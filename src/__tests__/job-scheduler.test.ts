@@ -1,0 +1,160 @@
+import { describe, it, expect } from 'vitest';
+import {
+  computePaddedWindow,
+  shouldWarmStart,
+  WarmStartCache,
+  type WarmStartEntry,
+} from '../lib/warm-start-cache';
+import type { SolverParams } from '../lib/solver-types';
+
+// ---------- computePaddedWindow ----------
+
+describe('computePaddedWindow', () => {
+  it('computes standard padding (5 * tauDecay * fs)', () => {
+    // paddingSamples = ceil(5 * 0.4 * 30) = ceil(60) = 60
+    const result = computePaddedWindow(1000, 2000, 10000, 0.4, 30);
+    expect(result.paddedStart).toBe(940);
+    expect(result.paddedEnd).toBe(2060);
+    expect(result.resultOffset).toBe(60);
+    expect(result.resultLength).toBe(1000);
+  });
+
+  it('clamps paddedStart to 0 when near trace start', () => {
+    // paddingSamples = 60, visibleStart=20 -> paddedStart = max(0, 20-60) = 0
+    const result = computePaddedWindow(20, 500, 10000, 0.4, 30);
+    expect(result.paddedStart).toBe(0);
+    expect(result.paddedEnd).toBe(560);
+    expect(result.resultOffset).toBe(20); // visibleStart - paddedStart = 20 - 0
+    expect(result.resultLength).toBe(480);
+  });
+
+  it('clamps paddedEnd to traceLength when near trace end', () => {
+    // paddingSamples = 60, visibleEnd=10000 -> paddedEnd = min(10000, 10060) = 10000
+    const result = computePaddedWindow(9800, 10000, 10000, 0.4, 30);
+    expect(result.paddedEnd).toBe(10000);
+    expect(result.paddedStart).toBe(9740);
+    expect(result.resultOffset).toBe(60);
+    expect(result.resultLength).toBe(200);
+  });
+
+  it('produces larger padding for larger tauDecay', () => {
+    // paddingSamples = ceil(5 * 2.0 * 100) = 1000
+    const result = computePaddedWindow(5000, 6000, 20000, 2.0, 100);
+    expect(result.paddedStart).toBe(4000);
+    expect(result.paddedEnd).toBe(7000);
+    expect(result.resultOffset).toBe(1000);
+    expect(result.resultLength).toBe(1000);
+  });
+
+  it('handles full-trace window (no padding extends beyond bounds)', () => {
+    const result = computePaddedWindow(0, 10000, 10000, 0.4, 30);
+    expect(result.paddedStart).toBe(0);
+    expect(result.paddedEnd).toBe(10000);
+    expect(result.resultOffset).toBe(0);
+    expect(result.resultLength).toBe(10000);
+  });
+});
+
+// ---------- shouldWarmStart ----------
+
+describe('shouldWarmStart', () => {
+  const baseParams: SolverParams = {
+    tauRise: 0.02,
+    tauDecay: 0.4,
+    lambda: 0.01,
+    fs: 30,
+  };
+
+  function makeEntry(params: SolverParams, paddedStart = 940, paddedEnd = 2060): WarmStartEntry {
+    return {
+      state: new Uint8Array([1, 2, 3]),
+      params,
+      paddedStart,
+      paddedEnd,
+    };
+  }
+
+  it('returns cold when no cached entry', () => {
+    expect(shouldWarmStart(null, baseParams, 940, 2060)).toBe('cold');
+  });
+
+  it('returns warm when only lambda changed', () => {
+    const cached = makeEntry(baseParams);
+    const newParams = { ...baseParams, lambda: 0.05 };
+    expect(shouldWarmStart(cached, newParams, 940, 2060)).toBe('warm');
+  });
+
+  it('returns warm-no-momentum when tauDecay changes by < 20%', () => {
+    const cached = makeEntry(baseParams);
+    // 10% change: 0.4 -> 0.44
+    const newParams = { ...baseParams, tauDecay: 0.44 };
+    expect(shouldWarmStart(cached, newParams, 940, 2060)).toBe('warm-no-momentum');
+  });
+
+  it('returns cold when tauDecay doubles (> 20% change)', () => {
+    const cached = makeEntry(baseParams);
+    const newParams = { ...baseParams, tauDecay: 0.8 };
+    expect(shouldWarmStart(cached, newParams, 940, 2060)).toBe('cold');
+  });
+
+  it('returns cold when window shifts', () => {
+    const cached = makeEntry(baseParams, 940, 2060);
+    // Same params but different window
+    expect(shouldWarmStart(cached, baseParams, 1000, 2120)).toBe('cold');
+  });
+
+  it('returns warm when params and window are identical', () => {
+    const cached = makeEntry(baseParams);
+    expect(shouldWarmStart(cached, { ...baseParams }, 940, 2060)).toBe('warm');
+  });
+
+  it('returns warm-no-momentum when tauRise changes by < 20%', () => {
+    const cached = makeEntry(baseParams);
+    // 15% change: 0.02 -> 0.023
+    const newParams = { ...baseParams, tauRise: 0.023 };
+    expect(shouldWarmStart(cached, newParams, 940, 2060)).toBe('warm-no-momentum');
+  });
+
+  it('returns cold when fs changes', () => {
+    const cached = makeEntry(baseParams);
+    const newParams = { ...baseParams, fs: 60 };
+    expect(shouldWarmStart(cached, newParams, 940, 2060)).toBe('cold');
+  });
+});
+
+// ---------- WarmStartCache ----------
+
+describe('WarmStartCache', () => {
+  const params: SolverParams = {
+    tauRise: 0.02,
+    tauDecay: 0.4,
+    lambda: 0.01,
+    fs: 30,
+  };
+
+  it('is initially empty', () => {
+    const cache = new WarmStartCache();
+    expect(cache.get()).toBeNull();
+    const { strategy, state } = cache.getStrategy(params, 940, 2060);
+    expect(strategy).toBe('cold');
+    expect(state).toBeNull();
+  });
+
+  it('stores and retrieves warm-start state', () => {
+    const cache = new WarmStartCache();
+    const mockState = new Uint8Array([10, 20, 30]);
+    cache.store(mockState, params, 940, 2060);
+
+    expect(cache.get()).not.toBeNull();
+    const { strategy, state } = cache.getStrategy(params, 940, 2060);
+    expect(strategy).toBe('warm');
+    expect(state).toBe(mockState);
+  });
+
+  it('clears the cache', () => {
+    const cache = new WarmStartCache();
+    cache.store(new Uint8Array([1]), params, 940, 2060);
+    cache.clear();
+    expect(cache.get()).toBeNull();
+  });
+});
