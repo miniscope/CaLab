@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: ['main']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -41,6 +41,7 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          VITE_APP_VERSION: ${{ github.ref_name }}
 
       - uses: actions/configure-pages@v4
 

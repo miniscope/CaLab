@@ -167,7 +167,7 @@ const App: Component = () => {
     <main class="import-container">
       {/* Header */}
       <header class="app-header" data-tutorial="app-header">
-        <h1 class="app-header__title">CaTune</h1>
+        <h1 class="app-header__title">CaTune <span class="app-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span></h1>
         <p class="app-header__subtitle">
           Calcium Deconvolution Parameter Tuning
           <TutorialLauncher isOpen={tutorialOpen} onToggle={() => setTutorialOpen((prev) => !prev)} />

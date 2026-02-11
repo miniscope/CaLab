@@ -97,6 +97,13 @@ a:hover {
   letter-spacing: -0.02em;
 }
 
+.app-header__version {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 400;
+  vertical-align: super;
+}
+
 .app-header__subtitle {
   color: var(--text-secondary);
   margin: 0;
