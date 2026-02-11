@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Neuroscientists can interactively tune deconvolution parameters on their own calcium imaging data, see immediate visual feedback of fit quality, and learn the tuning workflow through progressive guided tutorials -- all in the browser with zero setup.
-**Current focus:** Phase 2 - WASM Solver
+**Current focus:** Phase 3 - Visualization
 
 ## Current Position
 
-Phase: 2 of 8 (WASM Solver) -- COMPLETE
-Plan: 3 of 3 in current phase
-Status: Phase Complete
-Last activity: 2026-02-11 -- Completed 02-03 (Job Scheduler and Warm-Start)
+Phase: 3 of 8 (Visualization)
+Plan: 1 of 2 in current phase
+Status: In Progress
+Last activity: 2026-02-11 -- Completed 03-01 (Chart Infrastructure)
 
-Progress: [██████████] 3/3 Phase 2 COMPLETE
+Progress: [█████-----] 1/2 Phase 3
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: 5 min
-- Total execution time: 30 min
+- Total execution time: 33 min
 
 **By Phase:**
 
@@ -29,10 +29,11 @@ Progress: [██████████] 3/3 Phase 2 COMPLETE
 |-------|-------|-------|----------|
 | 01-data-foundation | 3/3 | 8 min | 3 min |
 | 02-wasm-solver | 3/3 | 22 min | 7 min |
+| 03-visualization | 1/2 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (?), 02-01 (13 min), 02-02 (6 min), 02-03 (3 min)
-- Trend: 02-03 fastest in phase (pure TypeScript, no WASM build or toolchain issues)
+- Last 5 plans: 02-01 (13 min), 02-02 (6 min), 02-03 (3 min), 03-01 (3 min)
+- Trend: 03-01 fast (pure TypeScript utilities + component, no build toolchain issues)
 
 *Updated after each plan completion*
 
@@ -64,6 +65,10 @@ Recent decisions affecting current work:
 - [02-03]: 20% relative threshold for tau change warm-start classification (research Pattern 4)
 - [02-03]: 30ms debounce for rapid slider movements; stale job discard via counter
 - [02-03]: Copy trace subarray before transfer to avoid detaching parent Float64Array
+- [03-01]: Left-click drag for pan, scroll-wheel for zoom (oscilloscope model per research)
+- [03-01]: X-axis only zoom with y auto-range (scientific trace viewing standard)
+- [03-01]: Disabled uPlot default box-select zoom in favor of drag-to-pan
+- [03-01]: autoResize enabled on SolidUplot for responsive width filling
 
 ### Pending Todos
 
@@ -76,5 +81,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 02-03-PLAN.md (Job Scheduler and Warm-Start) -- Phase 2 COMPLETE
-Resume file: .planning/phases/02-wasm-solver/02-03-SUMMARY.md
+Stopped at: Completed 03-01-PLAN.md (Chart Infrastructure)
+Resume file: .planning/phases/03-visualization/03-01-SUMMARY.md
