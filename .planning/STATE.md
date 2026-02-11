@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-10)
 ## Current Position
 
 Phase: 7 of 8 (Community Database)
-Plan: 1 of 4 in current phase
+Plan: 3 of 4 in current phase
 Status: In Progress
-Last activity: 2026-02-11 -- 07-01 Supabase foundation complete.
+Last activity: 2026-02-11 -- 07-03 Community browsing UI complete.
 
-Progress: [███-------] 1/4 Phase 7
+Progress: [███████---] 3/4 Phase 7
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 18
+- Total plans completed: 20
 - Average duration: 4 min
-- Total execution time: 65 min
+- Total execution time: 71 min
 
 **By Phase:**
 
@@ -33,11 +33,11 @@ Progress: [███-------] 1/4 Phase 7
 | 04-interactive-core-loop | 3/3 | 6 min | 2 min |
 | 05-multi-trace-and-export | 3/3 | 7 min | 2 min |
 | 06-tutorial-system | 3/3 | 10 min | 3 min |
-| 07-community-database | 1/4 | 4 min | 4 min |
+| 07-community-database | 3/4 | 10 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 06-01 (2 min), 06-02 (4 min), 06-03 (4 min), 07-01 (4 min)
-- Trend: Consistent 2-4 min per plan
+- Last 5 plans: 06-03 (4 min), 07-01 (4 min), 07-02 (3 min), 07-03 (3 min)
+- Trend: Consistent 3-4 min per plan
 
 *Updated after each plan completion*
 
@@ -111,6 +111,13 @@ Recent decisions affecting current work:
 - [07-01]: ArrayBuffer.slice() copy in dataset-hash for strict BufferSource type compatibility
 - [07-01]: signOut scope: 'local' for single-tab logout per Supabase best practice
 - [07-01]: redirectTo uses window.location.origin + BASE_URL for GitHub Pages subpath compatibility
+- [07-02]: SubmitPanel replaces ExportPanel as the single unified action point per locked decision
+- [07-02]: Datalist inputs (not select dropdowns) for indicator, species, brain region to allow custom values
+- [07-02]: Metadata form gated behind user() check -- AuthGate renders first, form fields only when authenticated
+- [07-02]: community.css overwrites previous placeholder styles with complete auth + submission styling
+- [07-03]: Raw uPlot instance via createEffect instead of SolidUplot wrapper (mode:2 data format incompatible)
+- [07-03]: Client-side filtering of full dataset instead of re-fetching on filter change
+- [07-03]: CSS transform rotate for vertical marginal histogram orientation
 
 ### Pending Todos
 
@@ -123,5 +130,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 07-01-PLAN.md
-Resume file: .planning/phases/07-community-database/07-01-SUMMARY.md
+Stopped at: Completed 07-03-PLAN.md
+Resume file: .planning/phases/07-community-database/07-03-SUMMARY.md
