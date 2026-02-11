@@ -1,0 +1,223 @@
+/* Multi-trace view styles - dark theme for CaTune */
+
+/* ========================
+   Multi-Trace Section
+   ======================== */
+.multi-trace-section {
+  margin-top: var(--space-lg);
+  padding: var(--space-md) 0;
+}
+
+.multi-trace-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.multi-trace-header__title {
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.multi-trace-header__count {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* ========================
+   Mini-Panel Grid
+   ======================== */
+.multi-trace-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-sm);
+}
+
+/* ========================
+   Mini-Panel
+   ======================== */
+.mini-panel {
+  border: 1px solid var(--bg-surface);
+  border-radius: 6px;
+  padding: var(--space-xs);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.mini-panel:hover {
+  border-color: var(--accent);
+}
+
+.mini-panel--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(83, 199, 240, 0.2);
+}
+
+.mini-panel__label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+  padding-left: var(--space-xs);
+}
+
+/* ========================
+   Cell Selector
+   ======================== */
+.cell-selector {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.cell-selector__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cell-selector__label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.cell-selector__mode {
+  background: var(--bg-surface);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.85rem;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.cell-selector__mode:focus {
+  border-color: var(--accent);
+}
+
+.cell-selector__count {
+  width: 60px;
+  background: var(--bg-surface);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.cell-selector__count:focus {
+  border-color: var(--accent);
+}
+
+/* Hide spin buttons for cleaner look */
+.cell-selector__count::-webkit-inner-spin-button,
+.cell-selector__count::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.cell-selector__count[type='number'] {
+  -moz-appearance: textfield;
+}
+
+.cell-selector__manual {
+  width: 180px;
+  background: var(--bg-surface);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.85rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.cell-selector__manual:focus {
+  border-color: var(--accent);
+}
+
+/* ========================
+   Export Panel
+   ======================== */
+.export-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.export-panel__summary {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* ========================
+   Solving Progress
+   ======================== */
+.solving-progress {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--accent);
+  margin-bottom: var(--space-sm);
+  animation: convergence-pulse 1s ease-in-out infinite;
+}
+
+/* ========================
+   Toolbar Row
+   ======================== */
+.viz-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.viz-toolbar__pin-info {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* ========================
+   Responsive
+   ======================== */
+@media (max-width: 600px) {
+  .multi-trace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cell-selector {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cell-selector__manual {
+    width: 100%;
+  }
+
+  .export-panel {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .viz-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
