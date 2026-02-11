@@ -1,0 +1,61 @@
+/* CaTune dark theme overrides for driver.js popovers.
+   Must be imported AFTER driver.js/dist/driver.css to override defaults. */
+
+.driver-popover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--bg-surface);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.driver-popover .driver-popover-title {
+  color: var(--accent);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.driver-popover .driver-popover-description {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.driver-popover .driver-popover-progress-text {
+  color: var(--text-secondary);
+}
+
+/* Next and Done buttons: accent-colored */
+.driver-popover-next-btn {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Previous button: ghost style */
+.driver-popover-prev-btn {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Close button */
+.driver-popover-close-btn {
+  color: var(--text-secondary);
+}
+
+/* Arrow color to match popover background */
+.driver-popover-arrow-side-left .driver-popover-arrow,
+.driver-popover-arrow-side-right .driver-popover-arrow,
+.driver-popover-arrow-side-top .driver-popover-arrow,
+.driver-popover-arrow-side-bottom .driver-popover-arrow {
+  border-color: var(--bg-secondary);
+}
