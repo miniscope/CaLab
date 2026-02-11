@@ -31,6 +31,40 @@ const [lambda, setLambda] = createSignal<number>(0.01); // default sparsity
 export type SolverStatus = 'idle' | 'solving' | 'converged' | 'error';
 const [solverStatus, setSolverStatus] = createSignal<SolverStatus>('idle');
 
+// --- Pinned snapshot for before/after comparison ---
+
+const [pinnedDeconvolved, setPinnedDeconvolved] =
+  createSignal<Float64Array | null>(null);
+const [pinnedReconvolution, setPinnedReconvolution] =
+  createSignal<Float64Array | null>(null);
+const [pinnedParams, setPinnedParams] = createSignal<{
+  tauRise: number;
+  tauDecay: number;
+  lambda: number;
+} | null>(null);
+
+/** Pin the current solver results as a dimmed overlay for before/after comparison. */
+function pinCurrentSnapshot(): void {
+  const deconv = deconvolvedTrace();
+  const reconv = reconvolutionTrace();
+
+  // Deep copy to avoid sharing ArrayBuffer references
+  setPinnedDeconvolved(deconv ? new Float64Array(deconv) : null);
+  setPinnedReconvolution(reconv ? new Float64Array(reconv) : null);
+  setPinnedParams({
+    tauRise: tauRise(),
+    tauDecay: tauDecay(),
+    lambda: lambda(),
+  });
+}
+
+/** Clear pinned snapshot data. */
+function unpinSnapshot(): void {
+  setPinnedDeconvolved(null);
+  setPinnedReconvolution(null);
+  setPinnedParams(null);
+}
+
 // --- Derived: residual trace ---
 
 const residualTrace = createMemo<Float64Array | null>(() => {
@@ -93,6 +127,9 @@ function loadCellTraces(
   // Clear derived traces -- tuning orchestrator will trigger solver dispatch
   setDeconvolvedTrace(null);
   setReconvolutionTrace(null);
+
+  // Clear pinned snapshot to avoid stale cross-cell comparison (Pitfall 4)
+  unpinSnapshot();
 }
 
 // --- Exports ---
@@ -121,6 +158,12 @@ export {
   // Solver status
   solverStatus,
   setSolverStatus,
+  // Pinned snapshot
+  pinnedDeconvolved,
+  pinnedReconvolution,
+  pinnedParams,
+  pinCurrentSnapshot,
+  unpinSnapshot,
   // Actions
   loadCellTraces,
 };
