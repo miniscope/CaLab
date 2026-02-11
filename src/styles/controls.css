@@ -1,0 +1,233 @@
+/* Parameter control panel styles - dark theme for CaTune */
+
+/* ========================
+   Parameter Panel
+   ======================== */
+.param-panel {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+}
+
+.param-panel__header {
+  margin-bottom: var(--space-md);
+}
+
+.param-panel__sliders {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ========================
+   Parameter Slider
+   ======================== */
+.param-slider {
+  margin-bottom: var(--space-md);
+}
+
+.param-slider:last-child {
+  margin-bottom: 0;
+}
+
+.param-slider__label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs);
+  font-weight: 500;
+}
+
+.param-slider__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* --- Range input: cross-browser dark theme --- */
+
+.param-slider__range {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Thumb - WebKit (Chrome, Safari, Edge) */
+.param-slider__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 4px rgba(83, 199, 240, 0.3);
+  transition: box-shadow 0.15s ease;
+}
+
+.param-slider__range::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 8px rgba(83, 199, 240, 0.5);
+}
+
+/* Thumb - Firefox */
+.param-slider__range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 4px rgba(83, 199, 240, 0.3);
+  transition: box-shadow 0.15s ease;
+}
+
+.param-slider__range::-moz-range-thumb:hover {
+  box-shadow: 0 0 8px rgba(83, 199, 240, 0.5);
+}
+
+/* Track - Firefox */
+.param-slider__range::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+}
+
+/* Focus ring for accessibility */
+.param-slider__range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(83, 199, 240, 0.4);
+}
+
+.param-slider__range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgba(83, 199, 240, 0.4);
+}
+
+/* --- Numeric input --- */
+
+.param-slider__number {
+  width: 80px;
+  background: var(--bg-surface);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  text-align: right;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.param-slider__number:focus {
+  border-color: var(--accent);
+}
+
+/* Hide spin buttons for cleaner look */
+.param-slider__number::-webkit-inner-spin-button,
+.param-slider__number::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.param-slider__number[type='number'] {
+  -moz-appearance: textfield;
+}
+
+/* --- Unit label --- */
+
+.param-slider__unit {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  min-width: 24px;
+}
+
+/* ========================
+   Convergence Indicator
+   ======================== */
+.convergence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.convergence__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.convergence__text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* Solving: pulsing accent dot */
+.convergence--solving .convergence__dot {
+  background: var(--accent);
+  animation: convergence-pulse 1s ease-in-out infinite;
+}
+
+.convergence--solving .convergence__text {
+  color: var(--accent);
+}
+
+/* Converged: solid green */
+.convergence--converged .convergence__dot {
+  background: var(--success);
+}
+
+.convergence--converged .convergence__text {
+  color: var(--success);
+}
+
+/* Error: solid red */
+.convergence--error .convergence__dot {
+  background: var(--error);
+}
+
+.convergence--error .convergence__text {
+  color: var(--error);
+}
+
+/* Idle: default (--text-secondary from base rule) */
+
+@keyframes convergence-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.3);
+  }
+}
+
+/* ========================
+   Responsive
+   ======================== */
+@media (max-width: 600px) {
+  .param-panel {
+    padding: var(--space-md);
+  }
+
+  .param-slider__controls {
+    flex-wrap: wrap;
+  }
+
+  .param-slider__range {
+    width: 100%;
+    flex: none;
+  }
+
+  .param-slider__number {
+    width: 70px;
+  }
+}
