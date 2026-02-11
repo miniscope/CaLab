@@ -2,23 +2,28 @@
 // Conditionally renders components based on importStep
 
 import type { Component } from 'solid-js';
-import { Show, createMemo } from 'solid-js';
+import { Show, createMemo, createEffect, on } from 'solid-js';
 import { FileDropZone } from './components/FileDropZone.tsx';
 import { NpzArraySelector } from './components/NpzArraySelector.tsx';
 import { DimensionConfirmation } from './components/DimensionConfirmation.tsx';
 import { SamplingRateInput } from './components/SamplingRateInput.tsx';
 import { DataValidationReport } from './components/DataValidationReport.tsx';
 import { TracePreview } from './components/TracePreview.tsx';
+import { TracePanelStack } from './components/traces/TracePanelStack.tsx';
+import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import {
   importStep,
   rawFile,
+  parsedData,
   effectiveShape,
+  swapped,
   samplingRate,
   durationSeconds,
   validationResult,
   npzArrays,
   resetImport,
 } from './lib/data-store.ts';
+import { loadCellTraces } from './lib/viz-store.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -45,7 +50,21 @@ const App: Component = () => {
     return `${d.toFixed(1)}s`;
   });
 
+  // Load first cell's traces when import reaches 'ready'
+  createEffect(
+    on(importStep, (currentStep) => {
+      if (currentStep === 'ready') {
+        const data = parsedData();
+        const shape = effectiveShape();
+        if (data && shape) {
+          loadCellTraces(0, data, shape, swapped());
+        }
+      }
+    }),
+  );
+
   return (
+    <>
     <main class="import-container">
       {/* Header */}
       <header class="app-header">
@@ -157,6 +176,24 @@ const App: Component = () => {
         </div>
       </Show>
     </main>
+
+    {/* Visualization section -- full width, outside import-container */}
+    <Show when={step() === 'ready'}>
+      <section class="viz-container">
+        <div class="viz-header">
+          <h2 class="viz-header__title">Trace Visualization</h2>
+          <Show when={effectiveShape()}>
+            <p class="viz-header__subtitle">
+              Cell 1 of {effectiveShape()![0].toLocaleString()}
+            </p>
+          </Show>
+        </div>
+
+        <TracePanelStack />
+        <KernelDisplay />
+      </section>
+    </Show>
+    </>
   );
 };
 

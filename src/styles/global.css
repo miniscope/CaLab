@@ -601,6 +601,66 @@ a:hover {
 }
 
 /* ========================
+   Visualization Container
+   ======================== */
+.viz-container {
+  width: 100%;
+  padding: var(--space-md) var(--space-lg);
+}
+
+.viz-header {
+  margin-bottom: var(--space-md);
+}
+
+.viz-header__title {
+  font-size: 1.3rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.viz-header__subtitle {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* Trace panel stack */
+.trace-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.trace-stack__panel {
+  /* No max-width -- fills available space */
+}
+
+.panel-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-xs);
+  font-weight: 500;
+}
+
+/* Kernel display */
+.kernel-section {
+  max-width: 400px;
+  margin-bottom: var(--space-lg);
+}
+
+.kernel-section__header {
+  margin-bottom: var(--space-xs);
+}
+
+.kernel-section__params {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-xs);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* ========================
    Responsive
    ======================== */
 @media (max-width: 600px) {
@@ -651,5 +711,13 @@ a:hover {
     width: 28px;
     height: 28px;
     font-size: 0.8rem;
+  }
+
+  .viz-container {
+    padding: var(--space-sm);
+  }
+
+  .kernel-section {
+    max-width: 100%;
   }
 }
