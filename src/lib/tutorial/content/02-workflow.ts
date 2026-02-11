@@ -1,0 +1,138 @@
+// TUTR-02: Guided Tuning Workflow tutorial.
+// Pure data definition -- no driver.js imports (TUTR-05 compliance).
+
+import type { Tutorial } from '../types';
+
+export const workflowTutorial: Tutorial = {
+  id: 'workflow',
+  title: 'Guided Tuning Workflow',
+  description:
+    'Walk through the recommended step-by-step tuning process used by the Aharoni Lab, adjusting parameters on your own data.',
+  level: 'intermediate',
+  prerequisites: ['basics'],
+  estimatedMinutes: 5,
+  steps: [
+    // Step 1: Introduction (centered modal, no element)
+    {
+      title: 'Guided Tuning Workflow',
+      description:
+        'This tutorial walks you through the recommended tuning workflow used by the Aharoni Lab. You will adjust parameters step by step on your own data.',
+    },
+    // Step 2: Pick a starting cell
+    {
+      element: '[data-tutorial="cell-selector"]',
+      title: 'Step 1: Pick a Good Starting Cell',
+      description:
+        'Start with a cell that has clear, isolated events visible in the raw trace. Use \u201CTop Active\u201D mode to find cells with strong activity. Click a mini-panel below to switch cells.',
+      side: 'top',
+    },
+    // Step 3: Look for clean events
+    {
+      element: '[data-tutorial="trace-raw-fit"]',
+      title: 'Look for Clean Events',
+      description:
+        'Scan the raw trace for sharp, well-separated peaks. Avoid cells dominated by noise or slow baseline drift. A cell with a few clear events is ideal for initial tuning.',
+      side: 'bottom',
+    },
+    // Step 4: Tune decay time (interactive)
+    {
+      element: '[data-tutorial="slider-decay"]',
+      title: 'Step 2: Tune Decay Time',
+      description:
+        'Decay has the biggest visual impact. Drag the slider and watch the orange fit line. Adjust until the fit\u2019s falling edge matches the raw trace\u2019s falling edge after each peak. Try it now.',
+      side: 'right',
+      waitForAction: 'slider-change',
+      disableActiveInteraction: false,
+    },
+    // Step 5: Check the fit
+    {
+      element: '[data-tutorial="trace-raw-fit"]',
+      title: 'Check the Fit',
+      description:
+        'Look at how the orange fit line follows the blue raw trace after peaks. The tails should line up. If the fit drops too fast, increase decay. If it lingers too long, decrease decay.',
+      side: 'bottom',
+    },
+    // Step 6: Check residuals
+    {
+      element: '[data-tutorial="trace-residuals"]',
+      title: 'Step 3: Check Residuals',
+      description:
+        'Good residuals are flat noise. If you see bumps after peaks (positive residuals), decay is too short \u2014 the model drops off before the real signal does. If you see dips (negative residuals), decay may be too long.',
+      side: 'bottom',
+    },
+    // Step 7: Fine-tune rise time (interactive)
+    {
+      element: '[data-tutorial="slider-rise"]',
+      title: 'Step 4: Fine-Tune Rise Time',
+      description:
+        'Now adjust the rise time. This is subtle \u2014 it affects the onset of each event. Watch the leading edge of peaks in the fit. Drag to adjust.',
+      side: 'right',
+      waitForAction: 'slider-change',
+      disableActiveInteraction: false,
+    },
+    // Step 8: Check rise slopes
+    {
+      element: '[data-tutorial="trace-raw-fit"]',
+      title: 'Check Rise Slopes',
+      description:
+        'Zoom into a peak onset. The orange fit should match the blue trace\u2019s upward slope. If the fit rises too slowly, decrease rise time. If it overshoots, increase it slightly. Note: changing rise time may slightly affect the optimal decay \u2014 re-check.',
+      side: 'bottom',
+    },
+    // Step 9: Add sparsity (interactive)
+    {
+      element: '[data-tutorial="slider-lambda"]',
+      title: 'Step 5: Add Sparsity',
+      description:
+        'Increase lambda to clean up the deconvolved trace. Start low and increase until noise spikes disappear. Stop before real events start vanishing. Drag to adjust.',
+      side: 'right',
+      waitForAction: 'slider-change',
+      disableActiveInteraction: false,
+    },
+    // Step 10: Check deconvolved quality
+    {
+      element: '[data-tutorial="trace-deconvolved"]',
+      title: 'Check Deconvolved Quality',
+      description:
+        'The deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the baseline is still noisy, increase lambda. If events are disappearing, decrease it.',
+      side: 'bottom',
+    },
+    // Step 11: Validate across cells
+    {
+      element: '[data-tutorial="multi-trace-view"]',
+      title: 'Step 6: Validate Across Cells',
+      description:
+        'Good parameters should work across diverse cells, not just one. The mini-panels below show how your current parameters perform on multiple cells. Look for consistent fit quality.',
+      side: 'top',
+    },
+    // Step 12: Check different cell types
+    {
+      element: '[data-tutorial="cell-selector"]',
+      title: 'Check Different Cell Types',
+      description:
+        'Switch between \u201CTop Active\u201D, \u201CRandom\u201D, and \u201CManual\u201D selection to test parameters on cells with different activity levels. Parameters that only work on high-SNR cells may need adjustment.',
+      side: 'top',
+    },
+    // Step 13: Compare iterations
+    {
+      element: '[data-tutorial="pin-snapshot"]',
+      title: 'Step 7: Compare Iterations',
+      description:
+        'Pin your current parameters, then make adjustments. The dashed overlay lets you see whether your changes improved the fit. This is especially useful for subtle lambda adjustments.',
+      side: 'bottom',
+    },
+    // Step 14: Export
+    {
+      element: '[data-tutorial="export-panel"]',
+      title: 'Step 8: Export When Satisfied',
+      description:
+        'Once your parameters produce good fits across diverse cells, export them. The JSON file includes all parameter values, AR2 coefficients for downstream analysis, and metadata about your dataset.',
+      side: 'top',
+    },
+    // Step 15: Completion (centered modal, no element)
+    {
+      title: 'Workflow Complete',
+      description:
+        'Excellent! You have completed the guided tuning workflow. Your exported parameters can be used directly in analysis pipelines. For deeper insights, try the \u201CAdvanced Techniques\u201D tutorial.',
+    },
+  ],
+};

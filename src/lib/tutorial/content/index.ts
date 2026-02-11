@@ -1,0 +1,19 @@
+// Tutorial content registry.
+// Aggregates all tutorial definitions in progression order.
+
+import type { Tutorial } from '../types';
+import { basicsTutorial } from './01-basics';
+import { workflowTutorial } from './02-workflow';
+import { advancedTutorial } from './03-advanced';
+
+/** All tutorials in recommended progression order. */
+export const tutorials: Tutorial[] = [
+  basicsTutorial,
+  workflowTutorial,
+  advancedTutorial,
+];
+
+/** Look up a tutorial by its unique ID. */
+export function getTutorialById(id: string): Tutorial | undefined {
+  return tutorials.find((t) => t.id === id);
+}
