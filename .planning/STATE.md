@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-10)
 ## Current Position
 
 Phase: 8 of 8 (Python Companion)
-Plan: 1 of 2 in current phase
-Status: In Progress
-Last activity: 2026-02-11 -- Plan 08-01 complete. Python package scaffold and kernel module with 14 passing tests.
+Plan: 2 of 2 in current phase
+Status: Phase Complete
+Last activity: 2026-02-11 -- Plan 08-02 complete. FISTA solver, I/O module, and 45 passing tests.
 
-Progress: [█████░░░░░] 1/2 Phase 8
+Progress: [██████████] 2/2 Phase 8
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 22
+- Total plans completed: 23
 - Average duration: 3 min
-- Total execution time: 75 min
+- Total execution time: 79 min
 
 **By Phase:**
 
@@ -34,10 +34,10 @@ Progress: [█████░░░░░] 1/2 Phase 8
 | 05-multi-trace-and-export | 3/3 | 7 min | 2 min |
 | 06-tutorial-system | 3/3 | 10 min | 3 min |
 | 07-community-database | 4/4 | 11 min | 3 min |
-| 08-python-companion | 1/2 | 3 min | 3 min |
+| 08-python-companion | 2/2 | 7 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 07-02 (3 min), 07-03 (3 min), 07-04 (1 min), 08-01 (3 min)
+- Last 5 plans: 07-03 (3 min), 07-04 (1 min), 08-01 (3 min), 08-02 (4 min)
 - Trend: Consistent 1-4 min per plan
 
 *Updated after each plan completion*
@@ -126,6 +126,9 @@ Recent decisions affecting current work:
 - [08-01]: tau_to_ar2 returns (g1, g2, d, r) -- 4 values vs Rust's 2 -- exposing roots for testing
 - [08-01]: np.fft.fft with matched padding (next_power_of_two(2*n)) for compute_lipschitz
 - [08-01]: Virtual environment in python/.venv for isolated development (system pip unavailable)
+- [08-02]: Adjoint convolution [klen-1:klen-1+n] truncation (not [:n]) matching Rust convolve_adjoint
+- [08-02]: JSON metadata sidecar with built-in keys taking precedence over user metadata
+- [08-02]: Sparsity-based lambda test comparing against low-lambda baseline (not absolute threshold)
 
 ### Pending Todos
 
@@ -138,5 +141,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 08-01-PLAN.md (Python package scaffold and kernel module)
-Resume file: .planning/phases/08-python-companion/08-01-SUMMARY.md
+Stopped at: Completed 08-02-PLAN.md (FISTA solver, I/O module, and complete test suite)
+Resume file: .planning/phases/08-python-companion/08-02-SUMMARY.md
