@@ -15,7 +15,9 @@ import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
 import { MultiTraceView } from './components/traces/MultiTraceView.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';
-import { ExportPanel } from './components/controls/ExportPanel.tsx';
+import { SubmitPanel } from './components/community/SubmitPanel.tsx';
+import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
+import { supabaseEnabled } from './lib/supabase.ts';
 import { TutorialLauncher } from './components/tutorial/TutorialLauncher.tsx';
 import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
 import { startTuningLoop, commitToHistory } from './lib/tuning-orchestrator.ts';
@@ -52,6 +54,7 @@ import {
 } from './lib/multi-cell-store.ts';
 import { solveSelectedCells } from './lib/multi-cell-solver.ts';
 import './styles/multi-trace.css';
+import './styles/community.css';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -334,7 +337,7 @@ const App: Component = () => {
               lambda={pinnedParams()!.lambda.toExponential(2)}
             </span>
           </Show>
-          <ExportPanel />
+          <SubmitPanel />
         </div>
 
         <TracePanelStack />
@@ -343,6 +346,12 @@ const App: Component = () => {
         <MultiTraceView onCellClick={handleCellClick} />
         <KernelDisplay />
       </section>
+
+      <Show when={supabaseEnabled}>
+        <section class="community-container">
+          <CommunityBrowser />
+        </section>
+      </Show>
     </Show>
     </>
   );
