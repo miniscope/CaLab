@@ -1,0 +1,15 @@
+{
+  "name": "catune-solver",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "catune_solver_bg.wasm",
+    "catune_solver.js",
+    "catune_solver.d.ts"
+  ],
+  "main": "catune_solver.js",
+  "types": "catune_solver.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
