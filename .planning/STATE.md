@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Neuroscientists can interactively tune deconvolution parameters on their own calcium imaging data, see immediate visual feedback of fit quality, and learn the tuning workflow through progressive guided tutorials -- all in the browser with zero setup.
-**Current focus:** Phase 6 in progress — Tutorial System
+**Current focus:** Phase 7 in progress — Community Database
 
 ## Current Position
 
-Phase: 6 of 8 (Tutorial System)
-Plan: 2 of 3 in current phase
-Status: Plan Complete
-Last activity: 2026-02-11 -- 06-02 tutorial content and selectors complete.
+Phase: 7 of 8 (Community Database)
+Plan: 1 of 4 in current phase
+Status: In Progress
+Last activity: 2026-02-11 -- 07-01 Supabase foundation complete.
 
-Progress: [██████----] 2/3 Phase 6
+Progress: [███-------] 1/4 Phase 7
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 16
+- Total plans completed: 18
 - Average duration: 4 min
-- Total execution time: 57 min
+- Total execution time: 65 min
 
 **By Phase:**
 
@@ -32,10 +32,11 @@ Progress: [██████----] 2/3 Phase 6
 | 03-visualization | 2/2 | 8 min | 4 min |
 | 04-interactive-core-loop | 3/3 | 6 min | 2 min |
 | 05-multi-trace-and-export | 3/3 | 7 min | 2 min |
-| 06-tutorial-system | 2/3 | 6 min | 3 min |
+| 06-tutorial-system | 3/3 | 10 min | 3 min |
+| 07-community-database | 1/4 | 4 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 05-02 (2 min), 05-03 (3 min), 06-01 (2 min), 06-02 (4 min)
+- Last 5 plans: 06-01 (2 min), 06-02 (4 min), 06-03 (4 min), 07-01 (4 min)
 - Trend: Consistent 2-4 min per plan
 
 *Updated after each plan completion*
@@ -101,6 +102,15 @@ Recent decisions affecting current work:
 - [06-02]: data-tutorial prop added to ParameterSlider interface for passthrough (slider-rise, slider-decay, slider-lambda)
 - [06-02]: Unicode escape sequences for em-dashes and smart quotes in tutorial content (portable)
 - [06-02]: Interactive workflow steps use waitForAction='slider-change' with disableActiveInteraction=false
+- [06-03]: Tutorial panel state managed locally in App.tsx (not global store) for UI-only concern
+- [06-03]: First-time banner checks localStorage and data-loaded state before showing
+- [06-03]: createEffect auto-closes tutorial panel when tour becomes active for cleaner UX
+- [06-03]: Tuning orchestrator conditionally calls notifyTutorialAction only when tutorial is active
+- [07-01]: Supabase client exports null (not throws) when credentials missing for graceful degradation
+- [07-01]: vite-env.d.ts added for Vite client type declarations (import.meta.env support)
+- [07-01]: ArrayBuffer.slice() copy in dataset-hash for strict BufferSource type compatibility
+- [07-01]: signOut scope: 'local' for single-tab logout per Supabase best practice
+- [07-01]: redirectTo uses window.location.origin + BASE_URL for GitHub Pages subpath compatibility
 
 ### Pending Todos
 
@@ -113,5 +123,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 06-02-PLAN.md
-Resume file: .planning/phases/06-tutorial-system/06-02-SUMMARY.md
+Stopped at: Completed 07-01-PLAN.md
+Resume file: .planning/phases/07-community-database/07-01-SUMMARY.md
