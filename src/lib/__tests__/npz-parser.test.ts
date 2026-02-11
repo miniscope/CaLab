@@ -79,7 +79,8 @@ function makeNpzBuffer(entries: Record<string, ArrayBuffer>): ArrayBuffer {
     zipEntries[name] = new Uint8Array(buf);
   }
   const zipped = zipSync(zipEntries);
-  return zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength);
+  const copy = new Uint8Array(zipped);
+  return copy.buffer as ArrayBuffer;
 }
 
 // --- Tests ---

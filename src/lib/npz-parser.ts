@@ -27,9 +27,9 @@ export function parseNpz(buffer: ArrayBuffer): NpzResult {
     if (name.endsWith('.npy')) {
       const arrayName = name.replace(/\.npy$/, '');
       // IMPORTANT: fflate's unzipSync returns Uint8Array views on a shared buffer.
-      // We must slice to get a standalone ArrayBuffer for parseNpy.
-      const standalone = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      arrays[arrayName] = parseNpy(standalone);
+      // We must copy to get a standalone ArrayBuffer for parseNpy.
+      const copy = new Uint8Array(data);
+      arrays[arrayName] = parseNpy(copy.buffer as ArrayBuffer);
       arrayNames.push(arrayName);
     }
   }
