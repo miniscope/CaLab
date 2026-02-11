@@ -139,7 +139,7 @@ export function generateSyntheticDataset(
       tauDecay,
       fs,
       baseSeed + c * 7919, // different prime-offset seed per cell
-      6 + (c % 5) * 2, // varying SNR across cells (6-14)
+      20 + (c % 5) * 2, // varying SNR across cells (6-14)
     );
     data.set(raw, c * numTimepoints);
   }
