@@ -2,6 +2,7 @@ mod kernel;
 mod fista;
 
 use kernel::{build_kernel, compute_lipschitz};
+use wasm_bindgen::prelude::*;
 
 /// FISTA solver for calcium deconvolution.
 ///
@@ -9,6 +10,7 @@ use kernel::{build_kernel, compute_lipschitz};
 /// where K is the convolution matrix derived from a double-exponential kernel.
 ///
 /// Pre-allocated buffers grow but never shrink to prevent WASM memory fragmentation.
+#[wasm_bindgen]
 pub struct Solver {
     // Parameters
     tau_rise: f64,
@@ -37,8 +39,10 @@ pub struct Solver {
     pub(crate) lipschitz_constant: f64,
 }
 
+#[wasm_bindgen]
 impl Solver {
     /// Create a new Solver with default parameters.
+    #[wasm_bindgen(constructor)]
     pub fn new() -> Solver {
         console_error_panic_hook::set_once();
 
