@@ -24,16 +24,11 @@ import {
   rawFile,
   parsedData,
   effectiveShape,
-  swapped,
-  samplingRate,
   resetImport,
   loadDemoData,
 } from './lib/data-store.ts';
 import {
-  loadCellTraces,
-  tauRise,
-  tauDecay,
-  lambda,
+  setSelectedCell,
   pinnedParams,
   pinCurrentSnapshot,
   unpinSnapshot,
@@ -41,10 +36,8 @@ import {
 import {
   computeAndCacheRanking,
   updateCellSelection,
-  selectedCells,
 } from './lib/multi-cell-store.ts';
-import { solveSelectedCells } from './lib/multi-cell-solver.ts';
-import { startTuningLoop } from './lib/tuning-orchestrator.ts';
+import { initCellSolveManager } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/supabase.ts';
 import { isTutorialActive } from './lib/tutorial/tutorial-store.ts';
 import { startTutorial } from './lib/tutorial/tutorial-engine.ts';
@@ -92,42 +85,16 @@ const App: Component = () => {
     }),
   );
 
-  // Trigger batch re-solve for selected cells with current parameters
-  const triggerBatchSolve = () => {
-    const data = parsedData();
-    const shape = effectiveShape();
-    const cells = selectedCells();
-    if (!data || !shape || cells.length === 0) return;
-    solveSelectedCells(
-      cells,
-      { tauRise: tauRise(), tauDecay: tauDecay(), lambda: lambda(), fs: samplingRate() ?? 30 },
-      data,
-      shape,
-      swapped(),
-    );
-  };
-
-  // Handle card click to switch primary cell
-  const handleCellClick = (cellIndex: number) => {
-    const data = parsedData();
-    const shape = effectiveShape();
-    if (data && shape) {
-      loadCellTraces(cellIndex, data, shape, swapped());
-    }
-  };
-
-  // Load first cell's traces and start tuning loop when import reaches 'ready'
+  // Initialize cell solve manager and cell selection when data is ready
   createEffect(
     on(importStep, (currentStep) => {
       if (currentStep === 'ready') {
         const data = parsedData();
         const shape = effectiveShape();
         if (data && shape) {
-          loadCellTraces(0, data, shape, swapped());
-          startTuningLoop();
           computeAndCacheRanking();
           updateCellSelection();
-          setTimeout(triggerBatchSolve, 100);
+          initCellSolveManager();
         }
       }
     }),
@@ -188,7 +155,7 @@ const App: Component = () => {
           {/* Left strip: Parameters + Kernel */}
           <div class="param-strip">
             <DashboardPanel id="parameters" variant="controls">
-              <ParameterPanel onBatchSolve={triggerBatchSolve} />
+              <ParameterPanel />
             </DashboardPanel>
 
             <DashboardPanel id="kernel" variant="data">
@@ -218,8 +185,8 @@ const App: Component = () => {
 
           {/* Center: Cell selector bar + Card Grid */}
           <div class="main-content-area">
-            <CellSelector onSelectionChange={triggerBatchSolve} />
-            <CardGrid onCellClick={handleCellClick} />
+            <CellSelector />
+            <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
           </div>
         </VizLayout>
       </DashboardShell>

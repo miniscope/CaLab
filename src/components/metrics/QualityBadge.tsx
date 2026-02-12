@@ -8,7 +8,7 @@
 
 import type { QualityTier } from '../../lib/metrics/snr';
 
-export type SolverStatus = 'fresh' | 'solving' | 'stale';
+export type SolverStatus = 'fresh' | 'solving' | 'stale' | 'error';
 
 export interface QualityBadgeProps {
   quality: QualityTier;

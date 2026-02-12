@@ -21,7 +21,7 @@ import '../../styles/multi-trace.css';
 
 export interface CellSelectorProps {
   /** Called when selection changes (triggers batch re-solve). */
-  onSelectionChange: () => void;
+  onSelectionChange?: () => void;
 }
 
 export function CellSelector(props: CellSelectorProps) {
@@ -29,7 +29,7 @@ export function CellSelector(props: CellSelectorProps) {
     const value = (e.target as HTMLSelectElement).value as SelectionMode;
     setSelectionMode(value);
     updateCellSelection();
-    props.onSelectionChange();
+    props.onSelectionChange?.();
   };
 
   const handleCountChange = (e: Event) => {
@@ -37,7 +37,7 @@ export function CellSelector(props: CellSelectorProps) {
     if (!isNaN(value) && value >= 1) {
       setDisplayCount(Math.min(value, Math.min(20, numCells())));
       updateCellSelection();
-      props.onSelectionChange();
+      props.onSelectionChange?.();
     }
   };
 
@@ -53,7 +53,7 @@ export function CellSelector(props: CellSelectorProps) {
     // Deduplicate
     const unique = [...new Set(indices)];
     setSelectedCells(unique);
-    props.onSelectionChange();
+    props.onSelectionChange?.();
   };
 
   const handleGridColumnsChange = (e: Event) => {
@@ -65,7 +65,7 @@ export function CellSelector(props: CellSelectorProps) {
 
   const handleReshuffle = () => {
     updateCellSelection();
-    props.onSelectionChange();
+    props.onSelectionChange?.();
   };
 
   const maxCount = () => Math.min(20, numCells());

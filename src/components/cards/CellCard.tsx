@@ -19,6 +19,8 @@ export interface CellCardProps {
   isActive?: boolean;
   solverStatus?: SolverStatus;
   onClick?: () => void;
+  onZoomChange?: (cellIndex: number, startS: number, endS: number) => void;
+  windowStartSample?: number;
 }
 
 const DEFAULT_ZOOM_WINDOW_S = 60; // 60 seconds default zoom window
@@ -46,6 +48,7 @@ export function CellCard(props: CellCardProps) {
   const handleZoomChange = (start: number, end: number) => {
     setZoomStart(start);
     setZoomEnd(end);
+    props.onZoomChange?.(props.cellIndex, start, end);
   };
 
   return (
@@ -81,6 +84,7 @@ export function CellCard(props: CellCardProps) {
             endTime={zoomEnd()}
             syncKey={`${ZOOM_SYNC_KEY}-${props.cellIndex}`}
             onZoomChange={handleZoomChange}
+            deconvWindowOffset={props.windowStartSample}
           />
         </div>
       </Show>

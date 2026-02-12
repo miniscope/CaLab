@@ -13,10 +13,10 @@ import { CellCard } from './CellCard';
 import {
   selectedCells,
   multiCellResults,
-  solvingCells,
-  activelySolvingCell,
+  cellSolverStatuses,
   gridColumns,
 } from '../../lib/multi-cell-store';
+import { reportCellZoom } from '../../lib/cell-solve-manager';
 import { samplingRate } from '../../lib/data-store';
 import { selectedCell } from '../../lib/viz-store';
 import '../../styles/cards.css';
@@ -52,12 +52,10 @@ export function CardGrid(props: CardGridProps) {
                       reconvolutionTrace={t().reconvolution}
                       samplingRate={samplingRate() ?? 30}
                       isActive={selectedCell() === cellIndex}
-                      solverStatus={
-                        activelySolvingCell() === cellIndex ? 'solving'
-                          : solvingCells().has(cellIndex) ? 'stale'
-                          : 'fresh'
-                      }
+                      solverStatus={cellSolverStatuses().get(cellIndex) ?? 'stale'}
                       onClick={() => props.onCellClick(cellIndex)}
+                      onZoomChange={reportCellZoom}
+                      windowStartSample={t().windowStartSample}
                     />
                   )}
                 </Show>

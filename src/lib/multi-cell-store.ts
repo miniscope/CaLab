@@ -14,7 +14,10 @@ export interface CellTraces {
   raw: Float64Array;
   deconvolved: Float64Array;
   reconvolution: Float64Array;
+  windowStartSample?: number;
 }
+
+export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error';
 
 // --- Signals ---
 
@@ -28,6 +31,37 @@ const [solvingCells, setSolvingCells] = createSignal<ReadonlySet<number>>(new Se
 const [activelySolvingCell, setActivelySolvingCell] = createSignal<number | null>(null);
 const [activityRanking, setActivityRanking] = createSignal<number[] | null>(null);
 const [gridColumns, setGridColumns] = createSignal<number>(2);
+const [cellSolverStatuses, setCellSolverStatuses] = createSignal<Map<number, CellSolverStatus>>(new Map());
+
+// --- Per-cell update helpers ---
+
+function updateOneCellStatus(cellIndex: number, status: CellSolverStatus): void {
+  setCellSolverStatuses(prev => {
+    const next = new Map(prev);
+    next.set(cellIndex, status);
+    return next;
+  });
+}
+
+function updateOneCellTraces(
+  cellIndex: number,
+  deconvolved: Float64Array,
+  reconvolution: Float64Array,
+  windowStartSample?: number,
+): void {
+  setMultiCellResults(prev => {
+    const existing = prev.get(cellIndex);
+    if (!existing) return prev;
+    const next = new Map(prev);
+    next.set(cellIndex, {
+      ...existing,
+      deconvolved,
+      reconvolution,
+      windowStartSample,
+    });
+    return next;
+  });
+}
 
 // --- Actions ---
 
@@ -107,6 +141,7 @@ export {
   activelySolvingCell,
   activityRanking,
   gridColumns,
+  cellSolverStatuses,
   // Setters
   setSelectionMode,
   setSelectedCells,
@@ -118,6 +153,10 @@ export {
   setActivelySolvingCell,
   setActivityRanking,
   setGridColumns,
+  setCellSolverStatuses,
+  // Per-cell helpers
+  updateOneCellStatus,
+  updateOneCellTraces,
   // Actions
   computeAndCacheRanking,
   updateCellSelection,
