@@ -121,12 +121,12 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
               <input
                 type="number"
                 min={0.5}
-                max={30}
+                max={60}
                 step={0.5}
                 value={demoDuration()}
                 onInput={(e) => {
                   const v = parseFloat(e.currentTarget.value);
-                  if (!isNaN(v) && v >= 0.5) setDemoDuration(Math.min(v, 30));
+                  if (!isNaN(v) && v >= 0.5) setDemoDuration(Math.min(v, 60));
                 }}
               />
             </label>

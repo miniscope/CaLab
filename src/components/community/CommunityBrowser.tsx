@@ -70,6 +70,12 @@ export function CommunityBrowser() {
     });
   });
 
+  /** Submissions matching the current data source (before dropdown filters). */
+  const sourceSubmissions = createMemo(() => {
+    const ds = dataSource();
+    return submissions().filter((s) => s.data_source === ds);
+  });
+
   /** Extract parameter arrays from filtered submissions. */
   const tauRiseValues = createMemo(() =>
     filteredSubmissions().map((s) => s.tau_rise),
@@ -195,7 +201,7 @@ export function CommunityBrowser() {
               onFilterChange={setFilters}
               options={fieldOptions()}
               filteredCount={filteredSubmissions().length}
-              totalCount={submissions().length}
+              totalCount={sourceSubmissions().length}
               demoPresets={getPresetLabels()}
               showDemoPresetFilter={dataSource() === 'demo'}
             />

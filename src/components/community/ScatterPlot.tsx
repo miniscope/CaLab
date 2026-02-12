@@ -27,30 +27,29 @@ export interface ScatterPlotProps {
   userParams?: { tauRise: number; tauDecay: number; lambda: number } | null;
 }
 
-/** Map a lambda value to a viridis-inspired HSLA color on a log scale. */
+/** Map a lambda value to a viridis-inspired HSLA color on a linear scale. */
 function lambdaToColor(
   lambda: number,
   minL: number,
   maxL: number,
 ): string {
-  const logMin = Math.log10(minL);
-  const logMax = Math.log10(maxL);
-  const range = logMax - logMin;
-  const t =
-    range === 0 ? 0.5 : (Math.log10(lambda) - logMin) / range;
+  const range = maxL - minL;
+  const t = range === 0 ? 0.5 : (lambda - minL) / range;
   const clamped = Math.max(0, Math.min(1, t));
   // Viridis-inspired: purple (270) -> yellow (60)
   const h = 270 - clamped * 210;
   return `hsla(${h}, 80%, 55%, 0.7)`;
 }
 
+/** Fixed lambda color range for consistent scatter plot coloring. */
+const LAMBDA_RANGE_MIN = 0;
+const LAMBDA_RANGE_MAX = 10;
+
 /** Pre-compute lambda color array for all submissions. */
 function computeLambdaColors(submissions: CommunitySubmission[]): string[] {
   if (submissions.length === 0) return [];
   const lambdas = submissions.map((s) => s.lambda);
-  const minL = Math.min(...lambdas);
-  const maxL = Math.max(...lambdas);
-  return lambdas.map((l) => lambdaToColor(l, minL, maxL));
+  return lambdas.map((l) => lambdaToColor(l, LAMBDA_RANGE_MIN, LAMBDA_RANGE_MAX));
 }
 
 /** Compute the median of a numeric array. Returns 0 for empty arrays. */
@@ -80,11 +79,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     };
   });
 
-  const lambdaRange = createMemo(() => {
-    if (props.submissions.length === 0) return { min: 0, max: 1 };
-    const lambdas = props.submissions.map((s) => s.lambda);
-    return { min: Math.min(...lambdas), max: Math.max(...lambdas) };
-  });
+  const lambdaRange = () => ({ min: LAMBDA_RANGE_MIN, max: LAMBDA_RANGE_MAX });
 
   /** Build mode:2 data: [[x0,x1,...],[y0,y1,...]] per series facet. */
   const chartData = createMemo((): uPlot.AlignedData => {
@@ -207,8 +202,8 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
               ctx.fillStyle = lambdaToColor(
                 up.lambda,
-                lambdaRange().min || up.lambda,
-                lambdaRange().max || up.lambda,
+                LAMBDA_RANGE_MIN,
+                LAMBDA_RANGE_MAX,
               );
               ctx.strokeStyle = markerStroke;
               ctx.lineWidth = 2 * devicePixelRatio;
