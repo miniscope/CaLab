@@ -110,6 +110,18 @@ body::before {
   flex-direction: column;
 }
 
+/* Dashboard mode: viewport-filling, no scroll */
+html.dashboard-mode,
+html.dashboard-mode body,
+html.dashboard-mode #root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+html.dashboard-mode #root {
+  min-height: 0;
+}
+
 /* Headings */
 h1, h2, h3, h4, h5, h6 {
   margin-top: 0;
@@ -777,19 +789,23 @@ a:hover {
 
 /* Kernel display */
 .kernel-section {
-  max-width: 400px;
-  margin-bottom: var(--space-lg);
+  max-width: 100%;
+  margin-bottom: 0;
 }
 
-.kernel-section__header {
-  margin-bottom: var(--space-xs);
+/* Remove inner box from kernel chart — already inside a DashboardPanel */
+.kernel-section .u-wrap {
+  background: none;
+  border: none;
+  border-radius: 0;
 }
 
-.kernel-section__params {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin: 0 0 var(--space-xs);
-  font-family: var(--font-mono);
+.kernel-section .trace-panel {
+  margin-bottom: 0;
+}
+
+.kernel-section .panel-label {
+  margin-bottom: 0;
 }
 
 /* ========================

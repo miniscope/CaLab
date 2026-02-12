@@ -11,11 +11,7 @@ import { TracePanel } from './TracePanel';
 import { downsampleMinMax } from '../../lib/chart/downsample';
 import { makeTimeAxis } from '../../lib/chart/time-axis';
 import { createRawSeries, createFitSeries } from '../../lib/chart/series-config';
-import {
-  multiCellResults,
-  multiCellSolving,
-  multiCellProgress,
-} from '../../lib/multi-cell-store';
+import { multiCellResults } from '../../lib/multi-cell-store';
 import { samplingRate } from '../../lib/data-store';
 import { selectedCell } from '../../lib/viz-store';
 
@@ -41,13 +37,6 @@ export function MultiTraceView(props: MultiTraceViewProps) {
             {multiCellResults().size} cells
           </span>
         </div>
-
-        <Show when={multiCellSolving()}>
-          <div class="solving-progress">
-            Solving cell {multiCellProgress()?.current ?? 0} of{' '}
-            {multiCellProgress()?.total ?? 0}...
-          </div>
-        </Show>
 
         <div class="multi-trace-grid">
           <For each={entries()}>

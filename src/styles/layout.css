@@ -65,33 +65,265 @@
 }
 
 /* ========================
-   Future dashboard grid mode (commented out)
-   Activate by switching class from viz-layout--scroll to viz-layout--grid
+   Dashboard Shell — outer 100vh grid: header + main + sidebar
    ======================== */
-
-/*
-.viz-layout--grid {
+.dashboard-shell {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto;
+  height: 100vh;
+  grid-template-columns: 1fr 0;
+  grid-template-rows: auto 1fr;
   grid-template-areas:
-    "parameters  parameters"
-    "toolbar     toolbar"
-    "traces      traces"
-    "selector    selector"
-    "kernel      multi-trace"
-    "community   community";
-  gap: var(--panel-gap);
+    "header  header"
+    "main    sidebar";
+  overflow: hidden;
+  transition: grid-template-columns var(--transition-slow);
 }
 
-.viz-layout--grid [data-panel-id="parameters"]  { grid-area: parameters; }
-.viz-layout--grid [data-panel-id="toolbar"]      { grid-area: toolbar; }
-.viz-layout--grid [data-panel-id="traces"]       { grid-area: traces; }
-.viz-layout--grid [data-panel-id="selector"]     { grid-area: selector; }
-.viz-layout--grid [data-panel-id="kernel"]       { grid-area: kernel; }
-.viz-layout--grid [data-panel-id="multi-trace"]  { grid-area: multi-trace; }
-.viz-layout--grid [data-panel-id="community"]    { grid-area: community; }
-*/
+.dashboard-shell--sidebar-open {
+  grid-template-columns: 1fr var(--sidebar-width, 380px);
+}
+
+.dashboard-shell__header {
+  grid-area: header;
+  min-width: 0;
+}
+
+.dashboard-shell__main {
+  grid-area: main;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dashboard-shell__sidebar {
+  grid-area: sidebar;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  transition: opacity var(--transition-slow);
+  opacity: 0;
+}
+
+.dashboard-shell--sidebar-open .dashboard-shell__sidebar {
+  overflow-y: auto;
+  opacity: 1;
+  padding: var(--space-md);
+}
+
+/* ========================
+   VizLayout — dashboard mode (3-column inner grid)
+   ======================== */
+.viz-layout--dashboard {
+  display: grid;
+  height: 100%;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: 1fr;
+  gap: var(--panel-gap);
+  padding: var(--space-md) var(--space-lg);
+  overflow: hidden;
+}
+
+/* Prevent grid blowout for all dashboard children */
+.viz-layout--dashboard > * {
+  min-height: 0;
+  min-width: 0;
+}
+
+.dashboard-shell .dashboard-panel {
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Utility: fill remaining flex space */
+.dashboard-panel--grow {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ========================
+   Parameter Strip — compact left column
+   ======================== */
+.param-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+  width: 260px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+/* Main content area: selector bar + card grid stacked */
+.main-content-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.param-strip__toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.param-strip__pin-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* ========================
+   Sidebar Tabs
+   ======================== */
+.sidebar-tabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.sidebar-tabs__bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  margin-bottom: var(--space-md);
+}
+
+.sidebar-tabs__tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-family: var(--font-body);
+  font-weight: var(--font-weight-medium);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.sidebar-tabs__tab:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-tabs__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.sidebar-tabs__content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ========================
+   Metrics Panel
+   ======================== */
+.metrics-panel {
+  padding: var(--space-sm) 0;
+}
+
+.metrics-panel__title {
+  font-size: 1.1rem;
+  margin: 0 0 var(--space-md);
+  color: var(--text-primary);
+}
+
+.metrics-panel__empty {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  text-align: center;
+  padding: var(--space-lg) 0;
+}
+
+.metrics-panel__summary {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.metrics-panel__stat {
+  flex: 1;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  text-align: center;
+}
+
+.metrics-panel__stat-label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.metrics-panel__stat-value {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.metrics-panel__table {
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+.metrics-panel__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: var(--space-xs);
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.metrics-panel__row--header {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+
+.metrics-panel__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* Quality Badge */
+.quality-badge {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s ease;
+}
+
+.quality-badge--solving {
+  animation: badge-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
 /* ========================
    Section Divider

@@ -216,7 +216,25 @@ export function ScatterPlot(props: ScatterPlotProps) {
     uplotInstance = new uPlot(opts, data, containerRef);
   });
 
+  // ResizeObserver: resize chart when sidebar opens/closes
+  let resizeRaf: number | undefined;
+  const resizeObserver = new ResizeObserver(() => {
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => {
+      if (uplotInstance && containerRef) {
+        const w = containerRef.clientWidth;
+        if (w > 0) uplotInstance.setSize({ width: w, height: 340 });
+      }
+    });
+  });
+
+  createEffect(() => {
+    if (containerRef) resizeObserver.observe(containerRef);
+  });
+
   onCleanup(() => {
+    resizeObserver.disconnect();
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
     if (uplotInstance) {
       uplotInstance.destroy();
       uplotInstance = undefined;

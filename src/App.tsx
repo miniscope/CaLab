@@ -2,25 +2,22 @@
 // Conditionally renders components based on importStep
 
 import type { Component } from 'solid-js';
-import { Show, createMemo, createEffect, createSignal, on } from 'solid-js';
+import { Show, createEffect, createSignal, on } from 'solid-js';
 
-import { FileDropZone } from './components/FileDropZone.tsx';
-import { NpzArraySelector } from './components/NpzArraySelector.tsx';
-import { DimensionConfirmation } from './components/DimensionConfirmation.tsx';
-import { SamplingRateInput } from './components/SamplingRateInput.tsx';
-import { DataValidationReport } from './components/DataValidationReport.tsx';
-import { TracePreview } from './components/TracePreview.tsx';
-import { TracePanelStack } from './components/traces/TracePanelStack.tsx';
-import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
-import { MultiTraceView } from './components/traces/MultiTraceView.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
-import { TutorialLauncher } from './components/tutorial/TutorialLauncher.tsx';
 import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
 import { DashboardPanel } from './components/layout/DashboardPanel.tsx';
 import { VizLayout } from './components/layout/VizLayout.tsx';
+import { DashboardShell } from './components/layout/DashboardShell.tsx';
+import { CompactHeader } from './components/layout/CompactHeader.tsx';
+import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
+import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
+import { CardGrid } from './components/cards/CardGrid.tsx';
+import { SidebarTabs } from './components/layout/SidebarTabs.tsx';
+import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
 
 import {
   importStep,
@@ -29,15 +26,11 @@ import {
   effectiveShape,
   swapped,
   samplingRate,
-  durationSeconds,
-  validationResult,
-  npzArrays,
   resetImport,
   loadDemoData,
 } from './lib/data-store.ts';
 import {
   loadCellTraces,
-  selectedCell,
   tauRise,
   tauDecay,
   lambda,
@@ -59,16 +52,7 @@ import { getTutorialById } from './lib/tutorial/content/index.ts';
 
 import './styles/multi-trace.css';
 import './styles/community.css';
-
-const STEP_LABELS: Record<string, { num: number; label: string }> = {
-  'drop':          { num: 1, label: 'Load Data' },
-  'confirm-dims':  { num: 2, label: 'Confirm Dimensions' },
-  'sampling-rate': { num: 3, label: 'Set Sampling Rate' },
-  'validation':    { num: 4, label: 'Validate Data' },
-  'ready':         { num: 4, label: 'Ready' },
-};
-
-const TOTAL_STEPS = 4;
+import './styles/cards.css';
 
 const BANNER_DISMISSED_KEY = 'catune-tutorial-dismissed';
 
@@ -78,7 +62,6 @@ function loadBannerDismissedState(): boolean {
 
 const App: Component = () => {
   const step = () => importStep();
-  const stepInfo = () => STEP_LABELS[step()] ?? { num: 1, label: 'Load Data' };
   const hasFile = () => !!rawFile();
 
   // Tutorial panel state
@@ -109,16 +92,6 @@ const App: Component = () => {
     }),
   );
 
-  const durationDisplay = createMemo(() => {
-    const d = durationSeconds();
-    if (d === null) return null;
-    const minutes = d / 60;
-    if (minutes >= 1) {
-      return `${d.toFixed(1)}s (${minutes.toFixed(1)} min)`;
-    }
-    return `${d.toFixed(1)}s`;
-  });
-
   // Trigger batch re-solve for selected cells with current parameters
   const triggerBatchSolve = () => {
     const data = parsedData();
@@ -134,7 +107,7 @@ const App: Component = () => {
     );
   };
 
-  // Handle mini-panel click to switch primary cell
+  // Handle card click to switch primary cell
   const handleCellClick = (cellIndex: number) => {
     const data = parsedData();
     const shape = effectiveShape();
@@ -152,10 +125,8 @@ const App: Component = () => {
         if (data && shape) {
           loadCellTraces(0, data, shape, swapped());
           startTuningLoop();
-          // Initialize multi-cell ranking and selection
           computeAndCacheRanking();
           updateCellSelection();
-          // Trigger initial batch solve after a short delay to let the primary cell solve first
           setTimeout(triggerBatchSolve, 100);
         }
       }
@@ -164,138 +135,6 @@ const App: Component = () => {
 
   return (
     <>
-    <main class="import-container">
-      {/* Header */}
-      <header class="app-header" data-tutorial="app-header">
-        <h1 class="app-header__title">CaTune <span class="app-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span></h1>
-        <p class="app-header__subtitle">
-          Calcium Deconvolution Parameter Tuning
-          <TutorialLauncher isOpen={tutorialOpen} onToggle={() => setTutorialOpen((prev) => !prev)} />
-        </p>
-      </header>
-
-      {/* Step indicator */}
-      <div class="step-indicator">
-        <div class="step-indicator__bar">
-          {[1, 2, 3, 4].map((n) => (
-            <div class={`step-dot ${n <= stepInfo().num ? 'step-dot--active' : ''} ${n === stepInfo().num ? 'step-dot--current' : ''}`}>
-              {n}
-            </div>
-          ))}
-        </div>
-        <p class="step-indicator__label">
-          Step {stepInfo().num} of {TOTAL_STEPS}: {stepInfo().label}
-        </p>
-      </div>
-
-      {/* Start Over button */}
-      <Show when={hasFile()}>
-        <div class="start-over-row">
-          <button class="btn-secondary btn-small" onClick={resetImport}>
-            Start Over
-          </button>
-        </div>
-      </Show>
-
-      {/* Step 1: File Drop */}
-      <Show when={step() === 'drop'}>
-        <FileDropZone />
-        <Show when={npzArrays()}>
-          <NpzArraySelector />
-        </Show>
-        <div class="demo-data-row">
-          <span class="demo-data-row__divider">or</span>
-          <button class="btn-secondary" onClick={loadDemoData}>
-            Load Demo Data
-          </button>
-          <p class="demo-data-row__hint">
-            20 synthetic cells, 5 min at 30 Hz
-          </p>
-        </div>
-      </Show>
-
-      {/* Step 2: Confirm Dimensions */}
-      <Show when={step() === 'confirm-dims'}>
-        <div class="file-info-dimmed">
-          <FileDropZone />
-        </div>
-        <DimensionConfirmation />
-      </Show>
-
-      {/* Step 3: Sampling Rate */}
-      <Show when={step() === 'sampling-rate'}>
-        <Show when={effectiveShape()}>
-          {(shape) => (
-            <div class="info-summary">
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-            </div>
-          )}
-        </Show>
-        <SamplingRateInput />
-      </Show>
-
-      {/* Step 4: Validation */}
-      <Show when={step() === 'validation'}>
-        <Show when={effectiveShape()}>
-          {(shape) => (
-            <div class="info-summary">
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{samplingRate()} Hz</span>
-            </div>
-          )}
-        </Show>
-        <DataValidationReport />
-      </Show>
-
-      {/* Ready: Show trace preview + summary */}
-      <Show when={step() === 'ready'}>
-        <div class="info-summary">
-          <Show when={rawFile()}>
-            {(file) => (<>
-              <span>{file().name}</span>
-              <span class="info-summary__sep">&middot;</span>
-            </>)}
-          </Show>
-          <Show when={effectiveShape()}>
-            {(shape) => (<>
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-              <span class="info-summary__sep">&middot;</span>
-            </>)}
-          </Show>
-          <span>{samplingRate()} Hz</span>
-          <Show when={durationDisplay()}>
-            <span class="info-summary__sep">&middot;</span>
-            <span>{durationDisplay()}</span>
-          </Show>
-        </div>
-
-        <Show when={validationResult()}>
-          {(result) => (
-            <Show when={result().warnings.length > 0}>
-              <p class="text-warning" style="text-align: center; margin-bottom: 12px;">
-                {result().warnings.length} warning{result().warnings.length > 1 ? 's' : ''}
-              </p>
-            </Show>
-          )}
-        </Show>
-
-        <TracePreview />
-
-        <div class="card ready-card">
-          <p class="text-success" style="font-weight: 600; text-align: center;">
-            Data loaded and validated. Ready for parameter tuning.
-          </p>
-        </div>
-      </Show>
-    </main>
-
     {/* Tutorial panel -- shown when toggled */}
     <Show when={tutorialOpen()}>
       <TutorialPanel onClose={() => setTutorialOpen(false)} />
@@ -318,68 +157,72 @@ const App: Component = () => {
       </div>
     </Show>
 
-    {/* Visualization section -- full width, outside import-container */}
-    <Show when={step() === 'ready'}>
-      <VizLayout>
-        <div class="viz-header" data-tutorial="viz-container">
-          <h2 class="viz-header__title">Trace Visualization</h2>
-          <Show when={effectiveShape()}>
-            {(shape) => (
-              <p class="viz-header__subtitle">
-                Cell {selectedCell() + 1} of {shape()[0].toLocaleString()}
-              </p>
-            )}
-          </Show>
-        </div>
+    {/* Import flow (full-page) OR Dashboard */}
+    <Show
+      when={step() === 'ready'}
+      fallback={
+        <ImportOverlay
+          hasFile={hasFile()}
+          onReset={resetImport}
+          onLoadDemo={loadDemoData}
+        />
+      }
+    >
+      <DashboardShell
+        header={
+          <CompactHeader
+            tutorialOpen={tutorialOpen}
+            onTutorialToggle={() => setTutorialOpen(prev => !prev)}
+          />
+        }
+        sidebar={
+          supabaseEnabled
+            ? <SidebarTabs
+                communityContent={<CommunityBrowser />}
+                metricsContent={<MetricsPanel />}
+              />
+            : <MetricsPanel />
+        }
+      >
+        <VizLayout mode="dashboard">
+          {/* Left strip: Parameters + Kernel */}
+          <div class="param-strip">
+            <DashboardPanel id="parameters" variant="controls">
+              <ParameterPanel onBatchSolve={triggerBatchSolve} />
+            </DashboardPanel>
 
-        <DashboardPanel id="parameters" variant="controls">
-          <ParameterPanel onBatchSolve={triggerBatchSolve} />
-        </DashboardPanel>
+            <DashboardPanel id="kernel" variant="data">
+              <KernelDisplay />
+            </DashboardPanel>
 
-        <DashboardPanel id="toolbar" variant="controls">
-          <div class="viz-toolbar">
-            <button
-              class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
-              onClick={() => pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot()}
-              data-tutorial="pin-snapshot"
-            >
-              {pinnedParams() ? 'Unpin Snapshot' : 'Pin for Comparison'}
-            </button>
-            <Show when={pinnedParams()}>
-              {(params) => (
-                <span class="viz-toolbar__pin-info">
-                  Pinned: rise={(params().tauRise * 1000).toFixed(1)}ms,
-                  decay={(params().tauDecay * 1000).toFixed(1)}ms,
-                  lambda={params().lambda.toExponential(2)}
-                </span>
-              )}
-            </Show>
-            <SubmitPanel />
+            <DashboardPanel id="toolbar" variant="controls">
+              <div class="param-strip__toolbar">
+                <button
+                  class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
+                  onClick={() => pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot()}
+                  data-tutorial="pin-snapshot"
+                >
+                  {pinnedParams() ? 'Unpin' : 'Pin'}
+                </button>
+                <Show when={pinnedParams()}>
+                  {(params) => (
+                    <span class="param-strip__pin-info">
+                      {(params().tauRise * 1000).toFixed(0)}ms / {(params().tauDecay * 1000).toFixed(0)}ms
+                    </span>
+                  )}
+                </Show>
+                <SubmitPanel />
+              </div>
+            </DashboardPanel>
           </div>
-        </DashboardPanel>
 
-        <DashboardPanel id="traces" variant="data">
-          <TracePanelStack />
-        </DashboardPanel>
-
-        <DashboardPanel id="selector" variant="controls">
-          <CellSelector onSelectionChange={triggerBatchSolve} />
-        </DashboardPanel>
-
-        <DashboardPanel id="multi-trace" variant="interactive">
-          <MultiTraceView onCellClick={handleCellClick} />
-        </DashboardPanel>
-
-        <DashboardPanel id="kernel" variant="data">
-          <KernelDisplay />
-        </DashboardPanel>
-
-        <Show when={supabaseEnabled}>
-          <DashboardPanel id="community" variant="interactive">
-            <CommunityBrowser />
-          </DashboardPanel>
-        </Show>
-      </VizLayout>
+          {/* Center: Cell selector bar + Card Grid */}
+          <div class="main-content-area">
+            <CellSelector onSelectionChange={triggerBatchSolve} />
+            <CardGrid onCellClick={handleCellClick} />
+          </div>
+        </VizLayout>
+      </DashboardShell>
     </Show>
     </>
   );

@@ -13,6 +13,8 @@ import {
   selectedCells,
   setSelectedCells,
   updateCellSelection,
+  gridColumns,
+  setGridColumns,
 } from '../../lib/multi-cell-store';
 import { numCells } from '../../lib/data-store';
 import '../../styles/multi-trace.css';
@@ -54,6 +56,13 @@ export function CellSelector(props: CellSelectorProps) {
     props.onSelectionChange();
   };
 
+  const handleGridColumnsChange = (e: Event) => {
+    const value = parseInt((e.target as HTMLInputElement).value, 10);
+    if (!isNaN(value) && value >= 1 && value <= 6) {
+      setGridColumns(value);
+    }
+  };
+
   const handleReshuffle = () => {
     updateCellSelection();
     props.onSelectionChange();
@@ -89,6 +98,15 @@ export function CellSelector(props: CellSelectorProps) {
           />
         </div>
       </Show>
+
+      <div class="cell-selector__group">
+        <label class="cell-selector__label">Grid columns</label>
+        <div class="cell-selector__stepper">
+          <button class="cell-selector__step-btn" onClick={() => gridColumns() > 1 && setGridColumns(gridColumns() - 1)}>−</button>
+          <span class="cell-selector__step-value">{gridColumns()}</span>
+          <button class="cell-selector__step-btn" onClick={() => gridColumns() < 6 && setGridColumns(gridColumns() + 1)}>+</button>
+        </div>
+      </div>
 
       <Show when={selectionMode() === 'random'}>
         <button class="btn-secondary btn-small" onClick={handleReshuffle}>

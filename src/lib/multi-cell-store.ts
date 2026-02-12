@@ -24,7 +24,10 @@ const [displayCount, setDisplayCount] = createSignal<number>(5);
 const [multiCellResults, setMultiCellResults] = createSignal<Map<number, CellTraces>>(new Map());
 const [multiCellSolving, setMultiCellSolving] = createSignal<boolean>(false);
 const [multiCellProgress, setMultiCellProgress] = createSignal<{ current: number; total: number } | null>(null);
+const [solvingCells, setSolvingCells] = createSignal<ReadonlySet<number>>(new Set());
+const [activelySolvingCell, setActivelySolvingCell] = createSignal<number | null>(null);
 const [activityRanking, setActivityRanking] = createSignal<number[] | null>(null);
+const [gridColumns, setGridColumns] = createSignal<number>(2);
 
 // --- Actions ---
 
@@ -78,6 +81,18 @@ function clearMultiCellResults(): void {
   setMultiCellResults(new Map());
 }
 
+/**
+ * Reset all multi-cell state (results + selection). Use when switching datasets.
+ */
+function clearMultiCellState(): void {
+  setMultiCellResults(new Map());
+  setSelectedCells([]);
+  setSolvingCells(new Set<number>());
+  setActivelySolvingCell(null);
+  setActivityRanking(null);
+  setSelectionMode('top-active');
+}
+
 // --- Exports ---
 
 export {
@@ -88,7 +103,10 @@ export {
   multiCellResults,
   multiCellSolving,
   multiCellProgress,
+  solvingCells,
+  activelySolvingCell,
   activityRanking,
+  gridColumns,
   // Setters
   setSelectionMode,
   setSelectedCells,
@@ -96,9 +114,13 @@ export {
   setMultiCellResults,
   setMultiCellSolving,
   setMultiCellProgress,
+  setSolvingCells,
+  setActivelySolvingCell,
   setActivityRanking,
+  setGridColumns,
   // Actions
   computeAndCacheRanking,
   updateCellSelection,
   clearMultiCellResults,
+  clearMultiCellState,
 };

@@ -33,17 +33,13 @@ export function KernelDisplay() {
 
   return (
     <div class="kernel-section" data-tutorial="kernel-display">
-      <div class="kernel-section__header">
-        <h4 class="panel-label">Calcium Kernel</h4>
-        <p class="kernel-section__params">
-          tau_rise = {tauRise().toFixed(3)}s, tau_decay = {tauDecay().toFixed(2)}s
-        </p>
-      </div>
+      <h4 class="panel-label">Calcium Kernel</h4>
       <TracePanel
         data={() => kernelData()}
         series={kernelSeries}
-        height={100}
+        height={140}
         syncKey={KERNEL_SYNC_KEY}
+        xLabel="Time (s)"
       />
     </div>
   );

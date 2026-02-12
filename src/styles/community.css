@@ -185,6 +185,38 @@
 }
 
 /* ========================
+   Submit Modal (Portal overlay)
+   ======================== */
+
+.submit-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.submit-modal__content {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--panel-radius);
+  padding: var(--panel-padding);
+  width: 480px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.submit-modal__title {
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-md);
+}
+
+/* ========================
    SubmitPanel
    ======================== */
 

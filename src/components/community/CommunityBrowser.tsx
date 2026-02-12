@@ -39,7 +39,7 @@ export function CommunityBrowser() {
     brainRegion: null,
   });
   const [loading, setLoading] = createSignal(false);
-  const [collapsed, setCollapsed] = createSignal(true);
+  const [collapsed, setCollapsed] = createSignal(false);
   const [compareMyParams, setCompareMyParams] = createSignal(false);
   const [lastFetched, setLastFetched] = createSignal<number | null>(null);
   const [error, setError] = createSignal<string | null>(null);

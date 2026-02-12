@@ -11,7 +11,8 @@
  *  - SubmissionSummary after successful submission
  */
 
-import { createSignal, Show, For } from 'solid-js';
+import { createSignal, Show, For, onCleanup } from 'solid-js';
+import { Portal } from 'solid-js/web';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store';
 import {
   samplingRate,
@@ -244,146 +245,161 @@ export function SubmitPanel() {
         )}
       </Show>
 
-      {/* Metadata form */}
+      {/* Metadata form — rendered as a centered modal via Portal */}
       <Show when={formOpen() && !lastSubmission()}>
-        <div class="submit-panel__form">
-          <AuthGate />
+        <Portal mount={document.body}>
+          <div
+            class="submit-modal__backdrop"
+            onClick={(e) => { if (e.target === e.currentTarget) setFormOpen(false); }}
+            ref={(el) => {
+              const handleKey = (e: KeyboardEvent) => {
+                if (e.key === 'Escape') setFormOpen(false);
+              };
+              document.addEventListener('keydown', handleKey);
+              onCleanup(() => document.removeEventListener('keydown', handleKey));
+            }}
+          >
+            <div class="submit-modal__content">
+              <h3 class="submit-modal__title">Submit to Community</h3>
+              <AuthGate />
 
-          <Show when={user()}>
-            {/* Required fields */}
-            <div class="submit-panel__field">
-              <label>
-                Calcium Indicator <span class="submit-panel__required-marker">*</span>
-              </label>
-              <input
-                type="text"
-                list="indicator-suggestions"
-                value={indicator()}
-                onInput={(e) => setIndicator(e.currentTarget.value)}
-                placeholder="e.g. GCaMP6f (AAV)"
-              />
-              <datalist id="indicator-suggestions">
-                <For each={INDICATOR_SUGGESTIONS}>
-                  {(s) => <option value={s} />}
-                </For>
-              </datalist>
+              <Show when={user()}>
+                {/* Required fields */}
+                <div class="submit-panel__field">
+                  <label>
+                    Calcium Indicator <span class="submit-panel__required-marker">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    list="indicator-suggestions"
+                    value={indicator()}
+                    onInput={(e) => setIndicator(e.currentTarget.value)}
+                    placeholder="e.g. GCaMP6f (AAV)"
+                  />
+                  <datalist id="indicator-suggestions">
+                    <For each={INDICATOR_SUGGESTIONS}>
+                      {(s) => <option value={s} />}
+                    </For>
+                  </datalist>
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>
+                    Species <span class="submit-panel__required-marker">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    list="species-suggestions"
+                    value={species()}
+                    onInput={(e) => setSpecies(e.currentTarget.value)}
+                    placeholder="e.g. mouse"
+                  />
+                  <datalist id="species-suggestions">
+                    <For each={SPECIES_SUGGESTIONS}>
+                      {(s) => <option value={s} />}
+                    </For>
+                  </datalist>
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>
+                    Brain Region <span class="submit-panel__required-marker">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    list="brain-region-suggestions"
+                    value={brainRegion()}
+                    onInput={(e) => setBrainRegion(e.currentTarget.value)}
+                    placeholder="e.g. cortex"
+                  />
+                  <datalist id="brain-region-suggestions">
+                    <For each={BRAIN_REGION_SUGGESTIONS}>
+                      {(s) => <option value={s} />}
+                    </For>
+                  </datalist>
+                </div>
+
+                {/* Optional fields */}
+                <div class="submit-panel__field">
+                  <label>Lab Name</label>
+                  <input
+                    type="text"
+                    value={labName()}
+                    onInput={(e) => setLabName(e.currentTarget.value)}
+                    placeholder="Optional"
+                  />
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>ORCID</label>
+                  <input
+                    type="text"
+                    value={orcid()}
+                    onInput={(e) => setOrcid(e.currentTarget.value)}
+                    placeholder="0000-0000-0000-0000"
+                  />
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>Virus / Construct</label>
+                  <input
+                    type="text"
+                    value={virusConstruct()}
+                    onInput={(e) => setVirusConstruct(e.currentTarget.value)}
+                    placeholder="Optional"
+                  />
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>Time Since Injection (days)</label>
+                  <input
+                    type="number"
+                    value={timeSinceInjection()}
+                    onInput={(e) => setTimeSinceInjection(e.currentTarget.value)}
+                    placeholder="Optional"
+                    min="0"
+                  />
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>Notes</label>
+                  <textarea
+                    value={notes()}
+                    onInput={(e) => setNotes(e.currentTarget.value)}
+                    placeholder="Optional notes about this dataset or tuning"
+                    rows={3}
+                  />
+                </div>
+
+                <PrivacyNotice />
+
+                {/* Validation errors */}
+                <Show when={validationErrors().length > 0}>
+                  <div class="submit-panel__errors">
+                    <For each={validationErrors()}>
+                      {(issue) => <p class="submit-panel__error-item">{issue}</p>}
+                    </For>
+                  </div>
+                </Show>
+
+                {/* Submit error */}
+                <Show when={submitError()}>
+                  <div class="submit-panel__errors">
+                    <p class="submit-panel__error-item">{submitError()}</p>
+                  </div>
+                </Show>
+
+                <button
+                  class="btn-primary"
+                  onClick={handleSubmit}
+                  disabled={!requiredFieldsFilled() || submitting()}
+                >
+                  {submitting() ? 'Submitting...' : 'Submit Parameters'}
+                </button>
+              </Show>
             </div>
-
-            <div class="submit-panel__field">
-              <label>
-                Species <span class="submit-panel__required-marker">*</span>
-              </label>
-              <input
-                type="text"
-                list="species-suggestions"
-                value={species()}
-                onInput={(e) => setSpecies(e.currentTarget.value)}
-                placeholder="e.g. mouse"
-              />
-              <datalist id="species-suggestions">
-                <For each={SPECIES_SUGGESTIONS}>
-                  {(s) => <option value={s} />}
-                </For>
-              </datalist>
-            </div>
-
-            <div class="submit-panel__field">
-              <label>
-                Brain Region <span class="submit-panel__required-marker">*</span>
-              </label>
-              <input
-                type="text"
-                list="brain-region-suggestions"
-                value={brainRegion()}
-                onInput={(e) => setBrainRegion(e.currentTarget.value)}
-                placeholder="e.g. cortex"
-              />
-              <datalist id="brain-region-suggestions">
-                <For each={BRAIN_REGION_SUGGESTIONS}>
-                  {(s) => <option value={s} />}
-                </For>
-              </datalist>
-            </div>
-
-            {/* Optional fields */}
-            <div class="submit-panel__field">
-              <label>Lab Name</label>
-              <input
-                type="text"
-                value={labName()}
-                onInput={(e) => setLabName(e.currentTarget.value)}
-                placeholder="Optional"
-              />
-            </div>
-
-            <div class="submit-panel__field">
-              <label>ORCID</label>
-              <input
-                type="text"
-                value={orcid()}
-                onInput={(e) => setOrcid(e.currentTarget.value)}
-                placeholder="0000-0000-0000-0000"
-              />
-            </div>
-
-            <div class="submit-panel__field">
-              <label>Virus / Construct</label>
-              <input
-                type="text"
-                value={virusConstruct()}
-                onInput={(e) => setVirusConstruct(e.currentTarget.value)}
-                placeholder="Optional"
-              />
-            </div>
-
-            <div class="submit-panel__field">
-              <label>Time Since Injection (days)</label>
-              <input
-                type="number"
-                value={timeSinceInjection()}
-                onInput={(e) => setTimeSinceInjection(e.currentTarget.value)}
-                placeholder="Optional"
-                min="0"
-              />
-            </div>
-
-            <div class="submit-panel__field">
-              <label>Notes</label>
-              <textarea
-                value={notes()}
-                onInput={(e) => setNotes(e.currentTarget.value)}
-                placeholder="Optional notes about this dataset or tuning"
-                rows={3}
-              />
-            </div>
-
-            <PrivacyNotice />
-
-            {/* Validation errors */}
-            <Show when={validationErrors().length > 0}>
-              <div class="submit-panel__errors">
-                <For each={validationErrors()}>
-                  {(issue) => <p class="submit-panel__error-item">{issue}</p>}
-                </For>
-              </div>
-            </Show>
-
-            {/* Submit error */}
-            <Show when={submitError()}>
-              <div class="submit-panel__errors">
-                <p class="submit-panel__error-item">{submitError()}</p>
-              </div>
-            </Show>
-
-            <button
-              class="btn-primary"
-              onClick={handleSubmit}
-              disabled={!requiredFieldsFilled() || submitting()}
-            >
-              {submitting() ? 'Submitting...' : 'Submit Parameters'}
-            </button>
-          </Show>
-        </div>
+          </div>
+        </Portal>
       </Show>
     </div>
   );

@@ -11,9 +11,12 @@ import type { CellTraces } from './multi-cell-store';
 
 import { extractCellTrace } from './array-utils';
 import {
+  multiCellResults,
   setMultiCellSolving,
   setMultiCellProgress,
   setMultiCellResults,
+  setSolvingCells,
+  setActivelySolvingCell,
 } from './multi-cell-store';
 import { createSolverWorker } from '../workers/solver-api';
 
@@ -41,9 +44,26 @@ export async function solveSelectedCells(
   shape: [number, number],
   isSwapped: boolean,
 ): Promise<Map<number, CellTraces>> {
+  const prev = multiCellResults();
   const results = new Map<number, CellTraces>();
+  const pending = new Set(cells);
+
+  // Ensure every selected cell has a card immediately.
+  // Keep stale results when they exist (parameter re-solve); zero-fill new cells.
+  for (const cellIndex of cells) {
+    const existing = prev.get(cellIndex);
+    if (existing) {
+      results.set(cellIndex, existing);
+    } else {
+      const raw = extractCellTrace(cellIndex, data, shape, isSwapped);
+      const zeros = new Float64Array(raw.length);
+      results.set(cellIndex, { cellIndex, raw, deconvolved: zeros, reconvolution: zeros });
+    }
+  }
+  setMultiCellResults(new Map(results));
 
   setMultiCellSolving(true);
+  setSolvingCells(pending);
   setMultiCellProgress({ current: 0, total: cells.length });
 
   try {
@@ -51,6 +71,7 @@ export async function solveSelectedCells(
 
     for (let i = 0; i < cells.length; i++) {
       const cellIndex = cells[i];
+      setActivelySolvingCell(cellIndex);
 
       try {
         const raw = extractCellTrace(cellIndex, data, shape, isSwapped);
@@ -81,14 +102,20 @@ export async function solveSelectedCells(
         // Continue to next cell -- don't abort the entire batch
       }
 
+      // Mark cell as solved and publish incremental results
+      pending.delete(cellIndex);
+      setSolvingCells(new Set(pending));
+      setMultiCellResults(new Map(results));
+
       // Update progress after each cell (success or failure)
       setMultiCellProgress({ current: i + 1, total: cells.length });
     }
   } finally {
     setMultiCellSolving(false);
+    setSolvingCells(new Set<number>());
+    setActivelySolvingCell(null);
     setMultiCellProgress(null);
   }
 
-  setMultiCellResults(results);
   return results;
 }

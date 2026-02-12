@@ -1,0 +1,61 @@
+/* Compact Header — thin bar for dashboard mode */
+
+.compact-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 48px;
+}
+
+.compact-header__brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.compact-header__title {
+  font-size: 1.1rem;
+  font-weight: var(--font-weight-semibold);
+  color: var(--accent);
+  letter-spacing: -0.02em;
+}
+
+.compact-header__version {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.compact-header__info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.compact-header__file {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compact-header__sep {
+  color: var(--text-tertiary);
+}
+
+.compact-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}

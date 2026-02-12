@@ -1,0 +1,139 @@
+/* Card Grid and Cell Card styles */
+
+/* ========================
+   Card Grid Container — only scrollable area
+   ======================== */
+.card-grid-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.card-grid {
+  --grid-cols: 2;
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), minmax(0, 1fr));
+  gap: var(--panel-gap);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-xs);
+  flex: 1;
+  min-height: 0;
+}
+
+.card-grid__progress {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--accent);
+  padding: var(--space-sm);
+  animation: convergence-pulse 1s ease-in-out infinite;
+}
+
+.card-grid__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* ========================
+   Cell Card
+   ======================== */
+.cell-card {
+  background: var(--panel-bg-data);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  min-height: 280px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.cell-card:hover {
+  border-color: var(--accent);
+}
+
+.cell-card--active {
+  border-color: var(--accent-warm);
+  box-shadow: 0 0 12px rgba(212, 165, 116, 0.25);
+}
+
+.cell-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-xs);
+}
+
+.cell-card__title {
+  font-size: 0.8rem;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* ========================
+   Trace Overview (minimap)
+   ======================== */
+.cell-card__overview {
+  flex-shrink: 0;
+}
+
+.trace-overview {
+  width: 100%;
+  cursor: crosshair;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+
+.trace-overview__canvas {
+  display: block;
+  width: 100%;
+}
+
+/* ========================
+   Zoom Window
+   ======================== */
+.cell-card__zoom {
+  flex: 1;
+  min-height: 100px;
+}
+
+.zoom-window {
+  height: 100%;
+}
+
+.zoom-window .trace-panel {
+  height: 100% !important;
+}
+
+.zoom-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  animation: zoom-hint-fade 1.5s ease-out forwards;
+}
+
+@keyframes zoom-hint-fade {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}

@@ -39,7 +39,7 @@ export function ParameterSlider(props: ParameterSliderProps) {
     const raw = parseFloat((e.target as HTMLInputElement).value);
     if (isNaN(raw)) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
-    props.setValue(() => val);
+    props.setValue(val);
   };
 
   // Range input: commit on mouse release (pushes to undo history)
@@ -55,7 +55,7 @@ export function ParameterSlider(props: ParameterSliderProps) {
     const raw = parseFloat((e.target as HTMLInputElement).value);
     if (isNaN(raw)) return;
     const clamped = Math.max(props.min, Math.min(props.max, raw));
-    props.setValue(() => clamped);
+    props.setValue(clamped);
   };
 
   // Numeric input: commit on blur/enter
@@ -68,30 +68,32 @@ export function ParameterSlider(props: ParameterSliderProps) {
 
   return (
     <div class="param-slider" data-tutorial={props['data-tutorial']}>
-      <label class="param-slider__label">{props.label}</label>
-      <div class="param-slider__controls">
-        <input
-          type="range"
-          class="param-slider__range"
-          min={props.toSlider ? 0 : props.min}
-          max={props.toSlider ? 1 : props.max}
-          step={props.toSlider ? 0.001 : props.step}
-          value={sliderValue()}
-          onInput={handleRangeInput}
-          onChange={handleRangeChange}
-        />
-        <input
-          type="number"
-          class="param-slider__number"
-          value={displayValue()}
-          min={props.min}
-          max={props.max}
-          step={props.step}
-          onInput={handleNumericInput}
-          onChange={handleNumericChange}
-        />
-        {props.unit && <span class="param-slider__unit">{props.unit}</span>}
+      <div class="param-slider__header">
+        <label class="param-slider__label">{props.label}</label>
+        <span class="param-slider__inline-value">
+          <input
+            type="number"
+            class="param-slider__number"
+            value={displayValue()}
+            min={props.min}
+            max={props.max}
+            step={props.step}
+            onInput={handleNumericInput}
+            onChange={handleNumericChange}
+          />
+          {props.unit && <span class="param-slider__unit">{props.unit}</span>}
+        </span>
       </div>
+      <input
+        type="range"
+        class="param-slider__range"
+        min={props.toSlider ? 0 : props.min}
+        max={props.toSlider ? 1 : props.max}
+        step={props.toSlider ? 0.001 : props.step}
+        value={sliderValue()}
+        onInput={handleRangeInput}
+        onChange={handleRangeChange}
+      />
     </div>
   );
 }

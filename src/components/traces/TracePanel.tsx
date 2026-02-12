@@ -21,17 +21,80 @@ export interface TracePanelProps {
   syncKey: string;
   /** Additional plugins (zoom sync injected externally) */
   plugins?: uPlot.Plugin[];
+  /** Disable built-in wheel zoom plugin (when parent handles zoom) */
+  disableWheelZoom?: boolean;
+  /** Lock y-axis to a fixed [min, max] range (prevents auto-ranging on zoom) */
+  yRange?: [number, number];
+  /** Hide y-axis tick labels (keep gridlines for visual reference) */
+  hideYValues?: boolean;
+  /** X-axis label (e.g., "Time (s)") */
+  xLabel?: string;
+}
+
+/** Format x-axis tick values, adapting decimal places to the visible range */
+function formatTimeValues(_u: uPlot, splits: number[]): string[] {
+  if (splits.length < 2) return splits.map(v => String(v));
+  const range = splits[splits.length - 1] - splits[0];
+  const decimals = range < 1 ? 2 : range < 10 ? 1 : 0;
+  return splits.map(v => v.toFixed(decimals));
 }
 
 export function TracePanel(props: TracePanelProps) {
   const height = () => props.height ?? 150;
 
   const plugins = (): uPlot.Plugin[] => {
-    const base = [wheelZoomPlugin()];
+    const base = props.disableWheelZoom ? [] : [wheelZoomPlugin()];
     if (props.plugins) {
       return [...base, ...props.plugins];
     }
     return base;
+  };
+
+  const scales = (): uPlot.Scales => {
+    const s: uPlot.Scales = { x: { time: false } };
+    if (props.yRange) {
+      const [yMin, yMax] = props.yRange;
+      s.y = { range: () => [yMin, yMax] };
+    }
+    return s;
+  };
+
+  // Build axes config once — stable references prevent SolidUplot from
+  // recreating the chart on every data update
+  // Use resolved hex colors (not CSS variables) — uPlot draws axis labels
+  // on canvas via fillText, and CSS variable resolution can fail during
+  // setData redraws, causing tick labels to vanish.
+  const AXIS_TEXT = '#8b92a8';
+  const AXIS_GRID = 'rgba(160, 160, 160, 0.15)';
+  const AXIS_TICK = 'rgba(160, 160, 160, 0.3)';
+
+  const xAxis: uPlot.Axis = {
+    stroke: AXIS_TEXT,
+    grid: { stroke: AXIS_GRID },
+    ticks: { stroke: AXIS_TICK },
+    values: formatTimeValues,
+    ...(props.xLabel ? { label: props.xLabel, labelSize: 14, labelGap: 2, labelFont: '11px sans-serif' } : {}),
+  };
+
+  const yAxisBase: uPlot.Axis = {
+    stroke: AXIS_TEXT,
+    grid: { stroke: AXIS_GRID },
+    ticks: { stroke: AXIS_TICK },
+  };
+
+  const yAxisHidden: uPlot.Axis = {
+    ...yAxisBase,
+    values: () => '' as any,
+    size: 20,
+  };
+
+  const yAxis = () => props.hideYValues ? yAxisHidden : yAxisBase;
+
+  const cursorConfig = {
+    sync: {
+      key: props.syncKey,
+      setSeries: true,
+    },
   };
 
   return (
@@ -39,25 +102,9 @@ export function TracePanel(props: TracePanelProps) {
       <SolidUplot
         data={props.data()}
         series={props.series}
-        scales={{ x: { time: false } }}
-        cursor={{
-          sync: {
-            key: props.syncKey,
-            setSeries: true,
-          },
-        }}
-        axes={[
-          {
-            stroke: 'var(--text-secondary)',
-            grid: { stroke: 'rgba(160, 160, 160, 0.15)' },
-            ticks: { stroke: 'rgba(160, 160, 160, 0.3)' },
-          },
-          {
-            stroke: 'var(--text-secondary)',
-            grid: { stroke: 'rgba(160, 160, 160, 0.15)' },
-            ticks: { stroke: 'rgba(160, 160, 160, 0.3)' },
-          },
-        ]}
+        scales={scales()}
+        cursor={cursorConfig}
+        axes={[xAxis, yAxis()]}
         plugins={plugins()}
         height={height()}
         autoResize={true}

@@ -6,7 +6,7 @@
 .param-panel {
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
-  padding: var(--space-lg);
+  padding: var(--space-md);
 }
 
 .param-panel__header {
@@ -29,20 +29,27 @@
   margin-bottom: 0;
 }
 
+.param-slider__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
 .param-slider__label {
-  display: block;
   font-size: 0.75rem;
   color: var(--text-secondary);
-  margin-bottom: var(--space-xs);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
-.param-slider__controls {
+.param-slider__inline-value {
   display: flex;
-  align-items: center;
-  gap: var(--space-sm);
+  align-items: baseline;
+  gap: 2px;
 }
 
 /* --- Range input: cross-browser dark theme --- */
@@ -111,13 +118,13 @@
 /* --- Numeric input --- */
 
 .param-slider__number {
-  width: 80px;
+  width: 72px;
   background: var(--bg-inset);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  padding: 4px 8px;
-  font-size: 0.85rem;
+  padding: 2px 6px;
+  font-size: 0.8rem;
   font-family: var(--font-mono);
   text-align: right;
   outline: none;
