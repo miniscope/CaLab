@@ -1,0 +1,38 @@
+name: Field Option Request
+description: Request a new option for Calcium Indicator, Species, or Brain Region
+title: "[Field Option] New {field}: "
+labels: ["field-option-request"]
+body:
+  - type: dropdown
+    id: field-type
+    attributes:
+      label: Field Type
+      description: Which field should this option be added to?
+      options:
+        - Calcium Indicator
+        - Species
+        - Brain Region
+    validations:
+      required: true
+
+  - type: input
+    id: option-value
+    attributes:
+      label: Option Value
+      description: >
+        The exact value to add. Use the same formatting as existing options
+        (e.g. "GCaMP8f (AAV)", "cortex — visual (V1)").
+      placeholder: e.g. GCaMP9f (AAV)
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: >
+        Optional. Relevant publications, common usage, or other context
+        that supports adding this option.
+      placeholder: Link to publication, description of use case, etc.
+    validations:
+      required: false
