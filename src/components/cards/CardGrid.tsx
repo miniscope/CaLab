@@ -15,6 +15,7 @@ import {
   multiCellResults,
   cellSolverStatuses,
   gridColumns,
+  pinnedMultiCellResults,
 } from '../../lib/multi-cell-store';
 import { reportCellZoom } from '../../lib/cell-solve-manager';
 import { samplingRate } from '../../lib/data-store';
@@ -42,6 +43,7 @@ export function CardGrid(props: CardGridProps) {
           <For each={cells()}>
             {(cellIndex) => {
               const traces = createMemo(() => multiCellResults().get(cellIndex));
+              const pinnedTraces = createMemo(() => pinnedMultiCellResults().get(cellIndex));
               return (
                 <Show when={traces()}>
                   {(t) => (
@@ -56,6 +58,9 @@ export function CardGrid(props: CardGridProps) {
                       onClick={() => props.onCellClick(cellIndex)}
                       onZoomChange={reportCellZoom}
                       windowStartSample={t().windowStartSample}
+                      pinnedDeconvolved={pinnedTraces()?.deconvolved}
+                      pinnedReconvolution={pinnedTraces()?.reconvolution}
+                      pinnedWindowStartSample={pinnedTraces()?.windowStartSample}
                     />
                   )}
                 </Show>

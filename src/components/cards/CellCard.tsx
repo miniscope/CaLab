@@ -21,6 +21,9 @@ export interface CellCardProps {
   onClick?: () => void;
   onZoomChange?: (cellIndex: number, startS: number, endS: number) => void;
   windowStartSample?: number;
+  pinnedDeconvolved?: Float32Array;
+  pinnedReconvolution?: Float32Array;
+  pinnedWindowStartSample?: number;
 }
 
 const DEFAULT_ZOOM_WINDOW_S = 60; // 60 seconds default zoom window
@@ -86,6 +89,9 @@ export function CellCard(props: CellCardProps) {
             syncKey={`${ZOOM_SYNC_KEY}-${props.cellIndex}`}
             onZoomChange={handleZoomChange}
             deconvWindowOffset={props.windowStartSample}
+            pinnedDeconvolved={props.pinnedDeconvolved}
+            pinnedReconvolution={props.pinnedReconvolution}
+            pinnedWindowOffset={props.pinnedWindowStartSample}
             data-tutorial={props.isActive ? 'zoom-window' : undefined}
           />
         </div>

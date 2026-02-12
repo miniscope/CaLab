@@ -7,7 +7,7 @@ import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel';
 import { downsampleMinMax } from '../../lib/chart/downsample';
-import { createRawSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries } from '../../lib/chart/series-config';
+import { createRawSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries } from '../../lib/chart/series-config';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -24,6 +24,12 @@ export interface ZoomWindowProps {
   onZoomChange?: (startTime: number, endTime: number) => void;
   /** Sample offset of deconv/reconv within the raw trace (for windowed solver results) */
   deconvWindowOffset?: number;
+  /** Pinned deconvolved trace for dashed overlay comparison */
+  pinnedDeconvolved?: Float32Array;
+  /** Pinned reconvolution trace for dashed overlay comparison */
+  pinnedReconvolution?: Float32Array;
+  /** Sample offset for pinned windowed solver results */
+  pinnedWindowOffset?: number;
   /** Tutorial targeting attribute for driver.js tour steps. */
   'data-tutorial'?: string;
 }
@@ -79,11 +85,11 @@ export function ZoomWindow(props: ZoomWindowProps) {
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
     const raw = props.rawTrace;
     const fs = props.samplingRate;
-    if (!raw || raw.length === 0) return [[], [], [], [], []];
+    if (!raw || raw.length === 0) return [[], [], [], [], [], [], []];
 
     const startSample = Math.max(0, Math.floor(props.startTime * fs));
     const endSample = Math.min(raw.length, Math.ceil(props.endTime * fs));
-    if (startSample >= endSample) return [[], [], [], [], []];
+    if (startSample >= endSample) return [[], [], [], [], [], [], []];
 
     const len = endSample - startSample;
     const { mean, std } = rawStats();
@@ -213,11 +219,54 @@ export function ZoomWindow(props: ZoomWindowProps) {
       dsResid = new Array(dsX.length).fill(null) as number[];
     }
 
-    return [dsX, dsRaw, dsDeconv, dsReconv, dsResid];
+    // Pinned reconvolution — same z-score space as raw
+    const pinnedReconv = props.pinnedReconvolution;
+    const pinnedOffset = props.pinnedWindowOffset ?? 0;
+    let dsPinnedReconv: number[];
+    const pinnedReconvStart = startSample - pinnedOffset;
+    const pinnedReconvEnd = endSample - pinnedOffset;
+    if (pinnedReconv && pinnedReconv.length > 0 && pinnedReconvStart >= 0 && pinnedReconvEnd <= pinnedReconv.length) {
+      const slice = pinnedReconv.subarray(pinnedReconvStart, pinnedReconvEnd);
+      let dsRaw2: number[];
+      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      dsPinnedReconv = dsRaw2.map(v => (v - mean) / std);
+    } else if (pinnedReconv && pinnedReconv.length === raw.length) {
+      const slice = pinnedReconv.subarray(startSample, endSample);
+      let dsRaw2: number[];
+      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      dsPinnedReconv = dsRaw2.map(v => (v - mean) / std);
+    } else {
+      dsPinnedReconv = new Array(dsX.length).fill(null) as number[];
+    }
+
+    // Pinned deconvolved — scale to deconv band using pinned trace's own range
+    const pinnedDeconv = props.pinnedDeconvolved;
+    let dsPinnedDeconv: number[];
+    const pinnedDeconvStart = startSample - pinnedOffset;
+    const pinnedDeconvEnd = endSample - pinnedOffset;
+    if (pinnedDeconv && pinnedDeconv.length > 0 && pinnedDeconvStart >= 0 && pinnedDeconvEnd <= pinnedDeconv.length) {
+      const slice = pinnedDeconv.subarray(pinnedDeconvStart, pinnedDeconvEnd);
+      let dsRaw2: number[];
+      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      dsPinnedDeconv = scaleDeconv(dsRaw2, pinnedDeconv);
+    } else if (pinnedDeconv && pinnedDeconv.length === raw.length) {
+      const slice = pinnedDeconv.subarray(startSample, endSample);
+      let dsRaw2: number[];
+      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      dsPinnedDeconv = scaleDeconv(dsRaw2, pinnedDeconv);
+    } else {
+      dsPinnedDeconv = new Array(dsX.length).fill(null) as number[];
+    }
+
+    return [dsX, dsRaw, dsDeconv, dsReconv, dsResid, dsPinnedDeconv, dsPinnedReconv];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {
-    return [{}, createRawSeries(), createDeconvolvedSeries(), createFitSeries(), createResidualSeries()];
+    const base = [{}, createRawSeries(), createDeconvolvedSeries(), createFitSeries(), createResidualSeries()];
+    // Always include pinned series slots (null data renders nothing)
+    base.push(createPinnedOverlaySeries('Pinned Deconv', '#2ca02c', 1));
+    base.push(createPinnedOverlaySeries('Pinned Fit', '#ff7f0e', 1.5));
+    return base;
   });
 
   const ZOOM_FACTOR = 0.75;

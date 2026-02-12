@@ -5,6 +5,7 @@
 import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult } from './types';
 import { extractCellTrace } from './array-utils';
+import { pinMultiCellResults, unpinMultiCellResults } from './multi-cell-store';
 
 // --- Cell selection ---
 
@@ -57,6 +58,9 @@ function pinCurrentSnapshot(): void {
     tauDecay: tauDecay(),
     lambda: lambda(),
   });
+
+  // Also snapshot all multi-cell results for card grid overlays
+  pinMultiCellResults();
 }
 
 /** Clear pinned snapshot data. */
@@ -64,6 +68,7 @@ function unpinSnapshot(): void {
   setPinnedDeconvolved(null);
   setPinnedReconvolution(null);
   setPinnedParams(null);
+  unpinMultiCellResults();
 }
 
 // --- Derived: residual trace ---

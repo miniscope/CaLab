@@ -19,23 +19,22 @@ export function createResidualSeries(): uPlot.Series {
 }
 
 /**
- * Create a dimmed dashed overlay variant for pinned snapshot comparison.
- * Uses 35% opacity and a [4,4] dash pattern.
+ * Create a dashed overlay variant for pinned snapshot comparison.
+ * Uses 65% opacity and a [8,4] dash pattern for clear visibility.
  */
 export function createPinnedOverlaySeries(
   label: string,
   baseStroke: string,
   baseWidth: number,
 ): uPlot.Series {
-  // Convert hex to 35% opacity rgba, or handle hsl→hsla
-  let hslaStroke: string;
+  let stroke: string;
   if (baseStroke.startsWith('#')) {
     const r = parseInt(baseStroke.slice(1, 3), 16);
     const g = parseInt(baseStroke.slice(3, 5), 16);
     const b = parseInt(baseStroke.slice(5, 7), 16);
-    hslaStroke = `rgba(${r}, ${g}, ${b}, 0.35)`;
+    stroke = `rgba(${r}, ${g}, ${b}, 0.65)`;
   } else {
-    hslaStroke = baseStroke.replace('hsl(', 'hsla(').replace(')', ', 0.35)');
+    stroke = baseStroke.replace('hsl(', 'hsla(').replace(')', ', 0.65)');
   }
-  return { label, stroke: hslaStroke, width: baseWidth, dash: [4, 4] };
+  return { label, stroke, width: baseWidth + 0.5, dash: [8, 4] };
 }

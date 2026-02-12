@@ -33,6 +33,9 @@ const [activityRanking, setActivityRanking] = createSignal<number[] | null>(null
 const [gridColumns, setGridColumns] = createSignal<number>(2);
 const [cellSolverStatuses, setCellSolverStatuses] = createSignal<Map<number, CellSolverStatus>>(new Map());
 
+// --- Pinned multi-cell results for before/after comparison ---
+const [pinnedMultiCellResults, setPinnedMultiCellResults] = createSignal<Map<number, CellTraces>>(new Map());
+
 // --- Per-cell update helpers ---
 
 function updateOneCellStatus(cellIndex: number, status: CellSolverStatus): void {
@@ -108,6 +111,25 @@ function updateCellSelection(): void {
   }
 }
 
+/** Snapshot current multi-cell results for pinned overlay comparison. */
+function pinMultiCellResults(): void {
+  const current = multiCellResults();
+  const snapshot = new Map<number, CellTraces>();
+  for (const [cellIdx, traces] of current) {
+    snapshot.set(cellIdx, {
+      ...traces,
+      deconvolved: new Float32Array(traces.deconvolved),
+      reconvolution: new Float32Array(traces.reconvolution),
+    });
+  }
+  setPinnedMultiCellResults(snapshot);
+}
+
+/** Clear pinned multi-cell results. */
+function unpinMultiCellResults(): void {
+  setPinnedMultiCellResults(new Map());
+}
+
 /**
  * Clear all multi-cell solver results (e.g., when parameters change).
  */
@@ -142,6 +164,7 @@ export {
   activityRanking,
   gridColumns,
   cellSolverStatuses,
+  pinnedMultiCellResults,
   // Setters
   setSelectionMode,
   setSelectedCells,
@@ -162,4 +185,6 @@ export {
   updateCellSelection,
   clearMultiCellResults,
   clearMultiCellState,
+  pinMultiCellResults,
+  unpinMultiCellResults,
 };
