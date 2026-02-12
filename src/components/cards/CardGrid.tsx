@@ -38,7 +38,7 @@ export function CardGrid(props: CardGridProps) {
           </div>
         }
       >
-        <div class="card-grid" style={{ '--grid-cols': gridColumns() }}>
+        <div class="card-grid" data-tutorial="card-grid" style={{ '--grid-cols': gridColumns() }}>
           <For each={cells()}>
             {(cellIndex) => {
               const traces = createMemo(() => multiCellResults().get(cellIndex));

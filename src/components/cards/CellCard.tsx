@@ -54,6 +54,7 @@ export function CellCard(props: CellCardProps) {
   return (
     <div
       class={`cell-card${props.isActive ? ' cell-card--active' : ''}`}
+      data-tutorial={props.isActive ? 'cell-card-active' : undefined}
       onClick={() => props.onClick?.()}
     >
       <div class="cell-card__header">
@@ -85,6 +86,7 @@ export function CellCard(props: CellCardProps) {
             syncKey={`${ZOOM_SYNC_KEY}-${props.cellIndex}`}
             onZoomChange={handleZoomChange}
             deconvWindowOffset={props.windowStartSample}
+            data-tutorial={props.isActive ? 'zoom-window' : undefined}
           />
         </div>
       </Show>

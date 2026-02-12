@@ -7,7 +7,7 @@ export const advancedTutorial: Tutorial = {
   id: 'advanced',
   title: 'Advanced Techniques',
   description:
-    'Covers advanced deconvolution concepts: residual analysis, parameter coupling, indicator-specific guidance, and common artifacts.',
+    'Covers advanced deconvolution concepts: fit quality diagnostics, parameter coupling, indicator-specific guidance, and common artifacts.',
   level: 'advanced',
   prerequisites: ['workflow'],
   estimatedMinutes: 3,
@@ -16,14 +16,14 @@ export const advancedTutorial: Tutorial = {
     {
       title: 'Advanced Techniques',
       description:
-        'This tutorial covers advanced deconvolution concepts: residual analysis, parameter coupling, indicator-specific guidance, and common artifacts.',
+        'This tutorial covers advanced deconvolution concepts: fit quality diagnostics, parameter coupling, indicator-specific guidance, and common artifacts.',
     },
     // Step 2: Residual pattern analysis
     {
-      element: '[data-tutorial="trace-residuals"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Residual Pattern Analysis',
       description:
-        'Structured residuals reveal specific model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: baseline drift (not a parameter issue \u2014 may need preprocessing). Periodic patterns: possible motion artifact.',
+        'The red residual trace at the bottom of the zoom window reveals model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: baseline drift (not a parameter issue \u2014 may need preprocessing). Periodic patterns: possible motion artifact.',
       side: 'bottom',
     },
     // Step 3: Parameter coupling
@@ -44,7 +44,7 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 5: Recognizing artifacts
     {
-      element: '[data-tutorial="trace-raw-fit"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Recognizing Artifacts',
       description:
         'Common artifacts that affect fitting: <b>Motion artifacts:</b> sharp, symmetric deflections (not calcium-shaped). <b>Photobleaching:</b> slow downward baseline trend. <b>Neuropil contamination:</b> broad, slow signals mixed with sharp events. These cannot be fixed by parameter tuning \u2014 they require preprocessing.',
@@ -52,15 +52,15 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 6: Fast firing and overlapping events
     {
-      element: '[data-tutorial="trace-deconvolved"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Fast Firing and Overlapping Events',
       description:
-        'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. If you see merged events, try slightly shorter decay time. Very fast firing may require higher sampling rates to resolve.',
+        'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. Look at the green deconvolved trace \u2014 if you see merged events, try slightly shorter decay time. Very fast firing may require higher sampling rates to resolve.',
       side: 'bottom',
     },
     // Step 7: Multi-cell consistency
     {
-      element: '[data-tutorial="multi-trace-view"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Multi-Cell Consistency',
       description:
         'Some variation in fit quality across cells is normal \u2014 cells differ in baseline noise, activity rate, and expression level. Aim for parameters that work well for the majority. If a few cells look terrible, they may have issues unrelated to parameter choice (dead cells, out-of-focus, artifacts).',
@@ -86,7 +86,7 @@ export const advancedTutorial: Tutorial = {
     {
       title: 'Advanced Tutorial Complete',
       description:
-        'You have covered advanced deconvolution techniques. Remember: the goal is parameters that produce clean deconvolved traces with residuals that look like noise across diverse cells. When in doubt, trust the residuals.',
+        'You have covered advanced deconvolution techniques. Remember: the goal is parameters that produce clean deconvolved traces with residuals (the red trace) that look like noise across diverse cells. When in doubt, trust the residuals.',
     },
   ],
 };

@@ -7,7 +7,7 @@ import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel';
 import { downsampleMinMax } from '../../lib/chart/downsample';
-import { createRawSeries, createFitSeries, createDeconvolvedSeries } from '../../lib/chart/series-config';
+import { createRawSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries } from '../../lib/chart/series-config';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -24,11 +24,15 @@ export interface ZoomWindowProps {
   onZoomChange?: (startTime: number, endTime: number) => void;
   /** Sample offset of deconv/reconv within the raw trace (for windowed solver results) */
   deconvWindowOffset?: number;
+  /** Tutorial targeting attribute for driver.js tour steps. */
+  'data-tutorial'?: string;
 }
 
 const ZOOM_BUCKET_WIDTH = 800;
 const DECONV_GAP = -2; // z-score offset: negative = deconv peaks overlap raw range
 const DECONV_SCALE = 0.35; // scale deconvolved to this fraction of raw z-range
+const RESID_GAP = 0.5; // gap between deconv band bottom and residual band top
+const RESID_SCALE = 0.25; // scale residuals to this fraction of raw z-range
 
 export function ZoomWindow(props: ZoomWindowProps) {
   const height = () => props.height ?? 150;
@@ -62,19 +66,24 @@ export function ZoomWindow(props: ZoomWindowProps) {
     }
 
     // Deconv sits below raw: baseline at deconvBottom, peaks up to deconvTop
-    const deconvHeight = (zMax - zMin) * DECONV_SCALE;
+    const rawRange = zMax - zMin;
+    const deconvHeight = rawRange * DECONV_SCALE;
     const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-    return [deconvBottom, zMax + (zMax - zMin) * 0.02];
+
+    // Residuals sit below deconv
+    const residHeight = rawRange * RESID_SCALE;
+    const residBottom = deconvBottom - RESID_GAP - residHeight;
+    return [residBottom, zMax + rawRange * 0.02];
   });
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
     const raw = props.rawTrace;
     const fs = props.samplingRate;
-    if (!raw || raw.length === 0) return [[], [], [], []];
+    if (!raw || raw.length === 0) return [[], [], [], [], []];
 
     const startSample = Math.max(0, Math.floor(props.startTime * fs));
     const endSample = Math.min(raw.length, Math.ceil(props.endTime * fs));
-    if (startSample >= endSample) return [[], [], [], []];
+    if (startSample >= endSample) return [[], [], [], [], []];
 
     const len = endSample - startSample;
     const { mean, std } = rawStats();
@@ -161,11 +170,54 @@ export function ZoomWindow(props: ZoomWindowProps) {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
 
-    return [dsX, dsRaw, dsDeconv, dsReconv];
+    // Residuals = z-scored raw - z-scored reconvolution, scaled + offset below deconv
+    let dsResid: number[];
+    if (dsReconv.some(v => v !== null)) {
+      // Compute raw z-score range for positioning
+      let zMin = Infinity;
+      let zMax = -Infinity;
+      for (let i = 0; i < raw.length; i++) {
+        const z = (raw[i] - mean) / std;
+        if (z < zMin) zMin = z;
+        if (z > zMax) zMax = z;
+      }
+      const rawRange = zMax - zMin;
+      const deconvHeight = rawRange * DECONV_SCALE;
+      const deconvBottom = zMin - DECONV_GAP - deconvHeight;
+      const residHeight = rawRange * RESID_SCALE;
+      const residTop = deconvBottom - RESID_GAP;
+      const residBottom = residTop - residHeight;
+
+      // Compute raw residuals (in z-score space) and find their range
+      const rawResid: number[] = [];
+      let rMin = Infinity;
+      let rMax = -Infinity;
+      for (let i = 0; i < dsRaw.length; i++) {
+        if (dsReconv[i] === null || dsReconv[i] === undefined) {
+          rawResid.push(0);
+        } else {
+          const r = dsRaw[i] - (dsReconv[i] as number);
+          rawResid.push(r);
+          if (r < rMin) rMin = r;
+          if (r > rMax) rMax = r;
+        }
+      }
+      const rRange = rMax - rMin || 1;
+
+      // Map residuals into the residual band
+      dsResid = rawResid.map(r => {
+        const norm = (r - rMin) / rRange;
+        return residBottom + norm * residHeight;
+      });
+    } else {
+      dsResid = new Array(dsX.length).fill(null) as number[];
+    }
+
+    return [dsX, dsRaw, dsDeconv, dsReconv, dsResid];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {
-    return [{}, createRawSeries(), createDeconvolvedSeries(), createFitSeries()];
+    return [{}, createRawSeries(), createDeconvolvedSeries(), createFitSeries(), createResidualSeries()];
   });
 
   const ZOOM_FACTOR = 0.75;
@@ -213,7 +265,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
   };
 
   return (
-    <div class="zoom-window" onWheel={handleWheel} style={{ position: 'relative' }}>
+    <div class="zoom-window" onWheel={handleWheel} style={{ position: 'relative' }} data-tutorial={props['data-tutorial']}>
       <TracePanel
         data={() => zoomData()}
         series={seriesConfig()}

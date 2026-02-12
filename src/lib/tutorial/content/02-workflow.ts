@@ -23,15 +23,15 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="cell-selector"]',
       title: 'Step 1: Pick a Good Starting Cell',
       description:
-        'Start with a cell that has clear, isolated events visible in the raw trace. Use \u201CTop Active\u201D mode to find cells with strong activity. Click a mini-panel below to switch cells.',
+        'Start with a cell that has clear, isolated events visible in the raw trace. Use \u201CTop Active\u201D mode to find cells with strong activity. Click a card below to switch cells.',
       side: 'top',
     },
     // Step 3: Look for clean events
     {
-      element: '[data-tutorial="trace-raw-fit"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Look for Clean Events',
       description:
-        'Scan the raw trace for sharp, well-separated peaks. Avoid cells dominated by noise or slow baseline drift. A cell with a few clear events is ideal for initial tuning.',
+        'Scan the raw trace (blue) for sharp, well-separated peaks. Avoid cells dominated by noise or slow baseline drift. A cell with a few clear events is ideal for initial tuning.',
       side: 'bottom',
     },
     // Step 4: Tune decay time (interactive)
@@ -46,7 +46,7 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 5: Check the fit
     {
-      element: '[data-tutorial="trace-raw-fit"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Check the Fit',
       description:
         'Look at how the orange fit line follows the blue raw trace after peaks. The tails should line up. If the fit drops too fast, increase decay. If it lingers too long, decrease decay.',
@@ -54,10 +54,10 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 6: Check residuals
     {
-      element: '[data-tutorial="trace-residuals"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Step 3: Check Residuals',
       description:
-        'Good residuals are flat noise. If you see bumps after peaks (positive residuals), decay is too short \u2014 the model drops off before the real signal does. If you see dips (negative residuals), decay may be too long.',
+        'Look at the red residual trace at the bottom of the zoom window. Good residuals are flat noise. If you see bumps after peaks (positive residuals), decay is too short. If you see dips (negative residuals), decay may be too long.',
       side: 'bottom',
     },
     // Step 7: Fine-tune rise time (interactive)
@@ -72,7 +72,7 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 8: Check rise slopes
     {
-      element: '[data-tutorial="trace-raw-fit"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Check Rise Slopes',
       description:
         'Zoom into a peak onset. The orange fit should match the blue trace\u2019s upward slope. If the fit rises too slowly, decrease rise time. If it overshoots, increase it slightly. Note: changing rise time may slightly affect the optimal decay \u2014 re-check.',
@@ -83,25 +83,25 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="slider-lambda"]',
       title: 'Step 5: Add Sparsity',
       description:
-        'Increase lambda to clean up the deconvolved trace. Start low and increase until noise spikes disappear. Stop before real events start vanishing. Drag to adjust.',
+        'Increase lambda to clean up the deconvolved trace. Start low and increase until noise spikes disappear from the green trace. Stop before real events start vanishing. Drag to adjust.',
       side: 'right',
       waitForAction: 'slider-change',
       disableActiveInteraction: false,
     },
     // Step 10: Check deconvolved quality
     {
-      element: '[data-tutorial="trace-deconvolved"]',
+      element: '[data-tutorial="zoom-window"]',
       title: 'Check Deconvolved Quality',
       description:
-        'The deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the baseline is still noisy, increase lambda. If events are disappearing, decrease it.',
+        'The green deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the baseline is still noisy, increase lambda. If events are disappearing, decrease it.',
       side: 'bottom',
     },
     // Step 11: Validate across cells
     {
-      element: '[data-tutorial="multi-trace-view"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Step 6: Validate Across Cells',
       description:
-        'Good parameters should work across diverse cells, not just one. The mini-panels below show how your current parameters perform on multiple cells. Look for consistent fit quality.',
+        'Good parameters should work across diverse cells, not just one. The card grid shows how your current parameters perform on multiple cells. Look for consistent fit quality across cards.',
       side: 'top',
     },
     // Step 12: Check different cell types

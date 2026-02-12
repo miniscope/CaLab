@@ -3,7 +3,7 @@
 
 import type { TutorialProgress } from './types';
 
-const STORAGE_KEY = 'catune-tutorial-progress';
+const STORAGE_KEY = 'catune-tutorial-progress-v2';
 
 /** Save progress for a tutorial (creates or updates entry). */
 export function saveProgress(
