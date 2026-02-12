@@ -131,13 +131,6 @@ function unpinMultiCellResults(): void {
 }
 
 /**
- * Clear all multi-cell solver results (e.g., when parameters change).
- */
-function clearMultiCellResults(): void {
-  setMultiCellResults(new Map());
-}
-
-/**
  * Reset all multi-cell state (results + selection). Use when switching datasets.
  */
 function clearMultiCellState(): void {
@@ -183,7 +176,6 @@ export {
   // Actions
   computeAndCacheRanking,
   updateCellSelection,
-  clearMultiCellResults,
   clearMultiCellState,
   pinMultiCellResults,
   unpinMultiCellResults,

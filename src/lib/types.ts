@@ -73,16 +73,6 @@ export type ImportStep =
   | 'validation'
   | 'ready';
 
-export interface DatasetInfo {
-  data: Float64Array | Float32Array;
-  shape: [number, number];
-  dtype: string;
-  fileName: string;
-  fileSize: number;
-  samplingRate: number;
-  validation: ValidationResult;
-}
-
 // --- Sampling Rate Presets ---
 
 export const SAMPLING_RATE_PRESETS = [

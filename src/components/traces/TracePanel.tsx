@@ -84,7 +84,7 @@ export function TracePanel(props: TracePanelProps) {
 
   const yAxisHidden: uPlot.Axis = {
     ...yAxisBase,
-    values: () => '' as any,
+    values: (_u: uPlot, vals: number[]) => vals.map(() => ''),
     size: 20,
   };
 

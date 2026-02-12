@@ -4,6 +4,7 @@ import { clearMultiCellState } from '../../lib/multi-cell-store';
 import { supabaseEnabled } from '../../lib/supabase';
 import { sidebarOpen, setSidebarOpen } from './DashboardShell';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher';
+import { formatDuration } from '../../lib/format-utils';
 import '../../styles/compact-header.css';
 
 export interface CompactHeaderProps {
@@ -17,13 +18,7 @@ export function CompactHeader(props: CompactHeaderProps) {
     resetImport();
   };
 
-  const durationDisplay = () => {
-    const d = durationSeconds();
-    if (d === null) return null;
-    const minutes = d / 60;
-    if (minutes >= 1) return `${minutes.toFixed(1)} min`;
-    return `${d.toFixed(1)}s`;
-  };
+  const durationDisplay = () => formatDuration(durationSeconds());
 
   return (
     <header class="compact-header">
