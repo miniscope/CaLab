@@ -55,10 +55,11 @@ const importStep = createMemo<ImportStep>(() => {
 
 // --- Demo Data ---
 
-function loadDemoData(): void {
-  const fs = 30;
-  const numCells = 20;
-  const numTimepoints = 9000; // 5 minutes at 30 Hz
+function loadDemoData(opts?: { numCells?: number; durationMinutes?: number; fps?: number }): void {
+  const fs = opts?.fps ?? 30;
+  const numCells = opts?.numCells ?? 20;
+  const durationMin = opts?.durationMinutes ?? 5;
+  const numTimepoints = Math.round(durationMin * 60 * fs);
   const { data, shape } = generateSyntheticDataset(numCells, numTimepoints, 0.02, 0.4, fs);
 
   setParsedData({ data, shape, dtype: '<f8', fortranOrder: false });

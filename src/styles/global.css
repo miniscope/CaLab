@@ -709,6 +709,38 @@ a:hover {
   margin: 0;
 }
 
+.demo-data-row__fields {
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-end;
+}
+
+.demo-data-row__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.demo-data-row__field input {
+  width: 80px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.demo-data-row__field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ========================
    Ready Card
    ======================== */

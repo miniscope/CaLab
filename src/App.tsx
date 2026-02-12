@@ -131,7 +131,7 @@ const App: Component = () => {
         <ImportOverlay
           hasFile={hasFile()}
           onReset={resetImport}
-          onLoadDemo={loadDemoData}
+          onLoadDemo={(opts) => loadDemoData(opts)}
         />
       }
     >

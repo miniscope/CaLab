@@ -1,4 +1,4 @@
-import { Show, type JSX } from 'solid-js';
+import { Show, createSignal, type JSX } from 'solid-js';
 import { FileDropZone } from '../FileDropZone';
 import { NpzArraySelector } from '../NpzArraySelector';
 import { DimensionConfirmation } from '../DimensionConfirmation';
@@ -28,12 +28,17 @@ const TOTAL_STEPS = 4;
 export interface ImportOverlayProps {
   hasFile: boolean;
   onReset: () => void;
-  onLoadDemo: () => void;
+  onLoadDemo: (opts: { numCells: number; durationMinutes: number; fps: number }) => void;
 }
 
 export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const step = () => importStep();
   const stepInfo = () => STEP_LABELS[step()] ?? { num: 1, label: 'Load Data' };
+
+  // Demo data config
+  const [demoCells, setDemoCells] = createSignal(20);
+  const [demoDuration, setDemoDuration] = createSignal(5);
+  const [demoFps, setDemoFps] = createSignal(30);
 
   const durationDisplay = () => {
     const d = durationSeconds();
@@ -83,13 +88,59 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           <NpzArraySelector />
         </Show>
         <div class="demo-data-row">
-          <span class="demo-data-row__divider">or</span>
-          <button class="btn-secondary" onClick={props.onLoadDemo}>
+          <span class="demo-data-row__divider">or generate synthetic data</span>
+          <div class="demo-data-row__fields">
+            <label class="demo-data-row__field">
+              <span>Cells</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={demoCells()}
+                onInput={(e) => {
+                  const v = parseInt(e.currentTarget.value, 10);
+                  if (!isNaN(v) && v >= 1) setDemoCells(Math.min(v, 200));
+                }}
+              />
+            </label>
+            <label class="demo-data-row__field">
+              <span>Duration (min)</span>
+              <input
+                type="number"
+                min={0.5}
+                max={30}
+                step={0.5}
+                value={demoDuration()}
+                onInput={(e) => {
+                  const v = parseFloat(e.currentTarget.value);
+                  if (!isNaN(v) && v >= 0.5) setDemoDuration(Math.min(v, 30));
+                }}
+              />
+            </label>
+            <label class="demo-data-row__field">
+              <span>FPS</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                value={demoFps()}
+                onInput={(e) => {
+                  const v = parseInt(e.currentTarget.value, 10);
+                  if (!isNaN(v) && v >= 1) setDemoFps(Math.min(v, 120));
+                }}
+              />
+            </label>
+          </div>
+          <button
+            class="btn-secondary"
+            onClick={() => props.onLoadDemo({
+              numCells: demoCells(),
+              durationMinutes: demoDuration(),
+              fps: demoFps(),
+            })}
+          >
             Load Demo Data
           </button>
-          <p class="demo-data-row__hint">
-            20 synthetic cells, 5 min at 30 Hz
-          </p>
         </div>
       </Show>
 
