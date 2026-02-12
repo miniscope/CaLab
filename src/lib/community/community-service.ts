@@ -7,6 +7,8 @@ import type {
   CommunitySubmission,
   SubmissionPayload,
   FilterState,
+  FieldOption,
+  FieldOptions,
 } from './types.ts';
 
 const TABLE = 'community_submissions';
@@ -61,37 +63,32 @@ export async function fetchSubmissions(
 }
 
 /**
- * Fetch distinct filter values for the community browser dropdowns.
- * Returns deduplicated, sorted arrays for each filterable field.
+ * Fetch canonical field options from the field_options lookup table.
+ * Returns grouped arrays ordered by display_order.
+ * No login required — the table has public read access for anon.
  */
-export async function fetchFilterOptions(): Promise<{
-  indicators: string[];
-  species: string[];
-  brainRegions: string[];
-}> {
+export async function fetchFieldOptions(): Promise<FieldOptions> {
   if (!supabase) throw new Error('Community features not configured');
 
-  const [indicatorRes, speciesRes, brainRegionRes] = await Promise.all([
-    supabase.from(TABLE).select('indicator'),
-    supabase.from(TABLE).select('species'),
-    supabase.from(TABLE).select('brain_region'),
-  ]);
+  const { data, error } = await supabase
+    .from('field_options')
+    .select('field_name, value, display_order')
+    .order('display_order');
 
-  if (indicatorRes.error) throw new Error(`Fetch indicators failed: ${indicatorRes.error.message}`);
-  if (speciesRes.error) throw new Error(`Fetch species failed: ${speciesRes.error.message}`);
-  if (brainRegionRes.error) throw new Error(`Fetch brain regions failed: ${brainRegionRes.error.message}`);
+  if (error) throw new Error(`Fetch field options failed: ${error.message}`);
 
-  const indicators = [...new Set(
-    (indicatorRes.data as Array<{ indicator: string }>).map((r) => r.indicator),
-  )].sort();
+  const rows = data as FieldOption[];
+  const indicators: string[] = [];
+  const species: string[] = [];
+  const brainRegions: string[] = [];
 
-  const species = [...new Set(
-    (speciesRes.data as Array<{ species: string }>).map((r) => r.species),
-  )].sort();
-
-  const brainRegions = [...new Set(
-    (brainRegionRes.data as Array<{ brain_region: string }>).map((r) => r.brain_region),
-  )].sort();
+  for (const row of rows) {
+    switch (row.field_name) {
+      case 'indicator': indicators.push(row.value); break;
+      case 'species': species.push(row.value); break;
+      case 'brain_region': brainRegions.push(row.value); break;
+    }
+  }
 
   return { indicators, species, brainRegions };
 }

@@ -6,7 +6,13 @@
 import { createSignal } from 'solid-js';
 import type { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../supabase.ts';
-import type { CommunitySubmission, FilterState } from './types.ts';
+import type { CommunitySubmission, FilterState, FieldOptions } from './types.ts';
+import {
+  INDICATOR_OPTIONS,
+  SPECIES_OPTIONS,
+  BRAIN_REGION_OPTIONS,
+} from './field-options.ts';
+import { fetchFieldOptions } from './community-service.ts';
 
 // --- Auth signals ---
 
@@ -24,6 +30,36 @@ const [filters, setFilters] = createSignal<FilterState>({
 });
 const [browsing, setBrowsing] = createSignal<boolean>(false);
 const [lastFetched, setLastFetched] = createSignal<number | null>(null);
+
+// --- Field options signals ---
+
+const [fieldOptions, setFieldOptions] = createSignal<FieldOptions>({
+  indicators: INDICATOR_OPTIONS,
+  species: SPECIES_OPTIONS,
+  brainRegions: BRAIN_REGION_OPTIONS,
+});
+const [fieldOptionsLoading, setFieldOptionsLoading] = createSignal(false);
+let fieldOptionsLoaded = false;
+
+/**
+ * Load canonical field options from Supabase.
+ * Idempotent — only fetches once. Falls back to hardcoded arrays on failure.
+ */
+async function loadFieldOptions(): Promise<void> {
+  if (fieldOptionsLoaded || fieldOptionsLoading()) return;
+  if (!supabase) return; // Keep fallback arrays
+
+  setFieldOptionsLoading(true);
+  try {
+    const opts = await fetchFieldOptions();
+    setFieldOptions(opts);
+    fieldOptionsLoaded = true;
+  } catch (err) {
+    console.warn('Failed to load field options from DB, using fallback:', err);
+  } finally {
+    setFieldOptionsLoading(false);
+  }
+}
 
 // --- Auth initialization ---
 
@@ -86,6 +122,10 @@ export {
   setFilters,
   setBrowsing,
   setLastFetched,
+  // Field options
+  fieldOptions,
+  fieldOptionsLoading,
+  loadFieldOptions,
   // Auth actions
   signInWithEmail,
   signOut,

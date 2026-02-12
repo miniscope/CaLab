@@ -9,10 +9,11 @@
 
 import { createSignal, createEffect, createMemo, Show } from 'solid-js';
 import { supabaseEnabled } from '../../lib/supabase';
+import { fetchSubmissions } from '../../lib/community/community-service';
 import {
-  fetchSubmissions,
-  fetchFilterOptions,
-} from '../../lib/community/community-service';
+  fieldOptions,
+  loadFieldOptions,
+} from '../../lib/community/community-store';
 import type {
   CommunitySubmission,
   FilterState,
@@ -28,11 +29,6 @@ const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 export function CommunityBrowser() {
   // --- State signals ---
   const [submissions, setSubmissions] = createSignal<CommunitySubmission[]>([]);
-  const [filterOptions, setFilterOptions] = createSignal<{
-    indicators: string[];
-    species: string[];
-    brainRegions: string[];
-  }>({ indicators: [], species: [], brainRegions: [] });
   const [filters, setFilters] = createSignal<FilterState>({
     indicator: null,
     species: null,
@@ -77,12 +73,11 @@ export function CommunityBrowser() {
     setLoading(true);
     setError(null);
     try {
-      const [subs, opts] = await Promise.all([
+      const [subs] = await Promise.all([
         fetchSubmissions(),
-        fetchFilterOptions(),
+        loadFieldOptions(),
       ]);
       setSubmissions(subs);
-      setFilterOptions(opts);
       setLastFetched(Date.now());
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load community data';
@@ -157,7 +152,7 @@ export function CommunityBrowser() {
             <FilterBar
               filters={filters()}
               onFilterChange={setFilters}
-              options={filterOptions()}
+              options={fieldOptions()}
               filteredCount={filteredSubmissions().length}
               totalCount={submissions().length}
             />

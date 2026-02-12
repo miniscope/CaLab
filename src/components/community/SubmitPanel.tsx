@@ -29,44 +29,23 @@ import {
   computeQualityScore,
 } from '../../lib/community/quality-checks';
 import { computeDatasetHash } from '../../lib/community/dataset-hash';
-import { user } from '../../lib/community/community-store';
+import {
+  user,
+  fieldOptions,
+  fieldOptionsLoading,
+  loadFieldOptions,
+} from '../../lib/community/community-store';
 import { supabaseEnabled } from '../../lib/supabase';
 import type {
   SubmissionPayload,
   CommunitySubmission,
 } from '../../lib/community/types';
+import { buildFieldOptionRequestUrl } from '../../lib/community/github-issue-url';
+import { SearchableSelect } from './SearchableSelect';
 import { AuthGate } from './AuthGate';
 import { PrivacyNotice } from './PrivacyNotice';
 import { SubmissionSummary } from './SubmissionSummary';
 import '../../styles/community.css';
-
-/** Datalist suggestion values for common metadata fields. */
-const INDICATOR_SUGGESTIONS = [
-  'GCaMP6f (AAV)',
-  'GCaMP7f (AAV)',
-  'GCaMP7f (transgenic)',
-  'GCaMP8f (AAV)',
-  'OGB-1 (dye)',
-  'jGCaMP8f (AAV)',
-];
-
-const SPECIES_SUGGESTIONS = [
-  'mouse',
-  'rat',
-  'zebrafish',
-  'drosophila',
-  'macaque',
-];
-
-const BRAIN_REGION_SUGGESTIONS = [
-  'cortex',
-  'hippocampus',
-  'striatum',
-  'cerebellum',
-  'thalamus',
-  'VTA',
-  'NAc',
-];
 
 export function SubmitPanel() {
   // --- Local state ---
@@ -227,7 +206,10 @@ export function SubmitPanel() {
         <Show when={supabaseEnabled}>
           <button
             class="btn-secondary btn-small"
-            onClick={() => setFormOpen((prev) => !prev)}
+            onClick={() => {
+              setFormOpen((prev) => !prev);
+              loadFieldOptions();
+            }}
           >
             {formOpen() ? 'Cancel' : 'Submit to Community'}
           </button>
@@ -269,54 +251,45 @@ export function SubmitPanel() {
                   <label>
                     Calcium Indicator <span class="submit-panel__required-marker">*</span>
                   </label>
-                  <input
-                    type="text"
-                    list="indicator-suggestions"
+                  <SearchableSelect
+                    options={fieldOptions().indicators}
                     value={indicator()}
-                    onInput={(e) => setIndicator(e.currentTarget.value)}
-                    placeholder="e.g. GCaMP6f (AAV)"
+                    onChange={setIndicator}
+                    placeholder={fieldOptionsLoading() ? 'Loading...' : 'e.g. GCaMP6f (AAV)'}
                   />
-                  <datalist id="indicator-suggestions">
-                    <For each={INDICATOR_SUGGESTIONS}>
-                      {(s) => <option value={s} />}
-                    </For>
-                  </datalist>
+                  <div class="submit-panel__request-link">
+                    Don't see yours? <a href={buildFieldOptionRequestUrl('indicator')} target="_blank" rel="noopener noreferrer">Request it</a>
+                  </div>
                 </div>
 
                 <div class="submit-panel__field">
                   <label>
                     Species <span class="submit-panel__required-marker">*</span>
                   </label>
-                  <input
-                    type="text"
-                    list="species-suggestions"
+                  <SearchableSelect
+                    options={fieldOptions().species}
                     value={species()}
-                    onInput={(e) => setSpecies(e.currentTarget.value)}
-                    placeholder="e.g. mouse"
+                    onChange={setSpecies}
+                    placeholder={fieldOptionsLoading() ? 'Loading...' : 'e.g. mouse'}
                   />
-                  <datalist id="species-suggestions">
-                    <For each={SPECIES_SUGGESTIONS}>
-                      {(s) => <option value={s} />}
-                    </For>
-                  </datalist>
+                  <div class="submit-panel__request-link">
+                    Don't see yours? <a href={buildFieldOptionRequestUrl('species')} target="_blank" rel="noopener noreferrer">Request it</a>
+                  </div>
                 </div>
 
                 <div class="submit-panel__field">
                   <label>
                     Brain Region <span class="submit-panel__required-marker">*</span>
                   </label>
-                  <input
-                    type="text"
-                    list="brain-region-suggestions"
+                  <SearchableSelect
+                    options={fieldOptions().brainRegions}
                     value={brainRegion()}
-                    onInput={(e) => setBrainRegion(e.currentTarget.value)}
-                    placeholder="e.g. cortex"
+                    onChange={setBrainRegion}
+                    placeholder={fieldOptionsLoading() ? 'Loading...' : 'e.g. cortex'}
                   />
-                  <datalist id="brain-region-suggestions">
-                    <For each={BRAIN_REGION_SUGGESTIONS}>
-                      {(s) => <option value={s} />}
-                    </For>
-                  </datalist>
+                  <div class="submit-panel__request-link">
+                    Don't see yours? <a href={buildFieldOptionRequestUrl('brain_region')} target="_blank" rel="noopener noreferrer">Request it</a>
+                  </div>
                 </div>
 
                 {/* Optional fields */}
