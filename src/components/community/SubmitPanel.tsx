@@ -65,6 +65,9 @@ export function SubmitPanel() {
   const [virusConstruct, setVirusConstruct] = createSignal('');
   const [timeSinceInjection, setTimeSinceInjection] = createSignal('');
   const [notes, setNotes] = createSignal('');
+  const [microscopeType, setMicroscopeType] = createSignal('');
+  const [cellType, setCellType] = createSignal('');
+  const [imagingDepth, setImagingDepth] = createSignal('');
 
   // --- Derived ---
   const requiredFieldsFilled = () =>
@@ -153,6 +156,9 @@ export function SubmitPanel() {
           ? parseInt(timeSinceInjection(), 10)
           : undefined,
         notes: notes().trim() || undefined,
+        microscope_type: microscopeType().trim() || undefined,
+        imaging_depth_um: imagingDepth() ? parseFloat(imagingDepth()) : undefined,
+        cell_type: cellType().trim() || undefined,
         num_cells: shape?.[0],
         recording_length_s: durationSeconds() ?? undefined,
         fps: fs,
@@ -174,6 +180,9 @@ export function SubmitPanel() {
       setVirusConstruct('');
       setTimeSinceInjection('');
       setNotes('');
+      setMicroscopeType('');
+      setCellType('');
+      setImagingDepth('');
       setFormOpen(false);
     } catch (err) {
       setSubmitError(
@@ -294,6 +303,43 @@ export function SubmitPanel() {
                 </div>
 
                 {/* Optional fields */}
+                <div class="submit-panel__field">
+                  <label>Microscope Type</label>
+                  <SearchableSelect
+                    options={fieldOptions().microscopeTypes}
+                    value={microscopeType()}
+                    onChange={setMicroscopeType}
+                    placeholder={fieldOptionsLoading() ? 'Loading...' : 'e.g. 2-photon'}
+                  />
+                  <div class="submit-panel__request-link">
+                    Don't see yours? <a href={buildFieldOptionRequestUrl('microscope_type')} target="_blank" rel="noopener noreferrer">Request it</a>
+                  </div>
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>Cell Type</label>
+                  <SearchableSelect
+                    options={fieldOptions().cellTypes}
+                    value={cellType()}
+                    onChange={setCellType}
+                    placeholder={fieldOptionsLoading() ? 'Loading...' : 'e.g. pyramidal cell'}
+                  />
+                  <div class="submit-panel__request-link">
+                    Don't see yours? <a href={buildFieldOptionRequestUrl('cell_type')} target="_blank" rel="noopener noreferrer">Request it</a>
+                  </div>
+                </div>
+
+                <div class="submit-panel__field">
+                  <label>Imaging Depth (um)</label>
+                  <input
+                    type="number"
+                    value={imagingDepth()}
+                    onInput={(e) => setImagingDepth(e.currentTarget.value)}
+                    placeholder="Optional"
+                    min="0"
+                  />
+                </div>
+
                 <div class="submit-panel__field">
                   <label>Lab Name</label>
                   <input

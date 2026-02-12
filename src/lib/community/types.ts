@@ -46,6 +46,11 @@ export interface CommunitySubmission {
   // Data source
   data_source: DataSource;
 
+  // Optional experiment metadata
+  microscope_type?: string;
+  imaging_depth_um?: number;
+  cell_type?: string;
+
   // Extensible
   extra_metadata?: Record<string, unknown>;
 }
@@ -91,7 +96,7 @@ export interface QualityCheckResult {
 /** Row from the field_options lookup table. */
 export interface FieldOption {
   id: number;
-  field_name: 'indicator' | 'species' | 'brain_region';
+  field_name: 'indicator' | 'species' | 'brain_region' | 'microscope_type' | 'cell_type';
   value: string;
   display_order: number;
 }
@@ -101,4 +106,6 @@ export interface FieldOptions {
   indicators: string[];
   species: string[];
   brainRegions: string[];
+  microscopeTypes: string[];
+  cellTypes: string[];
 }

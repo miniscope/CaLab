@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS field_options (
   display_order INTEGER NOT NULL DEFAULT 0,
   created_at    TIMESTAMPTZ DEFAULT now() NOT NULL,
   CONSTRAINT uq_field_option UNIQUE (field_name, value),
-  CONSTRAINT valid_field_name CHECK (field_name IN ('indicator', 'species', 'brain_region'))
+  CONSTRAINT valid_field_name CHECK (field_name IN ('indicator', 'species', 'brain_region', 'microscope_type', 'cell_type'))
 );
 
 ALTER TABLE field_options ENABLE ROW LEVEL SECURITY;

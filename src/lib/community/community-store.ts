@@ -11,6 +11,8 @@ import {
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,
   BRAIN_REGION_OPTIONS,
+  MICROSCOPE_TYPE_OPTIONS,
+  CELL_TYPE_OPTIONS,
 } from './field-options.ts';
 import { fetchFieldOptions } from './community-service.ts';
 
@@ -37,6 +39,8 @@ const [fieldOptions, setFieldOptions] = createSignal<FieldOptions>({
   indicators: INDICATOR_OPTIONS,
   species: SPECIES_OPTIONS,
   brainRegions: BRAIN_REGION_OPTIONS,
+  microscopeTypes: MICROSCOPE_TYPE_OPTIONS,
+  cellTypes: CELL_TYPE_OPTIONS,
 });
 const [fieldOptionsLoading, setFieldOptionsLoading] = createSignal(false);
 let fieldOptionsLoaded = false;

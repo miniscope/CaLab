@@ -41,6 +41,11 @@ CREATE TABLE community_submissions (
   -- Data source tracking
   data_source TEXT NOT NULL DEFAULT 'user',
 
+  -- Optional experiment metadata
+  microscope_type TEXT,
+  imaging_depth_um DOUBLE PRECISION,
+  cell_type TEXT,
+
   -- Extensible metadata
   extra_metadata JSONB DEFAULT '{}'::jsonb,
 

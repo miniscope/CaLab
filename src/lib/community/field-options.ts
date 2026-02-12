@@ -74,6 +74,39 @@ export const SPECIES_OPTIONS = [
   'planarian',
 ];
 
+/** Microscope type suggestions. */
+export const MICROSCOPE_TYPE_OPTIONS = [
+  '1-photon widefield',
+  '1-photon miniscope',
+  '2-photon',
+  '3-photon',
+  'confocal',
+  'spinning disk confocal',
+  'light-sheet',
+  'fiber photometry',
+];
+
+/** Cell type suggestions. */
+export const CELL_TYPE_OPTIONS = [
+  'excitatory neuron',
+  'inhibitory neuron',
+  'pyramidal cell',
+  'interneuron — PV+',
+  'interneuron — SST+',
+  'interneuron — VIP+',
+  'medium spiny neuron (MSN)',
+  'D1 MSN',
+  'D2 MSN',
+  'dopaminergic neuron',
+  'serotonergic neuron',
+  'cholinergic neuron',
+  'Purkinje cell',
+  'granule cell',
+  'astrocyte',
+  'microglia',
+  'oligodendrocyte',
+];
+
 /** Brain region suggestions, including sub-regions. */
 export const BRAIN_REGION_OPTIONS = [
   // Cortex

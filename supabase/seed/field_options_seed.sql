@@ -128,3 +128,34 @@ INSERT INTO field_options (field_name, value, display_order) VALUES
   ('brain_region', 'septum', 65),
   ('brain_region', 'claustrum', 66)
 ON CONFLICT DO NOTHING;
+
+INSERT INTO field_options (field_name, value, display_order) VALUES
+  ('microscope_type', '1-photon widefield', 0),
+  ('microscope_type', '1-photon miniscope', 1),
+  ('microscope_type', '2-photon', 2),
+  ('microscope_type', '3-photon', 3),
+  ('microscope_type', 'confocal', 4),
+  ('microscope_type', 'spinning disk confocal', 5),
+  ('microscope_type', 'light-sheet', 6),
+  ('microscope_type', 'fiber photometry', 7)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO field_options (field_name, value, display_order) VALUES
+  ('cell_type', 'excitatory neuron', 0),
+  ('cell_type', 'inhibitory neuron', 1),
+  ('cell_type', 'pyramidal cell', 2),
+  ('cell_type', 'interneuron — PV+', 3),
+  ('cell_type', 'interneuron — SST+', 4),
+  ('cell_type', 'interneuron — VIP+', 5),
+  ('cell_type', 'medium spiny neuron (MSN)', 6),
+  ('cell_type', 'D1 MSN', 7),
+  ('cell_type', 'D2 MSN', 8),
+  ('cell_type', 'dopaminergic neuron', 9),
+  ('cell_type', 'serotonergic neuron', 10),
+  ('cell_type', 'cholinergic neuron', 11),
+  ('cell_type', 'Purkinje cell', 12),
+  ('cell_type', 'granule cell', 13),
+  ('cell_type', 'astrocyte', 14),
+  ('cell_type', 'microglia', 15),
+  ('cell_type', 'oligodendrocyte', 16)
+ON CONFLICT DO NOTHING;

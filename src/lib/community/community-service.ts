@@ -81,16 +81,20 @@ export async function fetchFieldOptions(): Promise<FieldOptions> {
   const indicators: string[] = [];
   const species: string[] = [];
   const brainRegions: string[] = [];
+  const microscopeTypes: string[] = [];
+  const cellTypes: string[] = [];
 
   for (const row of rows) {
     switch (row.field_name) {
       case 'indicator': indicators.push(row.value); break;
       case 'species': species.push(row.value); break;
       case 'brain_region': brainRegions.push(row.value); break;
+      case 'microscope_type': microscopeTypes.push(row.value); break;
+      case 'cell_type': cellTypes.push(row.value); break;
     }
   }
 
-  return { indicators, species, brainRegions };
+  return { indicators, species, brainRegions, microscopeTypes, cellTypes };
 }
 
 /**
