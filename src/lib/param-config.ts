@@ -20,10 +20,10 @@ export const PARAM_RANGES = {
     unit: 's',
   },
   lambda: {
-    min: 0.0001,   // Very low sparsity (detect almost everything)
-    max: 10.0,     // Very high sparsity (only largest events)
+    min: 0,        // No sparsity penalty
+    max: 4.0,      // High sparsity (only largest events)
     default: 0.01, // Moderate sparsity
-    logScale: true, // Use logarithmic slider mapping
+    logScale: false,
   },
 } as const;
 

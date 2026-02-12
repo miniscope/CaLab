@@ -33,3 +33,39 @@ export interface SolveRequest {
   warmStartStrategy: WarmStartStrategy;
   jobId: number;
 }
+
+// --- Pool worker message protocol ---
+
+/** Messages sent TO a pool worker. */
+export type PoolWorkerInbound =
+  | {
+      type: 'solve';
+      jobId: number;
+      trace: Float64Array;
+      params: SolverParams;
+      warmState: Uint8Array | null;
+      warmStrategy: WarmStartStrategy;
+    }
+  | { type: 'cancel' };
+
+/** Messages sent FROM a pool worker. */
+export type PoolWorkerOutbound =
+  | { type: 'ready' }
+  | {
+      type: 'intermediate';
+      jobId: number;
+      solution: Float64Array;
+      reconvolution: Float64Array;
+      iteration: number;
+    }
+  | {
+      type: 'complete';
+      jobId: number;
+      solution: Float64Array;
+      reconvolution: Float64Array;
+      state: Uint8Array;
+      iterations: number;
+      converged: boolean;
+    }
+  | { type: 'cancelled'; jobId: number }
+  | { type: 'error'; jobId: number; message: string };

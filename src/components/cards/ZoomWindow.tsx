@@ -22,6 +22,8 @@ export interface ZoomWindowProps {
   syncKey: string;
   /** Called when the user scrolls to zoom in/out in time */
   onZoomChange?: (startTime: number, endTime: number) => void;
+  /** Sample offset of deconv/reconv within the raw trace (for windowed solver results) */
+  deconvWindowOffset?: number;
 }
 
 const ZOOM_BUCKET_WIDTH = 800;
@@ -89,10 +91,21 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, ZOOM_BUCKET_WIDTH);
     const dsRaw = dsRawRaw.map(v => (v - mean) / std);
 
+    // Offset for windowed solver results: deconv/reconv may start at a different sample than raw
+    const offset = props.deconvWindowOffset ?? 0;
+
     // Reconvolution trace — same z-score as raw (it approximates the raw)
     const reconv = props.reconvolutionTrace;
     let dsReconv: number[];
-    if (reconv && reconv.length === raw.length) {
+    const reconvStartInWindow = startSample - offset;
+    const reconvEndInWindow = endSample - offset;
+    if (reconv && reconv.length > 0 && reconvStartInWindow >= 0 && reconvEndInWindow <= reconv.length) {
+      const reconvSlice = reconv.subarray(reconvStartInWindow, reconvEndInWindow);
+      let dsReconvRaw: number[];
+      [, dsReconvRaw] = downsampleMinMax(x, reconvSlice, ZOOM_BUCKET_WIDTH);
+      dsReconv = dsReconvRaw.map(v => (v - mean) / std);
+    } else if (reconv && reconv.length === raw.length) {
+      // Full-length fallback (no windowing)
       const reconvSlice = reconv.subarray(startSample, endSample);
       let dsReconvRaw: number[];
       [, dsReconvRaw] = downsampleMinMax(x, reconvSlice, ZOOM_BUCKET_WIDTH);
@@ -104,21 +117,18 @@ export function ZoomWindow(props: ZoomWindowProps) {
     // Deconvolved trace — normalize to [0,1] then scale + offset below raw
     const deconv = props.deconvolvedTrace;
     let dsDeconv: number[];
-    if (deconv && deconv.length === raw.length) {
-      const deconvSlice = deconv.subarray(startSample, endSample);
-      let dsDeconvRaw: number[];
-      [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, ZOOM_BUCKET_WIDTH);
-
-      // Find global deconv min/max for consistent normalization
+    const deconvStartInWindow = startSample - offset;
+    const deconvEndInWindow = endSample - offset;
+    // Helper to scale deconv values to z-score space below the raw trace
+    const scaleDeconv = (dsDeconvRaw: number[], deconvFull: Float64Array): number[] => {
       let dMin = Infinity;
       let dMax = -Infinity;
-      for (let i = 0; i < deconv.length; i++) {
-        if (deconv[i] < dMin) dMin = deconv[i];
-        if (deconv[i] > dMax) dMax = deconv[i];
+      for (let i = 0; i < deconvFull.length; i++) {
+        if (deconvFull[i] < dMin) dMin = deconvFull[i];
+        if (deconvFull[i] > dMax) dMax = deconvFull[i];
       }
       const dRange = dMax - dMin || 1;
 
-      // Find raw z-range for proportional scaling
       let zMin = Infinity;
       let zMax = -Infinity;
       for (let i = 0; i < raw.length; i++) {
@@ -127,14 +137,26 @@ export function ZoomWindow(props: ZoomWindowProps) {
         if (z > zMax) zMax = z;
       }
 
-      // Deconv peaks point UP from a baseline below the raw trace
       const deconvHeight = (zMax - zMin) * DECONV_SCALE;
-      const deconvTop = zMin - DECONV_GAP;           // top of deconv peaks
-      const deconvBottom = deconvTop - deconvHeight;  // baseline of deconv
-      dsDeconv = dsDeconvRaw.map(v => {
-        const norm = (v - dMin) / dRange; // [0, 1]
-        return deconvBottom + norm * deconvHeight;    // peaks go up
+      const deconvTop = zMin - DECONV_GAP;
+      const deconvBottom = deconvTop - deconvHeight;
+      return dsDeconvRaw.map(v => {
+        const norm = (v - dMin) / dRange;
+        return deconvBottom + norm * deconvHeight;
       });
+    };
+
+    if (deconv && deconv.length > 0 && deconvStartInWindow >= 0 && deconvEndInWindow <= deconv.length) {
+      const deconvSlice = deconv.subarray(deconvStartInWindow, deconvEndInWindow);
+      let dsDeconvRaw: number[];
+      [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, ZOOM_BUCKET_WIDTH);
+      dsDeconv = scaleDeconv(dsDeconvRaw, deconv);
+    } else if (deconv && deconv.length === raw.length) {
+      // Full-length fallback (no windowing)
+      const deconvSlice = deconv.subarray(startSample, endSample);
+      let dsDeconvRaw: number[];
+      [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, ZOOM_BUCKET_WIDTH);
+      dsDeconv = scaleDeconv(dsDeconvRaw, deconv);
     } else {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }

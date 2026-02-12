@@ -6,11 +6,7 @@ import {
   tauRise, tauDecay, setTauRise, setTauDecay,
   lambda, setLambda,
 } from '../../lib/viz-store';
-import {
-  PARAM_RANGES,
-  sliderToLambda,
-  lambdaToSlider,
-} from '../../lib/param-config';
+import { PARAM_RANGES } from '../../lib/param-config';
 import { ParameterSlider } from './ParameterSlider';
 import { ConvergenceIndicator } from './ConvergenceIndicator';
 import '../../styles/controls.css';
@@ -61,10 +57,8 @@ export function ParameterPanel(props: ParameterPanelProps) {
           setValue={setLambda}
           min={PARAM_RANGES.lambda.min}
           max={PARAM_RANGES.lambda.max}
-          step={0.0001}
-          fromSlider={sliderToLambda}
-          toSlider={lambdaToSlider}
-          format={(v) => v.toExponential(2)}
+          step={0.01}
+          format={(v) => v.toFixed(2)}
           onCommit={handleCommit}
           data-tutorial="slider-lambda"
         />
