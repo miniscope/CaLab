@@ -3,6 +3,8 @@
 // via optional fromSlider/toSlider transform functions.
 
 import type { Accessor, Setter } from 'solid-js';
+import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine';
+import { isTutorialActive } from '../../lib/tutorial/tutorial-store';
 
 export interface ParameterSliderProps {
   label: string;
@@ -48,6 +50,7 @@ export function ParameterSlider(props: ParameterSliderProps) {
     if (isNaN(raw)) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
     props.onCommit?.(val);
+    if (isTutorialActive()) notifyTutorialAction();
   };
 
   // Numeric input: live feedback with clamping
