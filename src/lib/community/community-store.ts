@@ -29,6 +29,7 @@ const [filters, setFilters] = createSignal<FilterState>({
   indicator: null,
   species: null,
   brainRegion: null,
+  demoPreset: null,
 });
 const [browsing, setBrowsing] = createSignal<boolean>(false);
 const [lastFetched, setLastFetched] = createSignal<number | null>(null);

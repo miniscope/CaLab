@@ -84,6 +84,7 @@ export interface FilterState {
   indicator: string | null;
   species: string | null;
   brainRegion: string | null;
+  demoPreset: string | null;
 }
 
 /** Result of parameter validation before submission. */

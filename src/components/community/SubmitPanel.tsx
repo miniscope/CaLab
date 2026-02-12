@@ -21,6 +21,7 @@ import {
   parsedData,
   durationSeconds,
   isDemo,
+  demoPreset,
 } from '../../lib/data-store';
 import { computeAR2 } from '../../lib/ar2';
 import { buildExportData, downloadExport } from '../../lib/export';
@@ -168,6 +169,9 @@ export function SubmitPanel() {
         quality_score: qualityScore,
         data_source: rawFile() ? 'user' : 'demo',
         catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
+        extra_metadata: isDemo() && demoPreset()
+          ? { demo_preset: demoPreset()!.id }
+          : undefined,
       };
 
       const result = await submitParameters(payload);

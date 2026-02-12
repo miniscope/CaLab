@@ -21,6 +21,7 @@ import type {
 } from '../../lib/community/types';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store';
 import { isDemo } from '../../lib/data-store';
+import { getPresetLabels } from '../../lib/chart/demo-presets';
 import { ScatterPlot } from './ScatterPlot';
 import { FilterBar } from './FilterBar';
 import '../../styles/community.css';
@@ -35,6 +36,7 @@ export function CommunityBrowser() {
     indicator: null,
     species: null,
     brainRegion: null,
+    demoPreset: null,
   });
   const [dataSource, setDataSource] = createSignal<DataSource>(
     isDemo() ? 'demo' : 'user',
@@ -60,6 +62,10 @@ export function CommunityBrowser() {
       if (f.indicator && s.indicator !== f.indicator) return false;
       if (f.species && s.species !== f.species) return false;
       if (f.brainRegion && s.brain_region !== f.brainRegion) return false;
+      if (f.demoPreset && s.data_source === 'demo') {
+        const preset = (s.extra_metadata as Record<string, unknown> | undefined)?.demo_preset;
+        if (preset !== f.demoPreset) return false;
+      }
       return true;
     });
   });
@@ -190,6 +196,8 @@ export function CommunityBrowser() {
               options={fieldOptions()}
               filteredCount={filteredSubmissions().length}
               totalCount={submissions().length}
+              demoPresets={getPresetLabels()}
+              showDemoPresetFilter={dataSource() === 'demo'}
             />
 
             {/* Controls: Compare toggle */}

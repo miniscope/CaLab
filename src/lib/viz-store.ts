@@ -21,12 +21,12 @@ const [reconvolutionTrace, setReconvolutionTrace] =
 
 // --- Tau parameters (kernel shape) ---
 
-const [tauRise, setTauRise] = createSignal<number>(0.02); // 20ms default
-const [tauDecay, setTauDecay] = createSignal<number>(0.4); // 400ms default
+const [tauRise, setTauRise] = createSignal<number>(0.001); // start at minimum
+const [tauDecay, setTauDecay] = createSignal<number>(3.0); // start at maximum (longer than any indicator)
 
 // --- Lambda (sparsity penalty) ---
 
-const [lambda, setLambda] = createSignal<number>(0.01); // default sparsity
+const [lambda, setLambda] = createSignal<number>(0); // start at minimum sparsity
 
 // --- Solver status ---
 

@@ -9,6 +9,8 @@ import type {
   ImportStep,
 } from './types';
 import { generateSyntheticDataset } from './chart/mock-traces';
+import type { DemoPreset } from './chart/demo-presets';
+import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets';
 
 // --- Core Signals ---
 
@@ -25,6 +27,7 @@ const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(
   null,
 );
 const [importError, setImportError] = createSignal<string | null>(null);
+const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 
 // --- Derived State ---
 
@@ -58,13 +61,30 @@ const importStep = createMemo<ImportStep>(() => {
 
 // --- Demo Data ---
 
-function loadDemoData(opts?: { numCells?: number; durationMinutes?: number; fps?: number }): void {
+function loadDemoData(opts?: {
+  numCells?: number;
+  durationMinutes?: number;
+  fps?: number;
+  presetId?: string;
+  seed?: number | 'random';
+}): void {
   const fs = opts?.fps ?? 30;
   const numCells = opts?.numCells ?? 20;
   const durationMin = opts?.durationMinutes ?? 5;
   const numTimepoints = Math.round(durationMin * 60 * fs);
-  const { data, shape } = generateSyntheticDataset(numCells, numTimepoints, 0.02, 0.4, fs);
 
+  const preset = getPresetById(opts?.presetId ?? DEFAULT_PRESET_ID);
+  if (!preset) return;
+
+  const resolvedSeed = opts?.seed === 'random'
+    ? Math.floor(Math.random() * 2 ** 31)
+    : opts?.seed ?? 42;
+
+  const { data, shape } = generateSyntheticDataset(
+    numCells, numTimepoints, preset.params, fs, resolvedSeed,
+  );
+
+  setDemoPreset(preset);
   setParsedData({ data, shape, dtype: '<f8', fortranOrder: false });
   setDimensionsConfirmed(true);
   setSwapped(false);
@@ -97,6 +117,7 @@ function resetImport(): void {
   setNpzArrays(null);
   setSelectedNpzArray(null);
   setImportError(null);
+  setDemoPreset(null);
 }
 
 // --- Exports ---
@@ -129,6 +150,7 @@ export {
   durationSeconds,
   importStep,
   isDemo,
+  demoPreset,
   // Actions
   resetImport,
   loadDemoData,

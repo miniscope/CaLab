@@ -6,6 +6,7 @@
  */
 
 import { computeKernel } from './kernel-math';
+import type { MarkovParams, NoiseParams, SimulationParams } from './demo-presets';
 
 /** Seeded PRNG (xorshift32) for reproducible synthetic data. */
 function createRng(seed: number) {
@@ -50,6 +51,7 @@ export function generateSyntheticTrace(
   fs: number,
   seed: number = 42,
   snr: number = 8,
+  simParams?: { markov?: MarkovParams; noise?: NoiseParams },
 ): { raw: Float64Array; spikes: Float64Array; clean: Float64Array } {
   const rng = createRng(seed);
 
@@ -57,10 +59,10 @@ export function generateSyntheticTrace(
   // Two states: 0 = silent, 1 = active (bursting)
   // Transition probabilities per timestep
   const dt = 1 / fs;
-  const pSilentToActive = 0.02 * dt * fs; // ~2% chance per frame to start bursting
-  const pActiveToSilent = 0.15 * dt * fs; // bursts last ~6-7 frames on average
-  const pSpikeWhenActive = 0.7; // high spike probability during burst
-  const pSpikeWhenSilent = 0.005; // rare isolated spikes
+  const pSilentToActive = (simParams?.markov?.pSilentToActive ?? 0.02) * dt * fs;
+  const pActiveToSilent = (simParams?.markov?.pActiveToSilent ?? 0.15) * dt * fs;
+  const pSpikeWhenActive = simParams?.markov?.pSpikeWhenActive ?? 0.7;
+  const pSpikeWhenSilent = simParams?.markov?.pSpikeWhenSilent ?? 0.005;
 
   const spikes = new Float64Array(numTimepoints);
   let state = 0; // start silent
@@ -77,7 +79,7 @@ export function generateSyntheticTrace(
     const pSpike = state === 1 ? pSpikeWhenActive : pSpikeWhenSilent;
     if (rng.next() < pSpike) {
       // Amplitude: log-normal distributed (mean ~1, occasional large transients)
-      spikes[i] = Math.exp(0.3 * rng.gaussian());
+      spikes[i] = Math.exp((simParams?.noise?.amplitudeSigma ?? 0.3) * rng.gaussian());
     }
   }
 
@@ -98,8 +100,10 @@ export function generateSyntheticTrace(
 
   // --- Add baseline drift + noise ---
   // Slow baseline drift (mimics photobleaching / motion artifacts)
-  const driftPeriod = numTimepoints / (2 + rng.next() * 2); // 2-4 slow cycles
-  const driftAmp = 0.1; // 10% of signal range
+  const cyclesMin = simParams?.noise?.driftCyclesMin ?? 2;
+  const cyclesMax = simParams?.noise?.driftCyclesMax ?? 4;
+  const driftPeriod = numTimepoints / (cyclesMin + rng.next() * (cyclesMax - cyclesMin));
+  const driftAmp = simParams?.noise?.driftAmplitude ?? 0.1;
 
   // Compute signal amplitude for noise scaling
   let signalMax = 0;
@@ -125,8 +129,7 @@ export function generateSyntheticTrace(
 export function generateSyntheticDataset(
   numCells: number,
   numTimepoints: number,
-  tauRise: number = 0.02,
-  tauDecay: number = 0.4,
+  simParams: SimulationParams,
   fs: number = 30,
   baseSeed: number = 42,
 ): { data: Float64Array; shape: [number, number] } {
@@ -135,11 +138,12 @@ export function generateSyntheticDataset(
   for (let c = 0; c < numCells; c++) {
     const { raw } = generateSyntheticTrace(
       numTimepoints,
-      tauRise,
-      tauDecay,
+      simParams.tauRise,
+      simParams.tauDecay,
       fs,
       baseSeed + c * 7919, // different prime-offset seed per cell
-      20 + (c % 5) * 2, // varying SNR across cells (6-14)
+      simParams.snrBase + (c % 5) * simParams.snrStep,
+      { markov: simParams.markov, noise: simParams.noise },
     );
     data.set(raw, c * numTimepoints);
   }

@@ -723,6 +723,37 @@ a:hover {
   border-color: var(--accent);
 }
 
+.demo-data-row__select {
+  width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.demo-data-row__select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.demo-data-row__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.demo-data-row__checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* ========================
    Ready Card
    ======================== */

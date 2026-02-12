@@ -15,6 +15,7 @@ import {
   npzArrays,
 } from '../../lib/data-store';
 import { formatDuration } from '../../lib/format-utils';
+import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -29,7 +30,13 @@ const TOTAL_STEPS = 4;
 export interface ImportOverlayProps {
   hasFile: boolean;
   onReset: () => void;
-  onLoadDemo: (opts: { numCells: number; durationMinutes: number; fps: number }) => void;
+  onLoadDemo: (opts: {
+    numCells: number;
+    durationMinutes: number;
+    fps: number;
+    presetId: string;
+    seed?: number | 'random';
+  }) => void;
 }
 
 export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
@@ -40,6 +47,8 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const [demoCells, setDemoCells] = createSignal(20);
   const [demoDuration, setDemoDuration] = createSignal(5);
   const [demoFps, setDemoFps] = createSignal(30);
+  const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_PRESET_ID);
+  const [randomSeed, setRandomSeed] = createSignal(false);
 
   const durationDisplay = () => formatDuration(durationSeconds(), true);
 
@@ -84,6 +93,15 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
         </Show>
         <div class="demo-data-row">
           <span class="demo-data-row__divider">or generate synthetic data</span>
+          <select
+            class="demo-data-row__select"
+            value={demoPresetId()}
+            onChange={(e) => setDemoPresetId(e.currentTarget.value)}
+          >
+            {DEMO_PRESETS.map((p) => (
+              <option value={p.id}>{p.label}</option>
+            ))}
+          </select>
           <div class="demo-data-row__fields">
             <label class="demo-data-row__field">
               <span>Cells</span>
@@ -126,12 +144,22 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
               />
             </label>
           </div>
+          <label class="demo-data-row__checkbox">
+            <input
+              type="checkbox"
+              checked={randomSeed()}
+              onChange={(e) => setRandomSeed(e.currentTarget.checked)}
+            />
+            <span>Random seed</span>
+          </label>
           <button
             class="btn-secondary"
             onClick={() => props.onLoadDemo({
               numCells: demoCells(),
               durationMinutes: demoDuration(),
               fps: demoFps(),
+              presetId: demoPresetId(),
+              seed: randomSeed() ? 'random' : undefined,
             })}
           >
             Load Demo Data
