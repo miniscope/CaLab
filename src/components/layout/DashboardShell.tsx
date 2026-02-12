@@ -1,4 +1,4 @@
-import { createSignal, type JSX, type ParentComponent } from 'solid-js';
+import { createSignal, type JSX } from 'solid-js';
 
 export interface DashboardShellProps {
   header: JSX.Element;
@@ -10,7 +10,7 @@ export interface DashboardShellProps {
 const [sidebarOpen, setSidebarOpen] = createSignal(false);
 export { sidebarOpen, setSidebarOpen };
 
-export const DashboardShell: ParentComponent<DashboardShellProps> = (props) => {
+export function DashboardShell(props: DashboardShellProps): JSX.Element {
   return (
     <div class={`dashboard-shell${sidebarOpen() ? ' dashboard-shell--sidebar-open' : ''}`}>
       <div class="dashboard-shell__header">
@@ -24,4 +24,4 @@ export const DashboardShell: ParentComponent<DashboardShellProps> = (props) => {
       </div>
     </div>
   );
-};
+}

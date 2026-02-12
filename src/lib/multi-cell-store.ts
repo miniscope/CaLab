@@ -2,6 +2,8 @@
 // Uses SolidJS signals matching project pattern of module-level signals with named exports
 
 import { createSignal } from 'solid-js';
+import type { CellSolverStatus } from './solver-types';
+export type { CellSolverStatus } from './solver-types';
 import { rankCellsByActivity, sampleRandomCells } from './cell-ranking';
 import { parsedData, effectiveShape, swapped } from './data-store';
 
@@ -16,8 +18,6 @@ export interface CellTraces {
   reconvolution: Float32Array;
   windowStartSample?: number;
 }
-
-export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error';
 
 // --- Signals ---
 
@@ -131,13 +131,6 @@ function unpinMultiCellResults(): void {
 }
 
 /**
- * Clear all multi-cell solver results (e.g., when parameters change).
- */
-function clearMultiCellResults(): void {
-  setMultiCellResults(new Map());
-}
-
-/**
  * Reset all multi-cell state (results + selection). Use when switching datasets.
  */
 function clearMultiCellState(): void {
@@ -183,7 +176,6 @@ export {
   // Actions
   computeAndCacheRanking,
   updateCellSelection,
-  clearMultiCellResults,
   clearMultiCellState,
   pinMultiCellResults,
   unpinMultiCellResults,

@@ -761,26 +761,6 @@ a:hover {
   padding: var(--space-md) var(--space-lg);
 }
 
-.viz-header {
-  margin-bottom: var(--space-md);
-  padding-bottom: var(--space-sm);
-  border-bottom: 1px solid var(--border-default);
-}
-
-.viz-header__title {
-  font-size: 1.3rem;
-  color: var(--text-primary);
-  margin-bottom: var(--space-xs);
-  font-weight: var(--font-weight-semibold);
-}
-
-.viz-header__subtitle {
-  color: var(--text-secondary);
-  margin: 0;
-  font-size: 0.9rem;
-  font-family: var(--font-mono);
-}
-
 /* Trace panel stack */
 .trace-stack {
   display: flex;

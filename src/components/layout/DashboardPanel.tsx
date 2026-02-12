@@ -1,4 +1,4 @@
-import type { ParentComponent, JSX } from 'solid-js';
+import type { JSX } from 'solid-js';
 
 type PanelVariant = 'controls' | 'data' | 'interactive' | 'default' | 'flush';
 
@@ -10,7 +10,7 @@ interface DashboardPanelProps {
   children: JSX.Element;
 }
 
-export const DashboardPanel: ParentComponent<DashboardPanelProps> = (props) => {
+export function DashboardPanel(props: DashboardPanelProps): JSX.Element {
   const variant = () => props.variant ?? 'default';
 
   return (
@@ -22,4 +22,4 @@ export const DashboardPanel: ParentComponent<DashboardPanelProps> = (props) => {
       {props.children}
     </div>
   );
-};
+}

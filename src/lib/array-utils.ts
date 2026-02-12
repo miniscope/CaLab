@@ -53,3 +53,18 @@ export function transposeFortranToC(
   }
   return result;
 }
+
+/**
+ * Process a parsed NpyResult: handle Fortran order, then return corrected result.
+ *
+ * If the array is 2D and in Fortran (column-major) order, it is transposed
+ * to C (row-major) order before being returned.
+ */
+export function processNpyResult(result: NpyResult): NpyResult {
+  if (result.fortranOrder && result.shape.length === 2) {
+    const [rows, cols] = result.shape;
+    const transposed = transposeFortranToC(result.data, rows, cols);
+    return { ...result, data: transposed, fortranOrder: false };
+  }
+  return result;
+}

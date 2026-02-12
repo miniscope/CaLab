@@ -1,13 +1,13 @@
 // TutorialLauncher: header button to open/close the tutorial panel.
 
-import type { Accessor, Component } from 'solid-js';
+import type { Accessor, JSX } from 'solid-js';
 
 interface TutorialLauncherProps {
   isOpen: Accessor<boolean>;
   onToggle: () => void;
 }
 
-export const TutorialLauncher: Component<TutorialLauncherProps> = (props) => {
+export function TutorialLauncher(props: TutorialLauncherProps): JSX.Element {
   return (
     <button
       class="btn-secondary btn-small"
@@ -17,4 +17,4 @@ export const TutorialLauncher: Component<TutorialLauncherProps> = (props) => {
       {props.isOpen() ? 'Close Tutorial' : 'Tutorial'}
     </button>
   );
-};
+}

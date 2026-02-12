@@ -3,8 +3,8 @@
 // Parameter changes trigger solver dispatch; results flow back here.
 
 import { createSignal, createMemo } from 'solid-js';
-import type { NpyResult } from './types';
-import { extractCellTrace } from './array-utils';
+import type { SolverStatus } from './solver-types';
+export type { SolverStatus } from './solver-types';
 import { pinMultiCellResults, unpinMultiCellResults } from './multi-cell-store';
 
 // --- Cell selection ---
@@ -30,7 +30,6 @@ const [lambda, setLambda] = createSignal<number>(0.01); // default sparsity
 
 // --- Solver status ---
 
-export type SolverStatus = 'idle' | 'solving' | 'converged' | 'error';
 const [solverStatus, setSolverStatus] = createSignal<SolverStatus>('idle');
 
 // --- Pinned snapshot for before/after comparison ---
@@ -85,43 +84,6 @@ const residualTrace = createMemo<Float64Array | null>(() => {
   return residual;
 });
 
-// --- Load cell traces ---
-
-/**
- * Extract the raw fluorescence trace for a given cell index from the flat
- * typed array. Deconvolved/reconvolution traces are set to null; the
- * tuning orchestrator's reactive effect detects rawTrace changed and
- * triggers a solver dispatch automatically.
- *
- * @param cellIndex - Which cell to extract (row index)
- * @param data - The parsed NpyResult with flat typed array
- * @param shape - Effective [cells, timepoints] after optional swap
- * @param isSwapped - Whether dimensions were swapped by user
- */
-function loadCellTraces(
-  cellIndex: number,
-  data: NpyResult,
-  shape: [number, number],
-  isSwapped: boolean,
-): void {
-  const [numCells] = shape;
-
-  // Guard invalid index
-  if (cellIndex < 0 || cellIndex >= numCells) return;
-
-  const raw = extractCellTrace(cellIndex, data, shape, isSwapped);
-
-  setRawTrace(raw);
-  setSelectedCell(cellIndex);
-
-  // Clear derived traces -- tuning orchestrator will trigger solver dispatch
-  setDeconvolvedTrace(null);
-  setReconvolutionTrace(null);
-
-  // Clear pinned snapshot to avoid stale cross-cell comparison (Pitfall 4)
-  unpinSnapshot();
-}
-
 // --- Exports ---
 
 export {
@@ -154,6 +116,4 @@ export {
   pinnedParams,
   pinCurrentSnapshot,
   unpinSnapshot,
-  // Actions
-  loadCellTraces,
 };

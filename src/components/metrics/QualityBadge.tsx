@@ -7,13 +7,12 @@
  */
 
 import type { QualityTier } from '../../lib/metrics/snr';
-
-export type SolverStatus = 'fresh' | 'solving' | 'stale' | 'error';
+import type { CellSolverStatus } from '../../lib/solver-types';
 
 export interface QualityBadgeProps {
   quality: QualityTier;
   snr?: number;
-  solverStatus?: SolverStatus;
+  solverStatus?: CellSolverStatus;
 }
 
 const COLORS: Record<QualityTier, string> = {

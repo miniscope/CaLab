@@ -3,7 +3,7 @@
 // Solver status signal is centralized in viz-store.
 
 import { solverStatus } from '../../lib/viz-store';
-import type { SolverStatus } from '../../lib/viz-store';
+import type { SolverStatus } from '../../lib/solver-types';
 
 export function ConvergenceIndicator() {
   const statusClass = () => {

@@ -2,6 +2,32 @@
 
 import type uPlot from 'uplot';
 
+/**
+ * Convert a color to rgba with the specified opacity.
+ * Handles #rrggbb and #rgb hex formats. Returns input unchanged for other formats.
+ */
+function withOpacity(color: string, alpha: number): string {
+  if (color.startsWith('#')) {
+    let hex = color.slice(1);
+
+    // Expand shorthand #rgb to #rrggbb
+    if (hex.length === 3) {
+      hex = hex.split('').map(char => char + char).join('');
+    }
+
+    // Parse #rrggbb format
+    if (hex.length === 6) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+  }
+
+  // Safe fallback: return unchanged for other formats
+  return color;
+}
+
 export function createRawSeries(): uPlot.Series {
   return { label: 'Raw', stroke: '#1f77b4', width: 1 };
 }
@@ -27,14 +53,6 @@ export function createPinnedOverlaySeries(
   baseStroke: string,
   baseWidth: number,
 ): uPlot.Series {
-  let stroke: string;
-  if (baseStroke.startsWith('#')) {
-    const r = parseInt(baseStroke.slice(1, 3), 16);
-    const g = parseInt(baseStroke.slice(3, 5), 16);
-    const b = parseInt(baseStroke.slice(5, 7), 16);
-    stroke = `rgba(${r}, ${g}, ${b}, 0.65)`;
-  } else {
-    stroke = baseStroke.replace('hsl(', 'hsla(').replace(')', ', 0.65)');
-  }
+  const stroke = withOpacity(baseStroke, 0.65);
   return { label, stroke, width: baseWidth + 0.5, dash: [8, 4] };
 }

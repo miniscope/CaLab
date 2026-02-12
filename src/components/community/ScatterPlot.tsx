@@ -10,6 +10,18 @@ import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import uPlot from 'uplot';
 
+/** Read CSS custom property values from :root for uPlot programmatic styling. */
+function getThemeColors() {
+  const s = getComputedStyle(document.documentElement);
+  const v = (name: string) => s.getPropertyValue(name).trim() || undefined;
+  return {
+    textPrimary:   v('--text-primary')   ?? '#1a1a1a',
+    textSecondary: v('--text-secondary') ?? '#616161',
+    borderSubtle:  v('--border-subtle')  ?? '#e8e8e8',
+    borderDefault: v('--border-default') ?? '#d4d4d4',
+  };
+}
+
 export interface ScatterPlotProps {
   submissions: CommunitySubmission[];
   userParams?: { tauRise: number; tauDecay: number; lambda: number } | null;
@@ -74,7 +86,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
   });
 
   /** Create custom paths draw function for colored scatter points. */
-  function makeDrawPoints(colors: () => string[], userParams: () => ScatterPlotProps['userParams']) {
+  function makeDrawPoints(colors: () => string[], userParams: () => ScatterPlotProps['userParams'], markerStroke: string) {
     return (u: uPlot, seriesIdx: number, _idx0: number, _idx1: number) => {
       const ctx = u.ctx;
       const size = 10 * devicePixelRatio;
@@ -133,7 +145,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
                 lambdaRange().min || up.lambda,
                 lambdaRange().max || up.lambda,
               );
-              ctx.strokeStyle = '#ffffff';
+              ctx.strokeStyle = markerStroke;
               ctx.lineWidth = 2 * devicePixelRatio;
               ctx.beginPath();
               ctx.arc(ucx, ucy, uSize / 2, 0, 2 * Math.PI);
@@ -159,7 +171,10 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
     if (!containerRef || subs.length === 0) return;
 
-    const drawFn = makeDrawPoints(lambdaColors, () => props.userParams);
+    // Read CSS custom properties for theme-aware colors
+    const theme = getThemeColors();
+
+    const drawFn = makeDrawPoints(lambdaColors, () => props.userParams, theme.textPrimary);
 
     // Compute padded ranges so points aren't on the edge
     const xVals = subs.map((s) => s.tau_rise);
@@ -193,18 +208,18 @@ export function ScatterPlot(props: ScatterPlotProps) {
       axes: [
         {
           label: 'tau_rise (s)',
-          stroke: '#888',
-          grid: { stroke: '#333' },
-          ticks: { stroke: '#555' },
+          stroke: theme.textSecondary,
+          grid: { stroke: theme.borderSubtle },
+          ticks: { stroke: theme.borderDefault },
           size: 40,
           space: 80,
           values: (_u: uPlot, vals: number[]) => vals.map((v) => v.toFixed(4)),
         },
         {
           label: 'tau_decay (s)',
-          stroke: '#888',
-          grid: { stroke: '#333' },
-          ticks: { stroke: '#555' },
+          stroke: theme.textSecondary,
+          grid: { stroke: theme.borderSubtle },
+          ticks: { stroke: theme.borderDefault },
           size: 60,
           space: 50,
           values: (_u: uPlot, vals: number[]) => vals.map((v) => v.toFixed(3)),

@@ -43,26 +43,18 @@ const RESID_SCALE = 0.25; // scale residuals to this fraction of raw z-range
 export function ZoomWindow(props: ZoomWindowProps) {
   const height = () => props.height ?? 150;
 
-  // Z-score stats from full raw trace — consistent across zoom levels
+  // Z-score stats from full raw trace — consistent across zoom levels.
+  // Includes zMin/zMax so the z-score range is computed exactly ONCE.
   const rawStats = createMemo(() => {
     const raw = props.rawTrace;
-    if (!raw || raw.length === 0) return { mean: 0, std: 1 };
+    if (!raw || raw.length === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
     let sum = 0;
     for (let i = 0; i < raw.length; i++) sum += raw[i];
     const mean = sum / raw.length;
     let ssq = 0;
     for (let i = 0; i < raw.length; i++) ssq += (raw[i] - mean) ** 2;
     const std = Math.sqrt(ssq / raw.length) || 1;
-    return { mean, std };
-  });
 
-  // Global y-range in z-score space, with room for deconv offset below
-  const globalYRange = createMemo<[number, number]>(() => {
-    const raw = props.rawTrace;
-    const { mean, std } = rawStats();
-    if (!raw || raw.length === 0) return [-4, 6];
-
-    // Find z-scored min/max of raw trace
     let zMin = Infinity;
     let zMax = -Infinity;
     for (let i = 0; i < raw.length; i++) {
@@ -70,17 +62,136 @@ export function ZoomWindow(props: ZoomWindowProps) {
       if (z < zMin) zMin = z;
       if (z > zMax) zMax = z;
     }
+    return { mean, std, zMin, zMax };
+  });
 
-    // Deconv sits below raw: baseline at deconvBottom, peaks up to deconvTop
+  // Global y-range in z-score space, with room for deconv offset below
+  const globalYRange = createMemo<[number, number]>(() => {
+    const raw = props.rawTrace;
+    const { zMin, zMax } = rawStats();
+    if (!raw || raw.length === 0) return [-4, 6];
+
     const rawRange = zMax - zMin;
     const deconvHeight = rawRange * DECONV_SCALE;
     const deconvBottom = zMin - DECONV_GAP - deconvHeight;
 
-    // Residuals sit below deconv
     const residHeight = rawRange * RESID_SCALE;
     const residBottom = deconvBottom - RESID_GAP - residHeight;
     return [residBottom, zMax + rawRange * 0.02];
   });
+
+  /**
+   * Slice a trace for the current zoom window, downsample, and apply a transform.
+   *
+   * Handles windowed solver results (offset != 0), full-length traces, and missing
+   * traces (returns array of nulls). This pattern was repeated 4+ times in the
+   * original code for reconv, deconv, pinned reconv, and pinned deconv.
+   */
+  const sliceAndDownsample = (
+    trace: Float32Array | undefined,
+    x: Float64Array,
+    startSample: number,
+    endSample: number,
+    offset: number,
+    rawLength: number,
+    dsXLength: number,
+    transform: (dsValues: number[]) => number[],
+  ): number[] => {
+    if (!trace || trace.length === 0) {
+      return new Array(dsXLength).fill(null) as number[];
+    }
+
+    const windowStart = startSample - offset;
+    const windowEnd = endSample - offset;
+
+    // Windowed result: solver output is shorter than raw, offset-aligned
+    if (windowStart >= 0 && windowEnd <= trace.length) {
+      const slice = trace.subarray(windowStart, windowEnd);
+      const [, dsValues] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      return transform(dsValues);
+    }
+
+    // Full-length fallback: solver output is same length as raw
+    if (trace.length === rawLength) {
+      const slice = trace.subarray(startSample, endSample);
+      const [, dsValues] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      return transform(dsValues);
+    }
+
+    return new Array(dsXLength).fill(null) as number[];
+  };
+
+  /**
+   * Scale deconvolved values into the deconv band below the raw z-score range.
+   * Maps the full deconv trace's own [min,max] into [deconvBottom, deconvTop].
+   */
+  const scaleToDeconvBand = (
+    dsDeconvRaw: number[],
+    deconvFull: Float32Array,
+    zMin: number,
+    zMax: number,
+  ): number[] => {
+    let dMin = Infinity;
+    let dMax = -Infinity;
+    for (let i = 0; i < deconvFull.length; i++) {
+      if (deconvFull[i] < dMin) dMin = deconvFull[i];
+      if (deconvFull[i] > dMax) dMax = deconvFull[i];
+    }
+    const dRange = dMax - dMin || 1;
+
+    const deconvHeight = (zMax - zMin) * DECONV_SCALE;
+    const deconvTop = zMin - DECONV_GAP;
+    const deconvBottom = deconvTop - deconvHeight;
+
+    return dsDeconvRaw.map(v => {
+      const norm = (v - dMin) / dRange;
+      return deconvBottom + norm * deconvHeight;
+    });
+  };
+
+  /**
+   * Compute residuals (raw - reconvolution in z-score space) and map them
+   * into the residual band below the deconv band.
+   */
+  const computeResiduals = (
+    dsRaw: number[],
+    dsReconv: number[],
+    zMin: number,
+    zMax: number,
+    dsXLength: number,
+  ): number[] => {
+    if (!dsReconv.some(v => v !== null)) {
+      return new Array(dsXLength).fill(null) as number[];
+    }
+
+    const rawRange = zMax - zMin;
+    const deconvHeight = rawRange * DECONV_SCALE;
+    const deconvBottom = zMin - DECONV_GAP - deconvHeight;
+    const residHeight = rawRange * RESID_SCALE;
+    const residTop = deconvBottom - RESID_GAP;
+    const residBottom = residTop - residHeight;
+
+    // Compute raw residuals and find their range
+    const rawResid: number[] = [];
+    let rMin = Infinity;
+    let rMax = -Infinity;
+    for (let i = 0; i < dsRaw.length; i++) {
+      if (dsReconv[i] === null || dsReconv[i] === undefined) {
+        rawResid.push(0);
+      } else {
+        const r = dsRaw[i] - (dsReconv[i] as number);
+        rawResid.push(r);
+        if (r < rMin) rMin = r;
+        if (r > rMax) rMax = r;
+      }
+    }
+    const rRange = rMax - rMin || 1;
+
+    return rawResid.map(r => {
+      const norm = (r - rMin) / rRange;
+      return residBottom + norm * residHeight;
+    });
+  };
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
     const raw = props.rawTrace;
@@ -92,7 +203,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     if (startSample >= endSample) return [[], [], [], [], [], [], []];
 
     const len = endSample - startSample;
-    const { mean, std } = rawStats();
+    const { mean, std, zMin, zMax } = rawStats();
 
     // Build time axis for the window
     const x = new Float64Array(len);
@@ -106,157 +217,40 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, ZOOM_BUCKET_WIDTH);
     const dsRaw = dsRawRaw.map(v => (v - mean) / std);
 
-    // Offset for windowed solver results: deconv/reconv may start at a different sample than raw
     const offset = props.deconvWindowOffset ?? 0;
+    const pinnedOffset = props.pinnedWindowOffset ?? 0;
 
-    // Reconvolution trace — same z-score as raw (it approximates the raw)
-    const reconv = props.reconvolutionTrace;
-    let dsReconv: number[];
-    const reconvStartInWindow = startSample - offset;
-    const reconvEndInWindow = endSample - offset;
-    if (reconv && reconv.length > 0 && reconvStartInWindow >= 0 && reconvEndInWindow <= reconv.length) {
-      const reconvSlice = reconv.subarray(reconvStartInWindow, reconvEndInWindow);
-      let dsReconvRaw: number[];
-      [, dsReconvRaw] = downsampleMinMax(x, reconvSlice, ZOOM_BUCKET_WIDTH);
-      dsReconv = dsReconvRaw.map(v => (v - mean) / std);
-    } else if (reconv && reconv.length === raw.length) {
-      // Full-length fallback (no windowing)
-      const reconvSlice = reconv.subarray(startSample, endSample);
-      let dsReconvRaw: number[];
-      [, dsReconvRaw] = downsampleMinMax(x, reconvSlice, ZOOM_BUCKET_WIDTH);
-      dsReconv = dsReconvRaw.map(v => (v - mean) / std);
-    } else {
-      dsReconv = new Array(dsX.length).fill(null) as number[];
-    }
+    // z-score transform for traces in raw-space (reconv, pinned reconv)
+    const toZScore = (values: number[]) => values.map(v => (v - mean) / std);
 
-    // Deconvolved trace — normalize to [0,1] then scale + offset below raw
-    const deconv = props.deconvolvedTrace;
-    let dsDeconv: number[];
-    const deconvStartInWindow = startSample - offset;
-    const deconvEndInWindow = endSample - offset;
-    // Helper to scale deconv values to z-score space below the raw trace
-    const scaleDeconv = (dsDeconvRaw: number[], deconvFull: Float32Array): number[] => {
-      let dMin = Infinity;
-      let dMax = -Infinity;
-      for (let i = 0; i < deconvFull.length; i++) {
-        if (deconvFull[i] < dMin) dMin = deconvFull[i];
-        if (deconvFull[i] > dMax) dMax = deconvFull[i];
-      }
-      const dRange = dMax - dMin || 1;
+    // Reconvolution trace — same z-score space as raw
+    const dsReconv = sliceAndDownsample(
+      props.reconvolutionTrace, x, startSample, endSample,
+      offset, raw.length, dsX.length, toZScore,
+    );
 
-      let zMin = Infinity;
-      let zMax = -Infinity;
-      for (let i = 0; i < raw.length; i++) {
-        const z = (raw[i] - mean) / std;
-        if (z < zMin) zMin = z;
-        if (z > zMax) zMax = z;
-      }
+    // Deconvolved trace — scaled into deconv band below raw
+    const dsDeconv = sliceAndDownsample(
+      props.deconvolvedTrace, x, startSample, endSample,
+      offset, raw.length, dsX.length,
+      (vals) => scaleToDeconvBand(vals, props.deconvolvedTrace!, zMin, zMax),
+    );
 
-      const deconvHeight = (zMax - zMin) * DECONV_SCALE;
-      const deconvTop = zMin - DECONV_GAP;
-      const deconvBottom = deconvTop - deconvHeight;
-      return dsDeconvRaw.map(v => {
-        const norm = (v - dMin) / dRange;
-        return deconvBottom + norm * deconvHeight;
-      });
-    };
-
-    if (deconv && deconv.length > 0 && deconvStartInWindow >= 0 && deconvEndInWindow <= deconv.length) {
-      const deconvSlice = deconv.subarray(deconvStartInWindow, deconvEndInWindow);
-      let dsDeconvRaw: number[];
-      [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, ZOOM_BUCKET_WIDTH);
-      dsDeconv = scaleDeconv(dsDeconvRaw, deconv);
-    } else if (deconv && deconv.length === raw.length) {
-      // Full-length fallback (no windowing)
-      const deconvSlice = deconv.subarray(startSample, endSample);
-      let dsDeconvRaw: number[];
-      [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, ZOOM_BUCKET_WIDTH);
-      dsDeconv = scaleDeconv(dsDeconvRaw, deconv);
-    } else {
-      dsDeconv = new Array(dsX.length).fill(null) as number[];
-    }
-
-    // Residuals = z-scored raw - z-scored reconvolution, scaled + offset below deconv
-    let dsResid: number[];
-    if (dsReconv.some(v => v !== null)) {
-      // Compute raw z-score range for positioning
-      let zMin = Infinity;
-      let zMax = -Infinity;
-      for (let i = 0; i < raw.length; i++) {
-        const z = (raw[i] - mean) / std;
-        if (z < zMin) zMin = z;
-        if (z > zMax) zMax = z;
-      }
-      const rawRange = zMax - zMin;
-      const deconvHeight = rawRange * DECONV_SCALE;
-      const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-      const residHeight = rawRange * RESID_SCALE;
-      const residTop = deconvBottom - RESID_GAP;
-      const residBottom = residTop - residHeight;
-
-      // Compute raw residuals (in z-score space) and find their range
-      const rawResid: number[] = [];
-      let rMin = Infinity;
-      let rMax = -Infinity;
-      for (let i = 0; i < dsRaw.length; i++) {
-        if (dsReconv[i] === null || dsReconv[i] === undefined) {
-          rawResid.push(0);
-        } else {
-          const r = dsRaw[i] - (dsReconv[i] as number);
-          rawResid.push(r);
-          if (r < rMin) rMin = r;
-          if (r > rMax) rMax = r;
-        }
-      }
-      const rRange = rMax - rMin || 1;
-
-      // Map residuals into the residual band
-      dsResid = rawResid.map(r => {
-        const norm = (r - rMin) / rRange;
-        return residBottom + norm * residHeight;
-      });
-    } else {
-      dsResid = new Array(dsX.length).fill(null) as number[];
-    }
+    // Residuals — raw minus reconvolution, scaled into residual band
+    const dsResid = computeResiduals(dsRaw, dsReconv, zMin, zMax, dsX.length);
 
     // Pinned reconvolution — same z-score space as raw
-    const pinnedReconv = props.pinnedReconvolution;
-    const pinnedOffset = props.pinnedWindowOffset ?? 0;
-    let dsPinnedReconv: number[];
-    const pinnedReconvStart = startSample - pinnedOffset;
-    const pinnedReconvEnd = endSample - pinnedOffset;
-    if (pinnedReconv && pinnedReconv.length > 0 && pinnedReconvStart >= 0 && pinnedReconvEnd <= pinnedReconv.length) {
-      const slice = pinnedReconv.subarray(pinnedReconvStart, pinnedReconvEnd);
-      let dsRaw2: number[];
-      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
-      dsPinnedReconv = dsRaw2.map(v => (v - mean) / std);
-    } else if (pinnedReconv && pinnedReconv.length === raw.length) {
-      const slice = pinnedReconv.subarray(startSample, endSample);
-      let dsRaw2: number[];
-      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
-      dsPinnedReconv = dsRaw2.map(v => (v - mean) / std);
-    } else {
-      dsPinnedReconv = new Array(dsX.length).fill(null) as number[];
-    }
+    const dsPinnedReconv = sliceAndDownsample(
+      props.pinnedReconvolution, x, startSample, endSample,
+      pinnedOffset, raw.length, dsX.length, toZScore,
+    );
 
-    // Pinned deconvolved — scale to deconv band using pinned trace's own range
-    const pinnedDeconv = props.pinnedDeconvolved;
-    let dsPinnedDeconv: number[];
-    const pinnedDeconvStart = startSample - pinnedOffset;
-    const pinnedDeconvEnd = endSample - pinnedOffset;
-    if (pinnedDeconv && pinnedDeconv.length > 0 && pinnedDeconvStart >= 0 && pinnedDeconvEnd <= pinnedDeconv.length) {
-      const slice = pinnedDeconv.subarray(pinnedDeconvStart, pinnedDeconvEnd);
-      let dsRaw2: number[];
-      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
-      dsPinnedDeconv = scaleDeconv(dsRaw2, pinnedDeconv);
-    } else if (pinnedDeconv && pinnedDeconv.length === raw.length) {
-      const slice = pinnedDeconv.subarray(startSample, endSample);
-      let dsRaw2: number[];
-      [, dsRaw2] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
-      dsPinnedDeconv = scaleDeconv(dsRaw2, pinnedDeconv);
-    } else {
-      dsPinnedDeconv = new Array(dsX.length).fill(null) as number[];
-    }
+    // Pinned deconvolved — scaled into deconv band using pinned trace's own range
+    const dsPinnedDeconv = sliceAndDownsample(
+      props.pinnedDeconvolved, x, startSample, endSample,
+      pinnedOffset, raw.length, dsX.length,
+      (vals) => scaleToDeconvBand(vals, props.pinnedDeconvolved!, zMin, zMax),
+    );
 
     return [dsX, dsRaw, dsDeconv, dsReconv, dsResid, dsPinnedDeconv, dsPinnedReconv];
   });

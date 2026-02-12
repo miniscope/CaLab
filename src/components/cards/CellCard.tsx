@@ -7,7 +7,7 @@ import { createSignal, createMemo, createEffect, Show } from 'solid-js';
 import { TraceOverview } from './TraceOverview';
 import { ZoomWindow } from './ZoomWindow';
 import { QualityBadge } from '../metrics/QualityBadge';
-import type { SolverStatus } from '../metrics/QualityBadge';
+import type { CellSolverStatus } from '../../lib/solver-types';
 import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr';
 
 export interface CellCardProps {
@@ -17,7 +17,7 @@ export interface CellCardProps {
   reconvolutionTrace?: Float32Array;
   samplingRate: number;
   isActive?: boolean;
-  solverStatus?: SolverStatus;
+  solverStatus?: CellSolverStatus;
   onClick?: () => void;
   onZoomChange?: (cellIndex: number, startS: number, endS: number) => void;
   windowStartSample?: number;

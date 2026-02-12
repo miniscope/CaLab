@@ -54,13 +54,6 @@
   margin-top: var(--space-xs);
 }
 
-.auth-gate__buttons {
-  display: flex;
-  gap: var(--space-sm);
-  justify-content: center;
-  margin-bottom: var(--space-sm);
-}
-
 .auth-gate__btn {
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -448,40 +441,6 @@
 }
 
 /* ========================
-   Visualization Grid
-   ======================== */
-
-.community-browser__viz-grid {
-  display: grid;
-  grid-template-columns: 1fr 80px;
-  grid-template-rows: 60px 1fr;
-  gap: 0;
-  margin-top: var(--space-sm);
-}
-
-.community-browser__viz-grid__top-hist {
-  grid-column: 1;
-  grid-row: 1;
-  overflow: hidden;
-}
-
-.community-browser__viz-grid__corner {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.community-browser__viz-grid__scatter {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.community-browser__viz-grid__right-hist {
-  grid-column: 2;
-  grid-row: 2;
-  overflow: hidden;
-}
-
-/* ========================
    ScatterPlot
    ======================== */
 
@@ -596,10 +555,6 @@
    ======================== */
 
 @media (max-width: 600px) {
-  .auth-gate__buttons {
-    flex-direction: column;
-  }
-
   .submit-panel__actions {
     flex-direction: column;
   }

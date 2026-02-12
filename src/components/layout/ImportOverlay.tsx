@@ -14,6 +14,7 @@ import {
   validationResult,
   npzArrays,
 } from '../../lib/data-store';
+import { formatDuration } from '../../lib/format-utils';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -40,13 +41,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const [demoDuration, setDemoDuration] = createSignal(5);
   const [demoFps, setDemoFps] = createSignal(30);
 
-  const durationDisplay = () => {
-    const d = durationSeconds();
-    if (d === null) return null;
-    const minutes = d / 60;
-    if (minutes >= 1) return `${d.toFixed(1)}s (${minutes.toFixed(1)} min)`;
-    return `${d.toFixed(1)}s`;
-  };
+  const durationDisplay = () => formatDuration(durationSeconds(), true);
 
   return (
     <main class="import-container">

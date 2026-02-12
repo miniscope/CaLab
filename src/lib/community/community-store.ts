@@ -75,7 +75,6 @@ async function signOut(): Promise<void> {
 export {
   // Auth signals (getters)
   user,
-  session,
   authLoading,
   // Community data signals (getters)
   submissions,

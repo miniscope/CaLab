@@ -223,7 +223,6 @@ export function initCellSolveManager(): void {
       // Mark all stale and re-dispatch with debounce
       for (const state of cellStates.values()) {
         state.activeJobId = null;
-        state.warmStartCache; // keep cache for warm-start
         updateOneCellStatus(state.cellIndex, 'stale');
         debouncedDispatch(state);
       }

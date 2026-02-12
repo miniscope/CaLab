@@ -2,23 +2,13 @@
 // Lets user select which array to use for traces
 
 import { For, Show, createMemo } from 'solid-js';
-import type { NpyResult } from '../lib/types.ts';
 import {
   npzArrays,
   setParsedData,
   setSelectedNpzArray,
   setImportError,
 } from '../lib/data-store.ts';
-import { transposeFortranToC } from '../lib/array-utils.ts';
-
-function processNpyResult(result: NpyResult): NpyResult {
-  if (result.fortranOrder && result.shape.length === 2) {
-    const [rows, cols] = result.shape;
-    const transposed = transposeFortranToC(result.data, rows, cols);
-    return { ...result, data: transposed, fortranOrder: false };
-  }
-  return result;
-}
+import { processNpyResult } from '../lib/array-utils.ts';
 
 export function NpzArraySelector() {
   const twoDArrays = createMemo(() => {

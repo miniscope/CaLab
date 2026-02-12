@@ -1,7 +1,6 @@
 // TutorialPanel: lists all available tutorials with progress state and prerequisite gating.
 
-import type { Component } from 'solid-js';
-import { For, Show } from 'solid-js';
+import { For, Show, type JSX } from 'solid-js';
 import { tutorials } from '../../lib/tutorial/content';
 import { isCompleted, getProgress } from '../../lib/tutorial/progress';
 import { startTutorial } from '../../lib/tutorial/tutorial-engine';
@@ -24,7 +23,7 @@ function getPrereqName(prereqId: string): string {
   return found ? found.title : prereqId;
 }
 
-export const TutorialPanel: Component<TutorialPanelProps> = (props) => {
+export function TutorialPanel(props: TutorialPanelProps): JSX.Element {
   const dataReady = () => importStep() === 'ready';
 
   const handleCardClick = (tutorial: Tutorial) => {
@@ -101,4 +100,4 @@ export const TutorialPanel: Component<TutorialPanelProps> = (props) => {
       </For>
     </div>
   );
-};
+}

@@ -1,3 +1,27 @@
+// --- Solver status types ---
+
+/**
+ * Single-cell solver state machine (used in viz-store).
+ * Tracks the lifecycle of one solve operation:
+ *   idle      -> waiting for input / no solve in progress
+ *   solving   -> FISTA iteration active
+ *   converged -> solver finished successfully
+ *   error     -> solver encountered an error
+ */
+export type SolverStatus = 'idle' | 'solving' | 'converged' | 'error';
+
+/**
+ * Per-cell solver status for multi-cell mode (used in multi-cell-store, CellCard, QualityBadge).
+ * Tracks whether each cell's results are up to date:
+ *   stale   -> parameters changed, results outdated / awaiting solver
+ *   solving -> actively being solved
+ *   fresh   -> results are current for the active parameters
+ *   error   -> solver failed for this cell
+ */
+export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error';
+
+// --- Solver parameters ---
+
 /** Solver parameter configuration for calcium deconvolution. */
 export interface SolverParams {
   tauRise: number;   // seconds (e.g., 0.02)

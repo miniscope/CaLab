@@ -4,7 +4,6 @@
 import { createSignal, Show } from 'solid-js';
 import { parseNpy } from '../lib/npy-parser.ts';
 import { parseNpz } from '../lib/npz-parser.ts';
-import type { NpyResult } from '../lib/types.ts';
 import {
   rawFile,
   setRawFile,
@@ -13,19 +12,7 @@ import {
   setImportError,
   importError,
 } from '../lib/data-store.ts';
-import { transposeFortranToC } from '../lib/array-utils.ts';
-
-/**
- * Process a parsed NpyResult: handle Fortran order, then store in data store.
- */
-function processNpyResult(result: NpyResult): NpyResult {
-  if (result.fortranOrder && result.shape.length === 2) {
-    const [rows, cols] = result.shape;
-    const transposed = transposeFortranToC(result.data, rows, cols);
-    return { ...result, data: transposed, fortranOrder: false };
-  }
-  return result;
-}
+import { processNpyResult } from '../lib/array-utils.ts';
 
 export function FileDropZone() {
   const [isDragging, setIsDragging] = createSignal(false);

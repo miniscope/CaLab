@@ -1,13 +1,5 @@
 /* Multi-trace view styles - Scientific Instrument light theme */
 
-/* ========================
-   Multi-Trace Section
-   ======================== */
-.multi-trace-section {
-  margin-top: var(--space-lg);
-  padding: var(--space-md) 0;
-}
-
 .multi-trace-header {
   display: flex;
   align-items: baseline;
@@ -34,35 +26,6 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-sm);
-}
-
-/* ========================
-   Mini-Panel — flat, thin borders
-   ======================== */
-.mini-panel {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-xs);
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-}
-
-.mini-panel:hover {
-  border-color: var(--accent);
-}
-
-.mini-panel--active {
-  border-color: var(--accent);
-  border-width: 2px;
-}
-
-.mini-panel__label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-bottom: 2px;
-  padding-left: var(--space-xs);
-  font-family: var(--font-mono);
 }
 
 /* ========================
@@ -220,27 +183,6 @@
 }
 
 /* ========================
-   Toolbar Row
-   ======================== */
-.viz-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-  margin-bottom: var(--space-md);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-}
-
-.viz-toolbar__pin-info {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-}
-
-/* ========================
    Responsive
    ======================== */
 @media (max-width: 600px) {
@@ -260,10 +202,5 @@
   .export-panel {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .viz-toolbar {
-    flex-direction: column;
-    align-items: stretch;
   }
 }

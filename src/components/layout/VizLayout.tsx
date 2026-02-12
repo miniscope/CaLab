@@ -1,11 +1,11 @@
-import { type ParentComponent, type JSX, onMount, onCleanup } from 'solid-js';
+import { type JSX, onMount, onCleanup } from 'solid-js';
 
 interface VizLayoutProps {
   mode?: 'scroll' | 'dashboard';
   children: JSX.Element;
 }
 
-export const VizLayout: ParentComponent<VizLayoutProps> = (props) => {
+export function VizLayout(props: VizLayoutProps): JSX.Element {
   const mode = () => props.mode ?? 'dashboard';
 
   onMount(() => {
@@ -23,4 +23,4 @@ export const VizLayout: ParentComponent<VizLayoutProps> = (props) => {
       {props.children}
     </div>
   );
-};
+}

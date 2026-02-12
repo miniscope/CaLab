@@ -27,23 +27,3 @@ export const PARAM_RANGES = {
   },
 } as const;
 
-// --- Log-scale conversion for lambda slider ---
-
-const LOG_LAMBDA_MIN = Math.log10(PARAM_RANGES.lambda.min); // -4
-const LOG_LAMBDA_MAX = Math.log10(PARAM_RANGES.lambda.max); // 1
-
-/**
- * Convert a linear slider position [0, 1] to a logarithmic lambda value.
- * Maps uniformly across orders of magnitude: 0 -> 0.0001, 0.5 -> ~0.01, 1 -> 10.
- */
-export function sliderToLambda(position: number): number {
-  return Math.pow(10, LOG_LAMBDA_MIN + position * (LOG_LAMBDA_MAX - LOG_LAMBDA_MIN));
-}
-
-/**
- * Convert a lambda value to a linear slider position [0, 1].
- * Inverse of sliderToLambda.
- */
-export function lambdaToSlider(lambda: number): number {
-  return (Math.log10(lambda) - LOG_LAMBDA_MIN) / (LOG_LAMBDA_MAX - LOG_LAMBDA_MIN);
-}
