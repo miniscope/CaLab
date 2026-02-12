@@ -111,6 +111,12 @@
 
 .zoom-window {
   height: 100%;
+  cursor: grab;
+}
+
+.zoom-window--dragging {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .zoom-window .trace-panel {

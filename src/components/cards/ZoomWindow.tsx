@@ -267,7 +267,45 @@ export function ZoomWindow(props: ZoomWindowProps) {
   const MIN_WINDOW_S = 1; // minimum 1 second zoom window
 
   const [showHint, setShowHint] = createSignal(false);
+  const [dragging, setDragging] = createSignal(false);
   let hintTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const handleMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0 || !props.onZoomChange) return;
+
+    e.preventDefault();
+    setDragging(true);
+
+    const startX = e.clientX;
+    const startStart = props.startTime;
+    const startEnd = props.endTime;
+    const windowDuration = startEnd - startStart;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const pxToTime = windowDuration / rect.width;
+    const totalDuration = props.rawTrace.length / props.samplingRate;
+
+    const onMove = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const dx = ev.clientX - startX;
+      const dt = -dx * pxToTime; // negative: drag right = move earlier in time
+      let newStart = startStart + dt;
+      let newEnd = startEnd + dt;
+
+      if (newStart < 0) { newStart = 0; newEnd = windowDuration; }
+      if (newEnd > totalDuration) { newEnd = totalDuration; newStart = Math.max(0, totalDuration - windowDuration); }
+
+      props.onZoomChange!(newStart, newEnd);
+    };
+
+    const onUp = () => {
+      setDragging(false);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const handleWheel = (e: WheelEvent) => {
     if (!props.onZoomChange) return;
@@ -308,7 +346,14 @@ export function ZoomWindow(props: ZoomWindowProps) {
   };
 
   return (
-    <div class="zoom-window" onWheel={handleWheel} style={{ position: 'relative' }} data-tutorial={props['data-tutorial']}>
+    <div
+      class="zoom-window"
+      classList={{ 'zoom-window--dragging': dragging() }}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      style={{ position: 'relative', cursor: dragging() ? 'grabbing' : 'grab' }}
+      data-tutorial={props['data-tutorial']}
+    >
       <TracePanel
         data={() => zoomData()}
         series={seriesConfig()}
