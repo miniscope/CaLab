@@ -42,8 +42,8 @@ export interface DemoPreset {
 }
 
 const DEFAULT_MARKOV: MarkovParams = {
-  pSilentToActive: 0.02,
-  pActiveToSilent: 0.15,
+  pSilentToActive: 0.01,
+  pActiveToSilent: 0.2,
   pSpikeWhenActive: 0.7,
   pSpikeWhenSilent: 0.005,
 };
