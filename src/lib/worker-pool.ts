@@ -10,9 +10,8 @@ export interface PoolJob {
   params: SolverParams;
   warmState: Uint8Array | null;
   warmStrategy: WarmStartStrategy;
-  /** Lower number = higher priority. 0 = active cell, 1 = visible, 2 = off-screen. */
-  priority?: number;
-  /** Dynamic priority callback — called at drain time for fresh ordering. Overrides static priority. */
+  /** Dynamic priority callback — called at drain time for fresh ordering.
+   *  Lower number = higher priority. 0 = active cell, 1 = visible, 2 = off-screen. */
   getPriority?: () => number;
   maxIterations?: number;
   onIntermediate(solution: Float32Array, reconvolution: Float32Array, iteration: number): void;
@@ -116,43 +115,28 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
     entry.state = { status: 'busy', jobId: job.jobId };
     inFlightJobs.set(job.jobId, job);
 
-    // Copy trace for transfer (avoids detaching caller's buffer)
+    // Copy buffers for transfer (avoids detaching caller's buffers)
     const traceCopy = new Float64Array(job.trace);
     const transfer: Transferable[] = [traceCopy.buffer];
-    if (job.warmState) {
-      // Copy warm state too since it may be from a cache
-      const warmCopy = new Uint8Array(job.warmState);
-      transfer.push(warmCopy.buffer);
-      entry.worker.postMessage(
-        {
-          type: 'solve',
-          jobId: job.jobId,
-          trace: traceCopy,
-          params: job.params,
-          warmState: warmCopy,
-          warmStrategy: job.warmStrategy,
-          maxIterations: job.maxIterations,
-        },
-        transfer,
-      );
-    } else {
-      entry.worker.postMessage(
-        {
-          type: 'solve',
-          jobId: job.jobId,
-          trace: traceCopy,
-          params: job.params,
-          warmState: null,
-          warmStrategy: job.warmStrategy,
-          maxIterations: job.maxIterations,
-        },
-        transfer,
-      );
-    }
+    const warmCopy = job.warmState ? new Uint8Array(job.warmState) : null;
+    if (warmCopy) transfer.push(warmCopy.buffer);
+
+    entry.worker.postMessage(
+      {
+        type: 'solve',
+        jobId: job.jobId,
+        trace: traceCopy,
+        params: job.params,
+        warmState: warmCopy,
+        warmStrategy: job.warmStrategy,
+        maxIterations: job.maxIterations,
+      },
+      transfer,
+    );
   }
 
   function jobPriority(job: PoolJob): number {
-    return job.getPriority?.() ?? job.priority ?? 1;
+    return job.getPriority?.() ?? 1;
   }
 
   function drainQueue(): void {

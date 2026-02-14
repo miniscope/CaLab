@@ -88,13 +88,6 @@
 /* Dim deconv/reconv traces when stale */
 .cell-card--stale .cell-card__zoom {
   opacity: 0.35;
-  transition: opacity var(--transition-fast);
-}
-
-.cell-card--fresh .cell-card__zoom,
-.cell-card--solving .cell-card__zoom {
-  opacity: 1;
-  transition: opacity var(--transition-fast);
 }
 
 .cell-card__header {
@@ -137,6 +130,7 @@
 .cell-card__zoom {
   flex: 1;
   min-height: 100px;
+  transition: opacity var(--transition-fast);
 }
 
 .zoom-window {

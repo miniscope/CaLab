@@ -1,7 +1,7 @@
 /**
  * Per-card quality indicator badge.
  * SNR-colored dot + solver status text:
- *   - fresh: SNR dot + "SNR: X.X" or "Done (N iter)"
+ *   - fresh: SNR dot + "SNR X.X" or "Done (N)"
  *   - solving: SNR dot + "Iter N" with pulse
  *   - stale: SNR dot + "Stale"
  */
@@ -44,9 +44,12 @@ export function QualityBadge(props: QualityBadgeProps) {
 
   const title = () => {
     switch (status()) {
-      case 'solving': return `Solving — iteration ${iter()}`;
-      case 'stale': return 'Stale — awaiting solver';
-      default: return props.snr != null ? `Peak SNR: ${props.snr.toFixed(1)} dB` : undefined;
+      case 'solving':
+        return `Solving — iteration ${iter()}`;
+      case 'stale':
+        return 'Stale — awaiting solver';
+      default:
+        return props.snr != null ? `Peak SNR: ${props.snr.toFixed(1)} dB` : undefined;
     }
   };
 

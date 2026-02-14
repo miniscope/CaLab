@@ -65,13 +65,6 @@ export function CardGrid(props: CardGridProps) {
     observer?.observe(el);
   }
 
-  function unregisterCard(cellIndex: number): void {
-    const el = cardRefs.get(cellIndex);
-    if (el) observer?.unobserve(el);
-    cardRefs.delete(cellIndex);
-    visibleSet.delete(cellIndex);
-  }
-
   return (
     <div class="card-grid-container">
       <Show
