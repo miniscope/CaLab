@@ -157,6 +157,39 @@
 }
 
 /* ========================
+   Trace Legend
+   ======================== */
+.cell-selector__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+
+.cell-selector__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cell-selector__legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.cell-selector__legend-swatch--dashed {
+  background: none;
+  border-top: 2px dashed;
+  height: 0;
+}
+
+/* ========================
    Export Panel
    ======================== */
 .export-panel {

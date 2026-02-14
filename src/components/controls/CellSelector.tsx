@@ -16,7 +16,7 @@ import {
   gridColumns,
   setGridColumns,
 } from '../../lib/multi-cell-store';
-import { numCells } from '../../lib/data-store';
+import { numCells, groundTruthVisible } from '../../lib/data-store';
 import '../../styles/multi-trace.css';
 
 export interface CellSelectorProps {
@@ -131,6 +131,35 @@ export function CellSelector(props: CellSelectorProps) {
           />
         </div>
       </Show>
+
+      <div class="cell-selector__legend">
+        <span class="cell-selector__legend-item">
+          <span class="cell-selector__legend-swatch" style={{ background: '#1f77b4' }} />
+          Raw
+        </span>
+        <span class="cell-selector__legend-item">
+          <span class="cell-selector__legend-swatch" style={{ background: '#ff7f0e' }} />
+          Fit
+        </span>
+        <span class="cell-selector__legend-item">
+          <span class="cell-selector__legend-swatch" style={{ background: '#2ca02c' }} />
+          Deconv
+        </span>
+        <span class="cell-selector__legend-item">
+          <span class="cell-selector__legend-swatch" style={{ background: '#d62728' }} />
+          Resid
+        </span>
+        <Show when={groundTruthVisible()}>
+          <span class="cell-selector__legend-item">
+            <span class="cell-selector__legend-swatch cell-selector__legend-swatch--dashed" style={{ 'border-color': 'rgba(0, 188, 212, 0.7)' }} />
+            True Ca
+          </span>
+          <span class="cell-selector__legend-item">
+            <span class="cell-selector__legend-swatch" style={{ background: 'rgba(255, 193, 7, 0.7)' }} />
+            True Spk
+          </span>
+        </Show>
+      </div>
     </div>
   );
 }
