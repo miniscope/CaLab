@@ -24,6 +24,8 @@ export interface CellCardProps {
   pinnedDeconvolved?: Float32Array;
   pinnedReconvolution?: Float32Array;
   pinnedWindowStartSample?: number;
+  groundTruthSpikes?: Float64Array;
+  groundTruthCalcium?: Float64Array;
 }
 
 const DEFAULT_ZOOM_WINDOW_S = 60; // 60 seconds default zoom window
@@ -93,6 +95,8 @@ export function CellCard(props: CellCardProps) {
             pinnedReconvolution={props.pinnedReconvolution}
             pinnedWindowOffset={props.pinnedWindowStartSample}
             data-tutorial={props.isActive ? 'zoom-window' : undefined}
+            groundTruthSpikes={props.groundTruthSpikes}
+            groundTruthCalcium={props.groundTruthCalcium}
           />
         </div>
       </Show>

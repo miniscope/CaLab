@@ -8,6 +8,9 @@
 import { computeKernel } from './kernel-math';
 import type { MarkovParams, NoiseParams, SimulationParams } from './demo-presets';
 
+/** Neuronal spike simulation rate — 3.3ms refractory period. */
+const SPIKE_SIM_HZ = 300;
+
 /** Seeded PRNG (xorshift32) for reproducible synthetic data. */
 function createRng(seed: number) {
   let s = seed | 0 || 1;
@@ -55,35 +58,51 @@ export function generateSyntheticTrace(
 ): { raw: Float64Array; spikes: Float64Array; clean: Float64Array } {
   const rng = createRng(seed);
 
-  // --- Markov chain spike generation ---
-  // Two states: 0 = silent, 1 = active (bursting)
-  // Transition probabilities per timestep
-  const dt = 1 / fs;
-  const pSilentToActive = (simParams?.markov?.pSilentToActive ?? 0.02) * dt * fs;
-  const pActiveToSilent = (simParams?.markov?.pActiveToSilent ?? 0.15) * dt * fs;
+  // --- High-resolution Markov chain spike generation at SPIKE_SIM_HZ ---
+  const binsPerFrame = Math.round(SPIKE_SIM_HZ / fs);
+  const numHighResPoints = numTimepoints * binsPerFrame;
+
+  // Scale transition probabilities for high-res timestep so per-frame rate matches
+  const pBaseS2A = simParams?.markov?.pSilentToActive ?? 0.02;
+  const pBaseA2S = simParams?.markov?.pActiveToSilent ?? 0.15;
+  const pSilentToActive = 1 - Math.pow(1 - pBaseS2A, 1 / binsPerFrame);
+  const pActiveToSilent = 1 - Math.pow(1 - pBaseA2S, 1 / binsPerFrame);
   const pSpikeWhenActive = simParams?.markov?.pSpikeWhenActive ?? 0.7;
   const pSpikeWhenSilent = simParams?.markov?.pSpikeWhenSilent ?? 0.005;
 
-  const spikes = new Float64Array(numTimepoints);
+  // Generate binary spike train at 300 Hz
+  const highResSpikes = new Uint8Array(numHighResPoints);
   let state = 0; // start silent
 
-  for (let i = 0; i < numTimepoints; i++) {
-    // State transition
+  for (let i = 0; i < numHighResPoints; i++) {
     if (state === 0) {
       if (rng.next() < pSilentToActive) state = 1;
     } else {
       if (rng.next() < pActiveToSilent) state = 0;
     }
 
-    // Spike generation with variable amplitude
     const pSpike = state === 1 ? pSpikeWhenActive : pSpikeWhenSilent;
     if (rng.next() < pSpike) {
-      // Amplitude: log-normal distributed (mean ~1, occasional large transients)
-      spikes[i] = Math.exp((simParams?.noise?.amplitudeSigma ?? 0.3) * rng.gaussian());
+      highResSpikes[i] = 1;
     }
   }
 
-  // --- Convolve with calcium kernel ---
+  // Bin to imaging FPS: count spikes per frame, apply log-normal amplitude
+  const spikes = new Float64Array(numTimepoints);
+  for (let f = 0; f < numTimepoints; f++) {
+    let count = 0;
+    const start = f * binsPerFrame;
+    const end = start + binsPerFrame;
+    for (let j = start; j < end; j++) {
+      count += highResSpikes[j];
+    }
+    if (count > 0) {
+      // Amplitude: log-normal distributed (mean ~1, occasional large transients)
+      spikes[f] = count * Math.exp((simParams?.noise?.amplitudeSigma ?? 0.3) * rng.gaussian());
+    }
+  }
+
+  // --- Convolve with calcium kernel at imaging FPS ---
   const kernel = computeKernel(tauRise, tauDecay, fs);
   const kernelY = kernel.y;
   const kLen = kernelY.length;
@@ -99,13 +118,11 @@ export function generateSyntheticTrace(
   }
 
   // --- Add baseline drift + noise ---
-  // Slow baseline drift (mimics photobleaching / motion artifacts)
   const cyclesMin = simParams?.noise?.driftCyclesMin ?? 2;
   const cyclesMax = simParams?.noise?.driftCyclesMax ?? 4;
   const driftPeriod = numTimepoints / (cyclesMin + rng.next() * (cyclesMax - cyclesMin));
   const driftAmp = simParams?.noise?.driftAmplitude ?? 0.1;
 
-  // Compute signal amplitude for noise scaling
   let signalMax = 0;
   for (let i = 0; i < numTimepoints; i++) {
     if (clean[i] > signalMax) signalMax = clean[i];
@@ -132,11 +149,18 @@ export function generateSyntheticDataset(
   simParams: SimulationParams,
   fs: number = 30,
   baseSeed: number = 42,
-): { data: Float64Array; shape: [number, number] } {
+): {
+  data: Float64Array;
+  shape: [number, number];
+  groundTruthSpikes: Float64Array;
+  groundTruthCalcium: Float64Array;
+} {
   const data = new Float64Array(numCells * numTimepoints);
+  const groundTruthSpikes = new Float64Array(numCells * numTimepoints);
+  const groundTruthCalcium = new Float64Array(numCells * numTimepoints);
 
   for (let c = 0; c < numCells; c++) {
-    const { raw } = generateSyntheticTrace(
+    const { raw, spikes, clean } = generateSyntheticTrace(
       numTimepoints,
       simParams.tauRise,
       simParams.tauDecay,
@@ -145,8 +169,11 @@ export function generateSyntheticDataset(
       simParams.snrBase + (c % 5) * simParams.snrStep,
       { markov: simParams.markov, noise: simParams.noise },
     );
-    data.set(raw, c * numTimepoints);
+    const offset = c * numTimepoints;
+    data.set(raw, offset);
+    groundTruthSpikes.set(spikes, offset);
+    groundTruthCalcium.set(clean, offset);
   }
 
-  return { data, shape: [numCells, numTimepoints] };
+  return { data, shape: [numCells, numTimepoints], groundTruthSpikes, groundTruthCalcium };
 }

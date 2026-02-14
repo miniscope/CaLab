@@ -2,6 +2,7 @@
 // Supports both linear (tau) and log-scale (lambda) modes
 // via optional fromSlider/toSlider transform functions.
 
+import { Show } from 'solid-js';
 import type { Accessor, Setter } from 'solid-js';
 import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine';
 import { isTutorialActive } from '../../lib/tutorial/tutorial-store';
@@ -25,6 +26,7 @@ export interface ParameterSliderProps {
   unit?: string;
   /** Tutorial targeting attribute for driver.js tour steps. */
   'data-tutorial'?: string;
+  trueValue?: number;
 }
 
 export function ParameterSlider(props: ParameterSliderProps) {
@@ -87,16 +89,34 @@ export function ParameterSlider(props: ParameterSliderProps) {
           <span class="param-slider__unit">{props.unit ?? ''}</span>
         </span>
       </div>
-      <input
-        type="range"
-        class="param-slider__range"
-        min={props.toSlider ? 0 : props.min}
-        max={props.toSlider ? 1 : props.max}
-        step={props.toSlider ? 0.001 : props.step}
-        value={sliderValue()}
-        onInput={handleRangeInput}
-        onChange={handleRangeChange}
-      />
+      <div class="param-slider__track-container">
+        <input
+          type="range"
+          class="param-slider__range"
+          min={props.toSlider ? 0 : props.min}
+          max={props.toSlider ? 1 : props.max}
+          step={props.toSlider ? 0.001 : props.step}
+          value={sliderValue()}
+          onInput={handleRangeInput}
+          onChange={handleRangeChange}
+        />
+        <Show when={props.trueValue !== undefined}>
+          {(() => {
+            const sliderMin = props.toSlider ? 0 : props.min;
+            const sliderMax = props.toSlider ? 1 : props.max;
+            const mappedValue = props.toSlider ? props.toSlider(props.trueValue!) : props.trueValue!;
+            const pct = ((mappedValue - sliderMin) / (sliderMax - sliderMin)) * 100;
+            const formattedValue = props.format ? props.format(props.trueValue!) : props.trueValue!.toString();
+            return (
+              <div
+                class="param-slider__true-marker"
+                style={{ left: `${pct}%` }}
+                title={`True value: ${formattedValue}${props.unit ? ' ' + props.unit : ''}`}
+              />
+            );
+          })()}
+        </Show>
+      </div>
     </div>
   );
 }

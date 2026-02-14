@@ -29,6 +29,13 @@ const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(
 const [importError, setImportError] = createSignal<string | null>(null);
 const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 
+// --- Ground Truth Signals ---
+
+const [groundTruthSpikes, setGroundTruthSpikes] = createSignal<Float64Array | null>(null);
+const [groundTruthCalcium, setGroundTruthCalcium] = createSignal<Float64Array | null>(null);
+const [groundTruthVisible, setGroundTruthVisible] = createSignal(false);
+const [groundTruthLocked, setGroundTruthLocked] = createSignal(false);
+
 // --- Derived State ---
 
 const effectiveShape = createMemo<[number, number] | null>(() => {
@@ -59,6 +66,29 @@ const importStep = createMemo<ImportStep>(() => {
   return 'ready';
 });
 
+// --- Ground Truth Actions ---
+
+function revealGroundTruth() {
+  setGroundTruthVisible(true);
+  setGroundTruthLocked(true);
+}
+
+function toggleGroundTruthVisibility() {
+  if (groundTruthLocked()) setGroundTruthVisible(v => !v);
+}
+
+function getGroundTruthForCell(cellIndex: number): { spikes: Float64Array; calcium: Float64Array } | null {
+  const spikes = groundTruthSpikes();
+  const calcium = groundTruthCalcium();
+  const tp = numTimepoints();
+  if (!spikes || !calcium || tp === 0) return null;
+  const offset = cellIndex * tp;
+  return {
+    spikes: spikes.subarray(offset, offset + tp),
+    calcium: calcium.subarray(offset, offset + tp),
+  };
+}
+
 // --- Demo Data ---
 
 function loadDemoData(opts?: {
@@ -80,10 +110,13 @@ function loadDemoData(opts?: {
     ? Math.floor(Math.random() * 2 ** 31)
     : opts?.seed ?? 42;
 
-  const { data, shape } = generateSyntheticDataset(
-    numCells, numTimepoints, preset.params, fs, resolvedSeed,
-  );
+  const { data, shape, groundTruthSpikes: gtSpikes, groundTruthCalcium: gtCalcium } =
+    generateSyntheticDataset(numCells, numTimepoints, preset.params, fs, resolvedSeed);
 
+  setGroundTruthSpikes(gtSpikes);
+  setGroundTruthCalcium(gtCalcium);
+  setGroundTruthVisible(false);
+  setGroundTruthLocked(false);
   setDemoPreset(preset);
   setParsedData({ data, shape, dtype: '<f8', fortranOrder: false });
   setDimensionsConfirmed(true);
@@ -118,6 +151,10 @@ function resetImport(): void {
   setSelectedNpzArray(null);
   setImportError(null);
   setDemoPreset(null);
+  setGroundTruthSpikes(null);
+  setGroundTruthCalcium(null);
+  setGroundTruthVisible(false);
+  setGroundTruthLocked(false);
 }
 
 // --- Exports ---
@@ -151,6 +188,14 @@ export {
   importStep,
   isDemo,
   demoPreset,
+  // Ground Truth
+  groundTruthSpikes,
+  groundTruthCalcium,
+  groundTruthVisible,
+  groundTruthLocked,
+  revealGroundTruth,
+  toggleGroundTruthVisibility,
+  getGroundTruthForCell,
   // Actions
   resetImport,
   loadDemoData,

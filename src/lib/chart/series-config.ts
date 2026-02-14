@@ -48,6 +48,18 @@ export function createResidualSeries(): uPlot.Series {
  * Create a dashed overlay variant for pinned snapshot comparison.
  * Uses 65% opacity and a [8,4] dash pattern for clear visibility.
  */
+export function createGroundTruthSpikesSeries(): uPlot.Series {
+  return { label: 'True Spikes', stroke: 'rgba(255, 193, 7, 0.7)', width: 1.5 };
+}
+
+export function createGroundTruthCalciumSeries(): uPlot.Series {
+  return { label: 'True Calcium', stroke: 'rgba(0, 188, 212, 0.7)', width: 1.5, dash: [6, 3] };
+}
+
+export function createGroundTruthKernelSeries(): uPlot.Series {
+  return { label: 'True Kernel', stroke: 'rgba(233, 30, 99, 0.8)', width: 1.5, dash: [6, 3] };
+}
+
 export function createPinnedOverlaySeries(
   label: string,
   baseStroke: string,

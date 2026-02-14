@@ -6,6 +6,7 @@ import {
   tauRise, tauDecay, setTauRise, setTauDecay,
   lambda, setLambda,
 } from '../../lib/viz-store';
+import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store';
 import { PARAM_RANGES } from '../../lib/param-config';
 import { ParameterSlider } from './ParameterSlider';
 import { ConvergenceIndicator } from './ConvergenceIndicator';
@@ -19,6 +20,16 @@ export interface ParameterPanelProps {
 export function ParameterPanel(props: ParameterPanelProps) {
   const handleCommit = () => {
     props.onBatchSolve?.();
+  };
+
+  const trueRise = () => {
+    if (!groundTruthVisible() || !isDemo() || !demoPreset()) return undefined;
+    return demoPreset()!.params.tauRise;
+  };
+
+  const trueDecay = () => {
+    if (!groundTruthVisible() || !isDemo() || !demoPreset()) return undefined;
+    return demoPreset()!.params.tauDecay;
   };
 
   return (
@@ -38,6 +49,7 @@ export function ParameterPanel(props: ParameterPanelProps) {
           unit="ms"
           onCommit={handleCommit}
           data-tutorial="slider-rise"
+          trueValue={trueRise()}
         />
         <ParameterSlider
           label="Decay Time"
@@ -50,6 +62,7 @@ export function ParameterPanel(props: ParameterPanelProps) {
           unit="ms"
           onCommit={handleCommit}
           data-tutorial="slider-decay"
+          trueValue={trueDecay()}
         />
         <ParameterSlider
           label="Sparsity"

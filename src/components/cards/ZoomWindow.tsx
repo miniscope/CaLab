@@ -7,7 +7,7 @@ import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel';
 import { downsampleMinMax } from '../../lib/chart/downsample';
-import { createRawSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries } from '../../lib/chart/series-config';
+import { createRawSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries, createGroundTruthSpikesSeries, createGroundTruthCalciumSeries } from '../../lib/chart/series-config';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -32,6 +32,8 @@ export interface ZoomWindowProps {
   pinnedWindowOffset?: number;
   /** Tutorial targeting attribute for driver.js tour steps. */
   'data-tutorial'?: string;
+  groundTruthSpikes?: Float64Array;
+  groundTruthCalcium?: Float64Array;
 }
 
 const ZOOM_BUCKET_WIDTH = 800;
@@ -127,7 +129,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
    */
   const scaleToDeconvBand = (
     dsDeconvRaw: number[],
-    deconvFull: Float32Array,
+    deconvFull: ArrayLike<number>,
     zMin: number,
     zMax: number,
   ): number[] => {
@@ -252,7 +254,27 @@ export function ZoomWindow(props: ZoomWindowProps) {
       (vals) => scaleToDeconvBand(vals, props.pinnedDeconvolved!, zMin, zMax),
     );
 
-    return [dsX, dsRaw, dsDeconv, dsReconv, dsResid, dsPinnedDeconv, dsPinnedReconv];
+    // Ground truth calcium — z-score transform (same space as raw)
+    let dsGTCalcium: number[];
+    if (props.groundTruthCalcium && props.groundTruthCalcium.length > 0) {
+      const gtcSlice = props.groundTruthCalcium.subarray(startSample, endSample);
+      const [, dsGTCRaw] = downsampleMinMax(x, gtcSlice, ZOOM_BUCKET_WIDTH);
+      dsGTCalcium = dsGTCRaw.map(v => (v - mean) / std);
+    } else {
+      dsGTCalcium = new Array(dsX.length).fill(null) as number[];
+    }
+
+    // Ground truth spikes — scale into deconv band
+    let dsGTSpikes: number[];
+    if (props.groundTruthSpikes && props.groundTruthSpikes.length > 0) {
+      const gtsSlice = props.groundTruthSpikes.subarray(startSample, endSample);
+      const [, dsGTSRaw] = downsampleMinMax(x, gtsSlice, ZOOM_BUCKET_WIDTH);
+      dsGTSpikes = scaleToDeconvBand(dsGTSRaw, props.groundTruthSpikes, zMin, zMax);
+    } else {
+      dsGTSpikes = new Array(dsX.length).fill(null) as number[];
+    }
+
+    return [dsX, dsRaw, dsDeconv, dsReconv, dsResid, dsPinnedDeconv, dsPinnedReconv, dsGTCalcium, dsGTSpikes];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {
@@ -260,6 +282,9 @@ export function ZoomWindow(props: ZoomWindowProps) {
     // Always include pinned series slots (null data renders nothing)
     base.push(createPinnedOverlaySeries('Pinned Deconv', '#2ca02c', 1));
     base.push(createPinnedOverlaySeries('Pinned Fit', '#ff7f0e', 1.5));
+    // GT series: always present to keep series count stable
+    base.push(props.groundTruthCalcium ? createGroundTruthCalciumSeries() : { show: false } as uPlot.Series);
+    base.push(props.groundTruthSpikes ? createGroundTruthSpikesSeries() : { show: false } as uPlot.Series);
     return base;
   });
 

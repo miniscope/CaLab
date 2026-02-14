@@ -18,7 +18,7 @@ import {
   pinnedMultiCellResults,
 } from '../../lib/multi-cell-store';
 import { reportCellZoom } from '../../lib/cell-solve-manager';
-import { samplingRate } from '../../lib/data-store';
+import { samplingRate, isDemo, groundTruthVisible, getGroundTruthForCell } from '../../lib/data-store';
 import { selectedCell } from '../../lib/viz-store';
 import '../../styles/cards.css';
 
@@ -44,6 +44,10 @@ export function CardGrid(props: CardGridProps) {
             {(cellIndex) => {
               const traces = createMemo(() => multiCellResults().get(cellIndex));
               const pinnedTraces = createMemo(() => pinnedMultiCellResults().get(cellIndex));
+              const gt = createMemo(() => {
+                if (!groundTruthVisible() || !isDemo()) return null;
+                return getGroundTruthForCell(cellIndex);
+              });
               return (
                 <Show when={traces()}>
                   {(t) => (
@@ -61,6 +65,8 @@ export function CardGrid(props: CardGridProps) {
                       pinnedDeconvolved={pinnedTraces()?.deconvolved}
                       pinnedReconvolution={pinnedTraces()?.reconvolution}
                       pinnedWindowStartSample={pinnedTraces()?.windowStartSample}
+                      groundTruthSpikes={gt()?.spikes}
+                      groundTruthCalcium={gt()?.calcium}
                     />
                   )}
                 </Show>

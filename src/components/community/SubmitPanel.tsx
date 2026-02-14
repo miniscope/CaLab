@@ -22,6 +22,10 @@ import {
   durationSeconds,
   isDemo,
   demoPreset,
+  groundTruthVisible,
+  groundTruthLocked,
+  revealGroundTruth,
+  toggleGroundTruthVisibility,
 } from '../../lib/data-store';
 import { computeAR2 } from '../../lib/ar2';
 import { buildExportData, downloadExport } from '../../lib/export';
@@ -216,9 +220,35 @@ export function SubmitPanel() {
 
       {/* Action buttons */}
       <div class="submit-panel__actions">
-        <button class="btn-primary btn-small" onClick={handleExport}>
-          Export Locally
-        </button>
+        <Show when={!isDemo()}>
+          <button class="btn-primary btn-small" onClick={handleExport}>
+            Export Locally
+          </button>
+        </Show>
+        <Show when={isDemo()}>
+          <Show when={!groundTruthLocked()}>
+            <div class="submit-panel__gt-warning">
+              Revealing ground truth will disable community submission
+            </div>
+          </Show>
+          <button
+            class="btn-primary btn-small"
+            onClick={() => {
+              if (!groundTruthLocked()) {
+                revealGroundTruth();
+              } else {
+                toggleGroundTruthVisibility();
+              }
+            }}
+          >
+            {groundTruthVisible() ? 'Hide Ground Truth' : 'Show Ground Truth'}
+          </button>
+          <Show when={groundTruthLocked()}>
+            <div class="submit-panel__gt-locked-notice">
+              Community submission disabled — ground truth was viewed. Reload demo data to re-enable.
+            </div>
+          </Show>
+        </Show>
         <Show when={supabaseEnabled}>
           <button
             class="btn-secondary btn-small"
@@ -226,6 +256,8 @@ export function SubmitPanel() {
               setFormOpen((prev) => !prev);
               loadFieldOptions();
             }}
+            disabled={groundTruthLocked()}
+            title={groundTruthLocked() ? 'Community submission disabled — ground truth was viewed' : undefined}
           >
             {formOpen() ? 'Cancel' : 'Submit to Community'}
           </button>

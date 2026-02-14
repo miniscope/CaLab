@@ -734,6 +734,24 @@
 }
 
 /* ========================
+   Ground Truth Warning/Notice
+   ======================== */
+
+.submit-panel__gt-warning {
+  font-size: 0.8rem;
+  color: var(--warning, #f59e0b);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.submit-panel__gt-locked-notice {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+/* ========================
    Responsive
    ======================== */
 
