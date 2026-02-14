@@ -37,6 +37,9 @@ const [cellIterationCounts, setCellIterationCounts] = createSignal<Map<number, n
 // --- Viewport visibility tracking ---
 const [visibleCellIndices, setVisibleCellIndices] = createSignal<ReadonlySet<number>>(new Set());
 
+// --- Hover tracking (for solver priority boost) ---
+const [hoveredCell, setHoveredCell] = createSignal<number | null>(null);
+
 // --- Pinned multi-cell results for before/after comparison ---
 const [pinnedMultiCellResults, setPinnedMultiCellResults] = createSignal<Map<number, CellTraces>>(new Map());
 
@@ -179,6 +182,7 @@ export {
   cellIterationCounts,
   pinnedMultiCellResults,
   visibleCellIndices,
+  hoveredCell,
   // Setters
   setSelectionMode,
   setSelectedCells,
@@ -192,6 +196,7 @@ export {
   setGridColumns,
   setCellSolverStatuses,
   setVisibleCellIndices,
+  setHoveredCell,
   // Per-cell helpers
   updateOneCellStatus,
   updateOneCellIteration,

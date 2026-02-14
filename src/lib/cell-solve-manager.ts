@@ -13,6 +13,7 @@ import {
   updateOneCellIteration,
   updateOneCellTraces,
   visibleCellIndices,
+  hoveredCell,
 } from './multi-cell-store';
 import { extractCellTrace } from './array-utils';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-start-cache';
@@ -22,6 +23,7 @@ import type { NpyResult } from './types';
 
 const DEBOUNCE_MS = 30;
 const QUANTUM_ITERATIONS = 15;
+const DEFAULT_ZOOM_WINDOW_S = 20;
 
 interface CellSolveState {
   cellIndex: number;
@@ -59,9 +61,10 @@ function getCurrentParams(): SolverParams {
 }
 
 function getCellPriority(cellIndex: number): number {
-  if (cellIndex === selectedCell()) return 0;   // active (last-clicked)
+  if (cellIndex === selectedCell()) return 0;        // active (last-clicked)
+  if (cellIndex === hoveredCell()) return 0;         // hovered
   if (visibleCellIndices().has(cellIndex)) return 1; // visible
-  return 2;                                     // off-screen
+  return 2;                                          // off-screen
 }
 
 function cancelActiveJob(state: CellSolveState): void {
@@ -229,7 +232,7 @@ function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, num
       cellIndex,
       rawTrace,
       zoomStart: 0,
-      zoomEnd: duration,
+      zoomEnd: Math.min(DEFAULT_ZOOM_WINDOW_S, duration),
       warmStartCache: new WarmStartCache(),
       activeJobId: null,
       debounceTimer: null,

@@ -9,6 +9,7 @@ import { ZoomWindow } from './ZoomWindow';
 import { QualityBadge } from '../metrics/QualityBadge';
 import type { CellSolverStatus } from '../../lib/solver-types';
 import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr';
+import { setHoveredCell } from '../../lib/multi-cell-store';
 
 export interface CellCardProps {
   cellIndex: number;
@@ -30,7 +31,7 @@ export interface CellCardProps {
   groundTruthCalcium?: Float64Array;
 }
 
-const DEFAULT_ZOOM_WINDOW_S = 30; // 30 seconds default zoom window
+const DEFAULT_ZOOM_WINDOW_S = 20; // 20 seconds default zoom window
 const ZOOM_SYNC_KEY = 'catune-card-zoom';
 
 export function CellCard(props: CellCardProps) {
@@ -71,6 +72,8 @@ export function CellCard(props: CellCardProps) {
       data-tutorial={props.isActive ? 'cell-card-active' : undefined}
       ref={props.cardRef}
       onClick={() => props.onClick?.()}
+      onMouseEnter={() => setHoveredCell(props.cellIndex)}
+      onMouseLeave={() => setHoveredCell(null)}
     >
       <div class="cell-card__header">
         <span class="cell-card__title">
