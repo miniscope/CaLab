@@ -90,11 +90,14 @@ export function TracePanel(props: TracePanelProps) {
 
   const yAxis = () => props.hideYValues ? yAxisHidden : yAxisBase;
 
-  const cursorConfig = {
-    sync: {
-      key: props.syncKey,
-      setSeries: true,
-    },
+  const cursorConfig = (): uPlot.Cursor => {
+    const cfg: uPlot.Cursor = {
+      sync: { key: props.syncKey, setSeries: true },
+    };
+    if (props.disableWheelZoom) {
+      cfg.drag = { x: false, y: false };
+    }
+    return cfg;
   };
 
   return (
@@ -103,7 +106,7 @@ export function TracePanel(props: TracePanelProps) {
         data={props.data()}
         series={props.series}
         scales={scales()}
-        cursor={cursorConfig}
+        cursor={cursorConfig()}
         axes={[xAxis, yAxis()]}
         plugins={plugins()}
         height={height()}

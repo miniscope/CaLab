@@ -305,7 +305,8 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const startStart = props.startTime;
     const startEnd = props.endTime;
     const windowDuration = startEnd - startStart;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
+    const rect = overEl ? overEl.getBoundingClientRect() : (e.currentTarget as HTMLElement).getBoundingClientRect();
     const pxToTime = windowDuration / rect.width;
     const totalDuration = props.rawTrace.length / props.samplingRate;
 
@@ -355,8 +356,9 @@ export function ZoomWindow(props: ZoomWindowProps) {
       ? Math.max(MIN_WINDOW_S, currentRange * ZOOM_FACTOR)
       : Math.min(totalDuration, currentRange / ZOOM_FACTOR);
 
-    // Center zoom on cursor horizontal position
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // Center zoom on cursor horizontal position (use .u-over plot area, not outer div with y-axis gutter)
+    const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
+    const rect = overEl ? overEl.getBoundingClientRect() : (e.currentTarget as HTMLElement).getBoundingClientRect();
     const cursorFraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const cursorTime = props.startTime + cursorFraction * currentRange;
 
