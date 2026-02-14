@@ -30,7 +30,7 @@ export interface CellCardProps {
   groundTruthCalcium?: Float64Array;
 }
 
-const DEFAULT_ZOOM_WINDOW_S = 60; // 60 seconds default zoom window
+const DEFAULT_ZOOM_WINDOW_S = 30; // 30 seconds default zoom window
 const ZOOM_SYNC_KEY = 'catune-card-zoom';
 
 export function CellCard(props: CellCardProps) {

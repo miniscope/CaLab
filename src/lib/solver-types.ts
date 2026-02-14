@@ -69,6 +69,7 @@ export type PoolWorkerInbound =
       params: SolverParams;
       warmState: Uint8Array | null;
       warmStrategy: WarmStartStrategy;
+      maxIterations?: number;
     }
   | { type: 'cancel' };
 

@@ -6,7 +6,7 @@ import init, { Solver } from '../../wasm/catune-solver/pkg/catune_solver';
 import type { PoolWorkerInbound, PoolWorkerOutbound } from '../lib/solver-types';
 
 const INTERMEDIATE_INTERVAL_MS = 100;
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 15;
 
 let solver: Solver | null = null;
 let cancelled = false;
@@ -45,8 +45,10 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     // 'cold': set_trace already zeroed the solution
 
     let lastIntermediateTime = performance.now();
+    const startIter = solver.iteration_count();
+    const quantumLimit = req.maxIterations ?? Infinity;
 
-    while (!solver.converged() && !cancelled) {
+    while (!solver.converged() && !cancelled && (solver.iteration_count() - startIter) < quantumLimit) {
       solver.step_batch(BATCH_SIZE);
 
       // Post intermediate result at ~100ms intervals

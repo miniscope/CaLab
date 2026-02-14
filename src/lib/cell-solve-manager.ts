@@ -3,7 +3,7 @@
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
 import { createEffect, on, onCleanup } from 'solid-js';
-import { tauRise, tauDecay, lambda } from './viz-store';
+import { tauRise, tauDecay, lambda, selectedCell } from './viz-store';
 import { parsedData, effectiveShape, swapped, samplingRate } from './data-store';
 import {
   selectedCells,
@@ -21,6 +21,7 @@ import type { SolverParams } from './solver-types';
 import type { NpyResult } from './types';
 
 const DEBOUNCE_MS = 30;
+const QUANTUM_ITERATIONS = 15;
 
 interface CellSolveState {
   cellIndex: number;
@@ -30,6 +31,9 @@ interface CellSolveState {
   warmStartCache: WarmStartCache;
   activeJobId: number | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
+  converged: boolean;
+  deferredRequeue: boolean;
+  dispatchedParams: SolverParams | null;
   // Cached padded result for zoom-without-re-solve
   paddedResultStart: number;
   paddedResultEnd: number;
@@ -52,6 +56,12 @@ function getCurrentParams(): SolverParams {
     lambda: lambda(),
     fs: samplingRate() ?? 30,
   };
+}
+
+function getCellPriority(cellIndex: number): number {
+  if (cellIndex === selectedCell()) return 0;   // active (last-clicked)
+  if (visibleCellIndices().has(cellIndex)) return 1; // visible
+  return 2;                                     // off-screen
 }
 
 function dispatchCellSolve(state: CellSolveState): void {
@@ -85,10 +95,11 @@ function dispatchCellSolve(state: CellSolveState): void {
 
   const jobId = nextJobId();
   state.activeJobId = jobId;
+  state.converged = false;
+  state.deferredRequeue = false;
+  state.dispatchedParams = { ...params };
 
   updateOneCellStatus(state.cellIndex, 'solving');
-
-  const isVisible = visibleCellIndices().has(state.cellIndex);
 
   pool.dispatch({
     jobId,
@@ -96,7 +107,8 @@ function dispatchCellSolve(state: CellSolveState): void {
     params,
     warmState,
     warmStrategy: strategy,
-    priority: isVisible ? 0 : 1,
+    getPriority: () => getCellPriority(state.cellIndex),
+    maxIterations: QUANTUM_ITERATIONS,
     onIntermediate(solution, reconvolution, iteration) {
       if (state.activeJobId !== jobId) return; // stale
       // Store full padded result for zoom-without-re-solve
@@ -110,9 +122,10 @@ function dispatchCellSolve(state: CellSolveState): void {
       updateOneCellTraces(state.cellIndex, visSol, visReconv, visibleStart);
       updateOneCellIteration(state.cellIndex, iteration);
     },
-    onComplete(solution, reconvolution, solverState, iterations, _converged) {
+    onComplete(solution, reconvolution, solverState, iterations, converged) {
       if (state.activeJobId !== jobId) return; // stale
       state.activeJobId = null;
+      state.converged = converged;
       // Store full padded result for zoom-without-re-solve
       state.fullPaddedSolution = new Float32Array(solution);
       state.fullPaddedReconvolution = new Float32Array(reconvolution);
@@ -125,7 +138,15 @@ function dispatchCellSolve(state: CellSolveState): void {
       updateOneCellIteration(state.cellIndex, iterations);
       // Cache warm-start state
       state.warmStartCache.store(solverState, params, paddedStart, paddedEnd);
-      updateOneCellStatus(state.cellIndex, 'fresh');
+
+      if (converged) {
+        updateOneCellStatus(state.cellIndex, 'fresh');
+        // A cell finished — dispatch any deferred off-screen cells
+        drainDeferredCells();
+      } else {
+        // Not converged — re-enqueue for another quantum
+        reEnqueueCell(state);
+      }
     },
     onCancelled() {
       if (state.activeJobId === jobId) state.activeJobId = null;
@@ -137,6 +158,49 @@ function dispatchCellSolve(state: CellSolveState): void {
       updateOneCellStatus(state.cellIndex, 'error');
     },
   });
+}
+
+function hasUnconvergedVisibleCells(): boolean {
+  const visible = visibleCellIndices();
+  const active = selectedCell();
+  for (const s of cellStates.values()) {
+    if (s.converged) continue;
+    if (s.cellIndex === active || visible.has(s.cellIndex)) return true;
+  }
+  return false;
+}
+
+function drainDeferredCells(): void {
+  for (const s of cellStates.values()) {
+    if (s.deferredRequeue) {
+      s.deferredRequeue = false;
+      dispatchCellSolve(s);
+    }
+  }
+}
+
+function reEnqueueCell(state: CellSolveState): void {
+  if (!pool) return;
+  // Don't re-enqueue if params changed (Effect 2 handles it)
+  const current = getCurrentParams();
+  if (
+    state.dispatchedParams &&
+    (state.dispatchedParams.tauRise !== current.tauRise ||
+      state.dispatchedParams.tauDecay !== current.tauDecay ||
+      state.dispatchedParams.lambda !== current.lambda ||
+      state.dispatchedParams.fs !== current.fs)
+  )
+    return;
+  // Don't re-enqueue if cell was deselected
+  if (!cellStates.has(state.cellIndex)) return;
+
+  // Defer off-screen cells while visible/active cells are still solving
+  if (getCellPriority(state.cellIndex) > 1 && hasUnconvergedVisibleCells()) {
+    state.deferredRequeue = true;
+    return;
+  }
+
+  dispatchCellSolve(state);
 }
 
 function debouncedDispatch(state: CellSolveState): void {
@@ -163,6 +227,9 @@ function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, num
       warmStartCache: new WarmStartCache(),
       activeJobId: null,
       debounceTimer: null,
+      converged: false,
+      deferredRequeue: false,
+      dispatchedParams: null,
       paddedResultStart: 0,
       paddedResultEnd: 0,
       fullPaddedSolution: null,
@@ -221,6 +288,10 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
       const visSol = new Float32Array(state.fullPaddedSolution.subarray(offsetInPadded, offsetInPadded + length));
       const visReconv = new Float32Array(state.fullPaddedReconvolution.subarray(offsetInPadded, offsetInPadded + length));
       updateOneCellTraces(cellIndex, visSol, visReconv, newVisStart);
+      // If still solving (round-robin), re-enqueue to continue convergence
+      if (!state.converged) {
+        debouncedDispatch(state);
+      }
       return;
     }
   }
@@ -230,7 +301,10 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
     pool.cancel(state.activeJobId);
     state.activeJobId = null;
   }
-  updateOneCellStatus(cellIndex, 'stale');
+  // Only reset iteration count if cell had converged; mid-solve cells keep progress
+  if (state.converged) {
+    updateOneCellStatus(cellIndex, 'stale');
+  }
   debouncedDispatch(state);
 }
 
@@ -277,22 +351,30 @@ export function initCellSolveManager(): void {
       // Mark all stale and clear cached padded results
       for (const state of cellStates.values()) {
         state.activeJobId = null;
+        state.converged = false;
+        state.deferredRequeue = false;
+        state.dispatchedParams = null;
         state.fullPaddedSolution = null;
         state.fullPaddedReconvolution = null;
         updateOneCellStatus(state.cellIndex, 'stale');
       }
 
-      // Re-dispatch with debounce — visible cells first for priority ordering
+      // Re-dispatch with debounce — 3-tier priority: active → visible → off-screen
+      const active = selectedCell();
       const visible = visibleCellIndices();
+      const activeStates: CellSolveState[] = [];
       const visibleStates: CellSolveState[] = [];
       const offScreenStates: CellSolveState[] = [];
       for (const state of cellStates.values()) {
-        if (visible.has(state.cellIndex)) {
+        if (state.cellIndex === active) {
+          activeStates.push(state);
+        } else if (visible.has(state.cellIndex)) {
           visibleStates.push(state);
         } else {
           offScreenStates.push(state);
         }
       }
+      for (const state of activeStates) debouncedDispatch(state);
       for (const state of visibleStates) debouncedDispatch(state);
       for (const state of offScreenStates) debouncedDispatch(state);
     }),

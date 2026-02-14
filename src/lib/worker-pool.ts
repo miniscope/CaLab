@@ -10,8 +10,11 @@ export interface PoolJob {
   params: SolverParams;
   warmState: Uint8Array | null;
   warmStrategy: WarmStartStrategy;
-  /** Lower number = higher priority. 0 = viewport-visible, 1 = off-screen. */
+  /** Lower number = higher priority. 0 = active cell, 1 = visible, 2 = off-screen. */
   priority?: number;
+  /** Dynamic priority callback — called at drain time for fresh ordering. Overrides static priority. */
+  getPriority?: () => number;
+  maxIterations?: number;
   onIntermediate(solution: Float32Array, reconvolution: Float32Array, iteration: number): void;
   onComplete(solution: Float32Array, reconvolution: Float32Array, state: Uint8Array, iterations: number, converged: boolean): void;
   onCancelled(): void;
@@ -128,6 +131,7 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
           params: job.params,
           warmState: warmCopy,
           warmStrategy: job.warmStrategy,
+          maxIterations: job.maxIterations,
         },
         transfer,
       );
@@ -140,15 +144,20 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
           params: job.params,
           warmState: null,
           warmStrategy: job.warmStrategy,
+          maxIterations: job.maxIterations,
         },
         transfer,
       );
     }
   }
 
+  function jobPriority(job: PoolJob): number {
+    return job.getPriority?.() ?? job.priority ?? 1;
+  }
+
   function drainQueue(): void {
     if (queue.length > 1) {
-      queue.sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1));
+      queue.sort((a, b) => jobPriority(a) - jobPriority(b));
     }
     while (queue.length > 0) {
       const idle = findIdleWorker();
@@ -160,13 +169,8 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
 
   function dispatch(job: PoolJob): void {
     if (disposed) return;
-
-    const idle = findIdleWorker();
-    if (idle) {
-      dispatchToWorker(idle, job);
-    } else {
-      queue.push(job);
-    }
+    queue.push(job);
+    drainQueue();
   }
 
   function cancel(jobId: number): void {
