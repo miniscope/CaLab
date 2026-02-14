@@ -226,11 +226,6 @@ export function SubmitPanel() {
           </button>
         </Show>
         <Show when={isDemo()}>
-          <Show when={!groundTruthLocked()}>
-            <div class="submit-panel__gt-warning">
-              Revealing ground truth will disable community submission
-            </div>
-          </Show>
           <button
             class="btn-primary btn-small"
             onClick={() => {
@@ -243,11 +238,6 @@ export function SubmitPanel() {
           >
             {groundTruthVisible() ? 'Hide Ground Truth' : 'Show Ground Truth'}
           </button>
-          <Show when={groundTruthLocked()}>
-            <div class="submit-panel__gt-locked-notice">
-              Community submission disabled — ground truth was viewed. Reload demo data to re-enable.
-            </div>
-          </Show>
         </Show>
         <Show when={supabaseEnabled}>
           <button
@@ -263,6 +253,19 @@ export function SubmitPanel() {
           </button>
         </Show>
       </div>
+
+      <Show when={isDemo()}>
+        <Show when={!groundTruthLocked()}>
+          <div class="submit-panel__gt-warning">
+            Revealing ground truth will disable community submission
+          </div>
+        </Show>
+        <Show when={groundTruthLocked()}>
+          <div class="submit-panel__gt-locked-notice">
+            Community submission disabled — ground truth was viewed. Reload demo data to re-enable.
+          </div>
+        </Show>
+      </Show>
 
       {/* Submission summary card (shown after successful submission) */}
       <Show when={lastSubmission()}>
