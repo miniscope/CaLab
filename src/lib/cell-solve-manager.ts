@@ -3,7 +3,7 @@
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
 import { createEffect, on, onCleanup } from 'solid-js';
-import { tauRise, tauDecay, lambda, selectedCell } from './viz-store';
+import { tauRise, tauDecay, lambda, selectedCell, filterEnabled } from './viz-store';
 import { parsedData, effectiveShape, swapped, samplingRate } from './data-store';
 import {
   selectedCells,
@@ -57,6 +57,7 @@ function getCurrentParams(): SolverParams {
     tauDecay: tauDecay(),
     lambda: lambda(),
     fs: samplingRate() ?? 30,
+    filterEnabled: filterEnabled(),
   };
 }
 
@@ -193,7 +194,8 @@ function drainDeferredCells(): void {
 
 function paramsMatch(a: SolverParams, b: SolverParams): boolean {
   return a.tauRise === b.tauRise && a.tauDecay === b.tauDecay
-    && a.lambda === b.lambda && a.fs === b.fs;
+    && a.lambda === b.lambda && a.fs === b.fs
+    && a.filterEnabled === b.filterEnabled;
 }
 
 function reEnqueueCell(state: CellSolveState): void {
@@ -346,7 +348,7 @@ export function initCellSolveManager(): void {
 
   // Effect 2: Watch global params — mark all cells stale, cancel all, re-dispatch all
   createEffect(
-    on([tauRise, tauDecay, lambda], () => {
+    on([tauRise, tauDecay, lambda, filterEnabled], () => {
       if (cellStates.size === 0) return;
 
       // Cancel everything

@@ -2,14 +2,20 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_solver_free: (a: number, b: number) => void;
+export const solver_apply_filter: (a: number) => number;
 export const solver_converged: (a: number) => number;
 export const solver_export_state: (a: number, b: number) => void;
+export const solver_filter_enabled: (a: number) => number;
+export const solver_get_filter_cutoffs: (a: number, b: number) => void;
+export const solver_get_power_spectrum: (a: number, b: number) => void;
 export const solver_get_reconvolution: (a: number, b: number) => void;
 export const solver_get_solution: (a: number, b: number) => void;
+export const solver_get_spectrum_frequencies: (a: number, b: number) => void;
 export const solver_iteration_count: (a: number) => number;
 export const solver_load_state: (a: number, b: number, c: number) => void;
 export const solver_new: () => number;
 export const solver_reset_momentum: (a: number) => void;
+export const solver_set_filter_enabled: (a: number, b: number) => void;
 export const solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
 export const solver_set_trace: (a: number, b: number, c: number) => void;
 export const solver_step_batch: (a: number, b: number) => number;

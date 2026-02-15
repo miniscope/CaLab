@@ -81,6 +81,11 @@ export function shouldWarmStart(
     return 'cold';
   }
 
+  // Filter state changed -- the trace itself is different, must cold start
+  if ((oldParams.filterEnabled ?? false) !== (newParams.filterEnabled ?? false)) {
+    return 'cold';
+  }
+
   const tauRiseSame = oldParams.tauRise === newParams.tauRise;
   const tauDecaySame = oldParams.tauDecay === newParams.tauDecay;
 

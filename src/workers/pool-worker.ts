@@ -34,6 +34,12 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     // Configure solver
     solver.set_params(req.params.tauRise, req.params.tauDecay, req.params.lambda, req.params.fs);
     solver.set_trace(new Float32Array(req.trace));
+    solver.set_filter_enabled(req.params.filterEnabled);
+
+    // Apply bandpass filter before warm-start (filter modifies the trace itself)
+    if (req.params.filterEnabled) {
+      solver.apply_filter();
+    }
 
     // Warm-start handling
     if (req.warmStrategy === 'warm' && req.warmState) {
@@ -83,6 +89,19 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     const reconvolution = solver.get_reconvolution();
     const state = solver.export_state();
 
+    // Collect spectrum data for visualization
+    const power = solver.get_power_spectrum();
+    const frequencies = solver.get_spectrum_frequencies();
+    const cutoffsArr = solver.get_filter_cutoffs();
+    const spectrum = power.length > 0
+      ? { frequencies, power, cutoffs: [cutoffsArr[0], cutoffsArr[1]] as [number, number] }
+      : undefined;
+
+    const transfer: Transferable[] = [solution.buffer, reconvolution.buffer, state.buffer];
+    if (spectrum) {
+      transfer.push(spectrum.power.buffer, spectrum.frequencies.buffer);
+    }
+
     post(
       {
         type: 'complete',
@@ -92,8 +111,9 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
         state,
         iterations: solver.iteration_count(),
         converged: solver.converged(),
+        spectrum,
       },
-      [solution.buffer, reconvolution.buffer, state.buffer],
+      transfer,
     );
   } catch (err) {
     post({ type: 'error', jobId: req.jobId, message: String(err) });

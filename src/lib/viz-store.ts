@@ -28,6 +28,10 @@ const [tauDecay, setTauDecay] = createSignal<number>(3.0); // start at maximum (
 
 const [lambda, setLambda] = createSignal<number>(0); // start at minimum sparsity
 
+// --- Filter toggle ---
+
+const [filterEnabled, setFilterEnabled] = createSignal<boolean>(false);
+
 // --- Solver status ---
 
 const [solverStatus, setSolverStatus] = createSignal<SolverStatus>('idle');
@@ -107,6 +111,9 @@ export {
   // Lambda (sparsity)
   lambda,
   setLambda,
+  // Filter toggle
+  filterEnabled,
+  setFilterEnabled,
   // Solver status
   solverStatus,
   setSolverStatus,

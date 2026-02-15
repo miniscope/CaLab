@@ -5,6 +5,7 @@
 import {
   tauRise, tauDecay, setTauRise, setTauDecay,
   lambda, setLambda,
+  filterEnabled, setFilterEnabled,
 } from '../../lib/viz-store';
 import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store';
 import { PARAM_RANGES } from '../../lib/param-config';
@@ -76,6 +77,15 @@ export function ParameterPanel(props: ParameterPanelProps) {
           data-tutorial="slider-lambda"
         />
       </div>
+      <label class="param-panel__toggle">
+        <input
+          type="checkbox"
+          checked={filterEnabled()}
+          onChange={(e) => setFilterEnabled(e.currentTarget.checked)}
+        />
+        <span class="param-panel__toggle-label">Noise Filter</span>
+        <span class="param-panel__toggle-desc">Bandpass filter derived from kernel</span>
+      </label>
     </div>
   );
 }

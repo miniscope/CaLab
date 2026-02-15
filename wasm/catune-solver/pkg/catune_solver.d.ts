@@ -13,14 +13,27 @@ export class Solver {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+     */
+    apply_filter(): boolean;
+    /**
      * Returns whether the solver has converged.
      */
     converged(): boolean;
     /**
      * Serialize solver state for warm-start cache.
-     * Format: [active_len (u32)] [t_fista (f64)] [iteration (u32)] [solution...] [solution_prev...]
+     * Format: [active_len (u32)] [t_fista (f64)] [iteration (u32)] [solution f32...] [solution_prev f32...]
      */
     export_state(): Uint8Array;
+    filter_enabled(): boolean;
+    /**
+     * Get filter cutoff frequencies as [f_hp, f_lp].
+     */
+    get_filter_cutoffs(): Float32Array;
+    /**
+     * Get the power spectrum of the current trace (N/2+1 bins).
+     */
+    get_power_spectrum(): Float32Array;
     /**
      * Returns a copy of the reconvolution (K * solution) for the active region.
      */
@@ -29,6 +42,10 @@ export class Solver {
      * Returns a copy of the current solution (spike train) for the active region.
      */
     get_solution(): Float32Array;
+    /**
+     * Get frequency axis in Hz for the spectrum bins.
+     */
+    get_spectrum_frequencies(): Float32Array;
     /**
      * Returns the current iteration count.
      */
@@ -46,6 +63,7 @@ export class Solver {
      * Sets t_fista = 1.0 and copies solution into solution_prev.
      */
     reset_momentum(): void;
+    set_filter_enabled(enabled: boolean): void;
     /**
      * Update solver parameters and rebuild kernel.
      */
@@ -76,14 +94,20 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_solver_free: (a: number, b: number) => void;
+    readonly solver_apply_filter: (a: number) => number;
     readonly solver_converged: (a: number) => number;
     readonly solver_export_state: (a: number, b: number) => void;
+    readonly solver_filter_enabled: (a: number) => number;
+    readonly solver_get_filter_cutoffs: (a: number, b: number) => void;
+    readonly solver_get_power_spectrum: (a: number, b: number) => void;
     readonly solver_get_reconvolution: (a: number, b: number) => void;
     readonly solver_get_solution: (a: number, b: number) => void;
+    readonly solver_get_spectrum_frequencies: (a: number, b: number) => void;
     readonly solver_iteration_count: (a: number) => number;
     readonly solver_load_state: (a: number, b: number, c: number) => void;
     readonly solver_new: () => number;
     readonly solver_reset_momentum: (a: number) => void;
+    readonly solver_set_filter_enabled: (a: number, b: number) => void;
     readonly solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly solver_set_trace: (a: number, b: number, c: number) => void;
     readonly solver_step_batch: (a: number, b: number) => number;

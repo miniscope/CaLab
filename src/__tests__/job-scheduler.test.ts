@@ -64,6 +64,7 @@ describe('shouldWarmStart', () => {
     tauDecay: 0.4,
     lambda: 0.01,
     fs: 30,
+    filterEnabled: false,
   };
 
   function makeEntry(params: SolverParams, paddedStart = 940, paddedEnd = 2060): WarmStartEntry {
@@ -131,6 +132,7 @@ describe('WarmStartCache', () => {
     tauDecay: 0.4,
     lambda: 0.01,
     fs: 30,
+    filterEnabled: false,
   };
 
   it('is initially empty', () => {

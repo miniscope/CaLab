@@ -1,0 +1,52 @@
+/* Spectrum visualization panel styles */
+
+.spectrum-panel {
+  padding: var(--space-md);
+}
+
+.spectrum-panel__title {
+  font-size: 0.85rem;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.spectrum-panel__chart {
+  width: 100%;
+  min-height: 280px;
+}
+
+.spectrum-panel__info {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.spectrum-panel__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.spectrum-panel__stat-label {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.spectrum-panel__stat-value {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.spectrum-panel__empty {
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: var(--space-xl) var(--space-md);
+}

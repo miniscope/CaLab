@@ -18,6 +18,8 @@ import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { CardGrid } from './components/cards/CardGrid.tsx';
 import { SidebarTabs } from './components/layout/SidebarTabs.tsx';
 import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
+import { SpectrumPanel } from './components/spectrum/SpectrumPanel.tsx';
+import { initSpectrumStore } from './lib/spectrum/spectrum-store.ts';
 
 import {
   importStep,
@@ -95,6 +97,7 @@ const App: Component = () => {
           computeAndCacheRanking();
           updateCellSelection();
           initCellSolveManager();
+          initSpectrumStore();
         }
       }
     }),
@@ -146,9 +149,13 @@ const App: Component = () => {
           supabaseEnabled
             ? <SidebarTabs
                 communityContent={<CommunityBrowser />}
+                spectrumContent={<SpectrumPanel />}
                 metricsContent={<MetricsPanel />}
               />
-            : <MetricsPanel />
+            : <SidebarTabs
+                spectrumContent={<SpectrumPanel />}
+                metricsContent={<MetricsPanel />}
+              />
         }
       >
         <VizLayout mode="dashboard">

@@ -20,6 +20,14 @@ export class Solver {
         wasm.__wbg_solver_free(ptr, 0);
     }
     /**
+     * Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+     * @returns {boolean}
+     */
+    apply_filter() {
+        const ret = wasm.solver_apply_filter(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Returns whether the solver has converged.
      * @returns {boolean}
      */
@@ -29,7 +37,7 @@ export class Solver {
     }
     /**
      * Serialize solver state for warm-start cache.
-     * Format: [active_len (u32)] [t_fista (f64)] [iteration (u32)] [solution...] [solution_prev...]
+     * Format: [active_len (u32)] [t_fista (f64)] [iteration (u32)] [solution f32...] [solution_prev f32...]
      * @returns {Uint8Array}
      */
     export_state() {
@@ -46,8 +54,49 @@ export class Solver {
         }
     }
     /**
+     * @returns {boolean}
+     */
+    filter_enabled() {
+        const ret = wasm.solver_filter_enabled(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Get filter cutoff frequencies as [f_hp, f_lp].
+     * @returns {Float32Array}
+     */
+    get_filter_cutoffs() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.solver_get_filter_cutoffs(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Get the power spectrum of the current trace (N/2+1 bins).
+     * @returns {Float32Array}
+     */
+    get_power_spectrum() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.solver_get_power_spectrum(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Returns a copy of the reconvolution (K * solution) for the active region.
-     * @returns {Float64Array}
+     * @returns {Float32Array}
      */
     get_reconvolution() {
         try {
@@ -55,8 +104,8 @@ export class Solver {
             wasm.solver_get_reconvolution(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var v1 = getArrayF64FromWasm0(r0, r1).slice();
-            wasm.__wbindgen_export(r0, r1 * 8, 8);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
             return v1;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
@@ -64,7 +113,7 @@ export class Solver {
     }
     /**
      * Returns a copy of the current solution (spike train) for the active region.
-     * @returns {Float64Array}
+     * @returns {Float32Array}
      */
     get_solution() {
         try {
@@ -72,8 +121,25 @@ export class Solver {
             wasm.solver_get_solution(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var v1 = getArrayF64FromWasm0(r0, r1).slice();
-            wasm.__wbindgen_export(r0, r1 * 8, 8);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Get frequency axis in Hz for the spectrum bins.
+     * @returns {Float32Array}
+     */
+    get_spectrum_frequencies() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.solver_get_spectrum_frequencies(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
             return v1;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
@@ -113,6 +179,12 @@ export class Solver {
         wasm.solver_reset_momentum(this.__wbg_ptr);
     }
     /**
+     * @param {boolean} enabled
+     */
+    set_filter_enabled(enabled) {
+        wasm.solver_set_filter_enabled(this.__wbg_ptr, enabled);
+    }
+    /**
      * Update solver parameters and rebuild kernel.
      * @param {number} tau_rise
      * @param {number} tau_decay
@@ -125,10 +197,10 @@ export class Solver {
     /**
      * Load a trace for deconvolution. Grows buffers if needed (never shrinks).
      * Resets iteration state for a fresh solve.
-     * @param {Float64Array} trace
+     * @param {Float32Array} trace
      */
     set_trace(trace) {
-        const ptr0 = passArrayF64ToWasm0(trace, wasm.__wbindgen_export2);
+        const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         wasm.solver_set_trace(this.__wbg_ptr, ptr0, len0);
     }
@@ -211,9 +283,9 @@ function dropObject(idx) {
     heap_next = idx;
 }
 
-function getArrayF64FromWasm0(ptr, len) {
+function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
-    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayU8FromWasm0(ptr, len) {
@@ -229,12 +301,12 @@ function getDataViewMemory0() {
     return cachedDataViewMemory0;
 }
 
-let cachedFloat64ArrayMemory0 = null;
-function getFloat64ArrayMemory0() {
-    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
-        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
     }
-    return cachedFloat64ArrayMemory0;
+    return cachedFloat32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -264,9 +336,9 @@ function passArray8ToWasm0(arg, malloc) {
     return ptr;
 }
 
-function passArrayF64ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 8, 8) >>> 0;
-    getFloat64ArrayMemory0().set(arg, ptr / 8);
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
@@ -348,7 +420,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
-    cachedFloat64ArrayMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     return wasm;
 }
