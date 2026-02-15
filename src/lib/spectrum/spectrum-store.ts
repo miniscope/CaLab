@@ -1,5 +1,6 @@
 // Reactive spectrum store: computes periodogram from selected cell trace.
-// Watches cell results and kernel parameters, debounces to avoid churn.
+// Cutoffs update immediately on parameter change; expensive FFT only
+// recomputes when the underlying raw trace or selected cell changes.
 
 import { createSignal, createEffect, on } from 'solid-js';
 import { multiCellResults } from '../multi-cell-store';
@@ -18,11 +19,30 @@ export interface SpectrumData {
 
 const [spectrumData, setSpectrumData] = createSignal<SpectrumData | null>(null);
 
+// Cache to avoid redundant FFT when solver updates don't change the raw trace
+let lastRaw: Float64Array | null = null;
+let lastCellIdx = -1;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function initSpectrumStore(): void {
+  // Effect 1: Cutoff lines — update immediately, no debounce
   createEffect(
-    on([multiCellResults, samplingRate, tauRise, tauDecay, selectedCell], () => {
+    on([tauRise, tauDecay, samplingRate], () => {
+      const current = spectrumData();
+      if (!current) return;
+      const { highPass, lowPass } = computeFilterCutoffs(tauRise(), tauDecay());
+      const fs = samplingRate() ?? 30;
+      setSpectrumData({
+        ...current,
+        highPassHz: highPass,
+        lowPassHz: Math.min(lowPass, fs / 2),
+      });
+    }),
+  );
+
+  // Effect 2: FFT recomputation — debounced, skips if raw trace unchanged
+  createEffect(
+    on([multiCellResults, samplingRate, selectedCell], () => {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(computeSpectrum, 250);
     }),
@@ -33,45 +53,38 @@ function computeSpectrum(): void {
   const results = multiCellResults();
   const fs = samplingRate();
   const cellIdx = selectedCell();
-  const tr = tauRise();
-  const td = tauDecay();
 
   if (!fs || results.size === 0) {
+    lastRaw = null;
+    lastCellIdx = -1;
     setSpectrumData(null);
     return;
   }
 
-  // Use the selected cell's raw trace
+  // Resolve raw trace for the target cell
   const cellTraces = results.get(cellIdx);
-  if (!cellTraces) {
-    // Fall back to first available cell
-    const first = results.values().next().value;
-    if (!first) { setSpectrumData(null); return; }
-    computeFromTrace(first.raw, first.cellIndex, fs, tr, td);
-    return;
-  }
+  const target = cellTraces ?? results.values().next().value;
+  if (!target) { setSpectrumData(null); return; }
 
-  computeFromTrace(cellTraces.raw, cellIdx, fs, tr, td);
-}
+  const raw = target.raw;
+  const resolvedIdx = target.cellIndex;
 
-function computeFromTrace(
-  raw: Float64Array,
-  cellIndex: number,
-  fs: number,
-  tr: number,
-  td: number,
-): void {
+  // Skip FFT if raw trace reference and cell haven't changed
+  if (raw === lastRaw && resolvedIdx === lastCellIdx) return;
+  lastRaw = raw;
+  lastCellIdx = resolvedIdx;
+
   if (raw.length < 16) { setSpectrumData(null); return; }
 
   const { freqs, psd } = computePeriodogram(raw, fs);
-  const { highPass, lowPass } = computeFilterCutoffs(tr, td);
+  const { highPass, lowPass } = computeFilterCutoffs(tauRise(), tauDecay());
 
   setSpectrumData({
     freqs,
     psd,
     highPassHz: highPass,
     lowPassHz: Math.min(lowPass, fs / 2),
-    cellIndex,
+    cellIndex: resolvedIdx,
   });
 }
 
