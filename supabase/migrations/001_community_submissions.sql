@@ -21,6 +21,9 @@ CREATE TABLE community_submissions (
   species TEXT NOT NULL,
   brain_region TEXT NOT NULL,
 
+  -- Preprocessing
+  filter_enabled BOOLEAN DEFAULT false,
+
   -- Optional metadata
   lab_name TEXT,
   orcid TEXT,
