@@ -26,6 +26,9 @@ export interface CommunitySubmission {
   species: string;
   brain_region: string;
 
+  // Preprocessing
+  filter_enabled?: boolean;
+
   // Optional metadata
   lab_name?: string;
   orcid?: string;

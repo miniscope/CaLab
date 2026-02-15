@@ -4,7 +4,7 @@
  * and scientific formulation metadata.
  */
 
-import { tauRise, tauDecay, lambda } from '../../lib/viz-store';
+import { tauRise, tauDecay, lambda, filterEnabled } from '../../lib/viz-store';
 import { samplingRate, rawFile, effectiveShape } from '../../lib/data-store';
 import { buildExportData, downloadExport } from '../../lib/export';
 import '../../styles/multi-trace.css';
@@ -20,6 +20,7 @@ export function ExportPanel() {
       tauDecay(),
       lambda(),
       fs,
+      filterEnabled(),
       {
         sourceFilename: file?.name,
         numCells: shape?.[0],

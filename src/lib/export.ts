@@ -20,6 +20,7 @@ export interface CaTuneExport {
     tau_decay_s: number;
     lambda: number;
     sampling_rate_hz: number;
+    filter_enabled: boolean;
   };
   ar2_coefficients: AR2Coefficients;
   formulation: {
@@ -42,6 +43,7 @@ export function buildExportData(
   tauDecay: number,
   lambda: number,
   fs: number,
+  filterEnabled: boolean,
   metadata?: {
     sourceFilename?: string;
     numCells?: number;
@@ -51,7 +53,7 @@ export function buildExportData(
   const ar2 = computeAR2(tauRise, tauDecay, fs);
 
   return {
-    schema_version: '1.0.0',
+    schema_version: '1.1.0',
     catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
     export_date: new Date().toISOString(),
     parameters: {
@@ -59,6 +61,7 @@ export function buildExportData(
       tau_decay_s: tauDecay,
       lambda,
       sampling_rate_hz: fs,
+      filter_enabled: filterEnabled,
     },
     ar2_coefficients: ar2,
     formulation: {

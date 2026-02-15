@@ -13,7 +13,7 @@
 
 import { createSignal, Show, For, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
-import { tauRise, tauDecay, lambda } from '../../lib/viz-store';
+import { tauRise, tauDecay, lambda, filterEnabled } from '../../lib/viz-store';
 import {
   samplingRate,
   effectiveShape,
@@ -89,7 +89,7 @@ export function SubmitPanel() {
     const shape = effectiveShape();
     const file = rawFile();
 
-    const exportData = buildExportData(tauRise(), tauDecay(), lambda(), fs, {
+    const exportData = buildExportData(tauRise(), tauDecay(), lambda(), fs, filterEnabled(), {
       sourceFilename: file?.name,
       numCells: shape?.[0],
       numTimepoints: shape?.[1],
@@ -171,6 +171,7 @@ export function SubmitPanel() {
         fps: fs,
         dataset_hash: datasetHash,
         quality_score: qualityScore,
+        filter_enabled: filterEnabled(),
         data_source: rawFile() ? 'user' : 'demo',
         catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
         extra_metadata: isDemo() && demoPreset()
