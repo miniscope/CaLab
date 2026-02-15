@@ -76,13 +76,8 @@ export function shouldWarmStart(
 
   const oldParams = cached.params;
 
-  // Sampling rate changed -- fundamentally different discretization
-  if (oldParams.fs !== newParams.fs) {
-    return 'cold';
-  }
-
-  // Filter state changed -- the trace itself is different, must cold start
-  if (oldParams.filterEnabled !== newParams.filterEnabled) {
+  // Sampling rate or filter state changed -- fundamentally different input
+  if (oldParams.fs !== newParams.fs || oldParams.filterEnabled !== newParams.filterEnabled) {
     return 'cold';
   }
 

@@ -381,9 +381,7 @@ export function initCellSolveManager(): void {
     }),
   );
 
-  onCleanup(() => {
-    disposeCellSolveManager();
-  });
+  onCleanup(disposeCellSolveManager);
 }
 
 export function disposeCellSolveManager(): void {

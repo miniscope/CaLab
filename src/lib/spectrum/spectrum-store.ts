@@ -7,7 +7,20 @@ import { multiCellResults } from '../multi-cell-store';
 import { samplingRate } from '../data-store';
 import { tauRise, tauDecay, selectedCell } from '../viz-store';
 import { computePeriodogram } from './fft';
-import { computeFilterCutoffs } from './filter-cutoffs';
+
+// Margin factors kept in sync with filter.rs
+const MARGIN_FACTOR_HP = 16.0;
+const MARGIN_FACTOR_LP = 4.0;
+
+function computeFilterCutoffs(
+  tauRise: number,
+  tauDecay: number,
+): { highPass: number; lowPass: number } {
+  return {
+    highPass: 1 / (2 * Math.PI * tauDecay * MARGIN_FACTOR_HP),
+    lowPass: MARGIN_FACTOR_LP / (2 * Math.PI * tauRise),
+  };
+}
 
 export interface SpectrumData {
   freqs: Float64Array;

@@ -176,9 +176,7 @@
   z-index: 1;
 }
 
-/* ========================
-   Filter Toggle
-   ======================== */
+/* --- Filter Toggle --- */
 .param-panel__toggle {
   display: flex;
   align-items: center;

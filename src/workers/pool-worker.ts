@@ -43,14 +43,11 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
       filteredTrace = solver.get_trace();
     }
 
-    // Warm-start handling
-    if (req.warmStrategy === 'warm' && req.warmState) {
+    // Warm-start: load cached state; reset momentum if kernel changed
+    if (req.warmState && req.warmStrategy !== 'cold') {
       solver.load_state(req.warmState);
-    } else if (req.warmStrategy === 'warm-no-momentum' && req.warmState) {
-      solver.load_state(req.warmState);
-      solver.reset_momentum();
+      if (req.warmStrategy === 'warm-no-momentum') solver.reset_momentum();
     }
-    // 'cold': set_trace already zeroed the solution
 
     let lastIntermediateTime = performance.now();
     const startIter = solver.iteration_count();

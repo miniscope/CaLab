@@ -45,32 +45,25 @@ function filterBandPlugin(
           ctx.fillStyle = withOpacity(theme.accent, 0.06);
           ctx.fillRect(left, top, right - left, height);
 
-          // Dashed cutoff lines
+          // Cutoff lines and labels
           ctx.setLineDash([4, 4]);
           ctx.lineWidth = 1;
           ctx.strokeStyle = theme.accent;
           ctx.globalAlpha = 0.6;
-
-          // High-pass cutoff line
-          ctx.beginPath();
-          ctx.moveTo(left, top);
-          ctx.lineTo(left, top + height);
-          ctx.stroke();
-
-          // Low-pass cutoff line
-          ctx.beginPath();
-          ctx.moveTo(right, top);
-          ctx.lineTo(right, top + height);
-          ctx.stroke();
-
-          // Labels
+          for (const [x, label] of [[left, 'HP'], [right, 'LP']] as const) {
+            ctx.beginPath();
+            ctx.moveTo(x, top);
+            ctx.lineTo(x, top + height);
+            ctx.stroke();
+          }
           ctx.setLineDash([]);
           ctx.globalAlpha = 0.8;
           ctx.font = '10px sans-serif';
           ctx.fillStyle = theme.accent;
           ctx.textAlign = 'center';
-          ctx.fillText('HP', left, top + 12);
-          ctx.fillText('LP', right, top + 12);
+          for (const [x, label] of [[left, 'HP'], [right, 'LP']] as const) {
+            ctx.fillText(label, x, top + 12);
+          }
 
           ctx.restore();
         },
@@ -124,10 +117,7 @@ export function SpectrumPanel() {
             theme,
           ),
         ],
-        scales: {
-          x: { time: false },
-          y: {},
-        },
+        scales: { x: { time: false } },
         series: [
           {},
           {
@@ -165,7 +155,6 @@ export function SpectrumPanel() {
           },
         ],
         legend: { show: false },
-        cursor: { show: true },
       };
 
       uplotInstance = new uPlot(opts, chartData, containerRef);
@@ -204,8 +193,6 @@ export function SpectrumPanel() {
     }
   });
 
-  const fs = () => samplingRate() ?? 0;
-
   return (
     <div class="spectrum-panel">
       <h3 class="spectrum-panel__title">Spectrum</h3>
@@ -221,22 +208,17 @@ export function SpectrumPanel() {
           <>
             <div ref={containerRef} class="spectrum-panel__chart" />
             <div class="spectrum-panel__info">
-              <div class="spectrum-panel__stat">
-                <span class="spectrum-panel__stat-label">Cell</span>
-                <span class="spectrum-panel__stat-value">{data().cellIndex + 1}</span>
-              </div>
-              <div class="spectrum-panel__stat">
-                <span class="spectrum-panel__stat-label">Fs</span>
-                <span class="spectrum-panel__stat-value">{fs()} Hz</span>
-              </div>
-              <div class="spectrum-panel__stat">
-                <span class="spectrum-panel__stat-label">HP</span>
-                <span class="spectrum-panel__stat-value">{data().highPassHz.toFixed(3)} Hz</span>
-              </div>
-              <div class="spectrum-panel__stat">
-                <span class="spectrum-panel__stat-label">LP</span>
-                <span class="spectrum-panel__stat-value">{data().lowPassHz.toFixed(1)} Hz</span>
-              </div>
+              {[
+                ['Cell', String(data().cellIndex + 1)],
+                ['Fs', `${samplingRate() ?? 0} Hz`],
+                ['HP', `${data().highPassHz.toFixed(3)} Hz`],
+                ['LP', `${data().lowPassHz.toFixed(1)} Hz`],
+              ].map(([label, value]) => (
+                <div class="spectrum-panel__stat">
+                  <span class="spectrum-panel__stat-label">{label}</span>
+                  <span class="spectrum-panel__stat-value">{value}</span>
+                </div>
+              ))}
             </div>
           </>
         )}

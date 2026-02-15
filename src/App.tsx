@@ -146,16 +146,11 @@ const App: Component = () => {
           />
         }
         sidebar={
-          supabaseEnabled
-            ? <SidebarTabs
-                communityContent={<CommunityBrowser />}
-                spectrumContent={<SpectrumPanel />}
-                metricsContent={<MetricsPanel />}
-              />
-            : <SidebarTabs
-                spectrumContent={<SpectrumPanel />}
-                metricsContent={<MetricsPanel />}
-              />
+          <SidebarTabs
+            communityContent={supabaseEnabled ? <CommunityBrowser /> : undefined}
+            spectrumContent={<SpectrumPanel />}
+            metricsContent={<MetricsPanel />}
+          />
         }
       >
         <VizLayout mode="dashboard">
