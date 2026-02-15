@@ -204,6 +204,23 @@ impl BandpassFilter {
             trace[i] = self.fft_input[i] * scale;
         }
 
+        // Baseline correction: shift so 8th percentile = 0.
+        // The high-pass removes DC, leaving calcium transients centered
+        // around zero with ~half the values negative.  Subtracting the
+        // 8th percentile (a robust baseline estimate) restores a non-
+        // negative baseline suitable for the non-negativity constraint
+        // in FISTA deconvolution.
+        let p8_idx = ((n as f64 * 0.08).round() as usize).min(n.saturating_sub(1));
+        // Reuse fft_input as scratch for partial sort (O(n) average)
+        self.fft_input[..n].copy_from_slice(trace);
+        self.fft_input[..n].select_nth_unstable_by(p8_idx, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let baseline = self.fft_input[p8_idx];
+        for i in 0..n {
+            trace[i] -= baseline;
+        }
+
         true
     }
 
@@ -288,16 +305,19 @@ mod tests {
         let mut trace: Vec<f32> = (0..n)
             .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
             .collect();
-        let original_power: f32 = trace.iter().map(|x| x * x).sum();
+        let orig_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let original_ac_power: f32 = trace.iter().map(|x| (x - orig_mean).powi(2)).sum();
 
         assert!(f.apply(&mut trace));
 
-        let filtered_power: f32 = trace.iter().map(|x| x * x).sum();
-        // Passband should preserve >90% of power
+        // Compare AC power (variance) — robust to baseline shift
+        let filt_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let filtered_ac_power: f32 = trace.iter().map(|x| (x - filt_mean).powi(2)).sum();
+        // Passband should preserve >90% of AC power
         assert!(
-            filtered_power / original_power > 0.9,
-            "passband power ratio: {}",
-            filtered_power / original_power
+            filtered_ac_power / original_ac_power > 0.9,
+            "passband AC power ratio: {}",
+            filtered_ac_power / original_ac_power
         );
     }
 
@@ -354,10 +374,13 @@ mod tests {
 
         assert!(f.apply(&mut trace));
 
-        // Check correlation with original (should be very high for passband signal)
-        let dot: f32 = trace.iter().zip(original.iter()).map(|(a, b)| a * b).sum();
-        let norm_t: f32 = trace.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_o: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
+        // Mean-subtracted correlation — robust to baseline shift
+        let mean_t: f32 = trace.iter().sum::<f32>() / n as f32;
+        let mean_o: f32 = original.iter().sum::<f32>() / n as f32;
+        let dot: f32 = trace.iter().zip(original.iter())
+            .map(|(a, b)| (a - mean_t) * (b - mean_o)).sum();
+        let norm_t: f32 = trace.iter().map(|x| (x - mean_t).powi(2)).sum::<f32>().sqrt();
+        let norm_o: f32 = original.iter().map(|x| (x - mean_o).powi(2)).sum::<f32>().sqrt();
         let correlation = dot / (norm_t * norm_o + 1e-10);
         assert!(
             correlation > 0.95,
@@ -382,6 +405,43 @@ mod tests {
         assert!(!f.valid);
         let mut trace = vec![1.0; 64];
         assert!(!f.apply(&mut trace));
+    }
+
+    #[test]
+    fn test_baseline_correction() {
+        let mut f = make_filter(0.02, 0.4, 100.0);
+        let n = 1024;
+        let fs = 100.0_f32;
+
+        // Simulate a calcium-like trace: positive baseline + transients
+        let mut trace: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / fs;
+                let baseline = 100.0; // large DC offset (fluorescence)
+                let transient = if (t * 0.5).fract() < 0.05 { 20.0 } else { 0.0 };
+                baseline + transient + 0.5 * (2.0 * PI * 1.0 * t).sin()
+            })
+            .collect();
+
+        assert!(f.apply(&mut trace));
+
+        // After filtering + baseline correction, the 8th percentile should be ~0
+        let mut sorted = trace.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p8 = sorted[(n as f64 * 0.08).round() as usize];
+        assert!(
+            p8.abs() < 0.5,
+            "8th percentile should be near 0, got: {}",
+            p8
+        );
+
+        // Most values should be non-negative (baseline at 0, transients positive)
+        let negative_frac = trace.iter().filter(|&&x| x < 0.0).count() as f64 / n as f64;
+        assert!(
+            negative_frac < 0.10,
+            "too many negative values after correction: {:.1}%",
+            negative_frac * 100.0
+        );
     }
 
     #[test]
