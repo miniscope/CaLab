@@ -2,8 +2,13 @@ use realfft::RealFftPlanner;
 use rustfft::num_complex::Complex;
 use std::f32::consts::PI;
 
-/// Margin factor for deriving bandpass cutoffs from kernel time constants.
-const MARGIN_FACTOR: f32 = 4.0;
+/// Margin factors for deriving bandpass cutoffs from kernel time constants.
+/// HP cutoff = 1/(2π·τ_decay·M_HP), LP cutoff = M_LP/(2π·τ_rise).
+/// HP uses 16× to preserve the slow calcium decay tail (~40s period for
+/// typical τ_decay=0.4s) while still removing sub-calcium baseline drift.
+/// LP uses 4× for tighter noise rejection above the kernel's rise band.
+const MARGIN_FACTOR_HP: f32 = 16.0;
+const MARGIN_FACTOR_LP: f32 = 4.0;
 
 /// FFT-based bandpass filter derived from kernel time constants.
 /// Buffers grow but never shrink (matching Solver convention).
@@ -68,9 +73,9 @@ impl BandpassFilter {
         let nyquist = self.fs / 2.0;
 
         // High-pass: removes sub-calcium drift
-        self.f_hp = 1.0 / (2.0 * PI * tau_decay * MARGIN_FACTOR);
+        self.f_hp = 1.0 / (2.0 * PI * tau_decay * MARGIN_FACTOR_HP);
         // Low-pass: removes supra-calcium noise
-        self.f_lp = MARGIN_FACTOR / (2.0 * PI * tau_rise);
+        self.f_lp = MARGIN_FACTOR_LP / (2.0 * PI * tau_rise);
 
         // Clamp low-pass to Nyquist
         if self.f_lp > nyquist {
@@ -126,7 +131,7 @@ impl BandpassFilter {
         let spectrum_len = n / 2 + 1;
         let df = self.fs / n as f32;
 
-        // Taper widths: 50% of cutoff frequency
+        // Taper widths: 50% of respective cutoff frequency
         let w_hp = self.f_hp * 0.5;
         let w_lp = self.f_lp * 0.5;
 
@@ -204,13 +209,15 @@ impl BandpassFilter {
             trace[i] = self.fft_input[i] * scale;
         }
 
-        // Baseline correction: shift so 8th percentile = 0.
+        // Baseline correction: shift so 2nd percentile = 0.
         // The high-pass removes DC, leaving calcium transients centered
         // around zero with ~half the values negative.  Subtracting the
-        // 8th percentile (a robust baseline estimate) restores a non-
+        // 2nd percentile (a robust baseline estimate) restores a non-
         // negative baseline suitable for the non-negativity constraint
-        // in FISTA deconvolution.
-        let p8_idx = ((n as f64 * 0.08).round() as usize).min(n.saturating_sub(1));
+        // in FISTA deconvolution.  Using p2 instead of p8 minimizes
+        // the upward shift in quiet trace regions while still clipping
+        // the deepest noise excursions.
+        let p8_idx = ((n as f64 * 0.02).round() as usize).min(n.saturating_sub(1));
         // Reuse fft_input as scratch for partial sort (O(n) average)
         self.fft_input[..n].copy_from_slice(trace);
         self.fft_input[..n].select_nth_unstable_by(p8_idx, |a, b| {
@@ -288,8 +295,8 @@ mod tests {
     fn test_cutoff_computation() {
         let f = make_filter(0.02, 0.4, 30.0);
         assert!(f.valid);
-        // f_hp = 1/(2*pi*0.4*4) ~ 0.0995 Hz
-        assert!((f.f_hp - 0.0995).abs() < 0.01);
+        // f_hp = 1/(2*pi*0.4*16) ~ 0.0249 Hz
+        assert!((f.f_hp - 0.0249).abs() < 0.005);
         // f_lp = 4/(2*pi*0.02) ~ 31.83 Hz, clamped to Nyquist=15 Hz
         assert!((f.f_lp - 15.0).abs() < 0.01);
     }
@@ -324,12 +331,12 @@ mod tests {
     #[test]
     fn test_stopband_attenuation() {
         let mut f = make_filter(0.02, 0.4, 100.0);
-        let n = 8192;
+        let n = 65536;
         let fs = 100.0_f32;
 
-        // Generate a very low frequency sine (0.01 Hz — well below high-pass cutoff ~0.1 Hz)
-        // Use 8192 samples for sufficient frequency resolution at low frequencies
-        let freq = 0.01_f32;
+        // Generate a very low frequency sine (0.005 Hz — well below high-pass cutoff ~0.025 Hz)
+        // Use 65536 samples for sufficient frequency resolution at the low HP cutoff
+        let freq = 0.005_f32;
         let mut trace: Vec<f32> = (0..n)
             .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
             .collect();
@@ -425,10 +432,10 @@ mod tests {
 
         assert!(f.apply(&mut trace));
 
-        // After filtering + baseline correction, the 8th percentile should be ~0
+        // After filtering + baseline correction, the 2nd percentile should be ~0
         let mut sorted = trace.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let p8 = sorted[(n as f64 * 0.08).round() as usize];
+        let p8 = sorted[(n as f64 * 0.02).round() as usize];
         assert!(
             p8.abs() < 0.5,
             "8th percentile should be near 0, got: {}",
