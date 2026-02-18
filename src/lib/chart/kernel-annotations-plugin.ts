@@ -41,6 +41,9 @@ export function kernelAnnotationsPlugin(
 
         ctx.save();
 
+        const fontSize = 10 * dpr;
+        ctx.font = `${fontSize}px sans-serif`;
+
         // --- Dashed vertical line at peak time (orange) ---
         ctx.strokeStyle = PEAK_COLOR;
         ctx.lineWidth = 1.5 * dpr;
@@ -50,14 +53,13 @@ export function kernelAnnotationsPlugin(
         ctx.lineTo(peakPx, bottomPx);
         ctx.stroke();
 
-        // Peak label
+        // Peak label — centered above the vertical line
         const peakMs = (ann.peakTime * 1000).toFixed(0);
         ctx.setLineDash([]);
         ctx.fillStyle = PEAK_COLOR;
-        ctx.font = `${10 * dpr}px sans-serif`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        ctx.fillText(`Peak: ${peakMs}ms`, peakPx + LABEL_PAD * dpr, topPx + LABEL_PAD * dpr);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(`Peak: ${peakMs}ms`, peakPx, topPx - LABEL_PAD * dpr);
 
         // --- Dashed vertical line at half-decay time (purple) ---
         ctx.strokeStyle = HALF_DECAY_COLOR;
@@ -68,13 +70,14 @@ export function kernelAnnotationsPlugin(
         ctx.lineTo(halfPx, bottomPx);
         ctx.stroke();
 
-        // Half-decay label
+        // Half-decay label — right of the vertical line, vertically centered
         const halfMs = (ann.halfDecayTime * 1000).toFixed(0);
+        const midY = topPx + height / 2;
         ctx.setLineDash([]);
         ctx.fillStyle = HALF_DECAY_COLOR;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'top';
-        ctx.fillText(`t½: ${halfMs}ms`, halfPx - LABEL_PAD * dpr, topPx + LABEL_PAD * dpr);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`t½: ${halfMs}ms`, halfPx + LABEL_PAD * dpr, midY);
 
         // --- Horizontal dashed line at y=0.5 connecting peak to half-decay ---
         ctx.strokeStyle = 'rgba(150, 150, 150, 0.5)';

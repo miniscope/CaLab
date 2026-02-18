@@ -829,7 +829,7 @@ a:hover {
 }
 
 .kernel-section .panel-label {
-  margin-bottom: 0;
+  margin-bottom: -2px;
 }
 
 /* ========================

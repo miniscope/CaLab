@@ -76,7 +76,7 @@ export function KernelDisplay() {
       <TracePanel
         data={() => kernelData() as [number[], ...number[][]]}
         series={kernelSeries()}
-        height={140}
+        height={180}
         syncKey={KERNEL_SYNC_KEY}
         xLabel="Time (s)"
         plugins={kernelPlugins()}
