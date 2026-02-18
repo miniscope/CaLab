@@ -10,7 +10,7 @@ import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '../../lib/solver-types.ts';
 import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr.ts';
 import { setHoveredCell } from '../../lib/multi-cell-store.ts';
-import { cardHeight, setCardHeight } from '../../lib/viz-store.ts';
+import { cardHeight, setCardHeight, tauDecay } from '../../lib/viz-store.ts';
 
 export interface CellCardProps {
   cellIndex: number;
@@ -45,10 +45,10 @@ export function CellCard(props: CellCardProps) {
   const snr = createMemo(() => computePeakSNR(props.rawTrace));
   const quality = createMemo(() => snrToQuality(snr()));
 
-  // Per-card independent zoom window
-  const initialEnd = () => Math.min(DEFAULT_ZOOM_WINDOW_S, totalDuration());
-  const [zoomStart, setZoomStart] = createSignal(0);
-  const [zoomEnd, setZoomEnd] = createSignal(initialEnd());
+  // Per-card independent zoom window — skip past the convolution transient at t=0
+  const transientEnd = () => Math.min(2 * tauDecay(), totalDuration());
+  const [zoomStart, setZoomStart] = createSignal(transientEnd());
+  const [zoomEnd, setZoomEnd] = createSignal(Math.min(transientEnd() + DEFAULT_ZOOM_WINDOW_S, totalDuration()));
 
   // Sync zoom end when trace changes
   createEffect(() => {

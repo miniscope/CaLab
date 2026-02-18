@@ -243,8 +243,8 @@ function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, num
     state = {
       cellIndex,
       rawTrace,
-      zoomStart: 0,
-      zoomEnd: Math.min(DEFAULT_ZOOM_WINDOW_S, duration),
+      zoomStart: Math.min(2 * tauDecay(), duration),
+      zoomEnd: Math.min(2 * tauDecay() + DEFAULT_ZOOM_WINDOW_S, duration),
       warmStartCache: new WarmStartCache(),
       activeJobId: null,
       debounceTimer: null,

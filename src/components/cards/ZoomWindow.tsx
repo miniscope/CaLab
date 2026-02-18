@@ -8,7 +8,7 @@ import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel.tsx';
 import { downsampleMinMax } from '../../lib/chart/downsample.ts';
 import { createRawSeries, createFilteredSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries, createGroundTruthSpikesSeries, createGroundTruthCalciumSeries } from '../../lib/chart/series-config.ts';
-import { showRaw, showFiltered, showFit, showDeconv, showResid, showGTCalcium, showGTSpikes } from '../../lib/viz-store.ts';
+import { showRaw, showFiltered, showFit, showDeconv, showResid, showGTCalcium, showGTSpikes, tauDecay } from '../../lib/viz-store.ts';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -43,6 +43,8 @@ const DECONV_GAP = -2; // z-score offset: negative = deconv peaks overlap raw ra
 const DECONV_SCALE = 0.35; // scale deconvolved to this fraction of raw z-range
 const RESID_GAP = 0.5; // gap between deconv band bottom and residual band top
 const RESID_SCALE = 0.25; // scale residuals to this fraction of raw z-range
+/** Convolution transient: mask the first N × tauDecay seconds of the fit at the trace start. */
+const TRANSIENT_TAU_MULTIPLIER = 2;
 
 // Series count: x + raw + filtered + deconv + fit + resid + pinnedDeconv + pinnedFit + gtCalcium + gtSpikes
 const SERIES_COUNT = 10;
@@ -186,13 +188,13 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const residTop = deconvBottom - RESID_GAP;
     const residBottom = residTop - residHeight;
 
-    // Compute raw residuals and find their range
-    const rawResid: number[] = [];
+    // Compute raw residuals and find their range (null where reconv is masked)
+    const rawResid: (number | null)[] = [];
     let rMin = Infinity;
     let rMax = -Infinity;
     for (let i = 0; i < dsRaw.length; i++) {
       if (dsReconv[i] === null || dsReconv[i] === undefined) {
-        rawResid.push(0);
+        rawResid.push(null);
       } else {
         const r = dsRaw[i] - (dsReconv[i] as number);
         rawResid.push(r);
@@ -203,6 +205,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const rRange = rMax - rMin || 1;
 
     return rawResid.map(r => {
+      if (r === null) return null as unknown as number;
       const norm = (r - rMin) / rRange;
       return residBottom + norm * residHeight;
     });
@@ -257,6 +260,20 @@ export function ZoomWindow(props: ZoomWindowProps) {
       props.reconvolutionTrace, x, startSample, endSample,
       offset, raw.length, dsX.length, props.filteredTrace ? toZScoreFiltered : toZScore,
     );
+
+    // Null-mask the convolution transient at the trace start.
+    // At t=0 the causal kernel has no history, so the reconvolution ramps up from
+    // ~0 over the first ~2×tauDecay seconds. Mask those points so uPlot draws a gap.
+    const transientTime = TRANSIENT_TAU_MULTIPLIER * tauDecay();
+    if (startSample < transientTime * fs) {
+      for (let i = 0; i < dsReconv.length; i++) {
+        if (dsX[i] < transientTime) {
+          (dsReconv as any)[i] = null;
+        } else {
+          break;
+        }
+      }
+    }
 
     // Deconvolved trace — scaled into deconv band below raw
     const dsDeconv = sliceAndDownsample(
