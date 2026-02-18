@@ -124,7 +124,7 @@ export const basicsTutorial: Tutorial = {
     },
     // Step 15: Good vs bad fit
     {
-      element: '[data-tutorial="param-panel"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Good Fit vs Bad Fit',
       description:
         '<b>Good:</b> orange tracks blue peaks, green deconvolved events ride on the rise and decay of the calcium trace, red looks like noise. <b>Bad:</b> orange misses peaks, green has spikes spread beyond the actual transients, red shows structured patterns.',
