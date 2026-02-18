@@ -4,7 +4,7 @@
  */
 
 import { createSignal, type Accessor, type Setter, Show } from 'solid-js';
-import type { SelectionMode } from '../../lib/multi-cell-store';
+import type { SelectionMode } from '../../lib/multi-cell-store.ts';
 import {
   selectionMode,
   setSelectionMode,
@@ -15,8 +15,8 @@ import {
   updateCellSelection,
   gridColumns,
   setGridColumns,
-} from '../../lib/multi-cell-store';
-import { numCells, groundTruthVisible } from '../../lib/data-store';
+} from '../../lib/multi-cell-store.ts';
+import { numCells, groundTruthVisible } from '../../lib/data-store.ts';
 import {
   filterEnabled,
   showRaw, setShowRaw,
@@ -26,7 +26,7 @@ import {
   showResid, setShowResid,
   showGTCalcium, setShowGTCalcium,
   showGTSpikes, setShowGTSpikes,
-} from '../../lib/viz-store';
+} from '../../lib/viz-store.ts';
 import '../../styles/multi-trace.css';
 
 export interface CellSelectorProps {

@@ -1,12 +1,12 @@
 // TutorialPanel: lists all available tutorials with progress state and prerequisite gating.
 
 import { For, Show, type JSX } from 'solid-js';
-import { tutorials } from '../../lib/tutorial/content';
-import { isCompleted, getProgress } from '../../lib/tutorial/progress';
-import { startTutorial } from '../../lib/tutorial/tutorial-engine';
-import { isTutorialActive } from '../../lib/tutorial/tutorial-store';
-import { importStep } from '../../lib/data-store';
-import type { Tutorial } from '../../lib/tutorial/types';
+import { tutorials } from '../../lib/tutorial/content/index.ts';
+import { isCompleted, getProgress } from '../../lib/tutorial/progress.ts';
+import { startTutorial } from '../../lib/tutorial/tutorial-engine.ts';
+import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
+import { importStep } from '../../lib/data-store.ts';
+import type { Tutorial } from '../../lib/tutorial/types.ts';
 
 interface TutorialPanelProps {
   onClose: () => void;

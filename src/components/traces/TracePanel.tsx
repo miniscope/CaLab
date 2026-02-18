@@ -8,7 +8,7 @@ import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
-import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin';
+import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
 
 export interface TracePanelProps {
   /** uPlot AlignedData format: [x, y1, y2, ...] -- signal accessor for reactivity */

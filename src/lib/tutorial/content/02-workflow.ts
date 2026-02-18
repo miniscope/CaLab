@@ -1,7 +1,7 @@
 // TUTR-02: Guided Tuning Workflow tutorial.
 // Pure data definition -- no driver.js imports (TUTR-05 compliance).
 
-import type { Tutorial } from '../types';
+import type { Tutorial } from '../types.ts';
 
 export const workflowTutorial: Tutorial = {
   id: 'workflow',

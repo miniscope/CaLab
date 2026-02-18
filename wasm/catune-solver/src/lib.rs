@@ -4,6 +4,9 @@ mod filter;
 
 use kernel::{build_kernel, compute_lipschitz};
 use filter::BandpassFilter;
+use realfft::RealFftPlanner;
+use rustfft::num_complex::Complex;
+use std::io::{Cursor, Read};
 use wasm_bindgen::prelude::*;
 
 /// FISTA solver for calcium deconvolution.
@@ -46,6 +49,18 @@ pub struct Solver {
     pub(crate) baseline: f64,
     kernel_dc_gain: f64,
 
+    // FFT-based convolution infrastructure
+    pub(crate) fft_planner: RealFftPlanner<f32>,
+    pub(crate) fft_len: usize,             // padded FFT length (power of 2 >= n + k_len - 1)
+    pub(crate) kernel_fft: Vec<Complex<f32>>,      // pre-computed FFT of kernel (spectrum_len)
+    pub(crate) kernel_conj_fft: Vec<Complex<f32>>, // conjugate of kernel FFT (for adjoint)
+    pub(crate) fft_input: Vec<f32>,                // scratch: real input buffer (fft_len)
+    pub(crate) fft_spectrum: Vec<Complex<f32>>,    // scratch: complex spectrum (fft_len/2 + 1)
+    pub(crate) fft_scratch_fwd: Vec<Complex<f32>>, // scratch for forward FFT
+    pub(crate) fft_scratch_inv: Vec<Complex<f32>>, // scratch for inverse FFT
+    pub(crate) fft_output: Vec<f32>,               // scratch: real output buffer (fft_len)
+    pub(crate) reconvolution_stale: bool,          // dirty flag for lazy reconvolution
+
     // Bandpass filter
     bandpass: BandpassFilter,
 }
@@ -79,6 +94,16 @@ impl Solver {
             lipschitz_constant: 1.0,
             baseline: 0.0,
             kernel_dc_gain: 1.0,
+            fft_planner: RealFftPlanner::new(),
+            fft_len: 0,
+            kernel_fft: Vec::new(),
+            kernel_conj_fft: Vec::new(),
+            fft_input: Vec::new(),
+            fft_spectrum: Vec::new(),
+            fft_scratch_fwd: Vec::new(),
+            fft_scratch_inv: Vec::new(),
+            fft_output: Vec::new(),
+            reconvolution_stale: true,
             bandpass: BandpassFilter::new(),
         };
 
@@ -100,6 +125,21 @@ impl Solver {
         self.lipschitz_constant = compute_lipschitz(&self.kernel);
         self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
         self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
+
+        // Update kernel FFT if buffers are already set up and large enough.
+        // On re-enqueue quanta with unchanged trace length, this avoids a full
+        // FFT plan + buffer rebuild in ensure_fft_buffers.
+        if self.fft_len > 0 && self.active_len > 0 {
+            let min_len = self.active_len + self.kernel.len() - 1;
+            if min_len <= self.fft_len {
+                // Existing FFT buffers are large enough — just re-FFT the kernel
+                self.prepare_kernel_fft();
+            } else {
+                // New kernel is longer; need larger FFT — invalidate
+                self.fft_len = 0;
+            }
+        }
+        // If fft_len == 0 or active_len == 0, ensure_fft_buffers in set_trace handles it
     }
 
     /// Load a trace for deconvolution. Grows buffers if needed (never shrinks).
@@ -119,14 +159,13 @@ impl Solver {
         }
 
         // Copy trace data and zero out solution buffers for active region
-        self.trace[..trace.len()].copy_from_slice(trace);
-        for i in 0..trace.len() {
-            self.solution[i] = 0.0;
-            self.solution_prev[i] = 0.0;
-            self.gradient[i] = 0.0;
-            self.reconvolution[i] = 0.0;
-            self.residual_buf[i] = 0.0;
-        }
+        let n = trace.len();
+        self.trace[..n].copy_from_slice(trace);
+        self.solution[..n].fill(0.0);
+        self.solution_prev[..n].fill(0.0);
+        self.gradient[..n].fill(0.0);
+        self.reconvolution[..n].fill(0.0);
+        self.residual_buf[..n].fill(0.0);
 
         // Reset iteration state
         self.iteration = 0;
@@ -134,25 +173,48 @@ impl Solver {
         self.converged = false;
         self.prev_objective = f64::INFINITY;
         self.baseline = 0.0;
+        self.reconvolution_stale = true;
+
+        // Prepare FFT infrastructure for this trace length
+        self.ensure_fft_buffers();
     }
 
     /// Returns a copy of the kernel.
+    ///
+    /// Returns `Vec<f32>` which wasm-bindgen copies into a JS-owned `Float32Array`.
+    /// A WASM memory view would be unsound here: any subsequent WASM allocation
+    /// (e.g. `set_trace`) can grow the memory and invalidate the view. The JS side
+    /// also transfers these buffers via `postMessage`, which requires ownership.
     pub fn get_kernel(&self) -> Vec<f32> {
         self.kernel.clone()
     }
 
-    /// Returns a copy of the current solution (spike train) for the active region.
+    /// Returns the current solution (spike train) for the active region.
+    ///
+    /// See `get_kernel` for why this returns an owned copy rather than a memory view.
     pub fn get_solution(&self) -> Vec<f32> {
         self.solution[..self.active_len].to_vec()
     }
 
-    /// Returns a copy of the reconvolution (K * solution) for the active region.
-    pub fn get_reconvolution(&self) -> Vec<f32> {
+    /// Returns the reconvolution (K * solution) for the active region.
+    /// Computes the reconvolution lazily if it is stale (not computed during iteration).
+    ///
+    /// See `get_kernel` for why this returns an owned copy rather than a memory view.
+    pub fn get_reconvolution(&mut self) -> Vec<f32> {
+        if self.reconvolution_stale {
+            self.compute_reconvolution();
+        }
         self.reconvolution[..self.active_len].to_vec()
     }
 
     /// Returns reconvolution with baseline added: K*s + b for the active region.
-    pub fn get_reconvolution_with_baseline(&self) -> Vec<f32> {
+    /// Computes the reconvolution lazily if it is stale.
+    ///
+    /// See `get_kernel` for why this returns an owned copy rather than a memory view.
+    pub fn get_reconvolution_with_baseline(&mut self) -> Vec<f32> {
+        if self.reconvolution_stale {
+            self.compute_reconvolution();
+        }
         let b = self.baseline as f32;
         self.reconvolution[..self.active_len].iter().map(|&v| v + b).collect()
     }
@@ -162,8 +224,10 @@ impl Solver {
         self.baseline
     }
 
-    /// Returns a copy of the current trace for the active region.
+    /// Returns the current trace for the active region.
     /// After apply_filter(), this contains the filtered trace.
+    ///
+    /// See `get_kernel` for why this returns an owned copy rather than a memory view.
     pub fn get_trace(&self) -> Vec<f32> {
         self.trace[..self.active_len].to_vec()
     }
@@ -211,6 +275,213 @@ impl Solver {
         }
 
         buf
+    }
+
+    // --- FFT convolution infrastructure ---
+
+    /// Ensure FFT buffers are allocated for the current active_len + kernel size.
+    /// Recomputes kernel FFT when the padded FFT length changes.
+    /// Buffers grow but never shrink.
+    pub(crate) fn ensure_fft_buffers(&mut self) {
+        let n = self.active_len;
+        let k_len = self.kernel.len();
+        if n == 0 || k_len == 0 {
+            return;
+        }
+
+        // Padded length: next power of 2 >= n + k_len - 1 for linear (non-circular) convolution
+        let min_len = n + k_len - 1;
+        let padded_len = min_len.next_power_of_two();
+
+        if padded_len == self.fft_len {
+            return; // Already set up for this length
+        }
+
+        self.fft_len = padded_len;
+        let spectrum_len = padded_len / 2 + 1;
+
+        // Grow buffers (never shrink)
+        if self.fft_input.len() < padded_len {
+            self.fft_input.resize(padded_len, 0.0);
+        }
+        if self.fft_output.len() < padded_len {
+            self.fft_output.resize(padded_len, 0.0);
+        }
+        if self.fft_spectrum.len() < spectrum_len {
+            self.fft_spectrum.resize(spectrum_len, Complex::new(0.0, 0.0));
+        }
+        if self.kernel_fft.len() < spectrum_len {
+            self.kernel_fft.resize(spectrum_len, Complex::new(0.0, 0.0));
+        }
+        if self.kernel_conj_fft.len() < spectrum_len {
+            self.kernel_conj_fft.resize(spectrum_len, Complex::new(0.0, 0.0));
+        }
+
+        // Plan FFTs and allocate scratch
+        let fwd = self.fft_planner.plan_fft_forward(padded_len);
+        let inv = self.fft_planner.plan_fft_inverse(padded_len);
+        let fwd_scratch = fwd.get_scratch_len();
+        let inv_scratch = inv.get_scratch_len();
+        if self.fft_scratch_fwd.len() < fwd_scratch {
+            self.fft_scratch_fwd.resize(fwd_scratch, Complex::new(0.0, 0.0));
+        }
+        if self.fft_scratch_inv.len() < inv_scratch {
+            self.fft_scratch_inv.resize(inv_scratch, Complex::new(0.0, 0.0));
+        }
+
+        // Pre-compute kernel FFT and its conjugate
+        self.prepare_kernel_fft();
+    }
+
+    /// Compute and cache the FFT of the kernel (forward) and its conjugate (adjoint).
+    fn prepare_kernel_fft(&mut self) {
+        let k_len = self.kernel.len();
+        let padded_len = self.fft_len;
+        let spectrum_len = padded_len / 2 + 1;
+
+        // Zero-pad kernel into fft_input
+        for i in 0..padded_len {
+            self.fft_input[i] = if i < k_len { self.kernel[i] } else { 0.0 };
+        }
+
+        // Forward FFT of kernel
+        let fwd = self.fft_planner.plan_fft_forward(padded_len);
+        fwd.process_with_scratch(
+            &mut self.fft_input[..padded_len],
+            &mut self.kernel_fft[..spectrum_len],
+            &mut self.fft_scratch_fwd,
+        )
+        .unwrap();
+
+        // Conjugate for adjoint (correlation = convolution with reversed kernel)
+        for i in 0..spectrum_len {
+            self.kernel_conj_fft[i] = self.kernel_fft[i].conj();
+        }
+    }
+
+    /// FFT-based forward convolution: writes K * source into self.reconvolution[..n].
+    /// source must have at least n elements.
+    pub(crate) fn convolve_forward_fft(&mut self, source: &[f32]) {
+        let n = self.active_len;
+        let padded_len = self.fft_len;
+        let spectrum_len = padded_len / 2 + 1;
+
+        // Zero-pad source into fft_input
+        for i in 0..padded_len {
+            self.fft_input[i] = if i < n { source[i] } else { 0.0 };
+        }
+
+        // Forward FFT of source
+        let fwd = self.fft_planner.plan_fft_forward(padded_len);
+        fwd.process_with_scratch(
+            &mut self.fft_input[..padded_len],
+            &mut self.fft_spectrum[..spectrum_len],
+            &mut self.fft_scratch_fwd,
+        )
+        .unwrap();
+
+        // Pointwise multiply with kernel FFT
+        for i in 0..spectrum_len {
+            self.fft_spectrum[i] *= self.kernel_fft[i];
+        }
+
+        // Inverse FFT
+        let inv = self.fft_planner.plan_fft_inverse(padded_len);
+        inv.process_with_scratch(
+            &mut self.fft_spectrum[..spectrum_len],
+            &mut self.fft_output[..padded_len],
+            &mut self.fft_scratch_inv,
+        )
+        .unwrap();
+
+        // Normalize and copy first n samples to reconvolution
+        let scale = 1.0 / padded_len as f32;
+        for i in 0..n {
+            self.reconvolution[i] = self.fft_output[i] * scale;
+        }
+    }
+
+    /// FFT-based adjoint convolution (correlation): writes K^T * source into self.gradient[..n].
+    /// Uses the conjugate kernel FFT. source must have at least n elements.
+    pub(crate) fn convolve_adjoint_fft(&mut self, source: &[f32]) {
+        let n = self.active_len;
+        let padded_len = self.fft_len;
+        let spectrum_len = padded_len / 2 + 1;
+
+        // Zero-pad source into fft_input
+        for i in 0..padded_len {
+            self.fft_input[i] = if i < n { source[i] } else { 0.0 };
+        }
+
+        // Forward FFT of source
+        let fwd = self.fft_planner.plan_fft_forward(padded_len);
+        fwd.process_with_scratch(
+            &mut self.fft_input[..padded_len],
+            &mut self.fft_spectrum[..spectrum_len],
+            &mut self.fft_scratch_fwd,
+        )
+        .unwrap();
+
+        // Pointwise multiply with conjugate kernel FFT
+        for i in 0..spectrum_len {
+            self.fft_spectrum[i] *= self.kernel_conj_fft[i];
+        }
+
+        // Inverse FFT
+        let inv = self.fft_planner.plan_fft_inverse(padded_len);
+        inv.process_with_scratch(
+            &mut self.fft_spectrum[..spectrum_len],
+            &mut self.fft_output[..padded_len],
+            &mut self.fft_scratch_inv,
+        )
+        .unwrap();
+
+        // Normalize and copy first n samples to gradient
+        let scale = 1.0 / padded_len as f32;
+        for i in 0..n {
+            self.gradient[i] = self.fft_output[i] * scale;
+        }
+    }
+
+    /// Compute reconvolution (K * solution) on demand for getters.
+    /// Called lazily when get_reconvolution() or get_reconvolution_with_baseline() is invoked
+    /// and reconvolution_stale is true.
+    fn compute_reconvolution(&mut self) {
+        let n = self.active_len;
+        if n == 0 {
+            return;
+        }
+
+        // Use FFT-based convolution if infrastructure is ready
+        if self.fft_len > 0 {
+            // We need a temporary copy of solution since convolve_forward_fft borrows &[f32]
+            // but also mutates self. Use fft_output as temporary storage (it will be overwritten).
+            // Actually, we can use a slice reference trick: copy solution to a temp vec.
+            let solution_copy: Vec<f32> = self.solution[..n].to_vec();
+            self.convolve_forward_fft(&solution_copy);
+        } else {
+            // Fallback to time-domain convolution for very small cases
+            let k_len = self.kernel.len();
+            for t in 0..n {
+                let mut sum = 0.0;
+                let k_max = k_len.min(t + 1);
+                for k in 0..k_max {
+                    sum += self.kernel[k] * self.solution[t - k];
+                }
+                self.reconvolution[t] = sum;
+            }
+        }
+
+        // Recompute baseline at current solution
+        {
+            let mut sum = 0.0_f64;
+            for i in 0..n {
+                sum += (self.trace[i] - self.reconvolution[i]) as f64;
+            }
+            self.baseline = sum / n as f64;
+        }
+
+        self.reconvolution_stale = false;
     }
 
     // --- Bandpass filter methods ---
@@ -262,50 +533,54 @@ impl Solver {
             return; // cold start -- solution already zeroed by set_trace
         }
 
-        // Read header: active_len (u32) + t_fista (f64) + iteration (u32) + baseline (f64) = 24 bytes
+        // Header: active_len (u32) + t_fista (f64) + iteration (u32) + baseline (f64) = 24 bytes
         if state.len() < 24 {
             return; // too small, cold start
         }
 
-        let saved_len = u32::from_le_bytes([state[0], state[1], state[2], state[3]]) as usize;
-        let expected_size = 4 + 8 + 4 + 8 + 2 * saved_len * 4; // f32: 4 bytes per element
+        let mut cur = Cursor::new(state);
+
+        let saved_len = read_u32_le(&mut cur) as usize;
+        let expected_size = 4 + 8 + 4 + 8 + 2 * saved_len * 4;
 
         if state.len() != expected_size || saved_len != self.active_len {
             return; // size mismatch, cold start
         }
 
-        // Read t_fista, iteration, and baseline
-        self.t_fista = f64::from_le_bytes([
-            state[4], state[5], state[6], state[7], state[8], state[9], state[10], state[11],
-        ]);
-        self.iteration = u32::from_le_bytes([state[12], state[13], state[14], state[15]]);
-        self.baseline = f64::from_le_bytes([
-            state[16], state[17], state[18], state[19], state[20], state[21], state[22], state[23],
-        ]);
+        self.t_fista = read_f64_le(&mut cur);
+        self.iteration = read_u32_le(&mut cur);
+        self.baseline = read_f64_le(&mut cur);
         self.converged = false;
         self.prev_objective = f64::INFINITY;
 
-        // Read solution and solution_prev (f32: 4 bytes each)
-        let mut offset = 24;
         for i in 0..saved_len {
-            let bytes = [
-                state[offset],
-                state[offset + 1],
-                state[offset + 2],
-                state[offset + 3],
-            ];
-            self.solution[i] = f32::from_le_bytes(bytes);
-            offset += 4;
+            self.solution[i] = read_f32_le(&mut cur);
         }
         for i in 0..saved_len {
-            let bytes = [
-                state[offset],
-                state[offset + 1],
-                state[offset + 2],
-                state[offset + 3],
-            ];
-            self.solution_prev[i] = f32::from_le_bytes(bytes);
-            offset += 4;
+            self.solution_prev[i] = read_f32_le(&mut cur);
         }
     }
+}
+
+// --- Little-endian cursor read helpers ---
+// These wrap the repetitive read_exact + from_le_bytes pattern used by load_state.
+// Each panics on short reads, which cannot occur when the caller has already
+// validated the total buffer length (as load_state does above).
+
+fn read_u32_le(cur: &mut Cursor<&[u8]>) -> u32 {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).unwrap();
+    u32::from_le_bytes(buf)
+}
+
+fn read_f32_le(cur: &mut Cursor<&[u8]>) -> f32 {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).unwrap();
+    f32::from_le_bytes(buf)
+}
+
+fn read_f64_le(cur: &mut Cursor<&[u8]>) -> f64 {
+    let mut buf = [0u8; 8];
+    cur.read_exact(&mut buf).unwrap();
+    f64::from_le_bytes(buf)
 }

@@ -1,7 +1,7 @@
 // TUTR-01: Understanding Parameters tutorial.
 // Pure data definition -- no driver.js imports (TUTR-05 compliance).
 
-import type { Tutorial } from '../types';
+import type { Tutorial } from '../types.ts';
 
 export const basicsTutorial: Tutorial = {
   id: 'basics',

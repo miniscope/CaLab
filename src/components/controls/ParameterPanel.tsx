@@ -6,11 +6,11 @@ import {
   tauRise, tauDecay, setTauRise, setTauDecay,
   lambda, setLambda,
   filterEnabled, setFilterEnabled,
-} from '../../lib/viz-store';
-import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store';
-import { PARAM_RANGES } from '../../lib/param-config';
-import { ParameterSlider } from './ParameterSlider';
-import { ConvergenceIndicator } from './ConvergenceIndicator';
+} from '../../lib/viz-store.ts';
+import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
+import { PARAM_RANGES } from '../../lib/param-config.ts';
+import { ParameterSlider } from './ParameterSlider.tsx';
+import { ConvergenceIndicator } from './ConvergenceIndicator.tsx';
 import '../../styles/controls.css';
 
 export interface ParameterPanelProps {

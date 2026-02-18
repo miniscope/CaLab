@@ -1,8 +1,8 @@
 // Cell activity ranking and random sampling utilities
 // Pure functions for selecting which cells to display in multi-trace view
 
-import type { NpyResult } from './types';
-import { extractCellTrace } from './array-utils';
+import type { NpyResult } from './types.ts';
+import { extractCellTrace } from './array-utils.ts';
 
 /**
  * Rank all cells by activity level (variance of raw trace).

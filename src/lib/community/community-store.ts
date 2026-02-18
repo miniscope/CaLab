@@ -5,8 +5,8 @@
 
 import { createSignal } from 'solid-js';
 import type { User, Session } from '@supabase/supabase-js';
-import { supabase } from '../supabase.ts';
-import type { CommunitySubmission, FilterState, FieldOptions } from './types.ts';
+import { getSupabase, supabaseEnabled } from '../supabase.ts';
+import type { FieldOptions } from './types.ts';
 import {
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,
@@ -21,18 +21,6 @@ import { fetchFieldOptions } from './community-service.ts';
 const [user, setUser] = createSignal<User | null>(null);
 const [session, setSession] = createSignal<Session | null>(null);
 const [authLoading, setAuthLoading] = createSignal<boolean>(true);
-
-// --- Community data signals ---
-
-const [submissions, setSubmissions] = createSignal<CommunitySubmission[]>([]);
-const [filters, setFilters] = createSignal<FilterState>({
-  indicator: null,
-  species: null,
-  brainRegion: null,
-  demoPreset: null,
-});
-const [browsing, setBrowsing] = createSignal<boolean>(false);
-const [lastFetched, setLastFetched] = createSignal<number | null>(null);
 
 // --- Field options signals ---
 
@@ -52,7 +40,7 @@ let fieldOptionsLoaded = false;
  */
 async function loadFieldOptions(): Promise<void> {
   if (fieldOptionsLoaded || fieldOptionsLoading()) return;
-  if (!supabase) return; // Keep fallback arrays
+  if (!supabaseEnabled) return; // Keep fallback arrays
 
   setFieldOptionsLoading(true);
   try {
@@ -68,19 +56,27 @@ async function loadFieldOptions(): Promise<void> {
 
 // --- Auth initialization ---
 
-if (supabase) {
-  // Subscribe to auth state changes (no async in callback per Supabase docs)
-  supabase.auth.onAuthStateChange((_event, sess) => {
-    setSession(sess);
-    setUser(sess?.user ?? null);
-    setAuthLoading(false);
-  });
+if (supabaseEnabled) {
+  // Lazily load the SDK, then subscribe to auth events
+  getSupabase().then((client) => {
+    if (!client) {
+      setAuthLoading(false);
+      return;
+    }
 
-  // Load initial session
-  supabase.auth.getSession().then(({ data: { session: sess } }) => {
-    setSession(sess);
-    setUser(sess?.user ?? null);
-    setAuthLoading(false);
+    // Subscribe to auth state changes (no async in callback per Supabase docs)
+    client.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+      setUser(sess?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    // Load initial session
+    client.auth.getSession().then(({ data: { session: sess } }) => {
+      setSession(sess);
+      setUser(sess?.user ?? null);
+      setAuthLoading(false);
+    });
   });
 } else {
   // No Supabase configured -- mark auth as done immediately
@@ -91,8 +87,9 @@ if (supabase) {
 
 /** Sign in with email magic link. Sends a login link to the user's email. */
 async function signInWithEmail(email: string): Promise<{ error: string | null }> {
-  if (!supabase) return { error: 'Community features not configured' };
-  const { error } = await supabase.auth.signInWithOtp({
+  const client = await getSupabase();
+  if (!client) return { error: 'Community features not configured' };
+  const { error } = await client.auth.signInWithOtp({
     email,
     options: {
       emailRedirectTo: window.location.origin + (import.meta.env.BASE_URL || '/'),
@@ -107,8 +104,9 @@ async function signInWithEmail(email: string): Promise<{ error: string | null }>
 
 /** Sign out of the current session (local scope only). */
 async function signOut(): Promise<void> {
-  if (!supabase) return;
-  await supabase.auth.signOut({ scope: 'local' });
+  const client = await getSupabase();
+  if (!client) return;
+  await client.auth.signOut({ scope: 'local' });
 }
 
 // --- Exports ---
@@ -117,16 +115,6 @@ export {
   // Auth signals (getters)
   user,
   authLoading,
-  // Community data signals (getters)
-  submissions,
-  filters,
-  browsing,
-  lastFetched,
-  // Community data setters
-  setSubmissions,
-  setFilters,
-  setBrowsing,
-  setLastFetched,
   // Field options
   fieldOptions,
   fieldOptionsLoading,

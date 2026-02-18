@@ -8,6 +8,7 @@ export const solver_export_state: (a: number, b: number) => void;
 export const solver_filter_enabled: (a: number) => number;
 export const solver_get_baseline: (a: number) => number;
 export const solver_get_filter_cutoffs: (a: number, b: number) => void;
+export const solver_get_kernel: (a: number, b: number) => void;
 export const solver_get_power_spectrum: (a: number, b: number) => void;
 export const solver_get_reconvolution: (a: number, b: number) => void;
 export const solver_get_reconvolution_with_baseline: (a: number, b: number) => void;

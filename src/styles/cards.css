@@ -62,7 +62,9 @@
   border-color: var(--accent);
 }
 
-/* Status-based border glow */
+/* Status-based border glow
+   Box-shadow rgba values correspond to the semantic status colors:
+   --error: #d32f2f, --warning: #e09800, --success: #2e7d32 */
 .cell-card--stale {
   border-color: var(--error);
   box-shadow: 0 0 6px rgba(211, 47, 47, 0.3);

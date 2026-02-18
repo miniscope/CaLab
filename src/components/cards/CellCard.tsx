@@ -4,13 +4,13 @@
  */
 
 import { createSignal, createMemo, createEffect, Show } from 'solid-js';
-import { TraceOverview } from './TraceOverview';
-import { ZoomWindow } from './ZoomWindow';
-import { QualityBadge } from '../metrics/QualityBadge';
-import type { CellSolverStatus } from '../../lib/solver-types';
-import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr';
-import { setHoveredCell } from '../../lib/multi-cell-store';
-import { cardHeight, setCardHeight } from '../../lib/viz-store';
+import { TraceOverview } from './TraceOverview.tsx';
+import { ZoomWindow } from './ZoomWindow.tsx';
+import { QualityBadge } from '../metrics/QualityBadge.tsx';
+import type { CellSolverStatus } from '../../lib/solver-types.ts';
+import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr.ts';
+import { setHoveredCell } from '../../lib/multi-cell-store.ts';
+import { cardHeight, setCardHeight } from '../../lib/viz-store.ts';
 
 export interface CellCardProps {
   cellIndex: number;

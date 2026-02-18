@@ -5,12 +5,12 @@
  */
 
 import { createMemo } from 'solid-js';
-import { computeKernel, computeKernelAnnotations } from '../../lib/chart/kernel-math';
-import { kernelAnnotationsPlugin } from '../../lib/chart/kernel-annotations-plugin';
-import { tauRise, tauDecay } from '../../lib/viz-store';
-import { samplingRate, isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store';
-import { createGroundTruthKernelSeries } from '../../lib/chart/series-config';
-import { TracePanel } from './TracePanel';
+import { computeKernel, computeKernelAnnotations } from '../../lib/chart/kernel-math.ts';
+import { kernelAnnotationsPlugin } from '../../lib/chart/kernel-annotations-plugin.ts';
+import { tauRise, tauDecay } from '../../lib/viz-store.ts';
+import { samplingRate, isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
+import { createGroundTruthKernelSeries } from '../../lib/chart/series-config.ts';
+import { TracePanel } from './TracePanel.tsx';
 import type uPlot from 'uplot';
 
 const KERNEL_SYNC_KEY = 'catune-kernel';

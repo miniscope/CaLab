@@ -1,12 +1,21 @@
 // Pool worker: self-contained WASM solver with cooperative cancellation.
 // Uses raw postMessage (not Comlink) so the event loop can process
-// cancel messages between solver batches via setTimeout(0) yields.
+// cancel messages between solver batches via MessageChannel yields.
 
 import init, { Solver } from '../../wasm/catune-solver/pkg/catune_solver';
-import type { PoolWorkerInbound, PoolWorkerOutbound } from '../lib/solver-types';
+import type { PoolWorkerInbound, PoolWorkerOutbound } from '../lib/solver-types.ts';
 
 const INTERMEDIATE_INTERVAL_MS = 100;
 const BATCH_SIZE = 15;
+
+// MessageChannel yields in <1ms vs setTimeout(0)'s ~4ms minimum timer resolution.
+const yieldChannel = new MessageChannel();
+function yieldToMacrotask(): Promise<void> {
+  return new Promise<void>(resolve => {
+    yieldChannel.port2.onmessage = () => resolve();
+    yieldChannel.port1.postMessage(null);
+  });
+}
 
 let solver: Solver | null = null;
 let cancelled = false;
@@ -33,7 +42,7 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
   try {
     // Configure solver
     solver.set_params(req.params.tauRise, req.params.tauDecay, req.params.lambda, req.params.fs);
-    solver.set_trace(new Float32Array(req.trace));
+    solver.set_trace(req.trace);
     solver.set_filter_enabled(req.params.filterEnabled);
 
     // Apply bandpass filter before warm-start (filter modifies the trace itself)
@@ -76,7 +85,7 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
       }
 
       // Yield to event loop so cancel messages can be processed
-      await new Promise<void>(r => setTimeout(r, 0));
+      await yieldToMacrotask();
     }
 
     if (cancelled) {

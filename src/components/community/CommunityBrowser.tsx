@@ -8,22 +8,22 @@
  */
 
 import { createSignal, createEffect, createMemo, Show, on } from 'solid-js';
-import { supabaseEnabled } from '../../lib/supabase';
-import { fetchSubmissions } from '../../lib/community/community-service';
+import { supabaseEnabled } from '../../lib/supabase.ts';
+import { fetchSubmissions } from '../../lib/community/community-service.ts';
 import {
   fieldOptions,
   loadFieldOptions,
-} from '../../lib/community/community-store';
+} from '../../lib/community/community-store.ts';
 import type {
   CommunitySubmission,
   DataSource,
   FilterState,
-} from '../../lib/community/types';
-import { tauRise, tauDecay, lambda } from '../../lib/viz-store';
-import { isDemo } from '../../lib/data-store';
-import { getPresetLabels } from '../../lib/chart/demo-presets';
-import { ScatterPlot } from './ScatterPlot';
-import { FilterBar } from './FilterBar';
+} from '../../lib/community/types.ts';
+import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
+import { isDemo } from '../../lib/data-store.ts';
+import { getPresetLabels } from '../../lib/chart/demo-presets.ts';
+import { ScatterPlot } from './ScatterPlot.tsx';
+import { FilterBar } from './FilterBar.tsx';
 import '../../styles/community.css';
 
 /** Stale-while-revalidate threshold: 5 minutes in milliseconds. */

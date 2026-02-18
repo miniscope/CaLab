@@ -346,19 +346,10 @@
   color: var(--text-secondary);
 }
 
+/* Note: similar to convergence-pulse in global.css, but opacity-only (no scale) */
 @keyframes badge-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
-}
-
-/* ========================
-   Section Divider — solid thin line
-   ======================== */
-.section-divider {
-  border: none;
-  height: 1px;
-  background: var(--border-subtle);
-  margin: var(--space-sm) 0;
 }
 
 /* ========================

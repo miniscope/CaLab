@@ -1,4 +1,5 @@
 // Shared uPlot series configuration builders for trace panels.
+// Trace colors follow the D3 category10 scheme for scientific consistency.
 
 import type uPlot from 'uplot';
 

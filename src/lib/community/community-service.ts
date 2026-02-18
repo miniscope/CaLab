@@ -2,7 +2,7 @@
 // All functions guard with a null-check on the Supabase client
 // and throw if community features are not configured.
 
-import { supabase } from '../supabase.ts';
+import { getSupabase } from '../supabase.ts';
 import type {
   CommunitySubmission,
   SubmissionPayload,
@@ -20,12 +20,13 @@ const TABLE = 'community_submissions';
 export async function submitParameters(
   payload: SubmissionPayload,
 ): Promise<CommunitySubmission> {
-  if (!supabase) throw new Error('Community features not configured');
+  const client = await getSupabase();
+  if (!client) throw new Error('Community features not configured');
 
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await client.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from(TABLE)
     .insert({ ...payload, user_id: user.id })
     .select()
@@ -42,9 +43,10 @@ export async function submitParameters(
 export async function fetchSubmissions(
   filters?: FilterState,
 ): Promise<CommunitySubmission[]> {
-  if (!supabase) throw new Error('Community features not configured');
+  const client = await getSupabase();
+  if (!client) throw new Error('Community features not configured');
 
-  let query = supabase.from(TABLE).select('*');
+  let query = client.from(TABLE).select('*');
 
   if (filters?.indicator) {
     query = query.eq('indicator', filters.indicator);
@@ -68,9 +70,10 @@ export async function fetchSubmissions(
  * No login required — the table has public read access for anon.
  */
 export async function fetchFieldOptions(): Promise<FieldOptions> {
-  if (!supabase) throw new Error('Community features not configured');
+  const client = await getSupabase();
+  if (!client) throw new Error('Community features not configured');
 
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from('field_options')
     .select('field_name, value, display_order')
     .order('display_order');
@@ -101,30 +104,10 @@ export async function fetchFieldOptions(): Promise<FieldOptions> {
  * Delete a submission by ID. RLS ensures only the owner can delete.
  */
 export async function deleteSubmission(id: string): Promise<void> {
-  if (!supabase) throw new Error('Community features not configured');
+  const client = await getSupabase();
+  if (!client) throw new Error('Community features not configured');
 
-  const { error } = await supabase.from(TABLE).delete().eq('id', id);
+  const { error } = await client.from(TABLE).delete().eq('id', id);
 
   if (error) throw new Error(`Delete failed: ${error.message}`);
-}
-
-/**
- * Fetch submissions belonging to the current authenticated user.
- */
-export async function fetchUserSubmissions(): Promise<CommunitySubmission[]> {
-  if (!supabase) throw new Error('Community features not configured');
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) throw new Error('Not authenticated');
-
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('*')
-    .eq('user_id', user.id);
-
-  if (error) throw new Error(`Fetch user submissions failed: ${error.message}`);
-  return (data as CommunitySubmission[]) ?? [];
 }

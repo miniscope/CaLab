@@ -38,6 +38,9 @@ pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
 /// The AR(2) process c[t] = g1*c[t-1] + g2*c[t-2] + s[t] has characteristic
 /// roots d = exp(-dt/tau_decay) and r = exp(-dt/tau_rise).
 /// g1 = d + r (sum of roots), g2 = -(d * r) (negative product of roots).
+///
+/// Only used in tests; the WASM API relies on the TypeScript port in src/lib/ar2.ts.
+#[cfg(test)]
 pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
     let dt = 1.0 / fs;
     let d = (-dt / tau_decay).exp(); // decay eigenvalue
@@ -57,6 +60,11 @@ pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
 ///
 /// Computed via direct DFT of the kernel (O(n^2) but kernel is short, ~100-200 samples).
 /// Takes f32 kernel but uses f64 intermediates for DFT precision; returns f64.
+///
+/// Future optimization: could use `RealFftPlanner<f64>` for O(n log n), but this runs
+/// only on parameter changes (not per-iteration) and the kernel is short enough that
+/// the brute-force DFT is sub-millisecond. The f64 precision here is intentional since
+/// the Lipschitz constant controls the FISTA step size.
 pub fn compute_lipschitz(kernel: &[f32]) -> f64 {
     let n = kernel.len();
     if n == 0 {

@@ -1,6 +1,6 @@
 // Shared array utilities for cell trace extraction and Fortran-to-C transpose.
 
-import type { NpyResult, NumericTypedArray } from './types';
+import type { NpyResult, NumericTypedArray } from './types.ts';
 
 /**
  * Extract a single cell's fluorescence trace from a flat typed array.

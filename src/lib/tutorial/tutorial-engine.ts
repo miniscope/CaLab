@@ -5,7 +5,7 @@ import { driver, type DriveStep, type Config, type Driver } from 'driver.js';
 import 'driver.js/dist/driver.css';
 import '../../styles/tutorial.css';
 
-import type { Tutorial } from './types';
+import type { Tutorial } from './types.ts';
 import {
   setActiveTutorial,
   setCurrentStepIndex,
@@ -13,8 +13,8 @@ import {
   tutorialActionFired,
   setTutorialActionFired,
   isTutorialActive,
-} from './tutorial-store';
-import { saveProgress } from './progress';
+} from './tutorial-store.ts';
+import { saveProgress } from './progress.ts';
 
 // --- Module state ---
 
@@ -122,11 +122,6 @@ export function startTutorial(tutorial: Tutorial, resumeFromStep?: number): void
 
   // Start the tour
   driverInstance.drive(resumeFromStep ?? 0);
-}
-
-/** Stop the currently active tutorial tour. */
-export function stopTutorial(): void {
-  driverInstance?.destroy();
 }
 
 /**

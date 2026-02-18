@@ -4,8 +4,8 @@ import {
   shouldWarmStart,
   WarmStartCache,
   type WarmStartEntry,
-} from '../lib/warm-start-cache';
-import type { SolverParams } from '../lib/solver-types';
+} from '../lib/warm-start-cache.ts';
+import type { SolverParams } from '../lib/solver-types.ts';
 
 // ---------- computePaddedWindow ----------
 

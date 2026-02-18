@@ -1,7 +1,7 @@
 // Tutorial progress persistence via localStorage.
 // Tracks completion state and last step for resume support.
 
-import type { TutorialProgress } from './types';
+import type { TutorialProgress } from './types.ts';
 
 const STORAGE_KEY = 'catune-tutorial-progress-v2';
 
@@ -44,13 +44,4 @@ export function getAllProgress(): Record<string, TutorialProgress> {
 /** Check if a tutorial has been completed. */
 export function isCompleted(tutorialId: string): boolean {
   return getProgress(tutorialId)?.completed ?? false;
-}
-
-/** Clear all tutorial progress (removes storage key entirely). */
-export function clearProgress(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // localStorage unavailable -- silently ignore
-  }
 }

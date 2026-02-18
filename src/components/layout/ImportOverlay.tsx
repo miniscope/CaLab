@@ -1,10 +1,10 @@
 import { Show, createSignal, type JSX } from 'solid-js';
-import { FileDropZone } from '../FileDropZone';
-import { NpzArraySelector } from '../NpzArraySelector';
-import { DimensionConfirmation } from '../DimensionConfirmation';
-import { SamplingRateInput } from '../SamplingRateInput';
-import { DataValidationReport } from '../DataValidationReport';
-import { TracePreview } from '../TracePreview';
+import { FileDropZone } from '../import/FileDropZone.tsx';
+import { NpzArraySelector } from '../import/NpzArraySelector.tsx';
+import { DimensionConfirmation } from '../import/DimensionConfirmation.tsx';
+import { SamplingRateInput } from '../import/SamplingRateInput.tsx';
+import { DataValidationReport } from '../import/DataValidationReport.tsx';
+import { TracePreview } from '../import/TracePreview.tsx';
 import {
   importStep,
   rawFile,
@@ -13,9 +13,9 @@ import {
   durationSeconds,
   validationResult,
   npzArrays,
-} from '../../lib/data-store';
-import { formatDuration } from '../../lib/format-utils';
-import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets';
+} from '../../lib/data-store.ts';
+import { formatDuration } from '../../lib/format-utils.ts';
+import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -40,8 +40,7 @@ export interface ImportOverlayProps {
 }
 
 export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
-  const step = () => importStep();
-  const stepInfo = () => STEP_LABELS[step()] ?? { num: 1, label: 'Load Data' };
+  const stepInfo = () => STEP_LABELS[importStep()] ?? { num: 1, label: 'Load Data' };
 
   // Demo data config
   const [demoCells, setDemoCells] = createSignal(20);
@@ -86,7 +85,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       {/* Step 1: File Drop */}
-      <Show when={step() === 'drop'}>
+      <Show when={importStep() === 'drop'}>
         <FileDropZone />
         <Show when={npzArrays()}>
           <NpzArraySelector />
@@ -168,7 +167,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       {/* Step 2: Confirm Dimensions */}
-      <Show when={step() === 'confirm-dims'}>
+      <Show when={importStep() === 'confirm-dims'}>
         <div class="file-info-dimmed">
           <FileDropZone />
         </div>
@@ -176,7 +175,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       {/* Step 3: Sampling Rate */}
-      <Show when={step() === 'sampling-rate'}>
+      <Show when={importStep() === 'sampling-rate'}>
         <Show when={effectiveShape()}>
           {(shape) => (
             <div class="info-summary">
@@ -190,7 +189,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       {/* Step 4: Validation */}
-      <Show when={step() === 'validation'}>
+      <Show when={importStep() === 'validation'}>
         <Show when={effectiveShape()}>
           {(shape) => (
             <div class="info-summary">
@@ -206,7 +205,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       {/* Step 5 (ready): shown briefly before dashboard transition */}
-      <Show when={step() === 'ready'}>
+      <Show when={importStep() === 'ready'}>
         <div class="info-summary">
           <Show when={rawFile()}>
             {(file) => (<>

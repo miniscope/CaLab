@@ -5,10 +5,10 @@
 
 import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
-import { TracePanel } from '../traces/TracePanel';
-import { downsampleMinMax } from '../../lib/chart/downsample';
-import { createRawSeries, createFilteredSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries, createGroundTruthSpikesSeries, createGroundTruthCalciumSeries } from '../../lib/chart/series-config';
-import { showRaw, showFiltered, showFit, showDeconv, showResid, showGTCalcium, showGTSpikes } from '../../lib/viz-store';
+import { TracePanel } from '../traces/TracePanel.tsx';
+import { downsampleMinMax } from '../../lib/chart/downsample.ts';
+import { createRawSeries, createFilteredSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries, createGroundTruthSpikesSeries, createGroundTruthCalciumSeries } from '../../lib/chart/series-config.ts';
+import { showRaw, showFiltered, showFit, showDeconv, showResid, showGTCalcium, showGTSpikes } from '../../lib/viz-store.ts';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -57,20 +57,26 @@ export function ZoomWindow(props: ZoomWindowProps) {
   const rawStats = createMemo(() => {
     const raw = props.rawTrace;
     if (!raw || raw.length === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
-    let sum = 0;
-    for (let i = 0; i < raw.length; i++) sum += raw[i];
-    const mean = sum / raw.length;
-    let ssq = 0;
-    for (let i = 0; i < raw.length; i++) ssq += (raw[i] - mean) ** 2;
-    const std = Math.sqrt(ssq / raw.length) || 1;
 
-    let zMin = Infinity;
-    let zMax = -Infinity;
+    // Single pass: track sum, sumSq, min, max simultaneously
+    let sum = 0;
+    let sumSq = 0;
+    let rawMin = Infinity;
+    let rawMax = -Infinity;
     for (let i = 0; i < raw.length; i++) {
-      const z = (raw[i] - mean) / std;
-      if (z < zMin) zMin = z;
-      if (z > zMax) zMax = z;
+      const v = raw[i];
+      sum += v;
+      sumSq += v * v;
+      if (v < rawMin) rawMin = v;
+      if (v > rawMax) rawMax = v;
     }
+
+    const n = raw.length;
+    const mean = sum / n;
+    const std = Math.sqrt(sumSq / n - mean * mean) || 1;
+    // z-transform is monotonic, so raw min/max map directly to z min/max
+    const zMin = (rawMin - mean) / std;
+    const zMax = (rawMax - mean) / std;
     return { mean, std, zMin, zMax };
   });
 

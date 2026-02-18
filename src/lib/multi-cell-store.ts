@@ -1,11 +1,14 @@
-// Reactive state for multi-cell selection and results
-// Uses SolidJS signals matching project pattern of module-level signals with named exports
+// Reactive state for multi-cell selection and results.
+// Uses SolidJS stores for per-cell data (multiCellResults, cellSolverStatuses,
+// cellIterationCounts) to enable granular reactivity and avoid Map cloning.
+// Other signals use the standard createSignal pattern.
 
 import { createSignal } from 'solid-js';
-import type { CellSolverStatus } from './solver-types';
-export type { CellSolverStatus } from './solver-types';
-import { rankCellsByActivity, sampleRandomCells } from './cell-ranking';
-import { parsedData, effectiveShape, swapped } from './data-store';
+import { createStore, reconcile } from 'solid-js/store';
+import type { CellSolverStatus } from './solver-types.ts';
+export type { CellSolverStatus } from './solver-types.ts';
+import { rankCellsByActivity, sampleRandomCells } from './cell-ranking.ts';
+import { parsedData, effectiveShape, swapped } from './data-store.ts';
 
 // --- Types ---
 
@@ -20,20 +23,30 @@ export interface CellTraces {
   windowStartSample?: number;
 }
 
+// Record types for store-backed per-cell data.
+// Using Record<number, X> instead of Map<number, X> enables SolidJS
+// to track each cell index as a separate reactive property.
+type CellResultsStore = Record<number, CellTraces>;
+type CellStatusStore = Record<number, CellSolverStatus>;
+type CellIterationStore = Record<number, number>;
+
 // --- Signals ---
 
 const [selectionMode, setSelectionMode] = createSignal<SelectionMode>('top-active');
 const [selectedCells, setSelectedCells] = createSignal<number[]>([]);
 const [displayCount, setDisplayCount] = createSignal<number>(5);
-const [multiCellResults, setMultiCellResults] = createSignal<Map<number, CellTraces>>(new Map());
 const [multiCellSolving, setMultiCellSolving] = createSignal<boolean>(false);
 const [multiCellProgress, setMultiCellProgress] = createSignal<{ current: number; total: number } | null>(null);
 const [solvingCells, setSolvingCells] = createSignal<ReadonlySet<number>>(new Set());
 const [activelySolvingCell, setActivelySolvingCell] = createSignal<number | null>(null);
 const [activityRanking, setActivityRanking] = createSignal<number[] | null>(null);
 const [gridColumns, setGridColumns] = createSignal<number>(2);
-const [cellSolverStatuses, setCellSolverStatuses] = createSignal<Map<number, CellSolverStatus>>(new Map());
-const [cellIterationCounts, setCellIterationCounts] = createSignal<Map<number, number>>(new Map());
+
+// --- Per-cell stores (granular reactivity, no Map cloning) ---
+
+const [multiCellResults, setMultiCellResults] = createStore<CellResultsStore>({});
+const [cellSolverStatuses, setCellSolverStatuses] = createStore<CellStatusStore>({});
+const [cellIterationCounts, setCellIterationCounts] = createStore<CellIterationStore>({});
 
 // --- Viewport visibility tracking ---
 const [visibleCellIndices, setVisibleCellIndices] = createSignal<ReadonlySet<number>>(new Set());
@@ -42,31 +55,21 @@ const [visibleCellIndices, setVisibleCellIndices] = createSignal<ReadonlySet<num
 const [hoveredCell, setHoveredCell] = createSignal<number | null>(null);
 
 // --- Pinned multi-cell results for before/after comparison ---
-const [pinnedMultiCellResults, setPinnedMultiCellResults] = createSignal<Map<number, CellTraces>>(new Map());
+// Pinned results are a snapshot (read-only after creation), so a store
+// gives us the same granular reads without cloning on pin.
+const [pinnedMultiCellResults, setPinnedMultiCellResults] = createStore<CellResultsStore>({});
 
 // --- Per-cell update helpers ---
 
 function updateOneCellStatus(cellIndex: number, status: CellSolverStatus): void {
-  setCellSolverStatuses(prev => {
-    const next = new Map(prev);
-    next.set(cellIndex, status);
-    return next;
-  });
+  setCellSolverStatuses(cellIndex, status);
   if (status === 'stale') {
-    setCellIterationCounts(prev => {
-      const next = new Map(prev);
-      next.set(cellIndex, 0);
-      return next;
-    });
+    setCellIterationCounts(cellIndex, 0);
   }
 }
 
 function updateOneCellIteration(cellIndex: number, iteration: number): void {
-  setCellIterationCounts(prev => {
-    const next = new Map(prev);
-    next.set(cellIndex, iteration);
-    return next;
-  });
+  setCellIterationCounts(cellIndex, iteration);
 }
 
 function updateOneCellTraces(
@@ -76,18 +79,14 @@ function updateOneCellTraces(
   windowStartSample?: number,
   filteredTrace?: Float32Array,
 ): void {
-  setMultiCellResults(prev => {
-    const existing = prev.get(cellIndex);
-    if (!existing) return prev;
-    const next = new Map(prev);
-    next.set(cellIndex, {
-      ...existing,
-      deconvolved,
-      reconvolution,
-      filteredTrace,
-      windowStartSample,
-    });
-    return next;
+  const existing = multiCellResults[cellIndex];
+  if (!existing) return;
+  setMultiCellResults(cellIndex, {
+    ...existing,
+    deconvolved,
+    reconvolution,
+    filteredTrace,
+    windowStartSample,
   });
 }
 
@@ -138,28 +137,32 @@ function updateCellSelection(): void {
 
 /** Snapshot current multi-cell results for pinned overlay comparison. */
 function pinMultiCellResults(): void {
-  const current = multiCellResults();
-  const snapshot = new Map<number, CellTraces>();
-  for (const [cellIdx, traces] of current) {
-    snapshot.set(cellIdx, {
+  const snapshot: CellResultsStore = {};
+  for (const key of Object.keys(multiCellResults)) {
+    const cellIdx = Number(key);
+    const traces = multiCellResults[cellIdx];
+    if (!traces) continue;
+    snapshot[cellIdx] = {
       ...traces,
       deconvolved: new Float32Array(traces.deconvolved),
       reconvolution: new Float32Array(traces.reconvolution),
-    });
+    };
   }
-  setPinnedMultiCellResults(snapshot);
+  setPinnedMultiCellResults(reconcile(snapshot));
 }
 
 /** Clear pinned multi-cell results. */
 function unpinMultiCellResults(): void {
-  setPinnedMultiCellResults(new Map());
+  setPinnedMultiCellResults(reconcile({}));
 }
 
 /**
  * Reset all multi-cell state (results + selection). Use when switching datasets.
  */
 function clearMultiCellState(): void {
-  setMultiCellResults(new Map());
+  setMultiCellResults(reconcile({}));
+  setCellSolverStatuses(reconcile({}));
+  setCellIterationCounts(reconcile({}));
   setSelectedCells([]);
   setSolvingCells(new Set<number>());
   setActivelySolvingCell(null);
@@ -170,7 +173,7 @@ function clearMultiCellState(): void {
 // --- Exports ---
 
 export {
-  // Getters (signals)
+  // Getters (signals and stores)
   selectionMode,
   selectedCells,
   displayCount,

@@ -7,10 +7,10 @@ import type {
   NpzResult,
   ValidationResult,
   ImportStep,
-} from './types';
-import { generateSyntheticDataset } from './chart/mock-traces';
-import type { DemoPreset } from './chart/demo-presets';
-import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets';
+} from './types.ts';
+import { generateSyntheticDataset } from './chart/mock-traces.ts';
+import type { DemoPreset } from './chart/demo-presets.ts';
+import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets.ts';
 
 // --- Core Signals ---
 

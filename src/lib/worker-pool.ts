@@ -2,11 +2,11 @@
 // Dispatches jobs to idle workers, queues when all busy,
 // supports per-job cancellation and bulk cancelAll.
 
-import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from './solver-types';
+import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from './solver-types.ts';
 
 export interface PoolJob {
   jobId: number;
-  trace: Float64Array;
+  trace: Float32Array;
   params: SolverParams;
   warmState: Uint8Array | null;
   warmStrategy: WarmStartStrategy;
@@ -116,7 +116,7 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
     inFlightJobs.set(job.jobId, job);
 
     // Copy buffers for transfer (avoids detaching caller's buffers)
-    const traceCopy = new Float64Array(job.trace);
+    const traceCopy = new Float32Array(job.trace);
     const transfer: Transferable[] = [traceCopy.buffer];
     const warmCopy = job.warmState ? new Uint8Array(job.warmState) : null;
     if (warmCopy) transfer.push(warmCopy.buffer);

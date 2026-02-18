@@ -5,8 +5,8 @@
  */
 
 import { createSignal, Show } from 'solid-js';
-import { deleteSubmission } from '../../lib/community/community-service';
-import type { CommunitySubmission } from '../../lib/community/types';
+import { deleteSubmission } from '../../lib/community/community-service.ts';
+import type { CommunitySubmission } from '../../lib/community/types.ts';
 
 interface SubmissionSummaryProps {
   submission: CommunitySubmission;

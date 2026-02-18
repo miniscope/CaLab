@@ -2,8 +2,8 @@
 // Displays idle/solving/converged/error states with appropriate visuals.
 // Solver status signal is centralized in viz-store.
 
-import { solverStatus } from '../../lib/viz-store';
-import type { SolverStatus } from '../../lib/solver-types';
+import { solverStatus } from '../../lib/viz-store.ts';
+import type { SolverStatus } from '../../lib/solver-types.ts';
 
 export function ConvergenceIndicator() {
   const statusClass = () => {

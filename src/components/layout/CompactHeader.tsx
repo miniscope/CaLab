@@ -1,10 +1,10 @@
 import { Show, type Accessor } from 'solid-js';
-import { rawFile, effectiveShape, samplingRate, durationSeconds, resetImport } from '../../lib/data-store';
-import { clearMultiCellState } from '../../lib/multi-cell-store';
-import { supabaseEnabled } from '../../lib/supabase';
-import { sidebarOpen, setSidebarOpen } from './DashboardShell';
-import { TutorialLauncher } from '../tutorial/TutorialLauncher';
-import { formatDuration } from '../../lib/format-utils';
+import { rawFile, effectiveShape, samplingRate, durationSeconds, resetImport } from '../../lib/data-store.ts';
+import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
+import { supabaseEnabled } from '../../lib/supabase.ts';
+import { sidebarOpen, setSidebarOpen } from './DashboardShell.tsx';
+import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
+import { formatDuration } from '../../lib/format-utils.ts';
 import '../../styles/compact-header.css';
 
 export interface CompactHeaderProps {

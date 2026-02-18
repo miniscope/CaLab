@@ -4,11 +4,11 @@
  */
 
 import { createEffect, on, onCleanup, Show } from 'solid-js';
-import { spectrumData } from '../../lib/spectrum/spectrum-store';
-import { filterEnabled } from '../../lib/viz-store';
-import { samplingRate } from '../../lib/data-store';
-import { getThemeColors } from '../../lib/chart/theme-colors';
-import { withOpacity } from '../../lib/chart/series-config';
+import { spectrumData } from '../../lib/spectrum/spectrum-store.ts';
+import { filterEnabled } from '../../lib/viz-store.ts';
+import { samplingRate } from '../../lib/data-store.ts';
+import { getThemeColors } from '../../lib/chart/theme-colors.ts';
+import { withOpacity } from '../../lib/chart/series-config.ts';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';

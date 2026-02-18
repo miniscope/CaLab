@@ -6,8 +6,8 @@
  *   - stale: SNR dot + "Stale"
  */
 
-import type { QualityTier } from '../../lib/metrics/snr';
-import type { CellSolverStatus } from '../../lib/solver-types';
+import type { QualityTier } from '../../lib/metrics/snr.ts';
+import type { CellSolverStatus } from '../../lib/solver-types.ts';
 
 export interface QualityBadgeProps {
   quality: QualityTier;

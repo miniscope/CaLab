@@ -5,11 +5,11 @@
  */
 
 import { createEffect, createMemo, onCleanup } from 'solid-js';
-import type { CommunitySubmission } from '../../lib/community/types';
+import type { CommunitySubmission } from '../../lib/community/types.ts';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import uPlot from 'uplot';
-import { getThemeColors } from '../../lib/chart/theme-colors';
+import { getThemeColors } from '../../lib/chart/theme-colors.ts';
 
 export interface ScatterPlotProps {
   submissions: CommunitySubmission[];

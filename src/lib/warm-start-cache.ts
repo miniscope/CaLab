@@ -1,4 +1,4 @@
-import type { SolverParams, WarmStartStrategy } from './solver-types';
+import type { SolverParams, WarmStartStrategy } from './solver-types.ts';
 
 /** Number of tau_decay time constants of padding on each side of the visible window. */
 const PADDING_TAU_MULTIPLIER = 5;

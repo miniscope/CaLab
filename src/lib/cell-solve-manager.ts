@@ -3,8 +3,8 @@
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
 import { createEffect, on, onCleanup } from 'solid-js';
-import { tauRise, tauDecay, lambda, selectedCell, filterEnabled } from './viz-store';
-import { parsedData, effectiveShape, swapped, samplingRate } from './data-store';
+import { tauRise, tauDecay, lambda, selectedCell, filterEnabled } from './viz-store.ts';
+import { parsedData, effectiveShape, swapped, samplingRate } from './data-store.ts';
 import {
   selectedCells,
   multiCellResults,
@@ -14,15 +14,19 @@ import {
   updateOneCellTraces,
   visibleCellIndices,
   hoveredCell,
-} from './multi-cell-store';
-import { extractCellTrace } from './array-utils';
-import { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-start-cache';
-import { createWorkerPool, type WorkerPool } from './worker-pool';
-import type { SolverParams } from './solver-types';
-import type { NpyResult } from './types';
+} from './multi-cell-store.ts';
+import { extractCellTrace } from './array-utils.ts';
+import { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-start-cache.ts';
+import { createWorkerPool, type WorkerPool } from './worker-pool.ts';
+import type { SolverParams } from './solver-types.ts';
+import type { NpyResult } from './types.ts';
 
 const DEBOUNCE_MS = 30;
-const QUANTUM_ITERATIONS = 15;
+// With FFT convolutions each iteration is very fast (~0.1-1ms depending on trace length).
+// Small quanta cause excessive main-thread overhead from complete→re-enqueue→dispatch round-trips,
+// starving the UI event loop. 200 iterations keeps quanta under ~40ms for typical traces while
+// reducing round-trip overhead by ~13×. Cancel responsiveness is still ~2ms via BATCH_SIZE yields.
+const QUANTUM_ITERATIONS = 200;
 const DEFAULT_ZOOM_WINDOW_S = 20;
 
 interface CellSolveState {
@@ -119,7 +123,7 @@ function dispatchCellSolve(state: CellSolveState): void {
   const { paddedStart, paddedEnd, resultOffset, resultLength } =
     computePaddedWindow(visibleStart, visibleEnd, traceLen, params.tauDecay, fs);
 
-  const paddedTrace = new Float64Array(state.rawTrace.subarray(paddedStart, paddedEnd));
+  const paddedTrace = new Float32Array(state.rawTrace.subarray(paddedStart, paddedEnd));
   const { strategy, state: warmState } =
     state.warmStartCache.getStrategy(params, paddedStart, paddedEnd);
 
@@ -256,12 +260,9 @@ function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, num
     cellStates.set(cellIndex, state);
 
     // Ensure the cell has an entry in multiCellResults for immediate card rendering
-    const results = multiCellResults();
-    if (!results.has(cellIndex)) {
+    if (multiCellResults[cellIndex] === undefined) {
       const zeros = new Float32Array(rawTrace.length);
-      const next = new Map(results);
-      next.set(cellIndex, { cellIndex, raw: rawTrace, deconvolved: zeros, reconvolution: zeros });
-      setMultiCellResults(next);
+      setMultiCellResults(cellIndex, { cellIndex, raw: rawTrace, deconvolved: zeros, reconvolution: zeros });
     }
   }
   return state;

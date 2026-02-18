@@ -1,11 +1,24 @@
 /**
  * Sidebar tab switcher: Community | Spectrum | Metrics
- * Preserves component state by rendering all tabs, hiding inactive ones via display:none.
+ *
+ * Uses lazy rendering: a tab's content is only mounted the first time
+ * it becomes active. Once mounted, it stays in the DOM (hidden via
+ * display:none) to preserve component state and avoid re-initialization.
+ *
+ * The active tab signal is module-level so other components (e.g. MetricsPanel)
+ * can gate expensive computation on tab visibility.
  */
 
-import { createSignal, For, type JSX } from 'solid-js';
+import { createSignal, createEffect, For, Show, type JSX } from 'solid-js';
 
 export type SidebarTab = 'community' | 'spectrum' | 'metrics';
+
+// Module-level signal so MetricsPanel can skip computation when not visible.
+const [activeSidebarTab, setActiveSidebarTab] = createSignal<SidebarTab>('community');
+export { activeSidebarTab };
+
+// Tracks which tabs have been mounted at least once.
+const [mountedTabs, setMountedTabs] = createSignal<Set<string>>(new Set());
 
 export interface SidebarTabsProps {
   communityContent?: JSX.Element;
@@ -22,8 +35,25 @@ export function SidebarTabs(props: SidebarTabsProps) {
     return list;
   };
 
-  const defaultTab: SidebarTab = props.communityContent ? 'community' : props.spectrumContent ? 'spectrum' : 'metrics';
-  const [activeTab, setActiveTab] = createSignal<SidebarTab>(defaultTab);
+  const defaultTab: SidebarTab = props.communityContent
+    ? 'community'
+    : props.spectrumContent
+      ? 'spectrum'
+      : 'metrics';
+
+  setActiveSidebarTab(defaultTab);
+  setMountedTabs(new Set([defaultTab]));
+
+  // When the active tab changes, add it to the mounted set (once mounted, stays mounted)
+  createEffect(() => {
+    const tab = activeSidebarTab();
+    setMountedTabs((prev) => {
+      if (prev.has(tab)) return prev;
+      const next = new Set(prev);
+      next.add(tab);
+      return next;
+    });
+  });
 
   return (
     <div class="sidebar-tabs">
@@ -31,8 +61,8 @@ export function SidebarTabs(props: SidebarTabsProps) {
         <For each={tabs()}>
           {(tab) => (
             <button
-              class={`sidebar-tabs__tab${activeTab() === tab.id ? ' sidebar-tabs__tab--active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
+              class={`sidebar-tabs__tab${activeSidebarTab() === tab.id ? ' sidebar-tabs__tab--active' : ''}`}
+              onClick={() => setActiveSidebarTab(tab.id)}
             >
               {tab.label}
             </button>
@@ -42,9 +72,11 @@ export function SidebarTabs(props: SidebarTabsProps) {
       <div class="sidebar-tabs__content">
         <For each={tabs()}>
           {(tab) => (
-            <div style={{ display: activeTab() === tab.id ? 'block' : 'none' }}>
-              {tab.content}
-            </div>
+            <Show when={mountedTabs().has(tab.id)}>
+              <div style={{ display: activeSidebarTab() === tab.id ? 'block' : 'none' }}>
+                {tab.content}
+              </div>
+            </Show>
           )}
         </For>
       </div>

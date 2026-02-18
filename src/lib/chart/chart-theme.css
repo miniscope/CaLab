@@ -18,7 +18,7 @@
 
 /* Axis tick labels — mono font */
 .u-axis .u-label {
-  color: #616161;
+  color: var(--text-secondary);
   font-size: 11px;
   font-family: var(--font-mono);
 }

@@ -4,7 +4,7 @@
  * Includes clear button and filtered result count.
  */
 
-import type { FilterState } from '../../lib/community/types';
+import type { FilterState } from '../../lib/community/types.ts';
 import '../../styles/community.css';
 
 export interface FilterBarProps {

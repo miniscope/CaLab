@@ -5,8 +5,8 @@
  * Produces traces that resemble real calcium imaging data for development and testing.
  */
 
-import { computeKernel } from './kernel-math';
-import type { MarkovParams, NoiseParams, SimulationParams } from './demo-presets';
+import { computeKernel } from './kernel-math.ts';
+import type { MarkovParams, NoiseParams, SimulationParams } from './demo-presets.ts';
 
 /** Neuronal spike simulation rate — 3.3ms refractory period. */
 const SPIKE_SIM_HZ = 300;

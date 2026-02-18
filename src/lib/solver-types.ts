@@ -52,7 +52,7 @@ export type WarmStartStrategy = 'warm' | 'warm-no-momentum' | 'cold';
 
 /** Full solve request message sent to the worker. */
 export interface SolveRequest {
-  trace: Float64Array;
+  trace: Float32Array;
   params: SolverParams;
   warmStartState: Uint8Array | null;
   warmStartStrategy: WarmStartStrategy;
@@ -66,7 +66,7 @@ export type PoolWorkerInbound =
   | {
       type: 'solve';
       jobId: number;
-      trace: Float64Array;
+      trace: Float32Array;
       params: SolverParams;
       warmState: Uint8Array | null;
       warmStrategy: WarmStartStrategy;

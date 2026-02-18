@@ -1,10 +1,10 @@
 // Tutorial content registry.
 // Aggregates all tutorial definitions in progression order.
 
-import type { Tutorial } from '../types';
-import { basicsTutorial } from './01-basics';
-import { workflowTutorial } from './02-workflow';
-import { advancedTutorial } from './03-advanced';
+import type { Tutorial } from '../types.ts';
+import { basicsTutorial } from './01-basics.ts';
+import { workflowTutorial } from './02-workflow.ts';
+import { advancedTutorial } from './03-advanced.ts';
 
 /** All tutorials in recommended progression order. */
 export const tutorials: Tutorial[] = [

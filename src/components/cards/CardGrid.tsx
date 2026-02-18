@@ -9,7 +9,7 @@
  */
 
 import { For, Show, createMemo, onMount, onCleanup } from 'solid-js';
-import { CellCard } from './CellCard';
+import { CellCard } from './CellCard.tsx';
 import {
   selectedCells,
   multiCellResults,
@@ -18,10 +18,10 @@ import {
   gridColumns,
   pinnedMultiCellResults,
   setVisibleCellIndices,
-} from '../../lib/multi-cell-store';
-import { reportCellZoom } from '../../lib/cell-solve-manager';
-import { samplingRate, isDemo, groundTruthVisible, getGroundTruthForCell } from '../../lib/data-store';
-import { selectedCell } from '../../lib/viz-store';
+} from '../../lib/multi-cell-store.ts';
+import { reportCellZoom } from '../../lib/cell-solve-manager.ts';
+import { samplingRate, isDemo, groundTruthVisible, getGroundTruthForCell } from '../../lib/data-store.ts';
+import { selectedCell } from '../../lib/viz-store.ts';
 import '../../styles/cards.css';
 
 export interface CardGridProps {
@@ -78,8 +78,8 @@ export function CardGrid(props: CardGridProps) {
         <div class="card-grid" data-tutorial="card-grid" style={{ '--grid-cols': gridColumns() }}>
           <For each={cells()}>
             {(cellIndex) => {
-              const traces = createMemo(() => multiCellResults().get(cellIndex));
-              const pinnedTraces = createMemo(() => pinnedMultiCellResults().get(cellIndex));
+              const traces = createMemo(() => multiCellResults[cellIndex]);
+              const pinnedTraces = createMemo(() => pinnedMultiCellResults[cellIndex]);
               const gt = createMemo(() => {
                 if (!groundTruthVisible() || !isDemo()) return null;
                 return getGroundTruthForCell(cellIndex);
@@ -95,8 +95,8 @@ export function CardGrid(props: CardGridProps) {
                       filteredTrace={t().filteredTrace}
                       samplingRate={samplingRate() ?? 30}
                       isActive={selectedCell() === cellIndex}
-                      solverStatus={cellSolverStatuses().get(cellIndex) ?? 'stale'}
-                      iterationCount={cellIterationCounts().get(cellIndex) ?? 0}
+                      solverStatus={cellSolverStatuses[cellIndex] ?? 'stale'}
+                      iterationCount={cellIterationCounts[cellIndex] ?? 0}
                       cardRef={(el) => registerCard(cellIndex, el)}
                       onClick={() => props.onCellClick(cellIndex)}
                       onZoomChange={reportCellZoom}

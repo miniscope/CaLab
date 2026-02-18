@@ -11,7 +11,7 @@ import {
   authLoading,
   signInWithEmail,
   signOut,
-} from '../../lib/community/community-store';
+} from '../../lib/community/community-store.ts';
 
 export function AuthGate() {
   const [email, setEmail] = createSignal('');

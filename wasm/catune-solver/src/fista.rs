@@ -12,8 +12,11 @@ impl Solver {
     /// The algorithm evaluates the gradient at the extrapolated point y_k, takes
     /// the proximal step to get x_{k+1}, then extrapolates to get y_{k+1}.
     ///
-    /// Includes adaptive restart (O'Donoghue & Candes 2015): when the objective
-    /// increases, reset momentum to avoid oscillation with non-negativity projection.
+    /// Includes adaptive restart (O'Donoghue & Candes 2015): when the gradient-mapping
+    /// criterion detects momentum is hurting progress, reset to avoid oscillation.
+    ///
+    /// Uses FFT-based O(n log n) convolutions instead of time-domain O(n*k), and
+    /// primal residual convergence criterion to eliminate one convolution per iteration.
     pub fn step_batch(&mut self, n_steps: u32) -> bool {
         let n = self.active_len;
         if n == 0 {
@@ -33,9 +36,10 @@ impl Solver {
             // (on first iteration, y_0 = x_0 = solution = zeros)
 
             // 1. Forward convolution at y_k: reconvolution = K * y_k
-            //    We evaluate the gradient at y_k, so swap solution and solution_prev
-            //    temporarily, or just convolve using solution_prev directly.
-            self.convolve_forward_from_prev();
+            //    We need a temporary copy because convolve_forward_fft takes &[f32]
+            //    but mutates self. Reuse fft_output as temp storage before it gets overwritten.
+            let y_k_copy: Vec<f32> = self.solution_prev[..n].to_vec();
+            self.convolve_forward_fft(&y_k_copy);
 
             // 1b. Compute baseline: b = mean(trace - K*y_k)
             {
@@ -53,17 +57,18 @@ impl Solver {
             }
 
             // 3. Adjoint convolution: gradient = K^T * residual
-            self.convolve_adjoint();
+            //    Same temporary copy pattern for residual_buf.
+            let residual_copy: Vec<f32> = self.residual_buf[..n].to_vec();
+            self.convolve_adjoint_fft(&residual_copy);
 
             // 4. Proximal gradient step from y_k:
             //    x_{k+1} = prox(y_k - step_size * gradient)
             //    = max(0, y_k - step_size * gradient - threshold)
-            // Save x_k into residual_buf temporarily (we reuse it for restart check)
+            // Save x_k into residual_buf temporarily for restart check and convergence
             for i in 0..n {
                 self.residual_buf[i] = self.solution[i]; // save x_k
             }
 
-            // f64 scalars applied to f32 arrays via cast
             let step_f32 = step_size as f32;
             let thresh_f32 = threshold as f32;
             for i in 0..n {
@@ -71,24 +76,36 @@ impl Solver {
                 self.solution[i] = (z - thresh_f32).max(0.0); // x_{k+1}
             }
 
-            // 5. Compute objective at x_{k+1} for convergence and restart checks
-            self.convolve_forward(); // reconvolution = K * x_{k+1}
-
-            // 5b. Recompute baseline at x_{k+1}
-            {
-                let mut sum = 0.0_f64;
-                for i in 0..n {
-                    sum += (self.trace[i] - self.reconvolution[i]) as f64;
-                }
-                self.baseline = sum / n as f64;
-            }
-
-            let objective = self.compute_objective();
             self.iteration += 1;
 
-            // 6. Adaptive restart: if objective increased, restart momentum
-            if objective > self.prev_objective && self.iteration > 1 {
-                self.t_fista = 1.0;
+            // 5. Primal residual convergence criterion: ||x_{k+1} - x_k|| / ||x_k||
+            //    This replaces the expensive forward convolution + objective evaluation.
+            let mut diff_sq = 0.0_f64;
+            let mut xk_sq = 0.0_f64;
+            for i in 0..n {
+                let x_new = self.solution[i] as f64;
+                let x_old = self.residual_buf[i] as f64;
+                let d = x_new - x_old;
+                diff_sq += d * d;
+                xk_sq += x_old * x_old;
+            }
+            let rel_change = (diff_sq / (xk_sq + 1e-20)).sqrt();
+
+            // 6. Adaptive restart via gradient-mapping criterion (O'Donoghue & Candes 2015).
+            //    When the extrapolated point y_k leads to a solution x_{k+1} that moves
+            //    in the opposite direction of the momentum, restart. This is detected by:
+            //    (y_k - x_{k+1}) . (x_{k+1} - x_k) > 0
+            //    which means the proximal step "undid" the momentum direction.
+            if self.iteration > 1 {
+                let mut dot = 0.0_f64;
+                for i in 0..n {
+                    let y_minus_x = self.solution_prev[i] as f64 - self.solution[i] as f64;
+                    let x_diff = self.solution[i] as f64 - self.residual_buf[i] as f64;
+                    dot += y_minus_x * x_diff;
+                }
+                if dot > 0.0 {
+                    self.t_fista = 1.0;
+                }
             }
 
             // 7. FISTA momentum extrapolation: y_{k+1} = x_{k+1} + momentum * (x_{k+1} - x_k)
@@ -98,88 +115,21 @@ impl Solver {
             for i in 0..n {
                 let x_k = self.residual_buf[i]; // previous x_k
                 let x_new = self.solution[i]; // x_{k+1}
-                // y_{k+1} = x_{k+1} + momentum * (x_{k+1} - x_k)
                 let y_new = x_new + momentum * (x_new - x_k);
-                // Project to non-negative for the extrapolated point
                 self.solution_prev[i] = y_new.max(0.0);
             }
             self.t_fista = t_new;
 
-            // 8. Convergence check
-            if self.iteration > 5 {
-                let rel_change =
-                    (self.prev_objective - objective).abs() / (self.prev_objective.abs() + 1e-10);
-                if rel_change < self.tolerance {
-                    self.converged = true;
-                }
+            // 8. Convergence check using primal residual
+            if self.iteration > 5 && rel_change < self.tolerance {
+                self.converged = true;
             }
-            self.prev_objective = objective;
+
+            // Mark reconvolution as stale (it currently holds K*y_k, not K*x_{k+1})
+            self.reconvolution_stale = true;
         }
 
         self.converged
-    }
-
-    /// Forward (causal) convolution: reconvolution[t] = sum_k kernel[k] * solution[t-k]
-    fn convolve_forward(&mut self) {
-        let n = self.active_len;
-        let k_len = self.kernel.len();
-
-        for t in 0..n {
-            let mut sum = 0.0;
-            let k_max = k_len.min(t + 1);
-            for k in 0..k_max {
-                sum += self.kernel[k] * self.solution[t - k];
-            }
-            self.reconvolution[t] = sum;
-        }
-    }
-
-    /// Forward convolution from the extrapolated point (solution_prev = y_k):
-    /// reconvolution[t] = sum_k kernel[k] * solution_prev[t-k]
-    fn convolve_forward_from_prev(&mut self) {
-        let n = self.active_len;
-        let k_len = self.kernel.len();
-
-        for t in 0..n {
-            let mut sum = 0.0;
-            let k_max = k_len.min(t + 1);
-            for k in 0..k_max {
-                sum += self.kernel[k] * self.solution_prev[t - k];
-            }
-            self.reconvolution[t] = sum;
-        }
-    }
-
-    /// Adjoint (correlation) convolution: gradient[t] = sum_k kernel[k] * residual_buf[t+k]
-    /// Uses residual_buf as input (must be filled before calling).
-    fn convolve_adjoint(&mut self) {
-        let n = self.active_len;
-        let k_len = self.kernel.len();
-
-        for t in 0..n {
-            let mut sum = 0.0;
-            let k_max = k_len.min(n - t);
-            for k in 0..k_max {
-                sum += self.kernel[k] * self.residual_buf[t + k];
-            }
-            self.gradient[t] = sum;
-        }
-    }
-
-    /// Compute objective: (1/2)||K*s + b - trace||^2 + lambda*G_dc * sum(solution)
-    /// Accumulates in f64 for convergence tracking precision.
-    fn compute_objective(&self) -> f64 {
-        let n = self.active_len;
-        let mut data_fidelity = 0.0_f64;
-        let mut l1_penalty = 0.0_f64;
-
-        for i in 0..n {
-            let residual = (self.reconvolution[i] as f64) + self.baseline - (self.trace[i] as f64);
-            data_fidelity += residual * residual;
-            l1_penalty += self.solution[i] as f64; // solution is non-negative, so ||s||_1 = sum(s)
-        }
-
-        0.5 * data_fidelity + self.effective_lambda() * l1_penalty
     }
 }
 
@@ -565,5 +515,55 @@ mod tests {
             nnz_high,
             nnz_low
         );
+    }
+
+    // Test 11: FFT convolution matches time-domain convolution
+    #[test]
+    fn fft_convolution_matches_time_domain() {
+        let mut solver = Solver::new();
+        solver.set_params(0.02, 0.4, 0.01, 30.0);
+
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 200;
+        let trace = build_trace(&kernel, n, &[10, 50, 100, 150]);
+        solver.set_trace(&trace);
+
+        // Set up a known signal in solution_prev
+        for i in 0..n {
+            solver.solution_prev[i] = trace[i];
+        }
+
+        // FFT-based forward convolution
+        let source_copy: Vec<f32> = solver.solution_prev[..n].to_vec();
+        solver.convolve_forward_fft(&source_copy);
+        let fft_result: Vec<f32> = solver.reconvolution[..n].to_vec();
+
+        // Time-domain forward convolution for comparison
+        let k_len = kernel.len();
+        let mut td_result = vec![0.0_f32; n];
+        for t in 0..n {
+            let mut sum = 0.0;
+            let k_max = k_len.min(t + 1);
+            for k in 0..k_max {
+                sum += kernel[k] * source_copy[t - k];
+            }
+            td_result[t] = sum;
+        }
+
+        // Compare results — should match within f32 precision.
+        // Use absolute tolerance for values near zero, relative tolerance otherwise.
+        for i in 0..n {
+            let diff = (fft_result[i] - td_result[i]).abs();
+            let abs_ok = diff < 1e-4;
+            let rel_ok = diff / td_result[i].abs().max(1e-6) < 1e-3;
+            assert!(
+                abs_ok || rel_ok,
+                "FFT vs time-domain mismatch at index {}: fft={} td={} diff={}",
+                i,
+                fft_result[i],
+                td_result[i],
+                diff
+            );
+        }
     }
 }

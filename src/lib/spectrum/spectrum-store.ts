@@ -3,10 +3,10 @@
 // recomputes when the underlying raw trace or selected cell changes.
 
 import { createSignal, createEffect, on } from 'solid-js';
-import { multiCellResults } from '../multi-cell-store';
-import { samplingRate } from '../data-store';
-import { tauRise, tauDecay, selectedCell } from '../viz-store';
-import { computePeriodogram } from './fft';
+import { multiCellResults } from '../multi-cell-store.ts';
+import { samplingRate } from '../data-store.ts';
+import { tauRise, tauDecay, selectedCell } from '../viz-store.ts';
+import { computePeriodogram } from './fft.ts';
 
 // Margin factors kept in sync with filter.rs
 const MARGIN_FACTOR_HP = 16.0;
@@ -53,9 +53,11 @@ export function initSpectrumStore(): void {
     }),
   );
 
-  // Effect 2: FFT recomputation — debounced, skips if raw trace unchanged
+  // Effect 2: FFT recomputation — debounced, skips if raw trace unchanged.
+  // multiCellResults is a store proxy, so we read the selected cell's entry
+  // to establish a reactive dependency on the specific cell trace.
   createEffect(
-    on([multiCellResults, samplingRate, selectedCell], () => {
+    on([() => multiCellResults[selectedCell()], samplingRate, selectedCell], () => {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(computeSpectrum, 250);
     }),
@@ -63,11 +65,12 @@ export function initSpectrumStore(): void {
 }
 
 function computeSpectrum(): void {
-  const results = multiCellResults();
+  const results = multiCellResults;
   const fs = samplingRate();
   const cellIdx = selectedCell();
+  const resultKeys = Object.keys(results);
 
-  if (!fs || results.size === 0) {
+  if (!fs || resultKeys.length === 0) {
     lastRaw = null;
     lastCellIdx = -1;
     setSpectrumData(null);
@@ -75,8 +78,8 @@ function computeSpectrum(): void {
   }
 
   // Resolve raw trace for the target cell
-  const cellTraces = results.get(cellIdx);
-  const target = cellTraces ?? results.values().next().value;
+  const cellTraces = results[cellIdx];
+  const target = cellTraces ?? results[Number(resultKeys[0])];
   if (!target) { setSpectrumData(null); return; }
 
   const raw = target.raw;

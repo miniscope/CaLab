@@ -6,8 +6,8 @@
  */
 
 import { createEffect, createMemo, onCleanup, onMount } from 'solid-js';
-import { downsampleMinMax } from '../../lib/chart/downsample';
-import { makeTimeAxis } from '../../lib/chart/time-axis';
+import { downsampleMinMax } from '../../lib/chart/downsample.ts';
+import { makeTimeAxis } from '../../lib/chart/time-axis.ts';
 
 export interface TraceOverviewProps {
   trace: Float64Array;
@@ -54,7 +54,10 @@ export function TraceOverview(props: TraceOverviewProps) {
     return result;
   });
 
-  // Draw the overview canvas
+  // TODO: Optimize by caching trace lines to an offscreen canvas and only
+  // redrawing the zoom highlight rectangle on zoomStart/zoomEnd changes.
+  // This would avoid re-stroking all trace paths on every zoom pan. Requires
+  // a dual-canvas or OffscreenCanvas approach — skipped for now.
   function draw() {
     const canvas = canvasRef;
     if (!canvas) return;

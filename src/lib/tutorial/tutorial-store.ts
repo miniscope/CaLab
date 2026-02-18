@@ -2,7 +2,7 @@
 // Follows the same module-level signal pattern as viz-store.ts and multi-cell-store.ts.
 
 import { createSignal } from 'solid-js';
-import type { Tutorial } from './types';
+import type { Tutorial } from './types.ts';
 
 // --- Signals ---
 

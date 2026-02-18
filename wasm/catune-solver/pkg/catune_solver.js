@@ -88,6 +88,28 @@ export class Solver {
         }
     }
     /**
+     * Returns a copy of the kernel.
+     *
+     * Returns `Vec<f32>` which wasm-bindgen copies into a JS-owned `Float32Array`.
+     * A WASM memory view would be unsound here: any subsequent WASM allocation
+     * (e.g. `set_trace`) can grow the memory and invalidate the view. The JS side
+     * also transfers these buffers via `postMessage`, which requires ownership.
+     * @returns {Float32Array}
+     */
+    get_kernel() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.solver_get_kernel(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Get the power spectrum of the current trace (N/2+1 bins).
      * @returns {Float32Array}
      */
@@ -105,7 +127,10 @@ export class Solver {
         }
     }
     /**
-     * Returns a copy of the reconvolution (K * solution) for the active region.
+     * Returns the reconvolution (K * solution) for the active region.
+     * Computes the reconvolution lazily if it is stale (not computed during iteration).
+     *
+     * See `get_kernel` for why this returns an owned copy rather than a memory view.
      * @returns {Float32Array}
      */
     get_reconvolution() {
@@ -123,6 +148,9 @@ export class Solver {
     }
     /**
      * Returns reconvolution with baseline added: K*s + b for the active region.
+     * Computes the reconvolution lazily if it is stale.
+     *
+     * See `get_kernel` for why this returns an owned copy rather than a memory view.
      * @returns {Float32Array}
      */
     get_reconvolution_with_baseline() {
@@ -139,7 +167,9 @@ export class Solver {
         }
     }
     /**
-     * Returns a copy of the current solution (spike train) for the active region.
+     * Returns the current solution (spike train) for the active region.
+     *
+     * See `get_kernel` for why this returns an owned copy rather than a memory view.
      * @returns {Float32Array}
      */
     get_solution() {
@@ -173,8 +203,10 @@ export class Solver {
         }
     }
     /**
-     * Returns a copy of the current trace for the active region.
+     * Returns the current trace for the active region.
      * After apply_filter(), this contains the filtered trace.
+     *
+     * See `get_kernel` for why this returns an owned copy rather than a memory view.
      * @returns {Float32Array}
      */
     get_trace() {
@@ -259,8 +291,11 @@ export class Solver {
      * The algorithm evaluates the gradient at the extrapolated point y_k, takes
      * the proximal step to get x_{k+1}, then extrapolates to get y_{k+1}.
      *
-     * Includes adaptive restart (O'Donoghue & Candes 2015): when the objective
-     * increases, reset momentum to avoid oscillation with non-negativity projection.
+     * Includes adaptive restart (O'Donoghue & Candes 2015): when the gradient-mapping
+     * criterion detects momentum is hurting progress, reset to avoid oscillation.
+     *
+     * Uses FFT-based O(n log n) convolutions instead of time-domain O(n*k), and
+     * primal residual convergence criterion to eliminate one convolution per iteration.
      * @param {number} n_steps
      * @returns {boolean}
      */

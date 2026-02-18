@@ -739,7 +739,7 @@
 
 .submit-panel__gt-warning {
   font-size: 0.8rem;
-  color: var(--warning, #f59e0b);
+  color: var(--warning, #e09800);
   font-style: italic;
   line-height: 1.4;
 }
