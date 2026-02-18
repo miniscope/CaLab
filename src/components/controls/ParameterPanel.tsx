@@ -7,6 +7,7 @@ import {
   lambda, setLambda,
   filterEnabled, setFilterEnabled,
 } from '../../lib/viz-store.ts';
+import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine.ts';
 import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
 import { PARAM_RANGES } from '../../lib/param-config.ts';
 import { ParameterSlider } from './ParameterSlider.tsx';
@@ -73,12 +74,15 @@ export function ParameterPanel(props: ParameterPanelProps) {
           data-tutorial="slider-lambda"
         />
       </div>
-      <div class="param-panel__toggle-group">
+      <div class="param-panel__toggle-group" data-tutorial="noise-filter">
         <label class="param-panel__toggle">
           <input
             type="checkbox"
             checked={filterEnabled()}
-            onChange={(e) => setFilterEnabled(e.currentTarget.checked)}
+            onChange={(e) => {
+              setFilterEnabled(e.currentTarget.checked);
+              notifyTutorialAction();
+            }}
           />
           <span class="param-panel__toggle-label">Noise Filter</span>
         </label>

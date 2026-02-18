@@ -22,7 +22,7 @@ export function CompactHeader(props: CompactHeaderProps) {
   const durationDisplay = () => formatDuration(durationSeconds());
 
   return (
-    <header class="compact-header">
+    <header class="compact-header" data-tutorial="header-bar">
       <div class="compact-header__brand">
         <span class="compact-header__title">CaTune</span>
         <span class="compact-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span>
@@ -57,6 +57,7 @@ export function CompactHeader(props: CompactHeaderProps) {
         <TutorialLauncher isOpen={props.tutorialOpen} onToggle={props.onTutorialToggle} />
         <button
           class={`btn-secondary btn-small${sidebarOpen() ? ' btn-active' : ''}`}
+          data-tutorial="sidebar-toggle"
           onClick={() => setSidebarOpen(prev => !prev)}
         >
           Sidebar

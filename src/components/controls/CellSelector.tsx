@@ -134,7 +134,7 @@ export function CellSelector(props: CellSelectorProps) {
         </div>
       </Show>
 
-      <div class="cell-selector__group">
+      <div class="cell-selector__group" data-tutorial="grid-columns">
         <label class="cell-selector__label">Grid columns</label>
         <div class="cell-selector__stepper">
           <button class="cell-selector__step-btn" onClick={() => gridColumns() > 1 && setGridColumns(gridColumns() - 1)}>−</button>
@@ -167,7 +167,7 @@ export function CellSelector(props: CellSelectorProps) {
         </div>
       </Show>
 
-      <div class="cell-selector__legend">
+      <div class="cell-selector__legend" data-tutorial="legend-bar">
         <button
           class="legend-info__btn"
           title="What do these traces mean?"

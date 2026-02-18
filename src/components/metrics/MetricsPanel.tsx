@@ -92,7 +92,7 @@ export function MetricsPanel() {
   };
 
   return (
-    <div class="metrics-panel">
+    <div class="metrics-panel" data-tutorial="metrics-panel">
       <h3 class="metrics-panel__title">Metrics</h3>
 
       <Show

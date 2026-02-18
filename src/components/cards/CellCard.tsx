@@ -103,18 +103,20 @@ export function CellCard(props: CellCardProps) {
     >
       <div class="cell-card__header">
         <span class="cell-card__title">
-          <QualityBadge
-            quality={quality()}
-            snr={snr()}
-            solverStatus={props.solverStatus}
-            iterationCount={props.iterationCount}
-          />
+          <span data-tutorial={props.isActive ? 'convergence-indicator' : undefined}>
+            <QualityBadge
+              quality={quality()}
+              snr={snr()}
+              solverStatus={props.solverStatus}
+              iterationCount={props.iterationCount}
+            />
+          </span>
           {' '}Cell {props.cellIndex + 1}
         </span>
       </div>
 
       <Show when={props.rawTrace.length > 0}>
-        <div class="cell-card__overview">
+        <div class="cell-card__overview" data-tutorial={props.isActive ? 'minimap' : undefined}>
           <TraceOverview
             trace={props.rawTrace}
             samplingRate={props.samplingRate}
@@ -145,7 +147,7 @@ export function CellCard(props: CellCardProps) {
           />
         </div>
       </Show>
-      <div class="cell-card__resize-handle" onMouseDown={handleResizeStart} />
+      <div class="cell-card__resize-handle" data-tutorial="resize-handle" onMouseDown={handleResizeStart} />
     </div>
   );
 }

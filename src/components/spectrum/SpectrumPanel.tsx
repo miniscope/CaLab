@@ -257,7 +257,7 @@ export function SpectrumPanel() {
   };
 
   return (
-    <div class="spectrum-panel">
+    <div class="spectrum-panel" data-tutorial="spectrum-panel">
       <div class="spectrum-panel__header">
         <h3 class="spectrum-panel__title">Spectrum</h3>
         <Show when={spectrumData()}>
