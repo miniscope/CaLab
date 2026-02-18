@@ -4,6 +4,7 @@ import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { supabaseEnabled } from '../../lib/supabase.ts';
 import { sidebarOpen, setSidebarOpen } from './DashboardShell.tsx';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
+import { FeedbackMenu } from './FeedbackMenu.tsx';
 import { formatDuration } from '../../lib/format-utils.ts';
 import '../../styles/compact-header.css';
 
@@ -52,6 +53,7 @@ export function CompactHeader(props: CompactHeaderProps) {
       </div>
 
       <div class="compact-header__actions">
+        <FeedbackMenu />
         <TutorialLauncher isOpen={props.tutorialOpen} onToggle={props.onTutorialToggle} />
         <button
           class={`btn-secondary btn-small${sidebarOpen() ? ' btn-active' : ''}`}

@@ -133,6 +133,32 @@ a:hover {
   width: 100%;
 }
 
+.import-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xl);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.8rem;
+}
+
+.import-feedback a {
+  color: var(--text-tertiary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.import-feedback a:hover {
+  color: var(--text-secondary);
+}
+
+.import-feedback__sep {
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
 /* ========================
    App Header
    ======================== */

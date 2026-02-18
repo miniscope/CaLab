@@ -16,6 +16,7 @@ import {
 } from '../../lib/data-store.ts';
 import { formatDuration } from '../../lib/format-utils.ts';
 import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets.ts';
+import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '../../lib/community/github-issue-url.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -243,6 +244,15 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           </p>
         </div>
       </Show>
+
+      {/* Feedback links */}
+      <footer class="import-feedback">
+        <a href={buildFeedbackUrl()} target="_blank" rel="noopener noreferrer">Feedback</a>
+        <span class="import-feedback__sep">&middot;</span>
+        <a href={buildFeatureRequestUrl()} target="_blank" rel="noopener noreferrer">Feature Request</a>
+        <span class="import-feedback__sep">&middot;</span>
+        <a href={buildBugReportUrl()} target="_blank" rel="noopener noreferrer">Bug Report</a>
+      </footer>
     </main>
   );
 }

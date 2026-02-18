@@ -1,4 +1,6 @@
-/** Builds a pre-filled GitHub issue URL for requesting a new field option. */
+/** Builds pre-filled GitHub issue URLs for various issue templates. */
+
+const REPO_BASE = 'https://github.com/miniscope/CaTune/issues/new';
 
 const FIELD_LABELS: Record<string, string> = {
   indicator: 'Calcium Indicator',
@@ -17,5 +19,32 @@ export function buildFieldOptionRequestUrl(
     title: `[Field Option] New ${label}: `,
     labels: 'field-option-request',
   });
-  return `https://github.com/miniscope/CaTune/issues/new?${params.toString()}`;
+  return `${REPO_BASE}?${params.toString()}`;
+}
+
+export function buildFeedbackUrl(): string {
+  const params = new URLSearchParams({
+    template: 'feedback.yml',
+    title: '[Feedback] ',
+    labels: 'feedback',
+  });
+  return `${REPO_BASE}?${params.toString()}`;
+}
+
+export function buildFeatureRequestUrl(): string {
+  const params = new URLSearchParams({
+    template: 'feature-request.yml',
+    title: '[Feature] ',
+    labels: 'enhancement',
+  });
+  return `${REPO_BASE}?${params.toString()}`;
+}
+
+export function buildBugReportUrl(): string {
+  const params = new URLSearchParams({
+    template: 'bug-report.yml',
+    title: '[Bug] ',
+    labels: 'bug',
+  });
+  return `${REPO_BASE}?${params.toString()}`;
 }
