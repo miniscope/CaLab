@@ -752,6 +752,67 @@
 }
 
 /* ========================
+   AuthCallback (magic-link landing)
+   ======================== */
+
+.auth-callback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--space-lg);
+}
+
+.auth-callback__card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--panel-radius);
+  padding: var(--space-lg) calc(var(--space-lg) * 2);
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  box-shadow: var(--shadow-elevated);
+}
+
+.auth-callback__icon {
+  font-size: 2.5rem;
+  color: var(--success);
+  line-height: 1;
+  margin-bottom: var(--space-sm);
+}
+
+.auth-callback__heading {
+  font-size: 1.25rem;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.auth-callback__heading--error {
+  color: var(--error);
+}
+
+.auth-callback__email {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  margin: 0 0 var(--space-md);
+  word-break: break-all;
+}
+
+.auth-callback__text {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.auth-callback__status {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* ========================
    Responsive
    ======================== */
 

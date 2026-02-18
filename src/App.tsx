@@ -4,6 +4,7 @@
 import type { Component } from 'solid-js';
 import { Show, createEffect, createSignal, on } from 'solid-js';
 
+import { AuthCallback } from './components/auth/AuthCallback.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
@@ -55,7 +56,18 @@ function loadBannerDismissedState(): boolean {
   try { return localStorage.getItem(BANNER_DISMISSED_KEY) === 'true'; } catch { return false; }
 }
 
+/** Supabase magic-link redirects append auth tokens to the URL hash. */
+function isAuthCallback(): boolean {
+  const hash = window.location.hash;
+  return hash.includes('access_token=') || hash.includes('token_hash=');
+}
+
 const App: Component = () => {
+  // Magic-link callback: show lightweight confirmation instead of full app
+  if (isAuthCallback()) {
+    return <AuthCallback />;
+  }
+
   const step = () => importStep();
   const hasFile = () => !!rawFile();
 
