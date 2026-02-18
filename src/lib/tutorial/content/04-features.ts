@@ -68,7 +68,15 @@ export const featuresTutorial: Tutorial = {
         'Click <b>Sidebar</b> to open the analysis panel. It has tabs for Spectrum, Metrics, and Community (when available).',
       side: 'bottom',
     },
-    // Step 8: Spectrum panel
+    // Step 8: Select Spectrum tab
+    {
+      element: '[data-tutorial="sidebar-tab-spectrum"]',
+      title: 'Select the Spectrum Tab',
+      description:
+        'The sidebar defaults to the Community tab. <b>Click the Spectrum tab</b> to see frequency analysis.',
+      side: 'bottom',
+    },
+    // Step 9: Spectrum panel
     {
       element: '[data-tutorial="spectrum-panel"]',
       title: 'Spectrum Analysis',
@@ -76,7 +84,15 @@ export const featuresTutorial: Tutorial = {
         'The Spectrum tab shows power spectral density for the selected cell (blue) and all cells (gray). When Noise Filter is on, dashed lines show the bandpass cutoffs.',
       side: 'left',
     },
-    // Step 9: Metrics panel
+    // Step 10: Select Metrics tab
+    {
+      element: '[data-tutorial="sidebar-tab-metrics"]',
+      title: 'Select the Metrics Tab',
+      description:
+        '<b>Click the Metrics tab</b> to see quantitative fit quality.',
+      side: 'bottom',
+    },
+    // Step 11: Metrics panel
     {
       element: '[data-tutorial="metrics-panel"]',
       title: 'Fit Quality Metrics',
@@ -84,7 +100,15 @@ export const featuresTutorial: Tutorial = {
         'The Metrics tab shows per-cell SNR, R\u00B2, and sparsity. Use this to identify cells with poor fits and assess overall parameter quality.',
       side: 'left',
     },
-    // Step 10: Community browser
+    // Step 12: Select Community tab
+    {
+      element: '[data-tutorial="sidebar-tab-community"]',
+      title: 'Select the Community Tab',
+      description:
+        '<b>Click the Community tab</b> to browse shared parameters.',
+      side: 'bottom',
+    },
+    // Step 13: Community browser
     {
       element: '[data-tutorial="community-browser"]',
       title: 'Community Parameters',

@@ -62,6 +62,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
           {(tab) => (
             <button
               class={`sidebar-tabs__tab${activeSidebarTab() === tab.id ? ' sidebar-tabs__tab--active' : ''}`}
+              data-tutorial={`sidebar-tab-${tab.id}`}
               onClick={() => setActiveSidebarTab(tab.id)}
             >
               {tab.label}

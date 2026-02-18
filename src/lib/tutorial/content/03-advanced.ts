@@ -20,7 +20,7 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 2: Residual pattern analysis
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Residual Pattern Analysis',
       description:
         'The red residual trace reveals model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: baseline drift (not a parameter issue). <b>Residuals should resemble noise. Near-zero residuals = overfitting. Visible transient shapes = underfitting.</b>',
@@ -44,7 +44,7 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 5: Recognizing artifacts
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Recognizing Artifacts',
       description:
         'Common artifacts that affect fitting: <b>Motion artifacts:</b> sharp, symmetric deflections (not calcium-shaped). <b>Photobleaching:</b> slow downward baseline trend. <b>Neuropil contamination:</b> broad, slow signals mixed with sharp events. These cannot be fixed by parameter tuning \u2014 they require preprocessing.',
@@ -52,7 +52,7 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 6: Fast firing and overlapping events
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Fast Firing and Overlapping Events',
       description:
         'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. <b>Under big fluorescence events, try increasing decay time to reduce dense deconvolved activity</b> \u2014 increase as much as possible without making the fit too poor.',
@@ -66,15 +66,23 @@ export const advancedTutorial: Tutorial = {
         'Some variation in fit quality across cells is normal \u2014 cells differ in baseline noise, activity rate, and expression level. Aim for parameters that work well for the majority. If a few cells look terrible, they may have issues unrelated to parameter choice (dead cells, out-of-focus, artifacts).',
       side: 'top',
     },
-    // Step 8: Open sidebar for metrics
+    // Step 8: Open sidebar
     {
       element: '[data-tutorial="sidebar-toggle"]',
-      title: 'Open Metrics Panel',
+      title: 'Open the Sidebar',
       description:
-        'Open the <b>Sidebar</b> and click the <b>Metrics</b> tab for quantitative fit quality assessment.',
+        'Open the <b>Sidebar</b> to access the analysis panels.',
       side: 'bottom',
     },
-    // Step 9: Metrics dashboard
+    // Step 9: Select metrics tab
+    {
+      element: '[data-tutorial="sidebar-tab-metrics"]',
+      title: 'Select the Metrics Tab',
+      description:
+        '<b>Click the Metrics tab</b> for quantitative fit quality assessment.',
+      side: 'bottom',
+    },
+    // Step 10: Metrics dashboard
     {
       element: '[data-tutorial="metrics-panel"]',
       title: 'Metrics Dashboard',

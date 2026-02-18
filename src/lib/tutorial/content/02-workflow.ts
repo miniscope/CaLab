@@ -28,7 +28,7 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 3: Look for clean events
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Look for Clean Events',
       description:
         'Scan the raw trace (blue) for sharp, well-separated peaks. Avoid cells dominated by noise or slow baseline drift. A cell with a few clear events is ideal for initial tuning.',
@@ -46,7 +46,7 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 5: Check the fit
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Check the Fit',
       description:
         'Look at how the orange fit line follows the blue raw trace after peaks. The tails should line up. If the fit drops too fast, increase decay. If it lingers too long, decrease decay.',
@@ -54,7 +54,7 @@ export const workflowTutorial: Tutorial = {
     },
     // Step 6: Check residuals
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Step 3: Check Residuals',
       description:
         'Look at the red residual trace at the bottom. Residuals should resemble the noise characteristics of your recording. <b>Near-zero residuals = overfitting.</b> Visible transient shapes in residuals = underfitting. Good residuals are flat noise with no structure.',
@@ -78,7 +78,15 @@ export const workflowTutorial: Tutorial = {
         'Click the <b>Sidebar</b> button to open the analysis panel. It contains Spectrum, Metrics, and Community tabs.',
       side: 'bottom',
     },
-    // Step 9: Check the spectrum
+    // Step 9: Select the Spectrum tab
+    {
+      element: '[data-tutorial="sidebar-tab-spectrum"]',
+      title: 'Select the Spectrum Tab',
+      description:
+        'The sidebar defaults to the Community tab. <b>Click the Spectrum tab</b> to see frequency analysis for your data.',
+      side: 'bottom',
+    },
+    // Step 10: Check the spectrum
     {
       element: '[data-tutorial="spectrum-panel"]',
       title: 'Check the Spectrum',
@@ -96,9 +104,9 @@ export const workflowTutorial: Tutorial = {
       waitForAction: 'slider-change',
       disableActiveInteraction: false,
     },
-    // Step 11: Check rise slopes
+    // Step 12: Check rise slopes
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Check Rise Slopes',
       description:
         'Zoom into a peak onset. The orange fit should match the blue trace\u2019s upward slope. If the fit rises too slowly, decrease rise time. If it overshoots, increase it slightly. Note: changing rise time may slightly affect the optimal decay \u2014 re-check.',
@@ -114,9 +122,9 @@ export const workflowTutorial: Tutorial = {
       waitForAction: 'slider-change',
       disableActiveInteraction: false,
     },
-    // Step 13: Check deconvolved quality
+    // Step 14: Check deconvolved quality
     {
-      element: '[data-tutorial="zoom-window"]',
+      element: '[data-tutorial="card-grid"]',
       title: 'Check Deconvolved Quality',
       description:
         'The green deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the baseline is still noisy, increase lambda. If events are disappearing, decrease it.',
