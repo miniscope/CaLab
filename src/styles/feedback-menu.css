@@ -1,0 +1,46 @@
+/* FeedbackMenu — dropdown for feedback / feature request / bug report */
+
+.feedback-menu {
+  position: relative;
+}
+
+.feedback-menu__dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-xs));
+  right: 0;
+  min-width: 220px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  z-index: 100;
+  padding: var(--space-xs) 0;
+  animation: fade-in 0.15s ease-out;
+}
+
+.feedback-menu__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm) var(--space-md);
+  color: var(--text-primary);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.feedback-menu__item:hover,
+.feedback-menu__item:focus-visible {
+  background: var(--accent-muted);
+  outline: none;
+}
+
+.feedback-menu__item-label {
+  font-size: 0.85rem;
+  font-weight: var(--font-weight-medium);
+}
+
+.feedback-menu__item-desc {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}

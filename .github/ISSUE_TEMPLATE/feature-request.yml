@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new feature or improvement for CaTune
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: >
+        What problem does this feature solve, or what workflow would it
+        improve?
+      placeholder: I often find myself needing to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: >
+        Optional. How do you envision this feature working?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: >
+        Optional. Other approaches or workarounds you've tried.
+    validations:
+      required: false
