@@ -3,7 +3,7 @@
  * Supports three modes: top-active, random, and manual cell selection.
  */
 
-import { createSignal, Show } from 'solid-js';
+import { createSignal, type Accessor, type Setter, Show } from 'solid-js';
 import type { SelectionMode } from '../../lib/multi-cell-store';
 import {
   selectionMode,
@@ -32,6 +32,37 @@ import '../../styles/multi-trace.css';
 export interface CellSelectorProps {
   /** Called when selection changes (triggers batch re-solve). */
   onSelectionChange?: () => void;
+}
+
+interface LegendItemProps {
+  color: string;
+  label: string;
+  visible: Accessor<boolean>;
+  setVisible: Setter<boolean>;
+  dashed?: boolean;
+}
+
+function LegendItem(props: LegendItemProps) {
+  const swatchClass = () =>
+    props.dashed
+      ? 'cell-selector__legend-swatch cell-selector__legend-swatch--dashed'
+      : 'cell-selector__legend-swatch';
+
+  const swatchStyle = () =>
+    props.dashed
+      ? { 'border-color': props.color }
+      : { background: props.color };
+
+  return (
+    <span
+      class="cell-selector__legend-item"
+      classList={{ 'cell-selector__legend-item--hidden': !props.visible() }}
+      onClick={() => props.setVisible(v => !v)}
+    >
+      <span class={swatchClass()} style={swatchStyle()} />
+      {props.label}
+    </span>
+  );
 }
 
 export function CellSelector(props: CellSelectorProps) {
@@ -64,13 +95,6 @@ export function CellSelector(props: CellSelectorProps) {
     const unique = [...new Set(indices)];
     setSelectedCells(unique);
     props.onSelectionChange?.();
-  };
-
-  const handleGridColumnsChange = (e: Event) => {
-    const value = parseInt((e.target as HTMLInputElement).value, 10);
-    if (!isNaN(value) && value >= 1 && value <= 6) {
-      setGridColumns(value);
-    }
   };
 
   const handleReshuffle = () => {
@@ -161,65 +185,16 @@ export function CellSelector(props: CellSelectorProps) {
             <div class="legend-info__row"><strong>True Ca/Spk</strong> — Ground truth (demo only)</div>
           </div>
         </Show>
-        <span
-          class="cell-selector__legend-item"
-          classList={{ 'cell-selector__legend-item--hidden': !showRaw() }}
-          onClick={() => setShowRaw(v => !v)}
-        >
-          <span class="cell-selector__legend-swatch" style={{ background: '#1f77b4' }} />
-          Raw
-        </span>
+        <LegendItem color="#1f77b4" label="Raw" visible={showRaw} setVisible={setShowRaw} />
         <Show when={filterEnabled()}>
-          <span
-            class="cell-selector__legend-item"
-            classList={{ 'cell-selector__legend-item--hidden': !showFiltered() }}
-            onClick={() => setShowFiltered(v => !v)}
-          >
-            <span class="cell-selector__legend-swatch" style={{ background: '#17becf' }} />
-            Filtered
-          </span>
+          <LegendItem color="#17becf" label="Filtered" visible={showFiltered} setVisible={setShowFiltered} />
         </Show>
-        <span
-          class="cell-selector__legend-item"
-          classList={{ 'cell-selector__legend-item--hidden': !showFit() }}
-          onClick={() => setShowFit(v => !v)}
-        >
-          <span class="cell-selector__legend-swatch" style={{ background: '#ff7f0e' }} />
-          Fit
-        </span>
-        <span
-          class="cell-selector__legend-item"
-          classList={{ 'cell-selector__legend-item--hidden': !showDeconv() }}
-          onClick={() => setShowDeconv(v => !v)}
-        >
-          <span class="cell-selector__legend-swatch" style={{ background: '#2ca02c' }} />
-          Deconv
-        </span>
-        <span
-          class="cell-selector__legend-item"
-          classList={{ 'cell-selector__legend-item--hidden': !showResid() }}
-          onClick={() => setShowResid(v => !v)}
-        >
-          <span class="cell-selector__legend-swatch" style={{ background: '#d62728' }} />
-          Resid
-        </span>
+        <LegendItem color="#ff7f0e" label="Fit" visible={showFit} setVisible={setShowFit} />
+        <LegendItem color="#2ca02c" label="Deconv" visible={showDeconv} setVisible={setShowDeconv} />
+        <LegendItem color="#d62728" label="Resid" visible={showResid} setVisible={setShowResid} />
         <Show when={groundTruthVisible()}>
-          <span
-            class="cell-selector__legend-item"
-            classList={{ 'cell-selector__legend-item--hidden': !showGTCalcium() }}
-            onClick={() => setShowGTCalcium(v => !v)}
-          >
-            <span class="cell-selector__legend-swatch cell-selector__legend-swatch--dashed" style={{ 'border-color': 'rgba(0, 188, 212, 0.7)' }} />
-            True Ca
-          </span>
-          <span
-            class="cell-selector__legend-item"
-            classList={{ 'cell-selector__legend-item--hidden': !showGTSpikes() }}
-            onClick={() => setShowGTSpikes(v => !v)}
-          >
-            <span class="cell-selector__legend-swatch" style={{ background: 'rgba(255, 193, 7, 0.7)' }} />
-            True Spk
-          </span>
+          <LegendItem color="rgba(0, 188, 212, 0.7)" label="True Ca" visible={showGTCalcium} setVisible={setShowGTCalcium} dashed />
+          <LegendItem color="rgba(255, 193, 7, 0.7)" label="True Spk" visible={showGTSpikes} setVisible={setShowGTSpikes} />
         </Show>
       </div>
     </div>

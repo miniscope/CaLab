@@ -10,9 +10,8 @@ export interface KernelAnnotations {
   halfDecayTime: number;
 }
 
-const PEAK_COLOR = '#ff9800';     // orange
-const HALF_DECAY_COLOR = '#ab47bc'; // purple
-const LABEL_FONT = '10px sans-serif';
+const PEAK_COLOR = '#ff9800';
+const HALF_DECAY_COLOR = '#ab47bc';
 const LABEL_PAD = 4;
 
 /**
@@ -30,7 +29,7 @@ export function kernelAnnotationsPlugin(
         if (!ann) return;
 
         const ctx = u.ctx;
-        const { left, top, width, height } = u.bbox;
+        const { top, height } = u.bbox;
         const dpr = devicePixelRatio;
 
         // Convert time values to canvas pixel positions
