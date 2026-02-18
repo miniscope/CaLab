@@ -154,8 +154,8 @@ export function SpectrumPanel() {
 
       const chartData: uPlot.AlignedData = [
         new Float64Array(logFreqs),
-        new Float64Array(allPsdVals),
         new Float64Array(psdVals),
+        new Float64Array(allPsdVals),
       ];
 
       const opts: uPlot.Options = {
@@ -173,13 +173,13 @@ export function SpectrumPanel() {
         series: [
           {},
           {
-            label: 'All Cells',
-            stroke: withOpacity(theme.textTertiary, 0.5),
-            width: 1,
-          },
-          {
             label: 'Selected Cell',
             stroke: theme.accent,
+            width: 1.5,
+          },
+          {
+            label: 'All Cells',
+            stroke: withOpacity(theme.textTertiary, 0.55),
             width: 1.5,
           },
         ],
