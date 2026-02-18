@@ -142,7 +142,7 @@ export function CommunityBrowser() {
   if (!supabaseEnabled) return null;
 
   return (
-    <div class="community-browser">
+    <div class="community-browser" data-tutorial="community-browser">
       {/* Collapsible header */}
       <div class="community-browser__header" onClick={toggleCollapse}>
         <h3 class="community-browser__title">Community Parameters</h3>

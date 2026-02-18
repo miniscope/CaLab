@@ -41,7 +41,7 @@ export function FeedbackMenu() {
   };
 
   return (
-    <div class="feedback-menu" ref={containerRef}>
+    <div class="feedback-menu" data-tutorial="feedback-menu" ref={containerRef}>
       <button
         class="btn-secondary btn-small"
         aria-expanded={open()}

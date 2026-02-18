@@ -7,94 +7,142 @@ export const basicsTutorial: Tutorial = {
   id: 'basics',
   title: 'Understanding Parameters',
   description:
-    'Learn the basics of calcium trace deconvolution: what each parameter controls and how to recognize a good fit.',
+    'Learn the basics of calcium trace deconvolution: cell cards, trace reading, and what each parameter controls.',
   level: 'beginner',
   prerequisites: [],
-  estimatedMinutes: 3,
+  estimatedMinutes: 5,
   steps: [
     // Step 1: Welcome (centered modal, no element)
     {
       title: 'Welcome to CaTune',
       description:
-        'This tutorial teaches you the basics of calcium trace deconvolution \u2014 what each parameter controls and how to recognize a good fit.',
+        'This tutorial teaches you the basics of calcium trace deconvolution \u2014 how to navigate cell cards, read traces, and understand what each parameter controls.',
     },
-    // Step 2: Cell card
+    // Step 2: Header bar
+    {
+      element: '[data-tutorial="header-bar"]',
+      title: 'The Dashboard',
+      description:
+        'The header shows your dataset info: filename, cell count, timepoints, sampling rate, and duration. On the right you\u2019ll find action buttons for tutorials, the analysis sidebar, feedback, and switching datasets.',
+      side: 'bottom',
+    },
+    // Step 3: Cell card
     {
       element: '[data-tutorial="cell-card-active"]',
       title: 'Your Cell Card',
       description:
-        'Each cell gets its own card with two charts: a minimap overview at the top showing the full recording, and a zoom window below for detailed inspection. Click any card to make it active.',
+        'Each cell gets its own card with a minimap overview at the top and a zoom window below. Click any card to select it as the active cell.',
       side: 'bottom',
     },
-    // Step 3: Zoom window with overlaid traces
+    // Step 4: Minimap
+    {
+      element: '[data-tutorial="minimap"]',
+      title: 'The Minimap',
+      description:
+        'The minimap shows the full recording for this cell. The shaded region is your zoom window. <b>Click anywhere on the minimap</b> to jump to that timepoint, or <b>drag</b> to reposition the zoom window.',
+      side: 'bottom',
+    },
+    // Step 5: Zoom window
+    {
+      element: '[data-tutorial="zoom-window"]',
+      title: 'The Zoom Window',
+      description:
+        'The zoom window shows a detailed view of the selected time range. <b>Drag left/right to pan</b> through the recording. <b>Ctrl+Scroll</b> (or Cmd+Scroll) to zoom in and out.',
+      side: 'bottom',
+    },
+    // Step 6: Reading the traces
     {
       element: '[data-tutorial="zoom-window"]',
       title: 'Reading the Traces',
       description:
-        'The zoom window shows four overlaid signals. Top band: raw fluorescence (blue) with the model\u2019s reconvolution fit (orange). Below that: inferred deconvolved activity (green). At the bottom: residuals (red) \u2014 the difference between raw and fit. When the fit is good, residuals look like random noise.',
+        'Four trace bands are overlaid: raw fluorescence (blue) with the model\u2019s fit (orange) on top, inferred deconvolved activity (green) in the middle, and residuals (red) at the bottom. When the fit is good, residuals look like random noise.',
       side: 'bottom',
     },
-    // Step 4: Decay slider
+    // Step 7: Quality badge / convergence indicator
+    {
+      element: '[data-tutorial="convergence-indicator"]',
+      title: 'Quality Badge',
+      description:
+        'Shows solver status: <b>Iter N</b> while solving, then an <b>SNR value</b> when done. The colored dot indicates fit quality (green = good, yellow = fair, red = poor). Wait for solving to finish before judging the fit.',
+      side: 'bottom',
+    },
+    // Step 8: Resize handle
+    {
+      element: '[data-tutorial="resize-handle"]',
+      title: 'Card Height',
+      description:
+        'Drag the handle at the bottom of any card to resize all cards vertically. Taller cards make it easier to inspect fine trace details.',
+      side: 'top',
+    },
+    // Step 9: Legend bar
+    {
+      element: '[data-tutorial="legend-bar"]',
+      title: 'Trace Legend',
+      description:
+        '<b>Click any legend item to toggle that trace on or off.</b> The \u201C?\u201D button explains what each trace represents. Hiding traces you\u2019re not focused on reduces visual clutter.',
+      side: 'bottom',
+    },
+    // Step 10: Grid columns
+    {
+      element: '[data-tutorial="grid-columns"]',
+      title: 'Grid Layout',
+      description:
+        'Use +/\u2212 to adjust the number of columns (1\u20136). Fewer columns means larger cards for detailed inspection. More columns lets you compare many cells at once.',
+      side: 'bottom',
+    },
+    // Step 11: Decay slider
     {
       element: '[data-tutorial="slider-decay"]',
       title: 'Decay Time (tau_decay)',
       description:
-        'Controls how quickly calcium decays after a neural event. This is the most important parameter \u2014 start here. Typical values: 200\u2013800ms for GCaMP6f, 400\u20131500ms for GCaMP7f. Too short: fit undershoots after peaks. Too long: fit is sluggish and bleeds into the next event.',
+        'The most important parameter \u2014 start here. Controls how quickly calcium decays after a neural event. Too short: the solver re-fires spikes during the decay phase to explain lingering signal (overfitting). Too long: fit is sluggish and misses fast events. <b>Spikes should primarily occur during the rise, not spread across the whole decay.</b>',
       side: 'right',
     },
-    // Step 5: Rise slider
+    // Step 12: Rise slider
     {
       element: '[data-tutorial="slider-rise"]',
       title: 'Rise Time (tau_rise)',
       description:
-        'Controls how quickly calcium rises at the onset of an event. Usually much shorter than decay (5\u201350ms). Fine-tune this after decay is set. Too short: sharp onset artifacts. Too long: fit lags behind the true rise.',
+        'Controls how quickly calcium rises at event onset. Usually much shorter than decay (5\u201350ms). Fine-tune after decay is set. Note: <b>changing rise slightly changes optimal decay</b> \u2014 they\u2019re coupled, so re-check decay after adjusting rise.',
       side: 'right',
     },
-    // Step 6: Lambda slider
+    // Step 13: Lambda slider
     {
       element: '[data-tutorial="slider-lambda"]',
       title: 'Sparsity Penalty (lambda)',
       description:
-        'Controls how many events the model detects. Higher lambda = fewer, cleaner events. Lower lambda = more events but also more noise. Start low and increase until noise spikes disappear from the green trace without losing real events.',
+        'Controls event count. Start at 0 and increase until noise spikes disappear from the green trace without losing real events. <b>Prefer adjusting decay time over relying on high sparsity</b> to control overfitting. Increasing decay can help reduce dense deconvolved activity under big fluorescence events.',
       side: 'right',
     },
-    // Step 7: Kernel display
+    // Step 14: Kernel display
     {
       element: '[data-tutorial="kernel-display"]',
       title: 'Calcium Kernel Shape',
       description:
-        'This shows the shape of a single calcium event as defined by your current rise and decay times. It is the \u201Ctemplate\u201D the model uses to find events in your data. The shape should match what a real calcium transient looks like for your indicator.',
+        'The template the model uses to find events in your data. It should match what a real calcium transient looks like for your indicator. Peak time and half-decay time are shown in the annotations.',
       side: 'right',
     },
-    // Step 8: Convergence indicator
-    {
-      element: '[data-tutorial="convergence-indicator"]',
-      title: 'Solver Status',
-      description:
-        'Shows whether the deconvolution solver is still computing (Solving...) or has finished (Converged). When you adjust parameters, the solver re-runs. Wait for \u201CConverged\u201D before judging the fit quality.',
-      side: 'bottom',
-    },
-    // Step 9: Good vs bad fit
+    // Step 15: Good vs bad fit
     {
       element: '[data-tutorial="param-panel"]',
       title: 'Good Fit vs Bad Fit',
       description:
-        'A good fit: orange closely tracks blue peaks, green trace has clean events, and red residuals look like noise. A bad fit: orange misses peaks, green trace is noisy or has missing events, and residuals show structured patterns. Try different parameter values to see the difference.',
+        '<b>Good:</b> orange tracks blue peaks, green has clean events during the rise phase only, red looks like noise. <b>Bad:</b> orange misses peaks, green has spikes spread across the decay, red shows structured patterns.',
       side: 'left',
     },
-    // Step 10: Pin for comparison
+    // Step 16: Pin for comparison
     {
       element: '[data-tutorial="pin-snapshot"]',
-      title: 'Compare Parameters',
+      title: 'Pin for Comparison',
       description:
-        'Use \u201CPin for Comparison\u201D to save the current fit as a faded overlay. Then adjust parameters and see the new fit alongside the old one \u2014 a quick way to judge if your changes improved things.',
+        'Save the current fit as a dashed overlay, then adjust parameters. The overlay lets you quickly judge whether changes improved the fit.',
       side: 'bottom',
     },
-    // Step 11: Completion (centered modal, no element)
+    // Step 17: Completion (centered modal, no element)
     {
       title: 'Basics Complete',
       description:
-        'You now understand the basic parameters and what to look for. Next, try the \u201CGuided Tuning Workflow\u201D tutorial to learn the recommended step-by-step tuning process.',
+        'You now understand the cell card layout, traces, and parameter controls. Next, try the \u201CGuided Tuning Workflow\u201D tutorial to learn the recommended step-by-step tuning process.',
     },
   ],
 };

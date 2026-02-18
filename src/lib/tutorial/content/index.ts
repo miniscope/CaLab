@@ -5,12 +5,14 @@ import type { Tutorial } from '../types.ts';
 import { basicsTutorial } from './01-basics.ts';
 import { workflowTutorial } from './02-workflow.ts';
 import { advancedTutorial } from './03-advanced.ts';
+import { featuresTutorial } from './04-features.ts';
 
 /** All tutorials in recommended progression order. */
 export const tutorials: Tutorial[] = [
   basicsTutorial,
   workflowTutorial,
   advancedTutorial,
+  featuresTutorial,
 ];
 
 /** Look up a tutorial by its unique ID. */

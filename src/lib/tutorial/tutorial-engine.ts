@@ -8,6 +8,7 @@ import '../../styles/tutorial.css';
 import type { Tutorial } from './types.ts';
 import {
   setActiveTutorial,
+  currentStepIndex,
   setCurrentStepIndex,
   setIsTutorialActive,
   tutorialActionFired,
@@ -104,9 +105,10 @@ export function startTutorial(tutorial: Tutorial, resumeFromStep?: number): void
 
     // Handle tour destruction: persist completion and reset reactive state
     onDestroyed: () => {
-      // Check if user completed the tour (reached or passed the last step)
+      // Only mark completed if user reached the final step
       const lastIndex = tutorial.steps.length - 1;
-      saveProgress(tutorial.id, lastIndex, true);
+      const reachedEnd = currentStepIndex() >= lastIndex;
+      saveProgress(tutorial.id, currentStepIndex(), reachedEnd);
       setIsTutorialActive(false);
       setActiveTutorial(null);
       driverInstance = null;
@@ -122,6 +124,11 @@ export function startTutorial(tutorial: Tutorial, resumeFromStep?: number): void
 
   // Start the tour
   driverInstance.drive(resumeFromStep ?? 0);
+}
+
+/** Stop the currently active tutorial without marking it as completed. */
+export function stopTutorial(): void {
+  driverInstance?.destroy();
 }
 
 /**
