@@ -1,11 +1,12 @@
-/* Compact Header — thin bar for dashboard mode */
+/* Compact Header — thin bar for dashboard mode
+   Background: override via --header-bg (defaults to --bg-secondary) */
 
 .compact-header {
   display: flex;
   align-items: center;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-lg);
-  background: var(--bg-secondary);
+  background: var(--header-bg, var(--bg-secondary));
   border-bottom: 1px solid var(--border-subtle);
   min-height: 48px;
 }
@@ -45,8 +46,10 @@
 
 .compact-header__file {
   color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .compact-header__sep {
@@ -57,5 +60,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  margin-left: auto;
   flex-shrink: 0;
 }

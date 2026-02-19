@@ -1,5 +1,9 @@
 /* CaRank App-Specific Styles */
 
+:root {
+  --header-bg: var(--bg-primary);
+}
+
 /* App-specific overrides for shared components */
 .drop-zone__icon {
   font-size: 1.5rem;
@@ -8,63 +12,6 @@
 .error-card {
   margin-top: var(--space-md);
   margin-bottom: 0;
-}
-
-/* ========================
-   Compact Header
-   ======================== */
-.compact-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-sm) var(--space-lg);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-primary);
-  min-height: 48px;
-}
-
-.compact-header__brand {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-xs);
-  flex-shrink: 0;
-}
-
-.compact-header__title {
-  font-size: 1.1rem;
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-}
-
-.compact-header__info {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  min-width: 0;
-  overflow: hidden;
-}
-
-.compact-header__file {
-  font-weight: var(--font-weight-medium);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.compact-header__sep {
-  color: var(--text-tertiary);
-}
-
-.compact-header__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-left: auto;
-  flex-shrink: 0;
 }
 
 /* ========================

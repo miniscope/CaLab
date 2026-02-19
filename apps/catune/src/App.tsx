@@ -11,7 +11,7 @@ import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
 import { DashboardPanel, VizLayout, DashboardShell } from '@catune/ui';
-import { CompactHeader } from './components/layout/CompactHeader.tsx';
+import { CaTuneHeader } from './components/layout/CompactHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { CardGrid } from './components/cards/CardGrid.tsx';
@@ -69,7 +69,7 @@ const App: Component = () => {
 
   const hasFile = () => !!rawFile();
 
-  // Sidebar state — owned by the app, passed to DashboardShell & CompactHeader
+  // Sidebar state — owned by the app, passed to DashboardShell & CaTuneHeader
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const toggleSidebar = () => setSidebarOpen((prev) => !prev);
 
@@ -160,7 +160,7 @@ const App: Component = () => {
           sidebarOpen={sidebarOpen()}
           onToggleSidebar={toggleSidebar}
           header={
-            <CompactHeader
+            <CaTuneHeader
               tutorialOpen={tutorialOpen}
               onTutorialToggle={() => setTutorialOpen((prev) => !prev)}
               sidebarOpen={sidebarOpen()}
