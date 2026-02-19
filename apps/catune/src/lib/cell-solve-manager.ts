@@ -16,8 +16,8 @@ import {
   hoveredCell,
 } from './multi-cell-store.ts';
 import { extractCellTrace } from '@catune/io';
-import { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-start-cache.ts';
-import { createWorkerPool, type WorkerPool } from './worker-pool.ts';
+import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@catune/compute';
+import { createWorkerPool, type WorkerPool } from '@catune/compute';
 import type { SolverParams } from '@catune/core';
 import type { NpyResult } from '@catune/core';
 
@@ -373,7 +373,8 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 }
 
 export function initCellSolveManager(): void {
-  pool = createWorkerPool();
+  const workerUrl = new URL('../workers/pool-worker.ts', import.meta.url);
+  pool = createWorkerPool(workerUrl);
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves
   createEffect(
