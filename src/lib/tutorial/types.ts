@@ -40,6 +40,8 @@ export interface Tutorial {
   prerequisites: string[];
   /** Estimated completion time in minutes. */
   estimatedMinutes: number;
+  /** Highlight this tutorial as recommended in the tutorial panel. */
+  recommended?: boolean;
   /** Ordered array of tutorial steps. */
   steps: TutorialStep[];
 }

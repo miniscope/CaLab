@@ -20,6 +20,7 @@ export const theoryTutorial: Tutorial = {
   level: 'advanced',
   prerequisites: [],
   estimatedMinutes: 8,
+  recommended: true,
   steps: [
     // Step 1: Introduction
     {

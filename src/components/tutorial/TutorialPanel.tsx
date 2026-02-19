@@ -69,6 +69,9 @@ export function TutorialPanel(props: TutorialPanelProps): JSX.Element {
                   <span style={{ color: 'var(--success)', 'margin-right': '6px' }}>&#10003;</span>
                 </Show>
                 {tutorial.title}
+                <Show when={tutorial.recommended}>
+                  <span class="recommended-badge">Recommended</span>
+                </Show>
               </div>
               <div class="tutorial-card__meta">
                 <span class={`level-badge level-badge--${tutorial.level}`}>

@@ -109,6 +109,20 @@
 .tutorial-card__title {
   font-weight: var(--font-weight-semibold);
   margin-bottom: var(--space-xs);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.recommended-badge {
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(33, 113, 181, 0.15);
+  color: var(--accent);
 }
 
 .tutorial-card__meta {

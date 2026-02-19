@@ -10,11 +10,11 @@ import { theoryTutorial } from './05-theory.ts';
 
 /** All tutorials in recommended progression order. */
 export const tutorials: Tutorial[] = [
+  theoryTutorial,
   basicsTutorial,
   workflowTutorial,
   advancedTutorial,
   featuresTutorial,
-  theoryTutorial,
 ];
 
 /** Look up a tutorial by its unique ID. */
