@@ -1,0 +1,23 @@
+{
+  "name": "catune",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@catune/core": "*",
+    "@dschz/solid-uplot": "^0.5.2",
+    "@supabase/supabase-js": "^2.95.3",
+    "driver.js": "^1.4.0",
+    "fflate": "^0.8.0",
+    "solid-js": "^1.9.11",
+    "uplot": "^1.6.32",
+    "valibot": "^1.2.0"
+  }
+}

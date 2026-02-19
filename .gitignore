@@ -1,6 +1,7 @@
 .planning/
 node_modules/
 dist/
+apps/*/dist/
 .vite/
 wasm/catune-solver/target/
 test/

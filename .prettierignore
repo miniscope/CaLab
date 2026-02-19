@@ -1,4 +1,5 @@
 dist/
+apps/*/dist/
 wasm/catune-solver/pkg/
 wasm/catune-solver/target/
 .planning/
