@@ -176,7 +176,7 @@ Key design decisions:
 - **Raw postMessage** (not Comlink) so the event loop can process cancel messages between solver batches
 - **MessageChannel yields** (<1ms) instead of setTimeout(0) (~4ms) for cooperative multitasking
 - **Warm-start caching** (`@catune/compute`) reuses solver state when only lambda changes (kernel unchanged)
-- **Worker URL injection** — `createWorkerPool(url)` accepts a URL so the Vite worker entry stays in the app
+- **Worker factory injection** — `createWorkerPool(() => new Worker(...))` keeps the `new Worker(new URL(..., import.meta.url))` pattern in the app so Vite can detect and bundle the worker
 
 ## Module Boundaries
 

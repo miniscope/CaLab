@@ -41,7 +41,7 @@ export interface WorkerPool {
   dispose(): void;
 }
 
-export function createWorkerPool(workerUrl: URL, poolSize?: number): WorkerPool {
+export function createWorkerPool(createWorker: () => Worker, poolSize?: number): WorkerPool {
   const size = poolSize ?? Math.min(navigator.hardwareConcurrency ?? 4, 4);
   const entries: PoolEntry[] = [];
   const queue: PoolJob[] = [];
@@ -51,9 +51,7 @@ export function createWorkerPool(workerUrl: URL, poolSize?: number): WorkerPool 
 
   // Create workers
   for (let i = 0; i < size; i++) {
-    const worker = new Worker(workerUrl, {
-      type: 'module',
-    });
+    const worker = createWorker();
 
     const entry: PoolEntry = { worker, state: { status: 'init' } };
     entries.push(entry);

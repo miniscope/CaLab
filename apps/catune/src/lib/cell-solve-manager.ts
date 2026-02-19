@@ -373,8 +373,9 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 }
 
 export function initCellSolveManager(): void {
-  const workerUrl = new URL('../workers/pool-worker.ts', import.meta.url);
-  pool = createWorkerPool(workerUrl);
+  pool = createWorkerPool(
+    () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
+  );
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves
   createEffect(
