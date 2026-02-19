@@ -13,12 +13,6 @@ export interface TutorialStep {
   side?: 'top' | 'bottom' | 'left' | 'right';
   /** Require user to perform an action before advancing (e.g., 'slider-change'). */
   waitForAction?: string;
-  /** Optional parameter values to set for this step's demonstration. */
-  setupParams?: {
-    tauRise?: number;
-    tauDecay?: number;
-    lambda?: number;
-  };
   /** Whether to disable interaction with the highlighted element. Undefined = driver.js default. */
   disableActiveInteraction?: boolean;
   /** Called after popover renders. Receives description HTMLElement for canvas injection.

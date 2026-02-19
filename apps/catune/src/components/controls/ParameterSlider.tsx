@@ -4,8 +4,7 @@
 
 import { Show } from 'solid-js';
 import type { Accessor, Setter } from 'solid-js';
-import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine.ts';
-import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
+import { notifyTutorialAction, isTutorialActive } from '@calab/tutorials';
 
 export interface ParameterSliderProps {
   label: string;

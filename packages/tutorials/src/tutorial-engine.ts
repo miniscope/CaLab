@@ -1,11 +1,10 @@
-// Tutorial engine: driver.js integration for CaTune's guided tours.
+// Tutorial engine: driver.js integration for guided tours.
 // Maps typed Tutorial objects to driver.js DriveStep arrays and manages lifecycle.
 
 import { driver, type DriveStep, type Config, type Driver, type PopoverDOM } from 'driver.js';
 import 'driver.js/dist/driver.css';
-import '../../styles/tutorial.css';
 
-import type { Tutorial } from '@calab/tutorials';
+import type { Tutorial } from './types.ts';
 import {
   setActiveTutorial,
   currentStepIndex,
@@ -15,7 +14,16 @@ import {
   setTutorialActionFired,
   isTutorialActive,
 } from './tutorial-store.ts';
-import { saveProgress } from '@calab/tutorials';
+import { saveProgress } from './progress.ts';
+
+// --- Configuration ---
+
+let popoverClass = 'calab-tutorial';
+
+/** Configure tutorial engine options. Call once at app init if needed. */
+export function configureTutorialEngine(opts: { popoverClass?: string }): void {
+  if (opts.popoverClass !== undefined) popoverClass = opts.popoverClass;
+}
 
 // --- Module state ---
 
@@ -49,7 +57,6 @@ function mapSteps(tutorial: Tutorial): DriveStep[] {
         side: step.side,
         ...(renderFn && {
           onPopoverRender: (popover: PopoverDOM) => {
-            popover.wrapper.classList.add('catune-tutorial-figure');
             cleanupActiveRender();
             const cleanup = renderFn(popover.description);
             if (cleanup) activeRenderCleanup = cleanup;
@@ -111,7 +118,7 @@ export function startTutorial(tutorial: Tutorial, resumeFromStep?: number): void
     animate: true,
     allowClose: true,
     overlayOpacity: 0.6,
-    popoverClass: 'catune-tutorial',
+    popoverClass,
 
     // Track step transitions: update reactive store and persist progress
     onHighlightStarted: (_element, _step, { driver: drv }) => {

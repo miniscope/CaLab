@@ -37,8 +37,7 @@ import {
 import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
 import { initCellSolveManager } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/community/index.ts';
-import { isTutorialActive } from './lib/tutorial/tutorial-store.ts';
-import { startTutorial } from './lib/tutorial/tutorial-engine.ts';
+import { isTutorialActive, startTutorial } from '@calab/tutorials';
 import { getTutorialById } from './lib/tutorial/content/index.ts';
 
 import './styles/multi-trace.css';
@@ -175,44 +174,43 @@ const App: Component = () => {
             />
           }
         >
-          <VizLayout mode="dashboard">
-            {/* Left strip: Parameters + Kernel */}
-            <div class="param-strip">
-              <DashboardPanel id="parameters" variant="controls">
-                <ParameterPanel />
-              </DashboardPanel>
+          <VizLayout
+            mode="dashboard"
+            sidebar={
+              <>
+                <DashboardPanel id="parameters" variant="controls">
+                  <ParameterPanel />
+                </DashboardPanel>
 
-              <DashboardPanel id="kernel" variant="data">
-                <KernelDisplay />
-              </DashboardPanel>
+                <DashboardPanel id="kernel" variant="data">
+                  <KernelDisplay />
+                </DashboardPanel>
 
-              <DashboardPanel id="toolbar" variant="controls">
-                <div class="param-strip__toolbar">
-                  <button
-                    class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
-                    onClick={() => (pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot())}
-                    data-tutorial="pin-snapshot"
-                  >
-                    {pinnedParams() ? 'Unpin' : 'Pin'}
-                  </button>
-                  <Show when={pinnedParams()}>
-                    {(params) => (
-                      <span class="param-strip__pin-info">
-                        {(params().tauRise * 1000).toFixed(0)}ms /{' '}
-                        {(params().tauDecay * 1000).toFixed(0)}ms
-                      </span>
-                    )}
-                  </Show>
-                  <SubmitPanel />
-                </div>
-              </DashboardPanel>
-            </div>
-
-            {/* Center: Cell selector bar + Card Grid */}
-            <div class="main-content-area">
-              <CellSelector />
-              <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
-            </div>
+                <DashboardPanel id="toolbar" variant="controls">
+                  <div class="param-strip__toolbar">
+                    <button
+                      class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
+                      onClick={() => (pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot())}
+                      data-tutorial="pin-snapshot"
+                    >
+                      {pinnedParams() ? 'Unpin' : 'Pin'}
+                    </button>
+                    <Show when={pinnedParams()}>
+                      {(params) => (
+                        <span class="param-strip__pin-info">
+                          {(params().tauRise * 1000).toFixed(0)}ms /{' '}
+                          {(params().tauDecay * 1000).toFixed(0)}ms
+                        </span>
+                      )}
+                    </Show>
+                    <SubmitPanel />
+                  </div>
+                </DashboardPanel>
+              </>
+            }
+          >
+            <CellSelector />
+            <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
           </VizLayout>
         </DashboardShell>
       </Show>

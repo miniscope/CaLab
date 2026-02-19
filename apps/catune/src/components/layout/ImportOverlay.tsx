@@ -22,8 +22,7 @@ import {
   buildBugReportUrl,
 } from '../../lib/community/index.ts';
 import { getTutorialById } from '../../lib/tutorial/content/index.ts';
-import { startTutorial } from '../../lib/tutorial/tutorial-engine.ts';
-import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
+import { startTutorial, isTutorialActive } from '@calab/tutorials';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   drop: { num: 1, label: 'Load Data' },

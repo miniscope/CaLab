@@ -9,6 +9,7 @@
  */
 
 import { For, Show, createMemo, onMount, onCleanup } from 'solid-js';
+import { CardGrid as CardGridLayout } from '@calab/ui';
 import { CellCard } from './CellCard.tsx';
 import {
   selectedCells,
@@ -71,52 +72,52 @@ export function CardGrid(props: CardGridProps) {
   }
 
   return (
-    <div class="card-grid-container">
-      <Show
-        when={cells().length > 0}
-        fallback={
+    <Show
+      when={cells().length > 0}
+      fallback={
+        <div class="card-grid-container">
           <div class="card-grid__empty">No cell results yet. Adjust parameters to solve.</div>
-        }
-      >
-        <div class="card-grid" data-tutorial="card-grid" style={{ '--grid-cols': gridColumns() }}>
-          <For each={cells()}>
-            {(cellIndex) => {
-              const traces = createMemo(() => multiCellResults[cellIndex]);
-              const pinnedTraces = createMemo(() => pinnedMultiCellResults[cellIndex]);
-              const gt = createMemo(() => {
-                if (!groundTruthVisible() || !isDemo()) return null;
-                return getGroundTruthForCell(cellIndex);
-              });
-              return (
-                <Show when={traces()}>
-                  {(t) => (
-                    <CellCard
-                      cellIndex={cellIndex}
-                      rawTrace={t().raw}
-                      deconvolvedTrace={t().deconvolved}
-                      reconvolutionTrace={t().reconvolution}
-                      filteredTrace={t().filteredTrace}
-                      samplingRate={samplingRate() ?? 30}
-                      isActive={selectedCell() === cellIndex}
-                      solverStatus={cellSolverStatuses[cellIndex] ?? 'stale'}
-                      iterationCount={cellIterationCounts[cellIndex] ?? 0}
-                      cardRef={(el) => registerCard(cellIndex, el)}
-                      onClick={() => props.onCellClick(cellIndex)}
-                      onZoomChange={reportCellZoom}
-                      windowStartSample={t().windowStartSample}
-                      pinnedDeconvolved={pinnedTraces()?.deconvolved}
-                      pinnedReconvolution={pinnedTraces()?.reconvolution}
-                      pinnedWindowStartSample={pinnedTraces()?.windowStartSample}
-                      groundTruthSpikes={gt()?.spikes}
-                      groundTruthCalcium={gt()?.calcium}
-                    />
-                  )}
-                </Show>
-              );
-            }}
-          </For>
         </div>
-      </Show>
-    </div>
+      }
+    >
+      <CardGridLayout columns={gridColumns()} data-tutorial="card-grid">
+        <For each={cells()}>
+          {(cellIndex) => {
+            const traces = createMemo(() => multiCellResults[cellIndex]);
+            const pinnedTraces = createMemo(() => pinnedMultiCellResults[cellIndex]);
+            const gt = createMemo(() => {
+              if (!groundTruthVisible() || !isDemo()) return null;
+              return getGroundTruthForCell(cellIndex);
+            });
+            return (
+              <Show when={traces()}>
+                {(t) => (
+                  <CellCard
+                    cellIndex={cellIndex}
+                    rawTrace={t().raw}
+                    deconvolvedTrace={t().deconvolved}
+                    reconvolutionTrace={t().reconvolution}
+                    filteredTrace={t().filteredTrace}
+                    samplingRate={samplingRate() ?? 30}
+                    isActive={selectedCell() === cellIndex}
+                    solverStatus={cellSolverStatuses[cellIndex] ?? 'stale'}
+                    iterationCount={cellIterationCounts[cellIndex] ?? 0}
+                    cardRef={(el) => registerCard(cellIndex, el)}
+                    onClick={() => props.onCellClick(cellIndex)}
+                    onZoomChange={reportCellZoom}
+                    windowStartSample={t().windowStartSample}
+                    pinnedDeconvolved={pinnedTraces()?.deconvolved}
+                    pinnedReconvolution={pinnedTraces()?.reconvolution}
+                    pinnedWindowStartSample={pinnedTraces()?.windowStartSample}
+                    groundTruthSpikes={gt()?.spikes}
+                    groundTruthCalcium={gt()?.calcium}
+                  />
+                )}
+              </Show>
+            );
+          }}
+        </For>
+      </CardGridLayout>
+    </Show>
   );
 }

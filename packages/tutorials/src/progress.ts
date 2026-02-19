@@ -3,7 +3,12 @@
 
 import type { TutorialProgress } from './types.ts';
 
-const STORAGE_KEY = 'catune-tutorial-progress-v2';
+let storageKey = 'calab-tutorial-progress-v2';
+
+/** Set the localStorage key used for tutorial progress (call once at app init). */
+export function configureStorageKey(key: string): void {
+  storageKey = key;
+}
 
 /** Save progress for a tutorial (creates or updates entry). */
 export function saveProgress(tutorialId: string, stepIndex: number, completed: boolean): void {
@@ -15,7 +20,7 @@ export function saveProgress(tutorialId: string, stepIndex: number, completed: b
     timestamp: Date.now(),
   };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    localStorage.setItem(storageKey, JSON.stringify(all));
   } catch {
     // localStorage full or unavailable -- silently ignore
   }
@@ -30,7 +35,7 @@ export function getProgress(tutorialId: string): TutorialProgress | null {
 /** Get all saved tutorial progress. Returns empty object on parse error. */
 export function getAllProgress(): Record<string, TutorialProgress> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     return raw ? (JSON.parse(raw) as Record<string, TutorialProgress>) : {};
   } catch {
     return {};

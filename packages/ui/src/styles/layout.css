@@ -184,6 +184,110 @@ html.dashboard-mode #root {
 }
 
 /* ========================
+   VizLayout — sidebar + content areas (dashboard mode)
+   ======================== */
+.viz-layout__sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+  width: var(--sidebar-width, 260px);
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+.viz-layout__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ========================
+   Card Grid — generic layout container
+   ======================== */
+.card-grid-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.card-grid {
+  --grid-cols: 2;
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), minmax(0, 1fr));
+  gap: var(--panel-gap);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-xs);
+  flex: 1;
+  min-height: 0;
+}
+
+.card-grid__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* ========================
+   Card — reusable content card with optional resize
+   ======================== */
+.calab-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--panel-radius);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.calab-card:hover {
+  border-color: var(--accent);
+}
+
+.calab-card__resize-handle {
+  flex-shrink: 0;
+  height: 6px;
+  cursor: ns-resize;
+  position: relative;
+  margin-top: auto;
+}
+
+.calab-card__resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 3px;
+  border-top: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-default);
+  opacity: 0.4;
+  transition: opacity var(--transition-fast);
+}
+
+.calab-card__resize-handle:hover::after {
+  opacity: 0.8;
+}
+
+/* ========================
    Responsive
    ======================== */
 @media (max-width: 600px) {

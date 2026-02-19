@@ -12,6 +12,7 @@ export default defineConfig({
     alias: {
       '@calab/core': path.resolve(repoRoot, 'packages/core/src'),
       '@calab/io': path.resolve(repoRoot, 'packages/io/src'),
+      '@calab/tutorials': path.resolve(repoRoot, 'packages/tutorials/src'),
       '@calab/ui': path.resolve(repoRoot, 'packages/ui/src'),
     },
   },

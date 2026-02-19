@@ -12,7 +12,7 @@ import {
   filterEnabled,
   setFilterEnabled,
 } from '../../lib/viz-store.ts';
-import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine.ts';
+import { notifyTutorialAction } from '@calab/tutorials';
 import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
 import { PARAM_RANGES } from '@calab/core';
 import { ParameterSlider } from './ParameterSlider.tsx';

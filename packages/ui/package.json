@@ -10,6 +10,7 @@
     "./styles/*": "./src/styles/*"
   },
   "dependencies": {
+    "@calab/tutorials": "*",
     "solid-js": "^1.9.11"
   }
 }

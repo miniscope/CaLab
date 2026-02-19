@@ -150,6 +150,11 @@ function drawBaseline(
   }
 }
 
+/** Mark the driver.js popover wrapper with a wider class for theory figures. */
+function markFigurePopover(el: HTMLElement): void {
+  el.closest('.driver-popover')?.classList.add('catune-tutorial-figure');
+}
+
 /** Set up the side-by-side layout (text + figure column). Returns refs for cleanup. */
 function createFigureLayout(container: HTMLElement): {
   figCol: HTMLElement;
@@ -246,6 +251,7 @@ function drawLegendEntry(
 // ============================================================
 
 export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | void {
+  markFigurePopover(descriptionEl);
   const canvas = createHiDpiCanvas(SINGLE_W, SINGLE_H);
   const ctx = canvas.getContext('2d')!;
   const area = plotArea(SINGLE_W, SINGLE_H);
@@ -298,6 +304,7 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
 // ============================================================
 
 export function renderDecayComparison(descriptionEl: HTMLElement): (() => void) | void {
+  markFigurePopover(descriptionEl);
   const canvas = createHiDpiCanvas(SINGLE_W, SINGLE_H);
   const ctx = canvas.getContext('2d')!;
   const area = plotArea(SINGLE_W, SINGLE_H);
@@ -329,6 +336,7 @@ export function renderDecayComparison(descriptionEl: HTMLElement): (() => void) 
 // ============================================================
 
 export function renderDeltaTrap(descriptionEl: HTMLElement): (() => void) | void {
+  markFigurePopover(descriptionEl);
   const canvas = createHiDpiCanvas(SINGLE_W, SINGLE_H);
   const ctx = canvas.getContext('2d')!;
   const area = plotArea(SINGLE_W, SINGLE_H);
@@ -406,6 +414,7 @@ function drawDeconvPanel(
 }
 
 export function renderGoodVsBad(descriptionEl: HTMLElement): (() => void) | void {
+  markFigurePopover(descriptionEl);
   let cancelled = false;
 
   // Set up layout synchronously so text is visible while WASM loads
