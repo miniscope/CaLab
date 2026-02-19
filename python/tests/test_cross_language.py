@@ -17,10 +17,10 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from catune import build_kernel, run_deconvolution
-from catune._fista import run_deconvolution_full
-from catune._filter import bandpass_filter
-from catune._io import deconvolve_from_export
+from calab import build_kernel, run_deconvolution
+from calab._fista import run_deconvolution_full
+from calab._filter import bandpass_filter
+from calab._io import deconvolve_from_export
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

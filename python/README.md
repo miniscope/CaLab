@@ -1,26 +1,26 @@
-# CaLab Python Companion
+# CaLab Python
 
-Calcium imaging deconvolution and data preparation -- Python companion package for the [CaLab](https://github.com/miniscope/CaLab) tools.
+Calcium imaging analysis tools — deconvolution and data preparation. Python companion package for the [CaLab](https://github.com/miniscope/CaLab) tools.
 
 ## Installation
 
 ```bash
-pip install catune
+pip install calab
 ```
 
 ## Quick Start
 
 ```python
-import catune
+import calab
 
 # Build a calcium kernel
-kernel = catune.build_kernel(tau_rise=0.02, tau_decay=0.4, fs=30.0)
+kernel = calab.build_kernel(tau_rise=0.02, tau_decay=0.4, fs=30.0)
 
 # Get AR(2) coefficients
-g1, g2, d, r = catune.tau_to_ar2(tau_rise=0.02, tau_decay=0.4, fs=30.0)
+g1, g2, d, r = calab.tau_to_ar2(tau_rise=0.02, tau_decay=0.4, fs=30.0)
 
 # Compute Lipschitz constant for FISTA step size
-L = catune.compute_lipschitz(kernel)
+L = calab.compute_lipschitz(kernel)
 ```
 
 ## Deconvolution
@@ -30,16 +30,16 @@ Run FISTA deconvolution matching the CaTune web app's Rust solver exactly
 
 ```python
 import numpy as np
-import catune
+import calab
 
 # Load your calcium traces (n_cells x n_timepoints)
 traces = np.load("my_traces.npy")
 
 # Basic: returns non-negative activity array
-activity = catune.run_deconvolution(traces, fs=30.0, tau_r=0.02, tau_d=0.4, lam=0.01)
+activity = calab.run_deconvolution(traces, fs=30.0, tau_r=0.02, tau_d=0.4, lam=0.01)
 
 # Full: returns activity, baseline, reconvolution, iterations, converged
-result = catune.run_deconvolution_full(traces, fs=30.0, tau_r=0.02, tau_d=0.4, lam=0.01)
+result = calab.run_deconvolution_full(traces, fs=30.0, tau_r=0.02, tau_d=0.4, lam=0.01)
 print(f"Baseline: {result.baseline}, Converged: {result.converged}")
 ```
 
@@ -53,7 +53,7 @@ print(f"Baseline: {result.baseline}, Converged: {result.converged}")
 Apply the same FFT bandpass filter used in the CaTune web app:
 
 ```python
-filtered = catune.bandpass_filter(trace, tau_rise=0.02, tau_decay=0.4, fs=100.0)
+filtered = calab.bandpass_filter(trace, tau_rise=0.02, tau_decay=0.4, fs=100.0)
 ```
 
 ## Using CaTune Export JSON
@@ -61,29 +61,29 @@ filtered = catune.bandpass_filter(trace, tau_rise=0.02, tau_decay=0.4, fs=100.0)
 Load parameters from a CaTune export JSON and run deconvolution:
 
 ```python
-import catune
+import calab
 
 # Load export params
-params = catune.load_export_params("catune-params-2025-01-15.json")
+params = calab.load_export_params("catune-params-2025-01-15.json")
 # -> {'tau_rise': 0.02, 'tau_decay': 0.4, 'lambda_': 0.01, 'fs': 30.0, 'filter_enabled': False}
 
 # One-step pipeline: loads params, optionally filters, and deconvolves
-activity = catune.deconvolve_from_export(traces, "catune-params-2025-01-15.json")
+activity = calab.deconvolve_from_export(traces, "catune-params-2025-01-15.json")
 ```
 
 ## Saving Data for CaTune
 
 ```python
-import catune
+import calab
 
-catune.save_for_tuning(traces, fs=30.0, path="my_recording")
+calab.save_for_tuning(traces, fs=30.0, path="my_recording")
 # Creates my_recording.npy + my_recording_metadata.json
 # Load into CaTune browser tool via the .npy file
 ```
 
 ## Converting from CaImAn / Minian
 
-CaTune works with raw calcium traces extracted by any pipeline. Use
+CaLab works with raw calcium traces extracted by any pipeline. Use
 `save_for_tuning()` to convert extracted traces into CaTune-compatible
 format. No additional dependencies are required -- users extract arrays
 with their existing pipeline tools.
@@ -92,13 +92,13 @@ with their existing pipeline tools.
 
 ```python
 import h5py
-import catune
+import calab
 
 with h5py.File("caiman_results.hdf5", "r") as f:
     traces = f["estimates/C"][:]       # shape: (n_cells, n_timepoints)
     fs = float(f["params/data/fr"][()])
 
-catune.save_for_tuning(traces, fs, "my_recording")
+calab.save_for_tuning(traces, fs, "my_recording")
 # -> my_recording.npy + my_recording_metadata.json, ready for CaTune
 ```
 
@@ -106,13 +106,13 @@ catune.save_for_tuning(traces, fs, "my_recording")
 
 ```python
 import zarr
-import catune
+import calab
 
 store = zarr.open("minian_output", mode="r")
 traces = store["C"][:]  # shape: (n_cells, n_frames)
 fs = 30.0  # user must know their frame rate
 
-catune.save_for_tuning(traces, fs, "my_recording")
+calab.save_for_tuning(traces, fs, "my_recording")
 ```
 
 ### Then deconvolve
@@ -122,10 +122,10 @@ and apply them in Python:
 
 ```python
 import numpy as np
-import catune
+import calab
 
 traces = np.load("my_recording.npy")
-activity = catune.deconvolve_from_export(traces, "catune-params.json")
+activity = calab.deconvolve_from_export(traces, "catune-params.json")
 # activity is non-negative deconvolved neural activity (scaled by unknown constant)
 ```
 

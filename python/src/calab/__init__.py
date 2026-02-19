@@ -1,4 +1,4 @@
-"""CaTune companion: calcium imaging deconvolution and data preparation."""
+"""CaLab: calcium imaging analysis tools — deconvolution and data preparation."""
 
 from ._kernel import build_kernel, compute_lipschitz, tau_to_ar2
 from ._fista import run_deconvolution, run_deconvolution_full, DeconvolutionResult

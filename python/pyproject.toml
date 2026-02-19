@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "catune"
+name = "calab"
 version = "0.1.0"
-description = "CaLab companion: calcium imaging deconvolution and data preparation"
+description = "CaLab: calcium imaging analysis tools — deconvolution and data preparation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -36,7 +36,7 @@ Issues = "https://github.com/miniscope/CaLab/issues"
 dev = ["pytest>=7.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/catune"]
+packages = ["src/calab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

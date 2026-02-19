@@ -11,14 +11,14 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from catune import (
+from calab import (
     build_kernel,
     compute_lipschitz,
     load_tuning_data,
     run_deconvolution,
     save_for_tuning,
 )
-from catune._fista import run_deconvolution_full
+from calab._fista import run_deconvolution_full
 
 
 # ---------------------------------------------------------------------------

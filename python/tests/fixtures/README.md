@@ -1,7 +1,7 @@
 # Test Fixtures
 
 Reference values for cross-language equivalence testing between the Python
-`catune` package and the Rust/WASM solver (`wasm/catune-solver/`).
+`calab` package and the Rust/WASM solver (`wasm/catune-solver/`).
 
 ## Parameter Sets
 

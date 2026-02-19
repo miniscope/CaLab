@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 import numpy as np
-from catune import build_kernel
+from calab import build_kernel
 
 
 @pytest.fixture

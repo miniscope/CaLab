@@ -14,9 +14,9 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from catune import load_tuning_data, save_for_tuning
-from catune._io import load_export_params, deconvolve_from_export
-from catune._kernel import build_kernel
+from calab import load_tuning_data, save_for_tuning
+from calab._io import load_export_params, deconvolve_from_export
+from calab._kernel import build_kernel
 
 
 # ---------------------------------------------------------------------------

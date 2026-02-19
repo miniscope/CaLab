@@ -1,4 +1,4 @@
-"""Data I/O functions for CaTune-compatible file export and import.
+"""Data I/O functions for CaLab-compatible file export and import.
 
 Saves calcium traces as .npy files with JSON metadata sidecars,
 compatible with CaTune's browser-side .npy parser (src/lib/npy-parser.ts).
@@ -33,25 +33,25 @@ def save_for_tuning(
     **Converting from CaImAn** (users have h5py)::
 
         import h5py
-        import catune
+        import calab
 
         with h5py.File("caiman_results.hdf5", "r") as f:
             traces = f["estimates/C"][:]       # shape: (n_cells, n_timepoints)
             fs = float(f["params/data/fr"][()])
 
-        catune.save_for_tuning(traces, fs, "my_recording")
+        calab.save_for_tuning(traces, fs, "my_recording")
         # -> my_recording.npy + my_recording_metadata.json
 
     **Converting from Minian** (users have zarr/xarray)::
 
         import zarr
-        import catune
+        import calab
 
         store = zarr.open("minian_output", mode="r")
         traces = store["C"][:]  # shape: (n_cells, n_frames)
         fs = 30.0  # user must know their frame rate
 
-        catune.save_for_tuning(traces, fs, "my_recording")
+        calab.save_for_tuning(traces, fs, "my_recording")
 
     Parameters
     ----------
@@ -205,7 +205,7 @@ def deconvolve_from_export(
     params_path : str or Path
         Path to the CaTune export JSON file.
     return_full : bool, optional
-        If True, return a :class:`~catune.DeconvolutionResult` namedtuple.
+        If True, return a :class:`~calab.DeconvolutionResult` namedtuple.
         Default False returns just the activity array.
 
     Returns

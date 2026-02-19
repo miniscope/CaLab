@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.testing import assert_allclose
 
-from catune import build_kernel, tau_to_ar2, compute_lipschitz
+from calab import build_kernel, tau_to_ar2, compute_lipschitz
 
 
 # --- build_kernel tests ---
