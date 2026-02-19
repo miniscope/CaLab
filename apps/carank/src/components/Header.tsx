@@ -12,7 +12,9 @@ export function Header(props: HeaderProps): JSX.Element {
     <header class="compact-header">
       <div class="compact-header__brand">
         <span class="compact-header__title">CaRank</span>
-        <span class="compact-header__version">CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}</span>
+        <span class="compact-header__version">
+          CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}
+        </span>
       </div>
 
       <div class="compact-header__info">

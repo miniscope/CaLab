@@ -31,7 +31,9 @@ export function CompactHeader(props: CompactHeaderProps) {
     <header class="compact-header" data-tutorial="header-bar">
       <div class="compact-header__brand">
         <span class="compact-header__title">CaTune</span>
-        <span class="compact-header__version">CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}</span>
+        <span class="compact-header__version">
+          CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}
+        </span>
       </div>
 
       <div class="compact-header__info">
