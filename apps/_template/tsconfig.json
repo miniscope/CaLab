@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "baseUrl": ".",
+    "paths": {
+      "@catune/core": ["../../packages/core/src/index.ts"],
+      "@catune/core/*": ["../../packages/core/src/*"],
+      "@catune/io": ["../../packages/io/src/index.ts"],
+      "@catune/io/*": ["../../packages/io/src/*"],
+      "@catune/ui": ["../../packages/ui/src/index.ts"],
+      "@catune/ui/*": ["../../packages/ui/src/*"]
+    }
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/io" },
+    { "path": "../../packages/ui" }
+  ]
+}

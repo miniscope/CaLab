@@ -1,0 +1,21 @@
+{
+  "name": "app-template",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "calab": {
+    "displayName": "__APP_DISPLAY_NAME__",
+    "description": ""
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@catune/core": "*",
+    "@catune/io": "*",
+    "@catune/ui": "*",
+    "solid-js": "^1.9.11"
+  }
+}
