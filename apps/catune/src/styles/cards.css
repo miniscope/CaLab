@@ -18,32 +18,34 @@
    ======================== */
 
 /* Status-based border glow
+   Compound selector (.calab-card.cell-card--*) ensures these beat the
+   base .calab-card rule regardless of CSS load order.
    Box-shadow rgba values correspond to the semantic status colors:
    --error: #d32f2f, --warning: #e09800, --success: #2e7d32 */
-.cell-card--stale {
+.calab-card.cell-card--stale {
   border-color: var(--error);
   box-shadow: 0 0 6px rgba(211, 47, 47, 0.3);
 }
 
-.cell-card--solving {
+.calab-card.cell-card--solving {
   border-color: var(--warning);
   box-shadow: 0 0 6px rgba(224, 152, 0, 0.3);
 }
 
-.cell-card--fresh {
+.calab-card.cell-card--fresh {
   border-color: var(--success);
   box-shadow: 0 0 4px rgba(46, 125, 50, 0.15);
 }
 
 /* Active card always takes precedence */
-.cell-card--active {
+.calab-card.cell-card--active {
   border-color: var(--accent);
   border-width: 2px;
   box-shadow: none;
 }
 
 /* Dim deconv/reconv traces when stale */
-.cell-card--stale .cell-card__zoom {
+.calab-card.cell-card--stale .cell-card__zoom {
   opacity: 0.35;
 }
 
