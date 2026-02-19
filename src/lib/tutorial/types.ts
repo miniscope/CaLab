@@ -35,7 +35,7 @@ export interface Tutorial {
   /** Short description of what the tutorial covers. */
   description: string;
   /** Difficulty level for progressive disclosure. */
-  level: 'beginner' | 'intermediate' | 'advanced';
+  level: 'beginner' | 'intermediate' | 'advanced' | 'theory';
   /** Tutorial IDs that should be completed before this one. */
   prerequisites: string[];
   /** Estimated completion time in minutes. */

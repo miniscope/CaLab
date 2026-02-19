@@ -17,7 +17,7 @@ export const theoryTutorial: Tutorial = {
   title: 'Deconvolution Theory',
   description:
     'Understand the math behind deconvolution, how the solver works, critical pitfalls of kernel selection, and how to properly interpret results.',
-  level: 'advanced',
+  level: 'theory',
   prerequisites: [],
   estimatedMinutes: 8,
   recommended: true,

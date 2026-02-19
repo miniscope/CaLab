@@ -171,6 +171,11 @@
   color: var(--warning);
 }
 
+.level-badge--theory {
+  background: rgba(150, 100, 220, 0.12);
+  color: hsl(270, 60%, 65%);
+}
+
 /* ========================
    First-Time Tutorial Banner
    ======================== */
