@@ -11,7 +11,7 @@
 import * as v from 'valibot';
 import { computeAR2 } from './ar2.ts';
 import type { AR2Coefficients } from './ar2.ts';
-import { CaTuneExportSchema } from './schemas/export-schema.ts';
+import { CaTuneExportSchema } from '@catune/core';
 
 export interface CaTuneExport {
   schema_version: string;

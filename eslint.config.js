@@ -6,7 +6,7 @@ import globals from 'globals';
 export default tseslint.config(
   // Global ignores
   {
-    ignores: ['dist/', 'wasm/', '.planning/', '*.config.js', '*.config.ts'],
+    ignores: ['dist/', 'apps/*/dist/', 'packages/*/dist/', 'wasm/', '.planning/', '*.config.js', '*.config.ts'],
   },
 
   // Base JS recommended rules
@@ -15,15 +15,15 @@ export default tseslint.config(
   // TypeScript recommended (non-type-checked for speed)
   ...tseslint.configs.recommended,
 
-  // SolidJS rules for all TS/TSX files
+  // SolidJS rules for app TS/TSX files
   {
-    files: ['src/**/*.{ts,tsx}'],
+    files: ['apps/catune/src/**/*.{ts,tsx}'],
     ...solid,
   },
 
-  // Browser globals for src/
+  // Browser globals for app src/
   {
-    files: ['src/**/*.{ts,tsx}'],
+    files: ['apps/catune/src/**/*.{ts,tsx}'],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -31,9 +31,9 @@ export default tseslint.config(
     },
   },
 
-  // Worker globals for src/workers/
+  // Worker globals for app workers/
   {
-    files: ['src/workers/**/*.ts'],
+    files: ['apps/catune/src/workers/**/*.ts'],
     languageOptions: {
       globals: {
         ...globals.worker,
@@ -41,10 +41,10 @@ export default tseslint.config(
     },
   },
 
-  // Import boundary: only wasm-adapter.ts may import from the WASM pkg
+  // Import boundary: only packages/core/src/wasm-adapter.ts may import from the WASM pkg
   {
-    files: ['src/**/*.{ts,tsx}'],
-    ignores: ['src/lib/wasm-adapter.ts'],
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
+    ignores: ['packages/core/src/wasm-adapter.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -52,7 +52,7 @@ export default tseslint.config(
           patterns: [
             {
               group: ['**/wasm/catune-solver/pkg/*'],
-              message: 'Import from lib/wasm-adapter.ts instead of the WASM pkg directly.',
+              message: 'Import from @catune/core instead of the WASM pkg directly.',
             },
           ],
         },
@@ -63,8 +63,8 @@ export default tseslint.config(
   // Import boundary: only lib/supabase.ts and lib/community/ import @supabase/supabase-js
   // (community-store uses type imports for User/Session)
   {
-    files: ['src/**/*.{ts,tsx}'],
-    ignores: ['src/lib/supabase.ts', 'src/lib/community/**'],
+    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    ignores: ['apps/catune/src/lib/supabase.ts', 'apps/catune/src/lib/community/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -83,12 +83,12 @@ export default tseslint.config(
   // Import boundary: only lib/community/ and top-level layout use lib/supabase.ts
   // (supabaseEnabled flag is read by App.tsx and layout components for conditional rendering)
   {
-    files: ['src/**/*.{ts,tsx}'],
+    files: ['apps/catune/src/**/*.{ts,tsx}'],
     ignores: [
-      'src/lib/community/**',
-      'src/components/community/**',
-      'src/App.tsx',
-      'src/components/layout/**',
+      'apps/catune/src/lib/community/**',
+      'apps/catune/src/components/community/**',
+      'apps/catune/src/App.tsx',
+      'apps/catune/src/components/layout/**',
     ],
     rules: {
       'no-restricted-imports': [
@@ -113,6 +113,13 @@ export default tseslint.config(
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
+
+  // SolidJS-specific rule overrides (scoped to app files where solid plugin is loaded)
+  {
+    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    rules: {
       // .map() is fine for small static arrays; <For> migration is incremental
       'solid/prefer-for': 'off',
       // String style props work and are more concise for simple cases

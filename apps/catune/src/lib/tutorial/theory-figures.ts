@@ -11,7 +11,7 @@
 
 import { computeKernel, computeKernelAnnotations } from '../chart/kernel-math.ts';
 import { generateSyntheticTrace } from '../chart/mock-traces.ts';
-import { initWasm, Solver } from '../wasm-adapter.ts';
+import { initWasm, Solver } from '@catune/core';
 
 /** Run the FISTA solver synchronously on the main thread (fine for small traces). */
 function runSolver(
