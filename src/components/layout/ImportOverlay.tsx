@@ -65,22 +65,6 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
         </p>
       </header>
 
-      {/* Theory tutorial link */}
-      <Show when={importStep() === 'drop' && !isTutorialActive()}>
-        <div class="theory-tutorial-link">
-          <span>New to deconvolution?</span>
-          <button
-            class="btn-secondary btn-small"
-            onClick={() => {
-              const theory = getTutorialById('theory');
-              if (theory) startTutorial(theory);
-            }}
-          >
-            Start Theory Tutorial
-          </button>
-        </div>
-      </Show>
-
       {/* Step indicator */}
       <div class="step-indicator">
         <div class="step-indicator__bar">
@@ -183,6 +167,20 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           >
             Load Demo Data
           </button>
+          <Show when={!isTutorialActive()}>
+            <div class="theory-tutorial-link">
+              <span>New to deconvolution?</span>
+              <button
+                class="btn-secondary btn-small"
+                onClick={() => {
+                  const theory = getTutorialById('theory');
+                  if (theory) startTutorial(theory);
+                }}
+              >
+                Start Theory Tutorial
+              </button>
+            </div>
+          </Show>
         </div>
       </Show>
 

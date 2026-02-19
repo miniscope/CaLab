@@ -137,7 +137,9 @@ a:hover {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  margin-bottom: var(--space-md);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
   font-size: 0.9rem;
   color: var(--text-secondary);
 }
