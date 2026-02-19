@@ -3,7 +3,7 @@ import {
   buildFeedbackUrl,
   buildFeatureRequestUrl,
   buildBugReportUrl,
-} from '../../lib/community/github-issue-url.ts';
+} from '../../lib/community/index.ts';
 import '../../styles/feedback-menu.css';
 
 const MENU_ITEMS = [

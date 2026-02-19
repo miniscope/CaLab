@@ -5,16 +5,17 @@
 
 import { createSignal } from 'solid-js';
 import type { User, Session } from '@supabase/supabase-js';
-import { getSupabase, supabaseEnabled } from '../supabase.ts';
-import type { FieldOptions } from './types.ts';
 import {
+  getSupabase,
+  supabaseEnabled,
+  fetchFieldOptions,
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,
   BRAIN_REGION_OPTIONS,
   MICROSCOPE_TYPE_OPTIONS,
   CELL_TYPE_OPTIONS,
-} from './field-options.ts';
-import { fetchFieldOptions } from './community-service.ts';
+} from '@catune/community';
+import type { FieldOptions } from '@catune/community';
 
 // --- Auth signals ---
 

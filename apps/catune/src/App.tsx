@@ -38,7 +38,7 @@ import {
 } from './lib/viz-store.ts';
 import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
 import { initCellSolveManager } from './lib/cell-solve-manager.ts';
-import { supabaseEnabled } from './lib/supabase.ts';
+import { supabaseEnabled } from './lib/community/index.ts';
 import { isTutorialActive } from './lib/tutorial/tutorial-store.ts';
 import { startTutorial } from './lib/tutorial/tutorial-engine.ts';
 import { getTutorialById } from './lib/tutorial/content/index.ts';

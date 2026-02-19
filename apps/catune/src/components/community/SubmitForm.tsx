@@ -8,7 +8,7 @@ import { Portal } from 'solid-js/web';
 import type { Accessor, Setter } from 'solid-js';
 import { isDemo } from '../../lib/data-store.ts';
 import { user, fieldOptions, fieldOptionsLoading } from '../../lib/community/community-store.ts';
-import { buildFieldOptionRequestUrl } from '../../lib/community/github-issue-url.ts';
+import { buildFieldOptionRequestUrl } from '../../lib/community/index.ts';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import { AuthGate } from './AuthGate.tsx';
 import { PrivacyNotice } from './PrivacyNotice.tsx';

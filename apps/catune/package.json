@@ -17,9 +17,8 @@
     "@catune/io": "*",
     "@catune/tutorials": "*",
     "@dschz/solid-uplot": "^0.5.2",
-    "@supabase/supabase-js": "^2.95.3",
     "driver.js": "^1.4.0",
-"solid-js": "^1.9.11",
+    "solid-js": "^1.9.11",
     "uplot": "^1.6.32",
     "valibot": "^1.2.0"
   }

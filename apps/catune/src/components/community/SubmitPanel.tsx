@@ -19,11 +19,13 @@ import {
   groundTruthLocked,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport } from '@catune/io';
-import { validateSubmission } from '../../lib/community/quality-checks.ts';
-import { loadFieldOptions } from '../../lib/community/community-store.ts';
-import { supabaseEnabled } from '../../lib/supabase.ts';
-import type { CommunitySubmission } from '../../lib/community/types.ts';
-import { submitToSupabase } from '../../lib/community/submitAction.ts';
+import {
+  validateSubmission,
+  loadFieldOptions,
+  supabaseEnabled,
+  submitToSupabase,
+} from '../../lib/community/index.ts';
+import type { CommunitySubmission } from '../../lib/community/index.ts';
 import { GroundTruthControls, GroundTruthNotices } from './GroundTruthControls.tsx';
 import { SubmitForm } from './SubmitForm.tsx';
 import { SubmissionSummary } from './SubmissionSummary.tsx';

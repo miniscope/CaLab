@@ -8,10 +8,13 @@
  */
 
 import { createSignal, createEffect, createMemo, Show, on } from 'solid-js';
-import { supabaseEnabled } from '../../lib/supabase.ts';
-import { fetchSubmissions } from '../../lib/community/community-service.ts';
-import { fieldOptions, loadFieldOptions } from '../../lib/community/community-store.ts';
-import type { CommunitySubmission, DataSource, FilterState } from '../../lib/community/types.ts';
+import {
+  supabaseEnabled,
+  fetchSubmissions,
+  fieldOptions,
+  loadFieldOptions,
+} from '../../lib/community/index.ts';
+import type { CommunitySubmission, DataSource, FilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
 import { isDemo } from '../../lib/data-store.ts';
 import { getPresetLabels } from '../../lib/chart/demo-presets.ts';

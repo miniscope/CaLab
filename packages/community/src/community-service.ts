@@ -2,7 +2,7 @@
 // All functions guard with a null-check on the Supabase client
 // and throw if community features are not configured.
 
-import { getSupabase } from '../supabase.ts';
+import { getSupabase } from './supabase.ts';
 import type {
   CommunitySubmission,
   SubmissionPayload,

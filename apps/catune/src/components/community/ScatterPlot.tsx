@@ -5,7 +5,7 @@
  */
 
 import { createEffect, createMemo, onCleanup } from 'solid-js';
-import type { CommunitySubmission } from '../../lib/community/types.ts';
+import type { CommunitySubmission } from '../../lib/community/index.ts';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import uPlot from 'uplot';
