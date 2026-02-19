@@ -8,7 +8,7 @@ import {
 } from '../../lib/data-store.ts';
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { supabaseEnabled } from '../../lib/community/index.ts';
-import { sidebarOpen, setSidebarOpen } from './DashboardShell.tsx';
+import { sidebarOpen, setSidebarOpen } from '@catune/ui';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
 import { FeedbackMenu } from './FeedbackMenu.tsx';
 import { formatDuration } from '@catune/core';

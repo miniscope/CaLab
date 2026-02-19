@@ -23,12 +23,14 @@ CaTune is an npm workspaces monorepo:
 
 | Workspace           | Path                  | Description                                     |
 | ------------------- | --------------------- | ----------------------------------------------- |
-| `catune`            | `apps/catune/`        | SolidJS single-page application                 |
+| `catune`            | `apps/catune/`        | SolidJS app — deconvolution parameter tuning    |
+| `carank`            | `apps/carank/`        | SolidJS app — CNMF trace quality ranking        |
 | `@catune/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
 | `@catune/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
 | `@catune/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export    |
 | `@catune/community` | `packages/community/` | Supabase DAL, submission logic, field options   |
 | `@catune/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence |
+| `@catune/ui`        | `packages/ui/`        | Shared layout: Shell, Panel, VizLayout          |
 
 All packages are consumed as TypeScript source — Vite transpiles them directly via path aliases. No separate build step needed for development.
 
@@ -38,8 +40,10 @@ Run from the repo root:
 
 | Script                 | Description                                       |
 | ---------------------- | ------------------------------------------------- |
-| `npm run dev`          | Start Vite dev server (`apps/catune`)             |
-| `npm run build`        | Build WASM + Vite production bundle               |
+| `npm run dev`          | Start CaTune dev server                           |
+| `npm run dev:carank`   | Start CaRank dev server                           |
+| `npm run build`        | Build WASM + both apps                            |
+| `npm run build:pages`  | Build + combine dist for GitHub Pages             |
 | `npm run build:wasm`   | Compile Rust solver to WASM                       |
 | `npm run test`         | Run Vitest tests across all workspaces            |
 | `npm run test:watch`   | Run tests in watch mode (`apps/catune`)           |
@@ -52,7 +56,8 @@ Run from the repo root:
 You can also run scripts in a specific workspace:
 
 ```bash
-npm run dev -w apps/catune      # Start dev server
+npm run dev -w apps/catune      # Start CaTune dev server
+npm run dev -w apps/carank      # Start CaRank dev server
 npm run test -w apps/catune     # Run app tests only
 npm run test -w packages/io     # Run io package tests only
 ```

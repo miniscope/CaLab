@@ -32,4 +32,4 @@ jobs:
         run: npm run test
 
       - name: Build
-        run: npm run build -w apps/catune
+        run: npm run build -w apps/catune && npm run build -w apps/carank

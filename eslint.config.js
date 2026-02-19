@@ -23,15 +23,23 @@ export default tseslint.config(
   // TypeScript recommended (non-type-checked for speed)
   ...tseslint.configs.recommended,
 
-  // SolidJS rules for app TS/TSX files
+  // SolidJS rules for app TS/TSX files and UI package
   {
-    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    files: [
+      'apps/catune/src/**/*.{ts,tsx}',
+      'apps/carank/src/**/*.{ts,tsx}',
+      'packages/ui/src/**/*.{ts,tsx}',
+    ],
     ...solid,
   },
 
-  // Browser globals for app src/
+  // Browser globals for app src/ and UI package
   {
-    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    files: [
+      'apps/catune/src/**/*.{ts,tsx}',
+      'apps/carank/src/**/*.{ts,tsx}',
+      'packages/ui/src/**/*.{ts,tsx}',
+    ],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -121,9 +129,13 @@ export default tseslint.config(
     },
   },
 
-  // SolidJS-specific rule overrides (scoped to app files where solid plugin is loaded)
+  // SolidJS-specific rule overrides (scoped to files where solid plugin is loaded)
   {
-    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    files: [
+      'apps/catune/src/**/*.{ts,tsx}',
+      'apps/carank/src/**/*.{ts,tsx}',
+      'packages/ui/src/**/*.{ts,tsx}',
+    ],
     rules: {
       // .map() is fine for small static arrays; <For> migration is incremental
       'solid/prefer-for': 'off',

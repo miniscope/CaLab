@@ -4,12 +4,12 @@ CaTune is a browser-based calcium imaging deconvolution tool built with SolidJS,
 
 ## Monorepo Structure
 
-CaTune uses npm workspaces with six packages and one application:
+CaTune uses npm workspaces with seven packages and two applications:
 
 ```
 .
 ├── apps/
-│   └── catune/                  # SolidJS SPA
+│   ├── catune/                  # SolidJS SPA — deconvolution parameter tuning
 │       ├── index.html
 │       ├── src/
 │       │   ├── App.tsx          # Root component, routing, layout
@@ -38,6 +38,16 @@ CaTune uses npm workspaces with six packages and one application:
 │       ├── vite.config.ts
 │       ├── vitest.config.ts
 │       ├── tsconfig.json        # Extends ../../tsconfig.base.json
+│       └── package.json
+│   └── carank/                  # SolidJS SPA — trace quality ranking
+│       ├── index.html
+│       ├── src/
+│       │   ├── App.tsx          # Root: file import → ranking dashboard
+│       │   ├── components/      # Header, FileImport, RankingDashboard
+│       │   ├── types.ts         # CnmfData interface
+│       │   └── styles/          # Design tokens + app-specific styles
+│       ├── vite.config.ts
+│       ├── tsconfig.json
 │       └── package.json
 ├── packages/
 │   ├── core/                    # @catune/core — shared types, pure math, WASM adapter
@@ -79,11 +89,19 @@ CaTune uses npm workspaces with six packages and one application:
 │   │       ├── field-options.ts # Hardcoded option arrays
 │   │       ├── dataset-hash.ts  # SHA-256 hash
 │   │       └── github-issue-url.ts
-│   └── tutorials/               # @catune/tutorials — types + progress persistence
+│   ├── tutorials/               # @catune/tutorials — types + progress persistence
+│   │   └── src/
+│   │       ├── index.ts
+│   │       ├── types.ts         # Tutorial, TutorialStep, TutorialProgress
+│   │       └── progress.ts      # localStorage persistence
+│   └── ui/                      # @catune/ui — shared layout components
 │       └── src/
-│           ├── index.ts
-│           ├── types.ts         # Tutorial, TutorialStep, TutorialProgress
-│           └── progress.ts      # localStorage persistence
+│           ├── index.ts         # Barrel: DashboardShell, DashboardPanel, VizLayout
+│           ├── DashboardShell.tsx  # 3-section grid (header/main/sidebar)
+│           ├── DashboardPanel.tsx  # Variant-based panel wrapper
+│           ├── VizLayout.tsx    # Scroll/dashboard mode switcher
+│           └── styles/
+│               └── layout.css   # Layout CSS rules
 ├── wasm/
 │   └── catune-solver/           # Rust FISTA solver crate
 │       └── pkg/                 # wasm-pack output (committed)
@@ -91,6 +109,8 @@ CaTune uses npm workspaces with six packages and one application:
 ├── python/                      # Python utilities
 ├── test/                        # Test fixtures
 ├── docs/                        # Documentation
+├── scripts/
+│   └── combine-dist.mjs         # Merges app dists for GitHub Pages
 ├── package.json                 # Workspace root
 ├── tsconfig.base.json           # Shared TS compiler options
 └── eslint.config.js             # Shared lint config
@@ -103,20 +123,24 @@ CaTune uses npm workspaces with six packages and one application:
 @catune/compute       ← @catune/core
 @catune/io            ← @catune/core
 @catune/community     ← @catune/core
-@catune/tutorials     ← (no local deps)
+@catune/tutorials     ← leaf (no local deps)
+@catune/ui            ← leaf (solid-js only)
 apps/catune           ← all packages
+apps/carank           ← @catune/core, @catune/io, @catune/ui
 ```
 
 ## Package Responsibilities
 
-| Package             | Responsibility                                             | Key deps                                |
-| ------------------- | ---------------------------------------------------------- | --------------------------------------- |
-| `@catune/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                               |
-| `@catune/compute`   | Generic worker pool, warm-start caching                    | `@catune/core`                          |
-| `@catune/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@catune/core`, `fflate`, `valibot`     |
-| `@catune/community` | Supabase DAL, submission logic, field options              | `@catune/core`, `@supabase/supabase-js` |
-| `@catune/tutorials` | Tutorial type definitions, progress persistence            | none                                    |
-| `apps/catune`       | SolidJS app — UI components, reactive stores, worker entry | all packages                            |
+| Package             | Responsibility                                             | Key deps                                   |
+| ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
+| `@catune/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                                  |
+| `@catune/compute`   | Generic worker pool, warm-start caching                    | `@catune/core`                             |
+| `@catune/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@catune/core`, `fflate`, `valibot`        |
+| `@catune/community` | Supabase DAL, submission logic, field options              | `@catune/core`, `@supabase/supabase-js`    |
+| `@catune/tutorials` | Tutorial type definitions, progress persistence            | none                                       |
+| `@catune/ui`        | Shared layout: DashboardShell, DashboardPanel, VizLayout   | `solid-js`                                 |
+| `apps/catune`       | SolidJS app — UI components, reactive stores, worker entry | all packages                               |
+| `apps/carank`       | SolidJS app — CNMF trace quality ranking                   | `@catune/core`, `@catune/io`, `@catune/ui` |
 
 Packages export pure logic. The app wires packages to SolidJS signals.
 

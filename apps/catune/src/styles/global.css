@@ -95,18 +95,6 @@ body {
   flex-direction: column;
 }
 
-/* Dashboard mode: viewport-filling, no scroll */
-html.dashboard-mode,
-html.dashboard-mode body,
-html.dashboard-mode #root {
-  height: 100vh;
-  overflow: hidden;
-}
-
-html.dashboard-mode #root {
-  min-height: 0;
-}
-
 /* Headings */
 h1,
 h2,
@@ -856,17 +844,6 @@ a:hover {
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes fade-in-up {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 

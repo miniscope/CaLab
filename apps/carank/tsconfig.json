@@ -7,14 +7,8 @@
     "paths": {
       "@catune/core": ["../../packages/core/src/index.ts"],
       "@catune/core/*": ["../../packages/core/src/*"],
-      "@catune/compute": ["../../packages/compute/src/index.ts"],
-      "@catune/compute/*": ["../../packages/compute/src/*"],
       "@catune/io": ["../../packages/io/src/index.ts"],
       "@catune/io/*": ["../../packages/io/src/*"],
-      "@catune/community": ["../../packages/community/src/index.ts"],
-      "@catune/community/*": ["../../packages/community/src/*"],
-      "@catune/tutorials": ["../../packages/tutorials/src/index.ts"],
-      "@catune/tutorials/*": ["../../packages/tutorials/src/*"],
       "@catune/ui": ["../../packages/ui/src/index.ts"],
       "@catune/ui/*": ["../../packages/ui/src/*"]
     }
@@ -22,10 +16,7 @@
   "include": ["src"],
   "references": [
     { "path": "../../packages/core" },
-    { "path": "../../packages/compute" },
     { "path": "../../packages/io" },
-    { "path": "../../packages/community" },
-    { "path": "../../packages/tutorials" },
     { "path": "../../packages/ui" }
   ]
 }
