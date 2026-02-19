@@ -1,10 +1,10 @@
-# CaTune Architecture
+# CaLab Architecture
 
-CaTune is a browser-based calcium imaging deconvolution tool built with SolidJS, TypeScript, and a Rust/WASM solver.
+CaLab is a monorepo of calcium imaging analysis tools built with SolidJS, TypeScript, and a Rust/WASM solver.
 
 ## Monorepo Structure
 
-CaTune uses npm workspaces with seven packages and two applications:
+CaLab uses npm workspaces with seven packages and two applications:
 
 ```
 .
@@ -146,7 +146,7 @@ Packages export pure logic. The app wires packages to SolidJS signals.
 
 ## State Management
 
-CaTune uses **module-level SolidJS signals** instead of Context providers. State modules export signals and setters directly:
+CaTune (the app) uses **module-level SolidJS signals** instead of Context providers. State modules export signals and setters directly:
 
 - `data-store.ts` — loaded traces, parameters, solver results
 - `viz-store.ts` — zoom range, selected cell, UI toggles

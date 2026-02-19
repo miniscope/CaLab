@@ -1,4 +1,4 @@
-# Contributing to CaTune
+# Contributing to CaLab
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@
 
 ```bash
 git clone <repo-url>
-cd CaTune
+cd CaLab
 nvm use              # Node 22
 npm install          # JS dependencies (all workspaces)
 npm run build:wasm   # Compile Rust → WASM (only needed if changing solver)
@@ -19,7 +19,7 @@ npm run dev          # Start dev server
 
 ## Workspace Structure
 
-CaTune is an npm workspaces monorepo:
+CaLab is an npm workspaces monorepo:
 
 | Workspace           | Path                  | Description                                     |
 | ------------------- | --------------------- | ----------------------------------------------- |

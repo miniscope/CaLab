@@ -1,6 +1,6 @@
 # Supabase Database Setup
 
-CaTune uses [Supabase](https://supabase.com/) for community parameter sharing.
+CaLab uses [Supabase](https://supabase.com/) for community parameter sharing.
 We do **not** use the Supabase CLI — all migrations are applied manually via the
 Supabase Dashboard SQL Editor.
 

@@ -1,6 +1,6 @@
-# CaTune Python Companion
+# CaLab Python Companion
 
-Calcium imaging deconvolution and data preparation -- Python companion package for the [CaTune](https://github.com/daharoni/CaTune) browser tool.
+Calcium imaging deconvolution and data preparation -- Python companion package for the [CaLab](https://github.com/miniscope/CaLab) tools.
 
 ## Installation
 

@@ -1,6 +1,6 @@
 /** Builds pre-filled GitHub issue URLs for various issue templates. */
 
-const REPO_BASE = 'https://github.com/miniscope/CaTune/issues/new';
+const REPO_BASE = 'https://github.com/miniscope/CaLab/issues/new';
 
 const FIELD_LABELS: Record<string, string> = {
   indicator: 'Calcium Indicator',
