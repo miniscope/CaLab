@@ -4,10 +4,7 @@ CaTune is a browser-based calcium imaging deconvolution tool built with SolidJS,
 
 ## Monorepo Structure
 
-CaTune uses npm workspaces with two workspaces:
-
-- **`apps/catune`** — the SolidJS single-page application
-- **`packages/core`** (`@catune/core`) — shared library consumed as source (no build step; Vite transpiles it)
+CaTune uses npm workspaces with six packages and one application:
 
 ```
 .
@@ -26,29 +23,67 @@ CaTune uses npm workspaces with two workspaces:
 │       │   │   ├── spectrum/    # Power spectrum visualization
 │       │   │   ├── traces/      # Trace panel, kernel display
 │       │   │   └── tutorial/    # Tutorial launcher, popover
-│       │   ├── lib/             # Core logic (non-UI)
+│       │   ├── lib/             # App-specific logic (SolidJS stores + wiring)
 │       │   │   ├── chart/       # Chart helpers: kernel math, downsample, series config
-│       │   │   ├── community/   # Community service, store, types
-│       │   │   ├── metrics/     # Quality metrics
-│       │   │   ├── spectrum/    # Spectrum computation
-│       │   │   ├── tutorial/    # Tutorial engine, content, progress
-│       │   │   └── ...          # State stores, worker pool, exports
+│       │   │   ├── community/   # Barrel re-exports @catune/community + local store
+│       │   │   ├── spectrum/    # spectrum-store (SolidJS signals, imports @catune/core fft)
+│       │   │   ├── tutorial/    # Barrel re-exports @catune/tutorials + engine, store, content
+│       │   │   ├── data-store.ts        # SolidJS signals for loaded data
+│       │   │   ├── viz-store.ts         # SolidJS signals for visualization state
+│       │   │   ├── multi-cell-store.ts  # SolidJS signals for multi-cell selection
+│       │   │   └── cell-solve-manager.ts  # SolidJS orchestrator for solver
 │       │   ├── workers/
-│       │   │   └── pool-worker.ts  # WASM solver worker (raw postMessage)
+│       │   │   └── pool-worker.ts  # WASM solver worker (Vite bundled)
 │       │   └── styles/          # CSS files
 │       ├── vite.config.ts
 │       ├── vitest.config.ts
 │       ├── tsconfig.json        # Extends ../../tsconfig.base.json
 │       └── package.json
 ├── packages/
-│   └── core/                    # @catune/core
-│       ├── src/
-│       │   ├── index.ts         # Barrel re-exports
-│       │   ├── wasm-adapter.ts  # Single WASM import point
-│       │   └── schemas/
-│       │       └── export-schema.ts  # Valibot export validation
-│       ├── tsconfig.json
-│       └── package.json
+│   ├── core/                    # @catune/core — shared types, pure math, WASM adapter
+│   │   └── src/
+│   │       ├── index.ts         # Barrel re-exports
+│   │       ├── wasm-adapter.ts  # Single WASM import point
+│   │       ├── solver-types.ts  # Worker protocol types
+│   │       ├── types.ts         # NpyResult, ValidationResult, etc.
+│   │       ├── ar2.ts           # AR(2) coefficient derivation
+│   │       ├── param-config.ts  # Parameter ranges
+│   │       ├── format-utils.ts  # Number formatting
+│   │       ├── metrics/         # snr.ts, solver-metrics.ts
+│   │       ├── spectrum/        # fft.ts (periodogram computation)
+│   │       └── schemas/
+│   │           └── export-schema.ts  # Valibot export validation
+│   ├── compute/                 # @catune/compute — worker pool + warm-start cache
+│   │   └── src/
+│   │       ├── index.ts
+│   │       ├── worker-pool.ts   # Generic worker pool (accepts worker URL)
+│   │       └── warm-start-cache.ts
+│   ├── io/                      # @catune/io — file parsers, validation, export
+│   │   └── src/
+│   │       ├── index.ts
+│   │       ├── npy-parser.ts    # NumPy .npy parser
+│   │       ├── npz-parser.ts    # NumPy .npz parser
+│   │       ├── validation.ts    # Trace data validation
+│   │       ├── array-utils.ts   # Cell extraction, transpose
+│   │       ├── cell-ranking.ts  # Activity-based ranking
+│   │       ├── export.ts        # JSON export builder
+│   │       └── __tests__/       # Parser and validation tests
+│   ├── community/               # @catune/community — Supabase DAL, submission logic
+│   │   └── src/
+│   │       ├── index.ts
+│   │       ├── supabase.ts      # Lazy client singleton
+│   │       ├── community-service.ts  # CRUD operations
+│   │       ├── types.ts         # CommunitySubmission, FilterState, etc.
+│   │       ├── submitAction.ts  # Form → payload logic
+│   │       ├── quality-checks.ts
+│   │       ├── field-options.ts # Hardcoded option arrays
+│   │       ├── dataset-hash.ts  # SHA-256 hash
+│   │       └── github-issue-url.ts
+│   └── tutorials/               # @catune/tutorials — types + progress persistence
+│       └── src/
+│           ├── index.ts
+│           ├── types.ts         # Tutorial, TutorialStep, TutorialProgress
+│           └── progress.ts      # localStorage persistence
 ├── wasm/
 │   └── catune-solver/           # Rust FISTA solver crate
 │       └── pkg/                 # wasm-pack output (committed)
@@ -61,6 +96,30 @@ CaTune uses npm workspaces with two workspaces:
 └── eslint.config.js             # Shared lint config
 ```
 
+## Dependency DAG
+
+```
+@catune/core          ← leaf (no local deps)
+@catune/compute       ← @catune/core
+@catune/io            ← @catune/core
+@catune/community     ← @catune/core
+@catune/tutorials     ← (no local deps)
+apps/catune           ← all packages
+```
+
+## Package Responsibilities
+
+| Package             | Responsibility                                             | Key deps                                |
+| ------------------- | ---------------------------------------------------------- | --------------------------------------- |
+| `@catune/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                               |
+| `@catune/compute`   | Generic worker pool, warm-start caching                    | `@catune/core`                          |
+| `@catune/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@catune/core`, `fflate`, `valibot`     |
+| `@catune/community` | Supabase DAL, submission logic, field options              | `@catune/core`, `@supabase/supabase-js` |
+| `@catune/tutorials` | Tutorial type definitions, progress persistence            | none                                    |
+| `apps/catune`       | SolidJS app — UI components, reactive stores, worker entry | all packages                            |
+
+Packages export pure logic. The app wires packages to SolidJS signals.
+
 ## State Management
 
 CaTune uses **module-level SolidJS signals** instead of Context providers. State modules export signals and setters directly:
@@ -68,6 +127,9 @@ CaTune uses **module-level SolidJS signals** instead of Context providers. State
 - `data-store.ts` — loaded traces, parameters, solver results
 - `viz-store.ts` — zoom range, selected cell, UI toggles
 - `multi-cell-store.ts` — multi-cell selection and ranking
+- `spectrum-store.ts` — power spectrum computation
+- `community-store.ts` — auth state, field options (imports from `@catune/community`)
+- `tutorial-store.ts` — active tutorial state (imports from `@catune/tutorials`)
 
 This pattern avoids provider nesting and makes state accessible from non-component code (e.g., the tutorial engine).
 
@@ -77,7 +139,7 @@ This pattern avoids provider nesting and makes state accessible from non-compone
 User adjusts params
   → data-store signals update
   → cell-solve-manager debounces and dispatches
-  → worker-pool assigns job to idle Web Worker
+  → @catune/compute worker-pool assigns job to idle Web Worker
   → pool-worker.ts (in worker thread):
       → @catune/core wasm-adapter → WASM Solver
       → cooperative cancellation via MessageChannel yields
@@ -89,7 +151,8 @@ Key design decisions:
 
 - **Raw postMessage** (not Comlink) so the event loop can process cancel messages between solver batches
 - **MessageChannel yields** (<1ms) instead of setTimeout(0) (~4ms) for cooperative multitasking
-- **Warm-start caching** reuses solver state when only lambda changes (kernel unchanged)
+- **Warm-start caching** (`@catune/compute`) reuses solver state when only lambda changes (kernel unchanged)
+- **Worker URL injection** — `createWorkerPool(url)` accepts a URL so the Vite worker entry stays in the app
 
 ## Module Boundaries
 
@@ -99,11 +162,15 @@ Only `packages/core/src/wasm-adapter.ts` imports from `wasm/catune-solver/pkg/`.
 
 ### Supabase Isolation
 
-Only `apps/catune/src/lib/supabase.ts` dynamically imports `@supabase/supabase-js` (~45KB). The SDK is lazy-loaded on first use. The `supabaseEnabled` boolean is read by layout components to conditionally render community features. Enforced by ESLint `no-restricted-imports`.
+Only `packages/community/src/supabase.ts` dynamically imports `@supabase/supabase-js` (~45KB). The SDK is lazy-loaded on first use. The `supabaseEnabled` boolean is re-exported through the community barrel. Enforced by ESLint `no-restricted-imports`.
 
-### Barrel Files
+### Package Barrel Rule
 
-Each sub-module (`chart/`, `community/`, `tutorial/`) has an `index.ts` barrel file that re-exports the public API. `@catune/core` also uses a barrel (`packages/core/src/index.ts`). Prefer importing from barrels rather than internal files.
+App files import from package barrels (`@catune/core`, `@catune/io`, etc.) — never from internal paths like `@catune/core/src/ar2.ts`. Enforced by ESLint `no-restricted-imports`.
+
+### App Barrels
+
+Each app sub-module (`community/`, `tutorial/`) has a thin `index.ts` barrel that re-exports from both the package and local SolidJS stores. Components import from these barrels.
 
 ## CSS Conventions
 

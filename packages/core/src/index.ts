@@ -41,7 +41,11 @@ export { formatDuration } from './format-utils.ts';
 // Metrics
 export { computePeakSNR, snrToQuality } from './metrics/snr.ts';
 export type { QualityTier } from './metrics/snr.ts';
-export { computeSparsityRatio, computeResidualRMS, computeRSquared } from './metrics/solver-metrics.ts';
+export {
+  computeSparsityRatio,
+  computeResidualRMS,
+  computeRSquared,
+} from './metrics/solver-metrics.ts';
 
 // Spectrum
 export { computePeriodogram } from './spectrum/fft.ts';

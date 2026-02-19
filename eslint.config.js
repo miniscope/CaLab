@@ -68,35 +68,13 @@ export default tseslint.config(
     },
   },
 
-  // Import boundary: only lib/supabase.ts and lib/community/ import @supabase/supabase-js
-  // (community-store uses type imports for User/Session)
+  // Import boundary: only packages/community/src/supabase.ts may import @supabase/supabase-js
+  // (community-store uses type imports for User/Session — allowed since it's in the community boundary)
   {
-    files: ['apps/catune/src/**/*.{ts,tsx}'],
-    ignores: ['apps/catune/src/lib/supabase.ts', 'apps/catune/src/lib/community/**'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['@supabase/supabase-js'],
-              message: 'Import from lib/supabase.ts instead of @supabase/supabase-js directly.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // Import boundary: only lib/community/ and top-level layout use lib/supabase.ts
-  // (supabaseEnabled flag is read by App.tsx and layout components for conditional rendering)
-  {
-    files: ['apps/catune/src/**/*.{ts,tsx}'],
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
     ignores: [
-      'apps/catune/src/lib/community/**',
-      'apps/catune/src/components/community/**',
-      'apps/catune/src/App.tsx',
-      'apps/catune/src/components/layout/**',
+      'packages/community/src/supabase.ts',
+      'apps/catune/src/lib/community/community-store.ts',
     ],
     rules: {
       'no-restricted-imports': [
@@ -104,8 +82,27 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/lib/supabase', '**/lib/supabase.ts'],
-              message: 'Only community module and layout files should import from lib/supabase.ts.',
+              group: ['@supabase/supabase-js'],
+              message: 'Import from @catune/community instead of @supabase/supabase-js directly.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // Import boundary: no deep imports into package internals — use barrels only
+  {
+    files: ['apps/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@catune/*/src/*'],
+              message:
+                'Import from the package barrel (@catune/<pkg>) instead of reaching into src/.',
             },
           ],
         },

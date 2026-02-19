@@ -21,46 +21,67 @@ npm run dev          # Start dev server
 
 CaTune is an npm workspaces monorepo:
 
-| Workspace      | Path             | Description                                  |
-| -------------- | ---------------- | -------------------------------------------- |
-| `catune`       | `apps/catune/`   | SolidJS single-page application              |
-| `@catune/core` | `packages/core/` | Shared library (WASM adapter, export schema) |
+| Workspace           | Path                  | Description                                     |
+| ------------------- | --------------------- | ----------------------------------------------- |
+| `catune`            | `apps/catune/`        | SolidJS single-page application                 |
+| `@catune/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
+| `@catune/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
+| `@catune/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export    |
+| `@catune/community` | `packages/community/` | Supabase DAL, submission logic, field options   |
+| `@catune/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence |
 
-`@catune/core` is consumed as TypeScript source — Vite transpiles it directly. No separate build step needed.
+All packages are consumed as TypeScript source — Vite transpiles them directly via path aliases. No separate build step needed for development.
 
 ## npm Scripts
 
 Run from the repo root:
 
-| Script                 | Description                                  |
-| ---------------------- | -------------------------------------------- |
-| `npm run dev`          | Start Vite dev server (`apps/catune`)        |
-| `npm run build`        | Build WASM + Vite production bundle          |
-| `npm run build:wasm`   | Compile Rust solver to WASM                  |
-| `npm run test`         | Run Vitest tests (`apps/catune`)             |
-| `npm run test:watch`   | Run tests in watch mode                      |
-| `npm run lint`         | Run ESLint on `apps/` + `packages/`          |
-| `npm run lint:fix`     | Auto-fix ESLint issues                       |
-| `npm run typecheck`    | Run TypeScript type checking (project build) |
-| `npm run format`       | Format all files with Prettier               |
-| `npm run format:check` | Check formatting (CI gate)                   |
+| Script                 | Description                                       |
+| ---------------------- | ------------------------------------------------- |
+| `npm run dev`          | Start Vite dev server (`apps/catune`)             |
+| `npm run build`        | Build WASM + Vite production bundle               |
+| `npm run build:wasm`   | Compile Rust solver to WASM                       |
+| `npm run test`         | Run Vitest tests across all workspaces            |
+| `npm run test:watch`   | Run tests in watch mode (`apps/catune`)           |
+| `npm run lint`         | Run ESLint on `apps/` + `packages/`               |
+| `npm run lint:fix`     | Auto-fix ESLint issues                            |
+| `npm run typecheck`    | Run TypeScript type checking (all packages + app) |
+| `npm run format`       | Format all files with Prettier                    |
+| `npm run format:check` | Check formatting (CI gate)                        |
 
 You can also run scripts in a specific workspace:
 
 ```bash
-npm run dev -w apps/catune     # Start dev server
-npm run test -w apps/catune    # Run tests
+npm run dev -w apps/catune      # Start dev server
+npm run test -w apps/catune     # Run app tests only
+npm run test -w packages/io     # Run io package tests only
 ```
+
+## Creating a New Package
+
+1. Create `packages/<name>/` with `package.json`, `tsconfig.json`, and `src/index.ts`
+2. Add `@catune/<name>` to `apps/catune/package.json` dependencies as `"*"`
+3. Add path mapping to `apps/catune/tsconfig.json` and `apps/catune/vite.config.ts`
+4. Add the package to the root `typecheck` script in `package.json`
+5. Run `npm install` to link the workspace
 
 ## Code Style
 
 Code style is enforced automatically:
 
 - **Prettier** — single quotes, trailing commas, 100 char width
-- **ESLint** — TypeScript recommended + SolidJS plugin
+- **ESLint** — TypeScript recommended + SolidJS plugin + boundary rules
 - **TypeScript** — strict mode, project build mode for type checking
 
 Run `npm run lint && npm run format:check && npm run typecheck` before pushing.
+
+## Module Boundaries
+
+ESLint enforces these import boundaries:
+
+- **WASM**: Only `packages/core/src/wasm-adapter.ts` may import from `wasm/catune-solver/pkg/`
+- **Supabase**: Only `packages/community/src/supabase.ts` may import `@supabase/supabase-js`
+- **Package barrels**: App files import from `@catune/<pkg>`, never from `@catune/<pkg>/src/*`
 
 ## CI
 
@@ -69,7 +90,7 @@ The CI pipeline runs on every PR to `main`:
 1. Format check (`prettier --check`)
 2. Lint (`eslint`)
 3. Type check (`tsc -b`)
-4. Tests (`vitest run`)
+4. Tests (`vitest run` across all workspaces)
 5. Build (`vite build`)
 
 The WASM package is committed to the repo, so CI does not require Rust.
@@ -82,4 +103,4 @@ The WASM package is committed to the repo, so CI does not require Rust.
 
 ## Architecture
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for module layout, state management patterns, and boundary rules.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for module layout, dependency DAG, state management patterns, and boundary rules.
