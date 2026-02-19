@@ -5,7 +5,11 @@
   "type": "module",
   "calab": {
     "displayName": "__APP_DISPLAY_NAME__",
-    "description": ""
+    "description": "",
+    "longDescription": "",
+    "features": [],
+    "status": "coming-soon",
+    "screenshot": ""
   },
   "scripts": {
     "dev": "vite",

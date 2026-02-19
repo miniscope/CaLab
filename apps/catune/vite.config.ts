@@ -17,7 +17,7 @@ export default defineConfig({
     },
   },
   envDir: repoRoot,
-  base: process.env.GITHUB_ACTIONS ? '/CaLab/CaTune/' : '/',
+  base: process.env.GITHUB_ACTIONS ? '/CaLab/CaTune/' : process.env.CALAB_PAGES ? '/CaTune/' : '/',
   plugins: [solidPlugin(), wasm()],
   worker: {
     plugins: () => [wasm()],

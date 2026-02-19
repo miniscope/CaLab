@@ -25,7 +25,17 @@ Files that contain placeholders:
 - `index.html` — `<title>`
 - `src/App.tsx` — header title, placeholder text
 
-Also fill in `calab.description` in `package.json` (e.g., `"Trace visualization"`).
+Also fill in the following `calab` fields in `package.json`:
+
+| Field             | Description                              | Example                             |
+| ----------------- | ---------------------------------------- | ----------------------------------- |
+| `description`     | Short tagline for the app                | `"Trace visualization"`             |
+| `longDescription` | One-paragraph app description            | `"Interactively explore traces..."` |
+| `features`        | Array of feature strings                 | `["Feature 1", "Feature 2"]`        |
+| `status`          | `"stable"`, `"beta"`, or `"coming-soon"` | `"beta"`                            |
+| `screenshot`      | Filename of app screenshot (or `""`)     | `"screenshot.png"`                  |
+
+These fields populate the CaLab landing page. Apps with `status: "stable"` appear first, then `"beta"`, then `"coming-soon"`.
 
 ### 3. Install dependencies
 

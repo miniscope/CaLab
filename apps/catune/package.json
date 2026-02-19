@@ -5,7 +5,16 @@
   "type": "module",
   "calab": {
     "displayName": "CaTune",
-    "description": "Deconvolution parameter tuning"
+    "description": "Deconvolution parameter tuning",
+    "longDescription": "Interactively tune calcium deconvolution parameters with real-time visual feedback. Load fluorescence traces, adjust regularization and AR model settings, and compare results across cells.",
+    "features": [
+      "Real-time parameter adjustment with live preview",
+      "FISTA solver via Rust/WASM for fast deconvolution",
+      "Multi-cell comparison and batch processing",
+      "Community parameter sharing via Supabase"
+    ],
+    "status": "stable",
+    "screenshot": "screenshot.png"
   },
   "scripts": {
     "dev": "vite",

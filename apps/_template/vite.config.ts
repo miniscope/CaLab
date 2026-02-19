@@ -17,7 +17,11 @@ export default defineConfig({
     },
   },
   envDir: repoRoot,
-  base: process.env.GITHUB_ACTIONS ? `/CaLab/${displayName}/` : '/',
+  base: process.env.GITHUB_ACTIONS
+    ? `/CaLab/${displayName}/`
+    : process.env.CALAB_PAGES
+      ? `/${displayName}/`
+      : '/',
   plugins: [solidPlugin()],
   build: {
     target: 'esnext',

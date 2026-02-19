@@ -5,7 +5,15 @@
   "type": "module",
   "calab": {
     "displayName": "CaRank",
-    "description": "Trace quality ranking"
+    "description": "Trace quality ranking",
+    "longDescription": "Rank and classify calcium imaging traces by quality. Quickly sort through cells to identify clean signals, noisy recordings, and motion artifacts.",
+    "features": [
+      "Visual trace quality assessment",
+      "Drag-and-drop ranking interface",
+      "Bulk classification and export"
+    ],
+    "status": "beta",
+    "screenshot": "screenshot.png"
   },
   "scripts": {
     "dev": "vite",

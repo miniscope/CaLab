@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   envDir: repoRoot,
-  base: process.env.GITHUB_ACTIONS ? '/CaLab/CaRank/' : '/',
+  base: process.env.GITHUB_ACTIONS ? '/CaLab/CaRank/' : process.env.CALAB_PAGES ? '/CaRank/' : '/',
   plugins: [solidPlugin()],
   build: {
     target: 'esnext',

@@ -12,7 +12,7 @@
     "dev:carank": "npm run dev -w apps/carank",
     "build": "npm run build:wasm && npm run build:apps",
     "build:apps": "node scripts/build-apps.mjs",
-    "build:pages": "npm run build && node scripts/combine-dist.mjs",
+    "build:pages": "CALAB_PAGES=1 npm run build && node scripts/combine-dist.mjs",
     "build:wasm": "cd wasm/catune-solver && wasm-pack build --target web --release",
     "test": "npm run test --workspaces --if-present",
     "test:watch": "npm run test:watch -w apps/catune",
