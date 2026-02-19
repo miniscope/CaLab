@@ -10,11 +10,7 @@
 import { createMemo, For, Show } from 'solid-js';
 import { multiCellResults, cellSolverStatuses } from '../../lib/multi-cell-store.ts';
 import { computePeakSNR, snrToQuality } from '@catune/core';
-import {
-  computeSparsityRatio,
-  computeResidualRMS,
-  computeRSquared,
-} from '@catune/core';
+import { computeSparsityRatio, computeResidualRMS, computeRSquared } from '@catune/core';
 import { activeSidebarTab } from '../layout/SidebarTabs.tsx';
 
 interface CellMetrics {
