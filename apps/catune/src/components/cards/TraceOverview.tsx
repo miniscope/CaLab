@@ -6,8 +6,7 @@
  */
 
 import { createEffect, createMemo, onCleanup, onMount } from 'solid-js';
-import { downsampleMinMax } from '../../lib/chart/downsample.ts';
-import { makeTimeAxis } from '../../lib/chart/time-axis.ts';
+import { downsampleMinMax, makeTimeAxis } from '@catune/compute';
 
 export interface TraceOverviewProps {
   trace: Float64Array;

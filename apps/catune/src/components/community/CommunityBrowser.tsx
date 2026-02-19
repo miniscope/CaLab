@@ -17,7 +17,7 @@ import {
 import type { CommunitySubmission, DataSource, FilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
 import { isDemo } from '../../lib/data-store.ts';
-import { getPresetLabels } from '../../lib/chart/demo-presets.ts';
+import { getPresetLabels } from '@catune/compute';
 import { ScatterPlot } from './ScatterPlot.tsx';
 import { FilterBar } from './FilterBar.tsx';
 import '../../styles/community.css';

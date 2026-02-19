@@ -1,0 +1,138 @@
+/* CaLab Shared Components — app header, import flow, drop zone, error card */
+
+/* ========================
+   App Header
+   ======================== */
+.app-header {
+  text-align: left;
+  margin-bottom: var(--space-xl);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.app-header__title {
+  font-size: 1.75rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-xs);
+  letter-spacing: -0.03em;
+  font-weight: var(--font-weight-semibold);
+}
+
+.app-header__version {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-normal);
+  font-family: var(--font-mono);
+  vertical-align: super;
+}
+
+.app-header__subtitle {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* ========================
+   Import Container
+   ======================== */
+.import-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: var(--space-lg);
+  width: 100%;
+}
+
+/* ========================
+   Drop Zone
+   ======================== */
+.drop-zone-wrapper {
+  margin-bottom: var(--space-md);
+}
+
+.drop-zone {
+  border: 2px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-xl) var(--space-lg);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-normal),
+    background var(--transition-normal);
+  background: var(--bg-inset);
+}
+
+.drop-zone:hover {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.drop-zone--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  border-style: solid;
+}
+
+.drop-zone__icon {
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-sm);
+}
+
+.drop-zone--active .drop-zone__icon {
+  color: var(--accent);
+}
+
+.drop-zone__text {
+  margin: 0 0 var(--space-xs);
+  font-size: 1rem;
+}
+
+.drop-zone__subtext {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.file-info {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-top: var(--space-sm);
+}
+
+.file-info-dimmed {
+  opacity: 0.4;
+  pointer-events: none;
+  margin-bottom: var(--space-md);
+}
+
+/* ========================
+   Error Card
+   ======================== */
+.error-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  background: var(--error-bg);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.error-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--error);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}

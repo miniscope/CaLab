@@ -3,9 +3,8 @@
 
 import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@catune/core';
-import { generateSyntheticDataset } from './chart/mock-traces.ts';
-import type { DemoPreset } from './chart/demo-presets.ts';
-import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets.ts';
+import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@catune/compute';
+import type { DemoPreset } from '@catune/compute';
 
 // --- Core Signals ---
 

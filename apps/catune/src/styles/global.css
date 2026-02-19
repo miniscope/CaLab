@@ -1,131 +1,6 @@
-/* CaTune Global Styles - Scientific Instrument light theme */
+/* CaTune App-Specific Styles */
 
-:root {
-  /* Typography — system fonts for scientific tool feel */
-  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-weight-normal: 400;
-  --font-weight-medium: 500;
-  --font-weight-semibold: 600;
-
-  /* Background layers — white content, grey chrome */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f0f0f0;
-  --bg-inset: #fafafa;
-
-  /* Text hierarchy */
-  --text-primary: #1a1a1a;
-  --text-secondary: #616161;
-  --text-tertiary: #9e9e9e;
-
-  /* Accent — muted blue, used sparingly */
-  --accent: #2171b5;
-  --accent-hover: #185a92;
-  --accent-muted: rgba(33, 113, 181, 0.08);
-  --accent-warm: #1a1a1a;
-  --accent-warm-hover: #333333;
-
-  /* Status */
-  --warning: #e09800;
-  --warning-bg: rgba(224, 152, 0, 0.08);
-  --error: #d32f2f;
-  --error-bg: rgba(211, 47, 47, 0.06);
-  --success: #2e7d32;
-
-  /* Semantic borders — thin, neutral */
-  --border-subtle: #e8e8e8;
-  --border-default: #d4d4d4;
-
-  /* Panel tokens */
-  --panel-bg: var(--bg-primary);
-  --panel-bg-controls: var(--bg-secondary);
-  --panel-bg-data: var(--bg-primary);
-  --panel-bg-interactive: var(--bg-primary);
-  --panel-border: var(--border-subtle);
-  --panel-radius: var(--radius-md);
-  --panel-padding: var(--space-lg);
-  --panel-gap: var(--space-md);
-
-  /* Shadows — flat UI, minimal */
-  --shadow-panel: none;
-  --shadow-elevated: 0 2px 8px rgba(0, 0, 0, 0.12);
-  --shadow-inset: none;
-
-  /* Transitions */
-  --transition-fast: 0.1s ease;
-  --transition-normal: 0.2s ease;
-  --transition-slow: 0.35s ease;
-
-  /* Spacing */
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 32px;
-
-  /* Border radius — tight for scientific feel */
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
-}
-
-/* Box-sizing reset */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-/* Body — clean white, no gradients or texture */
-body {
-  margin: 0;
-  font-family: var(--font-body);
-  font-weight: var(--font-weight-normal);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* Root container */
-#root {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Headings */
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  margin-top: 0;
-  color: var(--text-primary);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: -0.02em;
-}
-
-/* Links */
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
-}
-
-/* Import flow layout */
-.import-container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: var(--space-lg);
-  width: 100%;
-}
-
+/* Import flow extras */
 .theory-tutorial-link {
   display: flex;
   align-items: center;
@@ -161,41 +36,6 @@ a:hover {
 .import-feedback__sep {
   color: var(--text-tertiary);
   opacity: 0.5;
-}
-
-/* ========================
-   App Header
-   ======================== */
-.app-header {
-  text-align: left;
-  margin-bottom: var(--space-xl);
-  padding-bottom: var(--space-md);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.app-header__title {
-  font-size: 1.75rem;
-  color: var(--text-primary);
-  margin-bottom: var(--space-xs);
-  letter-spacing: -0.03em;
-  font-weight: var(--font-weight-semibold);
-}
-
-.app-header__version {
-  font-size: 0.7rem;
-  color: var(--text-tertiary);
-  font-weight: var(--font-weight-normal);
-  font-family: var(--font-mono);
-  vertical-align: super;
-}
-
-.app-header__subtitle {
-  color: var(--text-secondary);
-  margin: 0;
-  font-size: 0.95rem;
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
 }
 
 /* ========================
@@ -268,60 +108,8 @@ a:hover {
 }
 
 /* ========================
-   Buttons — flat, no gradients
+   Buttons — app-specific
    ======================== */
-.btn-primary {
-  background: var(--accent-warm);
-  color: #ffffff;
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-sm) var(--space-lg);
-  font-size: 0.95rem;
-  font-weight: var(--font-weight-semibold);
-  font-family: var(--font-body);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent-warm-hover);
-}
-
-.btn-primary:active:not(:disabled) {
-  background: #000000;
-}
-
-.btn-primary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  background: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  padding: var(--space-sm) var(--space-lg);
-  font-size: 0.95rem;
-  font-family: var(--font-body);
-  cursor: pointer;
-  transition:
-    border-color var(--transition-fast),
-    color var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.btn-secondary:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-muted);
-}
-
-.btn-small {
-  padding: var(--space-xs) var(--space-md);
-  font-size: 0.85rem;
-}
-
 .btn-preset {
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -351,70 +139,7 @@ a:hover {
 }
 
 /* ========================
-   Drop Zone
-   ======================== */
-.drop-zone-wrapper {
-  margin-bottom: var(--space-md);
-}
-
-.drop-zone {
-  border: 2px dashed var(--border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-xl) var(--space-lg);
-  text-align: center;
-  cursor: pointer;
-  transition:
-    border-color var(--transition-normal),
-    background var(--transition-normal);
-  background: var(--bg-inset);
-}
-
-.drop-zone:hover {
-  border-color: var(--accent);
-  background: var(--accent-muted);
-}
-
-.drop-zone--active {
-  border-color: var(--accent);
-  background: var(--accent-muted);
-  border-style: solid;
-}
-
-.drop-zone__icon {
-  color: var(--text-tertiary);
-  margin-bottom: var(--space-sm);
-}
-
-.drop-zone--active .drop-zone__icon {
-  color: var(--accent);
-}
-
-.drop-zone__text {
-  margin: 0 0 var(--space-xs);
-  font-size: 1rem;
-}
-
-.drop-zone__subtext {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.file-info {
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-  margin-top: var(--space-sm);
-}
-
-.file-info-dimmed {
-  opacity: 0.4;
-  pointer-events: none;
-  margin-bottom: var(--space-md);
-}
-
-/* ========================
-   Warning & Error Cards
+   Warning Card
    ======================== */
 .warning-card {
   display: flex;
@@ -441,32 +166,6 @@ a:hover {
   font-weight: 700;
   flex-shrink: 0;
   margin-top: 1px;
-}
-
-.error-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  background: var(--error-bg);
-  border-left: 3px solid var(--error);
-  border-radius: var(--radius-sm);
-  padding: var(--space-md);
-  margin-bottom: var(--space-sm);
-  color: var(--text-primary);
-}
-
-.error-card__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--error);
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 700;
-  flex-shrink: 0;
 }
 
 /* ========================
@@ -835,18 +534,6 @@ a:hover {
   margin-bottom: -2px;
 }
 
-/* ========================
-   Animations
-   ======================== */
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
 /* Note: similar to badge-pulse in layout.css, but includes scale transform */
 @keyframes convergence-pulse {
   0%,
@@ -857,19 +544,6 @@ a:hover {
   50% {
     opacity: 0.5;
     transform: scale(1.3);
-  }
-}
-
-/* ========================
-   Reduced motion
-   ======================== */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
   }
 }
 

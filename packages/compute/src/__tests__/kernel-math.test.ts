@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKernel } from '../chart/kernel-math.ts';
+import { computeKernel } from '@catune/compute';
 
 describe('computeKernel', () => {
   const tauRise = 0.02;
