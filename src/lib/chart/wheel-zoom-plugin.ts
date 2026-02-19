@@ -19,9 +19,7 @@ import type uPlot from 'uplot';
  * @param opts - Options: factor controls zoom speed (default 0.75)
  * @returns uPlot plugin
  */
-export function wheelZoomPlugin(
-  opts?: { factor?: number },
-): uPlot.Plugin {
+export function wheelZoomPlugin(opts?: { factor?: number }): uPlot.Plugin {
   const factor = opts?.factor ?? 0.75;
 
   // Full data range captured on ready
@@ -55,8 +53,7 @@ export function wheelZoomPlugin(
 
           const leftPct = left / over.offsetWidth;
           const oxRange = u.scales.x.max! - u.scales.x.min!;
-          const nxRange =
-            e.deltaY < 0 ? oxRange * factor : oxRange / factor;
+          const nxRange = e.deltaY < 0 ? oxRange * factor : oxRange / factor;
 
           let nxMin = u.posToVal(left, 'x') - leftPct * nxRange;
           let nxMax = nxMin + nxRange;

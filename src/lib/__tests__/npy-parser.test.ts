@@ -9,12 +9,10 @@ function makeNpyBuffer(
   shape: number[],
   dtype: string,
   fortranOrder = false,
-  version: 1 | 2 = 1
+  version: 1 | 2 = 1,
 ): ArrayBuffer {
   // 1. Construct header string (Python dict literal)
-  const shapeStr = shape.length === 1
-    ? `(${shape[0]},)`
-    : `(${shape.join(', ')})`;
+  const shapeStr = shape.length === 1 ? `(${shape[0]},)` : `(${shape.join(', ')})`;
   const headerDict = `{'descr': '${dtype}', 'fortran_order': ${fortranOrder ? 'True' : 'False'}, 'shape': ${shapeStr}, }`;
 
   // 2. Compute header padding (align to 64 bytes for v1, or 64 bytes for v2)
@@ -78,9 +76,18 @@ function makeNpyBuffer(
 
 function getDtypeBytes(dtype: string): number {
   const map: Record<string, number> = {
-    '<f8': 8, '<f4': 4, '<i4': 4, '<i2': 2, '<i1': 1,
-    '|i1': 1, '<u4': 4, '<u2': 2, '<u1': 1, '|u1': 1,
-    '>f8': 8, '>f4': 4,
+    '<f8': 8,
+    '<f4': 4,
+    '<i4': 4,
+    '<i2': 2,
+    '<i1': 1,
+    '|i1': 1,
+    '<u4': 4,
+    '<u2': 2,
+    '<u1': 1,
+    '|u1': 1,
+    '>f8': 8,
+    '>f4': 4,
   };
   return map[dtype] ?? 8;
 }

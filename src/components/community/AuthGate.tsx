@@ -58,32 +58,21 @@ export function AuthGate() {
                     onInput={(e) => setEmail(e.currentTarget.value)}
                     required
                   />
-                  <button
-                    class="auth-gate__btn"
-                    type="submit"
-                    disabled={sending()}
-                  >
+                  <button class="auth-gate__btn" type="submit" disabled={sending()}>
                     {sending() ? 'Sending...' : 'Sign in with Email'}
                   </button>
                 </form>
                 <Show when={error()}>
                   <p class="auth-gate__error">{error()}</p>
                 </Show>
-                <p class="auth-gate__prompt">
-                  Sign in to share parameters with the community
-                </p>
+                <p class="auth-gate__prompt">Sign in to share parameters with the community</p>
               </Show>
             </div>
           }
         >
           <div class="auth-gate__user-row">
-            <span class="auth-gate__email">
-              {user()?.email ?? 'Authenticated'}
-            </span>
-            <button
-              class="auth-gate__btn auth-gate__btn--signout"
-              onClick={() => signOut()}
-            >
+            <span class="auth-gate__email">{user()?.email ?? 'Authenticated'}</span>
+            <button class="auth-gate__btn auth-gate__btn--signout" onClick={() => signOut()}>
               Sign Out
             </button>
           </div>

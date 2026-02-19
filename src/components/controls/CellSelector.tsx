@@ -19,13 +19,20 @@ import {
 import { numCells, groundTruthVisible } from '../../lib/data-store.ts';
 import {
   filterEnabled,
-  showRaw, setShowRaw,
-  showFiltered, setShowFiltered,
-  showFit, setShowFit,
-  showDeconv, setShowDeconv,
-  showResid, setShowResid,
-  showGTCalcium, setShowGTCalcium,
-  showGTSpikes, setShowGTSpikes,
+  showRaw,
+  setShowRaw,
+  showFiltered,
+  setShowFiltered,
+  showFit,
+  setShowFit,
+  showDeconv,
+  setShowDeconv,
+  showResid,
+  setShowResid,
+  showGTCalcium,
+  setShowGTCalcium,
+  showGTSpikes,
+  setShowGTSpikes,
 } from '../../lib/viz-store.ts';
 import '../../styles/multi-trace.css';
 
@@ -49,15 +56,13 @@ function LegendItem(props: LegendItemProps) {
       : 'cell-selector__legend-swatch';
 
   const swatchStyle = () =>
-    props.dashed
-      ? { 'border-color': props.color }
-      : { background: props.color };
+    props.dashed ? { 'border-color': props.color } : { background: props.color };
 
   return (
     <span
       class="cell-selector__legend-item"
       classList={{ 'cell-selector__legend-item--hidden': !props.visible() }}
-      onClick={() => props.setVisible(v => !v)}
+      onClick={() => props.setVisible((v) => !v)}
     >
       <span class={swatchClass()} style={swatchStyle()} />
       {props.label}
@@ -109,11 +114,7 @@ export function CellSelector(props: CellSelectorProps) {
     <div class="cell-selector" data-tutorial="cell-selector">
       <div class="cell-selector__group">
         <label class="cell-selector__label">Selection Mode</label>
-        <select
-          class="cell-selector__mode"
-          value={selectionMode()}
-          onChange={handleModeChange}
-        >
+        <select class="cell-selector__mode" value={selectionMode()} onChange={handleModeChange}>
           <option value="top-active">Top Active</option>
           <option value="random">Random</option>
           <option value="manual">Manual</option>
@@ -137,9 +138,19 @@ export function CellSelector(props: CellSelectorProps) {
       <div class="cell-selector__group" data-tutorial="grid-columns">
         <label class="cell-selector__label">Grid columns</label>
         <div class="cell-selector__stepper">
-          <button class="cell-selector__step-btn" onClick={() => gridColumns() > 1 && setGridColumns(gridColumns() - 1)}>−</button>
+          <button
+            class="cell-selector__step-btn"
+            onClick={() => gridColumns() > 1 && setGridColumns(gridColumns() - 1)}
+          >
+            −
+          </button>
           <span class="cell-selector__step-value">{gridColumns()}</span>
-          <button class="cell-selector__step-btn" onClick={() => gridColumns() < 6 && setGridColumns(gridColumns() + 1)}>+</button>
+          <button
+            class="cell-selector__step-btn"
+            onClick={() => gridColumns() < 6 && setGridColumns(gridColumns() + 1)}
+          >
+            +
+          </button>
         </div>
       </div>
 
@@ -171,31 +182,64 @@ export function CellSelector(props: CellSelectorProps) {
         <button
           class="legend-info__btn"
           title="What do these traces mean?"
-          onClick={() => setShowLegendInfo(v => !v)}
+          onClick={() => setShowLegendInfo((v) => !v)}
         >
           ?
         </button>
         <Show when={showLegendInfo()}>
           <div class="legend-info__popover">
-            <div class="legend-info__row"><strong>Raw</strong> — Original fluorescence recording</div>
-            <div class="legend-info__row"><strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)</div>
-            <div class="legend-info__row"><strong>Fit</strong> — Reconvolved model fit (kernel * spikes + baseline)</div>
-            <div class="legend-info__row"><strong>Deconv</strong> — Estimated spike train (deconvolution result)</div>
-            <div class="legend-info__row"><strong>Resid</strong> — Residuals (Raw minus Fit)</div>
-            <div class="legend-info__row"><strong>True Ca/Spk</strong> — Ground truth (demo only)</div>
+            <div class="legend-info__row">
+              <strong>Raw</strong> — Original fluorescence recording
+            </div>
+            <div class="legend-info__row">
+              <strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)
+            </div>
+            <div class="legend-info__row">
+              <strong>Fit</strong> — Reconvolved model fit (kernel * spikes + baseline)
+            </div>
+            <div class="legend-info__row">
+              <strong>Deconv</strong> — Estimated spike train (deconvolution result)
+            </div>
+            <div class="legend-info__row">
+              <strong>Resid</strong> — Residuals (Raw minus Fit)
+            </div>
+            <div class="legend-info__row">
+              <strong>True Ca/Spk</strong> — Ground truth (demo only)
+            </div>
             <div class="legend-info__hint">Click legend items to toggle traces on/off</div>
           </div>
         </Show>
         <LegendItem color="#1f77b4" label="Raw" visible={showRaw} setVisible={setShowRaw} />
         <Show when={filterEnabled()}>
-          <LegendItem color="#17becf" label="Filtered" visible={showFiltered} setVisible={setShowFiltered} />
+          <LegendItem
+            color="#17becf"
+            label="Filtered"
+            visible={showFiltered}
+            setVisible={setShowFiltered}
+          />
         </Show>
         <LegendItem color="#ff7f0e" label="Fit" visible={showFit} setVisible={setShowFit} />
-        <LegendItem color="#2ca02c" label="Deconv" visible={showDeconv} setVisible={setShowDeconv} />
+        <LegendItem
+          color="#2ca02c"
+          label="Deconv"
+          visible={showDeconv}
+          setVisible={setShowDeconv}
+        />
         <LegendItem color="#d62728" label="Resid" visible={showResid} setVisible={setShowResid} />
         <Show when={groundTruthVisible()}>
-          <LegendItem color="rgba(0, 188, 212, 0.7)" label="True Ca" visible={showGTCalcium} setVisible={setShowGTCalcium} dashed />
-          <LegendItem color="rgba(255, 193, 7, 0.7)" label="True Spk" visible={showGTSpikes} setVisible={setShowGTSpikes} />
+          <LegendItem
+            color="rgba(0, 188, 212, 0.7)"
+            label="True Ca"
+            visible={showGTCalcium}
+            setVisible={setShowGTCalcium}
+            dashed
+          />
+          <LegendItem
+            color="rgba(255, 193, 7, 0.7)"
+            label="True Spk"
+            visible={showGTSpikes}
+            setVisible={setShowGTSpikes}
+          />
         </Show>
       </div>
     </div>

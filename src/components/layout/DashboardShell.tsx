@@ -13,15 +13,9 @@ export { sidebarOpen, setSidebarOpen };
 export function DashboardShell(props: DashboardShellProps): JSX.Element {
   return (
     <div class={`dashboard-shell${sidebarOpen() ? ' dashboard-shell--sidebar-open' : ''}`}>
-      <div class="dashboard-shell__header">
-        {props.header}
-      </div>
-      <div class="dashboard-shell__main">
-        {props.children}
-      </div>
-      <div class="dashboard-shell__sidebar">
-        {props.sidebar}
-      </div>
+      <div class="dashboard-shell__header">{props.header}</div>
+      <div class="dashboard-shell__main">{props.children}</div>
+      <div class="dashboard-shell__sidebar">{props.sidebar}</div>
     </div>
   );
 }

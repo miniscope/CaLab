@@ -15,11 +15,7 @@ export interface AR2Coefficients {
   riseRoot: number; // exp(-dt/tau_rise) rise eigenvalue
 }
 
-export function computeAR2(
-  tauRise: number,
-  tauDecay: number,
-  fs: number,
-): AR2Coefficients {
+export function computeAR2(tauRise: number, tauDecay: number, fs: number): AR2Coefficients {
   const dt = 1 / fs;
   const decayRoot = Math.exp(-dt / tauDecay);
   const riseRoot = Math.exp(-dt / tauRise);

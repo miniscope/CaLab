@@ -66,12 +66,7 @@ export interface ValidationResult {
 
 // --- Import Pipeline ---
 
-export type ImportStep =
-  | 'drop'
-  | 'confirm-dims'
-  | 'sampling-rate'
-  | 'validation'
-  | 'ready';
+export type ImportStep = 'drop' | 'confirm-dims' | 'sampling-rate' | 'validation' | 'ready';
 
 // --- Sampling Rate Presets ---
 

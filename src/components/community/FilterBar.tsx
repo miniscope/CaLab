@@ -28,10 +28,7 @@ export function FilterBar(props: FilterBarProps) {
     props.filters.brainRegion !== null ||
     props.filters.demoPreset !== null;
 
-  function handleFilterChange(
-    field: keyof FilterState,
-    value: string,
-  ): void {
+  function handleFilterChange(field: keyof FilterState, value: string): void {
     props.onFilterChange({
       ...props.filters,
       [field]: value === '' ? null : value,

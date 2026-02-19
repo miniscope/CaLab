@@ -16,7 +16,7 @@ import type uPlot from 'uplot';
 const KERNEL_SYNC_KEY = 'catune-kernel';
 
 export function KernelDisplay() {
-  const kernelData = createMemo<[number[], ...((number | null)[])[]]>(() => {
+  const kernelData = createMemo<[number[], ...(number | null)[][]]>(() => {
     const fs = samplingRate() ?? 30;
     const userKernel = computeKernel(tauRise(), tauDecay(), fs);
 

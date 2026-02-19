@@ -13,7 +13,10 @@ export function withOpacity(color: string, alpha: number): string {
 
     // Expand shorthand #rgb to #rrggbb
     if (hex.length === 3) {
-      hex = hex.split('').map(char => char + char).join('');
+      hex = hex
+        .split('')
+        .map((char) => char + char)
+        .join('');
     }
 
     // Parse #rrggbb format

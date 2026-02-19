@@ -34,7 +34,7 @@ export const theoryTutorial: Tutorial = {
       title: "What's in the Raw Trace?",
       description:
         'The recorded fluorescence <b>F(t)</b> is a mixture of three components:<br><br>' +
-        '<b>1. Calcium transients</b> — neural activity convolved with the indicator\'s impulse response<br>' +
+        "<b>1. Calcium transients</b> — neural activity convolved with the indicator's impulse response<br>" +
         '<b>2. High-frequency noise</b> — photon shot noise and electronics<br>' +
         '<b>3. Slow baseline drift</b> — out-of-focus neuropil, diffuse calcium dynamics, photobleaching<br><br>' +
         'Mathematically:<br>' +
@@ -85,7 +85,7 @@ export const theoryTutorial: Tutorial = {
     {
       title: 'The Delta Function Trap',
       description:
-        'A critical insight: making the kernel <b>sharper and faster</b> will almost always <b>improve the solver\'s fit</b> (lower residuals, higher R²).<br><br>' +
+        "A critical insight: making the kernel <b>sharper and faster</b> will almost always <b>improve the solver's fit</b> (lower residuals, higher R²).<br><br>" +
         'As the kernel approaches a delta function, the deconvolved trace simply <b>mirrors the calcium dynamics</b> — including the full rise and decay tail. The fit looks great, but the result is meaningless.<br><br>' +
         'This is the trap <b>automated parameter optimization</b> falls into: it converges on kernels that are much too fast because the fit metric keeps improving. This is why CaTune does not auto-optimize kernel parameters.',
       onPopoverRender: renderDeltaTrap,
@@ -95,7 +95,7 @@ export const theoryTutorial: Tutorial = {
       title: "Why Sparsity Doesn't Fix It",
       description:
         'When the deconvolved trace looks too dense with a fast kernel, the instinct is to <b>increase λ</b> (sparsity penalty) to force fewer events.<br><br>' +
-        'This <b>masks the symptom</b> but doesn\'t fix the cause — the kernel shape is wrong. High λ with a too-fast kernel produces sparse but <b>arbitrarily-placed</b> events.<br><br>' +
+        "This <b>masks the symptom</b> but doesn't fix the cause — the kernel shape is wrong. High λ with a too-fast kernel produces sparse but <b>arbitrarily-placed</b> events.<br><br>" +
         'The correct fix is always to <b>adjust the kernel</b> (primarily decay time) until deconvolved events align with the rise phase of calcium transients — not to compensate with sparsity.',
     },
     // Step 9: Reading the signs
@@ -116,7 +116,7 @@ export const theoryTutorial: Tutorial = {
         'High-frequency noise creates <b>spurious transients</b> in the deconvolved trace. The <b>Noise Filter</b> applies a bandpass derived from your kernel parameters:<br><br>' +
         '• The <b>high-pass</b> removes slow drift (baseline)<br>' +
         '• The <b>low-pass</b> removes noise above what your calcium dynamics can produce<br><br>' +
-        'Filtering is conservative — it won\'t change transient shapes — but it significantly cleans up the deconvolution.',
+        "Filtering is conservative — it won't change transient shapes — but it significantly cleans up the deconvolution.",
     },
     // Step 11: What deconvolved activity is
     {

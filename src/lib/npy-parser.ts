@@ -16,14 +16,14 @@ interface DtypeInfo {
 const DTYPE_MAP: Record<string, DtypeInfo> = {
   '<f8': { constructor: Float64Array, bytes: 8 },
   '<f4': { constructor: Float32Array, bytes: 4 },
-  '<i4': { constructor: Int32Array,   bytes: 4 },
-  '<i2': { constructor: Int16Array,   bytes: 2 },
-  '<i1': { constructor: Int8Array,    bytes: 1 },
-  '|i1': { constructor: Int8Array,    bytes: 1 },
-  '<u4': { constructor: Uint32Array,  bytes: 4 },
-  '<u2': { constructor: Uint16Array,  bytes: 2 },
-  '<u1': { constructor: Uint8Array,   bytes: 1 },
-  '|u1': { constructor: Uint8Array,   bytes: 1 },
+  '<i4': { constructor: Int32Array, bytes: 4 },
+  '<i2': { constructor: Int16Array, bytes: 2 },
+  '<i1': { constructor: Int8Array, bytes: 1 },
+  '|i1': { constructor: Int8Array, bytes: 1 },
+  '<u4': { constructor: Uint32Array, bytes: 4 },
+  '<u2': { constructor: Uint16Array, bytes: 2 },
+  '<u1': { constructor: Uint8Array, bytes: 1 },
+  '|u1': { constructor: Uint8Array, bytes: 1 },
 };
 
 /**
@@ -92,15 +92,15 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
   const fortranOrder = fortranMatch === 'True';
   const shape = shapeMatch
     .split(',')
-    .map(s => s.trim())
-    .filter(s => s.length > 0)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
     .map(Number);
 
   // 6. Check for big-endian
   if (descr.startsWith('>')) {
     throw new Error(
       'Big-endian arrays are not supported. Re-save with: ' +
-      'arr = numpy.ascontiguousarray(arr.astype(arr.dtype.newbyteorder("<")))'
+        'arr = numpy.ascontiguousarray(arr.astype(arr.dtype.newbyteorder("<")))',
     );
   }
 
@@ -109,7 +109,7 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
   if (!dtypeInfo) {
     throw new Error(
       `Unsupported dtype "${descr}". CaTune requires numeric arrays ` +
-      `(float32, float64, or integer types).`
+        `(float32, float64, or integer types).`,
     );
   }
 
@@ -122,7 +122,7 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
   if (actualBytes < expectedBytes) {
     throw new Error(
       `File truncated: expected ${expectedBytes} bytes of data ` +
-      `but only ${actualBytes} available`
+        `but only ${actualBytes} available`,
     );
   }
 

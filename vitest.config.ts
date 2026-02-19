@@ -5,8 +5,6 @@ export default defineConfig({
   plugins: [solidPlugin()],
   test: {
     passWithNoTests: true,
-    environmentMatchGlobs: [
-      ['src/lib/__tests__/**', 'node'],
-    ],
+    environmentMatchGlobs: [['src/lib/__tests__/**', 'node']],
   },
 });

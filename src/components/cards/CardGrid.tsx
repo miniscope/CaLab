@@ -20,7 +20,12 @@ import {
   setVisibleCellIndices,
 } from '../../lib/multi-cell-store.ts';
 import { reportCellZoom } from '../../lib/cell-solve-manager.ts';
-import { samplingRate, isDemo, groundTruthVisible, getGroundTruthForCell } from '../../lib/data-store.ts';
+import {
+  samplingRate,
+  isDemo,
+  groundTruthVisible,
+  getGroundTruthForCell,
+} from '../../lib/data-store.ts';
 import { selectedCell } from '../../lib/viz-store.ts';
 import '../../styles/cards.css';
 
@@ -70,9 +75,7 @@ export function CardGrid(props: CardGridProps) {
       <Show
         when={cells().length > 0}
         fallback={
-          <div class="card-grid__empty">
-            No cell results yet. Adjust parameters to solve.
-          </div>
+          <div class="card-grid__empty">No cell results yet. Adjust parameters to solve.</div>
         }
       >
         <div class="card-grid" data-tutorial="card-grid" style={{ '--grid-cols': gridColumns() }}>

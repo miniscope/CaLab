@@ -54,10 +54,7 @@ export function QualityBadge(props: QualityBadgeProps) {
   };
 
   return (
-    <span
-      class={`quality-badge quality-badge--${status()}`}
-      title={title()}
-    >
+    <span class={`quality-badge quality-badge--${status()}`} title={title()}>
       <span class="quality-badge__dot" style={{ background: dotColor() }} />
       <span class="quality-badge__label">{label()}</span>
     </span>

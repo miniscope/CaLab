@@ -6,11 +6,7 @@ import type { TutorialProgress } from './types.ts';
 const STORAGE_KEY = 'catune-tutorial-progress-v2';
 
 /** Save progress for a tutorial (creates or updates entry). */
-export function saveProgress(
-  tutorialId: string,
-  stepIndex: number,
-  completed: boolean,
-): void {
+export function saveProgress(tutorialId: string, stepIndex: number, completed: boolean): void {
   const all = getAllProgress();
   all[tutorialId] = {
     tutorialId,

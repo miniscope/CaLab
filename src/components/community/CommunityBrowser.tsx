@@ -10,15 +10,8 @@
 import { createSignal, createEffect, createMemo, Show, on } from 'solid-js';
 import { supabaseEnabled } from '../../lib/supabase.ts';
 import { fetchSubmissions } from '../../lib/community/community-service.ts';
-import {
-  fieldOptions,
-  loadFieldOptions,
-} from '../../lib/community/community-store.ts';
-import type {
-  CommunitySubmission,
-  DataSource,
-  FilterState,
-} from '../../lib/community/types.ts';
+import { fieldOptions, loadFieldOptions } from '../../lib/community/community-store.ts';
+import type { CommunitySubmission, DataSource, FilterState } from '../../lib/community/types.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
 import { isDemo } from '../../lib/data-store.ts';
 import { getPresetLabels } from '../../lib/chart/demo-presets.ts';
@@ -38,9 +31,7 @@ export function CommunityBrowser() {
     brainRegion: null,
     demoPreset: null,
   });
-  const [dataSource, setDataSource] = createSignal<DataSource>(
-    isDemo() ? 'demo' : 'user',
-  );
+  const [dataSource, setDataSource] = createSignal<DataSource>(isDemo() ? 'demo' : 'user');
   const [loading, setLoading] = createSignal(false);
   const [collapsed, setCollapsed] = createSignal(false);
   const [compareMyParams, setCompareMyParams] = createSignal(false);
@@ -48,9 +39,11 @@ export function CommunityBrowser() {
   const [error, setError] = createSignal<string | null>(null);
 
   // Auto-switch data source when demo mode changes
-  createEffect(on(isDemo, (demo) => {
-    setDataSource(demo ? 'demo' : 'user');
-  }));
+  createEffect(
+    on(isDemo, (demo) => {
+      setDataSource(demo ? 'demo' : 'user');
+    }),
+  );
 
   // --- Filtered data ---
   const filteredSubmissions = createMemo(() => {
@@ -77,19 +70,12 @@ export function CommunityBrowser() {
   });
 
   /** Extract parameter arrays from filtered submissions. */
-  const tauRiseValues = createMemo(() =>
-    filteredSubmissions().map((s) => s.tau_rise),
-  );
-  const tauDecayValues = createMemo(() =>
-    filteredSubmissions().map((s) => s.tau_decay),
-  );
-
+  const tauRiseValues = createMemo(() => filteredSubmissions().map((s) => s.tau_rise));
+  const tauDecayValues = createMemo(() => filteredSubmissions().map((s) => s.tau_decay));
 
   /** User params for "Compare my params" overlay. */
   const userParams = createMemo(() =>
-    compareMyParams()
-      ? { tauRise: tauRise(), tauDecay: tauDecay(), lambda: lambda() }
-      : null,
+    compareMyParams() ? { tauRise: tauRise(), tauDecay: tauDecay(), lambda: lambda() } : null,
   );
 
   // --- Data fetching ---
@@ -97,10 +83,7 @@ export function CommunityBrowser() {
     setLoading(true);
     setError(null);
     try {
-      const [subs] = await Promise.all([
-        fetchSubmissions(),
-        loadFieldOptions(),
-      ]);
+      const [subs] = await Promise.all([fetchSubmissions(), loadFieldOptions()]);
       setSubmissions(subs);
       setLastFetched(Date.now());
     } catch (err) {
@@ -158,16 +141,12 @@ export function CommunityBrowser() {
         <div class="community-browser__body">
           {/* Loading state */}
           <Show when={loading()}>
-            <div class="community-browser__loading">
-              Loading community data...
-            </div>
+            <div class="community-browser__loading">Loading community data...</div>
           </Show>
 
           {/* Error state */}
           <Show when={error() && !loading()}>
-            <div class="community-browser__empty">
-              {error()}
-            </div>
+            <div class="community-browser__empty">{error()}</div>
           </Show>
 
           {/* Content when loaded */}
@@ -229,10 +208,7 @@ export function CommunityBrowser() {
                 </div>
               }
             >
-              <ScatterPlot
-                submissions={filteredSubmissions()}
-                userParams={userParams()}
-              />
+              <ScatterPlot submissions={filteredSubmissions()} userParams={userParams()} />
             </Show>
           </Show>
         </div>

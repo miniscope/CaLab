@@ -7,11 +7,7 @@ import { Show, For, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { Accessor, Setter } from 'solid-js';
 import { isDemo } from '../../lib/data-store.ts';
-import {
-  user,
-  fieldOptions,
-  fieldOptionsLoading,
-} from '../../lib/community/community-store.ts';
+import { user, fieldOptions, fieldOptionsLoading } from '../../lib/community/community-store.ts';
 import { buildFieldOptionRequestUrl } from '../../lib/community/github-issue-url.ts';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import { AuthGate } from './AuthGate.tsx';
@@ -66,8 +62,8 @@ export function SubmitForm(props: SubmitFormProps) {
 
           <Show when={isDemo()}>
             <div class="submit-panel__demo-notice">
-              You're tuning on simulated demo data — submitting is encouraged!
-              This helps the community see what parameters work well for the demo dataset.
+              You're tuning on simulated demo data — submitting is encouraged! This helps the
+              community see what parameters work well for the demo dataset.
             </div>
           </Show>
 
@@ -230,7 +226,8 @@ function SearchableField(props: SearchableFieldProps) {
       <label>
         {props.label}
         <Show when={props.required}>
-          {' '}<span class="submit-panel__required-marker">*</span>
+          {' '}
+          <span class="submit-panel__required-marker">*</span>
         </Show>
       </label>
       <SearchableSelect

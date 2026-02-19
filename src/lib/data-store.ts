@@ -2,12 +2,7 @@
 // Uses SolidJS signals for fine-grained reactivity
 
 import { createSignal, createMemo } from 'solid-js';
-import type {
-  NpyResult,
-  NpzResult,
-  ValidationResult,
-  ImportStep,
-} from './types.ts';
+import type { NpyResult, NpzResult, ValidationResult, ImportStep } from './types.ts';
 import { generateSyntheticDataset } from './chart/mock-traces.ts';
 import type { DemoPreset } from './chart/demo-presets.ts';
 import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets.ts';
@@ -16,16 +11,12 @@ import { getPresetById, DEFAULT_PRESET_ID } from './chart/demo-presets.ts';
 
 const [rawFile, setRawFile] = createSignal<File | null>(null);
 const [parsedData, setParsedData] = createSignal<NpyResult | null>(null);
-const [dimensionsConfirmed, setDimensionsConfirmed] =
-  createSignal<boolean>(false);
+const [dimensionsConfirmed, setDimensionsConfirmed] = createSignal<boolean>(false);
 const [swapped, setSwapped] = createSignal<boolean>(false);
 const [samplingRate, setSamplingRate] = createSignal<number | null>(null);
-const [validationResult, setValidationResult] =
-  createSignal<ValidationResult | null>(null);
+const [validationResult, setValidationResult] = createSignal<ValidationResult | null>(null);
 const [npzArrays, setNpzArrays] = createSignal<NpzResult | null>(null);
-const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(
-  null,
-);
+const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(null);
 const [importError, setImportError] = createSignal<string | null>(null);
 const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 
@@ -74,10 +65,12 @@ function revealGroundTruth() {
 }
 
 function toggleGroundTruthVisibility() {
-  if (groundTruthLocked()) setGroundTruthVisible(v => !v);
+  if (groundTruthLocked()) setGroundTruthVisible((v) => !v);
 }
 
-function getGroundTruthForCell(cellIndex: number): { spikes: Float64Array; calcium: Float64Array } | null {
+function getGroundTruthForCell(
+  cellIndex: number,
+): { spikes: Float64Array; calcium: Float64Array } | null {
   const spikes = groundTruthSpikes();
   const calcium = groundTruthCalcium();
   const tp = numTimepoints();
@@ -106,12 +99,15 @@ function loadDemoData(opts?: {
   const preset = getPresetById(opts?.presetId ?? DEFAULT_PRESET_ID);
   if (!preset) return;
 
-  const resolvedSeed = opts?.seed === 'random'
-    ? Math.floor(Math.random() * 2 ** 31)
-    : opts?.seed ?? 42;
+  const resolvedSeed =
+    opts?.seed === 'random' ? Math.floor(Math.random() * 2 ** 31) : (opts?.seed ?? 42);
 
-  const { data, shape, groundTruthSpikes: gtSpikes, groundTruthCalcium: gtCalcium } =
-    generateSyntheticDataset(numCells, numTimepoints, preset.params, fs, resolvedSeed);
+  const {
+    data,
+    shape,
+    groundTruthSpikes: gtSpikes,
+    groundTruthCalcium: gtCalcium,
+  } = generateSyntheticDataset(numCells, numTimepoints, preset.params, fs, resolvedSeed);
 
   setGroundTruthSpikes(gtSpikes);
   setGroundTruthCalcium(gtCalcium);

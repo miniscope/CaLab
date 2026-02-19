@@ -61,10 +61,7 @@ export interface CommunitySubmission {
  * INSERT payload for community_submissions.
  * Omits id, created_at, and user_id which are auto-set by Supabase/RLS.
  */
-export type SubmissionPayload = Omit<
-  CommunitySubmission,
-  'id' | 'created_at' | 'user_id'
->;
+export type SubmissionPayload = Omit<CommunitySubmission, 'id' | 'created_at' | 'user_id'>;
 
 /** User-entered metadata fields from the submission form. */
 export interface SubmissionMetadata {

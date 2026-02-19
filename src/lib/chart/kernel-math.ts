@@ -61,7 +61,7 @@ export function computeKernelAnnotations(
   if (tauDecay <= tauRise || tauRise <= 0 || tauDecay <= 0) return null;
 
   // Analytical peak time: t_peak = (τ_r × τ_d) / (τ_d - τ_r) × ln(τ_d / τ_r)
-  const peakTime = (tauRise * tauDecay) / (tauDecay - tauRise) * Math.log(tauDecay / tauRise);
+  const peakTime = ((tauRise * tauDecay) / (tauDecay - tauRise)) * Math.log(tauDecay / tauRise);
 
   // Numerical search for half-decay: first sample after peak where kernel ≤ 0.5
   const dt = 1 / fs;

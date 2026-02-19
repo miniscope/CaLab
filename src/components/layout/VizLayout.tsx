@@ -18,9 +18,5 @@ export function VizLayout(props: VizLayoutProps): JSX.Element {
     document.documentElement.classList.remove('dashboard-mode');
   });
 
-  return (
-    <div class={`viz-layout viz-layout--${mode()}`}>
-      {props.children}
-    </div>
-  );
+  return <div class={`viz-layout viz-layout--${mode()}`}>{props.children}</div>;
 }

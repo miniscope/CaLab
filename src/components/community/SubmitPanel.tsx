@@ -19,9 +19,7 @@ import {
   groundTruthLocked,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport } from '../../lib/export.ts';
-import {
-  validateSubmission,
-} from '../../lib/community/quality-checks.ts';
+import { validateSubmission } from '../../lib/community/quality-checks.ts';
 import { loadFieldOptions } from '../../lib/community/community-store.ts';
 import { supabaseEnabled } from '../../lib/supabase.ts';
 import type { CommunitySubmission } from '../../lib/community/types.ts';
@@ -35,8 +33,7 @@ export function SubmitPanel() {
   // --- UI state ---
   const [formOpen, setFormOpen] = createSignal(false);
   const [submitting, setSubmitting] = createSignal(false);
-  const [lastSubmission, setLastSubmission] =
-    createSignal<CommunitySubmission | null>(null);
+  const [lastSubmission, setLastSubmission] = createSignal<CommunitySubmission | null>(null);
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const [validationErrors, setValidationErrors] = createSignal<string[]>([]);
 
@@ -56,9 +53,7 @@ export function SubmitPanel() {
   // --- Derived ---
   const requiredFieldsFilled = () =>
     isDemo() ||
-    (indicator().trim() !== '' &&
-    species().trim() !== '' &&
-    brainRegion().trim() !== '');
+    (indicator().trim() !== '' && species().trim() !== '' && brainRegion().trim() !== '');
 
   // --- Handlers ---
 
@@ -132,9 +127,7 @@ export function SubmitPanel() {
       clearFormFields();
       setFormOpen(false);
     } catch (err) {
-      setSubmitError(
-        err instanceof Error ? err.message : 'Submission failed',
-      );
+      setSubmitError(err instanceof Error ? err.message : 'Submission failed');
     } finally {
       setSubmitting(false);
     }
@@ -163,9 +156,8 @@ export function SubmitPanel() {
       {/* Parameter summary row */}
       <div class="submit-panel__summary">
         <span>
-          rise: {(tauRise() * 1000).toFixed(1)}ms, decay:{' '}
-          {(tauDecay() * 1000).toFixed(1)}ms, lambda:{' '}
-          {lambda().toExponential(2)}
+          rise: {(tauRise() * 1000).toFixed(1)}ms, decay: {(tauDecay() * 1000).toFixed(1)}ms,
+          lambda: {lambda().toExponential(2)}
         </span>
       </div>
 
@@ -187,7 +179,11 @@ export function SubmitPanel() {
               loadFieldOptions();
             }}
             disabled={groundTruthLocked()}
-            title={groundTruthLocked() ? 'Community submission disabled — ground truth was viewed' : undefined}
+            title={
+              groundTruthLocked()
+                ? 'Community submission disabled — ground truth was viewed'
+                : undefined
+            }
           >
             {formOpen() ? 'Cancel' : 'Submit to Community'}
           </button>

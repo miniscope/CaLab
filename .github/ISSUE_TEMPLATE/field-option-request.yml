@@ -1,7 +1,7 @@
 name: Field Option Request
 description: Request a new option for Calcium Indicator, Species, or Brain Region
-title: "[Field Option] New {field}: "
-labels: ["field-option-request"]
+title: '[Field Option] New {field}: '
+labels: ['field-option-request']
 body:
   - type: dropdown
     id: field-type

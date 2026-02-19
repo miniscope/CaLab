@@ -27,7 +27,9 @@ export function DataValidationReport() {
     } else {
       // For integer types, create a basic valid result
       const totalElements = arr.length;
-      let min = Infinity, max = -Infinity, sum = 0;
+      let min = Infinity,
+        max = -Infinity,
+        sum = 0;
       for (let i = 0; i < arr.length; i++) {
         const v = (arr as NumericTypedArray)[i];
         if (v < min) min = v;
@@ -39,7 +41,8 @@ export function DataValidationReport() {
         warnings: [],
         errors: [],
         stats: {
-          min, max,
+          min,
+          max,
           mean: arr.length > 0 ? sum / arr.length : NaN,
           nanCount: 0,
           infCount: 0,
@@ -80,21 +83,26 @@ export function DataValidationReport() {
                 <span class="warning-card__icon">!</span>
                 <div>
                   <p style="margin: 0; font-weight: 500;">{warn.message}</p>
-                  <p class="text-secondary" style="margin: 4px 0 0; font-size: 0.85em;">{warn.details}</p>
+                  <p class="text-secondary" style="margin: 4px 0 0; font-size: 0.85em;">
+                    {warn.details}
+                  </p>
                 </div>
               </div>
             )}
           </For>
           <Show when={result()!.isValid}>
             <p class="text-warning" style="margin-top: 8px;">
-              Data loaded with {result()!.warnings.length} warning{result()!.warnings.length > 1 ? 's' : ''}.
+              Data loaded with {result()!.warnings.length} warning
+              {result()!.warnings.length > 1 ? 's' : ''}.
             </p>
           </Show>
         </Show>
 
         {/* Success */}
         <Show when={result()!.isValid && result()!.warnings.length === 0}>
-          <p class="text-success" style="font-weight: 600;">Data looks good!</p>
+          <p class="text-success" style="font-weight: 600;">
+            Data looks good!
+          </p>
         </Show>
 
         {/* Stats summary */}
@@ -114,7 +122,9 @@ export function DataValidationReport() {
             </div>
             <div class="stat-item">
               <span class="stat-item__label">Mean</span>
-              <span class="stat-item__value">{Number.isFinite(result()!.stats.mean) ? result()!.stats.mean.toFixed(4) : 'N/A'}</span>
+              <span class="stat-item__value">
+                {Number.isFinite(result()!.stats.mean) ? result()!.stats.mean.toFixed(4) : 'N/A'}
+              </span>
             </div>
             <div class="stat-item">
               <span class="stat-item__label">NaN Count</span>

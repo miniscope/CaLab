@@ -24,9 +24,7 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
       await deleteSubmission(props.submission.id);
       props.onDelete();
     } catch (err) {
-      setDeleteError(
-        err instanceof Error ? err.message : 'Delete failed',
-      );
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed');
     } finally {
       setDeleting(false);
     }
@@ -40,12 +38,8 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
       </p>
 
       <div class="submission-summary__params">
-        <span>
-          tau_rise: {(props.submission.tau_rise * 1000).toFixed(1)}ms
-        </span>
-        <span>
-          tau_decay: {(props.submission.tau_decay * 1000).toFixed(1)}ms
-        </span>
+        <span>tau_rise: {(props.submission.tau_rise * 1000).toFixed(1)}ms</span>
+        <span>tau_decay: {(props.submission.tau_decay * 1000).toFixed(1)}ms</span>
         <span>lambda: {props.submission.lambda.toExponential(2)}</span>
       </div>
 
@@ -67,11 +61,7 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
         <button class="btn-primary btn-small" onClick={props.onDismiss}>
           Close
         </button>
-        <button
-          class="btn-secondary btn-small"
-          onClick={handleDelete}
-          disabled={deleting()}
-        >
+        <button class="btn-secondary btn-small" onClick={handleDelete} disabled={deleting()}>
           {deleting() ? 'Deleting...' : 'Delete Submission'}
         </button>
       </div>

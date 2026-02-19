@@ -1,5 +1,11 @@
 import { Show, type Accessor } from 'solid-js';
-import { rawFile, effectiveShape, samplingRate, durationSeconds, resetImport } from '../../lib/data-store.ts';
+import {
+  rawFile,
+  effectiveShape,
+  samplingRate,
+  durationSeconds,
+  resetImport,
+} from '../../lib/data-store.ts';
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { supabaseEnabled } from '../../lib/supabase.ts';
 import { sidebarOpen, setSidebarOpen } from './DashboardShell.tsx';
@@ -30,17 +36,17 @@ export function CompactHeader(props: CompactHeaderProps) {
 
       <div class="compact-header__info">
         <Show when={rawFile()}>
-          {(file) => (
-            <span class="compact-header__file">{file().name}</span>
-          )}
+          {(file) => <span class="compact-header__file">{file().name}</span>}
         </Show>
         <Show when={effectiveShape()}>
-          {(shape) => (<>
-            <span class="compact-header__sep">&middot;</span>
-            <span>{shape()[0]} cells</span>
-            <span class="compact-header__sep">&middot;</span>
-            <span>{shape()[1].toLocaleString()} tp</span>
-          </>)}
+          {(shape) => (
+            <>
+              <span class="compact-header__sep">&middot;</span>
+              <span>{shape()[0]} cells</span>
+              <span class="compact-header__sep">&middot;</span>
+              <span>{shape()[1].toLocaleString()} tp</span>
+            </>
+          )}
         </Show>
         <Show when={samplingRate()}>
           <span class="compact-header__sep">&middot;</span>
@@ -58,7 +64,7 @@ export function CompactHeader(props: CompactHeaderProps) {
         <button
           class={`btn-secondary btn-small${sidebarOpen() ? ' btn-active' : ''}`}
           data-tutorial="sidebar-toggle"
-          onClick={() => setSidebarOpen(prev => !prev)}
+          onClick={() => setSidebarOpen((prev) => !prev)}
         >
           Sidebar
         </button>

@@ -36,10 +36,7 @@ import {
   pinCurrentSnapshot,
   unpinSnapshot,
 } from './lib/viz-store.ts';
-import {
-  computeAndCacheRanking,
-  updateCellSelection,
-} from './lib/multi-cell-store.ts';
+import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
 import { initCellSolveManager } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/supabase.ts';
 import { isTutorialActive } from './lib/tutorial/tutorial-store.ts';
@@ -53,7 +50,11 @@ import './styles/cards.css';
 const BANNER_DISMISSED_KEY = 'catune-tutorial-dismissed';
 
 function loadBannerDismissedState(): boolean {
-  try { return localStorage.getItem(BANNER_DISMISSED_KEY) === 'true'; } catch { return false; }
+  try {
+    return localStorage.getItem(BANNER_DISMISSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
 }
 
 /** Supabase magic-link redirects append auth tokens to the URL hash. */
@@ -79,7 +80,11 @@ const App: Component = () => {
 
   const dismissBanner = () => {
     setBannerDismissed(true);
-    try { localStorage.setItem(BANNER_DISMISSED_KEY, 'true'); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(BANNER_DISMISSED_KEY, 'true');
+    } catch {
+      /* ignore */
+    }
   };
 
   const launchBasicsTutorial = () => {
@@ -116,94 +121,95 @@ const App: Component = () => {
 
   return (
     <>
-    {/* Tutorial panel -- shown when toggled */}
-    <Show when={tutorialOpen()}>
-      <TutorialPanel onClose={() => setTutorialOpen(false)} />
-    </Show>
+      {/* Tutorial panel -- shown when toggled */}
+      <Show when={tutorialOpen()}>
+        <TutorialPanel onClose={() => setTutorialOpen(false)} />
+      </Show>
 
-    {/* First-time banner */}
-    <Show when={showBanner()}>
-      <div class="tutorial-banner">
-        <span class="tutorial-banner__text">
-          New to CaTune? Start with the basics tutorial to learn the parameter tuning workflow.
-        </span>
-        <div class="tutorial-banner__actions">
-          <button class="btn-secondary btn-small" onClick={launchBasicsTutorial}>
-            Start Tutorial
-          </button>
-          <button class="tutorial-banner__dismiss" onClick={dismissBanner} aria-label="Dismiss">
-            &times;
-          </button>
+      {/* First-time banner */}
+      <Show when={showBanner()}>
+        <div class="tutorial-banner">
+          <span class="tutorial-banner__text">
+            New to CaTune? Start with the basics tutorial to learn the parameter tuning workflow.
+          </span>
+          <div class="tutorial-banner__actions">
+            <button class="btn-secondary btn-small" onClick={launchBasicsTutorial}>
+              Start Tutorial
+            </button>
+            <button class="tutorial-banner__dismiss" onClick={dismissBanner} aria-label="Dismiss">
+              &times;
+            </button>
+          </div>
         </div>
-      </div>
-    </Show>
+      </Show>
 
-    {/* Import flow (full-page) OR Dashboard */}
-    <Show
-      when={importStep() === 'ready'}
-      fallback={
-        <ImportOverlay
-          hasFile={hasFile()}
-          onReset={resetImport}
-          onLoadDemo={(opts) => loadDemoData(opts)}
-        />
-      }
-    >
-      <DashboardShell
-        header={
-          <CompactHeader
-            tutorialOpen={tutorialOpen}
-            onTutorialToggle={() => setTutorialOpen(prev => !prev)}
-          />
-        }
-        sidebar={
-          <SidebarTabs
-            communityContent={supabaseEnabled ? <CommunityBrowser /> : undefined}
-            spectrumContent={<SpectrumPanel />}
-            metricsContent={<MetricsPanel />}
+      {/* Import flow (full-page) OR Dashboard */}
+      <Show
+        when={importStep() === 'ready'}
+        fallback={
+          <ImportOverlay
+            hasFile={hasFile()}
+            onReset={resetImport}
+            onLoadDemo={(opts) => loadDemoData(opts)}
           />
         }
       >
-        <VizLayout mode="dashboard">
-          {/* Left strip: Parameters + Kernel */}
-          <div class="param-strip">
-            <DashboardPanel id="parameters" variant="controls">
-              <ParameterPanel />
-            </DashboardPanel>
+        <DashboardShell
+          header={
+            <CompactHeader
+              tutorialOpen={tutorialOpen}
+              onTutorialToggle={() => setTutorialOpen((prev) => !prev)}
+            />
+          }
+          sidebar={
+            <SidebarTabs
+              communityContent={supabaseEnabled ? <CommunityBrowser /> : undefined}
+              spectrumContent={<SpectrumPanel />}
+              metricsContent={<MetricsPanel />}
+            />
+          }
+        >
+          <VizLayout mode="dashboard">
+            {/* Left strip: Parameters + Kernel */}
+            <div class="param-strip">
+              <DashboardPanel id="parameters" variant="controls">
+                <ParameterPanel />
+              </DashboardPanel>
 
-            <DashboardPanel id="kernel" variant="data">
-              <KernelDisplay />
-            </DashboardPanel>
+              <DashboardPanel id="kernel" variant="data">
+                <KernelDisplay />
+              </DashboardPanel>
 
-            <DashboardPanel id="toolbar" variant="controls">
-              <div class="param-strip__toolbar">
-                <button
-                  class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
-                  onClick={() => pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot()}
-                  data-tutorial="pin-snapshot"
-                >
-                  {pinnedParams() ? 'Unpin' : 'Pin'}
-                </button>
-                <Show when={pinnedParams()}>
-                  {(params) => (
-                    <span class="param-strip__pin-info">
-                      {(params().tauRise * 1000).toFixed(0)}ms / {(params().tauDecay * 1000).toFixed(0)}ms
-                    </span>
-                  )}
-                </Show>
-                <SubmitPanel />
-              </div>
-            </DashboardPanel>
-          </div>
+              <DashboardPanel id="toolbar" variant="controls">
+                <div class="param-strip__toolbar">
+                  <button
+                    class={`btn-secondary btn-small ${pinnedParams() ? 'btn-active' : ''}`}
+                    onClick={() => (pinnedParams() ? unpinSnapshot() : pinCurrentSnapshot())}
+                    data-tutorial="pin-snapshot"
+                  >
+                    {pinnedParams() ? 'Unpin' : 'Pin'}
+                  </button>
+                  <Show when={pinnedParams()}>
+                    {(params) => (
+                      <span class="param-strip__pin-info">
+                        {(params().tauRise * 1000).toFixed(0)}ms /{' '}
+                        {(params().tauDecay * 1000).toFixed(0)}ms
+                      </span>
+                    )}
+                  </Show>
+                  <SubmitPanel />
+                </div>
+              </DashboardPanel>
+            </div>
 
-          {/* Center: Cell selector bar + Card Grid */}
-          <div class="main-content-area">
-            <CellSelector />
-            <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
-          </div>
-        </VizLayout>
-      </DashboardShell>
-    </Show>
+            {/* Center: Cell selector bar + Card Grid */}
+            <div class="main-content-area">
+              <CellSelector />
+              <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
+            </div>
+          </VizLayout>
+        </DashboardShell>
+      </Show>
     </>
   );
 };

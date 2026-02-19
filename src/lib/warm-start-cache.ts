@@ -90,12 +90,18 @@ export function shouldWarmStart(
   }
 
   // Tau changed -- check if within 20% relative threshold
-  const tauRiseChange = oldParams.tauRise > 0
-    ? Math.abs(newParams.tauRise - oldParams.tauRise) / oldParams.tauRise
-    : (newParams.tauRise === 0 ? 0 : 1);
-  const tauDecayChange = oldParams.tauDecay > 0
-    ? Math.abs(newParams.tauDecay - oldParams.tauDecay) / oldParams.tauDecay
-    : (newParams.tauDecay === 0 ? 0 : 1);
+  const tauRiseChange =
+    oldParams.tauRise > 0
+      ? Math.abs(newParams.tauRise - oldParams.tauRise) / oldParams.tauRise
+      : newParams.tauRise === 0
+        ? 0
+        : 1;
+  const tauDecayChange =
+    oldParams.tauDecay > 0
+      ? Math.abs(newParams.tauDecay - oldParams.tauDecay) / oldParams.tauDecay
+      : newParams.tauDecay === 0
+        ? 0
+        : 1;
 
   if (tauRiseChange < TAU_CHANGE_THRESHOLD && tauDecayChange < TAU_CHANGE_THRESHOLD) {
     return 'warm-no-momentum';

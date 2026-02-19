@@ -62,8 +62,8 @@ export const DEMO_PRESETS: DemoPreset[] = [
     label: 'Demo Config 1',
     description: 'Default configuration',
     params: {
-      tauRise: 0.10,
-      tauDecay: 0.60,
+      tauRise: 0.1,
+      tauDecay: 0.6,
       snrBase: 20,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
@@ -76,8 +76,8 @@ export const DEMO_PRESETS: DemoPreset[] = [
     label: 'Demo Config 2',
     description: 'Configuration 2',
     params: {
-      tauRise: 0.40,
-      tauDecay: 1.80,
+      tauRise: 0.4,
+      tauDecay: 1.8,
       snrBase: 25,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
@@ -91,7 +91,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
     description: 'Configuration 3',
     params: {
       tauRise: 0.15,
-      tauDecay: 0.90,
+      tauDecay: 0.9,
       snrBase: 22,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
@@ -105,7 +105,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
     description: 'Configuration 4',
     params: {
       tauRise: 0.03,
-      tauDecay: 0.30,
+      tauDecay: 0.3,
       snrBase: 18,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
@@ -119,7 +119,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
     description: 'Configuration 5',
     params: {
       tauRise: 0.05,
-      tauDecay: 1.50,
+      tauDecay: 1.5,
       snrBase: 15,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
@@ -133,7 +133,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
     description: 'Legacy configuration',
     params: {
       tauRise: 0.02,
-      tauDecay: 0.40,
+      tauDecay: 0.4,
       snrBase: 20,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },

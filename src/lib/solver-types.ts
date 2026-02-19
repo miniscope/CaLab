@@ -14,11 +14,11 @@ export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error';
 
 /** Solver parameter configuration for calcium deconvolution. */
 export interface SolverParams {
-  tauRise: number;   // seconds (e.g., 0.02)
-  tauDecay: number;  // seconds (e.g., 0.4)
-  lambda: number;    // sparsity penalty (e.g., 0.01)
-  fs: number;        // sampling rate in Hz (e.g., 30)
-  filterEnabled: boolean;  // bandpass filter derived from kernel
+  tauRise: number; // seconds (e.g., 0.02)
+  tauDecay: number; // seconds (e.g., 0.4)
+  lambda: number; // sparsity penalty (e.g., 0.01)
+  fs: number; // sampling rate in Hz (e.g., 30)
+  filterEnabled: boolean; // bandpass filter derived from kernel
 }
 
 /** Intermediate result emitted during solver iteration for live visualization. */
@@ -32,7 +32,7 @@ export interface IntermediateResult {
 export interface SolveResult {
   solution: Float32Array;
   reconvolution: Float32Array;
-  state: Uint8Array;          // serialized warm-start state
+  state: Uint8Array; // serialized warm-start state
   iterations: number;
   converged: boolean;
 }
