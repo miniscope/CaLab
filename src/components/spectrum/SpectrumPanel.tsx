@@ -54,7 +54,7 @@ function filterBandPlugin(
           ctx.save();
 
           // Shaded passband rectangle — full plot height
-          ctx.fillStyle = withOpacity(theme.accent, 0.10);
+          ctx.fillStyle = withOpacity(theme.accent, 0.1);
           ctx.fillRect(left, top, right - left, height);
 
           // Cutoff lines — dashed, full height
@@ -87,7 +87,10 @@ function filterBandPlugin(
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
 
-          for (const [x, label] of [[left, 'HP'], [right, 'LP']] as const) {
+          for (const [x, label] of [
+            [left, 'HP'],
+            [right, 'LP'],
+          ] as const) {
             const textW = ctx.measureText(label).width;
             const pad = 5 * dpr;
             const pillW = textW + pad * 2;
@@ -206,8 +209,7 @@ export function SpectrumPanel() {
             ticks: { stroke: theme.borderDefault },
             size: 50,
             space: 40,
-            values: (_u: uPlot, vals: number[]) =>
-              vals.map((v) => v.toFixed(0)),
+            values: (_u: uPlot, vals: number[]) => vals.map((v) => v.toFixed(0)),
           },
         ],
         legend: { show: false },
@@ -286,8 +288,8 @@ export function SpectrumPanel() {
             <div ref={setContainer} class="spectrum-panel__chart" />
             <div class="spectrum-panel__info">
               <p class="spectrum-panel__desc">
-                Power spectral density averaged across all loaded cells (gray) and
-                for the selected cell (blue).
+                Power spectral density averaged across all loaded cells (gray) and for the selected
+                cell (blue).
                 {filterEnabled()
                   ? ' Dashed lines mark the kernel-derived bandpass cutoffs.'
                   : ' Enable Noise Filter to see bandpass cutoffs.'}

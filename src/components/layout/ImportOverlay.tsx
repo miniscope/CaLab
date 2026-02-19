@@ -16,17 +16,21 @@ import {
 } from '../../lib/data-store.ts';
 import { formatDuration } from '../../lib/format-utils.ts';
 import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets.ts';
-import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '../../lib/community/github-issue-url.ts';
+import {
+  buildFeedbackUrl,
+  buildFeatureRequestUrl,
+  buildBugReportUrl,
+} from '../../lib/community/github-issue-url.ts';
 import { getTutorialById } from '../../lib/tutorial/content/index.ts';
 import { startTutorial } from '../../lib/tutorial/tutorial-engine.ts';
 import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
-  'drop':          { num: 1, label: 'Load Data' },
-  'confirm-dims':  { num: 2, label: 'Confirm Dimensions' },
+  drop: { num: 1, label: 'Load Data' },
+  'confirm-dims': { num: 2, label: 'Confirm Dimensions' },
   'sampling-rate': { num: 3, label: 'Set Sampling Rate' },
-  'validation':    { num: 4, label: 'Validate Data' },
-  'ready':         { num: 4, label: 'Ready' },
+  validation: { num: 4, label: 'Validate Data' },
+  ready: { num: 4, label: 'Ready' },
 };
 
 const TOTAL_STEPS = 4;
@@ -59,17 +63,20 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
     <main class="import-container">
       {/* Header */}
       <header class="app-header" data-tutorial="app-header">
-        <h1 class="app-header__title">CaTune <span class="app-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span></h1>
-        <p class="app-header__subtitle">
-          Calcium Deconvolution Parameter Tuning
-        </p>
+        <h1 class="app-header__title">
+          CaTune{' '}
+          <span class="app-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span>
+        </h1>
+        <p class="app-header__subtitle">Calcium Deconvolution Parameter Tuning</p>
       </header>
 
       {/* Step indicator */}
       <div class="step-indicator">
         <div class="step-indicator__bar">
           {[1, 2, 3, 4].map((n) => (
-            <div class={`step-dot ${n <= stepInfo().num ? 'step-dot--active' : ''} ${n === stepInfo().num ? 'step-dot--current' : ''}`}>
+            <div
+              class={`step-dot ${n <= stepInfo().num ? 'step-dot--active' : ''} ${n === stepInfo().num ? 'step-dot--current' : ''}`}
+            >
               {n}
             </div>
           ))}
@@ -157,13 +164,15 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           </label>
           <button
             class="btn-secondary"
-            onClick={() => props.onLoadDemo({
-              numCells: demoCells(),
-              durationMinutes: demoDuration(),
-              fps: demoFps(),
-              presetId: demoPresetId(),
-              seed: randomSeed() ? 'random' : undefined,
-            })}
+            onClick={() =>
+              props.onLoadDemo({
+                numCells: demoCells(),
+                durationMinutes: demoDuration(),
+                fps: demoFps(),
+                presetId: demoPresetId(),
+                seed: randomSeed() ? 'random' : undefined,
+              })
+            }
           >
             Load Demo Data
           </button>
@@ -226,18 +235,22 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       <Show when={importStep() === 'ready'}>
         <div class="info-summary">
           <Show when={rawFile()}>
-            {(file) => (<>
-              <span>{file().name}</span>
-              <span class="info-summary__sep">&middot;</span>
-            </>)}
+            {(file) => (
+              <>
+                <span>{file().name}</span>
+                <span class="info-summary__sep">&middot;</span>
+              </>
+            )}
           </Show>
           <Show when={effectiveShape()}>
-            {(shape) => (<>
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-              <span class="info-summary__sep">&middot;</span>
-            </>)}
+            {(shape) => (
+              <>
+                <span>{shape()[0].toLocaleString()} cells</span>
+                <span class="info-summary__sep">&middot;</span>
+                <span>{shape()[1].toLocaleString()} timepoints</span>
+                <span class="info-summary__sep">&middot;</span>
+              </>
+            )}
           </Show>
           <span>{samplingRate()} Hz</span>
           <Show when={durationDisplay()}>
@@ -264,11 +277,17 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
 
       {/* Feedback links */}
       <footer class="import-feedback">
-        <a href={buildFeedbackUrl()} target="_blank" rel="noopener noreferrer">Feedback</a>
+        <a href={buildFeedbackUrl()} target="_blank" rel="noopener noreferrer">
+          Feedback
+        </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildFeatureRequestUrl()} target="_blank" rel="noopener noreferrer">Feature Request</a>
+        <a href={buildFeatureRequestUrl()} target="_blank" rel="noopener noreferrer">
+          Feature Request
+        </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildBugReportUrl()} target="_blank" rel="noopener noreferrer">Bug Report</a>
+        <a href={buildBugReportUrl()} target="_blank" rel="noopener noreferrer">
+          Bug Report
+        </a>
       </footer>
     </main>
   );

@@ -10,14 +10,9 @@ export default defineConfig({
     },
   },
   base: process.env.GITHUB_ACTIONS ? '/CaTune/' : '/',
-  plugins: [
-    solidPlugin(),
-    wasm(),
-  ],
+  plugins: [solidPlugin(), wasm()],
   worker: {
-    plugins: () => [
-      wasm(),
-    ],
+    plugins: () => [wasm()],
     format: 'es',
   },
   build: {

@@ -43,7 +43,8 @@ export function DimensionConfirmation() {
           <div class="warning-card">
             <span class="warning-card__icon">!</span>
             <span>
-              This array has more rows than columns. If your data has more cells than timepoints, this is correct.
+              This array has more rows than columns. If your data has more cells than timepoints,
+              this is correct.
             </span>
           </div>
         </Show>

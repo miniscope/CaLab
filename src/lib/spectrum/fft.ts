@@ -54,18 +54,23 @@ function fft(data: Float64Array, n: number): void {
     j ^= bit;
     if (i < j) {
       // Swap complex elements
-      let t = data[i * 2]; data[i * 2] = data[j * 2]; data[j * 2] = t;
-      t = data[i * 2 + 1]; data[i * 2 + 1] = data[j * 2 + 1]; data[j * 2 + 1] = t;
+      let t = data[i * 2];
+      data[i * 2] = data[j * 2];
+      data[j * 2] = t;
+      t = data[i * 2 + 1];
+      data[i * 2 + 1] = data[j * 2 + 1];
+      data[j * 2 + 1] = t;
     }
   }
 
   // Butterfly stages
   for (let len = 2; len <= n; len <<= 1) {
-    const ang = -2 * Math.PI / len;
+    const ang = (-2 * Math.PI) / len;
     const wRe = Math.cos(ang);
     const wIm = Math.sin(ang);
     for (let i = 0; i < n; i += len) {
-      let curRe = 1, curIm = 0;
+      let curRe = 1,
+        curIm = 0;
       for (let j = 0; j < len / 2; j++) {
         const uIdx = (i + j) * 2;
         const vIdx = (i + j + len / 2) * 2;

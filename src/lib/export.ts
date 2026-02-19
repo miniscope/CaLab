@@ -8,8 +8,10 @@
  * - Metadata for forward compatibility with Phase 7 (community DB)
  */
 
+import * as v from 'valibot';
 import { computeAR2 } from './ar2.ts';
 import type { AR2Coefficients } from './ar2.ts';
+import { CaTuneExportSchema } from './schemas/export-schema.ts';
 
 export interface CaTuneExport {
   schema_version: string;
@@ -66,16 +68,12 @@ export function buildExportData(
     ar2_coefficients: ar2,
     formulation: {
       model: 'FISTA with adaptive restart and non-negativity constraint',
-      objective:
-        'min_{s>=0} (1/2)||y - K*s||_2^2 + lambda*||s||_1',
-      kernel:
-        'h(t) = exp(-t/tau_decay) - exp(-t/tau_rise), normalized to unit peak',
+      objective: 'min_{s>=0} (1/2)||y - K*s||_2^2 + lambda*||s||_1',
+      kernel: 'h(t) = exp(-t/tau_decay) - exp(-t/tau_rise), normalized to unit peak',
       ar2_relation:
         'c[t] = g1*c[t-1] + g2*c[t-2] + s[t], where g1 = decayRoot+riseRoot, g2 = -(decayRoot*riseRoot), decayRoot = exp(-dt/tau_decay), riseRoot = exp(-dt/tau_rise)',
-      lambda_definition:
-        'L1 penalty weight on spike train s in the FISTA objective function',
-      convergence:
-        'Relative objective change < 1e-6 or max 2000 iterations',
+      lambda_definition: 'L1 penalty weight on spike train s in the FISTA objective function',
+      convergence: 'Relative objective change < 1e-6 or max 2000 iterations',
     },
     metadata: {
       source_filename: metadata?.sourceFilename,
@@ -85,10 +83,7 @@ export function buildExportData(
   };
 }
 
-export function downloadExport(
-  exportData: CaTuneExport,
-  filename?: string,
-): void {
+export function downloadExport(exportData: CaTuneExport, filename?: string): void {
   const defaultFilename = `catune-params-${new Date().toISOString().slice(0, 10)}.json`;
   const fname = filename ?? defaultFilename;
 
@@ -107,4 +102,18 @@ export function downloadExport(
 
   // Prevent memory leak
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Validate and parse a JSON object as a CaTune export.
+ * Use this when importing a previously exported JSON file to catch
+ * malformed or incompatible data at the system boundary.
+ */
+export function parseExport(data: unknown): CaTuneExport {
+  const result = v.safeParse(CaTuneExportSchema, data);
+  if (!result.success) {
+    const issues = result.issues.map((i) => i.message).join('; ');
+    throw new Error(`Invalid CaTune export: ${issues}`);
+  }
+  return result.output as CaTuneExport;
 }

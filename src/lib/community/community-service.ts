@@ -17,13 +17,13 @@ const TABLE = 'community_submissions';
  * Insert a new community submission and return the created row.
  * Adds user_id from the current auth session (required by RLS policy).
  */
-export async function submitParameters(
-  payload: SubmissionPayload,
-): Promise<CommunitySubmission> {
+export async function submitParameters(payload: SubmissionPayload): Promise<CommunitySubmission> {
   const client = await getSupabase();
   if (!client) throw new Error('Community features not configured');
 
-  const { data: { user } } = await client.auth.getUser();
+  const {
+    data: { user },
+  } = await client.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
   const { data, error } = await client
@@ -40,9 +40,7 @@ export async function submitParameters(
  * Fetch community submissions, optionally filtered by indicator, species,
  * and/or brain region. Returns an empty array if no matches.
  */
-export async function fetchSubmissions(
-  filters?: FilterState,
-): Promise<CommunitySubmission[]> {
+export async function fetchSubmissions(filters?: FilterState): Promise<CommunitySubmission[]> {
   const client = await getSupabase();
   if (!client) throw new Error('Community features not configured');
 
@@ -89,11 +87,21 @@ export async function fetchFieldOptions(): Promise<FieldOptions> {
 
   for (const row of rows) {
     switch (row.field_name) {
-      case 'indicator': indicators.push(row.value); break;
-      case 'species': species.push(row.value); break;
-      case 'brain_region': brainRegions.push(row.value); break;
-      case 'microscope_type': microscopeTypes.push(row.value); break;
-      case 'cell_type': cellTypes.push(row.value); break;
+      case 'indicator':
+        indicators.push(row.value);
+        break;
+      case 'species':
+        species.push(row.value);
+        break;
+      case 'brain_region':
+        brainRegions.push(row.value);
+        break;
+      case 'microscope_type':
+        microscopeTypes.push(row.value);
+        break;
+      case 'cell_type':
+        cellTypes.push(row.value);
+        break;
     }
   }
 

@@ -11,14 +11,30 @@
 }
 
 /* Staggered entrance for sequential panels */
-.dashboard-panel:nth-child(1) { animation-delay: 0s; }
-.dashboard-panel:nth-child(2) { animation-delay: 0.05s; }
-.dashboard-panel:nth-child(3) { animation-delay: 0.10s; }
-.dashboard-panel:nth-child(4) { animation-delay: 0.15s; }
-.dashboard-panel:nth-child(5) { animation-delay: 0.20s; }
-.dashboard-panel:nth-child(6) { animation-delay: 0.25s; }
-.dashboard-panel:nth-child(7) { animation-delay: 0.30s; }
-.dashboard-panel:nth-child(8) { animation-delay: 0.35s; }
+.dashboard-panel:nth-child(1) {
+  animation-delay: 0s;
+}
+.dashboard-panel:nth-child(2) {
+  animation-delay: 0.05s;
+}
+.dashboard-panel:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.dashboard-panel:nth-child(4) {
+  animation-delay: 0.15s;
+}
+.dashboard-panel:nth-child(5) {
+  animation-delay: 0.2s;
+}
+.dashboard-panel:nth-child(6) {
+  animation-delay: 0.25s;
+}
+.dashboard-panel:nth-child(7) {
+  animation-delay: 0.3s;
+}
+.dashboard-panel:nth-child(8) {
+  animation-delay: 0.35s;
+}
 
 /* Variant: controls — light grey bg */
 .dashboard-panel--controls {
@@ -71,8 +87,8 @@
   grid-template-columns: 1fr 0;
   grid-template-rows: auto 1fr;
   grid-template-areas:
-    "header  header"
-    "main    sidebar";
+    'header  header'
+    'main    sidebar';
   overflow: hidden;
   transition: grid-template-columns var(--transition-slow);
 }
@@ -204,7 +220,9 @@
   font-weight: var(--font-weight-medium);
   padding: var(--space-sm) var(--space-md);
   cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .sidebar-tabs__tab:hover {
@@ -348,8 +366,13 @@
 
 /* Note: similar to convergence-pulse in global.css, but opacity-only (no scale) */
 @keyframes badge-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 /* ========================

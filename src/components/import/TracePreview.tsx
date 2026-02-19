@@ -2,21 +2,11 @@
 // Minimal preview: no zoom/pan. Full plotting comes in Phase 3.
 
 import { onMount, onCleanup, createEffect } from 'solid-js';
-import {
-  parsedData,
-  effectiveShape,
-  swapped,
-} from '../../lib/data-store.ts';
+import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
 import type { NumericTypedArray } from '../../lib/types.ts';
 
 const NUM_TRACES = 5;
-const TRACE_COLORS = [
-  '#1f77b4',
-  '#ff7f0e',
-  '#2ca02c',
-  '#d62728',
-  '#9467bd',
-];
+const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];
 
 export function TracePreview() {
   let canvasRef: HTMLCanvasElement | undefined;

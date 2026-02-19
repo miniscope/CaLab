@@ -96,9 +96,7 @@ export function TraceOverview(props: TraceOverviewProps) {
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
       const rowY = r * ROW_HEIGHT;
-      const rowDuration = r < rows.length - 1
-        ? ROW_DURATION_S
-        : duration - r * ROW_DURATION_S;
+      const rowDuration = r < rows.length - 1 ? ROW_DURATION_S : duration - r * ROW_DURATION_S;
 
       // Draw zoom window highlight for this row
       const zoomStart = props.zoomStart;
@@ -135,9 +133,12 @@ export function TraceOverview(props: TraceOverviewProps) {
   }
 
   createEffect(() => {
-    // Track reactive dependencies
+    // Track reactive dependencies (SolidJS signal access pattern)
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     props.trace;
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     props.zoomStart;
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     props.zoomEnd;
     draw();
   });
@@ -170,9 +171,8 @@ export function TraceOverview(props: TraceOverviewProps) {
 
     const row = rows[rowIndex];
     const duration = totalDuration();
-    const rowDuration = rowIndex < rows.length - 1
-      ? ROW_DURATION_S
-      : duration - rowIndex * ROW_DURATION_S;
+    const rowDuration =
+      rowIndex < rows.length - 1 ? ROW_DURATION_S : duration - rowIndex * ROW_DURATION_S;
 
     const tFraction = Math.max(0, Math.min(1, x / width));
     return row.timeOffset + tFraction * rowDuration;
@@ -184,8 +184,14 @@ export function TraceOverview(props: TraceOverviewProps) {
     let newStart = centerTime - windowDuration / 2;
     let newEnd = newStart + windowDuration;
 
-    if (newStart < 0) { newStart = 0; newEnd = windowDuration; }
-    if (newEnd > duration) { newEnd = duration; newStart = Math.max(0, duration - windowDuration); }
+    if (newStart < 0) {
+      newStart = 0;
+      newEnd = windowDuration;
+    }
+    if (newEnd > duration) {
+      newEnd = duration;
+      newStart = Math.max(0, duration - windowDuration);
+    }
 
     props.onZoomChange(newStart, newEnd);
   };

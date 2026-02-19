@@ -63,7 +63,9 @@
   font-size: 0.9rem;
   font-family: var(--font-body);
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .auth-gate__btn:hover {
@@ -264,7 +266,9 @@
   font-size: 0.9rem;
   font-family: var(--font-body);
   outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .submit-panel__field input:focus,
@@ -431,7 +435,9 @@
   padding: var(--space-xs) var(--space-md);
   font-size: 0.85rem;
   cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .community-browser__compare-btn:hover {
@@ -469,7 +475,9 @@
   padding: var(--space-xs) var(--space-md);
   font-size: 0.8rem;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .community-browser__source-btn:not(:last-child) {
@@ -621,7 +629,9 @@
   font-size: 0.9rem;
   font-family: var(--font-body);
   outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .searchable-select__input:focus {

@@ -6,9 +6,7 @@
  * Compute a SHA-256 hex digest of a Float64Array.
  * Used to detect duplicate submissions from the same recording.
  */
-export async function computeDatasetHash(
-  data: Float64Array,
-): Promise<string> {
+export async function computeDatasetHash(data: Float64Array): Promise<string> {
   // Copy into a plain ArrayBuffer to satisfy the strict BufferSource type.
   // Float64Array.buffer may be ArrayBufferLike (includes SharedArrayBuffer),
   // but crypto.subtle.digest requires a narrow ArrayBuffer | ArrayBufferView<ArrayBuffer>.

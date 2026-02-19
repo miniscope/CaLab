@@ -52,9 +52,7 @@ export async function submitToSupabase(
   let datasetHash = 'no-data';
   if (ctx.datasetData) {
     const floatData =
-      ctx.datasetData instanceof Float64Array
-        ? ctx.datasetData
-        : new Float64Array(ctx.datasetData);
+      ctx.datasetData instanceof Float64Array ? ctx.datasetData : new Float64Array(ctx.datasetData);
     datasetHash = await computeDatasetHash(floatData);
   }
 
@@ -95,10 +93,7 @@ export async function submitToSupabase(
     filter_enabled: ctx.filterEnabled,
     data_source: ctx.rawFileName ? 'user' : 'demo',
     catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
-    extra_metadata:
-      ctx.isDemo && ctx.demoPresetId
-        ? { demo_preset: ctx.demoPresetId }
-        : undefined,
+    extra_metadata: ctx.isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
   };
 
   return submitParameters(payload);

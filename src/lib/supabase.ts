@@ -12,9 +12,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn(
-    'Supabase credentials not configured. Community features will be disabled.',
-  );
+  console.warn('Supabase credentials not configured. Community features will be disabled.');
 }
 
 export const supabaseEnabled: boolean = !!(supabaseUrl && supabaseAnonKey);

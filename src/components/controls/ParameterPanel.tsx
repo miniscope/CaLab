@@ -3,9 +3,14 @@
 // Lambda and solver status signals live in viz-store (centralized).
 
 import {
-  tauRise, tauDecay, setTauRise, setTauDecay,
-  lambda, setLambda,
-  filterEnabled, setFilterEnabled,
+  tauRise,
+  tauDecay,
+  setTauRise,
+  setTauDecay,
+  lambda,
+  setLambda,
+  filterEnabled,
+  setFilterEnabled,
 } from '../../lib/viz-store.ts';
 import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine.ts';
 import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';

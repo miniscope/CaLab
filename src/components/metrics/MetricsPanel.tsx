@@ -10,7 +10,11 @@
 import { createMemo, For, Show } from 'solid-js';
 import { multiCellResults, cellSolverStatuses } from '../../lib/multi-cell-store.ts';
 import { computePeakSNR, snrToQuality } from '../../lib/metrics/snr.ts';
-import { computeSparsityRatio, computeResidualRMS, computeRSquared } from '../../lib/metrics/solver-metrics.ts';
+import {
+  computeSparsityRatio,
+  computeResidualRMS,
+  computeRSquared,
+} from '../../lib/metrics/solver-metrics.ts';
 import { activeSidebarTab } from '../layout/SidebarTabs.tsx';
 
 interface CellMetrics {
@@ -26,7 +30,14 @@ interface CellMetrics {
 // Updated incrementally: only recomputed when a cell's status becomes 'fresh'.
 const metricsCache = new Map<number, CellMetrics>();
 
-function computeMetricsForCell(cellIndex: number, traces: { raw: Float64Array; deconvolved: Float32Array | Float64Array; reconvolution: Float32Array | Float64Array }): CellMetrics {
+function computeMetricsForCell(
+  cellIndex: number,
+  traces: {
+    raw: Float64Array;
+    deconvolved: Float32Array | Float64Array;
+    reconvolution: Float32Array | Float64Array;
+  },
+): CellMetrics {
   const snr = computePeakSNR(traces.raw);
   return {
     cellIndex,
@@ -98,9 +109,7 @@ export function MetricsPanel() {
       <Show
         when={cellMetrics().length > 0}
         fallback={
-          <div class="metrics-panel__empty">
-            No cell results yet. Solve cells to see metrics.
-          </div>
+          <div class="metrics-panel__empty">No cell results yet. Solve cells to see metrics.</div>
         }
       >
         {/* Aggregate stats */}

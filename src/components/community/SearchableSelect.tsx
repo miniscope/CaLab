@@ -137,16 +137,10 @@ export function SearchableSelect(props: SearchableSelectProps) {
       </Show>
 
       <Show when={open() && !props.value}>
-        <ul
-          ref={listRef}
-          class="searchable-select__dropdown"
-          role="listbox"
-        >
+        <ul ref={listRef} class="searchable-select__dropdown" role="listbox">
           <Show
             when={filtered().length > 0}
-            fallback={
-              <li class="searchable-select__no-results">No matches</li>
-            }
+            fallback={<li class="searchable-select__no-results">No matches</li>}
           >
             <For each={filtered()}>
               {(option, i) => (

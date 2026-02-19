@@ -15,7 +15,14 @@ export interface PoolJob {
   getPriority?: () => number;
   maxIterations?: number;
   onIntermediate(solution: Float32Array, reconvolution: Float32Array, iteration: number): void;
-  onComplete(solution: Float32Array, reconvolution: Float32Array, state: Uint8Array, iterations: number, converged: boolean, filteredTrace?: Float32Array): void;
+  onComplete(
+    solution: Float32Array,
+    reconvolution: Float32Array,
+    state: Uint8Array,
+    iterations: number,
+    converged: boolean,
+    filteredTrace?: Float32Array,
+  ): void;
   onCancelled(): void;
   onError(message: string): void;
 }
@@ -44,10 +51,9 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
 
   // Create workers
   for (let i = 0; i < size; i++) {
-    const worker = new Worker(
-      new URL('../workers/pool-worker.ts', import.meta.url),
-      { type: 'module' },
-    );
+    const worker = new Worker(new URL('../workers/pool-worker.ts', import.meta.url), {
+      type: 'module',
+    });
 
     const entry: PoolEntry = { worker, state: { status: 'init' } };
     entries.push(entry);
@@ -78,7 +84,14 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
       inFlightJobs.delete(msg.jobId);
       entry.state = { status: 'idle' };
       if (job) {
-        job.onComplete(msg.solution, msg.reconvolution, msg.state, msg.iterations, msg.converged, msg.filteredTrace);
+        job.onComplete(
+          msg.solution,
+          msg.reconvolution,
+          msg.state,
+          msg.iterations,
+          msg.converged,
+          msg.filteredTrace,
+        );
       }
       drainQueue();
       return;
@@ -108,7 +121,7 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
   }
 
   function findIdleWorker(): PoolEntry | undefined {
-    return entries.find(e => e.state.status === 'idle');
+    return entries.find((e) => e.state.status === 'idle');
   }
 
   function dispatchToWorker(entry: PoolEntry, job: PoolJob): void {
@@ -159,7 +172,7 @@ export function createWorkerPool(poolSize?: number): WorkerPool {
 
   function cancel(jobId: number): void {
     // Check queue first — if queued, just remove and call onCancelled
-    const qIdx = queue.findIndex(j => j.jobId === jobId);
+    const qIdx = queue.findIndex((j) => j.jobId === jobId);
     if (qIdx !== -1) {
       const [job] = queue.splice(qIdx, 1);
       job.onCancelled();

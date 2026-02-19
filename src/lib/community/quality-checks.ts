@@ -22,9 +22,7 @@ interface ValidationParams {
  * Validate parameters against hard limits.
  * Returns valid=false with human-readable issues if any check fails.
  */
-export function validateSubmission(
-  params: ValidationParams,
-): ValidationResult {
+export function validateSubmission(params: ValidationParams): ValidationResult {
   const issues: string[] = [];
 
   // tau_rise range check
@@ -49,7 +47,10 @@ export function validateSubmission(
   }
 
   // sampling_rate range check
-  if (params.samplingRate < HARD_LIMITS.samplingRate.min || params.samplingRate > HARD_LIMITS.samplingRate.max) {
+  if (
+    params.samplingRate < HARD_LIMITS.samplingRate.min ||
+    params.samplingRate > HARD_LIMITS.samplingRate.max
+  ) {
     issues.push(
       `sampling_rate (${params.samplingRate} Hz) is outside the valid range [${HARD_LIMITS.samplingRate.min}, ${HARD_LIMITS.samplingRate.max}] Hz`,
     );
@@ -57,9 +58,7 @@ export function validateSubmission(
 
   // tau_rise must be less than tau_decay
   if (params.tauRise >= params.tauDecay) {
-    issues.push(
-      `tau_rise (${params.tauRise}s) must be less than tau_decay (${params.tauDecay}s)`,
-    );
+    issues.push(`tau_rise (${params.tauRise}s) must be less than tau_decay (${params.tauDecay}s)`);
   }
 
   return {

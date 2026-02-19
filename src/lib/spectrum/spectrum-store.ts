@@ -81,7 +81,10 @@ function computeSpectrum(): void {
   // Resolve raw trace for the target cell
   const cellTraces = results[cellIdx];
   const target = cellTraces ?? results[Number(resultKeys[0])];
-  if (!target) { setSpectrumData(null); return; }
+  if (!target) {
+    setSpectrumData(null);
+    return;
+  }
 
   const raw = target.raw;
   const resolvedIdx = target.cellIndex;
@@ -91,14 +94,17 @@ function computeSpectrum(): void {
   lastRaw = raw;
   lastCellIdx = resolvedIdx;
 
-  if (raw.length < 16) { setSpectrumData(null); return; }
+  if (raw.length < 16) {
+    setSpectrumData(null);
+    return;
+  }
 
   const { freqs, psd } = computePeriodogram(raw, fs);
 
   // Average PSD across all loaded cells
-  const allTraces = resultKeys.map((k) => results[Number(k)]?.raw).filter(
-    (t): t is Float64Array => t != null && t.length >= 16,
-  );
+  const allTraces = resultKeys
+    .map((k) => results[Number(k)]?.raw)
+    .filter((t): t is Float64Array => t != null && t.length >= 16);
   let allPsd: Float64Array;
   if (allTraces.length <= 1) {
     allPsd = psd;

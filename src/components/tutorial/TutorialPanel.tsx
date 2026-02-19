@@ -75,9 +75,7 @@ export function TutorialPanel(props: TutorialPanelProps): JSX.Element {
                 </Show>
               </div>
               <div class="tutorial-card__meta">
-                <span class={`level-badge level-badge--${tutorial.level}`}>
-                  {tutorial.level}
-                </span>
+                <span class={`level-badge level-badge--${tutorial.level}`}>{tutorial.level}</span>
                 <span>{tutorial.estimatedMinutes} min</span>
               </div>
               <div class="tutorial-card__description">{tutorial.description}</div>

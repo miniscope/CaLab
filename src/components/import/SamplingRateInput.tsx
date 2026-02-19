@@ -3,10 +3,7 @@
 
 import { createSignal, Show, For } from 'solid-js';
 import { SAMPLING_RATE_PRESETS } from '../../lib/types.ts';
-import {
-  numTimepoints,
-  setSamplingRate,
-} from '../../lib/data-store.ts';
+import { numTimepoints, setSamplingRate } from '../../lib/data-store.ts';
 
 export function SamplingRateInput() {
   const [selectedRate, setSelectedRate] = createSignal<number | null>(null);
@@ -58,7 +55,8 @@ export function SamplingRateInput() {
     <div class="card">
       <h3 class="card__title">Set Sampling Rate</h3>
       <p class="text-secondary">
-        Select a preset or enter a custom sampling rate. This is required for correct parameter tuning.
+        Select a preset or enter a custom sampling rate. This is required for correct parameter
+        tuning.
       </p>
 
       <div class="preset-buttons">
@@ -92,7 +90,8 @@ export function SamplingRateInput() {
       <Show when={currentRate() && durationDisplay()}>
         <div class="duration-display">
           <p>
-            At <strong>{currentRate()} Hz</strong>, this recording is <strong>{durationDisplay()}</strong>
+            At <strong>{currentRate()} Hz</strong>, this recording is{' '}
+            <strong>{durationDisplay()}</strong>
           </p>
           <p class="text-secondary" style="font-size: 0.85em; margin-top: 4px;">
             If this duration does not match your recording, the sampling rate may be incorrect.

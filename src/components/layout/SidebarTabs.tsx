@@ -29,8 +29,10 @@ export interface SidebarTabsProps {
 export function SidebarTabs(props: SidebarTabsProps) {
   const tabs = (): { id: SidebarTab; label: string; content: JSX.Element }[] => {
     const list: { id: SidebarTab; label: string; content: JSX.Element }[] = [];
-    if (props.communityContent) list.push({ id: 'community', label: 'Community', content: props.communityContent });
-    if (props.spectrumContent) list.push({ id: 'spectrum', label: 'Spectrum', content: props.spectrumContent });
+    if (props.communityContent)
+      list.push({ id: 'community', label: 'Community', content: props.communityContent });
+    if (props.spectrumContent)
+      list.push({ id: 'spectrum', label: 'Spectrum', content: props.spectrumContent });
     list.push({ id: 'metrics', label: 'Metrics', content: props.metricsContent });
     return list;
   };

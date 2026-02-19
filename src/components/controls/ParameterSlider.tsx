@@ -32,8 +32,7 @@ export interface ParameterSliderProps {
 export function ParameterSlider(props: ParameterSliderProps) {
   // When toSlider is provided, the range input operates in [0, 1] normalized space.
   // Otherwise it uses the raw min/max/step values.
-  const sliderValue = () =>
-    props.toSlider ? props.toSlider(props.value()) : props.value();
+  const sliderValue = () => (props.toSlider ? props.toSlider(props.value()) : props.value());
 
   const displayValue = () =>
     props.format ? props.format(props.value()) : props.value().toString();
@@ -104,9 +103,13 @@ export function ParameterSlider(props: ParameterSliderProps) {
           {(() => {
             const sliderMin = props.toSlider ? 0 : props.min;
             const sliderMax = props.toSlider ? 1 : props.max;
-            const mappedValue = props.toSlider ? props.toSlider(props.trueValue!) : props.trueValue!;
+            const mappedValue = props.toSlider
+              ? props.toSlider(props.trueValue!)
+              : props.trueValue!;
             const pct = ((mappedValue - sliderMin) / (sliderMax - sliderMin)) * 100;
-            const formattedValue = props.format ? props.format(props.trueValue!) : props.trueValue!.toString();
+            const formattedValue = props.format
+              ? props.format(props.trueValue!)
+              : props.trueValue!.toString();
             return (
               <div
                 class="param-slider__true-marker"

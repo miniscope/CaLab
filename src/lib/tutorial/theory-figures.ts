@@ -11,14 +11,7 @@
 
 import { computeKernel, computeKernelAnnotations } from '../chart/kernel-math.ts';
 import { generateSyntheticTrace } from '../chart/mock-traces.ts';
-import initWasm, { Solver } from '../../../wasm/catune-solver/pkg/catune_solver';
-
-// --- WASM singleton ---
-let wasmReady: Promise<void> | null = null;
-function ensureWasm(): Promise<void> {
-  if (!wasmReady) wasmReady = initWasm().then(() => {});
-  return wasmReady;
-}
+import { initWasm, Solver } from '../wasm-adapter.ts';
 
 /** Run the FISTA solver synchronously on the main thread (fine for small traces). */
 function runSolver(
@@ -210,15 +203,14 @@ function plotArea(w: number, h: number) {
 }
 
 /** Compute data range with optional padding. */
-function dataRange(
-  xData: ArrayLike<number>,
-  yData: ArrayLike<number>,
-  yPadFrac: number = 0.05,
-) {
-  let xMin = Infinity, xMax = -Infinity;
-  let yMin = Infinity, yMax = -Infinity;
+function dataRange(xData: ArrayLike<number>, yData: ArrayLike<number>, yPadFrac: number = 0.05) {
+  let xMin = Infinity,
+    xMax = -Infinity;
+  let yMin = Infinity,
+    yMax = -Infinity;
   for (let i = 0; i < xData.length; i++) {
-    const x = xData[i], y = yData[i];
+    const x = xData[i],
+      y = yData[i];
     if (x < xMin) xMin = x;
     if (x > xMax) xMax = x;
     if (y < yMin) yMin = y;
@@ -259,7 +251,7 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
   const ctx = canvas.getContext('2d')!;
   const area = plotArea(SINGLE_W, SINGLE_H);
 
-  const kernel = computeKernel(0.10, 0.60, 30);
+  const kernel = computeKernel(0.1, 0.6, 30);
   const range = dataRange(kernel.x, kernel.y);
   range.yMin = -0.05;
 
@@ -267,7 +259,7 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
   drawPolyline(ctx, kernel.x, kernel.y, KERNEL_COLOR, 2, area, range);
 
   // Annotations
-  const annot = computeKernelAnnotations(0.10, 0.60, 30);
+  const annot = computeKernelAnnotations(0.1, 0.6, 30);
   if (annot) {
     const xSpan = range.xMax - range.xMin || 1;
     const ySpan = range.yMax - range.yMin || 1;
@@ -275,13 +267,25 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
     // Peak vertical line
     const peakPx = area.x + ((annot.peakTime - range.xMin) / xSpan) * area.w;
     drawDashedVertical(ctx, peakPx, area.y, area.y + area.h, LABEL_COLOR);
-    drawLabel(ctx, `Peak: ${Math.round(annot.peakTime * 1000)}ms`, peakPx + 4, area.y + 4, LABEL_COLOR);
+    drawLabel(
+      ctx,
+      `Peak: ${Math.round(annot.peakTime * 1000)}ms`,
+      peakPx + 4,
+      area.y + 4,
+      LABEL_COLOR,
+    );
 
     // Half-decay vertical line
     const halfPx = area.x + ((annot.halfDecayTime - range.xMin) / xSpan) * area.w;
     const halfY = area.y + area.h - ((0.5 - range.yMin) / ySpan) * area.h;
     drawDashedVertical(ctx, halfPx, halfY, area.y + area.h, LABEL_COLOR);
-    drawLabel(ctx, `t½: ${Math.round(annot.halfDecayTime * 1000)}ms`, halfPx + 4, halfY - 14, LABEL_COLOR);
+    drawLabel(
+      ctx,
+      `t½: ${Math.round(annot.halfDecayTime * 1000)}ms`,
+      halfPx + 4,
+      halfY - 14,
+      LABEL_COLOR,
+    );
   }
 
   // Time axis label
@@ -299,7 +303,7 @@ export function renderDecayComparison(descriptionEl: HTMLElement): (() => void) 
   const ctx = canvas.getContext('2d')!;
   const area = plotArea(SINGLE_W, SINGLE_H);
 
-  const correct = computeKernel(0.10, 0.60, 30);
+  const correct = computeKernel(0.1, 0.6, 30);
   const tooFast = computeKernel(0.02, 0.08, 30);
 
   // Combine ranges — use correct kernel's x range (longer)
@@ -332,7 +336,7 @@ export function renderDeltaTrap(descriptionEl: HTMLElement): (() => void) | void
 
   // Higher fs to resolve the narrow kernel
   const fs = 100;
-  const correct = computeKernel(0.10, 0.60, fs);
+  const correct = computeKernel(0.1, 0.6, fs);
   const mid = computeKernel(0.05, 0.12, fs);
   const nearDelta = computeKernel(0.005, 0.015, fs);
 
@@ -374,7 +378,7 @@ function scaleActivity(
   for (let i = 0; i < n; i++) {
     if (activity[i] > actMax) actMax = activity[i];
   }
-  const scale = actMax > 0 ? (range.yMax - range.yMin) * fraction / actMax : 1;
+  const scale = actMax > 0 ? ((range.yMax - range.yMin) * fraction) / actMax : 1;
   const scaled = new Float64Array(n);
   for (let i = 0; i < n; i++) scaled[i] = activity[i] * scale + range.yMin;
   return scaled;
@@ -410,19 +414,20 @@ export function renderGoodVsBad(descriptionEl: HTMLElement): (() => void) | void
 
   // Async: init WASM, run solver, draw canvas
   (async () => {
-    await ensureWasm();
+    await initWasm();
     if (cancelled) return;
 
     const N = 300;
     const fs = 30;
-    const TAU_RISE = 0.10;
-    const TAU_DECAY_GOOD = 0.60;
+    const TAU_RISE = 0.1;
+    const TAU_DECAY_GOOD = 0.6;
     const TAU_DECAY_BAD = 0.08;
     const TAU_RISE_BAD = 0.02;
     const LAMBDA = 0.05;
 
-    const { raw } = generateSyntheticTrace(N, TAU_RISE, TAU_DECAY_GOOD, fs, 42, 25,
-      { noise: { driftAmplitude: 0, amplitudeSigma: 0.3, driftCyclesMin: 2, driftCyclesMax: 4 } });
+    const { raw } = generateSyntheticTrace(N, TAU_RISE, TAU_DECAY_GOOD, fs, 42, 25, {
+      noise: { driftAmplitude: 0, amplitudeSigma: 0.3, driftCyclesMin: 2, driftCyclesMax: 4 },
+    });
 
     const rawF32 = new Float32Array(N);
     for (let i = 0; i < N; i++) rawF32[i] = raw[i];
@@ -446,8 +451,24 @@ export function renderGoodVsBad(descriptionEl: HTMLElement): (() => void) | void
     const timeArr = new Float64Array(N);
     for (let i = 0; i < N; i++) timeArr[i] = i / fs;
 
-    drawDeconvPanel(ctx, timeArr, raw, good, topArea, 'Good kernel \u2014 activity at onsets', GOOD_COLOR);
-    drawDeconvPanel(ctx, timeArr, raw, bad, botArea, 'Bad kernel \u2014 activity everywhere', BAD_COLOR);
+    drawDeconvPanel(
+      ctx,
+      timeArr,
+      raw,
+      good,
+      topArea,
+      'Good kernel \u2014 activity at onsets',
+      GOOD_COLOR,
+    );
+    drawDeconvPanel(
+      ctx,
+      timeArr,
+      raw,
+      bad,
+      botArea,
+      'Bad kernel \u2014 activity everywhere',
+      BAD_COLOR,
+    );
 
     // Shared legend
     let lx = MARGIN.left + 4;

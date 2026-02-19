@@ -10,9 +10,7 @@ function makeNpyBuffer(
   dtype: string,
   fortranOrder = false,
 ): ArrayBuffer {
-  const shapeStr = shape.length === 1
-    ? `(${shape[0]},)`
-    : `(${shape.join(', ')})`;
+  const shapeStr = shape.length === 1 ? `(${shape[0]},)` : `(${shape.join(', ')})`;
   const headerDict = `{'descr': '${dtype}', 'fortran_order': ${fortranOrder ? 'True' : 'False'}, 'shape': ${shapeStr}, }`;
 
   const preambleLen = 10; // version 1
@@ -65,8 +63,16 @@ function makeNpyBuffer(
 
 function getDtypeBytes(dtype: string): number {
   const map: Record<string, number> = {
-    '<f8': 8, '<f4': 4, '<i4': 4, '<i2': 2, '<i1': 1,
-    '|i1': 1, '<u4': 4, '<u2': 2, '<u1': 1, '|u1': 1,
+    '<f8': 8,
+    '<f4': 4,
+    '<i4': 4,
+    '<i2': 2,
+    '<i1': 1,
+    '|i1': 1,
+    '<u4': 4,
+    '<u2': 2,
+    '<u1': 1,
+    '|u1': 1,
   };
   return map[dtype] ?? 8;
 }
@@ -125,7 +131,7 @@ describe('parseNpz', () => {
         'arr_0.npy': npyBuf,
         'metadata.json': metadataBytes.buffer.slice(
           metadataBytes.byteOffset,
-          metadataBytes.byteOffset + metadataBytes.byteLength
+          metadataBytes.byteOffset + metadataBytes.byteLength,
         ),
       });
 
@@ -142,7 +148,7 @@ describe('parseNpz', () => {
       const npzBuf = makeNpzBuffer({
         'readme.txt': textBytes.buffer.slice(
           textBytes.byteOffset,
-          textBytes.byteOffset + textBytes.byteLength
+          textBytes.byteOffset + textBytes.byteLength,
         ),
       });
 

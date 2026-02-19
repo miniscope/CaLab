@@ -88,8 +88,7 @@ export const featuresTutorial: Tutorial = {
     {
       element: '[data-tutorial="sidebar-tab-metrics"]',
       title: 'Select the Metrics Tab',
-      description:
-        '<b>Click the Metrics tab</b> to see quantitative fit quality.',
+      description: '<b>Click the Metrics tab</b> to see quantitative fit quality.',
       side: 'bottom',
     },
     // Step 11: Metrics panel
@@ -104,8 +103,7 @@ export const featuresTutorial: Tutorial = {
     {
       element: '[data-tutorial="sidebar-tab-community"]',
       title: 'Select the Community Tab',
-      description:
-        '<b>Click the Community tab</b> to browse shared parameters.',
+      description: '<b>Click the Community tab</b> to browse shared parameters.',
       side: 'bottom',
     },
     // Step 13: Community browser

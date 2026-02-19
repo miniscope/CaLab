@@ -32,8 +32,8 @@ const DEFAULT_ZOOM_WINDOW_S = 20;
 interface CellSolveState {
   cellIndex: number;
   rawTrace: Float64Array;
-  zoomStart: number;  // seconds
-  zoomEnd: number;    // seconds
+  zoomStart: number; // seconds
+  zoomEnd: number; // seconds
   warmStartCache: WarmStartCache;
   activeJobId: number | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
@@ -67,10 +67,10 @@ function getCurrentParams(): SolverParams {
 }
 
 function getCellPriority(cellIndex: number): number {
-  if (cellIndex === selectedCell()) return 0;        // active (last-clicked)
-  if (cellIndex === hoveredCell()) return 0;         // hovered
+  if (cellIndex === selectedCell()) return 0; // active (last-clicked)
+  if (cellIndex === hoveredCell()) return 0; // hovered
   if (visibleCellIndices().has(cellIndex)) return 1; // visible
-  return 2;                                          // off-screen
+  return 2; // off-screen
 }
 
 function cancelActiveJob(state: CellSolveState): void {
@@ -100,7 +100,9 @@ function cachePaddedAndUpdateTraces(
   state.paddedResultEnd = paddedEnd;
 
   const visSol = new Float32Array(solution.subarray(resultOffset, resultOffset + resultLength));
-  const visReconv = new Float32Array(reconvolution.subarray(resultOffset, resultOffset + resultLength));
+  const visReconv = new Float32Array(
+    reconvolution.subarray(resultOffset, resultOffset + resultLength),
+  );
   const visFiltered = filteredTrace
     ? new Float32Array(filteredTrace.subarray(resultOffset, resultOffset + resultLength))
     : undefined;
@@ -120,12 +122,20 @@ function dispatchCellSolve(state: CellSolveState): void {
   const visibleEnd = Math.min(traceLen, Math.ceil(state.zoomEnd * fs));
   if (visibleStart >= visibleEnd) return;
 
-  const { paddedStart, paddedEnd, resultOffset, resultLength } =
-    computePaddedWindow(visibleStart, visibleEnd, traceLen, params.tauDecay, fs);
+  const { paddedStart, paddedEnd, resultOffset, resultLength } = computePaddedWindow(
+    visibleStart,
+    visibleEnd,
+    traceLen,
+    params.tauDecay,
+    fs,
+  );
 
   const paddedTrace = new Float32Array(state.rawTrace.subarray(paddedStart, paddedEnd));
-  const { strategy, state: warmState } =
-    state.warmStartCache.getStrategy(params, paddedStart, paddedEnd);
+  const { strategy, state: warmState } = state.warmStartCache.getStrategy(
+    params,
+    paddedStart,
+    paddedEnd,
+  );
 
   cancelActiveJob(state);
 
@@ -148,9 +158,15 @@ function dispatchCellSolve(state: CellSolveState): void {
     onIntermediate(solution, reconvolution, iteration) {
       if (state.activeJobId !== jobId) return;
       cachePaddedAndUpdateTraces(
-        state, solution, reconvolution,
-        paddedStart, paddedEnd, resultOffset, resultLength,
-        visibleStart, iteration,
+        state,
+        solution,
+        reconvolution,
+        paddedStart,
+        paddedEnd,
+        resultOffset,
+        resultLength,
+        visibleStart,
+        iteration,
       );
     },
     onComplete(solution, reconvolution, solverState, iterations, converged, filteredTrace) {
@@ -158,9 +174,16 @@ function dispatchCellSolve(state: CellSolveState): void {
       state.activeJobId = null;
       state.converged = converged;
       cachePaddedAndUpdateTraces(
-        state, solution, reconvolution,
-        paddedStart, paddedEnd, resultOffset, resultLength,
-        visibleStart, iterations, filteredTrace,
+        state,
+        solution,
+        reconvolution,
+        paddedStart,
+        paddedEnd,
+        resultOffset,
+        resultLength,
+        visibleStart,
+        iterations,
+        filteredTrace,
       );
       state.warmStartCache.store(solverState, params, paddedStart, paddedEnd);
 
@@ -203,9 +226,13 @@ function drainDeferredCells(): void {
 }
 
 function paramsMatch(a: SolverParams, b: SolverParams): boolean {
-  return a.tauRise === b.tauRise && a.tauDecay === b.tauDecay
-    && a.lambda === b.lambda && a.fs === b.fs
-    && a.filterEnabled === b.filterEnabled;
+  return (
+    a.tauRise === b.tauRise &&
+    a.tauDecay === b.tauDecay &&
+    a.lambda === b.lambda &&
+    a.fs === b.fs &&
+    a.filterEnabled === b.filterEnabled
+  );
 }
 
 function reEnqueueCell(state: CellSolveState): void {
@@ -234,7 +261,12 @@ function debouncedDispatch(state: CellSolveState): void {
   }, DEBOUNCE_MS);
 }
 
-function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, number], isSwapped: boolean): CellSolveState {
+function ensureCellState(
+  cellIndex: number,
+  data: NpyResult,
+  shape: [number, number],
+  isSwapped: boolean,
+): CellSolveState {
   let state = cellStates.get(cellIndex);
   if (!state) {
     const rawTrace = extractCellTrace(cellIndex, data, shape, isSwapped);
@@ -262,7 +294,12 @@ function ensureCellState(cellIndex: number, data: NpyResult, shape: [number, num
     // Ensure the cell has an entry in multiCellResults for immediate card rendering
     if (multiCellResults[cellIndex] === undefined) {
       const zeros = new Float32Array(rawTrace.length);
-      setMultiCellResults(cellIndex, { cellIndex, raw: rawTrace, deconvolved: zeros, reconvolution: zeros });
+      setMultiCellResults(cellIndex, {
+        cellIndex,
+        raw: rawTrace,
+        deconvolved: zeros,
+        reconvolution: zeros,
+      });
     }
   }
   return state;
@@ -278,7 +315,11 @@ function removeCellState(cellIndex: number): void {
 }
 
 /** Check whether a zoom window fits within the artifact-safe region of the cached padded result. */
-function tryExtractFromCache(state: CellSolveState, newVisStart: number, newVisEnd: number): boolean {
+function tryExtractFromCache(
+  state: CellSolveState,
+  newVisStart: number,
+  newVisEnd: number,
+): boolean {
   if (!state.fullPaddedSolution || !state.fullPaddedReconvolution) return false;
 
   const params = getCurrentParams();
@@ -293,10 +334,16 @@ function tryExtractFromCache(state: CellSolveState, newVisStart: number, newVisE
 
   const offsetInPadded = newVisStart - state.paddedResultStart;
   const length = newVisEnd - newVisStart;
-  const visSol = new Float32Array(state.fullPaddedSolution.subarray(offsetInPadded, offsetInPadded + length));
-  const visReconv = new Float32Array(state.fullPaddedReconvolution.subarray(offsetInPadded, offsetInPadded + length));
+  const visSol = new Float32Array(
+    state.fullPaddedSolution.subarray(offsetInPadded, offsetInPadded + length),
+  );
+  const visReconv = new Float32Array(
+    state.fullPaddedReconvolution.subarray(offsetInPadded, offsetInPadded + length),
+  );
   const visFiltered = state.fullPaddedFilteredTrace
-    ? new Float32Array(state.fullPaddedFilteredTrace.subarray(offsetInPadded, offsetInPadded + length))
+    ? new Float32Array(
+        state.fullPaddedFilteredTrace.subarray(offsetInPadded, offsetInPadded + length),
+      )
     : undefined;
   updateOneCellTraces(state.cellIndex, visSol, visReconv, newVisStart, visFiltered);
   return true;

@@ -33,10 +33,10 @@ export interface TracePanelProps {
 
 /** Format x-axis tick values, adapting decimal places to the visible range */
 function formatTimeValues(_u: uPlot, splits: number[]): string[] {
-  if (splits.length < 2) return splits.map(v => String(v));
+  if (splits.length < 2) return splits.map((v) => String(v));
   const range = splits[splits.length - 1] - splits[0];
   const decimals = range < 1 ? 2 : range < 10 ? 1 : 0;
-  return splits.map(v => v.toFixed(decimals));
+  return splits.map((v) => v.toFixed(decimals));
 }
 
 export function TracePanel(props: TracePanelProps) {
@@ -73,7 +73,9 @@ export function TracePanel(props: TracePanelProps) {
     grid: { stroke: AXIS_GRID },
     ticks: { stroke: AXIS_TICK },
     values: formatTimeValues,
-    ...(props.xLabel ? { label: props.xLabel, labelSize: 10, labelGap: 0, labelFont: '10px sans-serif', size: 30 } : {}),
+    ...(props.xLabel
+      ? { label: props.xLabel, labelSize: 10, labelGap: 0, labelFont: '10px sans-serif', size: 30 }
+      : {}),
   };
 
   const yAxisBase: uPlot.Axis = {
@@ -88,7 +90,7 @@ export function TracePanel(props: TracePanelProps) {
     size: 20,
   };
 
-  const yAxis = () => props.hideYValues ? yAxisHidden : yAxisBase;
+  const yAxis = () => (props.hideYValues ? yAxisHidden : yAxisBase);
 
   const cursorConfig = (): uPlot.Cursor => {
     const cfg: uPlot.Cursor = {

@@ -52,7 +52,9 @@
   flex-direction: column;
   gap: var(--space-xs);
   cursor: pointer;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
   min-height: 280px;
   min-width: 0;
   overflow: hidden;
@@ -193,7 +195,13 @@
 }
 
 @keyframes zoom-hint-fade {
-  0% { opacity: 1; }
-  70% { opacity: 1; }
-  100% { opacity: 0; }
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }

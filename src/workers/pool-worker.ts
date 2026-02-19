@@ -2,7 +2,7 @@
 // Uses raw postMessage (not Comlink) so the event loop can process
 // cancel messages between solver batches via MessageChannel yields.
 
-import init, { Solver } from '../../wasm/catune-solver/pkg/catune_solver';
+import { initWasm, Solver } from '../lib/wasm-adapter.ts';
 import type { PoolWorkerInbound, PoolWorkerOutbound } from '../lib/solver-types.ts';
 
 const INTERMEDIATE_INTERVAL_MS = 100;
@@ -11,7 +11,7 @@ const BATCH_SIZE = 15;
 // MessageChannel yields in <1ms vs setTimeout(0)'s ~4ms minimum timer resolution.
 const yieldChannel = new MessageChannel();
 function yieldToMacrotask(): Promise<void> {
-  return new Promise<void>(resolve => {
+  return new Promise<void>((resolve) => {
     yieldChannel.port2.onmessage = () => resolve();
     yieldChannel.port1.postMessage(null);
   });
@@ -21,7 +21,9 @@ let solver: Solver | null = null;
 let cancelled = false;
 
 // Worker-scoped postMessage (avoid Window overload confusion)
-const workerScope = globalThis as unknown as { postMessage(msg: unknown, transfer?: Transferable[]): void };
+const workerScope = globalThis as unknown as {
+  postMessage(msg: unknown, transfer?: Transferable[]): void;
+};
 
 function post(msg: PoolWorkerOutbound, transfer?: Transferable[]): void {
   if (transfer) {
@@ -62,7 +64,11 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     const startIter = solver.iteration_count();
     const quantumLimit = req.maxIterations ?? Infinity;
 
-    while (!solver.converged() && !cancelled && (solver.iteration_count() - startIter) < quantumLimit) {
+    while (
+      !solver.converged() &&
+      !cancelled &&
+      solver.iteration_count() - startIter < quantumLimit
+    ) {
       solver.step_batch(BATCH_SIZE);
 
       // Post intermediate result at ~100ms intervals
@@ -135,9 +141,11 @@ onmessage = (e: MessageEvent<PoolWorkerInbound>) => {
 };
 
 // Initialize WASM on startup
-init().then(() => {
-  solver = new Solver();
-  post({ type: 'ready' });
-}).catch((err) => {
-  console.error('WASM initialization failed:', err);
-});
+initWasm()
+  .then(() => {
+    solver = new Solver();
+    post({ type: 'ready' });
+  })
+  .catch((err) => {
+    console.error('WASM initialization failed:', err);
+  });

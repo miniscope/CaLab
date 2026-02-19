@@ -17,11 +17,7 @@ export interface ScatterPlotProps {
 }
 
 /** Map a lambda value to a viridis-inspired HSLA color on a linear scale. */
-function lambdaToColor(
-  lambda: number,
-  minL: number,
-  maxL: number,
-): string {
+function lambdaToColor(lambda: number, minL: number, maxL: number): string {
   const range = maxL - minL;
   const t = range === 0 ? 0.5 : (lambda - minL) / range;
   const clamped = Math.max(0, Math.min(1, t));
@@ -46,18 +42,14 @@ function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0
-    ? sorted[mid]
-    : (sorted[mid - 1] + sorted[mid]) / 2;
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 export function ScatterPlot(props: ScatterPlotProps) {
   let containerRef: HTMLDivElement | undefined;
   let uplotInstance: uPlot | undefined;
 
-  const lambdaColors = createMemo(() =>
-    computeLambdaColors(props.submissions),
-  );
+  const lambdaColors = createMemo(() => computeLambdaColors(props.submissions));
 
   const medianPoint = createMemo(() => {
     const subs = props.submissions;
@@ -76,10 +68,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     if (subs.length === 0) {
       return [
         [null] as unknown as number[],
-        [
-          [null] as unknown as number[],
-          [null] as unknown as number[],
-        ] as unknown as number[],
+        [[null] as unknown as number[], [null] as unknown as number[]] as unknown as number[],
       ];
     }
     const xs = subs.map((s) => s.tau_rise);
@@ -103,11 +92,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       uPlot.orient(
         u,
         seriesIdx,
-        (
-          _series, _dataX, _dataY, scaleX, scaleY,
-          valToPosX, valToPosY, xOff, yOff,
-          xDim, yDim,
-        ) => {
+        (_series, _dataX, _dataY, scaleX, scaleY, valToPosX, valToPosY, xOff, yOff, xDim, yDim) => {
           const d = u.data[seriesIdx] as unknown as number[][];
           if (!d || !d[0] || !d[1]) return;
           const xVals = d[0];
@@ -115,8 +100,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
           const cols = colors();
 
           const scaleValid =
-            scaleX.min != null && scaleX.max != null &&
-            scaleY.min != null && scaleY.max != null;
+            scaleX.min != null && scaleX.max != null && scaleY.min != null && scaleY.max != null;
 
           // Draw median crosshair lines (behind points)
           const mp = medianPt();
@@ -182,18 +166,16 @@ export function ScatterPlot(props: ScatterPlotProps) {
             const uy = up.tauDecay;
             if (
               scaleValid &&
-              ux >= scaleX.min! && ux <= scaleX.max! &&
-              uy >= scaleY.min! && uy <= scaleY.max!
+              ux >= scaleX.min! &&
+              ux <= scaleX.max! &&
+              uy >= scaleY.min! &&
+              uy <= scaleY.max!
             ) {
               const ucx = valToPosX(ux, scaleX, xDim, xOff);
               const ucy = valToPosY(uy, scaleY, yDim, yOff);
               const uSize = 14 * devicePixelRatio;
 
-              ctx.fillStyle = lambdaToColor(
-                up.lambda,
-                LAMBDA_RANGE_MIN,
-                LAMBDA_RANGE_MAX,
-              );
+              ctx.fillStyle = lambdaToColor(up.lambda, LAMBDA_RANGE_MIN, LAMBDA_RANGE_MAX);
               ctx.strokeStyle = markerStroke;
               ctx.lineWidth = 2 * devicePixelRatio;
               ctx.beginPath();
@@ -223,13 +205,22 @@ export function ScatterPlot(props: ScatterPlotProps) {
     // Read CSS custom properties for theme-aware colors
     const theme = getThemeColors();
 
-    const drawFn = makeDrawPoints(lambdaColors, () => props.userParams, medianPoint, theme.textPrimary, theme.textSecondary);
+    const drawFn = makeDrawPoints(
+      lambdaColors,
+      () => props.userParams,
+      medianPoint,
+      theme.textPrimary,
+      theme.textSecondary,
+    );
 
     // Compute padded ranges so points aren't on the edge
     const xVals = subs.map((s) => s.tau_rise);
     const yVals = subs.map((s) => s.tau_decay);
     const up = props.userParams;
-    if (up) { xVals.push(up.tauRise); yVals.push(up.tauDecay); }
+    if (up) {
+      xVals.push(up.tauRise);
+      yVals.push(up.tauDecay);
+    }
     const xMin = Math.min(...xVals);
     const xMax = Math.max(...xVals);
     const yMin = Math.min(...yVals);
@@ -311,14 +302,8 @@ export function ScatterPlot(props: ScatterPlotProps) {
         <div class="scatter-plot__empty">No community data yet</div>
       ) : (
         <>
-          <div
-            ref={containerRef}
-            class="scatter-plot__canvas"
-          />
-          <LambdaLegend
-            min={lambdaRange().min}
-            max={lambdaRange().max}
-          />
+          <div ref={containerRef} class="scatter-plot__canvas" />
+          <LambdaLegend min={lambdaRange().min} max={lambdaRange().max} />
         </>
       )}
     </div>
@@ -356,12 +341,7 @@ function LambdaLegend(props: { min: number; max: number }) {
   return (
     <div class="scatter-plot__legend">
       <span class="scatter-plot__legend-label">{formatVal(props.min)}</span>
-      <canvas
-        ref={canvasRef}
-        width={200}
-        height={12}
-        class="scatter-plot__legend-bar"
-      />
+      <canvas ref={canvasRef} width={200} height={12} class="scatter-plot__legend-bar" />
       <span class="scatter-plot__legend-label">{formatVal(props.max)}</span>
       <span class="scatter-plot__legend-title">&lambda;</span>
     </div>

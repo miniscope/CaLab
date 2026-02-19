@@ -27,7 +27,9 @@ export function FileDropZone() {
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     if (ext !== 'npy' && ext !== 'npz') {
-      setImportError(`Unsupported file format: .${ext ?? 'unknown'}. Please use .npy or .npz files.`);
+      setImportError(
+        `Unsupported file format: .${ext ?? 'unknown'}. Please use .npy or .npz files.`,
+      );
       return;
     }
 
@@ -40,13 +42,15 @@ export function FileDropZone() {
       if (ext === 'npz') {
         const npzResult = parseNpz(buffer);
         // Filter to only 2D numeric arrays
-        const twoDArrayNames = npzResult.arrayNames.filter(name => {
+        const twoDArrayNames = npzResult.arrayNames.filter((name) => {
           const arr = npzResult.arrays[name];
           return arr.shape.length === 2;
         });
 
         if (twoDArrayNames.length === 0) {
-          setImportError('No 2D arrays found in .npz file. CaTune requires a 2D array (cells x timepoints).');
+          setImportError(
+            'No 2D arrays found in .npz file. CaTune requires a 2D array (cells x timepoints).',
+          );
           return;
         }
 
@@ -106,13 +110,22 @@ export function FileDropZone() {
         onClick={handleClick}
       >
         <div class="drop-zone__icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <svg
+            width="48"
+            height="48"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="17 8 12 3 7 8" />
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
         </div>
-        <p class="drop-zone__text">Drop a <strong>.npy</strong> or <strong>.npz</strong> file here</p>
+        <p class="drop-zone__text">
+          Drop a <strong>.npy</strong> or <strong>.npz</strong> file here
+        </p>
         <p class="drop-zone__subtext">or click to browse</p>
         <input
           ref={inputRef}

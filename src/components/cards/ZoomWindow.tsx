@@ -7,8 +7,26 @@ import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel.tsx';
 import { downsampleMinMax } from '../../lib/chart/downsample.ts';
-import { createRawSeries, createFilteredSeries, createFitSeries, createDeconvolvedSeries, createResidualSeries, createPinnedOverlaySeries, createGroundTruthSpikesSeries, createGroundTruthCalciumSeries } from '../../lib/chart/series-config.ts';
-import { showRaw, showFiltered, showFit, showDeconv, showResid, showGTCalcium, showGTSpikes, tauDecay } from '../../lib/viz-store.ts';
+import {
+  createRawSeries,
+  createFilteredSeries,
+  createFitSeries,
+  createDeconvolvedSeries,
+  createResidualSeries,
+  createPinnedOverlaySeries,
+  createGroundTruthSpikesSeries,
+  createGroundTruthCalciumSeries,
+} from '../../lib/chart/series-config.ts';
+import {
+  showRaw,
+  showFiltered,
+  showFit,
+  showDeconv,
+  showResid,
+  showGTCalcium,
+  showGTSpikes,
+  tauDecay,
+} from '../../lib/viz-store.ts';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -160,7 +178,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const deconvTop = zMin - DECONV_GAP;
     const deconvBottom = deconvTop - deconvHeight;
 
-    return dsDeconvRaw.map(v => {
+    return dsDeconvRaw.map((v) => {
       const norm = (v - dMin) / dRange;
       return deconvBottom + norm * deconvHeight;
     });
@@ -177,7 +195,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     zMax: number,
     dsXLength: number,
   ): number[] => {
-    if (!dsReconv.some(v => v !== null)) {
+    if (!dsReconv.some((v) => v !== null)) {
       return new Array(dsXLength).fill(null) as number[];
     }
 
@@ -204,7 +222,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     }
     const rRange = rMax - rMin || 1;
 
-    return rawResid.map(r => {
+    return rawResid.map((r) => {
       if (r === null) return null as unknown as number;
       const norm = (r - rMin) / rRange;
       return residBottom + norm * residHeight;
@@ -233,32 +251,44 @@ export function ZoomWindow(props: ZoomWindowProps) {
     // Raw trace — z-score normalized
     const rawSlice = raw.subarray(startSample, endSample);
     const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, ZOOM_BUCKET_WIDTH);
-    const dsRaw = dsRawRaw.map(v => (v - mean) / std);
+    const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
 
     const offset = props.deconvWindowOffset ?? 0;
     const pinnedOffset = props.pinnedWindowOffset ?? 0;
 
     // z-score transform for traces in raw-space (reconv, pinned reconv)
-    const toZScore = (values: number[]) => values.map(v => (v - mean) / std);
+    const toZScore = (values: number[]) => values.map((v) => (v - mean) / std);
 
     // When the bandpass filter is active it strips the DC component, so filtered
     // and fit values are centered near zero instead of rawMean.  Dividing by
     // rawStd without subtracting rawMean keeps them aligned with the raw z-score
     // axis.  This only depends on the stable rawStats memo — no dependency on the
     // filtered array content — so it can't flicker during solver iterations.
-    const toZScoreFiltered = (values: number[]) => values.map(v => v / std);
+    const toZScoreFiltered = (values: number[]) => values.map((v) => v / std);
 
     // Filtered trace — same z-score space as raw (only present when filter is active)
     const dsFiltered = sliceAndDownsample(
-      props.filteredTrace, x, startSample, endSample,
-      offset, raw.length, dsX.length, props.filteredTrace ? toZScoreFiltered : toZScore,
+      props.filteredTrace,
+      x,
+      startSample,
+      endSample,
+      offset,
+      raw.length,
+      dsX.length,
+      props.filteredTrace ? toZScoreFiltered : toZScore,
     );
 
     // Reconvolution trace — same z-score space as raw
     // Uses filtered transform when filter is active (fit sits on filtered data)
     const dsReconv = sliceAndDownsample(
-      props.reconvolutionTrace, x, startSample, endSample,
-      offset, raw.length, dsX.length, props.filteredTrace ? toZScoreFiltered : toZScore,
+      props.reconvolutionTrace,
+      x,
+      startSample,
+      endSample,
+      offset,
+      raw.length,
+      dsX.length,
+      props.filteredTrace ? toZScoreFiltered : toZScore,
     );
 
     // Null-mask the convolution transient at the trace start.
@@ -277,8 +307,13 @@ export function ZoomWindow(props: ZoomWindowProps) {
 
     // Deconvolved trace — scaled into deconv band below raw
     const dsDeconv = sliceAndDownsample(
-      props.deconvolvedTrace, x, startSample, endSample,
-      offset, raw.length, dsX.length,
+      props.deconvolvedTrace,
+      x,
+      startSample,
+      endSample,
+      offset,
+      raw.length,
+      dsX.length,
       (vals) => scaleToDeconvBand(vals, props.deconvolvedTrace!, zMin, zMax),
     );
 
@@ -287,14 +322,25 @@ export function ZoomWindow(props: ZoomWindowProps) {
 
     // Pinned reconvolution — same z-score space as raw
     const dsPinnedReconv = sliceAndDownsample(
-      props.pinnedReconvolution, x, startSample, endSample,
-      pinnedOffset, raw.length, dsX.length, toZScore,
+      props.pinnedReconvolution,
+      x,
+      startSample,
+      endSample,
+      pinnedOffset,
+      raw.length,
+      dsX.length,
+      toZScore,
     );
 
     // Pinned deconvolved — scaled into deconv band using pinned trace's own range
     const dsPinnedDeconv = sliceAndDownsample(
-      props.pinnedDeconvolved, x, startSample, endSample,
-      pinnedOffset, raw.length, dsX.length,
+      props.pinnedDeconvolved,
+      x,
+      startSample,
+      endSample,
+      pinnedOffset,
+      raw.length,
+      dsX.length,
       (vals) => scaleToDeconvBand(vals, props.pinnedDeconvolved!, zMin, zMax),
     );
 
@@ -303,7 +349,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     if (props.groundTruthCalcium && props.groundTruthCalcium.length > 0) {
       const gtcSlice = props.groundTruthCalcium.subarray(startSample, endSample);
       const [, dsGTCRaw] = downsampleMinMax(x, gtcSlice, ZOOM_BUCKET_WIDTH);
-      dsGTCalcium = dsGTCRaw.map(v => (v - mean) / std);
+      dsGTCalcium = dsGTCRaw.map((v) => (v - mean) / std);
     } else {
       dsGTCalcium = new Array(dsX.length).fill(null) as number[];
     }
@@ -318,15 +364,28 @@ export function ZoomWindow(props: ZoomWindowProps) {
       dsGTSpikes = new Array(dsX.length).fill(null) as number[];
     }
 
-    return [dsX, dsRaw, dsFiltered, dsDeconv, dsReconv, dsResid, dsPinnedDeconv, dsPinnedReconv, dsGTCalcium, dsGTSpikes];
+    return [
+      dsX,
+      dsRaw,
+      dsFiltered,
+      dsDeconv,
+      dsReconv,
+      dsResid,
+      dsPinnedDeconv,
+      dsPinnedReconv,
+      dsGTCalcium,
+      dsGTSpikes,
+    ];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {
     const base: uPlot.Series[] = [{}, { ...createRawSeries(), show: showRaw() }];
     // Filtered series: visible only when filter is active AND user hasn't hidden it
-    base.push(props.filteredTrace
-      ? { ...createFilteredSeries(), show: showFiltered() }
-      : { show: false } as uPlot.Series);
+    base.push(
+      props.filteredTrace
+        ? { ...createFilteredSeries(), show: showFiltered() }
+        : ({ show: false } as uPlot.Series),
+    );
     base.push(
       { ...createDeconvolvedSeries(), show: showDeconv() },
       { ...createFitSeries(), show: showFit() },
@@ -336,12 +395,16 @@ export function ZoomWindow(props: ZoomWindowProps) {
     base.push({ ...createPinnedOverlaySeries('Pinned Deconv', '#2ca02c', 1), show: showDeconv() });
     base.push({ ...createPinnedOverlaySeries('Pinned Fit', '#ff7f0e', 1.5), show: showFit() });
     // GT series: always present to keep series count stable
-    base.push(props.groundTruthCalcium
-      ? { ...createGroundTruthCalciumSeries(), show: showGTCalcium() }
-      : { show: false } as uPlot.Series);
-    base.push(props.groundTruthSpikes
-      ? { ...createGroundTruthSpikesSeries(), show: showGTSpikes() }
-      : { show: false } as uPlot.Series);
+    base.push(
+      props.groundTruthCalcium
+        ? { ...createGroundTruthCalciumSeries(), show: showGTCalcium() }
+        : ({ show: false } as uPlot.Series),
+    );
+    base.push(
+      props.groundTruthSpikes
+        ? { ...createGroundTruthSpikesSeries(), show: showGTSpikes() }
+        : ({ show: false } as uPlot.Series),
+    );
     return base;
   });
 
@@ -363,7 +426,9 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const startEnd = props.endTime;
     const windowDuration = startEnd - startStart;
     const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
-    const rect = overEl ? overEl.getBoundingClientRect() : (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = overEl
+      ? overEl.getBoundingClientRect()
+      : (e.currentTarget as HTMLElement).getBoundingClientRect();
     const pxToTime = windowDuration / rect.width;
     const totalDuration = props.rawTrace.length / props.samplingRate;
 
@@ -374,8 +439,14 @@ export function ZoomWindow(props: ZoomWindowProps) {
       let newStart = startStart + dt;
       let newEnd = startEnd + dt;
 
-      if (newStart < 0) { newStart = 0; newEnd = windowDuration; }
-      if (newEnd > totalDuration) { newEnd = totalDuration; newStart = Math.max(0, totalDuration - windowDuration); }
+      if (newStart < 0) {
+        newStart = 0;
+        newEnd = windowDuration;
+      }
+      if (newEnd > totalDuration) {
+        newEnd = totalDuration;
+        newStart = Math.max(0, totalDuration - windowDuration);
+      }
 
       props.onZoomChange!(newStart, newEnd);
     };
@@ -409,13 +480,16 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const currentRange = props.endTime - props.startTime;
 
     // Zoom in (scroll up) or out (scroll down)
-    const newRange = e.deltaY < 0
-      ? Math.max(MIN_WINDOW_S, currentRange * ZOOM_FACTOR)
-      : Math.min(totalDuration, currentRange / ZOOM_FACTOR);
+    const newRange =
+      e.deltaY < 0
+        ? Math.max(MIN_WINDOW_S, currentRange * ZOOM_FACTOR)
+        : Math.min(totalDuration, currentRange / ZOOM_FACTOR);
 
     // Center zoom on cursor horizontal position (use .u-over plot area, not outer div with y-axis gutter)
     const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
-    const rect = overEl ? overEl.getBoundingClientRect() : (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = overEl
+      ? overEl.getBoundingClientRect()
+      : (e.currentTarget as HTMLElement).getBoundingClientRect();
     const cursorFraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const cursorTime = props.startTime + cursorFraction * currentRange;
 
@@ -423,8 +497,14 @@ export function ZoomWindow(props: ZoomWindowProps) {
     let newEnd = newStart + newRange;
 
     // Clamp to data bounds
-    if (newStart < 0) { newStart = 0; newEnd = newRange; }
-    if (newEnd > totalDuration) { newEnd = totalDuration; newStart = Math.max(0, totalDuration - newRange); }
+    if (newStart < 0) {
+      newStart = 0;
+      newEnd = newRange;
+    }
+    if (newEnd > totalDuration) {
+      newEnd = totalDuration;
+      newStart = Math.max(0, totalDuration - newRange);
+    }
 
     props.onZoomChange(newStart, newEnd);
   };

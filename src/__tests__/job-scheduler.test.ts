@@ -14,8 +14,8 @@ describe('computePaddedWindow', () => {
     // visibleSamples = 1000, tauPadding = ceil(5*0.4*30) = 60
     // padding = min(max(1000, 60), 9000) = 1000
     const result = computePaddedWindow(1000, 2000, 10000, 0.4, 30);
-    expect(result.paddedStart).toBe(0);   // max(0, 1000-1000)
-    expect(result.paddedEnd).toBe(3000);  // min(10000, 2000+1000)
+    expect(result.paddedStart).toBe(0); // max(0, 1000-1000)
+    expect(result.paddedEnd).toBe(3000); // min(10000, 2000+1000)
     expect(result.resultOffset).toBe(1000);
     expect(result.resultLength).toBe(1000);
   });
@@ -23,8 +23,8 @@ describe('computePaddedWindow', () => {
   it('clamps paddedStart to 0 when near trace start', () => {
     // visibleSamples = 480, tauPadding = 60, padding = max(480, 60) = 480
     const result = computePaddedWindow(20, 500, 10000, 0.4, 30);
-    expect(result.paddedStart).toBe(0);   // max(0, 20-480)
-    expect(result.paddedEnd).toBe(980);   // min(10000, 500+480)
+    expect(result.paddedStart).toBe(0); // max(0, 20-480)
+    expect(result.paddedEnd).toBe(980); // min(10000, 500+480)
     expect(result.resultOffset).toBe(20); // visibleStart - paddedStart = 20 - 0
     expect(result.resultLength).toBe(480);
   });

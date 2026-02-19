@@ -1,12 +1,7 @@
 // Data validation for calcium imaging trace data
 // Single-pass validation: detects NaN, Inf, suspicious shapes, and computes stats
 
-import type {
-  ValidationResult,
-  ValidationWarning,
-  ValidationError,
-  DataStats,
-} from './types.ts';
+import type { ValidationResult, ValidationWarning, ValidationError, DataStats } from './types.ts';
 
 /**
  * Create empty/default stats for early-return error cases.
@@ -35,7 +30,7 @@ function emptyStats(totalElements: number): DataStats {
  */
 export function validateTraceData(
   data: Float64Array | Float32Array,
-  shape: number[]
+  shape: number[],
 ): ValidationResult {
   const warnings: ValidationWarning[] = [];
   const errors: ValidationError[] = [];

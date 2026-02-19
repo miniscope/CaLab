@@ -70,16 +70,14 @@ export const advancedTutorial: Tutorial = {
     {
       element: '[data-tutorial="sidebar-toggle"]',
       title: 'Open the Sidebar',
-      description:
-        'Open the <b>Sidebar</b> to access the analysis panels.',
+      description: 'Open the <b>Sidebar</b> to access the analysis panels.',
       side: 'bottom',
     },
     // Step 9: Select metrics tab
     {
       element: '[data-tutorial="sidebar-tab-metrics"]',
       title: 'Select the Metrics Tab',
-      description:
-        '<b>Click the Metrics tab</b> for quantitative fit quality assessment.',
+      description: '<b>Click the Metrics tab</b> for quantitative fit quality assessment.',
       side: 'bottom',
     },
     // Step 10: Metrics dashboard

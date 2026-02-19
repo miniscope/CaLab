@@ -41,7 +41,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(true);
-      const nanWarning = result.warnings.find(w => w.type === 'nan_values');
+      const nanWarning = result.warnings.find((w) => w.type === 'nan_values');
       expect(nanWarning).toBeDefined();
       expect(nanWarning!.count).toBe(2);
       expect(nanWarning!.message).toContain('2');
@@ -55,7 +55,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(true);
-      const infWarning = result.warnings.find(w => w.type === 'inf_values');
+      const infWarning = result.warnings.find((w) => w.type === 'inf_values');
       expect(infWarning).toBeDefined();
       expect(infWarning!.count).toBe(2);
     });
@@ -68,7 +68,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(true);
-      const shapeWarning = result.warnings.find(w => w.type === 'suspicious_shape');
+      const shapeWarning = result.warnings.find((w) => w.type === 'suspicious_shape');
       expect(shapeWarning).toBeDefined();
       expect(shapeWarning!.message).toContain('4');
       expect(shapeWarning!.message).toContain('3');
@@ -81,7 +81,7 @@ describe('validateTraceData', () => {
 
       const result = validateTraceData(data, shape);
 
-      const shapeWarning = result.warnings.find(w => w.type === 'suspicious_shape');
+      const shapeWarning = result.warnings.find((w) => w.type === 'suspicious_shape');
       expect(shapeWarning).toBeUndefined();
     });
   });
@@ -94,7 +94,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(false);
-      const nanError = result.errors.find(e => e.type === 'all_nan');
+      const nanError = result.errors.find((e) => e.type === 'all_nan');
       expect(nanError).toBeDefined();
     });
 
@@ -105,7 +105,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(false);
-      const dimError = result.errors.find(e => e.type === 'not_2d');
+      const dimError = result.errors.find((e) => e.type === 'not_2d');
       expect(dimError).toBeDefined();
       expect(dimError!.message).toContain('1D');
     });
@@ -117,7 +117,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(false);
-      const dimError = result.errors.find(e => e.type === 'not_2d');
+      const dimError = result.errors.find((e) => e.type === 'not_2d');
       expect(dimError).toBeDefined();
       expect(dimError!.message).toContain('3D');
     });
@@ -129,7 +129,7 @@ describe('validateTraceData', () => {
       const result = validateTraceData(data, shape);
 
       expect(result.isValid).toBe(false);
-      const emptyError = result.errors.find(e => e.type === 'empty_array');
+      const emptyError = result.errors.find((e) => e.type === 'empty_array');
       expect(emptyError).toBeDefined();
     });
   });
@@ -159,7 +159,7 @@ describe('validateTraceData', () => {
 
       expect(result.stats.negativeCount).toBe(3);
       // Negative values should NOT produce a warning (deltaF/F can be negative)
-      const negWarning = result.warnings.find(w => w.type === 'negative_values');
+      const negWarning = result.warnings.find((w) => w.type === 'negative_values');
       expect(negWarning).toBeUndefined();
     });
 

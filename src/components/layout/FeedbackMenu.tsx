@@ -1,5 +1,9 @@
 import { createSignal, onCleanup, Show } from 'solid-js';
-import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '../../lib/community/github-issue-url.ts';
+import {
+  buildFeedbackUrl,
+  buildFeatureRequestUrl,
+  buildBugReportUrl,
+} from '../../lib/community/github-issue-url.ts';
 import '../../styles/feedback-menu.css';
 
 const MENU_ITEMS = [
@@ -37,7 +41,8 @@ export function FeedbackMenu() {
   const toggle = () => {
     const next = !open();
     setOpen(next);
-    if (next) attach(); else detach();
+    if (next) attach();
+    else detach();
   };
 
   return (

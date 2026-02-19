@@ -48,7 +48,9 @@ export function CellCard(props: CellCardProps) {
   // Per-card independent zoom window — skip past the convolution transient at t=0
   const transientEnd = () => Math.min(2 * tauDecay(), totalDuration());
   const [zoomStart, setZoomStart] = createSignal(transientEnd());
-  const [zoomEnd, setZoomEnd] = createSignal(Math.min(transientEnd() + DEFAULT_ZOOM_WINDOW_S, totalDuration()));
+  const [zoomEnd, setZoomEnd] = createSignal(
+    Math.min(transientEnd() + DEFAULT_ZOOM_WINDOW_S, totalDuration()),
+  );
 
   // Sync zoom end when trace changes
   createEffect(() => {
@@ -110,8 +112,8 @@ export function CellCard(props: CellCardProps) {
               solverStatus={props.solverStatus}
               iterationCount={props.iterationCount}
             />
-          </span>
-          {' '}Cell {props.cellIndex + 1}
+          </span>{' '}
+          Cell {props.cellIndex + 1}
         </span>
       </div>
 
@@ -147,7 +149,11 @@ export function CellCard(props: CellCardProps) {
           />
         </div>
       </Show>
-      <div class="cell-card__resize-handle" data-tutorial="resize-handle" onMouseDown={handleResizeStart} />
+      <div
+        class="cell-card__resize-handle"
+        data-tutorial="resize-handle"
+        onMouseDown={handleResizeStart}
+      />
     </div>
   );
 }
