@@ -5,7 +5,6 @@ export {
   fetchFieldOptions,
   deleteSubmission,
 } from './community-service.ts';
-export { computeDatasetHash } from './dataset-hash.ts';
 export {
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,

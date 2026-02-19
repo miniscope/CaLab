@@ -1,2 +1,2 @@
-export type { TutorialStep, Tutorial, TutorialProgress } from './types.ts';
-export { saveProgress, getProgress, getAllProgress, isCompleted } from './progress.ts';
+export type { TutorialStep, Tutorial } from './types.ts';
+export { saveProgress, getProgress, isCompleted } from './progress.ts';
