@@ -11,6 +11,7 @@ import type { CellSolverStatus } from '@catune/core';
 import { computePeakSNR, snrToQuality } from '@catune/core';
 import { setHoveredCell } from '../../lib/multi-cell-store.ts';
 import { cardHeight, setCardHeight, tauDecay } from '../../lib/viz-store.ts';
+import { DEFAULT_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
 
 export interface CellCardProps {
   cellIndex: number;
@@ -33,7 +34,6 @@ export interface CellCardProps {
   groundTruthCalcium?: Float64Array;
 }
 
-const DEFAULT_ZOOM_WINDOW_S = 20; // 20 seconds default zoom window
 const ZOOM_SYNC_KEY = 'catune-card-zoom';
 const MIN_CARD_HEIGHT = 200;
 const MAX_CARD_HEIGHT = 800;

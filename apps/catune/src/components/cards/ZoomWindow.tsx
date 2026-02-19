@@ -190,7 +190,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
    */
   const computeResiduals = (
     dsRaw: number[],
-    dsReconv: number[],
+    dsReconv: (number | null)[],
     zMin: number,
     zMax: number,
     dsXLength: number,
@@ -280,7 +280,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
 
     // Reconvolution trace — same z-score space as raw
     // Uses filtered transform when filter is active (fit sits on filtered data)
-    const dsReconv = sliceAndDownsample(
+    const dsReconv: (number | null)[] = sliceAndDownsample(
       props.reconvolutionTrace,
       x,
       startSample,
@@ -298,7 +298,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     if (startSample < transientTime * fs) {
       for (let i = 0; i < dsReconv.length; i++) {
         if (dsX[i] < transientTime) {
-          (dsReconv as any)[i] = null;
+          dsReconv[i] = null;
         } else {
           break;
         }
@@ -369,7 +369,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
       dsRaw,
       dsFiltered,
       dsDeconv,
-      dsReconv,
+      dsReconv as number[],
       dsResid,
       dsPinnedDeconv,
       dsPinnedReconv,

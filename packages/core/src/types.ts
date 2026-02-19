@@ -1,6 +1,3 @@
-// Shared type definitions for CaTune Phase 1
-// All types used across the data import pipeline
-
 // --- Typed Array Union ---
 
 export type NumericTypedArray =

@@ -1,5 +1,5 @@
 import { Show } from 'solid-js';
-import { user, authLoading } from '../../lib/community/community-store.ts';
+import { user, authLoading } from '../../lib/community/index.ts';
 
 /**
  * Lightweight page shown when a Supabase magic-link redirects here.

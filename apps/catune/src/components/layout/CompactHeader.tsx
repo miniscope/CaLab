@@ -8,7 +8,6 @@ import {
 } from '../../lib/data-store.ts';
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { supabaseEnabled } from '../../lib/community/index.ts';
-import { sidebarOpen, setSidebarOpen } from '@catune/ui';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
 import { FeedbackMenu } from './FeedbackMenu.tsx';
 import { formatDuration } from '@catune/core';
@@ -17,6 +16,10 @@ import '../../styles/compact-header.css';
 export interface CompactHeaderProps {
   tutorialOpen: Accessor<boolean>;
   onTutorialToggle: () => void;
+  /** Whether the sidebar is currently open. */
+  sidebarOpen?: boolean;
+  /** Callback invoked when the user clicks the sidebar toggle. */
+  onToggleSidebar?: () => void;
 }
 
 export function CompactHeader(props: CompactHeaderProps) {
@@ -64,9 +67,9 @@ export function CompactHeader(props: CompactHeaderProps) {
         <FeedbackMenu />
         <TutorialLauncher isOpen={props.tutorialOpen} onToggle={props.onTutorialToggle} />
         <button
-          class={`btn-secondary btn-small${sidebarOpen() ? ' btn-active' : ''}`}
+          class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
           data-tutorial="sidebar-toggle"
-          onClick={() => setSidebarOpen((prev) => !prev)}
+          onClick={() => props.onToggleSidebar?.()}
         >
           Sidebar
         </button>

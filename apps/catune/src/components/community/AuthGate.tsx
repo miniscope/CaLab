@@ -6,12 +6,7 @@
  */
 
 import { Show, createSignal } from 'solid-js';
-import {
-  user,
-  authLoading,
-  signInWithEmail,
-  signOut,
-} from '../../lib/community/community-store.ts';
+import { user, authLoading, signInWithEmail, signOut } from '../../lib/community/index.ts';
 
 export function AuthGate() {
   const [email, setEmail] = createSignal('');

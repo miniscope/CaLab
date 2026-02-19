@@ -57,30 +57,12 @@ export default tseslint.config(
     },
   },
 
-  // Import boundary: only packages/core/src/wasm-adapter.ts may import from the WASM pkg
-  {
-    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
-    ignores: ['packages/core/src/wasm-adapter.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['**/wasm/catune-solver/pkg/*'],
-              message: 'Import from @catune/core instead of the WASM pkg directly.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // Import boundary: only packages/community/src/supabase.ts may import @supabase/supabase-js
+  // Import boundaries (merged into one block so flat-config doesn't silently override)
   // (community-store uses type imports for User/Session — allowed since it's in the community boundary)
   {
     files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
     ignores: [
+      'packages/core/src/wasm-adapter.ts',
       'packages/community/src/supabase.ts',
       'apps/catune/src/lib/community/community-store.ts',
     ],
@@ -90,23 +72,13 @@ export default tseslint.config(
         {
           patterns: [
             {
+              group: ['**/wasm/catune-solver/pkg/*'],
+              message: 'Import from @catune/core instead of the WASM pkg directly.',
+            },
+            {
               group: ['@supabase/supabase-js'],
               message: 'Import from @catune/community instead of @supabase/supabase-js directly.',
             },
-          ],
-        },
-      ],
-    },
-  },
-
-  // Import boundary: no deep imports into package internals — use barrels only
-  {
-    files: ['apps/**/*.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
             {
               group: ['@catune/*/src/*'],
               message:

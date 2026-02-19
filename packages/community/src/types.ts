@@ -63,21 +63,6 @@ export interface CommunitySubmission {
  */
 export type SubmissionPayload = Omit<CommunitySubmission, 'id' | 'created_at' | 'user_id'>;
 
-/** User-entered metadata fields from the submission form. */
-export interface SubmissionMetadata {
-  // Required
-  indicator: string;
-  species: string;
-  brainRegion: string;
-
-  // Optional
-  labName?: string;
-  orcid?: string;
-  virusConstruct?: string;
-  timeSinceInjectionDays?: number;
-  notes?: string;
-}
-
 /** Filter state for the community browser. */
 export interface FilterState {
   indicator: string | null;
@@ -87,7 +72,7 @@ export interface FilterState {
 }
 
 /** Result of parameter validation before submission. */
-export interface ValidationResult {
+export interface SubmissionValidationResult {
   valid: boolean;
   issues: string[];
 }

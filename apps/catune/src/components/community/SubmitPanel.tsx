@@ -31,6 +31,8 @@ import { SubmitForm } from './SubmitForm.tsx';
 import { SubmissionSummary } from './SubmissionSummary.tsx';
 import '../../styles/community.css';
 
+const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
+
 export function SubmitPanel() {
   // --- UI state ---
   const [formOpen, setFormOpen] = createSignal(false);
@@ -64,11 +66,19 @@ export function SubmitPanel() {
     const shape = effectiveShape();
     const file = rawFile();
 
-    const exportData = buildExportData(tauRise(), tauDecay(), lambda(), fs, filterEnabled(), {
-      sourceFilename: file?.name,
-      numCells: shape?.[0],
-      numTimepoints: shape?.[1],
-    });
+    const exportData = buildExportData(
+      tauRise(),
+      tauDecay(),
+      lambda(),
+      fs,
+      filterEnabled(),
+      {
+        sourceFilename: file?.name,
+        numCells: shape?.[0],
+        numTimepoints: shape?.[1],
+      },
+      APP_VERSION,
+    );
 
     downloadExport(exportData);
   }
@@ -123,6 +133,7 @@ export function SubmitPanel() {
           demoPresetId: demoPreset()?.id,
           rawFileName: rawFile()?.name,
         },
+        APP_VERSION,
       );
 
       setLastSubmission(result);

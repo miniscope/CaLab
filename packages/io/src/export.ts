@@ -10,35 +10,11 @@
 
 import * as v from 'valibot';
 import { computeAR2 } from '@catune/core';
-import type { AR2Coefficients } from '@catune/core';
 import { CaTuneExportSchema } from '@catune/core';
+import type { CaTuneExportData } from '@catune/core';
 
-export interface CaTuneExport {
-  schema_version: string;
-  catune_version: string;
-  export_date: string;
-  parameters: {
-    tau_rise_s: number;
-    tau_decay_s: number;
-    lambda: number;
-    sampling_rate_hz: number;
-    filter_enabled: boolean;
-  };
-  ar2_coefficients: AR2Coefficients;
-  formulation: {
-    model: string;
-    objective: string;
-    kernel: string;
-    ar2_relation: string;
-    lambda_definition: string;
-    convergence: string;
-  };
-  metadata: {
-    source_filename?: string;
-    num_cells?: number;
-    num_timepoints?: number;
-  };
-}
+/** Alias preserving the public API name used by io consumers. */
+export type CaTuneExport = CaTuneExportData;
 
 export function buildExportData(
   tauRise: number,
@@ -51,12 +27,13 @@ export function buildExportData(
     numCells?: number;
     numTimepoints?: number;
   },
+  version: string = 'dev',
 ): CaTuneExport {
   const ar2 = computeAR2(tauRise, tauDecay, fs);
 
   return {
     schema_version: '1.1.0',
-    catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
+    catune_version: version,
     export_date: new Date().toISOString(),
     parameters: {
       tau_rise_s: tauRise,
@@ -115,5 +92,5 @@ export function parseExport(data: unknown): CaTuneExport {
     const issues = result.issues.map((i) => i.message).join('; ');
     throw new Error(`Invalid CaTune export: ${issues}`);
   }
-  return result.output as CaTuneExport;
+  return result.output;
 }

@@ -7,8 +7,12 @@ import { Show, For, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { Accessor, Setter } from 'solid-js';
 import { isDemo } from '../../lib/data-store.ts';
-import { user, fieldOptions, fieldOptionsLoading } from '../../lib/community/community-store.ts';
-import { buildFieldOptionRequestUrl } from '../../lib/community/index.ts';
+import {
+  user,
+  fieldOptions,
+  fieldOptionsLoading,
+  buildFieldOptionRequestUrl,
+} from '../../lib/community/index.ts';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import { AuthGate } from './AuthGate.tsx';
 import { PrivacyNotice } from './PrivacyNotice.tsx';

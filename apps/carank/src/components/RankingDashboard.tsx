@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js';
+import { createMemo } from 'solid-js';
 import { DashboardPanel } from '@catune/ui';
 import { computePeakSNR, snrToQuality } from '@catune/core';
 import type { QualityTier } from '@catune/core';
@@ -33,7 +34,7 @@ function computeMetrics(data: CnmfData): CellMetric[] {
 }
 
 export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
-  const metrics = () => computeMetrics(props.data);
+  const metrics = createMemo(() => computeMetrics(props.data));
   const good = () => metrics().filter((m) => m.quality === 'good').length;
   const fair = () => metrics().filter((m) => m.quality === 'fair').length;
   const poor = () => metrics().filter((m) => m.quality === 'poor').length;

@@ -47,6 +47,7 @@ export interface SubmissionContext {
 export async function submitToSupabase(
   fields: FormFields,
   ctx: SubmissionContext,
+  version: string = 'dev',
 ): Promise<CommunitySubmission> {
   // Compute dataset hash from parsed data
   let datasetHash = 'no-data';
@@ -92,7 +93,7 @@ export async function submitToSupabase(
     dataset_hash: datasetHash,
     filter_enabled: ctx.filterEnabled,
     data_source: ctx.rawFileName ? 'user' : 'demo',
-    catune_version: import.meta.env.VITE_APP_VERSION || 'dev',
+    catune_version: version,
     extra_metadata: ctx.isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
   };
 

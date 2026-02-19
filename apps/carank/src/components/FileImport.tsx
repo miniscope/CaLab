@@ -9,6 +9,7 @@ interface FileImportProps {
 export function FileImport(props: FileImportProps): JSX.Element {
   const [dragging, setDragging] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  let fileInputRef!: HTMLInputElement;
 
   const processFile = async (file: File) => {
     setError(null);
@@ -50,14 +51,7 @@ export function FileImport(props: FileImportProps): JSX.Element {
   const handleDragLeave = () => setDragging(false);
 
   const handleClick = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.npy';
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) processFile(file);
-    };
-    input.click();
+    fileInputRef.click();
   };
 
   return (
@@ -85,6 +79,17 @@ export function FileImport(props: FileImportProps): JSX.Element {
           <span>{error()}</span>
         </div>
       )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".npy"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          if (file) processFile(file);
+        }}
+      />
     </div>
   );
 }

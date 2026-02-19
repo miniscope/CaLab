@@ -20,15 +20,13 @@ export {
   buildBugReportUrl,
 } from './github-issue-url.ts';
 export { validateSubmission } from './quality-checks.ts';
-export { submitToSupabase } from './submitAction.ts';
-export type { FormFields, SubmissionContext } from './submitAction.ts';
+export { submitToSupabase } from './submit-action.ts';
 export type {
   DataSource,
   CommunitySubmission,
   SubmissionPayload,
-  SubmissionMetadata,
   FilterState,
-  ValidationResult,
+  SubmissionValidationResult,
   FieldOption,
   FieldOptions,
 } from './types.ts';

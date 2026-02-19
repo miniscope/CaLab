@@ -55,7 +55,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const [demoDuration, setDemoDuration] = createSignal(5);
   const [demoFps, setDemoFps] = createSignal(30);
   const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_PRESET_ID);
-  const [randomSeed, setRandomSeed] = createSignal(false);
+  const [useRandomSeed, setUseRandomSeed] = createSignal(false);
 
   const durationDisplay = () => formatDuration(durationSeconds(), true);
 
@@ -157,8 +157,8 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           <label class="demo-data-row__checkbox">
             <input
               type="checkbox"
-              checked={randomSeed()}
-              onChange={(e) => setRandomSeed(e.currentTarget.checked)}
+              checked={useRandomSeed()}
+              onChange={(e) => setUseRandomSeed(e.currentTarget.checked)}
             />
             <span>Random seed</span>
           </label>
@@ -170,7 +170,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
                 durationMinutes: demoDuration(),
                 fps: demoFps(),
                 presetId: demoPresetId(),
-                seed: randomSeed() ? 'random' : undefined,
+                seed: useRandomSeed() ? 'random' : undefined,
               })
             }
           >

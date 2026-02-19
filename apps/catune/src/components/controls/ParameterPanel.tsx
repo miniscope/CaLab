@@ -18,16 +18,7 @@ import { PARAM_RANGES } from '@catune/core';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import '../../styles/controls.css';
 
-export interface ParameterPanelProps {
-  /** Called when any slider commits (onChange). Triggers batch re-solve. */
-  onBatchSolve?: () => void;
-}
-
-export function ParameterPanel(props: ParameterPanelProps) {
-  const handleCommit = () => {
-    props.onBatchSolve?.();
-  };
-
+export function ParameterPanel() {
   const trueRise = () => {
     if (!groundTruthVisible() || !isDemo() || !demoPreset()) return undefined;
     return demoPreset()!.params.tauRise;
@@ -50,7 +41,6 @@ export function ParameterPanel(props: ParameterPanelProps) {
           step={PARAM_RANGES.tauRise.step}
           format={(v) => (v * 1000).toFixed(1)}
           unit="ms"
-          onCommit={handleCommit}
           data-tutorial="slider-rise"
           trueValue={trueRise()}
         />
@@ -63,7 +53,6 @@ export function ParameterPanel(props: ParameterPanelProps) {
           step={PARAM_RANGES.tauDecay.step}
           format={(v) => (v * 1000).toFixed(1)}
           unit="ms"
-          onCommit={handleCommit}
           data-tutorial="slider-decay"
           trueValue={trueDecay()}
         />
@@ -75,7 +64,6 @@ export function ParameterPanel(props: ParameterPanelProps) {
           max={PARAM_RANGES.lambda.max}
           step={0.01}
           format={(v) => v.toFixed(2)}
-          onCommit={handleCommit}
           data-tutorial="slider-lambda"
         />
       </div>

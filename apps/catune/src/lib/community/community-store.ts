@@ -4,7 +4,7 @@
 // When Supabase is not configured, sets authLoading to false immediately.
 
 import { createSignal } from 'solid-js';
-import type { User, Session } from '@supabase/supabase-js';
+import type { User } from '@supabase/supabase-js';
 import {
   getSupabase,
   supabaseEnabled,
@@ -20,7 +20,6 @@ import type { FieldOptions } from '@catune/community';
 // --- Auth signals ---
 
 const [user, setUser] = createSignal<User | null>(null);
-const [session, setSession] = createSignal<Session | null>(null);
 const [authLoading, setAuthLoading] = createSignal<boolean>(true);
 
 // --- Field options signals ---
@@ -67,14 +66,12 @@ if (supabaseEnabled) {
 
     // Subscribe to auth state changes (no async in callback per Supabase docs)
     client.auth.onAuthStateChange((_event, sess) => {
-      setSession(sess);
       setUser(sess?.user ?? null);
       setAuthLoading(false);
     });
 
     // Load initial session
     client.auth.getSession().then(({ data: { session: sess } }) => {
-      setSession(sess);
       setUser(sess?.user ?? null);
       setAuthLoading(false);
     });

@@ -1,5 +1,4 @@
 export { initWasm, Solver } from './wasm-adapter.ts';
-export type { InitInput, InitOutput } from './wasm-adapter.ts';
 export { CaTuneExportSchema } from './schemas/export-schema.ts';
 export type { CaTuneExportData } from './schemas/export-schema.ts';
 
@@ -20,10 +19,7 @@ export { SAMPLING_RATE_PRESETS } from './types.ts';
 export type {
   CellSolverStatus,
   SolverParams,
-  IntermediateResult,
-  SolveResult,
   WarmStartStrategy,
-  SolveRequest,
   PoolWorkerInbound,
   PoolWorkerOutbound,
 } from './solver-types.ts';

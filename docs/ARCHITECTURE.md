@@ -84,7 +84,7 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── supabase.ts      # Lazy client singleton
 │   │       ├── community-service.ts  # CRUD operations
 │   │       ├── types.ts         # CommunitySubmission, FilterState, etc.
-│   │       ├── submitAction.ts  # Form → payload logic
+│   │       ├── submit-action.ts  # Form → payload logic
 │   │       ├── quality-checks.ts
 │   │       ├── field-options.ts # Hardcoded option arrays
 │   │       ├── dataset-hash.ts  # SHA-256 hash

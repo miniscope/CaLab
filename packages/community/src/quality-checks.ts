@@ -1,7 +1,7 @@
 // Parameter validation for community submissions.
 // Hard limits block submission (validateSubmission).
 
-import type { ValidationResult } from './types.ts';
+import type { SubmissionValidationResult } from './types.ts';
 
 /** Hard parameter range limits that block submission if violated. */
 const HARD_LIMITS = {
@@ -22,7 +22,7 @@ interface ValidationParams {
  * Validate parameters against hard limits.
  * Returns valid=false with human-readable issues if any check fails.
  */
-export function validateSubmission(params: ValidationParams): ValidationResult {
+export function validateSubmission(params: ValidationParams): SubmissionValidationResult {
   const issues: string[] = [];
 
   // tau_rise range check

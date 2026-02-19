@@ -69,6 +69,10 @@ const App: Component = () => {
 
   const hasFile = () => !!rawFile();
 
+  // Sidebar state — owned by the app, passed to DashboardShell & CompactHeader
+  const [sidebarOpen, setSidebarOpen] = createSignal(false);
+  const toggleSidebar = () => setSidebarOpen((prev) => !prev);
+
   // Tutorial panel state
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
 
@@ -153,10 +157,14 @@ const App: Component = () => {
         }
       >
         <DashboardShell
+          sidebarOpen={sidebarOpen()}
+          onToggleSidebar={toggleSidebar}
           header={
             <CompactHeader
               tutorialOpen={tutorialOpen}
               onTutorialToggle={() => setTutorialOpen((prev) => !prev)}
+              sidebarOpen={sidebarOpen()}
+              onToggleSidebar={toggleSidebar}
             />
           }
           sidebar={
