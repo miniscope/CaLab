@@ -42,6 +42,8 @@ export interface Tutorial {
   estimatedMinutes: number;
   /** Highlight this tutorial as recommended in the tutorial panel. */
   recommended?: boolean;
+  /** Whether this tutorial requires data to be loaded. Defaults to true. */
+  requiresData?: boolean;
   /** Ordered array of tutorial steps. */
   steps: TutorialStep[];
 }

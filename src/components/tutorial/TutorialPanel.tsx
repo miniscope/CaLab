@@ -27,7 +27,8 @@ export function TutorialPanel(props: TutorialPanelProps): JSX.Element {
   const dataReady = () => importStep() === 'ready';
 
   const handleCardClick = (tutorial: Tutorial) => {
-    if (!dataReady()) return;
+    const needsData = tutorial.requiresData !== false;
+    if (needsData && !dataReady()) return;
     if (!arePrerequisitesMet(tutorial)) return;
     if (isTutorialActive()) return;
 
@@ -86,12 +87,12 @@ export function TutorialPanel(props: TutorialPanelProps): JSX.Element {
                     Complete {tutorial.prerequisites.map(getPrereqName).join(', ')} first
                   </span>
                 </Show>
-                <Show when={!locked() && !dataReady()}>
+                <Show when={!locked() && !dataReady() && tutorial.requiresData !== false}>
                   <span style={{ color: 'var(--text-secondary)' }}>
                     Load data first to start tutorials
                   </span>
                 </Show>
-                <Show when={!locked() && dataReady()}>
+                <Show when={!locked() && (dataReady() || tutorial.requiresData === false)}>
                   <span style={{ color: completed() ? 'var(--success)' : 'var(--accent)' }}>
                     {statusText()}
                   </span>

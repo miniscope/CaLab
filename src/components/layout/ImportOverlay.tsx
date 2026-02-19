@@ -17,6 +17,9 @@ import {
 import { formatDuration } from '../../lib/format-utils.ts';
 import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '../../lib/chart/demo-presets.ts';
 import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '../../lib/community/github-issue-url.ts';
+import { getTutorialById } from '../../lib/tutorial/content/index.ts';
+import { startTutorial } from '../../lib/tutorial/tutorial-engine.ts';
+import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   'drop':          { num: 1, label: 'Load Data' },
@@ -61,6 +64,22 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
           Calcium Deconvolution Parameter Tuning
         </p>
       </header>
+
+      {/* Theory tutorial link */}
+      <Show when={importStep() === 'drop' && !isTutorialActive()}>
+        <div class="theory-tutorial-link">
+          <span>New to deconvolution?</span>
+          <button
+            class="btn-secondary btn-small"
+            onClick={() => {
+              const theory = getTutorialById('theory');
+              if (theory) startTutorial(theory);
+            }}
+          >
+            Start Theory Tutorial
+          </button>
+        </div>
+      </Show>
 
       {/* Step indicator */}
       <div class="step-indicator">

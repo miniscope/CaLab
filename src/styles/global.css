@@ -133,6 +133,15 @@ a:hover {
   width: 100%;
 }
 
+.theory-tutorial-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
 .import-feedback {
   display: flex;
   align-items: center;

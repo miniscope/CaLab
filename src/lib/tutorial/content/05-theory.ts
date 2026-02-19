@@ -21,6 +21,7 @@ export const theoryTutorial: Tutorial = {
   prerequisites: [],
   estimatedMinutes: 8,
   recommended: true,
+  requiresData: false,
   steps: [
     // Step 1: Introduction
     {
