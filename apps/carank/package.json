@@ -15,6 +15,7 @@
   "dependencies": {
     "@calab/core": "*",
     "@calab/io": "*",
+    "@calab/tutorials": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.11"
   }

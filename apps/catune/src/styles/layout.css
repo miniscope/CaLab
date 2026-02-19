@@ -1,30 +1,6 @@
 /* CaTune Layout — App-specific layout rules */
 /* Layout primitives (DashboardPanel, VizLayout, DashboardShell) moved to @calab/ui */
 
-/* ========================
-   Parameter Strip — compact left column
-   ======================== */
-.param-strip {
-  display: flex;
-  flex-direction: column;
-  gap: var(--panel-gap);
-  width: 260px;
-  min-width: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-height: 0;
-}
-
-/* Main content area: selector bar + card grid stacked */
-.main-content-area {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
 .param-strip__toolbar {
   display: flex;
   flex-direction: column;

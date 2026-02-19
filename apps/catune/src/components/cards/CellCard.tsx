@@ -9,6 +9,7 @@ import { ZoomWindow } from './ZoomWindow.tsx';
 import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '@calab/core';
 import { computePeakSNR, snrToQuality } from '@calab/core';
+import { Card } from '@calab/ui';
 import { setHoveredCell } from '../../lib/multi-cell-store.ts';
 import { cardHeight, setCardHeight, tauDecay } from '../../lib/viz-store.ts';
 import { DEFAULT_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
@@ -35,8 +36,6 @@ export interface CellCardProps {
 }
 
 const ZOOM_SYNC_KEY = 'catune-card-zoom';
-const MIN_CARD_HEIGHT = 200;
-const MAX_CARD_HEIGHT = 800;
 
 export function CellCard(props: CellCardProps) {
   const totalDuration = createMemo(() => props.rawTrace.length / props.samplingRate);
@@ -65,27 +64,6 @@ export function CellCard(props: CellCardProps) {
     props.onZoomChange?.(props.cellIndex, start, end);
   };
 
-  const handleResizeStart = (e: MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startY = e.clientY;
-    const startHeight = cardHeight();
-
-    const onMove = (ev: MouseEvent) => {
-      ev.preventDefault();
-      const delta = ev.clientY - startY;
-      setCardHeight(Math.max(MIN_CARD_HEIGHT, Math.min(MAX_CARD_HEIGHT, startHeight + delta)));
-    };
-
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
   const statusClass = () => {
     if (props.isActive) return 'cell-card--active';
     const s = props.solverStatus ?? 'stale';
@@ -93,15 +71,17 @@ export function CellCard(props: CellCardProps) {
   };
 
   return (
-    <div
-      class={`cell-card ${statusClass()}`}
+    <Card
+      class={statusClass()}
       data-cell-index={props.cellIndex}
       data-tutorial={props.isActive ? 'cell-card-active' : undefined}
       ref={props.cardRef}
       onClick={() => props.onClick?.()}
       onMouseEnter={() => setHoveredCell(props.cellIndex)}
       onMouseLeave={() => setHoveredCell(null)}
-      style={{ height: `${cardHeight()}px` }}
+      height={cardHeight()}
+      resizable
+      onResize={setCardHeight}
     >
       <div class="cell-card__header">
         <span class="cell-card__title">
@@ -149,11 +129,6 @@ export function CellCard(props: CellCardProps) {
           />
         </div>
       </Show>
-      <div
-        class="cell-card__resize-handle"
-        data-tutorial="resize-handle"
-        onMouseDown={handleResizeStart}
-      />
-    </div>
+    </Card>
   );
 }

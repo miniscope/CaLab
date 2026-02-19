@@ -1,11 +1,13 @@
-import type { JSX } from 'solid-js';
-import { CompactHeader } from '@calab/ui';
+import type { Accessor, JSX } from 'solid-js';
+import { CompactHeader, TutorialLauncher } from '@calab/ui';
 
 interface HeaderProps {
   fileName: string;
   numCells: number;
   numTimepoints: number;
   onChangeData: () => void;
+  tutorialOpen: Accessor<boolean>;
+  onTutorialToggle: () => void;
 }
 
 export function Header(props: HeaderProps): JSX.Element {
@@ -25,9 +27,12 @@ export function Header(props: HeaderProps): JSX.Element {
         </>
       }
       actions={
-        <button class="btn-secondary btn-small" onClick={props.onChangeData}>
-          Change Data
-        </button>
+        <>
+          <TutorialLauncher isOpen={props.tutorialOpen} onToggle={props.onTutorialToggle} />
+          <button class="btn-secondary btn-small" onClick={props.onChangeData}>
+            Change Data
+          </button>
+        </>
       }
     />
   );

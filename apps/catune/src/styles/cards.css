@@ -1,28 +1,9 @@
 /* Card Grid and Cell Card styles */
+/* Grid container styles (.card-grid-container, .card-grid, .card-grid__empty) in @calab/ui */
 
 /* ========================
-   Card Grid Container — only scrollable area
+   Card Grid Progress (CaTune-specific)
    ======================== */
-.card-grid-container {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.card-grid {
-  --grid-cols: 2;
-  display: grid;
-  grid-template-columns: repeat(var(--grid-cols), minmax(0, 1fr));
-  gap: var(--panel-gap);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-xs);
-  flex: 1;
-  min-height: 0;
-}
-
 .card-grid__progress {
   text-align: center;
   font-size: 0.85rem;
@@ -31,38 +12,10 @@
   animation: convergence-pulse 1s ease-in-out infinite;
 }
 
-.card-grid__empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
 /* ========================
-   Cell Card
+   Cell Card — status variants + domain-specific children
+   Base card styles (.calab-card) provided by @calab/ui
    ======================== */
-.cell-card {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--panel-radius);
-  padding: var(--space-sm);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-  cursor: pointer;
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
-  min-height: 280px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.cell-card:hover {
-  border-color: var(--accent);
-}
 
 /* Status-based border glow
    Box-shadow rgba values correspond to the semantic status colors:
@@ -106,35 +59,6 @@
   font-weight: var(--font-weight-semibold);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-}
-
-/* ========================
-   Resize Handle
-   ======================== */
-.cell-card__resize-handle {
-  flex-shrink: 0;
-  height: 6px;
-  cursor: ns-resize;
-  position: relative;
-  margin-top: auto;
-}
-
-.cell-card__resize-handle::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 32px;
-  height: 3px;
-  border-top: 1px solid var(--border-default);
-  border-bottom: 1px solid var(--border-default);
-  opacity: 0.4;
-  transition: opacity var(--transition-fast);
-}
-
-.cell-card__resize-handle:hover::after {
-  opacity: 0.8;
 }
 
 /* ========================
