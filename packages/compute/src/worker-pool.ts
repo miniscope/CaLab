@@ -2,7 +2,7 @@
 // Dispatches jobs to idle workers, queues when all busy,
 // supports per-job cancellation and bulk cancelAll.
 
-import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from '@catune/core';
+import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from '@calab/core';
 
 export interface PoolJob {
   jobId: number;

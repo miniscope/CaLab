@@ -1,7 +1,7 @@
 // Data validation for calcium imaging trace data
 // Single-pass validation: detects NaN, Inf, suspicious shapes, and computes stats
 
-import type { ValidationResult, ValidationWarning, ValidationError, DataStats } from '@catune/core';
+import type { ValidationResult, ValidationWarning, ValidationError, DataStats } from '@calab/core';
 
 /**
  * Create empty/default stats for early-return error cases.

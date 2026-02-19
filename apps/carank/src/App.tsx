@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js';
 import { Show, createSignal } from 'solid-js';
-import { DashboardShell, VizLayout } from '@catune/ui';
+import { DashboardShell, VizLayout } from '@calab/ui';
 import { Header } from './components/Header.tsx';
 import { FileImport } from './components/FileImport.tsx';
 import { RankingDashboard } from './components/RankingDashboard.tsx';

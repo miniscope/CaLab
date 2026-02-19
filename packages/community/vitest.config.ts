@@ -4,7 +4,7 @@ import path from 'node:path';
 export default defineConfig({
   resolve: {
     alias: {
-      '@catune/core': path.resolve(__dirname, '../core/src'),
+      '@calab/core': path.resolve(__dirname, '../core/src'),
     },
   },
   test: {

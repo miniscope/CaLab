@@ -14,8 +14,8 @@ import {
   BRAIN_REGION_OPTIONS,
   MICROSCOPE_TYPE_OPTIONS,
   CELL_TYPE_OPTIONS,
-} from '@catune/community';
-import type { FieldOptions } from '@catune/community';
+} from '@calab/community';
+import type { FieldOptions } from '@calab/community';
 
 // --- Auth signals ---
 

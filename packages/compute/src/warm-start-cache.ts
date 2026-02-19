@@ -1,4 +1,4 @@
-import type { SolverParams, WarmStartStrategy } from '@catune/core';
+import type { SolverParams, WarmStartStrategy } from '@calab/core';
 
 /** Number of tau_decay time constants of padding on each side of the visible window. */
 const PADDING_TAU_MULTIPLIER = 5;

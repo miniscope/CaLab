@@ -1,7 +1,7 @@
 // TUTR-03: Advanced Techniques tutorial.
 // Pure data definition -- no driver.js imports (TUTR-05 compliance).
 
-import type { Tutorial } from '@catune/tutorials';
+import type { Tutorial } from '@calab/tutorials';
 
 export const advancedTutorial: Tutorial = {
   id: 'advanced',

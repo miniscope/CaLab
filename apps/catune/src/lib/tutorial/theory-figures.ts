@@ -9,8 +9,8 @@
  * rest of CaTune.
  */
 
-import { computeKernel, computeKernelAnnotations, generateSyntheticTrace } from '@catune/compute';
-import { initWasm, Solver } from '@catune/core';
+import { computeKernel, computeKernelAnnotations, generateSyntheticTrace } from '@calab/compute';
+import { initWasm, Solver } from '@calab/core';
 
 /** Run the FISTA solver synchronously on the main thread (fine for small traces). */
 function runSolver(

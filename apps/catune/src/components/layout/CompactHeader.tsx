@@ -1,5 +1,5 @@
 import { Show, type Accessor } from 'solid-js';
-import { CompactHeader } from '@catune/ui';
+import { CompactHeader } from '@calab/ui';
 import {
   rawFile,
   effectiveShape,
@@ -10,7 +10,7 @@ import {
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
 import { FeedbackMenu } from './FeedbackMenu.tsx';
-import { formatDuration } from '@catune/core';
+import { formatDuration } from '@calab/core';
 
 export interface CaTuneHeaderProps {
   tutorialOpen: Accessor<boolean>;

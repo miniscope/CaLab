@@ -66,29 +66,29 @@ npm run build:apps     # Builds all apps including yours
 The build and deploy scripts auto-discover apps from `apps/*/package.json`,
 so no changes are needed to `build-apps.mjs`, `combine-dist.mjs`, or CI.
 
-## Adding more `@catune/*` packages
+## Adding more `@calab/*` packages
 
-The template includes `@catune/core`, `@catune/io`, and `@catune/ui` by default.
-To add another package (e.g., `@catune/compute`):
+The template includes `@calab/core`, `@calab/io`, and `@calab/ui` by default.
+To add another package (e.g., `@calab/compute`):
 
 1. **package.json** — add to `dependencies`:
 
    ```json
-   "@catune/compute": "*"
+   "@calab/compute": "*"
    ```
 
 2. **vite.config.ts** — add alias:
 
    ```ts
-   '@catune/compute': path.resolve(repoRoot, 'packages/compute/src'),
+   '@calab/compute': path.resolve(repoRoot, 'packages/compute/src'),
    ```
 
 3. **tsconfig.json** — add path mapping and reference:
 
    ```json
    "paths": {
-     "@catune/compute": ["../../packages/compute/src/index.ts"],
-     "@catune/compute/*": ["../../packages/compute/src/*"]
+     "@calab/compute": ["../../packages/compute/src/index.ts"],
+     "@calab/compute/*": ["../../packages/compute/src/*"]
    }
    ```
 

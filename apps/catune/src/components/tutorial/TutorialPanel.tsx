@@ -2,11 +2,11 @@
 
 import { For, Show, type JSX } from 'solid-js';
 import { tutorials } from '../../lib/tutorial/content/index.ts';
-import { isCompleted, getProgress } from '@catune/tutorials';
+import { isCompleted, getProgress } from '@calab/tutorials';
 import { startTutorial } from '../../lib/tutorial/tutorial-engine.ts';
 import { isTutorialActive } from '../../lib/tutorial/tutorial-store.ts';
 import { importStep } from '../../lib/data-store.ts';
-import type { Tutorial } from '@catune/tutorials';
+import type { Tutorial } from '@calab/tutorials';
 
 interface TutorialPanelProps {
   onClose: () => void;

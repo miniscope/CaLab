@@ -6,7 +6,7 @@ import { createSignal, createEffect, on } from 'solid-js';
 import { multiCellResults } from '../multi-cell-store.ts';
 import { samplingRate } from '../data-store.ts';
 import { tauRise, tauDecay, selectedCell } from '../viz-store.ts';
-import { computePeriodogram } from '@catune/core';
+import { computePeriodogram } from '@calab/core';
 
 // Margin factors kept in sync with filter.rs
 const MARGIN_FACTOR_HP = 16.0;

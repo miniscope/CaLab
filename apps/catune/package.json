@@ -15,12 +15,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@catune/community": "*",
-    "@catune/compute": "*",
-    "@catune/core": "*",
-    "@catune/io": "*",
-    "@catune/tutorials": "*",
-    "@catune/ui": "*",
+    "@calab/community": "*",
+    "@calab/compute": "*",
+    "@calab/core": "*",
+    "@calab/io": "*",
+    "@calab/tutorials": "*",
+    "@calab/ui": "*",
     "@dschz/solid-uplot": "^0.5.2",
     "driver.js": "^1.4.0",
     "solid-js": "^1.9.11",

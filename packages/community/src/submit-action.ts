@@ -5,7 +5,7 @@
  * Separated from SubmitPanel UI to keep the component thin.
  */
 
-import { computeAR2 } from '@catune/core';
+import { computeAR2 } from '@calab/core';
 import { computeDatasetHash } from './dataset-hash.ts';
 import { submitParameters } from './community-service.ts';
 import type { SubmissionPayload, CommunitySubmission } from './types.ts';

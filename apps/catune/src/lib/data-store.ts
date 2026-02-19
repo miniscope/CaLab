@@ -2,9 +2,9 @@
 // Uses SolidJS signals for fine-grained reactivity
 
 import { createSignal, createMemo } from 'solid-js';
-import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@catune/core';
-import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@catune/compute';
-import type { DemoPreset } from '@catune/compute';
+import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@calab/core';
+import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@calab/compute';
+import type { DemoPreset } from '@calab/compute';
 
 // --- Core Signals ---
 

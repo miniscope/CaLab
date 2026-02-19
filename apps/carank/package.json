@@ -13,9 +13,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@catune/core": "*",
-    "@catune/io": "*",
-    "@catune/ui": "*",
+    "@calab/core": "*",
+    "@calab/io": "*",
+    "@calab/ui": "*",
     "solid-js": "^1.9.11"
   }
 }

@@ -2,7 +2,7 @@
 // Accepts .npy and .npz files, parses them, and updates the data store
 
 import { createSignal, Show } from 'solid-js';
-import { parseNpy, parseNpz, processNpyResult } from '@catune/io';
+import { parseNpy, parseNpz, processNpyResult } from '@calab/io';
 import {
   rawFile,
   setRawFile,

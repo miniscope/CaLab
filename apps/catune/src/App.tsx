@@ -10,7 +10,7 @@ import { CellSelector } from './components/controls/CellSelector.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
-import { DashboardPanel, VizLayout, DashboardShell } from '@catune/ui';
+import { DashboardPanel, VizLayout, DashboardShell } from '@calab/ui';
 import { CaTuneHeader } from './components/layout/CompactHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';

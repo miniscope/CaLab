@@ -5,7 +5,7 @@ import { driver, type DriveStep, type Config, type Driver, type PopoverDOM } fro
 import 'driver.js/dist/driver.css';
 import '../../styles/tutorial.css';
 
-import type { Tutorial } from '@catune/tutorials';
+import type { Tutorial } from '@calab/tutorials';
 import {
   setActiveTutorial,
   currentStepIndex,
@@ -15,7 +15,7 @@ import {
   setTutorialActionFired,
   isTutorialActive,
 } from './tutorial-store.ts';
-import { saveProgress } from '@catune/tutorials';
+import { saveProgress } from '@calab/tutorials';
 
 // --- Module state ---
 

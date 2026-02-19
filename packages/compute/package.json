@@ -1,5 +1,5 @@
 {
-  "name": "@catune/compute",
+  "name": "@calab/compute",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -9,6 +9,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@catune/core": "*"
+    "@calab/core": "*"
   }
 }

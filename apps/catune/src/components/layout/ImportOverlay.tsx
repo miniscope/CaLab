@@ -14,8 +14,8 @@ import {
   validationResult,
   npzArrays,
 } from '../../lib/data-store.ts';
-import { formatDuration } from '@catune/core';
-import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '@catune/compute';
+import { formatDuration } from '@calab/core';
+import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '@calab/compute';
 import {
   buildFeedbackUrl,
   buildFeatureRequestUrl,

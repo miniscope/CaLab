@@ -5,7 +5,7 @@
  */
 
 import { createMemo } from 'solid-js';
-import { computeKernel, computeKernelAnnotations } from '@catune/compute';
+import { computeKernel, computeKernelAnnotations } from '@calab/compute';
 import { kernelAnnotationsPlugin } from '../../lib/chart/kernel-annotations-plugin.ts';
 import { tauRise, tauDecay } from '../../lib/viz-store.ts';
 import { samplingRate, isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';

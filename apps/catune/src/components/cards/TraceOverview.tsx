@@ -6,7 +6,7 @@
  */
 
 import { createEffect, createMemo, onCleanup, onMount } from 'solid-js';
-import { downsampleMinMax, makeTimeAxis } from '@catune/compute';
+import { downsampleMinMax, makeTimeAxis } from '@calab/compute';
 
 export interface TraceOverviewProps {
   trace: Float64Array;

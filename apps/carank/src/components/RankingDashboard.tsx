@@ -1,8 +1,8 @@
 import type { JSX } from 'solid-js';
 import { createMemo } from 'solid-js';
-import { DashboardPanel } from '@catune/ui';
-import { computePeakSNR, snrToQuality } from '@catune/core';
-import type { QualityTier } from '@catune/core';
+import { DashboardPanel } from '@calab/ui';
+import { computePeakSNR, snrToQuality } from '@calab/core';
+import type { QualityTier } from '@calab/core';
 import type { CnmfData } from '../types.ts';
 
 interface RankingDashboardProps {

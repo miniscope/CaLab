@@ -2,8 +2,8 @@
 // Uses raw postMessage (not Comlink) so the event loop can process
 // cancel messages between solver batches via MessageChannel yields.
 
-import { initWasm, Solver } from '@catune/core';
-import type { PoolWorkerInbound, PoolWorkerOutbound } from '@catune/core';
+import { initWasm, Solver } from '@calab/core';
+import type { PoolWorkerInbound, PoolWorkerOutbound } from '@calab/core';
 
 const INTERMEDIATE_INTERVAL_MS = 100;
 const BATCH_SIZE = 15;

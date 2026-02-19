@@ -15,11 +15,11 @@ import {
   visibleCellIndices,
   hoveredCell,
 } from './multi-cell-store.ts';
-import { extractCellTrace } from '@catune/io';
-import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@catune/compute';
-import { createWorkerPool, type WorkerPool } from '@catune/compute';
-import type { SolverParams } from '@catune/core';
-import type { NpyResult } from '@catune/core';
+import { extractCellTrace } from '@calab/io';
+import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
+import { createWorkerPool, type WorkerPool } from '@calab/compute';
+import type { SolverParams } from '@calab/core';
+import type { NpyResult } from '@calab/core';
 
 const DEBOUNCE_MS = 30;
 // With FFT convolutions each iteration is very fast (~0.1-1ms depending on trace length).

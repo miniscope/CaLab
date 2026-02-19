@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js';
-import { CompactHeader } from '@catune/ui';
+import { CompactHeader } from '@calab/ui';
 
 interface HeaderProps {
   fileName: string;

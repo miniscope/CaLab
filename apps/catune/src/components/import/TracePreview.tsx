@@ -3,7 +3,7 @@
 
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
-import type { NumericTypedArray } from '@catune/core';
+import type { NumericTypedArray } from '@calab/core';
 
 const NUM_TRACES = 5;
 const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];

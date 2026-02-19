@@ -1,5 +1,5 @@
 {
-  "name": "@catune/community",
+  "name": "@calab/community",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@catune/core": "*",
+    "@calab/core": "*",
     "@supabase/supabase-js": "^2.95.3"
   }
 }

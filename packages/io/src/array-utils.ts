@@ -1,6 +1,6 @@
 // Shared array utilities for cell trace extraction and Fortran-to-C transpose.
 
-import type { NpyResult, NumericTypedArray } from '@catune/core';
+import type { NpyResult, NumericTypedArray } from '@calab/core';
 
 /**
  * Extract a single cell's fluorescence trace from a flat typed array.

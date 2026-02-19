@@ -4,7 +4,7 @@
 
 import { unzipSync } from 'fflate';
 import { parseNpy } from './npy-parser.ts';
-import type { NpyResult, NpzResult } from '@catune/core';
+import type { NpyResult, NpzResult } from '@calab/core';
 
 /**
  * Parse a .npz (zip-archived .npy) buffer.

@@ -7,8 +7,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
-- Unit tests for `@catune/core` and `@catune/community` packages
-- Shared `CompactHeader` component in `@catune/ui`
+- Unit tests for `@calab/core` and `@calab/community` packages
+- Shared `CompactHeader` component in `@calab/ui`
 - `base.css` aggregate import for shared styles
 - Glob-based `build-apps.mjs` and dynamic `combine-dist.mjs`
 - App template (`apps/_template`) and `docs/NEW_APP.md` guide
@@ -22,13 +22,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
-- `@catune/io` missing direct `valibot` dependency (phantom dep via `@catune/core`)
+- `@calab/io` missing direct `valibot` dependency (phantom dep via `@calab/core`)
 
 ## [2.0.3] - 2025-02-16
 
 ### Changed
 
-- Extracted chart logic to `@catune/compute` and shared CSS to `@catune/ui`
+- Extracted chart logic to `@calab/compute` and shared CSS to `@calab/ui`
 
 ## [2.0.2] - 2025-02-15
 

@@ -18,7 +18,7 @@ import {
   demoPreset,
   groundTruthLocked,
 } from '../../lib/data-store.ts';
-import { buildExportData, downloadExport } from '@catune/io';
+import { buildExportData, downloadExport } from '@calab/io';
 import {
   validateSubmission,
   loadFieldOptions,

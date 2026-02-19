@@ -9,9 +9,9 @@
  */
 
 import * as v from 'valibot';
-import { computeAR2 } from '@catune/core';
-import { CaTuneExportSchema } from '@catune/core';
-import type { CaTuneExportData } from '@catune/core';
+import { computeAR2 } from '@calab/core';
+import { CaTuneExportSchema } from '@calab/core';
+import type { CaTuneExportData } from '@calab/core';
 
 /** Alias preserving the public API name used by io consumers. */
 export type CaTuneExport = CaTuneExportData;

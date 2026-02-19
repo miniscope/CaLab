@@ -21,16 +21,16 @@ npm run dev          # Start dev server
 
 CaLab is an npm workspaces monorepo:
 
-| Workspace           | Path                  | Description                                     |
-| ------------------- | --------------------- | ----------------------------------------------- |
-| `catune`            | `apps/catune/`        | SolidJS app — deconvolution parameter tuning    |
-| `carank`            | `apps/carank/`        | SolidJS app — CNMF trace quality ranking        |
-| `@catune/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
-| `@catune/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
-| `@catune/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export    |
-| `@catune/community` | `packages/community/` | Supabase DAL, submission logic, field options   |
-| `@catune/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence |
-| `@catune/ui`        | `packages/ui/`        | Shared layout: Shell, Panel, VizLayout          |
+| Workspace          | Path                  | Description                                     |
+| ------------------ | --------------------- | ----------------------------------------------- |
+| `catune`           | `apps/catune/`        | SolidJS app — deconvolution parameter tuning    |
+| `carank`           | `apps/carank/`        | SolidJS app — CNMF trace quality ranking        |
+| `@calab/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
+| `@calab/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
+| `@calab/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export    |
+| `@calab/community` | `packages/community/` | Supabase DAL, submission logic, field options   |
+| `@calab/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence |
+| `@calab/ui`        | `packages/ui/`        | Shared layout: Shell, Panel, VizLayout          |
 
 All packages are consumed as TypeScript source — Vite transpiles them directly via path aliases. No separate build step needed for development.
 
@@ -65,7 +65,7 @@ npm run test -w packages/io     # Run io package tests only
 ## Creating a New Package
 
 1. Create `packages/<name>/` with `package.json`, `tsconfig.json`, and `src/index.ts`
-2. Add `@catune/<name>` to `apps/catune/package.json` dependencies as `"*"`
+2. Add `@calab/<name>` to `apps/catune/package.json` dependencies as `"*"`
 3. Add path mapping to `apps/catune/tsconfig.json` and `apps/catune/vite.config.ts`
 4. Add the package to the root `typecheck` script in `package.json`
 5. Run `npm install` to link the workspace
@@ -86,7 +86,7 @@ ESLint enforces these import boundaries:
 
 - **WASM**: Only `packages/core/src/wasm-adapter.ts` may import from `wasm/catune-solver/pkg/`
 - **Supabase**: Only `packages/community/src/supabase.ts` may import `@supabase/supabase-js`
-- **Package barrels**: App files import from `@catune/<pkg>`, never from `@catune/<pkg>/src/*`
+- **Package barrels**: App files import from `@calab/<pkg>`, never from `@calab/<pkg>/src/*`
 
 ## CI
 

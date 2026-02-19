@@ -1,7 +1,7 @@
 // TUTR-01: Understanding Parameters tutorial.
 // Pure data definition -- no driver.js imports (TUTR-05 compliance).
 
-import type { Tutorial } from '@catune/tutorials';
+import type { Tutorial } from '@calab/tutorials';
 
 export const basicsTutorial: Tutorial = {
   id: 'basics',

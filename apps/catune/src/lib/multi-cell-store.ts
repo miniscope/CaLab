@@ -5,8 +5,8 @@
 
 import { createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
-import type { CellSolverStatus } from '@catune/core';
-import { rankCellsByActivity, sampleRandomCells } from '@catune/io';
+import type { CellSolverStatus } from '@calab/core';
+import { rankCellsByActivity, sampleRandomCells } from '@calab/io';
 import { parsedData, effectiveShape, swapped } from './data-store.ts';
 
 // --- Types ---

@@ -1,5 +1,5 @@
 // Re-export package API + local SolidJS store
-export * from '@catune/community';
+export * from '@calab/community';
 export {
   user,
   authLoading,

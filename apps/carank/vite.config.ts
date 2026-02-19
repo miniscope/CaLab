@@ -7,9 +7,9 @@ const repoRoot = path.resolve(__dirname, '../..');
 export default defineConfig({
   resolve: {
     alias: {
-      '@catune/core': path.resolve(repoRoot, 'packages/core/src'),
-      '@catune/io': path.resolve(repoRoot, 'packages/io/src'),
-      '@catune/ui': path.resolve(repoRoot, 'packages/ui/src'),
+      '@calab/core': path.resolve(repoRoot, 'packages/core/src'),
+      '@calab/io': path.resolve(repoRoot, 'packages/io/src'),
+      '@calab/ui': path.resolve(repoRoot, 'packages/ui/src'),
     },
   },
   envDir: repoRoot,

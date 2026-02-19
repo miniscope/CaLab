@@ -8,7 +8,7 @@ import {
   setSelectedNpzArray,
   setImportError,
 } from '../../lib/data-store.ts';
-import { processNpyResult } from '@catune/io';
+import { processNpyResult } from '@calab/io';
 
 export function NpzArraySelector() {
   const twoDArrays = createMemo(() => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseNpy } from '../npy-parser.ts';
-import type { NpyResult } from '@catune/core';
+import type { NpyResult } from '@calab/core';
 
 // --- Test Helper: Build a valid .npy buffer programmatically ---
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { downsampleMinMax } from '@catune/compute';
+import { downsampleMinMax } from '@calab/compute';
 
 describe('downsampleMinMax', () => {
   it('returns data as-is when length <= 2 * targetBuckets', () => {

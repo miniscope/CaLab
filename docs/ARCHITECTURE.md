@@ -25,9 +25,9 @@ CaLab uses npm workspaces with seven packages and two applications:
 │       │   │   └── tutorial/    # Tutorial launcher, popover
 │       │   ├── lib/             # App-specific logic (SolidJS stores + wiring)
 │       │   │   ├── chart/       # Chart helpers: kernel math, downsample, series config
-│       │   │   ├── community/   # Barrel re-exports @catune/community + local store
-│       │   │   ├── spectrum/    # spectrum-store (SolidJS signals, imports @catune/core fft)
-│       │   │   ├── tutorial/    # Barrel re-exports @catune/tutorials + engine, store, content
+│       │   │   ├── community/   # Barrel re-exports @calab/community + local store
+│       │   │   ├── spectrum/    # spectrum-store (SolidJS signals, imports @calab/core fft)
+│       │   │   ├── tutorial/    # Barrel re-exports @calab/tutorials + engine, store, content
 │       │   │   ├── data-store.ts        # SolidJS signals for loaded data
 │       │   │   ├── viz-store.ts         # SolidJS signals for visualization state
 │       │   │   ├── multi-cell-store.ts  # SolidJS signals for multi-cell selection
@@ -50,7 +50,7 @@ CaLab uses npm workspaces with seven packages and two applications:
 │       ├── tsconfig.json
 │       └── package.json
 ├── packages/
-│   ├── core/                    # @catune/core — shared types, pure math, WASM adapter
+│   ├── core/                    # @calab/core — shared types, pure math, WASM adapter
 │   │   └── src/
 │   │       ├── index.ts         # Barrel re-exports
 │   │       ├── wasm-adapter.ts  # Single WASM import point
@@ -63,12 +63,12 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── spectrum/        # fft.ts (periodogram computation)
 │   │       └── schemas/
 │   │           └── export-schema.ts  # Valibot export validation
-│   ├── compute/                 # @catune/compute — worker pool + warm-start cache
+│   ├── compute/                 # @calab/compute — worker pool + warm-start cache
 │   │   └── src/
 │   │       ├── index.ts
 │   │       ├── worker-pool.ts   # Generic worker pool (accepts worker URL)
 │   │       └── warm-start-cache.ts
-│   ├── io/                      # @catune/io — file parsers, validation, export
+│   ├── io/                      # @calab/io — file parsers, validation, export
 │   │   └── src/
 │   │       ├── index.ts
 │   │       ├── npy-parser.ts    # NumPy .npy parser
@@ -78,7 +78,7 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── cell-ranking.ts  # Activity-based ranking
 │   │       ├── export.ts        # JSON export builder
 │   │       └── __tests__/       # Parser and validation tests
-│   ├── community/               # @catune/community — Supabase DAL, submission logic
+│   ├── community/               # @calab/community — Supabase DAL, submission logic
 │   │   └── src/
 │   │       ├── index.ts
 │   │       ├── supabase.ts      # Lazy client singleton
@@ -89,12 +89,12 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── field-options.ts # Hardcoded option arrays
 │   │       ├── dataset-hash.ts  # SHA-256 hash
 │   │       └── github-issue-url.ts
-│   ├── tutorials/               # @catune/tutorials — types + progress persistence
+│   ├── tutorials/               # @calab/tutorials — types + progress persistence
 │   │   └── src/
 │   │       ├── index.ts
 │   │       ├── types.ts         # Tutorial, TutorialStep, TutorialProgress
 │   │       └── progress.ts      # localStorage persistence
-│   └── ui/                      # @catune/ui — shared layout components
+│   └── ui/                      # @calab/ui — shared layout components
 │       └── src/
 │           ├── index.ts         # Barrel: DashboardShell, DashboardPanel, VizLayout
 │           ├── DashboardShell.tsx  # 3-section grid (header/main/sidebar)
@@ -119,28 +119,28 @@ CaLab uses npm workspaces with seven packages and two applications:
 ## Dependency DAG
 
 ```
-@catune/core          ← leaf (no local deps)
-@catune/compute       ← @catune/core
-@catune/io            ← @catune/core
-@catune/community     ← @catune/core
-@catune/tutorials     ← leaf (no local deps)
-@catune/ui            ← leaf (solid-js only)
+@calab/core          ← leaf (no local deps)
+@calab/compute       ← @calab/core
+@calab/io            ← @calab/core
+@calab/community     ← @calab/core
+@calab/tutorials     ← leaf (no local deps)
+@calab/ui            ← leaf (solid-js only)
 apps/catune           ← all packages
-apps/carank           ← @catune/core, @catune/io, @catune/ui
+apps/carank           ← @calab/core, @calab/io, @calab/ui
 ```
 
 ## Package Responsibilities
 
-| Package             | Responsibility                                             | Key deps                                   |
-| ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
-| `@catune/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                                  |
-| `@catune/compute`   | Generic worker pool, warm-start caching                    | `@catune/core`                             |
-| `@catune/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@catune/core`, `fflate`, `valibot`        |
-| `@catune/community` | Supabase DAL, submission logic, field options              | `@catune/core`, `@supabase/supabase-js`    |
-| `@catune/tutorials` | Tutorial type definitions, progress persistence            | none                                       |
-| `@catune/ui`        | Shared layout: DashboardShell, DashboardPanel, VizLayout   | `solid-js`                                 |
-| `apps/catune`       | SolidJS app — UI components, reactive stores, worker entry | all packages                               |
-| `apps/carank`       | SolidJS app — CNMF trace quality ranking                   | `@catune/core`, `@catune/io`, `@catune/ui` |
+| Package            | Responsibility                                             | Key deps                                |
+| ------------------ | ---------------------------------------------------------- | --------------------------------------- |
+| `@calab/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                               |
+| `@calab/compute`   | Generic worker pool, warm-start caching                    | `@calab/core`                           |
+| `@calab/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@calab/core`, `fflate`, `valibot`      |
+| `@calab/community` | Supabase DAL, submission logic, field options              | `@calab/core`, `@supabase/supabase-js`  |
+| `@calab/tutorials` | Tutorial type definitions, progress persistence            | none                                    |
+| `@calab/ui`        | Shared layout: DashboardShell, DashboardPanel, VizLayout   | `solid-js`                              |
+| `apps/catune`      | SolidJS app — UI components, reactive stores, worker entry | all packages                            |
+| `apps/carank`      | SolidJS app — CNMF trace quality ranking                   | `@calab/core`, `@calab/io`, `@calab/ui` |
 
 Packages export pure logic. The app wires packages to SolidJS signals.
 
@@ -152,8 +152,8 @@ CaTune (the app) uses **module-level SolidJS signals** instead of Context provid
 - `viz-store.ts` — zoom range, selected cell, UI toggles
 - `multi-cell-store.ts` — multi-cell selection and ranking
 - `spectrum-store.ts` — power spectrum computation
-- `community-store.ts` — auth state, field options (imports from `@catune/community`)
-- `tutorial-store.ts` — active tutorial state (imports from `@catune/tutorials`)
+- `community-store.ts` — auth state, field options (imports from `@calab/community`)
+- `tutorial-store.ts` — active tutorial state (imports from `@calab/tutorials`)
 
 This pattern avoids provider nesting and makes state accessible from non-component code (e.g., the tutorial engine).
 
@@ -163,9 +163,9 @@ This pattern avoids provider nesting and makes state accessible from non-compone
 User adjusts params
   → data-store signals update
   → cell-solve-manager debounces and dispatches
-  → @catune/compute worker-pool assigns job to idle Web Worker
+  → @calab/compute worker-pool assigns job to idle Web Worker
   → pool-worker.ts (in worker thread):
-      → @catune/core wasm-adapter → WASM Solver
+      → @calab/core wasm-adapter → WASM Solver
       → cooperative cancellation via MessageChannel yields
       → intermediate results posted at ~100ms intervals
   → worker-pool routes results back to data-store
@@ -175,14 +175,14 @@ Key design decisions:
 
 - **Raw postMessage** (not Comlink) so the event loop can process cancel messages between solver batches
 - **MessageChannel yields** (<1ms) instead of setTimeout(0) (~4ms) for cooperative multitasking
-- **Warm-start caching** (`@catune/compute`) reuses solver state when only lambda changes (kernel unchanged)
+- **Warm-start caching** (`@calab/compute`) reuses solver state when only lambda changes (kernel unchanged)
 - **Worker factory injection** — `createWorkerPool(() => new Worker(...))` keeps the `new Worker(new URL(..., import.meta.url))` pattern in the app so Vite can detect and bundle the worker
 
 ## Module Boundaries
 
 ### WASM Adapter Rule
 
-Only `packages/core/src/wasm-adapter.ts` imports from `wasm/catune-solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@catune/core`. Enforced by ESLint `no-restricted-imports`.
+Only `packages/core/src/wasm-adapter.ts` imports from `wasm/catune-solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core`. Enforced by ESLint `no-restricted-imports`.
 
 ### Supabase Isolation
 
@@ -190,7 +190,7 @@ Only `packages/community/src/supabase.ts` dynamically imports `@supabase/supabas
 
 ### Package Barrel Rule
 
-App files import from package barrels (`@catune/core`, `@catune/io`, etc.) — never from internal paths like `@catune/core/src/ar2.ts`. Enforced by ESLint `no-restricted-imports`.
+App files import from package barrels (`@calab/core`, `@calab/io`, etc.) — never from internal paths like `@calab/core/src/ar2.ts`. Enforced by ESLint `no-restricted-imports`.
 
 ### App Barrels
 

@@ -73,16 +73,16 @@ export default tseslint.config(
           patterns: [
             {
               group: ['**/wasm/catune-solver/pkg/*'],
-              message: 'Import from @catune/core instead of the WASM pkg directly.',
+              message: 'Import from @calab/core instead of the WASM pkg directly.',
             },
             {
               group: ['@supabase/supabase-js'],
-              message: 'Import from @catune/community instead of @supabase/supabase-js directly.',
+              message: 'Import from @calab/community instead of @supabase/supabase-js directly.',
             },
             {
-              group: ['@catune/*/src/*'],
+              group: ['@calab/*/src/*'],
               message:
-                'Import from the package barrel (@catune/<pkg>) instead of reaching into src/.',
+                'Import from the package barrel (@calab/<pkg>) instead of reaching into src/.',
             },
           ],
         },

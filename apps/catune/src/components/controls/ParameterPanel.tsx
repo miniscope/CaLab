@@ -14,7 +14,7 @@ import {
 } from '../../lib/viz-store.ts';
 import { notifyTutorialAction } from '../../lib/tutorial/tutorial-engine.ts';
 import { isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
-import { PARAM_RANGES } from '@catune/core';
+import { PARAM_RANGES } from '@calab/core';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import '../../styles/controls.css';
 

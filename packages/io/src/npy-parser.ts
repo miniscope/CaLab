@@ -2,7 +2,7 @@
 // Parses NumPy .npy files into typed arrays with shape, dtype, and fortran_order metadata.
 // Reference: https://numpy.org/doc/2.3/reference/generated/numpy.lib.format.html
 
-import type { NpyResult, NumericTypedArray } from '@catune/core';
+import type { NpyResult, NumericTypedArray } from '@calab/core';
 
 // Magic bytes: \x93NUMPY
 const NPY_MAGIC = new Uint8Array([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59]);

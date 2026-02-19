@@ -9,8 +9,8 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@catune/core": ["../core/src/index.ts"],
-      "@catune/core/*": ["../core/src/*"]
+      "@calab/core": ["../core/src/index.ts"],
+      "@calab/core/*": ["../core/src/*"]
     }
   },
   "include": ["src"],

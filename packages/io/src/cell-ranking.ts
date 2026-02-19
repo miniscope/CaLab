@@ -1,7 +1,7 @@
 // Cell activity ranking and random sampling utilities
 // Pure functions for selecting which cells to display in multi-trace view
 
-import type { NpyResult } from '@catune/core';
+import type { NpyResult } from '@calab/core';
 import { extractCellTrace } from './array-utils.ts';
 
 /**

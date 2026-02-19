@@ -6,7 +6,7 @@
 import { createMemo, createSignal, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel.tsx';
-import { downsampleMinMax } from '@catune/compute';
+import { downsampleMinMax } from '@calab/compute';
 import {
   createRawSeries,
   createFilteredSeries,

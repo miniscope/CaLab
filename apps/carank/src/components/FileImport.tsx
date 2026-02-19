@@ -1,5 +1,5 @@
 import { type JSX, createSignal } from 'solid-js';
-import { parseNpy } from '@catune/io';
+import { parseNpy } from '@calab/io';
 import type { CnmfData } from '../types.ts';
 
 interface FileImportProps {

@@ -6,12 +6,12 @@
     "jsxImportSource": "solid-js",
     "baseUrl": ".",
     "paths": {
-      "@catune/core": ["../../packages/core/src/index.ts"],
-      "@catune/core/*": ["../../packages/core/src/*"],
-      "@catune/io": ["../../packages/io/src/index.ts"],
-      "@catune/io/*": ["../../packages/io/src/*"],
-      "@catune/ui": ["../../packages/ui/src/index.ts"],
-      "@catune/ui/*": ["../../packages/ui/src/*"]
+      "@calab/core": ["../../packages/core/src/index.ts"],
+      "@calab/core/*": ["../../packages/core/src/*"],
+      "@calab/io": ["../../packages/io/src/index.ts"],
+      "@calab/io/*": ["../../packages/io/src/*"],
+      "@calab/ui": ["../../packages/ui/src/index.ts"],
+      "@calab/ui/*": ["../../packages/ui/src/*"]
     }
   },
   "include": ["src"],

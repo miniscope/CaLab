@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { DashboardShell, CompactHeader } from '@catune/ui';
+import { DashboardShell, CompactHeader } from '@calab/ui';
 
 const App: Component = () => {
   return (
