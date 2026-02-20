@@ -10,6 +10,7 @@ import {
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
 import { FeedbackMenu } from './FeedbackMenu.tsx';
+import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
 import { formatDuration } from '@calab/core';
 
 export interface CaTuneHeaderProps {
@@ -75,6 +76,7 @@ export function CaTuneHeader(props: CaTuneHeaderProps) {
           <button class="btn-secondary btn-small" onClick={handleChangeData}>
             Change Data
           </button>
+          <AuthMenuWrapper />
         </>
       }
     />
