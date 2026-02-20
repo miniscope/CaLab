@@ -1,5 +1,7 @@
 # CaLab Architecture
 
+> For a project overview, quick start, and documentation index, see the [root README](../README.md).
+
 CaLab is a monorepo of calcium imaging analysis tools built with SolidJS, TypeScript, and a Rust/WASM solver.
 
 ## Monorepo Structure

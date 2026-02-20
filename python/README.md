@@ -2,6 +2,10 @@
 
 Calcium imaging analysis tools — deconvolution and data preparation. Python companion package for the [CaLab](https://github.com/miniscope/CaLab) tools.
 
+> **Note:** This package is under active development — major updates are planned.
+
+The `calab` Python package is the Python entrypoint to the CaLab ecosystem. It runs the same FISTA deconvolution algorithm used by the CaTune web app, and provides utilities for exchanging data with the browser tools — prepare traces for import, load tuned parameters from CaTune export JSON files, and run batch deconvolution from Python scripts.
+
 ## Installation
 
 ```bash
