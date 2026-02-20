@@ -11,3 +11,5 @@ export { TutorialLauncher } from './TutorialLauncher.tsx';
 export type { TutorialLauncherProps } from './TutorialLauncher.tsx';
 export { Card } from './Card.tsx';
 export type { CardProps } from './Card.tsx';
+export { AuthMenu } from './AuthMenu.tsx';
+export type { AuthMenuProps } from './AuthMenu.tsx';

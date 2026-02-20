@@ -1,5 +1,6 @@
 import type { Accessor, JSX } from 'solid-js';
 import { CompactHeader, TutorialLauncher } from '@calab/ui';
+import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
 
 interface HeaderProps {
   fileName: string;
@@ -32,6 +33,7 @@ export function Header(props: HeaderProps): JSX.Element {
           <button class="btn-secondary btn-small" onClick={props.onChangeData}>
             Change Data
           </button>
+          <AuthMenuWrapper />
         </>
       }
     />

@@ -1,12 +1,6 @@
 import { Show } from 'solid-js';
-import { user, authLoading } from '../../lib/community/index.ts';
+import { user, authLoading } from '../lib/auth-store.ts';
 
-/**
- * Lightweight page shown when a Supabase magic-link redirects here.
- * The Supabase client (initialized in community-store) automatically
- * parses the hash fragment and stores the session in localStorage,
- * which the original tab picks up via cross-tab storage events.
- */
 export function AuthCallback() {
   return (
     <div class="auth-callback">
