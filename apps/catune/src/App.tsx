@@ -4,13 +4,13 @@
 import type { Component } from 'solid-js';
 import { Show, createEffect, createSignal, on } from 'solid-js';
 
+import { DashboardPanel, VizLayout, DashboardShell, isAuthCallback } from '@calab/ui';
 import { AuthCallback } from './components/auth/AuthCallback.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
-import { DashboardPanel, VizLayout, DashboardShell } from '@calab/ui';
 import { CaTuneHeader } from './components/layout/CompactHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
@@ -52,12 +52,6 @@ function loadBannerDismissedState(): boolean {
   } catch {
     return false;
   }
-}
-
-/** Supabase magic-link redirects append auth tokens to the URL hash. */
-function isAuthCallback(): boolean {
-  const hash = window.location.hash;
-  return hash.includes('access_token=') || hash.includes('token_hash=');
 }
 
 const App: Component = () => {
