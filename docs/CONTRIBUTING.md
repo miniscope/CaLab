@@ -9,7 +9,7 @@
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/miniscope/CaLab.git
 cd CaLab
 nvm use              # Node 22
 npm install          # JS dependencies (all workspaces)
@@ -109,3 +109,7 @@ The WASM package is committed to the repo, so CI does not require Rust.
 ## Architecture
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for module layout, dependency DAG, state management patterns, and boundary rules.
+
+## License
+
+CaLab is licensed under the [MIT License](../LICENSE).
