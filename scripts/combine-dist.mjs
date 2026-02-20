@@ -255,7 +255,7 @@ writeFileSync(
 <body>
   <div class="page">
     <header>
-      <h1>CaLab${version ? `<sup class="version-sup">v${version}</sup>` : ''}</h1>
+      <h1>CaLab${version ? `<sup class="version-sup">${version}</sup>` : ''}</h1>
       <p class="subtitle">Calcium imaging analysis tools</p>
       <a class="github-link" href="https://github.com/miniscope/CaLab">GitHub &rarr;</a>
     </header>
