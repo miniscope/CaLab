@@ -1,33 +1,37 @@
 /**
- * Community submission types for CaTune parameter sharing.
+ * Shared community types for the CaLab monorepo.
+ * App-specific submission types extend BaseSubmission with their own fields.
  * See supabase/migrations/ for the database schema.
  */
 
 export type DataSource = 'user' | 'demo' | 'training';
 
-/** Full community submission row as returned from the database. */
-export interface CommunitySubmission {
+/** Common fields every CaLab app submission shares. */
+export interface BaseSubmission {
+  // System (auto-set by Supabase/RLS)
   id: string;
   created_at: string;
   user_id: string;
 
-  // Core parameters
-  tau_rise: number;
-  tau_decay: number;
-  lambda: number;
-  sampling_rate: number;
-
-  // AR2 coefficients
-  ar2_g1: number;
-  ar2_g2: number;
-
-  // Required metadata
+  // Required experiment metadata
   indicator: string;
   species: string;
   brain_region: string;
 
-  // Preprocessing
-  filter_enabled?: boolean;
+  // Data source & deduplication
+  data_source: DataSource;
+  dataset_hash: string;
+  app_version: string;
+
+  // Optional experiment metadata
+  microscope_type?: string;
+  imaging_depth_um?: number;
+  cell_type?: string;
+
+  // Dataset metadata
+  num_cells?: number;
+  recording_length_s?: number;
+  fps?: number;
 
   // Optional metadata
   lab_name?: string;
@@ -36,39 +40,21 @@ export interface CommunitySubmission {
   time_since_injection_days?: number;
   notes?: string;
 
-  // Dataset metadata
-  num_cells?: number;
-  recording_length_s?: number;
-  fps?: number;
-
-  // Deduplication
-  dataset_hash: string;
-  catune_version: string;
-
-  // Data source
-  data_source: DataSource;
-
-  // Optional experiment metadata
-  microscope_type?: string;
-  imaging_depth_um?: number;
-  cell_type?: string;
-
   // Extensible
   extra_metadata?: Record<string, unknown>;
 }
 
 /**
- * INSERT payload for community_submissions.
+ * INSERT payload for any CaLab submission table.
  * Omits id, created_at, and user_id which are auto-set by Supabase/RLS.
  */
-export type SubmissionPayload = Omit<CommunitySubmission, 'id' | 'created_at' | 'user_id'>;
+export type BaseSubmissionPayload = Omit<BaseSubmission, 'id' | 'created_at' | 'user_id'>;
 
-/** Filter state for the community browser. */
-export interface FilterState {
+/** Shared filter state for community browsers. */
+export interface BaseFilterState {
   indicator: string | null;
   species: string | null;
   brainRegion: string | null;
-  demoPreset: string | null;
 }
 
 /** Result of parameter validation before submission. */

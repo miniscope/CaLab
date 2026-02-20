@@ -1,7 +1,7 @@
-// Parameter validation for community submissions.
+// CaTune parameter validation for community submissions.
 // Hard limits block submission (validateSubmission).
 
-import type { SubmissionValidationResult } from './types.ts';
+import type { SubmissionValidationResult } from '@calab/community';
 
 /** Hard parameter range limits that block submission if violated. */
 const HARD_LIMITS = {

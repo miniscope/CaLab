@@ -6,9 +6,9 @@
  */
 
 import { computeAR2 } from '@calab/core';
-import { computeDatasetHash } from './dataset-hash.ts';
-import { submitParameters } from './community-service.ts';
-import type { SubmissionPayload, CommunitySubmission } from './types.ts';
+import { computeDatasetHash } from '@calab/community';
+import { submitParameters } from './catune-service.ts';
+import type { CatuneSubmissionPayload, CatuneSubmission } from './types.ts';
 
 /** Form field values collected from the submission form. */
 export interface FormFields {
@@ -42,13 +42,13 @@ export interface SubmissionContext {
 
 /**
  * Build the full submission payload, compute derived values, and submit
- * to Supabase. Returns the created CommunitySubmission row.
+ * to Supabase. Returns the created CatuneSubmission row.
  */
 export async function submitToSupabase(
   fields: FormFields,
   ctx: SubmissionContext,
   version: string = 'dev',
-): Promise<CommunitySubmission> {
+): Promise<CatuneSubmission> {
   // Compute dataset hash from parsed data
   let datasetHash = 'no-data';
   if (ctx.datasetData) {
@@ -61,7 +61,7 @@ export async function submitToSupabase(
   const ar2 = computeAR2(ctx.tauRise, ctx.tauDecay, ctx.samplingRate);
 
   // Build payload
-  const payload: SubmissionPayload = {
+  const payload: CatuneSubmissionPayload = {
     tau_rise: ctx.tauRise,
     tau_decay: ctx.tauDecay,
     lambda: ctx.lambda,
@@ -93,7 +93,7 @@ export async function submitToSupabase(
     dataset_hash: datasetHash,
     filter_enabled: ctx.filterEnabled,
     data_source: ctx.rawFileName ? 'user' : 'demo',
-    catune_version: version,
+    app_version: version,
     extra_metadata: ctx.isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
   };
 

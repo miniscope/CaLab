@@ -25,7 +25,7 @@ import {
   supabaseEnabled,
   submitToSupabase,
 } from '../../lib/community/index.ts';
-import type { CommunitySubmission } from '../../lib/community/index.ts';
+import type { CatuneSubmission } from '../../lib/community/index.ts';
 import { GroundTruthControls, GroundTruthNotices } from './GroundTruthControls.tsx';
 import { SubmitForm } from './SubmitForm.tsx';
 import { SubmissionSummary } from './SubmissionSummary.tsx';
@@ -37,7 +37,7 @@ export function SubmitPanel() {
   // --- UI state ---
   const [formOpen, setFormOpen] = createSignal(false);
   const [submitting, setSubmitting] = createSignal(false);
-  const [lastSubmission, setLastSubmission] = createSignal<CommunitySubmission | null>(null);
+  const [lastSubmission, setLastSubmission] = createSignal<CatuneSubmission | null>(null);
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const [validationErrors, setValidationErrors] = createSignal<string[]>([]);
 

@@ -5,10 +5,10 @@
 
 import { createSignal, Show } from 'solid-js';
 import { deleteSubmission } from '../../lib/community/index.ts';
-import type { CommunitySubmission } from '../../lib/community/index.ts';
+import type { CatuneSubmission } from '../../lib/community/index.ts';
 
 interface SubmissionSummaryProps {
-  submission: CommunitySubmission;
+  submission: CatuneSubmission;
   onDismiss: () => void;
   onDelete: () => void;
 }
@@ -17,7 +17,7 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
   const [deleting, setDeleting] = createSignal(false);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
 
-  const handleDelete = async () => {
+  async function handleDelete(): Promise<void> {
     setDeleting(true);
     setDeleteError(null);
     try {
@@ -28,7 +28,7 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
     } finally {
       setDeleting(false);
     }
-  };
+  }
 
   return (
     <div class="submission-summary">
