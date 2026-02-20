@@ -91,7 +91,7 @@ function renderCard(app) {
 }
 
 const version = process.env.VITE_APP_VERSION ?? '';
-const versionHtml = version ? `<span class="version">v${version}</span> &middot; ` : '';
+const versionHtml = version ? `<span class="version">${version}</span> &middot; ` : '';
 
 const cards = apps.map(renderCard).join('\n');
 

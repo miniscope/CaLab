@@ -62,10 +62,8 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
     <main class="import-container">
       {/* Header */}
       <header class="app-header" data-tutorial="app-header">
-        <h1 class="app-header__title">
-          CaTune{' '}
-          <span class="app-header__version">{import.meta.env.VITE_APP_VERSION || 'dev'}</span>
-        </h1>
+        <h1 class="app-header__title">CaTune</h1>
+        <span class="app-header__version">CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}</span>
         <p class="app-header__subtitle">Calcium Deconvolution Parameter Tuning</p>
       </header>
 

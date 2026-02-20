@@ -58,6 +58,7 @@ export function FileImport(props: FileImportProps): JSX.Element {
     <div class="import-container">
       <div class="app-header">
         <h1 class="app-header__title">CaRank</h1>
+        <span class="app-header__version">CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}</span>
         <p class="app-header__subtitle">Quality ranking for CNMF calcium traces</p>
       </div>
 

@@ -13,17 +13,19 @@
 .app-header__title {
   font-size: 1.75rem;
   color: var(--text-primary);
-  margin-bottom: var(--space-xs);
+  margin: 0;
+  line-height: 1;
   letter-spacing: -0.03em;
   font-weight: var(--font-weight-semibold);
 }
 
 .app-header__version {
+  display: block;
   font-size: 0.7rem;
   color: var(--text-tertiary);
   font-weight: var(--font-weight-normal);
   font-family: var(--font-mono);
-  vertical-align: super;
+  line-height: 1;
 }
 
 .app-header__subtitle {
