@@ -5,14 +5,14 @@
  */
 
 import { createEffect, createMemo, onCleanup } from 'solid-js';
-import type { CommunitySubmission } from '../../lib/community/index.ts';
+import type { CatuneSubmission } from '../../lib/community/index.ts';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import uPlot from 'uplot';
 import { getThemeColors } from '../../lib/chart/theme-colors.ts';
 
 export interface ScatterPlotProps {
-  submissions: CommunitySubmission[];
+  submissions: CatuneSubmission[];
   userParams?: { tauRise: number; tauDecay: number; lambda: number } | null;
 }
 
@@ -31,7 +31,7 @@ const LAMBDA_RANGE_MIN = 0;
 const LAMBDA_RANGE_MAX = 10;
 
 /** Pre-compute lambda color array for all submissions. */
-function computeLambdaColors(submissions: CommunitySubmission[]): string[] {
+function computeLambdaColors(submissions: CatuneSubmission[]): string[] {
   if (submissions.length === 0) return [];
   const lambdas = submissions.map((s) => s.lambda);
   return lambdas.map((l) => lambdaToColor(l, LAMBDA_RANGE_MIN, LAMBDA_RANGE_MAX));

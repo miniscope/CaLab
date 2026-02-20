@@ -1,18 +1,18 @@
--- Community submissions table
+-- CaTune submissions table
 -- Run in Supabase Dashboard -> SQL Editor
 
-CREATE TABLE community_submissions (
+CREATE TABLE catune_submissions (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
   user_id UUID REFERENCES auth.users(id) NOT NULL,
 
-  -- Core parameters (always present, queryable)
+  -- CaTune-specific: deconvolution parameters
   tau_rise DOUBLE PRECISION NOT NULL,
   tau_decay DOUBLE PRECISION NOT NULL,
   lambda DOUBLE PRECISION NOT NULL,
   sampling_rate DOUBLE PRECISION NOT NULL,
 
-  -- AR2 coefficients (auto-computed)
+  -- CaTune-specific: AR2 coefficients (auto-computed)
   ar2_g1 DOUBLE PRECISION NOT NULL,
   ar2_g2 DOUBLE PRECISION NOT NULL,
 
@@ -21,7 +21,7 @@ CREATE TABLE community_submissions (
   species TEXT NOT NULL,
   brain_region TEXT NOT NULL,
 
-  -- Preprocessing
+  -- CaTune-specific: preprocessing
   filter_enabled BOOLEAN DEFAULT false,
 
   -- Optional metadata
@@ -39,7 +39,7 @@ CREATE TABLE community_submissions (
   -- Quality & deduplication
   dataset_hash TEXT NOT NULL,
   quality_score DOUBLE PRECISION,
-  catune_version TEXT NOT NULL,
+  app_version TEXT NOT NULL,
 
   -- Data source tracking
   data_source TEXT NOT NULL DEFAULT 'user',
@@ -61,29 +61,29 @@ CREATE TABLE community_submissions (
 );
 
 -- Enable RLS
-ALTER TABLE community_submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catune_submissions ENABLE ROW LEVEL SECURITY;
 
 -- Anyone can read submissions (community browsing)
 CREATE POLICY "Public read access"
-ON community_submissions FOR SELECT
+ON catune_submissions FOR SELECT
 TO anon, authenticated
 USING (true);
 
 -- Only authenticated users can insert
 CREATE POLICY "Authenticated users can submit"
-ON community_submissions FOR INSERT
+ON catune_submissions FOR INSERT
 TO authenticated
 WITH CHECK ((select auth.uid()) = user_id);
 
 -- Users can only delete their own submissions
 CREATE POLICY "Users can delete own submissions"
-ON community_submissions FOR DELETE
+ON catune_submissions FOR DELETE
 TO authenticated
 USING ((select auth.uid()) = user_id);
 
 -- Performance indexes
-CREATE INDEX idx_submissions_user_id ON community_submissions USING btree (user_id);
-CREATE INDEX idx_submissions_indicator ON community_submissions (indicator);
-CREATE INDEX idx_submissions_species ON community_submissions (species);
-CREATE INDEX idx_submissions_brain_region ON community_submissions (brain_region);
-CREATE INDEX idx_submissions_dataset_hash ON community_submissions (dataset_hash);
+CREATE INDEX idx_catune_sub_user_id ON catune_submissions USING btree (user_id);
+CREATE INDEX idx_catune_sub_indicator ON catune_submissions (indicator);
+CREATE INDEX idx_catune_sub_species ON catune_submissions (species);
+CREATE INDEX idx_catune_sub_brain_region ON catune_submissions (brain_region);
+CREATE INDEX idx_catune_sub_dataset_hash ON catune_submissions (dataset_hash);

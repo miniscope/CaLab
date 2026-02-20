@@ -1,0 +1,84 @@
+-- =====================================================================
+-- CaLab Base Submission Table Template
+-- =====================================================================
+-- Copy this template when adding community features to a new CaLab app.
+-- Replace <app> with your app name (e.g., carank) and add app-specific
+-- columns in the marked section.
+--
+-- This file is NOT executed directly — it's a documented starting point.
+-- =====================================================================
+
+-- CREATE TABLE <app>_submissions (
+--   -- System columns (auto-set)
+--   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+--   created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+--   user_id UUID REFERENCES auth.users(id) NOT NULL,
+--
+--   -- ================================================================
+--   -- ADD YOUR APP-SPECIFIC COLUMNS HERE
+--   -- Example: score DOUBLE PRECISION NOT NULL,
+--   -- ================================================================
+--
+--   -- Required experiment metadata
+--   indicator TEXT NOT NULL,
+--   species TEXT NOT NULL,
+--   brain_region TEXT NOT NULL,
+--
+--   -- Optional metadata
+--   lab_name TEXT,
+--   orcid TEXT,
+--   virus_construct TEXT,
+--   time_since_injection_days INTEGER,
+--   notes TEXT,
+--
+--   -- Dataset metadata
+--   num_cells INTEGER,
+--   recording_length_s DOUBLE PRECISION,
+--   fps DOUBLE PRECISION,
+--
+--   -- Deduplication & versioning
+--   dataset_hash TEXT NOT NULL,
+--   app_version TEXT NOT NULL,
+--
+--   -- Data source tracking
+--   data_source TEXT NOT NULL DEFAULT 'user',
+--
+--   -- Optional experiment metadata
+--   microscope_type TEXT,
+--   imaging_depth_um DOUBLE PRECISION,
+--   cell_type TEXT,
+--
+--   -- Extensible metadata
+--   extra_metadata JSONB DEFAULT '{}'::jsonb,
+--
+--   -- Constraints
+--   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training'))
+-- );
+--
+-- -- Enable RLS
+-- ALTER TABLE <app>_submissions ENABLE ROW LEVEL SECURITY;
+--
+-- -- Anyone can read (community browsing)
+-- CREATE POLICY "Public read access"
+-- ON <app>_submissions FOR SELECT
+-- TO anon, authenticated
+-- USING (true);
+--
+-- -- Only authenticated users can insert
+-- CREATE POLICY "Authenticated users can submit"
+-- ON <app>_submissions FOR INSERT
+-- TO authenticated
+-- WITH CHECK ((select auth.uid()) = user_id);
+--
+-- -- Users can only delete their own submissions
+-- CREATE POLICY "Users can delete own submissions"
+-- ON <app>_submissions FOR DELETE
+-- TO authenticated
+-- USING ((select auth.uid()) = user_id);
+--
+-- -- Standard indexes
+-- CREATE INDEX idx_<app>_sub_user_id ON <app>_submissions USING btree (user_id);
+-- CREATE INDEX idx_<app>_sub_indicator ON <app>_submissions (indicator);
+-- CREATE INDEX idx_<app>_sub_species ON <app>_submissions (species);
+-- CREATE INDEX idx_<app>_sub_brain_region ON <app>_submissions (brain_region);
+-- CREATE INDEX idx_<app>_sub_dataset_hash ON <app>_submissions (dataset_hash);

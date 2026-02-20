@@ -14,7 +14,7 @@ import {
   fieldOptions,
   loadFieldOptions,
 } from '../../lib/community/index.ts';
-import type { CommunitySubmission, DataSource, FilterState } from '../../lib/community/index.ts';
+import type { CatuneSubmission, DataSource, CatuneFilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
 import { isDemo } from '../../lib/data-store.ts';
 import { getPresetLabels } from '@calab/compute';
@@ -27,8 +27,8 @@ const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 export function CommunityBrowser() {
   // --- State signals ---
-  const [submissions, setSubmissions] = createSignal<CommunitySubmission[]>([]);
-  const [filters, setFilters] = createSignal<FilterState>({
+  const [submissions, setSubmissions] = createSignal<CatuneSubmission[]>([]);
+  const [filters, setFilters] = createSignal<CatuneFilterState>({
     indicator: null,
     species: null,
     brainRegion: null,

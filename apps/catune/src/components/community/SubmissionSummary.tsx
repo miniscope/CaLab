@@ -5,10 +5,10 @@
 
 import { createSignal, Show } from 'solid-js';
 import { deleteSubmission } from '../../lib/community/index.ts';
-import type { CommunitySubmission } from '../../lib/community/index.ts';
+import type { CatuneSubmission } from '../../lib/community/index.ts';
 
 interface SubmissionSummaryProps {
-  submission: CommunitySubmission;
+  submission: CatuneSubmission;
   onDismiss: () => void;
   onDelete: () => void;
 }

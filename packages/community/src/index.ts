@@ -1,10 +1,16 @@
+// Supabase client
 export { getSupabase, supabaseEnabled } from './supabase.ts';
-export {
-  submitParameters,
-  fetchSubmissions,
-  fetchFieldOptions,
-  deleteSubmission,
-} from './community-service.ts';
+
+// Auth
+export { subscribeAuth, signInWithEmail, signOut } from './auth.ts';
+export type { User, AuthState } from './auth.ts';
+
+// CRUD factory
+export { createSubmissionService } from './submission-service.ts';
+export type { SubmissionService } from './submission-service.ts';
+
+// Field options
+export { fetchFieldOptions } from './field-options-service.ts';
 export {
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,
@@ -12,19 +18,24 @@ export {
   CELL_TYPE_OPTIONS,
   BRAIN_REGION_OPTIONS,
 } from './field-options.ts';
+
+// Utilities
+export { computeDatasetHash } from './dataset-hash.ts';
+
+// GitHub URLs
 export {
   buildFieldOptionRequestUrl,
   buildFeedbackUrl,
   buildFeatureRequestUrl,
   buildBugReportUrl,
 } from './github-issue-url.ts';
-export { validateSubmission } from './quality-checks.ts';
-export { submitToSupabase } from './submit-action.ts';
+
+// Types
 export type {
+  BaseSubmission,
+  BaseSubmissionPayload,
+  BaseFilterState,
   DataSource,
-  CommunitySubmission,
-  SubmissionPayload,
-  FilterState,
   SubmissionValidationResult,
   FieldOption,
   FieldOptions,

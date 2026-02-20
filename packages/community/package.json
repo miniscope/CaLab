@@ -10,7 +10,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@calab/core": "*",
     "@supabase/supabase-js": "^2.95.3"
   }
 }

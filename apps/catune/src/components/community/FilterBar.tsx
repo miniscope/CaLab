@@ -4,12 +4,12 @@
  * Includes clear button and filtered result count.
  */
 
-import type { FilterState } from '../../lib/community/index.ts';
+import type { CatuneFilterState } from '../../lib/community/index.ts';
 import '../../styles/community.css';
 
 export interface FilterBarProps {
-  filters: FilterState;
-  onFilterChange: (filters: FilterState) => void;
+  filters: CatuneFilterState;
+  onFilterChange: (filters: CatuneFilterState) => void;
   options: {
     indicators: string[];
     species: string[];
@@ -28,7 +28,7 @@ export function FilterBar(props: FilterBarProps) {
     props.filters.brainRegion !== null ||
     props.filters.demoPreset !== null;
 
-  function handleFilterChange(field: keyof FilterState, value: string): void {
+  function handleFilterChange(field: keyof CatuneFilterState, value: string): void {
     props.onFilterChange({
       ...props.filters,
       [field]: value === '' ? null : value,

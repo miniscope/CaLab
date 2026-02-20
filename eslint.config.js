@@ -64,7 +64,7 @@ export default tseslint.config(
     ignores: [
       'packages/core/src/wasm-adapter.ts',
       'packages/community/src/supabase.ts',
-      'apps/catune/src/lib/community/community-store.ts',
+      'packages/community/src/auth.ts',
     ],
     rules: {
       'no-restricted-imports': [
