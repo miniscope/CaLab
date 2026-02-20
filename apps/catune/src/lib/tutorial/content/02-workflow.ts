@@ -117,7 +117,7 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="slider-lambda"]',
       title: 'Step 5: Add Sparsity',
       description:
-        'Increase lambda to clean up the deconvolved trace. Start low and increase until noise spikes disappear from the green trace. Stop before real events start vanishing. Drag to adjust.',
+        'Increase lambda to clean up the deconvolved trace. Start low and increase until noise artifacts disappear from the green trace. Stop before real events start vanishing. Drag to adjust.',
       side: 'right',
       waitForAction: 'slider-change',
       disableActiveInteraction: false,

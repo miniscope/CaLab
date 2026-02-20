@@ -49,7 +49,8 @@ export function buildExportData(
       kernel: 'h(t) = exp(-t/tau_decay) - exp(-t/tau_rise), normalized to unit peak',
       ar2_relation:
         'c[t] = g1*c[t-1] + g2*c[t-2] + s[t], where g1 = decayRoot+riseRoot, g2 = -(decayRoot*riseRoot), decayRoot = exp(-dt/tau_decay), riseRoot = exp(-dt/tau_rise)',
-      lambda_definition: 'L1 penalty weight on spike train s in the FISTA objective function',
+      lambda_definition:
+        'L1 penalty weight on the activity signal s in the FISTA objective function',
       convergence: 'Relative objective change < 1e-6 or max 2000 iterations',
     },
     metadata: {

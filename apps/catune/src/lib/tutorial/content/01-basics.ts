@@ -95,7 +95,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="slider-decay"]',
       title: 'Decay Time (tau_decay)',
       description:
-        'The most important parameter \u2014 start here. Controls how quickly calcium decays after a neural event. Too short: the solver re-fires spikes during the decay phase to explain lingering signal (overfitting). Too long: fit is sluggish and misses fast events. <b>Spikes should primarily occur during the rise, not spread across the whole decay.</b>',
+        'The most important parameter \u2014 start here. Controls how quickly calcium decays after a neural event. Too short: the solver places extra activity during the decay phase to explain lingering signal (overfitting). Too long: fit is sluggish and misses fast events. <b>Deconvolved activity should primarily appear during the rise, not spread across the whole decay.</b>',
       side: 'right',
     },
     // Step 12: Rise slider
@@ -111,7 +111,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="slider-lambda"]',
       title: 'Sparsity Penalty (lambda)',
       description:
-        'Controls event count. Start low and increase until noise spikes disappear from the green trace without losing real events. <b>Prefer adjusting decay time over relying on high sparsity</b> to control overfitting. Increasing decay can help reduce dense deconvolved activity under big fluorescence events.',
+        'Controls event count. Start low and increase until noise artifacts disappear from the green trace without losing real events. A value of 1 is a good starting point. The green deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the reconvolved fit peak starts decreasing away from the raw trace as you increase lambda, your sparsity is too high. <b>Prefer adjusting decay time over relying on high sparsity</b> to control overfitting. Increasing decay can help reduce dense deconvolved activity under big fluorescence events. Most cells will respond well to small sparsity values, but a small percentage of cells may be too noisy for reliable deconvolution \u2014 don\u2019t overfit noisy cells, focus on the average-looking cell.',
       side: 'right',
     },
     // Step 14: Kernel display
@@ -127,7 +127,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Good Fit vs Bad Fit',
       description:
-        '<b>Good:</b> orange tracks blue peaks, green deconvolved events ride on the rise and decay of the calcium trace, red looks like noise. <b>Bad:</b> orange misses peaks, green has spikes spread beyond the actual transients, red shows structured patterns.',
+        '<b>Good:</b> orange tracks blue peaks, green deconvolved activity appears primarily during the rise of calcium events (activity during the decay suggests additional neural activity or an extended response), red looks like noise. <b>Bad:</b> orange misses or undershoots peaks, the orange tail overshoots the raw data, green has activity spread beyond the actual transients, red shows structured patterns.',
       side: 'left',
     },
     // Step 16: Pin for comparison

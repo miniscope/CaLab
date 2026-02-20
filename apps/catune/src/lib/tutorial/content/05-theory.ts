@@ -122,22 +122,38 @@ export const theoryTutorial: Tutorial = {
     {
       title: 'What Deconvolved Activity Is',
       description:
-        'The deconvolved trace <b>s(t)</b> is, at best, a measure of underlying neural activity <b>scaled by an unknown factor</b>. The variable name <b>s</b> is a convention from the optimization literature — it does <b>not</b> stand for "spikes." The output is a continuous, graded signal, not a series of discrete events.<br><br>' +
-        'The absolute amplitude of s(t) depends on indicator expression, imaging conditions, cell depth, and many other variables. It has <b>no fixed physical meaning</b>. Only <b>relative differences</b> within the same cell under the same conditions are meaningful.',
+        'The deconvolved trace <b>s(t)</b> is, at best, a <b>probable neural activity rate</b> scaled by an <b>unknown factor</b>. The variable name <b>s</b> is a convention from the optimization literature — it does <b>not</b> stand for "spikes." The output is a continuous, graded signal, not a series of discrete events.<br><br>' +
+        'The absolute amplitude of s(t) depends on indicator expression, imaging conditions, cell depth, and many other variables. It has <b>no fixed physical meaning</b>. The unknown scalar factor can <b>differ between cells</b> and can <b>change over time</b> across sessions. Only <b>relative differences</b> within the same cell under the same conditions are meaningful.',
     },
     // Step 12: What deconvolved activity is NOT
     {
       title: 'What Deconvolved Activity Is NOT',
       description:
         'Critical limitations:<br><br>' +
-        '<b>1.</b> s(t) is <b>not a spike train</b> — do not threshold it into binary events<br>' +
+        '<b>1.</b> s(t) is <b>not a spike train</b> — binarizing (thresholding into 0/1) discards meaningful amplitude information and should be avoided in almost all cases<br>' +
         '<b>2.</b> You cannot derive <b>spikes-per-second</b> or firing rates from it<br>' +
         '<b>3.</b> It assumes neural activity is within the <b>linear response range</b> of the indicator<br>' +
         '<b>4.</b> It assumes calcium dynamics are not significantly driven by <b>non-neural factors</b> (glial activity, neuromodulation)<br>' +
         '<b>5.</b> It assumes a <b>single uniform kernel</b> applies to all events in the cell<br><br>' +
         'Treat s(t) as a <b>continuous, relative measure</b> of activity — not a direct readout of spiking.',
     },
-    // Step 13: Practical guidance
+    // Step 13: Comparing across cells and sessions
+    {
+      title: 'Comparing Across Cells and Sessions',
+      description:
+        'The unknown scalar factor that relates s(t) to true neural activity can <b>differ between cells</b> (due to indicator expression, optical path, cell depth) and can <b>evolve over time</b> across sessions (photobleaching, expression changes).<br><br>' +
+        '<b>Within a single cell in a single session</b>, the unknown scalar is generally stable — so within-trace comparisons of amplitude and timing are meaningful.<br><br>' +
+        '<b>Across cells or sessions</b>, direct amplitude comparison should generally <b>never</b> be done without careful normalization. Even with normalization, extreme caution is needed — clever normalization schemes can help but are very limited and cannot fully resolve the unknown scaling differences.',
+    },
+    // Step 14: Why you should not binarize
+    {
+      title: 'Why You Should Not Binarize',
+      description:
+        'Deconvolved output is a <b>continuous, graded signal</b>. Binarizing it (thresholding into 0/1 "event" vs "no event") discards meaningful amplitude information and should be <b>avoided in almost all cases</b>.<br><br>' +
+        'The deconvolved output should never be treated as "spikes" — it is at best a probable neural activity rate scaled by an unknown factor. Researchers often threshold out of habit from electrophysiology, but calcium deconvolution is <b>fundamentally different</b>: the temporal resolution and signal characteristics make binary discretization inappropriate.<br><br>' +
+        'If you need discrete events for a specific analysis, consider whether the continuous signal would serve your question better — in most cases, it will.',
+    },
+    // Step 15: Practical guidance
     {
       title: 'Practical Guidance',
       description:
@@ -147,7 +163,7 @@ export const theoryTutorial: Tutorial = {
         '<b>3.</b> Check the <b>Community Parameters</b> tab for values others use with your indicator and brain region<br>' +
         '<b>4.</b> When in doubt, trust the <b>residuals</b> — they reveal whether the model captures the signal structure or is fitting noise',
     },
-    // Step 14: Theory complete
+    // Step 16: Theory complete
     {
       title: 'Theory Complete',
       description:

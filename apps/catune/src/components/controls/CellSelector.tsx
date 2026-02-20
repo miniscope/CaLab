@@ -195,10 +195,11 @@ export function CellSelector(props: CellSelectorProps) {
               <strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)
             </div>
             <div class="legend-info__row">
-              <strong>Fit</strong> — Reconvolved model fit (kernel * spikes + baseline)
+              <strong>Fit</strong> — Reconvolved model fit (kernel * deconvolved activity +
+              baseline)
             </div>
             <div class="legend-info__row">
-              <strong>Deconv</strong> — Estimated spike train (deconvolution result)
+              <strong>Deconv</strong> — Estimated neural activity (deconvolution result)
             </div>
             <div class="legend-info__row">
               <strong>Resid</strong> — Residuals (Raw minus Fit)
