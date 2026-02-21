@@ -1,5 +1,4 @@
 // Admin auth + role signals.
-// Checks user.app_metadata.role === 'admin' after sign-in.
 
 import { createSignal } from 'solid-js';
 import { subscribeAuth, supabaseEnabled } from '@calab/community';
@@ -25,9 +24,8 @@ subscribeAuth((state) => {
 });
 
 function isAdmin(): boolean {
-  const u = user();
-  if (!u) return false;
-  return (u as unknown as { app_metadata?: { role?: string } }).app_metadata?.role === 'admin';
+  const metadata = user()?.app_metadata;
+  return metadata?.role === 'admin';
 }
 
 export {

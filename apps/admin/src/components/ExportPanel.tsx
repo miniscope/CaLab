@@ -15,8 +15,7 @@ export function ExportPanel(): JSX.Element {
   const [events] = createResource(dateRange, fetchEvents);
   const [submissions] = createResource(fetchSubmissions);
 
-  const range = () => dateRange();
-  const filenameSuffix = () => `${range().start}_to_${range().end}`;
+  const filenameSuffix = () => `${dateRange().start}_to_${dateRange().end}`;
 
   const exportSessions = () => {
     const weekly = computeWeeklySessions(sessions() ?? []);

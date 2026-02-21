@@ -19,7 +19,6 @@ export type AnalyticsEventName =
 
 let sessionId: string | null = null;
 let sessionStart: number | null = null;
-let anonymousId: string | null = null;
 
 function getAnonymousId(): string {
   let id = sessionStorage.getItem('calab_anon_id');
@@ -58,7 +57,6 @@ export async function initSession(
   if (!supabaseEnabled) return;
 
   try {
-    anonymousId = getAnonymousId();
     sessionStart = Date.now();
 
     const supabase = await getSupabase();
@@ -66,7 +64,7 @@ export async function initSession(
 
     const { data, error } = await supabase.functions.invoke('geo-session', {
       body: {
-        anonymous_id: anonymousId,
+        anonymous_id: getAnonymousId(),
         app_name: appName,
         app_version: appVersion ?? null,
         screen_width: window.screen.width,

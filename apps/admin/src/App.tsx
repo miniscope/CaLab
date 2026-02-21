@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { Show } from 'solid-js';
+import { Switch, Match } from 'solid-js';
 import { DashboardShell, CompactHeader, isAuthCallback, AuthCallback } from '@calab/ui';
 import { AdminGuard } from './components/AdminGuard.tsx';
 import { NavBar } from './components/NavBar.tsx';
@@ -24,21 +24,23 @@ const App: Component = () => {
         <div class="admin-layout">
           <NavBar />
           <div class="admin-content">
-            <Show when={activeView() === 'overview'}>
-              <OverviewView />
-            </Show>
-            <Show when={activeView() === 'usage'}>
-              <UsageView />
-            </Show>
-            <Show when={activeView() === 'geography'}>
-              <GeographyView />
-            </Show>
-            <Show when={activeView() === 'submissions'}>
-              <SubmissionsView />
-            </Show>
-            <Show when={activeView() === 'export'}>
-              <ExportPanel />
-            </Show>
+            <Switch>
+              <Match when={activeView() === 'overview'}>
+                <OverviewView />
+              </Match>
+              <Match when={activeView() === 'usage'}>
+                <UsageView />
+              </Match>
+              <Match when={activeView() === 'geography'}>
+                <GeographyView />
+              </Match>
+              <Match when={activeView() === 'submissions'}>
+                <SubmissionsView />
+              </Match>
+              <Match when={activeView() === 'export'}>
+                <ExportPanel />
+              </Match>
+            </Switch>
           </div>
         </div>
       </DashboardShell>

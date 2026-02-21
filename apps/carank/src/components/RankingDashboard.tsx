@@ -40,6 +40,7 @@ export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
   onMount(() => {
     void trackEvent('ranking_completed', { num_cells: props.data.numCells });
   });
+
   const good = () => metrics().filter((m) => m.quality === 'good').length;
   const fair = () => metrics().filter((m) => m.quality === 'fair').length;
   const poor = () => metrics().filter((m) => m.quality === 'poor').length;

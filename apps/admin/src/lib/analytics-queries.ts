@@ -13,6 +13,11 @@ import type {
   DateRange,
 } from './types.ts';
 
+/** Convert a date-only string (YYYY-MM-DD) to an end-of-day timestamp. */
+function endOfDay(dateStr: string): string {
+  return dateStr + 'T23:59:59Z';
+}
+
 export async function fetchSessions(range: DateRange): Promise<SessionRow[]> {
   const supabase = await getSupabase();
   if (!supabase) return [];
@@ -21,7 +26,7 @@ export async function fetchSessions(range: DateRange): Promise<SessionRow[]> {
     .from('analytics_sessions')
     .select('*')
     .gte('created_at', range.start)
-    .lte('created_at', range.end + 'T23:59:59Z')
+    .lte('created_at', endOfDay(range.end))
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -36,7 +41,7 @@ export async function fetchEvents(range: DateRange): Promise<EventRow[]> {
     .from('analytics_events')
     .select('*')
     .gte('created_at', range.start)
-    .lte('created_at', range.end + 'T23:59:59Z')
+    .lte('created_at', endOfDay(range.end))
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -64,7 +69,7 @@ export async function deleteSubmission(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-// --- Client-side aggregation ---
+// Client-side aggregation helpers
 
 export function computeMetrics(sessions: SessionRow[], submissions: SubmissionRow[]): AdminMetrics {
   const uniqueUserIds = new Set(sessions.filter((s) => s.user_id).map((s) => s.user_id));

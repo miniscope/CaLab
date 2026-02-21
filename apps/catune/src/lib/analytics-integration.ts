@@ -7,14 +7,11 @@ import { trackEvent } from '@calab/community';
 import { importStep, isDemo, rawFile } from './data-store.ts';
 import { user } from './community/community-store.ts';
 
-let prevImportStep: string | null = null;
-let prevUser: unknown = undefined;
-
 export function setupAnalyticsEffects(): void {
   // Track file_imported / demo_loaded when importStep transitions to 'ready'
   createEffect(
-    on(importStep, (step) => {
-      if (step === 'ready' && prevImportStep !== 'ready') {
+    on(importStep, (step, prevStep) => {
+      if (step === 'ready' && prevStep !== 'ready') {
         if (isDemo()) {
           void trackEvent('demo_loaded');
         } else if (rawFile()) {
@@ -23,24 +20,22 @@ export function setupAnalyticsEffects(): void {
           });
         }
       }
-      prevImportStep = step;
     }),
   );
 
-  // Track auth_signed_in / auth_signed_out on user transitions
+  // Track auth_signed_in / auth_signed_out on user transitions.
+  // defer: true skips the initial value so the first sign-in state is not tracked.
   createEffect(
-    on(user, (currentUser) => {
-      if (prevUser === undefined) {
-        // Initial load — don't fire event
-        prevUser = currentUser;
-        return;
-      }
-      if (currentUser && !prevUser) {
-        void trackEvent('auth_signed_in');
-      } else if (!currentUser && prevUser) {
-        void trackEvent('auth_signed_out');
-      }
-      prevUser = currentUser;
-    }),
+    on(
+      user,
+      (currentUser, prevUser) => {
+        if (currentUser && !prevUser) {
+          void trackEvent('auth_signed_in');
+        } else if (!currentUser && prevUser) {
+          void trackEvent('auth_signed_out');
+        }
+      },
+      { defer: true },
+    ),
   );
 }

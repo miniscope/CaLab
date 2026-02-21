@@ -1,5 +1,5 @@
 // Supabase Edge Function: geo-session
-// Receives session start data from client, resolves IP → country/region
+// Receives session start data from client, resolves IP -> country/region
 // server-side (IP is never stored), inserts session, returns session_id.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -8,6 +8,8 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+const jsonHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
 
 interface SessionPayload {
   anonymous_id: string;
@@ -22,6 +24,10 @@ interface SessionPayload {
 interface GeoResult {
   countryCode?: string;
   regionName?: string;
+}
+
+function jsonResponse(body: Record<string, unknown>, status: number): Response {
+  return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
 }
 
 async function resolveGeo(ip: string): Promise<GeoResult> {
@@ -41,6 +47,16 @@ async function resolveGeo(ip: string): Promise<GeoResult> {
   }
 }
 
+function extractUserIdFromJWT(authHeader: string): string | null {
+  if (!authHeader.startsWith('Bearer ')) return null;
+  try {
+    const payload = JSON.parse(atob(authHeader.split('.')[1]));
+    return payload.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -50,30 +66,17 @@ Deno.serve(async (req) => {
     const body: SessionPayload = await req.json();
 
     if (!body.anonymous_id || !body.app_name) {
-      return new Response(JSON.stringify({ error: 'anonymous_id and app_name are required' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'anonymous_id and app_name are required' }, 400);
     }
 
-    // Resolve IP → country/region (IP never stored)
+    // Resolve IP -> country/region (IP never stored)
     const ip =
       req.headers.get('cf-connecting-ip') ||
       req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       '';
     const geo = ip ? await resolveGeo(ip) : {};
 
-    // Extract auth user_id if present
-    const authHeader = req.headers.get('authorization') ?? '';
-    let userId: string | null = null;
-    if (authHeader.startsWith('Bearer ')) {
-      try {
-        const payload = JSON.parse(atob(authHeader.split('.')[1]));
-        userId = payload.sub ?? null;
-      } catch {
-        // Ignore malformed JWT
-      }
-    }
+    const userId = extractUserIdFromJWT(req.headers.get('authorization') ?? '');
 
     // Insert session using service_role client
     const supabase = createClient(
@@ -99,20 +102,11 @@ Deno.serve(async (req) => {
       .single();
 
     if (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: error.message }, 500);
     }
 
-    return new Response(JSON.stringify({ session_id: data.id }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ session_id: data.id }, 200);
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : 'Internal error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
+    return jsonResponse({ error: err instanceof Error ? err.message : 'Internal error' }, 500);
   }
 });
