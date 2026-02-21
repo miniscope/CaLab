@@ -3,6 +3,7 @@
 // Parameter changes trigger solver dispatch; results flow back here.
 
 import { createSignal } from 'solid-js';
+import { trackEvent } from '@calab/community';
 import { pinMultiCellResults, unpinMultiCellResults } from './multi-cell-store.ts';
 
 // --- Cell selection ---
@@ -54,6 +55,7 @@ function pinCurrentSnapshot(): void {
 
   // Also snapshot all multi-cell results for card grid overlays
   pinMultiCellResults();
+  void trackEvent('snapshot_pinned');
 }
 
 /** Clear pinned snapshot data. */

@@ -1,7 +1,8 @@
 import type { JSX } from 'solid-js';
-import { createMemo } from 'solid-js';
+import { createMemo, onMount } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import { computePeakSNR, snrToQuality } from '@calab/core';
+import { trackEvent } from '@calab/community';
 import type { QualityTier } from '@calab/core';
 import type { CnmfData } from '../types.ts';
 
@@ -35,6 +36,10 @@ function computeMetrics(data: CnmfData): CellMetric[] {
 
 export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
   const metrics = createMemo(() => computeMetrics(props.data));
+
+  onMount(() => {
+    void trackEvent('ranking_completed', { num_cells: props.data.numCells });
+  });
   const good = () => metrics().filter((m) => m.quality === 'good').length;
   const fair = () => metrics().filter((m) => m.quality === 'fair').length;
   const poor = () => metrics().filter((m) => m.quality === 'poor').length;

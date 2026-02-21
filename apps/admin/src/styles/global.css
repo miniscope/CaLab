@@ -1,0 +1,320 @@
+/* Admin design tokens and styles */
+
+:root {
+  --admin-bg: #f5f5f5;
+  --admin-surface: #ffffff;
+  --admin-border: #e0e0e0;
+  --admin-text: #1a1a1a;
+  --admin-text-muted: #616161;
+  --admin-accent: #2171b5;
+  --admin-accent-hover: #185a92;
+  --admin-success: #2e7d32;
+  --admin-danger: #d32f2f;
+  --admin-bar: rgba(33, 113, 181, 0.15);
+  --admin-radius: 4px;
+  --admin-font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+body {
+  background: var(--admin-bg);
+}
+
+/* Layout */
+.admin-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: calc(100vh - 48px);
+}
+
+.admin-content {
+  padding: 24px;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Navigation */
+.admin-nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--admin-border);
+  background: var(--admin-surface);
+  padding: 0 24px;
+}
+
+.admin-nav__tab {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 0.85rem;
+  color: var(--admin-text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.admin-nav__tab:hover {
+  color: var(--admin-text);
+}
+
+.admin-nav__tab--active {
+  color: var(--admin-accent);
+  border-bottom-color: var(--admin-accent);
+  font-weight: 500;
+}
+
+/* View */
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.view__title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--admin-text);
+  margin: 0;
+}
+
+.view__desc {
+  font-size: 0.85rem;
+  color: var(--admin-text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Metric cards */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.metric-card {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  padding: 20px;
+  text-align: center;
+}
+
+.metric-card__value {
+  font-size: 2rem;
+  font-weight: 600;
+  font-family: var(--admin-font-mono);
+  color: var(--admin-text);
+  line-height: 1.2;
+}
+
+.metric-card__label {
+  font-size: 0.8rem;
+  color: var(--admin-text-muted);
+  margin-top: 4px;
+}
+
+/* Data table */
+.data-table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.data-table__th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--admin-border);
+  color: var(--admin-text-muted);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.data-table__th:hover {
+  color: var(--admin-text);
+}
+
+.data-table__sort {
+  font-size: 0.7rem;
+}
+
+.data-table__td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--admin-border);
+  color: var(--admin-text);
+  vertical-align: middle;
+}
+
+.data-table__bar-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.data-table__bar-cell span {
+  min-width: 32px;
+  font-family: var(--admin-font-mono);
+  font-size: 0.8rem;
+}
+
+.data-table__bar {
+  height: 14px;
+  background: var(--admin-bar);
+  border-radius: 2px;
+  min-width: 2px;
+}
+
+.data-table__delete {
+  padding: 2px 8px;
+  border: 1px solid var(--admin-danger);
+  border-radius: var(--admin-radius);
+  background: none;
+  color: var(--admin-danger);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.data-table__delete:hover {
+  background: rgba(211, 47, 47, 0.08);
+}
+
+/* Date range selector */
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.date-range input {
+  padding: 3px 6px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  font-size: 0.75rem;
+  font-family: var(--admin-font-mono);
+  color: var(--admin-text);
+  background: var(--admin-surface);
+}
+
+.date-range__sep {
+  font-size: 0.75rem;
+  color: var(--admin-text-muted);
+}
+
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-bar input {
+  padding: 6px 10px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  font-size: 0.8rem;
+  color: var(--admin-text);
+  background: var(--admin-surface);
+  min-width: 160px;
+}
+
+/* Export buttons */
+.export-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.export-btn {
+  padding: 12px 16px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: var(--admin-surface);
+  color: var(--admin-accent);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.export-btn:hover {
+  border-color: var(--admin-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* Admin guard (auth gate) */
+.admin-guard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.admin-guard__card {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  padding: 32px 48px;
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+
+.admin-guard__card h2 {
+  font-size: 1.25rem;
+  margin: 0 0 8px;
+}
+
+.admin-guard__card p {
+  color: var(--admin-text-muted);
+  font-size: 0.9rem;
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.admin-guard__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-guard__form input {
+  padding: 8px 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  font-size: 0.85rem;
+}
+
+.admin-guard__form button {
+  padding: 8px 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: var(--admin-surface);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.admin-guard__form button:hover {
+  border-color: var(--admin-accent);
+}
+
+.admin-guard__sent {
+  color: var(--admin-success);
+  font-size: 0.85rem;
+}
+
+.admin-guard__error {
+  color: var(--admin-danger);
+  font-size: 0.8rem;
+  margin: 8px 0 0;
+}

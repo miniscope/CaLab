@@ -1,5 +1,6 @@
 import { type JSX, createSignal } from 'solid-js';
 import { parseNpy } from '@calab/io';
+import { trackEvent } from '@calab/community';
 import type { CnmfData } from '../types.ts';
 
 interface FileImportProps {
@@ -31,6 +32,7 @@ export function FileImport(props: FileImportProps): JSX.Element {
         numTimepoints: result.shape[1],
         fileName: file.name,
       });
+      void trackEvent('file_imported', { extension: file.name.split('.').pop() ?? 'unknown' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to parse file');
     }

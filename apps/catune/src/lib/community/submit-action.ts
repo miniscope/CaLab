@@ -6,7 +6,7 @@
  */
 
 import { computeAR2 } from '@calab/core';
-import { computeDatasetHash } from '@calab/community';
+import { computeDatasetHash, trackEvent } from '@calab/community';
 import { submitParameters } from './catune-service.ts';
 import type { CatuneSubmissionPayload, CatuneSubmission } from './types.ts';
 
@@ -97,5 +97,7 @@ export async function submitToSupabase(
     extra_metadata: ctx.isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
   };
 
-  return submitParameters(payload);
+  const result = await submitParameters(payload);
+  void trackEvent('submission_created', { data_source: payload.data_source });
+  return result;
 }

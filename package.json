@@ -18,7 +18,7 @@
     "test:watch": "npm run test:watch -w apps/catune",
     "lint": "eslint apps/ packages/",
     "lint:fix": "eslint --fix apps/ packages/",
-    "typecheck": "tsc -b apps/catune apps/carank",
+    "typecheck": "tsc -b apps/catune apps/carank apps/admin",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

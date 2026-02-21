@@ -59,6 +59,7 @@ const apps = readdirSync(appsDir)
       longDescription: pkg.calab.longDescription ?? '',
       features: pkg.calab.features ?? [],
       status: pkg.calab.status ?? 'coming-soon',
+      hidden: pkg.calab.hidden ?? false,
       screenshotFile,
     };
   })
@@ -109,7 +110,10 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL ?? '';
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY ?? '';
 const authEnabled = !!(supabaseUrl && supabaseAnonKey);
 
-const cards = apps.map(renderCard).join('\n');
+const cards = apps
+  .filter((a) => !a.hidden)
+  .map(renderCard)
+  .join('\n');
 
 writeFileSync(
   resolve(out, 'index.html'),
@@ -267,6 +271,7 @@ writeFileSync(
     footer a { color: #9e9e9e; }
     footer a:hover { color: #616161; }
     .version { font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace; }
+    .privacy-notice { margin-bottom: 12px; font-size: 0.75rem; line-height: 1.4; }
 
     /* Auth menu */
     .auth-landing { position: absolute; top: 16px; right: 16px; }
@@ -336,6 +341,7 @@ ${cards}
   </div>
   <footer>
     <div class="page">
+      <p class="privacy-notice">CaLab collects anonymous usage statistics to support grant reporting. No personal data or IP addresses are stored.</p>
       ${versionHtml}<a href="https://github.com/miniscope/CaLab">GitHub</a>
     </div>
   </footer>

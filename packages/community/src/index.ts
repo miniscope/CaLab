@@ -19,6 +19,10 @@ export {
   BRAIN_REGION_OPTIONS,
 } from './field-options.ts';
 
+// Analytics
+export { initSession, trackEvent, endSession, registerSessionEndListeners } from './analytics.ts';
+export type { AnalyticsEventName } from './analytics.ts';
+
 // Utilities
 export { computeDatasetHash } from './dataset-hash.ts';
 

@@ -1,0 +1,22 @@
+{
+  "name": "admin",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "calab": {
+    "displayName": "Admin",
+    "description": "Usage analytics and moderation",
+    "status": "stable",
+    "hidden": true
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@calab/community": "*",
+    "@calab/ui": "*",
+    "solid-js": "^1.9.11"
+  }
+}

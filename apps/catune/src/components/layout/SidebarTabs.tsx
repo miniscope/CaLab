@@ -10,6 +10,7 @@
  */
 
 import { createSignal, createEffect, For, Show, type JSX } from 'solid-js';
+import { trackEvent } from '@calab/community';
 
 export type SidebarTab = 'community' | 'spectrum' | 'metrics';
 
@@ -65,7 +66,10 @@ export function SidebarTabs(props: SidebarTabsProps) {
             <button
               class={`sidebar-tabs__tab${activeSidebarTab() === tab.id ? ' sidebar-tabs__tab--active' : ''}`}
               data-tutorial={`sidebar-tab-${tab.id}`}
-              onClick={() => setActiveSidebarTab(tab.id)}
+              onClick={() => {
+                setActiveSidebarTab(tab.id);
+                if (tab.id === 'community') void trackEvent('community_browser_opened');
+              }}
             >
               {tab.label}
             </button>
