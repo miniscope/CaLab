@@ -2,14 +2,13 @@
 
 Serves traces as .npy binary and receives exported params as JSON.
 Binds to 127.0.0.1 only (not network-reachable). CORS enabled for
-HTTPS→localhost mixed-content requests.
+HTTPS->localhost mixed-content requests.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -24,18 +23,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default stderr logging."""
-        pass
 
-    def _set_cors_headers(self) -> None:
+    def _send_cors_response(
+        self, data: bytes, content_type: str = "application/json",
+    ) -> None:
+        """Send a 200 response with CORS headers and body."""
+        self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_json(self, obj: Any) -> None:
+        """Send a JSON-serializable object as a CORS response."""
+        self._send_cors_response(json.dumps(obj).encode())
 
     def do_OPTIONS(self) -> None:
         """Handle CORS preflight."""
-        self.send_response(200)
-        self._set_cors_headers()
-        self.end_headers()
+        self._send_cors_response(b"", content_type="text/plain")
 
     def do_GET(self) -> None:
         if self.path == "/api/v1/traces":
@@ -43,9 +51,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/v1/metadata":
             self._serve_metadata()
         elif self.path == "/api/v1/status":
-            self._serve_status()
+            self._send_json({"ready": True, "app": "catune"})
         elif self.path == "/api/v1/health":
-            self._serve_health()
+            self._send_cors_response(b"ok", content_type="text/plain")
         else:
             self.send_error(404, "Not Found")
 
@@ -59,49 +67,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         """Serve traces as .npy binary."""
         buf = io.BytesIO()
         np.save(buf, self.server.traces)
-        data = buf.getvalue()
-
-        self.send_response(200)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        self._send_cors_response(buf.getvalue(), content_type="application/octet-stream")
 
     def _serve_metadata(self) -> None:
         """Serve metadata as JSON."""
-        meta = {
+        self._send_json({
             "sampling_rate_hz": self.server.fs,
             "num_cells": int(self.server.traces.shape[0]),
             "num_timepoints": int(self.server.traces.shape[1]),
-        }
-        data = json.dumps(meta).encode()
-
-        self.send_response(200)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _serve_status(self) -> None:
-        """Serve status."""
-        data = json.dumps({"ready": True, "app": "catune"}).encode()
-
-        self.send_response(200)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _serve_health(self) -> None:
-        """Liveness check."""
-        self.send_response(200)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"ok")
+        })
 
     def _receive_params(self) -> None:
         """Receive exported params JSON from web app."""
@@ -116,12 +90,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         self.server.received_params = params
         self.server.params_event.set()
-
-        self.send_response(200)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok"}).encode())
+        self._send_json({"status": "ok"})
 
 
 class BridgeServer(HTTPServer):
@@ -143,10 +112,3 @@ class BridgeServer(HTTPServer):
     @property
     def port(self) -> int:
         return self.server_address[1]
-
-
-def find_free_port() -> int:
-    """Find an available port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]

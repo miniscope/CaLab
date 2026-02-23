@@ -4,6 +4,18 @@ use pyo3::prelude::*;
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::Solver;
 
+const BATCH_SIZE: u32 = 100;
+
+/// Run the solver in batches until convergence or max_iters is reached.
+fn run_to_convergence(solver: &mut Solver, max_iters: u32) {
+    let n_batches = max_iters.div_ceil(BATCH_SIZE);
+    for _ in 0..n_batches {
+        if solver.step_batch(BATCH_SIZE) {
+            break;
+        }
+    }
+}
+
 /// Python-facing wrapper around the Rust FISTA Solver.
 ///
 /// Exposes the same API as the WASM bindings but with numpy array I/O.
@@ -27,7 +39,6 @@ impl PySolver {
     }
 
     /// Load a trace (numpy float32 array) for deconvolution.
-    /// Resets iteration state for a fresh solve.
     fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) {
         self.inner.set_trace(trace.as_slice().unwrap());
     }
@@ -39,26 +50,18 @@ impl PySolver {
 
     /// Run solver to convergence (up to max_iters). Returns iterations run.
     fn solve(&mut self, max_iters: u32) -> u32 {
-        let batch_size = 100;
-        let n_batches = (max_iters + batch_size - 1) / batch_size;
-        for _ in 0..n_batches {
-            if self.inner.step_batch(batch_size) {
-                break;
-            }
-        }
+        run_to_convergence(&mut self.inner, max_iters);
         self.inner.iteration_count()
     }
 
     /// Get the deconvolved activity (non-negative spike train).
     fn get_solution<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        let data = self.inner.get_solution();
-        PyArray1::from_vec(py, data)
+        PyArray1::from_vec(py, self.inner.get_solution())
     }
 
     /// Get reconvolution (K*s) for the active region.
     fn get_reconvolution<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        let data = self.inner.get_reconvolution();
-        PyArray1::from_vec(py, data)
+        PyArray1::from_vec(py, self.inner.get_reconvolution())
     }
 
     /// Get reconvolution + baseline (K*s + b).
@@ -66,8 +69,7 @@ impl PySolver {
         &mut self,
         py: Python<'py>,
     ) -> Bound<'py, PyArray1<f32>> {
-        let data = self.inner.get_reconvolution_with_baseline();
-        PyArray1::from_vec(py, data)
+        PyArray1::from_vec(py, self.inner.get_reconvolution_with_baseline())
     }
 
     /// Get estimated baseline.
@@ -77,14 +79,12 @@ impl PySolver {
 
     /// Get the current trace (after filtering if applied).
     fn get_trace<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        let data = self.inner.get_trace();
-        PyArray1::from_vec(py, data)
+        PyArray1::from_vec(py, self.inner.get_trace())
     }
 
     /// Get the kernel.
     fn get_kernel<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        let data = self.inner.get_kernel();
-        PyArray1::from_vec(py, data)
+        PyArray1::from_vec(py, self.inner.get_kernel())
     }
 
     /// Check convergence.
@@ -154,10 +154,7 @@ fn deconvolve_single<'py>(
     let mut solver = Solver::new();
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
 
-    // Convert f64 input to f32 for the solver
-    let trace_slice = trace.as_slice().unwrap();
-    let trace_f32: Vec<f32> = trace_slice.iter().map(|&v| v as f32).collect();
-
+    let trace_f32: Vec<f32> = trace.as_slice().unwrap().iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
 
     if filter_enabled {
@@ -165,27 +162,14 @@ fn deconvolve_single<'py>(
         solver.apply_filter();
     }
 
-    // Solve
-    let batch_size = 100u32;
-    let n_batches = (max_iters + batch_size - 1) / batch_size;
-    for _ in 0..n_batches {
-        if solver.step_batch(batch_size) {
-            break;
-        }
-    }
-
-    let activity = solver.get_solution();
-    let baseline = solver.get_baseline();
-    let reconvolution = solver.get_reconvolution_with_baseline();
-    let iterations = solver.iteration_count();
-    let converged = solver.converged();
+    run_to_convergence(&mut solver, max_iters);
 
     Ok((
-        PyArray1::from_vec(py, activity),
-        baseline,
-        PyArray1::from_vec(py, reconvolution),
-        iterations,
-        converged,
+        PyArray1::from_vec(py, solver.get_solution()),
+        solver.get_baseline(),
+        PyArray1::from_vec(py, solver.get_reconvolution_with_baseline()),
+        solver.iteration_count(),
+        solver.converged(),
     ))
 }
 
@@ -228,22 +212,14 @@ fn deconvolve_batch<'py>(
     let traces_ref = traces.as_array();
 
     for cell_idx in 0..n_cells {
-        let row = traces_ref.row(cell_idx);
-        let trace_f32: Vec<f32> = row.iter().map(|&v| v as f32).collect();
-
+        let trace_f32: Vec<f32> = traces_ref.row(cell_idx).iter().map(|&v| v as f32).collect();
         solver.set_trace(&trace_f32);
 
         if filter_enabled {
             solver.apply_filter();
         }
 
-        let batch_size = 100u32;
-        let n_batches = (max_iters + batch_size - 1) / batch_size;
-        for _ in 0..n_batches {
-            if solver.step_batch(batch_size) {
-                break;
-            }
-        }
+        run_to_convergence(&mut solver, max_iters);
 
         activities.push(PyArray1::from_vec(py, solver.get_solution()));
         baselines.push(solver.get_baseline());

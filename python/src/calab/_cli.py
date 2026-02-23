@@ -48,9 +48,14 @@ def cmd_tune(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _to_serializable(value):
+    """Convert numpy arrays/scalars to JSON-serializable Python types."""
+    return value.tolist() if hasattr(value, "tolist") else value
+
+
 def cmd_deconvolve(args: argparse.Namespace) -> None:
     """Batch deconvolution from file."""
-    from ._compute import run_deconvolution, run_deconvolution_full, bandpass_filter
+    from ._compute import bandpass_filter, run_deconvolution, run_deconvolution_full
     from ._io import load_export_params
 
     traces = np.load(args.file)
@@ -59,7 +64,6 @@ def cmd_deconvolve(args: argparse.Namespace) -> None:
 
     params = load_export_params(args.params)
 
-    # Apply filter if enabled
     if params["filter_enabled"]:
         traces = traces.copy()
         for i in range(traces.shape[0]):
@@ -67,42 +71,37 @@ def cmd_deconvolve(args: argparse.Namespace) -> None:
                 traces[i], params["tau_rise"], params["tau_decay"], params["fs"],
             )
 
+    deconv_kwargs = dict(
+        fs=params["fs"],
+        tau_r=params["tau_rise"],
+        tau_d=params["tau_decay"],
+        lam=params["lambda_"],
+    )
+
     if args.full:
-        result = run_deconvolution_full(
-            traces,
-            fs=params["fs"],
-            tau_r=params["tau_rise"],
-            tau_d=params["tau_decay"],
-            lam=params["lambda_"],
-        )
+        result = run_deconvolution_full(traces, **deconv_kwargs)
         np.save(args.output, result.activity)
-        # Save additional info as JSON sidecar
+
         info_path = str(Path(args.output).with_suffix("")) + "_info.json"
         info = {
-            "baseline": result.baseline.tolist() if hasattr(result.baseline, "tolist") else result.baseline,
-            "iterations": result.iterations.tolist() if hasattr(result.iterations, "tolist") else result.iterations,
-            "converged": result.converged.tolist() if hasattr(result.converged, "tolist") else result.converged,
+            "baseline": _to_serializable(result.baseline),
+            "iterations": _to_serializable(result.iterations),
+            "converged": _to_serializable(result.converged),
         }
         with open(info_path, "w") as f:
             json.dump(info, f, indent=2)
         print(f"Saved activity to {args.output}")
         print(f"Saved info to {info_path}")
     else:
-        activity = run_deconvolution(
-            traces,
-            fs=params["fs"],
-            tau_r=params["tau_rise"],
-            tau_d=params["tau_decay"],
-            lam=params["lambda_"],
-        )
+        activity = run_deconvolution(traces, **deconv_kwargs)
         np.save(args.output, activity)
         print(f"Saved activity to {args.output}")
 
 
 def cmd_convert(args: argparse.Namespace) -> None:
     """Convert from CaImAn/Minian format to CaLab format."""
-    from ._loaders import load_caiman, load_minian
     from ._io import save_for_tuning
+    from ._loaders import load_caiman, load_minian
 
     fmt = args.format.lower()
     if fmt == "caiman":

@@ -102,7 +102,6 @@ def run_deconvolution(
     tau_r: float,
     tau_d: float,
     lam: float,
-    tolerance: float = 1e-6,
     max_iters: int = 2000,
 ) -> np.ndarray:
     """Run FISTA deconvolution on one or more calcium traces.
@@ -122,8 +121,6 @@ def run_deconvolution(
         Decay time constant in seconds.
     lam : float
         L1 penalty (sparsity regularization strength).
-    tolerance : float, optional
-        Convergence tolerance, by default 1e-6. (Used by Rust solver internally.)
     max_iters : int, optional
         Maximum number of FISTA iterations, by default 2000.
 
@@ -154,7 +151,6 @@ def run_deconvolution_full(
     tau_r: float,
     tau_d: float,
     lam: float,
-    tolerance: float = 1e-6,
     max_iters: int = 2000,
 ) -> DeconvolutionResult:
     """Run FISTA deconvolution returning full results.
@@ -172,8 +168,6 @@ def run_deconvolution_full(
         Decay time constant in seconds.
     lam : float
         L1 penalty (sparsity regularization strength).
-    tolerance : float, optional
-        Convergence tolerance, by default 1e-6.
     max_iters : int, optional
         Maximum number of FISTA iterations, by default 2000.
 

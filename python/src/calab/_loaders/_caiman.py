@@ -35,11 +35,8 @@ def load_caiman(
         traces = np.asarray(f[trace_key], dtype=np.float64)
 
         # Read sampling rate from file if not provided
-        if fs is None:
-            if fs_key in f:
-                fs = float(np.asarray(f[fs_key]))
-            else:
-                fs = None
+        if fs is None and fs_key in f:
+            fs = float(np.asarray(f[fs_key]))
 
     # Ensure 2D
     if traces.ndim == 1:

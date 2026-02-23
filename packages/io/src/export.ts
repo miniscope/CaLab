@@ -9,9 +9,9 @@
  */
 
 import * as v from 'valibot';
-import { computeAR2 } from '@calab/core';
-import { CaTuneExportSchema } from '@calab/core';
+import { computeAR2, CaTuneExportSchema } from '@calab/core';
 import type { CaTuneExportData } from '@calab/core';
+import { postParamsToBridge } from './bridge.ts';
 
 /** Alias preserving the public API name used by io consumers. */
 export type CaTuneExport = CaTuneExportData;
@@ -82,18 +82,11 @@ export function downloadExport(
   anchor.click();
   document.body.removeChild(anchor);
 
-  // Prevent memory leak
   URL.revokeObjectURL(url);
 
-  // Also POST to bridge server if connected
+  // POST to bridge server if connected (best-effort, don't block the download)
   if (bridgeUrl) {
-    fetch(`${bridgeUrl}/api/v1/params`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: json,
-    }).catch(() => {
-      // Bridge POST is best-effort — don't block the download
-    });
+    postParamsToBridge(bridgeUrl, exportData).catch(() => {});
   }
 }
 
