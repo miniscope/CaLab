@@ -4,7 +4,7 @@
  * Optionally overlays the user's current parameters as a larger marker.
  */
 
-import { createEffect, createMemo, onCleanup } from 'solid-js';
+import { createEffect, createMemo, on, onCleanup } from 'solid-js';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
@@ -14,6 +14,7 @@ import { getThemeColors } from '../../lib/chart/theme-colors.ts';
 export interface ScatterPlotProps {
   submissions: CatuneSubmission[];
   userParams?: { tauRise: number; tauDecay: number; lambda: number } | null;
+  highlightFlags?: boolean[] | null;
 }
 
 /** Map a lambda value to a viridis-inspired HSLA color on a linear scale. */
@@ -82,6 +83,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     colors: () => string[],
     userParams: () => ScatterPlotProps['userParams'],
     medianPt: () => { x: number; y: number } | null,
+    highlightFlags: () => boolean[] | null,
     markerStroke: string,
     medianColor: string,
   ) {
@@ -129,6 +131,9 @@ export function ScatterPlot(props: ScatterPlotProps) {
           }
 
           // Draw community points
+          const flags = highlightFlags();
+          const highlighting = flags != null && flags.length > 0;
+
           for (let i = 0; i < xVals.length; i++) {
             const xVal = xVals[i];
             const yVal = yVals[i];
@@ -138,11 +143,22 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
             const cx = valToPosX(xVal, scaleX, xDim, xOff);
             const cy = valToPosY(yVal, scaleY, yDim, yOff);
+            const isOwned = highlighting && flags[i];
+
+            ctx.globalAlpha = highlighting && !isOwned ? 0.25 : 1;
             ctx.fillStyle = cols[i] || 'hsla(200, 80%, 55%, 0.7)';
+            const r = isOwned ? (size * 1.3) / 2 : size / 2;
             ctx.beginPath();
-            ctx.arc(cx, cy, size / 2, 0, 2 * Math.PI);
+            ctx.arc(cx, cy, r, 0, 2 * Math.PI);
             ctx.fill();
+
+            if (isOwned) {
+              ctx.strokeStyle = markerStroke;
+              ctx.lineWidth = 2 * devicePixelRatio;
+              ctx.stroke();
+            }
           }
+          ctx.globalAlpha = 1;
 
           // Draw median marker on top of community points
           if (mp && scaleValid) {
@@ -209,6 +225,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       lambdaColors,
       () => props.userParams,
       medianPoint,
+      () => props.highlightFlags ?? null,
       theme.textPrimary,
       theme.textSecondary,
     );
@@ -270,6 +287,17 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
     uplotInstance = new uPlot(opts, data, containerRef);
   });
+
+  // Force redraw when highlightFlags changes (without recreating the chart)
+  createEffect(
+    on(
+      () => props.highlightFlags,
+      () => {
+        if (uplotInstance) uplotInstance.redraw();
+      },
+      { defer: true },
+    ),
+  );
 
   // ResizeObserver: resize chart when sidebar opens/closes
   let resizeRaf: number | undefined;
