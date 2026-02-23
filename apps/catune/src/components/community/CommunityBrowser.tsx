@@ -13,6 +13,7 @@ import {
   fetchSubmissions,
   fieldOptions,
   loadFieldOptions,
+  user,
 } from '../../lib/community/index.ts';
 import type { CatuneSubmission, DataSource, CatuneFilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
@@ -38,6 +39,7 @@ export function CommunityBrowser() {
   const [loading, setLoading] = createSignal(false);
   const [collapsed, setCollapsed] = createSignal(false);
   const [compareMyParams, setCompareMyParams] = createSignal(false);
+  const [highlightMine, setHighlightMine] = createSignal(false);
   const [lastFetched, setLastFetched] = createSignal<number | null>(null);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -80,6 +82,14 @@ export function CommunityBrowser() {
   const userParams = createMemo(() =>
     compareMyParams() ? { tauRise: tauRise(), tauDecay: tauDecay(), lambda: lambda() } : null,
   );
+
+  /** Per-point flags: true for the current user's submissions when highlight is active. */
+  const highlightFlags = createMemo((): boolean[] | null => {
+    if (!highlightMine()) return null;
+    const uid = user()?.id;
+    if (!uid) return null;
+    return filteredSubmissions().map((s) => s.user_id === uid);
+  });
 
   // --- Data fetching ---
   async function loadData(): Promise<void> {
@@ -186,6 +196,9 @@ export function CommunityBrowser() {
               totalCount={sourceSubmissions().length}
               demoPresets={getPresetLabels()}
               showDemoPresetFilter={dataSource() === 'demo'}
+              highlightMine={highlightMine()}
+              onHighlightMineChange={() => setHighlightMine((prev) => !prev)}
+              canHighlight={!!user()}
             />
 
             {/* Controls: Compare toggle */}
@@ -211,7 +224,11 @@ export function CommunityBrowser() {
                 </div>
               }
             >
-              <ScatterPlot submissions={filteredSubmissions()} userParams={userParams()} />
+              <ScatterPlot
+                submissions={filteredSubmissions()}
+                userParams={userParams()}
+                highlightFlags={highlightFlags()}
+              />
             </Show>
           </Show>
         </div>

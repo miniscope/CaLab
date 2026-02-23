@@ -597,6 +597,31 @@
   margin-left: var(--space-xs);
 }
 
+.filter-bar__highlight-btn {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.filter-bar__highlight-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-bar__highlight-btn--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
 .filter-bar__clear {
   background: none;
   border: none;

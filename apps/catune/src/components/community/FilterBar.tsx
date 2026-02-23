@@ -4,6 +4,7 @@
  * Includes clear button and filtered result count.
  */
 
+import { Show } from 'solid-js';
 import type { CatuneFilterState } from '../../lib/community/index.ts';
 import '../../styles/community.css';
 
@@ -19,6 +20,9 @@ export interface FilterBarProps {
   totalCount: number;
   demoPresets?: { id: string; label: string }[];
   showDemoPresetFilter?: boolean;
+  highlightMine?: boolean;
+  onHighlightMineChange?: () => void;
+  canHighlight?: boolean;
 }
 
 export function FilterBar(props: FilterBarProps) {
@@ -26,7 +30,8 @@ export function FilterBar(props: FilterBarProps) {
     props.filters.indicator !== null ||
     props.filters.species !== null ||
     props.filters.brainRegion !== null ||
-    props.filters.demoPreset !== null;
+    props.filters.demoPreset !== null ||
+    !!props.highlightMine;
 
   function handleFilterChange(field: keyof CatuneFilterState, value: string): void {
     props.onFilterChange({
@@ -42,6 +47,9 @@ export function FilterBar(props: FilterBarProps) {
       brainRegion: null,
       demoPreset: null,
     });
+    if (props.highlightMine && props.onHighlightMineChange) {
+      props.onHighlightMineChange();
+    }
   }
 
   return (
@@ -93,6 +101,15 @@ export function FilterBar(props: FilterBarProps) {
           </select>
         </>
       )}
+
+      <Show when={props.canHighlight}>
+        <button
+          class={`filter-bar__highlight-btn ${props.highlightMine ? 'filter-bar__highlight-btn--active' : ''}`}
+          onClick={props.onHighlightMineChange}
+        >
+          {props.highlightMine ? '●' : '○'} My submissions
+        </button>
+      </Show>
 
       {hasActiveFilters() && (
         <button class="filter-bar__clear" onClick={handleClear}>
