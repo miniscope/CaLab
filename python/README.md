@@ -139,18 +139,18 @@ calab info my_traces.npy
 
 ## API Reference
 
-| Function | Description |
-| --- | --- |
-| `tune(traces, fs, ...)` | Open CaTune in browser for interactive tuning |
-| `load_caiman(path, ...)` | Load traces from CaImAn HDF5 file |
-| `load_minian(path, ...)` | Load traces from Minian Zarr directory |
-| `build_kernel(tau_rise, tau_decay, fs)` | Build double-exponential calcium kernel |
-| `tau_to_ar2(tau_rise, tau_decay, fs)` | Derive AR(2) coefficients from tau values |
-| `compute_lipschitz(kernel)` | Lipschitz constant for FISTA step size |
-| `run_deconvolution(traces, fs, tau_r, tau_d, lam)` | FISTA deconvolution, returns activity |
-| `run_deconvolution_full(traces, fs, tau_r, tau_d, lam)` | Full result with baseline, reconvolution |
-| `bandpass_filter(trace, tau_rise, tau_decay, fs)` | FFT bandpass filter from kernel params |
-| `save_for_tuning(traces, fs, path)` | Save traces for CaTune browser tool |
-| `load_tuning_data(path)` | Load traces saved by save\_for\_tuning |
-| `load_export_params(path)` | Load params from CaTune export JSON |
-| `deconvolve_from_export(traces, params_path)` | Full pipeline: load params + deconvolve |
+| Function                                                | Description                                   |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `tune(traces, fs, ...)`                                 | Open CaTune in browser for interactive tuning |
+| `load_caiman(path, ...)`                                | Load traces from CaImAn HDF5 file             |
+| `load_minian(path, ...)`                                | Load traces from Minian Zarr directory        |
+| `build_kernel(tau_rise, tau_decay, fs)`                 | Build double-exponential calcium kernel       |
+| `tau_to_ar2(tau_rise, tau_decay, fs)`                   | Derive AR(2) coefficients from tau values     |
+| `compute_lipschitz(kernel)`                             | Lipschitz constant for FISTA step size        |
+| `run_deconvolution(traces, fs, tau_r, tau_d, lam)`      | FISTA deconvolution, returns activity         |
+| `run_deconvolution_full(traces, fs, tau_r, tau_d, lam)` | Full result with baseline, reconvolution      |
+| `bandpass_filter(trace, tau_rise, tau_decay, fs)`       | FFT bandpass filter from kernel params        |
+| `save_for_tuning(traces, fs, path)`                     | Save traces for CaTune browser tool           |
+| `load_tuning_data(path)`                                | Load traces saved by save_for_tuning          |
+| `load_export_params(path)`                              | Load params from CaTune export JSON           |
+| `deconvolve_from_export(traces, params_path)`           | Full pipeline: load params + deconvolve       |
