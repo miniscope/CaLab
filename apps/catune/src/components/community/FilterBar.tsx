@@ -26,12 +26,13 @@ export interface FilterBarProps {
 }
 
 export function FilterBar(props: FilterBarProps) {
-  const hasActiveFilters = () =>
+  const hasActiveDataFilters = () =>
     props.filters.indicator !== null ||
     props.filters.species !== null ||
     props.filters.brainRegion !== null ||
-    props.filters.demoPreset !== null ||
-    !!props.highlightMine;
+    props.filters.demoPreset !== null;
+
+  const hasActiveControls = () => hasActiveDataFilters() || !!props.highlightMine;
 
   function handleFilterChange(field: keyof CatuneFilterState, value: string): void {
     props.onFilterChange({
@@ -111,14 +112,14 @@ export function FilterBar(props: FilterBarProps) {
         </button>
       </Show>
 
-      {hasActiveFilters() && (
+      {hasActiveControls() && (
         <button class="filter-bar__clear" onClick={handleClear}>
           Clear filters
         </button>
       )}
 
       <span class="filter-bar__count">
-        {hasActiveFilters()
+        {hasActiveDataFilters()
           ? `${props.filteredCount} of ${props.totalCount} submissions`
           : `${props.totalCount} submissions`}
       </span>

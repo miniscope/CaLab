@@ -83,7 +83,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     colors: () => string[],
     userParams: () => ScatterPlotProps['userParams'],
     medianPt: () => { x: number; y: number } | null,
-    highlightFlags: () => boolean[] | null | undefined,
+    highlightFlags: () => boolean[] | null,
     markerStroke: string,
     medianColor: string,
   ) {
@@ -225,7 +225,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       lambdaColors,
       () => props.userParams,
       medianPoint,
-      () => props.highlightFlags,
+      () => props.highlightFlags ?? null,
       theme.textPrimary,
       theme.textSecondary,
     );

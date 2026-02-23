@@ -134,6 +134,10 @@ export function CommunityBrowser() {
     setCompareMyParams((prev) => !prev);
   }
 
+  function toggleHighlight(): void {
+    setHighlightMine((prev) => !prev);
+  }
+
   // Guard: do not render if Supabase is not configured
   if (!supabaseEnabled) return null;
 
@@ -197,7 +201,7 @@ export function CommunityBrowser() {
               demoPresets={getPresetLabels()}
               showDemoPresetFilter={dataSource() === 'demo'}
               highlightMine={highlightMine()}
-              onHighlightMineChange={() => setHighlightMine((prev) => !prev)}
+              onHighlightMineChange={toggleHighlight}
               canHighlight={!!user()}
             />
 
