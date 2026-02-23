@@ -62,6 +62,11 @@
   border-color: var(--bg-primary);
 }
 
+/* Wider popover for steps with consolidated content */
+.driver-popover--wide {
+  max-width: 480px !important;
+}
+
 /* ========================
    Tutorial Panel
    ======================== */

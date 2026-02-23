@@ -55,6 +55,7 @@ function mapSteps(tutorial: Tutorial): DriveStep[] {
         title: step.title,
         description: step.description,
         side: step.side,
+        ...(step.popoverClass && { popoverClass: step.popoverClass }),
         ...(renderFn && {
           onPopoverRender: (popover: PopoverDOM) => {
             cleanupActiveRender();

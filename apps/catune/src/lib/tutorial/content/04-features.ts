@@ -12,7 +12,7 @@ export const featuresTutorial: Tutorial = {
     'Explore CaTune\u2019s navigation, analysis tools, and community features. No parameter tuning knowledge required.',
   level: 'beginner',
   prerequisites: [],
-  estimatedMinutes: 4,
+  estimatedMinutes: 3,
   steps: [
     // Step 1: Welcome (centered modal, no element)
     {
@@ -36,23 +36,15 @@ export const featuresTutorial: Tutorial = {
         'Click <b>Feedback</b> to report bugs, request features, or share suggestions. Each option opens a pre-filled GitHub issue \u2014 no account setup needed beyond GitHub.',
       side: 'bottom',
     },
-    // Step 4: Cell selector
+    // Step 4: Cell Selection & Grid (merged: cell selector + grid columns)
     {
       element: '[data-tutorial="cell-selector"]',
-      title: 'Cell Selection Controls',
+      title: 'Cell Selection & Grid',
       description:
-        'Choose which cells to display: <b>Top Active</b> (ranked by activity), <b>Random</b>, or <b>Manual</b> (type specific cell numbers). Adjust the count and grid columns to your preference.',
+        'Choose which cells to display: <b>Top Active</b> (ranked by activity), <b>Random</b>, or <b>Manual</b> (type specific cell numbers). Adjust the count to your preference. Use +/\u2212 to set grid columns and drag the resize handle to change card height.',
       side: 'top',
     },
-    // Step 5: Grid columns
-    {
-      element: '[data-tutorial="grid-columns"]',
-      title: 'Customize the Grid',
-      description:
-        'Use +/\u2212 to set 1\u20136 columns. Fewer columns = larger cards. Drag the resize handle at the bottom of any card to adjust height.',
-      side: 'bottom',
-    },
-    // Step 6: Legend bar
+    // Step 5: Trace Legend
     {
       element: '[data-tutorial="legend-bar"]',
       title: 'Trace Legend',
@@ -60,61 +52,33 @@ export const featuresTutorial: Tutorial = {
         '<b>Click any legend item</b> to show or hide that trace type. The \u201C?\u201D button explains what each trace represents.',
       side: 'bottom',
     },
-    // Step 7: Sidebar toggle
+    // Step 6: Spectrum Analysis (merged: sidebar toggle + select spectrum tab + spectrum panel)
     {
       element: '[data-tutorial="sidebar-toggle"]',
-      title: 'The Sidebar',
-      description:
-        'Click <b>Sidebar</b> to open the analysis panel. It has tabs for Spectrum, Metrics, and Community (when available).',
-      side: 'bottom',
-    },
-    // Step 8: Select Spectrum tab
-    {
-      element: '[data-tutorial="sidebar-tab-spectrum"]',
-      title: 'Select the Spectrum Tab',
-      description:
-        'The sidebar defaults to the Community tab. <b>Click the Spectrum tab</b> to see frequency analysis.',
-      side: 'bottom',
-    },
-    // Step 9: Spectrum panel
-    {
-      element: '[data-tutorial="spectrum-panel"]',
       title: 'Spectrum Analysis',
       description:
-        'The Spectrum tab shows power spectral density for the selected cell (blue) and all cells (gray). When Noise Filter is on, dashed lines show the bandpass cutoffs.',
-      side: 'left',
+        'Open the <b>Sidebar</b> and select the <b>Spectrum tab</b>. The power spectral density shows frequency content for the selected cell (blue) and all cells (gray). With Noise Filter on, dashed lines show the bandpass cutoffs.',
+      side: 'bottom',
+      popoverClass: 'driver-popover--wide',
     },
-    // Step 10: Select Metrics tab
+    // Step 7: Fit Quality Metrics (merged: select metrics tab + metrics panel)
     {
       element: '[data-tutorial="sidebar-tab-metrics"]',
-      title: 'Select the Metrics Tab',
-      description: '<b>Click the Metrics tab</b> to see quantitative fit quality.',
-      side: 'bottom',
-    },
-    // Step 11: Metrics panel
-    {
-      element: '[data-tutorial="metrics-panel"]',
       title: 'Fit Quality Metrics',
       description:
-        'The Metrics tab shows per-cell SNR, R\u00B2, and sparsity. Use this to identify cells with poor fits and assess overall parameter quality.',
-      side: 'left',
-    },
-    // Step 12: Select Community tab
-    {
-      element: '[data-tutorial="sidebar-tab-community"]',
-      title: 'Select the Community Tab',
-      description: '<b>Click the Community tab</b> to browse shared parameters.',
+        'Select the <b>Metrics tab</b> to see per-cell SNR, R\u00B2, and sparsity. Use this to identify cells with poor fits and assess overall parameter quality.',
       side: 'bottom',
     },
-    // Step 13: Community browser
+    // Step 8: Community Parameters (merged: select community tab + community browser)
     {
-      element: '[data-tutorial="community-browser"]',
+      element: '[data-tutorial="sidebar-tab-community"]',
       title: 'Community Parameters',
       description:
-        'Browse parameters shared by other researchers. The scatter plot shows tau_rise vs tau_decay, colored by lambda. Use filters to narrow by indicator, species, or brain region. Toggle \u201CCompare my params\u201D to overlay your current values.',
-      side: 'left',
+        'Select the <b>Community tab</b> to browse shared parameters. The scatter plot shows tau_rise vs tau_decay, colored by lambda. Use filters to narrow by indicator, species, or brain region. Toggle \u201CCompare my params\u201D to overlay your current values.',
+      side: 'bottom',
+      popoverClass: 'driver-popover--wide',
     },
-    // Step 11: Export panel
+    // Step 9: Share Parameters
     {
       element: '[data-tutorial="export-panel"]',
       title: 'Share Your Parameters',
@@ -122,7 +86,7 @@ export const featuresTutorial: Tutorial = {
         'When your parameters produce good fits, export them locally as JSON or submit to the community database. Community submissions help others find good starting points for similar experiments.',
       side: 'top',
     },
-    // Step 12: Completion (centered modal, no element)
+    // Step 10: Completion (centered modal, no element)
     {
       title: 'Tour Complete',
       description:

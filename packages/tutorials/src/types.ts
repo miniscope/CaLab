@@ -15,6 +15,8 @@ export interface TutorialStep {
   waitForAction?: string;
   /** Whether to disable interaction with the highlighted element. Undefined = driver.js default. */
   disableActiveInteraction?: boolean;
+  /** Extra CSS class(es) for the driver.js popover on this step (e.g., 'driver-popover--wide'). */
+  popoverClass?: string;
   /** Called after popover renders. Receives description HTMLElement for canvas injection.
    *  May return a cleanup function. */
   onPopoverRender?: (descriptionEl: HTMLElement) => (() => void) | void;
