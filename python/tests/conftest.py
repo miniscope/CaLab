@@ -1,7 +1,7 @@
-"""Shared pytest fixtures for CaTune Python tests.
+"""Shared pytest fixtures for CaLab Python tests.
 
 Provides standard parameter sets and pre-built kernels for reuse
-across test_kernel.py (Plan 01) and test_fista.py / test_io.py (Plan 02).
+across test modules.
 """
 
 from __future__ import annotations
@@ -43,5 +43,5 @@ def slow_params() -> dict:
 
 @pytest.fixture
 def standard_kernel(standard_params: dict) -> np.ndarray:
-    """Pre-built kernel with standard parameters (reused in Plan 02 tests)."""
+    """Pre-built kernel with standard parameters."""
     return build_kernel(**standard_params)
