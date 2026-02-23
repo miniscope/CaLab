@@ -4,7 +4,7 @@
 //!
 //! Outputs JSON fixtures to `../../python/tests/fixtures/`.
 
-use catune_solver::Solver;
+use calab_solver::Solver;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;

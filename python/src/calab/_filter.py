@@ -1,4 +1,4 @@
-"""Bandpass filter -- port of wasm/catune-solver/src/filter.rs.
+"""Bandpass filter -- port of crates/solver/src/filter.rs.
 
 Pure numpy FFT-based bandpass filter derived from kernel time constants.
 Uses cosine-tapered gain curve matching Rust's implementation exactly.

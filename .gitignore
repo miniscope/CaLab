@@ -5,7 +5,7 @@ apps/*/dist/
 packages/*/dist/
 *.tsbuildinfo
 .vite/
-wasm/catune-solver/target/
+crates/solver/target/
 test/
 .env
 .env.local

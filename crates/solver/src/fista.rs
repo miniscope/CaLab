@@ -1,7 +1,9 @@
 use crate::Solver;
+
+#[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
 impl Solver {
     /// Run n_steps of FISTA iterations. Returns true if converged.
     ///

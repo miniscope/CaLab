@@ -1,7 +1,7 @@
 # Test Fixtures
 
 Reference values for cross-language equivalence testing between the Python
-`calab` package and the Rust/WASM solver (`wasm/catune-solver/`).
+`calab` package and the Rust/WASM solver (`crates/solver/`).
 
 ## Parameter Sets
 
@@ -13,7 +13,7 @@ Three standard parameter sets cover the range of typical calcium imaging:
 
 ## Verification Strategy
 
-The Rust solver tests (`wasm/catune-solver/src/kernel.rs`) verify correctness
+The Rust solver tests (`crates/solver/src/kernel.rs`) verify correctness
 of the Rust implementation. The Python tests verify numerical equivalence with
 the Rust implementation by:
 

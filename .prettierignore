@@ -1,7 +1,7 @@
 dist/
 apps/*/dist/
 packages/*/dist/
-wasm/catune-solver/pkg/
-wasm/catune-solver/target/
+crates/solver/pkg/
+crates/solver/target/
 .planning/
 package-lock.json

@@ -12,7 +12,7 @@ This is a **leaf package** with no local dependencies (`valibot` is the only ext
 
 ## Boundary Rule
 
-Only `wasm-adapter.ts` may import from the WASM solver package (`wasm/catune-solver/pkg/`). All other code in the monorepo imports `{ initWasm, Solver }` from `@calab/core`. This boundary is enforced by ESLint `no-restricted-imports`.
+Only `wasm-adapter.ts` may import from the WASM solver package (`crates/solver/pkg/`). All other code in the monorepo imports `{ initWasm, Solver }` from `@calab/core`. This boundary is enforced by ESLint `no-restricted-imports`.
 
 ## Exports
 

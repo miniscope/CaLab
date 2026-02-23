@@ -1,7 +1,7 @@
 /**
  * AR(2) coefficient derivation from tau parameters.
  *
- * TypeScript port of `tau_to_ar2` from wasm/catune-solver/src/kernel.rs (lines 40-49).
+ * TypeScript port of `tau_to_ar2` from crates/solver/src/kernel.rs (lines 40-49).
  *
  * The AR(2) process: c[t] = g1*c[t-1] + g2*c[t-2] + s[t]
  * Characteristic roots: decayRoot = exp(-dt/tau_decay), riseRoot = exp(-dt/tau_rise)
