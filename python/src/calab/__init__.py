@@ -1,21 +1,36 @@
 """CaLab: calcium imaging analysis tools — deconvolution and data preparation."""
 
-from ._kernel import build_kernel, compute_lipschitz, tau_to_ar2
-from ._fista import run_deconvolution, run_deconvolution_full, DeconvolutionResult
-from ._filter import bandpass_filter
-from ._io import load_tuning_data, save_for_tuning, load_export_params, deconvolve_from_export
+from ._bridge import tune
+from ._compute import (
+    DeconvolutionResult,
+    bandpass_filter,
+    build_kernel,
+    compute_lipschitz,
+    run_deconvolution,
+    run_deconvolution_full,
+    tau_to_ar2,
+)
+from ._io import deconvolve_from_export, load_export_params, load_tuning_data, save_for_tuning
+from ._loaders import load_caiman, load_minian
 
 __version__ = "0.2.0"
 __all__ = [
+    # Bridge
+    "tune",
+    # Compute
+    "DeconvolutionResult",
+    "bandpass_filter",
     "build_kernel",
-    "tau_to_ar2",
     "compute_lipschitz",
     "run_deconvolution",
     "run_deconvolution_full",
-    "DeconvolutionResult",
-    "bandpass_filter",
-    "save_for_tuning",
-    "load_tuning_data",
-    "load_export_params",
+    "tau_to_ar2",
+    # I/O
     "deconvolve_from_export",
+    "load_export_params",
+    "load_tuning_data",
+    "save_for_tuning",
+    # Loaders
+    "load_caiman",
+    "load_minian",
 ]

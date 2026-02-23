@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from calab._filter import bandpass_filter
+from calab import bandpass_filter
 
 
 # ---------------------------------------------------------------------------

@@ -43,3 +43,28 @@ jobs:
 
       - name: Build
         run: npm run build:apps
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Create venv and install deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin[patchelf] numpy pytest h5py zarr
+        working-directory: python
+
+      - name: Build and install (dev)
+        run: .venv/bin/maturin develop --features pybindings
+        working-directory: python
+
+      - name: Run Python tests
+        run: .venv/bin/pytest
+        working-directory: python

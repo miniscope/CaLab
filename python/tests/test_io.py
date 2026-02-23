@@ -16,7 +16,7 @@ import pytest
 
 from calab import load_tuning_data, save_for_tuning
 from calab._io import load_export_params, deconvolve_from_export
-from calab._kernel import build_kernel
+from calab import build_kernel
 
 
 # ---------------------------------------------------------------------------

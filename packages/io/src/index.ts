@@ -5,3 +5,5 @@ export { extractCellTrace, processNpyResult } from './array-utils.ts';
 export { rankCellsByActivity, sampleRandomCells } from './cell-ranking.ts';
 export { buildExportData, downloadExport, parseExport } from './export.ts';
 export type { CaTuneExport } from './export.ts';
+export { getBridgeUrl, fetchBridgeData, postParamsToBridge } from './bridge.ts';
+export type { BridgeMetadata } from './bridge.ts';

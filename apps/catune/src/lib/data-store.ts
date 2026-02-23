@@ -4,6 +4,7 @@
 import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@calab/core';
 import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@calab/compute';
+import { fetchBridgeData, validateTraceData } from '@calab/io';
 import type { DemoPreset } from '@calab/compute';
 
 // --- Core Signals ---
@@ -18,6 +19,7 @@ const [npzArrays, setNpzArrays] = createSignal<NpzResult | null>(null);
 const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(null);
 const [importError, setImportError] = createSignal<string | null>(null);
 const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
+const [bridgeUrl, setBridgeUrl] = createSignal<string | null>(null);
 
 // --- Ground Truth Signals ---
 
@@ -133,6 +135,29 @@ function loadDemoData(opts?: {
   });
 }
 
+// --- Bridge Data ---
+
+async function loadFromBridge(url: string): Promise<void> {
+  setBridgeUrl(url);
+  try {
+    const { traces, metadata } = await fetchBridgeData(url);
+    const fs = metadata.sampling_rate_hz;
+
+    setParsedData(traces);
+    setDimensionsConfirmed(true);
+    setSwapped(false);
+    setSamplingRate(fs);
+
+    // Run validation on the loaded data
+    const data = traces.data as Float64Array | Float32Array;
+    const validation = validateTraceData(data, traces.shape);
+    setValidationResult(validation);
+  } catch (err) {
+    setImportError(err instanceof Error ? err.message : 'Bridge loading failed');
+    setBridgeUrl(null);
+  }
+}
+
 // --- Reset ---
 
 function resetImport(): void {
@@ -194,4 +219,7 @@ export {
   // Actions
   resetImport,
   loadDemoData,
+  loadFromBridge,
+  // Bridge
+  bridgeUrl,
 };

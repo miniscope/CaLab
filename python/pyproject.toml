@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "calab"
-version = "0.1.0"
+version = "0.2.0"
 description = "CaLab: calcium imaging analysis tools — deconvolution and data preparation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,11 +32,19 @@ Homepage = "https://github.com/miniscope/CaLab"
 Repository = "https://github.com/miniscope/CaLab"
 Issues = "https://github.com/miniscope/CaLab/issues"
 
-[project.optional-dependencies]
-dev = ["pytest>=7.0"]
+[project.scripts]
+calab = "calab._cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/calab"]
+[project.optional-dependencies]
+loaders = ["h5py>=3.0", "zarr>=2.12"]
+all = ["h5py>=3.0", "zarr>=2.12"]
+dev = ["pytest>=7.0", "h5py>=3.0", "zarr>=2.12"]
+
+[tool.maturin]
+manifest-path = "../crates/solver/Cargo.toml"
+features = ["pybindings"]
+module-name = "calab._solver"
+python-source = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
