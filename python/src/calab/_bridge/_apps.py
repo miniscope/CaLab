@@ -10,7 +10,7 @@ import numpy as np
 from ._server import BridgeServer
 
 # Default CaTune URL (GitHub Pages deployment)
-_DEFAULT_APP_URL = "https://miniscope.github.io/CaLab/catune/"
+_DEFAULT_APP_URL = "https://miniscope.github.io/CaLab/CaTune/"
 
 
 def tune(
