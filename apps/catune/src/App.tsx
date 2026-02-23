@@ -20,6 +20,7 @@ import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
 import { SpectrumPanel } from './components/spectrum/SpectrumPanel.tsx';
 import { initSpectrumStore } from './lib/spectrum/spectrum-store.ts';
 
+import { getBridgeUrl } from '@calab/io';
 import {
   importStep,
   rawFile,
@@ -27,6 +28,7 @@ import {
   effectiveShape,
   resetImport,
   loadDemoData,
+  loadFromBridge,
 } from './lib/data-store.ts';
 import {
   setSelectedCell,
@@ -58,6 +60,12 @@ const App: Component = () => {
   // Magic-link callback: show lightweight confirmation instead of full app
   if (isAuthCallback()) {
     return <AuthCallback />;
+  }
+
+  // Auto-load from Python bridge if ?bridge= URL param is present
+  const bridgeUrlParam = getBridgeUrl();
+  if (bridgeUrlParam) {
+    loadFromBridge(bridgeUrlParam);
   }
 
   const hasFile = () => !!rawFile();

@@ -18,7 +18,7 @@ from calab import (
     run_deconvolution,
     save_for_tuning,
 )
-from calab._fista import run_deconvolution_full
+from calab import run_deconvolution_full
 
 
 # ---------------------------------------------------------------------------

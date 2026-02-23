@@ -61,7 +61,11 @@ export function buildExportData(
   };
 }
 
-export function downloadExport(exportData: CaTuneExport, filename?: string): void {
+export function downloadExport(
+  exportData: CaTuneExport,
+  filename?: string,
+  bridgeUrl?: string | null,
+): void {
   const defaultFilename = `catune-params-${new Date().toISOString().slice(0, 10)}.json`;
   const fname = filename ?? defaultFilename;
 
@@ -80,6 +84,17 @@ export function downloadExport(exportData: CaTuneExport, filename?: string): voi
 
   // Prevent memory leak
   URL.revokeObjectURL(url);
+
+  // Also POST to bridge server if connected
+  if (bridgeUrl) {
+    fetch(`${bridgeUrl}/api/v1/params`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: json,
+    }).catch(() => {
+      // Bridge POST is best-effort — don't block the download
+    });
+  }
 }
 
 /**

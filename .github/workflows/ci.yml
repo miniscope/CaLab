@@ -43,3 +43,25 @@ jobs:
 
       - name: Build
         run: npm run build:apps
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin and test deps
+        run: pip install maturin[patchelf] numpy pytest h5py zarr
+
+      - name: Build and install (dev)
+        run: maturin develop --features pybindings
+        working-directory: python
+
+      - name: Run Python tests
+        run: pytest
+        working-directory: python

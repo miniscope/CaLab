@@ -1,9 +1,269 @@
+use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-/// calab-solver: Rust FISTA deconvolution engine for CaLab.
+use crate::kernel::{build_kernel, compute_lipschitz};
+use crate::Solver;
+
+/// Python-facing wrapper around the Rust FISTA Solver.
+///
+/// Exposes the same API as the WASM bindings but with numpy array I/O.
+#[pyclass]
+pub struct PySolver {
+    inner: Solver,
+}
+
+#[pymethods]
+impl PySolver {
+    #[new]
+    fn new() -> Self {
+        PySolver {
+            inner: Solver::new(),
+        }
+    }
+
+    /// Set solver parameters and rebuild kernel.
+    fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) {
+        self.inner.set_params(tau_rise, tau_decay, lambda, fs);
+    }
+
+    /// Load a trace (numpy float32 array) for deconvolution.
+    /// Resets iteration state for a fresh solve.
+    fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) {
+        self.inner.set_trace(trace.as_slice().unwrap());
+    }
+
+    /// Run n FISTA iterations. Returns true if converged.
+    fn step_batch(&mut self, n_steps: u32) -> bool {
+        self.inner.step_batch(n_steps)
+    }
+
+    /// Run solver to convergence (up to max_iters). Returns iterations run.
+    fn solve(&mut self, max_iters: u32) -> u32 {
+        let batch_size = 100;
+        let n_batches = (max_iters + batch_size - 1) / batch_size;
+        for _ in 0..n_batches {
+            if self.inner.step_batch(batch_size) {
+                break;
+            }
+        }
+        self.inner.iteration_count()
+    }
+
+    /// Get the deconvolved activity (non-negative spike train).
+    fn get_solution<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        let data = self.inner.get_solution();
+        PyArray1::from_vec(py, data)
+    }
+
+    /// Get reconvolution (K*s) for the active region.
+    fn get_reconvolution<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        let data = self.inner.get_reconvolution();
+        PyArray1::from_vec(py, data)
+    }
+
+    /// Get reconvolution + baseline (K*s + b).
+    fn get_reconvolution_with_baseline<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<f32>> {
+        let data = self.inner.get_reconvolution_with_baseline();
+        PyArray1::from_vec(py, data)
+    }
+
+    /// Get estimated baseline.
+    fn get_baseline(&self) -> f64 {
+        self.inner.get_baseline()
+    }
+
+    /// Get the current trace (after filtering if applied).
+    fn get_trace<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        let data = self.inner.get_trace();
+        PyArray1::from_vec(py, data)
+    }
+
+    /// Get the kernel.
+    fn get_kernel<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        let data = self.inner.get_kernel();
+        PyArray1::from_vec(py, data)
+    }
+
+    /// Check convergence.
+    fn converged(&self) -> bool {
+        self.inner.converged()
+    }
+
+    /// Get iteration count.
+    fn iteration_count(&self) -> u32 {
+        self.inner.iteration_count()
+    }
+
+    /// Apply bandpass filter to loaded trace.
+    fn apply_filter(&mut self) -> bool {
+        self.inner.apply_filter()
+    }
+
+    /// Set filter enabled/disabled.
+    fn set_filter_enabled(&mut self, enabled: bool) {
+        self.inner.set_filter_enabled(enabled);
+    }
+
+    /// Check if filter is enabled.
+    fn filter_enabled(&self) -> bool {
+        self.inner.filter_enabled()
+    }
+}
+
+/// Build a double-exponential calcium kernel, returned as numpy float32 array.
+#[pyfunction]
+fn py_build_kernel<'py>(
+    py: Python<'py>,
+    tau_rise: f64,
+    tau_decay: f64,
+    fs: f64,
+) -> Bound<'py, PyArray1<f32>> {
+    let kernel = build_kernel(tau_rise, tau_decay, fs);
+    PyArray1::from_vec(py, kernel)
+}
+
+/// Compute Lipschitz constant for a kernel.
+#[pyfunction]
+fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> f64 {
+    compute_lipschitz(kernel.as_slice().unwrap())
+}
+
+/// One-shot deconvolution for a single 1D trace.
+/// Returns (activity, baseline, reconvolution, iterations, converged).
+#[pyfunction]
+#[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000))]
+fn deconvolve_single<'py>(
+    py: Python<'py>,
+    trace: PyReadonlyArray1<f64>,
+    fs: f64,
+    tau_rise: f64,
+    tau_decay: f64,
+    lambda_: f64,
+    filter_enabled: bool,
+    max_iters: u32,
+) -> PyResult<(
+    Bound<'py, PyArray1<f32>>,
+    f64,
+    Bound<'py, PyArray1<f32>>,
+    u32,
+    bool,
+)> {
+    let mut solver = Solver::new();
+    solver.set_params(tau_rise, tau_decay, lambda_, fs);
+
+    // Convert f64 input to f32 for the solver
+    let trace_slice = trace.as_slice().unwrap();
+    let trace_f32: Vec<f32> = trace_slice.iter().map(|&v| v as f32).collect();
+
+    solver.set_trace(&trace_f32);
+
+    if filter_enabled {
+        solver.set_filter_enabled(true);
+        solver.apply_filter();
+    }
+
+    // Solve
+    let batch_size = 100u32;
+    let n_batches = (max_iters + batch_size - 1) / batch_size;
+    for _ in 0..n_batches {
+        if solver.step_batch(batch_size) {
+            break;
+        }
+    }
+
+    let activity = solver.get_solution();
+    let baseline = solver.get_baseline();
+    let reconvolution = solver.get_reconvolution_with_baseline();
+    let iterations = solver.iteration_count();
+    let converged = solver.converged();
+
+    Ok((
+        PyArray1::from_vec(py, activity),
+        baseline,
+        PyArray1::from_vec(py, reconvolution),
+        iterations,
+        converged,
+    ))
+}
+
+/// Batch deconvolution for a 2D array of traces (n_cells x n_timepoints).
+/// Returns (activities, baselines, reconvolutions, iterations, convergeds).
+#[pyfunction]
+#[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000))]
+fn deconvolve_batch<'py>(
+    py: Python<'py>,
+    traces: PyReadonlyArray2<f64>,
+    fs: f64,
+    tau_rise: f64,
+    tau_decay: f64,
+    lambda_: f64,
+    filter_enabled: bool,
+    max_iters: u32,
+) -> PyResult<(
+    Vec<Bound<'py, PyArray1<f32>>>,
+    Vec<f64>,
+    Vec<Bound<'py, PyArray1<f32>>>,
+    Vec<u32>,
+    Vec<bool>,
+)> {
+    let shape = traces.shape();
+    let n_cells = shape[0];
+
+    let mut solver = Solver::new();
+    solver.set_params(tau_rise, tau_decay, lambda_, fs);
+
+    if filter_enabled {
+        solver.set_filter_enabled(true);
+    }
+
+    let mut activities = Vec::with_capacity(n_cells);
+    let mut baselines = Vec::with_capacity(n_cells);
+    let mut reconvolutions = Vec::with_capacity(n_cells);
+    let mut iterations = Vec::with_capacity(n_cells);
+    let mut convergeds = Vec::with_capacity(n_cells);
+
+    let traces_ref = traces.as_array();
+
+    for cell_idx in 0..n_cells {
+        let row = traces_ref.row(cell_idx);
+        let trace_f32: Vec<f32> = row.iter().map(|&v| v as f32).collect();
+
+        solver.set_trace(&trace_f32);
+
+        if filter_enabled {
+            solver.apply_filter();
+        }
+
+        let batch_size = 100u32;
+        let n_batches = (max_iters + batch_size - 1) / batch_size;
+        for _ in 0..n_batches {
+            if solver.step_batch(batch_size) {
+                break;
+            }
+        }
+
+        activities.push(PyArray1::from_vec(py, solver.get_solution()));
+        baselines.push(solver.get_baseline());
+        reconvolutions.push(PyArray1::from_vec(py, solver.get_reconvolution_with_baseline()));
+        iterations.push(solver.iteration_count());
+        convergeds.push(solver.converged());
+    }
+
+    Ok((activities, baselines, reconvolutions, iterations, convergeds))
+}
+
+/// Register the Python module.
+/// The function name must match the leaf of module-name in pyproject.toml: "calab._solver" → "_solver".
 #[pymodule]
-fn calab_solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PySolver>()?;
+    m.add_function(wrap_pyfunction!(py_build_kernel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_compute_lipschitz, m)?)?;
+    m.add_function(wrap_pyfunction!(deconvolve_single, m)?)?;
+    m.add_function(wrap_pyfunction!(deconvolve_batch, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    // TODO: Add PySolver wrapper exposing Solver via numpy arrays
     Ok(())
 }

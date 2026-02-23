@@ -13,8 +13,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from calab import build_kernel, run_deconvolution
-from calab._fista import run_deconvolution_full, DeconvolutionResult
+from calab import build_kernel, run_deconvolution, run_deconvolution_full, DeconvolutionResult
 
 
 # ---------------------------------------------------------------------------

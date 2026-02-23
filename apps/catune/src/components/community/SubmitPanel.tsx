@@ -17,6 +17,7 @@ import {
   isDemo,
   demoPreset,
   groundTruthLocked,
+  bridgeUrl,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport } from '@calab/io';
 import {
@@ -80,7 +81,7 @@ export function SubmitPanel() {
       APP_VERSION,
     );
 
-    downloadExport(exportData);
+    downloadExport(exportData, undefined, bridgeUrl());
   }
 
   async function handleSubmit(): Promise<void> {
