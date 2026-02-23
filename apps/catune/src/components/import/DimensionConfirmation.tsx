@@ -10,7 +10,7 @@ import {
 } from '../../lib/data-store.ts';
 
 export function DimensionConfirmation() {
-  const shape = () => effectiveShape();
+  const shape = effectiveShape;
 
   const handleSwap = () => {
     setSwapped(!swapped());

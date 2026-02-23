@@ -91,9 +91,9 @@ function loadDemoData(opts?: {
   seed?: number | 'random';
 }): void {
   const fs = opts?.fps ?? 30;
-  const numCells = opts?.numCells ?? 20;
+  const cellCount = opts?.numCells ?? 20;
   const durationMin = opts?.durationMinutes ?? 5;
-  const numTimepoints = Math.round(durationMin * 60 * fs);
+  const timepointCount = Math.round(durationMin * 60 * fs);
 
   const preset = getPresetById(opts?.presetId ?? DEFAULT_PRESET_ID);
   if (!preset) return;
@@ -106,7 +106,7 @@ function loadDemoData(opts?: {
     shape,
     groundTruthSpikes: gtSpikes,
     groundTruthCalcium: gtCalcium,
-  } = generateSyntheticDataset(numCells, numTimepoints, preset.params, fs, resolvedSeed);
+  } = generateSyntheticDataset(cellCount, timepointCount, preset.params, fs, resolvedSeed);
 
   setGroundTruthSpikes(gtSpikes);
   setGroundTruthCalcium(gtCalcium);
@@ -128,7 +128,7 @@ function loadDemoData(opts?: {
       nanCount: 0,
       infCount: 0,
       negativeCount: 0,
-      totalElements: numCells * numTimepoints,
+      totalElements: cellCount * timepointCount,
     },
   });
 }

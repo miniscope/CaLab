@@ -190,7 +190,6 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
     // Cancel all queued jobs
     while (queue.length > 0) {
       const job = queue.shift()!;
-      inFlightJobs.delete(job.jobId);
       job.onCancelled();
     }
 

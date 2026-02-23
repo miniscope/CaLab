@@ -1,5 +1,5 @@
 import { type JSX, createSignal } from 'solid-js';
-import { parseNpy } from '@calab/io';
+import { parseNpy, processNpyResult } from '@calab/io';
 import { trackEvent } from '@calab/community';
 import type { CnmfData } from '../types.ts';
 
@@ -16,7 +16,8 @@ export function FileImport(props: FileImportProps): JSX.Element {
     setError(null);
     try {
       const buffer = await file.arrayBuffer();
-      const result = parseNpy(buffer);
+      const raw = parseNpy(buffer);
+      const result = processNpyResult(raw);
 
       if (result.shape.length !== 2) {
         setError(`Expected 2D array (cells x timepoints), got ${result.shape.length}D`);
@@ -42,7 +43,7 @@ export function FileImport(props: FileImportProps): JSX.Element {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer?.files[0];
-    if (file) processFile(file);
+    if (file) void processFile(file);
   };
 
   const handleDragOver: JSX.EventHandler<HTMLDivElement, DragEvent> = (e) => {
@@ -90,7 +91,7 @@ export function FileImport(props: FileImportProps): JSX.Element {
         style={{ display: 'none' }}
         onChange={(e) => {
           const file = e.currentTarget.files?.[0];
-          if (file) processFile(file);
+          if (file) void processFile(file);
         }}
       />
     </div>

@@ -2,7 +2,7 @@
 // All calls no-op if Supabase is not configured or session init failed.
 // Analytics never throws — all errors are silently caught.
 
-import { getSupabase, supabaseEnabled } from './supabase.ts';
+import { getSupabase, supabaseEnabled, supabaseUrl, supabaseAnonKey } from './supabase.ts';
 
 export type AnalyticsEventName =
   | 'file_imported'
@@ -106,33 +106,13 @@ export async function trackEvent(
 }
 
 /**
- * End the current session by setting ended_at and duration_seconds.
- * Best-effort — may not execute on tab close.
- */
-export async function endSession(): Promise<void> {
-  if (!supabaseEnabled || !sessionId) return;
-
-  try {
-    const supabase = await getSupabase();
-    if (!supabase) return;
-
-    const durationSeconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : null;
-
-    await supabase
-      .from('analytics_sessions')
-      .update({
-        ended_at: new Date().toISOString(),
-        duration_seconds: durationSeconds,
-      })
-      .eq('id', sessionId);
-  } catch {
-    // Session end failed — silently continue
-  }
-}
-
-/**
  * Register event listeners for best-effort session end on tab close.
  * Uses visibilitychange + pagehide with keepalive fetch.
+ *
+ * NOTE: Uses raw fetch with keepalive instead of the Supabase SDK because
+ * the SDK's async operations are not guaranteed to complete during page
+ * unload (visibilitychange/pagehide). The keepalive flag on fetch ensures
+ * the request outlives the page.
  */
 export function registerSessionEndListeners(): void {
   if (!supabaseEnabled) return;
@@ -146,17 +126,15 @@ export function registerSessionEndListeners(): void {
     const durationSeconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : null;
 
     // Best-effort: use sendBeacon-style keepalive fetch to Supabase REST API
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-    if (!supabaseUrl || !supabaseKey) return;
+    if (!supabaseUrl || !supabaseAnonKey) return;
 
     try {
       fetch(`${supabaseUrl}/rest/v1/analytics_sessions?id=eq.${sessionId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
           Prefer: 'return=minimal',
         },
         body: JSON.stringify({

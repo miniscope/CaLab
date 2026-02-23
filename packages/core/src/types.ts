@@ -68,8 +68,7 @@ export type ImportStep = 'drop' | 'confirm-dims' | 'sampling-rate' | 'validation
 // --- Sampling Rate Presets ---
 
 export const SAMPLING_RATE_PRESETS = [
-  { label: '30 Hz (miniscope)', value: 30 },
-  { label: '30 Hz (2-photon)', value: 30 },
+  { label: '30 Hz (miniscope / 2-photon)', value: 30 },
   { label: '15 Hz (slow 2-photon)', value: 15 },
   { label: '10 Hz (widefield)', value: 10 },
   { label: '60 Hz (fast miniscope)', value: 60 },

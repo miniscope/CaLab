@@ -2,6 +2,9 @@
 
 :root {
   --header-bg: var(--bg-primary);
+  --tier-good: #2e7d32;
+  --tier-fair: #e09800;
+  --tier-poor: #d32f2f;
 }
 
 /* App-specific overrides for shared components */

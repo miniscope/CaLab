@@ -20,7 +20,7 @@ export {
 } from './field-options.ts';
 
 // Analytics
-export { initSession, trackEvent, endSession, registerSessionEndListeners } from './analytics.ts';
+export { initSession, trackEvent, registerSessionEndListeners } from './analytics.ts';
 export type { AnalyticsEventName } from './analytics.ts';
 
 // Utilities
@@ -37,7 +37,6 @@ export {
 // Types
 export type {
   BaseSubmission,
-  BaseSubmissionPayload,
   BaseFilterState,
   DataSource,
   SubmissionValidationResult,

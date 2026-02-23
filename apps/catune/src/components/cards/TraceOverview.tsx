@@ -5,7 +5,7 @@
  * Click/drag to reposition the zoom window.
  */
 
-import { createEffect, createMemo, onCleanup, onMount } from 'solid-js';
+import { createEffect, createMemo, on, onCleanup, onMount } from 'solid-js';
 import { downsampleMinMax, makeTimeAxis } from '@calab/compute';
 
 export interface TraceOverviewProps {
@@ -131,16 +131,12 @@ export function TraceOverview(props: TraceOverviewProps) {
     }
   }
 
-  createEffect(() => {
-    // Track reactive dependencies (SolidJS signal access pattern)
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-    props.trace;
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-    props.zoomStart;
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-    props.zoomEnd;
-    draw();
-  });
+  createEffect(
+    on(
+      () => [props.trace, props.zoomStart, props.zoomEnd],
+      () => draw(),
+    ),
+  );
 
   // ResizeObserver for container width changes
   let resizeRaf: number | undefined;

@@ -1,13 +1,13 @@
-import { type JSX, createResource } from 'solid-js';
+import { type JSX, createMemo, createResource } from 'solid-js';
 import { MetricCard } from './MetricCard.tsx';
 import { fetchSessions, fetchSubmissions, computeMetrics } from '../lib/analytics-queries.ts';
 import { dateRange } from '../lib/admin-store.ts';
 
 export function OverviewView(): JSX.Element {
   const [sessions] = createResource(dateRange, fetchSessions);
-  const [submissions] = createResource(fetchSubmissions);
+  const [submissions] = createResource(dateRange, fetchSubmissions);
 
-  const metrics = () => computeMetrics(sessions() ?? [], submissions() ?? []);
+  const metrics = createMemo(() => computeMetrics(sessions() ?? [], submissions() ?? []));
 
   return (
     <div class="view">

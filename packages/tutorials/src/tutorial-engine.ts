@@ -73,11 +73,12 @@ function mapSteps(tutorial: Tutorial): DriveStep[] {
 
     // Interactive steps: block next button until user performs required action
     if (step.waitForAction) {
-      // Allow interaction with the highlighted element
-      driveStep.disableActiveInteraction = false;
+      // Allow interaction with the highlighted element (unless explicitly overridden)
+      if (step.disableActiveInteraction === undefined) {
+        driveStep.disableActiveInteraction = false;
+      }
 
       driveStep.onHighlighted = () => {
-        setCurrentStepIndex(index);
         // Reset action flag when entering an interactive step
         setTutorialActionFired(false);
       };

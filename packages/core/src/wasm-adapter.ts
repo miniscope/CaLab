@@ -8,7 +8,6 @@
 
 import init, { Solver } from '../../../wasm/catune-solver/pkg/catune_solver';
 export { Solver };
-export type { InitInput, InitOutput } from '../../../wasm/catune-solver/pkg/catune_solver';
 
 let wasmReady: Promise<void> | null = null;
 

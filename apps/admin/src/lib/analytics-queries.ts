@@ -48,13 +48,15 @@ export async function fetchEvents(range: DateRange): Promise<EventRow[]> {
   return (data ?? []) as EventRow[];
 }
 
-export async function fetchSubmissions(): Promise<SubmissionRow[]> {
+export async function fetchSubmissions(range: DateRange): Promise<SubmissionRow[]> {
   const supabase = await getSupabase();
   if (!supabase) return [];
 
   const { data, error } = await supabase
     .from('catune_submissions')
     .select('id, created_at, user_id, indicator, species, brain_region, data_source, app_version')
+    .gte('created_at', range.start)
+    .lte('created_at', endOfDay(range.end))
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);

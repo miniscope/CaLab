@@ -13,7 +13,7 @@ import { dateRange } from '../lib/admin-store.ts';
 export function ExportPanel(): JSX.Element {
   const [sessions] = createResource(dateRange, fetchSessions);
   const [events] = createResource(dateRange, fetchEvents);
-  const [submissions] = createResource(fetchSubmissions);
+  const [submissions] = createResource(dateRange, fetchSubmissions);
 
   const filenameSuffix = () => `${dateRange().start}_to_${dateRange().end}`;
 

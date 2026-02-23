@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
-const repoRoot = path.resolve(__dirname, '../..');
+const repoRoot = path.resolve(import.meta.dirname, '../..');
+const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf-8'));
+const displayName = pkg.calab?.displayName ?? path.basename(import.meta.dirname);
 
 export default defineConfig({
   resolve: {
@@ -15,7 +18,11 @@ export default defineConfig({
     },
   },
   envDir: repoRoot,
-  base: process.env.GITHUB_ACTIONS ? '/CaLab/CaRank/' : process.env.CALAB_PAGES ? '/CaRank/' : '/',
+  base: process.env.GITHUB_ACTIONS
+    ? `/CaLab/${displayName}/`
+    : process.env.CALAB_PAGES
+      ? `/${displayName}/`
+      : '/',
   plugins: [solidPlugin()],
   build: {
     target: 'esnext',
