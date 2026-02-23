@@ -17,7 +17,7 @@ import {
 } from '../../lib/community/index.ts';
 import type { CatuneSubmission, DataSource, CatuneFilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
-import { isDemo } from '../../lib/data-store.ts';
+import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
 import { getPresetLabels } from '@calab/compute';
 import { ScatterPlot } from './ScatterPlot.tsx';
 import { FilterBar } from './FilterBar.tsx';
@@ -43,10 +43,10 @@ export function CommunityBrowser() {
   const [lastFetched, setLastFetched] = createSignal<number | null>(null);
   const [error, setError] = createSignal<string | null>(null);
 
-  // Auto-switch data source when demo mode changes
+  // Auto-switch data source filter when app data source changes
   createEffect(
-    on(isDemo, (demo) => {
-      setDataSource(demo ? 'demo' : 'user');
+    on(appDataSource, (src) => {
+      setDataSource(src === 'demo' ? 'demo' : 'user');
     }),
   );
 

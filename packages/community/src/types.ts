@@ -4,7 +4,7 @@
  * See supabase/migrations/ for the database schema.
  */
 
-export type DataSource = 'user' | 'demo' | 'training';
+export type DataSource = 'user' | 'demo' | 'bridge' | 'training';
 
 /** Common fields every CaLab app submission shares. */
 export interface BaseSubmission {
