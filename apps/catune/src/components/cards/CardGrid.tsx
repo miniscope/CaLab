@@ -83,6 +83,12 @@ export function CardGrid(props: CardGridProps) {
       <CardGridLayout columns={gridColumns()} data-tutorial="card-grid">
         <For each={cells()}>
           {(cellIndex) => {
+            onCleanup(() => {
+              const el = cardRefs.get(cellIndex);
+              if (el) observer?.unobserve(el);
+              cardRefs.delete(cellIndex);
+              visibleSet.delete(cellIndex);
+            });
             const traces = createMemo(() => multiCellResults[cellIndex]);
             const pinnedTraces = createMemo(() => pinnedMultiCellResults[cellIndex]);
             const gt = createMemo(() => {

@@ -38,6 +38,10 @@ let lastRaw: Float64Array | null = null;
 let lastCellIdx = -1;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Per-cell PSD cache: avoids recomputing FFT for cells whose trace hasn't changed.
+// Reduces cell-switch cost from N FFTs to 1 FFT (only the newly selected cell).
+const psdCache = new Map<number, { traceRef: Float64Array; psd: Float64Array }>();
+
 export function initSpectrumStore(): void {
   // Effect 1: Cutoff lines — update immediately, no debounce
   createEffect(
@@ -74,6 +78,7 @@ function computeSpectrum(): void {
   if (!fs || resultKeys.length === 0) {
     lastRaw = null;
     lastCellIdx = -1;
+    psdCache.clear();
     setSpectrumData(null);
     return;
   }
@@ -101,22 +106,40 @@ function computeSpectrum(): void {
 
   const { freqs, psd } = computePeriodogram(raw, fs);
 
-  // Average PSD across all loaded cells
-  const allTraces = resultKeys
-    .map((k) => results[Number(k)]?.raw)
-    .filter((t): t is Float64Array => t != null && t.length >= 16);
+  // Average PSD across all loaded cells, using per-cell cache to avoid
+  // redundant FFTs. Only cells whose trace reference has changed are recomputed.
+  const allCellKeys = resultKeys.map(Number).filter((k) => {
+    const t = results[k]?.raw;
+    return t != null && t.length >= 16;
+  });
   let allPsd: Float64Array;
-  if (allTraces.length <= 1) {
+  if (allCellKeys.length <= 1) {
     allPsd = psd;
   } else {
-    const first = computePeriodogram(allTraces[0], fs);
-    const avgPsd = new Float64Array(first.psd.length);
-    for (let i = 0; i < avgPsd.length; i++) avgPsd[i] = first.psd[i];
-    for (let t = 1; t < allTraces.length; t++) {
-      const { psd: cellPsd } = computePeriodogram(allTraces[t], fs);
+    // Update cache: compute FFT only for cells whose trace ref changed
+    for (const k of allCellKeys) {
+      const trace = results[k]!.raw;
+      const cached = psdCache.get(k);
+      if (cached && cached.traceRef === trace) continue;
+      const { psd: cellPsd } = computePeriodogram(trace, fs);
+      psdCache.set(k, { traceRef: trace, psd: cellPsd });
+    }
+
+    // Evict stale entries for cells no longer present
+    const activeKeys = new Set(allCellKeys);
+    for (const k of psdCache.keys()) {
+      if (!activeKeys.has(k)) psdCache.delete(k);
+    }
+
+    // Average cached PSDs
+    const firstPsd = psdCache.get(allCellKeys[0])!.psd;
+    const avgPsd = new Float64Array(firstPsd.length);
+    for (let i = 0; i < avgPsd.length; i++) avgPsd[i] = firstPsd[i];
+    for (let t = 1; t < allCellKeys.length; t++) {
+      const cellPsd = psdCache.get(allCellKeys[t])!.psd;
       for (let i = 0; i < avgPsd.length; i++) avgPsd[i] += cellPsd[i];
     }
-    for (let i = 0; i < avgPsd.length; i++) avgPsd[i] /= allTraces.length;
+    for (let i = 0; i < avgPsd.length; i++) avgPsd[i] /= allCellKeys.length;
     allPsd = avgPsd;
   }
 

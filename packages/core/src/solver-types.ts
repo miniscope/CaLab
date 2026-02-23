@@ -21,33 +21,8 @@ export interface SolverParams {
   filterEnabled: boolean; // bandpass filter derived from kernel
 }
 
-/** Intermediate result emitted during solver iteration for live visualization. */
-export interface IntermediateResult {
-  solution: Float32Array;
-  reconvolution: Float32Array;
-  iteration: number;
-}
-
-/** Final result returned after solver convergence or termination. */
-export interface SolveResult {
-  solution: Float32Array;
-  reconvolution: Float32Array;
-  state: Uint8Array; // serialized warm-start state
-  iterations: number;
-  converged: boolean;
-}
-
 /** Strategy for initializing the solver on a new solve request. */
 export type WarmStartStrategy = 'warm' | 'warm-no-momentum' | 'cold';
-
-/** Full solve request message sent to the worker. */
-export interface SolveRequest {
-  trace: Float32Array;
-  params: SolverParams;
-  warmStartState: Uint8Array | null;
-  warmStartStrategy: WarmStartStrategy;
-  jobId: number;
-}
 
 // --- Pool worker message protocol ---
 

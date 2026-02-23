@@ -18,14 +18,34 @@ const out = resolve(root, 'dist/CaLab');
 const envPath = resolve(root, '.env');
 if (existsSync(envPath)) {
   for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
-    const match = line.match(/^\s*([\w]+)\s*=\s*(.*)\s*$/);
+    const match = line.match(/^\s*([\w]+)\s*=\s*(.*?)\s*$/);
     if (match && !process.env[match[1]]) {
-      process.env[match[1]] = match[2];
+      let val = match[2];
+      // Strip surrounding quotes
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      } else {
+        // Remove inline comments for unquoted values
+        val = val.replace(/\s+#.*$/, '');
+      }
+      process.env[match[1]] = val;
     }
   }
 }
 
 mkdirSync(out, { recursive: true });
+
+/** Escape a string for safe embedding in HTML content/attributes. */
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 const statusOrder = { stable: 0, beta: 1, 'coming-soon': 2 };
 
@@ -80,30 +100,32 @@ function renderCard(app) {
   const badge = statusBadge[app.status] ?? statusBadge['coming-soon'];
 
   const screenshotHtml = app.screenshotFile
-    ? `<img class="card-screenshot" src="${app.screenshotFile}" alt="${app.displayName} screenshot" />`
+    ? `<img class="card-screenshot" src="${escapeHtml(app.screenshotFile)}" alt="${escapeHtml(app.displayName)} screenshot" />`
     : '';
 
   const featuresHtml = app.features.length
-    ? `<ul class="features">${app.features.map((f) => `<li>${f}</li>`).join('')}</ul>`
+    ? `<ul class="features">${app.features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
     : '';
 
-  const longDescHtml = app.longDescription ? `<p class="long-desc">${app.longDescription}</p>` : '';
+  const longDescHtml = app.longDescription
+    ? `<p class="long-desc">${escapeHtml(app.longDescription)}</p>`
+    : '';
 
-  return `    <a class="card" href="${app.displayName}/">
+  return `    <a class="card" href="${escapeHtml(app.displayName)}/">
       ${screenshotHtml}
       <div class="card-header">
-        <h2>${app.displayName}</h2>
+        <h2>${escapeHtml(app.displayName)}</h2>
         <span class="badge" style="color:${badge.color};background:${badge.bg}">${badge.label}</span>
       </div>
-      <p class="tagline">${app.description}</p>
+      <p class="tagline">${escapeHtml(app.description)}</p>
       ${longDescHtml}
       ${featuresHtml}
-      <span class="cta">Open ${app.displayName} &rarr;</span>
+      <span class="cta">Open ${escapeHtml(app.displayName)} &rarr;</span>
     </a>`;
 }
 
 const version = process.env.VITE_APP_VERSION ?? '';
-const versionHtml = version ? `<span class="version">${version}</span> &middot; ` : '';
+const versionHtml = version ? `<span class="version">${escapeHtml(version)}</span> &middot; ` : '';
 
 // Auth env vars — injected at build time
 const supabaseUrl = process.env.VITE_SUPABASE_URL ?? '';
@@ -330,7 +352,7 @@ writeFileSync(
 <body>
   <div class="page">
     <header>
-      <h1>CaLab${version ? `<sup class="version-sup">${version}</sup>` : ''}</h1>
+      <h1>CaLab${version ? `<sup class="version-sup">${escapeHtml(version)}</sup>` : ''}</h1>
       <p class="subtitle">Calcium imaging analysis tools</p>
       <a class="github-link" href="https://github.com/miniscope/CaLab">GitHub &rarr;</a>
       ${authEnabled ? '<div id="auth-menu" class="auth-landing"></div>' : ''}
@@ -348,8 +370,8 @@ ${cards}
   ${
     authEnabled
       ? `<script type="module">
-    const SUPABASE_URL = '${supabaseUrl}';
-    const SUPABASE_ANON_KEY = '${supabaseAnonKey}';
+    const SUPABASE_URL = ${JSON.stringify(supabaseUrl)};
+    const SUPABASE_ANON_KEY = ${JSON.stringify(supabaseAnonKey)};
     const container = document.getElementById('auth-menu');
     if (!container) throw new Error('Missing #auth-menu');
 

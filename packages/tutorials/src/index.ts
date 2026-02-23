@@ -8,13 +8,9 @@ export {
 } from './progress.ts';
 export {
   activeTutorial,
-  setActiveTutorial,
   currentStepIndex,
-  setCurrentStepIndex,
   isTutorialActive,
-  setIsTutorialActive,
   tutorialActionFired,
-  setTutorialActionFired,
 } from './tutorial-store.ts';
 export {
   startTutorial,

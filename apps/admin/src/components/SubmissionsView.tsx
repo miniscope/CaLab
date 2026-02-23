@@ -1,9 +1,10 @@
 import { type JSX, createResource, createSignal, createMemo } from 'solid-js';
 import { DataTable } from './DataTable.tsx';
 import { fetchSubmissions, deleteSubmission } from '../lib/analytics-queries.ts';
+import { dateRange } from '../lib/admin-store.ts';
 
 export function SubmissionsView(): JSX.Element {
-  const [submissions, { refetch }] = createResource(fetchSubmissions);
+  const [submissions, { refetch }] = createResource(dateRange, fetchSubmissions);
   const [filterIndicator, setFilterIndicator] = createSignal('');
   const [filterSpecies, setFilterSpecies] = createSignal('');
   const [filterRegion, setFilterRegion] = createSignal('');

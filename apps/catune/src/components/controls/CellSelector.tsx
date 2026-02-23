@@ -36,11 +36,6 @@ import {
 } from '../../lib/viz-store.ts';
 import '../../styles/multi-trace.css';
 
-export interface CellSelectorProps {
-  /** Called when selection changes (triggers batch re-solve). */
-  onSelectionChange?: () => void;
-}
-
 interface LegendItemProps {
   color: string;
   label: string;
@@ -70,12 +65,11 @@ function LegendItem(props: LegendItemProps) {
   );
 }
 
-export function CellSelector(props: CellSelectorProps) {
+export function CellSelector() {
   const handleModeChange = (e: Event) => {
     const value = (e.target as HTMLSelectElement).value as SelectionMode;
     setSelectionMode(value);
     updateCellSelection();
-    props.onSelectionChange?.();
   };
 
   const handleCountChange = (e: Event) => {
@@ -83,7 +77,6 @@ export function CellSelector(props: CellSelectorProps) {
     if (!isNaN(value) && value >= 1) {
       setDisplayCount(Math.min(value, Math.min(20, numCells())));
       updateCellSelection();
-      props.onSelectionChange?.();
     }
   };
 
@@ -99,12 +92,10 @@ export function CellSelector(props: CellSelectorProps) {
     // Deduplicate
     const unique = [...new Set(indices)];
     setSelectedCells(unique);
-    props.onSelectionChange?.();
   };
 
   const handleReshuffle = () => {
     updateCellSelection();
-    props.onSelectionChange?.();
   };
 
   const maxCount = () => Math.min(20, numCells());

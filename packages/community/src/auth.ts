@@ -24,11 +24,12 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
   }
 
   let unsubscribe = () => {};
+  let disposed = false;
 
   // Fire-and-forget: SDK loads lazily, then subscribes to auth events
   void getSupabase().then((client) => {
     if (!client) {
-      callback({ user: null, loading: false });
+      if (!disposed) callback({ user: null, loading: false });
       return;
     }
 
@@ -36,18 +37,27 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, session) => {
-      callback({ user: session?.user ?? null, loading: false });
+      if (!disposed) callback({ user: session?.user ?? null, loading: false });
     });
+
+    // If cleanup was called before the promise resolved, unsubscribe immediately
+    if (disposed) {
+      subscription.unsubscribe();
+      return;
+    }
 
     unsubscribe = () => subscription.unsubscribe();
 
     // Load initial session
     client.auth.getSession().then(({ data: { session } }) => {
-      callback({ user: session?.user ?? null, loading: false });
+      if (!disposed) callback({ user: session?.user ?? null, loading: false });
     });
   });
 
-  return () => unsubscribe();
+  return () => {
+    disposed = true;
+    unsubscribe();
+  };
 }
 
 /** Sign in with email magic link. */

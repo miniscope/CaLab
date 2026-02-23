@@ -3,9 +3,9 @@ import path from 'node:path';
 import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
-const repoRoot = path.resolve(__dirname, '../..');
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'));
-const displayName = pkg.calab?.displayName ?? path.basename(__dirname);
+const repoRoot = path.resolve(import.meta.dirname, '../..');
+const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf-8'));
+const displayName = pkg.calab?.displayName ?? path.basename(import.meta.dirname);
 
 export default defineConfig({
   resolve: {

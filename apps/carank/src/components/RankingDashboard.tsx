@@ -1,5 +1,4 @@
-import type { JSX } from 'solid-js';
-import { createMemo, onMount } from 'solid-js';
+import { type JSX, createMemo, For, onMount } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import { computePeakSNR, snrToQuality } from '@calab/core';
 import { trackEvent } from '@calab/community';
@@ -11,9 +10,9 @@ interface RankingDashboardProps {
 }
 
 const TIER_COLORS: Record<QualityTier, string> = {
-  good: '#2e7d32',
-  fair: '#e09800',
-  poor: '#d32f2f',
+  good: 'var(--tier-good)',
+  fair: 'var(--tier-fair)',
+  poor: 'var(--tier-poor)',
 };
 
 interface CellMetric {
@@ -41,9 +40,13 @@ export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
     void trackEvent('ranking_completed', { num_cells: props.data.numCells });
   });
 
-  const good = () => metrics().filter((m) => m.quality === 'good').length;
-  const fair = () => metrics().filter((m) => m.quality === 'fair').length;
-  const poor = () => metrics().filter((m) => m.quality === 'poor').length;
+  const tierCounts = createMemo(() => {
+    const counts = { good: 0, fair: 0, poor: 0 };
+    for (const m of metrics()) {
+      counts[m.quality]++;
+    }
+    return counts;
+  });
 
   return (
     <DashboardPanel id="ranking" variant="data">
@@ -51,13 +54,13 @@ export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
 
       <div class="ranking__summary">
         <span class="ranking__stat" style={{ color: TIER_COLORS.good }}>
-          {good()} good
+          {tierCounts().good} good
         </span>
         <span class="ranking__stat" style={{ color: TIER_COLORS.fair }}>
-          {fair()} fair
+          {tierCounts().fair} fair
         </span>
         <span class="ranking__stat" style={{ color: TIER_COLORS.poor }}>
-          {poor()} poor
+          {tierCounts().poor} poor
         </span>
       </div>
 
@@ -71,17 +74,19 @@ export function RankingDashboard(props: RankingDashboardProps): JSX.Element {
           </tr>
         </thead>
         <tbody>
-          {metrics().map((m, rank) => (
-            <tr>
-              <td>{rank + 1}</td>
-              <td>{m.index}</td>
-              <td>{m.snr.toFixed(2)}</td>
-              <td>
-                <span class="ranking__dot" style={{ background: TIER_COLORS[m.quality] }} />
-                {m.quality}
-              </td>
-            </tr>
-          ))}
+          <For each={metrics()}>
+            {(m, rank) => (
+              <tr>
+                <td>{rank() + 1}</td>
+                <td>{m.index}</td>
+                <td>{m.snr.toFixed(2)}</td>
+                <td>
+                  <span class="ranking__dot" style={{ background: TIER_COLORS[m.quality] }} />
+                  {m.quality}
+                </td>
+              </tr>
+            )}
+          </For>
         </tbody>
       </table>
     </DashboardPanel>

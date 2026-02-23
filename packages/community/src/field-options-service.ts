@@ -30,7 +30,7 @@ export async function fetchFieldOptions(): Promise<FieldOptions> {
     cell_type: [],
   };
   for (const row of rows) {
-    grouped[row.field_name].push(row.value);
+    if (row.field_name in grouped) grouped[row.field_name].push(row.value);
   }
 
   return {

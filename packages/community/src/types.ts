@@ -65,7 +65,6 @@ export interface SubmissionValidationResult {
 
 /** Row from the field_options lookup table. */
 export interface FieldOption {
-  id: number;
   field_name: 'indicator' | 'species' | 'brain_region' | 'microscope_type' | 'cell_type';
   value: string;
   display_order: number;

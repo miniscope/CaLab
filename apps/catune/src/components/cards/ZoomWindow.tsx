@@ -115,6 +115,44 @@ export function ZoomWindow(props: ZoomWindowProps) {
     return [residBottom, zMax + rawRange * 0.02];
   });
 
+  // Pre-compute full-trace min/max for deconvolved traces so scaleToDeconvBand
+  // doesn't scan the entire array on every zoom frame.
+  const deconvMinMax = createMemo<[number, number]>(() => {
+    const d = props.deconvolvedTrace;
+    if (!d || d.length === 0) return [0, 1];
+    let dMin = Infinity;
+    let dMax = -Infinity;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] < dMin) dMin = d[i];
+      if (d[i] > dMax) dMax = d[i];
+    }
+    return [dMin, dMax];
+  });
+
+  const pinnedDeconvMinMax = createMemo<[number, number]>(() => {
+    const d = props.pinnedDeconvolved;
+    if (!d || d.length === 0) return [0, 1];
+    let dMin = Infinity;
+    let dMax = -Infinity;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] < dMin) dMin = d[i];
+      if (d[i] > dMax) dMax = d[i];
+    }
+    return [dMin, dMax];
+  });
+
+  const gtSpikesMinMax = createMemo<[number, number]>(() => {
+    const d = props.groundTruthSpikes;
+    if (!d || d.length === 0) return [0, 1];
+    let dMin = Infinity;
+    let dMax = -Infinity;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] < dMin) dMin = d[i];
+      if (d[i] > dMax) dMax = d[i];
+    }
+    return [dMin, dMax];
+  });
+
   /**
    * Slice a trace for the current zoom window, downsample, and apply a transform.
    *
@@ -159,19 +197,15 @@ export function ZoomWindow(props: ZoomWindowProps) {
   /**
    * Scale deconvolved values into the deconv band below the raw z-score range.
    * Maps the full deconv trace's own [min,max] into [deconvBottom, deconvTop].
+   * Accepts pre-computed [dMin, dMax] to avoid scanning the full array per frame.
    */
   const scaleToDeconvBand = (
     dsDeconvRaw: number[],
-    deconvFull: ArrayLike<number>,
+    deconvMinMaxPair: [number, number],
     zMin: number,
     zMax: number,
   ): number[] => {
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < deconvFull.length; i++) {
-      if (deconvFull[i] < dMin) dMin = deconvFull[i];
-      if (deconvFull[i] > dMax) dMax = deconvFull[i];
-    }
+    const [dMin, dMax] = deconvMinMaxPair;
     const dRange = dMax - dMin || 1;
 
     const deconvHeight = (zMax - zMin) * DECONV_SCALE;
@@ -314,7 +348,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
       offset,
       raw.length,
       dsX.length,
-      (vals) => scaleToDeconvBand(vals, props.deconvolvedTrace!, zMin, zMax),
+      (vals) => scaleToDeconvBand(vals, deconvMinMax(), zMin, zMax),
     );
 
     // Residuals — raw minus reconvolution, scaled into residual band
@@ -341,7 +375,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
       pinnedOffset,
       raw.length,
       dsX.length,
-      (vals) => scaleToDeconvBand(vals, props.pinnedDeconvolved!, zMin, zMax),
+      (vals) => scaleToDeconvBand(vals, pinnedDeconvMinMax(), zMin, zMax),
     );
 
     // Ground truth calcium — z-score transform (same space as raw)
@@ -359,7 +393,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     if (props.groundTruthSpikes && props.groundTruthSpikes.length > 0) {
       const gtsSlice = props.groundTruthSpikes.subarray(startSample, endSample);
       const [, dsGTSRaw] = downsampleMinMax(x, gtsSlice, ZOOM_BUCKET_WIDTH);
-      dsGTSpikes = scaleToDeconvBand(dsGTSRaw, props.groundTruthSpikes, zMin, zMax);
+      dsGTSpikes = scaleToDeconvBand(dsGTSRaw, gtSpikesMinMax(), zMin, zMax);
     } else {
       dsGTSpikes = new Array(dsX.length).fill(null) as number[];
     }

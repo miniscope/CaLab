@@ -12,12 +12,12 @@ interface HeaderProps {
 }
 
 export function Header(props: HeaderProps): JSX.Element {
-  const version = () => `CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`;
+  const version = `CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`;
 
   return (
     <CompactHeader
       title="CaRank"
-      version={version()}
+      version={version}
       info={
         <>
           <span class="compact-header__file">{props.fileName}</span>

@@ -13,7 +13,10 @@ export function AuthMenu(props: AuthMenuProps) {
   const [open, setOpen] = createSignal(false);
   let containerRef!: HTMLDivElement;
 
-  const close = () => setOpen(false);
+  const close = () => {
+    setOpen(false);
+    detach();
+  };
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') close();

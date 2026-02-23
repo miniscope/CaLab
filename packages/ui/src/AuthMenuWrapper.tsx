@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js';
-import { createSignal, Show } from 'solid-js';
+import { createEffect, createSignal, Show } from 'solid-js';
 import { AuthMenu } from './AuthMenu.tsx';
 
 export interface AuthMenuWrapperProps {
@@ -15,6 +15,15 @@ export function AuthMenuWrapper(props: AuthMenuWrapperProps) {
   const [sending, setSending] = createSignal(false);
   const [sent, setSent] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+
+  // Reset form state when user signs out
+  createEffect(() => {
+    if (!props.user()) {
+      setSent(false);
+      setError(null);
+      setEmail('');
+    }
+  });
 
   async function handleSubmit(e: Event) {
     e.preventDefault();

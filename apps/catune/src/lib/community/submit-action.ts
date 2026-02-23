@@ -92,7 +92,7 @@ export async function submitToSupabase(
     fps: ctx.samplingRate,
     dataset_hash: datasetHash,
     filter_enabled: ctx.filterEnabled,
-    data_source: ctx.rawFileName ? 'user' : 'demo',
+    data_source: ctx.isDemo ? 'demo' : 'user',
     app_version: version,
     extra_metadata: ctx.isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
   };
