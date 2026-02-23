@@ -55,13 +55,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install maturin and test deps
-        run: pip install maturin[patchelf] numpy pytest h5py zarr
+      - name: Create venv and install deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin[patchelf] numpy pytest h5py zarr
+        working-directory: python
 
       - name: Build and install (dev)
-        run: maturin develop --features pybindings
+        run: .venv/bin/maturin develop --features pybindings
         working-directory: python
 
       - name: Run Python tests
-        run: pytest
+        run: .venv/bin/pytest
         working-directory: python
