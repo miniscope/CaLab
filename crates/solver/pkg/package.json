@@ -1,0 +1,15 @@
+{
+  "name": "calab-solver",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "calab_solver_bg.wasm",
+    "calab_solver.js",
+    "calab_solver.d.ts"
+  ],
+  "main": "calab_solver.js",
+  "types": "calab_solver.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

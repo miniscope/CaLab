@@ -1,4 +1,4 @@
-"""Kernel math functions -- direct port of wasm/catune-solver/src/kernel.rs.
+"""Kernel math functions -- direct port of crates/solver/src/kernel.rs.
 
 Preserves exact variable names (dt, kernel_len, t, val, peak, d, r, g1, g2)
 for cross-language auditability.

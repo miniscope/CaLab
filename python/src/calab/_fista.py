@@ -1,4 +1,4 @@
-"""FISTA deconvolution solver -- direct port of wasm/catune-solver/src/fista.rs.
+"""FISTA deconvolution solver -- direct port of crates/solver/src/fista.rs.
 
 Preserves exact variable names (solution, solution_prev, t_fista, step_size,
 threshold, gradient, reconvolution, residual, momentum, t_new, x_prev)

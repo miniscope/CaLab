@@ -57,7 +57,7 @@ Key solver features:
 - **Warm-start caching** — 3-tier cache (lambda-only, kernel-changed, cold-start) reuses prior solver state
 - **Windowed computation** — only solves the visible zoom window (plus safety margin) for efficiency
 
-See [`wasm/catune-solver/README.md`](../../wasm/catune-solver/README.md) for detailed solver documentation.
+See [`crates/solver/README.md`](../../crates/solver/README.md) for detailed solver documentation.
 
 ## Development
 

@@ -1,12 +1,12 @@
 /**
  * Single import point for the WASM solver module.
  *
- * Rule: No other file should import from 'wasm/catune-solver/pkg/' directly.
+ * Rule: No other file should import from 'crates/solver/pkg/' directly.
  * This adapter provides lazy, idempotent initialization and re-exports the
  * Solver class so consumers never deal with raw WASM init.
  */
 
-import init, { Solver } from '../../../wasm/catune-solver/pkg/catune_solver';
+import init, { Solver } from '../../../crates/solver/pkg/calab_solver';
 export { Solver };
 
 let wasmReady: Promise<void> | null = null;

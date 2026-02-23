@@ -104,8 +104,8 @@ CaLab uses npm workspaces with seven packages and two applications:
 │           ├── VizLayout.tsx    # Scroll/dashboard mode switcher
 │           └── styles/
 │               └── layout.css   # Layout CSS rules
-├── wasm/
-│   └── catune-solver/           # Rust FISTA solver crate
+├── crates/
+│   └── solver/                  # Rust FISTA solver crate (WASM + PyO3)
 │       └── pkg/                 # wasm-pack output (committed)
 ├── supabase/                    # Supabase config
 ├── python/                      # Python utilities
@@ -184,7 +184,7 @@ Key design decisions:
 
 ### WASM Adapter Rule
 
-Only `packages/core/src/wasm-adapter.ts` imports from `wasm/catune-solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core`. Enforced by ESLint `no-restricted-imports`.
+Only `packages/core/src/wasm-adapter.ts` imports from `crates/solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core`. Enforced by ESLint `no-restricted-imports`.
 
 ### Supabase Isolation
 

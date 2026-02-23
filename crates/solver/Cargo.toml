@@ -1,5 +1,5 @@
 [package]
-name = "catune-solver"
+name = "calab-solver"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,11 +9,18 @@ wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["jsbindings"]
+jsbindings = ["wasm-bindgen", "console_error_panic_hook"]
+pybindings = ["pyo3", "numpy"]
+
 [dependencies]
-wasm-bindgen = "0.2"
-console_error_panic_hook = "0.1"
 realfft = "3"
 rustfft = "6"
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+numpy = { version = "0.23", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

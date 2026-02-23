@@ -36,7 +36,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: 'wasm/catune-solver -> target'
+          workspaces: 'crates/solver -> target'
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@v2

@@ -3,9 +3,14 @@ mod filter;
 mod fista;
 mod kernel;
 
+#[cfg(feature = "pybindings")]
+mod py_api;
+
 use filter::BandpassFilter;
 use kernel::{build_kernel, compute_lipschitz};
 use std::io::{Cursor, Read};
+
+#[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
 
 /// FISTA solver for calcium deconvolution.
@@ -16,7 +21,7 @@ use wasm_bindgen::prelude::*;
 /// so the sparsity slider is effective across all kernel configurations.
 ///
 /// Pre-allocated buffers grow but never shrink to prevent WASM memory fragmentation.
-#[wasm_bindgen]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
 pub struct Solver {
     // Parameters
     tau_rise: f64,
@@ -56,12 +61,12 @@ pub struct Solver {
     bandpass: BandpassFilter,
 }
 
-#[wasm_bindgen]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
 impl Solver {
     /// Create a new Solver with default parameters.
-    #[wasm_bindgen(constructor)]
+    #[cfg_attr(feature = "jsbindings", wasm_bindgen(constructor))]
     pub fn new() -> Solver {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(feature = "jsbindings", target_arch = "wasm32"))]
         console_error_panic_hook::set_once();
 
         let mut solver = Solver {

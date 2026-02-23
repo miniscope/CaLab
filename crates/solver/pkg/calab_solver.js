@@ -1,4 +1,4 @@
-/* @ts-self-types="./catune_solver.d.ts" */
+/* @ts-self-types="./calab_solver.d.ts" */
 
 /**
  * FISTA solver for calcium deconvolution.
@@ -340,7 +340,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./catune_solver_bg.js": import0,
+        "./calab_solver_bg.js": import0,
     };
 }
 
@@ -573,7 +573,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('catune_solver_bg.wasm', import.meta.url);
+        module_or_path = new URL('calab_solver_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

@@ -10,7 +10,7 @@ export default tseslint.config(
       'dist/',
       'apps/*/dist/',
       'packages/*/dist/',
-      'wasm/',
+      'crates/',
       '.planning/',
       '*.config.js',
       '*.config.ts',
@@ -73,7 +73,7 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/wasm/catune-solver/pkg/*'],
+              group: ['**/crates/solver/pkg/*'],
               message: 'Import from @calab/core instead of the WASM pkg directly.',
             },
             {

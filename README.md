@@ -57,8 +57,8 @@ See [`python/README.md`](python/README.md) for full API documentation.
 │   ├── community/               # @calab/community — Supabase DAL, submission logic
 │   ├── tutorials/               # @calab/tutorials — tutorial types, progress persistence
 │   └── ui/                      # @calab/ui — shared layout components
-├── wasm/
-│   └── catune-solver/           # Rust FISTA solver crate (compiled to WASM)
+├── crates/
+│   └── solver/                  # Rust FISTA solver crate (compiled to WASM + PyO3)
 ├── python/                      # Python companion package
 ├── docs/                        # Documentation
 ├── scripts/                     # Build and deploy scripts
@@ -116,7 +116,7 @@ See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the full development guid
 - [Changelog](docs/CHANGELOG.md) — release history
 - [New App Guide](docs/NEW_APP.md) — adding a new app to the monorepo
 - [CaTune](apps/catune/README.md) — CaTune app documentation
-- [WASM Solver](wasm/catune-solver/README.md) — Rust FISTA solver documentation
+- [WASM Solver](crates/solver/README.md) — Rust FISTA solver documentation
 - [Python Package](python/README.md) — Python companion package
 
 ## Tech Stack

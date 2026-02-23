@@ -1,6 +1,6 @@
-# catune-solver
+# calab-solver
 
-Rust FISTA deconvolution solver compiled to WebAssembly.
+Rust FISTA deconvolution solver with dual WASM/PyO3 targets.
 
 ## Overview
 
@@ -69,7 +69,7 @@ Methods exposed to JavaScript via `wasm-bindgen`:
 ## Build
 
 ```bash
-cd wasm/catune-solver
+cd crates/solver
 wasm-pack build --target web --release
 ```
 
