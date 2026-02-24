@@ -20,6 +20,7 @@ const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(null
 const [importError, setImportError] = createSignal<string | null>(null);
 const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 const [bridgeUrl, setBridgeUrl] = createSignal<string | null>(null);
+const [bridgeExportDone, setBridgeExportDone] = createSignal(false);
 
 /** Tracks how data was loaded: 'file' (user upload), 'demo' (generated), 'bridge' (Python calab.tune). */
 export type DataSource = 'file' | 'demo' | 'bridge' | null;
@@ -229,6 +230,8 @@ export {
   loadFromBridge,
   // Bridge
   bridgeUrl,
+  bridgeExportDone,
+  setBridgeExportDone,
   // Data source tracking
   dataSource,
   setDataSource,

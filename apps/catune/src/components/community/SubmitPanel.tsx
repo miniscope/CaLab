@@ -19,6 +19,7 @@ import {
   demoPreset,
   groundTruthLocked,
   bridgeUrl,
+  setBridgeExportDone,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
 import type { CaTuneExport } from '@calab/io';
@@ -91,7 +92,9 @@ export function SubmitPanel() {
   function handleBridgeExport(): void {
     const url = bridgeUrl();
     if (!url) return;
-    postParamsToBridge(url, buildCurrentExport()).catch(() => {});
+    postParamsToBridge(url, buildCurrentExport())
+      .then(() => setBridgeExportDone(true))
+      .catch(() => {});
   }
 
   async function handleSubmit(): Promise<void> {
