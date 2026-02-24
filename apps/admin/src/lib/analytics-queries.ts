@@ -10,6 +10,9 @@ import type {
   GeoBreakdown,
   EventBreakdown,
   WeeklySession,
+  SourceBreakdown,
+  AppBreakdown,
+  ReferrerBreakdown,
   DateRange,
 } from './types.ts';
 
@@ -54,7 +57,9 @@ export async function fetchSubmissions(range: DateRange): Promise<SubmissionRow[
 
   const { data, error } = await supabase
     .from('catune_submissions')
-    .select('id, created_at, user_id, indicator, species, brain_region, data_source, app_version')
+    .select(
+      'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, lambda, sampling_rate',
+    )
     .gte('created_at', range.start)
     .lte('created_at', endOfDay(range.end))
     .order('created_at', { ascending: false });
@@ -75,11 +80,37 @@ export async function deleteSubmission(id: string): Promise<void> {
 
 export function computeMetrics(sessions: SessionRow[], submissions: SubmissionRow[]): AdminMetrics {
   const uniqueUserIds = new Set(sessions.filter((s) => s.user_id).map((s) => s.user_id));
+
+  // Average session duration
+  const durations = sessions.map((s) => s.duration_seconds).filter((d): d is number => d != null);
+  const avgSeconds =
+    durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
+  const avgMinutes = avgSeconds / 60;
+  const avgDurationMinutes =
+    avgMinutes >= 1 ? `${avgMinutes.toFixed(1)} min` : `${avgSeconds.toFixed(0)} sec`;
+
+  // Top referrer domain
+  const refCounts = new Map<string, number>();
+  for (const s of sessions) {
+    const domain = s.referrer_domain || 'Direct';
+    refCounts.set(domain, (refCounts.get(domain) ?? 0) + 1);
+  }
+  let topReferrer = 'N/A';
+  let maxRef = 0;
+  for (const [domain, count] of refCounts) {
+    if (count > maxRef) {
+      maxRef = count;
+      topReferrer = domain;
+    }
+  }
+
   return {
     totalSessions: sessions.length,
     uniqueUsers: uniqueUserIds.size,
     anonymousSessions: sessions.filter((s) => !s.user_id).length,
     totalSubmissions: submissions.length,
+    avgDurationMinutes,
+    topReferrer,
   };
 }
 
@@ -126,4 +157,66 @@ export function computeWeeklySessions(sessions: SessionRow[]): WeeklySession[] {
   return Array.from(map.entries())
     .map(([week, count]) => ({ week, count }))
     .sort((a, b) => a.week.localeCompare(b.week));
+}
+
+export function computeSourceBreakdown(submissions: SubmissionRow[]): SourceBreakdown[] {
+  const map = new Map<string, number>();
+  for (const s of submissions) {
+    const source = s.data_source || 'unknown';
+    map.set(source, (map.get(source) ?? 0) + 1);
+  }
+  return Array.from(map.entries())
+    .map(([data_source, count]) => ({ data_source, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function computeAppBreakdown(sessions: SessionRow[]): AppBreakdown[] {
+  const map = new Map<string, number>();
+  for (const s of sessions) {
+    const app = s.app_name || 'unknown';
+    map.set(app, (map.get(app) ?? 0) + 1);
+  }
+  return Array.from(map.entries())
+    .map(([app_name, count]) => ({ app_name, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function computeReferrerBreakdown(sessions: SessionRow[]): ReferrerBreakdown[] {
+  const map = new Map<string, number>();
+  for (const s of sessions) {
+    const domain = s.referrer_domain || 'Direct';
+    map.set(domain, (map.get(domain) ?? 0) + 1);
+  }
+  return Array.from(map.entries())
+    .map(([referrer_domain, count]) => ({ referrer_domain, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/** Flag submission IDs as outliers using the IQR method (1.5x IQR from Q1/Q3). */
+export function computeOutliers(submissions: SubmissionRow[]): Set<string> {
+  if (submissions.length < 4) return new Set();
+
+  const outlierIds = new Set<string>();
+  const fields = ['tau_rise', 'tau_decay', 'lambda', 'sampling_rate'] as const;
+
+  for (const field of fields) {
+    const values = submissions.map((s) => s[field]).filter((v): v is number => v != null);
+    if (values.length < 4) continue;
+
+    values.sort((a, b) => a - b);
+    const q1 = values[Math.floor(values.length * 0.25)];
+    const q3 = values[Math.floor(values.length * 0.75)];
+    const iqr = q3 - q1;
+    const lower = q1 - 1.5 * iqr;
+    const upper = q3 + 1.5 * iqr;
+
+    for (const s of submissions) {
+      const v = s[field];
+      if (v != null && (v < lower || v > upper)) {
+        outlierIds.add(s.id);
+      }
+    }
+  }
+
+  return outlierIds;
 }

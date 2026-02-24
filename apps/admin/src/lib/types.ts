@@ -32,6 +32,10 @@ export interface SubmissionRow {
   brain_region: string;
   data_source: string;
   app_version: string | null;
+  tau_rise: number;
+  tau_decay: number;
+  lambda: number;
+  sampling_rate: number;
 }
 
 export interface AdminMetrics {
@@ -39,6 +43,8 @@ export interface AdminMetrics {
   uniqueUsers: number;
   anonymousSessions: number;
   totalSubmissions: number;
+  avgDurationMinutes: string;
+  topReferrer: string;
 }
 
 export interface GeoBreakdown {
@@ -54,6 +60,21 @@ export interface EventBreakdown {
 
 export interface WeeklySession {
   week: string;
+  count: number;
+}
+
+export interface SourceBreakdown {
+  data_source: string;
+  count: number;
+}
+
+export interface AppBreakdown {
+  app_name: string;
+  count: number;
+}
+
+export interface ReferrerBreakdown {
+  referrer_domain: string;
   count: number;
 }
 

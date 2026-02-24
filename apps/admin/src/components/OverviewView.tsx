@@ -1,6 +1,12 @@
 import { type JSX, createMemo, createResource } from 'solid-js';
 import { MetricCard } from './MetricCard.tsx';
-import { fetchSessions, fetchSubmissions, computeMetrics } from '../lib/analytics-queries.ts';
+import { DataTable } from './DataTable.tsx';
+import {
+  fetchSessions,
+  fetchSubmissions,
+  computeMetrics,
+  computeSourceBreakdown,
+} from '../lib/analytics-queries.ts';
 import { dateRange } from '../lib/admin-store.ts';
 
 export function OverviewView(): JSX.Element {
@@ -8,6 +14,7 @@ export function OverviewView(): JSX.Element {
   const [submissions] = createResource(dateRange, fetchSubmissions);
 
   const metrics = createMemo(() => computeMetrics(sessions() ?? [], submissions() ?? []));
+  const sourceBreakdown = createMemo(() => computeSourceBreakdown(submissions() ?? []));
 
   return (
     <div class="view">
@@ -17,7 +24,18 @@ export function OverviewView(): JSX.Element {
         <MetricCard label="Unique Users" value={metrics().uniqueUsers} />
         <MetricCard label="Anonymous Sessions" value={metrics().anonymousSessions} />
         <MetricCard label="Community Submissions" value={metrics().totalSubmissions} />
+        <MetricCard label="Avg Session Duration" value={metrics().avgDurationMinutes} />
+        <MetricCard label="Top Referrer" value={metrics().topReferrer} />
       </div>
+
+      <h2 class="view__title">Submissions by Source</h2>
+      <DataTable
+        columns={[
+          { key: 'data_source', label: 'Source' },
+          { key: 'count', label: 'Count', bar: true },
+        ]}
+        rows={sourceBreakdown()}
+      />
     </div>
   );
 }
