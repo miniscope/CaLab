@@ -25,7 +25,9 @@ def test_version() -> None:
     """--version prints version."""
     result = run_cli("--version")
     assert result.returncode == 0
-    assert "0.2.0" in result.stdout
+    from calab import __version__
+
+    assert __version__ in result.stdout
 
 
 def test_info_npy(tmp_path: Path) -> None:
