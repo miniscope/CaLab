@@ -57,7 +57,7 @@ CREATE TABLE catune_submissions (
   CONSTRAINT valid_tau_decay CHECK (tau_decay > 0 AND tau_decay < 10),
   CONSTRAINT valid_lambda CHECK (lambda >= 0 AND lambda <= 10),
   CONSTRAINT valid_sampling_rate CHECK (sampling_rate > 0 AND sampling_rate <= 1000),
-  CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training'))
+  CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training', 'bridge'))
 );
 
 -- Enable RLS

@@ -1,4 +1,4 @@
-import { type JSX, createSignal, createMemo, For, Show } from 'solid-js';
+import { type JSX, type Accessor, createSignal, createMemo, For, Show } from 'solid-js';
 
 interface Column {
   key: string;
@@ -14,6 +14,10 @@ interface DataTableProps {
   rows: AnyRow[];
   maxBarValue?: number;
   onDeleteRow?: (row: AnyRow) => void;
+  selectable?: boolean;
+  selectedIds?: Accessor<Set<string>>;
+  onSelectionChange?: (ids: Set<string>) => void;
+  rowClass?: (row: AnyRow) => string | undefined;
 }
 
 export function DataTable(props: DataTableProps): JSX.Element {
@@ -51,11 +55,44 @@ export function DataTable(props: DataTableProps): JSX.Element {
     }
   };
 
+  const allSelected = createMemo(() => {
+    if (!props.selectable || !props.selectedIds) return false;
+    const sel = props.selectedIds();
+    return props.rows.length > 0 && props.rows.every((r) => sel.has(r.id as string));
+  });
+
+  const toggleAll = () => {
+    if (!props.onSelectionChange) return;
+    if (allSelected()) {
+      props.onSelectionChange(new Set());
+    } else {
+      props.onSelectionChange(new Set(props.rows.map((r) => r.id as string)));
+    }
+  };
+
+  const toggleRow = (id: string) => {
+    if (!props.onSelectionChange || !props.selectedIds) return;
+    const next = new Set(props.selectedIds());
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    props.onSelectionChange(next);
+  };
+
   return (
     <div class="data-table-wrap">
       <table class="data-table">
         <thead>
           <tr>
+            <Show when={props.selectable}>
+              <th class="data-table__th data-table__th--checkbox">
+                <input
+                  type="checkbox"
+                  class="data-table__checkbox"
+                  checked={allSelected()}
+                  onChange={toggleAll}
+                />
+              </th>
+            </Show>
             <For each={props.columns}>
               {(col) => (
                 <th class="data-table__th" onClick={() => handleSort(col.key)}>
@@ -74,7 +111,17 @@ export function DataTable(props: DataTableProps): JSX.Element {
         <tbody>
           <For each={sorted()}>
             {(row) => (
-              <tr>
+              <tr class={props.rowClass?.(row) ?? undefined}>
+                <Show when={props.selectable}>
+                  <td class="data-table__td">
+                    <input
+                      type="checkbox"
+                      class="data-table__checkbox"
+                      checked={props.selectedIds?.().has(row.id as string) ?? false}
+                      onChange={() => toggleRow(row.id as string)}
+                    />
+                  </td>
+                </Show>
                 <For each={props.columns}>
                   {(col) => (
                     <td class="data-table__td">
