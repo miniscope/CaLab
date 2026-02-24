@@ -67,6 +67,41 @@
   max-width: 480px !important;
 }
 
+/* Wider popover for steps with code blocks */
+.driver-popover--code {
+  max-width: 520px !important;
+}
+
+/* Code snippets in tutorial popovers */
+.driver-popover code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-secondary);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.driver-popover pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin: var(--space-sm) 0;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.driver-popover pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
 /* ========================
    Tutorial Panel
    ======================== */
