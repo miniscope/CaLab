@@ -102,6 +102,31 @@
   white-space: pre;
 }
 
+/* Python syntax highlighting for tutorial code blocks */
+.driver-popover pre code .py-kw {
+  color: #8b1a8b;
+  font-weight: 600;
+}
+.driver-popover pre code .py-fn {
+  color: #2171b5;
+}
+.driver-popover pre code .py-str {
+  color: #2e7d32;
+}
+.driver-popover pre code .py-cmt {
+  color: #9e9e9e;
+  font-style: italic;
+}
+.driver-popover pre code .py-num {
+  color: #c45d09;
+}
+.driver-popover pre code .py-op {
+  color: #616161;
+}
+.driver-popover pre code .py-arg {
+  color: #8b4a00;
+}
+
 /* ========================
    Tutorial Panel
    ======================== */
