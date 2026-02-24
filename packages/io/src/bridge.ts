@@ -62,6 +62,7 @@ export async function fetchBridgeData(
  * This signals to the Python `calab.tune()` call that the user has finished tuning.
  */
 export async function postParamsToBridge(bridgeUrl: string, exportData: unknown): Promise<void> {
+  stopBridgeHeartbeat();
   const resp = await fetch(`${bridgeUrl}/api/v1/params`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,5 +70,23 @@ export async function postParamsToBridge(bridgeUrl: string, exportData: unknown)
   });
   if (!resp.ok) {
     throw new Error(`Bridge: failed to post params (${resp.status})`);
+  }
+}
+
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+export function startBridgeHeartbeat(bridgeUrl: string, intervalMs = 3000): void {
+  stopBridgeHeartbeat();
+  heartbeatInterval = setInterval(() => {
+    fetch(`${bridgeUrl}/api/v1/heartbeat`, { method: 'POST' }).catch(() => {
+      stopBridgeHeartbeat();
+    });
+  }, intervalMs);
+}
+
+export function stopBridgeHeartbeat(): void {
+  if (heartbeatInterval !== null) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
   }
 }

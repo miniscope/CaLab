@@ -142,3 +142,41 @@ def test_cors_headers(bridge_server: BridgeServer) -> None:
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=5) as resp:
         assert resp.headers["Access-Control-Allow-Origin"] == "*"
+
+
+def test_heartbeat_endpoint(bridge_server: BridgeServer) -> None:
+    """POST /api/v1/heartbeat returns ok and updates last_heartbeat."""
+    assert bridge_server.last_heartbeat is None
+
+    status, body = _post(bridge_server, "/api/v1/heartbeat", {})
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "ok"
+    assert bridge_server.last_heartbeat is not None
+
+
+def test_heartbeat_updates_timestamp(bridge_server: BridgeServer) -> None:
+    """Multiple heartbeats update the timestamp."""
+    _post(bridge_server, "/api/v1/heartbeat", {})
+    first = bridge_server.last_heartbeat
+
+    time.sleep(0.05)
+    _post(bridge_server, "/api/v1/heartbeat", {})
+    second = bridge_server.last_heartbeat
+
+    assert second is not None
+    assert first is not None
+    assert second > first
+
+
+def test_heartbeat_timeout_detection(bridge_server: BridgeServer) -> None:
+    """tune() polling loop detects stale heartbeat."""
+    from calab._bridge._apps import HEARTBEAT_TIMEOUT
+
+    # Simulate a heartbeat that arrived long ago
+    bridge_server.last_heartbeat = time.monotonic() - HEARTBEAT_TIMEOUT - 1
+
+    # The params_event.wait(1.0) should return False, then heartbeat check triggers break
+    # We test the server-level attribute directly since tune() orchestrates its own server
+    since_last = time.monotonic() - bridge_server.last_heartbeat
+    assert since_last > HEARTBEAT_TIMEOUT

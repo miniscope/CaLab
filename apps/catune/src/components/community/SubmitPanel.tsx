@@ -20,7 +20,12 @@ import {
   groundTruthLocked,
   bridgeUrl,
 } from '../../lib/data-store.ts';
-import { buildExportData, downloadExport } from '@calab/io';
+import {
+  buildExportData,
+  downloadExport,
+  postParamsToBridge,
+  stopBridgeHeartbeat,
+} from '@calab/io';
 import {
   validateSubmission,
   loadFieldOptions,
@@ -63,12 +68,12 @@ export function SubmitPanel() {
 
   // --- Handlers ---
 
-  function handleExport(): void {
+  function buildCurrentExport() {
     const fs = samplingRate() ?? 30;
     const shape = effectiveShape();
     const file = rawFile();
 
-    const exportData = buildExportData(
+    return buildExportData(
       tauRise(),
       tauDecay(),
       lambda(),
@@ -81,8 +86,16 @@ export function SubmitPanel() {
       },
       APP_VERSION,
     );
+  }
 
-    downloadExport(exportData, undefined, bridgeUrl());
+  function handleExport(): void {
+    downloadExport(buildCurrentExport());
+  }
+
+  function handleBridgeExport(): void {
+    const url = bridgeUrl();
+    if (!url) return;
+    postParamsToBridge(url, buildCurrentExport()).catch(() => {});
   }
 
   async function handleSubmit(): Promise<void> {
@@ -179,9 +192,18 @@ export function SubmitPanel() {
       {/* Action buttons */}
       <div class="submit-panel__actions">
         <Show when={!isDemo()}>
-          <button class="btn-primary btn-small" onClick={handleExport}>
-            Export Locally
-          </button>
+          <Show
+            when={bridgeUrl()}
+            fallback={
+              <button class="btn-primary btn-small" onClick={handleExport}>
+                Export Locally
+              </button>
+            }
+          >
+            <button class="btn-primary btn-small" onClick={handleBridgeExport}>
+              Export to Python
+            </button>
+          </Show>
         </Show>
 
         <GroundTruthControls />

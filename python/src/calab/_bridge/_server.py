@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -60,6 +61,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/api/v1/params":
             self._receive_params()
+        elif self.path == "/api/v1/heartbeat":
+            self.server.last_heartbeat = time.monotonic()
+            self._send_json({"status": "ok"})
         else:
             self.send_error(404, "Not Found")
 
@@ -106,6 +110,7 @@ class BridgeServer(HTTPServer):
         self.fs = fs
         self.received_params: dict | None = None
         self.params_event = threading.Event()
+        self.last_heartbeat: float | None = None
 
         super().__init__(("127.0.0.1", port), BridgeHandler)
 

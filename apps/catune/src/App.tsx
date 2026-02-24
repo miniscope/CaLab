@@ -20,7 +20,7 @@ import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
 import { SpectrumPanel } from './components/spectrum/SpectrumPanel.tsx';
 import { initSpectrumStore } from './lib/spectrum/spectrum-store.ts';
 
-import { getBridgeUrl } from '@calab/io';
+import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
 import {
   importStep,
   rawFile,
@@ -29,6 +29,7 @@ import {
   resetImport,
   loadDemoData,
   loadFromBridge,
+  bridgeUrl,
 } from './lib/data-store.ts';
 import {
   setSelectedCell,
@@ -65,7 +66,12 @@ const App: Component = () => {
   // Auto-load from Python bridge if ?bridge= URL param is present
   const bridgeUrlParam = getBridgeUrl();
   if (bridgeUrlParam) {
-    loadFromBridge(bridgeUrlParam);
+    void loadFromBridge(bridgeUrlParam).then(() => {
+      // Only start heartbeat if bridge load succeeded (bridgeUrl not cleared by error)
+      if (bridgeUrl()) {
+        startBridgeHeartbeat(bridgeUrlParam);
+      }
+    });
   }
 
   const hasFile = () => !!rawFile();
