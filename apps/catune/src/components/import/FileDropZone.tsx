@@ -9,6 +9,7 @@ import {
   setParsedData,
   setNpzArrays,
   setImportError,
+  setDataSource,
   importError,
 } from '../../lib/data-store.ts';
 
@@ -33,6 +34,7 @@ export function FileDropZone() {
 
     setImportError(null);
     setRawFile(file);
+    setDataSource('file');
 
     try {
       const buffer = await file.arrayBuffer();

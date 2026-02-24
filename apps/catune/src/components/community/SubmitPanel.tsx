@@ -15,11 +15,13 @@ import {
   parsedData,
   durationSeconds,
   isDemo,
+  dataSource,
   demoPreset,
   groundTruthLocked,
   bridgeUrl,
 } from '../../lib/data-store.ts';
-import { buildExportData, downloadExport } from '@calab/io';
+import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
+import type { CaTuneExport } from '@calab/io';
 import {
   validateSubmission,
   loadFieldOptions,
@@ -62,12 +64,12 @@ export function SubmitPanel() {
 
   // --- Handlers ---
 
-  function handleExport(): void {
+  function buildCurrentExport(): CaTuneExport {
     const fs = samplingRate() ?? 30;
     const shape = effectiveShape();
     const file = rawFile();
 
-    const exportData = buildExportData(
+    return buildExportData(
       tauRise(),
       tauDecay(),
       lambda(),
@@ -80,8 +82,16 @@ export function SubmitPanel() {
       },
       APP_VERSION,
     );
+  }
 
-    downloadExport(exportData, undefined, bridgeUrl());
+  function handleExport(): void {
+    downloadExport(buildCurrentExport());
+  }
+
+  function handleBridgeExport(): void {
+    const url = bridgeUrl();
+    if (!url) return;
+    postParamsToBridge(url, buildCurrentExport()).catch(() => {});
   }
 
   async function handleSubmit(): Promise<void> {
@@ -130,7 +140,7 @@ export function SubmitPanel() {
           numCells: shape?.[0],
           recordingLengthS: durationSeconds() ?? undefined,
           datasetData: data?.data,
-          isDemo: isDemo(),
+          dataSource: dataSource(),
           demoPresetId: demoPreset()?.id,
           rawFileName: rawFile()?.name,
         },
@@ -178,9 +188,18 @@ export function SubmitPanel() {
       {/* Action buttons */}
       <div class="submit-panel__actions">
         <Show when={!isDemo()}>
-          <button class="btn-primary btn-small" onClick={handleExport}>
-            Export Locally
-          </button>
+          <Show
+            when={bridgeUrl()}
+            fallback={
+              <button class="btn-primary btn-small" onClick={handleExport}>
+                Export Locally
+              </button>
+            }
+          >
+            <button class="btn-primary btn-small" onClick={handleBridgeExport}>
+              Export to Python
+            </button>
+          </Show>
         </Show>
 
         <GroundTruthControls />

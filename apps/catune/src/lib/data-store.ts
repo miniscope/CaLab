@@ -21,6 +21,10 @@ const [importError, setImportError] = createSignal<string | null>(null);
 const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 const [bridgeUrl, setBridgeUrl] = createSignal<string | null>(null);
 
+/** Tracks how data was loaded: 'file' (user upload), 'demo' (generated), 'bridge' (Python calab.tune). */
+export type DataSource = 'file' | 'demo' | 'bridge' | null;
+const [dataSource, setDataSource] = createSignal<DataSource>(null);
+
 // --- Ground Truth Signals ---
 
 const [groundTruthSpikes, setGroundTruthSpikes] = createSignal<Float64Array | null>(null);
@@ -47,8 +51,8 @@ const durationSeconds = createMemo<number | null>(() => {
   return rate && tp ? tp / rate : null;
 });
 
-/** True when loaded data is demo-generated (parsedData present but no rawFile). */
-const isDemo = createMemo(() => parsedData() !== null && rawFile() === null);
+/** True when loaded data is demo-generated. */
+const isDemo = createMemo(() => dataSource() === 'demo');
 
 const importStep = createMemo<ImportStep>(() => {
   if (!parsedData()) return 'drop';
@@ -115,6 +119,7 @@ function loadDemoData(opts?: {
   setGroundTruthVisible(false);
   setGroundTruthLocked(false);
   setDemoPreset(preset);
+  setDataSource('demo');
   setParsedData({ data, shape, dtype: '<f8', fortranOrder: false });
   setDimensionsConfirmed(true);
   setSwapped(false);
@@ -139,6 +144,7 @@ function loadDemoData(opts?: {
 
 async function loadFromBridge(url: string): Promise<void> {
   setBridgeUrl(url);
+  setDataSource('bridge');
   try {
     const { traces, metadata } = await fetchBridgeData(url);
     const fs = metadata.sampling_rate_hz;
@@ -163,6 +169,7 @@ async function loadFromBridge(url: string): Promise<void> {
 function resetImport(): void {
   setRawFile(null);
   setParsedData(null);
+  setDataSource(null);
   setDimensionsConfirmed(false);
   setSwapped(false);
   setSamplingRate(null);
@@ -222,4 +229,7 @@ export {
   loadFromBridge,
   // Bridge
   bridgeUrl,
+  // Data source tracking
+  dataSource,
+  setDataSource,
 };

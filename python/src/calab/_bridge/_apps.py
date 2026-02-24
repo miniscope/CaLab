@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import threading
+import time
 import webbrowser
 
 import numpy as np
 
 from ._server import BridgeServer
 
+HEARTBEAT_TIMEOUT = 10  # seconds without heartbeat = browser disconnected
+
 # Default CaTune URL (GitHub Pages deployment)
-_DEFAULT_APP_URL = "https://miniscope.github.io/CaLab/catune/"
+_DEFAULT_APP_URL = "https://miniscope.github.io/CaLab/CaTune/"
 
 
 def tune(
@@ -65,11 +68,26 @@ def tune(
     if open_browser:
         webbrowser.open(full_url)
 
+    received = False
+    start_time = time.monotonic()
     try:
-        received = server.params_event.wait(timeout=timeout)
+        while True:
+            if server.params_event.wait(timeout=1.0):
+                received = True
+                break
+
+            now = time.monotonic()
+
+            if timeout is not None and (now - start_time) >= timeout:
+                break
+
+            # Detect browser disconnect (only after first heartbeat arrives)
+            if server.last_heartbeat is not None:
+                if (now - server.last_heartbeat) > HEARTBEAT_TIMEOUT:
+                    print("\nBrowser disconnected (heartbeat timeout).")
+                    break
     except KeyboardInterrupt:
         print("\nBridge cancelled by user.")
-        received = False
     finally:
         server.shutdown()
 
