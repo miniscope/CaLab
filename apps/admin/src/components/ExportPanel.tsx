@@ -68,16 +68,16 @@ export function ExportPanel(): JSX.Element {
         grant progress reports.
       </p>
       <div class="export-grid">
-        <button class="export-btn" onClick={exportSessions}>
+        <button class="btn-secondary" onClick={exportSessions}>
           Sessions Summary
         </button>
-        <button class="export-btn" onClick={exportEvents}>
+        <button class="btn-secondary" onClick={exportEvents}>
           Event Breakdown
         </button>
-        <button class="export-btn" onClick={exportGeography}>
+        <button class="btn-secondary" onClick={exportGeography}>
           Geographic Breakdown
         </button>
-        <button class="export-btn" onClick={exportSubmissions}>
+        <button class="btn-secondary" onClick={exportSubmissions}>
           Submissions List
         </button>
       </div>
