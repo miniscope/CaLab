@@ -73,20 +73,22 @@ export async function postParamsToBridge(bridgeUrl: string, exportData: unknown)
   }
 }
 
-let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Begin sending periodic heartbeat POSTs to the bridge server. */
 export function startBridgeHeartbeat(bridgeUrl: string, intervalMs = 3000): void {
   stopBridgeHeartbeat();
-  heartbeatInterval = setInterval(() => {
+  heartbeatTimer = setInterval(() => {
     fetch(`${bridgeUrl}/api/v1/heartbeat`, { method: 'POST' }).catch(() => {
       stopBridgeHeartbeat();
     });
   }, intervalMs);
 }
 
+/** Stop the heartbeat interval if one is running. */
 export function stopBridgeHeartbeat(): void {
-  if (heartbeatInterval !== null) {
-    clearInterval(heartbeatInterval);
-    heartbeatInterval = null;
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
   }
 }

@@ -20,12 +20,8 @@ import {
   groundTruthLocked,
   bridgeUrl,
 } from '../../lib/data-store.ts';
-import {
-  buildExportData,
-  downloadExport,
-  postParamsToBridge,
-  stopBridgeHeartbeat,
-} from '@calab/io';
+import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
+import type { CaTuneExport } from '@calab/io';
 import {
   validateSubmission,
   loadFieldOptions,
@@ -68,7 +64,7 @@ export function SubmitPanel() {
 
   // --- Handlers ---
 
-  function buildCurrentExport() {
+  function buildCurrentExport(): CaTuneExport {
     const fs = samplingRate() ?? 30;
     const shape = effectiveShape();
     const file = rawFile();

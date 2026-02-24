@@ -11,7 +11,6 @@
 import * as v from 'valibot';
 import { computeAR2, CaTuneExportSchema } from '@calab/core';
 import type { CaTuneExportData } from '@calab/core';
-import { postParamsToBridge } from './bridge.ts';
 
 /** Alias preserving the public API name used by io consumers. */
 export type CaTuneExport = CaTuneExportData;
@@ -61,11 +60,7 @@ export function buildExportData(
   };
 }
 
-export function downloadExport(
-  exportData: CaTuneExport,
-  filename?: string,
-  bridgeUrl?: string | null,
-): void {
+export function downloadExport(exportData: CaTuneExport, filename?: string): void {
   const defaultFilename = `catune-params-${new Date().toISOString().slice(0, 10)}.json`;
   const fname = filename ?? defaultFilename;
 
@@ -83,11 +78,6 @@ export function downloadExport(
   document.body.removeChild(anchor);
 
   URL.revokeObjectURL(url);
-
-  // POST to bridge server if connected (best-effort, don't block the download)
-  if (bridgeUrl) {
-    postParamsToBridge(bridgeUrl, exportData).catch(() => {});
-  }
 }
 
 /**

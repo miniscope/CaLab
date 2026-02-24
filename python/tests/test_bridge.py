@@ -170,13 +170,11 @@ def test_heartbeat_updates_timestamp(bridge_server: BridgeServer) -> None:
 
 
 def test_heartbeat_timeout_detection(bridge_server: BridgeServer) -> None:
-    """tune() polling loop detects stale heartbeat."""
+    """A stale last_heartbeat is detected as exceeding HEARTBEAT_TIMEOUT."""
     from calab._bridge._apps import HEARTBEAT_TIMEOUT
 
     # Simulate a heartbeat that arrived long ago
     bridge_server.last_heartbeat = time.monotonic() - HEARTBEAT_TIMEOUT - 1
 
-    # The params_event.wait(1.0) should return False, then heartbeat check triggers break
-    # We test the server-level attribute directly since tune() orchestrates its own server
     since_last = time.monotonic() - bridge_server.last_heartbeat
     assert since_last > HEARTBEAT_TIMEOUT

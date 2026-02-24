@@ -76,16 +76,14 @@ def tune(
                 received = True
                 break
 
-            # Check user-specified timeout
-            if timeout is not None:
-                elapsed = time.monotonic() - start_time
-                if elapsed >= timeout:
-                    break
+            now = time.monotonic()
 
-            # Check heartbeat staleness (only after first heartbeat arrives)
+            if timeout is not None and (now - start_time) >= timeout:
+                break
+
+            # Detect browser disconnect (only after first heartbeat arrives)
             if server.last_heartbeat is not None:
-                since_last = time.monotonic() - server.last_heartbeat
-                if since_last > HEARTBEAT_TIMEOUT:
+                if (now - server.last_heartbeat) > HEARTBEAT_TIMEOUT:
                     print("\nBrowser disconnected (heartbeat timeout).")
                     break
     except KeyboardInterrupt:

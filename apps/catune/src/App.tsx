@@ -67,10 +67,8 @@ const App: Component = () => {
   const bridgeUrlParam = getBridgeUrl();
   if (bridgeUrlParam) {
     void loadFromBridge(bridgeUrlParam).then(() => {
-      // Only start heartbeat if bridge load succeeded (bridgeUrl not cleared by error)
-      if (bridgeUrl()) {
-        startBridgeHeartbeat(bridgeUrlParam);
-      }
+      // Start heartbeat only after a successful bridge load
+      if (bridgeUrl()) startBridgeHeartbeat(bridgeUrlParam);
     });
   }
 
