@@ -243,7 +243,7 @@ function SearchableField(props: SearchableFieldProps) {
       <div class="submit-panel__request-link">
         Don't see yours?{' '}
         <a
-          href={buildFieldOptionRequestUrl(props.fieldName)}
+          href={buildFieldOptionRequestUrl(props.fieldName, 'catune')}
           target="_blank"
           rel="noopener noreferrer"
         >

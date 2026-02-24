@@ -40,4 +40,22 @@ describe('GitHub issue URL builders', () => {
     expect(url).toContain('template=bug-report.yml');
     expect(url).toContain('labels=bug');
   });
+
+  describe('app label', () => {
+    it('appends app label when provided', () => {
+      expect(buildFeedbackUrl('catune')).toContain('labels=feedback%2Ccatune');
+      expect(buildFeatureRequestUrl('carank')).toContain('labels=enhancement%2Ccarank');
+      expect(buildBugReportUrl('python')).toContain('labels=bug%2Cpython');
+      expect(buildFieldOptionRequestUrl('indicator', 'catune')).toContain(
+        'labels=field-option-request%2Ccatune',
+      );
+    });
+
+    it('omits app label when not provided', () => {
+      const url = buildFeedbackUrl();
+      expect(url).toContain('labels=feedback');
+      expect(url).not.toContain('catune');
+      expect(url).not.toContain('carank');
+    });
+  });
 });

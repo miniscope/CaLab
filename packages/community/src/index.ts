@@ -33,6 +33,7 @@ export {
   buildFeatureRequestUrl,
   buildBugReportUrl,
 } from './github-issue-url.ts';
+export type { AppLabel } from './github-issue-url.ts';
 
 // Types
 export type {

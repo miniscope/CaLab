@@ -7,9 +7,17 @@ import {
 import '../../styles/feedback-menu.css';
 
 const MENU_ITEMS = [
-  { label: 'General Feedback', desc: 'Share thoughts or suggestions', url: buildFeedbackUrl },
-  { label: 'Feature Request', desc: 'Suggest a new feature', url: buildFeatureRequestUrl },
-  { label: 'Bug Report', desc: 'Report something broken', url: buildBugReportUrl },
+  {
+    label: 'General Feedback',
+    desc: 'Share thoughts or suggestions',
+    url: () => buildFeedbackUrl('catune'),
+  },
+  {
+    label: 'Feature Request',
+    desc: 'Suggest a new feature',
+    url: () => buildFeatureRequestUrl('catune'),
+  },
+  { label: 'Bug Report', desc: 'Report something broken', url: () => buildBugReportUrl('catune') },
 ] as const;
 
 export function FeedbackMenu() {

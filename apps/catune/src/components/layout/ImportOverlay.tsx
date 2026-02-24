@@ -274,15 +274,15 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
 
       {/* Feedback links */}
       <footer class="import-feedback">
-        <a href={buildFeedbackUrl()} target="_blank" rel="noopener noreferrer">
+        <a href={buildFeedbackUrl('catune')} target="_blank" rel="noopener noreferrer">
           Feedback
         </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildFeatureRequestUrl()} target="_blank" rel="noopener noreferrer">
+        <a href={buildFeatureRequestUrl('catune')} target="_blank" rel="noopener noreferrer">
           Feature Request
         </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildBugReportUrl()} target="_blank" rel="noopener noreferrer">
+        <a href={buildBugReportUrl('catune')} target="_blank" rel="noopener noreferrer">
           Bug Report
         </a>
       </footer>
