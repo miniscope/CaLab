@@ -6,6 +6,14 @@
 
 import type { Tutorial } from '@calab/tutorials';
 
+// Shorthand helpers for syntax-highlighted spans.
+const kw = (s: string) => `<span class="py-kw">${s}</span>`;
+const fn = (s: string) => `<span class="py-fn">${s}</span>`;
+const str = (s: string) => `<span class="py-str">${s}</span>`;
+const cmt = (s: string) => `<span class="py-cmt">${s}</span>`;
+const num = (s: string) => `<span class="py-num">${s}</span>`;
+const arg = (s: string) => `<span class="py-arg">${s}</span>`;
+
 export const pythonTutorial: Tutorial = {
   id: 'python',
   title: 'Python Package',
@@ -31,92 +39,92 @@ export const pythonTutorial: Tutorial = {
     // Step 3: Loading Data
     {
       title: 'Loading Data',
-      description: `Load traces from common calcium imaging pipelines:<pre><code>import calab
+      description: `Load traces from common calcium imaging pipelines:<pre><code>${kw('import')} calab
 
-# CaImAn HDF5
-traces, meta = calab.load_caiman("results.hdf5")
+${cmt('# CaImAn HDF5')}
+traces, meta = calab.${fn('load_caiman')}(${str('"results.hdf5"')})
 
-# Minian Zarr
-traces, meta = calab.load_minian("minian_output/", fs=30.0)</code></pre>Both return a NumPy array <code>(n_cells, n_timepoints)</code> and a metadata dict with <code>sampling_rate_hz</code>, <code>num_cells</code>, and <code>num_timepoints</code>.<br><br>You can also use any NumPy array directly \u2014 no special format required.`,
+${cmt('# Minian Zarr')}
+traces, meta = calab.${fn('load_minian')}(${str('"minian_output/"')}, ${arg('fs')}=${num('30.0')})</code></pre>Both return a NumPy array <code>(n_cells, n_timepoints)</code> and a metadata dict with <code>sampling_rate_hz</code>, <code>num_cells</code>, and <code>num_timepoints</code>.<br><br>You can also use any NumPy array directly \u2014 no special format required.`,
       popoverClass: 'driver-popover--code',
     },
     // Step 4: Interactive Tuning
     {
       title: 'Interactive Tuning',
-      description: `<code>calab.tune()</code> connects Python to CaTune in your browser:<pre><code>params = calab.tune(traces, fs=30.0)</code></pre>How it works:<ol><li>Starts a local HTTP server with your traces</li><li>Opens CaTune with a <code>?bridge=</code> URL parameter</li><li>CaTune loads traces from the bridge server</li><li>When you export parameters, they\u2019re returned to Python</li></ol>The returned <code>params</code> dict contains <code>tau_rise</code>, <code>tau_decay</code>, <code>lambda_</code>, <code>fs</code>, and <code>filter_enabled</code>.`,
+      description: `<code>calab.tune()</code> connects Python to CaTune in your browser:<pre><code>params = calab.${fn('tune')}(traces, ${arg('fs')}=${num('30.0')})</code></pre>How it works:<ol><li>Starts a local HTTP server with your traces</li><li>Opens CaTune with a <code>?bridge=</code> URL parameter</li><li>CaTune loads traces from the bridge server</li><li>When you export parameters, they\u2019re returned to Python</li></ol>The returned <code>params</code> dict contains <code>tau_rise</code>, <code>tau_decay</code>, <code>lambda_</code>, <code>fs</code>, and <code>filter_enabled</code>.`,
       popoverClass: 'driver-popover--code',
     },
     // Step 5: Saving Tuning Data
     {
       title: 'Saving Tuning Data',
-      description: `Save traces in CaTune-compatible format for sharing or later use:<pre><code>calab.save_for_tuning(traces, fs=30.0, path="my_recording")
-# Creates: my_recording.npy + my_recording_metadata.json</code></pre>The <code>.npy</code> file can be opened directly in CaTune via the file picker, and the JSON sidecar stores the sampling rate and dimensions.`,
+      description: `Save traces in CaTune-compatible format for sharing or later use:<pre><code>calab.${fn('save_for_tuning')}(traces, ${arg('fs')}=${num('30.0')}, ${arg('path')}=${str('"my_recording"')})
+${cmt('# Creates: my_recording.npy + my_recording_metadata.json')}</code></pre>The <code>.npy</code> file can be opened directly in CaTune via the file picker, and the JSON sidecar stores the sampling rate and dimensions.`,
       popoverClass: 'driver-popover--code',
     },
     // Step 6: Batch Deconvolution
     {
       title: 'Batch Deconvolution',
-      description: `Run FISTA deconvolution on one or more traces:<pre><code># Activity only
-activity = calab.run_deconvolution(
-    traces, fs=30.0,
-    tau_r=0.02, tau_d=0.2, lam=0.05
+      description: `Run FISTA deconvolution on one or more traces:<pre><code>${cmt('# Activity only')}
+activity = calab.${fn('run_deconvolution')}(
+    traces, ${arg('fs')}=${num('30.0')},
+    ${arg('tau_r')}=${num('0.02')}, ${arg('tau_d')}=${num('0.2')}, ${arg('lam')}=${num('0.05')}
 )
 
-# Full result
-result = calab.run_deconvolution_full(
-    traces, fs=30.0,
-    tau_r=0.02, tau_d=0.2, lam=0.05
+${cmt('# Full result')}
+result = calab.${fn('run_deconvolution_full')}(
+    traces, ${arg('fs')}=${num('30.0')},
+    ${arg('tau_r')}=${num('0.02')}, ${arg('tau_d')}=${num('0.2')}, ${arg('lam')}=${num('0.05')}
 )</code></pre>The full result includes <code>activity</code>, <code>baseline</code>, <code>reconvolution</code>, <code>iterations</code>, and <code>converged</code>.`,
       popoverClass: 'driver-popover--code',
     },
     // Step 7: Using Exported Parameters
     {
       title: 'Using Exported Parameters',
-      description: `The recommended workflow is: tune interactively, export a JSON, then apply to all your data:<pre><code># Apply exported parameters to traces
-activity = calab.deconvolve_from_export(
-    traces, "catune_export.json"
+      description: `The recommended workflow is: tune interactively, export a JSON, then apply to all your data:<pre><code>${cmt('# Apply exported parameters to traces')}
+activity = calab.${fn('deconvolve_from_export')}(
+    traces, ${str('"catune_export.json"')}
 )
 
-# With full results (baseline, reconvolution, etc.)
-result = calab.deconvolve_from_export(
-    traces, "catune_export.json", return_full=True
+${cmt('# With full results (baseline, reconvolution, etc.)')}
+result = calab.${fn('deconvolve_from_export')}(
+    traces, ${str('"catune_export.json"')}, ${arg('return_full')}=${kw('True')}
 )</code></pre>This loads the parameters from the CaTune export JSON and applies any bandpass filter settings automatically.`,
       popoverClass: 'driver-popover--code',
     },
     // Step 8: Command-Line Interface
     {
       title: 'Command-Line Interface',
-      description: `CaLab provides a <code>calab</code> CLI with four commands:<pre><code># Interactive tuning
-calab tune recording.npy --fs 30.0
+      description: `CaLab provides a <code>calab</code> CLI with four commands:<pre><code>${cmt('# Interactive tuning')}
+calab tune recording.npy --fs ${num('30.0')}
 
-# Batch deconvolution
+${cmt('# Batch deconvolution')}
 calab deconvolve traces.npy --params export.json -o activity.npy
 
-# Convert CaImAn/Minian to CaLab format
-calab convert results.hdf5 --format caiman --fs 30.0
+${cmt('# Convert CaImAn/Minian to CaLab format')}
+calab convert results.hdf5 --format caiman --fs ${num('30.0')}
 
-# Show file info
+${cmt('# Show file info')}
 calab info recording.npy</code></pre>`,
       popoverClass: 'driver-popover--code',
     },
     // Step 9: Complete Workflow
     {
       title: 'Complete Workflow',
-      description: `Here\u2019s a typical end-to-end workflow:<pre><code>import calab
+      description: `Here\u2019s a typical end-to-end workflow:<pre><code>${kw('import')} calab
 
-# 1. Load data
-traces, meta = calab.load_caiman("results.hdf5")
-fs = meta["sampling_rate_hz"]
+${cmt('# 1. Load data')}
+traces, meta = calab.${fn('load_caiman')}(${str('"results.hdf5"')})
+fs = meta[${str('"sampling_rate_hz"')}]
 
-# 2. Tune interactively
-params = calab.tune(traces, fs=fs)
+${cmt('# 2. Tune interactively')}
+params = calab.${fn('tune')}(traces, ${arg('fs')}=fs)
 
-# 3. Deconvolve all traces
-result = calab.run_deconvolution_full(
-    traces, fs=fs,
-    tau_r=params["tau_rise"],
-    tau_d=params["tau_decay"],
-    lam=params["lambda_"]
+${cmt('# 3. Deconvolve all traces')}
+result = calab.${fn('run_deconvolution_full')}(
+    traces, ${arg('fs')}=fs,
+    ${arg('tau_r')}=params[${str('"tau_rise"')}],
+    ${arg('tau_d')}=params[${str('"tau_decay"')}],
+    ${arg('lam')}=params[${str('"lambda_"')}]
 )</code></pre>`,
       popoverClass: 'driver-popover--code',
     },
