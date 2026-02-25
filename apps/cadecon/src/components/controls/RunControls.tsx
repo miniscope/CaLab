@@ -1,6 +1,3 @@
-// RunControls - Start/Pause/Stop/Reset buttons for the deconvolution pipeline
-// All disabled in Phase 1 with a hint for Phase 2
-
 import type { JSX } from 'solid-js';
 
 export function RunControls(): JSX.Element {

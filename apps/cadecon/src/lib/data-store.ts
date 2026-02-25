@@ -1,6 +1,3 @@
-// Reactive data store for the CaDecon import pipeline
-// Uses SolidJS signals for fine-grained reactivity
-
 import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@calab/core';
 import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@calab/compute';

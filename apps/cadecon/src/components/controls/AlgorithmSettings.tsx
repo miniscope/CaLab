@@ -1,6 +1,3 @@
-// AlgorithmSettings - Algorithm parameter controls for CaDecon
-// Module-level signals for ~8 algorithm parameters
-
 import { createSignal, Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
 

@@ -1,10 +1,13 @@
-// TracePreview - Canvas-based trace preview of first few traces
-
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
 
 const NUM_TRACES = 5;
 const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];
+
+/** Compute flat index into the typed array, accounting for potential dimension swap. */
+function dataIndex(cell: number, timepoint: number, rawCols: number, isSwapped: boolean): number {
+  return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
+}
 
 export function TracePreview() {
   let canvasRef: HTMLCanvasElement | undefined;
@@ -24,10 +27,7 @@ export function TracePreview() {
     const [numCells, numTimepoints] = shape;
     const typedData = data.data;
     const isSwapped = swapped();
-    const originalShape = data.shape;
-
-    const rawCols = originalShape[1];
-
+    const rawCols = data.shape[1];
     const tracesToShow = Math.min(NUM_TRACES, numCells);
 
     const rect = canvas.parentElement?.getBoundingClientRect();
@@ -50,13 +50,7 @@ export function TracePreview() {
       let min = Infinity;
       let max = -Infinity;
       for (let i = 0; i < numTimepoints; i++) {
-        let idx: number;
-        if (isSwapped) {
-          idx = i * rawCols + t;
-        } else {
-          idx = t * rawCols + i;
-        }
-        const v = typedData[idx];
+        const v = typedData[dataIndex(t, i, rawCols, isSwapped)];
         if (Number.isFinite(v)) {
           if (v < min) min = v;
           if (v > max) max = v;
@@ -75,13 +69,7 @@ export function TracePreview() {
       const step = Math.max(1, Math.ceil(numTimepoints / displayWidth));
 
       for (let i = 0; i < numTimepoints; i += step) {
-        let idx: number;
-        if (isSwapped) {
-          idx = i * rawCols + t;
-        } else {
-          idx = t * rawCols + i;
-        }
-        const v = typedData[idx];
+        const v = typedData[dataIndex(t, i, rawCols, isSwapped)];
         const x = (i / numTimepoints) * displayWidth;
         const y = Number.isFinite(v)
           ? yBase + usableHeight - (v - min) * yScale
@@ -100,9 +88,7 @@ export function TracePreview() {
 
   onMount(() => {
     if (containerRef) {
-      resizeObserver = new ResizeObserver(() => {
-        drawTraces();
-      });
+      resizeObserver = new ResizeObserver(() => drawTraces());
       resizeObserver.observe(containerRef);
     }
     drawTraces();

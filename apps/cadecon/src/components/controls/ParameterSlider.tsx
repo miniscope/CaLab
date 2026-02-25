@@ -1,7 +1,3 @@
-// Reusable parameter slider + numeric input component.
-// Supports both linear and log-scale modes via optional
-// fromSlider/toSlider transform functions.
-
 import { Show } from 'solid-js';
 import type { Accessor } from 'solid-js';
 

@@ -1,6 +1,3 @@
-// Subset configuration store for CaDecon
-// Manages K subsets with deterministic pseudo-random placement
-
 import { createSignal, createMemo } from 'solid-js';
 import { numCells, numTimepoints } from './data-store.ts';
 
@@ -108,26 +105,17 @@ const coverageStats = createMemo(() => {
   if (T === 0 || N === 0 || rects.length === 0) return { cellPct: 0, timePct: 0 };
 
   const cellsCovered = new Set<number>();
-  const timeCovered = new Set<number>();
+  let totalTimeCovered = 0;
 
   for (const r of rects) {
     for (let c = r.cellStart; c < r.cellEnd; c++) cellsCovered.add(c);
-    // Sample time coverage (avoid huge sets for large T)
-    const step = Math.max(1, Math.floor((r.tEnd - r.tStart) / 1000));
-    for (let t = r.tStart; t < r.tEnd; t += step) timeCovered.add(Math.floor(t / step));
-  }
-
-  // For time coverage, use proportional calculation
-  let totalTimeCovered = 0;
-  for (const r of rects) {
     totalTimeCovered += r.tEnd - r.tStart;
   }
-  // Clamp to T (overlapping rects can double-count)
-  const uniqueTimePct = Math.min(100, (totalTimeCovered / T) * 100);
 
   return {
     cellPct: (cellsCovered.size / N) * 100,
-    timePct: uniqueTimePct,
+    // Clamp to 100% since overlapping rects can double-count
+    timePct: Math.min(100, (totalTimeCovered / T) * 100),
   };
 });
 

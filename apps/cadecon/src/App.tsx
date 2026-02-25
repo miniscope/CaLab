@@ -2,6 +2,7 @@ import type { Component } from 'solid-js';
 import { Show } from 'solid-js';
 import { DashboardShell, DashboardPanel, VizLayout, isAuthCallback, AuthCallback } from '@calab/ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
+import { formatDuration } from '@calab/core';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -22,7 +23,6 @@ import {
   isDemo,
   demoPreset,
 } from './lib/data-store.ts';
-import { formatDuration } from '@calab/core';
 
 import './styles/controls.css';
 
@@ -31,7 +31,6 @@ const App: Component = () => {
     return <AuthCallback user={user} loading={authLoading} />;
   }
 
-  // Auto-load from Python bridge if ?bridge= URL param is present
   const bridgeUrlParam = getBridgeUrl();
   if (bridgeUrlParam) {
     void loadFromBridge(bridgeUrlParam).then(() => {
@@ -39,17 +38,11 @@ const App: Component = () => {
     });
   }
 
-  const hasFile = () => !!rawFile();
-
   return (
     <Show
       when={importStep() === 'ready'}
       fallback={
-        <ImportOverlay
-          hasFile={hasFile()}
-          onReset={resetImport}
-          onLoadDemo={(opts) => loadDemoData(opts)}
-        />
+        <ImportOverlay hasFile={!!rawFile()} onReset={resetImport} onLoadDemo={loadDemoData} />
       }
     >
       <DashboardShell header={<CaDeconHeader />}>
@@ -57,7 +50,6 @@ const App: Component = () => {
           mode="dashboard"
           sidebar={
             <>
-              {/* Dataset info */}
               <DashboardPanel id="dataset-info" variant="data">
                 <p class="panel-label">Dataset</p>
                 <div class="info-summary" style="margin-bottom: 0;">
@@ -85,30 +77,25 @@ const App: Component = () => {
                 </div>
               </DashboardPanel>
 
-              {/* Subset config */}
               <DashboardPanel id="subset-config" variant="controls">
                 <SubsetConfig />
               </DashboardPanel>
 
-              {/* Algorithm settings */}
               <DashboardPanel id="algorithm-settings" variant="controls">
                 <AlgorithmSettings />
               </DashboardPanel>
 
-              {/* Run controls */}
               <DashboardPanel id="run-controls" variant="controls">
                 <RunControls />
               </DashboardPanel>
             </>
           }
         >
-          {/* Raster heatmap */}
           <DashboardPanel id="raster" variant="data">
             <p class="panel-label">Raster Overview</p>
             <RasterOverview />
           </DashboardPanel>
 
-          {/* Placeholder for kernel convergence (Phase 2/3) */}
           <DashboardPanel id="kernel-convergence" variant="data">
             <p class="panel-label">Kernel Convergence</p>
             <p class="text-secondary" style="font-size: 0.85rem;">

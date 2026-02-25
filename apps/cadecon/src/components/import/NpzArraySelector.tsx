@@ -1,6 +1,3 @@
-// NpzArraySelector - Shown when .npz has multiple 2D arrays
-// Lets user select which array to use for traces
-
 import { For, Show, createMemo } from 'solid-js';
 import {
   npzArrays,

@@ -1,5 +1,3 @@
-// SubsetConfig - Controls for subset configuration (K, sizes, overlap)
-
 import { Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import {

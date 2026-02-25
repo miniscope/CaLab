@@ -1,6 +1,3 @@
-// RasterOverview - Canvas-based TxN heatmap with subset rectangle overlays
-// Cells on y-axis, time on x-axis, viridis colormap
-
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
 import {
@@ -10,7 +7,6 @@ import {
 } from '../../lib/subset-store.ts';
 import '../../styles/raster.css';
 
-// Viridis colormap (sampled at 256 points)
 const VIRIDIS_LUT = buildViridisLUT();
 
 function buildViridisLUT(): Uint8Array {
@@ -43,7 +39,11 @@ function buildViridisLUT(): Uint8Array {
   return lut;
 }
 
-// Subset rectangle colors (distinct, muted)
+/** Compute flat index into the typed array, accounting for potential dimension swap. */
+function dataIndex(cell: number, timepoint: number, rawCols: number, isSwapped: boolean): number {
+  return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
+}
+
 const SUBSET_COLORS = [
   'rgba(255, 99, 71, 0.7)',
   'rgba(30, 144, 255, 0.7)',
@@ -126,15 +126,7 @@ export function RasterOverview() {
       const cell = Math.floor((py / displayHeight) * N);
       for (let px = 0; px < displayWidth; px++) {
         const t = Math.floor((px / displayWidth) * T);
-
-        let idx: number;
-        if (isSwapped) {
-          idx = t * rawCols + cell;
-        } else {
-          idx = cell * rawCols + t;
-        }
-
-        const v = typedData[idx];
+        const v = typedData[dataIndex(cell, t, rawCols, isSwapped)];
         const normalized = Number.isFinite(v)
           ? Math.max(0, Math.min(255, Math.round(((v - p1) / range) * 255)))
           : 0;

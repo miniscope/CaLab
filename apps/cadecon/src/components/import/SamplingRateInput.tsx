@@ -1,6 +1,3 @@
-// SamplingRateInput - Sampling rate input with preset buttons
-// Required gate: user cannot proceed without setting a valid sampling rate
-
 import { createSignal, Show, For } from 'solid-js';
 import { SAMPLING_RATE_PRESETS } from '@calab/core';
 import { numTimepoints, setSamplingRate } from '../../lib/data-store.ts';
@@ -9,10 +6,8 @@ export function SamplingRateInput() {
   const [selectedRate, setSelectedRate] = createSignal<number | null>(null);
   const [customValue, setCustomValue] = createSignal<string>('');
 
-  const currentRate = () => selectedRate();
-
   const duration = () => {
-    const rate = currentRate();
+    const rate = selectedRate();
     const tp = numTimepoints();
     if (!rate || rate <= 0 || !tp) return null;
     return tp / rate;
@@ -37,15 +32,11 @@ export function SamplingRateInput() {
     const val = (e.target as HTMLInputElement).value;
     setCustomValue(val);
     const num = parseFloat(val);
-    if (!isNaN(num) && num > 0) {
-      setSelectedRate(num);
-    } else {
-      setSelectedRate(null);
-    }
+    setSelectedRate(!isNaN(num) && num > 0 ? num : null);
   };
 
   const handleConfirm = () => {
-    const rate = currentRate();
+    const rate = selectedRate();
     if (rate && rate > 0) {
       setSamplingRate(rate);
     }
@@ -62,7 +53,7 @@ export function SamplingRateInput() {
         <For each={[...SAMPLING_RATE_PRESETS]}>
           {(preset) => (
             <button
-              class={`btn-preset ${currentRate() === preset.value && customValue() === String(preset.value) ? 'btn-preset--active' : ''}`}
+              class={`btn-preset ${selectedRate() === preset.value && customValue() === String(preset.value) ? 'btn-preset--active' : ''}`}
               onClick={() => handlePreset(preset.value)}
             >
               {preset.label}
@@ -86,10 +77,10 @@ export function SamplingRateInput() {
         </label>
       </div>
 
-      <Show when={currentRate() && durationDisplay()}>
+      <Show when={selectedRate() && durationDisplay()}>
         <div class="duration-display">
           <p>
-            At <strong>{currentRate()} Hz</strong>, this recording is{' '}
+            At <strong>{selectedRate()} Hz</strong>, this recording is{' '}
             <strong>{durationDisplay()}</strong>
           </p>
           <p class="text-secondary" style="font-size: 0.85em; margin-top: 4px;">
@@ -101,7 +92,7 @@ export function SamplingRateInput() {
       <div class="dimension-actions">
         <button
           class="btn-primary"
-          disabled={!currentRate() || currentRate()! <= 0}
+          disabled={!selectedRate() || selectedRate()! <= 0}
           onClick={handleConfirm}
         >
           Confirm

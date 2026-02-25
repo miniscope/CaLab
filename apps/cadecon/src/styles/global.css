@@ -7,18 +7,6 @@
   --accent-strong: #146b51;
 }
 
-/* Import flow extras */
-.theory-tutorial-link {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-top: var(--space-md);
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--border-subtle);
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-}
-
 .import-feedback {
   display: flex;
   align-items: center;
@@ -137,12 +125,6 @@
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-muted);
-}
-
-.btn-active {
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-  background: var(--accent-muted) !important;
 }
 
 /* ========================
@@ -414,12 +396,6 @@
   font-family: var(--font-mono);
 }
 
-.demo-data-row__hint {
-  color: var(--text-tertiary);
-  font-size: 0.8rem;
-  margin: 0;
-}
-
 .demo-data-row__fields {
   display: flex;
   gap: var(--space-md);
@@ -481,13 +457,6 @@
 .demo-data-row__checkbox input[type='checkbox'] {
   accent-color: var(--accent);
   cursor: pointer;
-}
-
-/* ========================
-   Ready Card
-   ======================== */
-.ready-card {
-  text-align: center;
 }
 
 /* ========================
