@@ -81,8 +81,13 @@ export async function deleteSubmission(id: string): Promise<void> {
 export function computeMetrics(sessions: SessionRow[], submissions: SubmissionRow[]): AdminMetrics {
   const uniqueUserIds = new Set(sessions.filter((s) => s.user_id).map((s) => s.user_id));
 
-  // Average session duration
-  const durations = sessions.map((s) => s.duration_seconds).filter((d): d is number => d != null);
+  // Average session duration derived from ended_at - created_at
+  const durations = sessions
+    .filter((s) => s.ended_at)
+    .map((s) =>
+      Math.round((new Date(s.ended_at!).getTime() - new Date(s.created_at).getTime()) / 1000),
+    )
+    .filter((d) => d > 0);
   const avgSeconds =
     durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
   const avgMinutes = avgSeconds / 60;
