@@ -489,7 +489,7 @@
 .export-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -498,14 +498,15 @@
 
 .export-modal {
   position: relative;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg, 12px);
-  padding: 2rem 2.5rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  padding: var(--space-lg) var(--space-xl, 2rem);
   max-width: 480px;
   width: 90%;
   text-align: center;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .export-modal__close {
@@ -514,7 +515,7 @@
   right: 0.75rem;
   background: none;
   border: none;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 1.5rem;
   cursor: pointer;
   line-height: 1;
