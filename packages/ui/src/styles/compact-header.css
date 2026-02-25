@@ -68,3 +68,24 @@
   margin-left: auto;
   flex-shrink: 0;
 }
+
+/* Worker indicator — inline metadata badge */
+.worker-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.worker-indicator__icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.worker-indicator__count {
+  line-height: 1;
+}
