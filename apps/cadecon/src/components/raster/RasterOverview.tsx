@@ -44,27 +44,28 @@ function dataIndex(cell: number, timepoint: number, rawCols: number, isSwapped: 
   return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
 }
 
-const SUBSET_COLORS = [
-  'rgba(255, 99, 71, 0.7)',
-  'rgba(30, 144, 255, 0.7)',
-  'rgba(50, 205, 50, 0.7)',
-  'rgba(255, 215, 0, 0.7)',
-  'rgba(186, 85, 211, 0.7)',
-  'rgba(255, 140, 0, 0.7)',
-  'rgba(0, 206, 209, 0.7)',
-  'rgba(255, 105, 180, 0.7)',
-  'rgba(124, 252, 0, 0.7)',
-  'rgba(100, 149, 237, 0.7)',
-  'rgba(244, 164, 96, 0.7)',
-  'rgba(147, 112, 219, 0.7)',
-  'rgba(60, 179, 113, 0.7)',
-  'rgba(255, 69, 0, 0.7)',
-  'rgba(72, 209, 204, 0.7)',
-  'rgba(218, 112, 214, 0.7)',
-  'rgba(154, 205, 50, 0.7)',
-  'rgba(176, 196, 222, 0.7)',
-  'rgba(255, 182, 193, 0.7)',
-  'rgba(32, 178, 170, 0.7)',
+// High-contrast colors chosen to stand out against viridis (purple-teal-yellow):
+// warm reds, oranges, and pinks that don't appear in the viridis palette
+const SUBSET_STROKE = [
+  '#ff3333', // red
+  '#ff8800', // orange
+  '#ff33aa', // magenta
+  '#ffffff', // white
+  '#ff5555', // coral
+  '#ffaa00', // amber
+  '#ff55cc', // pink
+  '#cccccc', // silver
+];
+
+const SUBSET_FILL = [
+  'rgba(255, 51, 51, 0.12)',
+  'rgba(255, 136, 0, 0.12)',
+  'rgba(255, 51, 170, 0.12)',
+  'rgba(255, 255, 255, 0.12)',
+  'rgba(255, 85, 85, 0.12)',
+  'rgba(255, 170, 0, 0.12)',
+  'rgba(255, 85, 204, 0.12)',
+  'rgba(204, 204, 204, 0.12)',
 ];
 
 export function RasterOverview() {
@@ -143,7 +144,7 @@ export function RasterOverview() {
 
     ctx.putImageData(imageData, 0, 0);
 
-    // Draw subset rectangles (scale to physical pixels since we skipped ctx.scale)
+    // Draw subset rectangles (scale to CSS pixels since we skipped ctx.scale for ImageData)
     const rects = subsetRectangles();
     const selected = selectedSubsetIdx();
     ctx.scale(dpr, dpr);
@@ -153,14 +154,29 @@ export function RasterOverview() {
       const w = ((r.tEnd - r.tStart) / T) * displayWidth;
       const y = (r.cellStart / N) * displayHeight;
       const h = ((r.cellEnd - r.cellStart) / N) * displayHeight;
+      const colorIdx = r.idx % SUBSET_STROKE.length;
+      const isSelected = r.idx === selected;
 
-      ctx.strokeStyle = SUBSET_COLORS[r.idx % SUBSET_COLORS.length];
-      ctx.lineWidth = r.idx === selected ? 3 : 1.5;
+      // Semi-transparent fill
+      ctx.fillStyle = SUBSET_FILL[colorIdx];
+      ctx.fillRect(x, y, w, h);
+
+      // Dark shadow outline for contrast against any background
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 3;
+      ctx.strokeStyle = SUBSET_STROKE[colorIdx];
+      ctx.lineWidth = isSelected ? 3 : 2;
       ctx.strokeRect(x, y, w, h);
+      ctx.shadowBlur = 0;
 
-      ctx.fillStyle = SUBSET_COLORS[r.idx % SUBSET_COLORS.length];
+      // Label with dark background for readability
+      const label = `K${r.idx + 1}`;
       ctx.font = 'bold 11px system-ui, sans-serif';
-      ctx.fillText(`K${r.idx + 1}`, x + 3, y + 13);
+      const textW = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillRect(x + 2, y + 2, textW + 6, 14);
+      ctx.fillStyle = SUBSET_STROKE[colorIdx];
+      ctx.fillText(label, x + 5, y + 13);
     }
   };
 

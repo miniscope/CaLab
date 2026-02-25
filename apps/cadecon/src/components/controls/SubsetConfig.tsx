@@ -11,8 +11,6 @@ import {
   setSubsetTimeFrames,
   subsetCellCount,
   setSubsetCellCount,
-  overlapAllowed,
-  setOverlapAllowed,
   coverageStats,
   seed,
   setSeed,
@@ -70,17 +68,6 @@ export function SubsetConfig(): JSX.Element {
           />
         </Show>
 
-        <div class="param-panel__toggle-group">
-          <label class="param-panel__toggle">
-            <input
-              type="checkbox"
-              checked={overlapAllowed()}
-              onChange={(e) => setOverlapAllowed(e.currentTarget.checked)}
-            />
-            <span class="param-panel__toggle-label">Allow Overlap</span>
-          </label>
-        </div>
-
         <div class="param-panel__toggle-group" style="border-top: none; margin-top: 0;">
           <button
             class="btn-secondary btn-small"
@@ -94,14 +81,13 @@ export function SubsetConfig(): JSX.Element {
         </div>
       </div>
 
-      {/* Coverage stats */}
       <div class="stats-grid">
         <div class="stat-item">
-          <span class="stat-item__label">Cell Coverage</span>
+          <span class="stat-item__label">N_sub/N</span>
           <span class="stat-item__value">{coverageStats().cellPct.toFixed(0)}%</span>
         </div>
         <div class="stat-item">
-          <span class="stat-item__label">Time Coverage</span>
+          <span class="stat-item__label">T_sub/T</span>
           <span class="stat-item__value">{coverageStats().timePct.toFixed(0)}%</span>
         </div>
         <div class="stat-item">

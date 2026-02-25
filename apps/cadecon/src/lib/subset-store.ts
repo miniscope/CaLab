@@ -16,8 +16,6 @@ export interface SubsetRectangle {
 const [numSubsets, setNumSubsets] = createSignal(4);
 const [subsetTimeFrames, setSubsetTimeFrames] = createSignal<number | null>(null);
 const [subsetCellCount, setSubsetCellCount] = createSignal<number | null>(null);
-const [overlapAllowed, setOverlapAllowed] = createSignal(true);
-const [circularShiftEnabled, setCircularShiftEnabled] = createSignal(false);
 const [autoMode, setAutoMode] = createSignal(true);
 const [seed, setSeed] = createSignal(42);
 
@@ -50,6 +48,88 @@ function lcg(s: number): () => number {
   };
 }
 
+/**
+ * Place K non-overlapping subset rectangles using a grid tiling strategy
+ * with seeded random jitter within each tile.
+ *
+ * Strategy: compute how many tiles fit along each axis (time × cells),
+ * assign subsets to tiles in raster order, then jitter each rectangle
+ * within its tile so placement varies with the seed.
+ */
+function tileSubsets(
+  K: number,
+  T: number,
+  N: number,
+  tSub: number,
+  nSub: number,
+  rng: () => number,
+): SubsetRectangle[] {
+  // Figure out grid dimensions that fit K tiles
+  // Prefer more columns (time axis) than rows (cell axis) since T >> N typically
+  const maxCols = Math.max(1, Math.floor(T / tSub));
+  const maxRows = Math.max(1, Math.floor(N / nSub));
+  const maxTiles = maxCols * maxRows;
+
+  if (K <= maxTiles) {
+    // We can fit all K subsets without overlap using the grid
+    let cols = Math.min(K, maxCols);
+    let rows = Math.ceil(K / cols);
+    // If rows exceed capacity, widen
+    if (rows > maxRows) {
+      rows = maxRows;
+      cols = Math.ceil(K / rows);
+    }
+
+    const tileW = Math.floor(T / cols);
+    const tileH = Math.floor(N / rows);
+    const rects: SubsetRectangle[] = [];
+
+    for (let k = 0; k < K; k++) {
+      const col = k % cols;
+      const row = Math.floor(k / cols);
+
+      // Jitter within the tile (ensure the subset fits within the tile)
+      const tSlack = Math.max(0, tileW - tSub);
+      const nSlack = Math.max(0, tileH - nSub);
+      const tStart = col * tileW + Math.floor(rng() * (tSlack + 1));
+      const cellStart = row * tileH + Math.floor(rng() * (nSlack + 1));
+
+      rects.push({
+        tStart,
+        tEnd: tStart + tSub,
+        cellStart,
+        cellEnd: cellStart + nSub,
+        idx: k,
+      });
+    }
+    return rects;
+  }
+
+  // More subsets than tiles: pack as many as possible, extras get random placement
+  const rects: SubsetRectangle[] = [];
+  for (let k = 0; k < Math.min(K, maxTiles); k++) {
+    const col = k % maxCols;
+    const row = Math.floor(k / maxCols);
+    const tileW = Math.floor(T / maxCols);
+    const tileH = Math.floor(N / maxRows);
+    const tSlack = Math.max(0, tileW - tSub);
+    const nSlack = Math.max(0, tileH - nSub);
+    const tStart = col * tileW + Math.floor(rng() * (tSlack + 1));
+    const cellStart = row * tileH + Math.floor(rng() * (nSlack + 1));
+
+    rects.push({ tStart, tEnd: tStart + tSub, cellStart, cellEnd: cellStart + nSub, idx: k });
+  }
+
+  // Remaining subsets: random placement (may overlap)
+  for (let k = maxTiles; k < K; k++) {
+    const tStart = Math.floor(rng() * (T - tSub + 1));
+    const cellStart = Math.floor(rng() * (N - nSub + 1));
+    rects.push({ tStart, tEnd: tStart + tSub, cellStart, cellEnd: cellStart + nSub, idx: k });
+  }
+
+  return rects;
+}
+
 const subsetRectangles = createMemo<SubsetRectangle[]>(() => {
   const K = numSubsets();
   const T = numTimepoints();
@@ -60,62 +140,19 @@ const subsetRectangles = createMemo<SubsetRectangle[]>(() => {
   const nSub = Math.min(effectiveNSub(), N);
 
   const rng = lcg(seed());
-  const rects: SubsetRectangle[] = [];
-
-  for (let k = 0; k < K; k++) {
-    let tStart: number;
-    let cellStart: number;
-    let attempts = 0;
-    const maxAttempts = overlapAllowed() ? 1 : 100;
-
-    do {
-      tStart = Math.floor(rng() * (T - tSub + 1));
-      cellStart = Math.floor(rng() * (N - nSub + 1));
-      attempts++;
-
-      if (overlapAllowed()) break;
-
-      // Check overlap with existing rects
-      const overlaps = rects.some(
-        (r) =>
-          tStart < r.tEnd &&
-          tStart + tSub > r.tStart &&
-          cellStart < r.cellEnd &&
-          cellStart + nSub > r.cellStart,
-      );
-      if (!overlaps) break;
-    } while (attempts < maxAttempts);
-
-    rects.push({
-      tStart,
-      tEnd: tStart + tSub,
-      cellStart,
-      cellEnd: cellStart + nSub,
-      idx: k,
-    });
-  }
-
-  return rects;
+  return tileSubsets(K, T, N, tSub, nSub, rng);
 });
 
 const coverageStats = createMemo(() => {
   const T = numTimepoints();
   const N = numCells();
-  const rects = subsetRectangles();
-  if (T === 0 || N === 0 || rects.length === 0) return { cellPct: 0, timePct: 0 };
-
-  const cellsCovered = new Set<number>();
-  let totalTimeCovered = 0;
-
-  for (const r of rects) {
-    for (let c = r.cellStart; c < r.cellEnd; c++) cellsCovered.add(c);
-    totalTimeCovered += r.tEnd - r.tStart;
-  }
+  const tSub = Math.min(effectiveTSub(), T);
+  const nSub = Math.min(effectiveNSub(), N);
+  if (T === 0 || N === 0) return { cellPct: 0, timePct: 0 };
 
   return {
-    cellPct: (cellsCovered.size / N) * 100,
-    // Clamp to 100% since overlapping rects can double-count
-    timePct: Math.min(100, (totalTimeCovered / T) * 100),
+    cellPct: Math.min(100, (nSub / N) * 100),
+    timePct: Math.min(100, (tSub / T) * 100),
   };
 });
 
@@ -126,10 +163,6 @@ export {
   setSubsetTimeFrames,
   subsetCellCount,
   setSubsetCellCount,
-  overlapAllowed,
-  setOverlapAllowed,
-  circularShiftEnabled,
-  setCircularShiftEnabled,
   autoMode,
   setAutoMode,
   seed,
