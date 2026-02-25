@@ -19,8 +19,8 @@ export interface TraceOverviewProps {
   onZoomChange: (startTime: number, endTime: number) => void;
 }
 
-const ROW_HEIGHT = 24;
-const ROW_DURATION_S = 20 * 60; // 20 minutes per row
+export const ROW_HEIGHT = 24;
+export const ROW_DURATION_S = 20 * 60; // 20 minutes per row
 const PIXELS_PER_ROW = 600; // target downsample width per row
 
 export function TraceOverview(props: TraceOverviewProps) {
@@ -92,10 +92,13 @@ export function TraceOverview(props: TraceOverviewProps) {
     }
     const yRange = globalMax - globalMin || 1;
 
+    // Single-row traces use the actual duration so the trace fills the width;
+    // multi-row traces use a fixed row duration for uniform x-axis scaling.
+    const rowDuration = rows.length === 1 ? duration : ROW_DURATION_S;
+
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
       const rowY = r * ROW_HEIGHT;
-      const rowDuration = r < rows.length - 1 ? ROW_DURATION_S : duration - r * ROW_DURATION_S;
 
       // Draw zoom window highlight for this row
       const zoomStart = props.zoomStart;
@@ -166,8 +169,7 @@ export function TraceOverview(props: TraceOverviewProps) {
 
     const row = rows[rowIndex];
     const duration = totalDuration();
-    const rowDuration =
-      rowIndex < rows.length - 1 ? ROW_DURATION_S : duration - rowIndex * ROW_DURATION_S;
+    const rowDuration = rows.length === 1 ? duration : ROW_DURATION_S;
 
     const tFraction = Math.max(0, Math.min(1, x / width));
     return row.timeOffset + tFraction * rowDuration;
