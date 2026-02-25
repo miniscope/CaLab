@@ -87,6 +87,15 @@ const App: Component = () => {
   // Tutorial panel state
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
 
+  // Export modal visibility (separate from bridgeExportDone so button stays disabled)
+  const [exportModalOpen, setExportModalOpen] = createSignal(false);
+  const closeExportModal = () => setExportModalOpen(false);
+  createEffect(
+    on(bridgeExportDone, (done) => {
+      if (done) setExportModalOpen(true);
+    }),
+  );
+
   // First-time banner: show if not dismissed and data is loaded
   const [bannerDismissed, setBannerDismissed] = createSignal(loadBannerDismissedState());
   const showBanner = () => importStep() === 'ready' && !bannerDismissed();
@@ -156,20 +165,15 @@ const App: Component = () => {
         </div>
       </Show>
 
-      {/* Bridge export success — full-page confirmation */}
-      <Show when={bridgeExportDone()}>
-        <main class="import-container">
-          <header class="app-header">
-            <h1 class="app-header__title">CaTune</h1>
-            <span class="app-header__version">
-              CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}
-            </span>
-          </header>
-          <div class="card ready-card" style="margin-top: 3rem; text-align: center;">
-            <p class="text-success" style="font-weight: 600; font-size: 1.1rem;">
-              Parameters exported to Python
-            </p>
-            <div class="info-summary" style="margin-top: 1rem; justify-content: center;">
+      {/* Bridge export success — modal popup */}
+      <Show when={exportModalOpen()}>
+        <div class="export-modal-backdrop" onClick={closeExportModal}>
+          <div class="export-modal" onClick={(e) => e.stopPropagation()}>
+            <button class="export-modal__close" onClick={closeExportModal} aria-label="Close">
+              &times;
+            </button>
+            <p class="export-modal__heading text-success">Parameters exported to Python</p>
+            <div class="export-modal__params info-summary">
               <span>rise: {(tauRise() * 1000).toFixed(1)}ms</span>
               <span class="info-summary__sep">&middot;</span>
               <span>decay: {(tauDecay() * 1000).toFixed(1)}ms</span>
@@ -180,28 +184,27 @@ const App: Component = () => {
               <span class="info-summary__sep">&middot;</span>
               <span>filter: {filterEnabled() ? 'on' : 'off'}</span>
             </div>
-            <p style="margin-top: 1rem; color: var(--text-secondary);">
+            <p class="export-modal__body">
               You can return to your Python session — <code>tune()</code> has received your
               parameters.
             </p>
-            <p style="margin-top: 0.75rem; color: var(--text-tertiary); font-size: 0.85rem;">
-              You can close this tab.
+            <p class="export-modal__hint">
+              Close this popup to continue adjusting parameters, but further changes won't
+              auto-export back to Python.
             </p>
           </div>
-        </main>
+        </div>
       </Show>
 
       {/* Import flow (full-page) OR Dashboard */}
       <Show
-        when={!bridgeExportDone() && importStep() === 'ready'}
+        when={importStep() === 'ready'}
         fallback={
-          <Show when={!bridgeExportDone()}>
-            <ImportOverlay
-              hasFile={hasFile()}
-              onReset={resetImport}
-              onLoadDemo={(opts) => loadDemoData(opts)}
-            />
-          </Show>
+          <ImportOverlay
+            hasFile={hasFile()}
+            onReset={resetImport}
+            onLoadDemo={(opts) => loadDemoData(opts)}
+          />
         }
       >
         <DashboardShell

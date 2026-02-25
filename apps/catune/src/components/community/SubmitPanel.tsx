@@ -19,6 +19,7 @@ import {
   demoPreset,
   groundTruthLocked,
   bridgeUrl,
+  bridgeExportDone,
   setBridgeExportDone,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
@@ -192,7 +193,7 @@ export function SubmitPanel() {
       <div class="submit-panel__actions">
         <Show when={!isDemo()}>
           <Show
-            when={bridgeUrl()}
+            when={bridgeUrl() && !bridgeExportDone()}
             fallback={
               <button class="btn-primary btn-small" onClick={handleExport}>
                 Export Locally
