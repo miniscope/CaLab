@@ -9,3 +9,4 @@ crates/solver/target/
 test/
 .env
 .env.local
+.claude/settings.local.json
