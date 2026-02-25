@@ -1,4 +1,4 @@
-use crate::{ConvMode, Constraint, Solver};
+use crate::{Constraint, ConvMode, Solver};
 
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
@@ -44,10 +44,9 @@ impl Solver {
                     n,
                     &mut self.reconvolution[..n],
                 ),
-                ConvMode::BandedAR2 => self.banded.convolve_forward(
-                    &self.solution_prev[..n],
-                    &mut self.reconvolution[..n],
-                ),
+                ConvMode::BandedAR2 => self
+                    .banded
+                    .convolve_forward(&self.solution_prev[..n], &mut self.reconvolution[..n]),
             }
 
             // 1b. Compute baseline: b = mean(trace - K*y_k)
@@ -67,15 +66,13 @@ impl Solver {
 
             // 3. Adjoint convolution: gradient = K^T * residual
             match self.conv_mode {
-                ConvMode::Fft => self.fft.convolve_adjoint(
-                    &self.residual_buf[..n],
-                    n,
-                    &mut self.gradient[..n],
-                ),
-                ConvMode::BandedAR2 => self.banded.convolve_adjoint(
-                    &self.residual_buf[..n],
-                    &mut self.gradient[..n],
-                ),
+                ConvMode::Fft => {
+                    self.fft
+                        .convolve_adjoint(&self.residual_buf[..n], n, &mut self.gradient[..n])
+                }
+                ConvMode::BandedAR2 => self
+                    .banded
+                    .convolve_adjoint(&self.residual_buf[..n], &mut self.gradient[..n]),
             }
 
             // 4. Proximal gradient step from y_k:
@@ -607,7 +604,12 @@ mod tests {
 
         let solution = solver.get_solution();
         for (i, &v) in solution.iter().enumerate() {
-            assert!(v >= 0.0, "BandedAR2 solution at index {} is negative: {}", i, v);
+            assert!(
+                v >= 0.0,
+                "BandedAR2 solution at index {} is negative: {}",
+                i,
+                v
+            );
         }
 
         // Should have found some nonzero spikes
@@ -618,7 +620,7 @@ mod tests {
     // Test 13: Box01 constraint produces values in [0, 1]
     #[test]
     fn box01_constraint_bounds() {
-        use crate::{ConvMode, Constraint};
+        use crate::{Constraint, ConvMode};
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 200;

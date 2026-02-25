@@ -2,9 +2,29 @@ use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods}
 use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
-use crate::{ConvMode, Constraint, Solver};
+use crate::{Constraint, ConvMode, Solver};
 
 const BATCH_SIZE: u32 = 100;
+
+fn parse_conv_mode(s: &str) -> PyResult<ConvMode> {
+    match s {
+        "fft" => Ok(ConvMode::Fft),
+        "banded" => Ok(ConvMode::BandedAR2),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "conv_mode must be 'fft' or 'banded'",
+        )),
+    }
+}
+
+fn parse_constraint(s: &str) -> PyResult<Constraint> {
+    match s {
+        "nonneg" => Ok(Constraint::NonNegative),
+        "box01" => Ok(Constraint::Box01),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "constraint must be 'nonneg' or 'box01'",
+        )),
+    }
+}
 
 /// Run the solver in batches until convergence or max_iters is reached.
 fn run_to_convergence(solver: &mut Solver, max_iters: u32) {
@@ -114,29 +134,13 @@ impl PySolver {
 
     /// Set convolution mode: "fft" or "banded".
     fn set_conv_mode(&mut self, mode: &str) -> PyResult<()> {
-        match mode {
-            "fft" => self.inner.set_conv_mode(ConvMode::Fft),
-            "banded" => self.inner.set_conv_mode(ConvMode::BandedAR2),
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "conv_mode must be 'fft' or 'banded'",
-                ))
-            }
-        }
+        self.inner.set_conv_mode(parse_conv_mode(mode)?);
         Ok(())
     }
 
     /// Set constraint type: "nonneg" or "box01".
     fn set_constraint(&mut self, constraint: &str) -> PyResult<()> {
-        match constraint {
-            "nonneg" => self.inner.set_constraint(Constraint::NonNegative),
-            "box01" => self.inner.set_constraint(Constraint::Box01),
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "constraint must be 'nonneg' or 'box01'",
-                ))
-            }
-        }
+        self.inner.set_constraint(parse_constraint(constraint)?);
         Ok(())
     }
 }
@@ -165,24 +169,8 @@ fn configure_solver_options(
     conv_mode: &str,
     constraint: &str,
 ) -> PyResult<()> {
-    match conv_mode {
-        "fft" => solver.set_conv_mode(ConvMode::Fft),
-        "banded" => solver.set_conv_mode(ConvMode::BandedAR2),
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "conv_mode must be 'fft' or 'banded'",
-            ))
-        }
-    }
-    match constraint {
-        "nonneg" => solver.set_constraint(Constraint::NonNegative),
-        "box01" => solver.set_constraint(Constraint::Box01),
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "constraint must be 'nonneg' or 'box01'",
-            ))
-        }
-    }
+    solver.set_conv_mode(parse_conv_mode(conv_mode)?);
+    solver.set_constraint(parse_constraint(constraint)?);
     Ok(())
 }
 
@@ -212,7 +200,12 @@ fn deconvolve_single<'py>(
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
-    let trace_f32: Vec<f32> = trace.as_slice().unwrap().iter().map(|&v| v as f32).collect();
+    let trace_f32: Vec<f32> = trace
+        .as_slice()
+        .unwrap()
+        .iter()
+        .map(|&v| v as f32)
+        .collect();
     solver.set_trace(&trace_f32);
 
     if filter_enabled {
@@ -284,12 +277,21 @@ fn deconvolve_batch<'py>(
 
         activities.push(PyArray1::from_vec(py, solver.get_solution()));
         baselines.push(solver.get_baseline());
-        reconvolutions.push(PyArray1::from_vec(py, solver.get_reconvolution_with_baseline()));
+        reconvolutions.push(PyArray1::from_vec(
+            py,
+            solver.get_reconvolution_with_baseline(),
+        ));
         iterations.push(solver.iteration_count());
         convergeds.push(solver.converged());
     }
 
-    Ok((activities, baselines, reconvolutions, iterations, convergeds))
+    Ok((
+        activities,
+        baselines,
+        reconvolutions,
+        iterations,
+        convergeds,
+    ))
 }
 
 /// Register the Python module.

@@ -6,8 +6,6 @@
 pub(crate) struct BandedAR2 {
     g1: f64, // d + r (sum of AR2 roots)
     g2: f64, // -(d * r) (negative product of AR2 roots)
-    d: f64,  // exp(-dt/tau_decay) — decay eigenvalue
-    r: f64,  // exp(-dt/tau_rise) — rise eigenvalue
     lipschitz: f64,
 }
 
@@ -19,23 +17,20 @@ impl BandedAR2 {
         let r = (-dt / tau_rise).exp();
         let g1 = d + r;
         let g2 = -(d * r);
-        let lipschitz = compute_banded_lipschitz(g1, g2);
         BandedAR2 {
             g1,
             g2,
-            d,
-            r,
-            lipschitz,
+            lipschitz: compute_banded_lipschitz(g1, g2),
         }
     }
 
     /// Recompute coefficients after parameter change.
     pub(crate) fn update(&mut self, tau_rise: f64, tau_decay: f64, fs: f64) {
         let dt = 1.0 / fs;
-        self.d = (-dt / tau_decay).exp();
-        self.r = (-dt / tau_rise).exp();
-        self.g1 = self.d + self.r;
-        self.g2 = -(self.d * self.r);
+        let d = (-dt / tau_decay).exp();
+        let r = (-dt / tau_rise).exp();
+        self.g1 = d + r;
+        self.g2 = -(d * r);
         self.lipschitz = compute_banded_lipschitz(self.g1, self.g2);
     }
 
@@ -108,10 +103,7 @@ fn compute_banded_lipschitz(g1: f64, g2: f64) -> f64 {
         let im = g1 * w.sin() + g2 * (2.0 * w).sin();
         let denom_sq = re * re + im * im;
         if denom_sq > 1e-30 {
-            let power = 1.0 / denom_sq;
-            if power > max_power {
-                max_power = power;
-            }
+            max_power = max_power.max(1.0 / denom_sq);
         }
     }
 
@@ -234,8 +226,8 @@ mod tests {
         // The ultimate validation: both conv modes should produce equivalent
         // FISTA solutions on the same trace (since they're both valid
         // convolution operators for the same AR(2) model).
-        use crate::Solver;
         use crate::ConvMode;
+        use crate::Solver;
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 200;
@@ -278,12 +270,10 @@ mod tests {
         assert_eq!(sol_fft.len(), sol_banded.len());
 
         // Find the top 4 spike locations in each solution
-        let mut fft_spikes: Vec<(usize, f32)> =
-            sol_fft.iter().copied().enumerate().collect();
+        let mut fft_spikes: Vec<(usize, f32)> = sol_fft.iter().copied().enumerate().collect();
         fft_spikes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-        let mut banded_spikes: Vec<(usize, f32)> =
-            sol_banded.iter().copied().enumerate().collect();
+        let mut banded_spikes: Vec<(usize, f32)> = sol_banded.iter().copied().enumerate().collect();
         banded_spikes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         // Both should identify at least 3 of the 4 true spike locations (within +-2 samples)
@@ -293,7 +283,10 @@ mod tests {
         let mut fft_matches = 0;
         let mut banded_matches = 0;
         for &true_spike in &spikes {
-            if fft_top4.iter().any(|&s| (s as isize - true_spike as isize).unsigned_abs() <= 2) {
+            if fft_top4
+                .iter()
+                .any(|&s| (s as isize - true_spike as isize).unsigned_abs() <= 2)
+            {
                 fft_matches += 1;
             }
             if banded_top4

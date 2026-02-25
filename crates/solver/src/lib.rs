@@ -143,10 +143,7 @@ impl Solver {
 
         // Update both convolution engines
         self.banded.update(tau_rise, tau_decay, fs);
-        self.lipschitz_constant = match self.conv_mode {
-            ConvMode::Fft => compute_lipschitz(&self.kernel),
-            ConvMode::BandedAR2 => self.banded.lipschitz(),
-        };
+        self.lipschitz_constant = self.current_lipschitz();
 
         // Update kernel FFT if buffers are already set up and large enough.
         // On re-enqueue quanta with unchanged trace length, this avoids a full
@@ -279,10 +276,7 @@ impl Solver {
     /// Does NOT reset solution/iteration state — warm-start is preserved.
     pub fn set_conv_mode(&mut self, mode: ConvMode) {
         self.conv_mode = mode;
-        self.lipschitz_constant = match mode {
-            ConvMode::Fft => compute_lipschitz(&self.kernel),
-            ConvMode::BandedAR2 => self.banded.lipschitz(),
-        };
+        self.lipschitz_constant = self.current_lipschitz();
         // Ensure FFT buffers exist if switching to FFT mode with an active trace
         if mode == ConvMode::Fft && self.active_len > 0 {
             self.fft.ensure_buffers(self.active_len, &self.kernel);
@@ -292,6 +286,14 @@ impl Solver {
     /// Set the constraint type (NonNegative or Box01).
     pub fn set_constraint(&mut self, c: Constraint) {
         self.constraint = c;
+    }
+
+    /// Lipschitz constant for the current convolution mode.
+    fn current_lipschitz(&self) -> f64 {
+        match self.conv_mode {
+            ConvMode::Fft => compute_lipschitz(&self.kernel),
+            ConvMode::BandedAR2 => self.banded.lipschitz(),
+        }
     }
 
     /// Effective lambda scaled by kernel DC gain: lambda * G_dc.
