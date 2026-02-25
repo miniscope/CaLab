@@ -15,12 +15,8 @@ const workerScope = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
 };
 
-function post(msg: CaDeconWorkerOutbound, transfer?: Transferable[]): void {
-  if (transfer) {
-    workerScope.postMessage(msg, transfer);
-  } else {
-    workerScope.postMessage(msg);
-  }
+function post(msg: CaDeconWorkerOutbound, transfer: Transferable[] = []): void {
+  workerScope.postMessage(msg, transfer);
 }
 
 function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }>): void {
@@ -94,14 +90,14 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
     }
 
     // Step 2: Bi-exponential fit
-    const biexpJs = indeca_fit_biexponential(new Float32Array(hFree), req.fs, req.refine) as {
+    const hFreeArr = new Float32Array(hFree);
+    const biexpJs = indeca_fit_biexponential(hFreeArr, req.fs, req.refine) as {
       tau_rise: number;
       tau_decay: number;
       beta: number;
       residual: number;
     };
 
-    const hFreeArr = new Float32Array(hFree);
     post(
       {
         type: 'kernel-complete',
@@ -121,18 +117,18 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
   }
 }
 
-// Message handler
 onmessage = (e: MessageEvent<CaDeconWorkerInbound>) => {
   const msg = e.data;
-  if (msg.type === 'cancel') {
-    cancelled = true;
-    return;
-  }
-  if (msg.type === 'trace-job') {
-    handleTraceJob(msg);
-  }
-  if (msg.type === 'kernel-job') {
-    handleKernelJob(msg);
+  switch (msg.type) {
+    case 'cancel':
+      cancelled = true;
+      break;
+    case 'trace-job':
+      handleTraceJob(msg);
+      break;
+    case 'kernel-job':
+      handleKernelJob(msg);
+      break;
   }
 };
 

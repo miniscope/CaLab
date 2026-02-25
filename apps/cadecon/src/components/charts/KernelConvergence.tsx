@@ -1,6 +1,5 @@
 import { createEffect, on, onCleanup, type JSX } from 'solid-js';
-import { convergenceHistory, runState } from '../../lib/iteration-store.ts';
-import type { KernelSnapshot } from '../../lib/iteration-store.ts';
+import { convergenceHistory } from '../../lib/iteration-store.ts';
 
 const COLORS = {
   tauRise: '#42a5f5', // blue
@@ -29,12 +28,10 @@ export function KernelConvergence(): JSX.Element {
     const w = rect.width;
     const h = rect.height;
 
-    // Clear
     ctx.clearRect(0, 0, w, h);
 
     const history = convergenceHistory();
     if (history.length === 0) {
-      // Empty state
       ctx.fillStyle = 'var(--text-tertiary)';
       ctx.font = '13px system-ui, sans-serif';
       ctx.textAlign = 'center';
@@ -153,7 +150,7 @@ export function KernelConvergence(): JSX.Element {
   }
 
   createEffect(
-    on([convergenceHistory, runState], () => {
+    on(convergenceHistory, () => {
       requestAnimationFrame(draw);
     }),
   );

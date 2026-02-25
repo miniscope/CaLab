@@ -101,17 +101,23 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool) -> BiexpResult {
 ///
 /// Model: h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r))
 /// Beta is the least-squares optimal scalar: beta = <h_free, template> / <template, template>
+///
+/// Uses the identity ||h - beta*t||^2 = ||h||^2 - <h,t>^2 / ||t||^2
+/// to compute both beta and residual in a single pass over the data.
 fn eval_biexp(h_free: &[f32], tau_r: f64, tau_d: f64, dt: f64) -> (f64, f64) {
     let n = h_free.len();
 
     let mut dot_ht = 0.0_f64; // <h_free, template>
     let mut dot_tt = 0.0_f64; // <template, template>
+    let mut dot_hh = 0.0_f64; // <h_free, h_free>
 
     for i in 0..n {
         let t = i as f64 * dt;
         let template = (-t / tau_d).exp() - (-t / tau_r).exp();
-        dot_ht += h_free[i] as f64 * template;
+        let hi = h_free[i] as f64;
+        dot_ht += hi * template;
         dot_tt += template * template;
+        dot_hh += hi * hi;
     }
 
     if dot_tt < 1e-30 {
@@ -119,15 +125,9 @@ fn eval_biexp(h_free: &[f32], tau_r: f64, tau_d: f64, dt: f64) -> (f64, f64) {
     }
 
     let beta = dot_ht / dot_tt;
-
-    // Compute residual
-    let mut residual = 0.0_f64;
-    for i in 0..n {
-        let t = i as f64 * dt;
-        let template = (-t / tau_d).exp() - (-t / tau_r).exp();
-        let diff = h_free[i] as f64 - beta * template;
-        residual += diff * diff;
-    }
+    // ||h - beta*t||^2 = ||h||^2 - 2*beta*<h,t> + beta^2*||t||^2
+    //                   = ||h||^2 - <h,t>^2 / ||t||^2
+    let residual = dot_hh - dot_ht * dot_ht / dot_tt;
 
     (beta, residual)
 }

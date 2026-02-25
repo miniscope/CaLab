@@ -42,40 +42,33 @@ import { subsetRectangles } from './subset-store.ts';
 import type { SubsetRectangle } from './subset-store.ts';
 import { dataIndex } from './data-utils.ts';
 
+/** Per-trace FISTA solver parameters (shared between subset and finalization passes). */
+const TRACE_FISTA_MAX_ITERS = 500;
+const TRACE_FISTA_TOL = 1e-4;
+
+/** Per-subset kernel estimation solver parameters. */
+const KERNEL_FISTA_MAX_ITERS = 200;
+const KERNEL_FISTA_TOL = 1e-4;
+
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
 let pauseResolver: (() => void) | null = null;
 
 // --- Helpers ---
 
-/** Extract a cell's trace segment from the data matrix for a subset rectangle. */
+/** Extract a cell's trace segment from the data matrix between tStart and tEnd. */
 function extractCellTrace(
   cellIndex: number,
-  rect: SubsetRectangle,
+  tStart: number,
+  tEnd: number,
   data: { data: ArrayLike<number>; shape: number[] },
   isSwapped: boolean,
 ): Float32Array {
   const rawCols = data.shape[1];
-  const len = rect.tEnd - rect.tStart;
+  const len = tEnd - tStart;
   const trace = new Float32Array(len);
   for (let t = 0; t < len; t++) {
-    const idx = dataIndex(cellIndex, rect.tStart + t, rawCols, isSwapped);
-    trace[t] = Number(data.data[idx]);
-  }
-  return trace;
-}
-
-/** Extract a full cell trace from the data matrix. */
-function extractFullCellTrace(
-  cellIndex: number,
-  data: { data: ArrayLike<number>; shape: number[] },
-  isSwapped: boolean,
-  numTp: number,
-): Float32Array {
-  const rawCols = data.shape[1];
-  const trace = new Float32Array(numTp);
-  for (let t = 0; t < numTp; t++) {
-    const idx = dataIndex(cellIndex, t, rawCols, isSwapped);
+    const idx = dataIndex(cellIndex, tStart + t, rawCols, isSwapped);
     trace[t] = Number(data.data[idx]);
   }
   return trace;
@@ -103,7 +96,7 @@ function dispatchTraceJobs(
   maxIters: number,
   tol: number,
 ): Promise<Map<number, TraceResult[]>> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     // Collect all (cell, rect) pairs
     const jobs: { cell: number; rect: SubsetRectangle }[] = [];
     for (const rect of rects) {
@@ -125,7 +118,7 @@ function dispatchTraceJobs(
     let errored = false;
 
     for (const { cell, rect } of jobs) {
-      const trace = extractCellTrace(cell, rect, data, isSwapped);
+      const trace = extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped);
       const jobId = nextJobId++;
 
       pool!.dispatch({
@@ -194,7 +187,7 @@ function dispatchKernelJobs(
         const r = cellResults[0];
         if (r.alpha === 0 || r.sCounts.every((v) => v === 0)) continue;
 
-        const trace = extractCellTrace(c, rect, data, isSwapped);
+        const trace = extractCellTrace(c, rect.tStart, rect.tEnd, data, isSwapped);
         tracesFlat.push(...trace);
         spikesFlat.push(...r.sCounts.slice(0, trace.length));
         traceLengths.push(trace.length);
@@ -220,8 +213,8 @@ function dispatchKernelJobs(
         baselines: new Float64Array(baselines),
         kernelLength,
         fs,
-        maxIters: 200,
-        tol: 1e-4,
+        maxIters: KERNEL_FISTA_MAX_ITERS,
+        tol: KERNEL_FISTA_TOL,
         refine: true,
         onComplete(result: KernelResult) {
           kernelResults.push(result);
@@ -292,8 +285,8 @@ export async function startRun(): Promise<void> {
       tauD,
       fs,
       upFactor,
-      500, // per-trace FISTA max iters
-      1e-4,
+      TRACE_FISTA_MAX_ITERS,
+      TRACE_FISTA_TOL,
     );
 
     if (runState() === 'stopping') break;
@@ -356,7 +349,7 @@ export async function startRun(): Promise<void> {
       }
 
       for (let c = 0; c < nCells; c++) {
-        const trace = extractFullCellTrace(c, data, isSwap, nTp);
+        const trace = extractCellTrace(c, 0, nTp, data, isSwap);
         const jobId = nextJobId++;
 
         pool!.dispatch({
@@ -367,8 +360,8 @@ export async function startRun(): Promise<void> {
           tauDecay: tauD,
           fs,
           upsampleFactor: upFactor,
-          maxIters: 500,
-          tol: 1e-4,
+          maxIters: TRACE_FISTA_MAX_ITERS,
+          tol: TRACE_FISTA_TOL,
           onComplete(result: TraceResult) {
             updateTraceResult(c, {
               sCounts: result.sCounts,

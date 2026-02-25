@@ -4,14 +4,13 @@ import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iter
 import { parsedData, samplingRate } from '../../lib/data-store.ts';
 
 export function RunControls(): JSX.Element {
-  const state = () => runState();
   const hasData = () => !!parsedData() && !!samplingRate();
 
   return (
     <div class="param-panel">
       <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
         <Show
-          when={state() !== 'paused'}
+          when={runState() !== 'paused'}
           fallback={
             <button class="btn-primary" onClick={resumeRun}>
               Resume
@@ -20,20 +19,20 @@ export function RunControls(): JSX.Element {
         >
           <button
             class="btn-primary"
-            disabled={state() !== 'idle' || !hasData()}
+            disabled={runState() !== 'idle' || !hasData()}
             onClick={() => void startRun()}
           >
             Start
           </button>
         </Show>
 
-        <button class="btn-secondary" disabled={state() !== 'running'} onClick={pauseRun}>
+        <button class="btn-secondary" disabled={runState() !== 'running'} onClick={pauseRun}>
           Pause
         </button>
 
         <button
           class="btn-secondary"
-          disabled={state() !== 'running' && state() !== 'paused'}
+          disabled={runState() !== 'running' && runState() !== 'paused'}
           onClick={stopRun}
         >
           Stop
@@ -41,7 +40,7 @@ export function RunControls(): JSX.Element {
 
         <button
           class="btn-secondary"
-          disabled={state() !== 'complete' && state() !== 'stopping'}
+          disabled={runState() !== 'complete' && runState() !== 'stopping'}
           onClick={resetRun}
         >
           Reset

@@ -32,8 +32,6 @@ const [perTraceResults, setPerTraceResults] = createSignal<Record<number, TraceR
 
 // --- Derived ---
 
-const isRunning = createMemo(() => runState() === 'running');
-const isPaused = createMemo(() => runState() === 'paused');
 const progress = createMemo(() => {
   const total = totalSubsetTraceJobs();
   if (total === 0) return 0;
@@ -76,8 +74,6 @@ export {
   currentTauDecay,
   setCurrentTauDecay,
   perTraceResults,
-  isRunning,
-  isPaused,
   progress,
   resetIterationState,
   addConvergenceSnapshot,
