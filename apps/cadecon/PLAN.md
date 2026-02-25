@@ -230,6 +230,7 @@
   - Reads from: `algorithm-store`, `data-store`, `subset-store`
 
 **Deviations from plan:**
+
 - No bandpass preprocessing or weight-array computation implemented (2.8 item 1) — deferred
 - Subset informativeness weighting during kernel merge not implemented — uses simple median
 - Run provenance (settings snapshot) not stored
@@ -598,13 +599,13 @@ crates/solver/src/
 
 ### Signal locations Phase 2 must import from
 
-| Signal group                                                                                                                                   | Module                                      |
-| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Import pipeline (parsedData, effectiveShape, samplingRate, importStep…)                                                                        | `lib/data-store.ts`                         |
-| Ground truth tau (groundTruthTauRise, groundTruthTauDecay) — demo only                                                                         | `lib/data-store.ts`                         |
-| Subset config (numSubsets, effectiveTSub, effectiveNSub, subsetRectangles, seed)                                                               | `lib/subset-store.ts`                       |
+| Signal group                                                                                                                                   | Module                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Import pipeline (parsedData, effectiveShape, samplingRate, importStep…)                                                                        | `lib/data-store.ts`                             |
+| Ground truth tau (groundTruthTauRise, groundTruthTauDecay) — demo only                                                                         | `lib/data-store.ts`                             |
+| Subset config (numSubsets, effectiveTSub, effectiveNSub, subsetRectangles, seed)                                                               | `lib/subset-store.ts`                           |
 | Algorithm params (tauRiseInit, tauDecayInit, autoInitKernel, upsampleTarget, maxIterations, convergenceTol, weightingEnabled, bandpassEnabled) | `lib/algorithm-store.ts` (**moved in Phase 2**) |
-| Iteration state (runState, currentIteration, convergenceHistory, perTraceResults, progress) | `lib/iteration-store.ts` (**Phase 2**) |
+| Iteration state (runState, currentIteration, convergenceHistory, perTraceResults, progress)                                                    | `lib/iteration-store.ts` (**Phase 2**)          |
 
 **Note:** Algorithm signals were extracted from `AlgorithmSettings.tsx` into `lib/algorithm-store.ts` during Phase 2, as anticipated. `AlgorithmSettings.tsx` now imports from the store.
 
@@ -645,6 +646,7 @@ CSS custom property overrides in `global.css`:
 ### Rust module naming deviations
 
 Plan names → actual names:
+
 - `upsampling.rs` → `upsample.rs`
 - `threshold_search.rs` → `threshold.rs`
 - `kernel_estimation.rs` → `kernel_est.rs`
@@ -656,6 +658,7 @@ All modules are `pub(crate)` (not `pub`) to avoid `private_interfaces` warnings,
 ### Worker pool refactoring
 
 `packages/compute/src/worker-pool.ts` was refactored to be generic:
+
 - `BaseJob` and `MessageRouter<TJob, TOut>` interfaces define the contract
 - `createWorkerPool<TJob, TOut>(createWorker, router, poolSize?)` is the generic factory
 - CaTune-specific logic extracted to `packages/compute/src/catune-pool.ts` (`createCaTuneWorkerPool`)
@@ -668,6 +671,7 @@ Complex return types (`InDecaResult`, `BiexpResult`) use `serde-wasm-bindgen` fo
 ### Iteration manager architecture
 
 The iteration loop runs on the main thread and dispatches jobs to the worker pool:
+
 1. **Per-trace inference**: dispatches `TraceJob` for each cell in each subset rectangle
 2. **Kernel estimation**: dispatches `KernelJob` per subset with concatenated traces/spikes
 3. **Merge**: median of subset tau estimates (no informativeness weighting yet)
@@ -693,12 +697,12 @@ The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `pos
 
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                             |
-| ------------------------------------ | ----------- | ----------------------------------------------------------------- |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                   |
-| Phase 2: Core Compute                | COMPLETE    | PR #86 — 6 Rust modules, 64 tests, WASM bindings, worker, UI     |
-| Phase 3: Visualization + QC          | NOT STARTED | KernelConvergence chart pulled forward into Phase 2 (canvas-based)|
-| Phase 4: Community DB                | NOT STARTED |                                                                   |
-| Phase 5: Export/Import               | NOT STARTED |                                                                   |
-| Phase 6: Python Extension            | DEFERRED    |                                                                   |
-| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                   |
+| Phase                                | Status      | Notes                                                              |
+| ------------------------------------ | ----------- | ------------------------------------------------------------------ |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                    |
+| Phase 2: Core Compute                | COMPLETE    | PR #86 — 6 Rust modules, 64 tests, WASM bindings, worker, UI       |
+| Phase 3: Visualization + QC          | NOT STARTED | KernelConvergence chart pulled forward into Phase 2 (canvas-based) |
+| Phase 4: Community DB                | NOT STARTED |                                                                    |
+| Phase 5: Export/Import               | NOT STARTED |                                                                    |
+| Phase 6: Python Extension            | DEFERRED    |                                                                    |
+| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                    |
