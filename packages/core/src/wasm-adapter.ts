@@ -6,8 +6,20 @@
  * Solver class so consumers never deal with raw WASM init.
  */
 
-import init, { Solver } from '../../../crates/solver/pkg/calab_solver';
-export { Solver };
+import init, {
+  Solver,
+  indeca_solve_trace,
+  indeca_estimate_kernel,
+  indeca_fit_biexponential,
+  indeca_compute_upsample_factor,
+} from '../../../crates/solver/pkg/calab_solver';
+export {
+  Solver,
+  indeca_solve_trace,
+  indeca_estimate_kernel,
+  indeca_fit_biexponential,
+  indeca_compute_upsample_factor,
+};
 
 let wasmReady: Promise<void> | null = null;
 

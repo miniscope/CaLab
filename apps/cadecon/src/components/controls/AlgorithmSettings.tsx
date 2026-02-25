@@ -1,28 +1,24 @@
-import { createSignal, Show, type JSX } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import { ToggleSwitch } from './ToggleSwitch.tsx';
-
-// --- Module-level signals ---
-
-const [tauRiseInit, setTauRiseInit] = createSignal(0.1);
-const [tauDecayInit, setTauDecayInit] = createSignal(0.6);
-const [autoInitKernel, setAutoInitKernel] = createSignal(true);
-const [upsampleTarget, setUpsampleTarget] = createSignal(300);
-const [weightingEnabled, setWeightingEnabled] = createSignal(true);
-const [bandpassEnabled, setBandpassEnabled] = createSignal(false);
-const [maxIterations, setMaxIterations] = createSignal(10);
-const [convergenceTol, setConvergenceTol] = createSignal(0.01);
-
-export {
+import {
   tauRiseInit,
+  setTauRiseInit,
   tauDecayInit,
+  setTauDecayInit,
   autoInitKernel,
+  setAutoInitKernel,
   upsampleTarget,
+  setUpsampleTarget,
   weightingEnabled,
+  setWeightingEnabled,
   bandpassEnabled,
+  setBandpassEnabled,
   maxIterations,
+  setMaxIterations,
   convergenceTol,
-};
+  setConvergenceTol,
+} from '../../lib/algorithm-store.ts';
 
 export function AlgorithmSettings(): JSX.Element {
   return (

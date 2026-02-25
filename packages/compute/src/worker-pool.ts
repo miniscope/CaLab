@@ -2,30 +2,20 @@
 // Dispatches jobs to idle workers, queues when all busy,
 // supports per-job cancellation and bulk cancelAll.
 
-import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from '@calab/core';
 import { resolveWorkerCount } from './worker-sizing.ts';
 
-export interface PoolJob {
+export interface BaseJob {
   jobId: number;
-  trace: Float32Array;
-  params: SolverParams;
-  warmState: Uint8Array | null;
-  warmStrategy: WarmStartStrategy;
-  /** Dynamic priority callback — called at drain time for fresh ordering.
-   *  Lower number = higher priority. 0 = active cell, 1 = visible, 2 = off-screen. */
-  getPriority?: () => number;
-  maxIterations?: number;
-  onIntermediate(solution: Float32Array, reconvolution: Float32Array, iteration: number): void;
-  onComplete(
-    solution: Float32Array,
-    reconvolution: Float32Array,
-    state: Uint8Array,
-    iterations: number,
-    converged: boolean,
-    filteredTrace?: Float32Array,
-  ): void;
+  getPriority?(): number;
   onCancelled(): void;
-  onError(message: string): void;
+  onError(msg: string): void;
+}
+
+export interface MessageRouter<TJob extends BaseJob, TOut> {
+  isReady(msg: TOut): boolean;
+  getJobId(msg: TOut): number | undefined;
+  routeMessage(job: TJob, msg: TOut, finish: () => void): void;
+  buildDispatch(job: TJob): [unknown, Transferable[]];
 }
 
 type WorkerState = { status: 'init' } | { status: 'idle' } | { status: 'busy'; jobId: number };
@@ -35,20 +25,23 @@ interface PoolEntry {
   state: WorkerState;
 }
 
-export interface WorkerPool {
+export interface WorkerPool<TJob extends BaseJob = BaseJob> {
   readonly size: number;
-  dispatch(job: PoolJob): void;
+  dispatch(job: TJob): void;
   cancel(jobId: number): void;
   cancelAll(): void;
   dispose(): void;
 }
 
-export function createWorkerPool(createWorker: () => Worker, poolSize?: number): WorkerPool {
+export function createWorkerPool<TJob extends BaseJob, TOut>(
+  createWorker: () => Worker,
+  router: MessageRouter<TJob, TOut>,
+  poolSize?: number,
+): WorkerPool<TJob> {
   const size = poolSize ?? resolveWorkerCount();
   const entries: PoolEntry[] = [];
-  const queue: PoolJob[] = [];
-  // Map jobId → PoolJob for in-flight jobs (needed for routing messages)
-  const inFlightJobs = new Map<number, PoolJob>();
+  const queue: TJob[] = [];
+  const inFlightJobs = new Map<number, TJob>();
   let disposed = false;
 
   for (let i = 0; i < size; i++) {
@@ -57,91 +50,50 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
     const entry: PoolEntry = { worker, state: { status: 'init' } };
     entries.push(entry);
 
-    worker.onmessage = (e: MessageEvent<PoolWorkerOutbound>) => {
+    worker.onmessage = (e: MessageEvent<TOut>) => {
       handleWorkerMessage(entry, e.data);
     };
   }
 
-  /** Finish an in-flight job: remove from map, free the worker, drain queue. */
-  function finishJob(entry: PoolEntry, jobId: number): PoolJob | undefined {
+  function finishJob(entry: PoolEntry, jobId: number): TJob | undefined {
     const job = inFlightJobs.get(jobId);
     inFlightJobs.delete(jobId);
     entry.state = { status: 'idle' };
     return job;
   }
 
-  function handleWorkerMessage(entry: PoolEntry, msg: PoolWorkerOutbound): void {
-    switch (msg.type) {
-      case 'ready':
-        entry.state = { status: 'idle' };
-        drainQueue();
-        break;
-
-      case 'intermediate': {
-        const job = inFlightJobs.get(msg.jobId);
-        job?.onIntermediate(msg.solution, msg.reconvolution, msg.iteration);
-        break;
-      }
-
-      case 'complete': {
-        const job = finishJob(entry, msg.jobId);
-        job?.onComplete(
-          msg.solution,
-          msg.reconvolution,
-          msg.state,
-          msg.iterations,
-          msg.converged,
-          msg.filteredTrace,
-        );
-        drainQueue();
-        break;
-      }
-
-      case 'cancelled': {
-        const job = finishJob(entry, msg.jobId);
-        job?.onCancelled();
-        drainQueue();
-        break;
-      }
-
-      case 'error': {
-        const job = finishJob(entry, msg.jobId);
-        job?.onError(msg.message);
-        drainQueue();
-        break;
-      }
+  function handleWorkerMessage(entry: PoolEntry, msg: TOut): void {
+    if (router.isReady(msg)) {
+      entry.state = { status: 'idle' };
+      drainQueue();
+      return;
     }
+
+    const jobId = router.getJobId(msg);
+    if (jobId === undefined) return;
+
+    const job = inFlightJobs.get(jobId);
+    if (!job) return;
+
+    router.routeMessage(job, msg, () => {
+      finishJob(entry, jobId);
+      drainQueue();
+    });
   }
 
   function findIdleWorker(): PoolEntry | undefined {
     return entries.find((e) => e.state.status === 'idle');
   }
 
-  function dispatchToWorker(entry: PoolEntry, job: PoolJob): void {
+  function dispatchToWorker(entry: PoolEntry, job: TJob): void {
     entry.state = { status: 'busy', jobId: job.jobId };
     inFlightJobs.set(job.jobId, job);
 
-    // Copy buffers for transfer (avoids detaching caller's buffers)
-    const traceCopy = new Float32Array(job.trace);
-    const transfer: Transferable[] = [traceCopy.buffer];
-    const warmCopy = job.warmState ? new Uint8Array(job.warmState) : null;
-    if (warmCopy) transfer.push(warmCopy.buffer);
-
-    entry.worker.postMessage(
-      {
-        type: 'solve',
-        jobId: job.jobId,
-        trace: traceCopy,
-        params: job.params,
-        warmState: warmCopy,
-        warmStrategy: job.warmStrategy,
-        maxIterations: job.maxIterations,
-      },
-      transfer,
-    );
+    const [payload, transfer] = router.buildDispatch(job);
+    entry.worker.postMessage(payload, transfer);
   }
 
-  function jobPriority(job: PoolJob): number {
+  function jobPriority(job: TJob): number {
     return job.getPriority?.() ?? 1;
   }
 
@@ -157,14 +109,13 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
     }
   }
 
-  function dispatch(job: PoolJob): void {
+  function dispatch(job: TJob): void {
     if (disposed) return;
     queue.push(job);
     drainQueue();
   }
 
   function cancel(jobId: number): void {
-    // Check queue first — if queued, just remove and call onCancelled
     const qIdx = queue.findIndex((j) => j.jobId === jobId);
     if (qIdx !== -1) {
       const [job] = queue.splice(qIdx, 1);
@@ -172,7 +123,6 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
       return;
     }
 
-    // If in-flight, send cancel to the worker
     for (const entry of entries) {
       if (entry.state.status === 'busy' && entry.state.jobId === jobId) {
         entry.worker.postMessage({ type: 'cancel' });
@@ -182,13 +132,11 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
   }
 
   function cancelAll(): void {
-    // Cancel all queued jobs
     while (queue.length > 0) {
       const job = queue.shift()!;
       job.onCancelled();
     }
 
-    // Cancel all in-flight jobs
     for (const entry of entries) {
       if (entry.state.status === 'busy') {
         entry.worker.postMessage({ type: 'cancel' });

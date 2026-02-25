@@ -1,11 +1,24 @@
 mod banded;
+#[allow(dead_code)]
+pub(crate) mod biexp_fit;
 mod fft;
 mod filter;
 mod fista;
+#[allow(dead_code)]
+pub(crate) mod indeca;
 mod kernel;
+#[allow(dead_code)]
+pub(crate) mod kernel_est;
+#[allow(dead_code)]
+pub(crate) mod threshold;
+#[allow(dead_code)]
+pub(crate) mod upsample;
 
 #[cfg(feature = "pybindings")]
 mod py_api;
+
+#[cfg(feature = "jsbindings")]
+mod js_indeca;
 
 use banded::BandedAR2;
 use filter::BandpassFilter;

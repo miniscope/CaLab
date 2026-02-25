@@ -1,5 +1,7 @@
 export { createWorkerPool } from './worker-pool.ts';
-export type { WorkerPool } from './worker-pool.ts';
+export type { WorkerPool, BaseJob, MessageRouter } from './worker-pool.ts';
+export { createCaTuneWorkerPool } from './catune-pool.ts';
+export type { CaTunePoolJob } from './catune-pool.ts';
 export { resolveWorkerCount, getWorkersOverride, getDefaultWorkerCount } from './worker-sizing.ts';
 export {
   computePaddedWindow,
