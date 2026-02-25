@@ -511,19 +511,40 @@
 
 .export-modal__close {
   position: absolute;
-  top: 0.5rem;
-  right: 0.75rem;
+  top: var(--space-sm);
+  right: var(--space-md);
   background: none;
   border: none;
   color: var(--text-secondary);
   font-size: 1.5rem;
   cursor: pointer;
   line-height: 1;
-  padding: 0.25rem;
+  padding: var(--space-xs);
 }
 
 .export-modal__close:hover {
   color: var(--text-primary);
+}
+
+.export-modal__heading {
+  font-weight: var(--font-weight-semibold);
+  font-size: 1.1rem;
+}
+
+.export-modal__params {
+  margin-top: var(--space-md);
+  justify-content: center;
+}
+
+.export-modal__body {
+  margin-top: var(--space-md);
+  color: var(--text-secondary);
+}
+
+.export-modal__hint {
+  margin-top: var(--space-sm);
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
 }
 
 /* ========================

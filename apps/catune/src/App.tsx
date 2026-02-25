@@ -32,7 +32,6 @@ import {
   loadFromBridge,
   bridgeUrl,
   bridgeExportDone,
-  setBridgeExportDone,
 } from './lib/data-store.ts';
 import {
   tauRise,
@@ -87,6 +86,15 @@ const App: Component = () => {
 
   // Tutorial panel state
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
+
+  // Export modal visibility (separate from bridgeExportDone so button stays disabled)
+  const [exportModalOpen, setExportModalOpen] = createSignal(false);
+  const closeExportModal = () => setExportModalOpen(false);
+  createEffect(
+    on(bridgeExportDone, (done) => {
+      if (done) setExportModalOpen(true);
+    }),
+  );
 
   // First-time banner: show if not dismissed and data is loaded
   const [bannerDismissed, setBannerDismissed] = createSignal(loadBannerDismissedState());
@@ -158,20 +166,14 @@ const App: Component = () => {
       </Show>
 
       {/* Bridge export success — modal popup */}
-      <Show when={bridgeExportDone()}>
-        <div class="export-modal-backdrop" onClick={() => setBridgeExportDone(false)}>
+      <Show when={exportModalOpen()}>
+        <div class="export-modal-backdrop" onClick={closeExportModal}>
           <div class="export-modal" onClick={(e) => e.stopPropagation()}>
-            <button
-              class="export-modal__close"
-              onClick={() => setBridgeExportDone(false)}
-              aria-label="Close"
-            >
+            <button class="export-modal__close" onClick={closeExportModal} aria-label="Close">
               &times;
             </button>
-            <p class="text-success" style="font-weight: 600; font-size: 1.1rem;">
-              Parameters exported to Python
-            </p>
-            <div class="info-summary" style="margin-top: 1rem; justify-content: center;">
+            <p class="export-modal__heading text-success">Parameters exported to Python</p>
+            <div class="export-modal__params info-summary">
               <span>rise: {(tauRise() * 1000).toFixed(1)}ms</span>
               <span class="info-summary__sep">&middot;</span>
               <span>decay: {(tauDecay() * 1000).toFixed(1)}ms</span>
@@ -182,11 +184,11 @@ const App: Component = () => {
               <span class="info-summary__sep">&middot;</span>
               <span>filter: {filterEnabled() ? 'on' : 'off'}</span>
             </div>
-            <p style="margin-top: 1rem; color: var(--text-secondary);">
+            <p class="export-modal__body">
               You can return to your Python session — <code>tune()</code> has received your
               parameters.
             </p>
-            <p style="margin-top: 0.75rem; color: var(--text-tertiary); font-size: 0.85rem;">
+            <p class="export-modal__hint">
               Close this popup to continue adjusting parameters, but further changes won't
               auto-export back to Python.
             </p>
