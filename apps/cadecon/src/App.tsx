@@ -2,7 +2,6 @@ import type { Component } from 'solid-js';
 import { Show } from 'solid-js';
 import { DashboardShell, DashboardPanel, VizLayout, isAuthCallback, AuthCallback } from '@calab/ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
-import { formatDuration } from '@calab/core';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -13,15 +12,10 @@ import { user, authLoading } from './lib/auth-store.ts';
 import {
   importStep,
   rawFile,
-  effectiveShape,
-  samplingRate,
-  durationSeconds,
   resetImport,
   loadDemoData,
   loadFromBridge,
   bridgeUrl,
-  isDemo,
-  demoPreset,
 } from './lib/data-store.ts';
 
 import './styles/controls.css';
@@ -50,33 +44,6 @@ const App: Component = () => {
           mode="dashboard"
           sidebar={
             <>
-              <DashboardPanel id="dataset-info" variant="data">
-                <p class="panel-label">Dataset</p>
-                <div class="info-summary" style="margin-bottom: 0;">
-                  <Show when={isDemo()}>
-                    <span>{demoPreset()?.label ?? 'Demo'}</span>
-                    <span class="info-summary__sep">&middot;</span>
-                  </Show>
-                  <Show when={effectiveShape()}>
-                    {(shape) => (
-                      <>
-                        <span>{shape()[0]} cells</span>
-                        <span class="info-summary__sep">&middot;</span>
-                        <span>{shape()[1].toLocaleString()} tp</span>
-                      </>
-                    )}
-                  </Show>
-                  <Show when={samplingRate()}>
-                    <span class="info-summary__sep">&middot;</span>
-                    <span>{samplingRate()} Hz</span>
-                  </Show>
-                  <Show when={durationSeconds()}>
-                    <span class="info-summary__sep">&middot;</span>
-                    <span>{formatDuration(durationSeconds())}</span>
-                  </Show>
-                </div>
-              </DashboardPanel>
-
               <DashboardPanel id="subset-config" variant="controls">
                 <SubsetConfig />
               </DashboardPanel>

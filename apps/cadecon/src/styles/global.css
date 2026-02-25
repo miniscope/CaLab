@@ -300,14 +300,14 @@
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-sm);
-  margin-top: var(--space-md);
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
 }
 
 .stat-item {
   background: var(--bg-secondary);
   border-radius: var(--radius-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
   text-align: center;
   border: 1px solid var(--border-subtle);
 }

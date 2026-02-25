@@ -1,16 +1,27 @@
 /* Parameter control panel styles */
 
 /* ========================
+   Sidebar: compact spacing
+   ======================== */
+.viz-layout__sidebar {
+  gap: var(--space-xs);
+}
+
+.viz-layout__sidebar .dashboard-panel {
+  padding: var(--space-sm) var(--space-md);
+}
+
+/* ========================
    Parameter Panel
    ======================== */
 .param-panel {
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
-  padding: var(--space-md);
+  padding: 0;
 }
 
 .param-panel__header {
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--space-sm);
 }
 
 .param-panel__sliders {
@@ -22,7 +33,7 @@
    Parameter Slider
    ======================== */
 .param-slider {
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--space-sm);
 }
 
 .param-slider:last-child {
@@ -175,9 +186,9 @@
 
 /* --- Toggle --- */
 .param-panel__toggle-group {
-  padding-top: var(--space-md);
+  padding-top: var(--space-sm);
   border-top: 1px solid var(--border-subtle);
-  margin-top: var(--space-sm);
+  margin-top: var(--space-xs);
 }
 
 .param-panel__toggle {
