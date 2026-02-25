@@ -1,5 +1,6 @@
 import { Show, type Accessor } from 'solid-js';
-import { CompactHeader } from '@calab/ui';
+import { CompactHeader, WorkerIndicator } from '@calab/ui';
+import { resolveWorkerCount } from '@calab/compute';
 import {
   rawFile,
   effectiveShape,
@@ -27,6 +28,8 @@ export function CaTuneHeader(props: CaTuneHeaderProps) {
     clearMultiCellState();
     resetImport();
   };
+
+  const workerCount = resolveWorkerCount();
 
   const durationDisplay = () => formatDuration(durationSeconds());
 
@@ -60,6 +63,8 @@ export function CaTuneHeader(props: CaTuneHeaderProps) {
             <span class="compact-header__sep">&middot;</span>
             <span>{durationDisplay()}</span>
           </Show>
+          <span class="compact-header__sep">&middot;</span>
+          <WorkerIndicator count={workerCount} />
         </>
       }
       actions={

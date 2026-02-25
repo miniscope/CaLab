@@ -1,5 +1,6 @@
 export { createWorkerPool } from './worker-pool.ts';
 export type { WorkerPool } from './worker-pool.ts';
+export { resolveWorkerCount, getWorkersOverride, getDefaultWorkerCount } from './worker-sizing.ts';
 export {
   computePaddedWindow,
   computeSafeMargin,

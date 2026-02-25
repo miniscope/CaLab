@@ -3,6 +3,7 @@
 // supports per-job cancellation and bulk cancelAll.
 
 import type { SolverParams, WarmStartStrategy, PoolWorkerOutbound } from '@calab/core';
+import { resolveWorkerCount } from './worker-sizing.ts';
 
 export interface PoolJob {
   jobId: number;
@@ -35,6 +36,7 @@ interface PoolEntry {
 }
 
 export interface WorkerPool {
+  readonly size: number;
   dispatch(job: PoolJob): void;
   cancel(jobId: number): void;
   cancelAll(): void;
@@ -42,7 +44,7 @@ export interface WorkerPool {
 }
 
 export function createWorkerPool(createWorker: () => Worker, poolSize?: number): WorkerPool {
-  const size = poolSize ?? Math.min(navigator.hardwareConcurrency ?? 4, 4);
+  const size = poolSize ?? resolveWorkerCount();
   const entries: PoolEntry[] = [];
   const queue: PoolJob[] = [];
   // Map jobId → PoolJob for in-flight jobs (needed for routing messages)
@@ -211,5 +213,5 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
     inFlightJobs.clear();
   }
 
-  return { dispatch, cancel, cancelAll, dispose };
+  return { size, dispatch, cancel, cancelAll, dispose };
 }

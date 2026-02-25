@@ -18,3 +18,5 @@ export type { AuthCallbackProps } from './AuthCallback.tsx';
 export { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
 export type { AuthMenuWrapperProps } from './AuthMenuWrapper.tsx';
 export { isAuthCallback } from './auth-utils.ts';
+export { WorkerIndicator } from './WorkerIndicator.tsx';
+export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
