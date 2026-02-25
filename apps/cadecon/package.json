@@ -1,0 +1,33 @@
+{
+  "name": "cadecon",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "calab": {
+    "displayName": "CaDecon",
+    "description": "Automated calcium deconvolution",
+    "longDescription": "Automated binary spike inference with shared kernel learning. Load fluorescence traces, configure subset-based optimization, and run InDeCa-inspired deconvolution across all cells.",
+    "features": [
+      "Automated spike inference with shared kernel learning",
+      "Subset-based optimization for large datasets",
+      "TxN raster heatmap visualization",
+      "Configurable algorithm parameters"
+    ],
+    "status": "coming-soon",
+    "screenshot": ""
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@calab/community": "*",
+    "@calab/compute": "*",
+    "@calab/core": "*",
+    "@calab/io": "*",
+    "@calab/tutorials": "*",
+    "@calab/ui": "*",
+    "solid-js": "^1.9.11"
+  }
+}
