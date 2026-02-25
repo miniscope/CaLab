@@ -3,13 +3,13 @@
 // via optional fromSlider/toSlider transform functions.
 
 import { Show } from 'solid-js';
-import type { Accessor, Setter } from 'solid-js';
+import type { Accessor } from 'solid-js';
 import { notifyTutorialAction, isTutorialActive } from '@calab/tutorials';
 
 export interface ParameterSliderProps {
   label: string;
   value: Accessor<number>;
-  setValue: Setter<number>;
+  setValue: (value: number) => void;
   min: number;
   max: number;
   step: number;

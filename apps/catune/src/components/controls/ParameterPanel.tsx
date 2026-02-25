@@ -19,6 +19,17 @@ import { ParameterSlider } from './ParameterSlider.tsx';
 import '../../styles/controls.css';
 
 export function ParameterPanel() {
+  // Enforce tau_decay > tau_rise so the kernel never goes negative or zero.
+  const minGap = PARAM_RANGES.tauDecay.step;
+  const clampedSetTauRise = (v: number) => {
+    setTauRise(v);
+    if (tauDecay() < v + minGap) setTauDecay(v + minGap);
+  };
+  const clampedSetTauDecay = (v: number) => {
+    setTauDecay(v);
+    if (tauRise() > v - minGap) setTauRise(v - minGap);
+  };
+
   const trueRise = () => {
     if (!groundTruthVisible() || !isDemo() || !demoPreset()) return undefined;
     return demoPreset()!.params.tauRise;
@@ -35,7 +46,7 @@ export function ParameterPanel() {
         <ParameterSlider
           label="Rise Time"
           value={tauRise}
-          setValue={setTauRise}
+          setValue={clampedSetTauRise}
           min={PARAM_RANGES.tauRise.min}
           max={PARAM_RANGES.tauRise.max}
           step={PARAM_RANGES.tauRise.step}
@@ -47,7 +58,7 @@ export function ParameterPanel() {
         <ParameterSlider
           label="Decay Time"
           value={tauDecay}
-          setValue={setTauDecay}
+          setValue={clampedSetTauDecay}
           min={PARAM_RANGES.tauDecay.min}
           max={PARAM_RANGES.tauDecay.max}
           step={PARAM_RANGES.tauDecay.step}
