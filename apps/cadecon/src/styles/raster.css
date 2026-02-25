@@ -1,7 +1,17 @@
+/* Raster panel: grow to fill available vertical space */
+.raster-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Raster heatmap container and canvas styles */
 
 .raster-container {
   width: 100%;
+  flex: 1;
+  min-height: 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-primary);
@@ -11,5 +21,6 @@
 .raster-canvas {
   display: block;
   width: 100%;
+  height: 100%;
   cursor: pointer;
 }

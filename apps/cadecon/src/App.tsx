@@ -91,7 +91,7 @@ const App: Component = () => {
             </>
           }
         >
-          <DashboardPanel id="raster" variant="data">
+          <DashboardPanel id="raster" variant="data" class="raster-panel">
             <p class="panel-label">Raster Overview</p>
             <RasterOverview />
           </DashboardPanel>

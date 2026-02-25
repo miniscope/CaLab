@@ -93,14 +93,16 @@ export function RasterOverview() {
 
     const rect = containerRef?.getBoundingClientRect();
     const displayWidth = rect?.width ?? 800;
-    const displayHeight = Math.min(Math.max(200, N * 3), 500);
+    const displayHeight = rect?.height ?? Math.min(Math.max(200, N * 3), 500);
     const dpr = window.devicePixelRatio || 1;
 
-    canvas.width = displayWidth * dpr;
-    canvas.height = displayHeight * dpr;
+    // Size canvas at physical resolution
+    const physW = Math.round(displayWidth * dpr);
+    const physH = Math.round(displayHeight * dpr);
+    canvas.width = physW;
+    canvas.height = physH;
     canvas.style.width = `${displayWidth}px`;
     canvas.style.height = `${displayHeight}px`;
-    ctx.scale(dpr, dpr);
 
     lastWidth = displayWidth;
     lastHeight = displayHeight;
@@ -118,20 +120,20 @@ export function RasterOverview() {
     const p99 = samples[Math.floor(samples.length * 0.99)] ?? 1;
     const range = p99 - p1 || 1;
 
-    // Draw heatmap: each pixel maps to a block of data
-    const imageData = ctx.createImageData(displayWidth, displayHeight);
+    // Draw heatmap at physical pixel resolution (putImageData ignores canvas transforms)
+    const imageData = ctx.createImageData(physW, physH);
     const pixels = imageData.data;
 
-    for (let py = 0; py < displayHeight; py++) {
-      const cell = Math.floor((py / displayHeight) * N);
-      for (let px = 0; px < displayWidth; px++) {
-        const t = Math.floor((px / displayWidth) * T);
+    for (let py = 0; py < physH; py++) {
+      const cell = Math.floor((py / physH) * N);
+      for (let px = 0; px < physW; px++) {
+        const t = Math.floor((px / physW) * T);
         const v = typedData[dataIndex(cell, t, rawCols, isSwapped)];
         const normalized = Number.isFinite(v)
           ? Math.max(0, Math.min(255, Math.round(((v - p1) / range) * 255)))
           : 0;
 
-        const offset = (py * displayWidth + px) * 4;
+        const offset = (py * physW + px) * 4;
         pixels[offset] = VIRIDIS_LUT[normalized * 3];
         pixels[offset + 1] = VIRIDIS_LUT[normalized * 3 + 1];
         pixels[offset + 2] = VIRIDIS_LUT[normalized * 3 + 2];
@@ -141,9 +143,10 @@ export function RasterOverview() {
 
     ctx.putImageData(imageData, 0, 0);
 
-    // Draw subset rectangles
+    // Draw subset rectangles (scale to physical pixels since we skipped ctx.scale)
     const rects = subsetRectangles();
     const selected = selectedSubsetIdx();
+    ctx.scale(dpr, dpr);
 
     for (const r of rects) {
       const x = (r.tStart / T) * displayWidth;
@@ -155,7 +158,6 @@ export function RasterOverview() {
       ctx.lineWidth = r.idx === selected ? 3 : 1.5;
       ctx.strokeRect(x, y, w, h);
 
-      // Label
       ctx.fillStyle = SUBSET_COLORS[r.idx % SUBSET_COLORS.length];
       ctx.font = 'bold 11px system-ui, sans-serif';
       ctx.fillText(`K${r.idx + 1}`, x + 3, y + 13);
