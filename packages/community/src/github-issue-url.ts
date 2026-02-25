@@ -2,7 +2,7 @@
 
 const REPO_BASE = 'https://github.com/miniscope/CaLab/issues/new';
 
-export type AppLabel = 'catune' | 'carank' | 'python';
+export type AppLabel = 'catune' | 'carank' | 'cadecon' | 'python';
 
 const FIELD_LABELS: Record<string, string> = {
   indicator: 'Calcium Indicator',

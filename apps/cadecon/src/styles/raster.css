@@ -1,0 +1,15 @@
+/* Raster heatmap container and canvas styles */
+
+.raster-container {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+}
+
+.raster-canvas {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}

@@ -51,7 +51,7 @@ function extractDomain(url: string): string | null {
  * Stores the returned session_id for subsequent trackEvent calls.
  */
 export async function initSession(
-  appName: 'catune' | 'carank',
+  appName: 'catune' | 'carank' | 'cadecon',
   appVersion?: string,
 ): Promise<void> {
   if (!supabaseEnabled) return;

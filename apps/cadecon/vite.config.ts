@@ -1,0 +1,36 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { defineConfig } from 'vite';
+import solidPlugin from 'vite-plugin-solid';
+import wasm from 'vite-plugin-wasm';
+
+const repoRoot = path.resolve(import.meta.dirname, '../..');
+const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf-8'));
+const displayName = pkg.calab?.displayName ?? path.basename(import.meta.dirname);
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@calab/core': path.resolve(repoRoot, 'packages/core/src'),
+      '@calab/compute': path.resolve(repoRoot, 'packages/compute/src'),
+      '@calab/io': path.resolve(repoRoot, 'packages/io/src'),
+      '@calab/community': path.resolve(repoRoot, 'packages/community/src'),
+      '@calab/tutorials': path.resolve(repoRoot, 'packages/tutorials/src'),
+      '@calab/ui': path.resolve(repoRoot, 'packages/ui/src'),
+    },
+  },
+  envDir: repoRoot,
+  base: process.env.GITHUB_ACTIONS
+    ? `/CaLab/${displayName}/`
+    : process.env.CALAB_PAGES
+      ? `/${displayName}/`
+      : '/',
+  plugins: [solidPlugin(), wasm()],
+  worker: {
+    plugins: () => [wasm()],
+    format: 'es',
+  },
+  build: {
+    target: 'esnext',
+  },
+});
