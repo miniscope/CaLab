@@ -3,7 +3,7 @@
  * for a configurable time window. Uses uPlot via TracePanel.
  */
 
-import { createMemo, createSignal, Show } from 'solid-js';
+import { createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import type uPlot from 'uplot';
 import { TracePanel } from '../traces/TracePanel.tsx';
 import { downsampleMinMax } from '@calab/compute';
@@ -56,7 +56,8 @@ export interface ZoomWindowProps {
   groundTruthCalcium?: Float64Array;
 }
 
-const ZOOM_BUCKET_WIDTH = 800;
+const MIN_BUCKET_WIDTH = 300;
+const MAX_BUCKET_WIDTH = 1200;
 const DECONV_GAP = -2; // z-score offset: negative = deconv peaks overlap raw range
 const DECONV_SCALE = 0.35; // scale deconvolved to this fraction of raw z-range
 const RESID_GAP = 0.5; // gap between deconv band bottom and residual band top
@@ -71,6 +72,24 @@ const emptySeriesData = (): [number[], ...number[][]] =>
 
 export function ZoomWindow(props: ZoomWindowProps) {
   const height = () => props.height ?? 150;
+
+  // Track container width for adaptive downsampling bucket count
+  let containerRef: HTMLDivElement | undefined;
+  const [chartWidth, setChartWidth] = createSignal(600);
+
+  onMount(() => {
+    if (!containerRef) return;
+    setChartWidth(containerRef.clientWidth || 600);
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setChartWidth(w);
+    });
+    ro.observe(containerRef);
+    onCleanup(() => ro.disconnect());
+  });
+
+  const bucketWidth = () =>
+    Math.max(MIN_BUCKET_WIDTH, Math.min(MAX_BUCKET_WIDTH, Math.round(chartWidth())));
 
   // Z-score stats from full raw trace — consistent across zoom levels.
   // Includes zMin/zMax so the z-score range is computed exactly ONCE.
@@ -180,14 +199,14 @@ export function ZoomWindow(props: ZoomWindowProps) {
     // Windowed result: solver output is shorter than raw, offset-aligned
     if (windowStart >= 0 && windowEnd <= trace.length) {
       const slice = trace.subarray(windowStart, windowEnd);
-      const [, dsValues] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      const [, dsValues] = downsampleMinMax(x, slice, bucketWidth());
       return transform(dsValues);
     }
 
     // Full-length fallback: solver output is same length as raw
     if (trace.length === rawLength) {
       const slice = trace.subarray(startSample, endSample);
-      const [, dsValues] = downsampleMinMax(x, slice, ZOOM_BUCKET_WIDTH);
+      const [, dsValues] = downsampleMinMax(x, slice, bucketWidth());
       return transform(dsValues);
     }
 
@@ -284,7 +303,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
 
     // Raw trace — z-score normalized
     const rawSlice = raw.subarray(startSample, endSample);
-    const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, ZOOM_BUCKET_WIDTH);
+    const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, bucketWidth());
     const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
 
     const offset = props.deconvWindowOffset ?? 0;
@@ -382,7 +401,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     let dsGTCalcium: number[];
     if (props.groundTruthCalcium && props.groundTruthCalcium.length > 0) {
       const gtcSlice = props.groundTruthCalcium.subarray(startSample, endSample);
-      const [, dsGTCRaw] = downsampleMinMax(x, gtcSlice, ZOOM_BUCKET_WIDTH);
+      const [, dsGTCRaw] = downsampleMinMax(x, gtcSlice, bucketWidth());
       dsGTCalcium = dsGTCRaw.map((v) => (v - mean) / std);
     } else {
       dsGTCalcium = new Array(dsX.length).fill(null) as number[];
@@ -392,7 +411,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
     let dsGTSpikes: number[];
     if (props.groundTruthSpikes && props.groundTruthSpikes.length > 0) {
       const gtsSlice = props.groundTruthSpikes.subarray(startSample, endSample);
-      const [, dsGTSRaw] = downsampleMinMax(x, gtsSlice, ZOOM_BUCKET_WIDTH);
+      const [, dsGTSRaw] = downsampleMinMax(x, gtsSlice, bucketWidth());
       dsGTSpikes = scaleToDeconvBand(dsGTSRaw, gtSpikesMinMax(), zMin, zMax);
     } else {
       dsGTSpikes = new Array(dsX.length).fill(null) as number[];
@@ -545,6 +564,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
 
   return (
     <div
+      ref={containerRef}
       class="zoom-window"
       classList={{ 'zoom-window--dragging': dragging() }}
       onWheel={handleWheel}
