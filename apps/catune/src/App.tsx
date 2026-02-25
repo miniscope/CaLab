@@ -32,6 +32,7 @@ import {
   loadFromBridge,
   bridgeUrl,
   bridgeExportDone,
+  setBridgeExportDone,
 } from './lib/data-store.ts';
 import {
   tauRise,
@@ -156,16 +157,17 @@ const App: Component = () => {
         </div>
       </Show>
 
-      {/* Bridge export success — full-page confirmation */}
+      {/* Bridge export success — modal popup */}
       <Show when={bridgeExportDone()}>
-        <main class="import-container">
-          <header class="app-header">
-            <h1 class="app-header__title">CaTune</h1>
-            <span class="app-header__version">
-              CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}
-            </span>
-          </header>
-          <div class="card ready-card" style="margin-top: 3rem; text-align: center;">
+        <div class="export-modal-backdrop" onClick={() => setBridgeExportDone(false)}>
+          <div class="export-modal" onClick={(e) => e.stopPropagation()}>
+            <button
+              class="export-modal__close"
+              onClick={() => setBridgeExportDone(false)}
+              aria-label="Close"
+            >
+              &times;
+            </button>
             <p class="text-success" style="font-weight: 600; font-size: 1.1rem;">
               Parameters exported to Python
             </p>
@@ -185,23 +187,22 @@ const App: Component = () => {
               parameters.
             </p>
             <p style="margin-top: 0.75rem; color: var(--text-tertiary); font-size: 0.85rem;">
-              You can close this tab.
+              Close this popup to continue adjusting parameters, but further changes won't
+              auto-export back to Python.
             </p>
           </div>
-        </main>
+        </div>
       </Show>
 
       {/* Import flow (full-page) OR Dashboard */}
       <Show
-        when={!bridgeExportDone() && importStep() === 'ready'}
+        when={importStep() === 'ready'}
         fallback={
-          <Show when={!bridgeExportDone()}>
-            <ImportOverlay
-              hasFile={hasFile()}
-              onReset={resetImport}
-              onLoadDemo={(opts) => loadDemoData(opts)}
-            />
-          </Show>
+          <ImportOverlay
+            hasFile={hasFile()}
+            onReset={resetImport}
+            onLoadDemo={(opts) => loadDemoData(opts)}
+          />
         }
       >
         <DashboardShell

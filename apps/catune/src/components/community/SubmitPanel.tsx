@@ -19,6 +19,7 @@ import {
   demoPreset,
   groundTruthLocked,
   bridgeUrl,
+  bridgeExportDone,
   setBridgeExportDone,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
@@ -199,8 +200,12 @@ export function SubmitPanel() {
               </button>
             }
           >
-            <button class="btn-primary btn-small" onClick={handleBridgeExport}>
-              Export to Python
+            <button
+              class="btn-primary btn-small"
+              onClick={handleBridgeExport}
+              disabled={bridgeExportDone()}
+            >
+              {bridgeExportDone() ? 'Exported' : 'Export to Python'}
             </button>
           </Show>
         </Show>
