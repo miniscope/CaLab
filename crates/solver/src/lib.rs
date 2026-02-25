@@ -73,6 +73,8 @@ pub struct Solver {
 
     // Baseline and kernel scaling
     pub(crate) baseline: f64,
+    baseline_ema: f64,
+    baseline_ema_init: bool,
     kernel_dc_gain: f64,
 
     // Convolution engines
@@ -84,6 +86,7 @@ pub struct Solver {
 
     // Bandpass filter
     bandpass: BandpassFilter,
+    pub(crate) filtered: bool, // true after apply_filter() succeeded on current trace
 }
 
 #[cfg_attr(feature = "jsbindings", wasm_bindgen)]
@@ -114,6 +117,8 @@ impl Solver {
             tolerance: 1e-6,
             lipschitz_constant: 1.0,
             baseline: 0.0,
+            baseline_ema: 0.0,
+            baseline_ema_init: false,
             kernel_dc_gain: 1.0,
             fft: fft::FftConvolver::new(),
             banded: BandedAR2::new(0.02, 0.4, 30.0),
@@ -121,6 +126,7 @@ impl Solver {
             constraint: Constraint::NonNegative,
             reconvolution_stale: true,
             bandpass: BandpassFilter::new(),
+            filtered: false,
         };
 
         // Build kernel with default params
@@ -189,6 +195,9 @@ impl Solver {
         self.converged = false;
         self.prev_objective = f64::INFINITY;
         self.baseline = 0.0;
+        self.baseline_ema = 0.0;
+        self.baseline_ema_init = false;
+        self.filtered = false;
         self.reconvolution_stale = true;
 
         // Prepare FFT infrastructure for this trace length (skip if using banded mode)
@@ -233,16 +242,20 @@ impl Solver {
         if self.reconvolution_stale {
             self.compute_reconvolution();
         }
-        let b = self.baseline as f32;
+        let b = self.baseline_ema as f32;
         self.reconvolution[..self.active_len]
             .iter()
             .map(|&v| v + b)
             .collect()
     }
 
-    /// Returns the estimated scalar baseline.
-    pub fn get_baseline(&self) -> f64 {
-        self.baseline
+    /// Returns the estimated scalar baseline (EMA-smoothed for stable display).
+    /// Lazily computes reconvolution if stale, to ensure the EMA is up to date.
+    pub fn get_baseline(&mut self) -> f64 {
+        if self.reconvolution_stale {
+            self.compute_reconvolution();
+        }
+        self.baseline_ema
     }
 
     /// Returns the current trace for the active region.
@@ -355,13 +368,24 @@ impl Solver {
             }
         }
 
-        // Recompute baseline at current solution
+        // Recompute baseline at current solution for display alignment.
+        // In step_batch, baseline is skipped when filtered (cancels in gradient),
+        // but the display path always needs it to align fit with trace.
         {
             let mut sum = 0.0_f64;
             for i in 0..n {
                 sum += (self.trace[i] - self.reconvolution[i]) as f64;
             }
-            self.baseline = sum / n as f64;
+            let raw_baseline = sum / n as f64;
+            self.baseline = raw_baseline;
+
+            // EMA smoothing for display (damps momentum-induced oscillation)
+            if !self.baseline_ema_init {
+                self.baseline_ema = raw_baseline;
+                self.baseline_ema_init = true;
+            } else {
+                self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+            }
         }
 
         self.reconvolution_stale = false;
@@ -380,7 +404,11 @@ impl Solver {
     /// Apply bandpass filter to the active trace region. Returns true if filtering was applied.
     pub fn apply_filter(&mut self) -> bool {
         let n = self.active_len;
-        self.bandpass.apply(&mut self.trace[..n])
+        let applied = self.bandpass.apply(&mut self.trace[..n]);
+        if applied {
+            self.filtered = true;
+        }
+        applied
     }
 
     /// Get the power spectrum of the current trace (N/2+1 bins).

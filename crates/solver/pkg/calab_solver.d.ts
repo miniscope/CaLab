@@ -57,7 +57,8 @@ export class Solver {
     export_state(): Uint8Array;
     filter_enabled(): boolean;
     /**
-     * Returns the estimated scalar baseline.
+     * Returns the estimated scalar baseline (EMA-smoothed for stable display).
+     * Lazily computes reconvolution if stale, to ensure the EMA is up to date.
      */
     get_baseline(): number;
     /**

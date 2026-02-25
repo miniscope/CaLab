@@ -93,7 +93,8 @@ export class Solver {
         return ret !== 0;
     }
     /**
-     * Returns the estimated scalar baseline.
+     * Returns the estimated scalar baseline (EMA-smoothed for stable display).
+     * Lazily computes reconvolution if stale, to ensure the EMA is up to date.
      * @returns {number}
      */
     get_baseline() {

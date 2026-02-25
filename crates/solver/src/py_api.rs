@@ -93,7 +93,7 @@ impl PySolver {
     }
 
     /// Get estimated baseline.
-    fn get_baseline(&self) -> f64 {
+    fn get_baseline(&mut self) -> f64 {
         self.inner.get_baseline()
     }
 

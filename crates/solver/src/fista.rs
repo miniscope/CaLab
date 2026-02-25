@@ -50,12 +50,24 @@ impl Solver {
             }
 
             // 1b. Compute baseline: b = mean(trace - K*y_k)
-            {
+            //     Skip when bandpass-filtered — DC is already removed, and the baseline
+            //     mathematically cancels in the gradient (residual = mean-centered signals).
+            //     Computing it anyway would produce pure momentum-oscillation noise.
+            if !self.filtered {
                 let mut sum = 0.0_f64;
                 for i in 0..n {
                     sum += (self.trace[i] - self.reconvolution[i]) as f64;
                 }
-                self.baseline = sum / n as f64;
+                let raw_baseline = sum / n as f64;
+                self.baseline = raw_baseline;
+
+                // Per-iteration EMA smoothing for display baseline
+                if !self.baseline_ema_init {
+                    self.baseline_ema = raw_baseline;
+                    self.baseline_ema_init = true;
+                } else {
+                    self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+                }
             }
 
             // 2. Compute residual = K * y_k + b - trace
@@ -75,17 +87,13 @@ impl Solver {
                     .convolve_adjoint(&self.residual_buf[..n], &mut self.gradient[..n]),
             }
 
-            // 4. Proximal gradient step from y_k:
+            // 4. Loop A (fused): save x_k + proximal gradient step
             //    x_{k+1} = prox(y_k - step_size * gradient)
-            //    = max(0, y_k - step_size * gradient - threshold)
-            // Save x_k into residual_buf temporarily for restart check and convergence
-            for i in 0..n {
-                self.residual_buf[i] = self.solution[i]; // save x_k
-            }
-
             let step_f32 = step_size as f32;
             let thresh_f32 = threshold as f32;
             for i in 0..n {
+                let x_old = self.solution[i];
+                self.residual_buf[i] = x_old; // save x_k for restart check + momentum
                 let z = self.solution_prev[i] - step_f32 * self.gradient[i];
                 self.solution[i] = match self.constraint {
                     Constraint::NonNegative => (z - thresh_f32).max(0.0),
@@ -95,49 +103,40 @@ impl Solver {
 
             self.iteration += 1;
 
-            // 5. Primal residual convergence criterion: ||x_{k+1} - x_k|| / ||x_k||
-            //    This replaces the expensive forward convolution + objective evaluation.
+            // 5. Loop B (fused): convergence + restart accumulators
             let mut diff_sq = 0.0_f64;
             let mut xk_sq = 0.0_f64;
+            let mut dot = 0.0_f64;
             for i in 0..n {
                 let x_new = self.solution[i] as f64;
                 let x_old = self.residual_buf[i] as f64;
                 let d = x_new - x_old;
                 diff_sq += d * d;
                 xk_sq += x_old * x_old;
+                if self.iteration > 1 {
+                    let y_minus_x = self.solution_prev[i] as f64 - x_new;
+                    dot += y_minus_x * d;
+                }
             }
             let rel_change = (diff_sq / (xk_sq + 1e-20)).sqrt();
 
-            // 6. Adaptive restart via gradient-mapping criterion (O'Donoghue & Candes 2015).
-            //    When the extrapolated point y_k leads to a solution x_{k+1} that moves
-            //    in the opposite direction of the momentum, restart. This is detected by:
-            //    (y_k - x_{k+1}) . (x_{k+1} - x_k) > 0
-            //    which means the proximal step "undid" the momentum direction.
-            if self.iteration > 1 {
-                let mut dot = 0.0_f64;
-                for i in 0..n {
-                    let y_minus_x = self.solution_prev[i] as f64 - self.solution[i] as f64;
-                    let x_diff = self.solution[i] as f64 - self.residual_buf[i] as f64;
-                    dot += y_minus_x * x_diff;
-                }
-                if dot > 0.0 {
-                    self.t_fista = 1.0;
-                }
+            // Adaptive restart (O'Donoghue & Candes 2015)
+            if self.iteration > 1 && dot > 0.0 {
+                self.t_fista = 1.0;
             }
 
-            // 7. FISTA momentum extrapolation: y_{k+1} = x_{k+1} + momentum * (x_{k+1} - x_k)
+            // 6. Loop C: FISTA momentum extrapolation (needs computed momentum scalar)
             let t_new = (1.0 + (1.0 + 4.0 * self.t_fista * self.t_fista).sqrt()) / 2.0;
             let momentum = ((self.t_fista - 1.0) / t_new) as f32;
 
             for i in 0..n {
-                let x_k = self.residual_buf[i]; // previous x_k
-                let x_new = self.solution[i]; // x_{k+1}
-                let y_new = x_new + momentum * (x_new - x_k);
-                self.solution_prev[i] = y_new.max(0.0);
+                let x_new = self.solution[i];
+                let x_old = self.residual_buf[i];
+                self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
             }
             self.t_fista = t_new;
 
-            // 8. Convergence check using primal residual
+            // 7. Convergence check using primal residual
             if self.iteration > 5 && rel_change < self.tolerance {
                 self.converged = true;
             }
