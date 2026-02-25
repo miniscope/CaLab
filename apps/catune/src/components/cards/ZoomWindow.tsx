@@ -17,6 +17,7 @@ import {
   createGroundTruthSpikesSeries,
   createGroundTruthCalciumSeries,
 } from '../../lib/chart/series-config.ts';
+import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
 import {
   showRaw,
   showFiltered,
@@ -27,7 +28,6 @@ import {
   showGTSpikes,
   tauDecay,
 } from '../../lib/viz-store.ts';
-import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;

@@ -30,38 +30,37 @@ export function transientZonePlugin(getTransientEnd: () => number): uPlot.Plugin
 
         const ctx = u.ctx;
         const dpr = devicePixelRatio;
-        const { left, top, width, height } = u.bbox;
+        const { left, top, height } = u.bbox;
 
         // Convert transient boundary to canvas pixel position
         const rightPx = u.valToPos(Math.min(transientEnd, xMax), 'x', true);
-        const leftPx = left;
-        const zoneWidth = rightPx - leftPx;
+        const zoneWidth = rightPx - left;
 
         if (zoneWidth <= 0) return;
 
         ctx.save();
 
-        // Solid tinted background
+        // Tinted background
         ctx.fillStyle = FILL_COLOR;
-        ctx.fillRect(leftPx, top, zoneWidth, height);
+        ctx.fillRect(left, top, zoneWidth, height);
 
-        // Diagonal stripe pattern for visual distinction
+        // Diagonal stripe pattern
         ctx.beginPath();
-        ctx.rect(leftPx, top, zoneWidth, height);
+        ctx.rect(left, top, zoneWidth, height);
         ctx.clip();
 
         ctx.strokeStyle = STRIPE_COLOR;
         ctx.lineWidth = 1 * dpr;
         const spacing = STRIPE_SPACING * dpr;
-        const diag = width + height;
-        for (let d = -diag; d < diag; d += spacing) {
+        const sweep = zoneWidth + height;
+        for (let d = -height; d < sweep; d += spacing) {
           ctx.beginPath();
-          ctx.moveTo(leftPx + d, top);
-          ctx.lineTo(leftPx + d + height, top + height);
+          ctx.moveTo(left + d, top);
+          ctx.lineTo(left + d + height, top + height);
           ctx.stroke();
         }
 
-        // Label (only if the zone is wide enough to fit text)
+        // Label (only when zone is wide enough to fit text)
         const labelFontSize = 9 * dpr;
         ctx.font = `${labelFontSize}px sans-serif`;
         const label = 'No fit near t = 0';
@@ -69,7 +68,7 @@ export function transientZonePlugin(getTransientEnd: () => number): uPlot.Plugin
         const minWidth = textWidth + 12 * dpr;
 
         if (zoneWidth >= minWidth) {
-          const cx = leftPx + zoneWidth / 2;
+          const cx = left + zoneWidth / 2;
           const cy = top + labelFontSize + 6 * dpr;
           ctx.fillStyle = LABEL_COLOR;
           ctx.textAlign = 'center';
