@@ -44,7 +44,7 @@ const effectiveNSub = createMemo(() => {
   if (N === 0) return 10;
   const K = numSubsets();
   const scale = Math.sqrt(targetCoverage() / K);
-  return Math.max(10, Math.min(N, Math.floor(N * scale / Math.sqrt(aspectRatio()))));
+  return Math.max(10, Math.min(N, Math.floor((N * scale) / Math.sqrt(aspectRatio()))));
 });
 
 // Seeded LCG for deterministic pseudo-random placement
