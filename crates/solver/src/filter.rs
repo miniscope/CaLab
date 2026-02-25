@@ -1,6 +1,7 @@
 use realfft::RealFftPlanner;
 use rustfft::num_complex::Complex;
 use std::f32::consts::PI;
+use std::sync::Arc;
 
 /// Margin factors for deriving bandpass cutoffs from kernel time constants.
 /// HP cutoff = 1/(2π·τ_decay·M_HP), LP cutoff = M_LP/(2π·τ_rise).
@@ -23,6 +24,10 @@ pub struct BandpassFilter {
     planner: RealFftPlanner<f32>,
     planned_len: usize,
 
+    // Cached FFT plans (Arc from planner, avoids hash-map lookup per call)
+    plan_fwd: Option<Arc<dyn realfft::RealToComplex<f32>>>,
+    plan_inv: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
+
     // Grow-only buffers
     fft_input: Vec<f32>,
     spectrum: Vec<Complex<f32>>,
@@ -42,6 +47,8 @@ impl BandpassFilter {
             valid: false,
             planner: RealFftPlanner::new(),
             planned_len: 0,
+            plan_fwd: None,
+            plan_inv: None,
             fft_input: Vec::new(),
             spectrum: Vec::new(),
             gain_curve: Vec::new(),
@@ -85,8 +92,10 @@ impl BandpassFilter {
         // Invalid if high-pass >= low-pass
         self.valid = self.f_hp < self.f_lp;
 
-        // Invalidate cached gain curve
+        // Invalidate cached gain curve and FFT plans
         self.planned_len = 0;
+        self.plan_fwd = None;
+        self.plan_inv = None;
     }
 
     /// Grow-only buffer allocation for FFT of length n.
@@ -111,6 +120,7 @@ impl BandpassFilter {
             self.power_spectrum.resize(spectrum_len, 0.0);
         }
 
+        // Cache FFT plans and allocate scratch
         let fwd = self.planner.plan_fft_forward(n);
         let inv = self.planner.plan_fft_inverse(n);
         let fwd_scratch = fwd.get_scratch_len();
@@ -121,6 +131,8 @@ impl BandpassFilter {
         if self.scratch_inv.len() < inv_scratch {
             self.scratch_inv.resize(inv_scratch, Complex::new(0.0, 0.0));
         }
+        self.plan_fwd = Some(fwd);
+        self.plan_inv = Some(inv);
 
         self.build_gain_curve(n);
         self.planned_len = n;
@@ -174,8 +186,8 @@ impl BandpassFilter {
         // Copy trace into fft_input
         self.fft_input[..n].copy_from_slice(trace);
 
-        // Forward FFT
-        let fwd = self.planner.plan_fft_forward(n);
+        // Forward FFT (use cached plan — no hash-map lookup)
+        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
         fwd.process_with_scratch(
             &mut self.fft_input[..n],
             &mut self.spectrum[..spectrum_len],
@@ -194,8 +206,8 @@ impl BandpassFilter {
             self.spectrum[i] *= self.gain_curve[i];
         }
 
-        // Inverse FFT
-        let inv = self.planner.plan_fft_inverse(n);
+        // Inverse FFT (use cached plan — no hash-map lookup)
+        let inv = self.plan_inv.as_ref().expect("plans not initialized");
         inv.process_with_scratch(
             &mut self.spectrum[..spectrum_len],
             &mut self.fft_input[..n],
@@ -224,7 +236,7 @@ impl BandpassFilter {
 
         self.fft_input[..n].copy_from_slice(trace);
 
-        let fwd = self.planner.plan_fft_forward(n);
+        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
         fwd.process_with_scratch(
             &mut self.fft_input[..n],
             &mut self.spectrum[..spectrum_len],

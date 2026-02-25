@@ -4,6 +4,13 @@
 /// Kernel length extends until the decay envelope drops below 1e-6 of peak.
 /// Computed in f64 for precision, returned as Vec<f32>.
 pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
+    // Guard: tau_rise too close to tau_decay produces a degenerate zero kernel
+    let tau_rise = if (tau_rise - tau_decay).abs() < 1e-6 * tau_decay.max(tau_rise).max(1e-12) {
+        tau_decay * 0.5
+    } else {
+        tau_rise
+    };
+
     let dt = 1.0 / fs;
 
     // Kernel length: until decay drops below 1e-6 of peak
@@ -42,6 +49,13 @@ pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
 /// Used by BandedAR2 tests and the TypeScript port in src/lib/ar2.ts.
 #[allow(dead_code)]
 pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
+    // Guard: tau_rise too close to tau_decay produces a degenerate zero kernel
+    let tau_rise = if (tau_rise - tau_decay).abs() < 1e-6 * tau_decay.max(tau_rise).max(1e-12) {
+        tau_decay * 0.5
+    } else {
+        tau_rise
+    };
+
     let dt = 1.0 / fs;
     let d = (-dt / tau_decay).exp(); // decay eigenvalue
     let r = (-dt / tau_rise).exp(); // rise eigenvalue
@@ -58,33 +72,28 @@ pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
 /// largest eigenvalue of K^T K for a circulant convolution matrix, and is a
 /// tight upper bound for the Toeplitz (causal) convolution matrix used in practice.
 ///
-/// Computed via direct DFT of the kernel (O(n^2) but kernel is short, ~100-200 samples).
-/// Takes f32 kernel but uses f64 intermediates for DFT precision; returns f64.
-///
-/// Future optimization: could use `RealFftPlanner<f64>` for O(n log n), but this runs
-/// only on parameter changes (not per-iteration) and the kernel is short enough that
-/// the brute-force DFT is sub-millisecond. The f64 precision here is intentional since
-/// the Lipschitz constant controls the FISTA step size.
+/// Computed via direct DFT in f64 — O(n²) but zero-allocation and fast for
+/// typical kernel sizes (~200–600 samples). Only runs on parameter changes.
 pub fn compute_lipschitz(kernel: &[f32]) -> f64 {
     let n = kernel.len();
     if n == 0 {
         return 1e-10;
     }
 
-    // Zero-pad to at least 2*n for proper spectral analysis
     let fft_len = (2 * n).next_power_of_two();
-
-    // Compute max |H(w)|^2 via direct DFT
+    let inv = 2.0 * std::f64::consts::PI / (fft_len as f64);
     let mut max_power = 0.0_f64;
+
     for w in 0..fft_len {
-        let freq = 2.0 * std::f64::consts::PI * (w as f64) / (fft_len as f64);
+        let freq = inv * (w as f64);
         let mut re = 0.0_f64;
         let mut im = 0.0_f64;
         for (k, &hk) in kernel.iter().enumerate() {
             let hk64 = hk as f64;
             let angle = freq * (k as f64);
-            re += hk64 * angle.cos();
-            im -= hk64 * angle.sin();
+            let (s, c) = angle.sin_cos();
+            re += hk64 * c;
+            im -= hk64 * s;
         }
         let power = re * re + im * im;
         if power > max_power {

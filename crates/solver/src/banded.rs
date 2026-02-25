@@ -99,8 +99,13 @@ fn compute_banded_lipschitz(g1: f64, g2: f64) -> f64 {
         let w = std::f64::consts::PI * (k as f64) / (n_freqs as f64);
         // H(e^{jw}) = 1 / (1 - g1*e^{-jw} - g2*e^{-2jw})
         // Denominator: (1 - g1*cos(w) - g2*cos(2w)) + j*(g1*sin(w) + g2*sin(2w))
-        let re = 1.0 - g1 * w.cos() - g2 * (2.0 * w).cos();
-        let im = g1 * w.sin() + g2 * (2.0 * w).sin();
+        // Use double-angle identities: cos(2w) = 2cos^2(w)-1, sin(2w) = 2sin(w)cos(w)
+        let cw = w.cos();
+        let sw = w.sin();
+        let c2w = 2.0 * cw * cw - 1.0;
+        let s2w = 2.0 * sw * cw;
+        let re = 1.0 - g1 * cw - g2 * c2w;
+        let im = g1 * sw + g2 * s2w;
         let denom_sq = re * re + im * im;
         if denom_sq > 1e-30 {
             max_power = max_power.max(1.0 / denom_sq);

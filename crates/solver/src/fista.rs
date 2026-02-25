@@ -107,20 +107,29 @@ impl Solver {
             let mut diff_sq = 0.0_f64;
             let mut xk_sq = 0.0_f64;
             let mut dot = 0.0_f64;
-            for i in 0..n {
-                let x_new = self.solution[i] as f64;
-                let x_old = self.residual_buf[i] as f64;
-                let d = x_new - x_old;
-                diff_sq += d * d;
-                xk_sq += x_old * x_old;
-                if self.iteration > 1 {
+            if self.iteration > 1 {
+                for i in 0..n {
+                    let x_new = self.solution[i] as f64;
+                    let x_old = self.residual_buf[i] as f64;
+                    let d = x_new - x_old;
+                    diff_sq += d * d;
+                    xk_sq += x_old * x_old;
                     let y_minus_x = self.solution_prev[i] as f64 - x_new;
                     dot += y_minus_x * d;
                 }
+            } else {
+                for i in 0..n {
+                    let x_new = self.solution[i] as f64;
+                    let x_old = self.residual_buf[i] as f64;
+                    let d = x_new - x_old;
+                    diff_sq += d * d;
+                    xk_sq += x_old * x_old;
+                }
             }
-            let rel_change = (diff_sq / (xk_sq + 1e-20)).sqrt();
+            let tol_sq = self.tolerance * self.tolerance;
 
-            // Adaptive restart (O'Donoghue & Candes 2015)
+            // Adaptive restart (speed restart heuristic): reset momentum when
+            // the extrapolation direction opposes the update direction.
             if self.iteration > 1 && dot > 0.0 {
                 self.t_fista = 1.0;
             }
@@ -129,15 +138,27 @@ impl Solver {
             let t_new = (1.0 + (1.0 + 4.0 * self.t_fista * self.t_fista).sqrt()) / 2.0;
             let momentum = ((self.t_fista - 1.0) / t_new) as f32;
 
-            for i in 0..n {
-                let x_new = self.solution[i];
-                let x_old = self.residual_buf[i];
-                self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
+            match self.constraint {
+                Constraint::NonNegative => {
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
+                    }
+                }
+                Constraint::Box01 => {
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        self.solution_prev[i] =
+                            (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
+                    }
+                }
             }
             self.t_fista = t_new;
 
-            // 7. Convergence check using primal residual
-            if self.iteration > 5 && rel_change < self.tolerance {
+            // 7. Convergence check using primal residual (squared comparison)
+            if self.iteration > 5 && diff_sq < tol_sq * (xk_sq + 1e-20) {
                 self.converged = true;
             }
 

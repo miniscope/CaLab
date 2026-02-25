@@ -125,16 +125,11 @@ impl FftConvolver {
         let spectrum_len = padded_len / 2 + 1;
 
         // Zero-pad kernel into fft_input
-        for i in 0..padded_len {
-            self.fft_input[i] = if i < k_len { kernel[i] } else { 0.0 };
-        }
+        self.fft_input[..k_len].copy_from_slice(&kernel[..k_len]);
+        self.fft_input[k_len..padded_len].fill(0.0);
 
         // Forward FFT of kernel
-        let fwd = self
-            .plan_fwd
-            .as_ref()
-            .expect("plans not initialized")
-            .clone();
+        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
         fwd.process_with_scratch(
             &mut self.fft_input[..padded_len],
             &mut self.kernel_fft[..spectrum_len],
@@ -159,16 +154,11 @@ impl FftConvolver {
         let spectrum_len = padded_len / 2 + 1;
 
         // Zero-pad source into fft_input
-        for i in 0..padded_len {
-            self.fft_input[i] = if i < signal_len { source[i] } else { 0.0 };
-        }
+        self.fft_input[..signal_len].copy_from_slice(&source[..signal_len]);
+        self.fft_input[signal_len..padded_len].fill(0.0);
 
         // Forward FFT of source
-        let fwd = self
-            .plan_fwd
-            .as_ref()
-            .expect("plans not initialized")
-            .clone();
+        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
         fwd.process_with_scratch(
             &mut self.fft_input[..padded_len],
             &mut self.fft_spectrum[..spectrum_len],
@@ -182,11 +172,7 @@ impl FftConvolver {
         }
 
         // Inverse FFT
-        let inv = self
-            .plan_inv
-            .as_ref()
-            .expect("plans not initialized")
-            .clone();
+        let inv = self.plan_inv.as_ref().expect("plans not initialized");
         inv.process_with_scratch(
             &mut self.fft_spectrum[..spectrum_len],
             &mut self.fft_output[..padded_len],
@@ -212,16 +198,11 @@ impl FftConvolver {
         let spectrum_len = padded_len / 2 + 1;
 
         // Zero-pad source into fft_input
-        for i in 0..padded_len {
-            self.fft_input[i] = if i < signal_len { source[i] } else { 0.0 };
-        }
+        self.fft_input[..signal_len].copy_from_slice(&source[..signal_len]);
+        self.fft_input[signal_len..padded_len].fill(0.0);
 
         // Forward FFT of source
-        let fwd = self
-            .plan_fwd
-            .as_ref()
-            .expect("plans not initialized")
-            .clone();
+        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
         fwd.process_with_scratch(
             &mut self.fft_input[..padded_len],
             &mut self.fft_spectrum[..spectrum_len],
@@ -235,11 +216,7 @@ impl FftConvolver {
         }
 
         // Inverse FFT
-        let inv = self
-            .plan_inv
-            .as_ref()
-            .expect("plans not initialized")
-            .clone();
+        let inv = self.plan_inv.as_ref().expect("plans not initialized");
         inv.process_with_scratch(
             &mut self.fft_spectrum[..spectrum_len],
             &mut self.fft_output[..padded_len],

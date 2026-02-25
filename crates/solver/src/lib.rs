@@ -114,7 +114,7 @@ impl Solver {
             converged: false,
             active_len: 0,
             prev_objective: f64::INFINITY,
-            tolerance: 1e-6,
+            tolerance: 1e-4,
             lipschitz_constant: 1.0,
             baseline: 0.0,
             baseline_ema: 0.0,

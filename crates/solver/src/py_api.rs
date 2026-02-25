@@ -59,8 +59,14 @@ impl PySolver {
     }
 
     /// Load a trace (numpy float32 array) for deconvolution.
-    fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) {
-        self.inner.set_trace(trace.as_slice().unwrap());
+    fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) -> PyResult<()> {
+        let slice = trace.as_slice().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
+            )
+        })?;
+        self.inner.set_trace(slice);
+        Ok(())
     }
 
     /// Run n FISTA iterations. Returns true if converged.
@@ -159,8 +165,13 @@ fn py_build_kernel<'py>(
 
 /// Compute Lipschitz constant for a kernel.
 #[pyfunction]
-fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> f64 {
-    compute_lipschitz(kernel.as_slice().unwrap())
+fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> PyResult<f64> {
+    let slice = kernel.as_slice().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(
+            "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
+        )
+    })?;
+    Ok(compute_lipschitz(slice))
 }
 
 /// Configure solver conv_mode and constraint from string args.
@@ -200,12 +211,12 @@ fn deconvolve_single<'py>(
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
-    let trace_f32: Vec<f32> = trace
-        .as_slice()
-        .unwrap()
-        .iter()
-        .map(|&v| v as f32)
-        .collect();
+    let slice = trace.as_slice().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(
+            "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
+        )
+    })?;
+    let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
 
     if filter_enabled {
@@ -264,9 +275,12 @@ fn deconvolve_batch<'py>(
     let mut convergeds = Vec::with_capacity(n_cells);
 
     let traces_ref = traces.as_array();
+    let n_timepoints = shape[1];
+    let mut trace_f32: Vec<f32> = Vec::with_capacity(n_timepoints);
 
     for cell_idx in 0..n_cells {
-        let trace_f32: Vec<f32> = traces_ref.row(cell_idx).iter().map(|&v| v as f32).collect();
+        trace_f32.clear();
+        trace_f32.extend(traces_ref.row(cell_idx).iter().map(|&v| v as f32));
         solver.set_trace(&trace_f32);
 
         if filter_enabled {
