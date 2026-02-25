@@ -2,7 +2,7 @@ use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods}
 use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
-use crate::Solver;
+use crate::{ConvMode, Constraint, Solver};
 
 const BATCH_SIZE: u32 = 100;
 
@@ -111,6 +111,34 @@ impl PySolver {
     fn filter_enabled(&self) -> bool {
         self.inner.filter_enabled()
     }
+
+    /// Set convolution mode: "fft" or "banded".
+    fn set_conv_mode(&mut self, mode: &str) -> PyResult<()> {
+        match mode {
+            "fft" => self.inner.set_conv_mode(ConvMode::Fft),
+            "banded" => self.inner.set_conv_mode(ConvMode::BandedAR2),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "conv_mode must be 'fft' or 'banded'",
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    /// Set constraint type: "nonneg" or "box01".
+    fn set_constraint(&mut self, constraint: &str) -> PyResult<()> {
+        match constraint {
+            "nonneg" => self.inner.set_constraint(Constraint::NonNegative),
+            "box01" => self.inner.set_constraint(Constraint::Box01),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "constraint must be 'nonneg' or 'box01'",
+                ))
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Build a double-exponential calcium kernel, returned as numpy float32 array.
@@ -131,10 +159,37 @@ fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> f64 {
     compute_lipschitz(kernel.as_slice().unwrap())
 }
 
+/// Configure solver conv_mode and constraint from string args.
+fn configure_solver_options(
+    solver: &mut Solver,
+    conv_mode: &str,
+    constraint: &str,
+) -> PyResult<()> {
+    match conv_mode {
+        "fft" => solver.set_conv_mode(ConvMode::Fft),
+        "banded" => solver.set_conv_mode(ConvMode::BandedAR2),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "conv_mode must be 'fft' or 'banded'",
+            ))
+        }
+    }
+    match constraint {
+        "nonneg" => solver.set_constraint(Constraint::NonNegative),
+        "box01" => solver.set_constraint(Constraint::Box01),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "constraint must be 'nonneg' or 'box01'",
+            ))
+        }
+    }
+    Ok(())
+}
+
 /// One-shot deconvolution for a single 1D trace.
 /// Returns (activity, baseline, reconvolution, iterations, converged).
 #[pyfunction]
-#[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000))]
+#[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_single<'py>(
     py: Python<'py>,
     trace: PyReadonlyArray1<f64>,
@@ -144,6 +199,8 @@ fn deconvolve_single<'py>(
     lambda_: f64,
     filter_enabled: bool,
     max_iters: u32,
+    conv_mode: &str,
+    constraint: &str,
 ) -> PyResult<(
     Bound<'py, PyArray1<f32>>,
     f64,
@@ -153,6 +210,7 @@ fn deconvolve_single<'py>(
 )> {
     let mut solver = Solver::new();
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
+    configure_solver_options(&mut solver, conv_mode, constraint)?;
 
     let trace_f32: Vec<f32> = trace.as_slice().unwrap().iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
@@ -176,7 +234,7 @@ fn deconvolve_single<'py>(
 /// Batch deconvolution for a 2D array of traces (n_cells x n_timepoints).
 /// Returns (activities, baselines, reconvolutions, iterations, convergeds).
 #[pyfunction]
-#[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000))]
+#[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_batch<'py>(
     py: Python<'py>,
     traces: PyReadonlyArray2<f64>,
@@ -186,6 +244,8 @@ fn deconvolve_batch<'py>(
     lambda_: f64,
     filter_enabled: bool,
     max_iters: u32,
+    conv_mode: &str,
+    constraint: &str,
 ) -> PyResult<(
     Vec<Bound<'py, PyArray1<f32>>>,
     Vec<f64>,
@@ -198,6 +258,7 @@ fn deconvolve_batch<'py>(
 
     let mut solver = Solver::new();
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
+    configure_solver_options(&mut solver, conv_mode, constraint)?;
 
     if filter_enabled {
         solver.set_filter_enabled(true);

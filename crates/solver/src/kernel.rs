@@ -39,8 +39,8 @@ pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
 /// roots d = exp(-dt/tau_decay) and r = exp(-dt/tau_rise).
 /// g1 = d + r (sum of roots), g2 = -(d * r) (negative product of roots).
 ///
-/// Only used in tests; the WASM API relies on the TypeScript port in src/lib/ar2.ts.
-#[cfg(test)]
+/// Used by BandedAR2 tests and the TypeScript port in src/lib/ar2.ts.
+#[allow(dead_code)]
 pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
     let dt = 1.0 / fs;
     let d = (-dt / tau_decay).exp(); // decay eigenvalue

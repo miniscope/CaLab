@@ -63,6 +63,7 @@ function getCurrentParams(): SolverParams {
     lambda: lambda(),
     fs: samplingRate() ?? 30,
     filterEnabled: filterEnabled(),
+    convMode: 'banded',
   };
 }
 
@@ -231,7 +232,8 @@ function paramsMatch(a: SolverParams, b: SolverParams): boolean {
     a.tauDecay === b.tauDecay &&
     a.lambda === b.lambda &&
     a.fs === b.fs &&
-    a.filterEnabled === b.filterEnabled
+    a.filterEnabled === b.filterEnabled &&
+    a.convMode === b.convMode
   );
 }
 

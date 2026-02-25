@@ -1,4 +1,4 @@
-use crate::Solver;
+use crate::{ConvMode, Constraint, Solver};
 
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
@@ -38,8 +38,17 @@ impl Solver {
             // (on first iteration, y_0 = x_0 = solution = zeros)
 
             // 1. Forward convolution at y_k: reconvolution = K * y_k
-            self.fft
-                .convolve_forward(&self.solution_prev[..n], n, &mut self.reconvolution[..n]);
+            match self.conv_mode {
+                ConvMode::Fft => self.fft.convolve_forward(
+                    &self.solution_prev[..n],
+                    n,
+                    &mut self.reconvolution[..n],
+                ),
+                ConvMode::BandedAR2 => self.banded.convolve_forward(
+                    &self.solution_prev[..n],
+                    &mut self.reconvolution[..n],
+                ),
+            }
 
             // 1b. Compute baseline: b = mean(trace - K*y_k)
             {
@@ -57,8 +66,17 @@ impl Solver {
             }
 
             // 3. Adjoint convolution: gradient = K^T * residual
-            self.fft
-                .convolve_adjoint(&self.residual_buf[..n], n, &mut self.gradient[..n]);
+            match self.conv_mode {
+                ConvMode::Fft => self.fft.convolve_adjoint(
+                    &self.residual_buf[..n],
+                    n,
+                    &mut self.gradient[..n],
+                ),
+                ConvMode::BandedAR2 => self.banded.convolve_adjoint(
+                    &self.residual_buf[..n],
+                    &mut self.gradient[..n],
+                ),
+            }
 
             // 4. Proximal gradient step from y_k:
             //    x_{k+1} = prox(y_k - step_size * gradient)
@@ -72,7 +90,10 @@ impl Solver {
             let thresh_f32 = threshold as f32;
             for i in 0..n {
                 let z = self.solution_prev[i] - step_f32 * self.gradient[i];
-                self.solution[i] = (z - thresh_f32).max(0.0); // x_{k+1}
+                self.solution[i] = match self.constraint {
+                    Constraint::NonNegative => (z - thresh_f32).max(0.0),
+                    Constraint::Box01 => z.clamp(0.0, 1.0),
+                };
             }
 
             self.iteration += 1;
@@ -561,6 +582,64 @@ mod tests {
                 fft_result[i],
                 td_result[i],
                 diff
+            );
+        }
+    }
+
+    // Test 12: BandedAR2 mode converges and produces non-negative solution
+    #[test]
+    fn banded_mode_converges() {
+        use crate::ConvMode;
+
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let trace = build_trace(&kernel, 200, &[10, 50, 100, 150]);
+
+        let mut solver = Solver::new();
+        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_conv_mode(ConvMode::BandedAR2);
+        solve_to_convergence(&mut solver, &trace, 200, 10);
+
+        assert!(
+            solver.converged(),
+            "BandedAR2 solver should converge within 2000 iterations, got {}",
+            solver.iteration_count()
+        );
+
+        let solution = solver.get_solution();
+        for (i, &v) in solution.iter().enumerate() {
+            assert!(v >= 0.0, "BandedAR2 solution at index {} is negative: {}", i, v);
+        }
+
+        // Should have found some nonzero spikes
+        let nnz = solution.iter().filter(|&&v| v > 1e-6).count();
+        assert!(nnz > 0, "BandedAR2 should produce some nonzero spikes");
+    }
+
+    // Test 13: Box01 constraint produces values in [0, 1]
+    #[test]
+    fn box01_constraint_bounds() {
+        use crate::{ConvMode, Constraint};
+
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 200;
+        let trace = build_trace(&kernel, n, &[10, 50, 100, 150]);
+
+        // Scale trace so solution would exceed 1.0 without box constraint
+        let scaled_trace: Vec<f32> = trace.iter().map(|&v| v * 5.0).collect();
+
+        let mut solver = Solver::new();
+        solver.set_params(0.02, 0.4, 0.001, 30.0); // low lambda for large values
+        solver.set_conv_mode(ConvMode::BandedAR2);
+        solver.set_constraint(Constraint::Box01);
+        solve_to_convergence(&mut solver, &scaled_trace, 200, 10);
+
+        let solution = solver.get_solution();
+        for (i, &v) in solution.iter().enumerate() {
+            assert!(
+                v >= 0.0 && v <= 1.0,
+                "Box01 solution at index {} should be in [0,1], got {}",
+                i,
+                v
             );
         }
     }

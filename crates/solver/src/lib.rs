@@ -1,3 +1,4 @@
+mod banded;
 mod fft;
 mod filter;
 mod fista;
@@ -6,12 +7,33 @@ mod kernel;
 #[cfg(feature = "pybindings")]
 mod py_api;
 
+use banded::BandedAR2;
 use filter::BandpassFilter;
 use kernel::{build_kernel, compute_lipschitz};
 use std::io::{Cursor, Read};
 
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
+
+/// Convolution mode for forward/adjoint operations in FISTA.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
+pub enum ConvMode {
+    /// FFT-based O(T log T) per call — the original implementation.
+    Fft = 0,
+    /// Banded AR(2) recursion O(T) per call — faster for long traces.
+    BandedAR2 = 1,
+}
+
+/// Constraint type for the proximal step.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
+pub enum Constraint {
+    /// Current: max(0, z - threshold) — L1 + non-negativity.
+    NonNegative = 0,
+    /// InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+    Box01 = 1,
+}
 
 /// FISTA solver for calcium deconvolution.
 ///
@@ -53,8 +75,11 @@ pub struct Solver {
     pub(crate) baseline: f64,
     kernel_dc_gain: f64,
 
-    // FFT-based convolution engine (owns plans, buffers, kernel spectrum)
+    // Convolution engines
     pub(crate) fft: fft::FftConvolver,
+    pub(crate) banded: BandedAR2,
+    pub(crate) conv_mode: ConvMode,
+    pub(crate) constraint: Constraint,
     pub(crate) reconvolution_stale: bool, // dirty flag for lazy reconvolution
 
     // Bandpass filter
@@ -91,6 +116,9 @@ impl Solver {
             baseline: 0.0,
             kernel_dc_gain: 1.0,
             fft: fft::FftConvolver::new(),
+            banded: BandedAR2::new(0.02, 0.4, 30.0),
+            conv_mode: ConvMode::Fft,
+            constraint: Constraint::NonNegative,
             reconvolution_stale: true,
             bandpass: BandpassFilter::new(),
         };
@@ -110,24 +138,27 @@ impl Solver {
         self.lambda = lambda;
         self.fs = fs;
         self.kernel = build_kernel(tau_rise, tau_decay, fs);
-        self.lipschitz_constant = compute_lipschitz(&self.kernel);
         self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
         self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
+
+        // Update both convolution engines
+        self.banded.update(tau_rise, tau_decay, fs);
+        self.lipschitz_constant = match self.conv_mode {
+            ConvMode::Fft => compute_lipschitz(&self.kernel),
+            ConvMode::BandedAR2 => self.banded.lipschitz(),
+        };
 
         // Update kernel FFT if buffers are already set up and large enough.
         // On re-enqueue quanta with unchanged trace length, this avoids a full
         // FFT plan + buffer rebuild in ensure_buffers.
-        if self.fft.fft_len() > 0 && self.active_len > 0 {
+        if self.conv_mode == ConvMode::Fft && self.fft.fft_len() > 0 && self.active_len > 0 {
             let min_len = self.active_len + self.kernel.len() - 1;
             if min_len <= self.fft.fft_len() {
-                // Existing FFT buffers are large enough — just re-FFT the kernel
                 self.fft.prepare_kernel(&self.kernel);
             } else {
-                // New kernel is longer; need larger FFT — invalidate
                 self.fft.invalidate();
             }
         }
-        // If fft_len == 0 or active_len == 0, ensure_buffers in set_trace handles it
     }
 
     /// Load a trace for deconvolution. Grows buffers if needed (never shrinks).
@@ -163,8 +194,10 @@ impl Solver {
         self.baseline = 0.0;
         self.reconvolution_stale = true;
 
-        // Prepare FFT infrastructure for this trace length
-        self.fft.ensure_buffers(self.active_len, &self.kernel);
+        // Prepare FFT infrastructure for this trace length (skip if using banded mode)
+        if self.conv_mode == ConvMode::Fft {
+            self.fft.ensure_buffers(self.active_len, &self.kernel);
+        }
     }
 
     /// Returns a copy of the kernel.
@@ -241,6 +274,26 @@ impl Solver {
         self.solution_prev[..n].copy_from_slice(&self.solution[..n]);
     }
 
+    /// Set the convolution mode (FFT or BandedAR2).
+    /// Recomputes the Lipschitz constant for the selected mode.
+    /// Does NOT reset solution/iteration state — warm-start is preserved.
+    pub fn set_conv_mode(&mut self, mode: ConvMode) {
+        self.conv_mode = mode;
+        self.lipschitz_constant = match mode {
+            ConvMode::Fft => compute_lipschitz(&self.kernel),
+            ConvMode::BandedAR2 => self.banded.lipschitz(),
+        };
+        // Ensure FFT buffers exist if switching to FFT mode with an active trace
+        if mode == ConvMode::Fft && self.active_len > 0 {
+            self.fft.ensure_buffers(self.active_len, &self.kernel);
+        }
+    }
+
+    /// Set the constraint type (NonNegative or Box01).
+    pub fn set_constraint(&mut self, c: Constraint) {
+        self.constraint = c;
+    }
+
     /// Effective lambda scaled by kernel DC gain: lambda * G_dc.
     pub(crate) fn effective_lambda(&self) -> f64 {
         self.lambda * self.kernel_dc_gain
@@ -277,20 +330,26 @@ impl Solver {
             return;
         }
 
-        // Use FFT-based convolution if infrastructure is ready
-        if self.fft.fft_len() > 0 {
-            self.fft
-                .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n]);
-        } else {
-            // Fallback to time-domain convolution for very small cases
-            let k_len = self.kernel.len();
-            for t in 0..n {
-                let mut sum = 0.0;
-                let k_max = k_len.min(t + 1);
-                for k in 0..k_max {
-                    sum += self.kernel[k] * self.solution[t - k];
+        match self.conv_mode {
+            ConvMode::BandedAR2 => {
+                self.banded
+                    .convolve_forward(&self.solution[..n], &mut self.reconvolution[..n]);
+            }
+            ConvMode::Fft if self.fft.fft_len() > 0 => {
+                self.fft
+                    .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n]);
+            }
+            _ => {
+                // Fallback to time-domain convolution for very small cases
+                let k_len = self.kernel.len();
+                for t in 0..n {
+                    let mut sum = 0.0;
+                    let k_max = k_len.min(t + 1);
+                    for k in 0..k_max {
+                        sum += self.kernel[k] * self.solution[t - k];
+                    }
+                    self.reconvolution[t] = sum;
                 }
-                self.reconvolution[t] = sum;
             }
         }
 

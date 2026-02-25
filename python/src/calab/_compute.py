@@ -103,6 +103,8 @@ def run_deconvolution(
     tau_d: float,
     lam: float,
     max_iters: int = 2000,
+    conv_mode: str = "fft",
+    constraint: str = "nonneg",
 ) -> np.ndarray:
     """Run FISTA deconvolution on one or more calcium traces.
 
@@ -123,6 +125,11 @@ def run_deconvolution(
         L1 penalty (sparsity regularization strength).
     max_iters : int, optional
         Maximum number of FISTA iterations, by default 2000.
+    conv_mode : str, optional
+        Convolution mode: ``'fft'`` (default) or ``'banded'`` (O(T) AR2).
+    constraint : str, optional
+        Constraint type: ``'nonneg'`` (default, L1 + non-negative) or
+        ``'box01'`` (box constraint [0, 1], no L1 penalty).
 
     Returns
     -------
@@ -135,12 +142,14 @@ def run_deconvolution(
     if traces_2d.shape[0] == 1:
         activity, _, _, _, _ = _deconvolve_single(
             traces_2d[0], fs, tau_r, tau_d, lam, max_iters=max_iters,
+            conv_mode=conv_mode, constraint=constraint,
         )
         result = np.asarray(activity, dtype=np.float64)
         return result if single_trace else result.reshape(1, -1)
 
     activities, _, _, _, _ = _deconvolve_batch(
         traces_2d, fs, tau_r, tau_d, lam, max_iters=max_iters,
+        conv_mode=conv_mode, constraint=constraint,
     )
     return np.stack([np.asarray(a, dtype=np.float64) for a in activities])
 
@@ -152,6 +161,8 @@ def run_deconvolution_full(
     tau_d: float,
     lam: float,
     max_iters: int = 2000,
+    conv_mode: str = "fft",
+    constraint: str = "nonneg",
 ) -> DeconvolutionResult:
     """Run FISTA deconvolution returning full results.
 
@@ -170,6 +181,11 @@ def run_deconvolution_full(
         L1 penalty (sparsity regularization strength).
     max_iters : int, optional
         Maximum number of FISTA iterations, by default 2000.
+    conv_mode : str, optional
+        Convolution mode: ``'fft'`` (default) or ``'banded'`` (O(T) AR2).
+    constraint : str, optional
+        Constraint type: ``'nonneg'`` (default, L1 + non-negative) or
+        ``'box01'`` (box constraint [0, 1], no L1 penalty).
 
     Returns
     -------
@@ -183,6 +199,7 @@ def run_deconvolution_full(
     if single_trace:
         activity, baseline, reconvolution, iterations, converged = _deconvolve_single(
             traces_2d[0], fs, tau_r, tau_d, lam, max_iters=max_iters,
+            conv_mode=conv_mode, constraint=constraint,
         )
         return DeconvolutionResult(
             activity=np.asarray(activity, dtype=np.float64),
@@ -194,6 +211,7 @@ def run_deconvolution_full(
 
     activities, baselines, reconvolutions, iterations, convergeds = _deconvolve_batch(
         traces_2d, fs, tau_r, tau_d, lam, max_iters=max_iters,
+        conv_mode=conv_mode, constraint=constraint,
     )
 
     return DeconvolutionResult(

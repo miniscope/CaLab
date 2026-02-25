@@ -17,6 +17,7 @@ export { SAMPLING_RATE_PRESETS } from './types.ts';
 
 // Solver types
 export type {
+  ConvMode,
   CellSolverStatus,
   SolverParams,
   WarmStartStrategy,
