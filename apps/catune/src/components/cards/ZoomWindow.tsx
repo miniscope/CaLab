@@ -27,6 +27,7 @@ import {
   showGTSpikes,
   tauDecay,
 } from '../../lib/viz-store.ts';
+import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
 
 export interface ZoomWindowProps {
   rawTrace: Float64Array;
@@ -581,6 +582,7 @@ export function ZoomWindow(props: ZoomWindowProps) {
         yRange={globalYRange()}
         hideYValues
         xLabel="Time (s)"
+        plugins={[transientZonePlugin(() => TRANSIENT_TAU_MULTIPLIER * tauDecay())]}
       />
       <Show when={showHint()}>
         <div class="zoom-hint">Hold Ctrl to zoom</div>
