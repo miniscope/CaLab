@@ -5,7 +5,7 @@ import {
   numSubsets,
   setNumSubsets,
   autoMode,
-  setAutoMode,
+  toggleAutoMode,
   effectiveTSub,
   effectiveNSub,
   subsetTimeFrames,
@@ -13,6 +13,7 @@ import {
   subsetCellCount,
   setSubsetCellCount,
   coverageStats,
+  maxNonOverlappingK,
   seed,
   setSeed,
 } from '../../lib/subset-store.ts';
@@ -40,7 +41,7 @@ export function SubsetConfig(): JSX.Element {
             </>
           }
           checked={autoMode()}
-          onChange={setAutoMode}
+          onChange={toggleAutoMode}
         />
 
         <Show when={!autoMode()}>
@@ -87,10 +88,14 @@ export function SubsetConfig(): JSX.Element {
           <span class="stat-item__value">{coverageStats().timePct.toFixed(0)}%</span>
         </div>
         <div class="stat-item">
-          <span class="stat-item__label">K</span>
-          <span class="stat-item__value">{numSubsets()}</span>
+          <span class="stat-item__label">Total coverage</span>
+          <span class="stat-item__value">{coverageStats().totalPct.toFixed(0)}%</span>
         </div>
       </div>
+
+      <Show when={numSubsets() > maxNonOverlappingK()}>
+        <span class="stat-item__warn">K &gt; {maxNonOverlappingK()} causes overlap</span>
+      </Show>
     </div>
   );
 }

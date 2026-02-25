@@ -1,4 +1,5 @@
 import { createSignal, createMemo } from 'solid-js';
+import { resolveWorkerCount } from '@calab/compute';
 import { numCells, numTimepoints } from './data-store.ts';
 
 // --- Types ---
@@ -13,7 +14,7 @@ export interface SubsetRectangle {
 
 // --- Config Signals ---
 
-const [numSubsets, setNumSubsets] = createSignal(4);
+const [numSubsets, setNumSubsets] = createSignal(resolveWorkerCount());
 const [subsetTimeFrames, setSubsetTimeFrames] = createSignal<number | null>(null);
 const [subsetCellCount, setSubsetCellCount] = createSignal<number | null>(null);
 const [autoMode, setAutoMode] = createSignal(true);
@@ -25,18 +26,27 @@ const [selectedSubsetIdx, setSelectedSubsetIdx] = createSignal<number | null>(nu
 
 // --- Derived ---
 
+// Auto-size: 50% total coverage, preserving the dataset's aspect ratio.
+// scale = sqrt(target / K), applied uniformly so tSub/nSub = T/N.
+const TARGET_COVERAGE = 0.5;
+const autoScale = createMemo(() => Math.sqrt(TARGET_COVERAGE / numSubsets()));
+
 const effectiveTSub = createMemo(() => {
-  if (!autoMode()) return subsetTimeFrames() ?? 100;
+  if (!autoMode()) {
+    return subsetTimeFrames() ?? Math.max(100, Math.floor(numTimepoints() * autoScale()));
+  }
   const T = numTimepoints();
   if (T === 0) return 100;
-  return Math.max(100, Math.round(T * 0.25));
+  return Math.max(100, Math.floor(T * autoScale()));
 });
 
 const effectiveNSub = createMemo(() => {
-  if (!autoMode()) return subsetCellCount() ?? 10;
+  if (!autoMode()) {
+    return subsetCellCount() ?? Math.max(10, Math.floor(numCells() * autoScale()));
+  }
   const N = numCells();
   if (N === 0) return 10;
-  return Math.max(10, Math.round(N * 0.5));
+  return Math.max(10, Math.floor(N * autoScale()));
 });
 
 // Seeded LCG for deterministic pseudo-random placement
@@ -80,19 +90,23 @@ function tileSubsets(
       cols = Math.ceil(K / rows);
     }
 
-    const tileW = Math.floor(T / cols);
-    const tileH = Math.floor(N / rows);
+    const baseTileW = Math.floor(T / cols);
+    const baseTileH = Math.floor(N / rows);
     const rects: SubsetRectangle[] = [];
 
     for (let k = 0; k < K; k++) {
       const col = k % cols;
       const row = Math.floor(k / cols);
 
+      // Last column/row extends to data edge to eliminate fringe gap
+      const tileW = col === cols - 1 ? T - col * baseTileW : baseTileW;
+      const tileH = row === rows - 1 ? N - row * baseTileH : baseTileH;
+
       // Jitter within the tile (ensure the subset fits within the tile)
       const tSlack = Math.max(0, tileW - tSub);
       const nSlack = Math.max(0, tileH - nSub);
-      const tStart = col * tileW + Math.floor(rng() * (tSlack + 1));
-      const cellStart = row * tileH + Math.floor(rng() * (nSlack + 1));
+      const tStart = col * baseTileW + Math.floor(rng() * (tSlack + 1));
+      const cellStart = row * baseTileH + Math.floor(rng() * (nSlack + 1));
 
       rects.push({
         tStart,
@@ -110,12 +124,14 @@ function tileSubsets(
   for (let k = 0; k < Math.min(K, maxTiles); k++) {
     const col = k % maxCols;
     const row = Math.floor(k / maxCols);
-    const tileW = Math.floor(T / maxCols);
-    const tileH = Math.floor(N / maxRows);
+    const baseTileW = Math.floor(T / maxCols);
+    const baseTileH = Math.floor(N / maxRows);
+    const tileW = col === maxCols - 1 ? T - col * baseTileW : baseTileW;
+    const tileH = row === maxRows - 1 ? N - row * baseTileH : baseTileH;
     const tSlack = Math.max(0, tileW - tSub);
     const nSlack = Math.max(0, tileH - nSub);
-    const tStart = col * tileW + Math.floor(rng() * (tSlack + 1));
-    const cellStart = row * tileH + Math.floor(rng() * (nSlack + 1));
+    const tStart = col * baseTileW + Math.floor(rng() * (tSlack + 1));
+    const cellStart = row * baseTileH + Math.floor(rng() * (nSlack + 1));
 
     rects.push({ tStart, tEnd: tStart + tSub, cellStart, cellEnd: cellStart + nSub, idx: k });
   }
@@ -146,15 +162,35 @@ const subsetRectangles = createMemo<SubsetRectangle[]>(() => {
 const coverageStats = createMemo(() => {
   const T = numTimepoints();
   const N = numCells();
+  const K = numSubsets();
   const tSub = Math.min(effectiveTSub(), T);
   const nSub = Math.min(effectiveNSub(), N);
-  if (T === 0 || N === 0) return { cellPct: 0, timePct: 0 };
+  if (T === 0 || N === 0) return { cellPct: 0, timePct: 0, totalPct: 0 };
 
-  return {
-    cellPct: Math.min(100, (nSub / N) * 100),
-    timePct: Math.min(100, (tSub / T) * 100),
-  };
+  const cellPct = Math.min(100, (nSub / N) * 100);
+  const timePct = Math.min(100, (tSub / T) * 100);
+  // Aggregate: union of non-overlapping tiles as fraction of full matrix
+  const totalPct = Math.min(100, ((K * tSub * nSub) / (T * N)) * 100);
+  return { cellPct, timePct, totalPct };
 });
+
+const maxNonOverlappingK = createMemo(() => {
+  const T = numTimepoints();
+  const N = numCells();
+  const tSub = Math.min(effectiveTSub(), T);
+  const nSub = Math.min(effectiveNSub(), N);
+  if (T === 0 || N === 0) return 0;
+  return Math.floor(T / tSub) * Math.floor(N / nSub);
+});
+
+function toggleAutoMode(enabled: boolean) {
+  if (!enabled && autoMode()) {
+    // Switching auto → manual: seed manual values from current auto values
+    if (subsetTimeFrames() === null) setSubsetTimeFrames(effectiveTSub());
+    if (subsetCellCount() === null) setSubsetCellCount(effectiveNSub());
+  }
+  setAutoMode(enabled);
+}
 
 export {
   numSubsets,
@@ -164,7 +200,7 @@ export {
   subsetCellCount,
   setSubsetCellCount,
   autoMode,
-  setAutoMode,
+  toggleAutoMode,
   seed,
   setSeed,
   selectedSubsetIdx,
@@ -173,4 +209,5 @@ export {
   effectiveNSub,
   subsetRectangles,
   coverageStats,
+  maxNonOverlappingK,
 };
