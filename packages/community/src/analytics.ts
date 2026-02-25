@@ -18,7 +18,7 @@ export type AnalyticsEventName =
   | 'auth_signed_out';
 
 let sessionId: string | null = null;
-let endListenersRegistered = false;
+let sessionEndRegistered = false;
 
 function getAnonymousId(): string {
   let id = sessionStorage.getItem('calab_anon_id');
@@ -110,7 +110,7 @@ export async function trackEvent(
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
 /**
- * Periodically update ended_at + duration_seconds while the page is visible.
+ * Periodically update ended_at while the page is visible.
  * This ensures we have a recent timestamp even if the page-unload PATCH fails
  * (which browsers frequently abort).
  */
@@ -147,9 +147,9 @@ function startHeartbeat(): void {
  * unload (visibilitychange/pagehide). The keepalive flag on fetch ensures
  * the request outlives the page.
  */
-export function registerSessionEndListeners(): void {
-  if (!supabaseEnabled || endListenersRegistered) return;
-  endListenersRegistered = true;
+function registerSessionEndListeners(): void {
+  if (!supabaseEnabled || sessionEndRegistered) return;
+  sessionEndRegistered = true;
 
   let ended = false;
 
