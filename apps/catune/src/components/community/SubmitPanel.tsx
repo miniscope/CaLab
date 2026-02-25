@@ -192,14 +192,18 @@ export function SubmitPanel() {
       {/* Action buttons */}
       <div class="submit-panel__actions">
         <Show when={!isDemo()}>
-          <Show when={bridgeUrl() && !bridgeExportDone()}>
+          <Show
+            when={bridgeUrl() && !bridgeExportDone()}
+            fallback={
+              <button class="btn-primary btn-small" onClick={handleExport}>
+                Export Locally
+              </button>
+            }
+          >
             <button class="btn-primary btn-small" onClick={handleBridgeExport}>
               Export to Python
             </button>
           </Show>
-          <button class="btn-primary btn-small" onClick={handleExport}>
-            Export Locally
-          </button>
         </Show>
 
         <GroundTruthControls />
