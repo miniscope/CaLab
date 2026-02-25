@@ -63,6 +63,7 @@ function getCurrentParams(): SolverParams {
     lambda: lambda(),
     fs: samplingRate() ?? 30,
     filterEnabled: filterEnabled(),
+    convMode: 'banded',
   };
 }
 
@@ -95,7 +96,9 @@ function cachePaddedAndUpdateTraces(
 ): void {
   state.fullPaddedSolution = new Float32Array(solution);
   state.fullPaddedReconvolution = new Float32Array(reconvolution);
-  state.fullPaddedFilteredTrace = filteredTrace ? new Float32Array(filteredTrace) : null;
+  if (filteredTrace) {
+    state.fullPaddedFilteredTrace = new Float32Array(filteredTrace);
+  }
   state.paddedResultStart = paddedStart;
   state.paddedResultEnd = paddedEnd;
 
@@ -103,9 +106,14 @@ function cachePaddedAndUpdateTraces(
   const visReconv = new Float32Array(
     reconvolution.subarray(resultOffset, resultOffset + resultLength),
   );
+  // Preserve existing filtered trace during intermediate updates (which don't send it)
   const visFiltered = filteredTrace
     ? new Float32Array(filteredTrace.subarray(resultOffset, resultOffset + resultLength))
-    : undefined;
+    : state.fullPaddedFilteredTrace
+      ? new Float32Array(
+          state.fullPaddedFilteredTrace.subarray(resultOffset, resultOffset + resultLength),
+        )
+      : undefined;
   updateOneCellTraces(state.cellIndex, visSol, visReconv, visibleStart, visFiltered);
   updateOneCellIteration(state.cellIndex, iteration);
 }
@@ -144,6 +152,9 @@ function dispatchCellSolve(state: CellSolveState): void {
   state.converged = false;
   state.deferredRequeue = false;
   state.dispatchedParams = { ...params };
+  if (!params.filterEnabled) {
+    state.fullPaddedFilteredTrace = null;
+  }
 
   updateOneCellStatus(state.cellIndex, 'solving');
 
@@ -231,7 +242,8 @@ function paramsMatch(a: SolverParams, b: SolverParams): boolean {
     a.tauDecay === b.tauDecay &&
     a.lambda === b.lambda &&
     a.fs === b.fs &&
-    a.filterEnabled === b.filterEnabled
+    a.filterEnabled === b.filterEnabled &&
+    a.convMode === b.convMode
   );
 }
 

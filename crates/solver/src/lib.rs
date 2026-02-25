@@ -1,3 +1,4 @@
+mod banded;
 mod fft;
 mod filter;
 mod fista;
@@ -6,12 +7,33 @@ mod kernel;
 #[cfg(feature = "pybindings")]
 mod py_api;
 
+use banded::BandedAR2;
 use filter::BandpassFilter;
 use kernel::{build_kernel, compute_lipschitz};
 use std::io::{Cursor, Read};
 
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
+
+/// Convolution mode for forward/adjoint operations in FISTA.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
+pub enum ConvMode {
+    /// FFT-based O(T log T) per call — the original implementation.
+    Fft = 0,
+    /// Banded AR(2) recursion O(T) per call — faster for long traces.
+    BandedAR2 = 1,
+}
+
+/// Constraint type for the proximal step.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
+pub enum Constraint {
+    /// Current: max(0, z - threshold) — L1 + non-negativity.
+    NonNegative = 0,
+    /// InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+    Box01 = 1,
+}
 
 /// FISTA solver for calcium deconvolution.
 ///
@@ -51,14 +73,20 @@ pub struct Solver {
 
     // Baseline and kernel scaling
     pub(crate) baseline: f64,
+    baseline_ema: f64,
+    baseline_ema_init: bool,
     kernel_dc_gain: f64,
 
-    // FFT-based convolution engine (owns plans, buffers, kernel spectrum)
+    // Convolution engines
     pub(crate) fft: fft::FftConvolver,
+    pub(crate) banded: BandedAR2,
+    pub(crate) conv_mode: ConvMode,
+    pub(crate) constraint: Constraint,
     pub(crate) reconvolution_stale: bool, // dirty flag for lazy reconvolution
 
     // Bandpass filter
     bandpass: BandpassFilter,
+    pub(crate) filtered: bool, // true after apply_filter() succeeded on current trace
 }
 
 #[cfg_attr(feature = "jsbindings", wasm_bindgen)]
@@ -86,13 +114,19 @@ impl Solver {
             converged: false,
             active_len: 0,
             prev_objective: f64::INFINITY,
-            tolerance: 1e-6,
+            tolerance: 1e-4,
             lipschitz_constant: 1.0,
             baseline: 0.0,
+            baseline_ema: 0.0,
+            baseline_ema_init: false,
             kernel_dc_gain: 1.0,
             fft: fft::FftConvolver::new(),
+            banded: BandedAR2::new(0.02, 0.4, 30.0),
+            conv_mode: ConvMode::Fft,
+            constraint: Constraint::NonNegative,
             reconvolution_stale: true,
             bandpass: BandpassFilter::new(),
+            filtered: false,
         };
 
         // Build kernel with default params
@@ -110,24 +144,24 @@ impl Solver {
         self.lambda = lambda;
         self.fs = fs;
         self.kernel = build_kernel(tau_rise, tau_decay, fs);
-        self.lipschitz_constant = compute_lipschitz(&self.kernel);
         self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
         self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
+
+        // Update both convolution engines
+        self.banded.update(tau_rise, tau_decay, fs);
+        self.lipschitz_constant = self.current_lipschitz();
 
         // Update kernel FFT if buffers are already set up and large enough.
         // On re-enqueue quanta with unchanged trace length, this avoids a full
         // FFT plan + buffer rebuild in ensure_buffers.
-        if self.fft.fft_len() > 0 && self.active_len > 0 {
+        if self.conv_mode == ConvMode::Fft && self.fft.fft_len() > 0 && self.active_len > 0 {
             let min_len = self.active_len + self.kernel.len() - 1;
             if min_len <= self.fft.fft_len() {
-                // Existing FFT buffers are large enough — just re-FFT the kernel
                 self.fft.prepare_kernel(&self.kernel);
             } else {
-                // New kernel is longer; need larger FFT — invalidate
                 self.fft.invalidate();
             }
         }
-        // If fft_len == 0 or active_len == 0, ensure_buffers in set_trace handles it
     }
 
     /// Load a trace for deconvolution. Grows buffers if needed (never shrinks).
@@ -161,10 +195,15 @@ impl Solver {
         self.converged = false;
         self.prev_objective = f64::INFINITY;
         self.baseline = 0.0;
+        self.baseline_ema = 0.0;
+        self.baseline_ema_init = false;
+        self.filtered = false;
         self.reconvolution_stale = true;
 
-        // Prepare FFT infrastructure for this trace length
-        self.fft.ensure_buffers(self.active_len, &self.kernel);
+        // Prepare FFT infrastructure for this trace length (skip if using banded mode)
+        if self.conv_mode == ConvMode::Fft {
+            self.fft.ensure_buffers(self.active_len, &self.kernel);
+        }
     }
 
     /// Returns a copy of the kernel.
@@ -203,16 +242,20 @@ impl Solver {
         if self.reconvolution_stale {
             self.compute_reconvolution();
         }
-        let b = self.baseline as f32;
+        let b = self.baseline_ema as f32;
         self.reconvolution[..self.active_len]
             .iter()
             .map(|&v| v + b)
             .collect()
     }
 
-    /// Returns the estimated scalar baseline.
-    pub fn get_baseline(&self) -> f64 {
-        self.baseline
+    /// Returns the estimated scalar baseline (EMA-smoothed for stable display).
+    /// Lazily computes reconvolution if stale, to ensure the EMA is up to date.
+    pub fn get_baseline(&mut self) -> f64 {
+        if self.reconvolution_stale {
+            self.compute_reconvolution();
+        }
+        self.baseline_ema
     }
 
     /// Returns the current trace for the active region.
@@ -239,6 +282,31 @@ impl Solver {
         self.t_fista = 1.0;
         let n = self.active_len;
         self.solution_prev[..n].copy_from_slice(&self.solution[..n]);
+    }
+
+    /// Set the convolution mode (FFT or BandedAR2).
+    /// Recomputes the Lipschitz constant for the selected mode.
+    /// Does NOT reset solution/iteration state — warm-start is preserved.
+    pub fn set_conv_mode(&mut self, mode: ConvMode) {
+        self.conv_mode = mode;
+        self.lipschitz_constant = self.current_lipschitz();
+        // Ensure FFT buffers exist if switching to FFT mode with an active trace
+        if mode == ConvMode::Fft && self.active_len > 0 {
+            self.fft.ensure_buffers(self.active_len, &self.kernel);
+        }
+    }
+
+    /// Set the constraint type (NonNegative or Box01).
+    pub fn set_constraint(&mut self, c: Constraint) {
+        self.constraint = c;
+    }
+
+    /// Lipschitz constant for the current convolution mode.
+    fn current_lipschitz(&self) -> f64 {
+        match self.conv_mode {
+            ConvMode::Fft => compute_lipschitz(&self.kernel),
+            ConvMode::BandedAR2 => self.banded.lipschitz(),
+        }
     }
 
     /// Effective lambda scaled by kernel DC gain: lambda * G_dc.
@@ -277,30 +345,47 @@ impl Solver {
             return;
         }
 
-        // Use FFT-based convolution if infrastructure is ready
-        if self.fft.fft_len() > 0 {
-            self.fft
-                .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n]);
-        } else {
-            // Fallback to time-domain convolution for very small cases
-            let k_len = self.kernel.len();
-            for t in 0..n {
-                let mut sum = 0.0;
-                let k_max = k_len.min(t + 1);
-                for k in 0..k_max {
-                    sum += self.kernel[k] * self.solution[t - k];
+        match self.conv_mode {
+            ConvMode::BandedAR2 => {
+                self.banded
+                    .convolve_forward(&self.solution[..n], &mut self.reconvolution[..n]);
+            }
+            ConvMode::Fft if self.fft.fft_len() > 0 => {
+                self.fft
+                    .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n]);
+            }
+            _ => {
+                // Fallback to time-domain convolution for very small cases
+                let k_len = self.kernel.len();
+                for t in 0..n {
+                    let mut sum = 0.0;
+                    let k_max = k_len.min(t + 1);
+                    for k in 0..k_max {
+                        sum += self.kernel[k] * self.solution[t - k];
+                    }
+                    self.reconvolution[t] = sum;
                 }
-                self.reconvolution[t] = sum;
             }
         }
 
-        // Recompute baseline at current solution
+        // Recompute baseline at current solution for display alignment.
+        // In step_batch, baseline is skipped when filtered (cancels in gradient),
+        // but the display path always needs it to align fit with trace.
         {
             let mut sum = 0.0_f64;
             for i in 0..n {
                 sum += (self.trace[i] - self.reconvolution[i]) as f64;
             }
-            self.baseline = sum / n as f64;
+            let raw_baseline = sum / n as f64;
+            self.baseline = raw_baseline;
+
+            // EMA smoothing for display (damps momentum-induced oscillation)
+            if !self.baseline_ema_init {
+                self.baseline_ema = raw_baseline;
+                self.baseline_ema_init = true;
+            } else {
+                self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+            }
         }
 
         self.reconvolution_stale = false;
@@ -319,7 +404,11 @@ impl Solver {
     /// Apply bandpass filter to the active trace region. Returns true if filtering was applied.
     pub fn apply_filter(&mut self) -> bool {
         let n = self.active_len;
-        self.bandpass.apply(&mut self.trace[..n])
+        let applied = self.bandpass.apply(&mut self.trace[..n]);
+        if applied {
+            self.filtered = true;
+        }
+        applied
     }
 
     /// Get the power spectrum of the current trace (N/2+1 bins).

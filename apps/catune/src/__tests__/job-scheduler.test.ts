@@ -65,6 +65,7 @@ describe('shouldWarmStart', () => {
     lambda: 0.01,
     fs: 30,
     filterEnabled: false,
+    convMode: 'banded',
   };
 
   function makeEntry(params: SolverParams, paddedStart = 940, paddedEnd = 2060): WarmStartEntry {
@@ -133,6 +134,7 @@ describe('WarmStartCache', () => {
     lambda: 0.01,
     fs: 30,
     filterEnabled: false,
+    convMode: 'banded',
   };
 
   it('is initially empty', () => {

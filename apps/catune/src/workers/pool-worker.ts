@@ -44,6 +44,7 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
   try {
     // Configure solver
     solver.set_params(req.params.tauRise, req.params.tauDecay, req.params.lambda, req.params.fs);
+    solver.set_conv_mode(req.params.convMode === 'banded' ? 1 : 0);
     solver.set_trace(req.trace);
     solver.set_filter_enabled(req.params.filterEnabled);
 

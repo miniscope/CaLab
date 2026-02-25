@@ -1,4 +1,4 @@
-use crate::Solver;
+use crate::{Constraint, ConvMode, Solver};
 
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
@@ -38,16 +38,36 @@ impl Solver {
             // (on first iteration, y_0 = x_0 = solution = zeros)
 
             // 1. Forward convolution at y_k: reconvolution = K * y_k
-            self.fft
-                .convolve_forward(&self.solution_prev[..n], n, &mut self.reconvolution[..n]);
+            match self.conv_mode {
+                ConvMode::Fft => self.fft.convolve_forward(
+                    &self.solution_prev[..n],
+                    n,
+                    &mut self.reconvolution[..n],
+                ),
+                ConvMode::BandedAR2 => self
+                    .banded
+                    .convolve_forward(&self.solution_prev[..n], &mut self.reconvolution[..n]),
+            }
 
             // 1b. Compute baseline: b = mean(trace - K*y_k)
-            {
+            //     Skip when bandpass-filtered — DC is already removed, and the baseline
+            //     mathematically cancels in the gradient (residual = mean-centered signals).
+            //     Computing it anyway would produce pure momentum-oscillation noise.
+            if !self.filtered {
                 let mut sum = 0.0_f64;
                 for i in 0..n {
                     sum += (self.trace[i] - self.reconvolution[i]) as f64;
                 }
-                self.baseline = sum / n as f64;
+                let raw_baseline = sum / n as f64;
+                self.baseline = raw_baseline;
+
+                // Per-iteration EMA smoothing for display baseline
+                if !self.baseline_ema_init {
+                    self.baseline_ema = raw_baseline;
+                    self.baseline_ema_init = true;
+                } else {
+                    self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+                }
             }
 
             // 2. Compute residual = K * y_k + b - trace
@@ -57,70 +77,88 @@ impl Solver {
             }
 
             // 3. Adjoint convolution: gradient = K^T * residual
-            self.fft
-                .convolve_adjoint(&self.residual_buf[..n], n, &mut self.gradient[..n]);
-
-            // 4. Proximal gradient step from y_k:
-            //    x_{k+1} = prox(y_k - step_size * gradient)
-            //    = max(0, y_k - step_size * gradient - threshold)
-            // Save x_k into residual_buf temporarily for restart check and convergence
-            for i in 0..n {
-                self.residual_buf[i] = self.solution[i]; // save x_k
+            match self.conv_mode {
+                ConvMode::Fft => {
+                    self.fft
+                        .convolve_adjoint(&self.residual_buf[..n], n, &mut self.gradient[..n])
+                }
+                ConvMode::BandedAR2 => self
+                    .banded
+                    .convolve_adjoint(&self.residual_buf[..n], &mut self.gradient[..n]),
             }
 
+            // 4. Loop A (fused): save x_k + proximal gradient step
+            //    x_{k+1} = prox(y_k - step_size * gradient)
             let step_f32 = step_size as f32;
             let thresh_f32 = threshold as f32;
             for i in 0..n {
+                let x_old = self.solution[i];
+                self.residual_buf[i] = x_old; // save x_k for restart check + momentum
                 let z = self.solution_prev[i] - step_f32 * self.gradient[i];
-                self.solution[i] = (z - thresh_f32).max(0.0); // x_{k+1}
+                self.solution[i] = match self.constraint {
+                    Constraint::NonNegative => (z - thresh_f32).max(0.0),
+                    Constraint::Box01 => z.clamp(0.0, 1.0),
+                };
             }
 
             self.iteration += 1;
 
-            // 5. Primal residual convergence criterion: ||x_{k+1} - x_k|| / ||x_k||
-            //    This replaces the expensive forward convolution + objective evaluation.
+            // 5. Loop B (fused): convergence + restart accumulators
             let mut diff_sq = 0.0_f64;
             let mut xk_sq = 0.0_f64;
-            for i in 0..n {
-                let x_new = self.solution[i] as f64;
-                let x_old = self.residual_buf[i] as f64;
-                let d = x_new - x_old;
-                diff_sq += d * d;
-                xk_sq += x_old * x_old;
-            }
-            let rel_change = (diff_sq / (xk_sq + 1e-20)).sqrt();
-
-            // 6. Adaptive restart via gradient-mapping criterion (O'Donoghue & Candes 2015).
-            //    When the extrapolated point y_k leads to a solution x_{k+1} that moves
-            //    in the opposite direction of the momentum, restart. This is detected by:
-            //    (y_k - x_{k+1}) . (x_{k+1} - x_k) > 0
-            //    which means the proximal step "undid" the momentum direction.
+            let mut dot = 0.0_f64;
             if self.iteration > 1 {
-                let mut dot = 0.0_f64;
                 for i in 0..n {
-                    let y_minus_x = self.solution_prev[i] as f64 - self.solution[i] as f64;
-                    let x_diff = self.solution[i] as f64 - self.residual_buf[i] as f64;
-                    dot += y_minus_x * x_diff;
+                    let x_new = self.solution[i] as f64;
+                    let x_old = self.residual_buf[i] as f64;
+                    let d = x_new - x_old;
+                    diff_sq += d * d;
+                    xk_sq += x_old * x_old;
+                    let y_minus_x = self.solution_prev[i] as f64 - x_new;
+                    dot += y_minus_x * d;
                 }
-                if dot > 0.0 {
-                    self.t_fista = 1.0;
+            } else {
+                for i in 0..n {
+                    let x_new = self.solution[i] as f64;
+                    let x_old = self.residual_buf[i] as f64;
+                    let d = x_new - x_old;
+                    diff_sq += d * d;
+                    xk_sq += x_old * x_old;
                 }
             }
+            let tol_sq = self.tolerance * self.tolerance;
 
-            // 7. FISTA momentum extrapolation: y_{k+1} = x_{k+1} + momentum * (x_{k+1} - x_k)
+            // Adaptive restart (speed restart heuristic): reset momentum when
+            // the extrapolation direction opposes the update direction.
+            if self.iteration > 1 && dot > 0.0 {
+                self.t_fista = 1.0;
+            }
+
+            // 6. Loop C: FISTA momentum extrapolation (needs computed momentum scalar)
             let t_new = (1.0 + (1.0 + 4.0 * self.t_fista * self.t_fista).sqrt()) / 2.0;
             let momentum = ((self.t_fista - 1.0) / t_new) as f32;
 
-            for i in 0..n {
-                let x_k = self.residual_buf[i]; // previous x_k
-                let x_new = self.solution[i]; // x_{k+1}
-                let y_new = x_new + momentum * (x_new - x_k);
-                self.solution_prev[i] = y_new.max(0.0);
+            match self.constraint {
+                Constraint::NonNegative => {
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
+                    }
+                }
+                Constraint::Box01 => {
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        self.solution_prev[i] =
+                            (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
+                    }
+                }
             }
             self.t_fista = t_new;
 
-            // 8. Convergence check using primal residual
-            if self.iteration > 5 && rel_change < self.tolerance {
+            // 7. Convergence check using primal residual (squared comparison)
+            if self.iteration > 5 && diff_sq < tol_sq * (xk_sq + 1e-20) {
                 self.converged = true;
             }
 
@@ -561,6 +599,69 @@ mod tests {
                 fft_result[i],
                 td_result[i],
                 diff
+            );
+        }
+    }
+
+    // Test 12: BandedAR2 mode converges and produces non-negative solution
+    #[test]
+    fn banded_mode_converges() {
+        use crate::ConvMode;
+
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let trace = build_trace(&kernel, 200, &[10, 50, 100, 150]);
+
+        let mut solver = Solver::new();
+        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_conv_mode(ConvMode::BandedAR2);
+        solve_to_convergence(&mut solver, &trace, 200, 10);
+
+        assert!(
+            solver.converged(),
+            "BandedAR2 solver should converge within 2000 iterations, got {}",
+            solver.iteration_count()
+        );
+
+        let solution = solver.get_solution();
+        for (i, &v) in solution.iter().enumerate() {
+            assert!(
+                v >= 0.0,
+                "BandedAR2 solution at index {} is negative: {}",
+                i,
+                v
+            );
+        }
+
+        // Should have found some nonzero spikes
+        let nnz = solution.iter().filter(|&&v| v > 1e-6).count();
+        assert!(nnz > 0, "BandedAR2 should produce some nonzero spikes");
+    }
+
+    // Test 13: Box01 constraint produces values in [0, 1]
+    #[test]
+    fn box01_constraint_bounds() {
+        use crate::{Constraint, ConvMode};
+
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 200;
+        let trace = build_trace(&kernel, n, &[10, 50, 100, 150]);
+
+        // Scale trace so solution would exceed 1.0 without box constraint
+        let scaled_trace: Vec<f32> = trace.iter().map(|&v| v * 5.0).collect();
+
+        let mut solver = Solver::new();
+        solver.set_params(0.02, 0.4, 0.001, 30.0); // low lambda for large values
+        solver.set_conv_mode(ConvMode::BandedAR2);
+        solver.set_constraint(Constraint::Box01);
+        solve_to_convergence(&mut solver, &scaled_trace, 200, 10);
+
+        let solution = solver.get_solution();
+        for (i, &v) in solution.iter().enumerate() {
+            assert!(
+                v >= 0.0 && v <= 1.0,
+                "Box01 solution at index {} should be in [0,1], got {}",
+                i,
+                v
             );
         }
     }

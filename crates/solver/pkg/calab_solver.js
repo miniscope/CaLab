@@ -1,6 +1,36 @@
 /* @ts-self-types="./calab_solver.d.ts" */
 
 /**
+ * Constraint type for the proximal step.
+ * @enum {0 | 1}
+ */
+export const Constraint = Object.freeze({
+    /**
+     * Current: max(0, z - threshold) — L1 + non-negativity.
+     */
+    NonNegative: 0, "0": "NonNegative",
+    /**
+     * InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+     */
+    Box01: 1, "1": "Box01",
+});
+
+/**
+ * Convolution mode for forward/adjoint operations in FISTA.
+ * @enum {0 | 1}
+ */
+export const ConvMode = Object.freeze({
+    /**
+     * FFT-based O(T log T) per call — the original implementation.
+     */
+    Fft: 0, "0": "Fft",
+    /**
+     * Banded AR(2) recursion O(T) per call — faster for long traces.
+     */
+    BandedAR2: 1, "1": "BandedAR2",
+});
+
+/**
  * FISTA solver for calcium deconvolution.
  *
  * Minimizes (1/2)||y - K*s - b||^2 + lambda*G_dc*||s||_1 subject to s >= 0,
@@ -63,7 +93,8 @@ export class Solver {
         return ret !== 0;
     }
     /**
-     * Returns the estimated scalar baseline.
+     * Returns the estimated scalar baseline (EMA-smoothed for stable display).
+     * Lazily computes reconvolution if stale, to ensure the EMA is up to date.
      * @returns {number}
      */
     get_baseline() {
@@ -254,6 +285,22 @@ export class Solver {
      */
     reset_momentum() {
         wasm.solver_reset_momentum(this.__wbg_ptr);
+    }
+    /**
+     * Set the constraint type (NonNegative or Box01).
+     * @param {Constraint} c
+     */
+    set_constraint(c) {
+        wasm.solver_set_constraint(this.__wbg_ptr, c);
+    }
+    /**
+     * Set the convolution mode (FFT or BandedAR2).
+     * Recomputes the Lipschitz constant for the selected mode.
+     * Does NOT reset solution/iteration state — warm-start is preserved.
+     * @param {ConvMode} mode
+     */
+    set_conv_mode(mode) {
+        wasm.solver_set_conv_mode(this.__wbg_ptr, mode);
     }
     /**
      * @param {boolean} enabled

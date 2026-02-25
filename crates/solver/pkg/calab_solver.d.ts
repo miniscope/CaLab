@@ -2,6 +2,34 @@
 /* eslint-disable */
 
 /**
+ * Constraint type for the proximal step.
+ */
+export enum Constraint {
+    /**
+     * Current: max(0, z - threshold) — L1 + non-negativity.
+     */
+    NonNegative = 0,
+    /**
+     * InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+     */
+    Box01 = 1,
+}
+
+/**
+ * Convolution mode for forward/adjoint operations in FISTA.
+ */
+export enum ConvMode {
+    /**
+     * FFT-based O(T log T) per call — the original implementation.
+     */
+    Fft = 0,
+    /**
+     * Banded AR(2) recursion O(T) per call — faster for long traces.
+     */
+    BandedAR2 = 1,
+}
+
+/**
  * FISTA solver for calcium deconvolution.
  *
  * Minimizes (1/2)||y - K*s - b||^2 + lambda*G_dc*||s||_1 subject to s >= 0,
@@ -29,7 +57,8 @@ export class Solver {
     export_state(): Uint8Array;
     filter_enabled(): boolean;
     /**
-     * Returns the estimated scalar baseline.
+     * Returns the estimated scalar baseline (EMA-smoothed for stable display).
+     * Lazily computes reconvolution if stale, to ensure the EMA is up to date.
      */
     get_baseline(): number;
     /**
@@ -97,6 +126,16 @@ export class Solver {
      * Sets t_fista = 1.0 and copies solution into solution_prev.
      */
     reset_momentum(): void;
+    /**
+     * Set the constraint type (NonNegative or Box01).
+     */
+    set_constraint(c: Constraint): void;
+    /**
+     * Set the convolution mode (FFT or BandedAR2).
+     * Recomputes the Lipschitz constant for the selected mode.
+     * Does NOT reset solution/iteration state — warm-start is preserved.
+     */
+    set_conv_mode(mode: ConvMode): void;
     set_filter_enabled(enabled: boolean): void;
     /**
      * Update solver parameters and rebuild kernel.
@@ -148,6 +187,8 @@ export interface InitOutput {
     readonly solver_load_state: (a: number, b: number, c: number) => void;
     readonly solver_new: () => number;
     readonly solver_reset_momentum: (a: number) => void;
+    readonly solver_set_constraint: (a: number, b: number) => void;
+    readonly solver_set_conv_mode: (a: number, b: number) => void;
     readonly solver_set_filter_enabled: (a: number, b: number) => void;
     readonly solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly solver_set_trace: (a: number, b: number, c: number) => void;
