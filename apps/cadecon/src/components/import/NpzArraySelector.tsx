@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from 'solid-js';
+import { For, Show, createMemo, type JSX } from 'solid-js';
 import {
   npzArrays,
   setParsedData,
@@ -7,7 +7,7 @@ import {
 } from '../../lib/data-store.ts';
 import { processNpyResult } from '@calab/io';
 
-export function NpzArraySelector() {
+export function NpzArraySelector(): JSX.Element {
   const twoDArrays = createMemo(() => {
     const npz = npzArrays();
     if (!npz) return [];

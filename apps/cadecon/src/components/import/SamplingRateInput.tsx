@@ -1,8 +1,8 @@
-import { createSignal, Show, For } from 'solid-js';
+import { createSignal, Show, For, type JSX } from 'solid-js';
 import { SAMPLING_RATE_PRESETS } from '@calab/core';
 import { numTimepoints, setSamplingRate } from '../../lib/data-store.ts';
 
-export function SamplingRateInput() {
+export function SamplingRateInput(): JSX.Element {
   const [selectedRate, setSelectedRate] = createSignal<number | null>(null);
   const [customValue, setCustomValue] = createSignal<string>('');
 
@@ -53,7 +53,7 @@ export function SamplingRateInput() {
         <For each={[...SAMPLING_RATE_PRESETS]}>
           {(preset) => (
             <button
-              class={`btn-preset ${selectedRate() === preset.value && customValue() === String(preset.value) ? 'btn-preset--active' : ''}`}
+              class={`btn-preset ${selectedRate() === preset.value ? 'btn-preset--active' : ''}`}
               onClick={() => handlePreset(preset.value)}
             >
               {preset.label}

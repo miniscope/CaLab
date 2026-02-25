@@ -1,4 +1,4 @@
-import { Show } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import {
   effectiveShape,
   swapped,
@@ -6,7 +6,7 @@ import {
   setDimensionsConfirmed,
 } from '../../lib/data-store.ts';
 
-export function DimensionConfirmation() {
+export function DimensionConfirmation(): JSX.Element {
   return (
     <div class="card">
       <h3 class="card__title">Confirm Dimensions</h3>

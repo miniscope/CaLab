@@ -1,4 +1,4 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, Show, type JSX } from 'solid-js';
 import { parseNpy, parseNpz, processNpyResult } from '@calab/io';
 import {
   rawFile,
@@ -10,7 +10,7 @@ import {
   importError,
 } from '../../lib/data-store.ts';
 
-export function FileDropZone() {
+export function FileDropZone(): JSX.Element {
   const [isDragging, setIsDragging] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
 
@@ -75,7 +75,7 @@ export function FileDropZone() {
     e.stopPropagation();
     setIsDragging(false);
     const file = e.dataTransfer?.files[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   };
 
   const handleDragOver = (e: DragEvent) => {
@@ -94,7 +94,7 @@ export function FileDropZone() {
 
   const handleInputChange = (e: Event) => {
     const file = (e.target as HTMLInputElement).files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   };
 
   return (

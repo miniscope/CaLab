@@ -1,4 +1,4 @@
-import { createEffect, Show, For } from 'solid-js';
+import { createEffect, Show, For, type JSX } from 'solid-js';
 import { validateTraceData } from '@calab/io';
 import type { NumericTypedArray } from '@calab/core';
 import {
@@ -8,7 +8,7 @@ import {
   setValidationResult,
 } from '../../lib/data-store.ts';
 
-export function DataValidationReport() {
+export function DataValidationReport(): JSX.Element {
   createEffect(() => {
     const data = parsedData();
     const shape = effectiveShape();

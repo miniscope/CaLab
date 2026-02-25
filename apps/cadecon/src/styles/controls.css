@@ -20,10 +20,6 @@
   padding: 0;
 }
 
-.param-panel__header {
-  margin-bottom: 2px;
-}
-
 .param-panel__sliders {
   display: flex;
   flex-direction: column;
@@ -259,10 +255,6 @@
 @media (max-width: 600px) {
   .param-panel {
     padding: var(--space-md);
-  }
-
-  .param-slider__controls {
-    flex-wrap: wrap;
   }
 
   .param-slider__range {

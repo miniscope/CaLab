@@ -15,7 +15,7 @@ const STEP_LABELS: Record<string, { num: number; label: string }> = {
   validation: { num: 4, label: 'Validate Data' },
 };
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = Object.keys(STEP_LABELS).length;
 
 export interface ImportOverlayProps {
   hasFile: boolean;

@@ -1,4 +1,4 @@
-import { Show } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import type { Accessor } from 'solid-js';
 
 export interface ParameterSliderProps {
@@ -16,38 +16,60 @@ export interface ParameterSliderProps {
   trueValue?: number;
 }
 
-export function ParameterSlider(props: ParameterSliderProps) {
+function parseInputValue(e: Event): number | null {
+  const raw = parseFloat((e.target as HTMLInputElement).value);
+  return isNaN(raw) ? null : raw;
+}
+
+export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
   const sliderValue = () => (props.toSlider ? props.toSlider(props.value()) : props.value());
 
   const displayValue = () =>
     props.format ? props.format(props.value()) : props.value().toString();
 
   const handleRangeInput = (e: Event) => {
-    const raw = parseFloat((e.target as HTMLInputElement).value);
-    if (isNaN(raw)) return;
+    const raw = parseInputValue(e);
+    if (raw === null) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
     props.setValue(val);
   };
 
   const handleRangeChange = (e: Event) => {
-    const raw = parseFloat((e.target as HTMLInputElement).value);
-    if (isNaN(raw)) return;
+    const raw = parseInputValue(e);
+    if (raw === null) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
     props.onCommit?.(val);
   };
 
   const handleNumericInput = (e: Event) => {
-    const raw = parseFloat((e.target as HTMLInputElement).value);
-    if (isNaN(raw)) return;
+    const raw = parseInputValue(e);
+    if (raw === null) return;
     const clamped = Math.max(props.min, Math.min(props.max, raw));
     props.setValue(clamped);
   };
 
   const handleNumericChange = (e: Event) => {
-    const raw = parseFloat((e.target as HTMLInputElement).value);
-    if (isNaN(raw)) return;
+    const raw = parseInputValue(e);
+    if (raw === null) return;
     const clamped = Math.max(props.min, Math.min(props.max, raw));
     props.onCommit?.(clamped);
+  };
+
+  const renderTrueMarker = (): JSX.Element => {
+    const sliderMin = props.toSlider ? 0 : props.min;
+    const sliderMax = props.toSlider ? 1 : props.max;
+    const mappedValue = props.toSlider ? props.toSlider(props.trueValue!) : props.trueValue!;
+    const pct = ((mappedValue - sliderMin) / (sliderMax - sliderMin)) * 100;
+    const formattedValue = props.format
+      ? props.format(props.trueValue!)
+      : props.trueValue!.toString();
+    return (
+      <div
+        class="param-slider__true-marker"
+        style={{ left: `${pct}%` }}
+        title={`True value: ${formattedValue}${props.unit ? ' ' + props.unit : ''}`}
+      />
+    );
   };
 
   return (
@@ -79,26 +101,7 @@ export function ParameterSlider(props: ParameterSliderProps) {
           onInput={handleRangeInput}
           onChange={handleRangeChange}
         />
-        <Show when={props.trueValue !== undefined}>
-          {(() => {
-            const sliderMin = props.toSlider ? 0 : props.min;
-            const sliderMax = props.toSlider ? 1 : props.max;
-            const mappedValue = props.toSlider
-              ? props.toSlider(props.trueValue!)
-              : props.trueValue!;
-            const pct = ((mappedValue - sliderMin) / (sliderMax - sliderMin)) * 100;
-            const formattedValue = props.format
-              ? props.format(props.trueValue!)
-              : props.trueValue!.toString();
-            return (
-              <div
-                class="param-slider__true-marker"
-                style={{ left: `${pct}%` }}
-                title={`True value: ${formattedValue}${props.unit ? ' ' + props.unit : ''}`}
-              />
-            );
-          })()}
-        </Show>
+        <Show when={props.trueValue !== undefined}>{renderTrueMarker()}</Show>
       </div>
     </div>
   );

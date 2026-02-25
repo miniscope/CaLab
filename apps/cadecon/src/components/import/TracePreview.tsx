@@ -1,15 +1,11 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { onMount, onCleanup, createEffect, on, type JSX } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
+import { dataIndex } from '../../lib/data-utils.ts';
 
 const NUM_TRACES = 5;
 const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];
 
-/** Compute flat index into the typed array, accounting for potential dimension swap. */
-function dataIndex(cell: number, timepoint: number, rawCols: number, isSwapped: boolean): number {
-  return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
-}
-
-export function TracePreview() {
+export function TracePreview(): JSX.Element {
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
   let resizeObserver: ResizeObserver | undefined;
@@ -98,12 +94,7 @@ export function TracePreview() {
     resizeObserver?.disconnect();
   });
 
-  createEffect(() => {
-    parsedData();
-    effectiveShape();
-    swapped();
-    drawTraces();
-  });
+  createEffect(on([parsedData, effectiveShape, swapped], drawTraces));
 
   return (
     <div class="card">

@@ -1,5 +1,6 @@
 import { createSignal, Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
+import { ToggleSwitch } from './ToggleSwitch.tsx';
 
 // --- Module-level signals ---
 
@@ -27,21 +28,13 @@ export function AlgorithmSettings(): JSX.Element {
   return (
     <div class="param-panel">
       <div class="param-panel__sliders">
-        <div class="param-panel__toggle-group" style="border-top: none; padding-top: 0;">
-          <label class="param-panel__toggle">
-            <input
-              type="checkbox"
-              checked={autoInitKernel()}
-              onChange={(e) => setAutoInitKernel(e.currentTarget.checked)}
-            />
-            <div>
-              <span class="param-panel__toggle-label">Auto Init Kernel</span>
-              <span class="param-panel__toggle-desc">
-                Estimate initial tau values from data autocorrelation
-              </span>
-            </div>
-          </label>
-        </div>
+        <ToggleSwitch
+          label="Auto Init Kernel"
+          description="Estimate initial tau values from data autocorrelation"
+          checked={autoInitKernel()}
+          onChange={setAutoInitKernel}
+          style="border-top: none; padding-top: 0;"
+        />
 
         <Show when={!autoInitKernel()}>
           <ParameterSlider
@@ -97,37 +90,19 @@ export function AlgorithmSettings(): JSX.Element {
           format={(v) => v.toFixed(3)}
         />
 
-        <div class="param-panel__toggle-group">
-          <label class="param-panel__toggle">
-            <input
-              type="checkbox"
-              checked={weightingEnabled()}
-              onChange={(e) => setWeightingEnabled(e.currentTarget.checked)}
-            />
-            <div>
-              <span class="param-panel__toggle-label">Cell Weighting</span>
-              <span class="param-panel__toggle-desc">
-                Weight cells by SNR during kernel updates
-              </span>
-            </div>
-          </label>
-        </div>
+        <ToggleSwitch
+          label="Cell Weighting"
+          description="Weight cells by SNR during kernel updates"
+          checked={weightingEnabled()}
+          onChange={setWeightingEnabled}
+        />
 
-        <div class="param-panel__toggle-group">
-          <label class="param-panel__toggle">
-            <input
-              type="checkbox"
-              checked={bandpassEnabled()}
-              onChange={(e) => setBandpassEnabled(e.currentTarget.checked)}
-            />
-            <div>
-              <span class="param-panel__toggle-label">Bandpass Filter</span>
-              <span class="param-panel__toggle-desc">
-                Apply bandpass filtering before deconvolution
-              </span>
-            </div>
-          </label>
-        </div>
+        <ToggleSwitch
+          label="Bandpass Filter"
+          description="Apply bandpass filtering before deconvolution"
+          checked={bandpassEnabled()}
+          onChange={setBandpassEnabled}
+        />
       </div>
     </div>
   );

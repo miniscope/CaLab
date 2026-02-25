@@ -1,5 +1,6 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { onMount, onCleanup, createEffect, createMemo, on, type JSX } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
+import { dataIndex } from '../../lib/data-utils.ts';
 import {
   subsetRectangles,
   selectedSubsetIdx,
@@ -39,11 +40,6 @@ function buildViridisLUT(): Uint8Array {
   return lut;
 }
 
-/** Compute flat index into the typed array, accounting for potential dimension swap. */
-function dataIndex(cell: number, timepoint: number, rawCols: number, isSwapped: boolean): number {
-  return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
-}
-
 // High-contrast colors chosen to stand out against viridis (purple-teal-yellow):
 // warm reds, oranges, and pinks that don't appear in the viridis palette
 const SUBSET_STROKE = [
@@ -68,7 +64,7 @@ const SUBSET_FILL = [
   'rgba(204, 204, 204, 0.12)',
 ];
 
-export function RasterOverview() {
+export function RasterOverview(): JSX.Element {
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
   let resizeObserver: ResizeObserver | undefined;
@@ -76,6 +72,26 @@ export function RasterOverview() {
   // Cache pixel dimensions for click detection
   let lastWidth = 0;
   let lastHeight = 0;
+
+  /** Memoized 1st/99th percentile bounds -- recomputed only when the underlying data changes. */
+  const percentileBounds = createMemo(() => {
+    const data = parsedData();
+    if (!data) return { p1: 0, p99: 1, range: 1 };
+
+    const typedData = data.data;
+    const sampleSize = Math.min(typedData.length, 100000);
+    const step = Math.max(1, Math.floor(typedData.length / sampleSize));
+    const samples: number[] = [];
+    for (let i = 0; i < typedData.length; i += step) {
+      const v = typedData[i];
+      if (Number.isFinite(v)) samples.push(v);
+    }
+    samples.sort((a, b) => a - b);
+    const p1 = samples[Math.floor(samples.length * 0.01)] ?? 0;
+    const p99 = samples[Math.floor(samples.length * 0.99)] ?? 1;
+    const range = p99 - p1 || 1;
+    return { p1, p99, range };
+  });
 
   const drawRaster = () => {
     const canvas = canvasRef;
@@ -108,18 +124,7 @@ export function RasterOverview() {
     lastWidth = displayWidth;
     lastHeight = displayHeight;
 
-    // Compute 1st and 99th percentile for scaling
-    const sampleSize = Math.min(typedData.length, 100000);
-    const step = Math.max(1, Math.floor(typedData.length / sampleSize));
-    const samples: number[] = [];
-    for (let i = 0; i < typedData.length; i += step) {
-      const v = typedData[i];
-      if (Number.isFinite(v)) samples.push(v);
-    }
-    samples.sort((a, b) => a - b);
-    const p1 = samples[Math.floor(samples.length * 0.01)] ?? 0;
-    const p99 = samples[Math.floor(samples.length * 0.99)] ?? 1;
-    const range = p99 - p1 || 1;
+    const { p1, range } = percentileBounds();
 
     // Draw heatmap at physical pixel resolution (putImageData ignores canvas transforms)
     const imageData = ctx.createImageData(physW, physH);
@@ -225,14 +230,9 @@ export function RasterOverview() {
   });
 
   // Redraw when data, shape, subsets, or selection changes
-  createEffect(() => {
-    parsedData();
-    effectiveShape();
-    swapped();
-    subsetRectangles();
-    selectedSubsetIdx();
-    drawRaster();
-  });
+  createEffect(
+    on([parsedData, effectiveShape, swapped, subsetRectangles, selectedSubsetIdx], drawRaster),
+  );
 
   return (
     <div class="raster-container" ref={containerRef}>

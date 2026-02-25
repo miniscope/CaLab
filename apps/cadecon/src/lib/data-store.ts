@@ -15,16 +15,16 @@ const [validationResult, setValidationResult] = createSignal<ValidationResult | 
 const [npzArrays, setNpzArrays] = createSignal<NpzResult | null>(null);
 const [selectedNpzArray, setSelectedNpzArray] = createSignal<string | null>(null);
 const [importError, setImportError] = createSignal<string | null>(null);
-const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
 const [bridgeUrl, setBridgeUrl] = createSignal<string | null>(null);
-const [bridgeExportDone, setBridgeExportDone] = createSignal(false);
 
 /** Tracks how data was loaded: 'file' (user upload), 'demo' (generated), 'bridge' (Python calab.tune). */
 export type DataSource = 'file' | 'demo' | 'bridge' | null;
 const [dataSource, setDataSource] = createSignal<DataSource>(null);
 
-// --- Ground Truth Signals ---
+// ── Phase 2: ground truth & advanced features (not yet wired to UI) ────────
 
+const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
+const [bridgeExportDone, setBridgeExportDone] = createSignal(false);
 const [groundTruthSpikes, setGroundTruthSpikes] = createSignal<Float64Array | null>(null);
 const [groundTruthCalcium, setGroundTruthCalcium] = createSignal<Float64Array | null>(null);
 const [groundTruthVisible, setGroundTruthVisible] = createSignal(false);
@@ -62,7 +62,7 @@ const importStep = createMemo<ImportStep>(() => {
   return 'ready';
 });
 
-// --- Ground Truth Actions ---
+// ── Phase 2: ground truth actions (not yet wired to UI) ────────────────────
 
 function revealGroundTruth() {
   setGroundTruthVisible(true);
@@ -199,7 +199,6 @@ export {
   samplingRate,
   validationResult,
   npzArrays,
-  selectedNpzArray,
   importError,
   // Setters
   setRawFile,
@@ -218,8 +217,21 @@ export {
   durationSeconds,
   importStep,
   isDemo,
+  // Actions
+  resetImport,
+  loadDemoData,
+  loadFromBridge,
+  // Bridge
+  bridgeUrl,
+  // Data source tracking
+  dataSource,
+  setDataSource,
+
+  // ── Phase 2: ground truth & advanced features (not yet wired to UI) ──
+  selectedNpzArray,
   demoPreset,
-  // Ground Truth
+  bridgeExportDone,
+  setBridgeExportDone,
   groundTruthSpikes,
   groundTruthCalcium,
   groundTruthVisible,
@@ -229,15 +241,4 @@ export {
   revealGroundTruth,
   toggleGroundTruthVisibility,
   getGroundTruthForCell,
-  // Actions
-  resetImport,
-  loadDemoData,
-  loadFromBridge,
-  // Bridge
-  bridgeUrl,
-  bridgeExportDone,
-  setBridgeExportDone,
-  // Data source tracking
-  dataSource,
-  setDataSource,
 };

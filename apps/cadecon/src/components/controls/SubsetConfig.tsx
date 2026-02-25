@@ -1,5 +1,6 @@
 import { Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
+import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
   numSubsets,
   setNumSubsets,
@@ -31,21 +32,16 @@ export function SubsetConfig(): JSX.Element {
           format={(v) => String(Math.round(v))}
         />
 
-        <div class="param-panel__toggle-group">
-          <label class="param-panel__toggle">
-            <input
-              type="checkbox"
-              checked={autoMode()}
-              onChange={(e) => setAutoMode(e.currentTarget.checked)}
-            />
-            <div>
-              <span class="param-panel__toggle-label">Auto Size</span>
-              <span class="param-panel__toggle-desc">
-                T_sub = {effectiveTSub().toLocaleString()}, N_sub = {effectiveNSub()}
-              </span>
-            </div>
-          </label>
-        </div>
+        <ToggleSwitch
+          label="Auto Size"
+          description={
+            <>
+              T_sub = {effectiveTSub().toLocaleString()}, N_sub = {effectiveNSub()}
+            </>
+          }
+          checked={autoMode()}
+          onChange={setAutoMode}
+        />
 
         <Show when={!autoMode()}>
           <ParameterSlider
@@ -83,11 +79,11 @@ export function SubsetConfig(): JSX.Element {
 
       <div class="stats-grid">
         <div class="stat-item">
-          <span class="stat-item__label">N_sub/N</span>
+          <span class="stat-item__label">Cells/subset</span>
           <span class="stat-item__value">{coverageStats().cellPct.toFixed(0)}%</span>
         </div>
         <div class="stat-item">
-          <span class="stat-item__label">T_sub/T</span>
+          <span class="stat-item__label">Time/subset</span>
           <span class="stat-item__value">{coverageStats().timePct.toFixed(0)}%</span>
         </div>
         <div class="stat-item">
