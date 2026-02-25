@@ -18,7 +18,7 @@ export type AnalyticsEventName =
   | 'auth_signed_out';
 
 let sessionId: string | null = null;
-let sessionStart: number | null = null;
+let sessionEndRegistered = false;
 
 function getAnonymousId(): string {
   let id = sessionStorage.getItem('calab_anon_id');
@@ -57,8 +57,6 @@ export async function initSession(
   if (!supabaseEnabled) return;
 
   try {
-    sessionStart = Date.now();
-
     const supabase = await getSupabase();
     if (!supabase) return;
 
@@ -76,6 +74,10 @@ export async function initSession(
 
     if (error || !data?.session_id) return;
     sessionId = data.session_id;
+
+    // Register end listeners only after session is established
+    registerSessionEndListeners();
+    startHeartbeat();
   } catch {
     // Analytics init failed — silently continue
   }
@@ -105,6 +107,37 @@ export async function trackEvent(
   }
 }
 
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * Periodically update ended_at while the page is visible.
+ * This ensures we have a recent timestamp even if the page-unload PATCH fails
+ * (which browsers frequently abort).
+ */
+function startHeartbeat(): void {
+  if (!supabaseUrl || !supabaseAnonKey || !sessionId) return;
+
+  const tick = () => {
+    if (!sessionId || document.visibilityState === 'hidden') return;
+    try {
+      fetch(`${supabaseUrl}/rest/v1/analytics_sessions?id=eq.${sessionId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey!,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ ended_at: new Date().toISOString() }),
+      });
+    } catch {
+      // Best-effort — ignore errors
+    }
+  };
+
+  setInterval(tick, HEARTBEAT_INTERVAL_MS);
+}
+
 /**
  * Register event listeners for best-effort session end on tab close.
  * Uses visibilitychange + pagehide with keepalive fetch.
@@ -114,19 +147,15 @@ export async function trackEvent(
  * unload (visibilitychange/pagehide). The keepalive flag on fetch ensures
  * the request outlives the page.
  */
-export function registerSessionEndListeners(): void {
-  if (!supabaseEnabled) return;
+function registerSessionEndListeners(): void {
+  if (!supabaseEnabled || sessionEndRegistered) return;
+  sessionEndRegistered = true;
 
-  let ending = false;
+  let ended = false;
 
   const handleEnd = () => {
-    if (ending || !sessionId) return;
-    ending = true;
-
-    const durationSeconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : null;
-
-    // Best-effort: use sendBeacon-style keepalive fetch to Supabase REST API
-    if (!supabaseUrl || !supabaseAnonKey) return;
+    if (ended || !sessionId || !supabaseUrl || !supabaseAnonKey) return;
+    ended = true;
 
     try {
       fetch(`${supabaseUrl}/rest/v1/analytics_sessions?id=eq.${sessionId}`, {
@@ -137,10 +166,7 @@ export function registerSessionEndListeners(): void {
           Authorization: `Bearer ${supabaseAnonKey}`,
           Prefer: 'return=minimal',
         },
-        body: JSON.stringify({
-          ended_at: new Date().toISOString(),
-          duration_seconds: durationSeconds,
-        }),
+        body: JSON.stringify({ ended_at: new Date().toISOString() }),
         keepalive: true,
       });
     } catch {

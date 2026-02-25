@@ -1,7 +1,7 @@
 import { render } from 'solid-js/web';
 import App from './App.tsx';
 import { configureStorageKey, configureTutorialEngine } from '@calab/tutorials';
-import { initSession, registerSessionEndListeners } from '@calab/community';
+import { initSession } from '@calab/community';
 import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import '@calab/ui/styles/base.css';
 import '@calab/ui/styles/tutorial.css';
@@ -15,5 +15,4 @@ configureTutorialEngine({ popoverClass: 'catune-tutorial' });
 render(() => <App />, document.getElementById('root')!);
 
 void initSession('catune', import.meta.env.VITE_APP_VERSION || 'dev');
-registerSessionEndListeners();
 setupAnalyticsEffects();

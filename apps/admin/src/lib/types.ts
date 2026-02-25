@@ -12,7 +12,6 @@ export interface SessionRow {
   user_agent_family: string | null;
   referrer_domain: string | null;
   ended_at: string | null;
-  duration_seconds: number | null;
 }
 
 export interface EventRow {

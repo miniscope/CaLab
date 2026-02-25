@@ -20,7 +20,7 @@ export {
 } from './field-options.ts';
 
 // Analytics
-export { initSession, trackEvent, registerSessionEndListeners } from './analytics.ts';
+export { initSession, trackEvent } from './analytics.ts';
 export type { AnalyticsEventName } from './analytics.ts';
 
 // Utilities
