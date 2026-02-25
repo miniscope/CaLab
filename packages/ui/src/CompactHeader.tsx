@@ -9,7 +9,7 @@ export interface CompactHeaderProps {
   'data-tutorial'?: string;
 }
 
-export function CompactHeader(props: CompactHeaderProps) {
+export function CompactHeader(props: CompactHeaderProps): JSX.Element {
   return (
     <header class="compact-header" data-tutorial={props['data-tutorial']}>
       <div class="compact-header__brand">

@@ -73,7 +73,7 @@
 .worker-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-xs);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.85rem;

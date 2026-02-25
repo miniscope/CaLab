@@ -1,4 +1,4 @@
-import { Show, type Accessor } from 'solid-js';
+import { Show, type Accessor, type JSX } from 'solid-js';
 import { CompactHeader, WorkerIndicator } from '@calab/ui';
 import { resolveWorkerCount } from '@calab/compute';
 import {
@@ -23,7 +23,7 @@ export interface CaTuneHeaderProps {
   onToggleSidebar?: () => void;
 }
 
-export function CaTuneHeader(props: CaTuneHeaderProps) {
+export function CaTuneHeader(props: CaTuneHeaderProps): JSX.Element {
   const handleChangeData = () => {
     clearMultiCellState();
     resetImport();

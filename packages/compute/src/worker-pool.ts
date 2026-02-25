@@ -51,7 +51,6 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
   const inFlightJobs = new Map<number, PoolJob>();
   let disposed = false;
 
-  // Create workers
   for (let i = 0; i < size; i++) {
     const worker = createWorker();
 
@@ -63,28 +62,30 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
     };
   }
 
+  /** Finish an in-flight job: remove from map, free the worker, drain queue. */
+  function finishJob(entry: PoolEntry, jobId: number): PoolJob | undefined {
+    const job = inFlightJobs.get(jobId);
+    inFlightJobs.delete(jobId);
+    entry.state = { status: 'idle' };
+    return job;
+  }
+
   function handleWorkerMessage(entry: PoolEntry, msg: PoolWorkerOutbound): void {
-    if (msg.type === 'ready') {
-      entry.state = { status: 'idle' };
-      // Drain queue now that this worker is ready
-      drainQueue();
-      return;
-    }
+    switch (msg.type) {
+      case 'ready':
+        entry.state = { status: 'idle' };
+        drainQueue();
+        break;
 
-    if (msg.type === 'intermediate') {
-      const job = inFlightJobs.get(msg.jobId);
-      if (job) {
-        job.onIntermediate(msg.solution, msg.reconvolution, msg.iteration);
+      case 'intermediate': {
+        const job = inFlightJobs.get(msg.jobId);
+        job?.onIntermediate(msg.solution, msg.reconvolution, msg.iteration);
+        break;
       }
-      return;
-    }
 
-    if (msg.type === 'complete') {
-      const job = inFlightJobs.get(msg.jobId);
-      inFlightJobs.delete(msg.jobId);
-      entry.state = { status: 'idle' };
-      if (job) {
-        job.onComplete(
+      case 'complete': {
+        const job = finishJob(entry, msg.jobId);
+        job?.onComplete(
           msg.solution,
           msg.reconvolution,
           msg.state,
@@ -92,31 +93,23 @@ export function createWorkerPool(createWorker: () => Worker, poolSize?: number):
           msg.converged,
           msg.filteredTrace,
         );
+        drainQueue();
+        break;
       }
-      drainQueue();
-      return;
-    }
 
-    if (msg.type === 'cancelled') {
-      const job = inFlightJobs.get(msg.jobId);
-      inFlightJobs.delete(msg.jobId);
-      entry.state = { status: 'idle' };
-      if (job) {
-        job.onCancelled();
+      case 'cancelled': {
+        const job = finishJob(entry, msg.jobId);
+        job?.onCancelled();
+        drainQueue();
+        break;
       }
-      drainQueue();
-      return;
-    }
 
-    if (msg.type === 'error') {
-      const job = inFlightJobs.get(msg.jobId);
-      inFlightJobs.delete(msg.jobId);
-      entry.state = { status: 'idle' };
-      if (job) {
-        job.onError(msg.message);
+      case 'error': {
+        const job = finishJob(entry, msg.jobId);
+        job?.onError(msg.message);
+        drainQueue();
+        break;
       }
-      drainQueue();
-      return;
     }
   }
 
