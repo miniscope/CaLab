@@ -4,7 +4,7 @@
  */
 
 import { createSignal, createMemo, createEffect, Show } from 'solid-js';
-import { TraceOverview } from './TraceOverview.tsx';
+import { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from './TraceOverview.tsx';
 import { ZoomWindow } from './ZoomWindow.tsx';
 import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '@calab/core';
@@ -39,6 +39,13 @@ const ZOOM_SYNC_KEY = 'catune-card-zoom';
 
 export function CellCard(props: CellCardProps) {
   const totalDuration = createMemo(() => props.rawTrace.length / props.samplingRate);
+
+  // Auto-adjust card height so multi-row minimaps don't push the zoom window off-screen
+  const numRows = createMemo(() => Math.max(1, Math.ceil(totalDuration() / ROW_DURATION_S)));
+  const effectiveHeight = createMemo(() => {
+    const minHeight = cardHeight() + (numRows() - 1) * ROW_HEIGHT;
+    return Math.max(cardHeight(), minHeight);
+  });
 
   // Quality badge
   const snr = createMemo(() => computePeakSNR(props.rawTrace));
@@ -79,7 +86,7 @@ export function CellCard(props: CellCardProps) {
       onClick={() => props.onClick?.()}
       onMouseEnter={() => setHoveredCell(props.cellIndex)}
       onMouseLeave={() => setHoveredCell(null)}
-      height={cardHeight()}
+      height={effectiveHeight()}
       resizable
       onResize={setCardHeight}
     >
