@@ -26,9 +26,6 @@ export {
 export function AlgorithmSettings(): JSX.Element {
   return (
     <div class="param-panel">
-      <div class="param-panel__header">
-        <p class="panel-label">Algorithm Settings</p>
-      </div>
       <div class="param-panel__sliders">
         <div class="param-panel__toggle-group" style="border-top: none; padding-top: 0;">
           <label class="param-panel__toggle">

@@ -22,9 +22,6 @@ import { numCells, numTimepoints } from '../../lib/data-store.ts';
 export function SubsetConfig(): JSX.Element {
   return (
     <div class="param-panel">
-      <div class="param-panel__header">
-        <p class="panel-label">Subset Configuration</p>
-      </div>
       <div class="param-panel__sliders">
         <ParameterSlider
           label="Subsets (K)"
@@ -98,7 +95,7 @@ export function SubsetConfig(): JSX.Element {
       </div>
 
       {/* Coverage stats */}
-      <div class="stats-grid" style="margin-top: var(--space-md);">
+      <div class="stats-grid">
         <div class="stat-item">
           <span class="stat-item__label">Cell Coverage</span>
           <span class="stat-item__value">{coverageStats().cellPct.toFixed(0)}%</span>

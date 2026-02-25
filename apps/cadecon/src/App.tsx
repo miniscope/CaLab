@@ -45,14 +45,17 @@ const App: Component = () => {
           sidebar={
             <>
               <DashboardPanel id="subset-config" variant="controls">
+                <p class="panel-label">Subset Configuration</p>
                 <SubsetConfig />
               </DashboardPanel>
 
               <DashboardPanel id="algorithm-settings" variant="controls">
+                <p class="panel-label">Algorithm Settings</p>
                 <AlgorithmSettings />
               </DashboardPanel>
 
               <DashboardPanel id="run-controls" variant="controls">
+                <p class="panel-label">Run Controls</p>
                 <RunControls />
               </DashboardPanel>
             </>

@@ -3,9 +3,6 @@ import type { JSX } from 'solid-js';
 export function RunControls(): JSX.Element {
   return (
     <div class="param-panel">
-      <div class="param-panel__header">
-        <p class="panel-label">Run Controls</p>
-      </div>
       <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
         <button class="btn-primary" disabled title="Active in Phase 2">
           Start

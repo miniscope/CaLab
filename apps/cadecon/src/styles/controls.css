@@ -4,11 +4,11 @@
    Sidebar: compact spacing
    ======================== */
 .viz-layout__sidebar {
-  gap: var(--space-xs);
+  gap: 4px;
 }
 
 .viz-layout__sidebar .dashboard-panel {
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
 }
 
 /* ========================
@@ -21,7 +21,7 @@
 }
 
 .param-panel__header {
-  margin-bottom: var(--space-sm);
+  margin-bottom: 2px;
 }
 
 .param-panel__sliders {
@@ -33,7 +33,7 @@
    Parameter Slider
    ======================== */
 .param-slider {
-  margin-bottom: var(--space-sm);
+  margin-bottom: 4px;
 }
 
 .param-slider:last-child {
@@ -45,7 +45,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-sm);
-  margin-bottom: var(--space-xs);
+  margin-bottom: 0;
 }
 
 .param-slider__label {
@@ -186,15 +186,15 @@
 
 /* --- Toggle --- */
 .param-panel__toggle-group {
-  padding-top: var(--space-sm);
+  padding-top: 4px;
   border-top: 1px solid var(--border-subtle);
-  margin-top: var(--space-xs);
+  margin-top: 4px;
 }
 
 .param-panel__toggle {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: 6px;
   cursor: pointer;
   user-select: none;
 }
