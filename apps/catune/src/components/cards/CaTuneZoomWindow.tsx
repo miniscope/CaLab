@@ -391,7 +391,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
   const totalDuration = () => props.rawTrace.length / props.samplingRate;
 
   return (
-    <div ref={containerRef}>
+    <div ref={containerRef} style={{ height: '100%' }}>
       <ZoomWindow
         data={() => zoomData()}
         series={seriesConfig}
