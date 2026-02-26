@@ -7,9 +7,8 @@
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
-import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import '@calab/ui/chart/chart-theme.css';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 
 export interface TracePanelProps {
   data: () => [number[], ...number[][]];

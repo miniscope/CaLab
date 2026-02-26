@@ -7,11 +7,10 @@ import { createMemo, Show, type JSX } from 'solid-js';
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
+import '@calab/ui/chart/chart-theme.css';
 import { convergenceHistory, convergedAtIteration } from '../../lib/iteration-store.ts';
-import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
 
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';

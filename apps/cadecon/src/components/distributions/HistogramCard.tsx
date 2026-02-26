@@ -7,9 +7,8 @@ import { createMemo, Show, type JSX } from 'solid-js';
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
-import { withOpacity } from '../../lib/chart/series-config.ts';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import '@calab/ui/chart/chart-theme.css';
+import { withOpacity, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 import { median, iqr } from '../../lib/math-utils.ts';
 
 export interface HistogramCardProps {

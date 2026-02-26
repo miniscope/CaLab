@@ -7,9 +7,9 @@
 import { createEffect, createMemo, on, onCleanup } from 'solid-js';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
+import '@calab/ui/chart/chart-theme.css';
 import uPlot from 'uplot';
-import { getThemeColors } from '../../lib/chart/theme-colors.ts';
+import { getThemeColors } from '@calab/ui/chart';
 
 export interface ScatterPlotProps {
   submissions: CatuneSubmission[];

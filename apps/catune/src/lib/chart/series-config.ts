@@ -1,36 +1,10 @@
-// Shared uPlot series configuration builders for trace panels.
+// CaTune-specific uPlot series configuration builders for trace panels.
 // Trace colors follow the D3 category10 scheme for scientific consistency.
 
 import type uPlot from 'uplot';
+import { withOpacity } from '@calab/ui/chart';
 
-/**
- * Convert a color to rgba with the specified opacity.
- * Handles #rrggbb and #rgb hex formats. Returns input unchanged for other formats.
- */
-export function withOpacity(color: string, alpha: number): string {
-  if (color.startsWith('#')) {
-    let hex = color.slice(1);
-
-    // Expand shorthand #rgb to #rrggbb
-    if (hex.length === 3) {
-      hex = hex
-        .split('')
-        .map((char) => char + char)
-        .join('');
-    }
-
-    // Parse #rrggbb format
-    if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-  }
-
-  // Safe fallback: return unchanged for other formats
-  return color;
-}
+export { withOpacity };
 
 export function createRawSeries(): uPlot.Series {
   return { label: 'Raw', stroke: '#1f77b4', width: 1 };

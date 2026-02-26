@@ -39,7 +39,7 @@ import {
   createReconvolvedSeries,
   createResidualSeries,
 } from '../../lib/chart/series-config.ts';
-import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
+import { transientZonePlugin } from '@calab/ui/chart';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 
 const DOWNSAMPLE_TARGET = 2000;

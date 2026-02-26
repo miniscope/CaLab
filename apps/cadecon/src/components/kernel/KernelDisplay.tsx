@@ -7,13 +7,12 @@ import { createMemo, Show, type JSX } from 'solid-js';
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
+import '@calab/ui/chart/chart-theme.css';
 import { convergenceHistory, currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
 import { viewedIteration } from '../../lib/viz-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
 import { createKernelFreeSeries, createKernelFitSeries } from '../../lib/chart/series-config.ts';
-import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 
 export function KernelDisplay(): JSX.Element {
   const snapshot = createMemo(() => {

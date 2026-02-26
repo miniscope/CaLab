@@ -17,7 +17,7 @@ import {
   createGroundTruthSpikesSeries,
   createGroundTruthCalciumSeries,
 } from '../../lib/chart/series-config.ts';
-import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
+import { transientZonePlugin } from '@calab/ui/chart';
 import {
   showRaw,
   showFiltered,

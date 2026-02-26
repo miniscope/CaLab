@@ -2,43 +2,9 @@
 // Trace colors follow the D3 category10 scheme for scientific consistency.
 
 import type uPlot from 'uplot';
+import { D3_CATEGORY10, subsetColor, withOpacity } from '@calab/ui/chart';
 
-const D3_CATEGORY10 = [
-  '#1f77b4',
-  '#ff7f0e',
-  '#2ca02c',
-  '#d62728',
-  '#9467bd',
-  '#8c564b',
-  '#e377c2',
-  '#7f7f7f',
-  '#bcbd22',
-  '#17becf',
-];
-
-/** Return the D3 category10 color for a given subset index (wraps around). */
-export function subsetColor(idx: number): string {
-  return D3_CATEGORY10[idx % D3_CATEGORY10.length];
-}
-
-export function withOpacity(color: string, alpha: number): string {
-  if (color.startsWith('#')) {
-    let hex = color.slice(1);
-    if (hex.length === 3) {
-      hex = hex
-        .split('')
-        .map((char) => char + char)
-        .join('');
-    }
-    if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-  }
-  return color;
-}
+export { subsetColor, withOpacity };
 
 export function createRawTraceSeries(): uPlot.Series {
   return { label: 'Raw', stroke: '#1f77b4', width: 1 };

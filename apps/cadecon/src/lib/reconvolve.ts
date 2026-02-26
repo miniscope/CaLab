@@ -3,6 +3,9 @@
  * Mirrors the Rust BandedAR2 convolution: c[t] = g1*c[t-1] + g2*c[t-2] + s[t],
  * then normalize by impulse peak so recon = alpha * (c / peak) + baseline.
  */
+
+import { computeAR2 } from '@calab/core';
+
 export function reconvolveAR2(
   sCounts: Float32Array,
   tauR: number,
@@ -11,11 +14,7 @@ export function reconvolveAR2(
   alpha: number,
   baseline: number,
 ): Float32Array {
-  const dt = 1 / fs;
-  const d = Math.exp(-dt / tauD);
-  const r = Math.exp(-dt / tauR);
-  const g1 = d + r;
-  const g2 = -(d * r);
+  const { g1, g2 } = computeAR2(tauR, tauD, fs);
 
   // Compute impulse peak (same logic as Rust compute_impulse_peak)
   let impPeak = 1.0;

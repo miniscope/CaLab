@@ -7,8 +7,8 @@
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
-import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
+import '@calab/ui/chart/chart-theme.css';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 
 export interface TracePanelProps {
   /** uPlot AlignedData format: [x, y1, y2, ...] -- signal accessor for reactivity */
@@ -61,13 +61,6 @@ export function TracePanel(props: TracePanelProps) {
 
   // Build axes config once — stable references prevent SolidUplot from
   // recreating the chart on every data update
-  // Use resolved hex colors (not CSS variables) — uPlot draws axis labels
-  // on canvas via fillText, and CSS variable resolution can fail during
-  // setData redraws, causing tick labels to vanish.
-  const AXIS_TEXT = '#616161';
-  const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-  const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
-
   const xAxis: uPlot.Axis = {
     stroke: AXIS_TEXT,
     grid: { stroke: AXIS_GRID },

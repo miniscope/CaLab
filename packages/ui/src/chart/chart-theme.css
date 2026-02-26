@@ -1,7 +1,7 @@
 /*
- * CaTune light theme overrides for uPlot.
+ * CaLab shared light theme overrides for uPlot.
  * Import after uPlot.min.css to override default light theme.
- * References CSS custom properties from src/styles/global.css.
+ * References CSS custom properties from each app's global.css.
  */
 
 /* Chart wrapper — clean white with thin border */

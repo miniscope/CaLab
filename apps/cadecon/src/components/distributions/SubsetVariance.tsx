@@ -7,9 +7,9 @@ import { createMemo, Show, type JSX } from 'solid-js';
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
+import '@calab/ui/chart/chart-theme.css';
 import { subsetVarianceData, currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';
