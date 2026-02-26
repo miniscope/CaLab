@@ -2,7 +2,11 @@
 ///
 /// Given a relaxed solution s in [0,1], find the optimal threshold that produces
 /// a binary spike train whose AR2 convolution best explains the observed trace.
-/// Uses a coarse-then-fine grid search with early termination.
+/// Uses a coarse-then-fine grid search over thresholds from the relaxed solution.
+///
+/// Assumes the input trace is normalized: y_norm = (y - baseline) / alpha,
+/// so the AR2 impulse response peak ≈ 1 matches the trace amplitude.
+/// This ensures that spurious binary spikes create large MSE penalties.
 
 use crate::banded::BandedAR2;
 
@@ -24,10 +28,10 @@ pub fn boundary_padding(tau_decay: f64, fs_up: f64) -> usize {
 /// Find the optimal binarization threshold for a relaxed spike solution.
 ///
 /// Searches over candidate thresholds to find the one that minimizes
-/// weighted reconstruction error when the binarized signal is convolved
-/// through the AR2 model and fit with least-squares alpha + baseline.
+/// reconstruction error when the binarized signal is convolved through
+/// the AR2 model and fit with least-squares alpha + baseline.
 ///
-/// Early termination: stops after 10 consecutive error increases.
+/// Alpha is constrained non-negative (spikes must add signal, not subtract).
 pub fn threshold_search(
     s_relaxed: &[f32],
     y: &[f32],
@@ -148,33 +152,33 @@ pub fn threshold_search(
 
     // Compute PVE (proportion of variance explained)
     let inner_range = pad..n.saturating_sub(pad);
-    let y_mean: f64 = inner_range
-        .clone()
-        .map(|i| y[i] as f64)
-        .sum::<f64>()
-        / inner_range.len() as f64;
+    let inner_len = inner_range.len();
+    if inner_len > 0 {
+        let y_mean: f64 =
+            inner_range.clone().map(|i| y[i] as f64).sum::<f64>() / inner_len as f64;
 
-    let ss_tot: f64 = inner_range
-        .clone()
-        .map(|i| {
-            let d = y[i] as f64 - y_mean;
-            d * d
-        })
-        .sum();
+        let ss_tot: f64 = inner_range
+            .clone()
+            .map(|i| {
+                let d = y[i] as f64 - y_mean;
+                d * d
+            })
+            .sum();
 
-    let ss_res: f64 = inner_range
-        .map(|i| {
-            let pred = alpha * conv_buf[i] as f64 + baseline;
-            let d = y[i] as f64 - pred;
-            d * d
-        })
-        .sum();
+        let ss_res: f64 = inner_range
+            .map(|i| {
+                let pred = alpha * conv_buf[i] as f64 + baseline;
+                let d = y[i] as f64 - pred;
+                d * d
+            })
+            .sum();
 
-    best.pve = if ss_tot > 1e-20 {
-        1.0 - ss_res / ss_tot
-    } else {
-        0.0
-    };
+        best.pve = if ss_tot > 1e-20 {
+            1.0 - ss_res / ss_tot
+        } else {
+            0.0
+        };
+    }
 
     best
 }
@@ -187,7 +191,7 @@ fn binarize(s: &[f32], threshold: f64, s_bin: &mut [f32]) {
     }
 }
 
-/// Evaluate a single threshold: binarize → convolve → lstsq → weighted error.
+/// Evaluate a single threshold: binarize → convolve → lstsq → error.
 fn evaluate_threshold(
     s_relaxed: &[f32],
     y: &[f32],
@@ -202,7 +206,7 @@ fn evaluate_threshold(
 
     let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad);
 
-    // Weighted error over the interior (excluding boundary padding)
+    // Error over the interior (excluding boundary padding)
     let n = y.len();
     let mut err = 0.0_f64;
     for i in pad..n.saturating_sub(pad) {
@@ -215,6 +219,7 @@ fn evaluate_threshold(
 
 /// Least-squares fit for alpha and baseline: y ≈ alpha * conv + baseline.
 /// Solves the 2x2 normal equations over the inner region [pad..n-pad].
+/// Alpha is constrained non-negative (spikes add signal, never subtract).
 fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize) -> (f64, f64) {
     let n = y.len();
     let lo = pad;
@@ -247,6 +252,11 @@ fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize) -> (f64, f64) {
     let alpha = (sum_cy * count - sum_c * sum_y) / det;
     let baseline = (sum_cc * sum_y - sum_c * sum_cy) / det;
 
+    // Constrain alpha >= 0
+    if alpha < 0.0 {
+        return (0.0, sum_y / count);
+    }
+
     (alpha, baseline)
 }
 
@@ -257,19 +267,15 @@ mod tests {
 
     #[test]
     fn perfect_binary_recovery() {
-        // Create a known binary spike train, convolve it, then check that
-        // threshold_search recovers it.
         let banded = BandedAR2::new(0.02, 0.4, 30.0);
         let n = 300;
 
-        // Binary spikes
         let mut s_true = vec![0.0_f32; n];
         s_true[20] = 1.0;
         s_true[80] = 1.0;
         s_true[150] = 1.0;
         s_true[220] = 1.0;
 
-        // Generate observed trace: y = alpha * K * s + baseline
         let alpha_true = 5.0;
         let baseline_true = 2.0;
         let mut conv = vec![0.0_f32; n];
@@ -280,18 +286,14 @@ mod tests {
             .map(|&c| alpha_true * c + baseline_true as f32)
             .collect();
 
-        // Use the binary signal directly as "relaxed" (already 0/1)
         let result = threshold_search(&s_true, &y, &banded, 0.4, 30.0);
 
-        // Should recover the exact binary train
         let spike_count: f32 = result.s_binary.iter().sum();
         assert!(
             (spike_count - 4.0).abs() < 0.5,
             "Should find 4 spikes, got {}",
             spike_count
         );
-
-        // PVE should be very high
         assert!(
             result.pve > 0.95,
             "PVE should be > 0.95, got {}",
@@ -339,7 +341,6 @@ mod tests {
         let banded = BandedAR2::new(0.02, 0.4, 30.0);
         let n = 500;
 
-        // Create a relaxed solution that has clear spikes (smooth)
         let mut s_relaxed = vec![0.0_f32; n];
         for &pos in &[50, 120, 250, 380] {
             s_relaxed[pos] = 0.95;
@@ -351,7 +352,6 @@ mod tests {
             }
         }
 
-        // Generate clean trace from the actual binary version
         let mut s_binary = vec![0.0_f32; n];
         for &pos in &[50, 120, 250, 380] {
             s_binary[pos] = 1.0;
@@ -369,16 +369,18 @@ mod tests {
     }
 
     #[test]
-    fn early_termination_works() {
-        // With a very simple signal, the search should terminate early
+    fn alpha_non_negative() {
         let banded = BandedAR2::new(0.02, 0.4, 30.0);
         let n = 100;
-        let s_relaxed = vec![0.5_f32; n]; // uniform — any threshold works similarly
+        let s_relaxed = vec![0.5_f32; n];
         let y = vec![1.0_f32; n];
 
-        // This should not panic and should produce a valid result
         let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0);
-        assert!(result.threshold >= 0.0);
+        assert!(
+            result.alpha >= 0.0,
+            "Alpha should be non-negative, got {}",
+            result.alpha
+        );
     }
 
     #[test]

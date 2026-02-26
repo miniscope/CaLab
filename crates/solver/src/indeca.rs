@@ -2,6 +2,12 @@
 ///
 /// Chains: upsample → bounded FISTA solve → threshold search → downsample
 /// to produce binary spike counts at the original sampling rate.
+///
+/// Raw traces are passed directly to FISTA (no normalization). The Box[0,1]
+/// constraint works because the AR2 impulse response peak is large (~20 at
+/// 300Hz upsampled rate), so even s ∈ [0,1] can produce substantial amplitude
+/// in the forward model. The threshold search then finds the optimal alpha
+/// and baseline via least-squares.
 
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search, ThresholdResult};
@@ -74,10 +80,16 @@ pub fn solve_bounded(
 
 /// Full InDeCa trace processing pipeline.
 ///
-/// 1. Upsample trace by zero-insertion
-/// 2. Solve bounded FISTA (Box01, lambda=0) at upsampled rate
-/// 3. Threshold search: binarize → AR2 convolve → lstsq → best threshold
-/// 4. Downsample binary spike train back to original rate
+/// 1. Upsample trace (linear interpolation)
+/// 2. Solve bounded FISTA (Box01, lambda=0) on raw upsampled trace
+/// 3. Threshold search: binarize → AR2 convolve → lstsq alpha/baseline → best threshold
+/// 4. Downsample binary spike train to original rate
+///
+/// No trace normalization is applied — raw amplitudes are preserved.
+/// The AR2 impulse response peak at upsampled rates is large (e.g. ~21 at 300Hz
+/// for tau_r=0.1, tau_d=0.6), so FISTA's Box[0,1] constraint produces small
+/// relaxed values at spike times (e.g. s ≈ trace_peak / AR2_peak). The threshold
+/// search then binarizes and finds the optimal alpha via lstsq.
 pub fn solve_trace(
     trace: &[f32],
     tau_r: f64,
@@ -91,11 +103,11 @@ pub fn solve_trace(
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
 
-    // Step 1: Bounded FISTA solve at upsampled rate
+    // Step 1: Bounded FISTA solve on raw upsampled trace
     let (s_relaxed, iterations, converged) =
         solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start);
 
-    // Step 2: Threshold search at upsampled rate
+    // Step 2: Threshold search on raw upsampled trace
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
     let ThresholdResult {
         s_binary,

@@ -10,6 +10,7 @@ import { AlgorithmSettings } from './components/controls/AlgorithmSettings.tsx';
 import { RunControls } from './components/controls/RunControls.tsx';
 import { ProgressBar } from './components/controls/ProgressBar.tsx';
 import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
+import { DebugTraceChart } from './components/charts/DebugTraceChart.tsx';
 import { user, authLoading } from './lib/auth-store.ts';
 import {
   importStep,
@@ -67,6 +68,11 @@ const App: Component = () => {
           <DashboardPanel id="raster" variant="data" class="raster-panel">
             <p class="panel-label">Raster Overview</p>
             <RasterOverview />
+          </DashboardPanel>
+
+          <DashboardPanel id="debug-trace" variant="data">
+            <p class="panel-label">Debug: Trace + Spikes</p>
+            <DebugTraceChart />
           </DashboardPanel>
 
           <DashboardPanel id="kernel-convergence" variant="data">

@@ -279,6 +279,31 @@
 }
 
 /* ========================
+   Debug Trace Chart
+   ======================== */
+[data-panel-id='debug-trace'] {
+  flex: 1 1 200px !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-panel-id='debug-trace'] .debug-trace-wrapper {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+[data-panel-id='debug-trace'] canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
+}
+
+/* ========================
    Progress Bar
    ======================== */
 .progress-bar {

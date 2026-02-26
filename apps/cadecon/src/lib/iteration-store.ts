@@ -4,18 +4,39 @@ import { createSignal, createMemo } from 'solid-js';
 
 export type RunState = 'idle' | 'running' | 'paused' | 'stopping' | 'complete';
 
-export interface KernelSnapshot {
-  iteration: number;
+export interface SubsetKernelSnapshot {
   tauRise: number;
   tauDecay: number;
   beta: number;
   residual: number;
 }
 
+export interface KernelSnapshot {
+  iteration: number;
+  tauRise: number;
+  tauDecay: number;
+  beta: number;
+  residual: number;
+  subsets: SubsetKernelSnapshot[];
+}
+
 export interface TraceResultEntry {
   sCounts: Float32Array;
   alpha: number;
   baseline: number;
+  pve: number;
+}
+
+/** Snapshot of one cell's raw trace + deconvolved activity at a given iteration (for debug plotting). */
+export interface DebugTraceSnapshot {
+  iteration: number;
+  cellIndex: number;
+  rawTrace: Float32Array;
+  sCounts: Float32Array;
+  reconvolved: Float32Array;
+  alpha: number;
+  baseline: number;
+  threshold: number;
   pve: number;
 }
 
@@ -29,6 +50,7 @@ const [convergenceHistory, setConvergenceHistory] = createSignal<KernelSnapshot[
 const [currentTauRise, setCurrentTauRise] = createSignal<number | null>(null);
 const [currentTauDecay, setCurrentTauDecay] = createSignal<number | null>(null);
 const [perTraceResults, setPerTraceResults] = createSignal<Record<number, TraceResultEntry>>({});
+const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 
 // --- Derived ---
 
@@ -49,10 +71,15 @@ function resetIterationState(): void {
   setCurrentTauRise(null);
   setCurrentTauDecay(null);
   setPerTraceResults({});
+  setDebugTraceSnapshots([]);
 }
 
 function addConvergenceSnapshot(snapshot: KernelSnapshot): void {
   setConvergenceHistory((prev) => [...prev, snapshot]);
+}
+
+function addDebugTraceSnapshot(snapshot: DebugTraceSnapshot): void {
+  setDebugTraceSnapshots((prev) => [...prev, snapshot]);
 }
 
 function updateTraceResult(cellIndex: number, result: TraceResultEntry): void {
@@ -74,8 +101,10 @@ export {
   currentTauDecay,
   setCurrentTauDecay,
   perTraceResults,
+  debugTraceSnapshots,
   progress,
   resetIterationState,
   addConvergenceSnapshot,
+  addDebugTraceSnapshot,
   updateTraceResult,
 };

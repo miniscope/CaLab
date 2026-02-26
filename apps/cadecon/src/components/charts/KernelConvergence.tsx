@@ -4,6 +4,8 @@ import { convergenceHistory } from '../../lib/iteration-store.ts';
 const COLORS = {
   tauRise: '#42a5f5', // blue
   tauDecay: '#ef5350', // red
+  tauRiseFaint: 'rgba(66, 165, 245, 0.3)',
+  tauDecayFaint: 'rgba(239, 83, 80, 0.3)',
   axis: 'var(--text-tertiary)',
   grid: 'var(--border-subtle)',
   bg: 'var(--bg-secondary)',
@@ -47,14 +49,22 @@ export function KernelConvergence(): JSX.Element {
 
     if (plotW <= 0 || plotH <= 0) return;
 
-    // Data ranges
+    // Data ranges — include per-subset points in range calculation
     const iters = history.map((s) => s.iteration);
-    const tauRises = history.map((s) => s.tauRise * 1000); // convert to ms
+    const tauRises = history.map((s) => s.tauRise * 1000);
     const tauDecays = history.map((s) => s.tauDecay * 1000);
+
+    const allY = [...tauRises, ...tauDecays];
+    for (const snap of history) {
+      if (snap.subsets) {
+        for (const sub of snap.subsets) {
+          allY.push(sub.tauRise * 1000, sub.tauDecay * 1000);
+        }
+      }
+    }
 
     const xMin = Math.min(...iters);
     const xMax = Math.max(...iters);
-    const allY = [...tauRises, ...tauDecays];
     const yMin = Math.min(...allY) * 0.8;
     const yMax = Math.max(...allY) * 1.2;
 
@@ -107,7 +117,26 @@ export function KernelConvergence(): JSX.Element {
     ctx.fillText('ms', 0, 0);
     ctx.restore();
 
-    // Draw lines
+    // Draw per-subset scatter points (behind the median lines)
+    for (const snap of history) {
+      if (!snap.subsets) continue;
+      const x = mapX(snap.iteration);
+      for (const sub of snap.subsets) {
+        // tau rise subset point
+        ctx.fillStyle = COLORS.tauRiseFaint;
+        ctx.beginPath();
+        ctx.arc(x, mapY(sub.tauRise * 1000), 4, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // tau decay subset point
+        ctx.fillStyle = COLORS.tauDecayFaint;
+        ctx.beginPath();
+        ctx.arc(x, mapY(sub.tauDecay * 1000), 4, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+
+    // Draw median lines
     function drawLine(c: CanvasRenderingContext2D, data: number[], color: string) {
       if (data.length < 1) return;
       c.strokeStyle = color;
@@ -147,6 +176,14 @@ export function KernelConvergence(): JSX.Element {
     ctx.fillRect(legendX, legendY + 14, 12, 3);
     ctx.fillStyle = COLORS.axis;
     ctx.fillText('tau decay', legendX + 16, legendY + 12);
+
+    // Subset scatter legend
+    ctx.fillStyle = COLORS.tauRiseFaint;
+    ctx.beginPath();
+    ctx.arc(legendX + 5, legendY + 32, 3, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = COLORS.axis;
+    ctx.fillText('per-subset', legendX + 16, legendY + 26);
   }
 
   createEffect(

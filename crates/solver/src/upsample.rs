@@ -1,6 +1,6 @@
 /// Upsampling and downsampling utilities for InDeCa spike inference.
 ///
-/// Upsampling zero-inserts between samples to increase temporal resolution,
+/// Upsampling uses linear interpolation to increase temporal resolution,
 /// allowing sub-frame spike detection. Downsampling bin-sums the upsampled
 /// binary spike train back to the original frame rate.
 
@@ -9,7 +9,8 @@ pub fn compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
     (target_fs / fs).round().max(1.0) as usize
 }
 
-/// Zero-insert upsampling: insert (factor - 1) zeros between each sample.
+/// Linearly-interpolated upsampling: insert (factor - 1) interpolated values
+/// between each pair of samples.
 ///
 /// Output length = input_length * factor.
 /// At factor=1, returns a copy of the input.
@@ -17,10 +18,27 @@ pub fn upsample_trace(trace: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
         return trace.to_vec();
     }
-    let out_len = trace.len() * factor;
+    let n = trace.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let out_len = n * factor;
     let mut out = vec![0.0_f32; out_len];
-    for (i, &v) in trace.iter().enumerate() {
-        out[i * factor] = v;
+    for i in 0..n {
+        out[i * factor] = trace[i];
+        if i + 1 < n {
+            let v0 = trace[i];
+            let v1 = trace[i + 1];
+            for j in 1..factor {
+                let frac = j as f32 / factor as f32;
+                out[i * factor + j] = v0 + (v1 - v0) * frac;
+            }
+        } else {
+            // Last sample: hold value for remaining positions
+            for j in 1..factor {
+                out[i * factor + j] = trace[i];
+            }
+        }
     }
     out
 }
@@ -58,27 +76,61 @@ mod tests {
     }
 
     #[test]
-    fn zero_insertion_pattern() {
-        let trace = vec![1.0, 2.0, 3.0];
+    fn linear_interpolation_pattern() {
+        let trace = vec![0.0, 3.0, 6.0];
         let up = upsample_trace(&trace, 3);
         assert_eq!(up.len(), 9);
-        assert_eq!(up, vec![1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0]);
+        // Between 0.0 and 3.0: 0, 1, 2
+        // Between 3.0 and 6.0: 3, 4, 5
+        // After 6.0 (hold): 6, 6, 6
+        let expected = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0];
+        for (i, (&a, &b)) in up.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "Mismatch at {}: got {} expected {}",
+                i,
+                a,
+                b
+            );
+        }
     }
 
     #[test]
-    fn round_trip_sum_preservation() {
-        let trace = vec![1.0, 2.0, 3.0, 4.0];
-        let factor = 5;
+    fn original_samples_preserved() {
+        let trace = vec![1.0, 5.0, 2.0, 8.0];
+        let factor = 4;
         let up = upsample_trace(&trace, factor);
-        let down = downsample_binary(&up, factor);
-        assert_eq!(down.len(), trace.len());
-        for (i, (&d, &t)) in down.iter().zip(trace.iter()).enumerate() {
+        assert_eq!(up.len(), 16);
+        // Original sample positions (0, 4, 8, 12) should have exact values
+        assert!((up[0] - 1.0).abs() < 1e-6);
+        assert!((up[4] - 5.0).abs() < 1e-6);
+        assert!((up[8] - 2.0).abs() < 1e-6);
+        assert!((up[12] - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn monotone_interpolation() {
+        // Linearly increasing trace should produce linearly increasing upsampled trace
+        let trace = vec![0.0, 10.0];
+        let up = upsample_trace(&trace, 5);
+        assert_eq!(up.len(), 10);
+        for i in 0..5 {
+            let expected = i as f32 * 2.0;
             assert!(
-                (d - t).abs() < 1e-6,
-                "Mismatch at {}: {} vs {}",
+                (up[i] - expected).abs() < 1e-5,
+                "At {}: got {} expected {}",
                 i,
-                d,
-                t
+                up[i],
+                expected
+            );
+        }
+        // After last original sample: hold at 10.0
+        for i in 5..10 {
+            assert!(
+                (up[i] - 10.0).abs() < 1e-5,
+                "Hold region at {}: got {} expected 10.0",
+                i,
+                up[i]
             );
         }
     }
@@ -107,5 +159,16 @@ mod tests {
     fn empty_input() {
         assert_eq!(upsample_trace(&[], 5), Vec::<f32>::new());
         assert_eq!(downsample_binary(&[], 5), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn single_sample() {
+        let trace = vec![3.0];
+        let up = upsample_trace(&trace, 4);
+        assert_eq!(up.len(), 4);
+        // Single sample should hold value
+        for &v in &up {
+            assert!((v - 3.0).abs() < 1e-6);
+        }
     }
 }
