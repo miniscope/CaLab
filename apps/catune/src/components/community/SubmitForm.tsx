@@ -5,23 +5,12 @@
 
 import { Show, For } from 'solid-js';
 import type { Accessor, Setter } from 'solid-js';
-import { SubmitFormModal } from '@calab/ui';
+import { SubmitFormModal, SearchableField } from '@calab/ui';
+import type { FieldSignal } from '@calab/ui';
 import { isDemo } from '../../lib/data-store.ts';
-import {
-  user,
-  fieldOptions,
-  fieldOptionsLoading,
-  buildFieldOptionRequestUrl,
-} from '../../lib/community/index.ts';
-import { SearchableSelect } from './SearchableSelect.tsx';
+import { user, fieldOptions, fieldOptionsLoading } from '../../lib/community/index.ts';
 import { AuthGate } from './AuthGate.tsx';
 import { PrivacyNotice } from './PrivacyNotice.tsx';
-
-/** Signal pair for a string form field. */
-export interface FieldSignal {
-  get: Accessor<string>;
-  set: Setter<string>;
-}
 
 export interface SubmitFormProps {
   onClose: () => void;
@@ -67,6 +56,8 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.indicator}
             placeholder="e.g. GCaMP6f (AAV)"
             fieldName="indicator"
+            appLabel="catune"
+            loading={fieldOptionsLoading()}
           />
           <SearchableField
             label="Species"
@@ -75,6 +66,8 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.species}
             placeholder="e.g. mouse"
             fieldName="species"
+            appLabel="catune"
+            loading={fieldOptionsLoading()}
           />
           <SearchableField
             label="Brain Region"
@@ -83,6 +76,8 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.brainRegion}
             placeholder="e.g. cortex"
             fieldName="brain_region"
+            appLabel="catune"
+            loading={fieldOptionsLoading()}
           />
           <SearchableField
             label="Microscope Type"
@@ -90,6 +85,8 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.microscopeType}
             placeholder="e.g. 2-photon"
             fieldName="microscope_type"
+            appLabel="catune"
+            loading={fieldOptionsLoading()}
           />
           <SearchableField
             label="Cell Type"
@@ -97,6 +94,8 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.cellType}
             placeholder="e.g. pyramidal cell"
             fieldName="cell_type"
+            appLabel="catune"
+            loading={fieldOptionsLoading()}
           />
 
           <div class="submit-panel__field">
@@ -190,48 +189,5 @@ export function SubmitForm(props: SubmitFormProps) {
         </button>
       </Show>
     </SubmitFormModal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Internal helper: SearchableSelect field with label and "request" link
-// ---------------------------------------------------------------------------
-
-interface SearchableFieldProps {
-  label: string;
-  required?: boolean;
-  options: string[];
-  signal: FieldSignal;
-  placeholder: string;
-  fieldName: 'indicator' | 'species' | 'brain_region' | 'microscope_type' | 'cell_type';
-}
-
-function SearchableField(props: SearchableFieldProps) {
-  return (
-    <div class="submit-panel__field">
-      <label>
-        {props.label}
-        <Show when={props.required}>
-          {' '}
-          <span class="submit-panel__required-marker">*</span>
-        </Show>
-      </label>
-      <SearchableSelect
-        options={props.options}
-        value={props.signal.get()}
-        onChange={props.signal.set}
-        placeholder={fieldOptionsLoading() ? 'Loading...' : props.placeholder}
-      />
-      <div class="submit-panel__request-link">
-        Don't see yours?{' '}
-        <a
-          href={buildFieldOptionRequestUrl(props.fieldName, 'catune')}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Request it
-        </a>
-      </div>
-    </div>
   );
 }

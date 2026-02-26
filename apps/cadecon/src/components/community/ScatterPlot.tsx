@@ -6,6 +6,7 @@
 
 import { createEffect, createMemo, on, onCleanup } from 'solid-js';
 import type { CadeconSubmission } from '../../lib/community/index.ts';
+import { median } from '../../lib/math-utils.ts';
 import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import uPlot from 'uplot';
@@ -29,14 +30,6 @@ function pveToColor(pve: number | null): string {
 /** Pre-compute PVE color array for all submissions. */
 function computePveColors(submissions: CadeconSubmission[]): string[] {
   return submissions.map((s) => pveToColor(s.median_pve));
-}
-
-/** Compute the median of a numeric array. Returns 0 for empty arrays. */
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 export function ScatterPlot(props: ScatterPlotProps) {

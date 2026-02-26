@@ -147,14 +147,14 @@ export async function submitToSupabase(
     time_since_injection_days: isDemo
       ? undefined
       : fields.timeSinceInjection
-        ? parseInt(fields.timeSinceInjection, 10)
+        ? ((v) => (Number.isNaN(v) ? undefined : v))(parseInt(fields.timeSinceInjection, 10))
         : undefined,
     notes: fields.notes.trim() || undefined,
     microscope_type: isDemo ? undefined : fields.microscopeType.trim() || undefined,
     imaging_depth_um: isDemo
       ? undefined
       : fields.imagingDepth
-        ? parseFloat(fields.imagingDepth)
+        ? ((v) => (Number.isNaN(v) ? undefined : v))(parseFloat(fields.imagingDepth))
         : undefined,
     cell_type: isDemo ? undefined : fields.cellType.trim() || undefined,
 

@@ -1,4 +1,4 @@
-// Shared infrastructure from @calab/community
+// Shared infrastructure and reactive signals from @calab/community
 export {
   supabaseEnabled,
   buildFieldOptionRequestUrl,
@@ -7,6 +7,11 @@ export {
   buildBugReportUrl,
   signInWithEmail,
   signOut,
+  user,
+  authLoading,
+  fieldOptions,
+  fieldOptionsLoading,
+  loadFieldOptions,
 } from '@calab/community';
 export type {
   DataSource,
@@ -16,15 +21,6 @@ export type {
   FieldOption,
   FieldOptions,
   User,
-} from '@calab/community';
-
-// Reactive signals from shared community store
-export {
-  user,
-  authLoading,
-  fieldOptions,
-  fieldOptionsLoading,
-  loadFieldOptions,
 } from '@calab/community';
 
 // CaDecon-specific modules

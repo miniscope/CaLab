@@ -1,6 +1,6 @@
 /**
  * CaTune AuthGate — thin wrapper around the shared AuthGate component.
- * Wires shared community-store signals and auth actions.
+ * Wires shared community signals and auth actions.
  */
 
 import { AuthGate as SharedAuthGate } from '@calab/ui';

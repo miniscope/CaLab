@@ -57,9 +57,9 @@ CREATE TABLE cadecon_submissions (
   extra_metadata JSONB DEFAULT '{}'::jsonb,
 
   -- Constraints
-  CONSTRAINT valid_tau_rise CHECK (tau_rise > 0 AND tau_rise < 1),
-  CONSTRAINT valid_tau_decay CHECK (tau_decay > 0 AND tau_decay < 10),
-  CONSTRAINT valid_sampling_rate CHECK (sampling_rate > 0 AND sampling_rate <= 1000),
+  CONSTRAINT valid_tau_rise CHECK (tau_rise >= 0.001 AND tau_rise <= 0.5),
+  CONSTRAINT valid_tau_decay CHECK (tau_decay >= 0.01 AND tau_decay <= 10),
+  CONSTRAINT valid_sampling_rate CHECK (sampling_rate >= 1 AND sampling_rate <= 1000),
   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training', 'bridge'))
 );
 

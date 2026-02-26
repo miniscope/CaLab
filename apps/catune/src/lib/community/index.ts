@@ -1,4 +1,4 @@
-// Shared infrastructure from @calab/community
+// Shared infrastructure and reactive signals from @calab/community
 export {
   supabaseEnabled,
   buildFieldOptionRequestUrl,
@@ -7,6 +7,11 @@ export {
   buildBugReportUrl,
   signInWithEmail,
   signOut,
+  user,
+  authLoading,
+  fieldOptions,
+  fieldOptionsLoading,
+  loadFieldOptions,
 } from '@calab/community';
 export type {
   DataSource,
@@ -24,12 +29,3 @@ export { validateSubmission } from './quality-checks.ts';
 export { submitToSupabase } from './submit-action.ts';
 export type { FormFields, SubmissionContext } from './submit-action.ts';
 export type { CatuneSubmission, CatuneSubmissionPayload, CatuneFilterState } from './types.ts';
-
-// Reactive signals
-export {
-  user,
-  authLoading,
-  fieldOptions,
-  fieldOptionsLoading,
-  loadFieldOptions,
-} from './community-store.ts';

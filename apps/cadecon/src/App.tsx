@@ -10,8 +10,8 @@ import {
 } from '@calab/ui';
 import type { SidebarTabConfig } from '@calab/ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
-import { supabaseEnabled, trackEvent } from '@calab/community';
-import { user, authLoading } from '@calab/community';
+import { trackEvent } from '@calab/community';
+import { supabaseEnabled, user, authLoading } from './lib/community/index.ts';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -102,7 +102,7 @@ const App: Component = () => {
       list.push({
         id: 'community',
         label: 'Community',
-        content: <CommunityBrowser />,
+        content: () => <CommunityBrowser />,
         onActivate: () => void trackEvent('community_browser_opened'),
       });
     }

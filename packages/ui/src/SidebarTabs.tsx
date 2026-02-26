@@ -12,7 +12,8 @@ import './styles/community.css';
 export interface SidebarTabConfig {
   id: string;
   label: string;
-  content: JSX.Element;
+  /** Static JSX or a lazy factory that is called only when the tab is first activated. */
+  content: JSX.Element | (() => JSX.Element);
   onActivate?: () => void;
 }
 
@@ -25,6 +26,20 @@ export function SidebarTabs(props: SidebarTabsProps) {
   const defaultId = () => props.defaultTab ?? props.tabs[0]?.id ?? '';
   const [activeTab, setActiveTab] = createSignal(defaultId());
   const [mountedTabs, setMountedTabs] = createSignal<Set<string>>(new Set([defaultId()]));
+
+  // Cache for lazily-resolved tab content (factory → JSX.Element).
+  const resolvedContent = new Map<string, JSX.Element>();
+
+  /** Resolve tab content: call the factory on first access, or return static JSX as-is. */
+  function resolveContent(tab: SidebarTabConfig): JSX.Element {
+    if (typeof tab.content === 'function') {
+      if (!resolvedContent.has(tab.id)) {
+        resolvedContent.set(tab.id, (tab.content as () => JSX.Element)());
+      }
+      return resolvedContent.get(tab.id)!;
+    }
+    return tab.content;
+  }
 
   // When the active tab changes, add it to the mounted set
   createEffect(() => {
@@ -62,7 +77,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
           {(tab) => (
             <Show when={mountedTabs().has(tab.id)}>
               <div style={{ display: activeTab() === tab.id ? 'block' : 'none' }}>
-                {tab.content}
+                {resolveContent(tab)}
               </div>
             </Show>
           )}

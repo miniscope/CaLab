@@ -15,7 +15,7 @@ const [activeSidebarTab, setActiveSidebarTab] = createSignal<SidebarTab>('commun
 export { activeSidebarTab };
 
 export interface SidebarTabsProps {
-  communityContent?: JSX.Element;
+  communityContent?: JSX.Element | (() => JSX.Element);
   metricsContent: JSX.Element;
   spectrumContent?: JSX.Element;
 }
@@ -49,13 +49,14 @@ export function SidebarTabs(props: SidebarTabsProps) {
     return list;
   };
 
-  const defaultTab = props.communityContent
-    ? 'community'
-    : props.spectrumContent
-      ? 'spectrum'
-      : 'metrics';
+  let defaultTab: SidebarTab = 'metrics';
+  if (props.communityContent) {
+    defaultTab = 'community';
+  } else if (props.spectrumContent) {
+    defaultTab = 'spectrum';
+  }
 
-  setActiveSidebarTab(defaultTab as SidebarTab);
+  setActiveSidebarTab(defaultTab);
 
   return <SharedSidebarTabs tabs={tabs()} defaultTab={defaultTab} />;
 }

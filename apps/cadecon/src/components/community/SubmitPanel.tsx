@@ -5,10 +5,13 @@
  */
 
 import { createSignal, Show } from 'solid-js';
-import { SubmitFormModal, SubmissionSummary as SharedSubmissionSummary } from '@calab/ui';
+import {
+  SubmitFormModal,
+  SubmissionSummary as SharedSubmissionSummary,
+  SearchableField,
+} from '@calab/ui';
 import { AuthGate } from './AuthGateWrapper.tsx';
 import { PrivacyNotice } from './PrivacyNoticeWrapper.tsx';
-import { SearchableSelect } from '@calab/ui';
 import {
   validateSubmission,
   loadFieldOptions,
@@ -17,10 +20,9 @@ import {
   user,
   fieldOptions,
   fieldOptionsLoading,
-  buildFieldOptionRequestUrl,
   deleteSubmission,
 } from '../../lib/community/index.ts';
-import type { CadeconSubmission, FormFields } from '../../lib/community/index.ts';
+import type { CadeconSubmission } from '../../lib/community/index.ts';
 import {
   runState,
   currentTauRise,
@@ -51,13 +53,6 @@ import {
   demoPreset,
 } from '../../lib/data-store.ts';
 import '../../styles/community.css';
-
-import type { Accessor, Setter } from 'solid-js';
-
-interface FieldSignal {
-  get: Accessor<string>;
-  set: Setter<string>;
-}
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
 
@@ -256,6 +251,8 @@ export function SubmitPanel() {
                   signal={{ get: indicator, set: setIndicator }}
                   placeholder="e.g. GCaMP6f (AAV)"
                   fieldName="indicator"
+                  appLabel="cadecon"
+                  loading={fieldOptionsLoading()}
                 />
                 <SearchableField
                   label="Species"
@@ -264,6 +261,8 @@ export function SubmitPanel() {
                   signal={{ get: species, set: setSpecies }}
                   placeholder="e.g. mouse"
                   fieldName="species"
+                  appLabel="cadecon"
+                  loading={fieldOptionsLoading()}
                 />
                 <SearchableField
                   label="Brain Region"
@@ -272,6 +271,8 @@ export function SubmitPanel() {
                   signal={{ get: brainRegion, set: setBrainRegion }}
                   placeholder="e.g. cortex"
                   fieldName="brain_region"
+                  appLabel="cadecon"
+                  loading={fieldOptionsLoading()}
                 />
                 <SearchableField
                   label="Microscope Type"
@@ -279,6 +280,8 @@ export function SubmitPanel() {
                   signal={{ get: microscopeType, set: setMicroscopeType }}
                   placeholder="e.g. 2-photon"
                   fieldName="microscope_type"
+                  appLabel="cadecon"
+                  loading={fieldOptionsLoading()}
                 />
                 <SearchableField
                   label="Cell Type"
@@ -286,6 +289,8 @@ export function SubmitPanel() {
                   signal={{ get: cellType, set: setCellType }}
                   placeholder="e.g. pyramidal cell"
                   fieldName="cell_type"
+                  appLabel="cadecon"
+                  loading={fieldOptionsLoading()}
                 />
 
                 <div class="submit-panel__field">
@@ -379,45 +384,5 @@ export function SubmitPanel() {
         </Show>
       </div>
     </Show>
-  );
-}
-
-// Internal helper: SearchableSelect field with label
-interface SearchableFieldProps {
-  label: string;
-  required?: boolean;
-  options: string[];
-  signal: FieldSignal;
-  placeholder: string;
-  fieldName: 'indicator' | 'species' | 'brain_region' | 'microscope_type' | 'cell_type';
-}
-
-function SearchableField(props: SearchableFieldProps) {
-  return (
-    <div class="submit-panel__field">
-      <label>
-        {props.label}
-        <Show when={props.required}>
-          {' '}
-          <span class="submit-panel__required-marker">*</span>
-        </Show>
-      </label>
-      <SearchableSelect
-        options={props.options}
-        value={props.signal.get()}
-        onChange={props.signal.set}
-        placeholder={fieldOptionsLoading() ? 'Loading...' : props.placeholder}
-      />
-      <div class="submit-panel__request-link">
-        Don't see yours?{' '}
-        <a
-          href={buildFieldOptionRequestUrl(props.fieldName, 'cadecon')}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Request it
-        </a>
-      </div>
-    </div>
   );
 }

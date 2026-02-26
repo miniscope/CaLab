@@ -1,3 +1,8 @@
+/**
+ * Singleton community store using SolidJS reactive primitives (createSignal).
+ * Designed for SPA usage — signals are created at module scope on first import.
+ */
+
 // Shared reactive auth and community data signals.
 // Uses shared auth helpers from @calab/community and pipes into SolidJS signals.
 // Consumed by all CaLab apps (CaTune, CaDecon, etc.)

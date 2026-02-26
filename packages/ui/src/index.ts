@@ -25,6 +25,8 @@ export { TraceLegend } from './TraceLegend.tsx';
 export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
 
 // Community components (shared across CaLab apps)
+export { CommunityBrowserShell } from './CommunityBrowserShell.tsx';
+export type { CommunityBrowserShellProps } from './CommunityBrowserShell.tsx';
 export { SearchableSelect } from './SearchableSelect.tsx';
 export type { SearchableSelectProps } from './SearchableSelect.tsx';
 export { AuthGate } from './AuthGate.tsx';
@@ -39,6 +41,8 @@ export { SidebarTabs } from './SidebarTabs.tsx';
 export type { SidebarTabsProps, SidebarTabConfig } from './SidebarTabs.tsx';
 export { SubmitFormModal } from './SubmitFormModal.tsx';
 export type { SubmitFormModalProps } from './SubmitFormModal.tsx';
+export { SearchableField } from './SearchableField.tsx';
+export type { SearchableFieldProps, FieldSignal } from './SearchableField.tsx';
 
 // Chart utilities (also available via @calab/ui/chart sub-path)
 export {
