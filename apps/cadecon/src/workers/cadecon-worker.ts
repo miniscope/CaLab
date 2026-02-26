@@ -31,6 +31,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.upsampleFactor,
       req.maxIters,
       req.tol,
+      req.filterEnabled,
     ) as {
       s_counts: number[];
       alpha: number;

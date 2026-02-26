@@ -13,6 +13,7 @@ interface TraceJobFields {
   upsampleFactor: number;
   maxIters: number;
   tol: number;
+  filterEnabled: boolean;
   onComplete(result: TraceResult): void;
 }
 
@@ -80,6 +81,7 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           upsampleFactor: job.upsampleFactor,
           maxIters: job.maxIters,
           tol: job.tol,
+          filterEnabled: job.filterEnabled,
         },
         [traceCopy.buffer],
       ];

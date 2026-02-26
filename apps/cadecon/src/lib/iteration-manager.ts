@@ -30,6 +30,7 @@ import {
   upsampleFactor,
   maxIterations,
   convergenceTol,
+  bandpassEnabled,
 } from './algorithm-store.ts';
 import {
   parsedData,
@@ -99,6 +100,7 @@ function dispatchTraceJobs(
   upFactor: number,
   maxIters: number,
   tol: number,
+  filterEnabled: boolean,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
     const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
@@ -135,6 +137,7 @@ function dispatchTraceJobs(
         upsampleFactor: upFactor,
         maxIters,
         tol,
+        filterEnabled,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
           completed++;
@@ -256,6 +259,7 @@ export async function startRun(): Promise<void> {
   const isSwap = swapped();
   const nCells = numCells();
   const nTp = numTimepoints();
+  const filterOn = bandpassEnabled();
 
   // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
   const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
@@ -288,6 +292,7 @@ export async function startRun(): Promise<void> {
       upFactor,
       TRACE_FISTA_MAX_ITERS,
       TRACE_FISTA_TOL,
+      filterOn,
     );
 
     if (runState() === 'stopping') break;
@@ -426,6 +431,7 @@ export async function startRun(): Promise<void> {
           upsampleFactor: upFactor,
           maxIters: TRACE_FISTA_MAX_ITERS,
           tol: TRACE_FISTA_TOL,
+          filterEnabled: filterOn,
           onComplete(result: TraceResult) {
             updateTraceResult(c, {
               sCounts: result.sCounts,

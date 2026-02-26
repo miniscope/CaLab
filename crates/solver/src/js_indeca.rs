@@ -23,8 +23,11 @@ pub fn indeca_solve_trace(
     upsample_factor: usize,
     max_iters: u32,
     tol: f64,
+    filter_enabled: bool,
 ) -> JsValue {
-    let result = indeca::solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, None);
+    let result = indeca::solve_trace(
+        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, None, filter_enabled,
+    );
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 

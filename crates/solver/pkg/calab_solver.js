@@ -442,12 +442,13 @@ export function indeca_fit_biexponential(h_free, fs, refine) {
  * @param {number} upsample_factor
  * @param {number} max_iters
  * @param {number} tol
+ * @param {boolean} filter_enabled
  * @returns {any}
  */
-export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol) {
+export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled) {
     const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol);
+    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled);
     return takeObject(ret);
 }
 

@@ -32,6 +32,7 @@ export type CaDeconWorkerInbound =
       upsampleFactor: number;
       maxIters: number;
       tol: number;
+      filterEnabled: boolean;
     }
   | {
       type: 'kernel-job';
