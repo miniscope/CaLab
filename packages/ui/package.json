@@ -12,7 +12,10 @@
     "./styles/*": "./src/styles/*"
   },
   "dependencies": {
+    "@calab/compute": "*",
     "@calab/tutorials": "*",
-    "solid-js": "^1.9.11"
+    "@dschz/solid-uplot": "*",
+    "solid-js": "^1.9.11",
+    "uplot": "*"
   }
 }

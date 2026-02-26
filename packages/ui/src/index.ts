@@ -21,6 +21,9 @@ export { isAuthCallback } from './auth-utils.ts';
 export { WorkerIndicator } from './WorkerIndicator.tsx';
 export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
 
+export { TraceLegend } from './TraceLegend.tsx';
+export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
+
 // Chart utilities (also available via @calab/ui/chart sub-path)
 export {
   wheelZoomPlugin,

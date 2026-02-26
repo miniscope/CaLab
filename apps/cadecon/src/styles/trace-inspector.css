@@ -1,0 +1,97 @@
+/* Trace Inspector styles — CaDecon */
+
+.trace-inspector {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.trace-inspector__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.trace-inspector__stats {
+  display: flex;
+  gap: var(--space-sm, 8px);
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.trace-inspector__overview {
+  flex-shrink: 0;
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.trace-inspector__zoom {
+  flex: 1;
+  min-height: 100px;
+}
+
+.trace-inspector__empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+/* Iteration Scrubber */
+.iteration-scrubber {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  padding: var(--space-xs, 4px) 0;
+  margin-top: var(--space-xs, 4px);
+}
+
+.iteration-scrubber__label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium, 500);
+  white-space: nowrap;
+}
+
+.iteration-scrubber__slider {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.iteration-scrubber__value {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 50px;
+  text-align: center;
+}
+
+.iteration-scrubber__latest {
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.iteration-scrubber__latest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.iteration-scrubber__latest--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+}

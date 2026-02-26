@@ -64,70 +64,14 @@
 }
 
 /* ========================
-   Trace Overview (minimap)
+   Trace Overview + Zoom Window (shared styles in @calab/ui chart-theme.css)
    ======================== */
 .cell-card__overview {
   flex-shrink: 0;
 }
 
-.trace-overview {
-  width: 100%;
-  cursor: crosshair;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: var(--bg-primary);
-}
-
-.trace-overview__canvas {
-  display: block;
-  width: 100%;
-}
-
-/* ========================
-   Zoom Window
-   ======================== */
 .cell-card__zoom {
   flex: 1;
   min-height: 100px;
   transition: opacity var(--transition-fast);
-}
-
-.zoom-window {
-  height: 100%;
-  cursor: grab;
-}
-
-.zoom-window--dragging {
-  cursor: grabbing;
-  user-select: none;
-}
-
-.zoom-window .trace-panel {
-  height: 100% !important;
-}
-
-.zoom-hint {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.7);
-  color: #ffffff;
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 2px;
-  pointer-events: none;
-  animation: zoom-hint-fade 1.5s ease-out forwards;
-}
-
-@keyframes zoom-hint-fade {
-  0% {
-    opacity: 1;
-  }
-  70% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
 }

@@ -24,6 +24,7 @@ import {
   addDebugTraceSnapshot,
   updateTraceResult,
   resetIterationState,
+  snapshotIteration,
 } from './iteration-store.ts';
 import {
   tauRiseInit,
@@ -348,6 +349,9 @@ export async function startRun(): Promise<void> {
         pve: scalars.pve,
       });
     }
+
+    // Snapshot iteration history for the scrubber
+    snapshotIteration(iter + 1, tauR, tauD);
 
     // Capture debug trace snapshot: cell 0 from first subset that has it
     if (rects.length > 0 && traceResults[0].size > 0) {

@@ -10,7 +10,7 @@ import { kernelAnnotationsPlugin } from '../../lib/chart/kernel-annotations-plug
 import { tauRise, tauDecay } from '../../lib/viz-store.ts';
 import { samplingRate, isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
 import { createGroundTruthKernelSeries } from '../../lib/chart/series-config.ts';
-import { TracePanel } from './TracePanel.tsx';
+import { TracePanel } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 
 const KERNEL_SYNC_KEY = 'catune-kernel';

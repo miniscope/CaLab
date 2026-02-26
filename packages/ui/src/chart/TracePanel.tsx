@@ -7,8 +7,8 @@
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import '@calab/ui/chart/chart-theme.css';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import './chart-theme.css';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from './index.ts';
 
 export interface TracePanelProps {
   /** uPlot AlignedData format: [x, y1, y2, ...] -- signal accessor for reactivity */
@@ -23,12 +23,14 @@ export interface TracePanelProps {
   plugins?: uPlot.Plugin[];
   /** Disable built-in wheel zoom plugin (when parent handles zoom) */
   disableWheelZoom?: boolean;
-  /** Lock y-axis to a fixed [min, max] range (prevents auto-ranging on zoom) */
-  yRange?: [number, number];
+  /** Lock y-axis range; undefined min/max falls back to uPlot auto-ranging */
+  yRange?: [number | undefined, number | undefined];
   /** Hide y-axis tick labels (keep gridlines for visual reference) */
   hideYValues?: boolean;
   /** X-axis label (e.g., "Time (s)") */
   xLabel?: string;
+  /** Callback when uPlot instance is created */
+  onCreate?: (chart: uPlot) => void;
 }
 
 /** Format x-axis tick values, adapting decimal places to the visible range */
@@ -54,7 +56,9 @@ export function TracePanel(props: TracePanelProps) {
     const s: uPlot.Scales = { x: { time: false } };
     if (props.yRange) {
       const [yMin, yMax] = props.yRange;
-      s.y = { range: () => [yMin, yMax] };
+      s.y = {
+        range: (_u, dataMin, dataMax) => [yMin ?? dataMin, yMax ?? dataMax],
+      };
     }
     return s;
   };
@@ -106,6 +110,7 @@ export function TracePanel(props: TracePanelProps) {
         plugins={plugins()}
         height={height()}
         autoResize={true}
+        onCreate={(chart) => props.onCreate?.(chart)}
       />
     </div>
   );

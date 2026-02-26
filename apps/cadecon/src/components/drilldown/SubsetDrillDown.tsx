@@ -16,7 +16,7 @@ import { samplingRate } from '../../lib/data-store.ts';
 import { SubsetKernelFit } from './SubsetKernelFit.tsx';
 import { SubsetStats } from './SubsetStats.tsx';
 import { CellSelector } from '../traces/CellSelector.tsx';
-import { TraceViewer } from '../traces/TraceViewer.tsx';
+import { TraceInspector } from '../traces/TraceInspector.tsx';
 
 export function SubsetDrillDown(): JSX.Element {
   const subsetIdx = () => selectedSubsetIdx()!;
@@ -79,7 +79,7 @@ export function SubsetDrillDown(): JSX.Element {
               selectedIndex={() => inspectedCellIndex() ?? cellIndices()[0] ?? null}
               onSelect={setInspectedCellIndex}
             />
-            <TraceViewer />
+            <TraceInspector />
           </div>
         </div>
       </Show>

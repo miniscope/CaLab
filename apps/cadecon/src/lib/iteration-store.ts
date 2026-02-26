@@ -43,8 +43,20 @@ export interface DebugTraceSnapshot {
   pve: number;
 }
 
+// --- Iteration History ---
+
+export interface IterationHistoryEntry {
+  iteration: number;
+  results: Record<number, TraceResultEntry>;
+  tauRise: number;
+  tauDecay: number;
+}
+
+const MAX_HISTORY_ITERATIONS = 50;
+
 // --- Signals ---
 
+const [iterationHistory, setIterationHistory] = createSignal<IterationHistoryEntry[]>([]);
 const [runState, setRunState] = createSignal<RunState>('idle');
 const [currentIteration, setCurrentIteration] = createSignal(0);
 const [totalSubsetTraceJobs, setTotalSubsetTraceJobs] = createSignal(0);
@@ -95,6 +107,28 @@ function resetIterationState(): void {
   setPerTraceResults({});
   setDebugTraceSnapshots([]);
   setConvergedAtIteration(null);
+  setIterationHistory([]);
+}
+
+/** Deep-copy current perTraceResults into the iteration history. */
+function snapshotIteration(iteration: number, tauRise: number, tauDecay: number): void {
+  const results = perTraceResults();
+  const copy: Record<number, TraceResultEntry> = {};
+  for (const [key, entry] of Object.entries(results)) {
+    copy[Number(key)] = {
+      sCounts: new Float32Array(entry.sCounts),
+      alpha: entry.alpha,
+      baseline: entry.baseline,
+      pve: entry.pve,
+    };
+  }
+  setIterationHistory((prev) => {
+    const next = [...prev, { iteration, results: copy, tauRise, tauDecay }];
+    if (next.length > MAX_HISTORY_ITERATIONS) {
+      return next.slice(next.length - MAX_HISTORY_ITERATIONS);
+    }
+    return next;
+  });
 }
 
 function addConvergenceSnapshot(snapshot: KernelSnapshot): void {
@@ -133,8 +167,10 @@ export {
   pveValues,
   subsetVarianceData,
   progress,
+  iterationHistory,
   resetIterationState,
   addConvergenceSnapshot,
   addDebugTraceSnapshot,
   updateTraceResult,
+  snapshotIteration,
 };

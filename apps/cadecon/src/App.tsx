@@ -11,7 +11,7 @@ import { RunControls } from './components/controls/RunControls.tsx';
 import { ProgressBar } from './components/controls/ProgressBar.tsx';
 import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
 import { KernelDisplay } from './components/kernel/KernelDisplay.tsx';
-import { TraceViewer } from './components/traces/TraceViewer.tsx';
+import { TraceInspector } from './components/traces/TraceInspector.tsx';
 import { AlphaDistribution } from './components/distributions/AlphaDistribution.tsx';
 import { PVEDistribution } from './components/distributions/PVEDistribution.tsx';
 import { EventRateDistribution } from './components/distributions/EventRateDistribution.tsx';
@@ -31,7 +31,7 @@ import { selectedSubsetIdx } from './lib/viz-store.ts';
 import './styles/controls.css';
 import './styles/layout.css';
 import './styles/distributions.css';
-import './styles/trace-viewer.css';
+import './styles/trace-inspector.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
 
@@ -112,7 +112,7 @@ const App: Component = () => {
 
               <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
                 <p class="panel-label">Trace Inspector</p>
-                <TraceViewer />
+                <TraceInspector />
               </DashboardPanel>
             </div>
 
