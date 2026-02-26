@@ -76,13 +76,27 @@ export function TraceViewer(): JSX.Element {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
 
-    // During run: use debug snapshot trace
+    // During run: debug snapshot has pre-extracted raw trace for the debug cell
     if (!isFinalized()) {
       const snaps = debugTraceSnapshots();
-      if (snaps.length === 0) return null;
-      const latest = snaps[snaps.length - 1];
-      if (latest.cellIndex === cellIdx) return latest.rawTrace;
-      return null;
+      if (snaps.length > 0) {
+        const latest = snaps[snaps.length - 1];
+        if (latest.cellIndex === cellIdx) return latest.rawTrace;
+      }
+      // For other subset cells, extract from full data matrix
+      const data = parsedData();
+      const nTp = numTimepoints();
+      if (!data || nTp === 0) return null;
+      // Only extract if we have results for this cell (i.e. it was in a subset)
+      const results = perTraceResults();
+      if (!results[cellIdx]) return null;
+      const isSwap = swapped();
+      const rawCols = data.shape[1];
+      const trace = new Float32Array(nTp);
+      for (let t = 0; t < nTp; t++) {
+        trace[t] = Number(data.data[dataIndex(cellIdx, t, rawCols, isSwap)]);
+      }
+      return trace;
     }
 
     // After finalization: extract from full data
@@ -98,26 +112,10 @@ export function TraceViewer(): JSX.Element {
     return trace;
   });
 
-  // Get result for selected cell
+  // Get result for selected cell (from perTraceResults during both run and finalization)
   const cellResult = createMemo(() => {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
-
-    if (!isFinalized()) {
-      const snaps = debugTraceSnapshots();
-      if (snaps.length === 0) return null;
-      const latest = snaps[snaps.length - 1];
-      if (latest.cellIndex === cellIdx) {
-        return {
-          sCounts: latest.sCounts,
-          alpha: latest.alpha,
-          baseline: latest.baseline,
-          pve: latest.pve,
-        };
-      }
-      return null;
-    }
-
     const results = perTraceResults();
     return results[cellIdx] ?? null;
   });

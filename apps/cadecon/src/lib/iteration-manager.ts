@@ -313,6 +313,8 @@ export async function startRun(): Promise<void> {
     // Subset traces only cover a time window, so we store the subset-windowed s_counts
     // keyed by cell and reconstruct full-trace s_counts where available.
     prevTraceCounts = new Map();
+    // Map cell → latest scalar results (alpha, baseline, pve) from whichever subset last processed it
+    const cellScalars = new Map<number, { alpha: number; baseline: number; pve: number }>();
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
       for (const [cell, result] of traceResults[si]) {
@@ -323,7 +325,23 @@ export async function startRun(): Promise<void> {
           prevTraceCounts.set(cell, full);
         }
         full.set(result.sCounts, rect.tStart);
+        cellScalars.set(cell, {
+          alpha: result.alpha,
+          baseline: result.baseline,
+          pve: result.pve,
+        });
       }
+    }
+
+    // Publish full-length results so distributions and trace viewer update during iterations
+    for (const [cell, fullCounts] of prevTraceCounts) {
+      const scalars = cellScalars.get(cell)!;
+      updateTraceResult(cell, {
+        sCounts: fullCounts,
+        alpha: scalars.alpha,
+        baseline: scalars.baseline,
+        pve: scalars.pve,
+      });
     }
 
     // Capture debug trace snapshot: cell 0 from first subset that has it
