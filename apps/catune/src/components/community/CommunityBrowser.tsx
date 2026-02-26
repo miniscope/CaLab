@@ -4,14 +4,13 @@
  */
 
 import { createSignal } from 'solid-js';
-import { CommunityBrowserShell } from '@calab/ui';
+import { CommunityBrowserShell, FilterBar } from '@calab/ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CatuneSubmission, CatuneFilterState } from '../../lib/community/index.ts';
 import { tauRise, tauDecay, lambda } from '../../lib/viz-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
 import { getPresetLabels } from '@calab/compute';
 import { ScatterPlot } from './ScatterPlot.tsx';
-import { FilterBar } from './FilterBar.tsx';
 import '../../styles/community.css';
 
 export function CommunityBrowser() {
@@ -42,8 +41,8 @@ export function CommunityBrowser() {
           options={ctx.options}
           filteredCount={ctx.filteredCount}
           totalCount={ctx.totalCount}
-          demoPresets={getPresetLabels()}
-          showDemoPresetFilter={ctx.dataSource === 'demo'}
+          extraFilters={[{ id: 'demoPreset', label: 'All presets', options: getPresetLabels() }]}
+          showExtraFiltersOnly={ctx.dataSource === 'demo'}
           highlightMine={ctx.highlightMine}
           onHighlightMineChange={ctx.toggleHighlightMine}
           canHighlight={ctx.canHighlight}

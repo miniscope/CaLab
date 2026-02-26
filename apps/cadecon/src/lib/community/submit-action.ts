@@ -52,12 +52,19 @@ export interface CadeconSubmissionContext {
   demoPresetId: string | undefined;
 }
 
-/** Compute the median of a numeric array. Returns null for empty arrays. */
-function median(values: number[]): number | null {
+/** Compute the median of a numeric array, or null if empty. */
+function medianOrNull(values: number[]): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Parse a string to a number, returning undefined if empty or NaN. */
+function parseOptionalNumber(value: string, parser: (s: string) => number): number | undefined {
+  if (!value) return undefined;
+  const n = parser(value);
+  return Number.isNaN(n) ? undefined : n;
 }
 
 /** Compute mean event rate: sum(sCounts > 0) / (numCells * durationSeconds). */
@@ -104,8 +111,8 @@ export async function submitToSupabase(
     ctx.dataSource === 'demo' ? 'demo' : ctx.dataSource === 'bridge' ? 'bridge' : 'user';
 
   // Compute aggregate statistics
-  const medianAlpha = median(ctx.alphaValues);
-  const medianPve = median(ctx.pveValues);
+  const medianAlpha = medianOrNull(ctx.alphaValues);
+  const medianPve = medianOrNull(ctx.pveValues);
   const meanEventRate = computeMeanEventRate(ctx.perTraceResults, ctx.durationSeconds);
 
   // Build payload
@@ -146,16 +153,10 @@ export async function submitToSupabase(
     virus_construct: isDemo ? undefined : fields.virusConstruct.trim() || undefined,
     time_since_injection_days: isDemo
       ? undefined
-      : fields.timeSinceInjection
-        ? ((v) => (Number.isNaN(v) ? undefined : v))(parseInt(fields.timeSinceInjection, 10))
-        : undefined,
+      : parseOptionalNumber(fields.timeSinceInjection, (s) => parseInt(s, 10)),
     notes: fields.notes.trim() || undefined,
     microscope_type: isDemo ? undefined : fields.microscopeType.trim() || undefined,
-    imaging_depth_um: isDemo
-      ? undefined
-      : fields.imagingDepth
-        ? ((v) => (Number.isNaN(v) ? undefined : v))(parseFloat(fields.imagingDepth))
-        : undefined,
+    imaging_depth_um: isDemo ? undefined : parseOptionalNumber(fields.imagingDepth, parseFloat),
     cell_type: isDemo ? undefined : fields.cellType.trim() || undefined,
 
     // Dataset metadata

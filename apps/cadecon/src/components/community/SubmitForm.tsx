@@ -5,12 +5,17 @@
 
 import { Show, For } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { SubmitFormModal, SearchableField } from '@calab/ui';
+import { SubmitFormModal, SearchableField, AuthGate, PrivacyNotice } from '@calab/ui';
 import type { FieldSignal } from '@calab/ui';
 import { isDemo } from '../../lib/data-store.ts';
-import { user, fieldOptions, fieldOptionsLoading } from '../../lib/community/index.ts';
-import { AuthGate } from './AuthGateWrapper.tsx';
-import { PrivacyNotice } from './PrivacyNoticeWrapper.tsx';
+import {
+  user,
+  authLoading,
+  signInWithEmail,
+  signOut,
+  fieldOptions,
+  fieldOptionsLoading,
+} from '../../lib/community/index.ts';
 
 export interface SubmitFormProps {
   onClose: () => void;
@@ -43,7 +48,12 @@ export function SubmitForm(props: SubmitFormProps) {
         </div>
       </Show>
 
-      <AuthGate />
+      <AuthGate
+        user={user}
+        authLoading={authLoading}
+        signInWithEmail={signInWithEmail}
+        signOut={signOut}
+      />
 
       <Show when={user()}>
         {/* Experiment metadata fields — hidden for demo data */}
@@ -161,7 +171,22 @@ export function SubmitForm(props: SubmitFormProps) {
           />
         </div>
 
-        <PrivacyNotice />
+        <PrivacyNotice
+          sharedItems={
+            <>
+              When you submit, CaDecon sends only: kernel parameters (tau_rise, tau_decay, beta),
+              aggregate statistics (median alpha, median PVE, mean event rate), run configuration,
+              your experimental metadata (indicator, species, brain region), and a dataset
+              fingerprint for duplicate detection.
+            </>
+          }
+          retainedItems={
+            <>
+              Your raw fluorescence traces, deconvolved activity, and any file data remain entirely
+              in your browser's memory. No trace data is ever transmitted to any server.
+            </>
+          }
+        />
 
         {/* Validation errors */}
         <Show when={props.validationErrors().length > 0}>

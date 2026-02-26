@@ -16,19 +16,19 @@ export interface SubmitFormModalProps {
 }
 
 export function SubmitFormModal(props: SubmitFormModalProps) {
+  function handleKey(e: KeyboardEvent): void {
+    if (e.key === 'Escape') props.onClose();
+  }
+
+  document.addEventListener('keydown', handleKey);
+  onCleanup(() => document.removeEventListener('keydown', handleKey));
+
   return (
     <Portal mount={document.body}>
       <div
         class="submit-modal__backdrop"
         onClick={(e) => {
           if (e.target === e.currentTarget) props.onClose();
-        }}
-        ref={() => {
-          const handleKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') props.onClose();
-          };
-          document.addEventListener('keydown', handleKey);
-          onCleanup(() => document.removeEventListener('keydown', handleKey));
         }}
       >
         <div class="submit-modal__content">
