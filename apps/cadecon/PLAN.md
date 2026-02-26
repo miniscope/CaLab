@@ -243,7 +243,7 @@
   - `currentIteration`, `totalSubsetTraceJobs`, `completedSubsetTraceJobs`
   - `convergenceHistory: KernelSnapshot[]` (iteration, tauRise, tauDecay, beta, residual + per-subset snapshots)
   - `currentTauRise`, `currentTauDecay`
-  - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>`
+  - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>` — populated with full-length results during iterations (subset cells) and finalization (all cells)
   - `debugTraceSnapshots: DebugTraceSnapshot[]` — per-iteration snapshot of a single cell (raw trace, spike counts, reconvolved fit)
   - `debugKernelSnapshots` — per-iteration snapshot of free kernel + fitted bi-exponential per subset
   - Derived: `progress`
@@ -318,15 +318,18 @@
 
 - [x] **Deleted** `src/components/charts/DebugTraceChart.tsx`
 - [x] **Created** `src/components/traces/TraceViewer.tsx` — CellCard-inspired trace inspector
-  - **Dual mode:** During run shows debug cell from `debugTraceSnapshots`; after finalization shows any cell from `perTraceResults`
-  - **Top chart:** raw trace + reconvolved fit + residual (toggleable) via `TracePanel`
+  - **Unified mode:** Shows any subset cell during iterations and any cell after finalization, both from `perTraceResults`
+  - **Top chart:** raw trace + reconvolved fit + residual via `TracePanel`
+    - Series visibility toggled via uPlot `setSeries()` API (not NaN data swapping)
     - `transient-zone-plugin` shades pad zone: `ceil(2 * tauDecay * fs)` frames
     - `downsampleMinMax` for traces > ~4000 points
   - **Bottom chart:** spike counts as stem lines via custom paths callback
+  - **Zoom sync:** bidirectional x-scale sync between trace and spike charts via `setScale` hook plugins
   - **Header:** CellSelector + SeriesToggleBar + stats (alpha, PVE, spike count)
   - `makeTimeAxis` from `@calab/compute` for X-axis
   - `reconvolveAR2()` computed on-demand for selected cell
 - [x] **Created** `src/components/traces/TracePanel.tsx` — reusable uPlot wrapper (adapted from CaTune)
+  - `onCreate` callback for chart ref access (series toggling, zoom sync)
 - [x] **Created** `src/components/traces/CellSelector.tsx` — `<select>` dropdown + prev/next arrows
   - During iteration: cells from union of subset rectangles
   - After finalization: `0..numCells-1`
@@ -347,6 +350,7 @@
 - [x] `SubsetVariance.tsx` — grouped bar chart (tau_rise blue, tau_decay red):
   - Horizontal dashed lines at merged median values via custom plugin
   - Reads from `subsetVarianceData` memo in iteration-store
+- [x] **Live iteration updates:** `iteration-manager.ts` publishes full-length per-cell results to `perTraceResults` after each iteration's inference phase (not just during finalization). Distributions update progressively as iterations run.
 
 ### 3.5 Subset drill-down — ✅ DONE
 
@@ -374,7 +378,7 @@
 - [x] `App.tsx` rewritten with 3-row grid:
   - Row 1 (flex: 1 1 0, min-h 200): Raster (60%) | KernelConvergence (40%)
   - Row 2 (flex: 1 1 0, min-h 180): KernelDisplay (280px fixed) | TraceViewer (flex 1)
-  - Row 3 (flex: 0 0 auto):          4 distribution cards OR SubsetDrillDown
+  - Row 3 (flex: 0 0 auto): 4 distribution cards OR SubsetDrillDown
 - [x] Responsive: columns stack at 900px, distribution cards wrap at 50%
 
 ### 3.8 Store additions — ✅ DONE
@@ -402,7 +406,7 @@
 - [x] `src/styles/drilldown.css` — subset drill-down header, aggregate, cell browser, stats table
 - [x] `src/styles/controls.css` — removed old debug CSS rules, added `.progress-bar__phase`
 
-**Exit criteria:** ✅ All visualization cards populated with live data during runs. KernelConvergence shows per-subset scatter + convergence marker. KernelDisplay shows per-subset h_free + merged fit. TraceViewer supports cell selection with toggleable series. Distribution cards update live during finalization. Subset drill-down replaces distributions on click. ProgressBar shows phase labels. 3-row responsive grid layout. Build passes with 0 errors.
+**Exit criteria:** ✅ All visualization cards populated with live data during runs. KernelConvergence shows per-subset scatter + convergence marker. KernelDisplay shows per-subset h_free + merged fit. TraceViewer supports cell selection with independently toggleable series (via `setSeries`) and bidirectional zoom sync between trace and spike charts. Distribution cards update progressively during each iteration (not just finalization). Subset drill-down replaces distributions on click. ProgressBar shows phase labels. 3-row responsive grid layout. Build passes with 0 errors.
 
 ---
 
@@ -851,12 +855,12 @@ The 3-row grid uses CSS flexbox (not CSS Grid) for compatibility with the existi
 
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                                                     |
-| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------- |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                           |
-| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass       |
+| Phase                                | Status      | Notes                                                                                           |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------- |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                                 |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass             |
 | Phase 3: Visualization + QC          | COMPLETE    | uPlot charts, TraceViewer, distributions, drill-down, 3-row grid, phase indicator, 24 new files |
-| Phase 4: Community DB                | NOT STARTED |                                                                                           |
-| Phase 5: Export/Import               | NOT STARTED |                                                                                           |
-| Phase 6: Python Extension            | DEFERRED    |                                                                                           |
-| Phase 7: Tutorials + Polish          | DEFERRED    | Includes: per-worker indicators, iteration log sidebar                                    |
+| Phase 4: Community DB                | NOT STARTED |                                                                                                 |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                                 |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                                 |
+| Phase 7: Tutorials + Polish          | DEFERRED    | Includes: per-worker indicators, iteration log sidebar                                          |
