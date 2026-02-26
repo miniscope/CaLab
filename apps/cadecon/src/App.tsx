@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { Show } from 'solid-js';
+import { createSignal, Show } from 'solid-js';
 import {
   DashboardShell,
   DashboardPanel,
@@ -61,43 +61,12 @@ const App: Component = () => {
     });
   }
 
-  const sidebarTabs = (): SidebarTabConfig[] => {
-    const list: SidebarTabConfig[] = [
-      {
-        id: 'controls',
-        label: 'Controls',
-        content: (
-          <>
-            <DashboardPanel
-              id="subset-config"
-              variant="controls"
-              label="Subset Configuration"
-              collapsible
-            >
-              <SubsetConfig />
-            </DashboardPanel>
+  // Right sidebar state for community panel
+  const [sidebarOpen, setSidebarOpen] = createSignal(false);
+  const toggleSidebar = () => setSidebarOpen((prev) => !prev);
 
-            <DashboardPanel
-              id="algorithm-settings"
-              variant="controls"
-              label="Algorithm Settings"
-              collapsible
-              defaultCollapsed
-            >
-              <AlgorithmSettings />
-            </DashboardPanel>
-
-            <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
-              <RunControls />
-              <ProgressBar />
-            </DashboardPanel>
-
-            <SubmitPanel />
-          </>
-        ),
-      },
-    ];
-
+  const communitySidebarTabs = (): SidebarTabConfig[] => {
+    const list: SidebarTabConfig[] = [];
     if (supabaseEnabled) {
       list.push({
         id: 'community',
@@ -106,7 +75,6 @@ const App: Component = () => {
         onActivate: () => void trackEvent('community_browser_opened'),
       });
     }
-
     return list;
   };
 
@@ -117,10 +85,47 @@ const App: Component = () => {
         <ImportOverlay hasFile={!!rawFile()} onReset={resetImport} onLoadDemo={loadDemoData} />
       }
     >
-      <DashboardShell header={<CaDeconHeader />}>
+      <DashboardShell
+        sidebarOpen={sidebarOpen()}
+        onToggleSidebar={toggleSidebar}
+        header={<CaDeconHeader sidebarOpen={sidebarOpen()} onToggleSidebar={toggleSidebar} />}
+        sidebar={
+          supabaseEnabled ? (
+            <SidebarTabs tabs={communitySidebarTabs()} defaultTab="community" />
+          ) : undefined
+        }
+      >
         <VizLayout
           mode="dashboard"
-          sidebar={<SidebarTabs tabs={sidebarTabs()} defaultTab="controls" />}
+          sidebar={
+            <>
+              <DashboardPanel
+                id="subset-config"
+                variant="controls"
+                label="Subset Configuration"
+                collapsible
+              >
+                <SubsetConfig />
+              </DashboardPanel>
+
+              <DashboardPanel
+                id="algorithm-settings"
+                variant="controls"
+                label="Algorithm Settings"
+                collapsible
+                defaultCollapsed
+              >
+                <AlgorithmSettings />
+              </DashboardPanel>
+
+              <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
+                <RunControls />
+                <ProgressBar />
+              </DashboardPanel>
+
+              <SubmitPanel />
+            </>
+          }
         >
           <div class="viz-grid">
             {/* Row 1: Raster + Kernel Convergence */}

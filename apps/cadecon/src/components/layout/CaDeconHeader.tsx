@@ -11,7 +11,12 @@ import {
 import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
 import { formatDuration } from '@calab/core';
 
-export function CaDeconHeader(): JSX.Element {
+export interface CaDeconHeaderProps {
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
+}
+
+export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
   const workerCount = resolveWorkerCount();
   const durationDisplay = () => formatDuration(durationSeconds());
   const version = () => `CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`;
@@ -49,6 +54,12 @@ export function CaDeconHeader(): JSX.Element {
       }
       actions={
         <>
+          <button
+            class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
+            onClick={() => props.onToggleSidebar?.()}
+          >
+            Sidebar
+          </button>
           <button class="btn-secondary btn-small" onClick={resetImport}>
             Change Data
           </button>
