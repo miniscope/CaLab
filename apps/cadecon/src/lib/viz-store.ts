@@ -15,9 +15,6 @@ const [showFit, setShowFit] = createSignal(true);
 const [showDeconv, setShowDeconv] = createSignal(true);
 const [showResidual, setShowResidual] = createSignal(false);
 
-// Which subset is selected for drill-down (null = none)
-const [selectedSubsetIdx, setSelectedSubsetIdx] = createSignal<number | null>(null);
-
 // Backward-compatible aliases
 const showRawTrace = showRaw;
 const setShowRawTrace = setShowRaw;
@@ -39,8 +36,6 @@ export {
   setShowDeconv,
   showResidual,
   setShowResidual,
-  selectedSubsetIdx,
-  setSelectedSubsetIdx,
   // Backward-compatible aliases
   showRawTrace,
   setShowRawTrace,

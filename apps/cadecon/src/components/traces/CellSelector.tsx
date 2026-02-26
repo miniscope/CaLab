@@ -6,6 +6,8 @@ export interface CellSelectorProps {
   cellIndices: () => number[];
   selectedIndex: () => number | null;
   onSelect: (idx: number) => void;
+  /** When set, cells outside this set are greyed out in the dropdown. */
+  highlightedIndices?: () => Set<number> | null;
 }
 
 export function CellSelector(props: CellSelectorProps): JSX.Element {
@@ -45,9 +47,15 @@ export function CellSelector(props: CellSelectorProps): JSX.Element {
           if (!isNaN(v)) props.onSelect(v);
         }}
       >
-        {props.cellIndices().map((idx) => (
-          <option value={String(idx)}>Cell {idx}</option>
-        ))}
+        {props.cellIndices().map((idx) => {
+          const hl = props.highlightedIndices?.();
+          const dimmed = hl != null && !hl.has(idx);
+          return (
+            <option value={String(idx)} class={dimmed ? 'cell-selector__option--dimmed' : ''}>
+              Cell {idx}
+            </option>
+          );
+        })}
       </select>
       <button class="cell-selector__arrow" disabled={!canNext()} onClick={goNext}>
         &#x25B6;

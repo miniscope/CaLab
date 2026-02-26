@@ -5,18 +5,14 @@
 
 import { createMemo, Show, type JSX } from 'solid-js';
 import { convergenceHistory } from '../../lib/iteration-store.ts';
-import { subsetRectangles } from '../../lib/subset-store.ts';
 import {
+  subsetRectangles,
   selectedSubsetIdx,
   setSelectedSubsetIdx,
-  inspectedCellIndex,
-  setInspectedCellIndex,
-} from '../../lib/viz-store.ts';
+} from '../../lib/subset-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
 import { SubsetKernelFit } from './SubsetKernelFit.tsx';
 import { SubsetStats } from './SubsetStats.tsx';
-import { CellSelector } from '../traces/CellSelector.tsx';
-import { TraceInspector } from '../traces/TraceInspector.tsx';
 
 export function SubsetDrillDown(): JSX.Element {
   const subsetIdx = () => selectedSubsetIdx()!;
@@ -31,12 +27,6 @@ export function SubsetDrillDown(): JSX.Element {
     const idx = subsetIdx();
     if (idx >= rects.length) return null;
     return rects[idx];
-  });
-
-  const cellIndices = createMemo((): number[] => {
-    const r = rect();
-    if (!r) return [];
-    return Array.from({ length: r.cellEnd - r.cellStart }, (_, i) => r.cellStart + i);
   });
 
   const cellRange = createMemo((): [number, number] => {
@@ -63,24 +53,13 @@ export function SubsetDrillDown(): JSX.Element {
 
       <Show when={snapshot() != null}>
         <div class="subset-drilldown__content">
-          <div class="subset-drilldown__aggregate">
-            <SubsetKernelFit subsetIdx={subsetIdx()} snapshot={snapshot()!} />
-            <SubsetStats
-              subsetIdx={subsetIdx()}
-              snapshot={snapshot()!}
-              cellRange={cellRange()}
-              timeRange={timeRange()}
-            />
-          </div>
-
-          <div class="subset-drilldown__cell-browser">
-            <CellSelector
-              cellIndices={cellIndices}
-              selectedIndex={() => inspectedCellIndex() ?? cellIndices()[0] ?? null}
-              onSelect={setInspectedCellIndex}
-            />
-            <TraceInspector />
-          </div>
+          <SubsetKernelFit subsetIdx={subsetIdx()} snapshot={snapshot()!} />
+          <SubsetStats
+            subsetIdx={subsetIdx()}
+            snapshot={snapshot()!}
+            cellRange={cellRange()}
+            timeRange={timeRange()}
+          />
         </div>
       </Show>
     </div>

@@ -39,3 +39,8 @@
   text-align: center;
   color: var(--text-tertiary);
 }
+
+.cell-selector__option--dimmed {
+  color: var(--text-tertiary, #888);
+  font-style: italic;
+}

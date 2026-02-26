@@ -11,7 +11,9 @@ import '@calab/ui/chart/chart-theme.css';
 import { convergenceHistory, currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
 import { viewedIteration } from '../../lib/viz-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
-import { createKernelFreeSeries, createKernelFitSeries } from '../../lib/chart/series-config.ts';
+import { selectedSubsetIdx } from '../../lib/subset-store.ts';
+import { createKernelFitSeries } from '../../lib/chart/series-config.ts';
+import { D3_CATEGORY10, withOpacity } from '@calab/ui/chart';
 import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 
 export function KernelDisplay(): JSX.Element {
@@ -66,9 +68,17 @@ export function KernelDisplay(): JSX.Element {
   const series = createMemo((): uPlot.Series[] => {
     const snap = snapshot();
     if (!snap) return [{}];
+    const selected = selectedSubsetIdx();
     const s: uPlot.Series[] = [{}];
     for (let i = 0; i < snap.subsets.length; i++) {
-      s.push(createKernelFreeSeries(i));
+      const color = D3_CATEGORY10[i % D3_CATEGORY10.length];
+      const isSelected = selected === i;
+      const hasSelection = selected != null;
+      s.push({
+        label: `Subset ${i}`,
+        stroke: withOpacity(color, hasSelection ? (isSelected ? 1.0 : 0.15) : 0.4),
+        width: isSelected ? 2.5 : 1,
+      });
     }
     s.push(createKernelFitSeries());
     return s;

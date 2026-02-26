@@ -41,7 +41,7 @@ import {
   setShowResidual,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { subsetRectangles } from '../../lib/subset-store.ts';
+import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import { dataIndex } from '../../lib/data-utils.ts';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
@@ -71,6 +71,18 @@ export function TraceInspector(): JSX.Element {
       for (let c = r.cellStart; c < r.cellEnd; c++) set.add(c);
     }
     return [...set].sort((a, b) => a - b);
+  });
+
+  // Cells belonging to the selected subset (null = no subset selected)
+  const selectedSubsetCells = createMemo((): Set<number> | null => {
+    const idx = selectedSubsetIdx();
+    if (idx == null) return null;
+    const rects = subsetRectangles();
+    const rect = rects[idx];
+    if (!rect) return null;
+    const set = new Set<number>();
+    for (let c = rect.cellStart; c < rect.cellEnd; c++) set.add(c);
+    return set;
   });
 
   const effectiveCellIndex = createMemo(() => {
@@ -443,6 +455,7 @@ export function TraceInspector(): JSX.Element {
           cellIndices={cellIndices}
           selectedIndex={effectiveCellIndex}
           onSelect={setInspectedCellIndex}
+          highlightedIndices={selectedSubsetCells}
         />
         <TraceLegend items={legendItems()} />
         <div class="trace-inspector__stats">

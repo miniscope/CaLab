@@ -27,7 +27,7 @@ import {
   loadFromBridge,
   bridgeUrl,
 } from './lib/data-store.ts';
-import { selectedSubsetIdx } from './lib/viz-store.ts';
+import { selectedSubsetIdx } from './lib/subset-store.ts';
 
 import './styles/controls.css';
 import './styles/layout.css';
