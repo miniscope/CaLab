@@ -38,7 +38,8 @@ pub fn solve_bounded(
     max_iters: u32,
     tol: f64,
     warm_start: Option<&[f32]>,
-    filter_enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
 ) -> (Vec<f32>, u32, bool) {
     let upsampled = upsample_trace(trace, upsample_factor);
     let fs_up = fs * upsample_factor as f64;
@@ -49,8 +50,9 @@ pub fn solve_bounded(
     solver.set_constraint(Constraint::Box01);
     solver.set_trace(&upsampled);
 
-    if filter_enabled {
-        solver.set_filter_enabled(true);
+    if hp_enabled || lp_enabled {
+        solver.set_hp_filter_enabled(hp_enabled);
+        solver.set_lp_filter_enabled(lp_enabled);
         solver.apply_filter();
     }
 
@@ -103,7 +105,8 @@ pub fn solve_trace(
     max_iters: u32,
     tol: f64,
     warm_counts: Option<&[f32]>,
-    filter_enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
 ) -> InDecaResult {
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
@@ -114,7 +117,7 @@ pub fn solve_trace(
 
     // Step 1: Bounded FISTA solve on (optionally filtered) upsampled trace
     let (s_relaxed, iterations, converged) =
-        solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start, filter_enabled);
+        solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start, hp_enabled, lp_enabled);
 
     // Step 2: Threshold search on raw upsampled trace
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
@@ -163,7 +166,7 @@ mod tests {
     #[test]
     fn outputs_in_range() {
         let trace = make_trace(0.02, 0.4, 30.0, 300, &[20, 80, 150, 220]);
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false);
+        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false);
 
         // Spike counts should be non-negative
         for (i, &v) in result.s_counts.iter().enumerate() {
@@ -178,7 +181,7 @@ mod tests {
     fn known_spike_detection() {
         let spike_positions = [30, 100, 200];
         let trace = make_trace(0.02, 0.4, 30.0, 300, &spike_positions);
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false);
+        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, false);
 
         // Check that spikes are detected near the true positions
         let mut detected = 0;
@@ -208,7 +211,7 @@ mod tests {
 
         // Get the cold solution for warm-start
         let (cold_sol, _, _) =
-            solve_bounded(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false);
+            solve_bounded(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false);
 
         // Warm solve with slightly different taus
         let (_, warm_iters, _) = solve_bounded(
@@ -220,6 +223,7 @@ mod tests {
             500,
             1e-4,
             Some(&cold_sol),
+            false,
             false,
         );
 
@@ -233,7 +237,7 @@ mod tests {
     #[test]
     fn upsampled_output_length() {
         let trace = make_trace(0.02, 0.4, 30.0, 100, &[20, 50]);
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 10, 200, 1e-3, None, false);
+        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 10, 200, 1e-3, None, false, false);
 
         // Output should be same length as input regardless of upsample factor
         assert_eq!(
@@ -246,7 +250,7 @@ mod tests {
     #[test]
     fn zero_trace() {
         let trace = vec![0.0_f32; 100];
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 100, 1e-4, None, false);
+        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 100, 1e-4, None, false, false);
         let total_spikes: f32 = result.s_counts.iter().sum();
         assert!(
             total_spikes < 1e-6,

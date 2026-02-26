@@ -8,7 +8,8 @@ const [tauDecayInit, setTauDecayInit] = createSignal(0.6);
 const [autoInitKernel, setAutoInitKernel] = createSignal(true);
 const [upsampleTarget, setUpsampleTarget] = createSignal(300);
 const [weightingEnabled, setWeightingEnabled] = createSignal(true);
-const [bandpassEnabled, setBandpassEnabled] = createSignal(false);
+const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
+const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);
 const [maxIterations, setMaxIterations] = createSignal(10);
 const [convergenceTol, setConvergenceTol] = createSignal(0.01);
 
@@ -31,8 +32,10 @@ export {
   setUpsampleTarget,
   weightingEnabled,
   setWeightingEnabled,
-  bandpassEnabled,
-  setBandpassEnabled,
+  hpFilterEnabled,
+  setHpFilterEnabled,
+  lpFilterEnabled,
+  setLpFilterEnabled,
   maxIterations,
   setMaxIterations,
   convergenceTol,

@@ -128,12 +128,22 @@ impl PySolver {
         self.inner.apply_filter()
     }
 
-    /// Set filter enabled/disabled.
+    /// Convenience: set both HP and LP filter together.
     fn set_filter_enabled(&mut self, enabled: bool) {
         self.inner.set_filter_enabled(enabled);
     }
 
-    /// Check if filter is enabled.
+    /// Set high-pass filter enabled/disabled.
+    fn set_hp_filter_enabled(&mut self, enabled: bool) {
+        self.inner.set_hp_filter_enabled(enabled);
+    }
+
+    /// Set low-pass filter enabled/disabled.
+    fn set_lp_filter_enabled(&mut self, enabled: bool) {
+        self.inner.set_lp_filter_enabled(enabled);
+    }
+
+    /// Check if filter is enabled (either HP or LP).
     fn filter_enabled(&self) -> bool {
         self.inner.filter_enabled()
     }
@@ -188,7 +198,7 @@ fn configure_solver_options(
 /// One-shot deconvolution for a single 1D trace.
 /// Returns (activity, baseline, reconvolution, iterations, converged).
 #[pyfunction]
-#[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
+#[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, hp_enabled=false, lp_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_single<'py>(
     py: Python<'py>,
     trace: PyReadonlyArray1<f64>,
@@ -196,7 +206,8 @@ fn deconvolve_single<'py>(
     tau_rise: f64,
     tau_decay: f64,
     lambda_: f64,
-    filter_enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
     max_iters: u32,
     conv_mode: &str,
     constraint: &str,
@@ -219,8 +230,9 @@ fn deconvolve_single<'py>(
     let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
 
-    if filter_enabled {
-        solver.set_filter_enabled(true);
+    if hp_enabled || lp_enabled {
+        solver.set_hp_filter_enabled(hp_enabled);
+        solver.set_lp_filter_enabled(lp_enabled);
         solver.apply_filter();
     }
 
@@ -238,7 +250,7 @@ fn deconvolve_single<'py>(
 /// Batch deconvolution for a 2D array of traces (n_cells x n_timepoints).
 /// Returns (activities, baselines, reconvolutions, iterations, convergeds).
 #[pyfunction]
-#[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, filter_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
+#[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, hp_enabled=false, lp_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_batch<'py>(
     py: Python<'py>,
     traces: PyReadonlyArray2<f64>,
@@ -246,7 +258,8 @@ fn deconvolve_batch<'py>(
     tau_rise: f64,
     tau_decay: f64,
     lambda_: f64,
-    filter_enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
     max_iters: u32,
     conv_mode: &str,
     constraint: &str,
@@ -264,8 +277,9 @@ fn deconvolve_batch<'py>(
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
-    if filter_enabled {
-        solver.set_filter_enabled(true);
+    if hp_enabled || lp_enabled {
+        solver.set_hp_filter_enabled(hp_enabled);
+        solver.set_lp_filter_enabled(lp_enabled);
     }
 
     let mut activities = Vec::with_capacity(n_cells);
@@ -283,7 +297,7 @@ fn deconvolve_batch<'py>(
         trace_f32.extend(traces_ref.row(cell_idx).iter().map(|&v| v as f32));
         solver.set_trace(&trace_f32);
 
-        if filter_enabled {
+        if hp_enabled || lp_enabled {
             solver.apply_filter();
         }
 

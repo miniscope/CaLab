@@ -32,7 +32,8 @@ export type CaDeconWorkerInbound =
       upsampleFactor: number;
       maxIters: number;
       tol: number;
-      filterEnabled: boolean;
+      hpEnabled: boolean;
+      lpEnabled: boolean;
       /** Previous iteration's s_counts at original rate for warm-start. */
       warmCounts?: Float32Array;
     }

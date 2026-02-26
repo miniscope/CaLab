@@ -26,7 +26,8 @@ pub fn indeca_solve_trace(
     upsample_factor: usize,
     max_iters: u32,
     tol: f64,
-    filter_enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
     warm_counts: &[f32],
 ) -> JsValue {
     let warm = if warm_counts.is_empty() {
@@ -35,7 +36,7 @@ pub fn indeca_solve_trace(
         Some(warm_counts)
     };
     let result = indeca::solve_trace(
-        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm, filter_enabled,
+        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm, hp_enabled, lp_enabled,
     );
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }

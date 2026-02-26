@@ -31,7 +31,8 @@ import {
   upsampleFactor,
   maxIterations,
   convergenceTol,
-  bandpassEnabled,
+  hpFilterEnabled,
+  lpFilterEnabled,
 } from './algorithm-store.ts';
 import {
   parsedData,
@@ -94,7 +95,8 @@ function dispatchTraceJobs(
   upFactor: number,
   maxIters: number,
   tol: number,
-  filterEnabled: boolean,
+  hpEnabled: boolean,
+  lpEnabled: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
@@ -139,7 +141,8 @@ function dispatchTraceJobs(
         upsampleFactor: upFactor,
         maxIters,
         tol,
-        filterEnabled,
+        hpEnabled,
+        lpEnabled,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -265,7 +268,8 @@ export async function startRun(): Promise<void> {
   const isSwap = swapped();
   const nCells = numCells();
   const nTp = numTimepoints();
-  const filterOn = bandpassEnabled();
+  const hpOn = hpFilterEnabled();
+  const lpOn = lpFilterEnabled();
 
   // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
   const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
@@ -303,7 +307,8 @@ export async function startRun(): Promise<void> {
       upFactor,
       TRACE_FISTA_MAX_ITERS,
       TRACE_FISTA_TOL,
-      filterOn,
+      hpOn,
+      lpOn,
       prevTraceCounts,
     );
 
@@ -488,7 +493,8 @@ export async function startRun(): Promise<void> {
           upsampleFactor: upFactor,
           maxIters: TRACE_FISTA_MAX_ITERS,
           tol: TRACE_FISTA_TOL,
-          filterEnabled: filterOn,
+          hpEnabled: hpOn,
+          lpEnabled: lpOn,
           warmCounts,
           onComplete(result: TraceResult) {
             updateTraceResult(c, {

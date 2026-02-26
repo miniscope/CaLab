@@ -14,7 +14,8 @@ const MARGIN_FACTOR_LP: f32 = 4.0;
 /// FFT-based bandpass filter derived from kernel time constants.
 /// Buffers grow but never shrink (matching Solver convention).
 pub struct BandpassFilter {
-    enabled: bool,
+    hp_enabled: bool,
+    lp_enabled: bool,
     f_hp: f32,
     f_lp: f32,
     fs: f32,
@@ -40,7 +41,8 @@ pub struct BandpassFilter {
 impl BandpassFilter {
     pub fn new() -> Self {
         BandpassFilter {
-            enabled: false,
+            hp_enabled: false,
+            lp_enabled: false,
             f_hp: 0.0,
             f_lp: 0.0,
             fs: 30.0,
@@ -58,12 +60,31 @@ impl BandpassFilter {
         }
     }
 
+    /// Convenience: set both HP and LP together (used by CaTune's single toggle).
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.hp_enabled = enabled;
+        self.lp_enabled = enabled;
     }
 
+    /// Returns true if either HP or LP is active.
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.hp_enabled || self.lp_enabled
+    }
+
+    pub fn set_hp_enabled(&mut self, enabled: bool) {
+        self.hp_enabled = enabled;
+    }
+
+    pub fn set_lp_enabled(&mut self, enabled: bool) {
+        self.lp_enabled = enabled;
+    }
+
+    pub fn is_hp_enabled(&self) -> bool {
+        self.hp_enabled
+    }
+
+    pub fn is_lp_enabled(&self) -> bool {
+        self.lp_enabled
     }
 
     /// Compute bandpass cutoffs from kernel time constants.
@@ -89,8 +110,11 @@ impl BandpassFilter {
             self.f_lp = nyquist;
         }
 
-        // Invalid if high-pass >= low-pass
-        self.valid = self.f_hp < self.f_lp;
+        // Validity depends on which filters are active (checked at apply time).
+        // Pre-compute: both-on requires f_hp < f_lp; individual modes just need
+        // positive cutoffs within Nyquist. Store the most permissive condition here
+        // and let apply() + build_gain_curve() handle the mode-specific check.
+        self.valid = self.f_hp > 0.0 && self.f_lp > 0.0;
 
         // Invalidate cached gain curve and FFT plans
         self.planned_len = 0;
@@ -138,44 +162,60 @@ impl BandpassFilter {
         self.planned_len = n;
     }
 
-    /// Build cosine-tapered bandpass gain curve.
+    /// Build cosine-tapered gain curve for the active filter mode.
+    ///
+    /// - HP+LP: full bandpass (HP taper → passband → LP taper)
+    /// - HP-only: HP taper → passband to Nyquist (gain=1.0 above HP)
+    /// - LP-only: passband from DC → LP taper → stopband (gain=1.0 below LP)
     fn build_gain_curve(&mut self, n: usize) {
         let spectrum_len = n / 2 + 1;
         let df = self.fs / n as f32;
 
-        // Taper widths: 50% of respective cutoff frequency
         let w_hp = self.f_hp * 0.5;
         let w_lp = self.f_lp * 0.5;
+
+        let hp_on = self.hp_enabled;
+        let lp_on = self.lp_enabled;
 
         for i in 0..spectrum_len {
             let f = i as f32 * df;
 
-            let gain = if f < self.f_hp - w_hp {
-                // Stopband (below high-pass)
+            // High-pass contribution (1.0 when disabled)
+            let hp_gain = if !hp_on {
+                1.0
+            } else if f < self.f_hp - w_hp {
                 0.0
             } else if f < self.f_hp + w_hp {
-                // High-pass transition (cosine taper 0 -> 1)
                 let t = (f - (self.f_hp - w_hp)) / (2.0 * w_hp);
                 0.5 * (1.0 - (PI * t).cos())
+            } else {
+                1.0
+            };
+
+            // Low-pass contribution (1.0 when disabled)
+            let lp_gain = if !lp_on {
+                1.0
             } else if f < self.f_lp - w_lp {
-                // Passband
                 1.0
             } else if f < self.f_lp + w_lp {
-                // Low-pass transition (cosine taper 1 -> 0)
                 let t = (f - (self.f_lp - w_lp)) / (2.0 * w_lp);
                 0.5 * (1.0 + (PI * t).cos())
             } else {
-                // Stopband (above low-pass)
                 0.0
             };
 
-            self.gain_curve[i] = gain;
+            self.gain_curve[i] = hp_gain * lp_gain;
         }
     }
 
     /// Apply bandpass filter in-place. Caches power spectrum. Returns false if skipped.
     pub fn apply(&mut self, trace: &mut [f32]) -> bool {
-        if !self.enabled || !self.valid || trace.len() < 8 {
+        if !self.is_enabled() || !self.valid || trace.len() < 8 {
+            return false;
+        }
+
+        // Mode-specific validity: HP+LP requires f_hp < f_lp
+        if self.hp_enabled && self.lp_enabled && self.f_hp >= self.f_lp {
             return false;
         }
 
@@ -412,8 +452,7 @@ mod tests {
         let mut f = BandpassFilter::new();
         // tau_rise very large, tau_decay very small -> f_hp > f_lp
         f.update_cutoffs(10.0, 0.001, 30.0);
-        f.set_enabled(true);
-        assert!(!f.valid);
+        f.set_enabled(true); // both HP+LP: requires f_hp < f_lp
         let mut trace = vec![1.0; 64];
         assert!(!f.apply(&mut trace));
     }
@@ -426,5 +465,126 @@ mod tests {
         let original = trace.clone();
         assert!(!f.apply(&mut trace));
         assert_eq!(trace, original);
+    }
+
+    #[test]
+    fn test_hp_only_removes_dc() {
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.02, 0.4, 100.0);
+        f.set_hp_enabled(true);
+        f.set_lp_enabled(false);
+        let n = 256;
+
+        // Constant DC offset trace
+        let mut trace = vec![5.0_f32; n];
+        assert!(f.apply(&mut trace));
+
+        // DC should be removed
+        let mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        assert!(mean.abs() < 0.1, "HP-only: DC not removed, mean: {}", mean);
+    }
+
+    #[test]
+    fn test_hp_only_preserves_passband() {
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.02, 0.4, 100.0);
+        f.set_hp_enabled(true);
+        f.set_lp_enabled(false);
+        let n = 1024;
+        let fs = 100.0_f32;
+
+        // 1 Hz sine — well above HP cutoff (~0.025 Hz)
+        let freq = 1.0_f32;
+        let mut trace: Vec<f32> = (0..n)
+            .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
+            .collect();
+        let orig_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let original_ac_power: f32 = trace.iter().map(|x| (x - orig_mean).powi(2)).sum();
+
+        assert!(f.apply(&mut trace));
+
+        let filt_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let filtered_ac_power: f32 = trace.iter().map(|x| (x - filt_mean).powi(2)).sum();
+        assert!(
+            filtered_ac_power / original_ac_power > 0.9,
+            "HP-only passband AC ratio: {}",
+            filtered_ac_power / original_ac_power
+        );
+    }
+
+    #[test]
+    fn test_hp_only_preserves_high_freq() {
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.02, 0.4, 100.0);
+        f.set_hp_enabled(true);
+        f.set_lp_enabled(false);
+        let n = 1024;
+        let fs = 100.0_f32;
+
+        // 40 Hz sine — near Nyquist, should be preserved (no LP filter)
+        let freq = 40.0_f32;
+        let mut trace: Vec<f32> = (0..n)
+            .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
+            .collect();
+        let orig_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let original_ac_power: f32 = trace.iter().map(|x| (x - orig_mean).powi(2)).sum();
+
+        assert!(f.apply(&mut trace));
+
+        let filt_mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        let filtered_ac_power: f32 = trace.iter().map(|x| (x - filt_mean).powi(2)).sum();
+        assert!(
+            filtered_ac_power / original_ac_power > 0.9,
+            "HP-only should preserve high-freq, AC ratio: {}",
+            filtered_ac_power / original_ac_power
+        );
+    }
+
+    #[test]
+    fn test_lp_only_preserves_dc() {
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.02, 0.4, 100.0);
+        f.set_hp_enabled(false);
+        f.set_lp_enabled(true);
+        let n = 256;
+
+        // Constant DC offset trace — LP-only should preserve it
+        let mut trace = vec![5.0_f32; n];
+        assert!(f.apply(&mut trace));
+
+        let mean: f32 = trace.iter().sum::<f32>() / n as f32;
+        assert!(
+            (mean - 5.0).abs() < 0.1,
+            "LP-only should preserve DC, mean: {}",
+            mean
+        );
+    }
+
+    #[test]
+    fn test_lp_only_attenuates_high_freq() {
+        let mut f = BandpassFilter::new();
+        // Use tau_rise=0.02, tau_decay=0.4 at fs=100 → f_lp ≈ 31.8 Hz, clamped to 50 Hz Nyquist
+        // For a tighter LP, use tau_rise=0.1 → f_lp ≈ 6.37 Hz
+        f.update_cutoffs(0.1, 0.4, 100.0);
+        f.set_hp_enabled(false);
+        f.set_lp_enabled(true);
+        let n = 1024;
+        let fs = 100.0_f32;
+
+        // 40 Hz sine — well above LP cutoff
+        let freq = 40.0_f32;
+        let mut trace: Vec<f32> = (0..n)
+            .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
+            .collect();
+        let original_power: f32 = trace.iter().map(|x| x * x).sum();
+
+        assert!(f.apply(&mut trace));
+
+        let filtered_power: f32 = trace.iter().map(|x| x * x).sum();
+        assert!(
+            filtered_power / original_power < 0.1,
+            "LP-only should attenuate high-freq, power ratio: {}",
+            filtered_power / original_power
+        );
     }
 }

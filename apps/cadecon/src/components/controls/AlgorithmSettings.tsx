@@ -12,8 +12,10 @@ import {
   setUpsampleTarget,
   weightingEnabled,
   setWeightingEnabled,
-  bandpassEnabled,
-  setBandpassEnabled,
+  hpFilterEnabled,
+  setHpFilterEnabled,
+  lpFilterEnabled,
+  setLpFilterEnabled,
   maxIterations,
   setMaxIterations,
   convergenceTol,
@@ -94,10 +96,17 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ToggleSwitch
-          label="Bandpass Filter"
-          description="Apply bandpass filtering before deconvolution"
-          checked={bandpassEnabled()}
-          onChange={setBandpassEnabled}
+          label="High-Pass Filter"
+          description="Remove baseline drift before deconvolution"
+          checked={hpFilterEnabled()}
+          onChange={setHpFilterEnabled}
+        />
+
+        <ToggleSwitch
+          label="Low-Pass Filter"
+          description="Remove high-frequency noise before deconvolution"
+          checked={lpFilterEnabled()}
+          onChange={setLpFilterEnabled}
         />
       </div>
     </div>
