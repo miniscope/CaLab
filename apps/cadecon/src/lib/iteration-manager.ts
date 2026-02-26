@@ -8,8 +8,7 @@
 //   5. On convergence/max iters: finalization pass on ALL cells
 
 import type { WorkerPool } from '@calab/compute';
-import type { CaDeconPoolJob } from './cadecon-pool.ts';
-import { createCaDeconWorkerPool } from './cadecon-pool.ts';
+import { createCaDeconWorkerPool, type CaDeconPoolJob } from './cadecon-pool.ts';
 import type { TraceResult, KernelResult } from '../workers/cadecon-types.ts';
 import {
   runState,
@@ -40,8 +39,7 @@ import {
   swapped,
   effectiveShape,
 } from './data-store.ts';
-import { subsetRectangles } from './subset-store.ts';
-import type { SubsetRectangle } from './subset-store.ts';
+import { subsetRectangles, type SubsetRectangle } from './subset-store.ts';
 import { dataIndex } from './data-utils.ts';
 
 /** Per-trace FISTA solver parameters (shared between subset and finalization passes). */
@@ -84,6 +82,48 @@ function median(arr: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+/**
+ * Reconvolve a spike train through the peak-normalized AR2 forward model.
+ * Mirrors the Rust BandedAR2 convolution: c[t] = g1*c[t-1] + g2*c[t-2] + s[t],
+ * then normalize by impulse peak so recon = alpha * (c / peak) + baseline.
+ */
+function reconvolveAR2(
+  sCounts: Float32Array,
+  tauR: number,
+  tauD: number,
+  fs: number,
+  alpha: number,
+  baseline: number,
+): Float32Array {
+  const dt = 1 / fs;
+  const d = Math.exp(-dt / tauD);
+  const r = Math.exp(-dt / tauR);
+  const g1 = d + r;
+  const g2 = -(d * r);
+
+  // Compute impulse peak (same logic as Rust compute_impulse_peak)
+  let impPeak = 1.0;
+  let cPrev2 = 0;
+  let cPrev1 = 1;
+  const maxSteps = Math.ceil(5 * tauD * fs) + 10;
+  for (let i = 1; i < maxSteps; i++) {
+    const cv = g1 * cPrev1 + g2 * cPrev2;
+    if (cv > impPeak) impPeak = cv;
+    if (cv < impPeak * 0.95) break;
+    cPrev2 = cPrev1;
+    cPrev1 = cv;
+  }
+
+  const n = sCounts.length;
+  const reconvolved = new Float32Array(n);
+  const c = new Float64Array(n);
+  for (let t = 0; t < n; t++) {
+    c[t] = sCounts[t] + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
+    reconvolved[t] = alpha * (c[t] / impPeak) + baseline;
+  }
+  return reconvolved;
+}
+
 // --- Dispatch helpers ---
 
 /**
@@ -121,7 +161,6 @@ function dispatchTraceJobs(
 
     const results: Array<Map<number, TraceResult>> = rects.map(() => new Map());
     let completed = 0;
-    let errored = false;
 
     for (const { cell, rect, subsetIdx } of jobs) {
       const trace = extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped);
@@ -149,11 +188,7 @@ function dispatchTraceJobs(
           setCompletedSubsetTraceJobs(completed);
           if (completed === jobs.length) resolve(results);
         },
-        onError(msg: string) {
-          if (!errored) {
-            errored = true;
-            console.error('Trace job error:', msg);
-          }
+        onError() {
           completed++;
           setCompletedSubsetTraceJobs(completed);
           if (completed === jobs.length) resolve(results);
@@ -229,8 +264,7 @@ function dispatchKernelJobs(
           completed++;
           if (completed === totalKernelJobs) resolve(kernelResults);
         },
-        onError(msg: string) {
-          console.error(`Kernel job error (subset ${si}):`, msg);
+        onError() {
           completed++;
           if (completed === totalKernelJobs) resolve(kernelResults);
         },
@@ -309,35 +343,14 @@ export async function startRun(): Promise<void> {
           data,
           isSwap,
         );
-        // Reconvolve using peak-normalized AR2 forward model (same as solver).
-        // Raw AR2: c[t] = g1*c[t-1] + g2*c[t-2] + s[t], then divide by impulse peak.
-        // recon = alpha * (c / peak) + baseline
-        const dt = 1 / fs;
-        const d = Math.exp(-dt / tauD);
-        const r = Math.exp(-dt / tauR);
-        const g1 = d + r;
-        const g2 = -(d * r);
-        // Compute impulse peak (same logic as Rust compute_impulse_peak)
-        let impPeak = 1.0;
-        {
-          let cPrev2 = 0;
-          let cPrev1 = 1;
-          const maxSteps = Math.ceil(5 * tauD * fs) + 10;
-          for (let i = 1; i < maxSteps; i++) {
-            const cv = g1 * cPrev1 + g2 * cPrev2;
-            if (cv > impPeak) impPeak = cv;
-            if (cv < impPeak * 0.95) break;
-            cPrev2 = cPrev1;
-            cPrev1 = cv;
-          }
-        }
-        const reconvolved = new Float32Array(debugTrace.length);
-        const c = new Float64Array(debugTrace.length);
-        for (let t = 0; t < debugTrace.length; t++) {
-          c[t] =
-            debugResult.sCounts[t] + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
-          reconvolved[t] = debugResult.alpha * (c[t] / impPeak) + debugResult.baseline;
-        }
+        const reconvolved = reconvolveAR2(
+          debugResult.sCounts,
+          tauR,
+          tauD,
+          fs,
+          debugResult.alpha,
+          debugResult.baseline,
+        );
         addDebugTraceSnapshot({
           iteration: iter + 1,
           cellIndex: debugCell,

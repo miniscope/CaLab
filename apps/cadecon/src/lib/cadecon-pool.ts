@@ -1,5 +1,9 @@
-import type { BaseJob, MessageRouter } from '@calab/compute';
-import { createWorkerPool, type WorkerPool } from '@calab/compute';
+import {
+  createWorkerPool,
+  type BaseJob,
+  type MessageRouter,
+  type WorkerPool,
+} from '@calab/compute';
 import type { CaDeconWorkerOutbound, TraceResult, KernelResult } from '../workers/cadecon-types.ts';
 
 // --- Pool Job Types ---

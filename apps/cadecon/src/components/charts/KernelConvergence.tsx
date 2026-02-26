@@ -8,7 +8,6 @@ const COLORS = {
   tauDecayFaint: 'rgba(239, 83, 80, 0.3)',
   axis: 'var(--text-tertiary)',
   grid: 'var(--border-subtle)',
-  bg: 'var(--bg-secondary)',
 };
 
 export function KernelConvergence(): JSX.Element {
@@ -186,26 +185,17 @@ export function KernelConvergence(): JSX.Element {
     ctx.fillText('per-subset', legendX + 16, legendY + 26);
   }
 
-  createEffect(
-    on(convergenceHistory, () => {
-      requestAnimationFrame(draw);
-    }),
-  );
+  createEffect(on(convergenceHistory, () => requestAnimationFrame(draw)));
 
   function setupCanvas(el: HTMLCanvasElement) {
     canvasRef = el;
-    resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(draw);
-    });
-    // Observe the wrapper div (stable layout size; canvas is position:absolute)
+    resizeObserver = new ResizeObserver(() => requestAnimationFrame(draw));
     const wrapper = el.parentElement;
     if (wrapper) resizeObserver.observe(wrapper);
     requestAnimationFrame(draw);
   }
 
-  onCleanup(() => {
-    resizeObserver?.disconnect();
-  });
+  onCleanup(() => resizeObserver?.disconnect());
 
   return (
     <div class="kernel-chart-wrapper">

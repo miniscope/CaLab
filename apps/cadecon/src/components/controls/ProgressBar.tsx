@@ -1,6 +1,5 @@
 import { Show, type JSX } from 'solid-js';
-import { runState, currentIteration, progress } from '../../lib/iteration-store.ts';
-import type { RunState } from '../../lib/iteration-store.ts';
+import { runState, currentIteration, progress, type RunState } from '../../lib/iteration-store.ts';
 import { maxIterations } from '../../lib/algorithm-store.ts';
 
 function statusLabel(state: RunState): string | null {

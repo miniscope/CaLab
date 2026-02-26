@@ -1,6 +1,10 @@
 import type { PoolWorkerOutbound, SolverParams, WarmStartStrategy } from '@calab/core';
-import type { BaseJob, MessageRouter } from './worker-pool.ts';
-import { createWorkerPool, type WorkerPool } from './worker-pool.ts';
+import {
+  createWorkerPool,
+  type BaseJob,
+  type MessageRouter,
+  type WorkerPool,
+} from './worker-pool.ts';
 
 export interface CaTunePoolJob extends BaseJob {
   trace: Float32Array;

@@ -1,5 +1,4 @@
-import type { JSX } from 'solid-js';
-import { Show } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import {
   numSubsets,
