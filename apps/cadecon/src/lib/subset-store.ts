@@ -15,9 +15,8 @@ export interface SubsetRectangle {
 // --- Config Signals ---
 
 const [numSubsets, setNumSubsets] = createSignal(resolveWorkerCount());
-const [subsetTimeFrames, setSubsetTimeFrames] = createSignal<number | null>(null);
-const [subsetCellCount, setSubsetCellCount] = createSignal<number | null>(null);
-const [autoMode, setAutoMode] = createSignal(true);
+const [targetCoverage, setTargetCoverage] = createSignal(0.5);
+const [aspectRatio, setAspectRatio] = createSignal(1.0);
 const [seed, setSeed] = createSignal(42);
 
 // --- UI Signal ---
@@ -26,27 +25,26 @@ const [selectedSubsetIdx, setSelectedSubsetIdx] = createSignal<number | null>(nu
 
 // --- Derived ---
 
-// Auto-size: 50% total coverage, preserving the dataset's aspect ratio.
-// scale = sqrt(target / K), applied uniformly so tSub/nSub = T/N.
-const TARGET_COVERAGE = 0.5;
-const autoScale = createMemo(() => Math.sqrt(TARGET_COVERAGE / numSubsets()));
+// Sizing from coverage + aspect ratio:
+//   base scale = sqrt(coverage / K)
+//   tSub = T * scale * sqrt(aspectRatio)
+//   nSub = N * scale / sqrt(aspectRatio)
+// aspectRatio = 1 preserves dataset proportions; >1 = wider (more time); <1 = taller (more cells)
 
 const effectiveTSub = createMemo(() => {
-  if (!autoMode()) {
-    return subsetTimeFrames() ?? Math.max(100, Math.floor(numTimepoints() * autoScale()));
-  }
   const T = numTimepoints();
   if (T === 0) return 100;
-  return Math.max(100, Math.floor(T * autoScale()));
+  const K = numSubsets();
+  const scale = Math.sqrt(targetCoverage() / K);
+  return Math.max(100, Math.min(T, Math.floor(T * scale * Math.sqrt(aspectRatio()))));
 });
 
 const effectiveNSub = createMemo(() => {
-  if (!autoMode()) {
-    return subsetCellCount() ?? Math.max(10, Math.floor(numCells() * autoScale()));
-  }
   const N = numCells();
   if (N === 0) return 10;
-  return Math.max(10, Math.floor(N * autoScale()));
+  const K = numSubsets();
+  const scale = Math.sqrt(targetCoverage() / K);
+  return Math.max(10, Math.min(N, Math.floor((N * scale) / Math.sqrt(aspectRatio()))));
 });
 
 // Seeded LCG for deterministic pseudo-random placement
@@ -62,7 +60,7 @@ function lcg(s: number): () => number {
  * Place K non-overlapping subset rectangles using a grid tiling strategy
  * with seeded random jitter within each tile.
  *
- * Strategy: compute how many tiles fit along each axis (time × cells),
+ * Strategy: compute how many tiles fit along each axis (time x cells),
  * assign subsets to tiles in raster order, then jitter each rectangle
  * within its tile so placement varies with the seed.
  */
@@ -183,24 +181,13 @@ const maxNonOverlappingK = createMemo(() => {
   return Math.floor(T / tSub) * Math.floor(N / nSub);
 });
 
-function toggleAutoMode(enabled: boolean) {
-  if (!enabled && autoMode()) {
-    // Switching auto → manual: seed manual values from current auto values
-    if (subsetTimeFrames() === null) setSubsetTimeFrames(effectiveTSub());
-    if (subsetCellCount() === null) setSubsetCellCount(effectiveNSub());
-  }
-  setAutoMode(enabled);
-}
-
 export {
   numSubsets,
   setNumSubsets,
-  subsetTimeFrames,
-  setSubsetTimeFrames,
-  subsetCellCount,
-  setSubsetCellCount,
-  autoMode,
-  toggleAutoMode,
+  targetCoverage,
+  setTargetCoverage,
+  aspectRatio,
+  setAspectRatio,
   seed,
   setSeed,
   selectedSubsetIdx,

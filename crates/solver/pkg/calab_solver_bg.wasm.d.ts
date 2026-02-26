@@ -2,6 +2,10 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_solver_free: (a: number, b: number) => void;
+export const indeca_compute_upsample_factor: (a: number, b: number) => number;
+export const indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
+export const indeca_fit_biexponential: (a: number, b: number, c: number, d: number) => number;
+export const indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
 export const solver_apply_filter: (a: number) => number;
 export const solver_converged: (a: number) => number;
 export const solver_export_state: (a: number, b: number) => void;

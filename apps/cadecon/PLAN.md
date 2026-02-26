@@ -145,129 +145,146 @@
 
 **Goal:** Full InDeCa-inspired algorithm running in browser via WASM workers. Kernel converges on subsets, then full per-trace inference runs.
 
-### 2.1 Rust: Upsampling infrastructure
+### 2.1 Rust: Upsampling infrastructure — ✅ DONE
 
-- [ ] `src/upsampling.rs` module in `crates/solver/`
-  - `upsample_trace(trace: &[f32], factor: u32) -> Vec<f32>` — zero-insert or repeat
-  - `downsample_binary(s_bin: &[u8], factor: u32) -> Vec<u32>` — sum bins → integer counts
-  - `compute_upsample_factor(fs: f32, target_fs: f32) -> u32` — integer factor, prefer over under
-  - Downsampling matrix R is implicit (just bin-sum, no explicit matrix)
+- [x] `src/upsample.rs` module in `crates/solver/`
+  - `upsample_trace(trace: &[f32], factor: usize) -> Vec<f32>` — linear interpolation (not zero-insert)
+  - `downsample_binary(s_bin: &[f32], factor: usize) -> Vec<f32>` — bin-sum
+  - `compute_upsample_factor(fs: f64, target_fs: f64) -> usize` — round, min 1
+  - 6 tests (identity at factor=1, linear interpolation pattern, round-trip sum, factor computation, empty input, bin-sum)
 
-### 2.2 Rust: Threshold search + alpha/baseline refit
+### 2.2 Rust: Threshold search + alpha/baseline refit — ✅ DONE
 
-- [ ] `src/threshold_search.rs` module
-  - Input: relaxed s ∈ [0,1] (from FISTA Box01), kernel h, observed y, upsample_factor, pad_start
-  - **Efficient strategy:** Sort unique values of s, use ~100 evenly spaced thresholds from sorted values (avoids evaluating empty thresholds)
-  - For each threshold i:
-    - `s_bin = (s >= threshold[i])` as binary
-    - Convolve: `c_candidate = h * s_bin` (using banded AR2 forward)
-    - Least-squares refit: `alpha_i, baseline_i = lstsq(c_candidate, y)` excluding pad_start frames
-    - Score: `error_i = ||w * (y - alpha_i * c_candidate - baseline_i)||²` (weighted if w provided)
-  - Select best candidate (min error after pad exclusion)
-  - Downsample winner: `s_counts = R * s_bin_best`
-  - Return: `s_counts`, `alpha`, `baseline`, `best_threshold`, `PVE`, `error`
-- [ ] **Optimization: early termination** — if error increases for M consecutive thresholds, stop searching
-- [ ] **Optimization: coarse-to-fine** — Phase 1: 50 thresholds, Phase 2: refine around best with 50 more
+- [x] `src/threshold.rs` module (named `threshold.rs`, not `threshold_search.rs`)
+  - Coarse-to-fine: 50 coarse thresholds from sorted unique values → 50 fine around best
+  - Early termination: 10 consecutive error increases
+  - Per threshold: binarize → AR2 forward convolve → lstsq (alpha, baseline via 2x2 normal equations) → weighted error
+  - `ThresholdResult { s_binary, alpha, baseline, threshold, pve, error }`
+  - Boundary padding: `ceil(2 * tau_d * fs_up)` excluded from error and PVE computation
+  - 5 tests (perfect binary recovery, alpha/baseline recovery, PVE > 0.95 on clean data, early termination, empty spikes, boundary padding values)
 
-### 2.3 Rust: FISTA configuration for CaDecon
+### 2.3 Rust: InDeCa pipeline — ✅ DONE
 
-- [ ] Add `InDecaSolver` struct (or extend existing `Solver`) in `lib.rs`:
-  - `solve_bounded(trace, kernel_params, upsample_factor, ...) -> BoundedResult`
-    - Internally: upsample trace, build kernel at upsampled rate, run FISTA with Box01, return relaxed s
-  - `threshold_and_refit(relaxed_s, trace, kernel_params, ...) -> ThresholdResult`
-    - Run threshold search, return s_counts + alpha + baseline + QC
-  - `solve_trace(trace, kernel_params, upsample_factor, ...) -> TraceResult`
-    - Combined: bounded FISTA → threshold → downsample → return final result
-- [ ] Warm-start support: accept prior s_counts expanded to upsampled binary as initial guess
-- [ ] Padding: exclude first `ceil(2 * tau_d * fs)` frames from objective
+- [x] `src/indeca.rs` module (used existing `Solver` struct, no separate `InDecaSolver`)
+  - `solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start) -> (Vec<f32>, u32, bool)` — upsample → FISTA with Box01 + BandedAR2 + lambda=0
+  - `solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start) -> InDecaResult` — full pipeline: solve_bounded → threshold_search → downsample
+  - `InDecaResult { s_counts, alpha, baseline, threshold, pve, iterations, converged }`
+  - Warm-start: accepts prior solution as initial guess
+  - 5 tests (outputs in range, known spike detection, warm-start, upsampled output length, zero trace)
 
-### 2.4 Rust: Free kernel estimation (h_free)
+### 2.4 Rust: Free kernel estimation (h_free) — ✅ DONE
 
-- [ ] `src/kernel_estimation.rs` module
-  - Given: spike counts s_counts (per trace), observed y, alpha, baseline, kernel_length r
-  - Formulate as NNLS: `min_{h>=0} ||y - alpha * (h * s) - baseline||²`
-  - Reuse FISTA with lambda=0, non-negativity constraint
-  - Convolution here is: h convolved with known s (spike-triggered average, effectively)
-  - Input can be single trace or concatenation of multiple traces (shared kernel across subset)
-  - Return: `h_free` of length `r_frames`
+- [x] `src/kernel_est.rs` module (named `kernel_est.rs`, not `kernel_estimation.rs`)
+  - `estimate_free_kernel(traces, spike_trains, alphas, baselines, kernel_length, fs, max_iters, tol) -> Vec<f32>`
+  - FISTA with lambda=0, non-negativity constraint
+  - Concatenates multiple traces for shared kernel estimate
+  - 4 tests (recovers exponential kernel, non-negativity enforced, multi-trace runs, empty input)
 
-### 2.5 Rust: Bi-exponential fitting
+### 2.5 Rust: Bi-exponential fitting — ✅ DONE
 
-- [ ] `src/biexp_fit.rs` module
-  - Input: `h_free` (non-negative kernel estimate)
-  - Target: fit `h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r))` with constraints `tau_d > tau_r > 0`
-  - **Strategy:** Grid search over (tau_r, tau_d) pairs:
-    - tau_r range: [0.5/fs, 10/fs] in 20 steps (log-spaced)
-    - tau_d range: [tau_r, 50/fs] in 20 steps (log-spaced)
-    - For each (tau_r, tau_d): compute template, solve for optimal beta via closed-form LSQ
-    - Pick (tau_r, tau_d, beta) with lowest residual
-  - **Refinement:** Local Nelder-Mead or golden-section around best grid point
-  - Return: `(tau_r, tau_d, beta)` + residual + validity flag
-  - Validity: reject if tau_d < tau_r, or if residual too high, or if tau values out of physiological range
+- [x] `src/biexp_fit.rs` module
+  - 20×20 log-spaced grid search over (tau_r, tau_d)
+  - Closed-form beta per grid point
+  - Golden-section refinement (not Nelder-Mead)
+  - `BiexpResult { tau_rise, tau_decay, beta, residual }`
+  - tau_d > tau_r enforced, validity checks
+  - 6 tests (recovers known taus, tau_d > tau_r enforced, refinement improves fit, positive beta, empty kernel, various parameter ranges)
 
-### 2.6 Rust: WASM bindings for CaDecon
+### 2.6 Rust: WASM bindings for CaDecon — ✅ DONE
 
-- [ ] Expose via `#[wasm_bindgen]`:
-  - `indeca_solve_trace(trace: &[f32], tau_r: f32, tau_d: f32, fs: f32, upsample_factor: u32, ...) -> JsValue`
-    - Returns serialized TraceResult (s_counts, alpha, baseline, PVE, etc.)
-  - `indeca_estimate_kernel(traces: &[f32], spikes: &[u32], alphas: &[f32], baselines: &[f32], n_traces: u32, t_len: u32, r_frames: u32, fs: f32) -> JsValue`
-    - Returns h_free + bi-exp fit params
-  - Or: use a stateful `InDecaSolver` class similar to existing `Solver`
+- [x] `src/js_indeca.rs` (gated by `#[cfg(feature = "jsbindings")]`)
+  - `indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol) -> JsValue` (via serde-wasm-bindgen)
+  - `indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, fs, max_iters, tol) -> Vec<f32>`
+  - `indeca_fit_biexponential(h_free, fs, refine) -> JsValue`
+  - `indeca_compute_upsample_factor(fs, target_fs) -> usize`
+  - Added `serde` + `serde-wasm-bindgen` optional deps to Cargo.toml
+  - `InDecaResult` and `BiexpResult` derive `Serialize` when `jsbindings` feature is active
 
-### 2.7 TypeScript: CaDecon worker
+### 2.7 TypeScript: CaDecon worker — ✅ DONE
 
-- [ ] `src/workers/cadecon-worker.ts`
-  - Initialize WASM on startup → post 'ready'
-  - Handle message types:
-    - `'trace-job'`: call `indeca_solve_trace()`, return s_counts + alpha + baseline + QC
-    - `'kernel-job'`: call `indeca_estimate_kernel()`, return h_free + bi-exp params
+- [x] `src/workers/cadecon-worker.ts`
+  - Init WASM on startup → post `ready`
+  - `trace-job`: calls `indeca_solve_trace`, posts `trace-complete` with buffer transfers
+  - `kernel-job`: calls `indeca_estimate_kernel` + `indeca_fit_biexponential`, posts `kernel-complete`
   - Cooperative cancellation via MessageChannel (same pattern as CaTune)
-  - Intermediate progress for trace jobs (report after each FISTA convergence phase)
-  - Transfer buffers for results
+- [x] `src/workers/cadecon-types.ts` — message type definitions
+- [x] `src/lib/cadecon-pool.ts` — `CaDeconPoolJob` + `MessageRouter` implementation + `createCaDeconWorkerPool()`
+- [x] **Also refactored**: `packages/compute/src/worker-pool.ts` made generic with `BaseJob`/`MessageRouter<TJob, TOut>` interfaces; CaTune-specific logic extracted to `packages/compute/src/catune-pool.ts`
 
-### 2.8 TypeScript: Iteration manager
+**Deviation from plan:** Intermediate FISTA progress reporting within trace jobs was not implemented — the worker reports only job completion. This can be added later if needed for large-trace feedback.
 
-- [ ] `src/lib/iteration-manager.ts` — orchestrates the full InDeCa loop
-  - **State signals:**
-    - `currentIteration`, `maxIterations`, `converged`, `running`, `paused`
-    - `currentKernel: { tau_r, tau_d, beta, h_free, h_sampled }`
-    - `convergenceHistory: Array<{ iter, tau_r, tau_d, subsetVariance, PVE }>`
-    - `perTraceResults: Map<number, { alpha, baseline, s_counts, PVE, eventRate }>`
-  - **Loop (each global iteration):**
-    1. **Optional preprocessing** — bandpass filter, weight array from prior spikes
-    2. **Per-trace spike inference** (parallel via worker pool):
-       - Dispatch TraceJob for each trace in active subsets
-       - Collect results: s_counts, alpha, baseline, PVE per trace
-    3. **Subset kernel update** (parallel per subset):
-       - Dispatch KernelJob for each subset
-       - Each returns h_free + bi-exp fit (tau_r, tau_d, beta)
-    4. **Merge + convergence** (main thread):
-       - Robust aggregation of subset (tau_r, tau_d): median or trimmed mean
-       - Weight by subset informativeness (event count \* fit quality)
-       - Reject invalid fits (tau_d < tau_r, bad residual)
-       - Update global kernel
-       - Check convergence: |delta_tau| < tol over M iterations + low subset variance
-    5. **Update UI signals** (kernel convergence plot, progress)
-  - **Finalization pass:** After convergence, run per-trace inference on ALL traces (not just subsets)
-  - **Pause/Resume/Stop:** Cooperative via signals checked between phases
+### 2.8 TypeScript: Iteration manager — ✅ DONE
 
-### 2.9 TypeScript: Iteration store
+- [x] `src/lib/iteration-manager.ts` — orchestrates the full InDeCa loop
+  - **startRun():** creates pool, snapshots algorithm params, enters loop:
+    1. Per-trace inference on subset cells (parallel trace-jobs via pool)
+    2. Per-subset kernel estimation (parallel kernel-jobs via pool)
+    3. Merge: median tauRise/tauDecay across subsets
+    4. Record in convergenceHistory, update currentTauRise/currentTauDecay
+    5. Convergence check: `max(|Δτ_r|/τ_r, |Δτ_d|/τ_d) < convergenceTol`
+    6. Finalization pass: re-run trace inference on ALL cells with converged kernel
+  - **pauseRun():** sets `runState('paused')`, blocks loop via Promise resolver
+  - **resumeRun():** resolves pause Promise, sets `runState('running')`
+  - **stopRun():** `pool.cancelAll()`, resolves pause, stores intermediate results
+  - **resetRun():** disposes pool + `resetIterationState()`
+  - Reads from: `algorithm-store`, `data-store`, `subset-store`
 
-- [ ] `src/lib/iteration-store.ts` — reactive state for the algorithm run
-  - Global iteration state (current iter, phase within iter, progress %)
-  - Kernel convergence history (for plotting)
-  - Per-subset results cache
-  - Per-trace results (alpha, baseline, s_counts, PVE) — stored sparsely
-  - Run provenance (settings snapshot at start)
+**Deviations from plan:**
 
-### 2.10 Wire up run controls
+- ~~No bandpass preprocessing~~ — bandpass filter wired through in later commit (filterEnabled → worker → WASM → Rust)
+- Weight-array computation not implemented — deferred
+- Subset informativeness weighting during kernel merge not implemented — uses simple median
+- Run provenance (settings snapshot) not stored
 
-- [ ] Start button → initialize iteration manager → begin loop
-- [ ] Pause → set paused flag, workers finish current job then idle
-- [ ] Stop → cancel all workers, store intermediate results
-- [ ] Reset → clear all iteration state, keep data loaded
+### 2.9 TypeScript: Iteration store — ✅ DONE
 
-**Exit criteria:** Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. Console/minimal UI shows convergence. Demo data recovers known kernel params.
+- [x] `src/lib/iteration-store.ts`
+  - `runState: 'idle' | 'running' | 'paused' | 'stopping' | 'complete'`
+  - `currentIteration`, `totalSubsetTraceJobs`, `completedSubsetTraceJobs`
+  - `convergenceHistory: KernelSnapshot[]` (iteration, tauRise, tauDecay, beta, residual + per-subset snapshots)
+  - `currentTauRise`, `currentTauDecay`
+  - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>`
+  - `debugTraceSnapshots: DebugTraceSnapshot[]` — per-iteration snapshot of a single cell (raw trace, spike counts, reconvolved fit)
+  - `debugKernelSnapshots` — per-iteration snapshot of free kernel + fitted bi-exponential per subset
+  - Derived: `progress`
+  - `resetIterationState()`, `addConvergenceSnapshot()`, `updateTraceResult()`, `addDebugTraceSnapshot()`, `addDebugKernelSnapshot()`
+
+**Deviation:** No `result-store.ts` — per-trace results live in `iteration-store.ts` directly (simpler).
+
+### 2.10 Wire up run controls + UI — ✅ DONE
+
+- [x] `src/components/controls/RunControls.tsx` — Start/Pause/Resume/Stop/Reset with state-based enable/disable
+- [x] `src/components/controls/ProgressBar.tsx` — iteration count, percentage, visual bar with paused/complete states
+- [x] `src/components/charts/KernelConvergence.tsx` — canvas-based dual-line chart (tau_rise + tau_decay vs iteration)
+  - Originally planned for Phase 3 as a uPlot chart; implemented early as a lightweight canvas chart
+  - Per-subset scatter points behind the median lines
+  - Empty state: "Run deconvolution to see kernel convergence."
+- [x] `src/lib/algorithm-store.ts` — extracted 8 signals + setters from `AlgorithmSettings.tsx` + added `upsampleFactor` derived memo
+
+### 2.11 Debug visualization charts — ✅ DONE
+
+- [x] `src/components/charts/DebugTraceChart.tsx` — canvas overlay of raw trace + AR2-reconvolved fit + spike counts for a single debug cell, updated per iteration
+- [x] `src/components/charts/DebugKernelChart.tsx` — canvas overlay of free-form kernel (h_free) vs fitted bi-exponential per subset per iteration
+- [x] `src/lib/iteration-manager.ts` — reconvolveAR2() helper computes peak-normalized AR2 forward model for debug trace overlay
+
+### 2.12 Bandpass filter wiring — ✅ DONE
+
+- [x] Threaded `filterEnabled` from `algorithm-store` → `iteration-manager` → pool → worker → WASM → Rust `indeca::solve_trace`
+- [x] Matches CaTune approach: bandpass applied to trace before FISTA
+
+### 2.13 Subset config UX improvements — ✅ DONE
+
+- [x] Replaced auto-size toggle + conditional T_SUB/N_SUB sliders with 3 always-enabled sliders: K (num subsets), Total Coverage (%), Aspect Ratio (log-scale centered at 1.0)
+- [x] Coverage defaults to 50%, aspect ratio slider uses log scale for balanced exploration
+
+### 2.14 Warm-start for trace inference and kernel estimation — ✅ DONE
+
+- [x] **Trace warm-start**: previous iteration's `s_counts` (original rate) carried per-cell across iterations. `upsample_counts_to_binary()` in `upsample.rs` converts to upsampled-rate binary for FISTA warm-start — for each bin with count C, places min(C, factor) ones at the start of the upsampled window. Finalization pass also warm-starts from the last subset iteration where cell data is available.
+- [x] **Kernel warm-start**: previous iteration's `h_free` per subset passed as initial guess to `estimate_free_kernel()`. FISTA momentum resets since spike trains change between iterations.
+- [x] Full path for both: `iteration-manager.ts` → `cadecon-pool.ts` → `cadecon-types.ts` → `cadecon-worker.ts` → `js_indeca.rs` → Rust solver
+- [x] 4 new Rust tests for `upsample_counts_to_binary` (spike conservation, factor cap, factor-1, roundtrip)
+
+**Exit criteria:** ✅ Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. UI shows run controls, progress, kernel convergence chart, debug trace/kernel charts. Bandpass filter wired end-to-end. Warm-start active for both trace and kernel FISTA solvers. 71 Rust tests pass, TypeScript checks pass, dev server runs without errors.
 
 ---
 
@@ -275,30 +292,30 @@
 
 **Goal:** Rich interactive visualization of the algorithm's progress and results.
 
-### 3.1 Kernel convergence plot
+### 3.1 Kernel convergence plot — MOSTLY DONE (Phase 2)
 
-- [ ] `src/components/KernelConvergence.tsx` — uPlot time series
-  - X-axis: iteration number
-  - Y-axis (left): tau_r, tau_d values (lines with per-subset scatter points)
-  - Y-axis (right): PVE or subset variance
-  - Mark convergence point
+- [x] `src/components/charts/KernelConvergence.tsx` — canvas-based line chart (implemented in Phase 2)
+  - X-axis: iteration number, Y-axis: tau_rise + tau_decay in ms
   - Live update as iterations complete
+  - Per-subset scatter points behind median lines
+- [ ] Upgrade to uPlot for richer interaction (zoom, hover tooltips)
+- [ ] Add secondary Y-axis for PVE or subset variance
+- [ ] Mark convergence point
 
-### 3.2 Kernel shape display
+### 3.2 Kernel shape display — PARTIALLY DONE (Phase 2)
 
-- [ ] `src/components/KernelDisplay.tsx` — uPlot chart
-  - Show h_free (raw estimate) vs fitted bi-exponential overlay
-  - Display tau_r, tau_d, beta values
-  - Update per iteration
-  - Show per-subset h_free as faint lines, merged kernel as bold
+- [x] `src/components/charts/DebugKernelChart.tsx` — canvas chart showing h_free vs fitted bi-exponential per iteration (implemented in Phase 2 as debug chart)
+- [ ] Upgrade to full `KernelDisplay.tsx` uPlot chart with:
+  - Per-subset h_free as faint lines, merged kernel as bold
+  - Display tau_r, tau_d, beta values as labels
+  - Zoom/hover interaction
 
-### 3.3 Trace viewer card
+### 3.3 Trace viewer card — PARTIALLY DONE (Phase 2)
 
-- [ ] `src/components/TraceViewer.tsx` — per-trace inspection (similar to CaTune CellCard)
-  - Raw trace (y)
-  - Reconstructed fit (alpha _ h _ s_counts + baseline)
+- [x] `src/components/charts/DebugTraceChart.tsx` — canvas chart showing raw trace + AR2-reconvolved fit + spike counts for a single cell per iteration (implemented in Phase 2 as debug chart)
+- [ ] Upgrade to full `TraceViewer.tsx` with:
+  - Selectable cell (not just debug cell)
   - Residual (y - fit)
-  - Spike raster (s_counts as vertical ticks, height = count)
   - Pad zone shading (first 2*tau_d*fs frames)
   - uPlot with zoom/pan, downsampleMinMax for large traces
 
@@ -541,8 +558,11 @@ apps/cadecon/
 │   │   │   └── RunControls.tsx       # ✅ Phase 1 (disabled stubs)
 │   │   ├── raster/
 │   │   │   └── RasterOverview.tsx    # ✅ Phase 1
+│   │   ├── charts/
+│   │   │   ├── KernelConvergence.tsx # ✅ Phase 2 (canvas, upgrade to uPlot in Phase 3)
+│   │   │   ├── DebugTraceChart.tsx   # ✅ Phase 2 (raw + reconvolved + spikes)
+│   │   │   └── DebugKernelChart.tsx  # ✅ Phase 2 (h_free vs fitted biexp)
 │   │   ├── kernel/                   # Phase 3
-│   │   │   ├── KernelConvergence.tsx
 │   │   │   └── KernelDisplay.tsx
 │   │   ├── traces/                   # Phase 3
 │   │   │   └── TraceViewer.tsx
@@ -555,24 +575,27 @@ apps/cadecon/
 │   │   │   ├── SubmitPanel.tsx
 │   │   │   ├── CommunityBrowser.tsx
 │   │   │   └── ScatterPlot.tsx
-│   │   └── progress/                # Phase 2
-│   │       └── ProgressBar.tsx
+│   │   └── progress/
+│   │       └── ProgressBar.tsx       # ✅ Phase 2
 │   ├── lib/
 │   │   ├── data-store.ts            # ✅ Phase 1 (+ groundTruthTau signals)
 │   │   ├── auth-store.ts            # ✅ Phase 1
 │   │   ├── analytics-integration.ts # ✅ Phase 1
+│   │   ├── algorithm-store.ts       # ✅ Phase 2 (extracted from AlgorithmSettings)
 │   │   ├── subset-store.ts          # ✅ Phase 1 (LCG placement)
-│   │   ├── iteration-store.ts       # Phase 2
-│   │   ├── iteration-manager.ts     # Phase 2
-│   │   ├── result-store.ts          # Phase 2
+│   │   ├── iteration-store.ts       # ✅ Phase 2
+│   │   ├── data-utils.ts            # ✅ Phase 2 (extractCellTrace helper)
+│   │   ├── iteration-manager.ts     # ✅ Phase 2
+│   │   ├── cadecon-pool.ts          # ✅ Phase 2
 │   │   ├── community/               # Phase 4
 │   │   │   ├── cadecon-service.ts
 │   │   │   ├── community-store.ts
 │   │   │   └── quality-checks.ts
 │   │   └── chart/                   # Phase 3
 │   │       └── series-config.ts
-│   ├── workers/                     # Phase 2
-│   │   └── cadecon-worker.ts
+│   ├── workers/                     # ✅ Phase 2
+│   │   ├── cadecon-worker.ts
+│   │   └── cadecon-types.ts
 │   └── styles/
 │       ├── global.css               # ✅ Phase 1 (teal accent)
 │       ├── raster.css               # ✅ Phase 1
@@ -582,11 +605,12 @@ apps/cadecon/
 
 crates/solver/src/
 ├── (existing files unchanged)
-├── indeca.rs                        # Top-level CaDecon API
-├── threshold_search.rs              # Threshold sweep + alpha refit
-├── upsampling.rs                    # Upsample/downsample utilities
-├── kernel_estimation.rs             # h_free via FISTA NNLS
-└── biexp_fit.rs                     # Bi-exponential curve fitting
+├── indeca.rs                        # ✅ Phase 2 — Top-level CaDecon pipeline API
+├── threshold.rs                     # ✅ Phase 2 — Threshold sweep + alpha refit
+├── upsample.rs                      # ✅ Phase 2 — Upsample/downsample utilities
+├── kernel_est.rs                    # ✅ Phase 2 — h_free via FISTA NNLS
+├── biexp_fit.rs                     # ✅ Phase 2 — Bi-exponential curve fitting
+└── js_indeca.rs                     # ✅ Phase 2 — WASM bindings (jsbindings feature)
 ```
 
 ---
@@ -604,14 +628,15 @@ crates/solver/src/
 
 ### Signal locations Phase 2 must import from
 
-| Signal group                                                                                                                                   | Module                                      |
-| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Import pipeline (parsedData, effectiveShape, samplingRate, importStep…)                                                                        | `lib/data-store.ts`                         |
-| Ground truth tau (groundTruthTauRise, groundTruthTauDecay) — demo only                                                                         | `lib/data-store.ts`                         |
-| Subset config (numSubsets, effectiveTSub, effectiveNSub, subsetRectangles, seed)                                                               | `lib/subset-store.ts`                       |
-| Algorithm params (tauRiseInit, tauDecayInit, autoInitKernel, upsampleTarget, maxIterations, convergenceTol, weightingEnabled, bandpassEnabled) | `components/controls/AlgorithmSettings.tsx` |
+| Signal group                                                                                                                                   | Module                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Import pipeline (parsedData, effectiveShape, samplingRate, importStep…)                                                                        | `lib/data-store.ts`                             |
+| Ground truth tau (groundTruthTauRise, groundTruthTauDecay) — demo only                                                                         | `lib/data-store.ts`                             |
+| Subset config (numSubsets, effectiveTSub, effectiveNSub, subsetRectangles, seed)                                                               | `lib/subset-store.ts`                           |
+| Algorithm params (tauRiseInit, tauDecayInit, autoInitKernel, upsampleTarget, maxIterations, convergenceTol, weightingEnabled, bandpassEnabled) | `lib/algorithm-store.ts` (**moved in Phase 2**) |
+| Iteration state (runState, currentIteration, convergenceHistory, perTraceResults, progress)                                                    | `lib/iteration-store.ts` (**Phase 2**)          |
 
-**Important:** Algorithm signals are module-level in `AlgorithmSettings.tsx` (not a separate store file). If the signal count grows in Phase 2, extract to `lib/algorithm-store.ts`.
+**Note:** Algorithm signals were extracted from `AlgorithmSettings.tsx` into `lib/algorithm-store.ts` during Phase 2, as anticipated. `AlgorithmSettings.tsx` now imports from the store.
 
 ### Package-level changes
 
@@ -620,7 +645,8 @@ crates/solver/src/
 ### Subset store details
 
 - `subsetRectangles` uses a seeded LCG (`state * 1664525 + 1013904223`, unsigned 32-bit) for deterministic placement. The `seed` signal (default 42) can be randomized via the "Randomize Layout" button.
-- `circularShiftEnabled` signal exists but is not yet wired to placement logic — Phase 2 can implement circular shift if needed.
+- `circularShiftEnabled` signal exists but is not yet wired to placement logic.
+- Subset sizing uses 3 sliders: K (num subsets), Total Coverage (%, default 50), Aspect Ratio (log-scale centered at 1.0). Replaced the earlier auto-size toggle + conditional T_SUB/N_SUB sliders.
 - Coverage stats (`coverageStats` memo) gives `{ cellPct, timePct }` — time coverage is approximate for overlapping subsets.
 
 ### Raster rendering
@@ -643,14 +669,83 @@ CSS custom property overrides in `global.css`:
 
 ---
 
+## Phase 2 Implementation Notes
+
+> Details future phases need about how Phase 2 was actually built.
+
+### Rust module naming deviations
+
+Plan names → actual names:
+
+- `upsampling.rs` → `upsample.rs`
+- `threshold_search.rs` → `threshold.rs`
+- `kernel_estimation.rs` → `kernel_est.rs`
+- `indeca.rs` — same
+- `biexp_fit.rs` — same
+
+All modules are `pub(crate)` (not `pub`) to avoid `private_interfaces` warnings, since they use internal types like `BandedAR2`. The WASM bindings in `js_indeca.rs` are the public API boundary.
+
+### Worker pool refactoring
+
+`packages/compute/src/worker-pool.ts` was refactored to be generic:
+
+- `BaseJob` and `MessageRouter<TJob, TOut>` interfaces define the contract
+- `createWorkerPool<TJob, TOut>(createWorker, router, poolSize?)` is the generic factory
+- CaTune-specific logic extracted to `packages/compute/src/catune-pool.ts` (`createCaTuneWorkerPool`)
+- CaDecon uses its own `CaDeconPoolJob` and router in `src/lib/cadecon-pool.ts`
+
+### WASM serialization
+
+Complex return types (`InDecaResult`, `BiexpResult`) use `serde-wasm-bindgen` for serialization to `JsValue`. Simple return types (arrays, scalars) use standard `wasm-bindgen` types. The `serde` and `serde-wasm-bindgen` crates are optional deps gated by the `jsbindings` feature.
+
+### Iteration manager architecture
+
+The iteration loop runs on the main thread and dispatches jobs to the worker pool:
+
+1. **Per-trace inference**: dispatches `TraceJob` for each cell in each subset rectangle
+2. **Kernel estimation**: dispatches `KernelJob` per subset with concatenated traces/spikes
+3. **Merge**: median of subset tau estimates (no informativeness weighting yet)
+4. **Convergence**: `max(|Δτ_r|/τ_r, |Δτ_d|/τ_d) < convergenceTol`
+5. **Finalization**: re-runs all cells with converged kernel
+
+Pause/resume uses a Promise-based mechanism — the loop `await`s a resolver that only fires on resume.
+
+Warm-start state is maintained across iterations:
+
+- `prevTraceCounts: Map<number, Float32Array>` — full-length s_counts per cell from the previous iteration. Subset windows are extracted via `subarray()` when dispatching trace jobs.
+- `prevKernels: Float32Array[]` — per-subset h_free from the previous iteration, indexed by subset. Skipped subsets (no valid traces) have no entry.
+- Finalization also warm-starts from the last iteration's subset results where cells overlap.
+
+### Layout fix for kernel convergence chart
+
+The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `position: relative` wrapper to prevent ResizeObserver feedback loops. The wrapper has `flex: 1; min-height: 0` to fill remaining space in the fixed-height panel. The panel itself uses `flex: 0 0 180px` via `[data-panel-id='kernel-convergence']` CSS selector (DashboardPanel renders `id` prop as `data-panel-id` attribute, not HTML `id`).
+
+### Algorithmic changes from debugging
+
+- **AR2 impulse peak normalization**: The AR2 forward/adjoint convolutions in `banded.rs` are now divided by the impulse peak so a single spike produces peak=1.0 regardless of sampling rate. This makes alpha consistent across upsampled and original rates. Added `compute_impulse_peak()` and `new_peak_normalized()` to `BandedAR2`.
+- **FISTA Lipschitz estimation in kernel_est**: Replaced naive Lipschitz constant (sum of squared spikes) with power iteration on S^T·S. The tighter spectral norm estimate prevents FISTA oscillation on dense spike data.
+- **Kernel length**: Uses `5 * tau_decay * fs` (not 2x) to match CaTune convention — e^-5 ≈ 0.7% of peak, capturing the full tail.
+- **Linear interpolation upsampling**: `upsample_trace` uses linear interpolation between samples (not zero-insertion), producing smoother upsampled traces.
+
+### Features NOT yet implemented (deferred)
+
+- ~~Bandpass preprocessing~~ — now wired end-to-end
+- Error weighting by spike proximity (weight vector w)
+- Subset informativeness weighting during kernel merge
+- Run provenance (settings snapshot at start)
+- Intermediate FISTA progress reporting from worker
+- `result-store.ts` — per-trace results live in `iteration-store.ts` directly
+
+---
+
 ## Progress Tracker
 
-| Phase                                | Status      | Notes |
-| ------------------------------------ | ----------- | ----- |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |       |
-| Phase 2: Core Compute                | NOT STARTED |       |
-| Phase 3: Visualization + QC          | NOT STARTED |       |
-| Phase 4: Community DB                | NOT STARTED |       |
-| Phase 5: Export/Import               | NOT STARTED |       |
-| Phase 6: Python Extension            | DEFERRED    |       |
-| Phase 7: Tutorials + Polish          | DEFERRED    |       |
+| Phase                                | Status      | Notes                                                                               |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------- |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                     |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass |
+| Phase 3: Visualization + QC          | NOT STARTED | Debug trace/kernel charts + convergence scatter pulled forward into Phase 2         |
+| Phase 4: Community DB                | NOT STARTED |                                                                                     |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                     |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                     |
+| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                                     |

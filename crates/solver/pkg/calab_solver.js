@@ -353,6 +353,106 @@ export class Solver {
 }
 if (Symbol.dispose) Solver.prototype[Symbol.dispose] = Solver.prototype.free;
 
+/**
+ * Compute the upsample factor for a given sampling rate and target rate.
+ * @param {number} fs
+ * @param {number} target_fs
+ * @returns {number}
+ */
+export function indeca_compute_upsample_factor(fs, target_fs) {
+    const ret = wasm.indeca_compute_upsample_factor(fs, target_fs);
+    return ret >>> 0;
+}
+
+/**
+ * Estimate a free-form kernel from multiple traces and their spike trains.
+ *
+ * `warm_kernel`: optional kernel from a previous iteration. Pass an empty slice
+ * for cold-start.
+ *
+ * Returns the estimated kernel as Float32Array (via Vec<f32>).
+ * @param {Float32Array} traces_flat
+ * @param {Float32Array} spikes_flat
+ * @param {Uint32Array} trace_lengths
+ * @param {Float64Array} alphas
+ * @param {Float64Array} baselines
+ * @param {number} kernel_length
+ * @param {number} max_iters
+ * @param {number} tol
+ * @param {Float32Array} warm_kernel
+ * @returns {Float32Array}
+ */
+export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters, tol, warm_kernel) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF32ToWasm0(traces_flat, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF32ToWasm0(spikes_flat, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(trace_lengths, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(alphas, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(baselines, wasm.__wbindgen_export2);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArrayF32ToWasm0(warm_kernel, wasm.__wbindgen_export2);
+        const len5 = WASM_VECTOR_LEN;
+        wasm.indeca_estimate_kernel(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, kernel_length, max_iters, tol, ptr5, len5);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v7 = getArrayF32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v7;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Fit a bi-exponential model to a free-form kernel.
+ *
+ * Returns a JsValue containing the serialized BiexpResult:
+ * { tau_rise, tau_decay, beta, residual }
+ * @param {Float32Array} h_free
+ * @param {number} fs
+ * @param {boolean} refine
+ * @returns {any}
+ */
+export function indeca_fit_biexponential(h_free, fs, refine) {
+    const ptr0 = passArrayF32ToWasm0(h_free, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.indeca_fit_biexponential(ptr0, len0, fs, refine);
+    return takeObject(ret);
+}
+
+/**
+ * Solve a single trace using the InDeCa pipeline.
+ *
+ * `warm_counts`: optional spike counts from a previous iteration at the original
+ * sampling rate. Pass an empty slice for cold-start.
+ *
+ * Returns a JsValue containing the serialized InDecaResult:
+ * { s_counts, alpha, baseline, threshold, pve, iterations, converged }
+ * @param {Float32Array} trace
+ * @param {number} tau_r
+ * @param {number} tau_d
+ * @param {number} fs
+ * @param {number} upsample_factor
+ * @param {number} max_iters
+ * @param {number} tol
+ * @param {boolean} filter_enabled
+ * @param {Float32Array} warm_counts
+ * @returns {any}
+ */
+export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, warm_counts) {
+    const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF32ToWasm0(warm_counts, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, ptr1, len1);
+    return takeObject(ret);
+}
+
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -370,9 +470,23 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_export(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_new_361308b2356cecd0: function() {
+            const ret = new Object();
+            return addHeapObject(ret);
+        },
+        __wbg_new_3eb36ae241fe6f44: function() {
+            const ret = new Array();
+            return addHeapObject(ret);
+        },
         __wbg_new_8a6f238a6ece86ea: function() {
             const ret = new Error();
             return addHeapObject(ret);
+        },
+        __wbg_set_3f1d0b984ed272ed: function(arg0, arg1, arg2) {
+            getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
+        },
+        __wbg_set_f43e577aea94465b: function(arg0, arg1, arg2) {
+            getObject(arg0)[arg1 >>> 0] = takeObject(arg2);
         },
         __wbg_stack_0ed75d68575b0f3c: function(arg0, arg1) {
             const ret = getObject(arg1).stack;
@@ -380,6 +494,20 @@ function __wbg_get_imports() {
             const len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+            // Cast intrinsic for `Ref(String) -> Externref`.
+            const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+        },
+        __wbindgen_object_clone_ref: function(arg0) {
+            const ret = getObject(arg0);
+            return addHeapObject(ret);
         },
         __wbindgen_object_drop_ref: function(arg0) {
             takeObject(arg0);
@@ -436,9 +564,25 @@ function getFloat32ArrayMemory0() {
     return cachedFloat32ArrayMemory0;
 }
 
+let cachedFloat64ArrayMemory0 = null;
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
+}
+
 function getStringFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return decodeText(ptr, len);
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
@@ -456,6 +600,13 @@ heap.push(undefined, null, true, false);
 
 let heap_next = heap.length;
 
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
@@ -466,6 +617,13 @@ function passArray8ToWasm0(arg, malloc) {
 function passArrayF32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
@@ -548,6 +706,8 @@ function __wbg_finalize_init(instance, module) {
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedFloat32ArrayMemory0 = null;
+    cachedFloat64ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     return wasm;
 }

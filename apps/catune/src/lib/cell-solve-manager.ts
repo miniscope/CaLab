@@ -17,7 +17,7 @@ import {
 } from './multi-cell-store.ts';
 import { extractCellTrace } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
-import { createWorkerPool, type WorkerPool } from '@calab/compute';
+import { createCaTuneWorkerPool, type WorkerPool, type CaTunePoolJob } from '@calab/compute';
 import type { SolverParams } from '@calab/core';
 import type { NpyResult } from '@calab/core';
 
@@ -48,7 +48,7 @@ interface CellSolveState {
   fullPaddedFilteredTrace: Float32Array | null;
 }
 
-let pool: WorkerPool | null = null;
+let pool: WorkerPool<CaTunePoolJob> | null = null;
 let jobCounter = 0;
 const cellStates = new Map<number, CellSolveState>();
 
@@ -385,7 +385,7 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 }
 
 export function initCellSolveManager(): void {
-  pool = createWorkerPool(
+  pool = createCaTuneWorkerPool(
     () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
   );
 

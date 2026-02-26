@@ -8,6 +8,10 @@ import { RasterOverview } from './components/raster/RasterOverview.tsx';
 import { SubsetConfig } from './components/controls/SubsetConfig.tsx';
 import { AlgorithmSettings } from './components/controls/AlgorithmSettings.tsx';
 import { RunControls } from './components/controls/RunControls.tsx';
+import { ProgressBar } from './components/controls/ProgressBar.tsx';
+import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
+import { DebugTraceChart } from './components/charts/DebugTraceChart.tsx';
+import { DebugKernelChart } from './components/charts/DebugKernelChart.tsx';
 import { user, authLoading } from './lib/auth-store.ts';
 import {
   importStep,
@@ -57,6 +61,7 @@ const App: Component = () => {
               <DashboardPanel id="run-controls" variant="controls">
                 <p class="panel-label">Run Controls</p>
                 <RunControls />
+                <ProgressBar />
               </DashboardPanel>
             </>
           }
@@ -66,11 +71,21 @@ const App: Component = () => {
             <RasterOverview />
           </DashboardPanel>
 
+          <div class="debug-row">
+            <DashboardPanel id="debug-trace" variant="data">
+              <p class="panel-label">Debug: Trace + Spikes</p>
+              <DebugTraceChart />
+            </DashboardPanel>
+
+            <DashboardPanel id="debug-kernel" variant="data">
+              <p class="panel-label">Debug: Kernel Fit</p>
+              <DebugKernelChart />
+            </DashboardPanel>
+          </div>
+
           <DashboardPanel id="kernel-convergence" variant="data">
             <p class="panel-label">Kernel Convergence</p>
-            <p class="text-secondary" style="font-size: 0.85rem;">
-              Kernel learning visualization will appear here in Phase 2.
-            </p>
+            <KernelConvergence />
           </DashboardPanel>
         </VizLayout>
       </DashboardShell>

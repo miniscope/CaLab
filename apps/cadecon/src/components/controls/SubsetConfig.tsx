@@ -1,23 +1,17 @@
 import { Show, type JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
-import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
   numSubsets,
   setNumSubsets,
-  autoMode,
-  toggleAutoMode,
-  effectiveTSub,
-  effectiveNSub,
-  subsetTimeFrames,
-  setSubsetTimeFrames,
-  subsetCellCount,
-  setSubsetCellCount,
+  targetCoverage,
+  setTargetCoverage,
+  aspectRatio,
+  setAspectRatio,
   coverageStats,
   maxNonOverlappingK,
   seed,
   setSeed,
 } from '../../lib/subset-store.ts';
-import { numCells, numTimepoints } from '../../lib/data-store.ts';
 
 export function SubsetConfig(): JSX.Element {
   return (
@@ -33,37 +27,28 @@ export function SubsetConfig(): JSX.Element {
           format={(v) => String(Math.round(v))}
         />
 
-        <ToggleSwitch
-          label="Auto Size"
-          description={
-            <>
-              T_sub = {effectiveTSub().toLocaleString()}, N_sub = {effectiveNSub()}
-            </>
-          }
-          checked={autoMode()}
-          onChange={toggleAutoMode}
+        <ParameterSlider
+          label="Total Coverage"
+          value={() => targetCoverage() * 100}
+          setValue={(v) => setTargetCoverage(Math.round(v) / 100)}
+          min={10}
+          max={100}
+          step={5}
+          format={(v) => String(Math.round(v))}
+          unit="%"
         />
 
-        <Show when={!autoMode()}>
-          <ParameterSlider
-            label="T_sub (timepoints)"
-            value={() => subsetTimeFrames() ?? effectiveTSub()}
-            setValue={(v) => setSubsetTimeFrames(Math.round(v))}
-            min={100}
-            max={numTimepoints()}
-            step={10}
-            format={(v) => String(Math.round(v))}
-          />
-          <ParameterSlider
-            label="N_sub (cells)"
-            value={() => subsetCellCount() ?? effectiveNSub()}
-            setValue={(v) => setSubsetCellCount(Math.round(v))}
-            min={1}
-            max={numCells()}
-            step={1}
-            format={(v) => String(Math.round(v))}
-          />
-        </Show>
+        <ParameterSlider
+          label="Subset Aspect Ratio"
+          value={aspectRatio}
+          setValue={setAspectRatio}
+          min={0}
+          max={1}
+          step={0.001}
+          toSlider={(v) => Math.log2(v) / 6 + 0.5}
+          fromSlider={(p) => Math.pow(2, (p - 0.5) * 6)}
+          format={(v) => v.toFixed(1)}
+        />
 
         <div class="param-panel__toggle-group" style="border-top: none; margin-top: 0;">
           <button

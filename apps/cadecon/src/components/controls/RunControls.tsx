@@ -1,25 +1,51 @@
-import type { JSX } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
+import { runState } from '../../lib/iteration-store.ts';
+import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
+import { parsedData, samplingRate } from '../../lib/data-store.ts';
 
 export function RunControls(): JSX.Element {
+  const hasData = () => !!parsedData() && !!samplingRate();
+
   return (
     <div class="param-panel">
       <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
-        <button class="btn-primary" disabled title="Active in Phase 2">
-          Start
-        </button>
-        <button class="btn-secondary" disabled title="Active in Phase 2">
+        <Show
+          when={runState() !== 'paused'}
+          fallback={
+            <button class="btn-primary" onClick={resumeRun}>
+              Resume
+            </button>
+          }
+        >
+          <button
+            class="btn-primary"
+            disabled={runState() !== 'idle' || !hasData()}
+            onClick={() => void startRun()}
+          >
+            Start
+          </button>
+        </Show>
+
+        <button class="btn-secondary" disabled={runState() !== 'running'} onClick={pauseRun}>
           Pause
         </button>
-        <button class="btn-secondary" disabled title="Active in Phase 2">
+
+        <button
+          class="btn-secondary"
+          disabled={runState() !== 'running' && runState() !== 'paused'}
+          onClick={stopRun}
+        >
           Stop
         </button>
-        <button class="btn-secondary" disabled title="Active in Phase 2">
+
+        <button
+          class="btn-secondary"
+          disabled={runState() !== 'complete' && runState() !== 'stopping'}
+          onClick={resetRun}
+        >
           Reset
         </button>
       </div>
-      <p class="text-secondary" style="font-size: 0.75rem; margin-top: var(--space-sm);">
-        Deconvolution pipeline active in Phase 2.
-      </p>
     </div>
   );
 }

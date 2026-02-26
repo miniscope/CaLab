@@ -140,6 +140,25 @@ export const DEMO_PRESETS: DemoPreset[] = [
       noise: { ...DEFAULT_NOISE },
     },
   },
+  // near-ideal: no baseline drift, minimal noise (for algorithm debugging)
+  {
+    id: 'config-7',
+    label: 'Demo Config 7 (Clean)',
+    description: 'Near-ideal traces: minimal noise, no baseline drift',
+    params: {
+      tauRise: 0.1,
+      tauDecay: 0.6,
+      snrBase: 200,
+      snrStep: 0,
+      markov: { ...DEFAULT_MARKOV },
+      noise: {
+        amplitudeSigma: 0.0,
+        driftAmplitude: 0.0,
+        driftCyclesMin: 1,
+        driftCyclesMax: 1,
+      },
+    },
+  },
 ];
 
 export const DEFAULT_PRESET_ID = 'config-1';

@@ -3,10 +3,17 @@
 /// The AR(2) model c[t] = g1*c[t-1] + g2*c[t-2] + s[t] defines a banded
 /// deconvolution matrix G. The convolution K = G^{-1} is applied via recursion
 /// rather than FFT, reducing per-iteration cost from O(T log T) to O(T).
+///
+/// The raw AR2 impulse peak is sampling-rate-dependent (larger at higher fs
+/// because the recursion accumulates over more timesteps during the rise phase).
+/// To make alpha rate-independent, the forward and adjoint convolutions are
+/// normalized by the impulse peak so that a single spike always produces a
+/// peak of 1.0 in the output regardless of sampling rate.
 pub(crate) struct BandedAR2 {
-    g1: f64, // d + r (sum of AR2 roots)
-    g2: f64, // -(d * r) (negative product of AR2 roots)
-    lipschitz: f64,
+    g1: f64,          // d + r (sum of AR2 roots)
+    g2: f64,          // -(d * r) (negative product of AR2 roots)
+    impulse_peak: f64, // peak of raw AR2 impulse response (for normalization)
+    lipschitz: f64,    // Lipschitz constant of the normalized operator
 }
 
 impl BandedAR2 {
@@ -17,10 +24,14 @@ impl BandedAR2 {
         let r = (-dt / tau_rise).exp();
         let g1 = d + r;
         let g2 = -(d * r);
+        let impulse_peak = compute_impulse_peak(g1, g2, tau_decay, fs);
+        // Lipschitz of normalized operator: L_raw / peak^2
+        let lipschitz = compute_banded_lipschitz(g1, g2) / (impulse_peak * impulse_peak);
         BandedAR2 {
             g1,
             g2,
-            lipschitz: compute_banded_lipschitz(g1, g2),
+            impulse_peak,
+            lipschitz,
         }
     }
 
@@ -31,14 +42,15 @@ impl BandedAR2 {
         let r = (-dt / tau_rise).exp();
         self.g1 = d + r;
         self.g2 = -(d * r);
-        self.lipschitz = compute_banded_lipschitz(self.g1, self.g2);
+        self.impulse_peak = compute_impulse_peak(self.g1, self.g2, tau_decay, fs);
+        self.lipschitz = compute_banded_lipschitz(self.g1, self.g2)
+            / (self.impulse_peak * self.impulse_peak);
     }
 
-    /// Forward convolution: s -> c = K*s = G^{-1}*s via AR(2) recursion, O(T).
+    /// Forward convolution: s -> normalized AR2 output, O(T).
     ///
-    /// c[0] = s[0]
-    /// c[1] = g1*c[0] + s[1]
-    /// c[t] = g1*c[t-1] + g2*c[t-2] + s[t]  for t >= 2
+    /// Runs the raw AR2 recursion then divides by the impulse peak so that
+    /// a single spike produces a peak of 1.0 at all sampling rates.
     pub(crate) fn convolve_forward(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
@@ -47,6 +59,7 @@ impl BandedAR2 {
 
         let g1 = self.g1 as f32;
         let g2 = self.g2 as f32;
+        let inv_peak = (1.0 / self.impulse_peak) as f32;
 
         output[0] = source[0];
         if n > 1 {
@@ -55,13 +68,16 @@ impl BandedAR2 {
         for t in 2..n {
             output[t] = g1 * output[t - 1] + g2 * output[t - 2] + source[t];
         }
+
+        // Normalize by impulse peak
+        for t in 0..n {
+            output[t] *= inv_peak;
+        }
     }
 
-    /// Adjoint convolution: r -> (K^T)*r = (G^{-T})*r via reverse-time recursion, O(T).
+    /// Adjoint convolution: normalized adjoint, O(T).
     ///
-    /// output[T-1] = r[T-1]
-    /// output[T-2] = r[T-2] + g1*output[T-1]
-    /// output[t]   = r[t] + g1*output[t+1] + g2*output[t+2]  for t <= T-3
+    /// Adjoint of (K / peak) = K^T / peak.
     pub(crate) fn convolve_adjoint(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
@@ -70,6 +86,7 @@ impl BandedAR2 {
 
         let g1 = self.g1 as f32;
         let g2 = self.g2 as f32;
+        let inv_peak = (1.0 / self.impulse_peak) as f32;
 
         output[n - 1] = source[n - 1];
         if n > 1 {
@@ -78,12 +95,49 @@ impl BandedAR2 {
         for t in (0..n.saturating_sub(2)).rev() {
             output[t] = source[t] + g1 * output[t + 1] + g2 * output[t + 2];
         }
+
+        // Normalize by impulse peak
+        for t in 0..n {
+            output[t] *= inv_peak;
+        }
     }
 
-    /// Return the cached Lipschitz constant.
+    /// Return the cached Lipschitz constant (of the normalized operator).
     pub(crate) fn lipschitz(&self) -> f64 {
         self.lipschitz
     }
+
+    /// Return the raw AR2 impulse response peak (for diagnostics).
+    #[allow(dead_code)]
+    pub(crate) fn impulse_peak(&self) -> f64 {
+        self.impulse_peak
+    }
+}
+
+/// Compute the peak of the raw AR2 impulse response.
+///
+/// Runs the AR2 recursion c[t] = g1*c[t-1] + g2*c[t-2] + delta[t] until
+/// the response decays past its maximum. This peak is used to normalize
+/// the forward/adjoint convolutions so alpha is sampling-rate-independent.
+fn compute_impulse_peak(g1: f64, g2: f64, tau_decay: f64, fs: f64) -> f64 {
+    let max_steps = (5.0 * tau_decay * fs).ceil() as usize + 10;
+    let mut c_prev2 = 0.0_f64;
+    let mut c_prev1 = 1.0_f64; // c[0] = 1 (impulse)
+    let mut peak = 1.0_f64;
+
+    for _ in 1..max_steps {
+        let c = g1 * c_prev1 + g2 * c_prev2;
+        if c > peak {
+            peak = c;
+        }
+        if c < peak * 0.95 {
+            break; // past the peak, decaying
+        }
+        c_prev2 = c_prev1;
+        c_prev1 = c;
+    }
+
+    peak.max(1.0) // at minimum 1.0 (the impulse at t=0)
 }
 
 /// Compute the Lipschitz constant for the banded AR(2) operator.
@@ -118,7 +172,7 @@ fn compute_banded_lipschitz(g1: f64, g2: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{build_kernel, compute_lipschitz, tau_to_ar2};
+    use crate::kernel::{build_kernel, tau_to_ar2};
 
     #[test]
     fn g1_g2_match_tau_to_ar2() {
@@ -176,11 +230,8 @@ mod tests {
 
     #[test]
     fn forward_produces_decaying_calcium() {
-        // Banded forward is an AR(2) recursion (exact discrete-time model),
-        // while FFT convolves with a sampled continuous kernel. They differ
-        // structurally (e.g. kernel[0]=0 in FFT but AR(2) passes through
-        // the impulse at t=0). Instead of comparing numerically, verify that
-        // banded forward produces the expected calcium-like shape.
+        // Banded forward (now peak-normalized) should produce a calcium-like shape
+        // with peak = 1.0 regardless of sampling rate.
         let banded = BandedAR2::new(0.02, 0.4, 30.0);
         let n = 200;
 
@@ -200,14 +251,14 @@ mod tests {
             );
         }
 
-        // At the spike: impulse arrives
+        // At the spike: positive response
         assert!(
-            result[10] > 0.5,
+            result[10] > 0.01,
             "Expected positive response at spike, got {}",
             result[10]
         );
 
-        // After the spike: decaying response, all non-negative
+        // After the spike: non-negative response
         for i in 11..n {
             assert!(
                 result[i] >= -1e-6,
@@ -216,6 +267,14 @@ mod tests {
                 result[i]
             );
         }
+
+        // Peak should be ~1.0 (normalized)
+        let peak: f32 = result.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            (peak - 1.0).abs() < 0.05,
+            "Peak should be ~1.0, got {}",
+            peak
+        );
 
         // Response should decay toward zero
         assert!(
@@ -316,59 +375,50 @@ mod tests {
     }
 
     #[test]
-    fn lipschitz_reasonable() {
-        // The banded Lipschitz should be in a similar ballpark to the FFT-based one
-        let banded = BandedAR2::new(0.02, 0.4, 30.0);
-        let kernel = build_kernel(0.02, 0.4, 30.0);
-        let fft_lipschitz = compute_lipschitz(&kernel);
-
-        let ratio = banded.lipschitz() / fft_lipschitz;
-        // The banded operator works on the full infinite-length AR(2) transfer function
-        // while FFT uses a truncated kernel. They should be in the same order of magnitude.
-        assert!(
-            ratio > 0.5 && ratio < 2.0,
-            "Banded Lipschitz ({}) vs FFT Lipschitz ({}) ratio {} out of range",
-            banded.lipschitz(),
-            fft_lipschitz,
-            ratio
-        );
+    fn lipschitz_positive() {
+        // The normalized Lipschitz constant should be positive and finite
+        for &fs in &[30.0, 100.0, 300.0] {
+            let banded = BandedAR2::new(0.02, 0.4, fs);
+            assert!(
+                banded.lipschitz() > 0.0 && banded.lipschitz().is_finite(),
+                "fs={}: Lipschitz should be positive and finite, got {}",
+                fs,
+                banded.lipschitz()
+            );
+        }
     }
 
     #[test]
-    fn impulse_response_matches_kernel_shape() {
-        // A delta at t=0 through forward conv should produce an exponential decay
-        let banded = BandedAR2::new(0.02, 0.4, 30.0);
-        let n = 100;
+    fn impulse_response_peak_is_one() {
+        // After normalization, the impulse peak should be ~1.0 at any sampling rate
+        for &fs in &[30.0, 100.0, 300.0, 1000.0] {
+            let banded = BandedAR2::new(0.02, 0.4, fs);
+            let n = (5.0 * 0.4 * fs).ceil() as usize + 10;
 
-        let mut impulse = vec![0.0_f32; n];
-        impulse[0] = 1.0;
+            let mut impulse = vec![0.0_f32; n];
+            impulse[0] = 1.0;
 
-        let mut response = vec![0.0_f32; n];
-        banded.convolve_forward(&impulse, &mut response);
+            let mut response = vec![0.0_f32; n];
+            banded.convolve_forward(&impulse, &mut response);
 
-        // response[0] should be 1.0 (impulse passed through)
-        assert!(
-            (response[0] - 1.0).abs() < 1e-6,
-            "Impulse response at t=0 should be 1.0, got {}",
-            response[0]
-        );
-
-        // Response should be non-negative and decaying after peak
-        let peak_idx = response
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap()
-            .0;
-
-        // After peak, values should generally decrease
-        for t in (peak_idx + 2)..n {
+            let peak: f32 = response.iter().copied().fold(0.0_f32, f32::max);
             assert!(
-                response[t] >= -1e-6,
-                "Response should be non-negative at t={}, got {}",
-                t,
-                response[t]
+                (peak - 1.0).abs() < 0.02,
+                "fs={}: impulse peak should be ~1.0, got {}",
+                fs,
+                peak
             );
+
+            // Response should be non-negative
+            for (t, &v) in response.iter().enumerate() {
+                assert!(
+                    v >= -1e-5,
+                    "fs={}: response should be non-negative at t={}, got {}",
+                    fs,
+                    t,
+                    v
+                );
+            }
         }
     }
 }
