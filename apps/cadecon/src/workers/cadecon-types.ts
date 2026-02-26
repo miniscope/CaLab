@@ -3,6 +3,7 @@
 /** Results from InDeCa trace inference (mirrors Rust InDecaResult). */
 export interface TraceResult {
   sCounts: Float32Array;
+  filteredTrace?: Float32Array;
   alpha: number;
   baseline: number;
   threshold: number;
@@ -32,7 +33,8 @@ export type CaDeconWorkerInbound =
       upsampleFactor: number;
       maxIters: number;
       tol: number;
-      filterEnabled: boolean;
+      hpEnabled: boolean;
+      lpEnabled: boolean;
       /** Previous iteration's s_counts at original rate for warm-start. */
       warmCounts?: Float32Array;
     }

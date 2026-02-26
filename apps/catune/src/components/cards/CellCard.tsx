@@ -4,8 +4,8 @@
  */
 
 import { createSignal, createMemo, createEffect, Show } from 'solid-js';
-import { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from './TraceOverview.tsx';
-import { ZoomWindow } from './ZoomWindow.tsx';
+import { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from '@calab/ui/chart';
+import { CaTuneZoomWindow } from './CaTuneZoomWindow.tsx';
 import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '@calab/core';
 import { computePeakSNR, snrToQuality } from '@calab/core';
@@ -113,7 +113,7 @@ export function CellCard(props: CellCardProps) {
         </div>
 
         <div class="cell-card__zoom">
-          <ZoomWindow
+          <CaTuneZoomWindow
             rawTrace={props.rawTrace}
             deconvolvedTrace={props.deconvolvedTrace}
             reconvolutionTrace={props.reconvolutionTrace}

@@ -20,3 +20,19 @@ export type { AuthMenuWrapperProps } from './AuthMenuWrapper.tsx';
 export { isAuthCallback } from './auth-utils.ts';
 export { WorkerIndicator } from './WorkerIndicator.tsx';
 export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
+
+export { TraceLegend } from './TraceLegend.tsx';
+export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
+
+// Chart utilities (also available via @calab/ui/chart sub-path)
+export {
+  wheelZoomPlugin,
+  transientZonePlugin,
+  AXIS_TEXT,
+  AXIS_GRID,
+  AXIS_TICK,
+  getThemeColors,
+  D3_CATEGORY10,
+  subsetColor,
+  withOpacity,
+} from './chart/index.ts';

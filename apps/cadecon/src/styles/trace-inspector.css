@@ -1,0 +1,46 @@
+/* Trace Inspector styles — CaDecon */
+
+.trace-inspector {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.trace-inspector__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.trace-inspector__stats {
+  display: flex;
+  gap: var(--space-sm, 8px);
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.trace-inspector__overview {
+  flex-shrink: 0;
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.trace-inspector__zoom {
+  flex: 1;
+  min-height: 100px;
+}
+
+.trace-inspector__empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.cell-selector__option--dimmed {
+  color: var(--text-tertiary, #888);
+  font-style: italic;
+}

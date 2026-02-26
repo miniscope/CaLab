@@ -53,6 +53,10 @@ export class Solver {
     }
     /**
      * Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+     *
+     * Sets `self.filtered = true` only when HP is active, because HP removes DC and
+     * baseline estimation should be skipped. LP-only preserves DC, so baseline
+     * estimation must still run.
      * @returns {boolean}
      */
     apply_filter() {
@@ -303,10 +307,23 @@ export class Solver {
         wasm.solver_set_conv_mode(this.__wbg_ptr, mode);
     }
     /**
+     * Convenience: set both HP and LP together (used by CaTune's single toggle).
      * @param {boolean} enabled
      */
     set_filter_enabled(enabled) {
         wasm.solver_set_filter_enabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    set_hp_filter_enabled(enabled) {
+        wasm.solver_set_hp_filter_enabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    set_lp_filter_enabled(enabled) {
+        wasm.solver_set_lp_filter_enabled(this.__wbg_ptr, enabled);
     }
     /**
      * Update solver parameters and rebuild kernel.
@@ -440,16 +457,17 @@ export function indeca_fit_biexponential(h_free, fs, refine) {
  * @param {number} upsample_factor
  * @param {number} max_iters
  * @param {number} tol
- * @param {boolean} filter_enabled
+ * @param {boolean} hp_enabled
+ * @param {boolean} lp_enabled
  * @param {Float32Array} warm_counts
  * @returns {any}
  */
-export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, warm_counts) {
+export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, warm_counts) {
     const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF32ToWasm0(warm_counts, wasm.__wbindgen_export2);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, ptr1, len1);
+    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, ptr1, len1);
     return takeObject(ret);
 }
 

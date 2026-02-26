@@ -10,6 +10,7 @@ import {
 import type { CaDeconWorkerInbound, CaDeconWorkerOutbound } from './cadecon-types.ts';
 
 let cancelled = false;
+const EMPTY_F32 = new Float32Array(0);
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -23,7 +24,6 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
   try {
     cancelled = false;
 
-    const emptyF32 = new Float32Array(0);
     const jsResult = indeca_solve_trace(
       req.trace,
       req.tauRise,
@@ -32,10 +32,12 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.upsampleFactor,
       req.maxIters,
       req.tol,
-      req.filterEnabled,
-      req.warmCounts ?? emptyF32,
+      req.hpEnabled,
+      req.lpEnabled,
+      req.warmCounts ?? EMPTY_F32,
     ) as {
       s_counts: number[];
+      filtered_trace: number[] | null;
       alpha: number;
       baseline: number;
       threshold: number;
@@ -50,12 +52,18 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
     }
 
     const sCounts = new Float32Array(jsResult.s_counts);
+    const filteredTrace = jsResult.filtered_trace
+      ? new Float32Array(jsResult.filtered_trace)
+      : undefined;
+    const transfers: ArrayBuffer[] = [sCounts.buffer];
+    if (filteredTrace) transfers.push(filteredTrace.buffer);
     post(
       {
         type: 'trace-complete',
         jobId: req.jobId,
         result: {
           sCounts,
+          filteredTrace,
           alpha: jsResult.alpha,
           baseline: jsResult.baseline,
           threshold: jsResult.threshold,
@@ -64,7 +72,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           converged: jsResult.converged,
         },
       },
-      [sCounts.buffer],
+      transfers,
     );
   } catch (err) {
     post({ type: 'error', jobId: req.jobId, message: String(err) });
@@ -76,7 +84,6 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
     cancelled = false;
 
     // Step 1: Free-form kernel estimation
-    const emptyF32 = new Float32Array(0);
     const hFree = indeca_estimate_kernel(
       req.tracesFlat,
       req.spikesFlat,
@@ -86,7 +93,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
       req.kernelLength,
       req.maxIters,
       req.tol,
-      req.warmKernel ?? emptyF32,
+      req.warmKernel ?? EMPTY_F32,
     );
 
     if (cancelled) {

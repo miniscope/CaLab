@@ -1,0 +1,113 @@
+/*
+ * CaLab shared light theme overrides for uPlot.
+ * Import after uPlot.min.css to override default light theme.
+ * References CSS custom properties from each app's global.css.
+ */
+
+/* Chart wrapper — clean white with thin border */
+.u-wrap {
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Plot area cursor */
+.u-over {
+  cursor: crosshair;
+}
+
+/* Axis tick labels — mono font */
+.u-axis .u-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+/* Axis tick marks */
+.u-axis .u-tick {
+  stroke: rgba(0, 0, 0, 0.15);
+}
+
+/* Grid lines — subtle */
+.u-grid .u-stroke {
+  stroke: rgba(0, 0, 0, 0.06);
+}
+
+/* Cursor crosshair lines */
+.u-cursor-x,
+.u-cursor-y {
+  border-color: rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Legend text — mono font */
+.u-legend th,
+.u-legend td {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+/* Trace panel spacing and sizing */
+.trace-panel {
+  margin-bottom: var(--space-sm);
+  width: 100%;
+}
+
+/* ========================
+   Trace Overview (minimap)
+   ======================== */
+.trace-overview {
+  width: 100%;
+  cursor: crosshair;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.trace-overview__canvas {
+  display: block;
+  width: 100%;
+}
+
+/* ========================
+   Zoom Window
+   ======================== */
+.zoom-window {
+  height: 100%;
+  cursor: grab;
+}
+
+.zoom-window--dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.zoom-window .trace-panel {
+  height: 100% !important;
+}
+
+.zoom-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: #ffffff;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: zoom-hint-fade 1.5s ease-out forwards;
+}
+
+@keyframes zoom-hint-fade {
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}

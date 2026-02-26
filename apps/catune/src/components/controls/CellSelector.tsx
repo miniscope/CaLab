@@ -3,7 +3,7 @@
  * Supports three modes: top-active, random, and manual cell selection.
  */
 
-import { createSignal, type Accessor, type Setter, Show } from 'solid-js';
+import { createMemo, Show } from 'solid-js';
 import type { SelectionMode } from '../../lib/multi-cell-store.ts';
 import {
   selectionMode,
@@ -34,36 +34,8 @@ import {
   showGTSpikes,
   setShowGTSpikes,
 } from '../../lib/viz-store.ts';
+import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import '../../styles/multi-trace.css';
-
-interface LegendItemProps {
-  color: string;
-  label: string;
-  visible: Accessor<boolean>;
-  setVisible: Setter<boolean>;
-  dashed?: boolean;
-}
-
-function LegendItem(props: LegendItemProps) {
-  const swatchClass = () =>
-    props.dashed
-      ? 'cell-selector__legend-swatch cell-selector__legend-swatch--dashed'
-      : 'cell-selector__legend-swatch';
-
-  const swatchStyle = () =>
-    props.dashed ? { 'border-color': props.color } : { background: props.color };
-
-  return (
-    <span
-      class="cell-selector__legend-item"
-      classList={{ 'cell-selector__legend-item--hidden': !props.visible() }}
-      onClick={() => props.setVisible((v) => !v)}
-    >
-      <span class={swatchClass()} style={swatchStyle()} />
-      {props.label}
-    </span>
-  );
-}
 
 export function CellSelector() {
   const handleModeChange = (e: Event) => {
@@ -94,12 +66,83 @@ export function CellSelector() {
     setSelectedCells(unique);
   };
 
-  const handleReshuffle = () => {
-    updateCellSelection();
-  };
-
   const maxCount = () => Math.min(20, numCells());
-  const [showLegendInfo, setShowLegendInfo] = createSignal(false);
+
+  const legendItems = createMemo((): LegendItemConfig[] => {
+    const items: LegendItemConfig[] = [
+      { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
+    ];
+    if (filterEnabled()) {
+      items.push({
+        key: 'filtered',
+        color: '#17becf',
+        label: 'Filtered',
+        visible: showFiltered,
+        setVisible: setShowFiltered,
+      });
+    }
+    items.push(
+      { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
+      {
+        key: 'deconv',
+        color: '#2ca02c',
+        label: 'Deconv',
+        visible: showDeconv,
+        setVisible: setShowDeconv,
+      },
+      {
+        key: 'resid',
+        color: '#d62728',
+        label: 'Resid',
+        visible: showResid,
+        setVisible: setShowResid,
+      },
+    );
+    if (groundTruthVisible()) {
+      items.push(
+        {
+          key: 'gt-calcium',
+          color: 'rgba(0, 188, 212, 0.7)',
+          label: 'True Ca',
+          visible: showGTCalcium,
+          setVisible: setShowGTCalcium,
+          dashed: true,
+        },
+        {
+          key: 'gt-spikes',
+          color: 'rgba(255, 193, 7, 0.7)',
+          label: 'True Spk',
+          visible: showGTSpikes,
+          setVisible: setShowGTSpikes,
+        },
+      );
+    }
+    return items;
+  });
+
+  const legendInfoContent = (
+    <>
+      <div class="legend-info__row">
+        <strong>Raw</strong> — Original fluorescence recording
+      </div>
+      <div class="legend-info__row">
+        <strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)
+      </div>
+      <div class="legend-info__row">
+        <strong>Fit</strong> — Reconvolved model fit (kernel * deconvolved activity + baseline)
+      </div>
+      <div class="legend-info__row">
+        <strong>Deconv</strong> — Estimated neural activity (deconvolution result)
+      </div>
+      <div class="legend-info__row">
+        <strong>Resid</strong> — Residuals (Raw minus Fit)
+      </div>
+      <div class="legend-info__row">
+        <strong>True Ca/Spk</strong> — Ground truth (demo only)
+      </div>
+      <div class="legend-info__hint">Click legend items to toggle traces on/off</div>
+    </>
+  );
 
   return (
     <div class="cell-selector" data-tutorial="cell-selector">
@@ -146,7 +189,7 @@ export function CellSelector() {
       </div>
 
       <Show when={selectionMode() === 'random'}>
-        <button class="btn-secondary btn-small" onClick={handleReshuffle}>
+        <button class="btn-secondary btn-small" onClick={updateCellSelection}>
           Reshuffle
         </button>
       </Show>
@@ -170,69 +213,7 @@ export function CellSelector() {
       </Show>
 
       <div class="cell-selector__legend" data-tutorial="legend-bar">
-        <button
-          class="legend-info__btn"
-          title="What do these traces mean?"
-          onClick={() => setShowLegendInfo((v) => !v)}
-        >
-          ?
-        </button>
-        <Show when={showLegendInfo()}>
-          <div class="legend-info__popover">
-            <div class="legend-info__row">
-              <strong>Raw</strong> — Original fluorescence recording
-            </div>
-            <div class="legend-info__row">
-              <strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)
-            </div>
-            <div class="legend-info__row">
-              <strong>Fit</strong> — Reconvolved model fit (kernel * deconvolved activity +
-              baseline)
-            </div>
-            <div class="legend-info__row">
-              <strong>Deconv</strong> — Estimated neural activity (deconvolution result)
-            </div>
-            <div class="legend-info__row">
-              <strong>Resid</strong> — Residuals (Raw minus Fit)
-            </div>
-            <div class="legend-info__row">
-              <strong>True Ca/Spk</strong> — Ground truth (demo only)
-            </div>
-            <div class="legend-info__hint">Click legend items to toggle traces on/off</div>
-          </div>
-        </Show>
-        <LegendItem color="#1f77b4" label="Raw" visible={showRaw} setVisible={setShowRaw} />
-        <Show when={filterEnabled()}>
-          <LegendItem
-            color="#17becf"
-            label="Filtered"
-            visible={showFiltered}
-            setVisible={setShowFiltered}
-          />
-        </Show>
-        <LegendItem color="#ff7f0e" label="Fit" visible={showFit} setVisible={setShowFit} />
-        <LegendItem
-          color="#2ca02c"
-          label="Deconv"
-          visible={showDeconv}
-          setVisible={setShowDeconv}
-        />
-        <LegendItem color="#d62728" label="Resid" visible={showResid} setVisible={setShowResid} />
-        <Show when={groundTruthVisible()}>
-          <LegendItem
-            color="rgba(0, 188, 212, 0.7)"
-            label="True Ca"
-            visible={showGTCalcium}
-            setVisible={setShowGTCalcium}
-            dashed
-          />
-          <LegendItem
-            color="rgba(255, 193, 7, 0.7)"
-            label="True Spk"
-            visible={showGTSpikes}
-            setVisible={setShowGTSpikes}
-          />
-        </Show>
+        <TraceLegend items={legendItems()} infoContent={legendInfoContent} />
       </div>
     </div>
   );

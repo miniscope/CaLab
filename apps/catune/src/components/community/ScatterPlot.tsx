@@ -7,9 +7,9 @@
 import { createEffect, createMemo, on, onCleanup } from 'solid-js';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
 import 'uplot/dist/uPlot.min.css';
-import '../../lib/chart/chart-theme.css';
+import '@calab/ui/chart/chart-theme.css';
 import uPlot from 'uplot';
-import { getThemeColors } from '../../lib/chart/theme-colors.ts';
+import { getThemeColors } from '@calab/ui/chart';
 
 export interface ScatterPlotProps {
   submissions: CatuneSubmission[];
@@ -60,8 +60,6 @@ export function ScatterPlot(props: ScatterPlotProps) {
       y: median(subs.map((s) => s.tau_decay)),
     };
   });
-
-  const lambdaRange = () => ({ min: LAMBDA_RANGE_MIN, max: LAMBDA_RANGE_MAX });
 
   /** Build mode:2 data: [[x0,x1,...],[y0,y1,...]] per series facet. */
   const chartData = createMemo((): uPlot.AlignedData => {
@@ -331,7 +329,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       ) : (
         <>
           <div ref={containerRef} class="scatter-plot__canvas" />
-          <LambdaLegend min={lambdaRange().min} max={lambdaRange().max} />
+          <LambdaLegend min={LAMBDA_RANGE_MIN} max={LAMBDA_RANGE_MAX} />
         </>
       )}
     </div>

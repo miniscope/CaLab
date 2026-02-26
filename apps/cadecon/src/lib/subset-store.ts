@@ -36,7 +36,7 @@ const effectiveTSub = createMemo(() => {
   if (T === 0) return 100;
   const K = numSubsets();
   const scale = Math.sqrt(targetCoverage() / K);
-  return Math.max(100, Math.min(T, Math.floor(T * scale * Math.sqrt(aspectRatio()))));
+  return Math.max(1, Math.min(T, Math.floor(T * scale * Math.sqrt(aspectRatio()))));
 });
 
 const effectiveNSub = createMemo(() => {
@@ -44,7 +44,7 @@ const effectiveNSub = createMemo(() => {
   if (N === 0) return 10;
   const K = numSubsets();
   const scale = Math.sqrt(targetCoverage() / K);
-  return Math.max(10, Math.min(N, Math.floor((N * scale) / Math.sqrt(aspectRatio()))));
+  return Math.max(1, Math.min(N, Math.floor((N * scale) / Math.sqrt(aspectRatio()))));
 });
 
 // Seeded LCG for deterministic pseudo-random placement
@@ -57,12 +57,12 @@ function lcg(s: number): () => number {
 }
 
 /**
- * Place K non-overlapping subset rectangles using a grid tiling strategy
- * with seeded random jitter within each tile.
+ * Place K non-overlapping subset rectangles that evenly sample the full data.
  *
- * Strategy: compute how many tiles fit along each axis (time x cells),
- * assign subsets to tiles in raster order, then jitter each rectangle
- * within its tile so placement varies with the seed.
+ * Strategy: build a grid of all possible non-overlapping slots, shuffle them
+ * with a seeded RNG, then pick the first K. Each subset is jittered within
+ * its slot for seed-dependent variation. This guarantees even spatial coverage
+ * regardless of K relative to the grid size.
  */
 function tileSubsets(
   K: number,
@@ -72,72 +72,48 @@ function tileSubsets(
   nSub: number,
   rng: () => number,
 ): SubsetRectangle[] {
-  // Figure out grid dimensions that fit K tiles
-  // Prefer more columns (time axis) than rows (cell axis) since T >> N typically
-  const maxCols = Math.max(1, Math.floor(T / tSub));
-  const maxRows = Math.max(1, Math.floor(N / nSub));
-  const maxTiles = maxCols * maxRows;
+  const cols = Math.max(1, Math.floor(T / tSub));
+  const rows = Math.max(1, Math.floor(N / nSub));
+  const totalSlots = cols * rows;
 
-  if (K <= maxTiles) {
-    // We can fit all K subsets without overlap using the grid
-    let cols = Math.min(K, maxCols);
-    let rows = Math.ceil(K / cols);
-    // If rows exceed capacity, widen
-    if (rows > maxRows) {
-      rows = maxRows;
-      cols = Math.ceil(K / rows);
-    }
-
-    const baseTileW = Math.floor(T / cols);
-    const baseTileH = Math.floor(N / rows);
-    const rects: SubsetRectangle[] = [];
-
-    for (let k = 0; k < K; k++) {
-      const col = k % cols;
-      const row = Math.floor(k / cols);
-
-      // Last column/row extends to data edge to eliminate fringe gap
-      const tileW = col === cols - 1 ? T - col * baseTileW : baseTileW;
-      const tileH = row === rows - 1 ? N - row * baseTileH : baseTileH;
-
-      // Jitter within the tile (ensure the subset fits within the tile)
-      const tSlack = Math.max(0, tileW - tSub);
-      const nSlack = Math.max(0, tileH - nSub);
-      const tStart = col * baseTileW + Math.floor(rng() * (tSlack + 1));
-      const cellStart = row * baseTileH + Math.floor(rng() * (nSlack + 1));
-
-      rects.push({
-        tStart,
-        tEnd: tStart + tSub,
-        cellStart,
-        cellEnd: cellStart + nSub,
-        idx: k,
-      });
-    }
-    return rects;
+  // Build list of all grid slots and shuffle (Fisher-Yates)
+  const slots = Array.from({ length: totalSlots }, (_, i) => i);
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [slots[i], slots[j]] = [slots[j], slots[i]];
   }
 
-  // More subsets than tiles: pack as many as possible, extras get random placement
+  const tileW = Math.floor(T / cols);
+  const tileH = Math.floor(N / rows);
   const rects: SubsetRectangle[] = [];
-  for (let k = 0; k < Math.min(K, maxTiles); k++) {
-    const col = k % maxCols;
-    const row = Math.floor(k / maxCols);
-    const baseTileW = Math.floor(T / maxCols);
-    const baseTileH = Math.floor(N / maxRows);
-    const tileW = col === maxCols - 1 ? T - col * baseTileW : baseTileW;
-    const tileH = row === maxRows - 1 ? N - row * baseTileH : baseTileH;
-    const tSlack = Math.max(0, tileW - tSub);
-    const nSlack = Math.max(0, tileH - nSub);
-    const tStart = col * baseTileW + Math.floor(rng() * (tSlack + 1));
-    const cellStart = row * baseTileH + Math.floor(rng() * (nSlack + 1));
 
-    rects.push({ tStart, tEnd: tStart + tSub, cellStart, cellEnd: cellStart + nSub, idx: k });
+  for (let k = 0; k < Math.min(K, totalSlots); k++) {
+    const col = slots[k] % cols;
+    const row = Math.floor(slots[k] / cols);
+
+    // Last col/row extends to data edge to eliminate fringe gap
+    const effW = col === cols - 1 ? T - col * tileW : tileW;
+    const effH = row === rows - 1 ? N - row * tileH : tileH;
+
+    // Jitter within the slot
+    const tSlack = Math.max(0, effW - tSub);
+    const nSlack = Math.max(0, effH - nSub);
+    const tStart = col * tileW + Math.floor(rng() * (tSlack + 1));
+    const cellStart = row * tileH + Math.floor(rng() * (nSlack + 1));
+
+    rects.push({
+      tStart,
+      tEnd: tStart + tSub,
+      cellStart,
+      cellEnd: cellStart + nSub,
+      idx: k,
+    });
   }
 
-  // Remaining subsets: random placement (may overlap)
-  for (let k = maxTiles; k < K; k++) {
-    const tStart = Math.floor(rng() * (T - tSub + 1));
-    const cellStart = Math.floor(rng() * (N - nSub + 1));
+  // Overflow: more subsets than grid slots — random placement for extras
+  for (let k = totalSlots; k < K; k++) {
+    const tStart = Math.floor(rng() * Math.max(1, T - tSub + 1));
+    const cellStart = Math.floor(rng() * Math.max(1, N - nSub + 1));
     rects.push({ tStart, tEnd: tStart + tSub, cellStart, cellEnd: cellStart + nSub, idx: k });
   }
 

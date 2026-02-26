@@ -243,7 +243,7 @@
   - `currentIteration`, `totalSubsetTraceJobs`, `completedSubsetTraceJobs`
   - `convergenceHistory: KernelSnapshot[]` (iteration, tauRise, tauDecay, beta, residual + per-subset snapshots)
   - `currentTauRise`, `currentTauDecay`
-  - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>`
+  - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>` — populated with full-length results during iterations (subset cells) and finalization (all cells)
   - `debugTraceSnapshots: DebugTraceSnapshot[]` — per-iteration snapshot of a single cell (raw trace, spike counts, reconvolved fit)
   - `debugKernelSnapshots` — per-iteration snapshot of free kernel + fitted bi-exponential per subset
   - Derived: `progress`
@@ -288,67 +288,125 @@
 
 ---
 
-## Phase 3: Visualization + QC + Drill-Down
+## Phase 3: Visualization + QC + Drill-Down — ✅ COMPLETE
 
 **Goal:** Rich interactive visualization of the algorithm's progress and results.
 
-### 3.1 Kernel convergence plot — MOSTLY DONE (Phase 2)
+### 3.1 Kernel convergence plot — ✅ DONE
 
-- [x] `src/components/charts/KernelConvergence.tsx` — canvas-based line chart (implemented in Phase 2)
-  - X-axis: iteration number, Y-axis: tau_rise + tau_decay in ms
-  - Live update as iterations complete
-  - Per-subset scatter points behind median lines
-- [ ] Upgrade to uPlot for richer interaction (zoom, hover tooltips)
-- [ ] Add secondary Y-axis for PVE or subset variance
-- [ ] Mark convergence point
+- [x] `src/components/charts/KernelConvergence.tsx` — **rewrote** from canvas to SolidUplot
+  - Left Y-axis: tau_rise + tau_decay (ms) as line series with dot markers
+  - Right Y-axis (secondary): residual on `'res'` scale, dashed gray line
+  - Per-subset scatter: custom `draw` hook plugin draws faint circles behind median lines
+  - Convergence marker: `convergence-marker-plugin.ts` draws vertical dashed green line at `convergedAtIteration()`
+  - Empty state: `<Show when={convergenceHistory().length > 0}>` gate with placeholder text
+  - Wheel zoom + cursor sync key `'cadecon-convergence'`
 
-### 3.2 Kernel shape display — PARTIALLY DONE (Phase 2)
+### 3.2 Kernel shape display — ✅ DONE
 
-- [x] `src/components/charts/DebugKernelChart.tsx` — canvas chart showing h_free vs fitted bi-exponential per iteration (implemented in Phase 2 as debug chart)
-- [ ] Upgrade to full `KernelDisplay.tsx` uPlot chart with:
-  - Per-subset h_free as faint lines, merged kernel as bold
-  - Display tau_r, tau_d, beta values as labels
-  - Zoom/hover interaction
+- [x] **Deleted** `src/components/charts/DebugKernelChart.tsx`
+- [x] **Created** `src/components/kernel/KernelDisplay.tsx` — uPlot chart with:
+  - Per-subset h_free as faint colored lines (D3 category10 with 0.4 opacity)
+  - Merged bi-exponential fit as bold dashed purple line
+  - X-axis: time in ms, Y-axis: amplitude
+  - DOM overlay stats: tau_r, tau_d, beta values
+  - Reads `viewedIteration()` from viz-store (null = latest)
+  - Handles dynamic subset count via recreating series config
+  - Cursor sync key `'cadecon-kernel'`
 
-### 3.3 Trace viewer card — PARTIALLY DONE (Phase 2)
+### 3.3 Trace viewer card — ✅ DONE
 
-- [x] `src/components/charts/DebugTraceChart.tsx` — canvas chart showing raw trace + AR2-reconvolved fit + spike counts for a single cell per iteration (implemented in Phase 2 as debug chart)
-- [ ] Upgrade to full `TraceViewer.tsx` with:
-  - Selectable cell (not just debug cell)
-  - Residual (y - fit)
-  - Pad zone shading (first 2*tau_d*fs frames)
-  - uPlot with zoom/pan, downsampleMinMax for large traces
+- [x] **Deleted** `src/components/charts/DebugTraceChart.tsx`
+- [x] **Created** `src/components/traces/TraceViewer.tsx` — CellCard-inspired trace inspector
+  - **Unified mode:** Shows any subset cell during iterations and any cell after finalization, both from `perTraceResults`
+  - **Top chart:** raw trace + reconvolved fit + residual via `TracePanel`
+    - Series visibility toggled via uPlot `setSeries()` API (not NaN data swapping)
+    - `transient-zone-plugin` shades pad zone: `ceil(2 * tauDecay * fs)` frames
+    - `downsampleMinMax` for traces > ~4000 points
+  - **Bottom chart:** spike counts as stem lines via custom paths callback
+  - **Zoom sync:** bidirectional x-scale sync between trace and spike charts via `setScale` hook plugins
+  - **Header:** CellSelector + SeriesToggleBar + stats (alpha, PVE, spike count)
+  - `makeTimeAxis` from `@calab/compute` for X-axis
+  - `reconvolveAR2()` computed on-demand for selected cell
+- [x] **Created** `src/components/traces/TracePanel.tsx` — reusable uPlot wrapper (adapted from CaTune)
+  - `onCreate` callback for chart ref access (series toggling, zoom sync)
+- [x] **Created** `src/components/traces/CellSelector.tsx` — `<select>` dropdown + prev/next arrows
+  - During iteration: cells from union of subset rectangles
+  - After finalization: `0..numCells-1`
+  - Writes to `inspectedCellIndex` in viz-store
+- [x] **Created** `src/components/traces/SeriesToggleBar.tsx` — row of 5 compact swatch+checkbox toggles (Raw, Reconv, Resid, Spikes, Weight)
+  - Reads/writes from viz-store signals
 
-### 3.4 Distribution cards
+### 3.4 Distribution cards — ✅ DONE
 
-- [ ] `src/components/distributions/`
-  - **AlphaDistribution** — histogram of alpha values across all traces
-  - **PVEDistribution** — histogram of PVE across traces
-  - **EventRateDistribution** — histogram of spikes/second per trace
-  - **SubsetVariance** — bar chart of subset-to-subset kernel estimate spread
-  - Each card: uPlot histogram, summary stats (median, IQR), optional "your run" marker
+- [x] `src/components/distributions/HistogramCard.tsx` — reusable with:
+  - Custom bar-drawing `paths` callback (no uPlot series limitations)
+  - Summary stats: Median, IQR, N (mono font)
+  - Empty state when `values().length === 0`
+  - Live updates: reactive `values()` accessor triggers recomputation
+- [x] `AlphaDistribution.tsx` — `values={alphaValues}`, blue
+- [x] `PVEDistribution.tsx` — `values={pveValues}`, green
+- [x] `EventRateDistribution.tsx` — `values={eventRates}` (spikes/sec computed from `durationSeconds`), orange
+- [x] `SubsetVariance.tsx` — grouped bar chart (tau_rise blue, tau_decay red):
+  - Horizontal dashed lines at merged median values via custom plugin
+  - Reads from `subsetVarianceData` memo in iteration-store
+- [x] **Live iteration updates:** `iteration-manager.ts` publishes full-length per-cell results to `perTraceResults` after each iteration's inference phase (not just during finalization). Distributions update progressively as iterations run.
 
-### 3.5 Raster drill-down
+### 3.5 Subset drill-down — ✅ DONE
 
-- [ ] Click subset rectangle in RasterOverview → update selectedSubsetIdx
-- [ ] Show selected subset's traces in TraceViewer cards (grid of N_sub cells)
-- [ ] Show subset-specific kernel fit quality
+- [x] `src/components/drilldown/SubsetDrillDown.tsx` — appears when `selectedSubsetIdx() !== null`, replaces distribution card row
+  - Header: "Subset K{n} Details" + Close button
+  - Contains SubsetKernelFit + SubsetStats + Cell browser (CellSelector + TraceViewer)
+- [x] `src/components/drilldown/SubsetKernelFit.tsx` — small uPlot chart with subset's h_free (bold, subset color) + merged bi-exp (dashed purple)
+- [x] `src/components/drilldown/SubsetStats.tsx` — stats table: tau_r, tau_d, beta, residual (this subset vs merged), cell range, time range
 
-### 3.6 Progress and status
+**Deviations from plan:**
 
-- [ ] Progress bar component: phase indicator (preprocessing | inference | kernel update | merge)
-- [ ] Per-worker status indicators (idle/busy count)
-- [ ] Iteration summary log (collapsible right sidebar)
+- Per-worker status indicators deferred to Phase 7
+- Iteration summary log sidebar deferred to Phase 7
 
-### 3.7 Center grid layout
+### 3.6 Progress and status — ✅ DONE
 
-- [ ] Assemble center grid as card grid:
-  - Row 1: RasterOverview (wide) + KernelConvergence (wide)
-  - Row 2: KernelDisplay + TraceViewer (selected trace)
-  - Row 3: Distribution cards (alpha, PVE, event rate, subset variance)
-  - Responsive: stack on narrow screens
+- [x] `ProgressBar.tsx` updated with phase indicator below progress bar
+  - Maps: `inference` → "Trace inference", `kernel-update` → "Kernel estimation", `merge` → "Merging subsets", `finalization` → "Finalizing all cells"
+  - Styled in accent italic
+- [x] `RunPhase` type added to iteration-store: `'idle' | 'inference' | 'kernel-update' | 'merge' | 'finalization'`
+- [x] `iteration-manager.ts` calls `setRunPhase()` at each stage transition
 
-**Exit criteria:** All visualization cards populated with live data during runs. Click-to-inspect works. Distribution plots update after finalization.
+### 3.7 Center grid layout — ✅ DONE
+
+- [x] `App.tsx` rewritten with 3-row grid:
+  - Row 1 (flex: 1 1 0, min-h 200): Raster (60%) | KernelConvergence (40%)
+  - Row 2 (flex: 1 1 0, min-h 180): KernelDisplay (280px fixed) | TraceViewer (flex 1)
+  - Row 3 (flex: 0 0 auto): 4 distribution cards OR SubsetDrillDown
+- [x] Responsive: columns stack at 900px, distribution cards wrap at 50%
+
+### 3.8 Store additions — ✅ DONE
+
+- [x] `src/lib/viz-store.ts` — new file with: `viewedIteration`, `inspectedCellIndex`, series visibility toggles (`showRawTrace`, `showReconvolved`, `showResidual`, `showSpikes`, `showWeight`), `selectedSubsetIdx`
+- [x] `iteration-store.ts` extended with: `RunPhase` type, `runPhase`/`convergedAtIteration`/`selectedCellIndex` signals, distribution memos (`alphaValues`, `pveValues`, `eventRateValues`, `subsetVarianceData`)
+- [x] `iteration-manager.ts` updated with `setRunPhase` calls and `setConvergedAtIteration` on convergence
+
+### 3.9 Chart infrastructure — ✅ DONE
+
+- [x] Added `uplot` + `@dschz/solid-uplot` to `apps/cadecon/package.json`
+- [x] `src/lib/chart/series-config.ts` — 11 series factories + `withOpacity` helper + D3 category10 palette
+- [x] `src/lib/chart/chart-theme.css` — uPlot theme overrides (copied from CaTune)
+- [x] `src/lib/chart/wheel-zoom-plugin.ts` — scroll zoom + drag pan (copied from CaTune)
+- [x] `src/lib/chart/theme-colors.ts` — CSS custom property reader (adapted for CaDecon accent)
+- [x] `src/lib/chart/transient-zone-plugin.ts` — pad zone shading (copied from CaTune)
+- [x] `src/lib/chart/convergence-marker-plugin.ts` — convergence vertical dashed line
+
+### 3.10 CSS — ✅ DONE
+
+- [x] `src/styles/layout.css` — `.viz-grid` 3-row flex layout with responsive stacking
+- [x] `src/styles/distributions.css` — histogram card styling
+- [x] `src/styles/trace-viewer.css` — cell selector, series toggle bar, trace viewer header/stats
+- [x] `src/styles/kernel-display.css` — kernel display stats and empty state
+- [x] `src/styles/drilldown.css` — subset drill-down header, aggregate, cell browser, stats table
+- [x] `src/styles/controls.css` — removed old debug CSS rules, added `.progress-bar__phase`
+
+**Exit criteria:** ✅ All visualization cards populated with live data during runs. KernelConvergence shows per-subset scatter + convergence marker. KernelDisplay shows per-subset h_free + merged fit. TraceViewer supports cell selection with independently toggleable series (via `setSeries`) and bidirectional zoom sync between trace and spike charts. Distribution cards update progressively during each iteration (not just finalization). Subset drill-down replaces distributions on click. ProgressBar shows phase labels. 3-row responsive grid layout. Build passes with 0 errors.
 
 ---
 
@@ -559,18 +617,24 @@ apps/cadecon/
 │   │   ├── raster/
 │   │   │   └── RasterOverview.tsx    # ✅ Phase 1
 │   │   ├── charts/
-│   │   │   ├── KernelConvergence.tsx # ✅ Phase 2 (canvas, upgrade to uPlot in Phase 3)
-│   │   │   ├── DebugTraceChart.tsx   # ✅ Phase 2 (raw + reconvolved + spikes)
-│   │   │   └── DebugKernelChart.tsx  # ✅ Phase 2 (h_free vs fitted biexp)
-│   │   ├── kernel/                   # Phase 3
-│   │   │   └── KernelDisplay.tsx
-│   │   ├── traces/                   # Phase 3
-│   │   │   └── TraceViewer.tsx
-│   │   ├── distributions/            # Phase 3
+│   │   │   └── KernelConvergence.tsx # ✅ Phase 3 (uPlot rewrite with scatter + convergence marker)
+│   │   ├── kernel/                   # ✅ Phase 3
+│   │   │   └── KernelDisplay.tsx     # uPlot: per-subset h_free + merged bi-exp fit
+│   │   ├── traces/                   # ✅ Phase 3
+│   │   │   ├── TracePanel.tsx        # Reusable uPlot wrapper (from CaTune)
+│   │   │   ├── TraceViewer.tsx       # CellCard-inspired trace inspector
+│   │   │   ├── CellSelector.tsx      # Dropdown + prev/next arrows
+│   │   │   └── SeriesToggleBar.tsx   # Series visibility toggles
+│   │   ├── distributions/            # ✅ Phase 3
+│   │   │   ├── HistogramCard.tsx     # Reusable histogram with bar paths
 │   │   │   ├── AlphaDistribution.tsx
 │   │   │   ├── PVEDistribution.tsx
 │   │   │   ├── EventRateDistribution.tsx
-│   │   │   └── SubsetVariance.tsx
+│   │   │   └── SubsetVariance.tsx    # Grouped bar chart with median lines
+│   │   ├── drilldown/                # ✅ Phase 3
+│   │   │   ├── SubsetDrillDown.tsx   # Container with kernel + stats + cell browser
+│   │   │   ├── SubsetKernelFit.tsx   # Subset h_free vs merged fit
+│   │   │   └── SubsetStats.tsx       # Subset vs merged stats table
 │   │   ├── community/               # Phase 4
 │   │   │   ├── SubmitPanel.tsx
 │   │   │   ├── CommunityBrowser.tsx
@@ -587,21 +651,30 @@ apps/cadecon/
 │   │   ├── data-utils.ts            # ✅ Phase 2 (extractCellTrace helper)
 │   │   ├── iteration-manager.ts     # ✅ Phase 2
 │   │   ├── cadecon-pool.ts          # ✅ Phase 2
+│   │   ├── viz-store.ts             # ✅ Phase 3 (viewedIteration, inspectedCell, toggles)
 │   │   ├── community/               # Phase 4
 │   │   │   ├── cadecon-service.ts
 │   │   │   ├── community-store.ts
 │   │   │   └── quality-checks.ts
-│   │   └── chart/                   # Phase 3
-│   │       └── series-config.ts
+│   │   └── chart/                   # ✅ Phase 3
+│   │       ├── series-config.ts     # 11 series factories + withOpacity + D3 palette
+│   │       ├── chart-theme.css      # uPlot theme overrides
+│   │       ├── wheel-zoom-plugin.ts # Scroll zoom + drag pan
+│   │       ├── theme-colors.ts      # CSS variable reader
+│   │       ├── transient-zone-plugin.ts # Pad zone shading
+│   │       └── convergence-marker-plugin.ts # Convergence vertical line
 │   ├── workers/                     # ✅ Phase 2
 │   │   ├── cadecon-worker.ts
 │   │   └── cadecon-types.ts
 │   └── styles/
 │       ├── global.css               # ✅ Phase 1 (teal accent)
 │       ├── raster.css               # ✅ Phase 1
-│       ├── controls.css             # ✅ Phase 1
-│       ├── layout.css               # Phase 3
-│       └── distributions.css        # Phase 3
+│       ├── controls.css             # ✅ Phase 1 (updated Phase 3: removed debug CSS, added phase)
+│       ├── layout.css               # ✅ Phase 3 (3-row viz grid)
+│       ├── distributions.css        # ✅ Phase 3 (histogram cards)
+│       ├── trace-viewer.css         # ✅ Phase 3 (cell selector, toggle bar, stats)
+│       ├── kernel-display.css       # ✅ Phase 3 (kernel stats, empty state)
+│       └── drilldown.css            # ✅ Phase 3 (drill-down header, aggregate, table)
 
 crates/solver/src/
 ├── (existing files unchanged)
@@ -738,14 +811,56 @@ The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `pos
 
 ---
 
+## Phase 3 Implementation Notes
+
+> Details future phases need about how Phase 3 was actually built.
+
+### Chart infrastructure
+
+All chart files live in `src/lib/chart/`. Four files were copied from CaTune (`chart-theme.css`, `wheel-zoom-plugin.ts`, `theme-colors.ts`, `transient-zone-plugin.ts`) with minor adjustments (accent color default in theme-colors). Two new files were created: `series-config.ts` (CaDecon-specific series factories with D3 category10 palette) and `convergence-marker-plugin.ts`.
+
+`TracePanel.tsx` was also copied from CaTune into `src/components/traces/` with import path adjustments.
+
+### uPlot integration pattern
+
+All charts use `@dschz/solid-uplot` (`SolidUplot` component) with `autoResize={true}`. Axis colors are hardcoded hex values (not CSS variables) because uPlot canvas rendering can fail with CSS variable resolution during `setData` redraws.
+
+Custom bar/stem drawing uses the `paths` callback pattern returning `{ stroke: Path2D, fill: Path2D, clip: undefined, flags: 0 }`.
+
+### Store architecture
+
+`viz-store.ts` is purely UI state (which iteration to view, which cell to inspect, series visibility). Distribution-derived memos (`alphaValues`, `pveValues`, `eventRateValues`, `subsetVarianceData`) live in `iteration-store.ts` since they derive from `perTraceResults` and `convergenceHistory` signals.
+
+`RunPhase` signals are set by `iteration-manager.ts` at each stage transition. The phase resets to `'idle'` on completion and on stop.
+
+### TraceViewer dual-mode
+
+During a run, `TraceViewer` shows the debug cell from `debugTraceSnapshots` (last entry). After finalization (`runState() === 'complete'`), it extracts any cell's raw trace from the full data matrix via `dataIndex()`. Reconvolution is computed on-demand using the same `reconvolveAR2()` helper as `iteration-manager.ts`.
+
+### Drill-down flow
+
+`selectedSubsetIdx` in `viz-store.ts` controls whether the distribution card row or the drill-down panel is shown (via `<Show when={selectedSubsetIdx() != null}>`). The raster click handler in `RasterOverview.tsx` (Phase 1) already sets this signal. The drill-down close button sets it back to `null`.
+
+### Layout
+
+The 3-row grid uses CSS flexbox (not CSS Grid) for compatibility with the existing `VizLayout` structure. Row 1 and Row 2 use `flex: 1 1 0` with min-heights. Row 3 uses `flex: 0 0 auto`. Columns within rows are sized with flex-grow ratios (6:4 for raster:convergence, fixed 280px for kernel display).
+
+### Files changed summary
+
+- **Created:** 24 files (6 chart lib, 1 viz-store, 4 traces, 1 kernel, 5 distributions, 3 drilldown, 5 CSS)
+- **Modified:** 6 files (package.json, iteration-store, iteration-manager, App.tsx, ProgressBar, controls.css)
+- **Deleted:** 2 files (DebugTraceChart.tsx, DebugKernelChart.tsx)
+
+---
+
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                                               |
-| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------- |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                     |
-| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass |
-| Phase 3: Visualization + QC          | NOT STARTED | Debug trace/kernel charts + convergence scatter pulled forward into Phase 2         |
-| Phase 4: Community DB                | NOT STARTED |                                                                                     |
-| Phase 5: Export/Import               | NOT STARTED |                                                                                     |
-| Phase 6: Python Extension            | DEFERRED    |                                                                                     |
-| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                                     |
+| Phase                                | Status      | Notes                                                                                           |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------- |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                                 |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass             |
+| Phase 3: Visualization + QC          | COMPLETE    | uPlot charts, TraceViewer, distributions, drill-down, 3-row grid, phase indicator, 24 new files |
+| Phase 4: Community DB                | NOT STARTED |                                                                                                 |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                                 |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                                 |
+| Phase 7: Tutorials + Polish          | DEFERRED    | Includes: per-worker indicators, iteration log sidebar                                          |

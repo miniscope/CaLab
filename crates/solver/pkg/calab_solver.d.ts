@@ -44,6 +44,10 @@ export class Solver {
     [Symbol.dispose](): void;
     /**
      * Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+     *
+     * Sets `self.filtered = true` only when HP is active, because HP removes DC and
+     * baseline estimation should be skipped. LP-only preserves DC, so baseline
+     * estimation must still run.
      */
     apply_filter(): boolean;
     /**
@@ -136,7 +140,12 @@ export class Solver {
      * Does NOT reset solution/iteration state — warm-start is preserved.
      */
     set_conv_mode(mode: ConvMode): void;
+    /**
+     * Convenience: set both HP and LP together (used by CaTune's single toggle).
+     */
     set_filter_enabled(enabled: boolean): void;
+    set_hp_filter_enabled(enabled: boolean): void;
+    set_lp_filter_enabled(enabled: boolean): void;
     /**
      * Update solver parameters and rebuild kernel.
      */
@@ -197,7 +206,7 @@ export function indeca_fit_biexponential(h_free: Float32Array, fs: number, refin
  * Returns a JsValue containing the serialized InDecaResult:
  * { s_counts, alpha, baseline, threshold, pve, iterations, converged }
  */
-export function indeca_solve_trace(trace: Float32Array, tau_r: number, tau_d: number, fs: number, upsample_factor: number, max_iters: number, tol: number, filter_enabled: boolean, warm_counts: Float32Array): any;
+export function indeca_solve_trace(trace: Float32Array, tau_r: number, tau_d: number, fs: number, upsample_factor: number, max_iters: number, tol: number, hp_enabled: boolean, lp_enabled: boolean, warm_counts: Float32Array): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -207,7 +216,7 @@ export interface InitOutput {
     readonly indeca_compute_upsample_factor: (a: number, b: number) => number;
     readonly indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
     readonly indeca_fit_biexponential: (a: number, b: number, c: number, d: number) => number;
-    readonly indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
+    readonly indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
     readonly solver_apply_filter: (a: number) => number;
     readonly solver_converged: (a: number) => number;
     readonly solver_export_state: (a: number, b: number) => void;
@@ -228,6 +237,8 @@ export interface InitOutput {
     readonly solver_set_constraint: (a: number, b: number) => void;
     readonly solver_set_conv_mode: (a: number, b: number) => void;
     readonly solver_set_filter_enabled: (a: number, b: number) => void;
+    readonly solver_set_hp_filter_enabled: (a: number, b: number) => void;
+    readonly solver_set_lp_filter_enabled: (a: number, b: number) => void;
     readonly solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly solver_set_trace: (a: number, b: number, c: number) => void;
     readonly solver_step_batch: (a: number, b: number) => number;

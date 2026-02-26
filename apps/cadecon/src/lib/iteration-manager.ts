@@ -13,15 +13,18 @@ import type { TraceResult, KernelResult } from '../workers/cadecon-types.ts';
 import {
   runState,
   setRunState,
+  setRunPhase,
   setCurrentIteration,
   setTotalSubsetTraceJobs,
   setCompletedSubsetTraceJobs,
   setCurrentTauRise,
   setCurrentTauDecay,
+  setConvergedAtIteration,
   addConvergenceSnapshot,
   addDebugTraceSnapshot,
   updateTraceResult,
   resetIterationState,
+  snapshotIteration,
 } from './iteration-store.ts';
 import {
   tauRiseInit,
@@ -29,7 +32,8 @@ import {
   upsampleFactor,
   maxIterations,
   convergenceTol,
-  bandpassEnabled,
+  hpFilterEnabled,
+  lpFilterEnabled,
 } from './algorithm-store.ts';
 import {
   parsedData,
@@ -41,6 +45,8 @@ import {
 } from './data-store.ts';
 import { subsetRectangles, type SubsetRectangle } from './subset-store.ts';
 import { dataIndex } from './data-utils.ts';
+import { median } from './math-utils.ts';
+import { reconvolveAR2 } from './reconvolve.ts';
 
 /** Per-trace FISTA solver parameters (shared between subset and finalization passes). */
 const TRACE_FISTA_MAX_ITERS = 500;
@@ -74,54 +80,12 @@ function extractCellTrace(
   return trace;
 }
 
-/** Compute median of a numeric array. */
-function median(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-/**
- * Reconvolve a spike train through the peak-normalized AR2 forward model.
- * Mirrors the Rust BandedAR2 convolution: c[t] = g1*c[t-1] + g2*c[t-2] + s[t],
- * then normalize by impulse peak so recon = alpha * (c / peak) + baseline.
- */
-function reconvolveAR2(
-  sCounts: Float32Array,
-  tauR: number,
-  tauD: number,
-  fs: number,
-  alpha: number,
-  baseline: number,
-): Float32Array {
-  const dt = 1 / fs;
-  const d = Math.exp(-dt / tauD);
-  const r = Math.exp(-dt / tauR);
-  const g1 = d + r;
-  const g2 = -(d * r);
-
-  // Compute impulse peak (same logic as Rust compute_impulse_peak)
-  let impPeak = 1.0;
-  let cPrev2 = 0;
-  let cPrev1 = 1;
-  const maxSteps = Math.ceil(5 * tauD * fs) + 10;
-  for (let i = 1; i < maxSteps; i++) {
-    const cv = g1 * cPrev1 + g2 * cPrev2;
-    if (cv > impPeak) impPeak = cv;
-    if (cv < impPeak * 0.95) break;
-    cPrev2 = cPrev1;
-    cPrev1 = cv;
+/** Check whether a subset's trace results contain at least one usable cell (non-zero alpha and spikes). */
+function hasValidTraceResults(subsetResults: Map<number, TraceResult>): boolean {
+  for (const [, r] of subsetResults) {
+    if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) return true;
   }
-
-  const n = sCounts.length;
-  const reconvolved = new Float32Array(n);
-  const c = new Float64Array(n);
-  for (let t = 0; t < n; t++) {
-    c[t] = sCounts[t] + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
-    reconvolved[t] = alpha * (c[t] / impPeak) + baseline;
-  }
-  return reconvolved;
+  return false;
 }
 
 // --- Dispatch helpers ---
@@ -140,7 +104,8 @@ function dispatchTraceJobs(
   upFactor: number,
   maxIters: number,
   tol: number,
-  filterEnabled: boolean,
+  hpEnabled: boolean,
+  lpEnabled: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
@@ -185,7 +150,8 @@ function dispatchTraceJobs(
         upsampleFactor: upFactor,
         maxIters,
         tol,
-        filterEnabled,
+        hpEnabled,
+        lpEnabled,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -222,8 +188,6 @@ function dispatchKernelJobs(
     const kernelResults: KernelResult[] = [];
     let completed = 0;
     let totalKernelJobs = 0;
-    // Track which subset index maps to which dispatched job index for warm kernel lookup
-    const jobSubsetIndices: number[] = [];
 
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -252,7 +216,6 @@ function dispatchKernelJobs(
         continue;
       }
 
-      jobSubsetIndices.push(si);
       totalKernelJobs++;
       const jobId = nextJobId++;
 
@@ -311,7 +274,8 @@ export async function startRun(): Promise<void> {
   const isSwap = swapped();
   const nCells = numCells();
   const nTp = numTimepoints();
-  const filterOn = bandpassEnabled();
+  const hpOn = hpFilterEnabled();
+  const lpOn = lpFilterEnabled();
 
   // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
   const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
@@ -338,6 +302,7 @@ export async function startRun(): Promise<void> {
     setCurrentIteration(iter + 1);
 
     // Step 1: Per-trace inference (warm-started from previous iteration's s_counts)
+    setRunPhase('inference');
     const traceResults = await dispatchTraceJobs(
       rects,
       data,
@@ -348,7 +313,8 @@ export async function startRun(): Promise<void> {
       upFactor,
       TRACE_FISTA_MAX_ITERS,
       TRACE_FISTA_TOL,
-      filterOn,
+      hpOn,
+      lpOn,
       prevTraceCounts,
     );
 
@@ -358,6 +324,10 @@ export async function startRun(): Promise<void> {
     // Subset traces only cover a time window, so we store the subset-windowed s_counts
     // keyed by cell and reconstruct full-trace s_counts where available.
     prevTraceCounts = new Map();
+    // Map cell → latest scalar results (alpha, baseline, pve) from whichever subset last processed it
+    const cellScalars = new Map<number, { alpha: number; baseline: number; pve: number }>();
+    // Map cell → full-length filtered trace (stitched from subset windows)
+    const cellFiltered = new Map<number, Float32Array>();
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
       for (const [cell, result] of traceResults[si]) {
@@ -368,8 +338,38 @@ export async function startRun(): Promise<void> {
           prevTraceCounts.set(cell, full);
         }
         full.set(result.sCounts, rect.tStart);
+        // Stitch filtered trace subset windows into full-length arrays
+        if (result.filteredTrace) {
+          let fullFilt = cellFiltered.get(cell);
+          if (!fullFilt) {
+            fullFilt = new Float32Array(nTp);
+            cellFiltered.set(cell, fullFilt);
+          }
+          fullFilt.set(result.filteredTrace, rect.tStart);
+        }
+        cellScalars.set(cell, {
+          alpha: result.alpha,
+          baseline: result.baseline,
+          pve: result.pve,
+        });
       }
     }
+
+    // Publish full-length results so distributions and trace viewer update during iterations
+    for (const [cell, fullCounts] of prevTraceCounts) {
+      const scalars = cellScalars.get(cell)!;
+      const filteredTrace = cellFiltered.get(cell);
+      updateTraceResult(cell, {
+        sCounts: fullCounts,
+        filteredTrace,
+        alpha: scalars.alpha,
+        baseline: scalars.baseline,
+        pve: scalars.pve,
+      });
+    }
+
+    // Snapshot iteration history for the scrubber
+    snapshotIteration(iter + 1, tauR, tauD);
 
     // Capture debug trace snapshot: cell 0 from first subset that has it
     if (rects.length > 0 && traceResults[0].size > 0) {
@@ -406,6 +406,7 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
+    setRunPhase('kernel-update');
     const kernelResults = await dispatchKernelJobs(
       rects,
       traceResults,
@@ -429,15 +430,7 @@ export async function startRun(): Promise<void> {
     {
       let ki = 0;
       for (let si = 0; si < rects.length; si++) {
-        const subsetResults = traceResults[si];
-        let hasValid = false;
-        for (const [, r] of subsetResults) {
-          if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) {
-            hasValid = true;
-            break;
-          }
-        }
-        if (hasValid && ki < kernelResults.length) {
+        if (hasValidTraceResults(traceResults[si]) && ki < kernelResults.length) {
           prevKernels[si] = new Float32Array(kernelResults[ki].hFree);
           ki++;
         }
@@ -445,6 +438,7 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
+    setRunPhase('merge');
     const prevTauR = tauR;
     const prevTauD = tauD;
     tauR = median(kernelResults.map((r) => r.tauRise));
@@ -477,12 +471,14 @@ export async function startRun(): Promise<void> {
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
     const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
     if (iter > 0 && maxRelChange < convTol) {
+      setConvergedAtIteration(iter + 1);
       break;
     }
   }
 
   // Finalization: re-run trace inference on ALL cells with converged kernel
   if (runState() !== 'stopping') {
+    setRunPhase('finalization');
     setTotalSubsetTraceJobs(nCells);
     setCompletedSubsetTraceJobs(0);
     let finCompleted = 0;
@@ -511,11 +507,13 @@ export async function startRun(): Promise<void> {
           upsampleFactor: upFactor,
           maxIters: TRACE_FISTA_MAX_ITERS,
           tol: TRACE_FISTA_TOL,
-          filterEnabled: filterOn,
+          hpEnabled: hpOn,
+          lpEnabled: lpOn,
           warmCounts,
           onComplete(result: TraceResult) {
             updateTraceResult(c, {
               sCounts: result.sCounts,
+              filteredTrace: result.filteredTrace,
               alpha: result.alpha,
               baseline: result.baseline,
               pve: result.pve,
@@ -539,6 +537,7 @@ export async function startRun(): Promise<void> {
     });
   }
 
+  setRunPhase('idle');
   setRunState('complete');
 }
 
@@ -560,6 +559,7 @@ export function resumeRun(): void {
 
 export function stopRun(): void {
   setRunState('stopping');
+  setRunPhase('idle');
   pool?.cancelAll();
   // Resolve any pending pause
   if (pauseResolver) {

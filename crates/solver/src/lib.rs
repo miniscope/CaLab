@@ -406,8 +406,17 @@ impl Solver {
 
     // --- Bandpass filter methods ---
 
+    /// Convenience: set both HP and LP together (used by CaTune's single toggle).
     pub fn set_filter_enabled(&mut self, enabled: bool) {
         self.bandpass.set_enabled(enabled);
+    }
+
+    pub fn set_hp_filter_enabled(&mut self, enabled: bool) {
+        self.bandpass.set_hp_enabled(enabled);
+    }
+
+    pub fn set_lp_filter_enabled(&mut self, enabled: bool) {
+        self.bandpass.set_lp_enabled(enabled);
     }
 
     pub fn filter_enabled(&self) -> bool {
@@ -415,10 +424,14 @@ impl Solver {
     }
 
     /// Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+    ///
+    /// Sets `self.filtered = true` only when HP is active, because HP removes DC and
+    /// baseline estimation should be skipped. LP-only preserves DC, so baseline
+    /// estimation must still run.
     pub fn apply_filter(&mut self) -> bool {
         let n = self.active_len;
         let applied = self.bandpass.apply(&mut self.trace[..n]);
-        if applied {
+        if applied && self.bandpass.is_hp_enabled() {
             self.filtered = true;
         }
         applied
@@ -447,8 +460,7 @@ impl Solver {
 
     /// Get filter cutoff frequencies as [f_hp, f_lp].
     pub fn get_filter_cutoffs(&self) -> Vec<f32> {
-        let c = self.bandpass.get_cutoffs();
-        vec![c[0], c[1]]
+        self.bandpass.get_cutoffs().to_vec()
     }
 
     /// Load warm-start state. If state is empty or wrong size, performs cold-start (zero solution).

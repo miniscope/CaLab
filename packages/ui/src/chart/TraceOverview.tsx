@@ -8,6 +8,18 @@
 import { createEffect, createMemo, on, onCleanup, onMount } from 'solid-js';
 import { downsampleMinMax, makeTimeAxis } from '@calab/compute';
 
+/** A highlighted time region drawn as a background band on the minimap. */
+export interface HighlightZone {
+  /** Start time in seconds */
+  startTime: number;
+  /** End time in seconds */
+  endTime: number;
+  /** Fill color (e.g. 'rgba(255, 152, 0, 0.12)') */
+  color: string;
+  /** Optional border color */
+  borderColor?: string;
+}
+
 export interface TraceOverviewProps {
   trace: Float64Array;
   samplingRate: number;
@@ -17,6 +29,8 @@ export interface TraceOverviewProps {
   zoomEnd: number;
   /** Called when the user clicks/drags to reposition the zoom window */
   onZoomChange: (startTime: number, endTime: number) => void;
+  /** Optional background highlight zones (e.g. subset regions) */
+  highlightZones?: HighlightZone[];
 }
 
 export const ROW_HEIGHT = 24;
@@ -99,12 +113,36 @@ export function TraceOverview(props: TraceOverviewProps) {
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
       const rowY = r * ROW_HEIGHT;
+      const rowStartTime = row.timeOffset;
+      const rowEndTime = rowStartTime + rowDuration;
+
+      // Draw highlight zones (e.g. subset regions) as background bands
+      const zones = props.highlightZones;
+      if (zones) {
+        for (const zone of zones) {
+          if (zone.endTime > rowStartTime && zone.startTime < rowEndTime) {
+            const zStart = Math.max(0, (zone.startTime - rowStartTime) / rowDuration) * width;
+            const zEnd = Math.min(1, (zone.endTime - rowStartTime) / rowDuration) * width;
+            ctx.fillStyle = zone.color;
+            ctx.fillRect(zStart, rowY, zEnd - zStart, ROW_HEIGHT);
+            if (zone.borderColor) {
+              ctx.strokeStyle = zone.borderColor;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              // Draw only the left and right edges (not top/bottom) for a cleaner look
+              ctx.moveTo(zStart, rowY);
+              ctx.lineTo(zStart, rowY + ROW_HEIGHT);
+              ctx.moveTo(zEnd, rowY);
+              ctx.lineTo(zEnd, rowY + ROW_HEIGHT);
+              ctx.stroke();
+            }
+          }
+        }
+      }
 
       // Draw zoom window highlight for this row
       const zoomStart = props.zoomStart;
       const zoomEnd = props.zoomEnd;
-      const rowStartTime = row.timeOffset;
-      const rowEndTime = rowStartTime + rowDuration;
 
       if (zoomEnd > rowStartTime && zoomStart < rowEndTime) {
         const hlStart = Math.max(0, (zoomStart - rowStartTime) / rowDuration) * width;
@@ -136,7 +174,7 @@ export function TraceOverview(props: TraceOverviewProps) {
 
   createEffect(
     on(
-      () => [props.trace, props.zoomStart, props.zoomEnd],
+      () => [props.trace, props.zoomStart, props.zoomEnd, props.highlightZones],
       () => draw(),
     ),
   );

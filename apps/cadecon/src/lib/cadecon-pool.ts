@@ -17,7 +17,8 @@ interface TraceJobFields {
   upsampleFactor: number;
   maxIters: number;
   tol: number;
-  filterEnabled: boolean;
+  hpEnabled: boolean;
+  lpEnabled: boolean;
   warmCounts?: Float32Array;
   onComplete(result: TraceResult): void;
 }
@@ -90,7 +91,8 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           upsampleFactor: job.upsampleFactor,
           maxIters: job.maxIters,
           tol: job.tol,
-          filterEnabled: job.filterEnabled,
+          hpEnabled: job.hpEnabled,
+          lpEnabled: job.lpEnabled,
           warmCounts: warmCopy,
         },
         transfers,

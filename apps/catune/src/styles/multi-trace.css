@@ -159,94 +159,14 @@
 }
 
 /* ========================
-   Trace Legend
+   Trace Legend (wrapper — items and swatches in @calab/ui trace-legend.css)
    ======================== */
 .cell-selector__legend {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
   margin-left: auto;
   position: relative;
 }
 
-.cell-selector__legend-item {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 0.7rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  transition: opacity var(--transition-fast);
-}
-
-.cell-selector__legend-item:hover {
-  color: var(--text-primary);
-}
-
-.cell-selector__legend-item--hidden {
-  opacity: 0.35;
-  text-decoration: line-through;
-}
-
-.cell-selector__legend-swatch {
-  display: inline-block;
-  width: 14px;
-  height: 3px;
-  border-radius: 1px;
-  flex-shrink: 0;
-}
-
-.cell-selector__legend-swatch--dashed {
-  background: none;
-  border-top: 2px dashed;
-  height: 0;
-}
-
-/* ========================
-   Legend Info Tooltip
-   ======================== */
-.legend-info__btn {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 1px solid var(--border-default);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: 0.6rem;
-  font-weight: var(--font-weight-semibold);
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    border-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.legend-info__btn:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.legend-info__popover {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  margin-top: var(--space-xs);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  padding: var(--space-sm);
-  z-index: 20;
-  min-width: 280px;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
+/* Legend popover content classes (used inside TraceLegend infoContent slot) */
 .legend-info__row {
   padding: 2px 0;
 }

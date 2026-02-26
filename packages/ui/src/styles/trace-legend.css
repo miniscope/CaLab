@@ -1,0 +1,84 @@
+/* Shared trace legend — clickable series toggles with color swatches */
+
+.trace-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  position: relative;
+}
+
+.trace-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity var(--transition-fast);
+}
+
+.trace-legend__item:hover {
+  color: var(--text-primary);
+}
+
+.trace-legend__item--hidden {
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+
+.trace-legend__swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.trace-legend__swatch--dashed {
+  background: none;
+  border-top: 2px dashed;
+  height: 0;
+}
+
+/* Info button */
+.trace-legend__info-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.trace-legend__info-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.trace-legend__popover {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: var(--space-xs);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: var(--space-sm);
+  z-index: 20;
+  min-width: 280px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
