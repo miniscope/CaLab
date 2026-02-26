@@ -381,11 +381,13 @@ export async function startRun(): Promise<void> {
       tauDecay: tauD,
       beta: medBeta,
       residual: medResidual,
+      fs,
       subsets: kernelResults.map((r) => ({
         tauRise: r.tauRise,
         tauDecay: r.tauDecay,
         beta: r.beta,
         residual: r.residual,
+        hFree: r.hFree,
       })),
     });
 

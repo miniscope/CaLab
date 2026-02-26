@@ -67,10 +67,54 @@ pub fn estimate_free_kernel(
     // S*h = sum_t s[t] * h[t-k] (convolution of spikes with kernel)
     // Gradient: S^T * (S*h - y_adj)
 
-    // Compute Lipschitz constant: L = ||S||^2 ≈ max eigenvalue of S^T S
-    // For spike convolution, L ≈ sum(s^2) (rough upper bound)
-    let s_sq_sum: f64 = spike_trains.iter().map(|&v| (v as f64) * (v as f64)).sum();
-    let lipschitz = s_sq_sum.max(1.0);
+    // Estimate Lipschitz constant via power iteration on S^T S.
+    // The simple bound L = sum(s^2) underestimates for dense/correlated spikes,
+    // causing FISTA to oscillate. Power iteration gives a tighter estimate.
+    let lipschitz = {
+        // Power iteration: v_{k+1} = S^T S v_k / ||S^T S v_k||
+        let mut v = vec![1.0_f64; kernel_length];
+        let norm: f64 = (kernel_length as f64).sqrt();
+        for val in v.iter_mut() {
+            *val /= norm;
+        }
+        let mut sv = vec![0.0_f32; total_len]; // S*v
+        let mut stv = vec![0.0_f64; kernel_length]; // S^T S v
+        let mut eigenvalue = 1.0_f64;
+
+        for _ in 0..20 {
+            // S*v: convolve spikes with v (cast to f32)
+            let v_f32: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+            convolve_spikes_kernel(spike_trains, trace_lengths, &v_f32, &mut sv);
+
+            // S^T (S*v)
+            stv.fill(0.0);
+            let mut off = 0;
+            for i in 0..n_traces {
+                let len = trace_lengths[i];
+                for t in 0..len {
+                    let val = sv[off + t] as f64;
+                    let k_max = kernel_length.min(t + 1);
+                    for k in 0..k_max {
+                        stv[k] += val * spike_trains[off + t - k] as f64;
+                    }
+                }
+                off += len;
+            }
+
+            // eigenvalue estimate = ||S^T S v||
+            eigenvalue = stv.iter().map(|&x| x * x).sum::<f64>().sqrt();
+            if eigenvalue < 1e-20 {
+                eigenvalue = 1.0;
+                break;
+            }
+
+            // Normalize
+            for (vi, &si) in v.iter_mut().zip(stv.iter()) {
+                *vi = si / eigenvalue;
+            }
+        }
+        eigenvalue.max(1.0)
+    };
     let step_size = 1.0 / lipschitz;
 
     let mut h = vec![0.0_f32; kernel_length];
@@ -299,5 +343,71 @@ mod tests {
         let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4);
         assert_eq!(kernel.len(), 10);
         assert!(kernel.iter().all(|&v| v == 0.0));
+    }
+
+    /// Reproduce the conditions from the browser: high spike density, large spike values
+    /// (from 10x downsample), negative baselines, ~1.0 alphas.
+    #[test]
+    fn dense_spikes_realistic_data() {
+        let n_traces = 10;
+        let trace_len = 2250; // 2250 samples at 30Hz ≈ 75 seconds
+        let kernel_length = 36;
+
+        let mut traces = Vec::new();
+        let mut spikes = Vec::new();
+        let mut trace_lengths = Vec::new();
+        let mut alphas = Vec::new();
+        let mut baselines = Vec::new();
+
+        for i in 0..n_traces {
+            let alpha = 0.95 + 0.05 * (i as f64 / n_traces as f64);
+            let baseline = -30.0 - 5.0 * (i as f64);
+
+            // Generate a trace with dense spikes (~30% density with values 1-10)
+            let mut trace = vec![0.0_f32; trace_len];
+            let mut spike = vec![0.0_f32; trace_len];
+
+            // Simple deterministic pattern: spike every ~3 samples, value 1-10 cycling
+            for t in 0..trace_len {
+                if t % 3 == 0 {
+                    spike[t] = ((t % 10) + 1) as f32;
+                }
+            }
+
+            // Build trace = alpha * conv(spikes, true_kernel) + baseline
+            // True kernel: exponential decay
+            for t in 0..trace_len {
+                trace[t] = baseline as f32;
+                let k_max = kernel_length.min(t + 1);
+                for k in 0..k_max {
+                    let kernel_val = (-(k as f64) / 12.0).exp() as f32;
+                    trace[t] += alpha as f32 * spike[t - k] * kernel_val;
+                }
+            }
+
+            traces.extend_from_slice(&trace);
+            spikes.extend_from_slice(&spike);
+            trace_lengths.push(trace_len);
+            alphas.push(alpha);
+            baselines.push(baseline);
+        }
+
+        let kernel = estimate_free_kernel(
+            &traces,
+            &spikes,
+            &alphas,
+            &baselines,
+            &trace_lengths,
+            kernel_length,
+            200,
+            1e-4,
+        );
+
+        let peak = kernel.iter().cloned().fold(0.0_f32, f32::max);
+        assert!(
+            peak > 0.0,
+            "Kernel should have positive values, got all zeros (peak={})",
+            peak
+        );
     }
 }

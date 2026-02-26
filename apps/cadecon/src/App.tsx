@@ -11,6 +11,7 @@ import { RunControls } from './components/controls/RunControls.tsx';
 import { ProgressBar } from './components/controls/ProgressBar.tsx';
 import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
 import { DebugTraceChart } from './components/charts/DebugTraceChart.tsx';
+import { DebugKernelChart } from './components/charts/DebugKernelChart.tsx';
 import { user, authLoading } from './lib/auth-store.ts';
 import {
   importStep,
@@ -70,10 +71,17 @@ const App: Component = () => {
             <RasterOverview />
           </DashboardPanel>
 
-          <DashboardPanel id="debug-trace" variant="data">
-            <p class="panel-label">Debug: Trace + Spikes</p>
-            <DebugTraceChart />
-          </DashboardPanel>
+          <div class="debug-row">
+            <DashboardPanel id="debug-trace" variant="data">
+              <p class="panel-label">Debug: Trace + Spikes</p>
+              <DebugTraceChart />
+            </DashboardPanel>
+
+            <DashboardPanel id="debug-kernel" variant="data">
+              <p class="panel-label">Debug: Kernel Fit</p>
+              <DebugKernelChart />
+            </DashboardPanel>
+          </div>
 
           <DashboardPanel id="kernel-convergence" variant="data">
             <p class="panel-label">Kernel Convergence</p>
