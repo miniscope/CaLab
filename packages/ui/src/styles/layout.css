@@ -64,6 +64,49 @@
   background: transparent;
 }
 
+/* Collapsible panel header */
+.panel-collapse-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.panel-collapse-header:hover .panel-label {
+  color: var(--text-primary);
+}
+
+.panel-collapse-chevron {
+  color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.panel-collapse-chevron--open {
+  transform: rotate(180deg);
+}
+
+.panel-collapse-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.2s ease;
+}
+
+.panel-collapse-body > * {
+  overflow: hidden;
+}
+
+.panel-collapse-body--hidden {
+  grid-template-rows: 0fr;
+}
+
 /* ========================
    VizLayout — scroll mode (current), grid mode (future)
    ======================== */

@@ -59,18 +59,26 @@ const App: Component = () => {
           mode="dashboard"
           sidebar={
             <>
-              <DashboardPanel id="subset-config" variant="controls">
-                <p class="panel-label">Subset Configuration</p>
+              <DashboardPanel
+                id="subset-config"
+                variant="controls"
+                label="Subset Configuration"
+                collapsible
+              >
                 <SubsetConfig />
               </DashboardPanel>
 
-              <DashboardPanel id="algorithm-settings" variant="controls">
-                <p class="panel-label">Algorithm Settings</p>
+              <DashboardPanel
+                id="algorithm-settings"
+                variant="controls"
+                label="Algorithm Settings"
+                collapsible
+                defaultCollapsed
+              >
                 <AlgorithmSettings />
               </DashboardPanel>
 
-              <DashboardPanel id="run-controls" variant="controls">
-                <p class="panel-label">Run Controls</p>
+              <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
                 <RunControls />
                 <ProgressBar />
               </DashboardPanel>
