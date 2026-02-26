@@ -80,6 +80,14 @@ function extractCellTrace(
   return trace;
 }
 
+/** Check whether a subset's trace results contain at least one usable cell (non-zero alpha and spikes). */
+function hasValidTraceResults(subsetResults: Map<number, TraceResult>): boolean {
+  for (const [, r] of subsetResults) {
+    if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) return true;
+  }
+  return false;
+}
+
 // --- Dispatch helpers ---
 
 /**
@@ -180,8 +188,6 @@ function dispatchKernelJobs(
     const kernelResults: KernelResult[] = [];
     let completed = 0;
     let totalKernelJobs = 0;
-    // Track which subset index maps to which dispatched job index for warm kernel lookup
-    const jobSubsetIndices: number[] = [];
 
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -210,7 +216,6 @@ function dispatchKernelJobs(
         continue;
       }
 
-      jobSubsetIndices.push(si);
       totalKernelJobs++;
       const jobId = nextJobId++;
 
@@ -425,15 +430,7 @@ export async function startRun(): Promise<void> {
     {
       let ki = 0;
       for (let si = 0; si < rects.length; si++) {
-        const subsetResults = traceResults[si];
-        let hasValid = false;
-        for (const [, r] of subsetResults) {
-          if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) {
-            hasValid = true;
-            break;
-          }
-        }
-        if (hasValid && ki < kernelResults.length) {
+        if (hasValidTraceResults(traceResults[si]) && ki < kernelResults.length) {
           prevKernels[si] = new Float32Array(kernelResults[ki].hFree);
           ki++;
         }

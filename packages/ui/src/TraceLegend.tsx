@@ -3,7 +3,7 @@
  * Each item toggles a series on/off. Supports solid and dashed swatches.
  */
 
-import { Show, For, type Accessor, type Setter, type JSX } from 'solid-js';
+import { createSignal, Show, For, type Accessor, type Setter, type JSX } from 'solid-js';
 import './styles/trace-legend.css';
 
 export interface LegendItemConfig {
@@ -52,23 +52,21 @@ export function TraceLegend(props: TraceLegendProps) {
 }
 
 /** Small "?" button with a toggle popover. */
-function InfoPopover(props: { content: JSX.Element }) {
-  let open = false;
-  let ref: HTMLDivElement | undefined;
-
-  const toggle = () => {
-    open = !open;
-    if (ref) ref.style.display = open ? 'block' : 'none';
-  };
+function InfoPopover(props: { content: JSX.Element }): JSX.Element {
+  const [open, setOpen] = createSignal(false);
 
   return (
     <>
-      <button class="trace-legend__info-btn" title="What do these traces mean?" onClick={toggle}>
+      <button
+        class="trace-legend__info-btn"
+        title="What do these traces mean?"
+        onClick={() => setOpen((v) => !v)}
+      >
         ?
       </button>
-      <div ref={ref} class="trace-legend__popover" style={{ display: 'none' }}>
-        {props.content}
-      </div>
+      <Show when={open()}>
+        <div class="trace-legend__popover">{props.content}</div>
+      </Show>
     </>
   );
 }

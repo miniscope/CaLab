@@ -28,6 +28,24 @@ export interface ZoomWindowProps {
 const ZOOM_FACTOR = 0.75;
 const MIN_WINDOW_S = 1;
 
+/** Get the uPlot overlay element's bounding rect, falling back to the container. */
+function getPlotRect(container: HTMLElement): DOMRect {
+  const overEl = container.querySelector<HTMLElement>('.u-over');
+  return (overEl ?? container).getBoundingClientRect();
+}
+
+/** Clamp a time window to [0, totalDuration], preserving its width. */
+function clampWindow(
+  start: number,
+  end: number,
+  totalDuration: number,
+): [start: number, end: number] {
+  const duration = end - start;
+  if (start < 0) return [0, duration];
+  if (end > totalDuration) return [Math.max(0, totalDuration - duration), totalDuration];
+  return [start, end];
+}
+
 export function ZoomWindow(props: ZoomWindowProps) {
   const height = () => props.height ?? 150;
 
@@ -46,29 +64,14 @@ export function ZoomWindow(props: ZoomWindowProps) {
     const startStart = props.startTime;
     const startEnd = props.endTime;
     const windowDuration = startEnd - startStart;
-    const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
-    const rect = overEl
-      ? overEl.getBoundingClientRect()
-      : (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = getPlotRect(e.currentTarget as HTMLElement);
     const pxToTime = windowDuration / rect.width;
     const totalDuration = props.totalDuration;
 
     const onMove = (ev: MouseEvent) => {
       ev.preventDefault();
-      const dx = ev.clientX - startX;
-      const dt = -dx * pxToTime;
-      let newStart = startStart + dt;
-      let newEnd = startEnd + dt;
-
-      if (newStart < 0) {
-        newStart = 0;
-        newEnd = windowDuration;
-      }
-      if (newEnd > totalDuration) {
-        newEnd = totalDuration;
-        newStart = Math.max(0, totalDuration - windowDuration);
-      }
-
+      const dt = -(ev.clientX - startX) * pxToTime;
+      const [newStart, newEnd] = clampWindow(startStart + dt, startEnd + dt, totalDuration);
       props.onZoomChange!(newStart, newEnd);
     };
 
@@ -103,25 +106,15 @@ export function ZoomWindow(props: ZoomWindowProps) {
         ? Math.max(MIN_WINDOW_S, currentRange * ZOOM_FACTOR)
         : Math.min(totalDuration, currentRange / ZOOM_FACTOR);
 
-    const overEl = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.u-over');
-    const rect = overEl
-      ? overEl.getBoundingClientRect()
-      : (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = getPlotRect(e.currentTarget as HTMLElement);
     const cursorFraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const cursorTime = props.startTime + cursorFraction * currentRange;
 
-    let newStart = cursorTime - cursorFraction * newRange;
-    let newEnd = newStart + newRange;
-
-    if (newStart < 0) {
-      newStart = 0;
-      newEnd = newRange;
-    }
-    if (newEnd > totalDuration) {
-      newEnd = totalDuration;
-      newStart = Math.max(0, totalDuration - newRange);
-    }
-
+    const [newStart, newEnd] = clampWindow(
+      cursorTime - cursorFraction * newRange,
+      cursorTime - cursorFraction * newRange + newRange,
+      totalDuration,
+    );
     props.onZoomChange(newStart, newEnd);
   };
 

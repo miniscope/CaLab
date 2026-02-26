@@ -6,9 +6,8 @@ import { viewedIteration, setViewedIteration } from '../../lib/viz-store.ts';
 import '../../styles/iteration-scrubber.css';
 
 export function IterationScrubber(): JSX.Element {
-  const history = () => iterationHistory();
   const maxIter = () => {
-    const h = history();
+    const h = iterationHistory();
     return h.length > 0 ? h[h.length - 1].iteration : 0;
   };
 
@@ -27,7 +26,7 @@ export function IterationScrubber(): JSX.Element {
   const goLatest = () => setViewedIteration(null);
 
   return (
-    <Show when={history().length > 1}>
+    <Show when={iterationHistory().length > 1}>
       <div class="iteration-scrubber" classList={{ 'iteration-scrubber--past': !isLatest() }}>
         <label class="iteration-scrubber__label">Iteration:</label>
         <input

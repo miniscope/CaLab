@@ -8,18 +8,12 @@ const [viewedIteration, setViewedIteration] = createSignal<number | null>(null);
 // Which cell to inspect in TraceInspector (null = first available)
 const [inspectedCellIndex, setInspectedCellIndex] = createSignal<number | null>(null);
 
-// Series visibility toggles (aligned with CaTune naming)
+// Series visibility toggles
 const [showRaw, setShowRaw] = createSignal(true);
 const [showFiltered, setShowFiltered] = createSignal(false);
 const [showFit, setShowFit] = createSignal(true);
 const [showDeconv, setShowDeconv] = createSignal(true);
 const [showResidual, setShowResidual] = createSignal(false);
-
-// Backward-compatible aliases
-const showRawTrace = showRaw;
-const setShowRawTrace = setShowRaw;
-const showReconvolved = showFit;
-const setShowReconvolved = setShowFit;
 
 export {
   viewedIteration,
@@ -36,9 +30,4 @@ export {
   setShowDeconv,
   showResidual,
   setShowResidual,
-  // Backward-compatible aliases
-  showRawTrace,
-  setShowRawTrace,
-  showReconvolved,
-  setShowReconvolved,
 };

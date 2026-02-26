@@ -460,8 +460,7 @@ impl Solver {
 
     /// Get filter cutoff frequencies as [f_hp, f_lp].
     pub fn get_filter_cutoffs(&self) -> Vec<f32> {
-        let c = self.bandpass.get_cutoffs();
-        vec![c[0], c[1]]
+        self.bandpass.get_cutoffs().to_vec()
     }
 
     /// Load warm-start state. If state is empty or wrong size, performs cold-start (zero solution).

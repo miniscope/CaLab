@@ -152,7 +152,7 @@ export function KernelConvergence(): JSX.Element {
           cursor={cursor}
           height={160}
           autoResize={true}
-          onCreate={(u) => setUplotRef(u)}
+          onCreate={setUplotRef}
         />
       </div>
     </Show>

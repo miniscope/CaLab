@@ -7,7 +7,7 @@
 
 import { createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import type uPlot from 'uplot';
-import { ZoomWindow } from '@calab/ui/chart';
+import { ZoomWindow, transientZonePlugin } from '@calab/ui/chart';
 import { downsampleMinMax } from '@calab/compute';
 import {
   createRawSeries,
@@ -19,7 +19,6 @@ import {
   createGroundTruthSpikesSeries,
   createGroundTruthCalciumSeries,
 } from '../../lib/chart/series-config.ts';
-import { transientZonePlugin } from '@calab/ui/chart';
 import {
   showRaw,
   showFiltered,
@@ -60,8 +59,22 @@ const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
 
 const SERIES_COUNT = 10;
-const emptySeriesData = (): [number[], ...number[][]] =>
-  Array.from({ length: SERIES_COUNT }, () => []) as unknown as [number[], ...number[][]];
+
+function emptySeriesData(): [number[], ...number[][]] {
+  return Array.from({ length: SERIES_COUNT }, () => []) as unknown as [number[], ...number[][]];
+}
+
+/** Compute [min, max] of a typed array, returning [0, 1] for empty/missing input. */
+function typedArrayMinMax(arr: ArrayLike<number> | undefined): [number, number] {
+  if (!arr || arr.length === 0) return [0, 1];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] < lo) lo = arr[i];
+    if (arr[i] > hi) hi = arr[i];
+  }
+  return [lo, hi];
+}
 
 export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
   let containerRef: HTMLDivElement | undefined;
@@ -115,41 +128,9 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     return [residBottom, zMax + rawRange * 0.02];
   });
 
-  const deconvMinMax = createMemo<[number, number]>(() => {
-    const d = props.deconvolvedTrace;
-    if (!d || d.length === 0) return [0, 1];
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < d.length; i++) {
-      if (d[i] < dMin) dMin = d[i];
-      if (d[i] > dMax) dMax = d[i];
-    }
-    return [dMin, dMax];
-  });
-
-  const pinnedDeconvMinMax = createMemo<[number, number]>(() => {
-    const d = props.pinnedDeconvolved;
-    if (!d || d.length === 0) return [0, 1];
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < d.length; i++) {
-      if (d[i] < dMin) dMin = d[i];
-      if (d[i] > dMax) dMax = d[i];
-    }
-    return [dMin, dMax];
-  });
-
-  const gtSpikesMinMax = createMemo<[number, number]>(() => {
-    const d = props.groundTruthSpikes;
-    if (!d || d.length === 0) return [0, 1];
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < d.length; i++) {
-      if (d[i] < dMin) dMin = d[i];
-      if (d[i] > dMax) dMax = d[i];
-    }
-    return [dMin, dMax];
-  });
+  const deconvMinMax = createMemo(() => typedArrayMinMax(props.deconvolvedTrace));
+  const pinnedDeconvMinMax = createMemo(() => typedArrayMinMax(props.pinnedDeconvolved));
+  const gtSpikesMinMax = createMemo(() => typedArrayMinMax(props.groundTruthSpikes));
 
   const sliceAndDownsample = (
     trace: Float32Array | undefined,
@@ -216,7 +197,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     let rMin = Infinity;
     let rMax = -Infinity;
     for (let i = 0; i < dsRaw.length; i++) {
-      if (dsReconv[i] === null || dsReconv[i] === undefined) {
+      if (dsReconv[i] == null) {
         rawResid.push(null);
       } else {
         const r = dsRaw[i] - (dsReconv[i] as number);

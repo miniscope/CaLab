@@ -3,7 +3,7 @@
  * Supports three modes: top-active, random, and manual cell selection.
  */
 
-import { createMemo, createSignal, Show } from 'solid-js';
+import { createMemo, Show } from 'solid-js';
 import type { SelectionMode } from '../../lib/multi-cell-store.ts';
 import {
   selectionMode,
@@ -64,10 +64,6 @@ export function CellSelector() {
     // Deduplicate
     const unique = [...new Set(indices)];
     setSelectedCells(unique);
-  };
-
-  const handleReshuffle = () => {
-    updateCellSelection();
   };
 
   const maxCount = () => Math.min(20, numCells());
@@ -193,7 +189,7 @@ export function CellSelector() {
       </div>
 
       <Show when={selectionMode() === 'random'}>
-        <button class="btn-secondary btn-small" onClick={handleReshuffle}>
+        <button class="btn-secondary btn-small" onClick={updateCellSelection}>
           Reshuffle
         </button>
       </Show>

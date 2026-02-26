@@ -51,16 +51,18 @@ export function SubsetDrillDown(): JSX.Element {
         </button>
       </div>
 
-      <Show when={snapshot() != null}>
-        <div class="subset-drilldown__content">
-          <SubsetKernelFit subsetIdx={subsetIdx()} snapshot={snapshot()!} />
-          <SubsetStats
-            subsetIdx={subsetIdx()}
-            snapshot={snapshot()!}
-            cellRange={cellRange()}
-            timeRange={timeRange()}
-          />
-        </div>
+      <Show when={snapshot()}>
+        {(snap) => (
+          <div class="subset-drilldown__content">
+            <SubsetKernelFit subsetIdx={subsetIdx()} snapshot={snap()} />
+            <SubsetStats
+              subsetIdx={subsetIdx()}
+              snapshot={snap()}
+              cellRange={cellRange()}
+              timeRange={timeRange()}
+            />
+          </div>
+        )}
       </Show>
     </div>
   );

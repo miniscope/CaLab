@@ -46,12 +46,29 @@ pub fn solve_bounded(
 ) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
     let upsampled = upsample_trace(trace, upsample_factor);
     let fs_up = fs * upsample_factor as f64;
+    solve_bounded_upsampled(&upsampled, tau_r, tau_d, fs_up, max_iters, tol, warm_start, hp_enabled, lp_enabled)
+}
 
+/// Inner bounded FISTA solver operating on an already-upsampled trace.
+///
+/// Called by both `solve_bounded` (public API) and `solve_trace` (which
+/// needs the upsampled trace for threshold search and avoids upsampling twice).
+fn solve_bounded_upsampled(
+    upsampled: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs_up: f64,
+    max_iters: u32,
+    tol: f64,
+    warm_start: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
     let mut solver = Solver::new();
     solver.set_params(tau_r, tau_d, 0.0, fs_up);
     solver.set_conv_mode(ConvMode::BandedAR2);
     solver.set_constraint(Constraint::Box01);
-    solver.set_trace(&upsampled);
+    solver.set_trace(upsampled);
 
     let filtered = if hp_enabled || lp_enabled {
         solver.set_hp_filter_enabled(hp_enabled);
@@ -75,7 +92,7 @@ pub fn solve_bounded(
 
     // Run FISTA in batches
     let batch_size = 50;
-    let max_batches = (max_iters + batch_size - 1) / batch_size;
+    let max_batches = max_iters.div_ceil(batch_size);
     for _ in 0..max_batches {
         if solver.step_batch(batch_size) {
             break;
@@ -123,7 +140,7 @@ pub fn solve_trace(
 
     // Step 1: Bounded FISTA solve on (optionally filtered) upsampled trace
     let (s_relaxed, filtered_up, iterations, converged) =
-        solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start, hp_enabled, lp_enabled);
+        solve_bounded_upsampled(&upsampled, tau_r, tau_d, fs_up, max_iters, tol, warm_start, hp_enabled, lp_enabled);
 
     // Step 2: Threshold search on raw upsampled trace
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);

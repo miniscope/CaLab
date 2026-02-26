@@ -14,6 +14,28 @@ import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';
 
+/** Build a bar path renderer offset by [leftOff, rightOff] for grouped bars. */
+function groupedBarPaths(
+  leftOff: number,
+  rightOff: number,
+): (u: uPlot, sidx: number) => uPlot.Series.Paths {
+  return (u, sidx) => {
+    const xdata = u.data[0];
+    const ydata = u.data[sidx];
+    const p = new Path2D();
+    for (let i = 0; i < xdata.length; i++) {
+      const v = ydata[i];
+      if (v == null) continue;
+      const xL = u.valToPos(xdata[i] + leftOff, 'x', true);
+      const xR = u.valToPos(xdata[i] + rightOff, 'x', true);
+      const y0 = u.valToPos(0, 'y', true);
+      const y1 = u.valToPos(v as number, 'y', true);
+      p.rect(xL, y1, xR - xL, y0 - y1);
+    }
+    return { stroke: p, fill: p, clip: undefined, flags: 0 };
+  };
+}
+
 /** Plugin that draws horizontal dashed lines at merged median values. */
 function medianLinesPlugin(
   getMergedTauR: () => number | null,
@@ -77,44 +99,14 @@ export function SubsetVariance(): JSX.Element {
       stroke: TAU_RISE_COLOR,
       fill: 'rgba(66, 165, 245, 0.3)',
       width: 1,
-      paths: (u: uPlot, sidx: number) => {
-        const xdata = u.data[0];
-        const ydata = u.data[sidx];
-        const p = new Path2D();
-        for (let i = 0; i < xdata.length; i++) {
-          const v = ydata[i];
-          if (v == null) continue;
-          // Offset bars slightly left for grouped effect
-          const xL = u.valToPos(xdata[i] - 0.2, 'x', true);
-          const xR = u.valToPos(xdata[i] + 0.05, 'x', true);
-          const y0 = u.valToPos(0, 'y', true);
-          const y1 = u.valToPos(v as number, 'y', true);
-          p.rect(xL, y1, xR - xL, y0 - y1);
-        }
-        return { stroke: p, fill: p, clip: undefined, flags: 0 };
-      },
+      paths: groupedBarPaths(-0.2, 0.05),
     },
     {
       label: 'tau decay (ms)',
       stroke: TAU_DECAY_COLOR,
       fill: 'rgba(239, 83, 80, 0.3)',
       width: 1,
-      paths: (u: uPlot, sidx: number) => {
-        const xdata = u.data[0];
-        const ydata = u.data[sidx];
-        const p = new Path2D();
-        for (let i = 0; i < xdata.length; i++) {
-          const v = ydata[i];
-          if (v == null) continue;
-          // Offset bars slightly right for grouped effect
-          const xL = u.valToPos(xdata[i] - 0.05, 'x', true);
-          const xR = u.valToPos(xdata[i] + 0.2, 'x', true);
-          const y0 = u.valToPos(0, 'y', true);
-          const y1 = u.valToPos(v as number, 'y', true);
-          p.rect(xL, y1, xR - xL, y0 - y1);
-        }
-        return { stroke: p, fill: p, clip: undefined, flags: 0 };
-      },
+      paths: groupedBarPaths(-0.05, 0.2),
     },
   ];
 

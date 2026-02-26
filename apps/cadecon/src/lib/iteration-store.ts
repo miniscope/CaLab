@@ -126,10 +126,7 @@ function snapshotIteration(iteration: number, tauRise: number, tauDecay: number)
   }
   setIterationHistory((prev) => {
     const next = [...prev, { iteration, results: copy, tauRise, tauDecay }];
-    if (next.length > MAX_HISTORY_ITERATIONS) {
-      return next.slice(next.length - MAX_HISTORY_ITERATIONS);
-    }
-    return next;
+    return next.slice(-MAX_HISTORY_ITERATIONS);
   });
 }
 

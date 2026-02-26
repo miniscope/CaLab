@@ -4,8 +4,6 @@
 import type uPlot from 'uplot';
 import { withOpacity } from '@calab/ui/chart';
 
-export { withOpacity };
-
 export function createRawSeries(): uPlot.Series {
   return { label: 'Raw', stroke: '#1f77b4', width: 1 };
 }
@@ -26,10 +24,6 @@ export function createResidualSeries(): uPlot.Series {
   return { label: 'Residuals', stroke: '#d62728', width: 1 };
 }
 
-/**
- * Create a dashed overlay variant for pinned snapshot comparison.
- * Uses 65% opacity and a [8,4] dash pattern for clear visibility.
- */
 export function createGroundTruthSpikesSeries(): uPlot.Series {
   return { label: 'True Spikes', stroke: 'rgba(255, 193, 7, 0.7)', width: 1.5 };
 }

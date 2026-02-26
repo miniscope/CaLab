@@ -14,12 +14,12 @@ interface DashboardPanelProps {
 }
 
 export function DashboardPanel(props: DashboardPanelProps): JSX.Element {
-  const variant = () => props.variant ?? 'default';
   const [collapsed, setCollapsed] = createSignal(props.defaultCollapsed ?? false);
 
   return (
     <div
-      class={`dashboard-panel dashboard-panel--${variant()}${props.class ? ` ${props.class}` : ''}${props.collapsible && collapsed() ? ' dashboard-panel--collapsed' : ''}`}
+      class={`dashboard-panel dashboard-panel--${props.variant ?? 'default'}${props.class ? ` ${props.class}` : ''}`}
+      classList={{ 'dashboard-panel--collapsed': !!props.collapsible && collapsed() }}
       data-panel-id={props.id}
       data-tutorial={props['data-tutorial']}
     >

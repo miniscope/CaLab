@@ -44,13 +44,10 @@ function formatTimeValues(_u: uPlot, splits: number[]): string[] {
 export function TracePanel(props: TracePanelProps) {
   const height = () => props.height ?? 150;
 
-  const plugins = (): uPlot.Plugin[] => {
-    const base = props.disableWheelZoom ? [] : [wheelZoomPlugin()];
-    if (props.plugins) {
-      return [...base, ...props.plugins];
-    }
-    return base;
-  };
+  const plugins = (): uPlot.Plugin[] => [
+    ...(props.disableWheelZoom ? [] : [wheelZoomPlugin()]),
+    ...(props.plugins ?? []),
+  ];
 
   const scales = (): uPlot.Scales => {
     const s: uPlot.Scales = { x: { time: false } };
@@ -110,7 +107,7 @@ export function TracePanel(props: TracePanelProps) {
         plugins={plugins()}
         height={height()}
         autoResize={true}
-        onCreate={(chart) => props.onCreate?.(chart)}
+        onCreate={props.onCreate}
       />
     </div>
   );

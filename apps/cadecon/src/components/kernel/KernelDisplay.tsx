@@ -13,8 +13,14 @@ import { viewedIteration } from '../../lib/viz-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
 import { selectedSubsetIdx } from '../../lib/subset-store.ts';
 import { createKernelFitSeries } from '../../lib/chart/series-config.ts';
-import { D3_CATEGORY10, withOpacity } from '@calab/ui/chart';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import {
+  D3_CATEGORY10,
+  withOpacity,
+  wheelZoomPlugin,
+  AXIS_TEXT,
+  AXIS_GRID,
+  AXIS_TICK,
+} from '@calab/ui/chart';
 
 export function KernelDisplay(): JSX.Element {
   const snapshot = createMemo(() => {

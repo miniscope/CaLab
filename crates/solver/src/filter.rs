@@ -106,9 +106,7 @@ impl BandpassFilter {
         self.f_lp = MARGIN_FACTOR_LP / (2.0 * PI * tau_rise);
 
         // Clamp low-pass to Nyquist
-        if self.f_lp > nyquist {
-            self.f_lp = nyquist;
-        }
+        self.f_lp = self.f_lp.min(nyquist);
 
         // Validity depends on which filters are active (checked at apply time).
         // Pre-compute: both-on requires f_hp < f_lp; individual modes just need

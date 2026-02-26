@@ -7,7 +7,7 @@ export function EventRateDistribution(): JSX.Element {
   const eventRates = createMemo(() => {
     const results = perTraceResults();
     const dur = durationSeconds();
-    if (!dur || dur === 0) return [];
+    if (!dur) return [];
     return Object.values(results).map((r) => {
       const totalSpikes = r.sCounts.reduce((sum, v) => sum + v, 0);
       return totalSpikes / dur;

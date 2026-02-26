@@ -61,8 +61,6 @@ export function ScatterPlot(props: ScatterPlotProps) {
     };
   });
 
-  const lambdaRange = () => ({ min: LAMBDA_RANGE_MIN, max: LAMBDA_RANGE_MAX });
-
   /** Build mode:2 data: [[x0,x1,...],[y0,y1,...]] per series facet. */
   const chartData = createMemo((): uPlot.AlignedData => {
     const subs = props.submissions;
@@ -331,7 +329,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       ) : (
         <>
           <div ref={containerRef} class="scatter-plot__canvas" />
-          <LambdaLegend min={lambdaRange().min} max={lambdaRange().max} />
+          <LambdaLegend min={LAMBDA_RANGE_MIN} max={LAMBDA_RANGE_MAX} />
         </>
       )}
     </div>

@@ -7,8 +7,8 @@
 
 import { createMemo, createSignal, createEffect, on, Show, type JSX } from 'solid-js';
 import type uPlot from 'uplot';
-import { makeTimeAxis, downsampleMinMax } from '@calab/compute';
-import { TraceOverview, ZoomWindow, ROW_DURATION_S, type HighlightZone } from '@calab/ui/chart';
+import { downsampleMinMax } from '@calab/compute';
+import { TraceOverview, ZoomWindow, type HighlightZone } from '@calab/ui/chart';
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import { transientZonePlugin } from '@calab/ui/chart';
 import {
@@ -53,8 +53,6 @@ const DECONV_SCALE = 0.35;
 const RESID_GAP = 0.5;
 const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
-const MIN_BUCKET_WIDTH = 300;
-const MAX_BUCKET_WIDTH = 1200;
 const DEFAULT_ZOOM_WINDOW_S = 60;
 
 export function TraceInspector(): JSX.Element {
@@ -93,41 +91,26 @@ export function TraceInspector(): JSX.Element {
     return indices.length > 0 ? indices[0] : null;
   });
 
+  /** Resolve the history entry for the viewed iteration (null = use latest signals). */
+  const viewedHistoryEntry = createMemo(() => {
+    const iter = viewedIteration();
+    if (iter == null) return null;
+    return iterationHistory().find((h) => h.iteration === iter) ?? null;
+  });
+
   // Effective result: from iteration history or latest
   const effectiveResult = createMemo((): TraceResultEntry | null => {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
 
-    const iter = viewedIteration();
-    if (iter != null) {
-      const history = iterationHistory();
-      const entry = history.find((h) => h.iteration === iter);
-      if (entry) return entry.results[cellIdx] ?? null;
-      return null;
-    }
+    const histEntry = viewedHistoryEntry();
+    if (histEntry) return histEntry.results[cellIdx] ?? null;
 
     return perTraceResults()[cellIdx] ?? null;
   });
 
-  const effectiveTauRise = createMemo(() => {
-    const iter = viewedIteration();
-    if (iter != null) {
-      const history = iterationHistory();
-      const entry = history.find((h) => h.iteration === iter);
-      if (entry) return entry.tauRise;
-    }
-    return currentTauRise();
-  });
-
-  const effectiveTauDecay = createMemo(() => {
-    const iter = viewedIteration();
-    if (iter != null) {
-      const history = iterationHistory();
-      const entry = history.find((h) => h.iteration === iter);
-      if (entry) return entry.tauDecay;
-    }
-    return currentTauDecay();
-  });
+  const effectiveTauRise = createMemo(() => viewedHistoryEntry()?.tauRise ?? currentTauRise());
+  const effectiveTauDecay = createMemo(() => viewedHistoryEntry()?.tauDecay ?? currentTauDecay());
 
   // Whether we have any result for the selected cell (used as a gate, but
   // kept separate so the expensive trace extraction below doesn't re-run
@@ -170,21 +153,10 @@ export function TraceInspector(): JSX.Element {
     return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, result.baseline);
   });
 
-  // Residual = raw - reconvolved
-  const residualTrace = createMemo((): Float32Array | null => {
-    const raw = fullRawTrace();
-    const recon = reconvolvedTrace();
-    if (!raw || !recon) return null;
-    const minLen = Math.min(raw.length, recon.length);
-    const res = new Float32Array(minLen);
-    for (let i = 0; i < minLen; i++) res[i] = raw[i] - recon[i];
-    return res;
-  });
-
   // Filtered trace from solver (only present when HP/LP filtering is active)
-  const filteredTrace = createMemo((): Float32Array | null => {
-    return effectiveResult()?.filteredTrace ?? null;
-  });
+  const filteredTrace = createMemo(
+    (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
+  );
 
   // Auto-show/hide filtered trace based on filter state
   createEffect(() => {
@@ -305,7 +277,7 @@ export function TraceInspector(): JSX.Element {
     let rMin = Infinity;
     let rMax = -Infinity;
     for (let i = 0; i < dsRaw.length; i++) {
-      if (dsReconv[i] === null || dsReconv[i] === undefined) {
+      if (dsReconv[i] == null) {
         rawResid.push(null);
       } else {
         const r = dsRaw[i] - (dsReconv[i] as number);
@@ -321,27 +293,17 @@ export function TraceInspector(): JSX.Element {
     });
   };
 
-  // Container width tracking for adaptive downsampling
-  let containerRef: HTMLDivElement | undefined;
-  const [chartWidth, setChartWidth] = createSignal(600);
-
-  // --- Zoom window data (6 series: raw, filtered, fit, deconv, residual) ---
-  // Series order: x, raw, filtered, fit, deconv, residual
-  const SERIES_COUNT = 6;
-  const emptyData = (): [number[], ...number[][]] =>
-    Array.from({ length: SERIES_COUNT }, () => []) as unknown as [number[], ...number[][]];
-
-  const bucketWidth = () =>
-    Math.max(MIN_BUCKET_WIDTH, Math.min(MAX_BUCKET_WIDTH, Math.round(chartWidth())));
+  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], []];
+  const DOWNSAMPLE_BUCKETS = 600;
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
     const raw = fullRawTrace();
     const fs = samplingRate();
-    if (!raw || !fs || raw.length === 0) return emptyData();
+    if (!raw || !fs || raw.length === 0) return EMPTY_DATA;
 
     const startSample = Math.max(0, Math.floor(zoomStart() * fs));
     const endSample = Math.min(raw.length, Math.ceil(zoomEnd() * fs));
-    if (startSample >= endSample) return emptyData();
+    if (startSample >= endSample) return EMPTY_DATA;
 
     const len = endSample - startSample;
     const { mean, std, zMin, zMax } = rawStats();
@@ -351,7 +313,7 @@ export function TraceInspector(): JSX.Element {
     for (let i = 0; i < len; i++) x[i] = (startSample + i) * dt;
 
     const rawSlice = raw.subarray(startSample, endSample);
-    const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, bucketWidth());
+    const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, DOWNSAMPLE_BUCKETS);
     const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
 
     // Filtered trace — z-score (same normalization as raw)
@@ -359,7 +321,7 @@ export function TraceInspector(): JSX.Element {
     let dsFiltered: (number | null)[];
     if (filt && filt.length >= endSample) {
       const filtSlice = filt.subarray(startSample, endSample);
-      const [, dsFiltRaw] = downsampleMinMax(x, filtSlice, bucketWidth());
+      const [, dsFiltRaw] = downsampleMinMax(x, filtSlice, DOWNSAMPLE_BUCKETS);
       dsFiltered = dsFiltRaw.map((v) => (v - mean) / std);
     } else {
       dsFiltered = new Array(dsX.length).fill(null) as (number | null)[];
@@ -370,7 +332,7 @@ export function TraceInspector(): JSX.Element {
     let dsFit: (number | null)[];
     if (recon && recon.length >= endSample) {
       const reconSlice = recon.subarray(startSample, endSample);
-      const [, dsFitRaw] = downsampleMinMax(x, reconSlice, bucketWidth());
+      const [, dsFitRaw] = downsampleMinMax(x, reconSlice, DOWNSAMPLE_BUCKETS);
       dsFit = dsFitRaw.map((v) => (v - mean) / std);
     } else {
       dsFit = new Array(dsX.length).fill(null) as (number | null)[];
@@ -391,7 +353,7 @@ export function TraceInspector(): JSX.Element {
     let dsDeconv: number[];
     if (result && result.sCounts.length >= endSample) {
       const deconvSlice = result.sCounts.subarray(startSample, endSample);
-      const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, bucketWidth());
+      const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, DOWNSAMPLE_BUCKETS);
       dsDeconv = scaleToDeconvBand(dsDeconvRaw, deconvMinMax(), zMin, zMax);
     } else {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
@@ -480,7 +442,7 @@ export function TraceInspector(): JSX.Element {
   });
 
   return (
-    <div class="trace-inspector" ref={containerRef}>
+    <div class="trace-inspector">
       <div class="trace-inspector__header">
         <CellSelector
           cellIndices={cellIndices}

@@ -73,17 +73,11 @@ pub fn downsample_average(signal: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
         return signal.to_vec();
     }
-    let out_len = signal.len() / factor;
-    let mut out = vec![0.0_f32; out_len];
     let inv = 1.0 / factor as f32;
-    for i in 0..out_len {
-        let mut sum = 0.0_f32;
-        for j in 0..factor {
-            sum += signal[i * factor + j];
-        }
-        out[i] = sum * inv;
-    }
-    out
+    signal
+        .chunks_exact(factor)
+        .map(|chunk| chunk.iter().sum::<f32>() * inv)
+        .collect()
 }
 
 /// Downsample a binary spike signal by bin-summing: each output sample
@@ -95,16 +89,10 @@ pub fn downsample_binary(s_bin: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
         return s_bin.to_vec();
     }
-    let out_len = s_bin.len() / factor;
-    let mut out = vec![0.0_f32; out_len];
-    for i in 0..out_len {
-        let mut sum = 0.0_f32;
-        for j in 0..factor {
-            sum += s_bin[i * factor + j];
-        }
-        out[i] = sum;
-    }
-    out
+    s_bin
+        .chunks_exact(factor)
+        .map(|chunk| chunk.iter().sum())
+        .collect()
 }
 
 #[cfg(test)]

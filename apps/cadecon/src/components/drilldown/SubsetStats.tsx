@@ -20,6 +20,16 @@ export function SubsetStats(props: SubsetStatsProps): JSX.Element {
     return props.snapshot.subsets[props.subsetIdx];
   };
 
+  /** Format a subset field value, falling back to '--' when the subset is unavailable. */
+  const subFmt = (
+    field: 'tauRise' | 'tauDecay' | 'beta' | 'residual',
+    scale: number,
+    decimals: number,
+  ): string => {
+    const s = sub();
+    return s ? fmt(s[field] * scale, decimals) : '--';
+  };
+
   return (
     <div class="subset-stats">
       <table class="subset-stats__table">
@@ -33,22 +43,22 @@ export function SubsetStats(props: SubsetStatsProps): JSX.Element {
         <tbody>
           <tr>
             <td>tau_r (ms)</td>
-            <td>{sub() ? fmt(sub()!.tauRise * 1000, 1) : '--'}</td>
+            <td>{subFmt('tauRise', 1000, 1)}</td>
             <td>{fmt(props.snapshot.tauRise * 1000, 1)}</td>
           </tr>
           <tr>
             <td>tau_d (ms)</td>
-            <td>{sub() ? fmt(sub()!.tauDecay * 1000, 1) : '--'}</td>
+            <td>{subFmt('tauDecay', 1000, 1)}</td>
             <td>{fmt(props.snapshot.tauDecay * 1000, 1)}</td>
           </tr>
           <tr>
             <td>beta</td>
-            <td>{sub() ? fmt(sub()!.beta, 3) : '--'}</td>
+            <td>{subFmt('beta', 1, 3)}</td>
             <td>{fmt(props.snapshot.beta, 3)}</td>
           </tr>
           <tr>
             <td>residual</td>
-            <td>{sub() ? fmt(sub()!.residual, 4) : '--'}</td>
+            <td>{subFmt('residual', 1, 4)}</td>
             <td>{fmt(props.snapshot.residual, 4)}</td>
           </tr>
         </tbody>

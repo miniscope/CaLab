@@ -5,6 +5,8 @@ use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::{Constraint, ConvMode, Solver};
 
 const BATCH_SIZE: u32 = 100;
+const CONTIGUOUS_ERR: &str =
+    "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
 
 fn parse_conv_mode(s: &str) -> PyResult<ConvMode> {
     match s {
@@ -61,9 +63,7 @@ impl PySolver {
     /// Load a trace (numpy float32 array) for deconvolution.
     fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) -> PyResult<()> {
         let slice = trace.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(
-                "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
-            )
+            pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
         })?;
         self.inner.set_trace(slice);
         Ok(())
@@ -177,9 +177,7 @@ fn py_build_kernel<'py>(
 #[pyfunction]
 fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> PyResult<f64> {
     let slice = kernel.as_slice().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(
-            "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
-        )
+        pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
     })?;
     Ok(compute_lipschitz(slice))
 }
@@ -223,9 +221,7 @@ fn deconvolve_single<'py>(
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
     let slice = trace.as_slice().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(
-            "array must be C-contiguous; call numpy.ascontiguousarray() before passing",
-        )
+        pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
     })?;
     let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
