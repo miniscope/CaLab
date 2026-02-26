@@ -25,6 +25,7 @@ export interface KernelSnapshot {
 
 export interface TraceResultEntry {
   sCounts: Float32Array;
+  filteredTrace?: Float32Array;
   alpha: number;
   baseline: number;
   pve: number;
@@ -117,6 +118,7 @@ function snapshotIteration(iteration: number, tauRise: number, tauDecay: number)
   for (const [key, entry] of Object.entries(results)) {
     copy[Number(key)] = {
       sCounts: new Float32Array(entry.sCounts),
+      filteredTrace: entry.filteredTrace ? new Float32Array(entry.filteredTrace) : undefined,
       alpha: entry.alpha,
       baseline: entry.baseline,
       pve: entry.pve,

@@ -44,6 +44,10 @@ export class Solver {
     [Symbol.dispose](): void;
     /**
      * Apply bandpass filter to the active trace region. Returns true if filtering was applied.
+     *
+     * Sets `self.filtered = true` only when HP is active, because HP removes DC and
+     * baseline estimation should be skipped. LP-only preserves DC, so baseline
+     * estimation must still run.
      */
     apply_filter(): boolean;
     /**
@@ -136,6 +140,9 @@ export class Solver {
      * Does NOT reset solution/iteration state — warm-start is preserved.
      */
     set_conv_mode(mode: ConvMode): void;
+    /**
+     * Convenience: set both HP and LP together (used by CaTune's single toggle).
+     */
     set_filter_enabled(enabled: boolean): void;
     set_hp_filter_enabled(enabled: boolean): void;
     set_lp_filter_enabled(enabled: boolean): void;
@@ -230,6 +237,8 @@ export interface InitOutput {
     readonly solver_set_constraint: (a: number, b: number) => void;
     readonly solver_set_conv_mode: (a: number, b: number) => void;
     readonly solver_set_filter_enabled: (a: number, b: number) => void;
+    readonly solver_set_hp_filter_enabled: (a: number, b: number) => void;
+    readonly solver_set_lp_filter_enabled: (a: number, b: number) => void;
     readonly solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly solver_set_trace: (a: number, b: number, c: number) => void;
     readonly solver_step_batch: (a: number, b: number) => number;

@@ -41,6 +41,7 @@ import {
   setShowResidual,
   viewedIteration,
 } from '../../lib/viz-store.ts';
+import { hpFilterEnabled, lpFilterEnabled } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import { dataIndex } from '../../lib/data-utils.ts';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
@@ -180,6 +181,17 @@ export function TraceInspector(): JSX.Element {
     return res;
   });
 
+  // Filtered trace from solver (only present when HP/LP filtering is active)
+  const filteredTrace = createMemo((): Float32Array | null => {
+    return effectiveResult()?.filteredTrace ?? null;
+  });
+
+  // Auto-show/hide filtered trace based on filter state
+  createEffect(() => {
+    const filterActive = hpFilterEnabled() || lpFilterEnabled();
+    setShowFiltered(filterActive);
+  });
+
   // Zoom window state
   const totalDuration = createMemo(() => {
     const raw = fullRawTrace();
@@ -313,9 +325,9 @@ export function TraceInspector(): JSX.Element {
   let containerRef: HTMLDivElement | undefined;
   const [chartWidth, setChartWidth] = createSignal(600);
 
-  // --- Zoom window data (5 series: raw, fit, deconv, residual — filtered hidden for now) ---
-  // Series order: x, raw, fit, deconv, residual
-  const SERIES_COUNT = 5;
+  // --- Zoom window data (6 series: raw, filtered, fit, deconv, residual) ---
+  // Series order: x, raw, filtered, fit, deconv, residual
+  const SERIES_COUNT = 6;
   const emptyData = (): [number[], ...number[][]] =>
     Array.from({ length: SERIES_COUNT }, () => []) as unknown as [number[], ...number[][]];
 
@@ -341,6 +353,17 @@ export function TraceInspector(): JSX.Element {
     const rawSlice = raw.subarray(startSample, endSample);
     const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, bucketWidth());
     const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
+
+    // Filtered trace — z-score (same normalization as raw)
+    const filt = filteredTrace();
+    let dsFiltered: (number | null)[];
+    if (filt && filt.length >= endSample) {
+      const filtSlice = filt.subarray(startSample, endSample);
+      const [, dsFiltRaw] = downsampleMinMax(x, filtSlice, bucketWidth());
+      dsFiltered = dsFiltRaw.map((v) => (v - mean) / std);
+    } else {
+      dsFiltered = new Array(dsX.length).fill(null) as (number | null)[];
+    }
 
     // Reconvolved (fit) — z-score
     const recon = reconvolvedTrace();
@@ -377,12 +400,13 @@ export function TraceInspector(): JSX.Element {
     // Residual
     const dsResid = computeResiduals(dsRaw, dsFit, zMin, zMax, dsX.length);
 
-    return [dsX, dsRaw, dsFit as number[], dsDeconv, dsResid];
+    return [dsX, dsRaw, dsFiltered as number[], dsFit as number[], dsDeconv, dsResid];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => [
     {},
     { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
+    { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
     { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
     { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
     { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
@@ -391,6 +415,13 @@ export function TraceInspector(): JSX.Element {
   // Legend items
   const legendItems = createMemo((): LegendItemConfig[] => [
     { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
+    {
+      key: 'filtered',
+      color: '#17becf',
+      label: 'Filtered',
+      visible: showFiltered,
+      setVisible: setShowFiltered,
+    },
     { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
     {
       key: 'deconv',

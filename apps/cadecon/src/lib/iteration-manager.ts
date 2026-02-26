@@ -321,6 +321,8 @@ export async function startRun(): Promise<void> {
     prevTraceCounts = new Map();
     // Map cell → latest scalar results (alpha, baseline, pve) from whichever subset last processed it
     const cellScalars = new Map<number, { alpha: number; baseline: number; pve: number }>();
+    // Map cell → full-length filtered trace (stitched from subset windows)
+    const cellFiltered = new Map<number, Float32Array>();
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
       for (const [cell, result] of traceResults[si]) {
@@ -331,6 +333,15 @@ export async function startRun(): Promise<void> {
           prevTraceCounts.set(cell, full);
         }
         full.set(result.sCounts, rect.tStart);
+        // Stitch filtered trace subset windows into full-length arrays
+        if (result.filteredTrace) {
+          let fullFilt = cellFiltered.get(cell);
+          if (!fullFilt) {
+            fullFilt = new Float32Array(nTp);
+            cellFiltered.set(cell, fullFilt);
+          }
+          fullFilt.set(result.filteredTrace, rect.tStart);
+        }
         cellScalars.set(cell, {
           alpha: result.alpha,
           baseline: result.baseline,
@@ -342,8 +353,10 @@ export async function startRun(): Promise<void> {
     // Publish full-length results so distributions and trace viewer update during iterations
     for (const [cell, fullCounts] of prevTraceCounts) {
       const scalars = cellScalars.get(cell)!;
+      const filteredTrace = cellFiltered.get(cell);
       updateTraceResult(cell, {
         sCounts: fullCounts,
+        filteredTrace,
         alpha: scalars.alpha,
         baseline: scalars.baseline,
         pve: scalars.pve,
@@ -503,6 +516,7 @@ export async function startRun(): Promise<void> {
           onComplete(result: TraceResult) {
             updateTraceResult(c, {
               sCounts: result.sCounts,
+              filteredTrace: result.filteredTrace,
               alpha: result.alpha,
               baseline: result.baseline,
               pve: result.pve,

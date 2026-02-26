@@ -3,6 +3,7 @@
 /** Results from InDeCa trace inference (mirrors Rust InDecaResult). */
 export interface TraceResult {
   sCounts: Float32Array;
+  filteredTrace?: Float32Array;
   alpha: number;
   baseline: number;
   threshold: number;

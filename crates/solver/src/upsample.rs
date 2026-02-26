@@ -64,6 +64,28 @@ pub fn upsample_counts_to_binary(counts: &[f32], factor: usize) -> Vec<f32> {
     out
 }
 
+/// Downsample a continuous signal by bin-averaging: each output sample
+/// is the mean of `factor` consecutive input samples.
+///
+/// Output length = input_length / factor (truncated).
+/// At factor=1, returns a copy of the input.
+pub fn downsample_average(signal: &[f32], factor: usize) -> Vec<f32> {
+    if factor <= 1 {
+        return signal.to_vec();
+    }
+    let out_len = signal.len() / factor;
+    let mut out = vec![0.0_f32; out_len];
+    let inv = 1.0 / factor as f32;
+    for i in 0..out_len {
+        let mut sum = 0.0_f32;
+        for j in 0..factor {
+            sum += signal[i * factor + j];
+        }
+        out[i] = sum * inv;
+    }
+    out
+}
+
 /// Downsample a binary spike signal by bin-summing: each output sample
 /// is the sum of `factor` consecutive input samples.
 ///

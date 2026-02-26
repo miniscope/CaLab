@@ -37,6 +37,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.warmCounts ?? emptyF32,
     ) as {
       s_counts: number[];
+      filtered_trace: number[] | null;
       alpha: number;
       baseline: number;
       threshold: number;
@@ -51,12 +52,18 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
     }
 
     const sCounts = new Float32Array(jsResult.s_counts);
+    const filteredTrace = jsResult.filtered_trace
+      ? new Float32Array(jsResult.filtered_trace)
+      : undefined;
+    const transfers: ArrayBuffer[] = [sCounts.buffer];
+    if (filteredTrace) transfers.push(filteredTrace.buffer);
     post(
       {
         type: 'trace-complete',
         jobId: req.jobId,
         result: {
           sCounts,
+          filteredTrace,
           alpha: jsResult.alpha,
           baseline: jsResult.baseline,
           threshold: jsResult.threshold,
@@ -65,7 +72,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           converged: jsResult.converged,
         },
       },
-      [sCounts.buffer],
+      transfers,
     );
   } catch (err) {
     post({ type: 'error', jobId: req.jobId, message: String(err) });

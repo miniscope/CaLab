@@ -11,12 +11,15 @@
 
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search, ThresholdResult};
-use crate::upsample::{downsample_binary, upsample_counts_to_binary, upsample_trace};
+use crate::upsample::{
+    downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
+};
 use crate::{Constraint, ConvMode, Solver};
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct InDecaResult {
     pub s_counts: Vec<f32>,
+    pub filtered_trace: Option<Vec<f32>>,
     pub alpha: f64,
     pub baseline: f64,
     pub threshold: f64,
@@ -28,7 +31,7 @@ pub struct InDecaResult {
 /// Run bounded FISTA on a (possibly upsampled) trace.
 ///
 /// Uses Box01 constraint with lambda=0 and BandedAR2 convolution.
-/// Returns (relaxed_solution, iterations, converged).
+/// Returns (relaxed_solution, filtered_trace_if_filtering, iterations, converged).
 pub fn solve_bounded(
     trace: &[f32],
     tau_r: f64,
@@ -40,7 +43,7 @@ pub fn solve_bounded(
     warm_start: Option<&[f32]>,
     hp_enabled: bool,
     lp_enabled: bool,
-) -> (Vec<f32>, u32, bool) {
+) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
     let upsampled = upsample_trace(trace, upsample_factor);
     let fs_up = fs * upsample_factor as f64;
 
@@ -50,11 +53,14 @@ pub fn solve_bounded(
     solver.set_constraint(Constraint::Box01);
     solver.set_trace(&upsampled);
 
-    if hp_enabled || lp_enabled {
+    let filtered = if hp_enabled || lp_enabled {
         solver.set_hp_filter_enabled(hp_enabled);
         solver.set_lp_filter_enabled(lp_enabled);
         solver.apply_filter();
-    }
+        Some(solver.get_trace())
+    } else {
+        None
+    };
 
     // Apply warm-start if provided
     if let Some(warm) = warm_start {
@@ -83,7 +89,7 @@ pub fn solve_bounded(
     let iterations = solver.iteration_count();
     let converged = solver.converged();
 
-    (solution, iterations, converged)
+    (solution, filtered, iterations, converged)
 }
 
 /// Full InDeCa trace processing pipeline.
@@ -116,7 +122,7 @@ pub fn solve_trace(
     let warm_start = warm_binary.as_deref();
 
     // Step 1: Bounded FISTA solve on (optionally filtered) upsampled trace
-    let (s_relaxed, iterations, converged) =
+    let (s_relaxed, filtered_up, iterations, converged) =
         solve_bounded(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm_start, hp_enabled, lp_enabled);
 
     // Step 2: Threshold search on raw upsampled trace
@@ -133,8 +139,12 @@ pub fn solve_trace(
     // Step 3: Downsample binary spike train to original rate
     let s_counts = downsample_binary(&s_binary, upsample_factor);
 
+    // Step 4: Downsample filtered trace (if present) to original rate
+    let filtered_trace = filtered_up.map(|ft| downsample_average(&ft, upsample_factor));
+
     InDecaResult {
         s_counts,
+        filtered_trace,
         alpha,
         baseline,
         threshold,
@@ -210,11 +220,11 @@ mod tests {
         let trace = make_trace(0.02, 0.4, 30.0, 200, &[20, 80, 150]);
 
         // Get the cold solution for warm-start
-        let (cold_sol, _, _) =
+        let (cold_sol, _, _, _) =
             solve_bounded(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false);
 
         // Warm solve with slightly different taus
-        let (_, warm_iters, _) = solve_bounded(
+        let (_, _, warm_iters, _) = solve_bounded(
             &trace,
             0.025,
             0.45,
