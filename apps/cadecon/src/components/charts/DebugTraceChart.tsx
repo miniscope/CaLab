@@ -1,6 +1,5 @@
 import { createEffect, createSignal, on, onCleanup, type JSX } from 'solid-js';
-import { debugTraceSnapshots } from '../../lib/iteration-store.ts';
-import type { DebugTraceSnapshot } from '../../lib/iteration-store.ts';
+import { debugTraceSnapshots, type DebugTraceSnapshot } from '../../lib/iteration-store.ts';
 
 const COLORS = {
   trace: '#90caf9', // light blue
@@ -148,10 +147,6 @@ export function DebugTraceChart(): JSX.Element {
       if (sCounts[i] > sMax) sMax = sCounts[i];
     }
     if (sMax === 0) sMax = 1;
-
-    function mapYSpike(v: number): number {
-      return spikeTop + halfH - (v / sMax) * halfH;
-    }
 
     // Grid
     ctx.strokeStyle = COLORS.grid;

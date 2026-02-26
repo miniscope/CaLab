@@ -4,9 +4,9 @@
 /// a binary spike train whose AR2 convolution best explains the observed trace.
 /// Uses a coarse-then-fine grid search over thresholds from the relaxed solution.
 ///
-/// Assumes the input trace is normalized: y_norm = (y - baseline) / alpha,
-/// so the AR2 impulse response peak ≈ 1 matches the trace amplitude.
-/// This ensures that spurious binary spikes create large MSE penalties.
+/// For each candidate threshold, the binary spike train is convolved through
+/// the peak-normalized AR2 model and fit with least-squares alpha + baseline.
+/// Alpha is constrained non-negative (spikes must add signal, not subtract).
 
 use crate::banded::BandedAR2;
 

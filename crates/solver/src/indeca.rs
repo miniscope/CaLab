@@ -3,11 +3,11 @@
 /// Chains: upsample → bounded FISTA solve → threshold search → downsample
 /// to produce binary spike counts at the original sampling rate.
 ///
-/// Raw traces are passed directly to FISTA (no normalization). The Box[0,1]
-/// constraint works because the AR2 impulse response peak is large (~20 at
-/// 300Hz upsampled rate), so even s ∈ [0,1] can produce substantial amplitude
-/// in the forward model. The threshold search then finds the optimal alpha
-/// and baseline via least-squares.
+/// The AR2 forward model is peak-normalized so that a single spike produces
+/// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
+/// Raw traces are passed directly to FISTA with Box[0,1] constraint and
+/// lambda=0. The threshold search then binarizes the relaxed solution and
+/// finds the optimal alpha and baseline via least-squares.
 
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search, ThresholdResult};
@@ -82,14 +82,8 @@ pub fn solve_bounded(
 ///
 /// 1. Upsample trace (linear interpolation)
 /// 2. Solve bounded FISTA (Box01, lambda=0) on raw upsampled trace
-/// 3. Threshold search: binarize → AR2 convolve → lstsq alpha/baseline → best threshold
+/// 3. Threshold search: binarize → peak-normalized AR2 convolve → lstsq alpha/baseline
 /// 4. Downsample binary spike train to original rate
-///
-/// No trace normalization is applied — raw amplitudes are preserved.
-/// The AR2 impulse response peak at upsampled rates is large (e.g. ~21 at 300Hz
-/// for tau_r=0.1, tau_d=0.6), so FISTA's Box[0,1] constraint produces small
-/// relaxed values at spike times (e.g. s ≈ trace_peak / AR2_peak). The threshold
-/// search then binarizes and finds the optimal alpha via lstsq.
 pub fn solve_trace(
     trace: &[f32],
     tau_r: f64,

@@ -183,7 +183,6 @@ function dispatchKernelJobs(
       const traceLengths: number[] = [];
       const alphas: number[] = [];
       const baselines: number[] = [];
-      let subsetTotalSpikes = 0;
 
       for (let c = rect.cellStart; c < rect.cellEnd; c++) {
         const r = subsetResults.get(c);
@@ -196,22 +195,11 @@ function dispatchKernelJobs(
         traceLengths.push(trace.length);
         alphas.push(r.alpha);
         baselines.push(r.baseline);
-        subsetTotalSpikes += r.sCounts.reduce((s, v) => s + v, 0);
       }
 
       if (traceLengths.length === 0) {
-        console.warn(
-          `[CaDecon] Subset ${si}: no valid traces (all zero spikes or zero alpha). Skipping.`,
-        );
         continue;
       }
-
-      console.log(
-        `[CaDecon] Subset ${si}: ${traceLengths.length} traces, ` +
-          `${subsetTotalSpikes.toFixed(0)} total spikes, ` +
-          `mean alpha=${(alphas.reduce((s, v) => s + v, 0) / alphas.length).toFixed(2)}, ` +
-          `kernelLength=${kernelLength}`,
-      );
 
       totalKernelJobs++;
       const jobId = nextJobId++;
@@ -250,41 +238,6 @@ function dispatchKernelJobs(
   });
 }
 
-/** Log per-subset trace inference summary. */
-function logTraceResults(
-  rects: SubsetRectangle[],
-  perSubsetResults: Array<Map<number, TraceResult>>,
-): void {
-  for (let si = 0; si < rects.length; si++) {
-    const subsetResults = perSubsetResults[si];
-    const cells = subsetResults.size;
-    if (cells === 0) {
-      console.log(`[CaDecon]   Subset ${si}: 0 cells completed`);
-      continue;
-    }
-    let totalSpikes = 0;
-    let totalPve = 0;
-    let totalAlpha = 0;
-    let totalThreshold = 0;
-    let zeroSpikeCells = 0;
-    for (const r of subsetResults.values()) {
-      const spikes = r.sCounts.reduce((s, v) => s + v, 0);
-      totalSpikes += spikes;
-      totalPve += r.pve;
-      totalAlpha += r.alpha;
-      totalThreshold += r.threshold;
-      if (spikes === 0) zeroSpikeCells++;
-    }
-    console.log(
-      `[CaDecon]   Subset ${si}: ${cells} cells, ` +
-        `${totalSpikes.toFixed(0)} spikes (${zeroSpikeCells} cells w/ 0 spikes), ` +
-        `mean PVE=${(totalPve / cells).toFixed(3)}, ` +
-        `mean alpha=${(totalAlpha / cells).toFixed(2)}, ` +
-        `mean threshold=${(totalThreshold / cells).toFixed(4)}`,
-    );
-  }
-}
-
 // --- Main Loop ---
 
 export async function startRun(): Promise<void> {
@@ -307,20 +260,6 @@ export async function startRun(): Promise<void> {
   // Kernel length: ~2x tau_decay in samples
   const kernelLength = Math.max(10, Math.ceil(2.0 * tauD * fs));
 
-  console.log(
-    `[CaDecon] Starting run: ${nCells} cells, ${nTp} timepoints, fs=${fs} Hz, ` +
-      `upFactor=${upFactor}, ${rects.length} subsets`,
-  );
-  console.log(
-    `[CaDecon] Initial taus: rise=${(tauR * 1000).toFixed(1)} ms, ` +
-      `decay=${(tauD * 1000).toFixed(1)} ms, kernelLength=${kernelLength} samples`,
-  );
-  console.log(
-    `[CaDecon] Convergence: tol=${convTol}, maxIter=${maxIter}, ` +
-      `traceFISTA=(${TRACE_FISTA_MAX_ITERS}, ${TRACE_FISTA_TOL}), ` +
-      `kernelFISTA=(${KERNEL_FISTA_MAX_ITERS}, ${KERNEL_FISTA_TOL})`,
-  );
-
   // Create pool
   pool = createCaDeconWorkerPool();
   setRunState('running');
@@ -337,10 +276,6 @@ export async function startRun(): Promise<void> {
     }
 
     setCurrentIteration(iter + 1);
-    console.log(
-      `\n[CaDecon] === Iteration ${iter + 1} ===  ` +
-        `tauR=${(tauR * 1000).toFixed(1)} ms, tauD=${(tauD * 1000).toFixed(1)} ms`,
-    );
 
     // Step 1: Per-trace inference
     const traceResults = await dispatchTraceJobs(
@@ -356,9 +291,6 @@ export async function startRun(): Promise<void> {
     );
 
     if (runState() === 'stopping') break;
-
-    console.log('[CaDecon] Trace inference complete:');
-    logTraceResults(rects, traceResults);
 
     // Capture debug trace snapshot: cell 0 from first subset that has it
     if (rects.length > 0 && traceResults[0].size > 0) {
@@ -416,7 +348,6 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 2: Per-subset kernel estimation
-    console.log('[CaDecon] Dispatching kernel estimation jobs...');
     const kernelResults = await dispatchKernelJobs(
       rects,
       traceResults,
@@ -429,20 +360,7 @@ export async function startRun(): Promise<void> {
     if (runState() === 'stopping') break;
 
     if (kernelResults.length === 0) {
-      console.warn('[CaDecon] No kernel results — stopping.');
       break;
-    }
-
-    // Log per-subset kernel results
-    console.log('[CaDecon] Kernel estimation results:');
-    for (let ki = 0; ki < kernelResults.length; ki++) {
-      const kr = kernelResults[ki];
-      console.log(
-        `[CaDecon]   Kernel ${ki}: ` +
-          `tauR=${(kr.tauRise * 1000).toFixed(1)} ms, ` +
-          `tauD=${(kr.tauDecay * 1000).toFixed(1)} ms, ` +
-          `beta=${kr.beta.toFixed(4)}, residual=${kr.residual.toFixed(6)}`,
-      );
     }
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
@@ -475,27 +393,13 @@ export async function startRun(): Promise<void> {
     const relChangeTauR = Math.abs(tauR - prevTauR) / (prevTauR + 1e-20);
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
     const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
-    console.log(
-      `[CaDecon] Merge: tauR=${(tauR * 1000).toFixed(1)} ms, ` +
-        `tauD=${(tauD * 1000).toFixed(1)} ms  ` +
-        `(change: tauR=${(relChangeTauR * 100).toFixed(1)}%, ` +
-        `tauD=${(relChangeTauD * 100).toFixed(1)}%, ` +
-        `max=${(maxRelChange * 100).toFixed(1)}% vs tol=${(convTol * 100).toFixed(1)}%)`,
-    );
-
     if (iter > 0 && maxRelChange < convTol) {
-      console.log(`[CaDecon] Converged at iteration ${iter + 1}.`);
       break;
     }
   }
 
   // Finalization: re-run trace inference on ALL cells with converged kernel
   if (runState() !== 'stopping') {
-    console.log(
-      `\n[CaDecon] === Finalization ===  ` +
-        `${nCells} cells with tauR=${(tauR * 1000).toFixed(1)} ms, ` +
-        `tauD=${(tauD * 1000).toFixed(1)} ms`,
-    );
     setTotalSubsetTraceJobs(nCells);
     setCompletedSubsetTraceJobs(0);
     let finCompleted = 0;
@@ -544,7 +448,6 @@ export async function startRun(): Promise<void> {
         });
       }
     });
-    console.log('[CaDecon] Finalization complete.');
   }
 
   setRunState('complete');
