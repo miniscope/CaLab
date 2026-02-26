@@ -1,7 +1,17 @@
 import type { Component } from 'solid-js';
-import { Show } from 'solid-js';
-import { DashboardShell, DashboardPanel, VizLayout, isAuthCallback, AuthCallback } from '@calab/ui';
+import { createSignal, Show } from 'solid-js';
+import {
+  DashboardShell,
+  DashboardPanel,
+  VizLayout,
+  isAuthCallback,
+  AuthCallback,
+  SidebarTabs,
+} from '@calab/ui';
+import type { SidebarTabConfig } from '@calab/ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
+import { trackEvent } from '@calab/community';
+import { supabaseEnabled, user, authLoading } from './lib/community/index.ts';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -18,7 +28,8 @@ import { PVEDistribution } from './components/distributions/PVEDistribution.tsx'
 import { EventRateDistribution } from './components/distributions/EventRateDistribution.tsx';
 import { SubsetVariance } from './components/distributions/SubsetVariance.tsx';
 import { SubsetDrillDown } from './components/drilldown/SubsetDrillDown.tsx';
-import { user, authLoading } from './lib/auth-store.ts';
+import { SubmitPanel } from './components/community/SubmitPanel.tsx';
+import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import {
   importStep,
   rawFile,
@@ -36,6 +47,7 @@ import './styles/trace-inspector.css';
 import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
+import './styles/community.css';
 
 const App: Component = () => {
   if (isAuthCallback()) {
@@ -49,6 +61,23 @@ const App: Component = () => {
     });
   }
 
+  // Right sidebar state for community panel
+  const [sidebarOpen, setSidebarOpen] = createSignal(false);
+  const toggleSidebar = () => setSidebarOpen((prev) => !prev);
+
+  const communitySidebarTabs = (): SidebarTabConfig[] => {
+    const list: SidebarTabConfig[] = [];
+    if (supabaseEnabled) {
+      list.push({
+        id: 'community',
+        label: 'Community',
+        content: () => <CommunityBrowser />,
+        onActivate: () => void trackEvent('community_browser_opened'),
+      });
+    }
+    return list;
+  };
+
   return (
     <Show
       when={importStep() === 'ready'}
@@ -56,7 +85,16 @@ const App: Component = () => {
         <ImportOverlay hasFile={!!rawFile()} onReset={resetImport} onLoadDemo={loadDemoData} />
       }
     >
-      <DashboardShell header={<CaDeconHeader />}>
+      <DashboardShell
+        sidebarOpen={sidebarOpen()}
+        onToggleSidebar={toggleSidebar}
+        header={<CaDeconHeader sidebarOpen={sidebarOpen()} onToggleSidebar={toggleSidebar} />}
+        sidebar={
+          supabaseEnabled ? (
+            <SidebarTabs tabs={communitySidebarTabs()} defaultTab="community" />
+          ) : undefined
+        }
+      >
         <VizLayout
           mode="dashboard"
           sidebar={
@@ -84,6 +122,8 @@ const App: Component = () => {
                 <RunControls />
                 <ProgressBar />
               </DashboardPanel>
+
+              <SubmitPanel />
             </>
           }
         >

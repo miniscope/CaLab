@@ -8,8 +8,9 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-export const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const env = (import.meta as unknown as { env: Record<string, string | undefined> }).env;
+export const supabaseUrl = env.VITE_SUPABASE_URL;
+export const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('Supabase credentials not configured. Community features will be disabled.');

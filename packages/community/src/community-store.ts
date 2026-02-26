@@ -1,18 +1,25 @@
-// Reactive auth and community data signals.
+/**
+ * Singleton community store using SolidJS reactive primitives (createSignal).
+ * Designed for SPA usage — signals are created at module scope on first import.
+ */
+
+// Shared reactive auth and community data signals.
 // Uses shared auth helpers from @calab/community and pipes into SolidJS signals.
+// Consumed by all CaLab apps (CaTune, CaDecon, etc.)
 
 import { createSignal } from 'solid-js';
+import { subscribeAuth } from './auth.ts';
+import { fetchFieldOptions } from './field-options-service.ts';
+import { supabaseEnabled } from './supabase.ts';
 import {
-  subscribeAuth,
-  supabaseEnabled,
-  fetchFieldOptions,
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,
   BRAIN_REGION_OPTIONS,
   MICROSCOPE_TYPE_OPTIONS,
   CELL_TYPE_OPTIONS,
-} from '@calab/community';
-import type { User, FieldOptions } from '@calab/community';
+} from './field-options.ts';
+import type { User } from './auth.ts';
+import type { FieldOptions } from './types.ts';
 
 // --- Auth signals ---
 

@@ -5,7 +5,7 @@
 import { createEffect, on } from 'solid-js';
 import { trackEvent } from '@calab/community';
 import { importStep, isDemo, rawFile } from './data-store.ts';
-import { user } from './community/community-store.ts';
+import { user } from './community/index.ts';
 
 export function setupAnalyticsEffects(): void {
   // Track file_imported / demo_loaded when importStep transitions to 'ready'

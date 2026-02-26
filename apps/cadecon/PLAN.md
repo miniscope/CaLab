@@ -855,12 +855,12 @@ The 3-row grid uses CSS flexbox (not CSS Grid) for compatibility with the existi
 
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                                                           |
-| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------- |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                                 |
-| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass             |
-| Phase 3: Visualization + QC          | COMPLETE    | uPlot charts, TraceViewer, distributions, drill-down, 3-row grid, phase indicator, 24 new files |
-| Phase 4: Community DB                | NOT STARTED |                                                                                                 |
-| Phase 5: Export/Import               | NOT STARTED |                                                                                                 |
-| Phase 6: Python Extension            | DEFERRED    |                                                                                                 |
-| Phase 7: Tutorials + Polish          | DEFERRED    | Includes: per-worker indicators, iteration log sidebar                                          |
+| Phase                                | Status      | Notes                                                                                                    |
+| ------------------------------------ | ----------- | -------------------------------------------------------------------------------------------------------- |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                                          |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass                      |
+| Phase 3: Visualization + QC          | COMPLETE    | uPlot charts, TraceViewer, distributions, drill-down, 3-row grid, phase indicator, 24 new files          |
+| Phase 4: Community DB                | COMPLETE    | Shared components promoted to @calab/ui + @calab/community, CaDecon submit/browser/scatter, DB migration |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                                          |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                                          |
+| Phase 7: Tutorials + Polish          | DEFERRED    | Includes: per-worker indicators, iteration log sidebar                                                   |

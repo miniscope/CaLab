@@ -2,13 +2,22 @@
  * Authentication gate for community features.
  * Shows email sign-in form when unauthenticated,
  * user info with sign-out when authenticated.
- * Reads from the global community-store -- no props needed.
+ *
+ * Prop-driven: does not import any app-level store directly.
  */
 
 import { Show, createSignal } from 'solid-js';
-import { user, authLoading, signInWithEmail, signOut } from '../../lib/community/index.ts';
+import type { Accessor } from 'solid-js';
+import './styles/community.css';
 
-export function AuthGate() {
+export interface AuthGateProps {
+  user: Accessor<{ email?: string } | null>;
+  authLoading: Accessor<boolean>;
+  signInWithEmail: (email: string) => Promise<{ error?: string | null }>;
+  signOut: () => Promise<void> | void;
+}
+
+export function AuthGate(props: AuthGateProps) {
   const [email, setEmail] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [sent, setSent] = createSignal(false);
@@ -20,7 +29,7 @@ export function AuthGate() {
     if (!addr) return;
     setSending(true);
     setError(null);
-    const result = await signInWithEmail(addr);
+    const result = await props.signInWithEmail(addr);
     setSending(false);
     if (result.error) {
       setError(result.error);
@@ -31,9 +40,12 @@ export function AuthGate() {
 
   return (
     <div class="auth-gate">
-      <Show when={!authLoading()} fallback={<span class="auth-gate__loading">Loading...</span>}>
+      <Show
+        when={!props.authLoading()}
+        fallback={<span class="auth-gate__loading">Loading...</span>}
+      >
         <Show
-          when={user()}
+          when={props.user()}
           fallback={
             <div class="auth-gate__login">
               <Show
@@ -66,8 +78,8 @@ export function AuthGate() {
           }
         >
           <div class="auth-gate__user-row">
-            <span class="auth-gate__email">{user()?.email ?? 'Authenticated'}</span>
-            <button class="auth-gate__btn auth-gate__btn--signout" onClick={() => signOut()}>
+            <span class="auth-gate__email">{props.user()?.email ?? 'Authenticated'}</span>
+            <button class="auth-gate__btn auth-gate__btn--signout" onClick={() => props.signOut()}>
               Sign Out
             </button>
           </div>

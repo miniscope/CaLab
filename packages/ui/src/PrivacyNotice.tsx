@@ -1,13 +1,23 @@
 /**
  * Inline privacy notice with expandable data flow details.
  * Shows a brief privacy message (always visible) and a
- * "Learn more" toggle with detailed explanation of what
- * data is and is not transmitted.
+ * "Learn more" toggle with detailed explanation.
+ *
+ * Content is slot-driven: each app provides its own shared/retained item lists.
  */
 
 import { createSignal, Show } from 'solid-js';
+import type { JSX } from 'solid-js';
+import './styles/community.css';
 
-export function PrivacyNotice() {
+export interface PrivacyNoticeProps {
+  /** Describes what data IS shared (transmitted to the server). */
+  sharedItems: JSX.Element;
+  /** Describes what data is NOT shared (stays in the browser). */
+  retainedItems: JSX.Element;
+}
+
+export function PrivacyNotice(props: PrivacyNoticeProps) {
   const [expanded, setExpanded] = createSignal(false);
 
   return (
@@ -27,15 +37,8 @@ export function PrivacyNotice() {
       </button>
       <Show when={expanded()}>
         <div class="privacy-notice__details">
-          <p>
-            When you submit, CaTune sends only: parameter values (tau_rise, tau_decay, lambda), AR2
-            coefficients, sampling rate, your experimental metadata (indicator, species, brain
-            region), and a dataset fingerprint for duplicate detection.
-          </p>
-          <p>
-            Your raw fluorescence traces, deconvolved activity, and any file data remain entirely in
-            your browser's memory. No trace data is ever transmitted to any server.
-          </p>
+          <p>{props.sharedItems}</p>
+          <p>{props.retainedItems}</p>
           <p>
             Submissions are stored in a Supabase database. You can delete your own submissions at
             any time.

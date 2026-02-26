@@ -220,7 +220,7 @@ const App: Component = () => {
           }
           sidebar={
             <SidebarTabs
-              communityContent={supabaseEnabled ? <CommunityBrowser /> : undefined}
+              communityContent={supabaseEnabled ? () => <CommunityBrowser /> : undefined}
               spectrumContent={<SpectrumPanel />}
               metricsContent={<MetricsPanel />}
             />

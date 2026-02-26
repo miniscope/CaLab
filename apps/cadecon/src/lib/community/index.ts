@@ -23,9 +23,9 @@ export type {
   User,
 } from '@calab/community';
 
-// CaTune-specific modules
-export { submitParameters, fetchSubmissions, deleteSubmission } from './catune-service.ts';
+// CaDecon-specific modules
+export { submitParameters, fetchSubmissions, deleteSubmission } from './cadecon-service.ts';
 export { validateSubmission } from './quality-checks.ts';
 export { submitToSupabase } from './submit-action.ts';
-export type { FormFields, SubmissionContext } from './submit-action.ts';
-export type { CatuneSubmission, CatuneSubmissionPayload, CatuneFilterState } from './types.ts';
+export type { FormFields, CadeconSubmissionContext } from './submit-action.ts';
+export type { CadeconSubmission, CadeconSubmissionPayload, CadeconFilterState } from './types.ts';

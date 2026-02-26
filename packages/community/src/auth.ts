@@ -73,7 +73,8 @@ export async function signInWithEmail(
     options: {
       emailRedirectTo:
         redirectTo ??
-        window.location.origin + ((import.meta.env as Record<string, string>).BASE_URL || '/'),
+        window.location.origin +
+          ((import.meta as unknown as { env: Record<string, string> }).env.BASE_URL || '/'),
     },
   });
 

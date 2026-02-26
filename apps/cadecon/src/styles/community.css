@@ -1,0 +1,44 @@
+/* CaDecon app-specific community styles.
+   Shared styles (AuthGate, PrivacyNotice, SubmitModal, SubmissionSummary,
+   FilterBar, SearchableSelect, SidebarTabs, SubmitPanel fields,
+   CommunityBrowser, ScatterPlot) come from @calab/ui. */
+
+/* ========================
+   SubmitPanel (CaDecon-specific)
+   ======================== */
+
+.submit-panel {
+  padding: var(--space-md);
+}
+
+.submit-panel__converged-badge {
+  margin-bottom: var(--space-sm);
+}
+
+.badge--converged {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--success);
+  background: rgba(46, 125, 50, 0.08);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.badge--stopped {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.submit-panel__disabled-hint {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: var(--space-xs);
+  line-height: 1.3;
+}

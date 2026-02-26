@@ -44,8 +44,7 @@ export function SubmitForm(props: SubmitFormProps) {
     <SubmitFormModal onClose={props.onClose}>
       <Show when={isDemo()}>
         <div class="submit-panel__demo-notice">
-          You're tuning on simulated demo data — submitting is encouraged! This helps the community
-          see what parameters work well for the demo dataset.
+          You're running on simulated demo data — submitting is encouraged!
         </div>
       </Show>
 
@@ -66,7 +65,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.indicator}
             placeholder="e.g. GCaMP6f (AAV)"
             fieldName="indicator"
-            appLabel="catune"
+            appLabel="cadecon"
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -76,7 +75,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.species}
             placeholder="e.g. mouse"
             fieldName="species"
-            appLabel="catune"
+            appLabel="cadecon"
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -86,7 +85,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.brainRegion}
             placeholder="e.g. cortex"
             fieldName="brain_region"
-            appLabel="catune"
+            appLabel="cadecon"
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -95,7 +94,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.microscopeType}
             placeholder="e.g. 2-photon"
             fieldName="microscope_type"
-            appLabel="catune"
+            appLabel="cadecon"
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -104,7 +103,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.cellType}
             placeholder="e.g. pyramidal cell"
             fieldName="cell_type"
-            appLabel="catune"
+            appLabel="cadecon"
             loading={fieldOptionsLoading()}
           />
 
@@ -167,7 +166,7 @@ export function SubmitForm(props: SubmitFormProps) {
           <textarea
             value={props.notes.get()}
             onInput={(e) => props.notes.set(e.currentTarget.value)}
-            placeholder="Optional notes about this dataset or tuning"
+            placeholder="Optional notes about this dataset or run"
             rows={3}
           />
         </div>
@@ -175,9 +174,10 @@ export function SubmitForm(props: SubmitFormProps) {
         <PrivacyNotice
           sharedItems={
             <>
-              When you submit, CaTune sends only: parameter values (tau_rise, tau_decay, lambda),
-              AR2 coefficients, sampling rate, your experimental metadata (indicator, species, brain
-              region), and a dataset fingerprint for duplicate detection.
+              When you submit, CaDecon sends only: kernel parameters (tau_rise, tau_decay, beta),
+              aggregate statistics (median alpha, median PVE, mean event rate), run configuration,
+              your experimental metadata (indicator, species, brain region), and a dataset
+              fingerprint for duplicate detection.
             </>
           }
           retainedItems={

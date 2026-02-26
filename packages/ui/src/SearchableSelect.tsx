@@ -5,7 +5,7 @@
  */
 
 import { createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
-import '../../styles/community.css';
+import './styles/community.css';
 
 export interface SearchableSelectProps {
   options: string[];
