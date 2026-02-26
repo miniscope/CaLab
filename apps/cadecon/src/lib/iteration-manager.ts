@@ -13,11 +13,13 @@ import type { TraceResult, KernelResult } from '../workers/cadecon-types.ts';
 import {
   runState,
   setRunState,
+  setRunPhase,
   setCurrentIteration,
   setTotalSubsetTraceJobs,
   setCompletedSubsetTraceJobs,
   setCurrentTauRise,
   setCurrentTauDecay,
+  setConvergedAtIteration,
   addConvergenceSnapshot,
   addDebugTraceSnapshot,
   updateTraceResult,
@@ -338,6 +340,7 @@ export async function startRun(): Promise<void> {
     setCurrentIteration(iter + 1);
 
     // Step 1: Per-trace inference (warm-started from previous iteration's s_counts)
+    setRunPhase('inference');
     const traceResults = await dispatchTraceJobs(
       rects,
       data,
@@ -406,6 +409,7 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
+    setRunPhase('kernel-update');
     const kernelResults = await dispatchKernelJobs(
       rects,
       traceResults,
@@ -445,6 +449,7 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
+    setRunPhase('merge');
     const prevTauR = tauR;
     const prevTauD = tauD;
     tauR = median(kernelResults.map((r) => r.tauRise));
@@ -477,12 +482,14 @@ export async function startRun(): Promise<void> {
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
     const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
     if (iter > 0 && maxRelChange < convTol) {
+      setConvergedAtIteration(iter + 1);
       break;
     }
   }
 
   // Finalization: re-run trace inference on ALL cells with converged kernel
   if (runState() !== 'stopping') {
+    setRunPhase('finalization');
     setTotalSubsetTraceJobs(nCells);
     setCompletedSubsetTraceJobs(0);
     let finCompleted = 0;
@@ -539,6 +546,7 @@ export async function startRun(): Promise<void> {
     });
   }
 
+  setRunPhase('idle');
   setRunState('complete');
 }
 
@@ -560,6 +568,7 @@ export function resumeRun(): void {
 
 export function stopRun(): void {
   setRunState('stopping');
+  setRunPhase('idle');
   pool?.cancelAll();
   // Resolve any pending pause
   if (pauseResolver) {

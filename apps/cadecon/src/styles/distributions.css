@@ -1,0 +1,48 @@
+/* Distribution histogram cards */
+
+.histogram-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.histogram-card__title {
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.histogram-card__chart {
+  flex: 1;
+  min-height: 0;
+}
+
+.histogram-card__chart .u-wrap {
+  border: none;
+}
+
+.histogram-card__stats {
+  display: flex;
+  gap: var(--space-sm, 8px);
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.histogram-card__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}

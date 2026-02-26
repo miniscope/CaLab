@@ -1,0 +1,28 @@
+/* Kernel display styles */
+
+.kernel-display {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.kernel-display__stats {
+  display: flex;
+  gap: var(--space-md, 12px);
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.kernel-display__stats strong {
+  color: var(--text-primary);
+}
+
+.kernel-display__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
