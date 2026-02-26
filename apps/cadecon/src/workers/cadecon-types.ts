@@ -33,6 +33,8 @@ export type CaDeconWorkerInbound =
       maxIters: number;
       tol: number;
       filterEnabled: boolean;
+      /** Previous iteration's s_counts at original rate for warm-start. */
+      warmCounts?: Float32Array;
     }
   | {
       type: 'kernel-job';
@@ -47,6 +49,8 @@ export type CaDeconWorkerInbound =
       maxIters: number;
       tol: number;
       refine: boolean;
+      /** Previous iteration's free kernel for warm-start. */
+      warmKernel?: Float32Array;
     }
   | { type: 'cancel' };
 

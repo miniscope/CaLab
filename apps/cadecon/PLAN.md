@@ -277,7 +277,14 @@
 - [x] Replaced auto-size toggle + conditional T_SUB/N_SUB sliders with 3 always-enabled sliders: K (num subsets), Total Coverage (%), Aspect Ratio (log-scale centered at 1.0)
 - [x] Coverage defaults to 50%, aspect ratio slider uses log scale for balanced exploration
 
-**Exit criteria:** ✅ Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. UI shows run controls, progress, kernel convergence chart, debug trace/kernel charts. Bandpass filter wired end-to-end. 67 Rust tests pass, TypeScript checks pass, dev server runs without errors.
+### 2.14 Warm-start for trace inference and kernel estimation — ✅ DONE
+
+- [x] **Trace warm-start**: previous iteration's `s_counts` (original rate) carried per-cell across iterations. `upsample_counts_to_binary()` in `upsample.rs` converts to upsampled-rate binary for FISTA warm-start — for each bin with count C, places min(C, factor) ones at the start of the upsampled window. Finalization pass also warm-starts from the last subset iteration where cell data is available.
+- [x] **Kernel warm-start**: previous iteration's `h_free` per subset passed as initial guess to `estimate_free_kernel()`. FISTA momentum resets since spike trains change between iterations.
+- [x] Full path for both: `iteration-manager.ts` → `cadecon-pool.ts` → `cadecon-types.ts` → `cadecon-worker.ts` → `js_indeca.rs` → Rust solver
+- [x] 4 new Rust tests for `upsample_counts_to_binary` (spike conservation, factor cap, factor-1, roundtrip)
+
+**Exit criteria:** ✅ Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. UI shows run controls, progress, kernel convergence chart, debug trace/kernel charts. Bandpass filter wired end-to-end. Warm-start active for both trace and kernel FISTA solvers. 71 Rust tests pass, TypeScript checks pass, dev server runs without errors.
 
 ---
 
@@ -703,6 +710,12 @@ The iteration loop runs on the main thread and dispatches jobs to the worker poo
 
 Pause/resume uses a Promise-based mechanism — the loop `await`s a resolver that only fires on resume.
 
+Warm-start state is maintained across iterations:
+
+- `prevTraceCounts: Map<number, Float32Array>` — full-length s_counts per cell from the previous iteration. Subset windows are extracted via `subarray()` when dispatching trace jobs.
+- `prevKernels: Float32Array[]` — per-subset h_free from the previous iteration, indexed by subset. Skipped subsets (no valid traces) have no entry.
+- Finalization also warm-starts from the last iteration's subset results where cells overlap.
+
 ### Layout fix for kernel convergence chart
 
 The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `position: relative` wrapper to prevent ResizeObserver feedback loops. The wrapper has `flex: 1; min-height: 0` to fill remaining space in the fixed-height panel. The panel itself uses `flex: 0 0 180px` via `[data-panel-id='kernel-convergence']` CSS selector (DashboardPanel renders `id` prop as `data-panel-id` attribute, not HTML `id`).
@@ -727,12 +740,12 @@ The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `pos
 
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                                          |
-| ------------------------------------ | ----------- | ------------------------------------------------------------------------------ |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                |
-| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 67 tests, WASM bindings, worker, debug charts, bandpass wiring |
-| Phase 3: Visualization + QC          | NOT STARTED | Debug trace/kernel charts + convergence scatter pulled forward into Phase 2    |
-| Phase 4: Community DB                | NOT STARTED |                                                                                |
-| Phase 5: Export/Import               | NOT STARTED |                                                                                |
-| Phase 6: Python Extension            | DEFERRED    |                                                                                |
-| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                                |
+| Phase                                | Status      | Notes                                                                               |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------- |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                     |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 71 tests, WASM bindings, worker, debug charts, warm-start, bandpass |
+| Phase 3: Visualization + QC          | NOT STARTED | Debug trace/kernel charts + convergence scatter pulled forward into Phase 2         |
+| Phase 4: Community DB                | NOT STARTED |                                                                                     |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                     |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                     |
+| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                                     |

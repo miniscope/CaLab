@@ -367,16 +367,8 @@ export function indeca_compute_upsample_factor(fs, target_fs) {
 /**
  * Estimate a free-form kernel from multiple traces and their spike trains.
  *
- * Arguments:
- * - `traces_flat`: concatenated trace data (all traces joined end-to-end)
- * - `spikes_flat`: concatenated binary spike trains
- * - `trace_lengths`: length of each individual trace (Uint32Array)
- * - `alphas`: per-trace scaling factors (Float64Array)
- * - `baselines`: per-trace baselines (Float64Array)
- * - `kernel_length`: desired kernel length in samples
- * - `fs`: sampling rate
- * - `max_iters`: maximum FISTA iterations
- * - `tol`: convergence tolerance
+ * `warm_kernel`: optional kernel from a previous iteration. Pass an empty slice
+ * for cold-start.
  *
  * Returns the estimated kernel as Float32Array (via Vec<f32>).
  * @param {Float32Array} traces_flat
@@ -387,9 +379,10 @@ export function indeca_compute_upsample_factor(fs, target_fs) {
  * @param {number} kernel_length
  * @param {number} max_iters
  * @param {number} tol
+ * @param {Float32Array} warm_kernel
  * @returns {Float32Array}
  */
-export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters, tol) {
+export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters, tol, warm_kernel) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passArrayF32ToWasm0(traces_flat, wasm.__wbindgen_export2);
@@ -402,12 +395,14 @@ export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, 
         const len3 = WASM_VECTOR_LEN;
         const ptr4 = passArrayF64ToWasm0(baselines, wasm.__wbindgen_export2);
         const len4 = WASM_VECTOR_LEN;
-        wasm.indeca_estimate_kernel(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, kernel_length, max_iters, tol);
+        const ptr5 = passArrayF32ToWasm0(warm_kernel, wasm.__wbindgen_export2);
+        const len5 = WASM_VECTOR_LEN;
+        wasm.indeca_estimate_kernel(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, kernel_length, max_iters, tol, ptr5, len5);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var v6 = getArrayF32FromWasm0(r0, r1).slice();
+        var v7 = getArrayF32FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export(r0, r1 * 4, 4);
-        return v6;
+        return v7;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -433,6 +428,9 @@ export function indeca_fit_biexponential(h_free, fs, refine) {
 /**
  * Solve a single trace using the InDeCa pipeline.
  *
+ * `warm_counts`: optional spike counts from a previous iteration at the original
+ * sampling rate. Pass an empty slice for cold-start.
+ *
  * Returns a JsValue containing the serialized InDecaResult:
  * { s_counts, alpha, baseline, threshold, pve, iterations, converged }
  * @param {Float32Array} trace
@@ -443,12 +441,15 @@ export function indeca_fit_biexponential(h_free, fs, refine) {
  * @param {number} max_iters
  * @param {number} tol
  * @param {boolean} filter_enabled
+ * @param {Float32Array} warm_counts
  * @returns {any}
  */
-export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled) {
+export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, warm_counts) {
     const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled);
+    const ptr1 = passArrayF32ToWasm0(warm_counts, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, filter_enabled, ptr1, len1);
     return takeObject(ret);
 }
 

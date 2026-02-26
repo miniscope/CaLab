@@ -141,6 +141,7 @@ function dispatchTraceJobs(
   maxIters: number,
   tol: number,
   filterEnabled: boolean,
+  prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
     const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
@@ -166,6 +167,14 @@ function dispatchTraceJobs(
       const trace = extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped);
       const jobId = nextJobId++;
 
+      // Warm-start: extract the relevant segment of previous s_counts for this subset window.
+      // Previous s_counts cover the full trace; we need just [tStart, tEnd).
+      let warmCounts: Float32Array | undefined;
+      const prevCounts = prevResults?.get(cell);
+      if (prevCounts && prevCounts.length > 0) {
+        warmCounts = prevCounts.subarray(rect.tStart, rect.tEnd);
+      }
+
       pool!.dispatch({
         jobId,
         kind: 'trace',
@@ -177,6 +186,7 @@ function dispatchTraceJobs(
         maxIters,
         tol,
         filterEnabled,
+        warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
           completed++;
@@ -206,11 +216,14 @@ function dispatchKernelJobs(
   isSwapped: boolean,
   fs: number,
   kernelLength: number,
+  prevKernels?: Float32Array[],
 ): Promise<KernelResult[]> {
   return new Promise((resolve) => {
     const kernelResults: KernelResult[] = [];
     let completed = 0;
     let totalKernelJobs = 0;
+    // Track which subset index maps to which dispatched job index for warm kernel lookup
+    const jobSubsetIndices: number[] = [];
 
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -239,8 +252,12 @@ function dispatchKernelJobs(
         continue;
       }
 
+      jobSubsetIndices.push(si);
       totalKernelJobs++;
       const jobId = nextJobId++;
+
+      // Warm-start: use previous iteration's kernel for this subset
+      const warmKernel = prevKernels?.[si];
 
       pool!.dispatch({
         jobId,
@@ -255,6 +272,7 @@ function dispatchKernelJobs(
         maxIters: KERNEL_FISTA_MAX_ITERS,
         tol: KERNEL_FISTA_TOL,
         refine: true,
+        warmKernel,
         onComplete(result: KernelResult) {
           kernelResults.push(result);
           completed++;
@@ -303,6 +321,10 @@ export async function startRun(): Promise<void> {
   setRunState('running');
   setCurrentIteration(0);
 
+  // Warm-start state carried between iterations
+  let prevTraceCounts: Map<number, Float32Array> | undefined;
+  let prevKernels: Float32Array[] | undefined;
+
   for (let iter = 0; iter < maxIter; iter++) {
     // Check for stop/pause
     if (runState() === 'stopping') break;
@@ -315,7 +337,7 @@ export async function startRun(): Promise<void> {
 
     setCurrentIteration(iter + 1);
 
-    // Step 1: Per-trace inference
+    // Step 1: Per-trace inference (warm-started from previous iteration's s_counts)
     const traceResults = await dispatchTraceJobs(
       rects,
       data,
@@ -327,9 +349,27 @@ export async function startRun(): Promise<void> {
       TRACE_FISTA_MAX_ITERS,
       TRACE_FISTA_TOL,
       filterOn,
+      prevTraceCounts,
     );
 
     if (runState() === 'stopping') break;
+
+    // Collect s_counts for warm-starting next iteration.
+    // Subset traces only cover a time window, so we store the subset-windowed s_counts
+    // keyed by cell and reconstruct full-trace s_counts where available.
+    prevTraceCounts = new Map();
+    for (let si = 0; si < rects.length; si++) {
+      const rect = rects[si];
+      for (const [cell, result] of traceResults[si]) {
+        // Build a full-length s_counts array, fill the subset window
+        let full = prevTraceCounts.get(cell);
+        if (!full) {
+          full = new Float32Array(nTp);
+          prevTraceCounts.set(cell, full);
+        }
+        full.set(result.sCounts, rect.tStart);
+      }
+    }
 
     // Capture debug trace snapshot: cell 0 from first subset that has it
     if (rects.length > 0 && traceResults[0].size > 0) {
@@ -365,7 +405,7 @@ export async function startRun(): Promise<void> {
       }
     }
 
-    // Step 2: Per-subset kernel estimation
+    // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
     const kernelResults = await dispatchKernelJobs(
       rects,
       traceResults,
@@ -373,12 +413,35 @@ export async function startRun(): Promise<void> {
       isSwap,
       fs,
       kernelLength,
+      prevKernels,
     );
 
     if (runState() === 'stopping') break;
 
     if (kernelResults.length === 0) {
       break;
+    }
+
+    // Store kernels for warm-starting next iteration.
+    // dispatchKernelJobs skips subsets with no valid traces, so kernelResults
+    // may have fewer entries than rects. Map them back by replaying the skip logic.
+    prevKernels = new Array(rects.length);
+    {
+      let ki = 0;
+      for (let si = 0; si < rects.length; si++) {
+        const subsetResults = traceResults[si];
+        let hasValid = false;
+        for (const [, r] of subsetResults) {
+          if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) {
+            hasValid = true;
+            break;
+          }
+        }
+        if (hasValid && ki < kernelResults.length) {
+          prevKernels[si] = new Float32Array(kernelResults[ki].hFree);
+          ki++;
+        }
+      }
     }
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
@@ -434,6 +497,10 @@ export async function startRun(): Promise<void> {
         const trace = extractCellTrace(c, 0, nTp, data, isSwap);
         const jobId = nextJobId++;
 
+        // Warm-start finalization from subset iteration results where available.
+        // prevTraceCounts has full-length s_counts for cells that appeared in subsets.
+        const warmCounts = prevTraceCounts?.get(c);
+
         pool!.dispatch({
           jobId,
           kind: 'trace',
@@ -445,6 +512,7 @@ export async function startRun(): Promise<void> {
           maxIters: TRACE_FISTA_MAX_ITERS,
           tol: TRACE_FISTA_TOL,
           filterEnabled: filterOn,
+          warmCounts,
           onComplete(result: TraceResult) {
             updateTraceResult(c, {
               sCounts: result.sCounts,

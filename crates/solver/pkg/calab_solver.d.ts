@@ -173,20 +173,12 @@ export function indeca_compute_upsample_factor(fs: number, target_fs: number): n
 /**
  * Estimate a free-form kernel from multiple traces and their spike trains.
  *
- * Arguments:
- * - `traces_flat`: concatenated trace data (all traces joined end-to-end)
- * - `spikes_flat`: concatenated binary spike trains
- * - `trace_lengths`: length of each individual trace (Uint32Array)
- * - `alphas`: per-trace scaling factors (Float64Array)
- * - `baselines`: per-trace baselines (Float64Array)
- * - `kernel_length`: desired kernel length in samples
- * - `fs`: sampling rate
- * - `max_iters`: maximum FISTA iterations
- * - `tol`: convergence tolerance
+ * `warm_kernel`: optional kernel from a previous iteration. Pass an empty slice
+ * for cold-start.
  *
  * Returns the estimated kernel as Float32Array (via Vec<f32>).
  */
-export function indeca_estimate_kernel(traces_flat: Float32Array, spikes_flat: Float32Array, trace_lengths: Uint32Array, alphas: Float64Array, baselines: Float64Array, kernel_length: number, max_iters: number, tol: number): Float32Array;
+export function indeca_estimate_kernel(traces_flat: Float32Array, spikes_flat: Float32Array, trace_lengths: Uint32Array, alphas: Float64Array, baselines: Float64Array, kernel_length: number, max_iters: number, tol: number, warm_kernel: Float32Array): Float32Array;
 
 /**
  * Fit a bi-exponential model to a free-form kernel.
@@ -199,10 +191,13 @@ export function indeca_fit_biexponential(h_free: Float32Array, fs: number, refin
 /**
  * Solve a single trace using the InDeCa pipeline.
  *
+ * `warm_counts`: optional spike counts from a previous iteration at the original
+ * sampling rate. Pass an empty slice for cold-start.
+ *
  * Returns a JsValue containing the serialized InDecaResult:
  * { s_counts, alpha, baseline, threshold, pve, iterations, converged }
  */
-export function indeca_solve_trace(trace: Float32Array, tau_r: number, tau_d: number, fs: number, upsample_factor: number, max_iters: number, tol: number, filter_enabled: boolean): any;
+export function indeca_solve_trace(trace: Float32Array, tau_r: number, tau_d: number, fs: number, upsample_factor: number, max_iters: number, tol: number, filter_enabled: boolean, warm_counts: Float32Array): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -210,9 +205,9 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_solver_free: (a: number, b: number) => void;
     readonly indeca_compute_upsample_factor: (a: number, b: number) => number;
-    readonly indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => void;
+    readonly indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
     readonly indeca_fit_biexponential: (a: number, b: number, c: number, d: number) => number;
-    readonly indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
+    readonly indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
     readonly solver_apply_filter: (a: number) => number;
     readonly solver_converged: (a: number) => number;
     readonly solver_export_state: (a: number, b: number) => void;

@@ -18,6 +18,7 @@ interface TraceJobFields {
   maxIters: number;
   tol: number;
   filterEnabled: boolean;
+  warmCounts?: Float32Array;
   onComplete(result: TraceResult): void;
 }
 
@@ -33,6 +34,7 @@ interface KernelJobFields {
   maxIters: number;
   tol: number;
   refine: boolean;
+  warmKernel?: Float32Array;
   onComplete(result: KernelResult): void;
 }
 
@@ -74,6 +76,9 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
   buildDispatch(job) {
     if (job.kind === 'trace') {
       const traceCopy = new Float32Array(job.trace);
+      const warmCopy = job.warmCounts ? new Float32Array(job.warmCounts) : undefined;
+      const transfers: ArrayBuffer[] = [traceCopy.buffer];
+      if (warmCopy) transfers.push(warmCopy.buffer);
       return [
         {
           type: 'trace-job',
@@ -86,8 +91,9 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           maxIters: job.maxIters,
           tol: job.tol,
           filterEnabled: job.filterEnabled,
+          warmCounts: warmCopy,
         },
-        [traceCopy.buffer],
+        transfers,
       ];
     } else {
       const tracesCopy = new Float32Array(job.tracesFlat);
@@ -95,6 +101,15 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
       const lengthsCopy = new Uint32Array(job.traceLengths);
       const alphasCopy = new Float64Array(job.alphas);
       const baselinesCopy = new Float64Array(job.baselines);
+      const warmCopy = job.warmKernel ? new Float32Array(job.warmKernel) : undefined;
+      const transfers: ArrayBuffer[] = [
+        tracesCopy.buffer,
+        spikesCopy.buffer,
+        lengthsCopy.buffer,
+        alphasCopy.buffer,
+        baselinesCopy.buffer,
+      ];
+      if (warmCopy) transfers.push(warmCopy.buffer);
       return [
         {
           type: 'kernel-job',
@@ -109,14 +124,9 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           maxIters: job.maxIters,
           tol: job.tol,
           refine: job.refine,
+          warmKernel: warmCopy,
         },
-        [
-          tracesCopy.buffer,
-          spikesCopy.buffer,
-          lengthsCopy.buffer,
-          alphasCopy.buffer,
-          baselinesCopy.buffer,
-        ],
+        transfers,
       ];
     }
   },

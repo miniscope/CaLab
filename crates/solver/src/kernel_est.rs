@@ -12,6 +12,10 @@
 /// Concatenates all (trace, spike) pairs into a single regression problem
 /// to improve the estimate. Each trace is pre-processed: y_adj = (y - baseline) / alpha.
 ///
+/// `warm_start`: optional kernel from a previous iteration, used as initial guess
+/// for FISTA. Must be the same length as `kernel_length`. FISTA momentum is reset
+/// since the spike trains have changed between iterations.
+///
 /// Arguments:
 /// - `traces`: flat array of concatenated traces (each of length trace_lengths[i])
 /// - `spike_trains`: flat array of concatenated binary spike trains
@@ -21,6 +25,7 @@
 /// - `kernel_length`: desired length of the output kernel
 /// - `max_iters`: maximum FISTA iterations
 /// - `tol`: convergence tolerance
+/// - `warm_start`: optional previous kernel estimate for warm-starting FISTA
 ///
 /// Returns the estimated kernel of length `kernel_length`.
 pub fn estimate_free_kernel(
@@ -32,6 +37,7 @@ pub fn estimate_free_kernel(
     kernel_length: usize,
     max_iters: u32,
     tol: f64,
+    warm_start: Option<&[f32]>,
 ) -> Vec<f32> {
     let n_traces = trace_lengths.len();
     assert_eq!(alphas.len(), n_traces);
@@ -119,6 +125,12 @@ pub fn estimate_free_kernel(
 
     let mut h = vec![0.0_f32; kernel_length];
     let mut h_prev = vec![0.0_f32; kernel_length];
+    if let Some(warm) = warm_start {
+        if warm.len() == kernel_length {
+            h.copy_from_slice(warm);
+            h_prev.copy_from_slice(warm);
+        }
+    }
     let mut gradient = vec![0.0_f64; kernel_length];
     let mut t_fista = 1.0_f64;
 
@@ -269,6 +281,7 @@ mod tests {
             k_len,
             500,
             1e-5,
+            None,
         );
 
         // Normalize both kernels to unit peak for comparison
@@ -311,6 +324,7 @@ mod tests {
             20,
             100,
             1e-4,
+            None,
         );
 
         for (i, &v) in kernel.iter().enumerate() {
@@ -333,14 +347,14 @@ mod tests {
         let baselines = vec![0.0, 0.0, 0.0];
 
         let kernel = estimate_free_kernel(
-            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4,
+            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4, None,
         );
         assert_eq!(kernel.len(), 20);
     }
 
     #[test]
     fn empty_input() {
-        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4);
+        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4, None);
         assert_eq!(kernel.len(), 10);
         assert!(kernel.iter().all(|&v| v == 0.0));
     }
@@ -401,6 +415,7 @@ mod tests {
             kernel_length,
             200,
             1e-4,
+            None,
         );
 
         let peak = kernel.iter().cloned().fold(0.0_f32, f32::max);

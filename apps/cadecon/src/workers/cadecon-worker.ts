@@ -23,6 +23,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
   try {
     cancelled = false;
 
+    const emptyF32 = new Float32Array(0);
     const jsResult = indeca_solve_trace(
       req.trace,
       req.tauRise,
@@ -32,6 +33,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.maxIters,
       req.tol,
       req.filterEnabled,
+      req.warmCounts ?? emptyF32,
     ) as {
       s_counts: number[];
       alpha: number;
@@ -74,6 +76,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
     cancelled = false;
 
     // Step 1: Free-form kernel estimation
+    const emptyF32 = new Float32Array(0);
     const hFree = indeca_estimate_kernel(
       req.tracesFlat,
       req.spikesFlat,
@@ -83,6 +86,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
       req.kernelLength,
       req.maxIters,
       req.tol,
+      req.warmKernel ?? emptyF32,
     );
 
     if (cancelled) {

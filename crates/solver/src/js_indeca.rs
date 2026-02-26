@@ -12,6 +12,9 @@ use crate::upsample;
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
+/// `warm_counts`: optional spike counts from a previous iteration at the original
+/// sampling rate. Pass an empty slice for cold-start.
+///
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
 #[wasm_bindgen]
@@ -24,25 +27,23 @@ pub fn indeca_solve_trace(
     max_iters: u32,
     tol: f64,
     filter_enabled: bool,
+    warm_counts: &[f32],
 ) -> JsValue {
+    let warm = if warm_counts.is_empty() {
+        None
+    } else {
+        Some(warm_counts)
+    };
     let result = indeca::solve_trace(
-        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, None, filter_enabled,
+        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm, filter_enabled,
     );
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
 /// Estimate a free-form kernel from multiple traces and their spike trains.
 ///
-/// Arguments:
-/// - `traces_flat`: concatenated trace data (all traces joined end-to-end)
-/// - `spikes_flat`: concatenated binary spike trains
-/// - `trace_lengths`: length of each individual trace (Uint32Array)
-/// - `alphas`: per-trace scaling factors (Float64Array)
-/// - `baselines`: per-trace baselines (Float64Array)
-/// - `kernel_length`: desired kernel length in samples
-/// - `fs`: sampling rate
-/// - `max_iters`: maximum FISTA iterations
-/// - `tol`: convergence tolerance
+/// `warm_kernel`: optional kernel from a previous iteration. Pass an empty slice
+/// for cold-start.
 ///
 /// Returns the estimated kernel as Float32Array (via Vec<f32>).
 #[wasm_bindgen]
@@ -55,8 +56,14 @@ pub fn indeca_estimate_kernel(
     kernel_length: usize,
     max_iters: u32,
     tol: f64,
+    warm_kernel: &[f32],
 ) -> Vec<f32> {
     let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
+    let warm = if warm_kernel.is_empty() {
+        None
+    } else {
+        Some(warm_kernel)
+    };
     kernel_est::estimate_free_kernel(
         traces_flat,
         spikes_flat,
@@ -66,6 +73,7 @@ pub fn indeca_estimate_kernel(
         kernel_length,
         max_iters,
         tol,
+        warm,
     )
 }
 

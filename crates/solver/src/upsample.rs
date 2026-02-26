@@ -43,6 +43,27 @@ pub fn upsample_trace(trace: &[f32], factor: usize) -> Vec<f32> {
     out
 }
 
+/// Upsample spike counts to a binary trace at the upsampled rate.
+///
+/// For each original bin with count C, places min(C, factor) ones spread
+/// across the corresponding upsampled bins. Conserves total spike count.
+/// Output length = counts.len() * factor.
+pub fn upsample_counts_to_binary(counts: &[f32], factor: usize) -> Vec<f32> {
+    if factor <= 1 {
+        // At factor 1, binarize in-place: any count > 0.5 becomes 1
+        return counts.iter().map(|&v| if v > 0.5 { 1.0 } else { 0.0 }).collect();
+    }
+    let n = counts.len();
+    let mut out = vec![0.0_f32; n * factor];
+    for i in 0..n {
+        let c = (counts[i].round() as usize).min(factor);
+        for j in 0..c {
+            out[i * factor + j] = 1.0;
+        }
+    }
+    out
+}
+
 /// Downsample a binary spike signal by bin-summing: each output sample
 /// is the sum of `factor` consecutive input samples.
 ///
@@ -159,6 +180,59 @@ mod tests {
     fn empty_input() {
         assert_eq!(upsample_trace(&[], 5), Vec::<f32>::new());
         assert_eq!(downsample_binary(&[], 5), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn counts_to_binary_conserves_spikes() {
+        let counts = vec![2.0, 0.0, 1.0, 3.0];
+        let bin = upsample_counts_to_binary(&counts, 4);
+        assert_eq!(bin.len(), 16);
+        // Total spikes preserved
+        let total: f32 = bin.iter().sum();
+        assert!((total - 6.0).abs() < 1e-6, "Total spikes: {}", total);
+        // All values are 0 or 1
+        for &v in &bin {
+            assert!(v == 0.0 || v == 1.0, "Non-binary value: {}", v);
+        }
+        // Bin 0: 2 spikes → positions 0,1
+        assert_eq!(bin[0], 1.0);
+        assert_eq!(bin[1], 1.0);
+        assert_eq!(bin[2], 0.0);
+        // Bin 1: 0 spikes
+        assert_eq!(bin[4], 0.0);
+        // Bin 2: 1 spike → position 8
+        assert_eq!(bin[8], 1.0);
+        assert_eq!(bin[9], 0.0);
+    }
+
+    #[test]
+    fn counts_to_binary_caps_at_factor() {
+        // Count exceeds factor — should cap
+        let counts = vec![10.0];
+        let bin = upsample_counts_to_binary(&counts, 3);
+        assert_eq!(bin.len(), 3);
+        let total: f32 = bin.iter().sum();
+        assert!((total - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn counts_to_binary_factor_1() {
+        let counts = vec![0.0, 1.0, 2.0, 0.0];
+        let bin = upsample_counts_to_binary(&counts, 1);
+        assert_eq!(bin, vec![0.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn counts_to_binary_roundtrip() {
+        // Roundtrip: upsample_counts_to_binary → downsample_binary should recover counts
+        let counts = vec![1.0, 0.0, 2.0, 1.0, 0.0];
+        let factor = 5;
+        let binary = upsample_counts_to_binary(&counts, factor);
+        let recovered = downsample_binary(&binary, factor);
+        assert_eq!(recovered.len(), counts.len());
+        for (i, (&c, &r)) in counts.iter().zip(recovered.iter()).enumerate() {
+            assert!((c - r).abs() < 1e-6, "Mismatch at {}: {} vs {}", i, c, r);
+        }
     }
 
     #[test]
