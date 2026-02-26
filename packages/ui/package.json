@@ -12,6 +12,7 @@
     "./styles/*": "./src/styles/*"
   },
   "dependencies": {
+    "@calab/community": "*",
     "@calab/compute": "*",
     "@calab/tutorials": "*",
     "@dschz/solid-uplot": "*",

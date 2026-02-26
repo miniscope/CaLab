@@ -1,5 +1,5 @@
 /**
- * CaTune PrivacyNotice — thin wrapper with CaTune-specific content.
+ * CaDecon PrivacyNotice — thin wrapper with CaDecon-specific content.
  */
 
 import { PrivacyNotice as SharedPrivacyNotice } from '@calab/ui';
@@ -9,9 +9,10 @@ export function PrivacyNotice() {
     <SharedPrivacyNotice
       sharedItems={
         <>
-          When you submit, CaTune sends only: parameter values (tau_rise, tau_decay, lambda), AR2
-          coefficients, sampling rate, your experimental metadata (indicator, species, brain
-          region), and a dataset fingerprint for duplicate detection.
+          When you submit, CaDecon sends only: kernel parameters (tau_rise, tau_decay, beta),
+          aggregate statistics (median alpha, median PVE, mean event rate), run configuration, your
+          experimental metadata (indicator, species, brain region), and a dataset fingerprint for
+          duplicate detection.
         </>
       }
       retainedItems={

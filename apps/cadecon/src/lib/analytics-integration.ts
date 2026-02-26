@@ -1,8 +1,9 @@
 import { createEffect, on } from 'solid-js';
-import { trackEvent } from '@calab/community';
+import { trackEvent, subscribeAuth } from '@calab/community';
 import { importStep, isDemo, rawFile } from './data-store.ts';
 
 export function setupAnalyticsEffects(): void {
+  // Data import events
   createEffect(
     on(importStep, (step, prevStep) => {
       if (step === 'ready' && prevStep !== 'ready') {
@@ -16,4 +17,17 @@ export function setupAnalyticsEffects(): void {
       }
     }),
   );
+
+  // Auth events
+  let wasSignedIn = false;
+  subscribeAuth((state) => {
+    if (state.loading) return;
+    const isSignedIn = state.user !== null;
+    if (isSignedIn && !wasSignedIn) {
+      void trackEvent('auth_signed_in');
+    } else if (!isSignedIn && wasSignedIn) {
+      void trackEvent('auth_signed_out');
+    }
+    wasSignedIn = isSignedIn;
+  });
 }

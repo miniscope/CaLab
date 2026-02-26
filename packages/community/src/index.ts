@@ -35,6 +35,15 @@ export {
 } from './github-issue-url.ts';
 export type { AppLabel } from './github-issue-url.ts';
 
+// Reactive community store (SolidJS signals — requires solid-js peer dep)
+export {
+  user,
+  authLoading,
+  fieldOptions,
+  fieldOptionsLoading,
+  loadFieldOptions,
+} from './community-store.ts';
+
 // Types
 export type {
   BaseSubmission,

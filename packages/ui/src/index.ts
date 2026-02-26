@@ -24,6 +24,22 @@ export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
 export { TraceLegend } from './TraceLegend.tsx';
 export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
 
+// Community components (shared across CaLab apps)
+export { SearchableSelect } from './SearchableSelect.tsx';
+export type { SearchableSelectProps } from './SearchableSelect.tsx';
+export { AuthGate } from './AuthGate.tsx';
+export type { AuthGateProps } from './AuthGate.tsx';
+export { PrivacyNotice } from './PrivacyNotice.tsx';
+export type { PrivacyNoticeProps } from './PrivacyNotice.tsx';
+export { FilterBar } from './FilterBar.tsx';
+export type { FilterBarProps, ExtraFilter } from './FilterBar.tsx';
+export { SubmissionSummary } from './SubmissionSummary.tsx';
+export type { SubmissionSummaryProps } from './SubmissionSummary.tsx';
+export { SidebarTabs } from './SidebarTabs.tsx';
+export type { SidebarTabsProps, SidebarTabConfig } from './SidebarTabs.tsx';
+export { SubmitFormModal } from './SubmitFormModal.tsx';
+export type { SubmitFormModalProps } from './SubmitFormModal.tsx';
+
 // Chart utilities (also available via @calab/ui/chart sub-path)
 export {
   wheelZoomPlugin,

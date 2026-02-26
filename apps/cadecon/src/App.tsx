@@ -1,7 +1,17 @@
 import type { Component } from 'solid-js';
 import { Show } from 'solid-js';
-import { DashboardShell, DashboardPanel, VizLayout, isAuthCallback, AuthCallback } from '@calab/ui';
+import {
+  DashboardShell,
+  DashboardPanel,
+  VizLayout,
+  isAuthCallback,
+  AuthCallback,
+  SidebarTabs,
+} from '@calab/ui';
+import type { SidebarTabConfig } from '@calab/ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
+import { supabaseEnabled, trackEvent } from '@calab/community';
+import { user, authLoading } from '@calab/community';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -18,7 +28,8 @@ import { PVEDistribution } from './components/distributions/PVEDistribution.tsx'
 import { EventRateDistribution } from './components/distributions/EventRateDistribution.tsx';
 import { SubsetVariance } from './components/distributions/SubsetVariance.tsx';
 import { SubsetDrillDown } from './components/drilldown/SubsetDrillDown.tsx';
-import { user, authLoading } from './lib/auth-store.ts';
+import { SubmitPanel } from './components/community/SubmitPanel.tsx';
+import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import {
   importStep,
   rawFile,
@@ -36,6 +47,7 @@ import './styles/trace-inspector.css';
 import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
+import './styles/community.css';
 
 const App: Component = () => {
   if (isAuthCallback()) {
@@ -49,6 +61,55 @@ const App: Component = () => {
     });
   }
 
+  const sidebarTabs = (): SidebarTabConfig[] => {
+    const list: SidebarTabConfig[] = [
+      {
+        id: 'controls',
+        label: 'Controls',
+        content: (
+          <>
+            <DashboardPanel
+              id="subset-config"
+              variant="controls"
+              label="Subset Configuration"
+              collapsible
+            >
+              <SubsetConfig />
+            </DashboardPanel>
+
+            <DashboardPanel
+              id="algorithm-settings"
+              variant="controls"
+              label="Algorithm Settings"
+              collapsible
+              defaultCollapsed
+            >
+              <AlgorithmSettings />
+            </DashboardPanel>
+
+            <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
+              <RunControls />
+              <ProgressBar />
+            </DashboardPanel>
+
+            <SubmitPanel />
+          </>
+        ),
+      },
+    ];
+
+    if (supabaseEnabled) {
+      list.push({
+        id: 'community',
+        label: 'Community',
+        content: <CommunityBrowser />,
+        onActivate: () => void trackEvent('community_browser_opened'),
+      });
+    }
+
+    return list;
+  };
+
   return (
     <Show
       when={importStep() === 'ready'}
@@ -59,33 +120,7 @@ const App: Component = () => {
       <DashboardShell header={<CaDeconHeader />}>
         <VizLayout
           mode="dashboard"
-          sidebar={
-            <>
-              <DashboardPanel
-                id="subset-config"
-                variant="controls"
-                label="Subset Configuration"
-                collapsible
-              >
-                <SubsetConfig />
-              </DashboardPanel>
-
-              <DashboardPanel
-                id="algorithm-settings"
-                variant="controls"
-                label="Algorithm Settings"
-                collapsible
-                defaultCollapsed
-              >
-                <AlgorithmSettings />
-              </DashboardPanel>
-
-              <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
-                <RunControls />
-                <ProgressBar />
-              </DashboardPanel>
-            </>
-          }
+          sidebar={<SidebarTabs tabs={sidebarTabs()} defaultTab="controls" />}
         >
           <div class="viz-grid">
             {/* Row 1: Raster + Kernel Convergence */}
