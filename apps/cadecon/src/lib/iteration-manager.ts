@@ -257,8 +257,8 @@ export async function startRun(): Promise<void> {
   const nCells = numCells();
   const nTp = numTimepoints();
 
-  // Kernel length: ~2x tau_decay in samples
-  const kernelLength = Math.max(10, Math.ceil(2.0 * tauD * fs));
+  // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
+  const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
 
   // Create pool
   pool = createCaDeconWorkerPool();
