@@ -1,26 +1,17 @@
 /**
- * CaDecon submit panel — shown when run is complete.
- * Displays kernel result summary and provides "Submit to Community" action.
- * No ground truth lockout for CaDecon.
+ * CaDecon submit panel — always visible, with disabled button before completion.
+ * Thin orchestrator that manages form state and delegates to:
+ *  - SubmitForm for the modal form rendering
+ *  - SubmissionSummary for the post-submission card
+ *  - submitToSupabase for the actual submission logic
  */
 
 import { createSignal, Show } from 'solid-js';
-import {
-  SubmitFormModal,
-  SubmissionSummary as SharedSubmissionSummary,
-  SearchableField,
-} from '@calab/ui';
-import { AuthGate } from './AuthGateWrapper.tsx';
-import { PrivacyNotice } from './PrivacyNoticeWrapper.tsx';
 import {
   validateSubmission,
   loadFieldOptions,
   supabaseEnabled,
   submitToSupabase,
-  user,
-  fieldOptions,
-  fieldOptionsLoading,
-  deleteSubmission,
 } from '../../lib/community/index.ts';
 import type { CadeconSubmission } from '../../lib/community/index.ts';
 import {
@@ -52,6 +43,8 @@ import {
   dataSource,
   demoPreset,
 } from '../../lib/data-store.ts';
+import { SubmitForm } from './SubmitForm.tsx';
+import { SubmissionSummary } from './SubmissionSummary.tsx';
 import '../../styles/community.css';
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
@@ -81,7 +74,6 @@ export function SubmitPanel() {
     isDemo() ||
     (indicator().trim() !== '' && species().trim() !== '' && brainRegion().trim() !== '');
 
-  // Only show when run is complete
   const isComplete = () => runState() === 'complete';
   const isConverged = () => convergedAtIteration() !== null;
 
@@ -176,10 +168,14 @@ export function SubmitPanel() {
     setImagingDepth('');
   }
 
+  function handleDismissSummary(): void {
+    setLastSubmission(null);
+  }
+
   return (
-    <Show when={isComplete()}>
-      <div class="submit-panel" data-tutorial="submit-panel">
-        {/* Kernel result summary */}
+    <div class="submit-panel" data-tutorial="submit-panel">
+      {/* Kernel result summary + converged badge — only when complete */}
+      <Show when={isComplete()}>
         <div class="submit-panel__summary">
           <span>
             rise: {((currentTauRise() ?? 0) * 1000).toFixed(1)}ms, decay:{' '}
@@ -193,196 +189,61 @@ export function SubmitPanel() {
               : `Stopped at iteration ${currentIteration()}`}
           </span>
         </div>
+      </Show>
 
-        {/* Action buttons */}
-        <div class="submit-panel__actions">
-          <Show when={supabaseEnabled}>
-            <button
-              class="btn-secondary btn-small"
-              onClick={() => {
-                setFormOpen((prev) => !prev);
-                loadFieldOptions();
-              }}
-            >
-              {formOpen() ? 'Cancel' : 'Submit to Community'}
-            </button>
+      {/* Action buttons — always visible */}
+      <div class="submit-panel__actions">
+        <Show when={supabaseEnabled}>
+          <button
+            class="btn-secondary btn-small"
+            onClick={() => {
+              setFormOpen((prev) => !prev);
+              loadFieldOptions();
+            }}
+            disabled={!isComplete()}
+            title={!isComplete() ? 'Available after convergence or manual stop' : undefined}
+          >
+            {formOpen() ? 'Cancel' : 'Submit to Community'}
+          </button>
+          <Show when={!isComplete()}>
+            <p class="submit-panel__disabled-hint">Available after convergence or manual stop</p>
           </Show>
-        </div>
-
-        {/* Submission summary card */}
-        <Show when={lastSubmission()}>
-          {(submission) => (
-            <SharedSubmissionSummary
-              submission={submission()}
-              renderParams={(s: CadeconSubmission) => (
-                <>
-                  <span>tau_rise: {(s.tau_rise * 1000).toFixed(1)}ms</span>
-                  <span>tau_decay: {(s.tau_decay * 1000).toFixed(1)}ms</span>
-                  <span>iterations: {s.num_iterations}</span>
-                  <span>{s.converged ? 'converged' : 'stopped'}</span>
-                </>
-              )}
-              onDismiss={() => setLastSubmission(null)}
-              onDelete={async (id: string) => {
-                await deleteSubmission(id);
-                setLastSubmission(null);
-              }}
-            />
-          )}
-        </Show>
-
-        {/* Metadata form modal */}
-        <Show when={formOpen() && !lastSubmission()}>
-          <SubmitFormModal onClose={() => setFormOpen(false)}>
-            <Show when={isDemo()}>
-              <div class="submit-panel__demo-notice">
-                You're running on simulated demo data — submitting is encouraged!
-              </div>
-            </Show>
-
-            <AuthGate />
-
-            <Show when={user()}>
-              <Show when={!isDemo()}>
-                <SearchableField
-                  label="Calcium Indicator"
-                  required
-                  options={fieldOptions().indicators}
-                  signal={{ get: indicator, set: setIndicator }}
-                  placeholder="e.g. GCaMP6f (AAV)"
-                  fieldName="indicator"
-                  appLabel="cadecon"
-                  loading={fieldOptionsLoading()}
-                />
-                <SearchableField
-                  label="Species"
-                  required
-                  options={fieldOptions().species}
-                  signal={{ get: species, set: setSpecies }}
-                  placeholder="e.g. mouse"
-                  fieldName="species"
-                  appLabel="cadecon"
-                  loading={fieldOptionsLoading()}
-                />
-                <SearchableField
-                  label="Brain Region"
-                  required
-                  options={fieldOptions().brainRegions}
-                  signal={{ get: brainRegion, set: setBrainRegion }}
-                  placeholder="e.g. cortex"
-                  fieldName="brain_region"
-                  appLabel="cadecon"
-                  loading={fieldOptionsLoading()}
-                />
-                <SearchableField
-                  label="Microscope Type"
-                  options={fieldOptions().microscopeTypes}
-                  signal={{ get: microscopeType, set: setMicroscopeType }}
-                  placeholder="e.g. 2-photon"
-                  fieldName="microscope_type"
-                  appLabel="cadecon"
-                  loading={fieldOptionsLoading()}
-                />
-                <SearchableField
-                  label="Cell Type"
-                  options={fieldOptions().cellTypes}
-                  signal={{ get: cellType, set: setCellType }}
-                  placeholder="e.g. pyramidal cell"
-                  fieldName="cell_type"
-                  appLabel="cadecon"
-                  loading={fieldOptionsLoading()}
-                />
-
-                <div class="submit-panel__field">
-                  <label>Imaging Depth (um)</label>
-                  <input
-                    type="number"
-                    value={imagingDepth()}
-                    onInput={(e) => setImagingDepth(e.currentTarget.value)}
-                    placeholder="Optional"
-                    min="0"
-                  />
-                </div>
-
-                <div class="submit-panel__field">
-                  <label>Virus / Construct</label>
-                  <input
-                    type="text"
-                    value={virusConstruct()}
-                    onInput={(e) => setVirusConstruct(e.currentTarget.value)}
-                    placeholder="Optional"
-                  />
-                </div>
-
-                <div class="submit-panel__field">
-                  <label>Time Since Injection (days)</label>
-                  <input
-                    type="number"
-                    value={timeSinceInjection()}
-                    onInput={(e) => setTimeSinceInjection(e.currentTarget.value)}
-                    placeholder="Optional"
-                    min="0"
-                  />
-                </div>
-              </Show>
-
-              <div class="submit-panel__field">
-                <label>Lab Name</label>
-                <input
-                  type="text"
-                  value={labName()}
-                  onInput={(e) => setLabName(e.currentTarget.value)}
-                  placeholder="Optional"
-                />
-              </div>
-
-              <div class="submit-panel__field">
-                <label>ORCID</label>
-                <input
-                  type="text"
-                  value={orcid()}
-                  onInput={(e) => setOrcid(e.currentTarget.value)}
-                  placeholder="0000-0000-0000-0000"
-                />
-              </div>
-
-              <div class="submit-panel__field">
-                <label>Notes</label>
-                <textarea
-                  value={notes()}
-                  onInput={(e) => setNotes(e.currentTarget.value)}
-                  placeholder="Optional notes about this dataset or run"
-                  rows={3}
-                />
-              </div>
-
-              <PrivacyNotice />
-
-              <Show when={validationErrors().length > 0}>
-                <div class="submit-panel__errors">
-                  {validationErrors().map((issue) => (
-                    <p class="submit-panel__error-item">{issue}</p>
-                  ))}
-                </div>
-              </Show>
-
-              <Show when={submitError()}>
-                <div class="submit-panel__errors">
-                  <p class="submit-panel__error-item">{submitError()}</p>
-                </div>
-              </Show>
-
-              <button
-                class="btn-primary"
-                onClick={handleSubmit}
-                disabled={!requiredFieldsFilled() || submitting()}
-              >
-                {submitting() ? 'Submitting...' : 'Submit Parameters'}
-              </button>
-            </Show>
-          </SubmitFormModal>
         </Show>
       </div>
-    </Show>
+
+      {/* Submission summary card */}
+      <Show when={lastSubmission()}>
+        {(submission) => (
+          <SubmissionSummary
+            submission={submission()}
+            onDismiss={handleDismissSummary}
+            onDelete={handleDismissSummary}
+          />
+        )}
+      </Show>
+
+      {/* Metadata form modal */}
+      <Show when={formOpen() && !lastSubmission()}>
+        <SubmitForm
+          onClose={() => setFormOpen(false)}
+          onSubmit={handleSubmit}
+          submitting={submitting}
+          requiredFieldsFilled={requiredFieldsFilled}
+          validationErrors={validationErrors}
+          submitError={submitError}
+          indicator={{ get: indicator, set: setIndicator }}
+          species={{ get: species, set: setSpecies }}
+          brainRegion={{ get: brainRegion, set: setBrainRegion }}
+          microscopeType={{ get: microscopeType, set: setMicroscopeType }}
+          cellType={{ get: cellType, set: setCellType }}
+          imagingDepth={{ get: imagingDepth, set: setImagingDepth }}
+          virusConstruct={{ get: virusConstruct, set: setVirusConstruct }}
+          timeSinceInjection={{ get: timeSinceInjection, set: setTimeSinceInjection }}
+          labName={{ get: labName, set: setLabName }}
+          orcid={{ get: orcid, set: setOrcid }}
+          notes={{ get: notes, set: setNotes }}
+        />
+      </Show>
+    </div>
   );
 }
