@@ -148,10 +148,10 @@
 ### 2.1 Rust: Upsampling infrastructure — ✅ DONE
 
 - [x] `src/upsample.rs` module in `crates/solver/`
-  - `upsample_trace(trace: &[f32], factor: usize) -> Vec<f32>` — zero-insert
+  - `upsample_trace(trace: &[f32], factor: usize) -> Vec<f32>` — linear interpolation (not zero-insert)
   - `downsample_binary(s_bin: &[f32], factor: usize) -> Vec<f32>` — bin-sum
   - `compute_upsample_factor(fs: f64, target_fs: f64) -> usize` — round, min 1
-  - 6 tests (identity at factor=1, zero-insertion pattern, round-trip sum, factor computation, empty input, bin-sum)
+  - 6 tests (identity at factor=1, linear interpolation pattern, round-trip sum, factor computation, empty input, bin-sum)
 
 ### 2.2 Rust: Threshold search + alpha/baseline refit — ✅ DONE
 
@@ -231,7 +231,8 @@
 
 **Deviations from plan:**
 
-- No bandpass preprocessing or weight-array computation implemented (2.8 item 1) — deferred
+- ~~No bandpass preprocessing~~ — bandpass filter wired through in later commit (filterEnabled → worker → WASM → Rust)
+- Weight-array computation not implemented — deferred
 - Subset informativeness weighting during kernel merge not implemented — uses simple median
 - Run provenance (settings snapshot) not stored
 
@@ -240,11 +241,13 @@
 - [x] `src/lib/iteration-store.ts`
   - `runState: 'idle' | 'running' | 'paused' | 'stopping' | 'complete'`
   - `currentIteration`, `totalSubsetTraceJobs`, `completedSubsetTraceJobs`
-  - `convergenceHistory: KernelSnapshot[]` (iteration, tauRise, tauDecay, beta, residual)
+  - `convergenceHistory: KernelSnapshot[]` (iteration, tauRise, tauDecay, beta, residual + per-subset snapshots)
   - `currentTauRise`, `currentTauDecay`
   - `perTraceResults: Record<number, { sCounts, alpha, baseline, pve }>`
-  - Derived: `isRunning`, `isPaused`, `progress`
-  - `resetIterationState()`, `addConvergenceSnapshot()`, `updateTraceResult()`
+  - `debugTraceSnapshots: DebugTraceSnapshot[]` — per-iteration snapshot of a single cell (raw trace, spike counts, reconvolved fit)
+  - `debugKernelSnapshots` — per-iteration snapshot of free kernel + fitted bi-exponential per subset
+  - Derived: `progress`
+  - `resetIterationState()`, `addConvergenceSnapshot()`, `updateTraceResult()`, `addDebugTraceSnapshot()`, `addDebugKernelSnapshot()`
 
 **Deviation:** No `result-store.ts` — per-trace results live in `iteration-store.ts` directly (simpler).
 
@@ -254,10 +257,27 @@
 - [x] `src/components/controls/ProgressBar.tsx` — iteration count, percentage, visual bar with paused/complete states
 - [x] `src/components/charts/KernelConvergence.tsx` — canvas-based dual-line chart (tau_rise + tau_decay vs iteration)
   - Originally planned for Phase 3 as a uPlot chart; implemented early as a lightweight canvas chart
+  - Per-subset scatter points behind the median lines
   - Empty state: "Run deconvolution to see kernel convergence."
 - [x] `src/lib/algorithm-store.ts` — extracted 8 signals + setters from `AlgorithmSettings.tsx` + added `upsampleFactor` derived memo
 
-**Exit criteria:** ✅ Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. Minimal UI shows run controls, progress, and kernel convergence chart. 64 Rust tests pass, TypeScript checks pass, dev server runs without errors.
+### 2.11 Debug visualization charts — ✅ DONE
+
+- [x] `src/components/charts/DebugTraceChart.tsx` — canvas overlay of raw trace + AR2-reconvolved fit + spike counts for a single debug cell, updated per iteration
+- [x] `src/components/charts/DebugKernelChart.tsx` — canvas overlay of free-form kernel (h_free) vs fitted bi-exponential per subset per iteration
+- [x] `src/lib/iteration-manager.ts` — reconvolveAR2() helper computes peak-normalized AR2 forward model for debug trace overlay
+
+### 2.12 Bandpass filter wiring — ✅ DONE
+
+- [x] Threaded `filterEnabled` from `algorithm-store` → `iteration-manager` → pool → worker → WASM → Rust `indeca::solve_trace`
+- [x] Matches CaTune approach: bandpass applied to trace before FISTA
+
+### 2.13 Subset config UX improvements — ✅ DONE
+
+- [x] Replaced auto-size toggle + conditional T_SUB/N_SUB sliders with 3 always-enabled sliders: K (num subsets), Total Coverage (%), Aspect Ratio (log-scale centered at 1.0)
+- [x] Coverage defaults to 50%, aspect ratio slider uses log scale for balanced exploration
+
+**Exit criteria:** ✅ Full InDeCa loop runs on subsets, kernel converges, finalization pass produces per-trace s_counts. UI shows run controls, progress, kernel convergence chart, debug trace/kernel charts. Bandpass filter wired end-to-end. 67 Rust tests pass, TypeScript checks pass, dev server runs without errors.
 
 ---
 
@@ -265,31 +285,30 @@
 
 **Goal:** Rich interactive visualization of the algorithm's progress and results.
 
-### 3.1 Kernel convergence plot — PARTIALLY DONE (Phase 2)
+### 3.1 Kernel convergence plot — MOSTLY DONE (Phase 2)
 
 - [x] `src/components/charts/KernelConvergence.tsx` — canvas-based line chart (implemented in Phase 2)
   - X-axis: iteration number, Y-axis: tau_rise + tau_decay in ms
   - Live update as iterations complete
+  - Per-subset scatter points behind median lines
 - [ ] Upgrade to uPlot for richer interaction (zoom, hover tooltips)
-- [ ] Add per-subset scatter points behind the median lines
 - [ ] Add secondary Y-axis for PVE or subset variance
 - [ ] Mark convergence point
 
-### 3.2 Kernel shape display
+### 3.2 Kernel shape display — PARTIALLY DONE (Phase 2)
 
-- [ ] `src/components/KernelDisplay.tsx` — uPlot chart
-  - Show h_free (raw estimate) vs fitted bi-exponential overlay
-  - Display tau_r, tau_d, beta values
-  - Update per iteration
-  - Show per-subset h_free as faint lines, merged kernel as bold
+- [x] `src/components/charts/DebugKernelChart.tsx` — canvas chart showing h_free vs fitted bi-exponential per iteration (implemented in Phase 2 as debug chart)
+- [ ] Upgrade to full `KernelDisplay.tsx` uPlot chart with:
+  - Per-subset h_free as faint lines, merged kernel as bold
+  - Display tau_r, tau_d, beta values as labels
+  - Zoom/hover interaction
 
-### 3.3 Trace viewer card
+### 3.3 Trace viewer card — PARTIALLY DONE (Phase 2)
 
-- [ ] `src/components/TraceViewer.tsx` — per-trace inspection (similar to CaTune CellCard)
-  - Raw trace (y)
-  - Reconstructed fit (alpha _ h _ s_counts + baseline)
+- [x] `src/components/charts/DebugTraceChart.tsx` — canvas chart showing raw trace + AR2-reconvolved fit + spike counts for a single cell per iteration (implemented in Phase 2 as debug chart)
+- [ ] Upgrade to full `TraceViewer.tsx` with:
+  - Selectable cell (not just debug cell)
   - Residual (y - fit)
-  - Spike raster (s_counts as vertical ticks, height = count)
   - Pad zone shading (first 2*tau_d*fs frames)
   - uPlot with zoom/pan, downsampleMinMax for large traces
 
@@ -533,7 +552,9 @@ apps/cadecon/
 │   │   ├── raster/
 │   │   │   └── RasterOverview.tsx    # ✅ Phase 1
 │   │   ├── charts/
-│   │   │   └── KernelConvergence.tsx # ✅ Phase 2 (canvas, upgrade to uPlot in Phase 3)
+│   │   │   ├── KernelConvergence.tsx # ✅ Phase 2 (canvas, upgrade to uPlot in Phase 3)
+│   │   │   ├── DebugTraceChart.tsx   # ✅ Phase 2 (raw + reconvolved + spikes)
+│   │   │   └── DebugKernelChart.tsx  # ✅ Phase 2 (h_free vs fitted biexp)
 │   │   ├── kernel/                   # Phase 3
 │   │   │   └── KernelDisplay.tsx
 │   │   ├── traces/                   # Phase 3
@@ -556,6 +577,7 @@ apps/cadecon/
 │   │   ├── algorithm-store.ts       # ✅ Phase 2 (extracted from AlgorithmSettings)
 │   │   ├── subset-store.ts          # ✅ Phase 1 (LCG placement)
 │   │   ├── iteration-store.ts       # ✅ Phase 2
+│   │   ├── data-utils.ts            # ✅ Phase 2 (extractCellTrace helper)
 │   │   ├── iteration-manager.ts     # ✅ Phase 2
 │   │   ├── cadecon-pool.ts          # ✅ Phase 2
 │   │   ├── community/               # Phase 4
@@ -616,7 +638,8 @@ crates/solver/src/
 ### Subset store details
 
 - `subsetRectangles` uses a seeded LCG (`state * 1664525 + 1013904223`, unsigned 32-bit) for deterministic placement. The `seed` signal (default 42) can be randomized via the "Randomize Layout" button.
-- `circularShiftEnabled` signal exists but is not yet wired to placement logic — Phase 2 can implement circular shift if needed.
+- `circularShiftEnabled` signal exists but is not yet wired to placement logic.
+- Subset sizing uses 3 sliders: K (num subsets), Total Coverage (%, default 50), Aspect Ratio (log-scale centered at 1.0). Replaced the earlier auto-size toggle + conditional T_SUB/N_SUB sliders.
 - Coverage stats (`coverageStats` memo) gives `{ cellPct, timePct }` — time coverage is approximate for overlapping subsets.
 
 ### Raster rendering
@@ -684,9 +707,16 @@ Pause/resume uses a Promise-based mechanism — the loop `await`s a resolver tha
 
 The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `position: relative` wrapper to prevent ResizeObserver feedback loops. The wrapper has `flex: 1; min-height: 0` to fill remaining space in the fixed-height panel. The panel itself uses `flex: 0 0 180px` via `[data-panel-id='kernel-convergence']` CSS selector (DashboardPanel renders `id` prop as `data-panel-id` attribute, not HTML `id`).
 
+### Algorithmic changes from debugging
+
+- **AR2 impulse peak normalization**: The AR2 forward/adjoint convolutions in `banded.rs` are now divided by the impulse peak so a single spike produces peak=1.0 regardless of sampling rate. This makes alpha consistent across upsampled and original rates. Added `compute_impulse_peak()` and `new_peak_normalized()` to `BandedAR2`.
+- **FISTA Lipschitz estimation in kernel_est**: Replaced naive Lipschitz constant (sum of squared spikes) with power iteration on S^T·S. The tighter spectral norm estimate prevents FISTA oscillation on dense spike data.
+- **Kernel length**: Uses `5 * tau_decay * fs` (not 2x) to match CaTune convention — e^-5 ≈ 0.7% of peak, capturing the full tail.
+- **Linear interpolation upsampling**: `upsample_trace` uses linear interpolation between samples (not zero-insertion), producing smoother upsampled traces.
+
 ### Features NOT yet implemented (deferred)
 
-- Bandpass preprocessing before deconvolution (algorithm setting exists but not wired)
+- ~~Bandpass preprocessing~~ — now wired end-to-end
 - Error weighting by spike proximity (weight vector w)
 - Subset informativeness weighting during kernel merge
 - Run provenance (settings snapshot at start)
@@ -697,12 +727,12 @@ The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `pos
 
 ## Progress Tracker
 
-| Phase                                | Status      | Notes                                                              |
-| ------------------------------------ | ----------- | ------------------------------------------------------------------ |
-| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                    |
-| Phase 2: Core Compute                | COMPLETE    | PR #86 — 6 Rust modules, 64 tests, WASM bindings, worker, UI       |
-| Phase 3: Visualization + QC          | NOT STARTED | KernelConvergence chart pulled forward into Phase 2 (canvas-based) |
-| Phase 4: Community DB                | NOT STARTED |                                                                    |
-| Phase 5: Export/Import               | NOT STARTED |                                                                    |
-| Phase 6: Python Extension            | DEFERRED    |                                                                    |
-| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                    |
+| Phase                                | Status      | Notes                                                                          |
+| ------------------------------------ | ----------- | ------------------------------------------------------------------------------ |
+| Phase 1: Scaffold + Data + Subset UI | COMPLETE    |                                                                                |
+| Phase 2: Core Compute                | COMPLETE    | 6 Rust modules, 67 tests, WASM bindings, worker, debug charts, bandpass wiring |
+| Phase 3: Visualization + QC          | NOT STARTED | Debug trace/kernel charts + convergence scatter pulled forward into Phase 2    |
+| Phase 4: Community DB                | NOT STARTED |                                                                                |
+| Phase 5: Export/Import               | NOT STARTED |                                                                                |
+| Phase 6: Python Extension            | DEFERRED    |                                                                                |
+| Phase 7: Tutorials + Polish          | DEFERRED    |                                                                                |
