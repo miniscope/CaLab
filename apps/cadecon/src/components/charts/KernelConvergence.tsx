@@ -11,6 +11,7 @@ import '../../lib/chart/chart-theme.css';
 import { convergenceHistory, convergedAtIteration } from '../../lib/iteration-store.ts';
 import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
 
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';
@@ -51,10 +52,6 @@ function subsetScatterPlugin(): uPlot.Plugin {
     },
   };
 }
-
-const AXIS_TEXT = '#616161';
-const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
 
 export function KernelConvergence(): JSX.Element {
   const chartData = createMemo((): uPlot.AlignedData => {
@@ -130,13 +127,8 @@ export function KernelConvergence(): JSX.Element {
     <Show
       when={convergenceHistory().length > 0}
       fallback={
-        <div
-          class="kernel-chart-wrapper"
-          style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}
-        >
-          <span style={{ color: 'var(--text-tertiary)', 'font-size': '0.8rem' }}>
-            Run deconvolution to see kernel convergence.
-          </span>
+        <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
+          <span>Run deconvolution to see kernel convergence.</span>
         </div>
       }
     >

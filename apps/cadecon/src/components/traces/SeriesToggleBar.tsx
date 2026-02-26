@@ -10,8 +10,6 @@ import {
   setShowResidual,
   showSpikes,
   setShowSpikes,
-  showWeight,
-  setShowWeight,
 } from '../../lib/viz-store.ts';
 
 interface ToggleItem {
@@ -26,7 +24,6 @@ const TOGGLES: ToggleItem[] = [
   { label: 'Reconv', color: '#ff7f0e', get: showReconvolved, set: setShowReconvolved },
   { label: 'Resid', color: '#d62728', get: showResidual, set: setShowResidual },
   { label: 'Spikes', color: '#2ca02c', get: showSpikes, set: setShowSpikes },
-  { label: 'Weight', color: '#17becf', get: showWeight, set: setShowWeight },
 ];
 
 export function SeriesToggleBar(): JSX.Element {

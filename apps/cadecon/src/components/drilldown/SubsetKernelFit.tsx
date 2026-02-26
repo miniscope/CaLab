@@ -8,23 +8,8 @@ import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import type { KernelSnapshot, SubsetKernelSnapshot } from '../../lib/iteration-store.ts';
-
-const AXIS_TEXT = '#616161';
-const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
-
-const D3_CATEGORY10 = [
-  '#1f77b4',
-  '#ff7f0e',
-  '#2ca02c',
-  '#d62728',
-  '#9467bd',
-  '#8c564b',
-  '#e377c2',
-  '#7f7f7f',
-  '#bcbd22',
-  '#17becf',
-];
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import { subsetColor } from '../../lib/chart/series-config.ts';
 
 export interface SubsetKernelFitProps {
   subsetIdx: number;
@@ -61,7 +46,7 @@ export function SubsetKernelFit(props: SubsetKernelFitProps): JSX.Element {
     return [xAxis, hFree, fit];
   });
 
-  const subColor = () => D3_CATEGORY10[props.subsetIdx % D3_CATEGORY10.length];
+  const subColor = () => subsetColor(props.subsetIdx);
 
   const series = createMemo((): uPlot.Series[] => [
     {},

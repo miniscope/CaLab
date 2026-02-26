@@ -56,7 +56,6 @@ const [perTraceResults, setPerTraceResults] = createSignal<Record<number, TraceR
 const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 const [runPhase, setRunPhase] = createSignal<RunPhase>('idle');
 const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | null>(null);
-const [selectedCellIndex, setSelectedCellIndex] = createSignal<number | null>(null);
 
 // --- Derived ---
 
@@ -70,19 +69,6 @@ const progress = createMemo(() => {
 const alphaValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.alpha));
 
 const pveValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.pve));
-
-const eventRateValues = createMemo(() => {
-  const results = perTraceResults();
-  const entries = Object.values(results);
-  if (entries.length === 0) return [];
-  // Estimate duration from first result's spike array length and sampling rate
-  // (durationSeconds is available from data-store, but we compute from sCounts length)
-  return entries.map((r) => {
-    const totalSpikes = r.sCounts.reduce((sum, v) => sum + v, 0);
-    // sCounts length = number of timepoints; actual duration computed by caller if needed
-    return totalSpikes;
-  });
-});
 
 const subsetVarianceData = createMemo(() => {
   const history = convergenceHistory();
@@ -109,7 +95,6 @@ function resetIterationState(): void {
   setPerTraceResults({});
   setDebugTraceSnapshots([]);
   setConvergedAtIteration(null);
-  setSelectedCellIndex(null);
 }
 
 function addConvergenceSnapshot(snapshot: KernelSnapshot): void {
@@ -144,11 +129,8 @@ export {
   setRunPhase,
   convergedAtIteration,
   setConvergedAtIteration,
-  selectedCellIndex,
-  setSelectedCellIndex,
   alphaValues,
   pveValues,
-  eventRateValues,
   subsetVarianceData,
   progress,
   resetIterationState,

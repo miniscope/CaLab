@@ -11,7 +11,6 @@ import {
   runState,
   perTraceResults,
   debugTraceSnapshots,
-  convergenceHistory,
   currentTauRise,
   currentTauDecay,
 } from '../../lib/iteration-store.ts';
@@ -41,46 +40,10 @@ import {
   createResidualSeries,
 } from '../../lib/chart/series-config.ts';
 import { transientZonePlugin } from '../../lib/chart/transient-zone-plugin.ts';
+import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 
 const DOWNSAMPLE_TARGET = 2000;
 const TRACE_SYNC_KEY = 'cadecon-trace';
-
-/** Reconvolve spikes through AR2 model (same as iteration-manager). */
-function reconvolveAR2(
-  sCounts: Float32Array,
-  tauR: number,
-  tauD: number,
-  fs: number,
-  alpha: number,
-  baseline: number,
-): Float32Array {
-  const dt = 1 / fs;
-  const d = Math.exp(-dt / tauD);
-  const r = Math.exp(-dt / tauR);
-  const g1 = d + r;
-  const g2 = -(d * r);
-
-  let impPeak = 1.0;
-  let cPrev2 = 0;
-  let cPrev1 = 1;
-  const maxSteps = Math.ceil(5 * tauD * fs) + 10;
-  for (let i = 1; i < maxSteps; i++) {
-    const cv = g1 * cPrev1 + g2 * cPrev2;
-    if (cv > impPeak) impPeak = cv;
-    if (cv < impPeak * 0.95) break;
-    cPrev2 = cPrev1;
-    cPrev1 = cv;
-  }
-
-  const n = sCounts.length;
-  const reconvolved = new Float32Array(n);
-  const c = new Float64Array(n);
-  for (let t = 0; t < n; t++) {
-    c[t] = sCounts[t] + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
-    reconvolved[t] = alpha * (c[t] / impPeak) + baseline;
-  }
-  return reconvolved;
-}
 
 export function TraceViewer(): JSX.Element {
   const isFinalized = () => runState() === 'complete';
@@ -197,50 +160,39 @@ export function TraceViewer(): JSX.Element {
     if (!fs) return [[]];
 
     const timeAxis = Array.from(makeTimeAxis(raw.length, fs));
-    const series: number[][] = [];
     const rawArr = Array.from(raw);
+    const needsDownsample = raw.length > DOWNSAMPLE_TARGET * 2;
 
-    // Downsample if needed
-    if (raw.length > DOWNSAMPLE_TARGET * 2) {
+    // Build each series: visible data or NaN placeholder
+    const recon = reconvolvedTrace();
+    const resid = residualTrace();
+
+    const entries: { visible: boolean; source: Float32Array | null }[] = [
+      { visible: showRawTrace(), source: raw },
+      { visible: showReconvolved(), source: recon },
+      { visible: showResidual(), source: resid },
+    ];
+
+    if (needsDownsample) {
       const [dsX, dsRaw] = downsampleMinMax(timeAxis, rawArr, DOWNSAMPLE_TARGET);
-      const result: number[][] = [];
+      const nanArr = dsRaw.map(() => NaN);
 
-      if (showRawTrace()) result.push(dsRaw);
-      else result.push(dsRaw.map(() => NaN));
-
-      // Reconvolved
-      const recon = reconvolvedTrace();
-      if (showReconvolved() && recon) {
-        const [, dsRecon] = downsampleMinMax(timeAxis, Array.from(recon), DOWNSAMPLE_TARGET);
-        result.push(dsRecon);
-      } else {
-        result.push(dsRaw.map(() => NaN));
-      }
-
-      // Residual
-      const resid = residualTrace();
-      if (showResidual() && resid) {
-        const [, dsResid] = downsampleMinMax(timeAxis, Array.from(resid), DOWNSAMPLE_TARGET);
-        result.push(dsResid);
-      } else {
-        result.push(dsRaw.map(() => NaN));
-      }
-
-      return [dsX, ...result];
+      const seriesArrays = entries.map((e) => {
+        if (e.visible && e.source) {
+          const [, ds] = downsampleMinMax(timeAxis, Array.from(e.source), DOWNSAMPLE_TARGET);
+          return ds;
+        }
+        return nanArr;
+      });
+      return [dsX, ...seriesArrays];
     }
 
-    if (showRawTrace()) series.push(rawArr);
-    else series.push(rawArr.map(() => NaN));
-
-    const recon = reconvolvedTrace();
-    if (showReconvolved() && recon) series.push(Array.from(recon));
-    else series.push(rawArr.map(() => NaN));
-
-    const resid = residualTrace();
-    if (showResidual() && resid) series.push(Array.from(resid));
-    else series.push(rawArr.map(() => NaN));
-
-    return [timeAxis, ...series];
+    const nanArr = rawArr.map(() => NaN);
+    const seriesArrays = entries.map((e) => {
+      if (e.visible && e.source) return Array.from(e.source);
+      return nanArr;
+    });
+    return [timeAxis, ...seriesArrays];
   });
 
   const traceSeries: uPlot.Series[] = [
@@ -316,9 +268,7 @@ export function TraceViewer(): JSX.Element {
       <Show
         when={fullRawTrace() != null}
         fallback={
-          <div style={{ padding: '2rem', 'text-align': 'center', color: 'var(--text-tertiary)' }}>
-            No trace data available. Start a run to see traces.
-          </div>
+          <div class="trace-viewer__empty">No trace data available. Start a run to see traces.</div>
         }
       >
         <TracePanel
@@ -335,7 +285,7 @@ export function TraceViewer(): JSX.Element {
             series={spikeSeries}
             height={60}
             syncKey={TRACE_SYNC_KEY}
-            yRange={[0, undefined as unknown as number]}
+            yRange={[0, undefined]}
             hideYValues
           />
         </Show>

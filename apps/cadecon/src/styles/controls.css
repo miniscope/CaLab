@@ -262,6 +262,14 @@
   min-height: 0;
 }
 
+.kernel-chart-wrapper--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+
 /* ========================
    Progress Bar
    ======================== */

@@ -101,3 +101,9 @@
   font-size: 0.65rem;
   color: var(--text-secondary);
 }
+
+.trace-viewer__empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-tertiary);
+}

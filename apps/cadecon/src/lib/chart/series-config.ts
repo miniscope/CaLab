@@ -16,6 +16,11 @@ const D3_CATEGORY10 = [
   '#17becf',
 ];
 
+/** Return the D3 category10 color for a given subset index (wraps around). */
+export function subsetColor(idx: number): string {
+  return D3_CATEGORY10[idx % D3_CATEGORY10.length];
+}
+
 export function withOpacity(color: string, alpha: number): string {
   if (color.startsWith('#')) {
     let hex = color.slice(1);

@@ -1,3 +1,9 @@
+// Hardcoded axis colors used by all uPlot chart components.
+// These match the CSS theme but are needed as JS values for uPlot config.
+export const AXIS_TEXT = '#616161';
+export const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
+export const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
+
 /** Read CSS custom property values from :root for uPlot programmatic styling. */
 export function getThemeColors() {
   const s = getComputedStyle(document.documentElement);

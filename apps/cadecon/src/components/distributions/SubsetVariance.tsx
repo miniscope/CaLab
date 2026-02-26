@@ -9,12 +9,10 @@ import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import { subsetVarianceData, currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
 
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';
-const AXIS_TEXT = '#616161';
-const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
 
 /** Plugin that draws horizontal dashed lines at merged median values. */
 function medianLinesPlugin(

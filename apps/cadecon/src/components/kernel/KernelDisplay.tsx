@@ -13,10 +13,7 @@ import { viewedIteration } from '../../lib/viz-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
 import { createKernelFreeSeries, createKernelFitSeries } from '../../lib/chart/series-config.ts';
 import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
-
-const AXIS_TEXT = '#616161';
-const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
 
 export function KernelDisplay(): JSX.Element {
   const snapshot = createMemo(() => {
@@ -111,18 +108,8 @@ export function KernelDisplay(): JSX.Element {
     <Show
       when={snapshot() != null}
       fallback={
-        <div
-          class="kernel-display__empty"
-          style={{
-            display: 'flex',
-            'align-items': 'center',
-            'justify-content': 'center',
-            height: '100%',
-          }}
-        >
-          <span style={{ color: 'var(--text-tertiary)', 'font-size': '0.8rem' }}>
-            No kernel data yet.
-          </span>
+        <div class="kernel-display__empty">
+          <span>No kernel data yet.</span>
         </div>
       }
     >

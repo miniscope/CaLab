@@ -9,6 +9,7 @@ import { subsetRectangles } from '../../lib/subset-store.ts';
 import {
   selectedSubsetIdx,
   setSelectedSubsetIdx,
+  inspectedCellIndex,
   setInspectedCellIndex,
 } from '../../lib/viz-store.ts';
 import { samplingRate } from '../../lib/data-store.ts';
@@ -75,7 +76,7 @@ export function SubsetDrillDown(): JSX.Element {
           <div class="subset-drilldown__cell-browser">
             <CellSelector
               cellIndices={cellIndices}
-              selectedIndex={() => cellIndices()[0] ?? null}
+              selectedIndex={() => inspectedCellIndex() ?? cellIndices()[0] ?? null}
               onSelect={setInspectedCellIndex}
             />
             <TraceViewer />

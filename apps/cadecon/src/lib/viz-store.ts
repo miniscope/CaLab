@@ -13,8 +13,6 @@ const [showRawTrace, setShowRawTrace] = createSignal(true);
 const [showReconvolved, setShowReconvolved] = createSignal(true);
 const [showResidual, setShowResidual] = createSignal(false);
 const [showSpikes, setShowSpikes] = createSignal(true);
-const [showWeight, setShowWeight] = createSignal(false);
-
 // Which subset is selected for drill-down (null = none)
 const [selectedSubsetIdx, setSelectedSubsetIdx] = createSignal<number | null>(null);
 
@@ -31,8 +29,6 @@ export {
   setShowResidual,
   showSpikes,
   setShowSpikes,
-  showWeight,
-  setShowWeight,
   selectedSubsetIdx,
   setSelectedSubsetIdx,
 };

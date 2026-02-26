@@ -9,6 +9,8 @@ import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import { withOpacity } from '../../lib/chart/series-config.ts';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
+import { median, iqr } from '../../lib/math-utils.ts';
 
 export interface HistogramCardProps {
   title: string;
@@ -17,10 +19,6 @@ export interface HistogramCardProps {
   xLabel?: string;
   color?: string;
 }
-
-const AXIS_TEXT = '#616161';
-const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
 
 function computeBins(values: number[], binCount: number): { centers: number[]; counts: number[] } {
   if (values.length === 0) return { centers: [], counts: [] };
@@ -44,21 +42,6 @@ function computeBins(values: number[], binCount: number): { centers: number[]; c
   }
 
   return { centers, counts };
-}
-
-function median(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-function iqr(arr: number[]): [number, number] {
-  if (arr.length === 0) return [0, 0];
-  const sorted = [...arr].sort((a, b) => a - b);
-  const q1Idx = Math.floor(sorted.length * 0.25);
-  const q3Idx = Math.floor(sorted.length * 0.75);
-  return [sorted[q1Idx], sorted[q3Idx]];
 }
 
 export function HistogramCard(props: HistogramCardProps): JSX.Element {

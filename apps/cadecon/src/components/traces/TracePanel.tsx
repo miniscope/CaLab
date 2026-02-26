@@ -9,6 +9,7 @@ import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '../../lib/chart/chart-theme.css';
 import { wheelZoomPlugin } from '../../lib/chart/wheel-zoom-plugin.ts';
+import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '../../lib/chart/theme-colors.ts';
 
 export interface TracePanelProps {
   data: () => [number[], ...number[][]];
@@ -17,7 +18,7 @@ export interface TracePanelProps {
   syncKey: string;
   plugins?: uPlot.Plugin[];
   disableWheelZoom?: boolean;
-  yRange?: [number, number];
+  yRange?: [number | undefined, number | undefined];
   hideYValues?: boolean;
   xLabel?: string;
 }
@@ -44,14 +45,12 @@ export function TracePanel(props: TracePanelProps) {
     const s: uPlot.Scales = { x: { time: false } };
     if (props.yRange) {
       const [yMin, yMax] = props.yRange;
-      s.y = { range: () => [yMin, yMax] };
+      s.y = {
+        range: (_u, dataMin, dataMax) => [yMin ?? dataMin, yMax ?? dataMax],
+      };
     }
     return s;
   };
-
-  const AXIS_TEXT = '#616161';
-  const AXIS_GRID = 'rgba(0, 0, 0, 0.06)';
-  const AXIS_TICK = 'rgba(0, 0, 0, 0.15)';
 
   const xAxis: uPlot.Axis = {
     stroke: AXIS_TEXT,
