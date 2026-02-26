@@ -3,7 +3,7 @@
 import { Show, type JSX } from 'solid-js';
 import { iterationHistory } from '../../lib/iteration-store.ts';
 import { viewedIteration, setViewedIteration } from '../../lib/viz-store.ts';
-import '../../styles/trace-inspector.css';
+import '../../styles/iteration-scrubber.css';
 
 export function IterationScrubber(): JSX.Element {
   const history = () => iterationHistory();
@@ -28,7 +28,7 @@ export function IterationScrubber(): JSX.Element {
 
   return (
     <Show when={history().length > 1}>
-      <div class="iteration-scrubber">
+      <div class="iteration-scrubber" classList={{ 'iteration-scrubber--past': !isLatest() }}>
         <label class="iteration-scrubber__label">Iteration:</label>
         <input
           class="iteration-scrubber__slider"

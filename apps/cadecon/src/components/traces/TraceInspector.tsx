@@ -45,7 +45,6 @@ import { subsetRectangles } from '../../lib/subset-store.ts';
 import { dataIndex } from '../../lib/data-utils.ts';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
-import { IterationScrubber } from './IterationScrubber.tsx';
 import '../../styles/trace-inspector.css';
 
 const DECONV_GAP = -2;
@@ -486,8 +485,6 @@ export function TraceInspector(): JSX.Element {
             plugins={[transientZonePlugin(transientEndS)]}
           />
         </div>
-
-        <IterationScrubber />
       </Show>
     </div>
   );

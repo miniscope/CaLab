@@ -12,6 +12,7 @@ import { ProgressBar } from './components/controls/ProgressBar.tsx';
 import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
 import { KernelDisplay } from './components/kernel/KernelDisplay.tsx';
 import { TraceInspector } from './components/traces/TraceInspector.tsx';
+import { IterationScrubber } from './components/traces/IterationScrubber.tsx';
 import { AlphaDistribution } from './components/distributions/AlphaDistribution.tsx';
 import { PVEDistribution } from './components/distributions/PVEDistribution.tsx';
 import { EventRateDistribution } from './components/distributions/EventRateDistribution.tsx';
@@ -32,6 +33,7 @@ import './styles/controls.css';
 import './styles/layout.css';
 import './styles/distributions.css';
 import './styles/trace-inspector.css';
+import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
 
@@ -133,6 +135,7 @@ const App: Component = () => {
               </Show>
             </div>
           </div>
+          <IterationScrubber />
         </VizLayout>
       </DashboardShell>
     </Show>

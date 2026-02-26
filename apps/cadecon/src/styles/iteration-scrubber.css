@@ -1,0 +1,65 @@
+/* Iteration Scrubber — window-level control bar */
+
+.iteration-scrubber {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  padding: var(--space-sm, 8px) var(--space-md, 12px);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.iteration-scrubber--past {
+  background: rgba(255, 152, 0, 0.06);
+  border-top-color: rgba(255, 152, 0, 0.5);
+}
+
+.iteration-scrubber__label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium, 500);
+  white-space: nowrap;
+}
+
+.iteration-scrubber__slider {
+  flex: 1;
+  height: 6px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.iteration-scrubber__value {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 50px;
+  text-align: center;
+}
+
+.iteration-scrubber__latest {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.iteration-scrubber__latest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.iteration-scrubber__latest--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+}

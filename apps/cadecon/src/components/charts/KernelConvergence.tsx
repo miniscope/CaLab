@@ -3,14 +3,16 @@
  * Uses uPlot with per-subset scatter and convergence marker.
  */
 
-import { createMemo, Show, type JSX } from 'solid-js';
+import { createMemo, createSignal, createEffect, Show, type JSX } from 'solid-js';
 import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import { convergenceHistory, convergedAtIteration } from '../../lib/iteration-store.ts';
+import { viewedIteration } from '../../lib/viz-store.ts';
 import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
+import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
 const TAU_RISE_COLOR = '#42a5f5';
 const TAU_DECAY_COLOR = '#ef5350';
@@ -53,6 +55,14 @@ function subsetScatterPlugin(): uPlot.Plugin {
 }
 
 export function KernelConvergence(): JSX.Element {
+  const [uplotRef, setUplotRef] = createSignal<uPlot | null>(null);
+
+  // Redraw when viewedIteration changes so the overlay marker updates
+  createEffect(() => {
+    viewedIteration(); // track
+    uplotRef()?.redraw();
+  });
+
   const chartData = createMemo((): uPlot.AlignedData => {
     const h = convergenceHistory();
     if (h.length === 0) return [[], [], [], []];
@@ -115,6 +125,7 @@ export function KernelConvergence(): JSX.Element {
   const plugins = [
     subsetScatterPlugin(),
     convergenceMarkerPlugin(() => convergedAtIteration()),
+    viewedIterationPlugin(() => viewedIteration()),
     wheelZoomPlugin(),
   ];
 
@@ -141,6 +152,7 @@ export function KernelConvergence(): JSX.Element {
           cursor={cursor}
           height={160}
           autoResize={true}
+          onCreate={(u) => setUplotRef(u)}
         />
       </div>
     </Show>
