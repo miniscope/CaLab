@@ -20,6 +20,7 @@ export interface TracePanelProps {
   yRange?: [number | undefined, number | undefined];
   hideYValues?: boolean;
   xLabel?: string;
+  onCreate?: (chart: uPlot) => void;
 }
 
 function formatTimeValues(_u: uPlot, splits: number[]): string[] {
@@ -96,6 +97,7 @@ export function TracePanel(props: TracePanelProps) {
         plugins={plugins()}
         height={height()}
         autoResize={true}
+        onCreate={(chart) => props.onCreate?.(chart)}
       />
     </div>
   );

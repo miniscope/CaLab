@@ -4,7 +4,7 @@
  * Dual mode: during run (debug cell) and after finalization (any cell).
  */
 
-import { createMemo, Show, type JSX } from 'solid-js';
+import { createMemo, createEffect, Show, type JSX } from 'solid-js';
 import type uPlot from 'uplot';
 import { makeTimeAxis, downsampleMinMax } from '@calab/compute';
 import {
@@ -128,7 +128,7 @@ export function TraceViewer(): JSX.Element {
     return Math.ceil(2 * tauD * fs) / fs;
   });
 
-  // Top chart data: time + visible series
+  // Top chart data: time + all series (always include real data; visibility via uPlot setSeries)
   const traceChartData = createMemo((): [number[], ...number[][]] => {
     const raw = fullRawTrace();
     if (!raw) return [[]];
@@ -137,25 +137,19 @@ export function TraceViewer(): JSX.Element {
 
     const timeAxis = Array.from(makeTimeAxis(raw.length, fs));
     const rawArr = Array.from(raw);
-    const needsDownsample = raw.length > DOWNSAMPLE_TARGET * 2;
-
-    // Build each series: visible data or NaN placeholder
     const recon = reconvolvedTrace();
     const resid = residualTrace();
+    const needsDownsample = raw.length > DOWNSAMPLE_TARGET * 2;
 
-    const entries: { visible: boolean; source: Float32Array | null }[] = [
-      { visible: showRawTrace(), source: raw },
-      { visible: showReconvolved(), source: recon },
-      { visible: showResidual(), source: resid },
-    ];
+    const sources: (Float32Array | null)[] = [raw, recon, resid];
 
     if (needsDownsample) {
-      const [dsX, dsRaw] = downsampleMinMax(timeAxis, rawArr, DOWNSAMPLE_TARGET);
-      const nanArr = dsRaw.map(() => NaN);
+      const [dsX] = downsampleMinMax(timeAxis, rawArr, DOWNSAMPLE_TARGET);
+      const nanArr = new Array(dsX.length).fill(NaN);
 
-      const seriesArrays = entries.map((e) => {
-        if (e.visible && e.source) {
-          const [, ds] = downsampleMinMax(timeAxis, Array.from(e.source), DOWNSAMPLE_TARGET);
+      const seriesArrays = sources.map((s) => {
+        if (s) {
+          const [, ds] = downsampleMinMax(timeAxis, Array.from(s), DOWNSAMPLE_TARGET);
           return ds;
         }
         return nanArr;
@@ -164,19 +158,61 @@ export function TraceViewer(): JSX.Element {
     }
 
     const nanArr = rawArr.map(() => NaN);
-    const seriesArrays = entries.map((e) => {
-      if (e.visible && e.source) return Array.from(e.source);
-      return nanArr;
-    });
+    const seriesArrays = sources.map((s) => (s ? Array.from(s) : nanArr));
     return [timeAxis, ...seriesArrays];
   });
 
+  // Chart refs for runtime series toggling and zoom sync
+  let traceChart: uPlot | undefined;
+  let spikeChart: uPlot | undefined;
+
   const traceSeries: uPlot.Series[] = [
     {},
-    createRawTraceSeries(),
-    createReconvolvedSeries(),
-    createResidualSeries(),
+    { ...createRawTraceSeries(), show: showRawTrace() },
+    { ...createReconvolvedSeries(), show: showReconvolved() },
+    { ...createResidualSeries(), show: showResidual() },
   ];
+
+  // Toggle series visibility via uPlot API (data always contains real values)
+  createEffect(() => {
+    traceChart?.setSeries(1, { show: showRawTrace() });
+  });
+  createEffect(() => {
+    traceChart?.setSeries(2, { show: showReconvolved() });
+  });
+  createEffect(() => {
+    traceChart?.setSeries(3, { show: showResidual() });
+  });
+
+  // Sync x-scale zoom from trace chart to spike chart
+  const zoomSyncPlugin: uPlot.Plugin = {
+    hooks: {
+      setScale(u: uPlot, scaleKey: string) {
+        if (scaleKey !== 'x' || !spikeChart) return;
+        const { min, max } = u.scales.x;
+        if (min == null || max == null) return;
+        const sk = spikeChart.scales.x;
+        if (sk.min !== min || sk.max !== max) {
+          spikeChart.setScale('x', { min, max });
+        }
+      },
+    },
+  };
+
+  // Sync x-scale zoom from spike chart back to trace chart
+  const spikeZoomSyncPlugin: uPlot.Plugin = {
+    hooks: {
+      setScale(u: uPlot, scaleKey: string) {
+        if (scaleKey !== 'x' || !traceChart) return;
+        const { min, max } = u.scales.x;
+        if (min == null || max == null) return;
+        const tk = traceChart.scales.x;
+        if (tk.min !== min || tk.max !== max) {
+          traceChart.setScale('x', { min, max });
+        }
+      },
+    },
+  };
 
   // Bottom chart: spikes
   const spikeChartData = createMemo((): [number[], ...number[][]] => {
@@ -212,7 +248,8 @@ export function TraceViewer(): JSX.Element {
     },
   ];
 
-  const tracePlugins = [transientZonePlugin(transientEndS)];
+  const tracePlugins = [transientZonePlugin(transientEndS), zoomSyncPlugin];
+  const spikePlugins = [spikeZoomSyncPlugin];
 
   // Stats
   const alpha = () => cellResult()?.alpha.toFixed(2) ?? '--';
@@ -254,6 +291,9 @@ export function TraceViewer(): JSX.Element {
           syncKey={TRACE_SYNC_KEY}
           plugins={tracePlugins}
           xLabel="Time (s)"
+          onCreate={(c) => {
+            traceChart = c;
+          }}
         />
         <Show when={showSpikes() && cellResult() != null}>
           <TracePanel
@@ -261,8 +301,12 @@ export function TraceViewer(): JSX.Element {
             series={spikeSeries}
             height={60}
             syncKey={TRACE_SYNC_KEY}
+            plugins={spikePlugins}
             yRange={[0, undefined]}
             hideYValues
+            onCreate={(c) => {
+              spikeChart = c;
+            }}
           />
         </Show>
       </Show>
