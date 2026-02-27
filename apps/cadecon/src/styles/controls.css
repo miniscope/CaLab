@@ -247,13 +247,17 @@
 }
 
 .dual-range__header {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.dual-range__header .param-slider__label {
+  text-transform: none;
 }
 
 .dual-range__values {
   display: flex;
   gap: var(--space-sm);
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
 .dual-range__field {

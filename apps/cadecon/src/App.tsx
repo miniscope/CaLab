@@ -105,24 +105,24 @@ const App: Component = () => {
                   Subset Configuration
                   <button
                     class="panel-label__action"
-                    title="Randomize layout"
+                    title="Randomize subset tiling"
                     disabled={runState() !== 'idle' && runState() !== 'complete'}
                     onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d="M1 1v3.5h3.5" />
-                      <path d="M11 11V7.5H7.5" />
-                      <path d="M10.2 4.5A4.5 4.5 0 0 0 2.1 2.8L1 4.5" />
-                      <path d="M1.8 7.5A4.5 4.5 0 0 0 9.9 9.2L11 7.5" />
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                      <rect
+                        x="1"
+                        y="1"
+                        width="14"
+                        height="14"
+                        rx="2"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                      />
+                      <circle cx="4.5" cy="4.5" r="1.2" />
+                      <circle cx="8" cy="8" r="1.2" />
+                      <circle cx="11.5" cy="11.5" r="1.2" />
                     </svg>
                   </button>
                 </p>
