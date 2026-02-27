@@ -48,7 +48,7 @@ import {
   setShowGTSpikes,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { hpFilterEnabled, lpFilterEnabled } from '../../lib/algorithm-store.ts';
+import { hpFilterEnabled, lpFilterEnabled, upsampleFactor } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createGroundTruthCalciumSeries,
@@ -252,35 +252,11 @@ export function TraceInspector(): JSX.Element {
     return { rawMin, rawMax };
   });
 
-  const deconvMinMax = createMemo<[number, number]>(() => {
-    const result = effectiveResult();
-    if (!result || result.sCounts.length === 0) return [0, 1];
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < result.sCounts.length; i++) {
-      if (result.sCounts[i] < dMin) dMin = result.sCounts[i];
-      if (result.sCounts[i] > dMax) dMax = result.sCounts[i];
-    }
-    return [dMin, dMax];
-  });
-
   const gtTraces = createMemo(() => {
     if (!gtVisible()) return null;
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
     return getGroundTruthForCell(cellIdx);
-  });
-
-  const gtSpikesMinMax = createMemo<[number, number]>(() => {
-    const gt = gtTraces();
-    if (!gt) return [0, 1];
-    let mn = Infinity;
-    let mx = -Infinity;
-    for (let i = 0; i < gt.spikes.length; i++) {
-      if (gt.spikes[i] < mn) mn = gt.spikes[i];
-      if (gt.spikes[i] > mx) mx = gt.spikes[i];
-    }
-    return mn < mx ? [mn, mx] : [0, 1];
   });
 
   const globalYRange = createMemo<[number, number]>(() => {
@@ -290,17 +266,11 @@ export function TraceInspector(): JSX.Element {
     return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
-  const scaleToDeconvBand = (
-    values: number[],
-    minMax: [number, number],
-    yMin: number,
-    yMax: number,
-  ): number[] => {
-    const [dMin, dMax] = minMax;
-    const dRange = dMax - dMin || 1;
+  const scaleToDeconvBand = (values: number[], yMin: number, yMax: number): number[] => {
+    const dMax = upsampleFactor();
     const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
     return values.map((v) => {
-      const norm = (v - dMin) / dRange;
+      const norm = Math.min(v / dMax, 1);
       return deconvBottom + norm * deconvHeight;
     });
   };
@@ -396,7 +366,7 @@ export function TraceInspector(): JSX.Element {
     if (result && result.sCounts.length >= endSample) {
       const deconvSlice = result.sCounts.subarray(startSample, endSample);
       const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, DOWNSAMPLE_BUCKETS);
-      dsDeconv = scaleToDeconvBand(dsDeconvRaw, deconvMinMax(), rawMin, rawMax);
+      dsDeconv = scaleToDeconvBand(dsDeconvRaw, rawMin, rawMax);
     } else {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
@@ -416,7 +386,7 @@ export function TraceInspector(): JSX.Element {
 
       const gtSpkSlice = gt.spikes.subarray(startSample, endSample);
       const [, dsGTSpkRaw] = downsampleMinMax(x, gtSpkSlice, DOWNSAMPLE_BUCKETS);
-      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, gtSpikesMinMax(), rawMin, rawMax);
+      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, rawMin, rawMax);
     } else {
       dsGTCalcium = new Array(dsX.length).fill(null) as number[];
       dsGTSpikes = new Array(dsX.length).fill(null) as number[];

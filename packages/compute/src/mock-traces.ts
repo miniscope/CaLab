@@ -97,8 +97,7 @@ export function generateSyntheticTrace(
       count += highResSpikes[j];
     }
     if (count > 0) {
-      // Amplitude: log-normal distributed (mean ~1, occasional large transients)
-      spikes[f] = count * Math.exp((simParams?.noise?.amplitudeSigma ?? 0.3) * rng.gaussian());
+      spikes[f] = count;
     }
   }
 
