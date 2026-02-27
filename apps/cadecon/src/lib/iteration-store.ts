@@ -24,11 +24,18 @@ export interface KernelSnapshot {
 }
 
 export interface TraceResultEntry {
+  cellIndex: number;
+  subsetIdx: number; // -1 during finalization (no subset)
   sCounts: Float32Array;
   filteredTrace?: Float32Array;
   alpha: number;
   baseline: number;
+  threshold: number;
   pve: number;
+}
+
+function cellSubsetKey(cellIndex: number, subsetIdx: number): string {
+  return `${cellIndex}:${subsetIdx}`;
 }
 
 /** Snapshot of one cell's raw trace + deconvolved activity at a given iteration (for debug plotting). */
@@ -48,7 +55,7 @@ export interface DebugTraceSnapshot {
 
 export interface IterationHistoryEntry {
   iteration: number;
-  results: Record<number, TraceResultEntry>;
+  results: Record<string, TraceResultEntry>;
   tauRise: number;
   tauDecay: number;
 }
@@ -65,7 +72,7 @@ const [completedSubsetTraceJobs, setCompletedSubsetTraceJobs] = createSignal(0);
 const [convergenceHistory, setConvergenceHistory] = createSignal<KernelSnapshot[]>([]);
 const [currentTauRise, setCurrentTauRise] = createSignal<number | null>(null);
 const [currentTauDecay, setCurrentTauDecay] = createSignal<number | null>(null);
-const [perTraceResults, setPerTraceResults] = createSignal<Record<number, TraceResultEntry>>({});
+const [perTraceResults, setPerTraceResults] = createSignal<Record<string, TraceResultEntry>>({});
 const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 const [runPhase, setRunPhase] = createSignal<RunPhase>('idle');
 const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | null>(null);
@@ -85,6 +92,19 @@ const progress = createMemo(() => {
 const alphaValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.alpha));
 
 const pveValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.pve));
+
+/** Per-cell lookup: returns the best result for a given cell (finalization preferred, else first seen). */
+const cellResultLookup = createMemo(() => {
+  const results = perTraceResults();
+  const lookup = new Map<number, TraceResultEntry>();
+  for (const entry of Object.values(results)) {
+    const existing = lookup.get(entry.cellIndex);
+    if (!existing || entry.subsetIdx === -1) {
+      lookup.set(entry.cellIndex, entry);
+    }
+  }
+  return lookup;
+});
 
 const subsetVarianceData = createMemo(() => {
   const history = convergenceHistory();
@@ -117,13 +137,16 @@ function resetIterationState(): void {
 /** Deep-copy current perTraceResults into the iteration history. */
 function snapshotIteration(iteration: number, tauRise: number, tauDecay: number): void {
   const results = perTraceResults();
-  const copy: Record<number, TraceResultEntry> = {};
+  const copy: Record<string, TraceResultEntry> = {};
   for (const [key, entry] of Object.entries(results)) {
-    copy[Number(key)] = {
+    copy[key] = {
+      cellIndex: entry.cellIndex,
+      subsetIdx: entry.subsetIdx,
       sCounts: new Float32Array(entry.sCounts),
       filteredTrace: entry.filteredTrace ? new Float32Array(entry.filteredTrace) : undefined,
       alpha: entry.alpha,
       baseline: entry.baseline,
+      threshold: entry.threshold,
       pve: entry.pve,
     };
   }
@@ -141,8 +164,8 @@ function addDebugTraceSnapshot(snapshot: DebugTraceSnapshot): void {
   setDebugTraceSnapshots((prev) => [...prev, snapshot]);
 }
 
-function updateTraceResult(cellIndex: number, result: TraceResultEntry): void {
-  setPerTraceResults((prev) => ({ ...prev, [cellIndex]: result }));
+function updateTraceResult(key: string, result: TraceResultEntry): void {
+  setPerTraceResults((prev) => ({ ...prev, [key]: result }));
 }
 
 export {
@@ -167,6 +190,7 @@ export {
   setConvergedAtIteration,
   alphaValues,
   pveValues,
+  cellResultLookup,
   subsetVarianceData,
   isRunLocked,
   progress,
@@ -176,4 +200,5 @@ export {
   addDebugTraceSnapshot,
   updateTraceResult,
   snapshotIteration,
+  cellSubsetKey,
 };

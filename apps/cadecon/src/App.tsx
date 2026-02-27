@@ -19,7 +19,7 @@ import { SubsetConfig } from './components/controls/SubsetConfig.tsx';
 import { AlgorithmSettings } from './components/controls/AlgorithmSettings.tsx';
 import { RunControls } from './components/controls/RunControls.tsx';
 import { ProgressBar } from './components/controls/ProgressBar.tsx';
-import { KernelConvergence } from './components/charts/KernelConvergence.tsx';
+import { ConvergencePanel } from './components/charts/ConvergencePanel.tsx';
 import { KernelDisplay } from './components/kernel/KernelDisplay.tsx';
 import { TraceInspector } from './components/traces/TraceInspector.tsx';
 import { IterationScrubber } from './components/traces/IterationScrubber.tsx';
@@ -165,8 +165,7 @@ const App: Component = () => {
                 variant="data"
                 class="viz-grid__col--convergence"
               >
-                <p class="panel-label">Kernel Convergence</p>
-                <KernelConvergence />
+                <ConvergencePanel />
               </DashboardPanel>
             </div>
 

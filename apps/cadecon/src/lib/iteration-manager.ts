@@ -25,6 +25,7 @@ import {
   updateTraceResult,
   resetIterationState,
   snapshotIteration,
+  cellSubsetKey,
 } from './iteration-store.ts';
 import {
   tauRiseInit,
@@ -289,6 +290,32 @@ export async function startRun(): Promise<void> {
   let prevTraceCounts: Map<number, Float32Array> | undefined;
   let prevKernels: Float32Array[] | undefined;
 
+  // Iteration 0: record initial kernel state and alpha=1 baseline
+  addConvergenceSnapshot({
+    iteration: 0,
+    tauRise: tauR,
+    tauDecay: tauD,
+    beta: 0,
+    residual: 0,
+    fs,
+    subsets: [],
+  });
+  for (let si = 0; si < rects.length; si++) {
+    const rect = rects[si];
+    for (let c = rect.cellStart; c < rect.cellEnd; c++) {
+      updateTraceResult(cellSubsetKey(c, si), {
+        cellIndex: c,
+        subsetIdx: si,
+        sCounts: new Float32Array(0),
+        alpha: 1,
+        baseline: 0,
+        threshold: 0,
+        pve: 0,
+      });
+    }
+  }
+  snapshotIteration(0, tauR, tauD);
+
   for (let iter = 0; iter < maxIter; iter++) {
     // Check for stop/pause
     if (runState() === 'stopping') break;
@@ -324,8 +351,11 @@ export async function startRun(): Promise<void> {
     // Subset traces only cover a time window, so we store the subset-windowed s_counts
     // keyed by cell and reconstruct full-trace s_counts where available.
     prevTraceCounts = new Map();
-    // Map cell → latest scalar results (alpha, baseline, pve) from whichever subset last processed it
-    const cellScalars = new Map<number, { alpha: number; baseline: number; pve: number }>();
+    // Map cell → latest scalar results from whichever subset last processed it
+    const cellScalars = new Map<
+      number,
+      { alpha: number; baseline: number; threshold: number; pve: number }
+    >();
     // Map cell → full-length filtered trace (stitched from subset windows)
     const cellFiltered = new Map<number, Float32Array>();
     for (let si = 0; si < rects.length; si++) {
@@ -350,20 +380,37 @@ export async function startRun(): Promise<void> {
         cellScalars.set(cell, {
           alpha: result.alpha,
           baseline: result.baseline,
+          threshold: result.threshold,
+          pve: result.pve,
+        });
+
+        // Publish per cell×subset result for alpha/threshold trends tracking
+        updateTraceResult(cellSubsetKey(cell, si), {
+          cellIndex: cell,
+          subsetIdx: si,
+          sCounts: result.sCounts,
+          filteredTrace: result.filteredTrace,
+          alpha: result.alpha,
+          baseline: result.baseline,
+          threshold: result.threshold,
           pve: result.pve,
         });
       }
     }
 
-    // Publish full-length results so distributions and trace viewer update during iterations
+    // Publish stitched full-length results so trace viewer and distributions update correctly.
+    // These use subsetIdx=-1, which cellResultLookup prefers over per-subset entries.
     for (const [cell, fullCounts] of prevTraceCounts) {
       const scalars = cellScalars.get(cell)!;
       const filteredTrace = cellFiltered.get(cell);
-      updateTraceResult(cell, {
+      updateTraceResult(cellSubsetKey(cell, -1), {
+        cellIndex: cell,
+        subsetIdx: -1,
         sCounts: fullCounts,
         filteredTrace,
         alpha: scalars.alpha,
         baseline: scalars.baseline,
+        threshold: scalars.threshold,
         pve: scalars.pve,
       });
     }
@@ -511,11 +558,14 @@ export async function startRun(): Promise<void> {
           lpEnabled: lpOn,
           warmCounts,
           onComplete(result: TraceResult) {
-            updateTraceResult(c, {
+            updateTraceResult(cellSubsetKey(c, -1), {
+              cellIndex: c,
+              subsetIdx: -1,
               sCounts: result.sCounts,
               filteredTrace: result.filteredTrace,
               alpha: result.alpha,
               baseline: result.baseline,
+              threshold: result.threshold,
               pve: result.pve,
             });
             finCompleted++;

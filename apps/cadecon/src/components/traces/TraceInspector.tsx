@@ -13,7 +13,7 @@ import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import { transientZonePlugin } from '@calab/ui/chart';
 import {
   runState,
-  perTraceResults,
+  cellResultLookup,
   currentTauRise,
   currentTauDecay,
   iterationHistory,
@@ -139,9 +139,19 @@ export function TraceInspector(): JSX.Element {
     if (cellIdx == null) return null;
 
     const histEntry = viewedHistoryEntry();
-    if (histEntry) return histEntry.results[cellIdx] ?? null;
+    if (histEntry) {
+      // Prefer the stitched full-length result (subsetIdx=-1); fall back to first match
+      let fallback: TraceResultEntry | null = null;
+      for (const entry of Object.values(histEntry.results)) {
+        if (entry.cellIndex === cellIdx) {
+          if (entry.subsetIdx === -1) return entry;
+          if (!fallback) fallback = entry;
+        }
+      }
+      return fallback;
+    }
 
-    return perTraceResults()[cellIdx] ?? null;
+    return cellResultLookup().get(cellIdx) ?? null;
   });
 
   const effectiveTauRise = createMemo(() => viewedHistoryEntry()?.tauRise ?? currentTauRise());
