@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js';
+import type { Component, JSX } from 'solid-js';
 import { createSignal, Show } from 'solid-js';
 import {
   DashboardShell,
@@ -39,7 +39,7 @@ import {
   bridgeUrl,
 } from './lib/data-store.ts';
 import { selectedSubsetIdx, setSeed } from './lib/subset-store.ts';
-import { runState } from './lib/iteration-store.ts';
+import { isRunLocked } from './lib/iteration-store.ts';
 
 import './styles/controls.css';
 import './styles/layout.css';
@@ -49,6 +49,26 @@ import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
 import './styles/community.css';
+
+function DiceIcon(): JSX.Element {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+      <rect
+        x="1"
+        y="1"
+        width="14"
+        height="14"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+      />
+      <circle cx="4.5" cy="4.5" r="1.2" />
+      <circle cx="8" cy="8" r="1.2" />
+      <circle cx="11.5" cy="11.5" r="1.2" />
+    </svg>
+  );
+}
 
 const App: Component = () => {
   if (isAuthCallback()) {
@@ -106,24 +126,10 @@ const App: Component = () => {
                   <button
                     class="panel-label__action"
                     title="Randomize subset tiling"
-                    disabled={runState() !== 'idle' && runState() !== 'complete'}
+                    disabled={isRunLocked()}
                     onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
                   >
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                      <rect
-                        x="1"
-                        y="1"
-                        width="14"
-                        height="14"
-                        rx="2"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.5"
-                      />
-                      <circle cx="4.5" cy="4.5" r="1.2" />
-                      <circle cx="8" cy="8" r="1.2" />
-                      <circle cx="11.5" cy="11.5" r="1.2" />
-                    </svg>
+                    <DiceIcon />
                   </button>
                 </p>
                 <SubsetConfig />

@@ -1,9 +1,6 @@
-/**
- * Ground truth reveal/toggle controls and export buttons for CaDecon.
- * Mirrors CaTune's GroundTruthControls pattern.
- */
+/** Ground truth reveal/toggle controls and export button for CaDecon. */
 
-import { Show } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import {
   isDemo,
   groundTruthVisible,
@@ -13,7 +10,7 @@ import {
   bridgeUrl,
 } from '../../lib/data-store.ts';
 
-export function GroundTruthControls() {
+export function GroundTruthControls(): JSX.Element {
   function handleToggle(): void {
     if (!groundTruthLocked()) {
       revealGroundTruth();
@@ -31,7 +28,7 @@ export function GroundTruthControls() {
   );
 }
 
-export function GroundTruthNotices() {
+export function GroundTruthNotices(): JSX.Element {
   return (
     <Show when={isDemo()}>
       <Show when={!groundTruthLocked()}>
@@ -48,7 +45,7 @@ export function GroundTruthNotices() {
   );
 }
 
-export function ExportButton() {
+export function ExportButton(): JSX.Element {
   return (
     <Show when={!isDemo()}>
       <button class="btn-secondary btn-small" disabled title="Export coming soon">

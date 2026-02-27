@@ -27,32 +27,18 @@ export function DualRangeSlider(props: DualRangeSliderProps): JSX.Element {
   const lowPct = () => ((props.lowValue() - props.min) / (props.max - props.min)) * 100;
   const highPct = () => ((props.highValue() - props.min) / (props.max - props.min)) * 100;
 
-  function handleLowRange(e: Event) {
+  function clampAndSet(e: Event, min: number, max: number, setter: (v: number) => void): void {
     const raw = parseInput(e);
     if (raw === null) return;
-    // Clamp: can't exceed high value
-    props.setLowValue(Math.min(raw, props.highValue() - props.step));
+    setter(Math.max(min, Math.min(max, raw)));
   }
 
-  function handleHighRange(e: Event) {
-    const raw = parseInput(e);
-    if (raw === null) return;
-    // Clamp: can't go below low value
-    props.setHighValue(Math.max(raw, props.lowValue() + props.step));
+  function handleLow(e: Event): void {
+    clampAndSet(e, props.min, props.highValue() - props.step, props.setLowValue);
   }
 
-  function handleLowNumber(e: Event) {
-    const raw = parseInput(e);
-    if (raw === null) return;
-    const clamped = Math.max(props.min, Math.min(props.highValue() - props.step, raw));
-    props.setLowValue(clamped);
-  }
-
-  function handleHighNumber(e: Event) {
-    const raw = parseInput(e);
-    if (raw === null) return;
-    const clamped = Math.min(props.max, Math.max(props.lowValue() + props.step, raw));
-    props.setHighValue(clamped);
+  function handleHigh(e: Event): void {
+    clampAndSet(e, props.lowValue() + props.step, props.max, props.setHighValue);
   }
 
   return (
@@ -71,7 +57,7 @@ export function DualRangeSlider(props: DualRangeSliderProps): JSX.Element {
             max={props.highValue() - props.step}
             step={props.step}
             disabled={props.disabled}
-            onInput={handleLowNumber}
+            onInput={handleLow}
           />
           <span class="param-slider__unit">{props.unit ?? ''}</span>
         </label>
@@ -85,7 +71,7 @@ export function DualRangeSlider(props: DualRangeSliderProps): JSX.Element {
             max={props.max}
             step={props.step}
             disabled={props.disabled}
-            onInput={handleHighNumber}
+            onInput={handleHigh}
           />
           <span class="param-slider__unit">{props.unit ?? ''}</span>
         </label>
@@ -103,7 +89,7 @@ export function DualRangeSlider(props: DualRangeSliderProps): JSX.Element {
           step={props.step}
           value={props.lowValue()}
           disabled={props.disabled}
-          onInput={handleLowRange}
+          onInput={handleLow}
         />
         <input
           type="range"
@@ -113,7 +99,7 @@ export function DualRangeSlider(props: DualRangeSliderProps): JSX.Element {
           step={props.step}
           value={props.highValue()}
           disabled={props.disabled}
-          onInput={handleHighRange}
+          onInput={handleHigh}
         />
       </div>
     </div>

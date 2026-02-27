@@ -29,35 +29,35 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
   const displayValue = () =>
     props.format ? props.format(props.value()) : props.value().toString();
 
-  const handleRangeInput = (e: Event) => {
+  function handleRangeInput(e: Event): void {
     const raw = parseInputValue(e);
     if (raw === null) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
     props.setValue(val);
-  };
+  }
 
-  const handleRangeChange = (e: Event) => {
+  function handleRangeChange(e: Event): void {
     const raw = parseInputValue(e);
     if (raw === null) return;
     const val = props.fromSlider ? props.fromSlider(raw) : raw;
     props.onCommit?.(val);
-  };
+  }
 
-  const handleNumericInput = (e: Event) => {
+  function handleNumericInput(e: Event): void {
     const raw = parseInputValue(e);
     if (raw === null) return;
     const clamped = Math.max(props.min, Math.min(props.max, raw));
     props.setValue(clamped);
-  };
+  }
 
-  const handleNumericChange = (e: Event) => {
+  function handleNumericChange(e: Event): void {
     const raw = parseInputValue(e);
     if (raw === null) return;
     const clamped = Math.max(props.min, Math.min(props.max, raw));
     props.onCommit?.(clamped);
-  };
+  }
 
-  const renderTrueMarker = (): JSX.Element => {
+  function renderTrueMarker(): JSX.Element {
     const sliderMin = props.toSlider ? 0 : props.min;
     const sliderMax = props.toSlider ? 1 : props.max;
     const mappedValue = props.toSlider ? props.toSlider(props.trueValue!) : props.trueValue!;
@@ -72,7 +72,7 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
         title={`True value: ${formattedValue}${props.unit ? ' ' + props.unit : ''}`}
       />
     );
-  };
+  }
 
   return (
     <div class="param-slider" classList={{ 'param-slider--disabled': !!props.disabled }}>

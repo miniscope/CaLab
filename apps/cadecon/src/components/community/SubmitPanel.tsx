@@ -79,6 +79,12 @@ export function SubmitPanel() {
   const isComplete = () => runState() === 'complete';
   const isConverged = () => convergedAtIteration() !== null;
 
+  function submitButtonTitle(): string | undefined {
+    if (groundTruthLocked()) return 'Disabled — ground truth was viewed';
+    if (!isComplete()) return 'Available after convergence or manual stop';
+    return undefined;
+  }
+
   async function handleSubmit(): Promise<void> {
     setSubmitError(null);
     setValidationErrors([]);
@@ -206,13 +212,7 @@ export function SubmitPanel() {
               loadFieldOptions();
             }}
             disabled={!isComplete() || groundTruthLocked()}
-            title={
-              groundTruthLocked()
-                ? 'Disabled — ground truth was viewed'
-                : !isComplete()
-                  ? 'Available after convergence or manual stop'
-                  : undefined
-            }
+            title={submitButtonTitle()}
           >
             {formOpen() ? 'Cancel' : 'Submit to Community'}
           </button>

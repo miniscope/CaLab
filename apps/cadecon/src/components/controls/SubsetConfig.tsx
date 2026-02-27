@@ -10,11 +10,9 @@ import {
   coverageStats,
   maxNonOverlappingK,
 } from '../../lib/subset-store.ts';
-import { runState } from '../../lib/iteration-store.ts';
+import { isRunLocked } from '../../lib/iteration-store.ts';
 
 export function SubsetConfig(): JSX.Element {
-  const locked = () => runState() !== 'idle' && runState() !== 'complete';
-
   return (
     <div class="param-panel">
       <div class="param-panel__sliders">
@@ -26,7 +24,7 @@ export function SubsetConfig(): JSX.Element {
           max={20}
           step={1}
           format={(v) => String(Math.round(v))}
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
 
         <ParameterSlider
@@ -38,7 +36,7 @@ export function SubsetConfig(): JSX.Element {
           step={5}
           format={(v) => String(Math.round(v))}
           unit="%"
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
 
         <ParameterSlider
@@ -51,7 +49,7 @@ export function SubsetConfig(): JSX.Element {
           toSlider={(v) => Math.log2(v) / 6 + 0.5}
           fromSlider={(p) => Math.pow(2, (p - 0.5) * 6)}
           format={(v) => v.toFixed(1)}
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
       </div>
 

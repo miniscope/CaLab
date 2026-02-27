@@ -20,11 +20,9 @@ import {
   convergenceTol,
   setConvergenceTol,
 } from '../../lib/algorithm-store.ts';
-import { runState } from '../../lib/iteration-store.ts';
+import { isRunLocked } from '../../lib/iteration-store.ts';
 
 export function AlgorithmSettings(): JSX.Element {
-  const locked = () => runState() !== 'idle' && runState() !== 'complete';
-
   return (
     <div class="param-panel">
       <div class="param-panel__sliders">
@@ -41,7 +39,7 @@ export function AlgorithmSettings(): JSX.Element {
           step={0.01}
           format={(v) => (v * 1000).toFixed(0)}
           unit="ms"
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
 
         <ParameterSlider
@@ -53,7 +51,7 @@ export function AlgorithmSettings(): JSX.Element {
           step={10}
           format={(v) => String(Math.round(v))}
           unit="Hz"
-          disabled={locked()}
+          disabled={isRunLocked()}
           noSlider
         />
 
@@ -65,7 +63,7 @@ export function AlgorithmSettings(): JSX.Element {
           max={100}
           step={1}
           format={(v) => String(Math.round(v))}
-          disabled={locked()}
+          disabled={isRunLocked()}
           noSlider
         />
 
@@ -77,7 +75,7 @@ export function AlgorithmSettings(): JSX.Element {
           max={0.1}
           step={0.001}
           format={(v) => v.toFixed(3)}
-          disabled={locked()}
+          disabled={isRunLocked()}
           noSlider
         />
 
@@ -86,7 +84,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Weight cells by SNR during kernel updates"
           checked={weightingEnabled()}
           onChange={setWeightingEnabled}
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
 
         <ToggleSwitch
@@ -94,7 +92,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove baseline drift before deconvolution"
           checked={hpFilterEnabled()}
           onChange={setHpFilterEnabled}
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
 
         <ToggleSwitch
@@ -102,7 +100,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove high-frequency noise before deconvolution"
           checked={lpFilterEnabled()}
           onChange={setLpFilterEnabled}
-          disabled={locked()}
+          disabled={isRunLocked()}
         />
       </div>
     </div>

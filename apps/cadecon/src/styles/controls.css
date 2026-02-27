@@ -230,15 +230,6 @@
   gap: 4px;
 }
 
-/* --- Compact button --- */
-.btn-compact {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  font-size: 0.75rem;
-}
-
 /* ========================
    Dual Range Slider
    ======================== */
@@ -348,12 +339,8 @@
   height: 4px;
 }
 
-.dual-range--disabled {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
 /* --- Disabled state --- */
+.dual-range--disabled,
 .param-slider--disabled,
 .param-panel__toggle-group--disabled {
   opacity: 0.5;
@@ -425,14 +412,6 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   white-space: nowrap;
-}
-
-.param-panel__toggle-desc {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--text-tertiary);
-  margin-top: var(--space-xs);
-  line-height: 1.3;
 }
 
 /* ========================
