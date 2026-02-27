@@ -264,10 +264,8 @@ pub fn solve_trace(
     let upsampled = upsample_trace(trace, upsample_factor);
 
     // Pre-divide by alpha estimate so Box[0,1] maps to the correct amplitude range.
-    // Divide peak-to-trough by upsample_factor because the tallest calcium event is
-    // typically a burst of overlapping spikes, not a single spike — so peak-to-trough
-    // overestimates alpha by roughly the burst size.
-    let alpha_est = estimate_alpha(&upsampled) / upsample_factor as f64;
+    // A spike value of 1.0 in the solver now corresponds to an alpha-sized transient.
+    let alpha_est = estimate_alpha(&upsampled);
     let scaled: Vec<f32> = upsampled.iter().map(|&v| v / alpha_est as f32).collect();
 
     // Convert original-rate spike counts to upsampled-rate binary for warm-start
@@ -439,11 +437,13 @@ mod tests {
         );
     }
 
-    /// High alpha + upsampling: alpha_est is divided by upsample_factor to avoid
-    /// overestimating alpha from burst peaks. The lstsq fit recovers a reasonable
-    /// alpha and the total spike count should stay in a broad plausible range.
+    /// High alpha + upsampling should not overcount.
+    ///
+    /// Before the fix, alpha=5 + upsample=10x produced ~41 detected spikes because
+    /// Box[0,1] FISTA spread energy to neighboring upsampled bins. Pre-dividing by
+    /// alpha_est + pooling halo energy before threshold search fixes this.
     #[test]
-    fn high_alpha_upsampled() {
+    fn high_alpha_upsampled_no_overcounting() {
         let tau_r = 0.02;
         let tau_d = 0.4;
         let fs = 30.0;
@@ -464,10 +464,18 @@ mod tests {
 
         let result = solve_trace(&trace, tau_r, tau_d, fs, 10, 500, 1e-4, None, false, false);
 
-        // Output length should match input
-        assert_eq!(result.s_counts.len(), n);
-        // Alpha and baseline should be finite
-        assert!(result.alpha.is_finite(), "Alpha should be finite, got {}", result.alpha);
-        assert!(result.baseline.is_finite(), "Baseline should be finite, got {}", result.baseline);
+        let total_counts: f32 = result.s_counts.iter().sum();
+        assert!(
+            total_counts >= 3.0 && total_counts <= 8.0,
+            "Expected ~4 spike counts (range [3, 8]) with alpha=5 at 10x upsample, got {}",
+            total_counts
+        );
+
+        assert!(
+            (result.alpha - alpha_true as f64).abs() < 2.5,
+            "Alpha should be close to {}, got {}",
+            alpha_true,
+            result.alpha
+        );
     }
 }
