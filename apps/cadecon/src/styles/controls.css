@@ -223,10 +223,21 @@
   line-height: 1.3;
 }
 
+/* --- Run controls: single-row compact buttons --- */
+.run-controls {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.run-controls > button {
+  flex: 1 1 0;
+}
+
 /* --- Button icon --- */
 .btn-icon {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
 }
 

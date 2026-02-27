@@ -51,54 +51,52 @@ export function RunControls(): JSX.Element {
   const hasData = () => !!parsedData() && !!samplingRate();
 
   return (
-    <div class="param-panel">
-      <div style="display: flex; gap: var(--space-sm); flex-wrap: wrap;">
-        <Show
-          when={runState() !== 'paused'}
-          fallback={
-            <button class="btn-primary btn-icon" onClick={resumeRun}>
-              <PlayIcon />
-              Resume
-            </button>
-          }
-        >
-          <button
-            class="btn-primary btn-icon"
-            disabled={runState() !== 'idle' || !hasData()}
-            onClick={() => void startRun()}
-          >
+    <div class="run-controls">
+      <Show
+        when={runState() !== 'paused'}
+        fallback={
+          <button class="btn-primary btn-small btn-icon" onClick={resumeRun}>
             <PlayIcon />
-            Start
+            Resume
           </button>
-        </Show>
-
+        }
+      >
         <button
-          class="btn-secondary btn-icon"
-          disabled={runState() !== 'running'}
-          onClick={pauseRun}
+          class="btn-primary btn-small btn-icon"
+          disabled={runState() !== 'idle' || !hasData()}
+          onClick={() => void startRun()}
         >
-          <PauseIcon />
-          Pause
+          <PlayIcon />
+          Start
         </button>
+      </Show>
 
-        <button
-          class="btn-secondary btn-icon"
-          disabled={runState() !== 'running' && runState() !== 'paused'}
-          onClick={stopRun}
-        >
-          <StopIcon />
-          Stop
-        </button>
+      <button
+        class="btn-secondary btn-small btn-icon"
+        disabled={runState() !== 'running'}
+        onClick={pauseRun}
+      >
+        <PauseIcon />
+        Pause
+      </button>
 
-        <button
-          class="btn-secondary btn-icon"
-          disabled={runState() !== 'complete' && runState() !== 'stopping'}
-          onClick={resetRun}
-        >
-          <ResetIcon />
-          Reset
-        </button>
-      </div>
+      <button
+        class="btn-secondary btn-small btn-icon"
+        disabled={runState() !== 'running' && runState() !== 'paused'}
+        onClick={stopRun}
+      >
+        <StopIcon />
+        Stop
+      </button>
+
+      <button
+        class="btn-secondary btn-small btn-icon"
+        disabled={runState() !== 'complete' && runState() !== 'stopping'}
+        onClick={resetRun}
+      >
+        <ResetIcon />
+        Reset
+      </button>
     </div>
   );
 }
