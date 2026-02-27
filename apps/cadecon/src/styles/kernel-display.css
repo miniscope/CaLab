@@ -20,6 +20,14 @@
   color: var(--text-primary);
 }
 
+.kernel-display__gt-stat {
+  color: rgba(233, 30, 99, 0.8);
+}
+
+.kernel-display__gt-stat strong {
+  color: rgba(233, 30, 99, 1);
+}
+
 .kernel-display__empty {
   display: flex;
   align-items: center;

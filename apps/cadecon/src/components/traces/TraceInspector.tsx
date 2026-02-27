@@ -25,6 +25,9 @@ import {
   numTimepoints,
   parsedData,
   swapped,
+  groundTruthVisible,
+  isDemo,
+  getGroundTruthForCell,
 } from '../../lib/data-store.ts';
 import {
   inspectedCellIndex,
@@ -39,24 +42,56 @@ import {
   setShowDeconv,
   showResidual,
   setShowResidual,
+  showGTCalcium,
+  setShowGTCalcium,
+  showGTSpikes,
+  setShowGTSpikes,
   viewedIteration,
 } from '../../lib/viz-store.ts';
 import { hpFilterEnabled, lpFilterEnabled } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
+import {
+  createGroundTruthCalciumSeries,
+  createGroundTruthSpikesSeries,
+} from '../../lib/chart/series-config.ts';
 import { dataIndex } from '../../lib/data-utils.ts';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
 import '../../styles/trace-inspector.css';
 
-const DECONV_GAP = -2;
+const DECONV_GAP_FRAC = 0.05;
 const DECONV_SCALE = 0.35;
-const RESID_GAP = 0.5;
+const RESID_GAP_FRAC = 0.05;
 const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
 const DEFAULT_ZOOM_WINDOW_S = 60;
 
+interface BandLayout {
+  deconvTop: number;
+  deconvBottom: number;
+  deconvHeight: number;
+  residTop: number;
+  residBottom: number;
+  residHeight: number;
+}
+
+/** Compute the Y-axis positions for the deconv and residual bands below the raw trace. */
+function computeBandLayout(rawMin: number, rawMax: number): BandLayout {
+  const rawRange = rawMax - rawMin;
+  const deconvGap = rawRange * DECONV_GAP_FRAC;
+  const deconvHeight = rawRange * DECONV_SCALE;
+  const deconvTop = rawMin - deconvGap;
+  const deconvBottom = deconvTop - deconvHeight;
+  const residGap = rawRange * RESID_GAP_FRAC;
+  const residHeight = rawRange * RESID_SCALE;
+  const residTop = deconvBottom - residGap;
+  const residBottom = residTop - residHeight;
+  return { deconvTop, deconvBottom, deconvHeight, residTop, residBottom, residHeight };
+}
+
 export function TraceInspector(): JSX.Element {
   const isFinalized = () => runState() === 'complete';
+  const gtVisible = createMemo(() => groundTruthVisible() && isDemo());
 
   // Available cell indices
   const cellIndices = createMemo((): number[] => {
@@ -142,7 +177,10 @@ export function TraceInspector(): JSX.Element {
     return trace;
   });
 
-  // Reconvolved trace
+  // Reconvolved trace — when HP/LP filtering is active, the solver operates on
+  // the filtered trace (DC removed) and the threshold-search baseline captures
+  // a small residual offset. Drop that baseline so the fit overlays the filtered
+  // trace rather than sitting above it.
   const reconvolvedTrace = createMemo((): Float32Array | null => {
     const result = effectiveResult();
     if (!result) return null;
@@ -150,7 +188,9 @@ export function TraceInspector(): JSX.Element {
     const tauD = effectiveTauDecay();
     const fs = samplingRate();
     if (tauR == null || tauD == null || !fs) return null;
-    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, result.baseline);
+    const filterActive = hpFilterEnabled() || lpFilterEnabled();
+    const baseline = filterActive ? 0 : result.baseline;
+    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, baseline);
   });
 
   // Filtered trace from solver (only present when HP/LP filtering is active)
@@ -198,25 +238,18 @@ export function TraceInspector(): JSX.Element {
     setZoomEnd(end);
   };
 
-  // --- Z-score stats ---
+  // --- Raw trace min/max for Y-range layout ---
   const rawStats = createMemo(() => {
     const raw = fullRawTrace();
-    if (!raw || raw.length === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
-    let sum = 0;
-    let sumSq = 0;
+    if (!raw || raw.length === 0) return { rawMin: 0, rawMax: 0 };
     let rawMin = Infinity;
     let rawMax = -Infinity;
     for (let i = 0; i < raw.length; i++) {
       const v = raw[i];
-      sum += v;
-      sumSq += v * v;
       if (v < rawMin) rawMin = v;
       if (v > rawMax) rawMax = v;
     }
-    const n = raw.length;
-    const mean = sum / n;
-    const std = Math.sqrt(sumSq / n - mean * mean) || 1;
-    return { mean, std, zMin: (rawMin - mean) / std, zMax: (rawMax - mean) / std };
+    return { rawMin, rawMax };
   });
 
   const deconvMinMax = createMemo<[number, number]>(() => {
@@ -231,28 +264,41 @@ export function TraceInspector(): JSX.Element {
     return [dMin, dMax];
   });
 
+  const gtTraces = createMemo(() => {
+    if (!gtVisible()) return null;
+    const cellIdx = effectiveCellIndex();
+    if (cellIdx == null) return null;
+    return getGroundTruthForCell(cellIdx);
+  });
+
+  const gtSpikesMinMax = createMemo<[number, number]>(() => {
+    const gt = gtTraces();
+    if (!gt) return [0, 1];
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (let i = 0; i < gt.spikes.length; i++) {
+      if (gt.spikes[i] < mn) mn = gt.spikes[i];
+      if (gt.spikes[i] > mx) mx = gt.spikes[i];
+    }
+    return mn < mx ? [mn, mx] : [0, 1];
+  });
+
   const globalYRange = createMemo<[number, number]>(() => {
-    const { zMin, zMax } = rawStats();
-    if (zMin === 0 && zMax === 0) return [-4, 6];
-    const rawRange = zMax - zMin;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-    const residHeight = rawRange * RESID_SCALE;
-    const residBottom = deconvBottom - RESID_GAP - residHeight;
-    return [residBottom, zMax + rawRange * 0.02];
+    const { rawMin, rawMax } = rawStats();
+    if (rawMin === 0 && rawMax === 0) return [-4, 6];
+    const { residBottom } = computeBandLayout(rawMin, rawMax);
+    return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
   const scaleToDeconvBand = (
     values: number[],
     minMax: [number, number],
-    zMin: number,
-    zMax: number,
+    yMin: number,
+    yMax: number,
   ): number[] => {
     const [dMin, dMax] = minMax;
     const dRange = dMax - dMin || 1;
-    const deconvHeight = (zMax - zMin) * DECONV_SCALE;
-    const deconvTop = zMin - DECONV_GAP;
-    const deconvBottom = deconvTop - deconvHeight;
+    const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
     return values.map((v) => {
       const norm = (v - dMin) / dRange;
       return deconvBottom + norm * deconvHeight;
@@ -262,17 +308,12 @@ export function TraceInspector(): JSX.Element {
   const computeResiduals = (
     dsRaw: number[],
     dsReconv: (number | null)[],
-    zMin: number,
-    zMax: number,
+    yMin: number,
+    yMax: number,
     len: number,
   ): number[] => {
     if (!dsReconv.some((v) => v !== null)) return new Array(len).fill(null) as number[];
-    const rawRange = zMax - zMin;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-    const residHeight = rawRange * RESID_SCALE;
-    const residTop = deconvBottom - RESID_GAP;
-    const residBottom = residTop - residHeight;
+    const { residBottom, residHeight } = computeBandLayout(yMin, yMax);
     const rawResid: (number | null)[] = [];
     let rMin = Infinity;
     let rMax = -Infinity;
@@ -293,7 +334,7 @@ export function TraceInspector(): JSX.Element {
     });
   };
 
-  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], []];
+  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], [], [], []];
   const DOWNSAMPLE_BUCKETS = 600;
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
@@ -306,34 +347,35 @@ export function TraceInspector(): JSX.Element {
     if (startSample >= endSample) return EMPTY_DATA;
 
     const len = endSample - startSample;
-    const { mean, std, zMin, zMax } = rawStats();
+    const { rawMin, rawMax } = rawStats();
 
     const x = new Float64Array(len);
     const dt = 1 / fs;
     for (let i = 0; i < len; i++) x[i] = (startSample + i) * dt;
 
+    // Raw trace — plot raw fluorescence values, no normalization
     const rawSlice = raw.subarray(startSample, endSample);
-    const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, DOWNSAMPLE_BUCKETS);
-    const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
+    const [dsX, dsRaw] = downsampleMinMax(x, rawSlice, DOWNSAMPLE_BUCKETS);
 
-    // Filtered trace — z-score (same normalization as raw)
+    // Filtered trace — raw values from solver (HP/LP already applied)
     const filt = filteredTrace();
+    const isFiltered = filt != null && filt.length >= endSample;
     let dsFiltered: (number | null)[];
-    if (filt && filt.length >= endSample) {
+    if (isFiltered) {
       const filtSlice = filt.subarray(startSample, endSample);
-      const [, dsFiltRaw] = downsampleMinMax(x, filtSlice, DOWNSAMPLE_BUCKETS);
-      dsFiltered = dsFiltRaw.map((v) => (v - mean) / std);
+      const [, dsFilt] = downsampleMinMax(x, filtSlice, DOWNSAMPLE_BUCKETS);
+      dsFiltered = dsFilt as (number | null)[];
     } else {
       dsFiltered = new Array(dsX.length).fill(null) as (number | null)[];
     }
 
-    // Reconvolved (fit) — z-score
+    // Reconvolved (fit) — raw values from reconvolveAR2
     const recon = reconvolvedTrace();
     let dsFit: (number | null)[];
     if (recon && recon.length >= endSample) {
       const reconSlice = recon.subarray(startSample, endSample);
       const [, dsFitRaw] = downsampleMinMax(x, reconSlice, DOWNSAMPLE_BUCKETS);
-      dsFit = dsFitRaw.map((v) => (v - mean) / std);
+      dsFit = dsFitRaw as (number | null)[];
     } else {
       dsFit = new Array(dsX.length).fill(null) as (number | null)[];
     }
@@ -348,58 +390,117 @@ export function TraceInspector(): JSX.Element {
       }
     }
 
-    // Deconv — scaled to band
+    // Deconv — scaled to band below raw trace
     const result = effectiveResult();
     let dsDeconv: number[];
     if (result && result.sCounts.length >= endSample) {
       const deconvSlice = result.sCounts.subarray(startSample, endSample);
       const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, DOWNSAMPLE_BUCKETS);
-      dsDeconv = scaleToDeconvBand(dsDeconvRaw, deconvMinMax(), zMin, zMax);
+      dsDeconv = scaleToDeconvBand(dsDeconvRaw, deconvMinMax(), rawMin, rawMax);
     } else {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
 
-    // Residual
-    const dsResid = computeResiduals(dsRaw, dsFit, zMin, zMax, dsX.length);
+    // Residual — computed from raw values (raw - fit)
+    const dsResid = computeResiduals(dsRaw, dsFit, rawMin, rawMax, dsX.length);
 
-    return [dsX, dsRaw, dsFiltered as number[], dsFit as number[], dsDeconv, dsResid];
+    // Ground truth traces
+    const gt = gtTraces();
+    let dsGTCalcium: number[];
+    let dsGTSpikes: number[];
+    if (gt && gt.calcium.length >= endSample) {
+      // GT calcium — raw values (same fluorescence units as raw trace)
+      const gtCaSlice = gt.calcium.subarray(startSample, endSample);
+      const [, dsGTCa] = downsampleMinMax(x, gtCaSlice, DOWNSAMPLE_BUCKETS);
+      dsGTCalcium = dsGTCa as number[];
+
+      const gtSpkSlice = gt.spikes.subarray(startSample, endSample);
+      const [, dsGTSpkRaw] = downsampleMinMax(x, gtSpkSlice, DOWNSAMPLE_BUCKETS);
+      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, gtSpikesMinMax(), rawMin, rawMax);
+    } else {
+      dsGTCalcium = new Array(dsX.length).fill(null) as number[];
+      dsGTSpikes = new Array(dsX.length).fill(null) as number[];
+    }
+
+    return [
+      dsX,
+      dsRaw,
+      dsFiltered as number[],
+      dsFit as number[],
+      dsDeconv,
+      dsResid,
+      dsGTCalcium,
+      dsGTSpikes,
+    ];
   });
 
-  const seriesConfig = createMemo<uPlot.Series[]>(() => [
-    {},
-    { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
-    { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
-    { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
-    { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
-    { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
-  ]);
+  const seriesConfig = createMemo<uPlot.Series[]>(() => {
+    const gtCaSeries = gtVisible()
+      ? { ...createGroundTruthCalciumSeries(), show: showGTCalcium() }
+      : { show: false };
+    const gtSpkSeries = gtVisible()
+      ? { ...createGroundTruthSpikesSeries(), show: showGTSpikes() }
+      : { show: false };
+    return [
+      {},
+      { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
+      { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
+      { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
+      { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
+      { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
+      gtCaSeries,
+      gtSpkSeries,
+    ];
+  });
 
   // Legend items
-  const legendItems = createMemo((): LegendItemConfig[] => [
-    { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
-    {
-      key: 'filtered',
-      color: '#17becf',
-      label: 'Filtered',
-      visible: showFiltered,
-      setVisible: setShowFiltered,
-    },
-    { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
-    {
-      key: 'deconv',
-      color: '#2ca02c',
-      label: 'Deconv',
-      visible: showDeconv,
-      setVisible: setShowDeconv,
-    },
-    {
-      key: 'resid',
-      color: '#d62728',
-      label: 'Resid',
-      visible: showResidual,
-      setVisible: setShowResidual,
-    },
-  ]);
+  const legendItems = createMemo((): LegendItemConfig[] => {
+    const items: LegendItemConfig[] = [
+      { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
+      {
+        key: 'filtered',
+        color: '#17becf',
+        label: 'Filtered',
+        visible: showFiltered,
+        setVisible: setShowFiltered,
+      },
+      { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
+      {
+        key: 'deconv',
+        color: '#2ca02c',
+        label: 'Deconv',
+        visible: showDeconv,
+        setVisible: setShowDeconv,
+      },
+      {
+        key: 'resid',
+        color: '#d62728',
+        label: 'Resid',
+        visible: showResidual,
+        setVisible: setShowResidual,
+      },
+    ];
+    if (gtVisible()) {
+      items.push(
+        {
+          key: 'gt-ca',
+          color: 'rgba(0, 188, 212, 0.7)',
+          label: 'True Ca',
+          visible: showGTCalcium,
+          setVisible: setShowGTCalcium,
+          dashed: true,
+        },
+        {
+          key: 'gt-spk',
+          color: 'rgba(255, 193, 7, 0.7)',
+          label: 'True Spk',
+          visible: showGTSpikes,
+          setVisible: setShowGTSpikes,
+        },
+      );
+    }
+    return items;
+  });
 
   // Stats
   const alpha = () => effectiveResult()?.alpha.toFixed(2) ?? '--';

@@ -51,3 +51,7 @@ export function createGroundTruthSpikesSeries(): uPlot.Series {
 export function createGroundTruthCalciumSeries(): uPlot.Series {
   return { label: 'True Calcium', stroke: 'rgba(0, 188, 212, 0.7)', width: 1.5, dash: [6, 3] };
 }
+
+export function createGroundTruthKernelSeries(): uPlot.Series {
+  return { label: 'True Kernel', stroke: 'rgba(233, 30, 99, 0.8)', width: 1.5, dash: [6, 3] };
+}
