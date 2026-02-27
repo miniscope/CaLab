@@ -66,8 +66,32 @@ const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
 const DEFAULT_ZOOM_WINDOW_S = 60;
 
+interface BandLayout {
+  deconvTop: number;
+  deconvBottom: number;
+  deconvHeight: number;
+  residTop: number;
+  residBottom: number;
+  residHeight: number;
+}
+
+/** Compute the Y-axis positions for the deconv and residual bands below the raw trace. */
+function computeBandLayout(rawMin: number, rawMax: number): BandLayout {
+  const rawRange = rawMax - rawMin;
+  const deconvGap = rawRange * DECONV_GAP_FRAC;
+  const deconvHeight = rawRange * DECONV_SCALE;
+  const deconvTop = rawMin - deconvGap;
+  const deconvBottom = deconvTop - deconvHeight;
+  const residGap = rawRange * RESID_GAP_FRAC;
+  const residHeight = rawRange * RESID_SCALE;
+  const residTop = deconvBottom - residGap;
+  const residBottom = residTop - residHeight;
+  return { deconvTop, deconvBottom, deconvHeight, residTop, residBottom, residHeight };
+}
+
 export function TraceInspector(): JSX.Element {
   const isFinalized = () => runState() === 'complete';
+  const gtVisible = createMemo(() => groundTruthVisible() && isDemo());
 
   // Available cell indices
   const cellIndices = createMemo((): number[] => {
@@ -241,7 +265,7 @@ export function TraceInspector(): JSX.Element {
   });
 
   const gtTraces = createMemo(() => {
-    if (!groundTruthVisible() || !isDemo()) return null;
+    if (!gtVisible()) return null;
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
     return getGroundTruthForCell(cellIdx);
@@ -262,14 +286,8 @@ export function TraceInspector(): JSX.Element {
   const globalYRange = createMemo<[number, number]>(() => {
     const { rawMin, rawMax } = rawStats();
     if (rawMin === 0 && rawMax === 0) return [-4, 6];
-    const rawRange = rawMax - rawMin;
-    const deconvGap = rawRange * DECONV_GAP_FRAC;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = rawMin - deconvGap - deconvHeight;
-    const residGap = rawRange * RESID_GAP_FRAC;
-    const residHeight = rawRange * RESID_SCALE;
-    const residBottom = deconvBottom - residGap - residHeight;
-    return [residBottom, rawMax + rawRange * 0.02];
+    const { residBottom } = computeBandLayout(rawMin, rawMax);
+    return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
   const scaleToDeconvBand = (
@@ -280,11 +298,7 @@ export function TraceInspector(): JSX.Element {
   ): number[] => {
     const [dMin, dMax] = minMax;
     const dRange = dMax - dMin || 1;
-    const rawRange = yMax - yMin;
-    const deconvGap = rawRange * DECONV_GAP_FRAC;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvTop = yMin - deconvGap;
-    const deconvBottom = deconvTop - deconvHeight;
+    const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
     return values.map((v) => {
       const norm = (v - dMin) / dRange;
       return deconvBottom + norm * deconvHeight;
@@ -299,14 +313,7 @@ export function TraceInspector(): JSX.Element {
     len: number,
   ): number[] => {
     if (!dsReconv.some((v) => v !== null)) return new Array(len).fill(null) as number[];
-    const rawRange = yMax - yMin;
-    const deconvGap = rawRange * DECONV_GAP_FRAC;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = yMin - deconvGap - deconvHeight;
-    const residGap = rawRange * RESID_GAP_FRAC;
-    const residHeight = rawRange * RESID_SCALE;
-    const residTop = deconvBottom - residGap;
-    const residBottom = residTop - residHeight;
+    const { residBottom, residHeight } = computeBandLayout(yMin, yMax);
     const rawResid: (number | null)[] = [];
     let rMin = Infinity;
     let rMax = -Infinity;
@@ -428,11 +435,10 @@ export function TraceInspector(): JSX.Element {
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {
-    const gtVisible = groundTruthVisible() && isDemo();
-    const gtCaSeries = gtVisible
+    const gtCaSeries = gtVisible()
       ? { ...createGroundTruthCalciumSeries(), show: showGTCalcium() }
       : { show: false };
-    const gtSpkSeries = gtVisible
+    const gtSpkSeries = gtVisible()
       ? { ...createGroundTruthSpikesSeries(), show: showGTSpikes() }
       : { show: false };
     return [
@@ -474,7 +480,7 @@ export function TraceInspector(): JSX.Element {
         setVisible: setShowResidual,
       },
     ];
-    if (groundTruthVisible() && isDemo()) {
+    if (gtVisible()) {
       items.push(
         {
           key: 'gt-ca',

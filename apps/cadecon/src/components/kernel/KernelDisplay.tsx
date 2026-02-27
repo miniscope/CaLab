@@ -31,7 +31,17 @@ import {
   AXIS_TICK,
 } from '@calab/ui/chart';
 
+/** Format a tau value in seconds to a display string in ms, or a fallback. */
+function formatTauMs(tau: number | null, fallback: string = '--'): string {
+  return tau != null ? (tau * 1000).toFixed(1) : fallback;
+}
+
 export function KernelDisplay(): JSX.Element {
+  /** Whether ground truth overlay should be shown on this chart. */
+  const showGroundTruth = createMemo(
+    () => groundTruthVisible() && isDemo() && groundTruthTauRise() != null,
+  );
+
   const snapshot = createMemo(() => {
     const history = convergenceHistory();
     if (history.length === 0) return null;
@@ -80,17 +90,15 @@ export function KernelDisplay(): JSX.Element {
     const columns: (number | null)[][] = [...subsetArrays, fitArray];
 
     // Ground truth kernel overlay
-    if (groundTruthVisible() && isDemo()) {
-      const gtTauR = groundTruthTauRise();
-      const gtTauD = groundTruthTauDecay();
-      if (gtTauR != null && gtTauD != null) {
-        const gtArray = new Array(maxLen);
-        for (let i = 0; i < maxLen; i++) {
-          const t = i / fs;
-          gtArray[i] = beta * (Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR));
-        }
-        columns.push(gtArray);
+    if (showGroundTruth()) {
+      const gtTauR = groundTruthTauRise()!;
+      const gtTauD = groundTruthTauDecay()!;
+      const gtArray = new Array(maxLen);
+      for (let i = 0; i < maxLen; i++) {
+        const t = i / fs;
+        gtArray[i] = beta * (Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR));
       }
+      columns.push(gtArray);
     }
 
     return [xAxis, ...columns] as uPlot.AlignedData;
@@ -112,7 +120,7 @@ export function KernelDisplay(): JSX.Element {
       });
     }
     s.push(createKernelFitSeries());
-    if (groundTruthVisible() && isDemo() && groundTruthTauRise() != null) {
+    if (showGroundTruth()) {
       s.push(createGroundTruthKernelSeries());
     }
     return s;
@@ -138,22 +146,10 @@ export function KernelDisplay(): JSX.Element {
   const plugins = [wheelZoomPlugin()];
   const cursor: uPlot.Cursor = { sync: { key: 'cadecon-kernel', setSeries: true } };
 
-  const tauRMs = () => {
-    const v = currentTauRise();
-    return v != null ? (v * 1000).toFixed(1) : '--';
-  };
-  const tauDMs = () => {
-    const v = currentTauDecay();
-    return v != null ? (v * 1000).toFixed(1) : '--';
-  };
-  const gtTauRMs = () => {
-    const v = groundTruthTauRise();
-    return v != null ? (v * 1000).toFixed(1) : null;
-  };
-  const gtTauDMs = () => {
-    const v = groundTruthTauDecay();
-    return v != null ? (v * 1000).toFixed(1) : null;
-  };
+  const tauRMs = () => formatTauMs(currentTauRise());
+  const tauDMs = () => formatTauMs(currentTauDecay());
+  const gtTauRMs = () => formatTauMs(groundTruthTauRise());
+  const gtTauDMs = () => formatTauMs(groundTruthTauDecay());
 
   return (
     <Show
@@ -175,7 +171,7 @@ export function KernelDisplay(): JSX.Element {
           <span>
             beta: <strong>{snapshot()?.beta.toFixed(3) ?? '--'}</strong>
           </span>
-          <Show when={groundTruthVisible() && isDemo() && gtTauRMs() != null}>
+          <Show when={showGroundTruth()}>
             <span class="kernel-display__gt-stat">
               true tau_r: <strong>{gtTauRMs()}</strong> ms
             </span>
