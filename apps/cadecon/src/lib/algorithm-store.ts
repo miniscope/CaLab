@@ -5,9 +5,8 @@ import { samplingRate } from './data-store.ts';
 
 const [tauRiseInit, setTauRiseInit] = createSignal(0.1);
 const [tauDecayInit, setTauDecayInit] = createSignal(0.6);
-const [autoInitKernel, setAutoInitKernel] = createSignal(true);
 const [upsampleTarget, setUpsampleTarget] = createSignal(300);
-const [weightingEnabled, setWeightingEnabled] = createSignal(true);
+const [weightingEnabled, setWeightingEnabled] = createSignal(false);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);
 const [maxIterations, setMaxIterations] = createSignal(10);
@@ -26,8 +25,6 @@ export {
   setTauRiseInit,
   tauDecayInit,
   setTauDecayInit,
-  autoInitKernel,
-  setAutoInitKernel,
   upsampleTarget,
   setUpsampleTarget,
   weightingEnabled,

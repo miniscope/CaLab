@@ -38,7 +38,8 @@ import {
   loadFromBridge,
   bridgeUrl,
 } from './lib/data-store.ts';
-import { selectedSubsetIdx } from './lib/subset-store.ts';
+import { selectedSubsetIdx, setSeed } from './lib/subset-store.ts';
+import { runState } from './lib/iteration-store.ts';
 
 import './styles/controls.css';
 import './styles/layout.css';
@@ -99,26 +100,42 @@ const App: Component = () => {
           mode="dashboard"
           sidebar={
             <>
-              <DashboardPanel
-                id="subset-config"
-                variant="controls"
-                label="Subset Configuration"
-                collapsible
-              >
+              <DashboardPanel id="subset-config" variant="controls">
+                <p class="panel-label panel-label--with-action">
+                  Subset Configuration
+                  <button
+                    class="panel-label__action"
+                    title="Randomize layout"
+                    disabled={runState() !== 'idle' && runState() !== 'complete'}
+                    onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M1 1v3.5h3.5" />
+                      <path d="M11 11V7.5H7.5" />
+                      <path d="M10.2 4.5A4.5 4.5 0 0 0 2.1 2.8L1 4.5" />
+                      <path d="M1.8 7.5A4.5 4.5 0 0 0 9.9 9.2L11 7.5" />
+                    </svg>
+                  </button>
+                </p>
                 <SubsetConfig />
               </DashboardPanel>
 
-              <DashboardPanel
-                id="algorithm-settings"
-                variant="controls"
-                label="Algorithm Settings"
-                collapsible
-                defaultCollapsed
-              >
+              <DashboardPanel id="algorithm-settings" variant="controls">
+                <p class="panel-label">Algorithm Settings</p>
                 <AlgorithmSettings />
               </DashboardPanel>
 
-              <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
+              <DashboardPanel id="run-controls" variant="controls">
+                <p class="panel-label">Run Controls</p>
                 <RunControls />
                 <ProgressBar />
               </DashboardPanel>

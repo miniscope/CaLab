@@ -1,13 +1,12 @@
-import { Show, type JSX } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
+import { DualRangeSlider } from './DualRangeSlider.tsx';
 import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
   tauRiseInit,
   setTauRiseInit,
   tauDecayInit,
   setTauDecayInit,
-  autoInitKernel,
-  setAutoInitKernel,
   upsampleTarget,
   setUpsampleTarget,
   weightingEnabled,
@@ -21,41 +20,29 @@ import {
   convergenceTol,
   setConvergenceTol,
 } from '../../lib/algorithm-store.ts';
+import { runState } from '../../lib/iteration-store.ts';
 
 export function AlgorithmSettings(): JSX.Element {
+  const locked = () => runState() !== 'idle' && runState() !== 'complete';
+
   return (
     <div class="param-panel">
       <div class="param-panel__sliders">
-        <ToggleSwitch
-          label="Auto Init Kernel"
-          description="Estimate initial tau values from data autocorrelation"
-          checked={autoInitKernel()}
-          onChange={setAutoInitKernel}
-          style="border-top: none; padding-top: 0;"
+        <DualRangeSlider
+          label="Kernel Time Constants"
+          lowLabel="Rise"
+          highLabel="Decay"
+          lowValue={tauRiseInit}
+          highValue={tauDecayInit}
+          setLowValue={setTauRiseInit}
+          setHighValue={setTauDecayInit}
+          min={0.01}
+          max={3.0}
+          step={0.01}
+          format={(v) => (v * 1000).toFixed(0)}
+          unit="ms"
+          disabled={locked()}
         />
-
-        <Show when={!autoInitKernel()}>
-          <ParameterSlider
-            label="Tau Rise (init)"
-            value={tauRiseInit}
-            setValue={setTauRiseInit}
-            min={0.01}
-            max={1.0}
-            step={0.01}
-            format={(v) => (v * 1000).toFixed(0)}
-            unit="ms"
-          />
-          <ParameterSlider
-            label="Tau Decay (init)"
-            value={tauDecayInit}
-            setValue={setTauDecayInit}
-            min={0.05}
-            max={3.0}
-            step={0.01}
-            format={(v) => (v * 1000).toFixed(0)}
-            unit="ms"
-          />
-        </Show>
 
         <ParameterSlider
           label="Upsample Target"
@@ -66,6 +53,8 @@ export function AlgorithmSettings(): JSX.Element {
           step={10}
           format={(v) => String(Math.round(v))}
           unit="Hz"
+          disabled={locked()}
+          noSlider
         />
 
         <ParameterSlider
@@ -76,6 +65,8 @@ export function AlgorithmSettings(): JSX.Element {
           max={100}
           step={1}
           format={(v) => String(Math.round(v))}
+          disabled={locked()}
+          noSlider
         />
 
         <ParameterSlider
@@ -86,6 +77,8 @@ export function AlgorithmSettings(): JSX.Element {
           max={0.1}
           step={0.001}
           format={(v) => v.toFixed(3)}
+          disabled={locked()}
+          noSlider
         />
 
         <ToggleSwitch
@@ -93,6 +86,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Weight cells by SNR during kernel updates"
           checked={weightingEnabled()}
           onChange={setWeightingEnabled}
+          disabled={locked()}
         />
 
         <ToggleSwitch
@@ -100,6 +94,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove baseline drift before deconvolution"
           checked={hpFilterEnabled()}
           onChange={setHpFilterEnabled}
+          disabled={locked()}
         />
 
         <ToggleSwitch
@@ -107,6 +102,7 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove high-frequency noise before deconvolution"
           checked={lpFilterEnabled()}
           onChange={setLpFilterEnabled}
+          disabled={locked()}
         />
       </div>
     </div>

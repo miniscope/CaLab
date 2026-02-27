@@ -8,7 +8,7 @@
    ======================== */
 
 .submit-panel {
-  padding: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
 }
 
 .submit-panel__converged-badge {
@@ -41,4 +41,22 @@
   font-style: italic;
   margin-top: var(--space-xs);
   line-height: 1.3;
+}
+
+/* ========================
+   Ground Truth Controls
+   ======================== */
+
+.submit-panel__gt-warning {
+  font-size: 0.8rem;
+  color: var(--warning, #e09800);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.submit-panel__gt-locked-notice {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+  line-height: 1.4;
 }

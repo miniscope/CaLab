@@ -14,6 +14,8 @@ export interface ParameterSliderProps {
   format?: (value: number) => string;
   unit?: string;
   trueValue?: number;
+  disabled?: boolean;
+  noSlider?: boolean;
 }
 
 function parseInputValue(e: Event): number | null {
@@ -73,7 +75,7 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
   };
 
   return (
-    <div class="param-slider">
+    <div class="param-slider" classList={{ 'param-slider--disabled': !!props.disabled }}>
       <div class="param-slider__header">
         <label class="param-slider__label">{props.label}</label>
         <span class="param-slider__inline-value">
@@ -84,25 +86,29 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
             min={props.min}
             max={props.max}
             step={props.step}
+            disabled={props.disabled}
             onInput={handleNumericInput}
             onChange={handleNumericChange}
           />
           <span class="param-slider__unit">{props.unit ?? ''}</span>
         </span>
       </div>
-      <div class="param-slider__track-container">
-        <input
-          type="range"
-          class="param-slider__range"
-          min={props.toSlider ? 0 : props.min}
-          max={props.toSlider ? 1 : props.max}
-          step={props.toSlider ? 0.001 : props.step}
-          value={sliderValue()}
-          onInput={handleRangeInput}
-          onChange={handleRangeChange}
-        />
-        <Show when={props.trueValue !== undefined}>{renderTrueMarker()}</Show>
-      </div>
+      <Show when={!props.noSlider}>
+        <div class="param-slider__track-container">
+          <input
+            type="range"
+            class="param-slider__range"
+            min={props.toSlider ? 0 : props.min}
+            max={props.toSlider ? 1 : props.max}
+            step={props.toSlider ? 0.001 : props.step}
+            value={sliderValue()}
+            disabled={props.disabled}
+            onInput={handleRangeInput}
+            onChange={handleRangeChange}
+          />
+          <Show when={props.trueValue !== undefined}>{renderTrueMarker()}</Show>
+        </div>
+      </Show>
     </div>
   );
 }
