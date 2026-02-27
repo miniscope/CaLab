@@ -8,7 +8,7 @@
    ======================== */
 
 .submit-panel {
-  padding: var(--space-sm) var(--space-md);
+  /* No padding — DashboardPanel wrapper provides it */
 }
 
 .submit-panel__converged-badge {

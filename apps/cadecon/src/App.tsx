@@ -146,7 +146,9 @@ const App: Component = () => {
                 <ProgressBar />
               </DashboardPanel>
 
-              <SubmitPanel />
+              <DashboardPanel id="submit" variant="controls">
+                <SubmitPanel />
+              </DashboardPanel>
             </>
           }
         >
