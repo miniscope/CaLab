@@ -15,6 +15,10 @@ const [showFit, setShowFit] = createSignal(true);
 const [showDeconv, setShowDeconv] = createSignal(true);
 const [showResidual, setShowResidual] = createSignal(false);
 
+// Ground truth series visibility (default true so they show immediately on reveal)
+const [showGTCalcium, setShowGTCalcium] = createSignal(true);
+const [showGTSpikes, setShowGTSpikes] = createSignal(true);
+
 export {
   viewedIteration,
   setViewedIteration,
@@ -30,4 +34,8 @@ export {
   setShowDeconv,
   showResidual,
   setShowResidual,
+  showGTCalcium,
+  setShowGTCalcium,
+  showGTSpikes,
+  setShowGTSpikes,
 };

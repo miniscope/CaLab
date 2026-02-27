@@ -25,6 +25,9 @@ import {
   numTimepoints,
   parsedData,
   swapped,
+  groundTruthVisible,
+  isDemo,
+  getGroundTruthForCell,
 } from '../../lib/data-store.ts';
 import {
   inspectedCellIndex,
@@ -39,10 +42,18 @@ import {
   setShowDeconv,
   showResidual,
   setShowResidual,
+  showGTCalcium,
+  setShowGTCalcium,
+  showGTSpikes,
+  setShowGTSpikes,
   viewedIteration,
 } from '../../lib/viz-store.ts';
 import { hpFilterEnabled, lpFilterEnabled } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
+import {
+  createGroundTruthCalciumSeries,
+  createGroundTruthSpikesSeries,
+} from '../../lib/chart/series-config.ts';
 import { dataIndex } from '../../lib/data-utils.ts';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
@@ -231,6 +242,25 @@ export function TraceInspector(): JSX.Element {
     return [dMin, dMax];
   });
 
+  const gtTraces = createMemo(() => {
+    if (!groundTruthVisible() || !isDemo()) return null;
+    const cellIdx = effectiveCellIndex();
+    if (cellIdx == null) return null;
+    return getGroundTruthForCell(cellIdx);
+  });
+
+  const gtSpikesMinMax = createMemo<[number, number]>(() => {
+    const gt = gtTraces();
+    if (!gt) return [0, 1];
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (let i = 0; i < gt.spikes.length; i++) {
+      if (gt.spikes[i] < mn) mn = gt.spikes[i];
+      if (gt.spikes[i] > mx) mx = gt.spikes[i];
+    }
+    return mn < mx ? [mn, mx] : [0, 1];
+  });
+
   const globalYRange = createMemo<[number, number]>(() => {
     const { zMin, zMax } = rawStats();
     if (zMin === 0 && zMax === 0) return [-4, 6];
@@ -293,7 +323,7 @@ export function TraceInspector(): JSX.Element {
     });
   };
 
-  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], []];
+  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], [], [], []];
   const DOWNSAMPLE_BUCKETS = 600;
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
@@ -362,44 +392,103 @@ export function TraceInspector(): JSX.Element {
     // Residual
     const dsResid = computeResiduals(dsRaw, dsFit, zMin, zMax, dsX.length);
 
-    return [dsX, dsRaw, dsFiltered as number[], dsFit as number[], dsDeconv, dsResid];
+    // Ground truth traces
+    const gt = gtTraces();
+    let dsGTCalcium: number[];
+    let dsGTSpikes: number[];
+    if (gt && gt.calcium.length >= endSample) {
+      const gtCaSlice = gt.calcium.subarray(startSample, endSample);
+      const [, dsGTCaRaw] = downsampleMinMax(x, gtCaSlice, DOWNSAMPLE_BUCKETS);
+      dsGTCalcium = dsGTCaRaw.map((v) => (v - mean) / std);
+
+      const gtSpkSlice = gt.spikes.subarray(startSample, endSample);
+      const [, dsGTSpkRaw] = downsampleMinMax(x, gtSpkSlice, DOWNSAMPLE_BUCKETS);
+      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, gtSpikesMinMax(), zMin, zMax);
+    } else {
+      dsGTCalcium = new Array(dsX.length).fill(null) as number[];
+      dsGTSpikes = new Array(dsX.length).fill(null) as number[];
+    }
+
+    return [
+      dsX,
+      dsRaw,
+      dsFiltered as number[],
+      dsFit as number[],
+      dsDeconv,
+      dsResid,
+      dsGTCalcium,
+      dsGTSpikes,
+    ];
   });
 
-  const seriesConfig = createMemo<uPlot.Series[]>(() => [
-    {},
-    { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
-    { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
-    { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
-    { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
-    { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
-  ]);
+  const seriesConfig = createMemo<uPlot.Series[]>(() => {
+    const gtVisible = groundTruthVisible() && isDemo();
+    const gtCaSeries = gtVisible
+      ? { ...createGroundTruthCalciumSeries(), show: showGTCalcium() }
+      : { show: false };
+    const gtSpkSeries = gtVisible
+      ? { ...createGroundTruthSpikesSeries(), show: showGTSpikes() }
+      : { show: false };
+    return [
+      {},
+      { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
+      { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
+      { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
+      { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
+      { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
+      gtCaSeries,
+      gtSpkSeries,
+    ];
+  });
 
   // Legend items
-  const legendItems = createMemo((): LegendItemConfig[] => [
-    { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
-    {
-      key: 'filtered',
-      color: '#17becf',
-      label: 'Filtered',
-      visible: showFiltered,
-      setVisible: setShowFiltered,
-    },
-    { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
-    {
-      key: 'deconv',
-      color: '#2ca02c',
-      label: 'Deconv',
-      visible: showDeconv,
-      setVisible: setShowDeconv,
-    },
-    {
-      key: 'resid',
-      color: '#d62728',
-      label: 'Resid',
-      visible: showResidual,
-      setVisible: setShowResidual,
-    },
-  ]);
+  const legendItems = createMemo((): LegendItemConfig[] => {
+    const items: LegendItemConfig[] = [
+      { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
+      {
+        key: 'filtered',
+        color: '#17becf',
+        label: 'Filtered',
+        visible: showFiltered,
+        setVisible: setShowFiltered,
+      },
+      { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
+      {
+        key: 'deconv',
+        color: '#2ca02c',
+        label: 'Deconv',
+        visible: showDeconv,
+        setVisible: setShowDeconv,
+      },
+      {
+        key: 'resid',
+        color: '#d62728',
+        label: 'Resid',
+        visible: showResidual,
+        setVisible: setShowResidual,
+      },
+    ];
+    if (groundTruthVisible() && isDemo()) {
+      items.push(
+        {
+          key: 'gt-ca',
+          color: 'rgba(0, 188, 212, 0.7)',
+          label: 'True Ca',
+          visible: showGTCalcium,
+          setVisible: setShowGTCalcium,
+          dashed: true,
+        },
+        {
+          key: 'gt-spk',
+          color: 'rgba(255, 193, 7, 0.7)',
+          label: 'True Spk',
+          visible: showGTSpikes,
+          setVisible: setShowGTSpikes,
+        },
+      );
+    }
+    return items;
+  });
 
   // Stats
   const alpha = () => effectiveResult()?.alpha.toFixed(2) ?? '--';

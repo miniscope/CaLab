@@ -10,9 +10,18 @@ import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import { convergenceHistory, currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
 import { viewedIteration } from '../../lib/viz-store.ts';
-import { samplingRate } from '../../lib/data-store.ts';
+import {
+  samplingRate,
+  groundTruthVisible,
+  isDemo,
+  groundTruthTauRise,
+  groundTruthTauDecay,
+} from '../../lib/data-store.ts';
 import { selectedSubsetIdx } from '../../lib/subset-store.ts';
-import { createKernelFitSeries } from '../../lib/chart/series-config.ts';
+import {
+  createKernelFitSeries,
+  createGroundTruthKernelSeries,
+} from '../../lib/chart/series-config.ts';
 import {
   D3_CATEGORY10,
   withOpacity,
@@ -68,7 +77,23 @@ export function KernelDisplay(): JSX.Element {
       fitArray[i] = beta * (Math.exp(-t / tauD) - Math.exp(-t / tauR));
     }
 
-    return [xAxis, ...subsetArrays, fitArray] as uPlot.AlignedData;
+    const columns: (number | null)[][] = [...subsetArrays, fitArray];
+
+    // Ground truth kernel overlay
+    if (groundTruthVisible() && isDemo()) {
+      const gtTauR = groundTruthTauRise();
+      const gtTauD = groundTruthTauDecay();
+      if (gtTauR != null && gtTauD != null) {
+        const gtArray = new Array(maxLen);
+        for (let i = 0; i < maxLen; i++) {
+          const t = i / fs;
+          gtArray[i] = beta * (Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR));
+        }
+        columns.push(gtArray);
+      }
+    }
+
+    return [xAxis, ...columns] as uPlot.AlignedData;
   });
 
   const series = createMemo((): uPlot.Series[] => {
@@ -87,6 +112,9 @@ export function KernelDisplay(): JSX.Element {
       });
     }
     s.push(createKernelFitSeries());
+    if (groundTruthVisible() && isDemo() && groundTruthTauRise() != null) {
+      s.push(createGroundTruthKernelSeries());
+    }
     return s;
   });
 
@@ -118,6 +146,14 @@ export function KernelDisplay(): JSX.Element {
     const v = currentTauDecay();
     return v != null ? (v * 1000).toFixed(1) : '--';
   };
+  const gtTauRMs = () => {
+    const v = groundTruthTauRise();
+    return v != null ? (v * 1000).toFixed(1) : null;
+  };
+  const gtTauDMs = () => {
+    const v = groundTruthTauDecay();
+    return v != null ? (v * 1000).toFixed(1) : null;
+  };
 
   return (
     <Show
@@ -139,6 +175,14 @@ export function KernelDisplay(): JSX.Element {
           <span>
             beta: <strong>{snapshot()?.beta.toFixed(3) ?? '--'}</strong>
           </span>
+          <Show when={groundTruthVisible() && isDemo() && gtTauRMs() != null}>
+            <span class="kernel-display__gt-stat">
+              true tau_r: <strong>{gtTauRMs()}</strong> ms
+            </span>
+            <span class="kernel-display__gt-stat">
+              true tau_d: <strong>{gtTauDMs()}</strong> ms
+            </span>
+          </Show>
         </div>
         <SolidUplot
           data={chartData()}
