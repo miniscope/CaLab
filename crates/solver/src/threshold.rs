@@ -7,7 +7,6 @@
 /// For each candidate threshold, the binary spike train is convolved through
 /// the peak-normalized AR2 model and fit with least-squares alpha + baseline.
 /// Alpha is constrained non-negative (spikes must add signal, not subtract).
-
 use crate::banded::BandedAR2;
 
 pub struct ThresholdResult {
@@ -43,11 +42,7 @@ pub fn threshold_search(
     let pad = boundary_padding(tau_decay, fs_up).min(n / 4);
 
     // Collect sorted unique non-zero values for threshold candidates
-    let mut vals: Vec<f32> = s_relaxed
-        .iter()
-        .copied()
-        .filter(|&v| v > 1e-10)
-        .collect();
+    let mut vals: Vec<f32> = s_relaxed.iter().copied().filter(|&v| v > 1e-10).collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     vals.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
 
@@ -94,9 +89,7 @@ pub fn threshold_search(
 
     let mut consecutive_increases = 0;
     for &thresh in &coarse_thresholds {
-        let err = evaluate_threshold(
-            s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf,
-        );
+        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf);
         if err < best.error {
             best.error = err;
             best.threshold = thresh;
@@ -126,9 +119,7 @@ pub fn threshold_search(
         if thresh < 0.0 {
             continue;
         }
-        let err = evaluate_threshold(
-            s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf,
-        );
+        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf);
         if err < best.error {
             best.error = err;
             best.threshold = thresh;
@@ -154,8 +145,7 @@ pub fn threshold_search(
     let inner_range = pad..n.saturating_sub(pad);
     let inner_len = inner_range.len();
     if inner_len > 0 {
-        let y_mean: f64 =
-            inner_range.clone().map(|i| y[i] as f64).sum::<f64>() / inner_len as f64;
+        let y_mean: f64 = inner_range.clone().map(|i| y[i] as f64).sum::<f64>() / inner_len as f64;
 
         let ss_tot: f64 = inner_range
             .clone()

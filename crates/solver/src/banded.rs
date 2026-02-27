@@ -10,8 +10,8 @@
 /// normalized by the impulse peak so that a single spike always produces a
 /// peak of 1.0 in the output regardless of sampling rate.
 pub(crate) struct BandedAR2 {
-    g1: f64,          // d + r (sum of AR2 roots)
-    g2: f64,          // -(d * r) (negative product of AR2 roots)
+    g1: f64,           // d + r (sum of AR2 roots)
+    g2: f64,           // -(d * r) (negative product of AR2 roots)
     impulse_peak: f64, // peak of raw AR2 impulse response (for normalization)
     lipschitz: f64,    // Lipschitz constant of the normalized operator
 }
@@ -43,8 +43,8 @@ impl BandedAR2 {
         self.g1 = d + r;
         self.g2 = -(d * r);
         self.impulse_peak = compute_impulse_peak(self.g1, self.g2, tau_decay, fs);
-        self.lipschitz = compute_banded_lipschitz(self.g1, self.g2)
-            / (self.impulse_peak * self.impulse_peak);
+        self.lipschitz =
+            compute_banded_lipschitz(self.g1, self.g2) / (self.impulse_peak * self.impulse_peak);
     }
 
     /// Forward convolution: s -> normalized AR2 output, O(T).

@@ -2,7 +2,6 @@
 ///
 /// These functions are exposed to JavaScript via wasm-bindgen and use
 /// serde-wasm-bindgen for complex return types (InDecaResult, BiexpResult).
-
 use wasm_bindgen::prelude::*;
 
 use crate::biexp_fit;
@@ -36,7 +35,16 @@ pub fn indeca_solve_trace(
         Some(warm_counts)
     };
     let result = indeca::solve_trace(
-        trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, warm, hp_enabled, lp_enabled,
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm,
+        hp_enabled,
+        lp_enabled,
     );
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
