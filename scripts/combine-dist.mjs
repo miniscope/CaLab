@@ -100,27 +100,24 @@ function renderCard(app) {
   const badge = statusBadge[app.status] ?? statusBadge['coming-soon'];
 
   const screenshotHtml = app.screenshotFile
-    ? `<img class="card-screenshot" src="${escapeHtml(app.screenshotFile)}" alt="${escapeHtml(app.displayName)} screenshot" />`
-    : '';
+    ? `<div class="card-thumb" style="background-image:url('${escapeHtml(app.screenshotFile)}')"></div>`
+    : `<div class="card-thumb card-thumb--empty"></div>`;
 
   const featuresHtml = app.features.length
     ? `<ul class="features">${app.features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
     : '';
 
-  const longDescHtml = app.longDescription
-    ? `<p class="long-desc">${escapeHtml(app.longDescription)}</p>`
-    : '';
-
   return `    <a class="card" href="${escapeHtml(app.displayName)}/">
       ${screenshotHtml}
-      <div class="card-header">
-        <h2>${escapeHtml(app.displayName)}</h2>
-        <span class="badge" style="color:${badge.color};background:${badge.bg}">${badge.label}</span>
+      <div class="card-body">
+        <div class="card-header">
+          <h2>${escapeHtml(app.displayName)}</h2>
+          <span class="badge" style="color:${badge.color};background:${badge.bg}">${badge.label}</span>
+        </div>
+        <p class="tagline">${escapeHtml(app.description)}</p>
+        ${featuresHtml}
+        <span class="cta">Open &rarr;</span>
       </div>
-      <p class="tagline">${escapeHtml(app.description)}</p>
-      ${longDescHtml}
-      ${featuresHtml}
-      <span class="cta">Open ${escapeHtml(app.displayName)} &rarr;</span>
     </a>`;
 }
 
@@ -158,19 +155,19 @@ writeFileSync(
     }
 
     .page {
-      max-width: 900px;
+      max-width: 1120px;
       margin: 0 auto;
-      padding: 0 16px;
+      padding: 0 24px;
       width: 100%;
     }
 
     header {
-      padding: 48px 0 32px;
+      padding: 28px 0 20px;
       text-align: center;
       position: relative;
     }
     header h1 {
-      font-size: 2rem;
+      font-size: 1.6rem;
       font-weight: 600;
       letter-spacing: -0.02em;
     }
@@ -185,44 +182,63 @@ writeFileSync(
 
     header .subtitle {
       color: #616161;
-      margin-top: 8px;
-      font-size: 1.05rem;
+      margin-top: 4px;
+      font-size: 0.95rem;
     }
     header .github-link {
       display: inline-block;
-      margin-top: 12px;
+      margin-top: 6px;
       color: #2171b5;
       text-decoration: none;
-      font-size: 0.9rem;
+      font-size: 0.8rem;
     }
     header .github-link:hover { text-decoration: underline; }
 
     .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 24px;
-      padding-bottom: 48px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 16px;
+      padding-bottom: 24px;
     }
 
     .card {
+      width: calc((100% - 48px) / 4);
       background: #ffffff;
       border: 1px solid #e8e8e8;
       border-radius: 6px;
-      padding: 24px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
       text-decoration: none;
       color: inherit;
       cursor: pointer;
+      overflow: hidden;
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
+    @media (max-width: 900px) {
+      .card { width: calc((100% - 32px) / 3); }
+    }
+    @media (max-width: 640px) {
+      .card { width: calc((100% - 16px) / 2); }
+    }
 
-    .card-screenshot {
+    .card-thumb {
       width: 100%;
-      border-radius: 4px;
-      border: 1px solid #e0e0e0;
-      margin-bottom: 4px;
+      height: 100px;
+      background-size: cover;
+      background-position: center top;
+      border-bottom: 1px solid #e8e8e8;
+      flex-shrink: 0;
+    }
+    .card-thumb--empty {
+      background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+    }
+    .card-body {
+      padding: 12px 14px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
     }
     .card:hover {
       border-color: #2171b5;
@@ -233,44 +249,40 @@ writeFileSync(
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 8px;
     }
     .card-header h2 {
-      font-size: 1.25rem;
+      font-size: 1rem;
       font-weight: 600;
     }
 
     .badge {
-      font-size: 0.75rem;
+      font-size: 0.65rem;
       font-weight: 500;
-      padding: 2px 10px;
-      border-radius: 4px;
+      padding: 1px 7px;
+      border-radius: 3px;
       white-space: nowrap;
     }
 
     .tagline {
       color: #616161;
-      font-size: 0.95rem;
-    }
-
-    .long-desc {
-      font-size: 0.9rem;
-      line-height: 1.55;
-      color: #1a1a1a;
+      font-size: 0.8rem;
+      line-height: 1.35;
     }
 
     .features {
       list-style: none;
-      border-left: 3px solid #2171b5;
-      padding-left: 16px;
+      border-left: 2px solid #2171b5;
+      padding-left: 10px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 2px;
+      margin-top: 2px;
     }
     .features li {
-      font-size: 0.85rem;
-      color: #1a1a1a;
-      line-height: 1.4;
+      font-size: 0.72rem;
+      color: #555;
+      line-height: 1.35;
     }
 
     .cta {
@@ -279,21 +291,20 @@ writeFileSync(
       color: #2171b5;
       text-decoration: none;
       font-weight: 500;
-      font-size: 0.9rem;
+      font-size: 0.8rem;
     }
     .cta:hover { text-decoration: underline; }
 
     footer {
-      margin-top: auto;
-      padding: 24px 0;
+      padding: 16px 0;
       text-align: center;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       color: #9e9e9e;
     }
     footer a { color: #9e9e9e; }
     footer a:hover { color: #616161; }
     .version { font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace; }
-    .privacy-notice { margin-bottom: 12px; font-size: 0.75rem; line-height: 1.4; }
+    .privacy-notice { margin-bottom: 8px; font-size: 0.7rem; line-height: 1.4; }
 
     /* Auth menu */
     .auth-landing { position: absolute; top: 16px; right: 16px; }

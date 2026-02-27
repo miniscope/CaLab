@@ -13,7 +13,7 @@
       "TxN raster heatmap visualization",
       "Configurable algorithm parameters"
     ],
-    "status": "coming-soon",
+    "status": "beta",
     "screenshot": ""
   },
   "scripts": {
