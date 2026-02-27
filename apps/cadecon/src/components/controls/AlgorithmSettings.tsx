@@ -29,7 +29,7 @@ export function AlgorithmSettings(): JSX.Element {
     <div class="param-panel">
       <div class="param-panel__sliders">
         <DualRangeSlider
-          label="Kernel Time Constants"
+          label="Initial Kernel τ's"
           lowLabel="Rise"
           highLabel="Decay"
           lowValue={tauRiseInit}
