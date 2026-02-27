@@ -38,6 +38,8 @@ export interface TrendsData {
   median: number[];
   q25: number[];
   q75: number[];
+  yMin: number;
+  yMax: number;
 }
 
 /** Extract a numeric field from TraceResultEntry history into TrendsData. */
@@ -46,7 +48,16 @@ export function deriveTrendsData(
   accessor: (entry: TraceResultEntry) => number,
 ): TrendsData {
   if (history.length === 0) {
-    return { iterations: [], keys: [], perKey: new Map(), median: [], q25: [], q75: [] };
+    return {
+      iterations: [],
+      keys: [],
+      perKey: new Map(),
+      median: [],
+      q25: [],
+      q75: [],
+      yMin: 0,
+      yMax: 1,
+    };
   }
 
   const keySet = new Set<string>();
@@ -63,6 +74,8 @@ export function deriveTrendsData(
   const median: number[] = [];
   const q25: number[] = [];
   const q75: number[] = [];
+  let yMin = Infinity;
+  let yMax = -Infinity;
 
   for (const key of keys) {
     perKey.set(key, []);
@@ -76,7 +89,11 @@ export function deriveTrendsData(
       const entry = results[key];
       const val = entry != null ? accessor(entry) : null;
       perKey.get(key)!.push(val);
-      if (val != null) values.push(val);
+      if (val != null) {
+        values.push(val);
+        if (val < yMin) yMin = val;
+        if (val > yMax) yMax = val;
+      }
     }
 
     if (values.length > 0) {
@@ -92,7 +109,12 @@ export function deriveTrendsData(
     }
   }
 
-  return { iterations, keys, perKey, median, q25, q75 };
+  if (!isFinite(yMin)) {
+    yMin = 0;
+    yMax = 1;
+  }
+
+  return { iterations, keys, perKey, median, q25, q75, yMin, yMax };
 }
 
 function cellFromKey(key: string): number {
@@ -271,7 +293,14 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
     { label: 'Q75', stroke: Q_COLOR, width: 1, dash: [4, 2], show: false },
   ];
 
-  const scales: uPlot.Scales = { x: { time: false }, y: {} };
+  const scales = createMemo((): uPlot.Scales => {
+    const d = trendsData();
+    const pad = (d.yMax - d.yMin) * 0.05 || 0.1;
+    return {
+      x: { time: false },
+      y: { range: [d.yMin - pad, d.yMax + pad] },
+    };
+  });
 
   const axes: uPlot.Axis[] = [
     {
@@ -317,7 +346,7 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
         <SolidUplot
           data={chartData()}
           series={series}
-          scales={scales}
+          scales={scales()}
           axes={axes}
           plugins={plugins}
           cursor={cursor}
