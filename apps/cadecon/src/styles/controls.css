@@ -5,6 +5,7 @@
    ======================== */
 .viz-layout__sidebar {
   gap: 4px;
+  overflow-y: auto;
 }
 
 .viz-layout__sidebar .dashboard-panel {
@@ -180,11 +181,194 @@
   z-index: 1;
 }
 
+/* --- Panel label with inline action --- */
+.panel-label--with-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-label__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.panel-label__action:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel-label__action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- Inline subset stats --- */
+.subset-stats-inline {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin: 2px 0 0;
+  line-height: 1.3;
+}
+
+/* --- Run controls: single-row compact buttons --- */
+.run-controls {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.run-controls > button {
+  flex: 1 1 0;
+}
+
+/* --- Button icon --- */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* ========================
+   Dual Range Slider
+   ======================== */
+.dual-range {
+  margin-bottom: 4px;
+}
+
+.dual-range__header {
+  margin-bottom: 6px;
+}
+
+.dual-range__header .param-slider__label {
+  text-transform: none;
+}
+
+.dual-range__values {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: 4px;
+}
+
+.dual-range__field {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex: 1;
+}
+
+.dual-range__field-label {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.dual-range__field .param-slider__number {
+  width: 56px;
+}
+
+.dual-range__track {
+  position: relative;
+  height: 4px;
+  background: var(--border-default);
+  border-radius: 2px;
+}
+
+.dual-range__fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.dual-range__input {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: transparent;
+  pointer-events: none;
+  margin: 0;
+  outline: none;
+}
+
+.dual-range__input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--border-default);
+  pointer-events: auto;
+  transition: box-shadow var(--transition-fast);
+}
+
+.dual-range__input::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dual-range__input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--border-default);
+  pointer-events: auto;
+  transition: box-shadow var(--transition-fast);
+}
+
+.dual-range__input::-moz-range-thumb:hover {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dual-range__input::-moz-range-track {
+  background: transparent;
+  height: 4px;
+}
+
+/* --- Disabled state --- */
+.dual-range--disabled,
+.param-slider--disabled,
+.param-panel__toggle-group--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* --- Toggle --- */
 .param-panel__toggle-group {
   padding-top: 4px;
   border-top: 1px solid var(--border-subtle);
   margin-top: 4px;
+}
+
+.param-panel__toggle-group:first-child {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
 }
 
 .param-panel__toggle {
@@ -241,14 +425,6 @@
   white-space: nowrap;
 }
 
-.param-panel__toggle-desc {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--text-tertiary);
-  margin-top: var(--space-xs);
-  line-height: 1.3;
-}
-
 /* ========================
    Content panels
    ======================== */
@@ -290,26 +466,41 @@
 .progress-bar__label {
   display: flex;
   justify-content: space-between;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   margin-bottom: 2px;
 }
 
 .progress-bar__pct {
   font-family: var(--font-mono);
+  font-weight: 600;
 }
 
 .progress-bar__track {
-  height: 4px;
+  height: 8px;
   background: var(--border-default);
-  border-radius: 2px;
+  border-radius: 4px;
   overflow: hidden;
+}
+
+@keyframes progress-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px var(--accent-muted);
+  }
+  50% {
+    box-shadow: 0 0 10px var(--accent-muted);
+  }
+}
+
+.progress-bar__track--running {
+  animation: progress-pulse 2s ease-in-out infinite;
 }
 
 .progress-bar__fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 2px;
+  border-radius: 4px;
   transition: width 0.3s ease;
 }
 

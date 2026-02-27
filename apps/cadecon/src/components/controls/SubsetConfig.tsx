@@ -9,9 +9,8 @@ import {
   setAspectRatio,
   coverageStats,
   maxNonOverlappingK,
-  seed,
-  setSeed,
 } from '../../lib/subset-store.ts';
+import { isRunLocked } from '../../lib/iteration-store.ts';
 
 export function SubsetConfig(): JSX.Element {
   return (
@@ -25,6 +24,7 @@ export function SubsetConfig(): JSX.Element {
           max={20}
           step={1}
           format={(v) => String(Math.round(v))}
+          disabled={isRunLocked()}
         />
 
         <ParameterSlider
@@ -36,6 +36,7 @@ export function SubsetConfig(): JSX.Element {
           step={5}
           format={(v) => String(Math.round(v))}
           unit="%"
+          disabled={isRunLocked()}
         />
 
         <ParameterSlider
@@ -48,35 +49,14 @@ export function SubsetConfig(): JSX.Element {
           toSlider={(v) => Math.log2(v) / 6 + 0.5}
           fromSlider={(p) => Math.pow(2, (p - 0.5) * 6)}
           format={(v) => v.toFixed(1)}
+          disabled={isRunLocked()}
         />
-
-        <div class="param-panel__toggle-group" style="border-top: none; margin-top: 0;">
-          <button
-            class="btn-secondary btn-small"
-            onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
-          >
-            Randomize Layout
-          </button>
-          <span class="param-panel__toggle-desc" style="margin-top: 4px;">
-            Seed: {seed()}
-          </span>
-        </div>
       </div>
 
-      <div class="stats-grid">
-        <div class="stat-item">
-          <span class="stat-item__label">Cells/subset</span>
-          <span class="stat-item__value">{coverageStats().cellPct.toFixed(0)}%</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-item__label">Time/subset</span>
-          <span class="stat-item__value">{coverageStats().timePct.toFixed(0)}%</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-item__label">Total coverage</span>
-          <span class="stat-item__value">{coverageStats().totalPct.toFixed(0)}%</span>
-        </div>
-      </div>
+      <p class="subset-stats-inline">
+        {coverageStats().cellPct.toFixed(0)}% cells, {coverageStats().timePct.toFixed(0)}% time,{' '}
+        {coverageStats().totalPct.toFixed(0)}% total
+      </p>
 
       <Show when={numSubsets() > maxNonOverlappingK()}>
         <span class="stat-item__warn">K &gt; {maxNonOverlappingK()} causes overlap</span>

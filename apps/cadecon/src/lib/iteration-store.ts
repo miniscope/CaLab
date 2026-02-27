@@ -72,6 +72,9 @@ const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | nu
 
 // --- Derived ---
 
+/** True when the algorithm is actively running (not idle or complete). */
+const isRunLocked = createMemo(() => runState() !== 'idle' && runState() !== 'complete');
+
 const progress = createMemo(() => {
   const total = totalSubsetTraceJobs();
   if (total === 0) return 0;
@@ -165,6 +168,7 @@ export {
   alphaValues,
   pveValues,
   subsetVarianceData,
+  isRunLocked,
   progress,
   iterationHistory,
   resetIterationState,

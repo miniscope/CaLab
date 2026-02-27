@@ -42,9 +42,11 @@ import {
   isDemo,
   dataSource,
   demoPreset,
+  groundTruthLocked,
 } from '../../lib/data-store.ts';
 import { SubmitForm } from './SubmitForm.tsx';
 import { SubmissionSummary } from './SubmissionSummary.tsx';
+import { GroundTruthControls, GroundTruthNotices, ExportButton } from './GroundTruthControls.tsx';
 import '../../styles/community.css';
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
@@ -76,6 +78,12 @@ export function SubmitPanel() {
 
   const isComplete = () => runState() === 'complete';
   const isConverged = () => convergedAtIteration() !== null;
+
+  function submitButtonTitle(): string | undefined {
+    if (groundTruthLocked()) return 'Disabled — ground truth was viewed';
+    if (!isComplete()) return 'Available after convergence or manual stop';
+    return undefined;
+  }
 
   async function handleSubmit(): Promise<void> {
     setSubmitError(null);
@@ -191,8 +199,11 @@ export function SubmitPanel() {
         </div>
       </Show>
 
-      {/* Action buttons — always visible */}
+      {/* Action buttons */}
       <div class="submit-panel__actions">
+        <ExportButton />
+        <GroundTruthControls />
+
         <Show when={supabaseEnabled}>
           <button
             class="btn-secondary btn-small"
@@ -200,16 +211,21 @@ export function SubmitPanel() {
               setFormOpen((prev) => !prev);
               loadFieldOptions();
             }}
-            disabled={!isComplete()}
-            title={!isComplete() ? 'Available after convergence or manual stop' : undefined}
+            disabled={!isComplete() || groundTruthLocked()}
+            title={submitButtonTitle()}
           >
             {formOpen() ? 'Cancel' : 'Submit to Community'}
           </button>
-          <Show when={!isComplete()}>
-            <p class="submit-panel__disabled-hint">Available after convergence or manual stop</p>
-          </Show>
         </Show>
       </div>
+
+      <GroundTruthNotices />
+
+      <Show when={!isComplete() && !groundTruthLocked()}>
+        <p class="submit-panel__disabled-hint">
+          Export and submission available after convergence or manual stop
+        </p>
+      </Show>
 
       {/* Submission summary card */}
       <Show when={lastSubmission()}>

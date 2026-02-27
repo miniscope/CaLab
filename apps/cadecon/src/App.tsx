@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js';
+import type { Component, JSX } from 'solid-js';
 import { createSignal, Show } from 'solid-js';
 import {
   DashboardShell,
@@ -38,7 +38,8 @@ import {
   loadFromBridge,
   bridgeUrl,
 } from './lib/data-store.ts';
-import { selectedSubsetIdx } from './lib/subset-store.ts';
+import { selectedSubsetIdx, setSeed } from './lib/subset-store.ts';
+import { isRunLocked } from './lib/iteration-store.ts';
 
 import './styles/controls.css';
 import './styles/layout.css';
@@ -48,6 +49,26 @@ import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
 import './styles/drilldown.css';
 import './styles/community.css';
+
+function DiceIcon(): JSX.Element {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+      <rect
+        x="1"
+        y="1"
+        width="14"
+        height="14"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+      />
+      <circle cx="4.5" cy="4.5" r="1.2" />
+      <circle cx="8" cy="8" r="1.2" />
+      <circle cx="11.5" cy="11.5" r="1.2" />
+    </svg>
+  );
+}
 
 const App: Component = () => {
   if (isAuthCallback()) {
@@ -99,31 +120,35 @@ const App: Component = () => {
           mode="dashboard"
           sidebar={
             <>
-              <DashboardPanel
-                id="subset-config"
-                variant="controls"
-                label="Subset Configuration"
-                collapsible
-              >
+              <DashboardPanel id="subset-config" variant="controls">
+                <p class="panel-label panel-label--with-action">
+                  Subset Configuration
+                  <button
+                    class="panel-label__action"
+                    title="Randomize subset tiling"
+                    disabled={isRunLocked()}
+                    onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
+                  >
+                    <DiceIcon />
+                  </button>
+                </p>
                 <SubsetConfig />
               </DashboardPanel>
 
-              <DashboardPanel
-                id="algorithm-settings"
-                variant="controls"
-                label="Algorithm Settings"
-                collapsible
-                defaultCollapsed
-              >
+              <DashboardPanel id="algorithm-settings" variant="controls">
+                <p class="panel-label">Algorithm Settings</p>
                 <AlgorithmSettings />
               </DashboardPanel>
 
-              <DashboardPanel id="run-controls" variant="controls" label="Run Controls" collapsible>
+              <DashboardPanel id="run-controls" variant="controls">
+                <p class="panel-label">Run Controls</p>
                 <RunControls />
                 <ProgressBar />
               </DashboardPanel>
 
-              <SubmitPanel />
+              <DashboardPanel id="submit" variant="controls">
+                <SubmitPanel />
+              </DashboardPanel>
             </>
           }
         >

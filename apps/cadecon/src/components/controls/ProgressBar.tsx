@@ -49,7 +49,10 @@ export function ProgressBar(): JSX.Element {
           </span>
           <span class="progress-bar__pct">{pct()}%</span>
         </div>
-        <div class="progress-bar__track">
+        <div
+          class="progress-bar__track"
+          classList={{ 'progress-bar__track--running': runState() === 'running' }}
+        >
           <div
             class="progress-bar__fill"
             classList={{
