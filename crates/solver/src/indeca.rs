@@ -283,9 +283,9 @@ pub fn solve_trace(
     // threshold search sees concentrated peaks rather than halos. Real
     // consecutive spikes survive because high-valued bins barely need to
     // absorb anything.
-    pool_energy(&mut s_relaxed, upsample_factor);
+    // pool_energy(&mut s_relaxed, upsample_factor);
 
-    // Step 3: Threshold search on pooled, scaled trace
+    // Step 3: Threshold search on scaled trace
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
     let ThresholdResult {
         s_binary,
