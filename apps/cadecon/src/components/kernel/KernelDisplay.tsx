@@ -101,7 +101,9 @@ export function KernelDisplay(): JSX.Element {
         if (gtArray[i] > gtPeak) gtPeak = gtArray[i];
       }
       if (gtPeak > 1e-10) {
-        for (let i = 0; i < maxLen; i++) gtArray[i] /= gtPeak;
+        for (let i = 0; i < maxLen; i++) {
+          gtArray[i] /= gtPeak;
+        }
       }
       columns.push(gtArray);
     }

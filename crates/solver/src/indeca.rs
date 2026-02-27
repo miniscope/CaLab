@@ -10,6 +10,9 @@
 /// so that Box[0,1] maps to the correct amplitude range. After FISTA, halo
 /// energy (spread across neighboring upsampled bins) is pooled back into peak
 /// bins before threshold search, preserving real consecutive spikes.
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search, ThresholdResult};
 use crate::upsample::{
@@ -120,22 +123,10 @@ fn solve_bounded_upsampled(
 /// is fine: if alpha_est > alpha_true, the pre-divided trace has spike values < 1.0,
 /// which Box[0,1] doesn't clip. Returns 1.0 for flat traces.
 fn estimate_alpha(trace: &[f32]) -> f64 {
-    let mut lo = f32::INFINITY;
-    let mut hi = f32::NEG_INFINITY;
-    for &v in trace {
-        if v < lo {
-            lo = v;
-        }
-        if v > hi {
-            hi = v;
-        }
-    }
+    let lo = trace.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = trace.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let ptp = (hi - lo) as f64;
-    if ptp < 1e-10 {
-        1.0
-    } else {
-        ptp
-    }
+    if ptp < 1e-10 { 1.0 } else { ptp }
 }
 
 /// Pool halo energy into peak bins via greedy lowest-first absorption.
@@ -173,9 +164,6 @@ fn pool_energy(s: &mut [f32], upsample_factor: usize) {
 
     // Max-heap keyed on value. Stale entries (where heap value != current s[i])
     // are skipped on pop, so we don't need decrease-key.
-    use std::cmp::Ordering;
-    use std::collections::BinaryHeap;
-
     #[derive(PartialEq)]
     struct Entry(f32, usize);
     impl Eq for Entry {}
@@ -212,11 +200,7 @@ fn pool_energy(s: &mut [f32], upsample_factor: usize) {
         }
 
         // Repeatedly absorb from the lowest-valued unprocessed neighbor
-        loop {
-            if deficit <= 1e-10 {
-                break;
-            }
-
+        while deficit > 1e-10 {
             // Scan window for the lowest unprocessed neighbor
             let lo = idx.saturating_sub(half);
             let hi = (idx + half + 1).min(n);
