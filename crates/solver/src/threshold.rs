@@ -37,9 +37,17 @@ pub fn threshold_search(
     banded: &BandedAR2,
     tau_decay: f64,
     fs_up: f64,
+    upsample_factor: usize,
+    max_alpha: f64,
 ) -> ThresholdResult {
     let n = s_relaxed.len();
     let pad = boundary_padding(tau_decay, fs_up).min(n / 4);
+
+    // EXPLORATORY: Minimum threshold floor at 0.5/upsample_factor.
+    // At upsampled rates, FISTA spreads spike energy across neighboring bins,
+    // producing halo values around this level. This floor prevents the search
+    // from selecting a threshold so low that halo artifacts are counted as spikes.
+    let min_threshold = 0.5 / upsample_factor.max(1) as f64;
 
     // Collect sorted unique non-zero values for threshold candidates
     let mut vals: Vec<f32> = s_relaxed.iter().copied().filter(|&v| v > 1e-10).collect();
@@ -87,9 +95,16 @@ pub fn threshold_search(
     }
     coarse_thresholds.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
 
+    // Enforce minimum threshold floor
+    coarse_thresholds.retain(|&t| t >= min_threshold);
+    if coarse_thresholds.is_empty() {
+        // All candidates below minimum — use min_threshold as the only candidate
+        coarse_thresholds.push(min_threshold);
+    }
+
     let mut consecutive_increases = 0;
     for &thresh in &coarse_thresholds {
-        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf);
+        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, max_alpha, &mut s_bin, &mut conv_buf);
         if err < best.error {
             best.error = err;
             best.threshold = thresh;
@@ -108,7 +123,7 @@ pub fn threshold_search(
     } else {
         best.threshold * 0.2
     };
-    let fine_lo = (best.threshold - spread).max(0.0);
+    let fine_lo = (best.threshold - spread).max(min_threshold);
     let fine_hi = best.threshold + spread;
     let fine_n = 50;
     let fine_step = (fine_hi - fine_lo) / (fine_n - 1).max(1) as f64;
@@ -119,7 +134,7 @@ pub fn threshold_search(
         if thresh < 0.0 {
             continue;
         }
-        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, &mut s_bin, &mut conv_buf);
+        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, max_alpha, &mut s_bin, &mut conv_buf);
         if err < best.error {
             best.error = err;
             best.threshold = thresh;
@@ -136,7 +151,7 @@ pub fn threshold_search(
     binarize(s_relaxed, best.threshold, &mut s_bin);
     banded.convolve_forward(&s_bin, &mut conv_buf);
 
-    let (alpha, baseline) = lstsq_alpha_baseline(&conv_buf, y, pad);
+    let (alpha, baseline) = lstsq_alpha_baseline(&conv_buf, y, pad, max_alpha);
     best.alpha = alpha;
     best.baseline = baseline;
     best.s_binary = s_bin.clone();
@@ -188,13 +203,14 @@ fn evaluate_threshold(
     banded: &BandedAR2,
     threshold: f64,
     pad: usize,
+    max_alpha: f64,
     s_bin: &mut [f32],
     conv_buf: &mut [f32],
 ) -> f64 {
     binarize(s_relaxed, threshold, s_bin);
     banded.convolve_forward(s_bin, conv_buf);
 
-    let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad);
+    let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad, max_alpha);
 
     // Error over the interior (excluding boundary padding)
     let n = y.len();
@@ -209,8 +225,10 @@ fn evaluate_threshold(
 
 /// Least-squares fit for alpha and baseline: y ≈ alpha * conv + baseline.
 /// Solves the 2x2 normal equations over the inner region [pad..n-pad].
-/// Alpha is constrained non-negative (spikes add signal, never subtract).
-fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize) -> (f64, f64) {
+/// Alpha is constrained to [0, max_alpha]. When max_alpha is f64::INFINITY
+/// (the default from solve_trace), alpha is effectively uncapped — the
+/// free-solve phase calibrates the prescale so alpha_lstsq lands near 1.0.
+fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize, max_alpha: f64) -> (f64, f64) {
     let n = y.len();
     let lo = pad;
     let hi = n.saturating_sub(pad);
@@ -242,9 +260,14 @@ fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize) -> (f64, f64) {
     let alpha = (sum_cy * count - sum_c * sum_y) / det;
     let baseline = (sum_cc * sum_y - sum_c * sum_cy) / det;
 
-    // Constrain alpha >= 0
+    // Constrain alpha to [0, max_alpha]
     if alpha < 0.0 {
         return (0.0, sum_y / count);
+    }
+    if alpha > max_alpha {
+        // EXPLORATORY: clamp alpha and recompute baseline for the clamped value
+        let baseline = (sum_y - max_alpha * sum_c) / count;
+        return (max_alpha, baseline);
     }
 
     (alpha, baseline)
@@ -276,7 +299,7 @@ mod tests {
             .map(|&c| alpha_true * c + baseline_true as f32)
             .collect();
 
-        let result = threshold_search(&s_true, &y, &banded, 0.4, 30.0);
+        let result = threshold_search(&s_true, &y, &banded, 0.4, 30.0, 1, f64::INFINITY);
 
         let spike_count: f32 = result.s_binary.iter().sum();
         assert!(
@@ -310,7 +333,7 @@ mod tests {
             .map(|&c| (alpha_true * c as f64 + baseline_true) as f32)
             .collect();
 
-        let result = threshold_search(&s_true, &y, &banded, 0.4, 30.0);
+        let result = threshold_search(&s_true, &y, &banded, 0.4, 30.0, 1, f64::INFINITY);
 
         assert!(
             (result.alpha - alpha_true).abs() < 0.5,
@@ -350,7 +373,7 @@ mod tests {
         banded.convolve_forward(&s_binary, &mut conv);
         let y: Vec<f32> = conv.iter().map(|&c| 3.0 * c + 1.0).collect();
 
-        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0);
+        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0, 1, f64::INFINITY);
         assert!(
             result.pve > 0.9,
             "PVE should be > 0.9 on clean data, got {}",
@@ -365,7 +388,7 @@ mod tests {
         let s_relaxed = vec![0.5_f32; n];
         let y = vec![1.0_f32; n];
 
-        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0);
+        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0, 1, f64::INFINITY);
         assert!(
             result.alpha >= 0.0,
             "Alpha should be non-negative, got {}",
@@ -380,7 +403,7 @@ mod tests {
         let s_relaxed = vec![0.0_f32; n];
         let y = vec![1.0_f32; n];
 
-        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0);
+        let result = threshold_search(&s_relaxed, &y, &banded, 0.4, 30.0, 1, f64::INFINITY);
         assert_eq!(result.s_binary.iter().sum::<f32>(), 0.0);
     }
 
