@@ -28,8 +28,8 @@ import {
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
-const IQR_FILL = 'rgba(31, 119, 180, 0.08)';
-const Q_COLOR = 'rgba(31, 119, 180, 0.3)';
+const IQR_FILL = 'rgba(31, 119, 180, 0.18)';
+const Q_COLOR = 'rgba(31, 119, 180, 0.4)';
 
 export interface TrendsData {
   iterations: number[];
@@ -290,8 +290,8 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
       width: 2,
       points: { show: true, size: 5 },
     },
-    { label: 'Q25', stroke: Q_COLOR, width: 1, dash: [4, 2], show: false },
-    { label: 'Q75', stroke: Q_COLOR, width: 1, dash: [4, 2], show: false },
+    { label: 'Q25', stroke: Q_COLOR, width: 1, dash: [4, 2] },
+    { label: 'Q75', stroke: Q_COLOR, width: 1, dash: [4, 2] },
   ];
 
   const scales = createMemo((): uPlot.Scales => {
