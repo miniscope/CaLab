@@ -6,6 +6,7 @@ import type {
   SessionRow,
   EventRow,
   SubmissionRow,
+  CadeconSubmissionRow,
   AdminMetrics,
   GeoBreakdown,
   EventBreakdown,
@@ -76,9 +77,37 @@ export async function deleteSubmission(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+export async function fetchCadeconSubmissions(range: DateRange): Promise<CadeconSubmissionRow[]> {
+  const supabase = await getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('cadecon_submissions')
+    .select(
+      'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, sampling_rate, median_alpha, median_pve, mean_event_rate, num_iterations, converged',
+    )
+    .gte('created_at', range.start)
+    .lte('created_at', endOfDay(range.end))
+    .order('created_at', { ascending: false });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as CadeconSubmissionRow[];
+}
+
+export async function deleteCadeconSubmission(id: string): Promise<void> {
+  const supabase = await getSupabase();
+  if (!supabase) throw new Error('Supabase not configured');
+
+  const { error } = await supabase.from('cadecon_submissions').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
 // Client-side aggregation helpers
 
-export function computeMetrics(sessions: SessionRow[], submissions: SubmissionRow[]): AdminMetrics {
+export function computeMetrics(
+  sessions: SessionRow[],
+  submissions: Pick<SubmissionRow, 'data_source'>[],
+): AdminMetrics {
   const uniqueUserIds = new Set(sessions.filter((s) => s.user_id).map((s) => s.user_id));
 
   // Average session duration derived from ended_at - created_at
@@ -164,7 +193,9 @@ export function computeWeeklySessions(sessions: SessionRow[]): WeeklySession[] {
     .sort((a, b) => a.week.localeCompare(b.week));
 }
 
-export function computeSourceBreakdown(submissions: SubmissionRow[]): SourceBreakdown[] {
+export function computeSourceBreakdown(
+  submissions: Pick<SubmissionRow, 'data_source'>[],
+): SourceBreakdown[] {
   const map = new Map<string, number>();
   for (const s of submissions) {
     const source = s.data_source || 'unknown';
@@ -195,6 +226,35 @@ export function computeReferrerBreakdown(sessions: SessionRow[]): ReferrerBreakd
   return Array.from(map.entries())
     .map(([referrer_domain, count]) => ({ referrer_domain, count }))
     .sort((a, b) => b.count - a.count);
+}
+
+/** Flag CaDecon submission IDs as outliers using the IQR method (1.5x IQR from Q1/Q3). */
+export function computeCadeconOutliers(submissions: CadeconSubmissionRow[]): Set<string> {
+  if (submissions.length < 4) return new Set();
+
+  const outlierIds = new Set<string>();
+  const fields = ['tau_rise', 'tau_decay', 'sampling_rate'] as const;
+
+  for (const field of fields) {
+    const values = submissions.map((s) => s[field]).filter((v): v is number => v != null);
+    if (values.length < 4) continue;
+
+    values.sort((a, b) => a - b);
+    const q1 = values[Math.floor(values.length * 0.25)];
+    const q3 = values[Math.floor(values.length * 0.75)];
+    const iqr = q3 - q1;
+    const lower = q1 - 1.5 * iqr;
+    const upper = q3 + 1.5 * iqr;
+
+    for (const s of submissions) {
+      const v = s[field];
+      if (v != null && (v < lower || v > upper)) {
+        outlierIds.add(s.id);
+      }
+    }
+  }
+
+  return outlierIds;
 }
 
 /** Flag submission IDs as outliers using the IQR method (1.5x IQR from Q1/Q3). */

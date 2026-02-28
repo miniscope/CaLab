@@ -213,6 +213,42 @@ body {
   color: var(--text-secondary);
 }
 
+/* App toggle (CaTune / CaDecon switcher) */
+.app-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.app-toggle__btn {
+  padding: 6px 16px;
+  border: none;
+  background: var(--bg-primary);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.app-toggle__btn:not(:last-child) {
+  border-right: 1px solid var(--border-subtle);
+}
+
+.app-toggle__btn:hover {
+  color: var(--text-primary);
+}
+
+.app-toggle__btn--active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: var(--font-weight-medium);
+}
+
 /* Filter bar */
 .filter-bar {
   display: flex;
