@@ -551,12 +551,9 @@ export async function startRun(): Promise<void> {
     }
 
     // Early stop: if residual has risen for RESIDUAL_PATIENCE consecutive
-    // iterations, the optimizer has overshot — revert to best and stop.
+    // iterations, the optimizer has overshot. The post-loop revert below will
+    // restore the best-residual kernel parameters before finalization.
     if (residualIncreaseCount >= RESIDUAL_PATIENCE) {
-      tauR = bestTauR;
-      tauD = bestTauD;
-      setCurrentTauRise(tauR);
-      setCurrentTauDecay(tauD);
       setConvergedAtIteration(bestIteration);
       break;
     }

@@ -25,6 +25,17 @@ const TAU_DECAY_COLOR = '#ef5350';
 const RESIDUAL_COLOR = '#9e9e9e';
 const TAU_RISE_FAINT = 'rgba(66, 165, 245, 0.3)';
 const TAU_DECAY_FAINT = 'rgba(239, 83, 80, 0.3)';
+
+/** Draw a single horizontal line at `yVal` on scale `'y'`. Caller must save/restore ctx. */
+function drawHLine(ctx: CanvasRenderingContext2D, u: uPlot, yVal: number, color: string): void {
+  ctx.strokeStyle = color;
+  const yPx = u.valToPos(yVal, 'y', true);
+  ctx.beginPath();
+  ctx.moveTo(u.bbox.left, yPx);
+  ctx.lineTo(u.bbox.left + u.bbox.width, yPx);
+  ctx.stroke();
+}
+
 /** Plugin that draws horizontal dashed lines at ground truth tau_rise (blue) and tau_decay (red). */
 function groundTruthPlugin(): uPlot.Plugin {
   return {
@@ -35,32 +46,14 @@ function groundTruthPlugin(): uPlot.Plugin {
         const gtTauD = groundTruthTauDecay();
         if (gtTauR == null && gtTauD == null) return;
 
-        const ctx = u.ctx;
         const dpr = devicePixelRatio;
-        const left = u.bbox.left;
-        const width = u.bbox.width;
-
+        const ctx = u.ctx;
         ctx.save();
         ctx.lineWidth = 1.5 * dpr;
         ctx.setLineDash([6 * dpr, 4 * dpr]);
 
-        if (gtTauR != null) {
-          ctx.strokeStyle = TAU_RISE_COLOR;
-          const yPx = u.valToPos(gtTauR * 1000, 'y', true);
-          ctx.beginPath();
-          ctx.moveTo(left, yPx);
-          ctx.lineTo(left + width, yPx);
-          ctx.stroke();
-        }
-
-        if (gtTauD != null) {
-          ctx.strokeStyle = TAU_DECAY_COLOR;
-          const yPx = u.valToPos(gtTauD * 1000, 'y', true);
-          ctx.beginPath();
-          ctx.moveTo(left, yPx);
-          ctx.lineTo(left + width, yPx);
-          ctx.stroke();
-        }
+        if (gtTauR != null) drawHLine(ctx, u, gtTauR * 1000, TAU_RISE_COLOR);
+        if (gtTauD != null) drawHLine(ctx, u, gtTauD * 1000, TAU_DECAY_COLOR);
 
         ctx.restore();
       },

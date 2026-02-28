@@ -338,7 +338,7 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
 
   return (
     <Show
-      when={iterationHistory().length > 0}
+      when={trendsData().iterations.length > 0}
       fallback={
         <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
           <span>{props.emptyMessage}</span>
