@@ -311,6 +311,8 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
       label: 'Iteration',
       labelSize: 10,
       labelFont: '10px sans-serif',
+      values: (_u: uPlot, splits: number[]) =>
+        splits.map((v) => (Number.isInteger(v) ? String(v) : '')),
     },
     {
       stroke: AXIS_TEXT,

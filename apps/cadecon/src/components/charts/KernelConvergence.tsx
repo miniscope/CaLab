@@ -112,14 +112,16 @@ export function KernelConvergence(): JSX.Element {
     uplotRef()?.redraw();
   });
 
+  const filteredHistory = createMemo(() => convergenceHistory().filter((s) => s.iteration > 0));
+
   const chartData = createMemo((): uPlot.AlignedData => {
-    const h = convergenceHistory();
+    const h = filteredHistory();
     if (h.length === 0) return [[], [], [], []];
     return [
       h.map((s) => s.iteration),
       h.map((s) => s.tauRise * 1000),
       h.map((s) => s.tauDecay * 1000),
-      h.map((s) => (s.iteration === 0 ? null : s.residual)),
+      h.map((s) => s.residual),
     ];
   });
 
@@ -150,6 +152,8 @@ export function KernelConvergence(): JSX.Element {
       label: 'Iteration',
       labelSize: 10,
       labelFont: '10px sans-serif',
+      values: (_u: uPlot, splits: number[]) =>
+        splits.map((v) => (Number.isInteger(v) ? String(v) : '')),
     },
     {
       stroke: AXIS_TEXT,
@@ -185,7 +189,7 @@ export function KernelConvergence(): JSX.Element {
 
   return (
     <Show
-      when={convergenceHistory().length > 0}
+      when={filteredHistory().length > 0}
       fallback={
         <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
           <span>Run deconvolution to see kernel convergence.</span>
