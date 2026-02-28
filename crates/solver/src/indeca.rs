@@ -52,8 +52,17 @@ pub fn solve_bounded(
     let mut solver = Solver::new();
     solve_upsampled(
         &mut solver,
-        &upsampled, tau_r, tau_d, fs_up, max_iters, tol, warm_start, hp_enabled, lp_enabled,
-        Constraint::Box01, false,
+        &upsampled,
+        tau_r,
+        tau_d,
+        fs_up,
+        max_iters,
+        tol,
+        warm_start,
+        hp_enabled,
+        lp_enabled,
+        Constraint::Box01,
+        false,
     )
 }
 
@@ -148,7 +157,11 @@ fn estimate_alpha_interior(trace: &[f32], pad: usize) -> f64 {
     let lo = inner.iter().copied().fold(f32::INFINITY, f32::min);
     let hi = inner.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let ptp = (hi - lo) as f64;
-    if ptp < 1e-10 { 1.0 } else { ptp }
+    if ptp < 1e-10 {
+        1.0
+    } else {
+        ptp
+    }
 }
 
 /// Maximum value in the interior of a slice, excluding `pad` samples from each end.
@@ -236,8 +249,7 @@ pub fn solve_trace(
     let mut alpha_est = estimate_alpha_interior(&working_trace, pad);
 
     // Convert original-rate spike counts to upsampled-rate binary for warm-start
-    let warm_binary =
-        warm_counts.map(|counts| upsample_counts_to_binary(counts, upsample_factor));
+    let warm_binary = warm_counts.map(|counts| upsample_counts_to_binary(counts, upsample_factor));
 
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
 
@@ -346,8 +358,8 @@ pub fn solve_trace(
     }
 
     // ── Step 4: Extract best result ─────────────────────────────────────
-    let (s_binary, alpha, baseline, threshold, pve, iterations, converged) =
-        best_result.unwrap_or_else(|| {
+    let (s_binary, alpha, baseline, threshold, pve, iterations, converged) = best_result
+        .unwrap_or_else(|| {
             // Fallback: no valid result found (shouldn't happen)
             (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
         });
@@ -594,11 +606,7 @@ mod tests {
         );
 
         // PVE should be reasonable (not garbage from a single edge spike)
-        assert!(
-            result.pve > 0.7,
-            "PVE should be > 0.7, got {}",
-            result.pve
-        );
+        assert!(result.pve > 0.7, "PVE should be > 0.7, got {}", result.pve);
     }
 
     /// High baseline should not prevent spike detection.

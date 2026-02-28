@@ -28,6 +28,7 @@ impl Solver {
 
         let step_size = 1.0 / self.lipschitz_constant;
         let threshold = step_size * self.effective_lambda();
+        let tol_sq = self.tolerance * self.tolerance;
 
         for _ in 0..n_steps {
             if self.converged {
@@ -124,62 +125,38 @@ impl Solver {
             let mut xk_sq = 0.0_f64;
             let mut dot = 0.0_f64;
 
+            // Constraint match hoisted outside the inner loop for SIMD auto-vectorization.
+            // The `dot` accumulator is always computed (one fma per element) to avoid
+            // duplicating the loop body for the check_restart branch.
             match self.constraint {
                 Constraint::NonNegative => {
-                    if check_restart {
-                        for i in 0..n {
-                            let x_new = self.solution[i];
-                            let x_old = self.residual_buf[i];
-                            let x_new_f64 = x_new as f64;
-                            let x_old_f64 = x_old as f64;
-                            let d = x_new_f64 - x_old_f64;
-                            diff_sq += d * d;
-                            xk_sq += x_old_f64 * x_old_f64;
-                            dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
-                            self.solution_prev[i] =
-                                (x_new + momentum * (x_new - x_old)).max(0.0);
-                        }
-                    } else {
-                        for i in 0..n {
-                            let x_new = self.solution[i];
-                            let x_old = self.residual_buf[i];
-                            let d = (x_new - x_old) as f64;
-                            diff_sq += d * d;
-                            xk_sq += (x_old as f64) * (x_old as f64);
-                            self.solution_prev[i] =
-                                (x_new + momentum * (x_new - x_old)).max(0.0);
-                        }
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        let x_new_f64 = x_new as f64;
+                        let x_old_f64 = x_old as f64;
+                        let d = x_new_f64 - x_old_f64;
+                        diff_sq += d * d;
+                        xk_sq += x_old_f64 * x_old_f64;
+                        dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
+                        self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
                     }
                 }
                 Constraint::Box01 => {
-                    if check_restart {
-                        for i in 0..n {
-                            let x_new = self.solution[i];
-                            let x_old = self.residual_buf[i];
-                            let x_new_f64 = x_new as f64;
-                            let x_old_f64 = x_old as f64;
-                            let d = x_new_f64 - x_old_f64;
-                            diff_sq += d * d;
-                            xk_sq += x_old_f64 * x_old_f64;
-                            dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
-                            self.solution_prev[i] =
-                                (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
-                        }
-                    } else {
-                        for i in 0..n {
-                            let x_new = self.solution[i];
-                            let x_old = self.residual_buf[i];
-                            let d = (x_new - x_old) as f64;
-                            diff_sq += d * d;
-                            xk_sq += (x_old as f64) * (x_old as f64);
-                            self.solution_prev[i] =
-                                (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
-                        }
+                    for i in 0..n {
+                        let x_new = self.solution[i];
+                        let x_old = self.residual_buf[i];
+                        let x_new_f64 = x_new as f64;
+                        let x_old_f64 = x_old as f64;
+                        let d = x_new_f64 - x_old_f64;
+                        diff_sq += d * d;
+                        xk_sq += x_old_f64 * x_old_f64;
+                        dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
+                        self.solution_prev[i] =
+                            (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
                     }
                 }
             }
-
-            let tol_sq = self.tolerance * self.tolerance;
 
             // Adaptive restart: if momentum hurt progress, reset.
             // Undo the speculative momentum by setting solution_prev = solution.

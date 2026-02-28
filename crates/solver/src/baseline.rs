@@ -49,7 +49,7 @@ struct FenwickTree {
 
 impl FenwickTree {
     fn new(size: usize) -> Self {
-        FenwickTree {
+        Self {
             tree: vec![0; size + 1], // 1-indexed
         }
     }
@@ -105,11 +105,7 @@ pub fn subtract_rolling_baseline(trace: &mut [f32], window: usize, quantile: f64
     let m = sorted_vals.len();
 
     // Map from value to compressed index via binary search.
-    let compress = |v: f32| -> usize {
-        sorted_vals
-            .binary_search(&OrderedF32(v))
-            .unwrap()
-    };
+    let compress = |v: f32| -> usize { sorted_vals.binary_search(&OrderedF32(v)).unwrap() };
 
     let mut fenwick = FenwickTree::new(m);
     let mut baselines = Vec::with_capacity(n);
