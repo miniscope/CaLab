@@ -531,9 +531,15 @@ export async function startRun(): Promise<void> {
     });
 
     // Step 4: Best-residual tracking & early stop
-    // The bi-exponential fit residual measures how well the parametric kernel
-    // matches the free-form estimate. When tau_rise overshoots past the true
-    // value, this residual increases — so the minimum marks the best kernel.
+    //
+    // TODO: The current stopping criterion uses the bi-exponential fit residual
+    // (||h_free - β·template||²), which measures kernel shape mismatch. This
+    // doesn't always work — it can be noisy or non-monotonic depending on the
+    // data. A more robust approach would use the trace-reconstruction residual
+    // (||y - α·(K*s) - b||² across cells), which directly measures how well
+    // the model explains the data. That's more expensive to compute but would
+    // be a stronger signal for when the kernel has overshot.
+    //
     if (medResidual < bestResidual) {
       bestResidual = medResidual;
       bestTauR = tauR;
