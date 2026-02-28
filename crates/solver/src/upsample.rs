@@ -51,7 +51,10 @@ pub fn upsample_trace(trace: &[f32], factor: usize) -> Vec<f32> {
 pub fn upsample_counts_to_binary(counts: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
         // At factor 1, binarize in-place: any count > 0.5 becomes 1
-        return counts.iter().map(|&v| if v > 0.5 { 1.0 } else { 0.0 }).collect();
+        return counts
+            .iter()
+            .map(|&v| if v > 0.5 { 1.0 } else { 0.0 })
+            .collect();
     }
     let n = counts.len();
     let mut out = vec![0.0_f32; n * factor];

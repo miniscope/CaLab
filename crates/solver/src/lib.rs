@@ -1,4 +1,5 @@
 mod banded;
+pub(crate) mod baseline;
 #[allow(dead_code)]
 pub(crate) mod biexp_fit;
 mod fft;
@@ -435,6 +436,22 @@ impl Solver {
             self.filtered = true;
         }
         applied
+    }
+
+    /// Subtract a rolling-percentile baseline from the active trace.
+    ///
+    /// Brings the trace floor to ~0, removing slow baseline drift while
+    /// preserving positive-going calcium transients. After subtraction the
+    /// baseline is ~0 so FISTA baseline estimation can be skipped (same
+    /// rationale as when HP removes DC).
+    pub fn subtract_baseline(&mut self) {
+        let n = self.active_len;
+        if n == 0 {
+            return;
+        }
+        let window = baseline::baseline_window(self.tau_decay, self.fs);
+        baseline::subtract_rolling_baseline(&mut self.trace[..n], window, 0.2);
+        self.filtered = true;
     }
 
     /// Get the power spectrum of the current trace (N/2+1 bins).

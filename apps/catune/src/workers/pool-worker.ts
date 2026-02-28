@@ -49,11 +49,15 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     solver.set_filter_enabled(req.params.filterEnabled);
 
     // Apply bandpass filter before warm-start (filter modifies the trace itself)
-    let filteredTrace: Float32Array | undefined;
     if (req.params.filterEnabled) {
       solver.apply_filter();
-      filteredTrace = solver.get_trace();
     }
+
+    // Always subtract rolling-percentile baseline (brings floor to ~0)
+    solver.subtract_baseline();
+
+    // Always capture the working trace (after filter + baseline subtraction)
+    const filteredTrace: Float32Array = solver.get_trace();
 
     // Warm-start: load cached state; reset momentum if kernel changed
     if (req.warmState && req.warmStrategy !== 'cold') {
@@ -105,9 +109,13 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
     const reconvolution = solver.get_reconvolution_with_baseline();
     const state = solver.export_state();
 
-    const ftCopy = filteredTrace ? new Float32Array(filteredTrace) : undefined;
-    const transfer: Transferable[] = [solution.buffer, reconvolution.buffer, state.buffer];
-    if (ftCopy) transfer.push(ftCopy.buffer);
+    const ftCopy = new Float32Array(filteredTrace);
+    const transfer: Transferable[] = [
+      solution.buffer,
+      reconvolution.buffer,
+      state.buffer,
+      ftCopy.buffer,
+    ];
 
     post(
       {

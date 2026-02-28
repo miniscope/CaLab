@@ -31,6 +31,7 @@ export const solver_set_lp_filter_enabled: (a: number, b: number) => void;
 export const solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
 export const solver_set_trace: (a: number, b: number, c: number) => void;
 export const solver_step_batch: (a: number, b: number) => number;
+export const solver_subtract_baseline: (a: number) => void;
 export const __wbindgen_export: (a: number, b: number, c: number) => void;
 export const __wbindgen_export2: (a: number, b: number) => number;
 export const __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;

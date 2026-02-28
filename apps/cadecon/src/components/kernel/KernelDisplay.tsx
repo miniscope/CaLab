@@ -89,14 +89,21 @@ export function KernelDisplay(): JSX.Element {
 
     const columns: (number | null)[][] = [...subsetArrays, fitArray];
 
-    // Ground truth kernel overlay
+    // Ground truth kernel overlay (peak-normalized to 1.0 to match free/fit kernels)
     if (showGroundTruth()) {
       const gtTauR = groundTruthTauRise()!;
       const gtTauD = groundTruthTauDecay()!;
       const gtArray = new Array(maxLen);
+      let gtPeak = 0;
       for (let i = 0; i < maxLen; i++) {
         const t = i / fs;
-        gtArray[i] = beta * (Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR));
+        gtArray[i] = Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR);
+        if (gtArray[i] > gtPeak) gtPeak = gtArray[i];
+      }
+      if (gtPeak > 1e-10) {
+        for (let i = 0; i < maxLen; i++) {
+          gtArray[i] /= gtPeak;
+        }
       }
       columns.push(gtArray);
     }

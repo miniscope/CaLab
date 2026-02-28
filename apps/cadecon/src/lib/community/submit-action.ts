@@ -41,7 +41,7 @@ export interface CadeconSubmissionContext {
   lpFilterEnabled: boolean;
   alphaValues: number[];
   pveValues: number[];
-  perTraceResults: Record<number, { sCounts: Float32Array }>;
+  perTraceResults: Record<string, { sCounts: Float32Array }>;
   durationSeconds: number | null;
   numIterations: number;
   converged: boolean;
@@ -69,7 +69,7 @@ function parseOptionalNumber(value: string, parser: (s: string) => number): numb
 
 /** Compute mean event rate: sum(sCounts > 0) / (numCells * durationSeconds). */
 function computeMeanEventRate(
-  perTraceResults: Record<number, { sCounts: Float32Array }>,
+  perTraceResults: Record<string, { sCounts: Float32Array }>,
   durationSeconds: number | null,
 ): number | null {
   if (!durationSeconds || durationSeconds <= 0) return null;

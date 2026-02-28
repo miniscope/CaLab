@@ -62,9 +62,9 @@ impl PySolver {
 
     /// Load a trace (numpy float32 array) for deconvolution.
     fn set_trace(&mut self, trace: PyReadonlyArray1<f32>) -> PyResult<()> {
-        let slice = trace.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
-        })?;
+        let slice = trace
+            .as_slice()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
         self.inner.set_trace(slice);
         Ok(())
     }
@@ -128,6 +128,11 @@ impl PySolver {
         self.inner.apply_filter()
     }
 
+    /// Subtract rolling-percentile baseline from loaded trace.
+    fn subtract_baseline(&mut self) {
+        self.inner.subtract_baseline();
+    }
+
     /// Convenience: set both HP and LP filter together.
     fn set_filter_enabled(&mut self, enabled: bool) {
         self.inner.set_filter_enabled(enabled);
@@ -176,9 +181,9 @@ fn py_build_kernel<'py>(
 /// Compute Lipschitz constant for a kernel.
 #[pyfunction]
 fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> PyResult<f64> {
-    let slice = kernel.as_slice().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
-    })?;
+    let slice = kernel
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
     Ok(compute_lipschitz(slice))
 }
 
@@ -220,9 +225,9 @@ fn deconvolve_single<'py>(
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
-    let slice = trace.as_slice().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR)
-    })?;
+    let slice = trace
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
     let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
     solver.set_trace(&trace_f32);
 
@@ -231,6 +236,8 @@ fn deconvolve_single<'py>(
         solver.set_lp_filter_enabled(lp_enabled);
         solver.apply_filter();
     }
+
+    solver.subtract_baseline();
 
     run_to_convergence(&mut solver, max_iters);
 
@@ -296,6 +303,8 @@ fn deconvolve_batch<'py>(
         if hp_enabled || lp_enabled {
             solver.apply_filter();
         }
+
+        solver.subtract_baseline();
 
         run_to_convergence(&mut solver, max_iters);
 

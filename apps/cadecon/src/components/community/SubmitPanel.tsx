@@ -21,7 +21,7 @@ import {
   convergenceHistory,
   alphaValues,
   pveValues,
-  perTraceResults,
+  cellResultLookup,
   currentIteration,
   convergedAtIteration,
 } from '../../lib/iteration-store.ts';
@@ -139,7 +139,7 @@ export function SubmitPanel() {
           lpFilterEnabled: lpFilterEnabled(),
           alphaValues: alphaValues(),
           pveValues: pveValues(),
-          perTraceResults: perTraceResults(),
+          perTraceResults: Object.fromEntries(cellResultLookup()),
           durationSeconds: durationSeconds(),
           numIterations: currentIteration(),
           converged: isConverged(),

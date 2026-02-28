@@ -172,6 +172,15 @@ export class Solver {
      * primal residual convergence criterion to eliminate one convolution per iteration.
      */
     step_batch(n_steps: number): boolean;
+    /**
+     * Subtract a rolling-percentile baseline from the active trace.
+     *
+     * Brings the trace floor to ~0, removing slow baseline drift while
+     * preserving positive-going calcium transients. After subtraction the
+     * baseline is ~0 so FISTA baseline estimation can be skipped (same
+     * rationale as when HP removes DC).
+     */
+    subtract_baseline(): void;
 }
 
 /**
@@ -242,6 +251,7 @@ export interface InitOutput {
     readonly solver_set_params: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly solver_set_trace: (a: number, b: number, c: number) => void;
     readonly solver_step_batch: (a: number, b: number) => number;
+    readonly solver_subtract_baseline: (a: number) => void;
     readonly __wbindgen_export: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export2: (a: number, b: number) => number;
     readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;

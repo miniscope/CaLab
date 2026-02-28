@@ -13,7 +13,7 @@ import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import { transientZonePlugin } from '@calab/ui/chart';
 import {
   runState,
-  perTraceResults,
+  cellResultLookup,
   currentTauRise,
   currentTauDecay,
   iterationHistory,
@@ -48,7 +48,7 @@ import {
   setShowGTSpikes,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { hpFilterEnabled, lpFilterEnabled } from '../../lib/algorithm-store.ts';
+import { upsampleFactor } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createGroundTruthCalciumSeries,
@@ -139,9 +139,19 @@ export function TraceInspector(): JSX.Element {
     if (cellIdx == null) return null;
 
     const histEntry = viewedHistoryEntry();
-    if (histEntry) return histEntry.results[cellIdx] ?? null;
+    if (histEntry) {
+      // Prefer the stitched full-length result (subsetIdx=-1); fall back to first match
+      let fallback: TraceResultEntry | null = null;
+      for (const entry of Object.values(histEntry.results)) {
+        if (entry.cellIndex === cellIdx) {
+          if (entry.subsetIdx === -1) return entry;
+          if (!fallback) fallback = entry;
+        }
+      }
+      return fallback;
+    }
 
-    return perTraceResults()[cellIdx] ?? null;
+    return cellResultLookup().get(cellIdx) ?? null;
   });
 
   const effectiveTauRise = createMemo(() => viewedHistoryEntry()?.tauRise ?? currentTauRise());
@@ -149,7 +159,7 @@ export function TraceInspector(): JSX.Element {
 
   // Whether we have any result for the selected cell (used as a gate, but
   // kept separate so the expensive trace extraction below doesn't re-run
-  // every time perTraceResults updates with new iteration data).
+  // every time cellResultLookup updates with new iteration data).
   const hasResult = createMemo(() => {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return false;
@@ -177,10 +187,8 @@ export function TraceInspector(): JSX.Element {
     return trace;
   });
 
-  // Reconvolved trace — when HP/LP filtering is active, the solver operates on
-  // the filtered trace (DC removed) and the threshold-search baseline captures
-  // a small residual offset. Drop that baseline so the fit overlays the filtered
-  // trace rather than sitting above it.
+  // Reconvolved trace — the solver always operates on the baseline-subtracted
+  // working trace, so result.baseline is ~0. Use it directly.
   const reconvolvedTrace = createMemo((): Float32Array | null => {
     const result = effectiveResult();
     if (!result) return null;
@@ -188,21 +196,13 @@ export function TraceInspector(): JSX.Element {
     const tauD = effectiveTauDecay();
     const fs = samplingRate();
     if (tauR == null || tauD == null || !fs) return null;
-    const filterActive = hpFilterEnabled() || lpFilterEnabled();
-    const baseline = filterActive ? 0 : result.baseline;
-    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, baseline);
+    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, result.baseline);
   });
 
   // Filtered trace from solver (only present when HP/LP filtering is active)
   const filteredTrace = createMemo(
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
-
-  // Auto-show/hide filtered trace based on filter state
-  createEffect(() => {
-    const filterActive = hpFilterEnabled() || lpFilterEnabled();
-    setShowFiltered(filterActive);
-  });
 
   // Zoom window state
   const totalDuration = createMemo(() => {
@@ -252,35 +252,11 @@ export function TraceInspector(): JSX.Element {
     return { rawMin, rawMax };
   });
 
-  const deconvMinMax = createMemo<[number, number]>(() => {
-    const result = effectiveResult();
-    if (!result || result.sCounts.length === 0) return [0, 1];
-    let dMin = Infinity;
-    let dMax = -Infinity;
-    for (let i = 0; i < result.sCounts.length; i++) {
-      if (result.sCounts[i] < dMin) dMin = result.sCounts[i];
-      if (result.sCounts[i] > dMax) dMax = result.sCounts[i];
-    }
-    return [dMin, dMax];
-  });
-
   const gtTraces = createMemo(() => {
     if (!gtVisible()) return null;
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
     return getGroundTruthForCell(cellIdx);
-  });
-
-  const gtSpikesMinMax = createMemo<[number, number]>(() => {
-    const gt = gtTraces();
-    if (!gt) return [0, 1];
-    let mn = Infinity;
-    let mx = -Infinity;
-    for (let i = 0; i < gt.spikes.length; i++) {
-      if (gt.spikes[i] < mn) mn = gt.spikes[i];
-      if (gt.spikes[i] > mx) mx = gt.spikes[i];
-    }
-    return mn < mx ? [mn, mx] : [0, 1];
   });
 
   const globalYRange = createMemo<[number, number]>(() => {
@@ -290,17 +266,11 @@ export function TraceInspector(): JSX.Element {
     return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
-  const scaleToDeconvBand = (
-    values: number[],
-    minMax: [number, number],
-    yMin: number,
-    yMax: number,
-  ): number[] => {
-    const [dMin, dMax] = minMax;
-    const dRange = dMax - dMin || 1;
+  const scaleToDeconvBand = (values: number[], yMin: number, yMax: number): number[] => {
+    const dMax = upsampleFactor();
     const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
     return values.map((v) => {
-      const norm = (v - dMin) / dRange;
+      const norm = Math.min(v / dMax, 1);
       return deconvBottom + norm * deconvHeight;
     });
   };
@@ -396,13 +366,14 @@ export function TraceInspector(): JSX.Element {
     if (result && result.sCounts.length >= endSample) {
       const deconvSlice = result.sCounts.subarray(startSample, endSample);
       const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, DOWNSAMPLE_BUCKETS);
-      dsDeconv = scaleToDeconvBand(dsDeconvRaw, deconvMinMax(), rawMin, rawMax);
+      dsDeconv = scaleToDeconvBand(dsDeconvRaw, rawMin, rawMax);
     } else {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
 
-    // Residual — computed from raw values (raw - fit)
-    const dsResid = computeResiduals(dsRaw, dsFit, rawMin, rawMax, dsX.length);
+    // Residual — compute against the working trace (what the solver actually fit)
+    const residSource = isFiltered ? (dsFiltered as number[]) : dsRaw;
+    const dsResid = computeResiduals(residSource, dsFit, rawMin, rawMax, dsX.length);
 
     // Ground truth traces
     const gt = gtTraces();
@@ -416,7 +387,7 @@ export function TraceInspector(): JSX.Element {
 
       const gtSpkSlice = gt.spikes.subarray(startSample, endSample);
       const [, dsGTSpkRaw] = downsampleMinMax(x, gtSpkSlice, DOWNSAMPLE_BUCKETS);
-      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, gtSpikesMinMax(), rawMin, rawMax);
+      dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, rawMin, rawMax);
     } else {
       dsGTCalcium = new Array(dsX.length).fill(null) as number[];
       dsGTSpikes = new Array(dsX.length).fill(null) as number[];

@@ -189,12 +189,7 @@ pub fn estimate_free_kernel(
 }
 
 /// Convolve spike trains with kernel h: output[t] = sum_k h[k] * s[t-k].
-fn convolve_spikes_kernel(
-    spikes: &[f32],
-    trace_lengths: &[usize],
-    h: &[f32],
-    output: &mut [f32],
-) {
+fn convolve_spikes_kernel(spikes: &[f32], trace_lengths: &[usize], h: &[f32], output: &mut [f32]) {
     let k_len = h.len();
     let mut offset = 0;
     for &len in trace_lengths {
@@ -315,17 +310,8 @@ mod tests {
         let trace = vec![1.0_f32; 100];
         let spikes = vec![0.0_f32; 100];
         // With no spikes, the kernel should stay at zero (non-negative constraint)
-        let kernel = estimate_free_kernel(
-            &trace,
-            &spikes,
-            &[1.0],
-            &[0.0],
-            &[100],
-            20,
-            100,
-            1e-4,
-            None,
-        );
+        let kernel =
+            estimate_free_kernel(&trace, &spikes, &[1.0], &[0.0], &[100], 20, 100, 1e-4, None);
 
         for (i, &v) in kernel.iter().enumerate() {
             assert!(

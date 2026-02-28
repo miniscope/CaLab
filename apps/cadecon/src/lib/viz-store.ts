@@ -10,7 +10,7 @@ const [inspectedCellIndex, setInspectedCellIndex] = createSignal<number | null>(
 
 // Series visibility toggles
 const [showRaw, setShowRaw] = createSignal(true);
-const [showFiltered, setShowFiltered] = createSignal(false);
+const [showFiltered, setShowFiltered] = createSignal(true);
 const [showFit, setShowFit] = createSignal(true);
 const [showDeconv, setShowDeconv] = createSignal(true);
 const [showResidual, setShowResidual] = createSignal(false);

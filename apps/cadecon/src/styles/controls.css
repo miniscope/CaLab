@@ -442,6 +442,52 @@
   flex: 0 0 auto;
 }
 
+/* ========================
+   Convergence Panel (tabbed)
+   ======================== */
+.convergence-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.convergence-panel__tabs {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.convergence-panel__tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.convergence-panel__tab:hover {
+  color: var(--text-primary);
+}
+
+.convergence-panel__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.convergence-panel__content {
+  flex: 1;
+  min-height: 0;
+}
+
 .kernel-chart-wrapper {
   flex: 1;
   min-height: 0;
