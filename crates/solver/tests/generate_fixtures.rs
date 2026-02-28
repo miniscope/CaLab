@@ -50,6 +50,7 @@ fn build_trace(kernel: &[f32], n: usize, spikes: &[usize]) -> Vec<f32> {
 
 fn solve_to_convergence(solver: &mut Solver, trace: &[f32], max_batches: u32, batch_size: u32) {
     solver.set_trace(trace);
+    solver.subtract_baseline();
     for _ in 0..max_batches {
         if solver.step_batch(batch_size) {
             break;
@@ -205,12 +206,14 @@ fn generate_fixtures() {
         let trace = build_trace(&kernel, 1024, &[100, 300, 600, 800]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
 
-        // Apply filter (this modifies the trace in the solver)
+        // Apply filter (modifies the trace in the solver)
         solver.set_trace(&trace);
         solver.apply_filter();
+        // Capture filtered trace BEFORE baseline subtraction (for filter comparison test)
         let filtered_trace: Vec<f64> = solver.get_trace().iter().map(|&v| v as f64).collect();
+        solver.subtract_baseline();
 
-        // Now solve on the filtered trace
+        // Now solve on the filtered + baseline-subtracted trace
         for _ in 0..200 {
             if solver.step_batch(10) {
                 break;

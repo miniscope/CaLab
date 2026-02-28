@@ -128,6 +128,11 @@ impl PySolver {
         self.inner.apply_filter()
     }
 
+    /// Subtract rolling-percentile baseline from loaded trace.
+    fn subtract_baseline(&mut self) {
+        self.inner.subtract_baseline();
+    }
+
     /// Convenience: set both HP and LP filter together.
     fn set_filter_enabled(&mut self, enabled: bool) {
         self.inner.set_filter_enabled(enabled);
@@ -232,6 +237,8 @@ fn deconvolve_single<'py>(
         solver.apply_filter();
     }
 
+    solver.subtract_baseline();
+
     run_to_convergence(&mut solver, max_iters);
 
     Ok((
@@ -296,6 +303,8 @@ fn deconvolve_batch<'py>(
         if hp_enabled || lp_enabled {
             solver.apply_filter();
         }
+
+        solver.subtract_baseline();
 
         run_to_convergence(&mut solver, max_iters);
 

@@ -367,6 +367,17 @@ export class Solver {
         const ret = wasm.solver_step_batch(this.__wbg_ptr, n_steps);
         return ret !== 0;
     }
+    /**
+     * Subtract a rolling-percentile baseline from the active trace.
+     *
+     * Brings the trace floor to ~0, removing slow baseline drift while
+     * preserving positive-going calcium transients. After subtraction the
+     * baseline is ~0 so FISTA baseline estimation can be skipped (same
+     * rationale as when HP removes DC).
+     */
+    subtract_baseline() {
+        wasm.solver_subtract_baseline(this.__wbg_ptr);
+    }
 }
 if (Symbol.dispose) Solver.prototype[Symbol.dispose] = Solver.prototype.free;
 

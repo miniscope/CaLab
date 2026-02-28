@@ -205,7 +205,12 @@ function dispatchKernelJobs(
         if (!r) continue;
         if (r.alpha === 0 || r.sCounts.every((v) => v === 0)) continue;
 
-        const trace = extractCellTrace(c, rect.tStart, rect.tEnd, data, isSwapped);
+        // Use the working trace (after filter + baseline subtraction) for kernel
+        // estimation — this is the domain the solver operated in. Fall back to
+        // raw only if the working trace is unavailable.
+        const trace = r.filteredTrace
+          ? r.filteredTrace
+          : extractCellTrace(c, rect.tStart, rect.tEnd, data, isSwapped);
         tracesFlat.push(...trace);
         spikesFlat.push(...r.sCounts);
         traceLengths.push(trace.length);

@@ -48,7 +48,7 @@ import {
   setShowGTSpikes,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { hpFilterEnabled, lpFilterEnabled, upsampleFactor } from '../../lib/algorithm-store.ts';
+import { upsampleFactor } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createGroundTruthCalciumSeries,
@@ -187,10 +187,8 @@ export function TraceInspector(): JSX.Element {
     return trace;
   });
 
-  // Reconvolved trace — when HP/LP filtering is active, the solver operates on
-  // the filtered trace (DC removed) and the threshold-search baseline captures
-  // a small residual offset. Drop that baseline so the fit overlays the filtered
-  // trace rather than sitting above it.
+  // Reconvolved trace — the solver always operates on the baseline-subtracted
+  // working trace, so result.baseline is ~0. Use it directly.
   const reconvolvedTrace = createMemo((): Float32Array | null => {
     const result = effectiveResult();
     if (!result) return null;
@@ -198,9 +196,7 @@ export function TraceInspector(): JSX.Element {
     const tauD = effectiveTauDecay();
     const fs = samplingRate();
     if (tauR == null || tauD == null || !fs) return null;
-    const filterActive = hpFilterEnabled() || lpFilterEnabled();
-    const baseline = filterActive ? 0 : result.baseline;
-    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, baseline);
+    return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, result.baseline);
   });
 
   // Filtered trace from solver (only present when HP/LP filtering is active)
@@ -208,10 +204,9 @@ export function TraceInspector(): JSX.Element {
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
 
-  // Auto-show/hide filtered trace based on filter state
+  // Always show the working trace (baseline-subtracted, optionally filtered)
   createEffect(() => {
-    const filterActive = hpFilterEnabled() || lpFilterEnabled();
-    setShowFiltered(filterActive);
+    setShowFiltered(true);
   });
 
   // Zoom window state
@@ -381,8 +376,9 @@ export function TraceInspector(): JSX.Element {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
 
-    // Residual — computed from raw values (raw - fit)
-    const dsResid = computeResiduals(dsRaw, dsFit, rawMin, rawMax, dsX.length);
+    // Residual — compute against the working trace (what the solver actually fit)
+    const residSource = isFiltered ? (dsFiltered as number[]) : dsRaw;
+    const dsResid = computeResiduals(residSource, dsFit, rawMin, rawMax, dsX.length);
 
     // Ground truth traces
     const gt = gtTraces();

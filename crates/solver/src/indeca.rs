@@ -331,10 +331,10 @@ pub fn solve_trace(
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
 
-    // ── Step 1: Apply optional bandpass filter once ──────────────────────
-    // Run a throwaway FISTA just to get the filtered trace, then use it
-    // for all subsequent iterations. This avoids re-filtering each round.
-    let (working_trace_owned, filtered_for_output) = if hp_enabled || lp_enabled {
+    // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
+    // Run a throwaway FISTA just to get the filtered trace (if HP/LP), then
+    // subtract the rolling-percentile baseline so the floor is ~0.
+    let mut working_trace_owned = if hp_enabled || lp_enabled {
         let (_, filtered_up, _, _) = solve_upsampled(
             &upsampled,
             tau_r,
@@ -347,11 +347,17 @@ pub fn solve_trace(
             lp_enabled,
             Constraint::Box01,
         );
-        let ft = filtered_up.unwrap();
-        (ft.clone(), Some(ft))
+        filtered_up.unwrap()
     } else {
-        (upsampled.clone(), None)
+        upsampled.clone()
     };
+
+    // Rolling-percentile baseline subtraction: brings the floor to ~0.
+    let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
+    crate::baseline::subtract_rolling_baseline(&mut working_trace_owned, bl_window, 0.2);
+
+    // Always provide the working trace for display — it's what the solver sees.
+    let filtered_for_output = Some(working_trace_owned.clone());
     let working_trace: &[f32] = &working_trace_owned;
 
     // ── Step 2: Boundary padding + initial alpha estimate ───────────────
