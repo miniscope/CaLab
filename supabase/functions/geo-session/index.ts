@@ -13,7 +13,7 @@ const jsonHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
 
 interface SessionPayload {
   anonymous_id: string;
-  app_name: 'catune' | 'carank';
+  app_name: 'catune' | 'carank' | 'cadecon';
   app_version?: string;
   screen_width?: number;
   screen_height?: number;

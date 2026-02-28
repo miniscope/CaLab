@@ -4,6 +4,7 @@ import {
   fetchSessions,
   fetchEvents,
   fetchSubmissions,
+  fetchCadeconSubmissions,
   computeGeoBreakdown,
   computeEventBreakdown,
   computeWeeklySessions,
@@ -14,6 +15,7 @@ export function ExportPanel(): JSX.Element {
   const [sessions] = createResource(dateRange, fetchSessions);
   const [events] = createResource(dateRange, fetchEvents);
   const [submissions] = createResource(dateRange, fetchSubmissions);
+  const [cadeconSubmissions] = createResource(dateRange, fetchCadeconSubmissions);
 
   const filenameSuffix = () => `${dateRange().start}_to_${dateRange().end}`;
 
@@ -44,20 +46,74 @@ export function ExportPanel(): JSX.Element {
     downloadCSV(csv, `calab-geography-${filenameSuffix()}.csv`);
   };
 
-  const exportSubmissions = () => {
+  const exportCatuneSubmissions = () => {
     const subs = submissions() ?? [];
     const csv = toCSV(
-      ['Date', 'Indicator', 'Species', 'Brain Region', 'Source', 'Version'],
+      [
+        'Date',
+        'Indicator',
+        'Species',
+        'Brain Region',
+        'Source',
+        'Tau Rise',
+        'Tau Decay',
+        'Lambda',
+        'Samp. Rate',
+        'Version',
+      ],
       subs.map((s) => [
         s.created_at,
         s.indicator,
         s.species,
         s.brain_region,
         s.data_source,
+        s.tau_rise,
+        s.tau_decay,
+        s.lambda,
+        s.sampling_rate,
         s.app_version ?? '',
       ]),
     );
-    downloadCSV(csv, `calab-submissions-${filenameSuffix()}.csv`);
+    downloadCSV(csv, `calab-catune-submissions-${filenameSuffix()}.csv`);
+  };
+
+  const exportCadeconSubmissions = () => {
+    const subs = cadeconSubmissions() ?? [];
+    const csv = toCSV(
+      [
+        'Date',
+        'Indicator',
+        'Species',
+        'Brain Region',
+        'Source',
+        'Tau Rise',
+        'Tau Decay',
+        'Samp. Rate',
+        'Med. Alpha',
+        'Med. PVE',
+        'Event Rate',
+        'Iterations',
+        'Converged',
+        'Version',
+      ],
+      subs.map((s) => [
+        s.created_at,
+        s.indicator,
+        s.species,
+        s.brain_region,
+        s.data_source,
+        s.tau_rise,
+        s.tau_decay,
+        s.sampling_rate,
+        s.median_alpha ?? '',
+        s.median_pve ?? '',
+        s.mean_event_rate ?? '',
+        s.num_iterations,
+        s.converged,
+        s.app_version ?? '',
+      ]),
+    );
+    downloadCSV(csv, `calab-cadecon-submissions-${filenameSuffix()}.csv`);
   };
 
   return (
@@ -77,8 +133,11 @@ export function ExportPanel(): JSX.Element {
         <button class="btn-secondary" onClick={exportGeography}>
           Geographic Breakdown
         </button>
-        <button class="btn-secondary" onClick={exportSubmissions}>
-          Submissions List
+        <button class="btn-secondary" onClick={exportCatuneSubmissions}>
+          CaTune Submissions
+        </button>
+        <button class="btn-secondary" onClick={exportCadeconSubmissions}>
+          CaDecon Submissions
         </button>
       </div>
     </div>

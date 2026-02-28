@@ -37,6 +37,25 @@ export interface SubmissionRow {
   sampling_rate: number;
 }
 
+export interface CadeconSubmissionRow {
+  id: string;
+  created_at: string;
+  user_id: string;
+  indicator: string;
+  species: string;
+  brain_region: string;
+  data_source: string;
+  app_version: string;
+  tau_rise: number;
+  tau_decay: number;
+  sampling_rate: number;
+  median_alpha: number | null;
+  median_pve: number | null;
+  mean_event_rate: number | null;
+  num_iterations: number;
+  converged: boolean;
+}
+
 export interface AdminMetrics {
   totalSessions: number;
   uniqueUsers: number;

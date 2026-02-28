@@ -4,6 +4,7 @@ import { DataTable } from './DataTable.tsx';
 import {
   fetchSessions,
   fetchSubmissions,
+  fetchCadeconSubmissions,
   computeMetrics,
   computeSourceBreakdown,
 } from '../lib/analytics-queries.ts';
@@ -11,10 +12,16 @@ import { dateRange } from '../lib/admin-store.ts';
 
 export function OverviewView(): JSX.Element {
   const [sessions] = createResource(dateRange, fetchSessions);
-  const [submissions] = createResource(dateRange, fetchSubmissions);
+  const [catuneSubmissions] = createResource(dateRange, fetchSubmissions);
+  const [cadeconSubmissions] = createResource(dateRange, fetchCadeconSubmissions);
 
-  const metrics = createMemo(() => computeMetrics(sessions() ?? [], submissions() ?? []));
-  const sourceBreakdown = createMemo(() => computeSourceBreakdown(submissions() ?? []));
+  const allSubmissions = createMemo(() => [
+    ...(catuneSubmissions() ?? []),
+    ...(cadeconSubmissions() ?? []),
+  ]);
+
+  const metrics = createMemo(() => computeMetrics(sessions() ?? [], allSubmissions()));
+  const sourceBreakdown = createMemo(() => computeSourceBreakdown(allSubmissions()));
 
   return (
     <div class="view">
@@ -24,6 +31,8 @@ export function OverviewView(): JSX.Element {
         <MetricCard label="Unique Users" value={metrics().uniqueUsers} />
         <MetricCard label="Anonymous Sessions" value={metrics().anonymousSessions} />
         <MetricCard label="Community Submissions" value={metrics().totalSubmissions} />
+        <MetricCard label="CaTune Submissions" value={(catuneSubmissions() ?? []).length} />
+        <MetricCard label="CaDecon Submissions" value={(cadeconSubmissions() ?? []).length} />
         <MetricCard label="Avg Session Duration" value={metrics().avgDurationMinutes} />
         <MetricCard label="Top Referrer" value={metrics().topReferrer} />
       </div>
