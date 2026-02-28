@@ -1,4 +1,4 @@
-/* 3-row visualization grid */
+/* 2-row visualization grid */
 
 .viz-grid {
   display: flex;
@@ -24,11 +24,6 @@
   min-height: 180px;
 }
 
-.viz-grid__row--bottom {
-  flex: 0 0 auto;
-  min-height: 130px;
-}
-
 /* Column sizing within rows */
 .viz-grid__col--raster {
   flex: 6 1 0;
@@ -50,17 +45,6 @@
   min-width: 0;
 }
 
-/* Distribution card row */
-.viz-grid__distributions {
-  display: flex;
-  gap: var(--space-sm, 8px);
-}
-
-.viz-grid__distributions > * {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
 /* Responsive: stack columns at narrow widths */
 @media (max-width: 900px) {
   .viz-grid__row {
@@ -69,14 +53,5 @@
 
   .viz-grid__col--kernel {
     flex: 0 0 auto;
-  }
-
-  .viz-grid__distributions {
-    flex-wrap: wrap;
-  }
-
-  .viz-grid__distributions > * {
-    flex: 1 1 calc(50% - 4px);
-    min-width: 120px;
   }
 }

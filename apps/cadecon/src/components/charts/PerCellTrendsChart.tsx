@@ -28,8 +28,8 @@ import {
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
-const IQR_FILL = 'rgba(31, 119, 180, 0.08)';
-const Q_COLOR = 'rgba(31, 119, 180, 0.3)';
+const IQR_FILL = 'rgba(31, 119, 180, 0.18)';
+const Q_COLOR = 'rgba(31, 119, 180, 0.4)';
 
 export interface TrendsData {
   iterations: number[];
@@ -263,7 +263,10 @@ export interface PerCellTrendsChartProps {
 export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element {
   const [uplotRef, setUplotRef] = createSignal<uPlot | null>(null);
 
-  const trendsData = createMemo(() => deriveTrendsData(iterationHistory(), props.accessor));
+  const trendsData = createMemo(() => {
+    const history = iterationHistory().filter((h) => h.iteration > 0);
+    return deriveTrendsData(history, props.accessor);
+  });
 
   // Redraw when overlay state changes
   createEffect(() => {
@@ -287,8 +290,8 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
       width: 2,
       points: { show: true, size: 5 },
     },
-    { label: 'Q25', stroke: Q_COLOR, width: 1, dash: [4, 2], show: false },
-    { label: 'Q75', stroke: Q_COLOR, width: 1, dash: [4, 2], show: false },
+    { label: 'Q25', stroke: Q_COLOR, width: 1, dash: [4, 2] },
+    { label: 'Q75', stroke: Q_COLOR, width: 1, dash: [4, 2] },
   ];
 
   const scales = createMemo((): uPlot.Scales => {
@@ -308,6 +311,8 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
       label: 'Iteration',
       labelSize: 10,
       labelFont: '10px sans-serif',
+      values: (_u: uPlot, splits: number[]) =>
+        splits.map((v) => (Number.isInteger(v) ? String(v) : '')),
     },
     {
       stroke: AXIS_TEXT,
@@ -333,7 +338,7 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
 
   return (
     <Show
-      when={iterationHistory().length > 0}
+      when={trendsData().iterations.length > 0}
       fallback={
         <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
           <span>{props.emptyMessage}</span>

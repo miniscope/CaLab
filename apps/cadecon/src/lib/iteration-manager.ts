@@ -295,6 +295,18 @@ export async function startRun(): Promise<void> {
   let prevTraceCounts: Map<number, Float32Array> | undefined;
   let prevKernels: Float32Array[] | undefined;
 
+  // Best-residual tracking: remember the kernel parameters from the iteration
+  // whose bi-exponential fit residual was lowest. This prevents the rise time
+  // from collapsing toward 0 — the residual has a U-shape, so the minimum
+  // corresponds to the correct kernel even though the optimizer keeps pushing
+  // tau_rise down on subsequent iterations.
+  let bestResidual = Infinity;
+  let bestTauR = tauR;
+  let bestTauD = tauD;
+  let bestIteration = 0;
+  const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
+  let residualIncreaseCount = 0;
+
   // Iteration 0: record initial kernel state and alpha=1 baseline
   addConvergenceSnapshot({
     iteration: 0,
@@ -518,7 +530,35 @@ export async function startRun(): Promise<void> {
       })),
     });
 
-    // Step 4: Convergence check
+    // Step 4: Best-residual tracking & early stop
+    //
+    // TODO: The current stopping criterion uses the bi-exponential fit residual
+    // (||h_free - β·template||²), which measures kernel shape mismatch. This
+    // doesn't always work — it can be noisy or non-monotonic depending on the
+    // data. A more robust approach would use the trace-reconstruction residual
+    // (||y - α·(K*s) - b||² across cells), which directly measures how well
+    // the model explains the data. That's more expensive to compute but would
+    // be a stronger signal for when the kernel has overshot.
+    //
+    if (medResidual < bestResidual) {
+      bestResidual = medResidual;
+      bestTauR = tauR;
+      bestTauD = tauD;
+      bestIteration = iter + 1;
+      residualIncreaseCount = 0;
+    } else {
+      residualIncreaseCount++;
+    }
+
+    // Early stop: if residual has risen for RESIDUAL_PATIENCE consecutive
+    // iterations, the optimizer has overshot. The post-loop revert below will
+    // restore the best-residual kernel parameters before finalization.
+    if (residualIncreaseCount >= RESIDUAL_PATIENCE) {
+      setConvergedAtIteration(bestIteration);
+      break;
+    }
+
+    // Step 5: Convergence check (relative change in tau values)
     const relChangeTauR = Math.abs(tauR - prevTauR) / (prevTauR + 1e-20);
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
     const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
@@ -526,6 +566,16 @@ export async function startRun(): Promise<void> {
       setConvergedAtIteration(iter + 1);
       break;
     }
+  }
+
+  // Use the best-residual kernel for finalization. If the loop ran to maxIter
+  // without early-stopping, the current tauR/tauD may have overshot. Revert to
+  // the iteration that produced the lowest bi-exponential fit residual.
+  if (bestResidual < Infinity) {
+    tauR = bestTauR;
+    tauD = bestTauD;
+    setCurrentTauRise(tauR);
+    setCurrentTauDecay(tauD);
   }
 
   // Finalization: re-run trace inference on ALL cells with converged kernel

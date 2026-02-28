@@ -3,8 +3,14 @@ import { samplingRate } from './data-store.ts';
 
 // --- Algorithm parameter signals ---
 
-const [tauRiseInit, setTauRiseInit] = createSignal(0.1);
-const [tauDecayInit, setTauDecayInit] = createSignal(0.6);
+// Initial kernel time constants (seconds). These MUST start at or above the
+// true values. The iterative solver can only refine time constants downward —
+// a too-fast kernel is compensated by placing extra spikes, so the free-form
+// kernel never receives an error signal pushing it slower. Starting from
+// conservatively slow values ensures the optimizer passes through the optimum
+// on the way down, where best-residual tracking (iteration-manager.ts) catches it.
+const [tauRiseInit, setTauRiseInit] = createSignal(0.2);
+const [tauDecayInit, setTauDecayInit] = createSignal(1.0);
 const [upsampleTarget, setUpsampleTarget] = createSignal(300);
 const [weightingEnabled, setWeightingEnabled] = createSignal(false);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
