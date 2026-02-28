@@ -49,7 +49,9 @@ pub fn solve_bounded(
 ) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
     let upsampled = upsample_trace(trace, upsample_factor);
     let fs_up = fs * upsample_factor as f64;
+    let mut solver = Solver::new();
     solve_upsampled(
+        &mut solver,
         &upsampled, tau_r, tau_d, fs_up, max_iters, tol, warm_start, hp_enabled, lp_enabled,
         Constraint::Box01, false,
     )
@@ -58,11 +60,14 @@ pub fn solve_bounded(
 /// Inner FISTA solver operating on an already-upsampled trace.
 ///
 /// Called by `solve_bounded` (public API) and by `solve_trace` (scale iteration).
+/// Accepts `solver` by mutable reference so callers can reuse a single allocation
+/// across multiple calls (`set_trace` resets all state; buffers grow but never shrink).
 ///
 /// `baseline_subtracted`: when true, the trace has already had its baseline
 /// removed externally (via rolling-percentile subtraction), so FISTA should
 /// skip its internal baseline estimation (sets `solver.filtered = true`).
 fn solve_upsampled(
+    solver: &mut Solver,
     upsampled: &[f32],
     tau_r: f64,
     tau_d: f64,
@@ -75,7 +80,6 @@ fn solve_upsampled(
     constraint: Constraint,
     baseline_subtracted: bool,
 ) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
-    let mut solver = Solver::new();
     solver.set_params(tau_r, tau_d, 0.0, fs_up);
     solver.set_conv_mode(ConvMode::BandedAR2);
     solver.set_constraint(constraint);
@@ -189,11 +193,16 @@ pub fn solve_trace(
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
 
+    // Single solver allocation reused across all solve_upsampled calls.
+    // set_trace() resets all state; buffers grow but never shrink.
+    let mut solver = Solver::new();
+
     // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
     // Run a throwaway FISTA just to get the filtered trace (if HP/LP), then
     // subtract the rolling-percentile baseline so the floor is ~0.
     let mut working_trace = if hp_enabled || lp_enabled {
         let (_, filtered_up, _, _) = solve_upsampled(
+            &mut solver,
             &upsampled,
             tau_r,
             tau_d,
@@ -214,9 +223,6 @@ pub fn solve_trace(
     // Rolling-percentile baseline subtraction: brings the floor to ~0.
     let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
     crate::baseline::subtract_rolling_baseline(&mut working_trace, bl_window, 0.2);
-
-    // Always provide the working trace for display — it's what the solver sees.
-    let filtered_for_output = Some(working_trace.clone());
 
     // ── Step 2: Boundary padding + initial alpha estimate ───────────────
     // Compute boundary padding: edge effects from AR2 convolution make the first
@@ -245,11 +251,17 @@ pub fn solve_trace(
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
 
+    // Pre-allocate scratch buffers reused across scale iterations.
+    let wt_len = working_trace.len();
+    let mut scaled = vec![0.0_f32; wt_len];
+    let mut s_normalized = vec![0.0_f32; wt_len];
+
     for scale_iter in 0..MAX_SCALE_ITERS {
-        let scaled: Vec<f32> = working_trace
-            .iter()
-            .map(|&v| v / alpha_est as f32)
-            .collect();
+        // Fill scaled buffer in-place (multiply by reciprocal instead of dividing).
+        let inv_alpha = 1.0 / alpha_est as f32;
+        for i in 0..wt_len {
+            scaled[i] = working_trace[i] * inv_alpha;
+        }
 
         // Use warm-start from user on first iteration only;
         // subsequent iterations start fresh with the refined prescale.
@@ -260,6 +272,7 @@ pub fn solve_trace(
         };
 
         let (s_relaxed, _, iterations, converged) = solve_upsampled(
+            &mut solver,
             &scaled,
             tau_r,
             tau_d,
@@ -277,11 +290,15 @@ pub fn solve_trace(
         // Use the interior peak only (excluding boundary padding) so that edge
         // artifacts from trace subsets starting mid-transient don't dominate.
         let s_peak = interior_peak(&s_relaxed, pad);
-        let s_normalized: Vec<f32> = if s_peak > 1e-10 {
-            s_relaxed.iter().map(|&v| v / s_peak).collect()
+        if s_peak > 1e-10 {
+            let inv_peak = 1.0 / s_peak;
+            for i in 0..s_relaxed.len() {
+                s_normalized[i] = s_relaxed[i] * inv_peak;
+            }
         } else {
-            s_relaxed.clone()
-        };
+            s_normalized[..s_relaxed.len()].copy_from_slice(&s_relaxed);
+        }
+        let s_norm_slice = &s_normalized[..s_relaxed.len()];
 
         // Threshold search fits binarized spikes against the ORIGINAL trace.
         let ThresholdResult {
@@ -292,7 +309,7 @@ pub fn solve_trace(
             pve,
             ..
         } = threshold_search(
-            &s_normalized,
+            s_norm_slice,
             &working_trace,
             &banded,
             tau_d,
@@ -332,14 +349,15 @@ pub fn solve_trace(
     let (s_binary, alpha, baseline, threshold, pve, iterations, converged) =
         best_result.unwrap_or_else(|| {
             // Fallback: no valid result found (shouldn't happen)
-            (vec![0.0; working_trace.len()], 0.0, 0.0, 0.0, 0.0, 0, false)
+            (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
         });
 
     // Downsample binary spike train to original rate
     let s_counts = downsample_binary(&s_binary, upsample_factor);
 
-    // Downsample filtered trace to original rate (already in original units).
-    let filtered_trace = filtered_for_output.map(|ft| downsample_average(&ft, upsample_factor));
+    // Downsample filtered trace to original rate directly from working_trace
+    // (working_trace is not modified after baseline subtraction).
+    let filtered_trace = Some(downsample_average(&working_trace, upsample_factor));
 
     InDecaResult {
         s_counts,

@@ -6,8 +6,8 @@
 /// percentile (default q=0.2) tracks the floor of the signal, bringing the
 /// baseline to ~0 while preserving transients.
 ///
-/// Algorithm matches InDeCa's `compute_dff`: causal window of length
-/// `5 * ceil(5 * tau_d * fs)`, 20th percentile via partial sort.
+/// Uses a coordinate-compressed Fenwick tree (Binary Indexed Tree) for
+/// O(N log M) sliding-window k-th element queries, where M = distinct values.
 
 /// Compute the rolling-baseline window size in samples.
 ///
@@ -18,30 +18,122 @@ pub fn baseline_window(tau_d: f64, fs: f64) -> usize {
     5 * kernel_len.max(1)
 }
 
+/// Wrapper for f32 that provides total ordering (NaN sorts last).
+#[derive(Clone, Copy)]
+struct OrderedF32(f32);
+
+impl PartialEq for OrderedF32 {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for OrderedF32 {}
+
+impl PartialOrd for OrderedF32 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedF32 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// Fenwick tree (Binary Indexed Tree) supporting point updates and prefix sums.
+/// Used for O(log M) k-th element queries via binary lifting.
+struct FenwickTree {
+    tree: Vec<i32>,
+}
+
+impl FenwickTree {
+    fn new(size: usize) -> Self {
+        FenwickTree {
+            tree: vec![0; size + 1], // 1-indexed
+        }
+    }
+
+    /// Add `delta` to position `i` (0-indexed).
+    fn update(&mut self, mut i: usize, delta: i32) {
+        i += 1; // convert to 1-indexed
+        while i < self.tree.len() {
+            self.tree[i] += delta;
+            i += i & i.wrapping_neg(); // i += lowbit(i)
+        }
+    }
+
+    /// Find the 0-indexed position of the k-th element (1-based k).
+    /// Uses binary lifting: O(log M) time.
+    fn kth(&self, mut k: i32) -> usize {
+        let n = self.tree.len() - 1; // max 0-indexed position + 1
+        let mut pos = 0;
+        // Find highest power of 2 <= n
+        let mut bit = 1;
+        while bit <= n {
+            bit <<= 1;
+        }
+        bit >>= 1;
+
+        while bit > 0 {
+            let next = pos + bit;
+            if next <= n && self.tree[next] < k {
+                k -= self.tree[next];
+                pos = next;
+            }
+            bit >>= 1;
+        }
+        pos // 0-indexed coordinate
+    }
+}
+
 /// Subtract a rolling-percentile baseline from `trace` in place.
 ///
 /// For each position `t`, the baseline is the `quantile`-th value of
 /// `trace[max(0, t-window+1)..=t]` (causal window, min_periods=1 at edges).
-/// O(n * w) via partial sort — fast enough for one-time preprocessing.
+/// O(N log M) via coordinate-compressed Fenwick tree, where M = distinct values.
 pub fn subtract_rolling_baseline(trace: &mut [f32], window: usize, quantile: f64) {
     let n = trace.len();
     if n == 0 || window == 0 {
         return;
     }
 
-    // Pre-compute all baseline values before modifying the trace.
+    // Coordinate compression: sort + dedup trace values, assign indices via binary search.
+    let mut sorted_vals: Vec<OrderedF32> = trace.iter().map(|&v| OrderedF32(v)).collect();
+    sorted_vals.sort_unstable();
+    sorted_vals.dedup();
+    let m = sorted_vals.len();
+
+    // Map from value to compressed index via binary search.
+    let compress = |v: f32| -> usize {
+        sorted_vals
+            .binary_search(&OrderedF32(v))
+            .unwrap()
+    };
+
+    let mut fenwick = FenwickTree::new(m);
     let mut baselines = Vec::with_capacity(n);
-    let mut buf = Vec::with_capacity(window);
 
     for t in 0..n {
-        let start = t.saturating_sub(window - 1);
-        buf.clear();
-        buf.extend_from_slice(&trace[start..=t]);
-        let k = ((buf.len() as f64 - 1.0) * quantile).round() as usize;
-        let k = k.min(buf.len() - 1);
-        // Partial sort: move the k-th smallest element to position k.
-        buf.select_nth_unstable_by(k, |a, b| a.partial_cmp(b).unwrap());
-        baselines.push(buf[k]);
+        // Add the new element entering the window.
+        let ci = compress(trace[t]);
+        fenwick.update(ci, 1);
+
+        // Remove the element leaving the window.
+        if t >= window {
+            let old_ci = compress(trace[t - window]);
+            fenwick.update(old_ci, -1);
+        }
+
+        // Current window size.
+        let win_size = (t + 1).min(window);
+        // k-th index (0-based rank), matching the original: ((win_size - 1) * quantile).round()
+        let k = ((win_size as f64 - 1.0) * quantile).round() as usize;
+        let k = k.min(win_size - 1);
+
+        // Find the (k+1)-th smallest element (Fenwick kth uses 1-based k).
+        let coord = fenwick.kth((k + 1) as i32);
+        baselines.push(sorted_vals[coord].0);
     }
 
     for (v, &b) in trace.iter_mut().zip(baselines.iter()) {
@@ -128,5 +220,85 @@ mod tests {
         // should be positive (since the floor is below the mean) but bounded
         assert!(mean > 0.0, "Mean should be positive, got {}", mean);
         assert!(mean < 10.0, "Mean should be bounded, got {}", mean);
+    }
+
+    /// Reference implementation (the old O(N*W) algorithm) for cross-validation.
+    fn subtract_rolling_baseline_reference(trace: &mut [f32], window: usize, quantile: f64) {
+        let n = trace.len();
+        if n == 0 || window == 0 {
+            return;
+        }
+        let mut baselines = Vec::with_capacity(n);
+        let mut buf = Vec::with_capacity(window);
+        for t in 0..n {
+            let start = t.saturating_sub(window - 1);
+            buf.clear();
+            buf.extend_from_slice(&trace[start..=t]);
+            let k = ((buf.len() as f64 - 1.0) * quantile).round() as usize;
+            let k = k.min(buf.len() - 1);
+            buf.select_nth_unstable_by(k, |a, b| a.partial_cmp(b).unwrap());
+            baselines.push(buf[k]);
+        }
+        for (v, &b) in trace.iter_mut().zip(baselines.iter()) {
+            *v -= b;
+        }
+    }
+
+    /// Fenwick tree produces identical results to the reference partial-sort algorithm.
+    #[test]
+    fn fenwick_matches_reference_random() {
+        // Deterministic pseudo-random sequence (simple LCG)
+        let n = 2000;
+        let window = 300;
+        let quantile = 0.2;
+        let mut rng_state = 42u64;
+        let mut trace: Vec<f32> = (0..n)
+            .map(|_| {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((rng_state >> 33) as f32) / (u32::MAX as f32 / 2.0) - 0.5
+            })
+            .collect();
+
+        let mut trace_ref = trace.clone();
+        subtract_rolling_baseline(&mut trace, window, quantile);
+        subtract_rolling_baseline_reference(&mut trace_ref, window, quantile);
+
+        for i in 0..n {
+            assert!(
+                (trace[i] - trace_ref[i]).abs() < 1e-6,
+                "Mismatch at index {}: fenwick={} ref={} diff={}",
+                i,
+                trace[i],
+                trace_ref[i],
+                (trace[i] - trace_ref[i]).abs()
+            );
+        }
+    }
+
+    /// Cross-validate on a trace with repeated values (tests dedup handling).
+    #[test]
+    fn fenwick_matches_reference_repeated_values() {
+        let mut trace = vec![1.0_f32; 100];
+        // Insert some different values
+        for i in (0..100).step_by(5) {
+            trace[i] = 0.0;
+        }
+        for i in (3..100).step_by(7) {
+            trace[i] = 2.0;
+        }
+
+        let mut trace_ref = trace.clone();
+        subtract_rolling_baseline(&mut trace, 20, 0.2);
+        subtract_rolling_baseline_reference(&mut trace_ref, 20, 0.2);
+
+        for i in 0..trace.len() {
+            assert!(
+                (trace[i] - trace_ref[i]).abs() < 1e-6,
+                "Mismatch at index {}: fenwick={} ref={}",
+                i,
+                trace[i],
+                trace_ref[i]
+            );
+        }
     }
 }
