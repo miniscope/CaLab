@@ -9,7 +9,7 @@ const [upsampleTarget, setUpsampleTarget] = createSignal(300);
 const [weightingEnabled, setWeightingEnabled] = createSignal(false);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);
-const [maxIterations, setMaxIterations] = createSignal(10);
+const [maxIterations, setMaxIterations] = createSignal(20);
 const [convergenceTol, setConvergenceTol] = createSignal(0.01);
 
 // --- Derived ---

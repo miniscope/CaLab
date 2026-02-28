@@ -98,8 +98,8 @@ function loadDemoData(opts?: {
   seed?: number | 'random';
 }): void {
   const fs = opts?.fps ?? 30;
-  const cellCount = opts?.numCells ?? 20;
-  const durationMin = opts?.durationMinutes ?? 5;
+  const cellCount = opts?.numCells ?? 100;
+  const durationMin = opts?.durationMinutes ?? 15;
   const timepointCount = Math.round(durationMin * 60 * fs);
 
   const preset = getPresetById(opts?.presetId ?? DEFAULT_PRESET_ID);

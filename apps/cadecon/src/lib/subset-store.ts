@@ -15,7 +15,7 @@ export interface SubsetRectangle {
 // --- Config Signals ---
 
 const [numSubsets, setNumSubsets] = createSignal(resolveWorkerCount());
-const [targetCoverage, setTargetCoverage] = createSignal(0.5);
+const [targetCoverage, setTargetCoverage] = createSignal(0.25);
 const [aspectRatio, setAspectRatio] = createSignal(1.0);
 const [seed, setSeed] = createSignal(42);
 
