@@ -8,6 +8,7 @@ import {
   durationSeconds,
   resetImport,
 } from '../../lib/data-store.ts';
+import { FeedbackMenu } from './FeedbackMenu.tsx';
 import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
 import { formatDuration } from '@calab/core';
 
@@ -54,6 +55,7 @@ export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
       }
       actions={
         <>
+          <FeedbackMenu />
           <button
             class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
             onClick={() => props.onToggleSidebar?.()}
