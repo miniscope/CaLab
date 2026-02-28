@@ -1,5 +1,6 @@
 /**
- * Tabbed panel switching between Kernel Convergence, Alpha Trends, and Threshold Trends.
+ * Tabbed panel switching between Kernel Convergence, Alpha Trends, Threshold Trends,
+ * PVE Trends, and Event Rate Trends.
  * All charts remain mounted (display toggled) to preserve uPlot state across tab switches.
  */
 
@@ -7,8 +8,10 @@ import { createSignal, type JSX } from 'solid-js';
 import { KernelConvergence } from './KernelConvergence.tsx';
 import { AlphaTrends } from './AlphaTrends.tsx';
 import { ThresholdTrends } from './ThresholdTrends.tsx';
+import { PveTrends } from './PveTrends.tsx';
+import { EventRateTrends } from './EventRateTrends.tsx';
 
-type ConvergenceTab = 'kernel' | 'alpha' | 'threshold';
+type ConvergenceTab = 'kernel' | 'alpha' | 'threshold' | 'pve' | 'event-rate';
 
 export function ConvergencePanel(): JSX.Element {
   const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('kernel');
@@ -37,6 +40,20 @@ export function ConvergencePanel(): JSX.Element {
         >
           Threshold
         </button>
+        <button
+          class="convergence-panel__tab"
+          classList={{ 'convergence-panel__tab--active': activeTab() === 'pve' }}
+          onClick={() => setActiveTab('pve')}
+        >
+          PVE
+        </button>
+        <button
+          class="convergence-panel__tab"
+          classList={{ 'convergence-panel__tab--active': activeTab() === 'event-rate' }}
+          onClick={() => setActiveTab('event-rate')}
+        >
+          Event Rate
+        </button>
       </div>
       <div
         class="convergence-panel__content"
@@ -55,6 +72,18 @@ export function ConvergencePanel(): JSX.Element {
         style={{ display: activeTab() === 'threshold' ? 'contents' : 'none' }}
       >
         <ThresholdTrends />
+      </div>
+      <div
+        class="convergence-panel__content"
+        style={{ display: activeTab() === 'pve' ? 'contents' : 'none' }}
+      >
+        <PveTrends />
+      </div>
+      <div
+        class="convergence-panel__content"
+        style={{ display: activeTab() === 'event-rate' ? 'contents' : 'none' }}
+      >
+        <EventRateTrends />
       </div>
     </div>
   );

@@ -23,11 +23,6 @@ import { ConvergencePanel } from './components/charts/ConvergencePanel.tsx';
 import { KernelDisplay } from './components/kernel/KernelDisplay.tsx';
 import { TraceInspector } from './components/traces/TraceInspector.tsx';
 import { IterationScrubber } from './components/traces/IterationScrubber.tsx';
-import { AlphaDistribution } from './components/distributions/AlphaDistribution.tsx';
-import { PVEDistribution } from './components/distributions/PVEDistribution.tsx';
-import { EventRateDistribution } from './components/distributions/EventRateDistribution.tsx';
-import { SubsetVariance } from './components/distributions/SubsetVariance.tsx';
-import { SubsetDrillDown } from './components/drilldown/SubsetDrillDown.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
 import {
@@ -38,16 +33,14 @@ import {
   loadFromBridge,
   bridgeUrl,
 } from './lib/data-store.ts';
-import { selectedSubsetIdx, setSeed } from './lib/subset-store.ts';
+import { setSeed } from './lib/subset-store.ts';
 import { isRunLocked } from './lib/iteration-store.ts';
 
 import './styles/controls.css';
 import './styles/layout.css';
-import './styles/distributions.css';
 import './styles/trace-inspector.css';
 import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
-import './styles/drilldown.css';
 import './styles/community.css';
 
 function DiceIcon(): JSX.Element {
@@ -180,23 +173,6 @@ const App: Component = () => {
                 <p class="panel-label">Trace Inspector</p>
                 <TraceInspector />
               </DashboardPanel>
-            </div>
-
-            {/* Row 3: Distribution Cards OR Subset Drill-Down */}
-            <div class="viz-grid__row viz-grid__row--bottom">
-              <Show
-                when={selectedSubsetIdx() != null}
-                fallback={
-                  <div class="viz-grid__distributions">
-                    <AlphaDistribution />
-                    <PVEDistribution />
-                    <EventRateDistribution />
-                    <SubsetVariance />
-                  </div>
-                }
-              >
-                <SubsetDrillDown />
-              </Show>
             </div>
           </div>
           <IterationScrubber />

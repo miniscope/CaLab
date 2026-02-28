@@ -25,9 +25,7 @@ const TAU_DECAY_COLOR = '#ef5350';
 const RESIDUAL_COLOR = '#9e9e9e';
 const TAU_RISE_FAINT = 'rgba(66, 165, 245, 0.3)';
 const TAU_DECAY_FAINT = 'rgba(239, 83, 80, 0.3)';
-const GT_COLOR = 'rgba(233, 30, 99, 0.8)';
-
-/** Plugin that draws horizontal dashed lines at ground truth tau_rise and tau_decay. */
+/** Plugin that draws horizontal dashed lines at ground truth tau_rise (blue) and tau_decay (red). */
 function groundTruthPlugin(): uPlot.Plugin {
   return {
     hooks: {
@@ -43,11 +41,11 @@ function groundTruthPlugin(): uPlot.Plugin {
         const width = u.bbox.width;
 
         ctx.save();
-        ctx.strokeStyle = GT_COLOR;
         ctx.lineWidth = 1.5 * dpr;
         ctx.setLineDash([6 * dpr, 4 * dpr]);
 
         if (gtTauR != null) {
+          ctx.strokeStyle = TAU_RISE_COLOR;
           const yPx = u.valToPos(gtTauR * 1000, 'y', true);
           ctx.beginPath();
           ctx.moveTo(left, yPx);
@@ -56,6 +54,7 @@ function groundTruthPlugin(): uPlot.Plugin {
         }
 
         if (gtTauD != null) {
+          ctx.strokeStyle = TAU_DECAY_COLOR;
           const yPx = u.valToPos(gtTauD * 1000, 'y', true);
           ctx.beginPath();
           ctx.moveTo(left, yPx);
