@@ -50,8 +50,8 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const stepInfo = () => STEP_LABELS[importStep()] ?? { num: 1, label: 'Load Data' };
 
   // Demo data config
-  const [demoCells, setDemoCells] = createSignal(20);
-  const [demoDuration, setDemoDuration] = createSignal(5);
+  const [demoCells, setDemoCells] = createSignal(100);
+  const [demoDuration, setDemoDuration] = createSignal(15);
   const [demoFps, setDemoFps] = createSignal(30);
   const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_PRESET_ID);
   const [useRandomSeed, setUseRandomSeed] = createSignal(false);

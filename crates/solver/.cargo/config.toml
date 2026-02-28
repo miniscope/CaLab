@@ -1,2 +1,5 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-L/home/linuxbrew/.linuxbrew/opt/glibc/lib", "-C", "link-arg=-B/home/linuxbrew/.linuxbrew/opt/glibc/lib"]
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

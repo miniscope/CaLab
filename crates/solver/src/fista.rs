@@ -28,6 +28,7 @@ impl Solver {
 
         let step_size = 1.0 / self.lipschitz_constant;
         let threshold = step_size * self.effective_lambda();
+        let tol_sq = self.tolerance * self.tolerance;
 
         for _ in 0..n_steps {
             if self.converged {
@@ -89,60 +90,55 @@ impl Solver {
 
             // 4. Loop A (fused): save x_k + proximal gradient step
             //    x_{k+1} = prox(y_k - step_size * gradient)
+            //    Constraint match hoisted outside inner loop for SIMD auto-vectorization.
             let step_f32 = step_size as f32;
             let thresh_f32 = threshold as f32;
-            for i in 0..n {
-                let x_old = self.solution[i];
-                self.residual_buf[i] = x_old; // save x_k for restart check + momentum
-                let z = self.solution_prev[i] - step_f32 * self.gradient[i];
-                self.solution[i] = match self.constraint {
-                    Constraint::NonNegative => (z - thresh_f32).max(0.0),
-                    Constraint::Box01 => z.clamp(0.0, 1.0),
-                };
+            match self.constraint {
+                Constraint::NonNegative => {
+                    for i in 0..n {
+                        let x_old = self.solution[i];
+                        self.residual_buf[i] = x_old;
+                        let z = self.solution_prev[i] - step_f32 * self.gradient[i];
+                        self.solution[i] = (z - thresh_f32).max(0.0);
+                    }
+                }
+                Constraint::Box01 => {
+                    for i in 0..n {
+                        let x_old = self.solution[i];
+                        self.residual_buf[i] = x_old;
+                        let z = self.solution_prev[i] - step_f32 * self.gradient[i];
+                        self.solution[i] = z.clamp(0.0, 1.0);
+                    }
+                }
             }
 
             self.iteration += 1;
 
-            // 5. Loop B (fused): convergence + restart accumulators
+            // 5+6. Fused Loop B+C: convergence/restart accumulators + momentum extrapolation.
+            // Compute tentative momentum BEFORE the loop (only depends on self.t_fista).
+            // On restart (rare), correct with a single copy_from_slice afterwards.
+            let t_new = (1.0 + (1.0 + 4.0 * self.t_fista * self.t_fista).sqrt()) / 2.0;
+            let momentum = ((self.t_fista - 1.0) / t_new) as f32;
+            let check_restart = self.iteration > 1;
+
             let mut diff_sq = 0.0_f64;
             let mut xk_sq = 0.0_f64;
             let mut dot = 0.0_f64;
-            if self.iteration > 1 {
-                for i in 0..n {
-                    let x_new = self.solution[i] as f64;
-                    let x_old = self.residual_buf[i] as f64;
-                    let d = x_new - x_old;
-                    diff_sq += d * d;
-                    xk_sq += x_old * x_old;
-                    let y_minus_x = self.solution_prev[i] as f64 - x_new;
-                    dot += y_minus_x * d;
-                }
-            } else {
-                for i in 0..n {
-                    let x_new = self.solution[i] as f64;
-                    let x_old = self.residual_buf[i] as f64;
-                    let d = x_new - x_old;
-                    diff_sq += d * d;
-                    xk_sq += x_old * x_old;
-                }
-            }
-            let tol_sq = self.tolerance * self.tolerance;
 
-            // Adaptive restart (speed restart heuristic): reset momentum when
-            // the extrapolation direction opposes the update direction.
-            if self.iteration > 1 && dot > 0.0 {
-                self.t_fista = 1.0;
-            }
-
-            // 6. Loop C: FISTA momentum extrapolation (needs computed momentum scalar)
-            let t_new = (1.0 + (1.0 + 4.0 * self.t_fista * self.t_fista).sqrt()) / 2.0;
-            let momentum = ((self.t_fista - 1.0) / t_new) as f32;
-
+            // Constraint match hoisted outside the inner loop for SIMD auto-vectorization.
+            // The `dot` accumulator is always computed (one fma per element) to avoid
+            // duplicating the loop body for the check_restart branch.
             match self.constraint {
                 Constraint::NonNegative => {
                     for i in 0..n {
                         let x_new = self.solution[i];
                         let x_old = self.residual_buf[i];
+                        let x_new_f64 = x_new as f64;
+                        let x_old_f64 = x_old as f64;
+                        let d = x_new_f64 - x_old_f64;
+                        diff_sq += d * d;
+                        xk_sq += x_old_f64 * x_old_f64;
+                        dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
                         self.solution_prev[i] = (x_new + momentum * (x_new - x_old)).max(0.0);
                     }
                 }
@@ -150,12 +146,28 @@ impl Solver {
                     for i in 0..n {
                         let x_new = self.solution[i];
                         let x_old = self.residual_buf[i];
+                        let x_new_f64 = x_new as f64;
+                        let x_old_f64 = x_old as f64;
+                        let d = x_new_f64 - x_old_f64;
+                        diff_sq += d * d;
+                        xk_sq += x_old_f64 * x_old_f64;
+                        dot += (self.solution_prev[i] as f64 - x_new_f64) * d;
                         self.solution_prev[i] =
                             (x_new + momentum * (x_new - x_old)).clamp(0.0, 1.0);
                     }
                 }
             }
-            self.t_fista = t_new;
+
+            // Adaptive restart: if momentum hurt progress, reset.
+            // Undo the speculative momentum by setting solution_prev = solution.
+            // This is correct because with momentum=0, y_{k+1} = x_{k+1} = solution,
+            // and solution already satisfies Box01 from the prox step.
+            if check_restart && dot > 0.0 {
+                self.t_fista = 1.0;
+                self.solution_prev[..n].copy_from_slice(&self.solution[..n]);
+            } else {
+                self.t_fista = t_new;
+            }
 
             // 7. Convergence check using primal residual (squared comparison)
             if self.iteration > 5 && diff_sq < tol_sq * (xk_sq + 1e-20) {
