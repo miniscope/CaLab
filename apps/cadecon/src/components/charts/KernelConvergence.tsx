@@ -80,7 +80,7 @@ function subsetScatterPlugin(): uPlot.Plugin {
         const dpr = devicePixelRatio;
 
         for (const snap of history) {
-          if (!snap.subsets) continue;
+          if (!snap.subsets || snap.iteration === 0) continue;
           const xPx = u.valToPos(snap.iteration, 'x', true);
 
           for (const sub of snap.subsets) {
@@ -113,7 +113,7 @@ export function KernelConvergence(): JSX.Element {
   });
 
   const chartData = createMemo((): uPlot.AlignedData => {
-    const h = convergenceHistory();
+    const h = convergenceHistory().filter((s) => s.iteration > 0);
     if (h.length === 0) return [[], [], [], []];
     return [
       h.map((s) => s.iteration),
