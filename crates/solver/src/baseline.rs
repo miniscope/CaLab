@@ -44,8 +44,8 @@ pub fn subtract_rolling_baseline(trace: &mut [f32], window: usize, quantile: f64
         baselines.push(buf[k]);
     }
 
-    for (t, &b) in baselines.iter().enumerate() {
-        trace[t] -= b;
+    for (v, &b) in trace.iter_mut().zip(baselines.iter()) {
+        *v -= b;
     }
 }
 

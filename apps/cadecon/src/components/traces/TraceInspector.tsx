@@ -159,7 +159,7 @@ export function TraceInspector(): JSX.Element {
 
   // Whether we have any result for the selected cell (used as a gate, but
   // kept separate so the expensive trace extraction below doesn't re-run
-  // every time perTraceResults updates with new iteration data).
+  // every time cellResultLookup updates with new iteration data).
   const hasResult = createMemo(() => {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return false;
@@ -203,11 +203,6 @@ export function TraceInspector(): JSX.Element {
   const filteredTrace = createMemo(
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
-
-  // Always show the working trace (baseline-subtracted, optionally filtered)
-  createEffect(() => {
-    setShowFiltered(true);
-  });
 
   // Zoom window state
   const totalDuration = createMemo(() => {

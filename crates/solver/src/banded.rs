@@ -70,8 +70,8 @@ impl BandedAR2 {
         }
 
         // Normalize by impulse peak
-        for t in 0..n {
-            output[t] *= inv_peak;
+        for v in &mut output[..n] {
+            *v *= inv_peak;
         }
     }
 
@@ -97,8 +97,8 @@ impl BandedAR2 {
         }
 
         // Normalize by impulse peak
-        for t in 0..n {
-            output[t] *= inv_peak;
+        for v in &mut output[..n] {
+            *v *= inv_peak;
         }
     }
 

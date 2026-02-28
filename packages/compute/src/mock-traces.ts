@@ -87,7 +87,7 @@ export function generateSyntheticTrace(
     }
   }
 
-  // Bin to imaging FPS: count spikes per frame, apply log-normal amplitude
+  // Bin to imaging FPS: count spikes per frame
   const spikes = new Float64Array(numTimepoints);
   for (let f = 0; f < numTimepoints; f++) {
     let count = 0;

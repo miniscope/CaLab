@@ -276,14 +276,13 @@ def test_baseline_recovery_with_dc_offset():
 
     result = run_deconvolution_full(trace, 30.0, 0.02, 0.4, 0.001)
 
-    # Rolling-percentile baseline subtraction removes the DC offset before
-    # FISTA runs, so the solver baseline should be ~0.
     assert abs(result.baseline) < 1.0, (
         f"Baseline {result.baseline} should be near 0 after baseline subtraction"
     )
-    # Spikes should still be detected (baseline subtraction preserves transients)
-    assert np.sum(result.activity > 0) >= 2, (
-        f"Should detect at least 2 spikes with DC offset, got {np.sum(result.activity > 0)}"
+    # Baseline subtraction preserves transients, so spikes should still appear
+    n_spikes = np.sum(result.activity > 0)
+    assert n_spikes >= 2, (
+        f"Should detect at least 2 spikes with DC offset, got {n_spikes}"
     )
 
 

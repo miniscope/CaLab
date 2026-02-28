@@ -88,11 +88,6 @@ const progress = createMemo(() => {
   return completedSubsetTraceJobs() / total;
 });
 
-// Distribution memos derived from perTraceResults
-const alphaValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.alpha));
-
-const pveValues = createMemo(() => Object.values(perTraceResults()).map((r) => r.pve));
-
 /** Per-cell lookup: returns the best result for a given cell (finalization preferred, else first seen). */
 const cellResultLookup = createMemo(() => {
   const results = perTraceResults();
@@ -105,6 +100,11 @@ const cellResultLookup = createMemo(() => {
   }
   return lookup;
 });
+
+// Distribution memos derived from deduplicated per-cell results
+const alphaValues = createMemo(() => [...cellResultLookup().values()].map((r) => r.alpha));
+
+const pveValues = createMemo(() => [...cellResultLookup().values()].map((r) => r.pve));
 
 const subsetVarianceData = createMemo(() => {
   const history = convergenceHistory();
@@ -182,7 +182,6 @@ export {
   setCurrentTauRise,
   currentTauDecay,
   setCurrentTauDecay,
-  perTraceResults,
   debugTraceSnapshots,
   runPhase,
   setRunPhase,

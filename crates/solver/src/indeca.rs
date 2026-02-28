@@ -12,9 +12,6 @@
 ///
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search, ThresholdResult};
 use crate::upsample::{
@@ -60,8 +57,7 @@ pub fn solve_bounded(
 
 /// Inner FISTA solver operating on an already-upsampled trace.
 ///
-/// Called by `solve_bounded` (public API, Box01), and by `solve_trace` which
-/// calls it twice: first with NonNegative for scale discovery, then Box01.
+/// Called by `solve_bounded` (public API) and by `solve_trace` (scale iteration).
 ///
 /// `baseline_subtracted`: when true, the trace has already had its baseline
 /// removed externally (via rolling-percentile subtraction), so FISTA should
@@ -98,12 +94,11 @@ fn solve_upsampled(
         None
     };
 
-    // Apply warm-start if provided
+    // Apply warm-start if provided (must match trace length)
     if let Some(warm) = warm_start {
         if warm.len() == upsampled.len() {
-            let n = upsampled.len();
-            solver.solution[..n].copy_from_slice(warm);
-            solver.solution_prev[..n].copy_from_slice(warm);
+            solver.solution[..warm.len()].copy_from_slice(warm);
+            solver.solution_prev[..warm.len()].copy_from_slice(warm);
         }
     }
 
@@ -152,161 +147,15 @@ fn estimate_alpha_interior(trace: &[f32], pad: usize) -> f64 {
     if ptp < 1e-10 { 1.0 } else { ptp }
 }
 
-/// Pool halo energy into peak bins via greedy lowest-first absorption.
+/// Maximum value in the interior of a slice, excluding `pad` samples from each end.
 ///
-/// At upsampled rates, FISTA spreads a spike's energy across neighboring bins
-/// (the "halo"). This function lets higher-valued bins absorb energy from
-/// nearby lower-valued bins, concentrating halos back into peaks.
-///
-/// Algorithm:
-/// 1. Order all nonzero bins by value (highest first) in a max-heap
-/// 2. Pop the highest bin; within ±upsample_factor/2, find the lowest-valued
-///    unprocessed neighbor and absorb its energy
-/// 3. Repeat absorbing from the next-lowest neighbor until the bin reaches 1.0
-///    or no unprocessed neighbors remain
-/// 4. Mark the bin as processed (it can no longer be a donor)
-/// 5. If a donor was only partially consumed, push its updated value back into
-///    the heap so it can later be an absorber at its reduced value
-/// 6. Pop the next highest bin and repeat
-///
-/// Grabbing from the **lowest** neighbor first ensures halos (tiny values like
-/// 0.02–0.1) are consumed before any real neighboring spike is touched. A real
-/// spike at 0.9 only needs 0.1 to reach 1.0 — it grabs a couple of 0.02 halo
-/// values and stops, leaving an adjacent 0.8 spike untouched.
-///
-/// The window (`upsample_factor / 2` per side) represents the positional
-/// flexibility within one original-rate bin — energy spread within this range
-/// is an artifact of upsampling, not real sub-sample structure. At
-/// upsample_factor=1 this is a no-op.
-fn pool_energy(s: &mut [f32], upsample_factor: usize) {
-    if upsample_factor <= 1 {
-        return;
-    }
+/// Falls back to the full slice when the interior is empty.
+fn interior_peak(s: &[f32], pad: usize) -> f32 {
     let n = s.len();
-    let half = upsample_factor / 2;
-
-    // Max-heap keyed on value. Stale entries (where heap value != current s[i])
-    // are skipped on pop, so we don't need decrease-key.
-    #[derive(PartialEq)]
-    struct Entry(f32, usize);
-    impl Eq for Entry {}
-    impl PartialOrd for Entry {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            self.0.partial_cmp(&other.0)
-        }
-    }
-    impl Ord for Entry {
-        fn cmp(&self, other: &Self) -> Ordering {
-            self.partial_cmp(other).unwrap_or(Ordering::Equal)
-        }
-    }
-
-    let mut heap = BinaryHeap::new();
-    for (i, &v) in s.iter().enumerate() {
-        if v > 1e-10 {
-            heap.push(Entry(v, i));
-        }
-    }
-
-    let mut processed = vec![false; n];
-
-    while let Some(Entry(heap_val, idx)) = heap.pop() {
-        // Skip stale entries (value changed since insertion)
-        if processed[idx] || (s[idx] - heap_val).abs() > 1e-6 {
-            continue;
-        }
-        processed[idx] = true;
-
-        let mut deficit = 1.0_f32 - s[idx];
-        if deficit <= 1e-10 {
-            continue;
-        }
-
-        // Repeatedly absorb from the lowest-valued unprocessed neighbor
-        while deficit > 1e-10 {
-            // Scan window for the lowest unprocessed neighbor
-            let lo = idx.saturating_sub(half);
-            let hi = (idx + half + 1).min(n);
-            let mut min_val = f32::INFINITY;
-            let mut min_j = None;
-            for j in lo..hi {
-                if j != idx && !processed[j] && s[j] > 1e-10 && s[j] < min_val {
-                    min_val = s[j];
-                    min_j = Some(j);
-                }
-            }
-
-            let Some(j) = min_j else { break };
-
-            let take = s[j].min(deficit);
-            s[idx] += take;
-            s[j] -= take;
-            deficit -= take;
-
-            // Push updated value so donor can be an absorber later at its new value
-            if s[j] > 1e-10 {
-                heap.push(Entry(s[j], j));
-            }
-        }
-    }
-}
-
-/// Peak-picking: collapse connected non-zero regions into single spikes.
-///
-/// Mirrors InDeCa's `pks_polish` step. After FISTA with Box[0,1] and lambda=0,
-/// the solution has broad connected regions of nonzero values (the solver spreads
-/// energy across neighboring bins). This function:
-///   1. Zeros values below 10% of the interior peak (noise floor)
-///   2. Labels connected regions of remaining nonzero values
-///   3. Replaces each region with a single spike at the region's peak location
-///
-/// This converts FISTA's dense output into discrete spike candidates that the
-/// threshold search can meaningfully binarize.
-fn peaks_polish(s: &[f32], pad: usize) -> Vec<f32> {
-    let n = s.len();
-    if n == 0 {
-        return vec![];
-    }
-
-    // Find interior peak for noise floor computation.
-    let inner_lo = pad.min(n);
-    let inner_hi = n.saturating_sub(pad).max(inner_lo);
-    let interior_peak = if inner_hi > inner_lo {
-        s[inner_lo..inner_hi]
-            .iter()
-            .copied()
-            .fold(0.0_f32, f32::max)
-    } else {
-        s.iter().copied().fold(0.0_f32, f32::max)
-    };
-
-    // Noise floor: 10% of the interior peak.
-    let noise_floor = interior_peak * 0.1;
-
-    let mut result = vec![0.0_f32; n];
-
-    // Scan for connected regions above the noise floor.
-    let mut i = 0;
-    while i < n {
-        if s[i] > noise_floor {
-            // Start of a connected region — find peak and end.
-            let mut peak_idx = i;
-            let mut peak_val = s[i];
-            while i < n && s[i] > noise_floor {
-                if s[i] > peak_val {
-                    peak_val = s[i];
-                    peak_idx = i;
-                }
-                i += 1;
-            }
-            // Place a single spike at the peak of this region.
-            result[peak_idx] = peak_val;
-        } else {
-            i += 1;
-        }
-    }
-
-    result
+    let lo = pad.min(n);
+    let hi = n.saturating_sub(pad).max(lo);
+    let region = if hi > lo { &s[lo..hi] } else { s };
+    region.iter().copied().fold(0.0_f32, f32::max)
 }
 
 /// Full InDeCa trace processing pipeline with scale iteration.
@@ -343,7 +192,7 @@ pub fn solve_trace(
     // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
     // Run a throwaway FISTA just to get the filtered trace (if HP/LP), then
     // subtract the rolling-percentile baseline so the floor is ~0.
-    let mut working_trace_owned = if hp_enabled || lp_enabled {
+    let mut working_trace = if hp_enabled || lp_enabled {
         let (_, filtered_up, _, _) = solve_upsampled(
             &upsampled,
             tau_r,
@@ -359,16 +208,15 @@ pub fn solve_trace(
         );
         filtered_up.unwrap()
     } else {
-        upsampled.clone()
+        upsampled
     };
 
     // Rolling-percentile baseline subtraction: brings the floor to ~0.
     let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
-    crate::baseline::subtract_rolling_baseline(&mut working_trace_owned, bl_window, 0.2);
+    crate::baseline::subtract_rolling_baseline(&mut working_trace, bl_window, 0.2);
 
     // Always provide the working trace for display — it's what the solver sees.
-    let filtered_for_output = Some(working_trace_owned.clone());
-    let working_trace: &[f32] = &working_trace_owned;
+    let filtered_for_output = Some(working_trace.clone());
 
     // ── Step 2: Boundary padding + initial alpha estimate ───────────────
     // Compute boundary padding: edge effects from AR2 convolution make the first
@@ -379,7 +227,7 @@ pub fn solve_trace(
     let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(working_trace.len() / 4);
 
     // Estimate alpha from the interior of the trace only (excluding edges).
-    let mut alpha_est = estimate_alpha_interior(working_trace, pad);
+    let mut alpha_est = estimate_alpha_interior(&working_trace, pad);
 
     // Convert original-rate spike counts to upsampled-rate binary for warm-start
     let warm_binary =
@@ -428,17 +276,7 @@ pub fn solve_trace(
         // Normalize relaxed solution to [0,1] before threshold search.
         // Use the interior peak only (excluding boundary padding) so that edge
         // artifacts from trace subsets starting mid-transient don't dominate.
-        let n_up = s_relaxed.len();
-        let inner_lo = pad.min(n_up);
-        let inner_hi = n_up.saturating_sub(pad).max(inner_lo);
-        let s_peak = if inner_hi > inner_lo {
-            s_relaxed[inner_lo..inner_hi]
-                .iter()
-                .copied()
-                .fold(0.0_f32, f32::max)
-        } else {
-            s_relaxed.iter().copied().fold(0.0_f32, f32::max)
-        };
+        let s_peak = interior_peak(&s_relaxed, pad);
         let s_normalized: Vec<f32> = if s_peak > 1e-10 {
             s_relaxed.iter().map(|&v| v / s_peak).collect()
         } else {
@@ -455,7 +293,7 @@ pub fn solve_trace(
             ..
         } = threshold_search(
             &s_normalized,
-            working_trace,
+            &working_trace,
             &banded,
             tau_d,
             fs_up,
@@ -642,7 +480,7 @@ mod tests {
     ///
     /// Before the fix, alpha=5 + upsample=10x produced ~41 detected spikes because
     /// Box[0,1] FISTA spread energy to neighboring upsampled bins. Pre-dividing by
-    /// alpha_est + pooling halo energy before threshold search fixes this.
+    /// alpha_est before threshold search fixes this.
     #[test]
     fn high_alpha_upsampled_no_overcounting() {
         let tau_r = 0.02;

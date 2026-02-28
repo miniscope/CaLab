@@ -43,7 +43,7 @@ pub fn threshold_search(
     let n = s_relaxed.len();
     let pad = boundary_padding(tau_decay, fs_up).min(n / 4);
 
-    // EXPLORATORY: Minimum threshold floor at 0.5/upsample_factor.
+    // Minimum threshold floor at 0.5/upsample_factor.
     // At upsampled rates, FISTA spreads spike energy across neighboring bins,
     // producing halo values around this level. This floor prevents the search
     // from selecting a threshold so low that halo artifacts are counted as spikes.
@@ -191,8 +191,8 @@ pub fn threshold_search(
 /// Binarize: s_bin[i] = 1 if s[i] >= threshold, else 0.
 fn binarize(s: &[f32], threshold: f64, s_bin: &mut [f32]) {
     let thresh = threshold as f32;
-    for (i, &v) in s.iter().enumerate() {
-        s_bin[i] = if v >= thresh { 1.0 } else { 0.0 };
+    for (out, &v) in s_bin.iter_mut().zip(s.iter()) {
+        *out = if v >= thresh { 1.0 } else { 0.0 };
     }
 }
 
@@ -265,7 +265,7 @@ fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize, max_alpha: f64) -> 
         return (0.0, sum_y / count);
     }
     if alpha > max_alpha {
-        // EXPLORATORY: clamp alpha and recompute baseline for the clamped value
+        // Clamp alpha and recompute baseline for the clamped value
         let baseline = (sum_y - max_alpha * sum_c) / count;
         return (max_alpha, baseline);
     }

@@ -33,7 +33,6 @@ const Q_COLOR = 'rgba(31, 119, 180, 0.3)';
 
 export interface TrendsData {
   iterations: number[];
-  keys: string[];
   perKey: Map<string, (number | null)[]>;
   median: number[];
   q25: number[];
@@ -50,7 +49,6 @@ export function deriveTrendsData(
   if (history.length === 0) {
     return {
       iterations: [],
-      keys: [],
       perKey: new Map(),
       median: [],
       q25: [],
@@ -114,7 +112,7 @@ export function deriveTrendsData(
     yMax = 1;
   }
 
-  return { iterations, keys, perKey, median, q25, q75, yMin, yMax };
+  return { iterations, perKey, median, q25, q75, yMin, yMax };
 }
 
 function cellFromKey(key: string): number {
@@ -151,7 +149,7 @@ function cellLinesPlugin(
 
           const color = D3_CATEGORY10[cellIdx % D3_CATEGORY10.length];
           ctx.strokeStyle = withOpacity(color, 0.12);
-          ctx.lineWidth = 1 * dpr;
+          ctx.lineWidth = dpr;
           drawLine(ctx, u, data.iterations, values);
         }
 
@@ -324,8 +322,8 @@ export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element 
   const plugins = [
     iqrBandPlugin(trendsData),
     cellLinesPlugin(trendsData, inspectedCellIndex, selectedSubsetIdx),
-    convergenceMarkerPlugin(() => convergedAtIteration()),
-    viewedIterationPlugin(() => viewedIteration()),
+    convergenceMarkerPlugin(convergedAtIteration),
+    viewedIterationPlugin(viewedIteration),
     wheelZoomPlugin(),
   ];
 
