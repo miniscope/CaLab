@@ -258,12 +258,18 @@ export interface PerCellTrendsChartProps {
   medianColor: string;
   /** Fallback message when no data. */
   emptyMessage: string;
+  /** Skip iteration 0 (placeholder values before any computation). Default true. */
+  skipZero?: boolean;
 }
 
 export function PerCellTrendsChart(props: PerCellTrendsChartProps): JSX.Element {
   const [uplotRef, setUplotRef] = createSignal<uPlot | null>(null);
 
-  const trendsData = createMemo(() => deriveTrendsData(iterationHistory(), props.accessor));
+  const trendsData = createMemo(() => {
+    const skip = props.skipZero !== false; // default true
+    const history = skip ? iterationHistory().filter((h) => h.iteration > 0) : iterationHistory();
+    return deriveTrendsData(history, props.accessor);
+  });
 
   // Redraw when overlay state changes
   createEffect(() => {
