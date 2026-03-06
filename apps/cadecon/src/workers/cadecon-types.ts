@@ -51,6 +51,8 @@ export type CaDeconWorkerInbound =
       maxIters: number;
       tol: number;
       refine: boolean;
+      /** TV-L1 smoothness penalty weight for kernel estimation. */
+      smoothLambda: number;
       /** Previous iteration's free kernel for warm-start. */
       warmKernel?: Float32Array;
     }

@@ -56,6 +56,8 @@ const TRACE_FISTA_TOL = 1e-4;
 /** Per-subset kernel estimation solver parameters. */
 const KERNEL_FISTA_MAX_ITERS = 200;
 const KERNEL_FISTA_TOL = 1e-4;
+/** TV-L1 smoothness penalty for free-form kernel estimation. */
+const KERNEL_SMOOTH_LAMBDA = 0;
 
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
@@ -241,6 +243,7 @@ function dispatchKernelJobs(
         maxIters: KERNEL_FISTA_MAX_ITERS,
         tol: KERNEL_FISTA_TOL,
         refine: true,
+        smoothLambda: KERNEL_SMOOTH_LAMBDA,
         warmKernel,
         onComplete(result: KernelResult) {
           kernelResults.push(result);
@@ -530,7 +533,7 @@ export async function startRun(): Promise<void> {
       })),
     });
 
-    // Step 4: Best-residual tracking & early stop
+    // Step 4: Best-residual tracking & early stop (DISABLED)
     //
     // TODO: The current stopping criterion uses the bi-exponential fit residual
     // (||h_free - β·template||²), which measures kernel shape mismatch. This
@@ -540,6 +543,10 @@ export async function startRun(): Promise<void> {
     // the model explains the data. That's more expensive to compute but would
     // be a stronger signal for when the kernel has overshot.
     //
+    // Disabled: with damped tau updates the residual-patience early stop fires
+    // too aggressively before the damped parameters have had time to settle.
+    // Re-enable once a better stopping metric is implemented.
+    //
     if (medResidual < bestResidual) {
       bestResidual = medResidual;
       bestTauR = tauR;
@@ -548,14 +555,6 @@ export async function startRun(): Promise<void> {
       residualIncreaseCount = 0;
     } else {
       residualIncreaseCount++;
-    }
-
-    // Early stop: if residual has risen for RESIDUAL_PATIENCE consecutive
-    // iterations, the optimizer has overshot. The post-loop revert below will
-    // restore the best-residual kernel parameters before finalization.
-    if (residualIncreaseCount >= RESIDUAL_PATIENCE) {
-      setConvergedAtIteration(bestIteration);
-      break;
     }
 
     // Step 5: Convergence check (relative change in tau values)

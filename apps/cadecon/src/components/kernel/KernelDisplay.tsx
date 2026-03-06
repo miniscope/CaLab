@@ -21,6 +21,7 @@ import { selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createKernelFitSeries,
   createGroundTruthKernelSeries,
+  peakNormalize,
 } from '../../lib/chart/series-config.ts';
 import {
   D3_CATEGORY10,
@@ -71,21 +72,24 @@ export function KernelDisplay(): JSX.Element {
       xAxis[i] = (i / fs) * 1000;
     }
 
-    // Per-subset h_free arrays (padded with null)
+    // Per-subset h_free arrays (peak-normalized, padded with null)
     const subsetArrays: (number | null)[][] = snap.subsets.map((s) => {
+      const raw = s.hFree.slice();
+      peakNormalize(raw);
       const arr: (number | null)[] = new Array(maxLen).fill(null);
-      for (let i = 0; i < s.hFree.length; i++) {
-        arr[i] = s.hFree[i];
+      for (let i = 0; i < raw.length; i++) {
+        arr[i] = raw[i];
       }
       return arr;
     });
 
-    // Fitted bi-exp from merged params
+    // Fitted bi-exp from merged params (peak-normalized)
     const fitArray = new Array(maxLen);
     for (let i = 0; i < maxLen; i++) {
       const t = i / fs;
       fitArray[i] = beta * (Math.exp(-t / tauD) - Math.exp(-t / tauR));
     }
+    peakNormalize(fitArray);
 
     const columns: (number | null)[][] = [...subsetArrays, fitArray];
 
@@ -94,17 +98,11 @@ export function KernelDisplay(): JSX.Element {
       const gtTauR = groundTruthTauRise()!;
       const gtTauD = groundTruthTauDecay()!;
       const gtArray = new Array(maxLen);
-      let gtPeak = 0;
       for (let i = 0; i < maxLen; i++) {
         const t = i / fs;
         gtArray[i] = Math.exp(-t / gtTauD) - Math.exp(-t / gtTauR);
-        if (gtArray[i] > gtPeak) gtPeak = gtArray[i];
       }
-      if (gtPeak > 1e-10) {
-        for (let i = 0; i < maxLen; i++) {
-          gtArray[i] /= gtPeak;
-        }
-      }
+      peakNormalize(gtArray);
       columns.push(gtArray);
     }
 

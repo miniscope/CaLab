@@ -104,7 +104,16 @@ pub fn threshold_search(
 
     let mut consecutive_increases = 0;
     for &thresh in &coarse_thresholds {
-        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, max_alpha, &mut s_bin, &mut conv_buf);
+        let err = evaluate_threshold(
+            s_relaxed,
+            y,
+            banded,
+            thresh,
+            pad,
+            max_alpha,
+            &mut s_bin,
+            &mut conv_buf,
+        );
         if err < best.error {
             best.error = err;
             best.threshold = thresh;
@@ -134,7 +143,16 @@ pub fn threshold_search(
         if thresh < 0.0 {
             continue;
         }
-        let err = evaluate_threshold(s_relaxed, y, banded, thresh, pad, max_alpha, &mut s_bin, &mut conv_buf);
+        let err = evaluate_threshold(
+            s_relaxed,
+            y,
+            banded,
+            thresh,
+            pad,
+            max_alpha,
+            &mut s_bin,
+            &mut conv_buf,
+        );
         if err < best.error {
             best.error = err;
             best.threshold = thresh;

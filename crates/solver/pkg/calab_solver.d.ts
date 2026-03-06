@@ -196,7 +196,7 @@ export function indeca_compute_upsample_factor(fs: number, target_fs: number): n
  *
  * Returns the estimated kernel as Float32Array (via Vec<f32>).
  */
-export function indeca_estimate_kernel(traces_flat: Float32Array, spikes_flat: Float32Array, trace_lengths: Uint32Array, alphas: Float64Array, baselines: Float64Array, kernel_length: number, max_iters: number, tol: number, warm_kernel: Float32Array): Float32Array;
+export function indeca_estimate_kernel(traces_flat: Float32Array, spikes_flat: Float32Array, trace_lengths: Uint32Array, alphas: Float64Array, baselines: Float64Array, kernel_length: number, max_iters: number, tol: number, warm_kernel: Float32Array, smooth_lambda: number): Float32Array;
 
 /**
  * Fit a bi-exponential model to a free-form kernel.
@@ -223,7 +223,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_solver_free: (a: number, b: number) => void;
     readonly indeca_compute_upsample_factor: (a: number, b: number) => number;
-    readonly indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
+    readonly indeca_estimate_kernel: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => void;
     readonly indeca_fit_biexponential: (a: number, b: number, c: number, d: number) => number;
     readonly indeca_solve_trace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
     readonly solver_apply_filter: (a: number) => number;

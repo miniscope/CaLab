@@ -94,6 +94,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
       req.maxIters,
       req.tol,
       req.warmKernel ?? EMPTY_F32,
+      req.smoothLambda,
     );
 
     if (cancelled) {

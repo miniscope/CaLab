@@ -11,7 +11,7 @@ import { samplingRate } from './data-store.ts';
 // on the way down, where best-residual tracking (iteration-manager.ts) catches it.
 const [tauRiseInit, setTauRiseInit] = createSignal(0.2);
 const [tauDecayInit, setTauDecayInit] = createSignal(1.0);
-const [upsampleTarget, setUpsampleTarget] = createSignal(300);
+const [upsampleTarget, setUpsampleTarget] = createSignal(120);
 const [weightingEnabled, setWeightingEnabled] = createSignal(false);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);

@@ -35,6 +35,7 @@ interface KernelJobFields {
   maxIters: number;
   tol: number;
   refine: boolean;
+  smoothLambda: number;
   warmKernel?: Float32Array;
   onComplete(result: KernelResult): void;
 }
@@ -126,6 +127,7 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           maxIters: job.maxIters,
           tol: job.tol,
           refine: job.refine,
+          smoothLambda: job.smoothLambda,
           warmKernel: warmCopy,
         },
         transfers,

@@ -146,34 +146,28 @@ const App: Component = () => {
           }
         >
           <div class="viz-grid">
-            {/* Row 1: Raster + Kernel Convergence */}
-            <div class="viz-grid__row viz-grid__row--top">
-              <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
-                <p class="panel-label">Raster Overview</p>
-                <RasterOverview />
-              </DashboardPanel>
+            <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
+              <p class="panel-label">Raster Overview</p>
+              <RasterOverview />
+            </DashboardPanel>
 
-              <DashboardPanel
-                id="kernel-convergence"
-                variant="data"
-                class="viz-grid__col--convergence"
-              >
-                <ConvergencePanel />
-              </DashboardPanel>
-            </div>
+            <DashboardPanel
+              id="kernel-convergence"
+              variant="data"
+              class="viz-grid__col--convergence"
+            >
+              <ConvergencePanel />
+            </DashboardPanel>
 
-            {/* Row 2: Kernel Display + Trace Viewer */}
-            <div class="viz-grid__row viz-grid__row--middle">
-              <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
-                <p class="panel-label">Kernel Shape</p>
-                <KernelDisplay />
-              </DashboardPanel>
+            <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
+              <p class="panel-label">Kernel Shape</p>
+              <KernelDisplay />
+            </DashboardPanel>
 
-              <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
-                <p class="panel-label">Trace Inspector</p>
-                <TraceInspector />
-              </DashboardPanel>
-            </div>
+            <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
+              <p class="panel-label">Trace Inspector</p>
+              <TraceInspector />
+            </DashboardPanel>
           </div>
           <IterationScrubber />
         </VizLayout>

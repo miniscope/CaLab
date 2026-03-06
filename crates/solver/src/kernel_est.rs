@@ -2,10 +2,58 @@
 ///
 /// Given observed traces and inferred spike trains, estimate the shared
 /// calcium kernel h by solving:
-///   min_h (1/2)||y - S*h||^2  subject to h >= 0
-/// where S is the spike convolution matrix and y is the concatenated traces.
+///   min_h (1/2)||y - S*h||^2 + λ_smooth * ||Δh||_1  subject to h >= 0
+/// where S is the spike convolution matrix, y is the concatenated traces,
+/// and ||Δh||_1 is the total variation (L1 norm of first differences).
 ///
-/// Uses FISTA with lambda=0 and non-negativity constraint.
+/// Uses FISTA with non-negativity constraint and optional TV smoothness penalty.
+
+/// In-place 1D total variation proximal operator (Chambolle 2004).
+///
+/// Solves: argmin_z (1/2)||z - x||² + lambda * sum |z[i+1] - z[i]|
+/// via dual projected gradient descent on:
+///   min_u (1/2)||x - D^T u||²  s.t. ||u||_inf <= lambda
+/// where D is the forward-difference operator: (Dz)[i] = z[i+1] - z[i].
+///
+/// Primal reconstruction: z = x - D^T u, where:
+///   (D^T u)[0] = -u[0], (D^T u)[j] = u[j-1]-u[j], (D^T u)[n-1] = u[n-2]
+///
+/// O(n * iters) — fast for short kernels (n <= 50).
+fn prox_tv_1d(x: &mut [f64], lambda: f64) {
+    let n = x.len();
+    if n <= 1 || lambda <= 0.0 {
+        return;
+    }
+
+    let mut u = vec![0.0_f64; n - 1]; // dual variable, ||u||_inf <= lambda
+    let mut z = vec![0.0_f64; n]; // primal reconstruction buffer
+    let tau = 0.249; // step size < 1/||DD^T|| = 1/4
+
+    for _ in 0..100 {
+        // Reconstruct primal: z = x - D^T u
+        //   z[0]   = x[0]   - (-u[0])     = x[0] + u[0]
+        //   z[j]   = x[j]   - (u[j-1]-u[j]) = x[j] - u[j-1] + u[j]
+        //   z[n-1] = x[n-1] - u[n-2]
+        z[0] = x[0] + u[0];
+        for j in 1..n - 1 {
+            z[j] = x[j] - u[j - 1] + u[j];
+        }
+        z[n - 1] = x[n - 1] - u[n - 2];
+
+        // Gradient descent: u <- clamp(u + tau * Dz, -lambda, lambda)
+        //   (Dz)[i] = z[i+1] - z[i]
+        for i in 0..n - 1 {
+            u[i] = (u[i] + tau * (z[i + 1] - z[i])).clamp(-lambda, lambda);
+        }
+    }
+
+    // Final primal reconstruction: x <- x - D^T u (in-place)
+    x[0] += u[0];
+    for j in 1..n - 1 {
+        x[j] += u[j] - u[j - 1];
+    }
+    x[n - 1] -= u[n - 2];
+}
 
 /// Estimate a free-form kernel from multiple traces and their spike trains.
 ///
@@ -26,6 +74,7 @@
 /// - `max_iters`: maximum FISTA iterations
 /// - `tol`: convergence tolerance
 /// - `warm_start`: optional previous kernel estimate for warm-starting FISTA
+/// - `smooth_lambda`: TV-L1 smoothness penalty weight (0 = no smoothness)
 ///
 /// Returns the estimated kernel of length `kernel_length`.
 pub fn estimate_free_kernel(
@@ -38,6 +87,7 @@ pub fn estimate_free_kernel(
     max_iters: u32,
     tol: f64,
     warm_start: Option<&[f32]>,
+    smooth_lambda: f64,
 ) -> Vec<f32> {
     let n_traces = trace_lengths.len();
     assert_eq!(alphas.len(), n_traces);
@@ -158,13 +208,27 @@ pub fn estimate_free_kernel(
             offset += len;
         }
 
-        // Proximal gradient step with non-negativity
+        // Proximal gradient step: gradient descent on data-fidelity, then
+        // TV proximal operator, then non-negativity projection.
+        let mut z = vec![0.0_f64; kernel_length];
+        for k in 0..kernel_length {
+            z[k] = h_prev[k] as f64 - step_size * gradient[k];
+        }
+
+        // Apply TV-L1 proximal operator to resist kernel sharpening.
+        // The proximal parameter is smooth_lambda (not scaled by step_size,
+        // so that lambda is interpretable as an absolute TV strength on the
+        // kernel shape, independent of the data-fidelity Lipschitz constant).
+        if smooth_lambda > 0.0 && kernel_length > 1 {
+            prox_tv_1d(&mut z, smooth_lambda);
+        }
+
+        // Non-negativity projection + convergence tracking
         let mut diff_sq = 0.0_f64;
         let mut h_sq = 0.0_f64;
         for k in 0..kernel_length {
             let h_old = h[k];
-            let z = h_prev[k] as f64 - step_size * gradient[k];
-            h[k] = z.max(0.0) as f32;
+            h[k] = z[k].max(0.0) as f32;
             let d = h[k] as f64 - h_old as f64;
             diff_sq += d * d;
             h_sq += (h_old as f64) * (h_old as f64);
@@ -208,6 +272,42 @@ fn convolve_spikes_kernel(spikes: &[f32], trace_lengths: &[usize], h: &[f32], ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prox_tv_reduces_total_variation() {
+        // Noisy step function: TV should decrease after prox
+        let mut x: Vec<f64> = vec![
+            0.0, 0.1, -0.1, 0.05, 0.0, // low plateau with noise
+            1.0, 1.1, 0.9, 1.05, 1.0, // high plateau with noise
+        ];
+        let original_tv: f64 = x.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+
+        prox_tv_1d(&mut x, 0.2);
+
+        let smoothed_tv: f64 = x.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+
+        assert!(
+            smoothed_tv < original_tv,
+            "TV prox should reduce TV: {:.4} -> {:.4}",
+            original_tv,
+            smoothed_tv
+        );
+    }
+
+    #[test]
+    fn prox_tv_identity_on_constant() {
+        let mut x = vec![3.0_f64; 10];
+        let original = x.clone();
+        prox_tv_1d(&mut x, 0.5);
+        for (i, (&a, &b)) in x.iter().zip(original.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "Constant signal should be unchanged at {}: got {}",
+                i,
+                a
+            );
+        }
+    }
 
     /// Build an exponential kernel: h[t] = exp(-t * dt / tau_d) - exp(-t * dt / tau_r)
     fn make_exponential_kernel(tau_r: f64, tau_d: f64, fs: f64, length: usize) -> Vec<f32> {
@@ -277,6 +377,7 @@ mod tests {
             500,
             1e-5,
             None,
+            0.0,
         );
 
         // Normalize both kernels to unit peak for comparison
@@ -310,8 +411,18 @@ mod tests {
         let trace = vec![1.0_f32; 100];
         let spikes = vec![0.0_f32; 100];
         // With no spikes, the kernel should stay at zero (non-negative constraint)
-        let kernel =
-            estimate_free_kernel(&trace, &spikes, &[1.0], &[0.0], &[100], 20, 100, 1e-4, None);
+        let kernel = estimate_free_kernel(
+            &trace,
+            &spikes,
+            &[1.0],
+            &[0.0],
+            &[100],
+            20,
+            100,
+            1e-4,
+            None,
+            0.0,
+        );
 
         for (i, &v) in kernel.iter().enumerate() {
             assert!(
@@ -333,14 +444,14 @@ mod tests {
         let baselines = vec![0.0, 0.0, 0.0];
 
         let kernel = estimate_free_kernel(
-            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4, None,
+            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4, None, 0.0,
         );
         assert_eq!(kernel.len(), 20);
     }
 
     #[test]
     fn empty_input() {
-        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4, None);
+        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4, None, 0.0);
         assert_eq!(kernel.len(), 10);
         assert!(kernel.iter().all(|&v| v == 0.0));
     }
@@ -402,6 +513,7 @@ mod tests {
             200,
             1e-4,
             None,
+            0.0,
         );
 
         let peak = kernel.iter().cloned().fold(0.0_f32, f32::max);
@@ -410,5 +522,101 @@ mod tests {
             "Kernel should have positive values, got all zeros (peak={})",
             peak
         );
+    }
+
+    /// Verify that smooth_lambda > 0 produces a smoother kernel (lower total variation)
+    /// than smooth_lambda = 0, when data is noisy and spikes are dense.
+    #[test]
+    fn smoothness_reduces_total_variation() {
+        // Dense spikes with noisy traces — the regime where TV smoothness matters.
+        let k_len = 30;
+        let trace_len = 300;
+        let n_traces = 5;
+
+        let mut all_traces = Vec::new();
+        let mut all_spikes = Vec::new();
+        let mut trace_lengths = Vec::new();
+        let mut alphas = Vec::new();
+        let mut baselines = Vec::new();
+
+        // True kernel: simple exponential decay
+        let true_kernel: Vec<f32> = (0..k_len)
+            .map(|k| (-(k as f64) / 10.0).exp() as f32)
+            .collect();
+
+        for i in 0..n_traces {
+            let mut trace = vec![0.0_f32; trace_len];
+            let mut s = vec![0.0_f32; trace_len];
+
+            // Dense spikes: every 3-4 samples with varying amplitude
+            for t in 0..trace_len {
+                if (t + i * 7) % 3 == 0 {
+                    s[t] = ((t % 5) + 1) as f32;
+                }
+            }
+
+            // Build trace = conv(spikes, kernel) + noise
+            for t in 0..trace_len {
+                let k_max = k_len.min(t + 1);
+                for k in 0..k_max {
+                    trace[t] += s[t - k] * true_kernel[k];
+                }
+                // Add deterministic pseudo-noise to make the problem ill-conditioned
+                trace[t] += 0.1 * ((t as f64 * 0.7 + i as f64 * 1.3).sin() as f32);
+            }
+
+            all_traces.extend_from_slice(&trace);
+            all_spikes.extend_from_slice(&s);
+            trace_lengths.push(trace_len);
+            alphas.push(1.0);
+            baselines.push(0.0);
+        }
+
+        let kernel_no_smooth = estimate_free_kernel(
+            &all_traces,
+            &all_spikes,
+            &alphas,
+            &baselines,
+            &trace_lengths,
+            k_len,
+            500,
+            1e-6,
+            None,
+            0.0,
+        );
+
+        let kernel_smooth = estimate_free_kernel(
+            &all_traces,
+            &all_spikes,
+            &alphas,
+            &baselines,
+            &trace_lengths,
+            k_len,
+            500,
+            1e-6,
+            None,
+            0.001,
+        );
+
+        // Total variation = sum of |h[k+1] - h[k]|
+        let tv = |h: &[f32]| -> f64 {
+            h.windows(2)
+                .map(|w| (w[1] as f64 - w[0] as f64).abs())
+                .sum()
+        };
+
+        let tv_no_smooth = tv(&kernel_no_smooth);
+        let tv_smooth = tv(&kernel_smooth);
+
+        assert!(
+            tv_smooth < tv_no_smooth,
+            "Smoothed kernel TV ({:.4}) should be less than unsmoothed ({:.4})",
+            tv_smooth,
+            tv_no_smooth
+        );
+
+        // The smoothed kernel should still have a positive peak
+        let peak = kernel_smooth.iter().cloned().fold(0.0_f32, f32::max);
+        assert!(peak > 0.0, "Smoothed kernel should have positive peak");
     }
 }

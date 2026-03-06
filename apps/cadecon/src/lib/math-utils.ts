@@ -8,6 +8,18 @@ export function median(arr: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+/**
+ * Area under a peak-normalized bi-exponential kernel: f(t) = exp(-t/τ_d) - exp(-t/τ_r).
+ * Returns 0 for degenerate cases (τ_d ≤ τ_r or either ≤ 0).
+ */
+export function computeNormalizedKernelArea(tauRise: number, tauDecay: number): number {
+  if (tauRise <= 0 || tauDecay <= 0 || tauDecay <= tauRise) return 0;
+  const tPeak = ((tauRise * tauDecay) / (tauDecay - tauRise)) * Math.log(tauDecay / tauRise);
+  const fPeak = Math.exp(-tPeak / tauDecay) - Math.exp(-tPeak / tauRise);
+  if (fPeak <= 0) return 0;
+  return (tauDecay - tauRise) / fPeak;
+}
+
 /** Compute the interquartile range [Q1, Q3]. Returns [0, 0] for empty arrays. */
 export function iqr(arr: number[]): [number, number] {
   if (arr.length === 0) return [0, 0];

@@ -408,9 +408,10 @@ export function indeca_compute_upsample_factor(fs, target_fs) {
  * @param {number} max_iters
  * @param {number} tol
  * @param {Float32Array} warm_kernel
+ * @param {number} smooth_lambda
  * @returns {Float32Array}
  */
-export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters, tol, warm_kernel) {
+export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters, tol, warm_kernel, smooth_lambda) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passArrayF32ToWasm0(traces_flat, wasm.__wbindgen_export2);
@@ -425,7 +426,7 @@ export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, 
         const len4 = WASM_VECTOR_LEN;
         const ptr5 = passArrayF32ToWasm0(warm_kernel, wasm.__wbindgen_export2);
         const len5 = WASM_VECTOR_LEN;
-        wasm.indeca_estimate_kernel(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, kernel_length, max_iters, tol, ptr5, len5);
+        wasm.indeca_estimate_kernel(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, kernel_length, max_iters, tol, ptr5, len5, smooth_lambda);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v7 = getArrayF32FromWasm0(r0, r1).slice();

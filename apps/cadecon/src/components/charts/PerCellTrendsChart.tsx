@@ -44,7 +44,7 @@ export interface TrendsData {
 /** Extract a numeric field from TraceResultEntry history into TrendsData. */
 export function deriveTrendsData(
   history: IterationHistoryEntry[],
-  accessor: (entry: TraceResultEntry) => number,
+  accessor: (entry: TraceResultEntry, historyEntry: IterationHistoryEntry) => number,
 ): TrendsData {
   if (history.length === 0) {
     return {
@@ -85,7 +85,7 @@ export function deriveTrendsData(
 
     for (const key of keys) {
       const entry = results[key];
-      const val = entry != null ? accessor(entry) : null;
+      const val = entry != null ? accessor(entry, history[i]) : null;
       perKey.get(key)!.push(val);
       if (val != null) {
         values.push(val);
@@ -249,7 +249,7 @@ function iqrBandPlugin(getData: () => TrendsData): uPlot.Plugin {
 
 export interface PerCellTrendsChartProps {
   /** Field accessor to extract the value from each TraceResultEntry. */
-  accessor: (entry: TraceResultEntry) => number;
+  accessor: (entry: TraceResultEntry, historyEntry: IterationHistoryEntry) => number;
   /** Y-axis label (e.g. "Alpha", "Threshold"). */
   yLabel: string;
   /** Median series label (e.g. "Median Alpha"). */

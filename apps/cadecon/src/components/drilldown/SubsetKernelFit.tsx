@@ -9,6 +9,7 @@ import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import type { KernelSnapshot, SubsetKernelSnapshot } from '../../lib/iteration-store.ts';
 import { AXIS_TEXT, AXIS_GRID, AXIS_TICK, subsetColor } from '@calab/ui/chart';
+import { peakNormalize } from '../../lib/chart/series-config.ts';
 
 export interface SubsetKernelFitProps {
   subsetIdx: number;
@@ -41,6 +42,8 @@ export function SubsetKernelFit(props: SubsetKernelFitProps): JSX.Element {
       const t = i / fs;
       fit[i] = beta * (Math.exp(-t / tauD) - Math.exp(-t / tauR));
     }
+    peakNormalize(hFree);
+    peakNormalize(fit);
 
     return [xAxis, hFree, fit];
   });

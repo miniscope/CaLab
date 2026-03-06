@@ -10,8 +10,9 @@ import { AlphaTrends } from './AlphaTrends.tsx';
 import { ThresholdTrends } from './ThresholdTrends.tsx';
 import { PveTrends } from './PveTrends.tsx';
 import { EventRateTrends } from './EventRateTrends.tsx';
+import { SpikeEfficiencyTrends } from './SpikeEfficiencyTrends.tsx';
 
-type ConvergenceTab = 'kernel' | 'alpha' | 'threshold' | 'pve' | 'event-rate';
+type ConvergenceTab = 'kernel' | 'alpha' | 'threshold' | 'pve' | 'event-rate' | 'spike-eff';
 
 interface TabEntry {
   id: ConvergenceTab;
@@ -25,6 +26,7 @@ const TABS: TabEntry[] = [
   { id: 'threshold', label: 'Threshold', content: () => <ThresholdTrends /> },
   { id: 'pve', label: 'PVE', content: () => <PveTrends /> },
   { id: 'event-rate', label: 'Event Rate', content: () => <EventRateTrends /> },
+  { id: 'spike-eff', label: 'Spike Eff.', content: () => <SpikeEfficiencyTrends /> },
 ];
 
 export function ConvergencePanel(): JSX.Element {

@@ -35,8 +35,10 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool) -> BiexpResult {
 
     let dt = 1.0 / fs;
 
-    // Grid search ranges (in seconds)
-    let tau_r_lo = 0.005_f64;
+    // Grid search ranges (in seconds).
+    // tau_r lower bound: at least 2 samples (Nyquist floor). A rise time shorter
+    // than 2/fs is unresolvable and drives the iterative loop toward collapse.
+    let tau_r_lo = (2.0 / fs).max(0.005_f64);
     let tau_r_hi = 0.5_f64;
     let tau_d_lo = 0.05_f64;
     let tau_d_hi = 5.0_f64;
@@ -147,8 +149,8 @@ fn golden_section_refine(
 
     for step in 0..max_steps {
         if step % 2 == 0 {
-            // Refine tau_r
-            let mut lo = (tau_r * 0.5).max(0.001);
+            // Refine tau_r (floor at 2 samples — same Nyquist limit as grid search)
+            let mut lo = (tau_r * 0.5).max(2.0 * dt);
             let mut hi = tau_r * 2.0;
             // Ensure tau_r < tau_d
             hi = hi.min(tau_d * 0.99);
@@ -211,7 +213,7 @@ mod tests {
 
     #[test]
     fn recovers_known_taus() {
-        let tau_r_true = 0.03;
+        let tau_r_true = 0.08;
         let tau_d_true = 0.5;
         let fs = 30.0;
         let n = 60; // 2 seconds

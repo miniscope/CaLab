@@ -6,6 +6,19 @@ import { D3_CATEGORY10, subsetColor, withOpacity } from '@calab/ui/chart';
 
 export { subsetColor, withOpacity };
 
+/** Divide every element by the array's peak value so the max becomes 1.0. */
+export function peakNormalize(arr: number[] | Float32Array): void {
+  let peak = 0;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] > peak) peak = arr[i];
+  }
+  if (peak > 1e-10) {
+    for (let i = 0; i < arr.length; i++) {
+      arr[i] /= peak;
+    }
+  }
+}
+
 export function createRawTraceSeries(): uPlot.Series {
   return { label: 'Raw', stroke: '#1f77b4', width: 1 };
 }

@@ -66,6 +66,7 @@ pub fn indeca_estimate_kernel(
     max_iters: u32,
     tol: f64,
     warm_kernel: &[f32],
+    smooth_lambda: f64,
 ) -> Vec<f32> {
     let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
     let warm = if warm_kernel.is_empty() {
@@ -83,6 +84,7 @@ pub fn indeca_estimate_kernel(
         max_iters,
         tol,
         warm,
+        smooth_lambda,
     )
 }
 
