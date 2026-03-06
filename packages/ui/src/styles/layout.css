@@ -264,6 +264,7 @@ html.dashboard-mode #root {
   --grid-cols: 2;
   display: grid;
   grid-template-columns: repeat(var(--grid-cols), minmax(0, 1fr));
+  align-content: start;
   gap: var(--panel-gap);
   overflow-y: auto;
   overflow-x: hidden;
