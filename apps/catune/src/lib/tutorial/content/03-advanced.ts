@@ -23,7 +23,7 @@ export const advancedTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Residual Pattern Analysis',
       description:
-        'The red residual trace reveals model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: baseline drift (not a parameter issue). <b>Residuals should resemble noise. Near-zero residuals = overfitting. Visible transient shapes = underfitting.</b>',
+        'The red residual trace reveals model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: residual baseline drift (the automatic baseline subtraction handles most drift, but very slow trends may remain). <b>Residuals should resemble noise. Near-zero residuals = overfitting. Visible transient shapes = underfitting.</b>',
       side: 'bottom',
     },
     // Step 3: Parameter coupling
@@ -47,7 +47,7 @@ export const advancedTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Artifacts & Challenging Signals',
       description:
-        'Common artifacts that affect fitting: <b>Motion artifacts:</b> sharp, symmetric deflections (not calcium-shaped). <b>Photobleaching:</b> slow downward baseline trend. <b>Neuropil contamination:</b> broad, slow signals mixed with sharp events. These cannot be fixed by parameter tuning \u2014 they require preprocessing.<br><br>' +
+        'Common artifacts that affect fitting: <b>Motion artifacts:</b> sharp, symmetric deflections (not calcium-shaped). <b>Photobleaching:</b> slow downward baseline trend (largely handled by the automatic rolling-percentile baseline subtraction, but extreme cases may still affect results). <b>Neuropil contamination:</b> broad, slow signals mixed with sharp events. Motion artifacts cannot be fixed by parameter tuning \u2014 they require preprocessing. Photobleaching and neuropil contamination are partially addressed by CaTune\u2019s automatic baseline handling.<br><br>' +
         'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. <b>Under big fluorescence events, try increasing decay time to reduce dense deconvolved activity</b> \u2014 increase as much as possible without making the fit too poor.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',

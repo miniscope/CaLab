@@ -39,7 +39,8 @@ export const theoryTutorial: Tutorial = {
         '<b>3. Slow baseline drift</b> — out-of-focus neuropil, diffuse calcium dynamics, photobleaching<br><br>' +
         'Mathematically:<br>' +
         '<b>F(t) = (s \u2217 k)(t) + b(t) + \u03B5(t)</b><br><br>' +
-        'where <b>s</b> is neural activity, <b>k</b> is the calcium kernel, <b>b</b> is baseline drift, and <b>\u03B5</b> is noise. Deconvolution aims to recover <b>s</b> from <b>F</b>.',
+        'where <b>s</b> is neural activity, <b>k</b> is the calcium kernel, <b>b</b> is baseline drift, and <b>\u03B5</b> is noise. Deconvolution aims to recover <b>s</b> from <b>F</b>.<br><br>' +
+        'CaTune automatically handles b(t) through rolling-percentile baseline subtraction before deconvolution, so you generally don\u2019t need to preprocess for baseline drift.',
     },
     // Step 3: The calcium kernel
     {
@@ -104,12 +105,13 @@ export const theoryTutorial: Tutorial = {
     },
     // Step 9: The role of noise filtering
     {
-      title: 'The Role of Noise Filtering',
+      title: 'Baseline & Noise Handling',
       description:
-        'High-frequency noise creates <b>spurious transients</b> in the deconvolved trace. The <b>Noise Filter</b> applies a bandpass derived from your kernel parameters:<br><br>' +
-        '\u2022 The <b>high-pass</b> removes slow drift (baseline)<br>' +
-        '\u2022 The <b>low-pass</b> removes noise above what your calcium dynamics can produce<br><br>' +
-        "Filtering is conservative — it won't change transient shapes — but it significantly cleans up the deconvolution.",
+        'CaTune handles baseline in three layers:<br><br>' +
+        '<b>1. Rolling-percentile baseline subtraction</b> \u2014 always active. Before every solve, a moving-window 20th percentile is subtracted from the trace, bringing the fluorescence floor to ~0. The window size adapts automatically to your decay time.<br>' +
+        '<b>2. Bandpass filter</b> (Noise Filter toggle) \u2014 the high-pass removes slow oscillations the baseline subtraction may miss; the low-pass removes noise above what your calcium dynamics can produce.<br>' +
+        '<b>3. Solver baseline estimate</b> \u2014 if neither of the above fully removes the baseline, the solver estimates a scalar baseline offset during iteration.<br><br>' +
+        'Together, these handle photobleaching, neuropil contamination, and slow drift without manual preprocessing.',
     },
     // Step 10: What Deconvolved Activity IS (and IS NOT) (merged: what it is + what it is not)
     {
