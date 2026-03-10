@@ -377,7 +377,7 @@ mod tests {
             500,
             1e-5,
             None,
-            0.0,
+            0.005,
         );
 
         // Normalize both kernels to unit peak for comparison
@@ -421,7 +421,7 @@ mod tests {
             100,
             1e-4,
             None,
-            0.0,
+            0.005,
         );
 
         for (i, &v) in kernel.iter().enumerate() {
@@ -444,14 +444,14 @@ mod tests {
         let baselines = vec![0.0, 0.0, 0.0];
 
         let kernel = estimate_free_kernel(
-            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4, None, 0.0,
+            &traces, &spikes, &alphas, &baselines, &lengths, 20, 50, 1e-4, None, 0.005,
         );
         assert_eq!(kernel.len(), 20);
     }
 
     #[test]
     fn empty_input() {
-        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4, None, 0.0);
+        let kernel = estimate_free_kernel(&[], &[], &[], &[], &[], 10, 100, 1e-4, None, 0.005);
         assert_eq!(kernel.len(), 10);
         assert!(kernel.iter().all(|&v| v == 0.0));
     }
@@ -513,7 +513,7 @@ mod tests {
             200,
             1e-4,
             None,
-            0.0,
+            0.005,
         );
 
         let peak = kernel.iter().cloned().fold(0.0_f32, f32::max);
@@ -582,7 +582,7 @@ mod tests {
             500,
             1e-6,
             None,
-            0.0,
+            0.005,
         );
 
         let kernel_smooth = estimate_free_kernel(
@@ -595,7 +595,7 @@ mod tests {
             500,
             1e-6,
             None,
-            0.001,
+            0.005,
         );
 
         // Total variation = sum of |h[k+1] - h[k]|
