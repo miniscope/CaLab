@@ -74,6 +74,11 @@ pub fn indeca_estimate_kernel(
     } else {
         Some(warm_kernel)
     };
+    let smooth_lambda = 0.005 if smooth_lambda.is_empty() {
+        None
+    } else {
+        Some(smooth_lambda)
+    }
     kernel_est::estimate_free_kernel(
         traces_flat,
         spikes_flat,
