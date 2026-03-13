@@ -3,6 +3,26 @@
 /// Fits h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r)) to the estimated kernel
 /// using grid search over (tau_r, tau_d) with closed-form beta, optionally
 /// refined by golden-section search.
+///
+/// # Why this works (and why direct trace-level optimization does not)
+///
+/// This function fits the bi-exponential model to the *kernel shape* estimated
+/// by `kernel_est::estimate_free_kernel`. The free-form kernel has ~50 samples,
+/// and the bi-exponential structure is unambiguous at this level: the sharp
+/// rising edge and long exponential tail are geometrically distinct features
+/// that cleanly determine tau_rise and tau_decay.
+///
+/// Fitting (tau_r, tau_d) directly against trace-level reconstruction quality
+/// (i.e., evaluating how well `conv(spikes, kernel(tau_r, tau_d))` matches the
+/// observed traces) was tried and fails: different (tau_r, tau_d) pairs produce
+/// nearly identical convolutions with realistic spike trains because transient
+/// overlap destroys the parameter-specific signatures. The loss surface becomes
+/// a shallow ridge where tau_r and tau_d drift toward each other. This happens
+/// with any trace-level metric (SSE, projection residual, correlation).
+///
+/// The `skip` parameter helps avoid early-bin artifacts in the free kernel
+/// (often caused by imperfect spike timing at iteration boundaries) that can
+/// bias the tau_rise estimate.
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct BiexpResult {

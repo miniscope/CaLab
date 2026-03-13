@@ -7,6 +7,38 @@
 /// and ||Δh||_1 is the total variation (L1 norm of first differences).
 ///
 /// Uses FISTA with non-negativity constraint and optional TV smoothness penalty.
+///
+/// # Why free-form estimation instead of direct (tau_r, tau_d) optimization
+///
+/// An alternative approach — optimizing tau_rise and tau_decay directly by
+/// evaluating trace-level reconstruction quality for each (tau_r, tau_d) pair —
+/// was investigated and found to be fundamentally ill-conditioned.
+///
+/// The free-form kernel has ~50 degrees of freedom, which is enough to resolve
+/// the bi-exponential structure unambiguously: the sharp rise edge and long
+/// decay tail are geometrically distinct features in the kernel vector. The
+/// subsequent bi-exponential fit (see `biexp_fit.rs`) operates on this
+/// recovered shape where the two time constants are clearly separable.
+///
+/// Direct (tau_r, tau_d) optimization against trace reconstruction fails
+/// because different bi-exponential parameterizations produce nearly identical
+/// convolutions when convolved with realistic (overlapping) spike trains.
+/// The loss surface becomes a shallow valley where tau_r and tau_d drift
+/// toward each other — the optimizer cannot distinguish rise from decay at
+/// the trace level. This happens regardless of the metric used (raw SSE,
+/// projection residual, correlation). The problem is not the metric but the
+/// information content: trace-level reconstruction simply does not contain
+/// enough signal to separately identify two time constants.
+///
+/// This matches findings from Pachitariu et al. (2018), who showed that all
+/// tested methods fail to recover accurate calcium indicator time constants
+/// from data, and recommended fixing them to literature values. The two-step
+/// approach here (free kernel → biexp fit) works because the kernel-shape
+/// fitting step sidesteps the trace-level ambiguity entirely.
+///
+/// See also: OASIS (Friedrich et al. 2017) uses autocovariance-based
+/// estimation (Yule-Walker) for initial time constants, avoids joint
+/// (tau_r, tau_d) optimization, and refines on isolated large events only.
 
 /// In-place 1D total variation proximal operator (Chambolle 2004).
 ///
