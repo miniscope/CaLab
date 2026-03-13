@@ -22,6 +22,7 @@ pub struct BiexpResult {
 /// - `h_free`: the free-form kernel to fit (from estimate_free_kernel)
 /// - `fs`: sampling rate used for the kernel
 /// - `refine`: whether to apply golden-section refinement after grid search
+/// - `skip`: number of early kernel samples to exclude from the least-squares fit
 pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> BiexpResult {
     let n = h_free.len();
     let skip = skip.min(n.saturating_sub(1));
