@@ -25,6 +25,10 @@ const TAU_DECAY_COLOR = '#ef5350';
 const RESIDUAL_COLOR = '#9e9e9e';
 const TAU_RISE_FAINT = 'rgba(66, 165, 245, 0.3)';
 const TAU_DECAY_FAINT = 'rgba(239, 83, 80, 0.3)';
+const DIRECT_TAU_RISE_COLOR = '#e91e63';
+const DIRECT_TAU_DECAY_COLOR = '#ff9800';
+const DIRECT_TAU_RISE_FAINT = 'rgba(233, 30, 99, 0.3)';
+const DIRECT_TAU_DECAY_FAINT = 'rgba(255, 152, 0, 0.3)';
 
 /** Draw a single horizontal line at `yVal` on scale `'y'`. Caller must save/restore ctx. */
 function drawHLine(ctx: CanvasRenderingContext2D, u: uPlot, yVal: number, color: string): void {
@@ -88,6 +92,32 @@ function subsetScatterPlugin(): uPlot.Plugin {
             ctx.beginPath();
             ctx.arc(xPx, u.valToPos(sub.tauDecay * 1000, 'y', true), 4 * dpr, 0, 2 * Math.PI);
             ctx.fill();
+
+            // direct biexp scatter (hybrid mode)
+            if (sub.directTauRise != null) {
+              ctx.fillStyle = DIRECT_TAU_RISE_FAINT;
+              ctx.beginPath();
+              ctx.arc(
+                xPx,
+                u.valToPos(sub.directTauRise * 1000, 'y', true),
+                3 * dpr,
+                0,
+                2 * Math.PI,
+              );
+              ctx.fill();
+            }
+            if (sub.directTauDecay != null) {
+              ctx.fillStyle = DIRECT_TAU_DECAY_FAINT;
+              ctx.beginPath();
+              ctx.arc(
+                xPx,
+                u.valToPos(sub.directTauDecay * 1000, 'y', true),
+                3 * dpr,
+                0,
+                2 * Math.PI,
+              );
+              ctx.fill();
+            }
           }
         }
       },
@@ -109,12 +139,14 @@ export function KernelConvergence(): JSX.Element {
 
   const chartData = createMemo((): uPlot.AlignedData => {
     const h = filteredHistory();
-    if (h.length === 0) return [[], [], [], []];
+    if (h.length === 0) return [[], [], [], [], [], []];
     return [
       h.map((s) => s.iteration),
       h.map((s) => s.tauRise * 1000),
       h.map((s) => s.tauDecay * 1000),
       h.map((s) => s.residual),
+      h.map((s) => (s.directTauRise != null ? s.directTauRise * 1000 : null)),
+      h.map((s) => (s.directTauDecay != null ? s.directTauDecay * 1000 : null)),
     ];
   });
 
@@ -128,6 +160,20 @@ export function KernelConvergence(): JSX.Element {
       width: 1,
       scale: 'res',
       dash: [4, 2],
+    },
+    {
+      label: 'direct tau rise (ms)',
+      stroke: DIRECT_TAU_RISE_COLOR,
+      width: 1.5,
+      dash: [3, 3],
+      points: { show: true, size: 4 },
+    },
+    {
+      label: 'direct tau decay (ms)',
+      stroke: DIRECT_TAU_DECAY_COLOR,
+      width: 1.5,
+      dash: [3, 3],
+      points: { show: true, size: 4 },
     },
   ];
 

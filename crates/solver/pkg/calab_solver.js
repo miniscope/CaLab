@@ -449,19 +449,25 @@ export function indeca_estimate_kernel(traces_flat, spikes_flat, trace_lengths, 
  * where residual is total trace reconstruction SSR (not kernel shape mismatch).
  * @param {Float32Array} traces_flat
  * @param {Float32Array} spikes_flat
+ * @param {Float64Array} alphas
+ * @param {Float64Array} baselines
  * @param {Uint32Array} trace_lengths
  * @param {number} fs
  * @param {boolean} refine
  * @returns {any}
  */
-export function indeca_fit_biexp_direct(traces_flat, spikes_flat, trace_lengths, fs, refine) {
+export function indeca_fit_biexp_direct(traces_flat, spikes_flat, alphas, baselines, trace_lengths, fs, refine) {
     const ptr0 = passArrayF32ToWasm0(traces_flat, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF32ToWasm0(spikes_flat, wasm.__wbindgen_export2);
     const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArray32ToWasm0(trace_lengths, wasm.__wbindgen_export2);
+    const ptr2 = passArrayF64ToWasm0(alphas, wasm.__wbindgen_export2);
     const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.indeca_fit_biexp_direct(ptr0, len0, ptr1, len1, ptr2, len2, fs, refine);
+    const ptr3 = passArrayF64ToWasm0(baselines, wasm.__wbindgen_export2);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArray32ToWasm0(trace_lengths, wasm.__wbindgen_export2);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.indeca_fit_biexp_direct(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, fs, refine);
     return takeObject(ret);
 }
 

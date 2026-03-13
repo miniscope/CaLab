@@ -68,3 +68,7 @@ export function createGroundTruthCalciumSeries(): uPlot.Series {
 export function createGroundTruthKernelSeries(): uPlot.Series {
   return { label: 'True Kernel', stroke: 'rgba(233, 30, 99, 0.8)', width: 1.5, dash: [6, 3] };
 }
+
+export function createDirectBiexpFitSeries(): uPlot.Series {
+  return { label: 'Direct Fit', stroke: '#e91e63', width: 1.5, dash: [3, 3] };
+}

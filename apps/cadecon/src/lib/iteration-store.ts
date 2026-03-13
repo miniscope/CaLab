@@ -11,6 +11,10 @@ export interface SubsetKernelSnapshot {
   beta: number;
   residual: number;
   hFree: Float32Array;
+  directTauRise?: number;
+  directTauDecay?: number;
+  directBeta?: number;
+  directResidual?: number;
 }
 
 export interface KernelSnapshot {
@@ -21,6 +25,9 @@ export interface KernelSnapshot {
   residual: number;
   fs: number;
   subsets: SubsetKernelSnapshot[];
+  directTauRise?: number;
+  directTauDecay?: number;
+  directAgreed?: boolean;
 }
 
 export interface TraceResultEntry {

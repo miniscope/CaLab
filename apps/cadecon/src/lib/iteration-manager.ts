@@ -36,6 +36,7 @@ import {
   hpFilterEnabled,
   lpFilterEnabled,
   kernelMode,
+  hybridFreeKernelIters,
 } from './algorithm-store.ts';
 import {
   parsedData,
@@ -60,7 +61,7 @@ const KERNEL_FISTA_TOL = 1e-4;
 /** TV-L1 smoothness penalty for free-form kernel estimation. */
 const KERNEL_SMOOTH_LAMBDA = 0;
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
-const BIEXP_FIT_SKIP = 0;
+const BIEXP_FIT_SKIP = 4;
 
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
@@ -188,7 +189,7 @@ function dispatchKernelJobs(
   isSwapped: boolean,
   fs: number,
   kernelLength: number,
-  kMode: 'free-kernel' | 'direct-biexp',
+  kMode: 'free-kernel' | 'direct-biexp' | 'hybrid',
   prevKernels?: Float32Array[],
 ): Promise<KernelResult[]> {
   return new Promise((resolve) => {
@@ -316,6 +317,9 @@ export async function startRun(): Promise<void> {
   let bestIteration = 0;
   const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
   let residualIncreaseCount = 0;
+
+  // Hybrid mode: use free-kernel for the first N iterations, then switch to direct-biexp
+  const freeKernelIters = hybridFreeKernelIters();
 
   // Iteration 0: record initial kernel state and alpha=1 baseline
   addConvergenceSnapshot({
@@ -480,6 +484,14 @@ export async function startRun(): Promise<void> {
     }
 
     // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
+    // Hybrid mode: free-kernel for first N iterations, then switch to direct-biexp.
+    const effectiveMode =
+      kMode === 'hybrid' && iter + 1 > freeKernelIters
+        ? 'direct-biexp'
+        : kMode === 'hybrid'
+          ? 'free-kernel'
+          : kMode;
+
     setRunPhase('kernel-update');
     const kernelResults = await dispatchKernelJobs(
       rects,
@@ -488,7 +500,7 @@ export async function startRun(): Promise<void> {
       isSwap,
       fs,
       kernelLength,
-      kMode,
+      effectiveMode,
       prevKernels,
     );
 
@@ -498,9 +510,9 @@ export async function startRun(): Promise<void> {
       break;
     }
 
-    // Store kernels for warm-starting next iteration (free-kernel mode only;
-    // direct-biexp returns empty hFree so there's nothing to warm-start).
-    if (kMode === 'free-kernel') {
+    // Store kernels for warm-starting next iteration (only when free-kernel
+    // produced an hFree; direct-biexp returns empty hFree).
+    if (effectiveMode === 'free-kernel') {
       prevKernels = new Array(rects.length);
       let ki = 0;
       for (let si = 0; si < rects.length; si++) {
@@ -517,6 +529,7 @@ export async function startRun(): Promise<void> {
     const prevTauD = tauD;
     tauR = median(kernelResults.map((r) => r.tauRise));
     tauD = median(kernelResults.map((r) => r.tauDecay));
+    const usedDirect = effectiveMode === 'direct-biexp';
 
     setCurrentTauRise(tauR);
     setCurrentTauDecay(tauD);
@@ -531,12 +544,19 @@ export async function startRun(): Promise<void> {
       beta: medBeta,
       residual: medResidual,
       fs,
+      directTauRise: usedDirect ? tauR : undefined,
+      directTauDecay: usedDirect ? tauD : undefined,
+      directAgreed: usedDirect,
       subsets: kernelResults.map((r) => ({
         tauRise: r.tauRise,
         tauDecay: r.tauDecay,
         beta: r.beta,
         residual: r.residual,
         hFree: r.hFree,
+        directTauRise: usedDirect ? r.tauRise : undefined,
+        directTauDecay: usedDirect ? r.tauDecay : undefined,
+        directBeta: usedDirect ? r.beta : undefined,
+        directResidual: usedDirect ? r.residual : undefined,
       })),
     });
 

@@ -38,7 +38,7 @@ interface KernelJobFields {
   smoothLambda: number;
   biexpSkip: number;
   warmKernel?: Float32Array;
-  kernelMode: 'free-kernel' | 'direct-biexp';
+  kernelMode: 'free-kernel' | 'direct-biexp' | 'hybrid';
   onComplete(result: KernelResult): void;
 }
 

@@ -112,12 +112,22 @@ pub fn indeca_fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usi
 pub fn indeca_fit_biexp_direct(
     traces_flat: &[f32],
     spikes_flat: &[f32],
+    alphas: &[f64],
+    baselines: &[f64],
     trace_lengths: &[u32],
     fs: f64,
     refine: bool,
 ) -> JsValue {
     let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
-    let result = biexp_direct::fit_biexp_direct(traces_flat, spikes_flat, &lengths, fs, refine);
+    let result = biexp_direct::fit_biexp_direct(
+        traces_flat,
+        spikes_flat,
+        alphas,
+        baselines,
+        &lengths,
+        fs,
+        refine,
+    );
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 

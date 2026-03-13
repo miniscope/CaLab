@@ -82,10 +82,10 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ToggleSwitch
-          label="Direct Biexp Kernel"
-          description="Optimize kernel taus directly against trace reconstruction"
-          checked={kernelMode() === 'direct-biexp'}
-          onChange={(on) => setKernelMode(on ? 'direct-biexp' : 'free-kernel')}
+          label="Hybrid Kernel"
+          description="Run both free-kernel and direct estimation; transition when they agree"
+          checked={kernelMode() === 'hybrid'}
+          onChange={(on) => setKernelMode(on ? 'hybrid' : 'free-kernel')}
           disabled={isRunLocked()}
         />
 

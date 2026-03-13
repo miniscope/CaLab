@@ -20,6 +20,7 @@ import {
 import { selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createKernelFitSeries,
+  createDirectBiexpFitSeries,
   createGroundTruthKernelSeries,
   peakNormalize,
 } from '../../lib/chart/series-config.ts';
@@ -98,7 +99,22 @@ export function KernelDisplay(): JSX.Element {
     }
     peakNormalize(fitArray);
 
-    const columns: (number | null)[][] = [...subsetArrays, fitArray];
+    // Direct biexp fit curve (always present for series stability; null-filled when not hybrid)
+    const directTauR = snap.directTauRise;
+    const directTauD = snap.directTauDecay;
+    let directFitArray: (number | null)[];
+    if (directTauR != null && directTauD != null) {
+      directFitArray = new Array(maxLen);
+      for (let i = 0; i < maxLen; i++) {
+        const t = i / fs;
+        directFitArray[i] = Math.exp(-t / directTauD) - Math.exp(-t / directTauR);
+      }
+      peakNormalize(directFitArray as number[]);
+    } else {
+      directFitArray = new Array(maxLen).fill(null);
+    }
+
+    const columns: (number | null)[][] = [...subsetArrays, fitArray, directFitArray];
 
     // Ground truth kernel overlay (peak-normalized to 1.0 to match free/fit kernels)
     if (showGroundTruth()) {
@@ -132,6 +148,7 @@ export function KernelDisplay(): JSX.Element {
       });
     }
     s.push(createKernelFitSeries());
+    s.push(createDirectBiexpFitSeries());
     if (showGroundTruth()) {
       s.push(createGroundTruthKernelSeries());
     }
@@ -160,8 +177,11 @@ export function KernelDisplay(): JSX.Element {
 
   const tauRMs = () => formatTauMs(currentTauRise());
   const tauDMs = () => formatTauMs(currentTauDecay());
+  const directTauRMs = () => formatTauMs(snapshot()?.directTauRise ?? null);
+  const directTauDMs = () => formatTauMs(snapshot()?.directTauDecay ?? null);
   const gtTauRMs = () => formatTauMs(groundTruthTauRise());
   const gtTauDMs = () => formatTauMs(groundTruthTauDecay());
+  const hasDirectTaus = () => snapshot()?.directTauRise != null;
 
   return (
     <Show
@@ -183,6 +203,17 @@ export function KernelDisplay(): JSX.Element {
           <span>
             beta: <strong>{snapshot()?.beta.toFixed(3) ?? '--'}</strong>
           </span>
+          <Show when={hasDirectTaus()}>
+            <span style={{ color: '#e91e63' }}>
+              direct tau_r: <strong>{directTauRMs()}</strong> ms
+            </span>
+            <span style={{ color: '#e91e63' }}>
+              direct tau_d: <strong>{directTauDMs()}</strong> ms
+            </span>
+            <Show when={snapshot()?.directAgreed}>
+              <span style={{ color: '#4caf50', 'font-weight': 'bold' }}>agreed</span>
+            </Show>
+          </Show>
           <Show when={showGroundTruth()}>
             <span class="kernel-display__gt-stat">
               true tau_r: <strong>{gtTauRMs()}</strong> ms

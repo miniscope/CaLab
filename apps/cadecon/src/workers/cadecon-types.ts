@@ -19,6 +19,11 @@ export interface KernelResult {
   tauDecay: number;
   beta: number;
   residual: number;
+  /** Direct biexp tau values (hybrid mode only). */
+  directTauRise?: number;
+  directTauDecay?: number;
+  directBeta?: number;
+  directResidual?: number;
 }
 
 /** Messages sent TO a CaDecon worker. */
@@ -59,7 +64,7 @@ export type CaDeconWorkerInbound =
       warmKernel?: Float32Array;
       /** Kernel estimation mode: 'free-kernel' runs the two-step free-kernel + biexp fit;
        *  'direct-biexp' optimizes (tau_r, tau_d) directly against trace reconstruction. */
-      kernelMode: 'free-kernel' | 'direct-biexp';
+      kernelMode: 'free-kernel' | 'direct-biexp' | 'hybrid';
     }
   | { type: 'cancel' };
 

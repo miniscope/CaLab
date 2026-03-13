@@ -90,6 +90,8 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
       const biexpJs = indeca_fit_biexp_direct(
         req.tracesFlat,
         req.spikesFlat,
+        req.alphas,
+        req.baselines,
         req.traceLengths,
         req.fs,
         req.refine,
@@ -113,6 +115,72 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
           },
         },
         [],
+      );
+    } else if (req.kernelMode === 'hybrid') {
+      // Hybrid mode: run both free-kernel and direct-biexp, return combined result.
+
+      // Step 1: Free-form kernel estimation
+      const hFree = indeca_estimate_kernel(
+        req.tracesFlat,
+        req.spikesFlat,
+        req.traceLengths,
+        req.alphas,
+        req.baselines,
+        req.kernelLength,
+        req.maxIters,
+        req.tol,
+        req.warmKernel ?? EMPTY_F32,
+        req.smoothLambda,
+      );
+
+      if (cancelled) {
+        post({ type: 'cancelled', jobId: req.jobId });
+        return;
+      }
+
+      const hFreeArr = new Float32Array(hFree);
+
+      // Step 2: Bi-exponential fit of free kernel
+      const freeJs = indeca_fit_biexponential(hFreeArr, req.fs, req.refine, req.biexpSkip) as {
+        tau_rise: number;
+        tau_decay: number;
+        beta: number;
+        residual: number;
+      };
+
+      // Step 3: Direct biexp estimation
+      const directJs = indeca_fit_biexp_direct(
+        req.tracesFlat,
+        req.spikesFlat,
+        req.alphas,
+        req.baselines,
+        req.traceLengths,
+        req.fs,
+        req.refine,
+      ) as {
+        tau_rise: number;
+        tau_decay: number;
+        beta: number;
+        residual: number;
+      };
+
+      post(
+        {
+          type: 'kernel-complete',
+          jobId: req.jobId,
+          result: {
+            hFree: hFreeArr,
+            tauRise: freeJs.tau_rise,
+            tauDecay: freeJs.tau_decay,
+            beta: freeJs.beta,
+            residual: freeJs.residual,
+            directTauRise: directJs.tau_rise,
+            directTauDecay: directJs.tau_decay,
+            directBeta: directJs.beta,
+            directResidual: directJs.residual,
+          },
+        },
+        [hFreeArr.buffer],
       );
     } else {
       // Free-kernel mode: two-step approach (estimate free kernel + biexp fit)
