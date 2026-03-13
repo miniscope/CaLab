@@ -99,6 +99,8 @@ npm run dev
 | Script                | Description                            |
 | --------------------- | -------------------------------------- |
 | `npm run dev`         | Start CaTune dev server                |
+| `npm run dev:cadecon` | Start CaDecon dev server               |
+| `npm run dev:carank`  | Start CaRank dev server                |
 | `npm run build`       | Build WASM + all apps                  |
 | `npm run build:pages` | Build + combine dist for GitHub Pages  |
 | `npm run build:wasm`  | Compile Rust solver to WASM            |

@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev -w apps/catune",
     "dev:carank": "npm run dev -w apps/carank",
+    "dev:cadecon": "npm run dev -w apps/cadecon",
     "build": "npm run build:wasm && npm run build:apps",
     "build:apps": "node scripts/build-apps.mjs",
     "build:pages": "CALAB_PAGES=1 npm run build && node scripts/combine-dist.mjs",

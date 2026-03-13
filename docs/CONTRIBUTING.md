@@ -24,6 +24,7 @@ CaLab is an npm workspaces monorepo:
 | Workspace          | Path                  | Description                                     |
 | ------------------ | --------------------- | ----------------------------------------------- |
 | `catune`           | `apps/catune/`        | SolidJS app — deconvolution parameter tuning    |
+| `cadecon`          | `apps/cadecon/`       | SolidJS app — automated binary spike inference  |
 | `carank`           | `apps/carank/`        | SolidJS app — CNMF trace quality ranking        |
 | `@calab/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
 | `@calab/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
@@ -41,8 +42,9 @@ Run from the repo root:
 | Script                 | Description                                       |
 | ---------------------- | ------------------------------------------------- |
 | `npm run dev`          | Start CaTune dev server                           |
+| `npm run dev:cadecon`  | Start CaDecon dev server                          |
 | `npm run dev:carank`   | Start CaRank dev server                           |
-| `npm run build`        | Build WASM + both apps                            |
+| `npm run build`        | Build WASM + all apps                             |
 | `npm run build:pages`  | Build + combine dist for GitHub Pages             |
 | `npm run build:wasm`   | Compile Rust solver to WASM                       |
 | `npm run test`         | Run Vitest tests across all workspaces            |
@@ -57,10 +59,13 @@ You can also run scripts in a specific workspace:
 
 ```bash
 npm run dev -w apps/catune      # Start CaTune dev server
+npm run dev -w apps/cadecon     # Start CaDecon dev server
 npm run dev -w apps/carank      # Start CaRank dev server
 npm run test -w apps/catune     # Run app tests only
 npm run test -w packages/io     # Run io package tests only
 ```
+
+> **Note:** Always start dev servers from the repo root using `npm run dev:*` or `npm run dev -w apps/<name>`. Running `npx vite --config apps/<name>/vite.config.ts` from the repo root will fail (404) because Vite resolves `index.html` relative to its working directory, not the config file location.
 
 ## Creating a New Package
 
