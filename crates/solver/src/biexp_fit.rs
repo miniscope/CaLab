@@ -126,22 +126,10 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
 /// Model: h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r))
 /// Beta is the least-squares optimal scalar: beta = <h_free, template> / <template, template>
 ///
-/// The template uses bin-integrated (bin-averaged) evaluation rather than
-/// point-evaluation. The free-form kernel from `estimate_free_kernel` represents
-/// bin-averaged values, so the template must match. Each bin-averaged sample is:
-///   (tau/dt) * (1 - exp(-dt/tau)) * exp(-i*dt/tau)
-/// This reduces to the point-evaluated formula when dt -> 0.
-///
 /// Uses the identity ||h - beta*t||^2 = ||h||^2 - <h,t>^2 / ||t||^2
 /// to compute both beta and residual in a single pass over the data.
 fn eval_biexp(h_free: &[f32], tau_r: f64, tau_d: f64, dt: f64, skip: usize) -> (f64, f64) {
     let n = h_free.len();
-
-    // Bin-integration coefficients: (tau/dt) * (1 - exp(-dt/tau))
-    // Converts point-evaluated exp(-t/tau) to bin-averaged values,
-    // matching what estimate_free_kernel produces from bin-averaged traces.
-    let c_d = (tau_d / dt) * (1.0 - (-dt / tau_d).exp());
-    let c_r = (tau_r / dt) * (1.0 - (-dt / tau_r).exp());
 
     let mut dot_ht = 0.0_f64; // <h_free, template>
     let mut dot_tt = 0.0_f64; // <template, template>
@@ -149,7 +137,7 @@ fn eval_biexp(h_free: &[f32], tau_r: f64, tau_d: f64, dt: f64, skip: usize) -> (
 
     for i in skip..n {
         let t = i as f64 * dt;
-        let template = c_d * (-t / tau_d).exp() - c_r * (-t / tau_r).exp();
+        let template = (-t / tau_d).exp() - (-t / tau_r).exp();
         let hi = h_free[i] as f64;
         dot_ht += hi * template;
         dot_tt += template * template;
@@ -235,25 +223,8 @@ fn golden_section_refine(
 mod tests {
     use super::*;
 
-    /// Generate a bin-averaged bi-exponential kernel with known parameters.
-    ///
-    /// Uses the same closed-form integral as `eval_biexp`: each sample is the
-    /// average of the continuous bi-exponential over the bin, matching what
-    /// `estimate_free_kernel` produces from real data.
+    /// Generate a bi-exponential kernel with known parameters.
     fn make_biexp(tau_r: f64, tau_d: f64, beta: f64, fs: f64, n: usize) -> Vec<f32> {
-        let dt = 1.0 / fs;
-        let c_d = (tau_d / dt) * (1.0 - (-dt / tau_d).exp());
-        let c_r = (tau_r / dt) * (1.0 - (-dt / tau_r).exp());
-        (0..n)
-            .map(|i| {
-                let t = i as f64 * dt;
-                (beta * (c_d * (-t / tau_d).exp() - c_r * (-t / tau_r).exp())) as f32
-            })
-            .collect()
-    }
-
-    /// Generate a point-evaluated (non-bin-averaged) bi-exponential kernel.
-    fn make_biexp_point(tau_r: f64, tau_d: f64, beta: f64, fs: f64, n: usize) -> Vec<f32> {
         let dt = 1.0 / fs;
         (0..n)
             .map(|i| {
@@ -382,40 +353,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bin_integration_improves_recovery() {
-        // At fs=30, bin-averaging causes ~18% correction on the rise component
-        // for tau_r=0.08. The bin-integrated template should recover these
-        // parameters tightly because it matches the bin-averaged kernel shape.
-        let tau_r_true = 0.08;
-        let tau_d_true = 0.4;
-        let fs = 30.0;
-        let n = 60;
-
-        // Bin-averaged kernel (what estimate_free_kernel produces)
-        let h_bin = make_biexp(tau_r_true, tau_d_true, 2.0, fs, n);
-        let result_bin = fit_biexponential(&h_bin, fs, true, 0);
-        let tr_err_bin = (result_bin.tau_rise - tau_r_true).abs() / tau_r_true;
-
-        assert!(
-            tr_err_bin < 0.10,
-            "Bin-integrated fit should recover tau_r within 10%: error {:.1}% (got {:.4}, expected {:.4})",
-            tr_err_bin * 100.0,
-            result_bin.tau_rise,
-            tau_r_true
-        );
-
-        // Point-evaluated kernel (mismatched with bin-integrated template)
-        // should give worse tau_r recovery, demonstrating the fix matters
-        let h_point = make_biexp_point(tau_r_true, tau_d_true, 2.0, fs, n);
-        let result_point = fit_biexponential(&h_point, fs, true, 0);
-        let tr_err_point = (result_point.tau_rise - tau_r_true).abs() / tau_r_true;
-
-        assert!(
-            tr_err_bin <= tr_err_point + 0.01,
-            "Matched template should recover at least as well: bin_err={:.1}% vs point_err={:.1}%",
-            tr_err_bin * 100.0,
-            tr_err_point * 100.0
-        );
-    }
 }

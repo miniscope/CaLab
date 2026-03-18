@@ -473,14 +473,15 @@ export function indeca_fit_biexponential(h_free, fs, refine, skip) {
  * @param {boolean} hp_enabled
  * @param {boolean} lp_enabled
  * @param {Float32Array} warm_counts
+ * @param {number} lambda
  * @returns {any}
  */
-export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, warm_counts) {
+export function indeca_solve_trace(trace, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, warm_counts, lambda) {
     const ptr0 = passArrayF32ToWasm0(trace, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF32ToWasm0(warm_counts, wasm.__wbindgen_export2);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, ptr1, len1);
+    const ret = wasm.indeca_solve_trace(ptr0, len0, tau_r, tau_d, fs, upsample_factor, max_iters, tol, hp_enabled, lp_enabled, ptr1, len1, lambda);
     return takeObject(ret);
 }
 

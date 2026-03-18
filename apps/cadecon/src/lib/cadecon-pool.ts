@@ -19,6 +19,7 @@ interface TraceJobFields {
   tol: number;
   hpEnabled: boolean;
   lpEnabled: boolean;
+  lambda: number;
   warmCounts?: Float32Array;
   onComplete(result: TraceResult): void;
 }
@@ -95,6 +96,7 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           tol: job.tol,
           hpEnabled: job.hpEnabled,
           lpEnabled: job.lpEnabled,
+          lambda: job.lambda,
           warmCounts: warmCopy,
         },
         transfers,
