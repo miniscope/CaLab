@@ -107,7 +107,7 @@ impl Solver {
                         let x_old = self.solution[i];
                         self.residual_buf[i] = x_old;
                         let z = self.solution_prev[i] - step_f32 * self.gradient[i];
-                        self.solution[i] = z.clamp(0.0, 1.0);
+                        self.solution[i] = (z - thresh_f32).clamp(0.0, 1.0);
                     }
                 }
             }

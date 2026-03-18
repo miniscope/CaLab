@@ -111,6 +111,7 @@ function dispatchTraceJobs(
   tol: number,
   hpEnabled: boolean,
   lpEnabled: boolean,
+  lambda: number,
   prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
@@ -157,6 +158,7 @@ function dispatchTraceJobs(
         tol,
         hpEnabled,
         lpEnabled,
+        lambda,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -288,6 +290,7 @@ export async function startRun(): Promise<void> {
   const nTp = numTimepoints();
   const hpOn = hpFilterEnabled();
   const lpOn = lpFilterEnabled();
+  const sparsityLambda = 0.0;
 
   // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
   const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
@@ -365,6 +368,7 @@ export async function startRun(): Promise<void> {
       TRACE_FISTA_TOL,
       hpOn,
       lpOn,
+      sparsityLambda,
       prevTraceCounts,
     );
 
@@ -613,6 +617,7 @@ export async function startRun(): Promise<void> {
           tol: TRACE_FISTA_TOL,
           hpEnabled: hpOn,
           lpEnabled: lpOn,
+          lambda: sparsityLambda,
           warmCounts,
           onComplete(result: TraceResult) {
             updateTraceResult(cellSubsetKey(c, -1), {

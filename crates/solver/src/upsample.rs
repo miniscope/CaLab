@@ -45,8 +45,9 @@ pub fn upsample_trace(trace: &[f32], factor: usize) -> Vec<f32> {
 
 /// Upsample spike counts to a binary trace at the upsampled rate.
 ///
-/// For each original bin with count C, places min(C, factor) ones spread
-/// across the corresponding upsampled bins. Conserves total spike count.
+/// For each original bin with count C, places min(C, factor) ones centered
+/// on the original sample position (`i * factor`), so spikes align with the
+/// timepoint they belong to rather than the edge of the upsampled bin.
 /// Output length = counts.len() * factor.
 pub fn upsample_counts_to_binary(counts: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
@@ -60,8 +61,13 @@ pub fn upsample_counts_to_binary(counts: &[f32], factor: usize) -> Vec<f32> {
     let mut out = vec![0.0_f32; n * factor];
     for i in 0..n {
         let c = (counts[i].round() as usize).min(factor);
+        let center = i * factor;
+        let start = center.saturating_sub(c / 2);
         for j in 0..c {
-            out[i * factor + j] = 1.0;
+            let idx = start + j;
+            if idx < out.len() {
+                out[idx] = 1.0;
+            }
         }
     }
     out
@@ -83,8 +89,12 @@ pub fn downsample_average(signal: &[f32], factor: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Downsample a binary spike signal by bin-summing: each output sample
-/// is the sum of `factor` consecutive input samples.
+/// Downsample a binary spike signal by bin-summing with centered bins.
+///
+/// Each output bin is centered on the original sample position (`i * factor`)
+/// rather than starting at the edge, so spikes near an original timepoint are
+/// attributed to that timepoint. Interior bins have exactly `factor` elements;
+/// the first bin is narrower because there are no samples before t=0.
 ///
 /// Output length = input_length / factor (truncated).
 /// At factor=1, returns a copy of the input.
@@ -92,10 +102,16 @@ pub fn downsample_binary(s_bin: &[f32], factor: usize) -> Vec<f32> {
     if factor <= 1 {
         return s_bin.to_vec();
     }
-    s_bin
-        .chunks_exact(factor)
-        .map(|chunk| chunk.iter().sum())
-        .collect()
+    let n_out = s_bin.len() / factor;
+    let half = factor / 2;
+    let mut out = vec![0.0_f32; n_out];
+    for i in 0..n_out {
+        let center = i * factor;
+        let lo = center.saturating_sub(half);
+        let hi = (center + factor - half).min(s_bin.len());
+        out[i] = s_bin[lo..hi].iter().sum();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -170,14 +186,17 @@ mod tests {
     }
 
     #[test]
-    fn bin_sum_downsample() {
-        // Simulate a binary signal at 3x: some 1s within each bin
+    fn bin_sum_downsample_centered() {
+        // factor=3, half=1. Centered bins:
+        //   Bin 0 (center=0): [0, 2) → indices 0,1
+        //   Bin 1 (center=3): [2, 5) → indices 2,3,4
+        //   Bin 2 (center=6): [5, 8) → indices 5,6,7
         let s_bin = vec![1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let down = downsample_binary(&s_bin, 3);
         assert_eq!(down.len(), 3);
-        assert!((down[0] - 2.0).abs() < 1e-6);
-        assert!((down[1] - 0.0).abs() < 1e-6);
-        assert!((down[2] - 3.0).abs() < 1e-6);
+        assert!((down[0] - 1.0).abs() < 1e-6); // [0,1] → 1
+        assert!((down[1] - 1.0).abs() < 1e-6); // [2,3,4] → 1
+        assert!((down[2] - 2.0).abs() < 1e-6); // [5,6,7] → 2
     }
 
     #[test]
@@ -207,15 +226,23 @@ mod tests {
         for &v in &bin {
             assert!(v == 0.0 || v == 1.0, "Non-binary value: {}", v);
         }
-        // Bin 0: 2 spikes → positions 0,1
+        // Bin 0 (center=0): 2 spikes, start=max(0, 0-1)=0 → positions 0,1
         assert_eq!(bin[0], 1.0);
         assert_eq!(bin[1], 1.0);
         assert_eq!(bin[2], 0.0);
+        assert_eq!(bin[3], 0.0);
         // Bin 1: 0 spikes
         assert_eq!(bin[4], 0.0);
-        // Bin 2: 1 spike → position 8
+        // Bin 2 (center=8): 1 spike, start=8 → position 8
         assert_eq!(bin[8], 1.0);
         assert_eq!(bin[9], 0.0);
+        assert_eq!(bin[10], 0.0);
+        // Bin 3 (center=12): 3 spikes, start=12-1=11 → positions 11,12,13
+        assert_eq!(bin[11], 1.0);
+        assert_eq!(bin[12], 1.0);
+        assert_eq!(bin[13], 1.0);
+        assert_eq!(bin[14], 0.0);
+        assert_eq!(bin[15], 0.0);
     }
 
     #[test]
