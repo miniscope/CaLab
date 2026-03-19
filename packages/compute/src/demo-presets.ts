@@ -98,15 +98,15 @@ export const DEMO_PRESETS: DemoPreset[] = [
       noise: { ...DEFAULT_NOISE },
     },
   },
-  // modeled on jGCaMP8f
+  // modeled on jGCaMP8f — fast indicator, higher noise
   {
     id: 'config-4',
     label: 'Demo Config 4',
     description: 'Configuration 4',
     params: {
-      tauRise: 0.03,
+      tauRise: 0.05,
       tauDecay: 0.3,
-      snrBase: 18,
+      snrBase: 12,
       snrStep: 2,
       markov: { ...DEFAULT_MARKOV },
       noise: { ...DEFAULT_NOISE },
@@ -126,13 +126,13 @@ export const DEMO_PRESETS: DemoPreset[] = [
       noise: { ...DEFAULT_NOISE },
     },
   },
-  // legacy hardcoded values
+  // fast rise, moderate decay — tests near-floor tau_rise at 30 Hz
   {
     id: 'config-6',
     label: 'Demo Config 6',
-    description: 'Legacy configuration',
+    description: 'Fast-rise configuration',
     params: {
-      tauRise: 0.02,
+      tauRise: 0.04,
       tauDecay: 0.4,
       snrBase: 20,
       snrStep: 2,

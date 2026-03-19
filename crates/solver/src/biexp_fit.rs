@@ -75,9 +75,13 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
     let dt = 1.0 / fs;
 
     // Grid search ranges (in seconds).
-    // tau_r lower bound: at least 2 samples (Nyquist floor). A rise time shorter
-    // than 2/fs is unresolvable and drives the iterative loop toward collapse.
-    let tau_r_lo = (2.0 / fs).max(0.005_f64);
+    // tau_r lower bound: at least 1 sample period. Rise times shorter than dt
+    // are not resolvable — the biexponential template degrades smoothly to a
+    // pure exponential decay (exp(-t/tau_r) → 0 for all sampled t). The fit
+    // still works but the reported tau_rise is a ceiling, not a measurement.
+    // Note: the two-component model absorbs noise artifacts that previously
+    // caused tau_rise collapse, so the old 2*dt floor is no longer needed.
+    let tau_r_lo = (1.0 / fs).max(0.005_f64);
     let tau_r_hi = 0.5_f64;
     let tau_d_lo = 0.05_f64;
     let tau_d_hi = 5.0_f64;

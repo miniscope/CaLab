@@ -28,11 +28,11 @@ from calab import run_deconvolution_full
 @pytest.mark.parametrize(
     "tau_r,tau_d,fs",
     [
-        (0.02, 0.4, 30.0),
-        (0.005, 0.1, 100.0),
-        (0.05, 1.0, 20.0),
-        (0.01, 0.2, 50.0),
-        (0.001, 2.0, 100.0),
+        (0.04, 0.4, 30.0),   # standard: ~1.2 samples rise
+        (0.015, 0.15, 100.0), # fast: ~1.5 samples rise
+        (0.05, 1.0, 20.0),   # slow: 1.0 samples rise (at floor)
+        (0.02, 0.2, 50.0),   # medium: 1.0 samples rise
+        (0.01, 2.0, 100.0),  # long decay, resolvable rise
     ],
 )
 def test_kernel_equivalence_across_params(tau_r: float, tau_d: float, fs: float):

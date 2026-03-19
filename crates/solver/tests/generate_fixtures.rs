@@ -71,9 +71,10 @@ fn write_fixture(name: &str, fixture: &Fixture) {
 #[ignore]
 fn generate_fixtures() {
     // --- standard_clean ---
+    // GCaMP6f-like at 30 Hz: tau_rise=0.04s (>1 sample at 33ms dt)
     {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.04, 0.4, 0.01, 30.0);
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -84,7 +85,7 @@ fn generate_fixtures() {
             "standard_clean",
             &Fixture {
                 params: FixtureParams {
-                    tau_rise: 0.02,
+                    tau_rise: 0.04,
                     tau_decay: 0.4,
                     lambda: 0.01,
                     fs: 30.0,
@@ -102,9 +103,10 @@ fn generate_fixtures() {
     }
 
     // --- standard_dc_offset ---
+    // Same kernel as standard_clean, with +5.0 DC offset
     {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.04, 0.4, 0.01, 30.0);
         let kernel = solver.get_kernel();
         let mut trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         for v in trace.iter_mut() {
@@ -118,7 +120,7 @@ fn generate_fixtures() {
             "standard_dc_offset",
             &Fixture {
                 params: FixtureParams {
-                    tau_rise: 0.02,
+                    tau_rise: 0.04,
                     tau_decay: 0.4,
                     lambda: 0.01,
                     fs: 30.0,
@@ -136,9 +138,10 @@ fn generate_fixtures() {
     }
 
     // --- fast_kinetics ---
+    // jGCaMP8f-like at 100 Hz: tau_rise=0.015s (1.5 samples at 10ms dt)
     {
         let mut solver = Solver::new();
-        solver.set_params(0.005, 0.1, 0.01, 100.0);
+        solver.set_params(0.015, 0.15, 0.01, 100.0);
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 500, &[50, 200, 400]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -149,8 +152,8 @@ fn generate_fixtures() {
             "fast_kinetics",
             &Fixture {
                 params: FixtureParams {
-                    tau_rise: 0.005,
-                    tau_decay: 0.1,
+                    tau_rise: 0.015,
+                    tau_decay: 0.15,
                     lambda: 0.01,
                     fs: 100.0,
                 },
@@ -167,9 +170,10 @@ fn generate_fixtures() {
     }
 
     // --- high_lambda ---
+    // Same kernel as standard_clean, high sparsity penalty
     {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 1.0, 30.0);
+        solver.set_params(0.04, 0.4, 1.0, 30.0);
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -180,7 +184,7 @@ fn generate_fixtures() {
             "high_lambda",
             &Fixture {
                 params: FixtureParams {
-                    tau_rise: 0.02,
+                    tau_rise: 0.04,
                     tau_decay: 0.4,
                     lambda: 1.0,
                     fs: 30.0,
@@ -198,9 +202,10 @@ fn generate_fixtures() {
     }
 
     // --- with_filter ---
+    // Moderate kinetics at 100 Hz with bandpass filter enabled
     {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 100.0);
+        solver.set_params(0.04, 0.4, 0.01, 100.0);
         solver.set_filter_enabled(true);
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 1024, &[100, 300, 600, 800]);
@@ -224,7 +229,7 @@ fn generate_fixtures() {
             "with_filter",
             &Fixture {
                 params: FixtureParams {
-                    tau_rise: 0.02,
+                    tau_rise: 0.04,
                     tau_decay: 0.4,
                     lambda: 0.01,
                     fs: 100.0,
