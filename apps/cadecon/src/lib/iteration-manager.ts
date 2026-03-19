@@ -405,7 +405,7 @@ export async function startRun(): Promise<void> {
   }
 
   // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
-  let kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
+  const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
 
   // Warm-start state carried between iterations
   let prevTraceCounts: Map<number, Float32Array> | undefined;
