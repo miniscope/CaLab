@@ -19,7 +19,6 @@ export interface CadeconSubmission extends BaseSubmission {
   target_coverage: number;
   max_iterations: number;
   convergence_tol: number;
-  weighting_enabled: boolean;
   hp_filter_enabled: boolean;
   lp_filter_enabled: boolean;
 

@@ -36,7 +36,6 @@ export interface CadeconSubmissionContext {
   targetCoverage: number;
   maxIterations: number;
   convergenceTol: number;
-  weightingEnabled: boolean;
   hpFilterEnabled: boolean;
   lpFilterEnabled: boolean;
   alphaValues: number[];
@@ -131,7 +130,6 @@ export async function submitToSupabase(
     target_coverage: ctx.targetCoverage,
     max_iterations: ctx.maxIterations,
     convergence_tol: ctx.convergenceTol,
-    weighting_enabled: ctx.weightingEnabled,
     hp_filter_enabled: ctx.hpFilterEnabled,
     lp_filter_enabled: ctx.lpFilterEnabled,
 

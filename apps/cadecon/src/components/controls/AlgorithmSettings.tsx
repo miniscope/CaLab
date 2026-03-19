@@ -1,16 +1,9 @@
 import type { JSX } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider.tsx';
-import { DualRangeSlider } from './DualRangeSlider.tsx';
 import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
-  tauRiseInit,
-  setTauRiseInit,
-  tauDecayInit,
-  setTauDecayInit,
   upsampleTarget,
   setUpsampleTarget,
-  weightingEnabled,
-  setWeightingEnabled,
   hpFilterEnabled,
   setHpFilterEnabled,
   lpFilterEnabled,
@@ -26,22 +19,6 @@ export function AlgorithmSettings(): JSX.Element {
   return (
     <div class="param-panel">
       <div class="param-panel__sliders">
-        <DualRangeSlider
-          label="Initial Kernel τ's"
-          lowLabel="Rise"
-          highLabel="Decay"
-          lowValue={tauRiseInit}
-          highValue={tauDecayInit}
-          setLowValue={setTauRiseInit}
-          setHighValue={setTauDecayInit}
-          min={0.01}
-          max={3.0}
-          step={0.01}
-          format={(v) => (v * 1000).toFixed(0)}
-          unit="ms"
-          disabled={isRunLocked()}
-        />
-
         <ParameterSlider
           label="Upsample Target"
           value={upsampleTarget}
@@ -77,14 +54,6 @@ export function AlgorithmSettings(): JSX.Element {
           format={(v) => v.toFixed(3)}
           disabled={isRunLocked()}
           noSlider
-        />
-
-        <ToggleSwitch
-          label="Cell Weighting"
-          description="Weight cells by SNR during kernel updates"
-          checked={weightingEnabled()}
-          onChange={setWeightingEnabled}
-          disabled={isRunLocked()}
         />
 
         <ToggleSwitch

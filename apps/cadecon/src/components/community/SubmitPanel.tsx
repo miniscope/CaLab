@@ -27,7 +27,6 @@ import {
 } from '../../lib/iteration-store.ts';
 import {
   upsampleFactor,
-  weightingEnabled,
   hpFilterEnabled,
   lpFilterEnabled,
   maxIterations,
@@ -134,7 +133,6 @@ export function SubmitPanel() {
           targetCoverage: targetCoverage(),
           maxIterations: maxIterations(),
           convergenceTol: convergenceTol(),
-          weightingEnabled: weightingEnabled(),
           hpFilterEnabled: hpFilterEnabled(),
           lpFilterEnabled: lpFilterEnabled(),
           alphaValues: alphaValues(),
