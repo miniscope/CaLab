@@ -332,7 +332,8 @@ function dispatchSeedTraceJobs(
           setCompletedSubsetTraceJobs(completed);
           if (completed === jobs.length) resolve(results);
         },
-        onError() {
+        onError(msg: string) {
+          console.warn('[CaDecon] seed-trace error:', msg);
           completed++;
           setCompletedSubsetTraceJobs(completed);
           if (completed === jobs.length) resolve(results);

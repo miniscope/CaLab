@@ -55,7 +55,7 @@ pub struct SeedKernelResult {
 }
 
 /// Median of a slice (copies + sorts). Returns 0.0 for empty input.
-fn median(data: &[f32]) -> f32 {
+pub(crate) fn median(data: &[f32]) -> f32 {
     if data.is_empty() {
         return 0.0;
     }
@@ -70,7 +70,7 @@ fn median(data: &[f32]) -> f32 {
 }
 
 /// Median absolute deviation of a slice.
-fn mad(data: &[f32], median_val: f32) -> f32 {
+pub(crate) fn mad(data: &[f32], median_val: f32) -> f32 {
     if data.is_empty() {
         return 0.0;
     }

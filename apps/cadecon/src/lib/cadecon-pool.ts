@@ -95,10 +95,9 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
 
   buildDispatch(job) {
     if (job.kind === 'seed-trace') {
-      const traceCopy = new Float32Array(job.trace);
       return [
-        { type: 'seed-trace-job', jobId: job.jobId, trace: traceCopy, fs: job.fs },
-        [traceCopy.buffer],
+        { type: 'seed-trace-job', jobId: job.jobId, trace: job.trace, fs: job.fs },
+        [job.trace.buffer],
       ];
     } else if (job.kind === 'trace') {
       const traceCopy = new Float32Array(job.trace);

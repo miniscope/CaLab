@@ -117,20 +117,3 @@ pub fn seed_trace(trace: &[f32], fs: f64) -> JsValue {
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
-/// Auto-estimate kernel from raw traces via peak-seeded free kernel estimation.
-///
-/// Pools prominent peaks from all traces, walks back to onset, builds sparse
-/// spike trains, then runs estimate_free_kernel → fit_biexponential.
-///
-/// Returns a JsValue containing the serialized SeedKernelResult:
-/// { free_kernel, tau_rise, tau_decay, beta, residual, n_seed_spikes }
-#[wasm_bindgen]
-pub fn seed_kernel_estimate(
-    traces_flat: &[f32],
-    trace_lengths: &[u32],
-    fs: f64,
-) -> JsValue {
-    let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
-    let result = peak_seed::seed_kernel_estimate(traces_flat, &lengths, fs);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
-}
