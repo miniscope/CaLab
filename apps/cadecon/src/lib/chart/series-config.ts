@@ -40,8 +40,16 @@ export function createKernelFreeSeries(subsetIdx: number): uPlot.Series {
   return { label: `Subset ${subsetIdx}`, stroke: withOpacity(color, 0.4), width: 1 };
 }
 
-export function createKernelFitSeries(): uPlot.Series {
-  return { label: 'Fit', stroke: '#9467bd', width: 1.5, dash: [6, 3] };
+export function createKernelFitSlowSeries(): uPlot.Series {
+  return { label: 'Slow', stroke: '#9467bd', width: 1.5, dash: [6, 3] };
+}
+
+export function createKernelFitFastSeries(): uPlot.Series {
+  return { label: 'Fast', stroke: '#d62728', width: 1, dash: [3, 2] };
+}
+
+export function createKernelFitFullSeries(): uPlot.Series {
+  return { label: 'Slow+Fast', stroke: '#e377c2', width: 2 };
 }
 
 export function createKernelMergedSeries(): uPlot.Series {

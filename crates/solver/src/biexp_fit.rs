@@ -1,28 +1,26 @@
-/// Bi-exponential fitting: extract tau_rise and tau_decay from a free-form kernel.
+/// Two-component bi-exponential fitting: extract tau_rise and tau_decay from a free-form kernel.
 ///
-/// Fits h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r)) to the estimated kernel
-/// using grid search over (tau_r, tau_d) with closed-form beta, optionally
-/// refined by golden-section search.
+/// Fits h(t) = beta_s * (exp(-t/tau_d) - exp(-t/tau_r)) + beta_f * exp(-t/tau_f)
+/// where:
+/// - **Slow component** (biexp): real calcium kernel — tau_rise and tau_decay extracted here
+/// - **Fast component** (exponential decay): absorbs noise artifact near t=0
 ///
-/// # Why this works (and why direct trace-level optimization does not)
+/// The fast component uses a simple exponential exp(-t/τ_f). Since the kernel is a causal
+/// impulse response with h(0)=0, bin 0 should be excluded from the fit (skip≥1). The fast
+/// component absorbs the noise artifact at bins 1-3 that previously required skip=4.
 ///
-/// This function fits the bi-exponential model to the *kernel shape* estimated
-/// by `kernel_est::estimate_free_kernel`. The free-form kernel has ~50 samples,
-/// and the bi-exponential structure is unambiguous at this level: the sharp
-/// rising edge and long exponential tail are geometrically distinct features
-/// that cleanly determine tau_rise and tau_decay.
+/// When no artifact exists, beta_f converges to ~0, recovering the single-biexp result.
 ///
-/// Fitting (tau_r, tau_d) directly against trace-level reconstruction quality
-/// (i.e., evaluating how well `conv(spikes, kernel(tau_r, tau_d))` matches the
-/// observed traces) was tried and fails: different (tau_r, tau_d) pairs produce
-/// nearly identical convolutions with realistic spike trains because transient
-/// overlap destroys the parameter-specific signatures. The loss surface becomes
-/// a shallow ridge where tau_r and tau_d drift toward each other. This happens
-/// with any trace-level metric (SSE, projection residual, correlation).
+/// Uses grid search over (tau_r, tau_d, tau_f) with 2-variable NNLS for (beta_s, beta_f),
+/// optionally refined by golden-section search.
 ///
-/// The `skip` parameter helps avoid early-bin artifacts in the free kernel
-/// (often caused by imperfect spike timing at iteration boundaries) that can
-/// bias the tau_rise estimate.
+/// # Why two components?
+///
+/// During iterative deconvolution, the free-form kernel develops a fast spike near t=0
+/// from noise fitting. A single biexponential tries to explain both the real calcium
+/// peak and this noise artifact with one curve, causing tau_rise to collapse toward 0.
+/// The two-component model explicitly separates them: the fast component absorbs the
+/// noise artifact while the slow component accurately captures the true calcium kernel.
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct BiexpResult {
@@ -30,13 +28,15 @@ pub struct BiexpResult {
     pub tau_decay: f64,
     pub beta: f64,
     pub residual: f64,
+    pub tau_fast: f64,
+    pub beta_fast: f64,
 }
 
-/// Fit a bi-exponential model to a free-form kernel.
+/// Fit a two-component bi-exponential model to a free-form kernel.
 ///
-/// Uses a 20x20 log-spaced grid search over (tau_r, tau_d) with
-/// closed-form beta at each grid point, followed by optional
-/// golden-section refinement around the best grid point.
+/// Uses a 20x20x8 log-spaced grid search over (tau_r, tau_d, tau_f) with
+/// 2-variable NNLS at each grid point, followed by optional golden-section
+/// refinement around the best grid point.
 ///
 /// Arguments:
 /// - `h_free`: the free-form kernel to fit (from estimate_free_kernel)
@@ -52,6 +52,8 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
             tau_decay: 0.4,
             beta: 0.0,
             residual: f64::INFINITY,
+            tau_fast: 0.0,
+            beta_fast: 0.0,
         };
     }
 
@@ -65,6 +67,13 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
     let tau_d_lo = 0.05_f64;
     let tau_d_hi = 5.0_f64;
 
+    // tau_f range: fast component that peaks at t=0
+    // Lower bound: at least 1 sample (1/fs) or 1ms
+    // Upper bound: min(tau_r_lo, 50ms) — must be faster than the slowest rise time considered
+    let tau_f_lo = (1.0 / fs).max(0.001);
+    let tau_f_hi = tau_r_lo.min(0.05);
+    let tau_f_grid_n = if tau_f_lo < tau_f_hi { 8 } else { 0 };
+
     let grid_n = 20;
     let log_tr_lo = tau_r_lo.ln();
     let log_tr_hi = tau_r_hi.ln();
@@ -76,6 +85,8 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
         tau_decay: 0.4,
         beta: 0.0,
         residual: f64::INFINITY,
+        tau_fast: 0.0,
+        beta_fast: 0.0,
     };
 
     // Phase 1: Grid search
@@ -92,97 +103,211 @@ pub fn fit_biexponential(h_free: &[f32], fs: f64, refine: bool, skip: usize) -> 
                 continue;
             }
 
-            let (beta, residual) = eval_biexp(h_free, tau_r, tau_d, dt, skip);
-            if residual < best.residual {
-                best = BiexpResult {
-                    tau_rise: tau_r,
-                    tau_decay: tau_d,
-                    beta,
-                    residual,
-                };
+            if tau_f_grid_n > 0 {
+                // Scan tau_f values
+                let log_tf_lo = tau_f_lo.ln();
+                let log_tf_hi = tau_f_hi.ln();
+                for k in 0..tau_f_grid_n {
+                    let log_tf = log_tf_lo
+                        + (log_tf_hi - log_tf_lo) * k as f64 / (tau_f_grid_n - 1) as f64;
+                    let tau_f = log_tf.exp();
+
+                    // Enforce tau_f < tau_r
+                    if tau_f >= tau_r {
+                        continue;
+                    }
+
+                    let (beta_s, beta_f, residual) =
+                        eval_two_component(h_free, tau_r, tau_d, tau_f, dt, skip);
+                    if residual < best.residual {
+                        best = BiexpResult {
+                            tau_rise: tau_r,
+                            tau_decay: tau_d,
+                            beta: beta_s,
+                            residual,
+                            tau_fast: tau_f,
+                            beta_fast: beta_f,
+                        };
+                    }
+                }
+            } else {
+                // No valid tau_f range — fit without fast component
+                let (beta_s, _, residual) =
+                    eval_two_component(h_free, tau_r, tau_d, dt, dt, skip);
+                if residual < best.residual {
+                    best = BiexpResult {
+                        tau_rise: tau_r,
+                        tau_decay: tau_d,
+                        beta: beta_s,
+                        residual,
+                        tau_fast: 0.0,
+                        beta_fast: 0.0,
+                    };
+                }
             }
         }
     }
 
     // Phase 2: Optional golden-section refinement
     if refine {
-        let (refined_tr, refined_td) = golden_section_refine(h_free, &best, dt, 20, skip);
-        let (beta, residual) = eval_biexp(h_free, refined_tr, refined_td, dt, skip);
+        let (refined_tr, refined_td, refined_tf) =
+            golden_section_refine(h_free, &best, dt, 30, skip);
+        let (beta_s, beta_f, residual) =
+            eval_two_component(h_free, refined_tr, refined_td, refined_tf, dt, skip);
         if residual < best.residual {
             best = BiexpResult {
                 tau_rise: refined_tr,
                 tau_decay: refined_td,
-                beta,
+                beta: beta_s,
                 residual,
+                tau_fast: refined_tf,
+                beta_fast: beta_f,
             };
         }
     }
 
     // Recompute residual over the FULL kernel (skip=0) so it captures early-bin
-    // divergence between the free kernel and the bi-exponential template. The fit
-    // itself (beta, tau_r, tau_d) was determined using skip..n to avoid noise bias,
-    // but the full-kernel residual is a better overfitting metric: when iterations
-    // start explaining noise rather than calcium, the early bins diverge and this
-    // residual rises — useful as an early-stopping signal.
+    // divergence between the free kernel and the two-component template. The fit
+    // itself was determined using skip..n to avoid noise bias, but the full-kernel
+    // residual is a better overfitting metric: when iterations start explaining
+    // noise rather than calcium, the early bins diverge and this residual rises.
     if skip > 0 {
-        let (_, full_residual) = eval_biexp(h_free, best.tau_rise, best.tau_decay, dt, 0);
+        let (_, _, full_residual) = eval_two_component(
+            h_free,
+            best.tau_rise,
+            best.tau_decay,
+            best.tau_fast,
+            dt,
+            0,
+        );
         best.residual = full_residual;
     }
 
     best
 }
 
-/// Evaluate bi-exponential fit at (tau_r, tau_d) with closed-form beta.
+/// Evaluate two-component fit at fixed (tau_r, tau_d, tau_f) with NNLS for (beta_s, beta_f).
 ///
-/// Model: h(t) = beta * (exp(-t/tau_d) - exp(-t/tau_r))
-/// Beta is the least-squares optimal scalar: beta = <h_free, template> / <template, template>
+/// Model: h(t) = beta_s * (exp(-t/tau_d) - exp(-t/tau_r)) + beta_f * exp(-t/tau_f)
 ///
-/// Uses the identity ||h - beta*t||^2 = ||h||^2 - <h,t>^2 / ||t||^2
-/// to compute both beta and residual in a single pass over the data.
-fn eval_biexp(h_free: &[f32], tau_r: f64, tau_d: f64, dt: f64, skip: usize) -> (f64, f64) {
+/// For fixed time constants, this is a 2-variable non-negative least squares problem.
+/// We enumerate all 4 active sets and pick the one with minimum residual.
+///
+/// Returns (beta_s, beta_f, residual).
+fn eval_two_component(
+    h_free: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    tau_f: f64,
+    dt: f64,
+    skip: usize,
+) -> (f64, f64, f64) {
     let n = h_free.len();
 
-    let mut dot_ht = 0.0_f64; // <h_free, template>
-    let mut dot_tt = 0.0_f64; // <template, template>
-    let mut dot_hh = 0.0_f64; // <h_free, h_free>
+    // Gram matrix G (2x2), rhs vector (2x1), and ||h||^2
+    let mut g_ss = 0.0_f64; // <T_s, T_s>
+    let mut g_ff = 0.0_f64; // <T_f, T_f>
+    let mut g_sf = 0.0_f64; // <T_s, T_f>
+    let mut rhs_s = 0.0_f64; // <h, T_s>
+    let mut rhs_f = 0.0_f64; // <h, T_f>
+    let mut dot_hh = 0.0_f64; // <h, h>
 
     for i in skip..n {
         let t = i as f64 * dt;
-        let template = (-t / tau_d).exp() - (-t / tau_r).exp();
+        let ts = (-t / tau_d).exp() - (-t / tau_r).exp();
+        let tf = (-t / tau_f).exp();
         let hi = h_free[i] as f64;
-        dot_ht += hi * template;
-        dot_tt += template * template;
+
+        g_ss += ts * ts;
+        g_ff += tf * tf;
+        g_sf += ts * tf;
+        rhs_s += hi * ts;
+        rhs_f += hi * tf;
         dot_hh += hi * hi;
     }
 
-    if dot_tt < 1e-30 {
-        return (0.0, f64::INFINITY);
+    // Compute residual: ||h - beta_s*T_s - beta_f*T_f||^2
+    // = ||h||^2 - 2*beta_s*<h,T_s> - 2*beta_f*<h,T_f>
+    //   + beta_s^2*<T_s,T_s> + 2*beta_s*beta_f*<T_s,T_f> + beta_f^2*<T_f,T_f>
+    let residual_fn = |bs: f64, bf: f64| -> f64 {
+        dot_hh - 2.0 * bs * rhs_s - 2.0 * bf * rhs_f
+            + bs * bs * g_ss
+            + 2.0 * bs * bf * g_sf
+            + bf * bf * g_ff
+    };
+
+    let mut best_bs = 0.0;
+    let mut best_bf = 0.0;
+    let mut best_res = dot_hh; // residual when both are zero
+
+    // Active set 1: both free — solve 2x2 system via Cramer's rule
+    let det = g_ss * g_ff - g_sf * g_sf;
+    if det.abs() > 1e-30 {
+        let bs = (rhs_s * g_ff - rhs_f * g_sf) / det;
+        let bf = (rhs_f * g_ss - rhs_s * g_sf) / det;
+        if bs >= 0.0 && bf >= 0.0 {
+            let r = residual_fn(bs, bf);
+            if r < best_res {
+                best_bs = bs;
+                best_bf = bf;
+                best_res = r;
+            }
+        }
     }
 
-    let beta = dot_ht / dot_tt;
-    // ||h - beta*t||^2 = ||h||^2 - 2*beta*<h,t> + beta^2*||t||^2
-    //                   = ||h||^2 - <h,t>^2 / ||t||^2
-    let residual = dot_hh - dot_ht * dot_ht / dot_tt;
+    // Active set 2: beta_s only (beta_f = 0)
+    if g_ss > 1e-30 {
+        let bs = rhs_s / g_ss;
+        if bs >= 0.0 {
+            let r = residual_fn(bs, 0.0);
+            if r < best_res {
+                best_bs = bs;
+                best_bf = 0.0;
+                best_res = r;
+            }
+        }
+    }
 
-    (beta, residual)
+    // Active set 3: beta_f only (beta_s = 0)
+    if g_ff > 1e-30 {
+        let bf = rhs_f / g_ff;
+        if bf >= 0.0 {
+            let r = residual_fn(0.0, bf);
+            if r < best_res {
+                best_bs = 0.0;
+                best_bf = bf;
+                best_res = r;
+            }
+        }
+    }
+
+    // Active set 4: both zero — already covered by initial best_res = dot_hh
+
+    (best_bs, best_bf, best_res)
 }
 
 /// Golden-section refinement around the best grid point.
-/// Alternates refining tau_r and tau_d for `max_steps` total.
+/// Cycles through refining tau_r, tau_d, and tau_f for `max_steps` total.
 fn golden_section_refine(
     h_free: &[f32],
     best: &BiexpResult,
     dt: f64,
     max_steps: usize,
     skip: usize,
-) -> (f64, f64) {
+) -> (f64, f64, f64) {
     let phi = (5.0_f64.sqrt() - 1.0) / 2.0; // golden ratio conjugate
 
     let mut tau_r = best.tau_rise;
     let mut tau_d = best.tau_decay;
+    let mut tau_f = best.tau_fast;
+
+    // If tau_f is zero (no fast component), skip tau_f refinement
+    let has_fast = tau_f > 0.0;
 
     for step in 0..max_steps {
-        if step % 2 == 0 {
+        let phase = if has_fast { step % 3 } else { step % 2 };
+
+        if phase == 0 {
             // Refine tau_r (floor at 2 samples — same Nyquist limit as grid search)
             let mut lo = (tau_r * 0.5).max(2.0 * dt);
             let mut hi = tau_r * 2.0;
@@ -195,8 +320,8 @@ fn golden_section_refine(
             for _ in 0..10 {
                 let x1 = hi - phi * (hi - lo);
                 let x2 = lo + phi * (hi - lo);
-                let (_, r1) = eval_biexp(h_free, x1, tau_d, dt, skip);
-                let (_, r2) = eval_biexp(h_free, x2, tau_d, dt, skip);
+                let (_, _, r1) = eval_two_component(h_free, x1, tau_d, tau_f, dt, skip);
+                let (_, _, r2) = eval_two_component(h_free, x2, tau_d, tau_f, dt, skip);
                 if r1 < r2 {
                     hi = x2;
                 } else {
@@ -204,7 +329,7 @@ fn golden_section_refine(
                 }
             }
             tau_r = (lo + hi) / 2.0;
-        } else {
+        } else if phase == 1 {
             // Refine tau_d
             let mut lo = (tau_d * 0.5).max(tau_r * 1.01);
             let mut hi = tau_d * 2.0;
@@ -215,8 +340,8 @@ fn golden_section_refine(
             for _ in 0..10 {
                 let x1 = hi - phi * (hi - lo);
                 let x2 = lo + phi * (hi - lo);
-                let (_, r1) = eval_biexp(h_free, tau_r, x1, dt, skip);
-                let (_, r2) = eval_biexp(h_free, tau_r, x2, dt, skip);
+                let (_, _, r1) = eval_two_component(h_free, tau_r, x1, tau_f, dt, skip);
+                let (_, _, r2) = eval_two_component(h_free, tau_r, x2, tau_f, dt, skip);
                 if r1 < r2 {
                     hi = x2;
                 } else {
@@ -224,10 +349,30 @@ fn golden_section_refine(
                 }
             }
             tau_d = (lo + hi) / 2.0;
+        } else {
+            // Refine tau_f
+            let mut lo = (tau_f * 0.5).max(dt);
+            let mut hi = (tau_f * 2.0).min(tau_r * 0.99);
+            if lo >= hi {
+                continue;
+            }
+
+            for _ in 0..10 {
+                let x1 = hi - phi * (hi - lo);
+                let x2 = lo + phi * (hi - lo);
+                let (_, _, r1) = eval_two_component(h_free, tau_r, tau_d, x1, dt, skip);
+                let (_, _, r2) = eval_two_component(h_free, tau_r, tau_d, x2, dt, skip);
+                if r1 < r2 {
+                    hi = x2;
+                } else {
+                    lo = x1;
+                }
+            }
+            tau_f = (lo + hi) / 2.0;
         }
     }
 
-    (tau_r, tau_d)
+    (tau_r, tau_d, tau_f)
 }
 
 #[cfg(test)]
@@ -241,6 +386,27 @@ mod tests {
             .map(|i| {
                 let t = i as f64 * dt;
                 (beta * ((-t / tau_d).exp() - (-t / tau_r).exp())) as f32
+            })
+            .collect()
+    }
+
+    /// Generate a two-component kernel with known parameters.
+    fn make_two_component(
+        tau_r: f64,
+        tau_d: f64,
+        beta_s: f64,
+        tau_f: f64,
+        beta_f: f64,
+        fs: f64,
+        n: usize,
+    ) -> Vec<f32> {
+        let dt = 1.0 / fs;
+        (0..n)
+            .map(|i| {
+                let t = i as f64 * dt;
+                let slow = beta_s * ((-t / tau_d).exp() - (-t / tau_r).exp());
+                let fast = beta_f * (-t / tau_f).exp();
+                (slow + fast) as f32
             })
             .collect()
     }
@@ -271,6 +437,20 @@ mod tests {
             td_err * 100.0,
             result.tau_decay,
             tau_d_true
+        );
+    }
+
+    #[test]
+    fn clean_biexp_has_near_zero_beta_fast() {
+        let h = make_biexp(0.08, 0.5, 2.0, 30.0, 60);
+        let result = fit_biexponential(&h, 30.0, true, 0);
+
+        // For a clean biexponential input, beta_fast should be negligible
+        assert!(
+            result.beta_fast < 0.1 * result.beta,
+            "beta_fast ({:.4}) should be much smaller than beta ({:.4}) for clean biexp input",
+            result.beta_fast,
+            result.beta
         );
     }
 
@@ -377,4 +557,149 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recovers_taus_with_fast_component() {
+        // Generate h(t) = 2.0*(exp(-t/0.5) - exp(-t/0.08)) + 1.5*exp(-t/0.005)
+        let tau_r_true = 0.08;
+        let tau_d_true = 0.5;
+        let tau_f_true = 0.005;
+        let fs = 100.0; // high fs to resolve fast component
+        let n = 200;
+        let h = make_two_component(tau_r_true, tau_d_true, 2.0, tau_f_true, 1.5, fs, n);
+
+        let result = fit_biexponential(&h, fs, true, 0);
+
+        // Slow tau values should be recovered
+        let tr_err = (result.tau_rise - tau_r_true).abs() / tau_r_true;
+        let td_err = (result.tau_decay - tau_d_true).abs() / tau_d_true;
+
+        assert!(
+            tr_err < 0.25,
+            "Tau rise error {:.1}% (got {:.4}, expected {:.4})",
+            tr_err * 100.0,
+            result.tau_rise,
+            tau_r_true
+        );
+        assert!(
+            td_err < 0.25,
+            "Tau decay error {:.1}% (got {:.4}, expected {:.4})",
+            td_err * 100.0,
+            result.tau_decay,
+            tau_d_true
+        );
+
+        // Fast component should be detected
+        assert!(
+            result.beta_fast > 0.0,
+            "beta_fast should be positive when fast component exists, got {}",
+            result.beta_fast
+        );
+    }
+
+    #[test]
+    fn fast_absorbs_noise_spike() {
+        let tau_r_true = 0.08;
+        let tau_d_true = 0.5;
+        let fs = 100.0; // high fs needed to resolve fast vs slow components
+        let n = 200;
+        let mut h = make_biexp(tau_r_true, tau_d_true, 2.0, fs, n);
+
+        // Simulate noise artifact: large values at bins 0-2
+        h[0] += 5.0;
+        h[1] += 3.0;
+        h[2] += 1.0;
+
+        let result = fit_biexponential(&h, fs, true, 0);
+
+        // With two-component model, tau_rise should stay near true value
+        // because the fast component absorbs the noise spike
+        let tr_err = (result.tau_rise - tau_r_true).abs() / tau_r_true;
+        assert!(
+            tr_err < 0.5,
+            "tau_rise should stay near true value with noise spike: got {:.4} (err {:.1}%), expected {:.4}",
+            result.tau_rise,
+            tr_err * 100.0,
+            tau_r_true
+        );
+
+        // The fast component should have picked up the spike
+        assert!(
+            result.beta_fast > 0.0,
+            "beta_fast should be positive to absorb the noise spike"
+        );
+    }
+
+    #[test]
+    fn tau_f_less_than_tau_r() {
+        // For various inputs, verify tau_f < tau_r always holds (when tau_f > 0)
+        let test_cases = [
+            (0.08, 0.5, 30.0),
+            (0.05, 0.3, 100.0),
+            (0.1, 2.0, 10.0),
+        ];
+
+        for (tau_r, tau_d, fs) in test_cases {
+            let h = make_biexp(tau_r, tau_d, 2.0, fs, 60);
+            let result = fit_biexponential(&h, fs, true, 0);
+
+            if result.tau_fast > 0.0 {
+                assert!(
+                    result.tau_fast < result.tau_rise,
+                    "tau_fast ({}) should be < tau_rise ({}) for (tau_r={}, tau_d={}, fs={})",
+                    result.tau_fast,
+                    result.tau_rise,
+                    tau_r,
+                    tau_d,
+                    fs
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nnls_active_sets() {
+        let fs = 100.0;
+        let dt = 1.0 / fs;
+        let n = 100;
+
+        // Case 1: Pure slow component — should yield beta_s > 0, beta_f ≈ 0
+        let h_slow = make_biexp(0.05, 0.5, 2.0, fs, n);
+        let (bs, bf, _) = eval_two_component(&h_slow, 0.05, 0.5, 0.005, dt, 0);
+        assert!(bs > 0.0, "beta_s should be positive for slow-only input");
+        assert!(
+            bf < 0.1 * bs,
+            "beta_f ({:.4}) should be near zero for slow-only input (beta_s={:.4})",
+            bf,
+            bs
+        );
+
+        // Case 2: Pure fast component — should yield beta_s ≈ 0, beta_f > 0
+        let h_fast: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f64 * dt;
+                (3.0 * (-t / 0.005).exp()) as f32
+            })
+            .collect();
+        let (bs, bf, _) = eval_two_component(&h_fast, 0.05, 0.5, 0.005, dt, 0);
+        assert!(bf > 0.0, "beta_f should be positive for fast-only input");
+        assert!(
+            bs < 0.1 * bf,
+            "beta_s ({:.4}) should be near zero for fast-only input (beta_f={:.4})",
+            bs,
+            bf
+        );
+
+        // Case 3: Both components present
+        let h_both = make_two_component(0.05, 0.5, 2.0, 0.005, 1.5, fs, n);
+        let (bs, bf, _) = eval_two_component(&h_both, 0.05, 0.5, 0.005, dt, 0);
+        assert!(bs > 0.0, "beta_s should be positive for mixed input");
+        assert!(bf > 0.0, "beta_f should be positive for mixed input");
+
+        // Case 4: Zero signal — both should be zero
+        let h_zero = vec![0.0_f32; n];
+        let (bs, bf, res) = eval_two_component(&h_zero, 0.05, 0.5, 0.005, dt, 0);
+        assert_eq!(bs, 0.0, "beta_s should be zero for zero input");
+        assert_eq!(bf, 0.0, "beta_f should be zero for zero input");
+        assert!(res < 1e-20, "residual should be ~0 for zero input");
+    }
 }

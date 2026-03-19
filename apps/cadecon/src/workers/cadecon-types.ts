@@ -26,6 +26,8 @@ export interface KernelResult {
   tauDecay: number;
   beta: number;
   residual: number;
+  tauFast: number;
+  betaFast: number;
 }
 
 /** Messages sent TO a CaDecon worker. */

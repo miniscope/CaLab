@@ -351,13 +351,13 @@ fn py_seed_trace<'py>(
 /// Auto-estimate kernel from raw traces via peak-seeded free kernel estimation.
 ///
 /// Takes a 2D array (n_cells x n_timepoints) and returns
-/// (free_kernel, tau_rise, tau_decay, n_seed_spikes).
+/// (free_kernel, tau_rise, tau_decay, tau_fast, beta_fast, n_seed_spikes).
 #[pyfunction]
 fn seed_kernel_estimate<'py>(
     py: Python<'py>,
     traces: PyReadonlyArray2<f64>,
     fs: f64,
-) -> PyResult<(Bound<'py, PyArray1<f32>>, f64, f64, usize)> {
+) -> PyResult<(Bound<'py, PyArray1<f32>>, f64, f64, f64, f64, usize)> {
     let shape = traces.shape();
     let n_cells = shape[0];
     let n_timepoints = shape[1];
@@ -377,6 +377,8 @@ fn seed_kernel_estimate<'py>(
         PyArray1::from_vec(py, result.free_kernel),
         result.tau_rise,
         result.tau_decay,
+        result.tau_fast,
+        result.beta_fast,
         result.n_seed_spikes,
     ))
 }

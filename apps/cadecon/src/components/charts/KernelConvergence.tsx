@@ -26,6 +26,7 @@ const TAU_RISE_COLOR = '#66bb6a'; // green
 const TAU_DECAY_COLOR = '#ffa726'; // orange
 const TPEAK_COLOR = '#42a5f5'; // blue
 const FWHM_COLOR = '#ef5350'; // red
+const BETA_FAST_COLOR = '#ab47bc'; // purple
 const RESIDUAL_COLOR = '#9e9e9e';
 
 const TAU_RISE_FAINT = 'rgba(102, 187, 106, 0.3)';
@@ -176,7 +177,7 @@ export function KernelConvergence(): JSX.Element {
     const h = filteredHistory();
     if (h.length === 0)
       return {
-        aligned: [[], [], [], [], [], []] as uPlot.AlignedData,
+        aligned: [[], [], [], [], [], [], []] as uPlot.AlignedData,
         scatter: [] as SubsetScatterPoint[],
       };
 
@@ -186,6 +187,7 @@ export function KernelConvergence(): JSX.Element {
     const tPeaks: number[] = new Array(h.length);
     const fwhms: number[] = new Array(h.length);
     const residuals: number[] = new Array(h.length);
+    const betaFasts: number[] = new Array(h.length);
     const pts: SubsetScatterPoint[] = [];
 
     for (let i = 0; i < h.length; i++) {
@@ -197,6 +199,7 @@ export function KernelConvergence(): JSX.Element {
       tPeaks[i] = shape ? shape.tPeak * 1000 : 0;
       fwhms[i] = shape ? shape.fwhm * 1000 : 0;
       residuals[i] = s.residual;
+      betaFasts[i] = s.betaFast;
 
       if (s.subsets) {
         for (const sub of s.subsets) {
@@ -213,7 +216,15 @@ export function KernelConvergence(): JSX.Element {
     }
 
     return {
-      aligned: [iterations, tauRises, tauDecays, tPeaks, fwhms, residuals] as uPlot.AlignedData,
+      aligned: [
+        iterations,
+        tauRises,
+        tauDecays,
+        tPeaks,
+        fwhms,
+        residuals,
+        betaFasts,
+      ] as uPlot.AlignedData,
       scatter: pts,
     };
   });
@@ -250,6 +261,14 @@ export function KernelConvergence(): JSX.Element {
       width: 1,
       scale: 'res',
       dash: [4, 2],
+    },
+    {
+      label: 'β_fast',
+      stroke: BETA_FAST_COLOR,
+      width: 1,
+      scale: 'res',
+      dash: [4, 2],
+      show: false,
     },
   ];
 
