@@ -59,7 +59,7 @@ const KERNEL_FISTA_TOL = 1e-4;
 /** TV-L1 smoothness penalty for free-form kernel estimation. */
 const KERNEL_SMOOTH_LAMBDA = 0;
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
-const BIEXP_FIT_SKIP = 4;
+export const BIEXP_FIT_SKIP = 4;
 
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;

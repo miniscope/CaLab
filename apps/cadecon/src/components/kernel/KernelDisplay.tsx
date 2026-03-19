@@ -18,6 +18,7 @@ import {
   groundTruthTauDecay,
 } from '../../lib/data-store.ts';
 import { selectedSubsetIdx } from '../../lib/subset-store.ts';
+import { BIEXP_FIT_SKIP } from '../../lib/iteration-manager.ts';
 import {
   createKernelFitSeries,
   createGroundTruthKernelSeries,
@@ -35,6 +36,28 @@ import {
 /** Format a tau value in seconds to a display string in ms, or a fallback. */
 function formatTauMs(tau: number | null, fallback: string = '--'): string {
   return tau != null ? (tau * 1000).toFixed(1) : fallback;
+}
+
+/** Plugin that shades the region of early kernel samples excluded from the bi-exp fit. */
+function biexpSkipPlugin(skipMs: () => number | null): uPlot.Plugin {
+  return {
+    hooks: {
+      draw(u: uPlot) {
+        const ms = skipMs();
+        if (ms == null || ms <= 0) return;
+
+        const xPx = u.valToPos(ms, 'x', true);
+        const { left, top, height } = u.bbox;
+        if (xPx <= left) return;
+
+        const ctx = u.ctx;
+        ctx.save();
+        ctx.fillStyle = 'rgba(200, 120, 50, 0.10)';
+        ctx.fillRect(left, top, Math.min(xPx, left + u.bbox.width) - left, height);
+        ctx.restore();
+      },
+    },
+  };
 }
 
 export function KernelDisplay(): JSX.Element {
@@ -147,8 +170,15 @@ export function KernelDisplay(): JSX.Element {
     },
   ];
 
+  const skipMs = createMemo(() => {
+    const snap = snapshot();
+    if (!snap) return null;
+    const fs = samplingRate() ?? snap.fs;
+    return ((BIEXP_FIT_SKIP - 0.5) / fs) * 1000;
+  });
+
   const scales: uPlot.Scales = { x: { time: false } };
-  const plugins = [wheelZoomPlugin()];
+  const plugins = [biexpSkipPlugin(skipMs), wheelZoomPlugin()];
   const cursor: uPlot.Cursor = { sync: { key: 'cadecon-kernel', setSeries: true } };
 
   const tauRMs = () => formatTauMs(currentTauRise());
