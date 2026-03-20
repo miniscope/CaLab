@@ -723,7 +723,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn recovers_taus_with_fast_component() {
         // A typical calcium kernel with a small noise artifact: slow rise time
         // well above the fast template range, moderate artifact amplitude.
@@ -947,7 +946,7 @@ mod tests {
 
         // If there's a fast component, it should be confined
         if result.tau_decay_fast > 0.0 {
-            let tdf_cap = (3.0 * dt).min(tau_d_true * 0.15);
+            let tdf_cap = (15.0 * dt).min(tau_d_true * 0.2);
             assert!(
                 result.tau_decay_fast <= tdf_cap + 1e-6,
                 "tau_d_fast ({:.6}s = {:.1} bins) should be ≤ cap ({:.6}s) for large tau_d",

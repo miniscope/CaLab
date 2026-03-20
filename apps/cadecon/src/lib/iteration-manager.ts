@@ -629,15 +629,8 @@ export async function startRun(): Promise<void> {
         if (hasValidTraceResults(traceResults[si]) && ki < kernelResults.length) {
           const kr = kernelResults[ki];
           prevKernels[si] = new Float32Array(kr.hFree);
-          prevBiexpResults[si] = {
-            tauRise: kr.tauRise,
-            tauDecay: kr.tauDecay,
-            tauRiseFast: kr.tauRiseFast,
-            tauDecayFast: kr.tauDecayFast,
-            beta: kr.beta,
-            betaFast: kr.betaFast,
-            residual: kr.residual,
-          };
+          const { hFree: _, ...warmFields } = kr;
+          prevBiexpResults[si] = warmFields;
           ki++;
         }
       }
@@ -647,18 +640,35 @@ export async function startRun(): Promise<void> {
     setRunPhase('merge');
     const prevTauR = tauR;
     const prevTauD = tauD;
-    tauR = median(kernelResults.map((r) => r.tauRise));
-    tauD = median(kernelResults.map((r) => r.tauDecay));
+    // Extract all scalar fields in a single pass for median computation
+    const tauRises: number[] = [];
+    const tauDecays: number[] = [];
+    const betas: number[] = [];
+    const residuals: number[] = [];
+    const tauRiseFasts: number[] = [];
+    const tauDecayFasts: number[] = [];
+    const betaFasts: number[] = [];
+    for (const r of kernelResults) {
+      tauRises.push(r.tauRise);
+      tauDecays.push(r.tauDecay);
+      betas.push(r.beta);
+      residuals.push(r.residual);
+      tauRiseFasts.push(r.tauRiseFast);
+      tauDecayFasts.push(r.tauDecayFast);
+      betaFasts.push(r.betaFast);
+    }
+    tauR = median(tauRises);
+    tauD = median(tauDecays);
 
     setCurrentTauRise(tauR);
     setCurrentTauDecay(tauD);
 
     // Record convergence history with per-subset data
-    const medBeta = median(kernelResults.map((r) => r.beta));
-    const medResidual = median(kernelResults.map((r) => r.residual));
-    const medTauRiseFast = median(kernelResults.map((r) => r.tauRiseFast));
-    const medTauDecayFast = median(kernelResults.map((r) => r.tauDecayFast));
-    const medBetaFast = median(kernelResults.map((r) => r.betaFast));
+    const medBeta = median(betas);
+    const medResidual = median(residuals);
+    const medTauRiseFast = median(tauRiseFasts);
+    const medTauDecayFast = median(tauDecayFasts);
+    const medBetaFast = median(betaFasts);
     addConvergenceSnapshot({
       iteration: iter + 1,
       tauRise: tauR,

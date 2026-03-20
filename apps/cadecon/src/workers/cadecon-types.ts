@@ -32,15 +32,7 @@ export interface KernelResult {
 }
 
 /** Previous biexponential result for warm-starting the next fit. */
-export interface WarmBiexp {
-  tauRise: number;
-  tauDecay: number;
-  tauRiseFast: number;
-  tauDecayFast: number;
-  beta: number;
-  betaFast: number;
-  residual: number;
-}
+export type WarmBiexp = Omit<KernelResult, 'hFree'>;
 
 /** Messages sent TO a CaDecon worker. */
 export type CaDeconWorkerInbound =

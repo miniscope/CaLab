@@ -201,9 +201,10 @@ export function indeca_estimate_kernel(traces_flat: Float32Array, spikes_flat: F
 /**
  * Fit a bi-exponential model to a free-form kernel.
  *
- * Warm-start: pass `use_warm=true` and the previous result's fields to skip
- * the grid search and refine directly from those parameters. Pass `use_warm=false`
- * (and any values for warm_* fields) for cold-start.
+ * Warm-start: pass `use_warm=true` and the previous result's fields to add
+ * the previous result as an additional refined candidate alongside the cold
+ * grid search. This gives faster convergence when the kernel evolves smoothly.
+ * Pass `use_warm=false` (and any values for warm_* fields) for cold-start only.
  *
  * Returns a JsValue containing the serialized BiexpResult:
  * { tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast }
