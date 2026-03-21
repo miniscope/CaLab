@@ -13,6 +13,7 @@ import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
 import { trackEvent } from '@calab/community';
 import { supabaseEnabled, user, authLoading } from './lib/community/index.ts';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
+import { ResizableGrid } from './components/layout/ResizableGrid.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
 import { SubsetConfig } from './components/controls/SubsetConfig.tsx';
@@ -145,7 +146,7 @@ const App: Component = () => {
             </>
           }
         >
-          <div class="viz-grid">
+          <ResizableGrid>
             <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
               <p class="panel-label">Raster Overview</p>
               <RasterOverview />
@@ -168,7 +169,7 @@ const App: Component = () => {
               <p class="panel-label">Trace Inspector</p>
               <TraceInspector />
             </DashboardPanel>
-          </div>
+          </ResizableGrid>
           <IterationScrubber />
         </VizLayout>
       </DashboardShell>

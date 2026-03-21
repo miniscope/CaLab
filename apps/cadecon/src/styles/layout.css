@@ -1,12 +1,17 @@
-/* 3-column, 2-row visualization grid */
+/* 2-column, 2-row resizable visualization grid */
 
 .viz-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 2fr;
   grid-template-rows: 1fr 1fr;
   gap: var(--space-sm, 8px);
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+.viz-grid--dragging {
+  user-select: none;
 }
 
 .viz-grid__col--raster {
@@ -17,7 +22,7 @@
 }
 
 .viz-grid__col--convergence {
-  grid-column: 2 / 4;
+  grid-column: 2;
   grid-row: 1;
   min-width: 0;
   min-height: 0;
@@ -31,17 +36,72 @@
 }
 
 .viz-grid__col--trace {
-  grid-column: 2 / 4;
+  grid-column: 2;
   grid-row: 2;
   min-width: 0;
   min-height: 0;
 }
 
-/* Responsive: stack at narrow widths */
+/* --- Drag handles --- */
+
+.viz-grid__handle {
+  position: absolute;
+  z-index: 10;
+  touch-action: none;
+}
+
+.viz-grid__handle--col {
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.viz-grid__handle--row {
+  left: 0;
+  right: 0;
+  height: 12px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.viz-grid__handle--both {
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  cursor: move;
+  border-radius: 50%;
+  z-index: 11;
+}
+
+/* Center dot indicator */
+.viz-grid__handle--both::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.viz-grid__handle--both:hover::after,
+.viz-grid--dragging .viz-grid__handle--both::after {
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
+}
+
+/* Responsive: stack at narrow widths, hide handles */
 @media (max-width: 900px) {
   .viz-grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto !important;
   }
 
   .viz-grid__col--raster,
@@ -50,5 +110,9 @@
   .viz-grid__col--trace {
     grid-column: 1;
     grid-row: auto;
+  }
+
+  .viz-grid__handle {
+    display: none;
   }
 }
