@@ -398,8 +398,14 @@ export async function startRun(): Promise<void> {
   );
 
   if (seedKernelResults.length > 0) {
-    tauR = median(seedKernelResults.map((r) => r.tauRise));
-    tauD = median(seedKernelResults.map((r) => r.tauDecay));
+    const seedTauRises: number[] = new Array(seedKernelResults.length);
+    const seedTauDecays: number[] = new Array(seedKernelResults.length);
+    for (let i = 0; i < seedKernelResults.length; i++) {
+      seedTauRises[i] = seedKernelResults[i].tauRise;
+      seedTauDecays[i] = seedKernelResults[i].tauDecay;
+    }
+    tauR = median(seedTauRises);
+    tauD = median(seedTauDecays);
     setCurrentTauRise(tauR);
     setCurrentTauDecay(tauD);
     console.log(

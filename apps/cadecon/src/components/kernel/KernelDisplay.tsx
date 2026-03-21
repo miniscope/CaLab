@@ -38,12 +38,10 @@ import {
   AXIS_TEXT,
   AXIS_GRID,
   AXIS_TICK,
+  kernelAnnotationsPlugin,
+  type KernelAnnotations,
 } from '@calab/ui/chart';
 import { tauToShape, computeKernelAnnotations } from '@calab/compute';
-import {
-  kernelAnnotationsPlugin,
-  type KernelAnnotationsMs,
-} from '../../lib/chart/kernel-annotations-plugin.ts';
 
 /** Format a tau value in seconds to a display string in ms with 1 decimal. */
 function formatTauMs(tau: number | null, fallback: string = '--'): string {
@@ -102,7 +100,7 @@ export function KernelDisplay(): JSX.Element {
     return tauToShape(tauR, tauD);
   });
 
-  const annotations = createMemo((): KernelAnnotationsMs | null => {
+  const annotations = createMemo((): KernelAnnotations | null => {
     const tauR = currentTauRise();
     const tauD = currentTauDecay();
     const fs = samplingRate();
@@ -110,10 +108,10 @@ export function KernelDisplay(): JSX.Element {
     const ann = computeKernelAnnotations(tauR, tauD, fs);
     if (!ann) return null;
     return {
-      peakTimeMs: ann.peakTime * 1000,
-      halfRiseTimeMs: ann.halfRiseTime * 1000,
-      halfDecayTimeMs: ann.halfDecayTime * 1000,
-      fwhmMs: ann.fwhm * 1000,
+      peakTime: ann.peakTime * 1000,
+      halfRiseTime: ann.halfRiseTime * 1000,
+      halfDecayTime: ann.halfDecayTime * 1000,
+      fwhm: ann.fwhm * 1000,
     };
   });
 

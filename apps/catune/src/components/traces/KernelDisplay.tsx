@@ -6,11 +6,10 @@
 
 import { createMemo } from 'solid-js';
 import { computeKernel, computeKernelAnnotations } from '@calab/compute';
-import { kernelAnnotationsPlugin } from '../../lib/chart/kernel-annotations-plugin.ts';
 import { currentTau } from '../../lib/viz-store.ts';
 import { samplingRate, isDemo, demoPreset, groundTruthVisible } from '../../lib/data-store.ts';
 import { createGroundTruthKernelSeries } from '../../lib/chart/series-config.ts';
-import { TracePanel } from '@calab/ui/chart';
+import { kernelAnnotationsPlugin, TracePanel } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 
 const KERNEL_SYNC_KEY = 'catune-kernel';
@@ -68,9 +67,7 @@ export function KernelDisplay() {
     return computeKernelAnnotations(tau.tauRise, tau.tauDecay, fs);
   });
 
-  const kernelPlugins = createMemo<uPlot.Plugin[]>(() => [
-    kernelAnnotationsPlugin(() => annotations()),
-  ]);
+  const kernelPlugins: uPlot.Plugin[] = [kernelAnnotationsPlugin(() => annotations(), 1000)];
 
   return (
     <div class="kernel-section" data-tutorial="kernel-display">
@@ -81,7 +78,7 @@ export function KernelDisplay() {
         height={180}
         syncKey={KERNEL_SYNC_KEY}
         xLabel="Time (s)"
-        plugins={kernelPlugins()}
+        plugins={kernelPlugins}
       />
     </div>
   );

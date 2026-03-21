@@ -1,15 +1,19 @@
 /**
  * uPlot plugin that draws peak time and FWHM annotations
- * on the kernel chart. Values are in ms (matching CaDecon's X-axis).
+ * on the kernel chart as dashed vertical lines with labels.
+ *
+ * All position values must be in the chart's native x-axis unit.
+ * The `toMs` multiplier converts those positions to ms for labels
+ * (e.g., 1000 when the axis is in seconds, 1 when already in ms).
  */
 
 import type uPlot from 'uplot';
 
-export interface KernelAnnotationsMs {
-  peakTimeMs: number;
-  halfRiseTimeMs: number;
-  halfDecayTimeMs: number;
-  fwhmMs: number;
+export interface KernelAnnotations {
+  peakTime: number;
+  halfRiseTime: number;
+  halfDecayTime: number;
+  fwhm: number;
 }
 
 const PEAK_COLOR = '#ff9800';
@@ -20,9 +24,11 @@ const LABEL_PAD = 4;
  * Create a uPlot plugin that draws kernel annotation markers.
  *
  * @param getAnnotations - Accessor returning current annotation values (reactive)
+ * @param toMs - Multiplier to convert annotation values to ms for labels (default 1)
  */
 export function kernelAnnotationsPlugin(
-  getAnnotations: () => KernelAnnotationsMs | null,
+  getAnnotations: () => KernelAnnotations | null,
+  toMs: number = 1,
 ): uPlot.Plugin {
   return {
     hooks: {
@@ -34,10 +40,9 @@ export function kernelAnnotationsPlugin(
         const { top, height } = u.bbox;
         const dpr = devicePixelRatio;
 
-        // Convert ms values to canvas pixel positions
-        const peakPx = u.valToPos(ann.peakTimeMs, 'x', true);
-        const halfRisePx = u.valToPos(ann.halfRiseTimeMs, 'x', true);
-        const halfDecayPx = u.valToPos(ann.halfDecayTimeMs, 'x', true);
+        const peakPx = u.valToPos(ann.peakTime, 'x', true);
+        const halfRisePx = u.valToPos(ann.halfRiseTime, 'x', true);
+        const halfDecayPx = u.valToPos(ann.halfDecayTime, 'x', true);
         const halfYPx = u.valToPos(0.5, 'y', true);
         const topPx = top;
         const bottomPx = top + height;
@@ -58,11 +63,12 @@ export function kernelAnnotationsPlugin(
         ctx.stroke();
 
         // Peak label
+        const peakMs = (ann.peakTime * toMs).toFixed(0);
         ctx.setLineDash([]);
         ctx.fillStyle = PEAK_COLOR;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        ctx.fillText(`Peak: ${ann.peakTimeMs.toFixed(0)}ms`, peakPx, topPx - LABEL_PAD * dpr);
+        ctx.fillText(`Peak: ${peakMs}ms`, peakPx, topPx - LABEL_PAD * dpr);
 
         // --- FWHM horizontal line at y=0.5 (purple) ---
         ctx.strokeStyle = FWHM_COLOR;
@@ -88,11 +94,12 @@ export function kernelAnnotationsPlugin(
         ctx.stroke();
 
         // FWHM label
+        const fwhmMs = (ann.fwhm * toMs).toFixed(0);
         const fwhmCenterPx = (halfRisePx + halfDecayPx) / 2;
         ctx.fillStyle = FWHM_COLOR;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        ctx.fillText(`FWHM: ${ann.fwhmMs.toFixed(0)}ms`, fwhmCenterPx, halfYPx - LABEL_PAD * dpr);
+        ctx.fillText(`FWHM: ${fwhmMs}ms`, fwhmCenterPx, halfYPx - LABEL_PAD * dpr);
 
         ctx.restore();
       },

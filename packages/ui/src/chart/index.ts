@@ -1,3 +1,5 @@
+export { kernelAnnotationsPlugin } from './kernel-annotations-plugin.ts';
+export type { KernelAnnotations } from './kernel-annotations-plugin.ts';
 export { wheelZoomPlugin } from './wheel-zoom-plugin.ts';
 export { transientZonePlugin } from './transient-zone-plugin.ts';
 export { AXIS_TEXT, AXIS_GRID, AXIS_TICK, getThemeColors } from './theme-colors.ts';
