@@ -162,8 +162,15 @@ impl Solver {
         self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
         self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
 
-        // Update both convolution engines
-        self.banded.update(tau_rise, tau_decay, fs);
+        // Update convolution engines (only the active one + compute Lipschitz)
+        match self.conv_mode {
+            ConvMode::BandedAR2 => {
+                self.banded.update(tau_rise, tau_decay, fs);
+            }
+            ConvMode::Fft => {
+                // banded will be updated lazily if conv_mode switches
+            }
+        }
         self.lipschitz_constant = self.current_lipschitz();
 
         // Update kernel FFT if buffers are already set up and large enough.
@@ -304,11 +311,19 @@ impl Solver {
     /// Does NOT reset solution/iteration state — warm-start is preserved.
     pub fn set_conv_mode(&mut self, mode: ConvMode) {
         self.conv_mode = mode;
-        self.lipschitz_constant = self.current_lipschitz();
-        // Ensure FFT buffers exist if switching to FFT mode with an active trace
-        if mode == ConvMode::Fft && self.active_len > 0 {
-            self.fft.ensure_buffers(self.active_len, &self.kernel);
+        match mode {
+            ConvMode::BandedAR2 => {
+                // Ensure banded coefficients are current (may have been skipped in set_params)
+                self.banded.update(self.tau_rise, self.tau_decay, self.fs);
+            }
+            ConvMode::Fft => {
+                // Ensure FFT buffers exist if switching to FFT mode with an active trace
+                if self.active_len > 0 {
+                    self.fft.ensure_buffers(self.active_len, &self.kernel);
+                }
+            }
         }
+        self.lipschitz_constant = self.current_lipschitz();
     }
 
     /// Set the constraint type (NonNegative or Box01).
@@ -333,8 +348,7 @@ impl Solver {
     /// Format: [active_len (u32)] [t_fista (f64)] [iteration (u32)] [baseline (f64)] [solution f32...] [solution_prev f32...]
     pub fn export_state(&self) -> Vec<u8> {
         let n = self.active_len;
-        // 4 bytes active_len + 8 bytes t_fista + 4 bytes iteration + 8 bytes baseline + 2*n*4 bytes solutions (f32)
-        let mut buf = Vec::with_capacity(4 + 8 + 4 + 8 + 2 * n * 4);
+        let mut buf = Vec::with_capacity(state_byte_len(n));
 
         buf.extend_from_slice(&(n as u32).to_le_bytes());
         buf.extend_from_slice(&self.t_fista.to_le_bytes());
@@ -386,24 +400,22 @@ impl Solver {
         // Recompute baseline at current solution for display alignment.
         // In step_batch, baseline is skipped when filtered (cancels in gradient),
         // but the display path always needs it to align fit with trace.
-        {
-            let mut sum = 0.0_f64;
-            for i in 0..n {
-                sum += (self.trace[i] - self.reconvolution[i]) as f64;
-            }
-            let raw_baseline = sum / n as f64;
-            self.baseline = raw_baseline;
-
-            // EMA smoothing for display (damps momentum-induced oscillation)
-            if !self.baseline_ema_init {
-                self.baseline_ema = raw_baseline;
-                self.baseline_ema_init = true;
-            } else {
-                self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
-            }
-        }
+        let raw = compute_raw_baseline(&self.trace[..n], &self.reconvolution[..n], n);
+        self.update_baseline_ema(raw);
 
         self.reconvolution_stale = false;
+    }
+
+    /// Update the baseline EMA from a raw baseline estimate.
+    /// Called by both `step_batch` (per-iteration) and `compute_reconvolution` (lazy display path).
+    fn update_baseline_ema(&mut self, raw_baseline: f64) {
+        self.baseline = raw_baseline;
+        if !self.baseline_ema_init {
+            self.baseline_ema = raw_baseline;
+            self.baseline_ema_init = true;
+        } else {
+            self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+        }
     }
 
     // --- Bandpass filter methods ---
@@ -495,7 +507,7 @@ impl Solver {
         let mut cur = Cursor::new(state);
 
         let saved_len = read_u32_le(&mut cur) as usize;
-        let expected_size = 4 + 8 + 4 + 8 + 2 * saved_len * 4;
+        let expected_size = state_byte_len(saved_len);
 
         if state.len() != expected_size || saved_len != self.active_len {
             return; // size mismatch, cold start
@@ -514,6 +526,20 @@ impl Solver {
             self.solution_prev[i] = read_f32_le(&mut cur);
         }
     }
+}
+
+/// Compute the mean residual (trace - reconvolution) as the raw baseline estimate.
+pub(crate) fn compute_raw_baseline(trace: &[f32], reconvolution: &[f32], n: usize) -> f64 {
+    let mut sum = 0.0_f64;
+    for i in 0..n {
+        sum += (trace[i] - reconvolution[i]) as f64;
+    }
+    sum / n as f64
+}
+
+/// Byte length of serialized solver state for a trace of length `n`.
+fn state_byte_len(n: usize) -> usize {
+    4 + 8 + 4 + 8 + 2 * n * 4 // u32 + f64 + u32 + f64 + 2×n×f32
 }
 
 // --- Little-endian cursor read helpers ---

@@ -128,8 +128,7 @@ pub fn indeca_fit_biexponential(
     } else {
         None
     };
-    let result =
-        biexp_fit::fit_biexponential(h_free, fs, refine, skip, warm_start.as_ref());
+    let result = biexp_fit::fit_biexponential(h_free, fs, refine, skip, warm_start.as_ref());
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 

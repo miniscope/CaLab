@@ -51,7 +51,7 @@ pub fn threshold_search(
 
     // Collect sorted unique non-zero values for threshold candidates
     let mut vals: Vec<f32> = s_relaxed.iter().copied().filter(|&v| v > 1e-10).collect();
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals.sort_unstable_by(|a, b| a.total_cmp(b));
     vals.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
 
     if vals.is_empty() {
@@ -71,7 +71,7 @@ pub fn threshold_search(
     let mut conv_buf = vec![0.0_f32; n];
 
     let mut best = ThresholdResult {
-        s_binary: vec![0.0; n],
+        s_binary: Vec::new(),
         alpha: 0.0,
         baseline: 0.0,
         threshold: 0.0,
@@ -172,29 +172,28 @@ pub fn threshold_search(
     let (alpha, baseline) = lstsq_alpha_baseline(&conv_buf, y, pad, max_alpha);
     best.alpha = alpha;
     best.baseline = baseline;
-    best.s_binary = s_bin.clone();
+    best.s_binary = s_bin;
 
     // Compute PVE (proportion of variance explained)
     let inner_range = pad..n.saturating_sub(pad);
     let inner_len = inner_range.len();
     if inner_len > 0 {
-        let y_mean: f64 = inner_range.clone().map(|i| y[i] as f64).sum::<f64>() / inner_len as f64;
+        let mut y_sum = 0.0_f64;
+        for i in inner_range.clone() {
+            y_sum += y[i] as f64;
+        }
+        let y_mean = y_sum / inner_len as f64;
 
-        let ss_tot: f64 = inner_range
-            .clone()
-            .map(|i| {
-                let d = y[i] as f64 - y_mean;
-                d * d
-            })
-            .sum();
-
-        let ss_res: f64 = inner_range
-            .map(|i| {
-                let pred = alpha * conv_buf[i] as f64 + baseline;
-                let d = y[i] as f64 - pred;
-                d * d
-            })
-            .sum();
+        let mut ss_tot = 0.0_f64;
+        let mut ss_res = 0.0_f64;
+        for i in inner_range {
+            let yi = y[i] as f64;
+            let d = yi - y_mean;
+            ss_tot += d * d;
+            let pred = alpha * conv_buf[i] as f64 + baseline;
+            let r = yi - pred;
+            ss_res += r * r;
+        }
 
         best.pve = if ss_tot > 1e-20 {
             1.0 - ss_res / ss_tot

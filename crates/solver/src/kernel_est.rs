@@ -169,25 +169,18 @@ pub fn estimate_free_kernel(
         let mut stv = vec![0.0_f64; kernel_length]; // S^T S v
         let mut eigenvalue = 1.0_f64;
 
+        let mut v_f32 = vec![0.0_f32; kernel_length];
+
         for _ in 0..20 {
-            // S*v: convolve spikes with v (cast to f32)
-            let v_f32: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+            // Cast v to f32 into pre-allocated buffer
+            for (dst, &src) in v_f32.iter_mut().zip(v.iter()) {
+                *dst = src as f32;
+            }
+            // S*v: convolve spikes with v
             convolve_spikes_kernel(spike_trains, trace_lengths, &v_f32, &mut sv);
 
             // S^T (S*v)
-            stv.fill(0.0);
-            let mut off = 0;
-            for i in 0..n_traces {
-                let len = trace_lengths[i];
-                for t in 0..len {
-                    let val = sv[off + t] as f64;
-                    let k_max = kernel_length.min(t + 1);
-                    for k in 0..k_max {
-                        stv[k] += val * spike_trains[off + t - k] as f64;
-                    }
-                }
-                off += len;
-            }
+            adjoint_spikes_kernel(&sv, spike_trains, trace_lengths, kernel_length, &mut stv);
 
             // eigenvalue estimate = ||S^T S v||
             eigenvalue = stv.iter().map(|&x| x * x).sum::<f64>().sqrt();
@@ -219,30 +212,28 @@ pub fn estimate_free_kernel(
     // Working buffer for S*h (convolution result)
     let mut sh = vec![0.0_f32; total_len];
 
+    let mut z = vec![0.0_f64; kernel_length];
+
     for iter in 0..max_iters {
         // Forward: S*h (convolve each trace's spikes with h)
         convolve_spikes_kernel(spike_trains, trace_lengths, &h_prev, &mut sh);
 
-        // Residual: r = S*h - y_adj
-        // Gradient: S^T * r
-        gradient.fill(0.0);
-        offset = 0;
-        for i in 0..n_traces {
-            let len = trace_lengths[i];
-            for t in 0..len {
-                let r = sh[offset + t] as f64 - y_adj[offset + t] as f64;
-                // S^T contribution: h[k] gets r * s[t-k]
-                let k_max = kernel_length.min(t + 1);
-                for k in 0..k_max {
-                    gradient[k] += r * spike_trains[offset + t - k] as f64;
-                }
-            }
-            offset += len;
+        // Residual: r = S*h - y_adj (compute in-place in sh)
+        for i in 0..total_len {
+            sh[i] -= y_adj[i];
         }
+
+        // Gradient: S^T * r
+        adjoint_spikes_kernel(
+            &sh,
+            spike_trains,
+            trace_lengths,
+            kernel_length,
+            &mut gradient,
+        );
 
         // Proximal gradient step: gradient descent on data-fidelity, then
         // TV proximal operator, then non-negativity projection.
-        let mut z = vec![0.0_f64; kernel_length];
         for k in 0..kernel_length {
             z[k] = h_prev[k] as f64 - step_size * gradient[k];
         }
@@ -282,6 +273,29 @@ pub fn estimate_free_kernel(
     }
 
     h
+}
+
+/// Adjoint of spike convolution: output[k] += sum_t input[t] * s[t-k].
+/// This is S^T * input, the transpose of convolve_spikes_kernel.
+fn adjoint_spikes_kernel(
+    input: &[f32],
+    spikes: &[f32],
+    trace_lengths: &[usize],
+    kernel_length: usize,
+    output: &mut [f64],
+) {
+    output[..kernel_length].fill(0.0);
+    let mut offset = 0;
+    for &len in trace_lengths {
+        for t in 0..len {
+            let val = input[offset + t] as f64;
+            let k_max = kernel_length.min(t + 1);
+            for k in 0..k_max {
+                output[k] += val * spikes[offset + t - k] as f64;
+            }
+        }
+        offset += len;
+    }
 }
 
 /// Convolve spike trains with kernel h: output[t] = sum_k h[k] * s[t-k].

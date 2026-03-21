@@ -8,7 +8,6 @@
 /// 5. Feed into estimate_free_kernel() → fit_biexponential() (already exist)
 ///
 /// The result provides initial tau_rise, tau_decay for the normal iterative pipeline.
-
 use crate::biexp_fit::{fit_biexponential, BiexpResult};
 use crate::kernel_est::estimate_free_kernel;
 
@@ -28,7 +27,7 @@ pub struct SeedTraceResult {
 /// into the kernel estimation step as a replacement for FISTA trace inference.
 pub fn seed_trace(trace: &[f32], fs: f64) -> SeedTraceResult {
     let n = trace.len();
-    let bl = median(trace);
+    let (bl, _) = median_and_mad(trace);
     let onsets = find_seed_spikes(trace, fs, 5.0);
 
     let mut s_counts = vec![0.0_f32; n];
@@ -58,7 +57,8 @@ pub struct SeedKernelResult {
 }
 
 /// Median of a slice (copies + sorts). Returns 0.0 for empty input.
-pub(crate) fn median(data: &[f32]) -> f32 {
+#[cfg(test)]
+fn median(data: &[f32]) -> f32 {
     if data.is_empty() {
         return 0.0;
     }
@@ -73,12 +73,39 @@ pub(crate) fn median(data: &[f32]) -> f32 {
 }
 
 /// Median absolute deviation of a slice.
-pub(crate) fn mad(data: &[f32], median_val: f32) -> f32 {
+#[cfg(test)]
+fn mad(data: &[f32], median_val: f32) -> f32 {
     if data.is_empty() {
         return 0.0;
     }
     let deviations: Vec<f32> = data.iter().map(|&x| (x - median_val).abs()).collect();
     median(&deviations)
+}
+
+/// Compute median and MAD in one sort pass.
+pub(crate) fn median_and_mad(data: &[f32]) -> (f32, f32) {
+    if data.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sorted: Vec<f32> = data.to_vec();
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let med = if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    };
+    // Compute deviations in-place (reuse sorted buffer)
+    for v in sorted.iter_mut() {
+        *v = (*v - med).abs();
+    }
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+    let mad_val = if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    };
+    (med, mad_val)
 }
 
 /// Find seed spike onset locations from a single trace.
@@ -96,8 +123,7 @@ pub fn find_seed_spikes(trace: &[f32], fs: f64, min_peak_distance_s: f64) -> Vec
         return Vec::new();
     }
 
-    let baseline = median(trace);
-    let mad_val = mad(trace, baseline);
+    let (baseline, mad_val) = median_and_mad(trace);
 
     if mad_val < 1e-10 {
         return Vec::new();
@@ -191,7 +217,7 @@ pub fn seed_kernel_estimate(
     let mut offset = 0;
     for &len in trace_lengths {
         let trace = &traces_flat[offset..offset + len];
-        let bl = median(trace);
+        let (bl, _) = median_and_mad(trace);
 
         let onsets = find_seed_spikes(trace, fs, min_peak_distance_s);
         for &onset in &onsets {

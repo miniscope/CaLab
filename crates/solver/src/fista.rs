@@ -55,20 +55,9 @@ impl Solver {
             //     mathematically cancels in the gradient (residual = mean-centered signals).
             //     Computing it anyway would produce pure momentum-oscillation noise.
             if !self.filtered {
-                let mut sum = 0.0_f64;
-                for i in 0..n {
-                    sum += (self.trace[i] - self.reconvolution[i]) as f64;
-                }
-                let raw_baseline = sum / n as f64;
-                self.baseline = raw_baseline;
-
-                // Per-iteration EMA smoothing for display baseline
-                if !self.baseline_ema_init {
-                    self.baseline_ema = raw_baseline;
-                    self.baseline_ema_init = true;
-                } else {
-                    self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
-                }
+                let raw =
+                    crate::compute_raw_baseline(&self.trace[..n], &self.reconvolution[..n], n);
+                self.update_baseline_ema(raw);
             }
 
             // 2. Compute residual = K * y_k + b - trace

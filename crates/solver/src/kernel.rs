@@ -1,15 +1,20 @@
+/// Clamp tau_rise away from tau_decay to prevent degenerate zero kernels.
+/// When tau_rise ≈ tau_decay, the biexponential exp(-t/τ_d) - exp(-t/τ_r) collapses to zero.
+pub(crate) fn clamp_tau_rise(tau_rise: f64, tau_decay: f64) -> f64 {
+    if (tau_rise - tau_decay).abs() < 1e-6 * tau_decay.max(tau_rise).max(1e-12) {
+        tau_decay * 0.5
+    } else {
+        tau_rise
+    }
+}
+
 /// Build a double-exponential calcium kernel normalized to peak = 1.0.
 ///
 /// h(t) = exp(-t/tau_decay) - exp(-t/tau_rise), normalized so max(h) = 1.0.
 /// Kernel length extends until the decay envelope drops below 1e-6 of peak.
 /// Computed in f64 for precision, returned as Vec<f32>.
 pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
-    // Guard: tau_rise too close to tau_decay produces a degenerate zero kernel
-    let tau_rise = if (tau_rise - tau_decay).abs() < 1e-6 * tau_decay.max(tau_rise).max(1e-12) {
-        tau_decay * 0.5
-    } else {
-        tau_rise
-    };
+    let tau_rise = clamp_tau_rise(tau_rise, tau_decay);
 
     let dt = 1.0 / fs;
 
@@ -49,12 +54,7 @@ pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
 /// Used by BandedAR2 tests and the TypeScript port in src/lib/ar2.ts.
 #[allow(dead_code)]
 pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
-    // Guard: tau_rise too close to tau_decay produces a degenerate zero kernel
-    let tau_rise = if (tau_rise - tau_decay).abs() < 1e-6 * tau_decay.max(tau_rise).max(1e-12) {
-        tau_decay * 0.5
-    } else {
-        tau_rise
-    };
+    let tau_rise = clamp_tau_rise(tau_rise, tau_decay);
 
     let dt = 1.0 / fs;
     let d = (-dt / tau_decay).exp(); // decay eigenvalue
@@ -84,16 +84,19 @@ pub fn compute_lipschitz(kernel: &[f32]) -> f64 {
     let inv = 2.0 * std::f64::consts::PI / (fft_len as f64);
     let mut max_power = 0.0_f64;
 
-    for w in 0..fft_len {
+    // Pre-cast kernel to f64 once instead of per-frequency
+    let kernel_f64: Vec<f64> = kernel.iter().map(|&k| k as f64).collect();
+
+    // Real kernel has symmetric spectrum: only need 0..=fft_len/2
+    for w in 0..=fft_len / 2 {
         let freq = inv * (w as f64);
         let mut re = 0.0_f64;
         let mut im = 0.0_f64;
-        for (k, &hk) in kernel.iter().enumerate() {
-            let hk64 = hk as f64;
+        for (k, &hk) in kernel_f64.iter().enumerate() {
             let angle = freq * (k as f64);
             let (s, c) = angle.sin_cos();
-            re += hk64 * c;
-            im -= hk64 * s;
+            re += hk * c;
+            im -= hk * s;
         }
         let power = re * re + im * im;
         if power > max_power {

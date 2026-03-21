@@ -82,6 +82,7 @@
 /// the ceiling logic in eval_two_component can be simplified back to a
 /// plain `bs >= bf` gate.
 
+#[derive(Clone)]
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct BiexpResult {
     pub tau_rise: f64,
@@ -91,6 +92,25 @@ pub struct BiexpResult {
     pub tau_rise_fast: f64,
     pub tau_decay_fast: f64,
     pub beta_fast: f64,
+}
+
+impl BiexpResult {
+    fn sentinel() -> Self {
+        BiexpResult {
+            tau_rise: 0.02,
+            tau_decay: 0.4,
+            beta: 0.0,
+            residual: f64::INFINITY,
+            tau_rise_fast: 0.0,
+            tau_decay_fast: 0.0,
+            beta_fast: 0.0,
+        }
+    }
+
+    /// Returns true if the fit includes a fast component.
+    pub fn has_fast_component(&self) -> bool {
+        self.tau_rise_fast > 0.0 && self.tau_decay_fast > self.tau_rise_fast
+    }
 }
 
 /// Fit a two-component bi-exponential model to a free-form kernel.
@@ -116,15 +136,7 @@ pub fn fit_biexponential(
     let n = h_free.len();
     let skip = skip.min(n.saturating_sub(1));
     if n == 0 {
-        return BiexpResult {
-            tau_rise: 0.02,
-            tau_decay: 0.4,
-            beta: 0.0,
-            residual: f64::INFINITY,
-            tau_rise_fast: 0.0,
-            tau_decay_fast: 0.0,
-            beta_fast: 0.0,
-        };
+        return BiexpResult::sentinel();
     }
 
     let dt = 1.0 / fs;
@@ -145,15 +157,7 @@ pub fn fit_biexponential(
     // additional candidate. This gives faster convergence when the kernel
     // is evolving smoothly between iterations.
     if let Some(warm) = warm_start {
-        let mut warm_candidate = BiexpResult {
-            tau_rise: warm.tau_rise,
-            tau_decay: warm.tau_decay,
-            beta: warm.beta,
-            residual: warm.residual,
-            tau_rise_fast: warm.tau_rise_fast,
-            tau_decay_fast: warm.tau_decay_fast,
-            beta_fast: warm.beta_fast,
-        };
+        let mut warm_candidate = warm.clone();
         // Re-evaluate on the CURRENT h_free (warm residual was from previous h_free)
         let (bs, bf, res) = eval_two_component(
             h_free,
@@ -172,7 +176,7 @@ pub fn fit_biexponential(
             refine_candidate(h_free, &mut warm_candidate, dt, 40, skip);
         }
         // Warm candidate competes with the appropriate track
-        if warm_candidate.tau_rise_fast > 0.0 && warm_candidate.tau_decay_fast > warm_candidate.tau_rise_fast {
+        if warm_candidate.has_fast_component() {
             if warm_candidate.residual < best_two.residual {
                 best_two = warm_candidate;
             }
@@ -218,8 +222,15 @@ fn refine_candidate(
 ) {
     let (refined_tr, refined_td, refined_trf, refined_tdf) =
         golden_section_refine(h_free, candidate, dt, max_steps, skip);
-    let (beta_s, beta_f, residual) =
-        eval_two_component(h_free, refined_tr, refined_td, refined_trf, refined_tdf, dt, skip);
+    let (beta_s, beta_f, residual) = eval_two_component(
+        h_free,
+        refined_tr,
+        refined_td,
+        refined_trf,
+        refined_tdf,
+        dt,
+        skip,
+    );
     if residual < candidate.residual {
         *candidate = BiexpResult {
             tau_rise: refined_tr,
@@ -285,24 +296,8 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
     let tdf_lo = 0.5 * dt;
     let tdf_abs_hi = 8.0 * dt;
 
-    let mut best_slow = BiexpResult {
-        tau_rise: 0.02,
-        tau_decay: 0.4,
-        beta: 0.0,
-        residual: f64::INFINITY,
-        tau_rise_fast: 0.0,
-        tau_decay_fast: 0.0,
-        beta_fast: 0.0,
-    };
-    let mut best_two = BiexpResult {
-        tau_rise: 0.02,
-        tau_decay: 0.4,
-        beta: 0.0,
-        residual: f64::INFINITY,
-        tau_rise_fast: 0.0,
-        tau_decay_fast: 0.0,
-        beta_fast: 0.0,
-    };
+    let mut best_slow = BiexpResult::sentinel();
+    let mut best_two = BiexpResult::sentinel();
 
     for i in 0..grid_n {
         let log_tr = log_tr_lo + (log_tr_hi - log_tr_lo) * i as f64 / (grid_n - 1) as f64;
@@ -334,7 +329,7 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
 
             // Inner grid: scan independent (tau_r_fast, tau_d_fast)
             // Upper bound for tau_d_fast is the tighter of the absolute cap
-            // (8×dt) and a relative cap (tau_d × 0.2) to prevent degeneracy.
+            // (8×dt) and a relative cap (tau_d × 0.15) to prevent degeneracy.
             let tdf_hi = tdf_abs_hi.min(tau_d * 0.15);
             if tdf_hi <= tdf_lo {
                 continue; // tau_d too small for a distinct fast component
@@ -343,8 +338,7 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
             let log_tdf_hi = tdf_hi.ln();
 
             for ki in 0..trf_grid_n {
-                let tau_r_fast =
-                    trf_lo + (trf_hi - trf_lo) * ki as f64 / (trf_grid_n - 1) as f64;
+                let tau_r_fast = trf_lo + (trf_hi - trf_lo) * ki as f64 / (trf_grid_n - 1) as f64;
 
                 for kj in 0..tdf_grid_n {
                     let log_tdf = log_tdf_lo
@@ -356,15 +350,8 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
                         continue;
                     }
 
-                    let (beta_s, beta_f, residual) = eval_two_component(
-                        h_free,
-                        tau_r,
-                        tau_d,
-                        tau_r_fast,
-                        tau_d_fast,
-                        dt,
-                        skip,
-                    );
+                    let (beta_s, beta_f, residual) =
+                        eval_two_component(h_free, tau_r, tau_d, tau_r_fast, tau_d_fast, dt, skip);
                     if residual < best_two.residual {
                         best_two = BiexpResult {
                             tau_rise: tau_r,
@@ -527,6 +514,23 @@ fn eval_two_component(
     (best_bs, best_bf, best_res)
 }
 
+/// Run one golden-section narrowing pass on a 1D interval [lo, hi].
+/// `cost` takes a candidate value and returns the residual.
+/// Returns the midpoint of the narrowed interval.
+fn golden_bracket(mut lo: f64, mut hi: f64, cost: impl Fn(f64) -> f64) -> f64 {
+    const PHI: f64 = 0.6180339887498949; // (sqrt(5) - 1) / 2
+    for _ in 0..10 {
+        let x1 = hi - PHI * (hi - lo);
+        let x2 = lo + PHI * (hi - lo);
+        if cost(x1) < cost(x2) {
+            hi = x2;
+        } else {
+            lo = x1;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
 /// Golden-section refinement around the best grid point.
 /// Cycles through refining tau_r, tau_d, tau_r_fast, and tau_d_fast for `max_steps` total.
 fn golden_section_refine(
@@ -536,109 +540,56 @@ fn golden_section_refine(
     max_steps: usize,
     skip: usize,
 ) -> (f64, f64, f64, f64) {
-    let phi = (5.0_f64.sqrt() - 1.0) / 2.0; // golden ratio conjugate
-
     let mut tau_r = best.tau_rise;
     let mut tau_d = best.tau_decay;
     let mut tau_r_fast = best.tau_rise_fast;
     let mut tau_d_fast = best.tau_decay_fast;
 
-    // If fast component is zero, skip fast parameter refinement
-    let has_fast = tau_r_fast > 0.0 && tau_d_fast > tau_r_fast;
+    let has_fast = best.has_fast_component();
     let n_phases = if has_fast { 4 } else { 2 };
 
     for step in 0..max_steps {
-        let phase = step % n_phases;
-
-        if phase == 0 {
-            // Refine tau_r
-            let mut lo = (tau_r * 0.5).max(dt);
-            let mut hi = (tau_r * 2.0).min(tau_d * 0.99);
-            if lo >= hi {
-                continue;
-            }
-
-            for _ in 0..10 {
-                let x1 = hi - phi * (hi - lo);
-                let x2 = lo + phi * (hi - lo);
-                let (_, _, r1) =
-                    eval_two_component(h_free, x1, tau_d, tau_r_fast, tau_d_fast, dt, skip);
-                let (_, _, r2) =
-                    eval_two_component(h_free, x2, tau_d, tau_r_fast, tau_d_fast, dt, skip);
-                if r1 < r2 {
-                    hi = x2;
-                } else {
-                    lo = x1;
+        match step % n_phases {
+            0 => {
+                // Refine tau_r
+                let lo = (tau_r * 0.5).max(dt);
+                let hi = (tau_r * 2.0).min(tau_d * 0.99);
+                if lo < hi {
+                    tau_r = golden_bracket(lo, hi, |x| {
+                        eval_two_component(h_free, x, tau_d, tau_r_fast, tau_d_fast, dt, skip).2
+                    });
                 }
             }
-            tau_r = (lo + hi) / 2.0;
-        } else if phase == 1 {
-            // Refine tau_d
-            let lo = (tau_d * 0.5).max(tau_r * 1.01);
-            let mut hi = tau_d * 2.0;
-            if lo >= hi {
-                continue;
-            }
-
-            let mut lo = lo;
-            for _ in 0..10 {
-                let x1 = hi - phi * (hi - lo);
-                let x2 = lo + phi * (hi - lo);
-                let (_, _, r1) =
-                    eval_two_component(h_free, tau_r, x1, tau_r_fast, tau_d_fast, dt, skip);
-                let (_, _, r2) =
-                    eval_two_component(h_free, tau_r, x2, tau_r_fast, tau_d_fast, dt, skip);
-                if r1 < r2 {
-                    hi = x2;
-                } else {
-                    lo = x1;
+            1 => {
+                // Refine tau_d
+                let lo = (tau_d * 0.5).max(tau_r * 1.01);
+                let hi = tau_d * 2.0;
+                if lo < hi {
+                    tau_d = golden_bracket(lo, hi, |x| {
+                        eval_two_component(h_free, tau_r, x, tau_r_fast, tau_d_fast, dt, skip).2
+                    });
                 }
             }
-            tau_d = (lo + hi) / 2.0;
-        } else if phase == 2 {
-            // Refine tau_r_fast
-            let mut lo = (tau_r_fast * 0.5).max(0.1 * dt);
-            let mut hi = (tau_r_fast * 2.0).min((2.0 * dt).min(tau_d_fast * 0.99));
-            if lo >= hi {
-                continue;
-            }
-
-            for _ in 0..10 {
-                let x1 = hi - phi * (hi - lo);
-                let x2 = lo + phi * (hi - lo);
-                let (_, _, r1) =
-                    eval_two_component(h_free, tau_r, tau_d, x1, tau_d_fast, dt, skip);
-                let (_, _, r2) =
-                    eval_two_component(h_free, tau_r, tau_d, x2, tau_d_fast, dt, skip);
-                if r1 < r2 {
-                    hi = x2;
-                } else {
-                    lo = x1;
+            2 => {
+                // Refine tau_r_fast
+                let lo = (tau_r_fast * 0.5).max(0.1 * dt);
+                let hi = (tau_r_fast * 2.0).min((2.0 * dt).min(tau_d_fast * 0.99));
+                if lo < hi {
+                    tau_r_fast = golden_bracket(lo, hi, |x| {
+                        eval_two_component(h_free, tau_r, tau_d, x, tau_d_fast, dt, skip).2
+                    });
                 }
             }
-            tau_r_fast = (lo + hi) / 2.0;
-        } else {
-            // Refine tau_d_fast — cap at min(8×dt, tau_d × 0.15) to prevent degeneracy
-            let mut lo = (tau_d_fast * 0.5).max(tau_r_fast * 1.01);
-            let mut hi = (tau_d_fast * 2.0).min((8.0 * dt).min(tau_d * 0.15));
-            if lo >= hi {
-                continue;
-            }
-
-            for _ in 0..10 {
-                let x1 = hi - phi * (hi - lo);
-                let x2 = lo + phi * (hi - lo);
-                let (_, _, r1) =
-                    eval_two_component(h_free, tau_r, tau_d, tau_r_fast, x1, dt, skip);
-                let (_, _, r2) =
-                    eval_two_component(h_free, tau_r, tau_d, tau_r_fast, x2, dt, skip);
-                if r1 < r2 {
-                    hi = x2;
-                } else {
-                    lo = x1;
+            _ => {
+                // Refine tau_d_fast
+                let lo = (tau_d_fast * 0.5).max(tau_r_fast * 1.01);
+                let hi = (tau_d_fast * 2.0).min((8.0 * dt).min(tau_d * 0.15));
+                if lo < hi {
+                    tau_d_fast = golden_bracket(lo, hi, |x| {
+                        eval_two_component(h_free, tau_r, tau_d, tau_r_fast, x, dt, skip).2
+                    });
                 }
             }
-            tau_d_fast = (lo + hi) / 2.0;
         }
     }
 
@@ -921,11 +872,7 @@ mod tests {
     #[test]
     fn fast_tau_in_valid_range() {
         // For various inputs, verify fast component time constants are in expected ranges
-        let test_cases = [
-            (0.08, 0.5, 30.0),
-            (0.05, 0.3, 100.0),
-            (0.1, 2.0, 10.0),
-        ];
+        let test_cases = [(0.08, 0.5, 30.0), (0.05, 0.3, 100.0), (0.1, 2.0, 10.0)];
 
         for (tau_r, tau_d, fs) in test_cases {
             let h = make_biexp(tau_r, tau_d, 2.0, fs, 60);
@@ -966,8 +913,7 @@ mod tests {
 
         // Case 1: Pure slow component — should yield beta_s > 0, beta_f ≈ 0
         let h_slow = make_biexp(0.05, 0.5, 2.0, fs, n);
-        let (bs, bf, _) =
-            eval_two_component(&h_slow, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
+        let (bs, bf, _) = eval_two_component(&h_slow, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
         assert!(bs > 0.0, "beta_s should be positive for slow-only input");
         assert!(
             bf < 0.1 * bs,
@@ -985,22 +931,19 @@ mod tests {
                 (3.0 * ((-t / tau_d_fast).exp() - (-t / tau_r_fast).exp())) as f32
             })
             .collect();
-        let (bs, _bf, _) =
-            eval_two_component(&h_fast, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
+        let (bs, _bf, _) = eval_two_component(&h_fast, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
         // With no fast-only active set, the slow template absorbs what it can
         assert!(bs >= 0.0, "beta_s should be non-negative for any input");
 
         // Case 3: Both components present
         let h_both = make_two_component(0.05, 0.5, 2.0, tau_r_fast, tau_d_fast, 1.5, fs, n);
-        let (bs, bf, _) =
-            eval_two_component(&h_both, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
+        let (bs, bf, _) = eval_two_component(&h_both, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
         assert!(bs > 0.0, "beta_s should be positive for mixed input");
         assert!(bf > 0.0, "beta_f should be positive for mixed input");
 
         // Case 4: Zero signal — both should be zero
         let h_zero = vec![0.0_f32; n];
-        let (bs, bf, res) =
-            eval_two_component(&h_zero, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
+        let (bs, bf, res) = eval_two_component(&h_zero, 0.05, 0.5, tau_r_fast, tau_d_fast, dt, 0);
         assert_eq!(bs, 0.0, "beta_s should be zero for zero input");
         assert_eq!(bf, 0.0, "beta_f should be zero for zero input");
         assert!(res < 1e-20, "residual should be ~0 for zero input");

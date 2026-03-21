@@ -138,6 +138,19 @@ fn solve_upsampled(
     (solution, filtered, iterations, converged)
 }
 
+/// Return the interior slice of `s` excluding `pad` samples from each end.
+/// Falls back to the full slice when the interior is empty.
+fn interior_slice(s: &[f32], pad: usize) -> &[f32] {
+    let n = s.len();
+    let lo = pad.min(n);
+    let hi = n.saturating_sub(pad).max(lo);
+    if hi > lo {
+        &s[lo..hi]
+    } else {
+        s
+    }
+}
+
 /// Estimate alpha from the interior of the trace (excluding boundary padding).
 ///
 /// Uses peak-to-trough of the inner region to avoid edge artifacts that occur
@@ -145,17 +158,7 @@ fn solve_upsampled(
 /// Since the kernel is peak-normalized, peak-to-trough >= alpha, making this
 /// a safe overestimate. Returns 1.0 for flat traces.
 fn estimate_alpha_interior(trace: &[f32], pad: usize) -> f64 {
-    let n = trace.len();
-    let lo_idx = pad.min(n);
-    let hi_idx = n.saturating_sub(pad).max(lo_idx);
-    let inner = &trace[lo_idx..hi_idx];
-    if inner.is_empty() {
-        // Trace too short for padding — fall back to full trace
-        let lo = trace.iter().copied().fold(f32::INFINITY, f32::min);
-        let hi = trace.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let ptp = (hi - lo) as f64;
-        return if ptp < 1e-10 { 1.0 } else { ptp };
-    }
+    let inner = interior_slice(trace, pad);
     let lo = inner.iter().copied().fold(f32::INFINITY, f32::min);
     let hi = inner.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let ptp = (hi - lo) as f64;
@@ -170,11 +173,10 @@ fn estimate_alpha_interior(trace: &[f32], pad: usize) -> f64 {
 ///
 /// Falls back to the full slice when the interior is empty.
 fn interior_peak(s: &[f32], pad: usize) -> f32 {
-    let n = s.len();
-    let lo = pad.min(n);
-    let hi = n.saturating_sub(pad).max(lo);
-    let region = if hi > lo { &s[lo..hi] } else { s };
-    region.iter().copied().fold(0.0_f32, f32::max)
+    interior_slice(s, pad)
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max)
 }
 
 /// Full InDeCa trace processing pipeline with scale iteration.
@@ -214,25 +216,17 @@ pub fn solve_trace(
     let mut solver = Solver::new();
 
     // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
-    // Run a throwaway FISTA just to get the filtered trace (if HP/LP), then
+    // Apply bandpass filter directly (if HP/LP enabled), then
     // subtract the rolling-percentile baseline so the floor is ~0.
     let mut working_trace = if hp_enabled || lp_enabled {
-        let (_, filtered_up, _, _) = solve_upsampled(
-            &mut solver,
-            &upsampled,
-            tau_r,
-            tau_d,
-            fs_up,
-            1, // only 1 iteration — we just need the filtered trace
-            tol,
-            None,
-            hp_enabled,
-            lp_enabled,
-            Constraint::Box01,
-            false,
-            0.0, // no sparsity for filter pass
-        );
-        filtered_up.unwrap()
+        // Apply bandpass filter directly — no need for a full FISTA solve
+        solver.set_conv_mode(ConvMode::BandedAR2);
+        solver.set_params(tau_r, tau_d, 0.0, fs_up);
+        solver.set_trace(&upsampled);
+        solver.set_hp_filter_enabled(hp_enabled);
+        solver.set_lp_filter_enabled(lp_enabled);
+        solver.apply_filter();
+        solver.get_trace()
     } else {
         upsampled
     };
@@ -412,7 +406,9 @@ mod tests {
     #[test]
     fn outputs_in_range() {
         let trace = make_trace(0.02, 0.4, 30.0, 300, &[20, 80, 150, 220]);
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false, 0.0,
+        );
 
         // Spike counts should be non-negative
         for (i, &v) in result.s_counts.iter().enumerate() {
@@ -438,7 +434,9 @@ mod tests {
                 }
             }
         }
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, false, 0.0,
+        );
 
         // Check that spikes are detected near the true positions
         let mut detected = 0;
@@ -491,7 +489,9 @@ mod tests {
     #[test]
     fn upsampled_output_length() {
         let trace = make_trace(0.02, 0.4, 30.0, 100, &[20, 50]);
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 10, 200, 1e-3, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 10, 200, 1e-3, None, false, false, 0.0,
+        );
 
         // Output should be same length as input regardless of upsample factor
         assert_eq!(
@@ -504,7 +504,9 @@ mod tests {
     #[test]
     fn zero_trace() {
         let trace = vec![0.0_f32; 100];
-        let result = solve_trace(&trace, 0.02, 0.4, 30.0, 1, 100, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 100, 1e-4, None, false, false, 0.0,
+        );
         let total_spikes: f32 = result.s_counts.iter().sum();
         assert!(
             total_spikes < 1e-6,
@@ -538,7 +540,9 @@ mod tests {
             }
         }
 
-        let result = solve_trace(&trace, tau_r, tau_d, fs, 10, 500, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, tau_r, tau_d, fs, 10, 500, 1e-4, None, false, false, 0.0,
+        );
 
         let total_counts: f32 = result.s_counts.iter().sum();
 
@@ -602,7 +606,9 @@ mod tests {
         let subset_end = 400;
         let subset = &full_trace[subset_start..subset_end];
 
-        let result = solve_trace(subset, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            subset, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0,
+        );
         let total_spikes: f32 = result.s_counts.iter().sum();
 
         // Should detect interior spikes, not just the edge artifact
@@ -638,13 +644,131 @@ mod tests {
             }
         }
 
-        let result = solve_trace(&trace, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0);
+        let result = solve_trace(
+            &trace, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0,
+        );
         let total_spikes: f32 = result.s_counts.iter().sum();
 
         assert!(
             total_spikes >= 2.0,
             "Should detect at least 2 spikes with high baseline, got {} (alpha={:.2}, threshold={:.4}, pve={:.4})",
             total_spikes, result.alpha, result.threshold, result.pve
+        );
+    }
+
+    /// HP+LP filter path should produce valid results and return a filtered trace.
+    #[test]
+    fn filter_path_hp_lp() {
+        let spike_positions = [30, 100, 200];
+        let alpha_true = 10.0_f32;
+        let baseline_true = 2.0_f32;
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 300;
+        let mut trace = vec![baseline_true; n];
+        for &pos in &spike_positions {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n {
+                    trace[pos + k] += alpha_true * kv;
+                }
+            }
+        }
+
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, true, true, 0.0,
+        );
+
+        // Output length should match input
+        assert_eq!(result.s_counts.len(), trace.len());
+
+        // Spike counts should be non-negative
+        for (i, &v) in result.s_counts.iter().enumerate() {
+            assert!(v >= 0.0, "Negative spike count at {}: {}", i, v);
+        }
+
+        // Filtered trace should be returned and have the correct length
+        let filtered = result
+            .filtered_trace
+            .as_ref()
+            .expect("filtered_trace should be Some when filters are enabled");
+        assert_eq!(filtered.len(), trace.len());
+
+        // Should still detect spikes through the filter
+        let total_spikes: f32 = result.s_counts.iter().sum();
+        assert!(
+            total_spikes >= 1.0,
+            "Should detect at least 1 spike with HP+LP filter, got {} (pve={:.4})",
+            total_spikes,
+            result.pve
+        );
+    }
+
+    /// HP-only filter path should remove DC and still detect spikes.
+    #[test]
+    fn filter_path_hp_only() {
+        let spike_positions = [30, 100, 200];
+        let alpha_true = 10.0_f32;
+        let baseline_true = 50.0_f32; // high DC offset
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 300;
+        let mut trace = vec![baseline_true; n];
+        for &pos in &spike_positions {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n {
+                    trace[pos + k] += alpha_true * kv;
+                }
+            }
+        }
+
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, true, false, 0.0,
+        );
+
+        assert_eq!(result.s_counts.len(), trace.len());
+
+        // Filtered trace should be returned
+        assert!(result.filtered_trace.is_some());
+
+        // Should still detect spikes
+        let total_spikes: f32 = result.s_counts.iter().sum();
+        assert!(
+            total_spikes >= 1.0,
+            "Should detect at least 1 spike with HP-only filter, got {} (pve={:.4})",
+            total_spikes,
+            result.pve
+        );
+    }
+
+    /// LP-only filter path should preserve DC and detect spikes.
+    #[test]
+    fn filter_path_lp_only() {
+        let spike_positions = [30, 100, 200];
+        let alpha_true = 10.0_f32;
+        let baseline_true = 2.0_f32;
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 300;
+        let mut trace = vec![baseline_true; n];
+        for &pos in &spike_positions {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n {
+                    trace[pos + k] += alpha_true * kv;
+                }
+            }
+        }
+
+        let result = solve_trace(
+            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, true, 0.0,
+        );
+
+        assert_eq!(result.s_counts.len(), trace.len());
+        assert!(result.filtered_trace.is_some());
+
+        // Should still detect spikes
+        let total_spikes: f32 = result.s_counts.iter().sum();
+        assert!(
+            total_spikes >= 1.0,
+            "Should detect at least 1 spike with LP-only filter, got {} (pve={:.4})",
+            total_spikes,
+            result.pve
         );
     }
 }

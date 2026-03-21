@@ -45,12 +45,19 @@ impl Ord for OrderedF32 {
 /// Used for O(log M) k-th element queries via binary lifting.
 struct FenwickTree {
     tree: Vec<i32>,
+    msb: usize, // highest power of 2 <= (tree.len() - 1)
 }
 
 impl FenwickTree {
     fn new(size: usize) -> Self {
+        let mut msb = 1;
+        while msb <= size {
+            msb <<= 1;
+        }
+        msb >>= 1;
         Self {
-            tree: vec![0; size + 1], // 1-indexed
+            tree: vec![0; size + 1],
+            msb,
         }
     }
 
@@ -66,14 +73,9 @@ impl FenwickTree {
     /// Find the 0-indexed position of the k-th element (1-based k).
     /// Uses binary lifting: O(log M) time.
     fn kth(&self, mut k: i32) -> usize {
-        let n = self.tree.len() - 1; // max 0-indexed position + 1
+        let n = self.tree.len() - 1;
         let mut pos = 0;
-        // Find highest power of 2 <= n
-        let mut bit = 1;
-        while bit <= n {
-            bit <<= 1;
-        }
-        bit >>= 1;
+        let mut bit = self.msb;
 
         while bit > 0 {
             let next = pos + bit;
@@ -83,7 +85,7 @@ impl FenwickTree {
             }
             bit >>= 1;
         }
-        pos // 0-indexed coordinate
+        pos
     }
 }
 

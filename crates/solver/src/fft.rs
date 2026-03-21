@@ -150,41 +150,7 @@ impl FftConvolver {
         signal_len: usize,
         output: &mut [f32],
     ) {
-        let padded_len = self.fft_len;
-        let spectrum_len = padded_len / 2 + 1;
-
-        // Zero-pad source into fft_input
-        self.fft_input[..signal_len].copy_from_slice(&source[..signal_len]);
-        self.fft_input[signal_len..padded_len].fill(0.0);
-
-        // Forward FFT of source
-        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
-        fwd.process_with_scratch(
-            &mut self.fft_input[..padded_len],
-            &mut self.fft_spectrum[..spectrum_len],
-            &mut self.fft_scratch_fwd,
-        )
-        .unwrap();
-
-        // Pointwise multiply with kernel FFT
-        for i in 0..spectrum_len {
-            self.fft_spectrum[i] *= self.kernel_fft[i];
-        }
-
-        // Inverse FFT
-        let inv = self.plan_inv.as_ref().expect("plans not initialized");
-        inv.process_with_scratch(
-            &mut self.fft_spectrum[..spectrum_len],
-            &mut self.fft_output[..padded_len],
-            &mut self.fft_scratch_inv,
-        )
-        .unwrap();
-
-        // Normalize and copy first signal_len samples to output
-        let scale = 1.0 / padded_len as f32;
-        for i in 0..signal_len {
-            output[i] = self.fft_output[i] * scale;
-        }
+        self.convolve_impl(source, signal_len, output, false);
     }
 
     /// FFT-based adjoint convolution (correlation): output[..signal_len] = (K^T * source)[..signal_len].
@@ -193,6 +159,18 @@ impl FftConvolver {
         source: &[f32],
         signal_len: usize,
         output: &mut [f32],
+    ) {
+        self.convolve_impl(source, signal_len, output, true);
+    }
+
+    /// Shared FFT convolution implementation.
+    /// `use_conjugate` selects `kernel_conj_fft` (adjoint) or `kernel_fft` (forward).
+    fn convolve_impl(
+        &mut self,
+        source: &[f32],
+        signal_len: usize,
+        output: &mut [f32],
+        use_conjugate: bool,
     ) {
         let padded_len = self.fft_len;
         let spectrum_len = padded_len / 2 + 1;
@@ -210,9 +188,15 @@ impl FftConvolver {
         )
         .unwrap();
 
-        // Pointwise multiply with conjugate kernel FFT
-        for i in 0..spectrum_len {
-            self.fft_spectrum[i] *= self.kernel_conj_fft[i];
+        // Pointwise multiply with kernel spectrum
+        if use_conjugate {
+            for i in 0..spectrum_len {
+                self.fft_spectrum[i] *= self.kernel_conj_fft[i];
+            }
+        } else {
+            for i in 0..spectrum_len {
+                self.fft_spectrum[i] *= self.kernel_fft[i];
+            }
         }
 
         // Inverse FFT
