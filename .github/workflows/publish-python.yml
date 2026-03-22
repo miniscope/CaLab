@@ -61,6 +61,7 @@ jobs:
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
+        shell: bash
         run: python3 -c "import re,os; v=os.environ['GITHUB_REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
       - uses: actions/setup-python@v5
