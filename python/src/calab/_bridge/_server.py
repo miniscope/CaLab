@@ -109,7 +109,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         try:
             params = json.loads(body)
         except json.JSONDecodeError:
-            self.send_error(400, "Invalid JSON")
+            self._send_error_cors(400, "Invalid JSON")
             return
 
         self.server.received_params = params

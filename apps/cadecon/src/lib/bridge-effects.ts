@@ -26,7 +26,7 @@ import {
   currentTauDecay,
 } from './iteration-store.ts';
 import { maxIterations } from './algorithm-store.ts';
-import { bridgeUrl, setBridgeExportDone } from './data-store.ts';
+import { bridgeUrl, setBridgeExportDone, bridgeExportDone } from './data-store.ts';
 import { startRun } from './iteration-manager.ts';
 import { buildCaDeconActivityMatrix, buildCaDeconResultsPayload } from './export-utils.ts';
 
@@ -65,6 +65,17 @@ export async function initBridgeConfig(url: string): Promise<void> {
   } catch {
     // Config endpoint is optional — absence means use defaults
   }
+}
+
+/**
+ * Build and export CaDecon results to the bridge server.
+ * Shared by both auto-export (effect) and manual export (ExportButton).
+ */
+export async function runBridgeExport(url: string): Promise<void> {
+  const { data, shape } = buildCaDeconActivityMatrix();
+  const results = buildCaDeconResultsPayload();
+  await exportCaDeconToBridge(url, data, shape, results);
+  setBridgeExportDone(true);
 }
 
 /**
@@ -110,15 +121,12 @@ export function setupBridgeEffects(): void {
     on(runState, (state) => {
       if (state !== 'complete') return;
       if (!bridgeAutorun()) return;
+      if (bridgeExportDone()) return;
 
       const url = bridgeUrl();
       if (!url) return;
 
-      const { data, shape } = buildCaDeconActivityMatrix();
-      const results = buildCaDeconResultsPayload();
-      exportCaDeconToBridge(url, data, shape, results)
-        .then(() => setBridgeExportDone(true))
-        .catch((err) => console.error('Auto-export failed:', err));
+      void runBridgeExport(url).catch((err) => console.error('Auto-export failed:', err));
     }),
   );
 }

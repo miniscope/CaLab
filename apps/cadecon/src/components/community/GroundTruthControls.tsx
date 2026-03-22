@@ -8,13 +8,10 @@ import {
   revealGroundTruth,
   toggleGroundTruthVisibility,
   bridgeUrl,
-  setBridgeExportDone,
   bridgeExportDone,
 } from '../../lib/data-store.ts';
 import { runState } from '../../lib/iteration-store.ts';
-import { exportCaDeconToBridge } from '@calab/io';
-import { buildCaDeconActivityMatrix, buildCaDeconResultsPayload } from '../../lib/export-utils.ts';
-import { isBridgeAutorun } from '../../lib/bridge-effects.ts';
+import { isBridgeAutorun, runBridgeExport } from '../../lib/bridge-effects.ts';
 
 export function GroundTruthControls(): JSX.Element {
   function handleToggle(): void {
@@ -57,8 +54,7 @@ export function ExportButton(): JSX.Element {
 
   const isComplete = () => runState() === 'complete';
   const isBridge = () => !!bridgeUrl();
-  const isAutorun = () => isBridgeAutorun();
-  const isDisabled = () => isAutorun() || !isComplete() || exporting() || bridgeExportDone();
+  const isDisabled = () => isBridgeAutorun() || !isComplete() || exporting() || bridgeExportDone();
 
   async function handleExport(): Promise<void> {
     const url = bridgeUrl();
@@ -67,10 +63,7 @@ export function ExportButton(): JSX.Element {
     setExporting(true);
     setError(null);
     try {
-      const { data, shape } = buildCaDeconActivityMatrix();
-      const results = buildCaDeconResultsPayload();
-      await exportCaDeconToBridge(url, data, shape, results);
-      setBridgeExportDone(true);
+      await runBridgeExport(url);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Export failed');
     } finally {
@@ -84,7 +77,7 @@ export function ExportButton(): JSX.Element {
         class="btn-secondary btn-small"
         disabled={isDisabled()}
         title={
-          isAutorun()
+          isBridgeAutorun()
             ? 'Auto-export enabled'
             : bridgeExportDone()
               ? 'Exported'
@@ -96,7 +89,7 @@ export function ExportButton(): JSX.Element {
         }
         onClick={handleExport}
       >
-        {isAutorun()
+        {isBridgeAutorun()
           ? 'Auto-export enabled'
           : exporting()
             ? 'Exporting...'

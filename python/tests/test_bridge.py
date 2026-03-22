@@ -14,33 +14,33 @@ import pytest
 from calab._bridge._server import BridgeServer
 
 
-@pytest.fixture
-def bridge_server():
-    """Start a bridge server on a random port, yield it, then shut down."""
+def _make_server(**kwargs) -> BridgeServer:
+    """Create a BridgeServer with default test traces."""
     rng = np.random.default_rng(42)
     traces = rng.standard_normal((3, 200))
-    server = BridgeServer(traces, fs=30.0)
+    return BridgeServer(traces, fs=30.0, **kwargs)
 
+
+def _start_server(server: BridgeServer) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    yield server
 
+@pytest.fixture
+def bridge_server():
+    """Start a bridge server on a random port, yield it, then shut down."""
+    server = _make_server()
+    _start_server(server)
+    yield server
     server.shutdown()
 
 
 @pytest.fixture
 def cadecon_server():
     """Start a bridge server in cadecon mode on a random port."""
-    rng = np.random.default_rng(42)
-    traces = rng.standard_normal((3, 200))
-    server = BridgeServer(traces, fs=30.0, app="cadecon")
-
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
+    server = _make_server(app="cadecon")
+    _start_server(server)
     yield server
-
     server.shutdown()
 
 
@@ -284,16 +284,10 @@ def test_invalid_npy_returns_400(cadecon_server: BridgeServer) -> None:
 @pytest.fixture
 def config_server():
     """Start a bridge server with config on a random port."""
-    rng = np.random.default_rng(42)
-    traces = rng.standard_normal((3, 200))
     config = {"autorun": True, "max_iterations": 10}
-    server = BridgeServer(traces, fs=30.0, app="cadecon", config=config)
-
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
+    server = _make_server(app="cadecon", config=config)
+    _start_server(server)
     yield server
-
     server.shutdown()
 
 
