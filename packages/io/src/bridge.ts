@@ -6,6 +6,7 @@
  */
 
 import { parseNpy } from './npy-parser.ts';
+import { writeNpy } from './npy-writer.ts';
 import { processNpyResult } from './array-utils.ts';
 import type { NpyResult } from '@calab/core';
 
@@ -91,4 +92,58 @@ export function stopBridgeHeartbeat(): void {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+}
+
+/**
+ * POST the activity matrix as .npy binary to the bridge server.
+ * Used by CaDecon to send the large activity array before the JSON results.
+ */
+export async function postActivityToBridge(
+  bridgeUrl: string,
+  activity: Float32Array,
+  shape: [number, number],
+): Promise<void> {
+  const npyBuffer = writeNpy(activity, shape);
+  const resp = await fetch(`${bridgeUrl}/api/v1/results/activity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: npyBuffer,
+  });
+  if (!resp.ok) {
+    throw new Error(`Bridge: failed to post activity (${resp.status})`);
+  }
+}
+
+/**
+ * POST the results JSON (scalars + metadata) to the bridge server.
+ * This acts as the "done" signal for the two-POST CaDecon export.
+ */
+export async function postResultsToBridge(
+  bridgeUrl: string,
+  results: Record<string, unknown>,
+): Promise<void> {
+  const resp = await fetch(`${bridgeUrl}/api/v1/results`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(results),
+  });
+  if (!resp.ok) {
+    throw new Error(`Bridge: failed to post results (${resp.status})`);
+  }
+}
+
+/**
+ * Export CaDecon results to the bridge server.
+ * Sequences: activity POST first (large binary), then results POST (small JSON, triggers done).
+ * Stops the heartbeat after both succeed.
+ */
+export async function exportCaDeconToBridge(
+  bridgeUrl: string,
+  activity: Float32Array,
+  shape: [number, number],
+  results: Record<string, unknown>,
+): Promise<void> {
+  await postActivityToBridge(bridgeUrl, activity, shape);
+  await postResultsToBridge(bridgeUrl, results);
+  stopBridgeHeartbeat();
 }

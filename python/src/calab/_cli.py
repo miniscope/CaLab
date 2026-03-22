@@ -53,6 +53,52 @@ def _to_serializable(value):
     return value.tolist() if hasattr(value, "tolist") else value
 
 
+def cmd_cadecon(args: argparse.Namespace) -> None:
+    """Open CaDecon for automated deconvolution."""
+    from ._bridge import decon
+
+    traces = np.load(args.file)
+    if traces.ndim == 1:
+        traces = traces.reshape(1, -1)
+
+    result = decon(
+        traces,
+        fs=args.fs,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+
+    if result is None:
+        print("No results received.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Activity shape: {result.activity.shape}")
+    print(f"Sampling rate: {result.fs} Hz")
+    print(f"Alphas: {result.alphas}")
+    print(f"Baselines: {result.baselines}")
+    print(f"PVEs: {result.pves}")
+    print(f"Kernel slow length: {len(result.kernel_slow)}")
+    print(f"Kernel fast length: {len(result.kernel_fast)}")
+
+    if args.output:
+        np.save(f"{args.output}_activity.npy", result.activity)
+        results_json = {
+            "alphas": result.alphas.tolist(),
+            "baselines": result.baselines.tolist(),
+            "pves": result.pves.tolist(),
+            "fs": result.fs,
+            "kernel_slow_length": len(result.kernel_slow),
+            "kernel_fast_length": len(result.kernel_fast),
+            "metadata": {
+                k: (v.tolist() if hasattr(v, "tolist") else v)
+                for k, v in result.metadata.items()
+            },
+        }
+        with open(f"{args.output}_results.json", "w") as f:
+            json.dump(results_json, f, indent=2)
+        print(f"Saved to {args.output}_activity.npy and {args.output}_results.json")
+
+
 def cmd_deconvolve(args: argparse.Namespace) -> None:
     """Batch deconvolution from file."""
     from ._compute import bandpass_filter, run_deconvolution, run_deconvolution_full
@@ -186,6 +232,15 @@ def main() -> None:
     p_tune.add_argument("--port", type=int, default=None, help="Server port")
     p_tune.add_argument("--no-browser", action="store_true", help="Don't open browser")
     p_tune.set_defaults(func=cmd_tune)
+
+    # cadecon
+    p_cadecon = subparsers.add_parser("cadecon", help="Open CaDecon for automated deconvolution")
+    p_cadecon.add_argument("file", help="Input .npy file")
+    p_cadecon.add_argument("--fs", type=float, default=30.0, help="Sampling rate (Hz)")
+    p_cadecon.add_argument("--port", type=int, default=None, help="Server port")
+    p_cadecon.add_argument("--no-browser", action="store_true", help="Don't open browser")
+    p_cadecon.add_argument("--output", "-o", default=None, help="Output path stem")
+    p_cadecon.set_defaults(func=cmd_cadecon)
 
     # deconvolve
     p_deconv = subparsers.add_parser("deconvolve", help="Batch deconvolution")

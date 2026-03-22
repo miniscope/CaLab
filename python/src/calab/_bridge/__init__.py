@@ -1,12 +1,11 @@
-"""Bridge between Python and CaTune web app.
+"""Bridge between Python and CaLab web apps (CaTune + CaDecon).
 
-``calab.tune(traces, fs)`` starts a localhost HTTP server, opens CaTune
-in the browser with ``?bridge=localhost:PORT``, and returns the exported
-parameters when the user finishes tuning.
+``calab.tune(traces, fs)`` opens CaTune for interactive parameter tuning.
+``calab.decon(traces, fs)`` opens CaDecon for automated deconvolution.
 """
 
 from __future__ import annotations
 
-from ._apps import tune
+from ._apps import decon, tune
 
-__all__ = ["tune"]
+__all__ = ["decon", "tune"]

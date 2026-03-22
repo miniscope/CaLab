@@ -1,4 +1,5 @@
 export { parseNpy } from './npy-parser.ts';
+export { writeNpy } from './npy-writer.ts';
 export { parseNpz } from './npz-parser.ts';
 export { validateTraceData } from './validation.ts';
 export { extractCellTrace, processNpyResult } from './array-utils.ts';
@@ -9,6 +10,7 @@ export {
   getBridgeUrl,
   fetchBridgeData,
   postParamsToBridge,
+  exportCaDeconToBridge,
   startBridgeHeartbeat,
   stopBridgeHeartbeat,
 } from './bridge.ts';

@@ -29,6 +29,21 @@ def bridge_server():
     server.shutdown()
 
 
+@pytest.fixture
+def cadecon_server():
+    """Start a bridge server in cadecon mode on a random port."""
+    rng = np.random.default_rng(42)
+    traces = rng.standard_normal((3, 200))
+    server = BridgeServer(traces, fs=30.0, app="cadecon")
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    yield server
+
+    server.shutdown()
+
+
 def _get(server: BridgeServer, path: str) -> tuple[int, bytes]:
     """Make a GET request to the bridge server."""
     url = f"http://127.0.0.1:{server.port}{path}"
@@ -46,6 +61,18 @@ def _post(server: BridgeServer, path: str, data: dict) -> tuple[int, bytes]:
     body = json.dumps(data).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _post_binary(server: BridgeServer, path: str, data: bytes) -> tuple[int, bytes]:
+    """Make a POST request with binary data."""
+    url = f"http://127.0.0.1:{server.port}{path}"
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, resp.read()
@@ -178,3 +205,74 @@ def test_heartbeat_timeout_detection(bridge_server: BridgeServer) -> None:
 
     since_last = time.monotonic() - bridge_server.last_heartbeat
     assert since_last > HEARTBEAT_TIMEOUT
+
+
+# --- CaDecon bridge tests ---
+
+
+def test_status_cadecon(cadecon_server: BridgeServer) -> None:
+    """GET /api/v1/status returns app: cadecon."""
+    status, body = _get(cadecon_server, "/api/v1/status")
+    assert status == 200
+    data = json.loads(body)
+    assert data["ready"] is True
+    assert data["app"] == "cadecon"
+
+
+def test_results_activity_post(cadecon_server: BridgeServer) -> None:
+    """POST /api/v1/results/activity stores a .npy array."""
+    import io as sysio
+
+    activity = np.random.default_rng(0).standard_normal((3, 100)).astype(np.float32)
+    buf = sysio.BytesIO()
+    np.save(buf, activity)
+    npy_bytes = buf.getvalue()
+
+    status, body = _post_binary(cadecon_server, "/api/v1/results/activity", npy_bytes)
+    assert status == 200
+    assert cadecon_server.received_activity is not None
+    npt.assert_allclose(cadecon_server.received_activity, activity, atol=1e-6)
+
+
+def test_results_json_post(cadecon_server: BridgeServer) -> None:
+    """POST /api/v1/results stores JSON and triggers results_event."""
+    results = {"alphas": [1.0, 2.0], "fs": 30.0, "tau_rise": 0.2}
+
+    status, body = _post(cadecon_server, "/api/v1/results", results)
+    assert status == 200
+    assert cadecon_server.results_event.is_set()
+    assert cadecon_server.received_results == results
+
+
+def test_results_two_post_sequence(cadecon_server: BridgeServer) -> None:
+    """Full two-POST flow: activity first, then JSON results."""
+    import io as sysio
+
+    # 1. POST activity
+    activity = np.ones((2, 50), dtype=np.float32)
+    buf = sysio.BytesIO()
+    np.save(buf, activity)
+    status, _ = _post_binary(cadecon_server, "/api/v1/results/activity", buf.getvalue())
+    assert status == 200
+
+    # results_event should NOT be set yet
+    assert not cadecon_server.results_event.is_set()
+
+    # 2. POST results JSON
+    results = {"alphas": [1.0, 1.0], "fs": 30.0}
+    status, _ = _post(cadecon_server, "/api/v1/results", results)
+    assert status == 200
+
+    # Now both should be stored
+    assert cadecon_server.results_event.is_set()
+    assert cadecon_server.received_activity is not None
+    assert cadecon_server.received_results == results
+    npt.assert_array_equal(cadecon_server.received_activity, activity)
+
+
+def test_invalid_npy_returns_400(cadecon_server: BridgeServer) -> None:
+    """Garbage bytes to /api/v1/results/activity returns 400."""
+    status, body = _post_binary(
+        cadecon_server, "/api/v1/results/activity", b"not-a-npy-file",
+    )
+    assert status == 400

@@ -19,6 +19,51 @@ from ._solver import (
 )
 
 
+class CaDeconResult(NamedTuple):
+    """Full result from CaDecon (automated deconvolution via InDeCa algorithm).
+
+    Attributes
+    ----------
+    activity : np.ndarray
+        Deconvolved activity matrix, shape ``(n_cells, n_timepoints)``, float32.
+    alphas : np.ndarray
+        Per-cell scaling factors, shape ``(n_cells,)``, float64.
+    baselines : np.ndarray
+        Per-cell baseline estimates, shape ``(n_cells,)``, float64.
+    pves : np.ndarray
+        Per-cell proportion of variance explained, shape ``(n_cells,)``, float64.
+    kernel_slow : np.ndarray
+        Slow biexponential kernel waveform, float32.
+    kernel_fast : np.ndarray
+        Fast biexponential kernel waveform, float32 (empty if single-component).
+    fs : float
+        Sampling rate in Hz.
+    metadata : dict
+        Extensible dict with biexp params, convergence info, h_free, etc.
+    """
+
+    activity: np.ndarray
+    alphas: np.ndarray
+    baselines: np.ndarray
+    pves: np.ndarray
+    kernel_slow: np.ndarray
+    kernel_fast: np.ndarray
+    fs: float
+    metadata: dict
+
+
+def _build_biexp_waveform(
+    tau_rise: float, tau_decay: float, beta: float, fs: float, length: int,
+) -> np.ndarray:
+    """Build a biexponential waveform: beta * (exp(-t/tau_d) - exp(-t/tau_r)).
+
+    Uses the same 5x tau_decay length convention as the browser solver.
+    """
+    t = np.arange(length) / fs
+    waveform = beta * (np.exp(-t / tau_decay) - np.exp(-t / tau_rise))
+    return waveform.astype(np.float32)
+
+
 class DeconvolutionResult(NamedTuple):
     """Full result from FISTA deconvolution.
 
