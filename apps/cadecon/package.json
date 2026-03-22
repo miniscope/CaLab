@@ -14,7 +14,7 @@
       "Configurable algorithm parameters"
     ],
     "status": "beta",
-    "screenshot": ""
+    "screenshot": "screenshot.png"
   },
   "scripts": {
     "dev": "vite",
