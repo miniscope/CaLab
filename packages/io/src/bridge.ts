@@ -19,8 +19,6 @@ export interface BridgeMetadata {
 /** Configuration from Python's DeconConfig, sent via GET /api/v1/config. */
 export interface BridgeConfig {
   autorun: boolean;
-  tau_rise_init?: number;
-  tau_decay_init?: number;
   upsample_target?: number;
   hp_filter_enabled?: boolean;
   lp_filter_enabled?: boolean;
@@ -35,8 +33,6 @@ export interface BridgeConfig {
 /** All known keys of BridgeConfig (for cross-language schema tests). */
 export const BRIDGE_CONFIG_KEYS: readonly string[] = [
   'autorun',
-  'tau_rise_init',
-  'tau_decay_init',
   'upsample_target',
   'hp_filter_enabled',
   'lp_filter_enabled',

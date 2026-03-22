@@ -1,7 +1,5 @@
 {
   "autorun": true,
-  "tau_rise_init": 0.2,
-  "tau_decay_init": 1.0,
   "upsample_target": 300,
   "hp_filter_enabled": true,
   "lp_filter_enabled": false,

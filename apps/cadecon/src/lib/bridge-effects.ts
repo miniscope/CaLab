@@ -10,8 +10,6 @@ import { createEffect, on, createSignal } from 'solid-js';
 import { fetchBridgeConfig, postProgressToBridge, exportCaDeconToBridge } from '@calab/io';
 import type { BridgeConfig } from '@calab/io';
 import {
-  setTauRiseInit,
-  setTauDecayInit,
   setUpsampleTarget,
   setHpFilterEnabled,
   setLpFilterEnabled,
@@ -41,8 +39,6 @@ export function isBridgeAutorun(): boolean {
 
 /** Apply config values from BridgeConfig to the appropriate store signals. */
 function applyConfig(config: BridgeConfig): void {
-  if (config.tau_rise_init != null) setTauRiseInit(config.tau_rise_init);
-  if (config.tau_decay_init != null) setTauDecayInit(config.tau_decay_init);
   if (config.upsample_target != null) setUpsampleTarget(config.upsample_target);
   if (config.hp_filter_enabled != null) setHpFilterEnabled(config.hp_filter_enabled);
   if (config.lp_filter_enabled != null) setLpFilterEnabled(config.lp_filter_enabled);

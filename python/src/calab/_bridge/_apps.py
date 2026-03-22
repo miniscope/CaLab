@@ -169,8 +169,6 @@ def decon(
     open_browser: bool = True,
     *,
     autorun: bool = False,
-    tau_rise_init: float | None = None,
-    tau_decay_init: float | None = None,
     upsample_target: int | None = None,
     hp_filter_enabled: bool | None = None,
     lp_filter_enabled: bool | None = None,
@@ -203,10 +201,6 @@ def decon(
         Whether to auto-open the browser. Default: True.
     autorun : bool
         If True, the solver starts automatically after loading. Default: False.
-    tau_rise_init : float, optional
-        Initial rise time constant (s). Must be > 0.
-    tau_decay_init : float, optional
-        Initial decay time constant (s). Must be > 0.
     upsample_target : int, optional
         Target sampling rate for upsampling. Must be > 0.
     hp_filter_enabled : bool, optional
@@ -236,8 +230,6 @@ def decon(
     # Build and validate config via pydantic
     config = DeconConfig(
         autorun=autorun,
-        tau_rise_init=tau_rise_init,
-        tau_decay_init=tau_decay_init,
         upsample_target=upsample_target,
         hp_filter_enabled=hp_filter_enabled,
         lp_filter_enabled=lp_filter_enabled,

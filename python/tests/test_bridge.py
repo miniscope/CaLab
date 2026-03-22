@@ -286,7 +286,7 @@ def config_server():
     """Start a bridge server with config on a random port."""
     rng = np.random.default_rng(42)
     traces = rng.standard_normal((3, 200))
-    config = {"autorun": True, "tau_rise_init": 0.2, "max_iterations": 10}
+    config = {"autorun": True, "max_iterations": 10}
     server = BridgeServer(traces, fs=30.0, app="cadecon", config=config)
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -310,7 +310,7 @@ def test_config_endpoint_with_params(config_server: BridgeServer) -> None:
     status, body = _get(config_server, "/api/v1/config")
     assert status == 200
     data = json.loads(body)
-    assert data == {"autorun": True, "tau_rise_init": 0.2, "max_iterations": 10}
+    assert data == {"autorun": True, "max_iterations": 10}
 
 
 def test_progress_endpoint(cadecon_server: BridgeServer) -> None:
@@ -352,9 +352,6 @@ def test_decon_config_validation() -> None:
     from calab._bridge._models import DeconConfig
 
     with pytest.raises(Exception):  # noqa: B017
-        DeconConfig(tau_rise_init=-1)
-
-    with pytest.raises(Exception):  # noqa: B017
         DeconConfig(max_iterations=0)
 
     with pytest.raises(Exception):  # noqa: B017
@@ -374,11 +371,11 @@ def test_decon_config_serialization() -> None:
     """model_dump(exclude_none=True) omits unset optional fields."""
     from calab._bridge._models import DeconConfig
 
-    config = DeconConfig(autorun=True, tau_rise_init=0.1)
+    config = DeconConfig(autorun=True, max_iterations=10)
     dumped = config.model_dump(exclude_none=True)
-    assert dumped == {"autorun": True, "tau_rise_init": 0.1}
-    assert "tau_decay_init" not in dumped
-    assert "max_iterations" not in dumped
+    assert dumped == {"autorun": True, "max_iterations": 10}
+    assert "upsample_target" not in dumped
+    assert "seed" not in dumped
 
 
 # --- Cross-language schema consistency tests ---

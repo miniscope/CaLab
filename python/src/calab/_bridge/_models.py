@@ -14,10 +14,6 @@ class DeconConfig(BaseModel):
     """
 
     autorun: bool = Field(False, description="Auto-start solver after loading traces")
-    tau_rise_init: float | None = Field(None, gt=0, description="Initial rise time constant (s)")
-    tau_decay_init: float | None = Field(
-        None, gt=0, description="Initial decay time constant (s)"
-    )
     upsample_target: int | None = Field(
         None, gt=0, description="Target sampling rate (Hz) for upsampling"
     )

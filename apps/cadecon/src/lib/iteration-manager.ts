@@ -35,8 +35,6 @@ import {
   cellSubsetKey,
 } from './iteration-store.ts';
 import {
-  tauRiseInit,
-  tauDecayInit,
   upsampleFactor,
   maxIterations,
   convergenceTol,
@@ -379,9 +377,9 @@ export async function startRun(): Promise<void> {
   const shape = effectiveShape();
   if (!data || !fs || !shape) return;
 
-  // Snapshot parameters
-  let tauR = tauRiseInit();
-  let tauD = tauDecayInit();
+  // Snapshot parameters — tau values are auto-detected by the seed phase below
+  let tauR = 0.2;
+  let tauD = 1.0;
   const upFactor = upsampleFactor();
   const maxIter = maxIterations();
   const convTol = convergenceTol();
