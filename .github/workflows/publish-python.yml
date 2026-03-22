@@ -17,7 +17,7 @@ jobs:
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
-        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#py/v}\"/" python/pyproject.toml
+        run: python3 -c "import re,os; v=os.environ['GITHUB_REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',open(p).read(),flags=re.M))"
 
       - uses: actions/setup-python@v5
         with:
@@ -59,18 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set version from tag (Unix)
-        if: startsWith(github.ref, 'refs/tags/py/v') && runner.os != 'Windows'
-        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#py/v}\"/" python/pyproject.toml
-
-      - name: Set version from tag (Windows)
-        if: startsWith(github.ref, 'refs/tags/py/v') && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          $version = $env:TAG_NAME.Replace("py/v", "")
-          (Get-Content python/pyproject.toml) -replace '^version = .*', "version = `"$version`"" | Set-Content python/pyproject.toml
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/py/v')
+        run: python3 -c "import re,os; v=os.environ['GITHUB_REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',open(p).read(),flags=re.M))"
 
       - uses: actions/setup-python@v5
         with:
@@ -98,7 +89,7 @@ jobs:
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
-        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#py/v}\"/" python/pyproject.toml
+        run: python3 -c "import re,os; v=os.environ['GITHUB_REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',open(p).read(),flags=re.M))"
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
