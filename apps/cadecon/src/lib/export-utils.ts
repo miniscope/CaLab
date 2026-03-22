@@ -3,7 +3,12 @@
  */
 
 import { cellResultLookup, convergenceHistory, convergedAtIteration } from './iteration-store.ts';
-import { samplingRate, numCells, numTimepoints } from './data-store.ts';
+import { samplingRate, numTimepoints } from './data-store.ts';
+
+/** Sorted cell indices for deterministic row order across both export functions. */
+function sortedCellIndices(): number[] {
+  return [...cellResultLookup().keys()].sort((a, b) => a - b);
+}
 
 /**
  * Build a contiguous Float32Array activity matrix from per-cell sCounts.
@@ -14,13 +19,11 @@ export function buildCaDeconActivityMatrix(): {
   shape: [number, number];
 } {
   const lookup = cellResultLookup();
-  const nCells = numCells() ?? 0;
   const nTime = numTimepoints() ?? 0;
 
-  const data = new Float32Array(nCells * nTime);
+  const sortedCells = sortedCellIndices();
+  const data = new Float32Array(sortedCells.length * nTime);
 
-  // Sorted cell indices for deterministic row order
-  const sortedCells = [...lookup.keys()].sort((a, b) => a - b);
   for (let row = 0; row < sortedCells.length; row++) {
     const entry = lookup.get(sortedCells[row])!;
     const offset = row * nTime;
@@ -39,7 +42,7 @@ export function buildCaDeconResultsPayload(): Record<string, unknown> {
   const history = convergenceHistory();
   const fs = samplingRate() ?? 30;
 
-  const sortedCells = [...lookup.keys()].sort((a, b) => a - b);
+  const sortedCells = sortedCellIndices();
   const alphas: number[] = [];
   const baselines: number[] = [];
   const pves: number[] = [];

@@ -17,6 +17,56 @@ _DEFAULT_CATUNE_URL = "https://miniscope.github.io/CaLab/CaTune/"
 _DEFAULT_CADECON_URL = "https://miniscope.github.io/CaLab/CaDecon/"
 
 
+def _run_bridge(
+    server: BridgeServer,
+    event: threading.Event,
+    app_name: str,
+    app_url: str,
+    open_browser: bool,
+    timeout: float | None,
+) -> bool:
+    """Start server, open browser, and wait for the bridge event.
+
+    Returns True if the event fired (data received), False otherwise.
+    """
+    actual_port = server.port
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    bridge_param = f"http://127.0.0.1:{actual_port}"
+    full_url = f"{app_url}?bridge={bridge_param}"
+
+    print(f"Bridge server running on http://127.0.0.1:{actual_port}")
+    print(f"Opening {app_name}: {full_url}")
+
+    if open_browser:
+        webbrowser.open(full_url)
+
+    received = False
+    start_time = time.monotonic()
+    try:
+        while True:
+            if event.wait(timeout=1.0):
+                received = True
+                break
+
+            now = time.monotonic()
+
+            if timeout is not None and (now - start_time) >= timeout:
+                break
+
+            if server.last_heartbeat is not None:
+                if (now - server.last_heartbeat) > HEARTBEAT_TIMEOUT:
+                    print("\nBrowser disconnected (heartbeat timeout).")
+                    break
+    except KeyboardInterrupt:
+        print("\nBridge cancelled by user.")
+    finally:
+        server.shutdown()
+
+    return received
+
+
 def tune(
     traces: np.ndarray,
     fs: float = 30.0,
@@ -53,44 +103,10 @@ def tune(
         Keys: ``tau_rise``, ``tau_decay``, ``lambda_``, ``fs``, ``filter_enabled``.
     """
     server = BridgeServer(traces, fs, port=port or 0)
-    actual_port = server.port
-
-    # Start server in daemon thread
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-
-    url = app_url or _DEFAULT_CATUNE_URL
-    bridge_param = f"http://127.0.0.1:{actual_port}"
-    full_url = f"{url}?bridge={bridge_param}"
-
-    print(f"Bridge server running on http://127.0.0.1:{actual_port}")
-    print(f"Opening CaTune: {full_url}")
-
-    if open_browser:
-        webbrowser.open(full_url)
-
-    received = False
-    start_time = time.monotonic()
-    try:
-        while True:
-            if server.params_event.wait(timeout=1.0):
-                received = True
-                break
-
-            now = time.monotonic()
-
-            if timeout is not None and (now - start_time) >= timeout:
-                break
-
-            # Detect browser disconnect (only after first heartbeat arrives)
-            if server.last_heartbeat is not None:
-                if (now - server.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                    print("\nBrowser disconnected (heartbeat timeout).")
-                    break
-    except KeyboardInterrupt:
-        print("\nBridge cancelled by user.")
-    finally:
-        server.shutdown()
+    received = _run_bridge(
+        server, server.params_event, "CaTune",
+        app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
+    )
 
     if received and server.received_params is not None:
         raw = server.received_params
@@ -144,43 +160,10 @@ def decon(
     from .._compute import CaDeconResult, _build_biexp_waveform
 
     server = BridgeServer(traces, fs, port=port or 0, app="cadecon")
-    actual_port = server.port
-
-    # Start server in daemon thread
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-
-    url = app_url or _DEFAULT_CADECON_URL
-    bridge_param = f"http://127.0.0.1:{actual_port}"
-    full_url = f"{url}?bridge={bridge_param}"
-
-    print(f"Bridge server running on http://127.0.0.1:{actual_port}")
-    print(f"Opening CaDecon: {full_url}")
-
-    if open_browser:
-        webbrowser.open(full_url)
-
-    received = False
-    start_time = time.monotonic()
-    try:
-        while True:
-            if server.results_event.wait(timeout=1.0):
-                received = True
-                break
-
-            now = time.monotonic()
-
-            if timeout is not None and (now - start_time) >= timeout:
-                break
-
-            if server.last_heartbeat is not None:
-                if (now - server.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                    print("\nBrowser disconnected (heartbeat timeout).")
-                    break
-    except KeyboardInterrupt:
-        print("\nBridge cancelled by user.")
-    finally:
-        server.shutdown()
+    received = _run_bridge(
+        server, server.results_event, "CaDecon",
+        app_url or _DEFAULT_CADECON_URL, open_browser, timeout,
+    )
 
     if not received or server.received_results is None:
         return None

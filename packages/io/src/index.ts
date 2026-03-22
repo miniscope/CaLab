@@ -10,8 +10,6 @@ export {
   getBridgeUrl,
   fetchBridgeData,
   postParamsToBridge,
-  postActivityToBridge,
-  postResultsToBridge,
   exportCaDeconToBridge,
   startBridgeHeartbeat,
   stopBridgeHeartbeat,
