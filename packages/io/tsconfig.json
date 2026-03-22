@@ -13,6 +13,6 @@
       "@calab/core/*": ["../core/src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "src/__fixtures__/*.json"],
   "references": [{ "path": "../core" }]
 }
