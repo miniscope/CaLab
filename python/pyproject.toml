@@ -49,3 +49,6 @@ python-source = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: requires Playwright + network access (skip with -m 'not integration')",
+]

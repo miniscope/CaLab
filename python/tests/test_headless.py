@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from calab._bridge._headless import HeadlessBrowser, _check_playwright
+
+try:
+    from playwright.sync_api import sync_playwright as _  # noqa: F401
+
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
 
 
 # ---------------------------------------------------------------------------
@@ -189,3 +197,70 @@ class TestManagedHeadless:
                         assert isinstance(browser, HeadlessBrowser)
                         mock_start.assert_called_once()
                     mock_close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Integration tests (require Playwright + Chromium + network access)
+# ---------------------------------------------------------------------------
+
+_skip_no_playwright = pytest.mark.skipif(
+    not HAS_PLAYWRIGHT, reason="playwright not installed",
+)
+
+
+@_skip_no_playwright
+@pytest.mark.integration
+class TestHeadlessDeconIntegration:
+    """End-to-end tests that launch a real headless browser against the
+    hosted CaDecon page.  These verify that the HTTPS→localhost bridge
+    actually works (the Private Network Access issue that prompted this).
+    """
+
+    def test_decon_headless_true(self):
+        """decon(headless=True) returns a valid CaDeconResult."""
+        import calab
+
+        traces = np.random.randn(3, 200)
+        result = calab.decon(
+            traces,
+            30.0,
+            headless=True,
+            autorun=True,
+            timeout=60,
+            max_iterations=5,
+        )
+        assert result is not None
+        assert result.activity.shape == (3, 200)
+        assert result.activity.dtype == np.float32
+        assert len(result.alphas) == 3
+        assert len(result.baselines) == 3
+        assert len(result.pves) == 3
+        assert result.kernel_slow.shape[0] > 0
+        assert result.fs == 30.0
+
+    def test_decon_headless_browser_reuse(self):
+        """A single HeadlessBrowser instance works across two decon() calls."""
+        import calab
+
+        with HeadlessBrowser() as hb:
+            r1 = calab.decon(
+                np.random.randn(2, 150),
+                30.0,
+                headless=hb,
+                autorun=True,
+                timeout=60,
+                max_iterations=5,
+            )
+            assert r1 is not None
+            assert r1.activity.shape == (2, 150)
+
+            r2 = calab.decon(
+                np.random.randn(4, 100),
+                30.0,
+                headless=hb,
+                autorun=True,
+                timeout=60,
+                max_iterations=5,
+            )
+            assert r2 is not None
+            assert r2.activity.shape == (4, 100)
