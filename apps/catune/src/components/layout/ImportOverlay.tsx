@@ -15,7 +15,7 @@ import {
   npzArrays,
 } from '../../lib/data-store.ts';
 import { formatDuration } from '@calab/core';
-import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '@calab/compute';
+import { SIMULATION_PRESETS, DEFAULT_SIMULATION_PRESET_ID } from '@calab/compute';
 import {
   buildFeedbackUrl,
   buildFeatureRequestUrl,
@@ -53,7 +53,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const [demoCells, setDemoCells] = createSignal(100);
   const [demoDuration, setDemoDuration] = createSignal(15);
   const [demoFps, setDemoFps] = createSignal(30);
-  const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_PRESET_ID);
+  const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_SIMULATION_PRESET_ID);
   const [useRandomSeed, setUseRandomSeed] = createSignal(false);
 
   const durationDisplay = () => formatDuration(durationSeconds(), true);
@@ -105,7 +105,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
             value={demoPresetId()}
             onChange={(e) => setDemoPresetId(e.currentTarget.value)}
           >
-            {DEMO_PRESETS.map((p) => (
+            {SIMULATION_PRESETS.map((p) => (
               <option value={p.id}>{p.label}</option>
             ))}
           </select>

@@ -9,7 +9,7 @@ import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CatuneSubmission, CatuneFilterState } from '../../lib/community/index.ts';
 import { tPeak, fwhm, lambda } from '../../lib/viz-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
-import { getPresetLabels } from '@calab/compute';
+import { SIMULATION_PRESETS } from '@calab/compute';
 import { ScatterPlot } from './ScatterPlot.tsx';
 import '../../styles/community.css';
 
@@ -41,7 +41,13 @@ export function CommunityBrowser() {
           options={ctx.options}
           filteredCount={ctx.filteredCount}
           totalCount={ctx.totalCount}
-          extraFilters={[{ id: 'demoPreset', label: 'All presets', options: getPresetLabels() }]}
+          extraFilters={[
+            {
+              id: 'demoPreset',
+              label: 'All presets',
+              options: SIMULATION_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+            },
+          ]}
           showExtraFiltersOnly={ctx.dataSource === 'demo'}
           highlightMine={ctx.highlightMine}
           onHighlightMineChange={ctx.toggleHighlightMine}

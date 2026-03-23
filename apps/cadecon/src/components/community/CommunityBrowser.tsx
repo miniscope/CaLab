@@ -9,7 +9,7 @@ import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CadeconSubmission, CadeconFilterState } from '../../lib/community/index.ts';
 import { currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
-import { getPresetLabels, tauToShape } from '@calab/compute';
+import { SIMULATION_PRESETS, tauToShape } from '@calab/compute';
 import { ScatterPlot } from './ScatterPlot.tsx';
 import '../../styles/community.css';
 
@@ -44,7 +44,13 @@ export function CommunityBrowser() {
           options={ctx.options}
           filteredCount={ctx.filteredCount}
           totalCount={ctx.totalCount}
-          extraFilters={[{ id: 'demoPreset', label: 'All presets', options: getPresetLabels() }]}
+          extraFilters={[
+            {
+              id: 'demoPreset',
+              label: 'All presets',
+              options: SIMULATION_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+            },
+          ]}
           showExtraFiltersOnly={ctx.dataSource === 'demo'}
           highlightMine={ctx.highlightMine}
           onHighlightMineChange={ctx.toggleHighlightMine}

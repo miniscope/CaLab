@@ -17,3 +17,32 @@ export { makeTimeAxis } from './time-axis.ts';
 export { DEMO_PRESETS, DEFAULT_PRESET_ID, getPresetById, getPresetLabels } from './demo-presets.ts';
 export type { DemoPreset } from './demo-presets.ts';
 export { generateSyntheticTrace, generateSyntheticDataset } from './mock-traces.ts';
+// Simulation types + presets (shared with Rust WASM simulation engine)
+export type {
+  SimulationConfig,
+  SimulationResult,
+  CellGroundTruth,
+  KernelConfig as SimKernelConfig,
+  NoiseConfig as SimNoiseConfig,
+  MarkovConfig,
+  PoissonConfig,
+  SpikeModel,
+  SinusoidalDrift,
+  RandomWalkDrift,
+  DriftModel,
+  PhotobleachingConfig,
+  SaturationConfig,
+  CellVariationConfig,
+} from './simulation-types.ts';
+export type { SimulationPreset } from './simulation-presets.ts';
+export {
+  SIMULATION_PRESETS,
+  DEFAULT_SIMULATION_PRESET_ID,
+  getSimulationPresetById,
+  PRESET_GCAMP6F,
+  PRESET_GCAMP6S,
+  PRESET_GCAMP6M,
+  PRESET_JGCAMP8F,
+  PRESET_OGB1,
+  PRESET_CLEAN,
+} from './simulation-presets.ts';

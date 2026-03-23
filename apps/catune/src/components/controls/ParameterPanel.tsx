@@ -32,7 +32,10 @@ export function ParameterPanel() {
 
   const trueShape = () => {
     if (!groundTruthVisible() || !isDemo() || !demoPreset()) return undefined;
-    return tauToShape(demoPreset()!.params.tauRise, demoPreset()!.params.tauDecay) ?? undefined;
+    return (
+      tauToShape(demoPreset()!.config.kernel.tau_rise_s, demoPreset()!.config.kernel.tau_decay_s) ??
+      undefined
+    );
   };
 
   return (

@@ -5,7 +5,7 @@ import { DimensionConfirmation } from '../import/DimensionConfirmation.tsx';
 import { SamplingRateInput } from '../import/SamplingRateInput.tsx';
 import { DataValidationReport } from '../import/DataValidationReport.tsx';
 import { importStep, effectiveShape, samplingRate, npzArrays } from '../../lib/data-store.ts';
-import { DEMO_PRESETS, DEFAULT_PRESET_ID } from '@calab/compute';
+import { SIMULATION_PRESETS, DEFAULT_SIMULATION_PRESET_ID } from '@calab/compute';
 import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '@calab/community';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
@@ -35,7 +35,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
   const [demoCells, setDemoCells] = createSignal(100);
   const [demoDuration, setDemoDuration] = createSignal(15);
   const [demoFps, setDemoFps] = createSignal(30);
-  const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_PRESET_ID);
+  const [demoPresetId, setDemoPresetId] = createSignal(DEFAULT_SIMULATION_PRESET_ID);
   const [useRandomSeed, setUseRandomSeed] = createSignal(false);
 
   return (
@@ -81,7 +81,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
             value={demoPresetId()}
             onChange={(e) => setDemoPresetId(e.currentTarget.value)}
           >
-            {DEMO_PRESETS.map((p) => (
+            {SIMULATION_PRESETS.map((p) => (
               <option value={p.id}>{p.label}</option>
             ))}
           </select>

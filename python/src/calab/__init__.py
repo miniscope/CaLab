@@ -19,6 +19,24 @@ from ._compute import (
 )
 from ._io import deconvolve_from_export, load_export_params, load_tuning_data, save_for_tuning
 from ._loaders import load_caiman, load_minian
+from ._simulate import (
+    CellGroundTruth,
+    CellVariationConfig,
+    DriftModel,
+    KernelConfig,
+    MarkovConfig,
+    NoiseConfig,
+    PhotobleachingConfig,
+    PoissonConfig,
+    RandomWalkDrift,
+    SaturationConfig,
+    SimulationConfig,
+    SimulationResult,
+    SinusoidalDrift,
+    SpikeModel,
+    presets,
+    simulate,
+)
 
 from importlib.metadata import version as _pkg_version
 
@@ -52,4 +70,21 @@ __all__ = [
     # Loaders
     "load_caiman",
     "load_minian",
+    # Simulation
+    "CellGroundTruth",
+    "CellVariationConfig",
+    "DriftModel",
+    "KernelConfig",
+    "MarkovConfig",
+    "NoiseConfig",
+    "PhotobleachingConfig",
+    "PoissonConfig",
+    "RandomWalkDrift",
+    "SaturationConfig",
+    "SimulationConfig",
+    "SimulationResult",
+    "SinusoidalDrift",
+    "SpikeModel",
+    "presets",
+    "simulate",
 ]

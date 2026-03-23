@@ -22,7 +22,11 @@ export function KernelDisplay() {
 
     if (groundTruthVisible() && isDemo() && demoPreset()) {
       const preset = demoPreset()!;
-      const trueKernel = computeKernel(preset.params.tauRise, preset.params.tauDecay, fs);
+      const trueKernel = computeKernel(
+        preset.config.kernel.tau_rise_s,
+        preset.config.kernel.tau_decay_s,
+        fs,
+      );
 
       // Align x-axes: use the longer of the two
       const maxLen = Math.max(userKernel.x.length, trueKernel.x.length);

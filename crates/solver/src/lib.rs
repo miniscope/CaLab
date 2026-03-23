@@ -11,6 +11,7 @@ mod kernel;
 #[allow(dead_code)]
 pub(crate) mod kernel_est;
 pub(crate) mod peak_seed;
+pub(crate) mod simulate;
 #[allow(dead_code)]
 pub(crate) mod threshold;
 #[allow(dead_code)]
@@ -21,6 +22,8 @@ mod py_api;
 
 #[cfg(feature = "jsbindings")]
 mod js_indeca;
+#[cfg(feature = "jsbindings")]
+mod js_simulate;
 
 use banded::BandedAR2;
 use filter::BandpassFilter;

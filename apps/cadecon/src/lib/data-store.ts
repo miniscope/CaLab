@@ -1,8 +1,12 @@
 import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@calab/core';
-import { generateSyntheticDataset, getPresetById, DEFAULT_PRESET_ID } from '@calab/compute';
+import {
+  generateSyntheticDataset,
+  getSimulationPresetById,
+  DEFAULT_SIMULATION_PRESET_ID,
+} from '@calab/compute';
 import { fetchBridgeData, validateTraceData } from '@calab/io';
-import type { DemoPreset } from '@calab/compute';
+import type { SimulationPreset, CellGroundTruth } from '@calab/compute';
 
 // --- Core Signals ---
 
@@ -23,7 +27,7 @@ const [dataSource, setDataSource] = createSignal<DataSource>(null);
 
 // ── Phase 2: ground truth & advanced features (not yet wired to UI) ────────
 
-const [demoPreset, setDemoPreset] = createSignal<DemoPreset | null>(null);
+const [demoPreset, setDemoPreset] = createSignal<SimulationPreset | null>(null);
 const [bridgeExportDone, setBridgeExportDone] = createSignal(false);
 const [groundTruthSpikes, setGroundTruthSpikes] = createSignal<Float64Array | null>(null);
 const [groundTruthCalcium, setGroundTruthCalcium] = createSignal<Float64Array | null>(null);
@@ -96,30 +100,62 @@ function loadDemoData(opts?: {
   presetId?: string;
   seed?: number | 'random';
 }): void {
-  const fs = opts?.fps ?? 30;
-  const cellCount = opts?.numCells ?? 100;
+  const preset = getSimulationPresetById(opts?.presetId ?? DEFAULT_SIMULATION_PRESET_ID);
+  if (!preset) return;
+
+  const cfg = preset.config;
+  const fs = opts?.fps ?? cfg.fs_hz;
+  const cellCount = opts?.numCells ?? cfg.num_cells;
   const durationMin = opts?.durationMinutes ?? 15;
   const timepointCount = Math.round(durationMin * 60 * fs);
 
-  const preset = getPresetById(opts?.presetId ?? DEFAULT_PRESET_ID);
-  if (!preset) return;
-
   const resolvedSeed =
-    opts?.seed === 'random' ? Math.floor(Math.random() * 2 ** 31) : (opts?.seed ?? 42);
+    opts?.seed === 'random' ? Math.floor(Math.random() * 2 ** 31) : (opts?.seed ?? cfg.seed);
+
+  // Generate using TS engine with params extracted from the new SimulationConfig
+  const simParams = {
+    tauRise: cfg.kernel.tau_rise_s,
+    tauDecay: cfg.kernel.tau_decay_s,
+    snrBase: cfg.noise.snr,
+    snrStep: cfg.cell_variation.snr_spread > 0 ? cfg.cell_variation.snr_spread / 2.5 : 2,
+    markov:
+      cfg.spike_model.model_type === 'markov'
+        ? {
+            pSilentToActive: cfg.spike_model.p_silent_to_active,
+            pActiveToSilent: cfg.spike_model.p_active_to_silent,
+            pSpikeWhenActive: cfg.spike_model.p_spike_when_active,
+            pSpikeWhenSilent: cfg.spike_model.p_spike_when_silent,
+          }
+        : {
+            pSilentToActive: 0.01,
+            pActiveToSilent: 0.2,
+            pSpikeWhenActive: 0.7,
+            pSpikeWhenSilent: 0.005,
+          },
+    noise:
+      cfg.drift.model_type === 'sinusoidal'
+        ? {
+            amplitudeSigma: 0.3,
+            driftAmplitude: cfg.drift.amplitude_fraction,
+            driftCyclesMin: cfg.drift.cycles_min,
+            driftCyclesMax: cfg.drift.cycles_max,
+          }
+        : { amplitudeSigma: 0.3, driftAmplitude: 0.1, driftCyclesMin: 2, driftCyclesMax: 4 },
+  };
 
   const {
     data,
     shape,
     groundTruthSpikes: gtSpikes,
     groundTruthCalcium: gtCalcium,
-  } = generateSyntheticDataset(cellCount, timepointCount, preset.params, fs, resolvedSeed);
+  } = generateSyntheticDataset(cellCount, timepointCount, simParams, fs, resolvedSeed);
 
   setGroundTruthSpikes(gtSpikes);
   setGroundTruthCalcium(gtCalcium);
   setGroundTruthVisible(false);
   setGroundTruthLocked(false);
-  setGroundTruthTauRise(preset.params.tauRise);
-  setGroundTruthTauDecay(preset.params.tauDecay);
+  setGroundTruthTauRise(cfg.kernel.tau_rise_s);
+  setGroundTruthTauDecay(cfg.kernel.tau_decay_s);
   setDemoPreset(preset);
   setDataSource('demo');
   setParsedData({ data, shape, dtype: '<f8', fortranOrder: false });

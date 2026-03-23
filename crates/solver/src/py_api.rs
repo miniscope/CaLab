@@ -2,6 +2,7 @@ use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods}
 use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
+use crate::simulate;
 use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver};
 
 const BATCH_SIZE: u32 = 100;
@@ -555,6 +556,68 @@ fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
     upsample::compute_upsample_factor(fs, target_fs)
 }
 
+/// Generate synthetic calcium traces from a JSON config string.
+///
+/// Returns a tuple of flat numpy arrays for efficient Python consumption:
+///   (traces, spikes, clean_calcium, alphas, baselines, snrs,
+///    tau_rises, tau_decays, num_cells, num_timepoints)
+#[pyfunction]
+fn py_simulate_traces<'py>(
+    py: Python<'py>,
+    config_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray1<f32>>,  // traces (flat, row-major)
+    Bound<'py, PyArray1<f32>>,  // spikes (flat, row-major)
+    Bound<'py, PyArray1<f32>>,  // clean_calcium (flat, row-major)
+    Bound<'py, PyArray1<f64>>,  // alphas (per-cell)
+    Bound<'py, PyArray1<f64>>,  // baselines (per-cell)
+    Bound<'py, PyArray1<f64>>,  // snrs (per-cell)
+    Bound<'py, PyArray1<f64>>,  // tau_rises (per-cell)
+    Bound<'py, PyArray1<f64>>,  // tau_decays (per-cell)
+    usize,                      // num_cells
+    usize,                      // num_timepoints
+)> {
+    let config: simulate::SimulationConfig = serde_json::from_str(config_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
+
+    let result = simulate::simulate(&config);
+
+    let n_cells = result.num_cells;
+    let n_tp = result.num_timepoints;
+
+    // Flatten ground truth into parallel arrays
+    let mut spikes_flat = Vec::with_capacity(n_cells * n_tp);
+    let mut clean_flat = Vec::with_capacity(n_cells * n_tp);
+    let mut alphas = Vec::with_capacity(n_cells);
+    let mut baselines = Vec::with_capacity(n_cells);
+    let mut snrs = Vec::with_capacity(n_cells);
+    let mut tau_rises = Vec::with_capacity(n_cells);
+    let mut tau_decays = Vec::with_capacity(n_cells);
+
+    for gt in &result.ground_truth {
+        spikes_flat.extend_from_slice(&gt.spikes);
+        clean_flat.extend_from_slice(&gt.clean_calcium);
+        alphas.push(gt.alpha);
+        baselines.push(gt.baseline);
+        snrs.push(gt.snr);
+        tau_rises.push(gt.tau_rise_s);
+        tau_decays.push(gt.tau_decay_s);
+    }
+
+    Ok((
+        PyArray1::from_vec(py, result.traces),
+        PyArray1::from_vec(py, spikes_flat),
+        PyArray1::from_vec(py, clean_flat),
+        PyArray1::from_vec(py, alphas),
+        PyArray1::from_vec(py, baselines),
+        PyArray1::from_vec(py, snrs),
+        PyArray1::from_vec(py, tau_rises),
+        PyArray1::from_vec(py, tau_decays),
+        n_cells,
+        n_tp,
+    ))
+}
+
 /// Register the Python module.
 /// The function name must match the leaf of module-name in pyproject.toml: "calab._solver" → "_solver".
 #[pymodule]
@@ -571,6 +634,8 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_indeca_estimate_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(py_indeca_fit_biexponential, m)?)?;
     m.add_function(wrap_pyfunction!(py_indeca_compute_upsample_factor, m)?)?;
+    // Simulation
+    m.add_function(wrap_pyfunction!(py_simulate_traces, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
