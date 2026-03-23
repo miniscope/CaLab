@@ -2,11 +2,24 @@ use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods}
 use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
-use crate::{Constraint, ConvMode, Solver};
+use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver};
 
 const BATCH_SIZE: u32 = 100;
 const CONTIGUOUS_ERR: &str =
     "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
+
+/// Convert a numpy f64 array to a Vec<f32>, validating contiguity.
+fn to_f32_vec(arr: &PyReadonlyArray1<f64>) -> PyResult<Vec<f32>> {
+    let slice = arr
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+    Ok(slice.iter().map(|&v| v as f32).collect())
+}
+
+/// Convert an optional numpy f64 array to an optional Vec<f32>.
+fn optional_to_f32_vec(opt: Option<PyReadonlyArray1<f64>>) -> PyResult<Option<Vec<f32>>> {
+    opt.map(|w| to_f32_vec(&w)).transpose()
+}
 
 fn parse_conv_mode(s: &str) -> PyResult<ConvMode> {
     match s {
@@ -225,10 +238,7 @@ fn deconvolve_single<'py>(
     solver.set_params(tau_rise, tau_decay, lambda_, fs);
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
-    let slice = trace
-        .as_slice()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-    let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
+    let trace_f32 = to_f32_vec(&trace)?;
     solver.set_trace(&trace_f32);
 
     if hp_enabled || lp_enabled {
@@ -336,10 +346,7 @@ fn py_seed_trace<'py>(
     trace: PyReadonlyArray1<f64>,
     fs: f64,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, f64, f64)> {
-    let slice = trace
-        .as_slice()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-    let trace_f32: Vec<f32> = slice.iter().map(|&v| v as f32).collect();
+    let trace_f32 = to_f32_vec(&trace)?;
     let result = crate::peak_seed::seed_trace(&trace_f32, fs);
     Ok((
         PyArray1::from_vec(py, result.s_counts),
@@ -384,6 +391,170 @@ fn seed_kernel_estimate<'py>(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// InDeCa pipeline bindings
+// ---------------------------------------------------------------------------
+
+/// Run the full InDeCa pipeline on a single trace.
+///
+/// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged).
+#[pyfunction]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0))]
+fn py_indeca_solve_trace<'py>(
+    py: Python<'py>,
+    trace: PyReadonlyArray1<f64>,
+    tau_rise: f64,
+    tau_decay: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    warm_counts: Option<PyReadonlyArray1<f64>>,
+    lambda_: f64,
+) -> PyResult<(
+    Bound<'py, PyArray1<f32>>, // s_counts
+    f64,                       // alpha
+    f64,                       // baseline
+    f64,                       // threshold
+    f64,                       // pve
+    u32,                       // iterations
+    bool,                      // converged
+)> {
+    let trace_f32 = to_f32_vec(&trace)?;
+    let warm = optional_to_f32_vec(warm_counts)?;
+
+    let result = indeca::solve_trace(
+        &trace_f32,
+        tau_rise,
+        tau_decay,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm.as_deref(),
+        hp_enabled,
+        lp_enabled,
+        lambda_,
+    );
+
+    Ok((
+        PyArray1::from_vec(py, result.s_counts),
+        result.alpha,
+        result.baseline,
+        result.threshold,
+        result.pve,
+        result.iterations,
+        result.converged,
+    ))
+}
+
+/// Estimate a free-form kernel from multiple traces and their spike trains.
+///
+/// Returns the estimated kernel as a numpy float32 array.
+#[pyfunction]
+#[pyo3(signature = (traces_flat, spikes_flat, trace_lengths, alphas, baselines, kernel_length, max_iters=200, tol=1e-4, warm_kernel=None, smooth_lambda=0.0))]
+fn py_indeca_estimate_kernel<'py>(
+    py: Python<'py>,
+    traces_flat: PyReadonlyArray1<f64>,
+    spikes_flat: PyReadonlyArray1<f64>,
+    trace_lengths: PyReadonlyArray1<i64>,
+    alphas: PyReadonlyArray1<f64>,
+    baselines: PyReadonlyArray1<f64>,
+    kernel_length: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_kernel: Option<PyReadonlyArray1<f64>>,
+    smooth_lambda: f64,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let traces_f32 = to_f32_vec(&traces_flat)?;
+    let spikes_f32 = to_f32_vec(&spikes_flat)?;
+
+    let lengths_slice = trace_lengths
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+    let lengths: Vec<usize> = lengths_slice.iter().map(|&v| v as usize).collect();
+
+    let alphas_slice = alphas
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+    let baselines_slice = baselines
+        .as_slice()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+
+    let warm = optional_to_f32_vec(warm_kernel)?;
+
+    let result = kernel_est::estimate_free_kernel(
+        &traces_f32,
+        &spikes_f32,
+        alphas_slice,
+        baselines_slice,
+        &lengths,
+        kernel_length,
+        max_iters,
+        tol,
+        warm.as_deref(),
+        smooth_lambda,
+    );
+
+    Ok(PyArray1::from_vec(py, result))
+}
+
+/// Fit a bi-exponential model to a free-form kernel.
+///
+/// Returns (tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast).
+#[pyfunction]
+#[pyo3(signature = (h_free, fs, refine=true, skip=0, warm_tau_rise=0.0, warm_tau_decay=0.0, warm_tau_rise_fast=0.0, warm_tau_decay_fast=0.0, warm_beta=0.0, warm_beta_fast=0.0, warm_residual=f64::INFINITY, use_warm=false))]
+fn py_indeca_fit_biexponential(
+    h_free: PyReadonlyArray1<f64>,
+    fs: f64,
+    refine: bool,
+    skip: usize,
+    warm_tau_rise: f64,
+    warm_tau_decay: f64,
+    warm_tau_rise_fast: f64,
+    warm_tau_decay_fast: f64,
+    warm_beta: f64,
+    warm_beta_fast: f64,
+    warm_residual: f64,
+    use_warm: bool,
+) -> PyResult<(f64, f64, f64, f64, f64, f64, f64)> {
+    let h_f32 = to_f32_vec(&h_free)?;
+
+    let warm_start = if use_warm {
+        Some(biexp_fit::BiexpResult {
+            tau_rise: warm_tau_rise,
+            tau_decay: warm_tau_decay,
+            beta: warm_beta,
+            residual: warm_residual,
+            tau_rise_fast: warm_tau_rise_fast,
+            tau_decay_fast: warm_tau_decay_fast,
+            beta_fast: warm_beta_fast,
+        })
+    } else {
+        None
+    };
+
+    let result = biexp_fit::fit_biexponential(&h_f32, fs, refine, skip, warm_start.as_ref());
+
+    Ok((
+        result.tau_rise,
+        result.tau_decay,
+        result.beta,
+        result.residual,
+        result.tau_rise_fast,
+        result.tau_decay_fast,
+        result.beta_fast,
+    ))
+}
+
+/// Compute the upsample factor for a given sampling rate and target rate.
+#[pyfunction]
+fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
+    upsample::compute_upsample_factor(fs, target_fs)
+}
+
 /// Register the Python module.
 /// The function name must match the leaf of module-name in pyproject.toml: "calab._solver" → "_solver".
 #[pymodule]
@@ -395,6 +566,11 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deconvolve_batch, m)?)?;
     m.add_function(wrap_pyfunction!(py_seed_trace, m)?)?;
     m.add_function(wrap_pyfunction!(seed_kernel_estimate, m)?)?;
+    // InDeCa pipeline
+    m.add_function(wrap_pyfunction!(py_indeca_solve_trace, m)?)?;
+    m.add_function(wrap_pyfunction!(py_indeca_estimate_kernel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_indeca_fit_biexponential, m)?)?;
+    m.add_function(wrap_pyfunction!(py_indeca_compute_upsample_factor, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

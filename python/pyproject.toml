@@ -37,8 +37,9 @@ calab = "calab._cli:main"
 
 [project.optional-dependencies]
 loaders = ["h5py>=3.0", "zarr>=2.12"]
-all = ["h5py>=3.0", "zarr>=2.12"]
-dev = ["pytest>=7.0", "h5py>=3.0", "zarr>=2.12"]
+headless = ["playwright>=1.40"]
+all = ["h5py>=3.0", "zarr>=2.12", "playwright>=1.40"]
+dev = ["pytest>=7.0", "h5py>=3.0", "zarr>=2.12", "playwright>=1.40"]
 
 [tool.maturin]
 manifest-path = "../crates/solver/Cargo.toml"
@@ -48,3 +49,6 @@ python-source = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: requires Playwright + network access (skip with -m 'not integration')",
+]
