@@ -3,15 +3,38 @@
 //! Generates realistic fluorescence traces for testing deconvolution algorithms.
 //! Shared engine: exposed to both WASM (web) and Python (PyO3) via bindings.
 //!
-//! Pipeline per cell:
-//!   1. Draw per-cell parameters (alpha, tau, SNR) from variation distributions
-//!   2. Generate spike train at high resolution, bin to imaging rate
-//!   3. Convolve with per-cell kernel
-//!   4. Scale by alpha
-//!   5. Apply indicator saturation (optional)
-//!   6. Add drift
-//!   7. Apply photobleaching (optional, multiplicative)
-//!   8. Add noise (Gaussian + optional Poisson shot noise)
+//! ## Pipeline per cell
+//!
+//!   1. **Spike generation** at high-res rate (default 300 Hz).
+//!      - *Markov HMM* (default): two-state silent/active model producing bursty
+//!        firing patterns. Original CaLab web simulator model.
+//!      - *Poisson*: homogeneous process at a fixed rate. Standard model in
+//!        OASIS (Friedrich et al., 2017) and CaImAn (Giovannucci et al., 2019).
+//!   2. **Convolution** with double-exponential calcium kernel at high-res rate.
+//!      h(t) = exp(-t/τ_d) − exp(-t/τ_r), peak-normalized to 1.0.
+//!      Convolution happens before downsampling so sub-frame spike timing is
+//!      preserved — important for fast indicators (e.g. jGCaMP8f).
+//!   3. **Downsample** calcium signal to imaging rate via bin-averaging, which
+//!      simulates camera exposure integration. Uses `downsample_average` from
+//!      the upsample module (consistent with the centered-bin approach used
+//!      elsewhere in the InDeCa pipeline).
+//!   4. **Scale by alpha** (per-cell amplitude). CaDecon's solver estimates
+//!      alpha via least-squares; varying it across cells tests that estimation.
+//!   5. **Indicator saturation** (optional). Hill equation F^n / (F^n + Kd^n)
+//!      models nonlinear calcium-to-fluorescence response at high [Ca²⁺].
+//!      From MLspike (Deneux et al., 2016).
+//!   6. **Baseline drift**. Mean-reverting Gaussian random walk (default) models
+//!      slow irregular fluctuations from tissue movement, focus drift, and
+//!      photobleaching recovery. From MLspike (Deneux et al., 2016).
+//!      A deterministic sinusoidal mode is also available for testing.
+//!   7. **Photobleaching** (optional). Multiplicative exponential decay
+//!      F(t) *= 1 − amp·(1 − exp(−t/τ)). From NAOMi (Charles et al., 2019).
+//!   8. **Noise**. Additive Gaussian noise scaled by SNR. Optional Poisson
+//!      (shot) noise models photon-counting statistics — signal-dependent
+//!      variance. From CASCADE (Rupprecht et al., 2021).
+//!
+//! Ground truth spike counts are binned to imaging rate (what the solver sees).
+//! Clean calcium is the noiseless, drift-free signal at imaging rate.
 
 use crate::kernel::build_kernel;
 use crate::upsample::downsample_average;
@@ -152,7 +175,8 @@ impl Default for NoiseConfig {
     }
 }
 
-/// Slow sinusoidal baseline drift. Attribution: CaLab web simulator.
+/// Deterministic sinusoidal baseline drift. Useful as a simple test signal
+/// but not physically motivated — real baseline fluctuations are irregular.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -171,8 +195,15 @@ impl Default for SinusoidalDrift {
     }
 }
 
-/// Gaussian random walk baseline drift with mean reversion.
-/// Attribution: MLspike (Deneux et al., 2016).
+/// Mean-reverting Gaussian random walk baseline drift.
+///
+/// Models slow irregular baseline fluctuations from tissue movement, focus
+/// drift, neuropil signal changes, and partial photobleaching recovery.
+/// From MLspike (Deneux et al., 2016, Nature Communications).
+///
+/// Update rule: drift[t] = drift[t-1] * (1 - mean_reversion) + N(0, step_std).
+/// step_std is scaled relative to the peak calcium signal so the drift
+/// amplitude is physically meaningful regardless of indicator brightness.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -194,14 +225,16 @@ impl Default for RandomWalkDrift {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "model_type"))]
 pub enum DriftModel {
+    /// Deterministic sinusoidal drift (testing only).
     #[cfg_attr(feature = "serde", serde(rename = "sinusoidal"))]
     Sinusoidal(SinusoidalDrift),
+    /// Mean-reverting random walk (default). From MLspike (Deneux et al., 2016).
     #[cfg_attr(feature = "serde", serde(rename = "random_walk"))]
     RandomWalk(RandomWalkDrift),
 }
 
 impl Default for DriftModel {
-    fn default() -> Self { Self::Sinusoidal(SinusoidalDrift::default()) }
+    fn default() -> Self { Self::RandomWalk(RandomWalkDrift::default()) }
 }
 
 /// Exponential photobleaching: F(t) *= 1 - amp * (1 - exp(-t/tau)).
@@ -743,8 +776,8 @@ pub mod presets {
         SimulationConfig {
             kernel: KernelConfig { tau_rise_s: 0.1, tau_decay_s: 0.6 },
             noise: NoiseConfig { snr: 200.0, ..Default::default() },
-            drift: DriftModel::Sinusoidal(SinusoidalDrift {
-                amplitude_fraction: 0.0, cycles_min: 1.0, cycles_max: 1.0,
+            drift: DriftModel::RandomWalk(RandomWalkDrift {
+                step_std_fraction: 0.0, ..Default::default()
             }),
             cell_variation: CellVariationConfig { alpha_cv: 0.0, ..Default::default() },
             ..Default::default()

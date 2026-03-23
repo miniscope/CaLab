@@ -104,9 +104,9 @@ class NoiseConfig(BaseModel):
 
 
 class SinusoidalDrift(BaseModel):
-    """Slow sinusoidal baseline drift.
+    """Deterministic sinusoidal baseline drift.
 
-    Attribution: CaLab web simulator.
+    Useful as a simple test signal but not physically motivated.
     """
 
     model_type: Literal["sinusoidal"] = "sinusoidal"
@@ -118,9 +118,11 @@ class SinusoidalDrift(BaseModel):
 
 
 class RandomWalkDrift(BaseModel):
-    """Gaussian random walk baseline drift with optional mean reversion.
+    """Mean-reverting Gaussian random walk baseline drift (default).
 
-    Attribution: MLspike (Deneux et al., 2016).
+    Models slow irregular baseline fluctuations from tissue movement, focus
+    drift, and neuropil signal changes.
+    From MLspike (Deneux et al., 2016, Nature Communications).
     """
 
     model_type: Literal["random_walk"] = "random_walk"
@@ -204,7 +206,7 @@ class SimulationConfig(BaseModel):
     kernel: KernelConfig = Field(default_factory=KernelConfig)
     spike_model: SpikeModel = Field(default_factory=MarkovConfig)
     noise: NoiseConfig = Field(default_factory=NoiseConfig)
-    drift: DriftModel = Field(default_factory=SinusoidalDrift)
+    drift: DriftModel = Field(default_factory=RandomWalkDrift)
     photobleaching: PhotobleachingConfig = Field(default_factory=PhotobleachingConfig)
     saturation: SaturationConfig = Field(default_factory=SaturationConfig)
     cell_variation: CellVariationConfig = Field(default_factory=CellVariationConfig)
@@ -355,7 +357,7 @@ class presets:
         return SimulationConfig(
             kernel=KernelConfig(tau_rise_s=0.1, tau_decay_s=0.6),
             noise=NoiseConfig(snr=200.0),
-            drift=SinusoidalDrift(amplitude_fraction=0.0),
+            drift=RandomWalkDrift(step_std_fraction=0.0),
             cell_variation=CellVariationConfig(alpha_cv=0.0),
             **overrides,
         )

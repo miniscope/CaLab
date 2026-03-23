@@ -14,10 +14,9 @@ const DEFAULT_MARKOV = {
 
 const DEFAULT_NOISE = { snr: 8.0, shot_noise_enabled: false, shot_noise_fraction: 0.3 };
 const DEFAULT_DRIFT = {
-  model_type: 'sinusoidal' as const,
-  amplitude_fraction: 0.1,
-  cycles_min: 2.0,
-  cycles_max: 4.0,
+  model_type: 'random_walk' as const,
+  step_std_fraction: 0.002,
+  mean_reversion: 0.001,
 };
 const DEFAULT_PHOTOBLEACHING = {
   enabled: false,
@@ -121,7 +120,7 @@ export const PRESET_CLEAN: SimulationPreset = {
   config: makeConfig({
     kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6 },
     noise: { ...DEFAULT_NOISE, snr: 200.0 },
-    drift: { model_type: 'sinusoidal', amplitude_fraction: 0.0, cycles_min: 1.0, cycles_max: 1.0 },
+    drift: { model_type: 'random_walk', step_std_fraction: 0.0, mean_reversion: 0.001 },
     cell_variation: { ...DEFAULT_VARIATION, alpha_cv: 0.0 },
   }),
 };
