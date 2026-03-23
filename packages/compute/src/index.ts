@@ -39,6 +39,8 @@ export {
   SIMULATION_PRESETS,
   DEFAULT_SIMULATION_PRESET_ID,
   getSimulationPresetById,
+  getSimulationPresetLabels,
+  simulationConfigToLegacyParams,
   PRESET_GCAMP6F,
   PRESET_GCAMP6S,
   PRESET_GCAMP6M,

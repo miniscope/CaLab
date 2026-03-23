@@ -558,9 +558,8 @@ fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
 
 /// Generate synthetic calcium traces from a JSON config string.
 ///
-/// Returns a tuple of flat numpy arrays for efficient Python consumption:
-///   (traces, spikes, clean_calcium, alphas, baselines, snrs,
-///    tau_rises, tau_decays, num_cells, num_timepoints)
+/// Returns flat numpy arrays for efficient Python consumption:
+///   (traces, spikes, clean_calcium, alphas, snrs, tau_rises, tau_decays, num_cells, num_timepoints)
 #[pyfunction]
 fn py_simulate_traces<'py>(
     py: Python<'py>,
@@ -570,7 +569,6 @@ fn py_simulate_traces<'py>(
     Bound<'py, PyArray1<f32>>,  // spikes (flat, row-major)
     Bound<'py, PyArray1<f32>>,  // clean_calcium (flat, row-major)
     Bound<'py, PyArray1<f64>>,  // alphas (per-cell)
-    Bound<'py, PyArray1<f64>>,  // baselines (per-cell)
     Bound<'py, PyArray1<f64>>,  // snrs (per-cell)
     Bound<'py, PyArray1<f64>>,  // tau_rises (per-cell)
     Bound<'py, PyArray1<f64>>,  // tau_decays (per-cell)
@@ -581,15 +579,12 @@ fn py_simulate_traces<'py>(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
 
     let result = simulate::simulate(&config);
-
     let n_cells = result.num_cells;
     let n_tp = result.num_timepoints;
 
-    // Flatten ground truth into parallel arrays
     let mut spikes_flat = Vec::with_capacity(n_cells * n_tp);
     let mut clean_flat = Vec::with_capacity(n_cells * n_tp);
     let mut alphas = Vec::with_capacity(n_cells);
-    let mut baselines = Vec::with_capacity(n_cells);
     let mut snrs = Vec::with_capacity(n_cells);
     let mut tau_rises = Vec::with_capacity(n_cells);
     let mut tau_decays = Vec::with_capacity(n_cells);
@@ -598,7 +593,6 @@ fn py_simulate_traces<'py>(
         spikes_flat.extend_from_slice(&gt.spikes);
         clean_flat.extend_from_slice(&gt.clean_calcium);
         alphas.push(gt.alpha);
-        baselines.push(gt.baseline);
         snrs.push(gt.snr);
         tau_rises.push(gt.tau_rise_s);
         tau_decays.push(gt.tau_decay_s);
@@ -609,7 +603,6 @@ fn py_simulate_traces<'py>(
         PyArray1::from_vec(py, spikes_flat),
         PyArray1::from_vec(py, clean_flat),
         PyArray1::from_vec(py, alphas),
-        PyArray1::from_vec(py, baselines),
         PyArray1::from_vec(py, snrs),
         PyArray1::from_vec(py, tau_rises),
         PyArray1::from_vec(py, tau_decays),

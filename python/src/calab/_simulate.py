@@ -223,7 +223,6 @@ class CellGroundTruth(BaseModel):
     spikes: np.ndarray  # (num_timepoints,) spike counts at imaging rate
     clean_calcium: np.ndarray  # (num_timepoints,) kernel * spikes, no noise
     alpha: float  # amplitude scaling factor
-    baseline: float  # baseline fluorescence
     snr: float  # actual SNR for this cell
     tau_rise_s: float  # actual rise time constant (seconds)
     tau_decay_s: float  # actual decay time constant (seconds)
@@ -268,7 +267,6 @@ def simulate(config: SimulationConfig | None = None, **kwargs: object) -> Simula
         spikes_flat,
         clean_flat,
         alphas,
-        baselines,
         snrs,
         tau_rises,
         tau_decays,
@@ -286,7 +284,6 @@ def simulate(config: SimulationConfig | None = None, **kwargs: object) -> Simula
             spikes=spikes_2d[i],
             clean_calcium=clean_2d[i],
             alpha=float(alphas[i]),
-            baseline=float(baselines[i]),
             snr=float(snrs[i]),
             tau_rise_s=float(tau_rises[i]),
             tau_decay_s=float(tau_decays[i]),

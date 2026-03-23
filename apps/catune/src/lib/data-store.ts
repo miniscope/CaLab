@@ -7,6 +7,7 @@ import {
   generateSyntheticDataset,
   getSimulationPresetById,
   DEFAULT_SIMULATION_PRESET_ID,
+  simulationConfigToLegacyParams,
 } from '@calab/compute';
 import { fetchBridgeData, validateTraceData } from '@calab/io';
 import type { SimulationPreset } from '@calab/compute';
@@ -113,37 +114,7 @@ function loadDemoData(opts?: {
   const resolvedSeed =
     opts?.seed === 'random' ? Math.floor(Math.random() * 2 ** 31) : (opts?.seed ?? cfg.seed);
 
-  // Generate using TS engine with params extracted from the new SimulationConfig
-  const simParams = {
-    tauRise: cfg.kernel.tau_rise_s,
-    tauDecay: cfg.kernel.tau_decay_s,
-    snrBase: cfg.noise.snr,
-    snrStep: cfg.cell_variation.snr_spread > 0 ? cfg.cell_variation.snr_spread / 2.5 : 2,
-    markov:
-      cfg.spike_model.model_type === 'markov'
-        ? {
-            pSilentToActive: cfg.spike_model.p_silent_to_active,
-            pActiveToSilent: cfg.spike_model.p_active_to_silent,
-            pSpikeWhenActive: cfg.spike_model.p_spike_when_active,
-            pSpikeWhenSilent: cfg.spike_model.p_spike_when_silent,
-          }
-        : {
-            pSilentToActive: 0.01,
-            pActiveToSilent: 0.2,
-            pSpikeWhenActive: 0.7,
-            pSpikeWhenSilent: 0.005,
-          },
-    noise:
-      cfg.drift.model_type === 'sinusoidal'
-        ? {
-            amplitudeSigma: 0.3,
-            driftAmplitude: cfg.drift.amplitude_fraction,
-            driftCyclesMin: cfg.drift.cycles_min,
-            driftCyclesMax: cfg.drift.cycles_max,
-          }
-        : { amplitudeSigma: 0.3, driftAmplitude: 0.1, driftCyclesMin: 2, driftCyclesMax: 4 },
-  };
-
+  const simParams = simulationConfigToLegacyParams(cfg);
   const {
     data,
     shape,
