@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from ._apps import decon, tune
+from ._headless import HeadlessBrowser
 from ._models import DeconConfig
 
-__all__ = ["DeconConfig", "decon", "tune"]
+__all__ = ["DeconConfig", "HeadlessBrowser", "decon", "tune"]

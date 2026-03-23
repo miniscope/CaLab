@@ -9,6 +9,7 @@ import webbrowser
 
 import numpy as np
 
+from ._headless import HeadlessBrowser
 from ._models import DeconConfig
 from ._server import BridgeServer
 
@@ -39,6 +40,23 @@ def _format_progress(progress: dict) -> str:
     return "  ".join(parts)
 
 
+def _resolve_headless(
+    headless: HeadlessBrowser | bool | None,
+) -> tuple[HeadlessBrowser | None, bool]:
+    """Resolve the *headless* parameter into a browser instance.
+
+    Returns ``(browser_or_none, owns)`` where *owns* is True if the caller
+    must close the browser after use (i.e. we created it here).
+    """
+    if headless is True:
+        hb = HeadlessBrowser()
+        hb.start()
+        return hb, True
+    if isinstance(headless, HeadlessBrowser):
+        return headless, False
+    return None, False
+
+
 def _run_bridge(
     server: BridgeServer,
     event: threading.Event,
@@ -47,6 +65,7 @@ def _run_bridge(
     open_browser: bool,
     timeout: float | None,
     show_progress: bool = False,
+    headless: HeadlessBrowser | None = None,
 ) -> bool:
     """Start server, open browser, and wait for the bridge event.
 
@@ -62,7 +81,9 @@ def _run_bridge(
     print(f"Bridge server running on http://127.0.0.1:{actual_port}")
     print(f"Opening {app_name}: {full_url}")
 
-    if open_browser:
+    if headless is not None:
+        headless.navigate(full_url)
+    elif open_browser:
         webbrowser.open(full_url)
 
     received = False
@@ -111,6 +132,7 @@ def tune(
     port: int | None = None,
     app_url: str | None = None,
     open_browser: bool = True,
+    headless: HeadlessBrowser | bool | None = None,
 ) -> dict | None:
     """Open CaTune in the browser for interactive parameter tuning.
 
@@ -132,6 +154,10 @@ def tune(
         Override CaTune URL (for local dev). Default: GitHub Pages.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
+    headless : HeadlessBrowser or bool or None
+        ``None``/``False``: default (use ``webbrowser.open``).
+        ``True``: create a temporary headless browser for this call.
+        ``HeadlessBrowser``: reuse an existing browser instance.
 
     Returns
     -------
@@ -139,11 +165,18 @@ def tune(
         Exported parameters dict if received, None if timeout/cancelled.
         Keys: ``tau_rise``, ``tau_decay``, ``lambda_``, ``fs``, ``filter_enabled``.
     """
+    headless_browser, owns_headless = _resolve_headless(headless)
+
     server = BridgeServer(traces, fs, port=port or 0)
-    received = _run_bridge(
-        server, server.params_event, "CaTune",
-        app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
-    )
+    try:
+        received = _run_bridge(
+            server, server.params_event, "CaTune",
+            app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
+            headless=headless_browser,
+        )
+    finally:
+        if owns_headless and headless_browser is not None:
+            headless_browser.close()
 
     if received and server.received_params is not None:
         raw = server.received_params
@@ -167,6 +200,7 @@ def decon(
     port: int | None = None,
     app_url: str | None = None,
     open_browser: bool = True,
+    headless: HeadlessBrowser | bool | None = None,
     *,
     autorun: bool = False,
     upsample_target: int | None = None,
@@ -199,6 +233,10 @@ def decon(
         Override CaDecon URL (for local dev). Default: GitHub Pages.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
+    headless : HeadlessBrowser or bool or None
+        ``None``/``False``: default (use ``webbrowser.open``).
+        ``True``: create a temporary headless browser for this call.
+        ``HeadlessBrowser``: reuse an existing browser instance (for batch).
     autorun : bool
         If True, the solver starts automatically after loading. Default: False.
     upsample_target : int, optional
@@ -227,6 +265,8 @@ def decon(
     """
     from .._compute import CaDeconResult, _build_biexp_waveform
 
+    headless_browser, owns_headless = _resolve_headless(headless)
+
     # Build and validate config via pydantic
     config = DeconConfig(
         autorun=autorun,
@@ -243,72 +283,77 @@ def decon(
     config_dict = config.model_dump(exclude_none=True)
 
     server = BridgeServer(traces, fs, port=port or 0, app="cadecon", config=config_dict)
-    received = _run_bridge(
-        server, server.results_event, "CaDecon",
-        app_url or _DEFAULT_CADECON_URL, open_browser, timeout,
-        show_progress=autorun,
-    )
-
-    if not received or server.received_results is None:
-        return None
-
-    results = server.received_results
-    activity = server.received_activity
-    if activity is None:
-        print("Warning: results received but activity matrix was missing.")
-        return None
-
-    # Build kernel waveforms from biexp params
-    result_fs = results.get("fs", fs)
-    tau_rise = results.get("tau_rise", 0.2)
-    tau_decay = results.get("tau_decay", 1.0)
-    beta = results.get("beta", 1.0)
-    kernel_length = int(5.0 * tau_decay * result_fs)
-    kernel_slow = _build_biexp_waveform(tau_rise, tau_decay, beta, result_fs, kernel_length)
-
-    tau_rise_fast = results.get("tau_rise_fast", 0.0)
-    tau_decay_fast = results.get("tau_decay_fast", 0.0)
-    beta_fast = results.get("beta_fast", 0.0)
-    if tau_decay_fast > 0 and beta_fast != 0:
-        kernel_length_fast = int(5.0 * tau_decay_fast * result_fs)
-        kernel_fast = _build_biexp_waveform(
-            tau_rise_fast, tau_decay_fast, beta_fast, result_fs, kernel_length_fast,
+    try:
+        received = _run_bridge(
+            server, server.results_event, "CaDecon",
+            app_url or _DEFAULT_CADECON_URL, open_browser, timeout,
+            show_progress=autorun,
+            headless=headless_browser,
         )
-    else:
-        kernel_fast = np.empty(0, dtype=np.float32)
 
-    # Assemble per-cell arrays
-    alphas = np.array(results.get("alphas", []), dtype=np.float64)
-    baselines = np.array(results.get("baselines", []), dtype=np.float64)
-    pves = np.array(results.get("pves", []), dtype=np.float64)
+        if not received or server.received_results is None:
+            return None
 
-    # Build metadata dict
-    metadata = {
-        "tau_rise": tau_rise,
-        "tau_decay": tau_decay,
-        "beta": beta,
-        "tau_rise_fast": tau_rise_fast,
-        "tau_decay_fast": tau_decay_fast,
-        "beta_fast": beta_fast,
-    }
-    for key in (
-        "residual", "h_free", "num_iterations", "converged",
-        "converged_at_iteration", "schema_version", "calab_version",
-        "export_date",
-    ):
-        if key in results:
-            value = results[key]
-            if key == "h_free" and not isinstance(value, list):
-                value = list(value)
-            metadata[key] = value
+        results = server.received_results
+        activity = server.received_activity
+        if activity is None:
+            print("Warning: results received but activity matrix was missing.")
+            return None
 
-    return CaDeconResult(
-        activity=np.asarray(activity, dtype=np.float32),
-        alphas=alphas,
-        baselines=baselines,
-        pves=pves,
-        kernel_slow=kernel_slow,
-        kernel_fast=kernel_fast,
-        fs=result_fs,
-        metadata=metadata,
-    )
+        # Build kernel waveforms from biexp params
+        result_fs = results.get("fs", fs)
+        tau_rise = results.get("tau_rise", 0.2)
+        tau_decay = results.get("tau_decay", 1.0)
+        beta = results.get("beta", 1.0)
+        kernel_length = int(5.0 * tau_decay * result_fs)
+        kernel_slow = _build_biexp_waveform(tau_rise, tau_decay, beta, result_fs, kernel_length)
+
+        tau_rise_fast = results.get("tau_rise_fast", 0.0)
+        tau_decay_fast = results.get("tau_decay_fast", 0.0)
+        beta_fast = results.get("beta_fast", 0.0)
+        if tau_decay_fast > 0 and beta_fast != 0:
+            kernel_length_fast = int(5.0 * tau_decay_fast * result_fs)
+            kernel_fast = _build_biexp_waveform(
+                tau_rise_fast, tau_decay_fast, beta_fast, result_fs, kernel_length_fast,
+            )
+        else:
+            kernel_fast = np.empty(0, dtype=np.float32)
+
+        # Assemble per-cell arrays
+        alphas = np.array(results.get("alphas", []), dtype=np.float64)
+        baselines = np.array(results.get("baselines", []), dtype=np.float64)
+        pves = np.array(results.get("pves", []), dtype=np.float64)
+
+        # Build metadata dict
+        metadata = {
+            "tau_rise": tau_rise,
+            "tau_decay": tau_decay,
+            "beta": beta,
+            "tau_rise_fast": tau_rise_fast,
+            "tau_decay_fast": tau_decay_fast,
+            "beta_fast": beta_fast,
+        }
+        for key in (
+            "residual", "h_free", "num_iterations", "converged",
+            "converged_at_iteration", "schema_version", "calab_version",
+            "export_date",
+        ):
+            if key in results:
+                value = results[key]
+                if key == "h_free" and not isinstance(value, list):
+                    value = list(value)
+                metadata[key] = value
+
+        return CaDeconResult(
+            activity=np.asarray(activity, dtype=np.float32),
+            alphas=alphas,
+            baselines=baselines,
+            pves=pves,
+            kernel_slow=kernel_slow,
+            kernel_fast=kernel_fast,
+            fs=result_fs,
+            metadata=metadata,
+        )
+    finally:
+        if owns_headless and headless_browser is not None:
+            headless_browser.close()
