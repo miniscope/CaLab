@@ -141,7 +141,6 @@ def tune(
     port: int | None = None,
     app_url: str | None = None,
     open_browser: bool = True,
-    headless: HeadlessBrowser | bool | None = None,
 ) -> dict | None:
     """Open CaTune in the browser for interactive parameter tuning.
 
@@ -163,10 +162,6 @@ def tune(
         Override CaTune URL (for local dev). Default: GitHub Pages.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
-    headless : HeadlessBrowser or bool or None
-        ``None``/``False``: default (use ``webbrowser.open``).
-        ``True``: create a temporary headless browser for this call.
-        ``HeadlessBrowser``: reuse an existing browser instance.
 
     Returns
     -------
@@ -175,12 +170,10 @@ def tune(
         Keys: ``tau_rise``, ``tau_decay``, ``lambda_``, ``fs``, ``filter_enabled``.
     """
     server = BridgeServer(traces, fs, port=port or 0)
-    with _managed_headless(headless) as headless_browser:
-        received = _run_bridge(
-            server, server.params_event, "CaTune",
-            app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
-            headless=headless_browser,
-        )
+    received = _run_bridge(
+        server, server.params_event, "CaTune",
+        app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
+    )
 
     if received and server.received_params is not None:
         raw = server.received_params
