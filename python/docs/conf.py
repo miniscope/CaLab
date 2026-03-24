@@ -1,8 +1,18 @@
 """Sphinx configuration for CaLab Python documentation."""
 
+from importlib.metadata import version as _pkg_version
+
 project = "CaLab"
 copyright = "2026, Daniel Aharoni"
 author = "Daniel Aharoni"
+
+# Pull version from installed package when available (e.g. on Read the Docs);
+# fall back gracefully so a local `sphinx-build` still works without installing.
+try:
+    release = _pkg_version("calab")
+except Exception:
+    release = "dev"
+version = release
 
 extensions = [
     "sphinx.ext.napoleon",      # NumPy/Google-style docstrings
@@ -33,6 +43,7 @@ suppress_warnings = [
 # -- MyST (Markdown) ---------------------------------------------------------
 myst_enable_extensions = [
     "colon_fence",    # ::: directive syntax
+    "deflist",        # definition lists (term\n: definition)
     "fieldlist",      # :param: style fields
 ]
 source_suffix = {

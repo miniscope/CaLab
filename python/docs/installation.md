@@ -6,7 +6,7 @@
 pip install calab
 ```
 
-This installs the core package with numpy, pydantic, and the compiled Rust solver extension.
+This installs the core package with numpy, pydantic, and the compiled Rust solver extension. You get deconvolution, simulation, and the interactive `tune()` bridge out of the box.
 
 Requires **Python 3.10+**.
 
@@ -14,7 +14,7 @@ Requires **Python 3.10+**.
 
 ### Format loaders
 
-To load data from CaImAn (HDF5) or Minian (Zarr) pipelines:
+If your traces come from CaImAn (HDF5) or Minian (Zarr), install the loader extras to avoid writing manual import code:
 
 ```bash
 pip install calab[loaders]
@@ -24,12 +24,14 @@ This adds `h5py` and `zarr`.
 
 ### Headless browser
 
-For automated browser-based deconvolution without a visible window:
+For running CaDecon in CI or scripts without a visible browser window:
 
 ```bash
 pip install calab[headless]
 playwright install chromium
 ```
+
+This adds `playwright`. The second command downloads the Chromium binary that Playwright needs.
 
 ### Everything
 

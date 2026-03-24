@@ -2,6 +2,6 @@
 
 ```{include} ../../docs/CHANGELOG.md
 ---
-start-after: "# Changelog"
+start-after: Versions correspond to git tags
 ---
 ```
