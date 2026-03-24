@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 import calab
 from calab import (
-    CellVariationConfig,
+    KernelConfig,
     KernelConfig,
     MarkovConfig,
     NoiseConfig,
@@ -116,7 +116,7 @@ def test_simulate_config_plus_kwargs():
 def test_markov_produces_spikes():
     cfg = SimulationConfig(
         num_cells=1, num_timepoints=9000,
-        cell_variation=CellVariationConfig(alpha_cv=0.0),
+        alpha_cv=0.0,
     )
     result = simulate(cfg)
     assert result.ground_truth[0].spikes.sum() > 0
@@ -126,7 +126,7 @@ def test_poisson_mean_rate():
     cfg = SimulationConfig(
         num_cells=1, num_timepoints=30000,
         spike_model=PoissonConfig(rate_hz=2.0),
-        cell_variation=CellVariationConfig(alpha_cv=0.0),
+        alpha_cv=0.0,
     )
     result = simulate(cfg)
     duration_s = 30000 / 30.0
@@ -140,7 +140,7 @@ def test_poisson_mean_rate():
 def test_alpha_variation():
     cfg = SimulationConfig(
         num_cells=50, num_timepoints=300,
-        cell_variation=CellVariationConfig(alpha_cv=0.3),
+        alpha_cv=0.3,
     )
     result = simulate(cfg)
     alphas = np.array([gt.alpha for gt in result.ground_truth])
@@ -151,7 +151,7 @@ def test_alpha_variation():
 def test_kernel_variation():
     cfg = SimulationConfig(
         num_cells=50, num_timepoints=300,
-        cell_variation=CellVariationConfig(alpha_cv=0.0, tau_decay_cv=0.15),
+        alpha_cv=0.0, kernel=KernelConfig(tau_decay_cv=0.15),
     )
     result = simulate(cfg)
     taus = np.array([gt.tau_decay_s for gt in result.ground_truth])
@@ -167,7 +167,7 @@ def test_photobleaching():
         num_cells=1, num_timepoints=9000,
         noise=NoiseConfig(snr=200.0),
         drift=SinusoidalDrift(amplitude_fraction=0.0),
-        cell_variation=CellVariationConfig(alpha_cv=0.0),
+        alpha_cv=0.0,
     )
     r_no = simulate(SimulationConfig(**{**base.model_dump(), "photobleaching": PhotobleachingConfig(enabled=False)}))
     r_yes = simulate(SimulationConfig(**{
@@ -186,7 +186,7 @@ def test_photobleaching():
 
 
 def test_saturation_compresses():
-    base = dict(num_cells=1, num_timepoints=900, cell_variation=CellVariationConfig(alpha_cv=0.0))
+    base = dict(num_cells=1, num_timepoints=900, alpha_cv=0.0)
     r_lin = simulate(SimulationConfig(saturation=SaturationConfig(enabled=False), **base))
     r_sat = simulate(SimulationConfig(saturation=SaturationConfig(enabled=True, k_d=0.5), **base))
     max_lin = r_lin.ground_truth[0].clean_calcium.max()
@@ -239,7 +239,7 @@ def test_config_json_roundtrip():
 def test_single_cell_single_timepoint():
     result = simulate(SimulationConfig(
         num_cells=1, num_timepoints=1,
-        cell_variation=CellVariationConfig(alpha_cv=0.0),
+        alpha_cv=0.0,
     ))
     assert result.traces.shape == (1, 1)
 
@@ -249,7 +249,7 @@ def test_high_snr_clean():
         num_cells=1, num_timepoints=900,
         noise=NoiseConfig(snr=1000.0),
         drift=SinusoidalDrift(amplitude_fraction=0.0),
-        cell_variation=CellVariationConfig(alpha_cv=0.0),
+        alpha_cv=0.0,
     ))
     gt = result.ground_truth[0]
     # With very high SNR and no drift, trace should closely match clean signal

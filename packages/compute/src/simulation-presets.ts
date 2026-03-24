@@ -12,42 +12,39 @@ const DEFAULT_MARKOV = {
   p_spike_when_silent: 0.005,
 };
 
-const DEFAULT_NOISE = { snr: 8.0, shot_noise_enabled: false, shot_noise_fraction: 0.3 };
+const DEFAULT_NOISE = {
+  snr: 8.0,
+  shot_noise_enabled: false,
+  shot_noise_fraction: 0.3,
+  snr_spread: 0,
+};
 const DEFAULT_DRIFT = {
   model_type: 'random_walk' as const,
   step_std_fraction: 0.002,
   mean_reversion: 0.001,
+  step_std_cv: 0,
 };
 const DEFAULT_PHOTOBLEACHING = {
   enabled: false,
   decay_time_constant_s: 600.0,
   amplitude_fraction: 0.15,
+  amplitude_cv: 0,
 };
-const DEFAULT_SATURATION = { enabled: false, hill_coefficient: 1.0, k_d: 5.0 };
-const DEFAULT_VARIATION = {
-  alpha_mean: 1.0,
-  alpha_cv: 0.3,
-  tau_rise_cv: 0.0,
-  tau_decay_cv: 0.0,
-  snr_spread: 0.0,
-  drift_cv: 0.0,
-  bleach_cv: 0.0,
-  saturation_cv: 0.0,
-  spike_rate_cv: 0.0,
-};
+const DEFAULT_SATURATION = { enabled: false, hill_coefficient: 1.0, k_d: 5.0, k_d_cv: 0 };
 
 function makeConfig(overrides: Partial<SimulationConfig>): SimulationConfig {
   return {
     fs_hz: 30.0,
     num_timepoints: 27000,
     num_cells: 100,
-    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6 },
-    spike_model: { ...DEFAULT_MARKOV },
+    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0, tau_decay_cv: 0 },
+    spike_model: { ...DEFAULT_MARKOV, p_silent_to_active_cv: 0 },
     noise: { ...DEFAULT_NOISE },
     drift: { ...DEFAULT_DRIFT },
     photobleaching: { ...DEFAULT_PHOTOBLEACHING },
     saturation: { ...DEFAULT_SATURATION },
-    cell_variation: { ...DEFAULT_VARIATION },
+    alpha_mean: 1.0,
+    alpha_cv: 0.3,
     seed: 42,
     spike_sim_hz: 300.0,
     ...overrides,
@@ -67,7 +64,7 @@ export const PRESET_GCAMP6F: SimulationPreset = {
   label: 'GCaMP6f',
   description: 'Fast genetically encoded indicator (default)',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6 },
+    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 20.0 },
   }),
 };
@@ -78,7 +75,7 @@ export const PRESET_GCAMP6S: SimulationPreset = {
   label: 'GCaMP6s',
   description: 'Slow genetically encoded indicator, high SNR',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.4, tau_decay_s: 1.8 },
+    kernel: { tau_rise_s: 0.4, tau_decay_s: 1.8, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 25.0 },
   }),
 };
@@ -89,7 +86,7 @@ export const PRESET_GCAMP6M: SimulationPreset = {
   label: 'GCaMP6m',
   description: 'Moderate kinetics genetically encoded indicator',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.15, tau_decay_s: 0.9 },
+    kernel: { tau_rise_s: 0.15, tau_decay_s: 0.9, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 22.0 },
   }),
 };
@@ -100,7 +97,7 @@ export const PRESET_JGCAMP8F: SimulationPreset = {
   label: 'jGCaMP8f',
   description: 'Fast next-gen indicator, noisier',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.05, tau_decay_s: 0.3 },
+    kernel: { tau_rise_s: 0.05, tau_decay_s: 0.3, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 12.0 },
   }),
 };
@@ -111,7 +108,7 @@ export const PRESET_OGB1: SimulationPreset = {
   label: 'OGB-1',
   description: 'Synthetic calcium dye, fast rise',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.05, tau_decay_s: 1.5 },
+    kernel: { tau_rise_s: 0.05, tau_decay_s: 1.5, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 15.0 },
   }),
 };
@@ -122,10 +119,15 @@ export const PRESET_CLEAN: SimulationPreset = {
   label: 'Clean (Debug)',
   description: 'Minimal noise, no drift — for algorithm debugging',
   config: makeConfig({
-    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6 },
+    kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0, tau_decay_cv: 0 },
     noise: { ...DEFAULT_NOISE, snr: 200.0 },
-    drift: { model_type: 'random_walk', step_std_fraction: 0.0, mean_reversion: 0.001 },
-    cell_variation: { ...DEFAULT_VARIATION, alpha_cv: 0.0 },
+    drift: {
+      model_type: 'random_walk',
+      step_std_fraction: 0.0,
+      mean_reversion: 0.001,
+      step_std_cv: 0,
+    },
+    alpha_cv: 0.0,
   }),
 };
 

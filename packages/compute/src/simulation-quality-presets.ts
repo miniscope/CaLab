@@ -17,7 +17,6 @@ import type {
   RandomWalkDrift,
   PhotobleachingConfig,
   SaturationConfig,
-  CellVariationConfig,
 } from './simulation-types.ts';
 import { getSimulationPresetById } from './simulation-presets.ts';
 
@@ -229,8 +228,7 @@ function rangeCv<T>(levels: readonly T[], range: [number, number], field: keyof 
  * Compose a full SimulationConfig from qualitative choices.
  *
  * For each step, the midpoint of the selected range sets the nominal value.
- * The width of the range sets the per-cell variation (encoded as CV or spread
- * fields in CellVariationConfig).
+ * The width of the range sets the per-cell variation (CV field on each struct).
  */
 export function buildSimulationConfig(
   q: QualitativeSimConfig,
@@ -243,87 +241,80 @@ export function buildSimulationConfig(
   },
 ): SimulationConfig {
   const preset = getSimulationPresetById(q.indicator);
-  const kernel = preset ? preset.config.kernel : { tau_rise_s: 0.1, tau_decay_s: 0.6 };
+  const presetKernel = preset
+    ? preset.config.kernel
+    : { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0, tau_decay_cv: 0 };
 
-  // Spike activity (midpoint of range, spread → spike_rate_cv)
+  // Spike activity
   const spkLo = SPIKE_ACTIVITY_LEVELS[clampIdx(SPIKE_ACTIVITY_LEVELS, q.spikeActivity[0])];
   const spkHi = SPIKE_ACTIVITY_LEVELS[clampIdx(SPIKE_ACTIVITY_LEVELS, q.spikeActivity[1])];
+  const pS2aMid = lerp(spkLo.p_silent_to_active, spkHi.p_silent_to_active, 0.5);
   const spikeModel: MarkovConfig = {
     model_type: 'markov',
-    p_silent_to_active: lerp(spkLo.p_silent_to_active, spkHi.p_silent_to_active, 0.5),
+    p_silent_to_active: pS2aMid,
     p_active_to_silent: lerp(spkLo.p_active_to_silent, spkHi.p_active_to_silent, 0.5),
     p_spike_when_active: lerp(spkLo.p_spike_when_active, spkHi.p_spike_when_active, 0.5),
     p_spike_when_silent: lerp(spkLo.p_spike_when_silent, spkHi.p_spike_when_silent, 0.5),
+    p_silent_to_active_cv:
+      rangeCv(SPIKE_ACTIVITY_LEVELS, q.spikeActivity, 'p_silent_to_active') /
+      Math.max(pS2aMid, 1e-6),
   };
-  const spikeRateCv =
-    rangeCv(SPIKE_ACTIVITY_LEVELS, q.spikeActivity, 'p_silent_to_active') /
-    Math.max(spikeModel.p_silent_to_active, 1e-6);
 
-  // Noise (midpoint SNR, spread → snr_spread)
+  // Noise
   const snrMid = midpoint(NOISE_LEVELS, q.noise, 'snr');
-  const snrSpread = rangeCv(NOISE_LEVELS, q.noise, 'snr');
   const noiseLo = NOISE_LEVELS[clampIdx(NOISE_LEVELS, q.noise[0])];
   const noiseHi = NOISE_LEVELS[clampIdx(NOISE_LEVELS, q.noise[1])];
   const noiseConfig: NoiseConfig = {
     snr: snrMid,
     shot_noise_enabled: noiseLo.shot_noise_enabled || noiseHi.shot_noise_enabled,
     shot_noise_fraction: Math.max(noiseLo.shot_noise_fraction, noiseHi.shot_noise_fraction),
+    snr_spread: rangeCv(NOISE_LEVELS, q.noise, 'snr'),
   };
 
-  // Drift (midpoint, spread → drift_cv)
+  // Drift
   const driftMidStep = midpoint(DRIFT_LEVELS, q.drift, 'step_std_fraction');
-  const driftMidMr = midpoint(DRIFT_LEVELS, q.drift, 'mean_reversion');
-  const driftCv =
-    driftMidStep > 0 ? rangeCv(DRIFT_LEVELS, q.drift, 'step_std_fraction') / driftMidStep : 0;
   const driftConfig: RandomWalkDrift = {
     model_type: 'random_walk',
     step_std_fraction: driftMidStep,
-    mean_reversion: driftMidMr,
+    mean_reversion: midpoint(DRIFT_LEVELS, q.drift, 'mean_reversion'),
+    step_std_cv:
+      driftMidStep > 0 ? rangeCv(DRIFT_LEVELS, q.drift, 'step_std_fraction') / driftMidStep : 0,
   };
 
-  // Photobleaching (midpoint, spread → bleach_cv)
+  // Photobleaching
   const pbLo = PHOTOBLEACHING_LEVELS[clampIdx(PHOTOBLEACHING_LEVELS, q.photobleaching[0])];
   const pbHi = PHOTOBLEACHING_LEVELS[clampIdx(PHOTOBLEACHING_LEVELS, q.photobleaching[1])];
   const pbAmpMid = lerp(pbLo.amplitude_fraction, pbHi.amplitude_fraction, 0.5);
-  const pbTauMid = lerp(pbLo.decay_time_constant_s, pbHi.decay_time_constant_s, 0.5);
-  const bleachCv =
-    pbAmpMid > 0
-      ? rangeCv(PHOTOBLEACHING_LEVELS, q.photobleaching, 'amplitude_fraction') / pbAmpMid
-      : 0;
   const photobleachingConfig: PhotobleachingConfig = {
     enabled: pbLo.enabled || pbHi.enabled,
-    decay_time_constant_s: pbTauMid,
+    decay_time_constant_s: lerp(pbLo.decay_time_constant_s, pbHi.decay_time_constant_s, 0.5),
     amplitude_fraction: pbAmpMid,
+    amplitude_cv:
+      pbAmpMid > 0
+        ? rangeCv(PHOTOBLEACHING_LEVELS, q.photobleaching, 'amplitude_fraction') / pbAmpMid
+        : 0,
   };
 
-  // Saturation (midpoint, spread → saturation_cv)
+  // Saturation
   const satLo = SATURATION_LEVELS[clampIdx(SATURATION_LEVELS, q.saturation[0])];
   const satHi = SATURATION_LEVELS[clampIdx(SATURATION_LEVELS, q.saturation[1])];
   const kdMid = lerp(satLo.k_d, satHi.k_d, 0.5);
-  const satCv = kdMid > 0 ? rangeCv(SATURATION_LEVELS, q.saturation, 'k_d') / kdMid : 0;
   const saturationConfig: SaturationConfig = {
     enabled: satLo.enabled || satHi.enabled,
     hill_coefficient: lerp(satLo.hill_coefficient, satHi.hill_coefficient, 0.5),
     k_d: kdMid,
+    k_d_cv: kdMid > 0 ? rangeCv(SATURATION_LEVELS, q.saturation, 'k_d') / kdMid : 0,
   };
 
   // Amplitude variation
   const alphaCv = midpoint(AMPLITUDE_VARIATION_LEVELS, q.amplitudeVariation, 'alpha_cv');
 
-  // Kernel variation
-  const tauRiseCv = midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_rise_cv');
-  const tauDecayCv = midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_decay_cv');
-
-  const cellVariationConfig: CellVariationConfig = {
-    alpha_mean: 1.0,
-    alpha_cv: alphaCv,
-    tau_rise_cv: tauRiseCv,
-    tau_decay_cv: tauDecayCv,
-    snr_spread: snrSpread,
-    drift_cv: driftCv,
-    bleach_cv: bleachCv,
-    saturation_cv: satCv,
-    spike_rate_cv: spikeRateCv,
+  // Kernel variation (CV fields co-located on KernelConfig)
+  const kernel = {
+    tau_rise_s: presetKernel.tau_rise_s,
+    tau_decay_s: presetKernel.tau_decay_s,
+    tau_rise_cv: midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_rise_cv'),
+    tau_decay_cv: midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_decay_cv'),
   };
 
   return {
@@ -338,6 +329,7 @@ export function buildSimulationConfig(
     drift: driftConfig,
     photobleaching: photobleachingConfig,
     saturation: saturationConfig,
-    cell_variation: cellVariationConfig,
+    alpha_mean: 1.0,
+    alpha_cv: alphaCv,
   };
 }

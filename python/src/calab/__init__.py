@@ -21,7 +21,6 @@ from ._io import deconvolve_from_export, load_export_params, load_tuning_data, s
 from ._loaders import load_caiman, load_minian
 from ._simulate import (
     CellGroundTruth,
-    CellVariationConfig,
     DriftModel,
     KernelConfig,
     MarkovConfig,
@@ -72,7 +71,6 @@ __all__ = [
     "load_minian",
     # Simulation
     "CellGroundTruth",
-    "CellVariationConfig",
     "DriftModel",
     "KernelConfig",
     "MarkovConfig",

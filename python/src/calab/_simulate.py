@@ -15,9 +15,9 @@ Example::
     result = calab.simulate(calab.presets.jgcamp8f(num_cells=50))
 
     # With per-cell kernel variation (tests single-kernel assumption)
-    from calab import SimulationConfig, CellVariationConfig
+    from calab import SimulationConfig, KernelConfig
     config = SimulationConfig(
-        cell_variation=CellVariationConfig(tau_decay_cv=0.15),
+        kernel=KernelConfig(tau_decay_cv=0.15),
     )
     result = calab.simulate(config)
 """
@@ -54,6 +54,9 @@ class MarkovConfig(BaseModel):
     p_spike_when_silent: float = Field(
         0.005, ge=0, le=1, description="Spike probability in silent state (per 300 Hz step)"
     )
+    p_silent_to_active_cv: float = Field(
+        0.0, ge=0, description="Per-cell log-normal CV on p_silent_to_active (0 = no variation)"
+    )
 
 
 class PoissonConfig(BaseModel):
@@ -81,6 +84,8 @@ class KernelConfig(BaseModel):
 
     tau_rise_s: float = Field(0.1, gt=0, description="Rise time constant (seconds)")
     tau_decay_s: float = Field(0.6, gt=0, description="Decay time constant (seconds)")
+    tau_rise_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on tau_rise (0 = no variation)")
+    tau_decay_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on tau_decay (0 = no variation)")
 
 
 # ── Noise ────────────────────────────────────────────────────────
@@ -98,6 +103,7 @@ class NoiseConfig(BaseModel):
     shot_noise_fraction: float = Field(
         0.3, ge=0, le=1, description="Fraction of total noise variance from shot noise"
     )
+    snr_spread: float = Field(0.0, ge=0, description="Per-cell additive SNR spread (+/- this value)")
 
 
 # ── Baseline Drift ───────────────────────────────────────────────
@@ -115,6 +121,7 @@ class SinusoidalDrift(BaseModel):
     )
     cycles_min: float = Field(2.0, gt=0, description="Minimum drift cycles over trace duration")
     cycles_max: float = Field(4.0, gt=0, description="Maximum drift cycles over trace duration")
+    amplitude_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on amplitude (0 = no variation)")
 
 
 class RandomWalkDrift(BaseModel):
@@ -132,6 +139,7 @@ class RandomWalkDrift(BaseModel):
     mean_reversion: float = Field(
         0.001, ge=0, le=1, description="Mean-reversion rate (0=pure walk, 1=reset each frame)"
     )
+    step_std_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on step_std (0 = no variation)")
 
 
 DriftModel = Annotated[Union[SinusoidalDrift, RandomWalkDrift], Field(discriminator="model_type")]
@@ -153,6 +161,7 @@ class PhotobleachingConfig(BaseModel):
     amplitude_fraction: float = Field(
         0.15, ge=0, le=1, description="Max fractional signal loss"
     )
+    amplitude_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on amplitude (0 = no variation)")
 
 
 # ── Indicator Saturation ─────────────────────────────────────────
@@ -167,37 +176,7 @@ class SaturationConfig(BaseModel):
     enabled: bool = Field(False, description="Apply indicator saturation")
     hill_coefficient: float = Field(1.0, gt=0, description="Hill coefficient n")
     k_d: float = Field(5.0, gt=0, description="Half-saturation level (signal units)")
-
-
-# ── Per-Cell Variation ───────────────────────────────────────────
-
-
-class CellVariationConfig(BaseModel):
-    """Per-cell parameter variation for multi-cell simulations.
-
-    Tests CaDecon's assumptions: single-kernel across all cells and
-    per-cell amplitude (alpha) estimation.
-    """
-
-    alpha_mean: float = Field(1.0, gt=0, description="Mean amplitude scaling factor")
-    alpha_cv: float = Field(0.3, ge=0, description="Alpha coefficient of variation (std/mean)")
-    tau_rise_cv: float = Field(
-        0.0, ge=0, description="Tau_rise log-space CV (0 = no variation)"
-    )
-    tau_decay_cv: float = Field(
-        0.0, ge=0, description="Tau_decay log-space CV (0 = no variation)"
-    )
-    snr_spread: float = Field(0.0, ge=0, description="Additive SNR spread (+/- this value)")
-    drift_cv: float = Field(0.0, ge=0, description="Drift intensity log-space CV (0 = no variation)")
-    bleach_cv: float = Field(
-        0.0, ge=0, description="Photobleaching amplitude log-space CV (0 = no variation)"
-    )
-    saturation_cv: float = Field(
-        0.0, ge=0, description="Saturation Kd log-space CV (0 = no variation)"
-    )
-    spike_rate_cv: float = Field(
-        0.0, ge=0, description="Spike rate log-space CV (0 = no variation)"
-    )
+    k_d_cv: float = Field(0.0, ge=0, description="Per-cell log-normal CV on k_d (0 = no variation)")
 
 
 # ── Top-Level Config ─────────────────────────────────────────────
@@ -206,8 +185,9 @@ class CellVariationConfig(BaseModel):
 class SimulationConfig(BaseModel):
     """Complete configuration for synthetic calcium trace generation.
 
-    Every parameter has physical units documented in the field description.
-    Default values produce a reasonable GCaMP6f-like simulation.
+    Per-cell variation (_cv fields) live on each config struct alongside
+    the nominal value they modify. Alpha is here because it doesn't
+    belong to any pipeline step.
     """
 
     fs_hz: float = Field(30.0, gt=0, description="Sampling rate (Hz)")
@@ -219,7 +199,8 @@ class SimulationConfig(BaseModel):
     drift: DriftModel = Field(default_factory=RandomWalkDrift)
     photobleaching: PhotobleachingConfig = Field(default_factory=PhotobleachingConfig)
     saturation: SaturationConfig = Field(default_factory=SaturationConfig)
-    cell_variation: CellVariationConfig = Field(default_factory=CellVariationConfig)
+    alpha_mean: float = Field(1.0, gt=0, description="Mean per-cell amplitude scaling factor")
+    alpha_cv: float = Field(0.3, ge=0, description="Per-cell log-normal CV on alpha (0 = no variation)")
     seed: int = Field(42, ge=0, description="RNG seed for reproducibility")
     spike_sim_hz: float = Field(300.0, gt=0, description="Internal spike simulation rate (Hz)")
 
@@ -368,6 +349,6 @@ class presets:
             kernel=KernelConfig(tau_rise_s=0.1, tau_decay_s=0.6),
             noise=NoiseConfig(snr=200.0),
             drift=RandomWalkDrift(step_std_fraction=0.0),
-            cell_variation=CellVariationConfig(alpha_cv=0.0),
+            alpha_cv=0.0,
             **overrides,
         )

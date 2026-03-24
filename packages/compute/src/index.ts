@@ -28,7 +28,6 @@ export type {
   DriftModel,
   PhotobleachingConfig,
   SaturationConfig,
-  CellVariationConfig,
 } from './simulation-types.ts';
 export type { SimulationPreset } from './simulation-presets.ts';
 export {
