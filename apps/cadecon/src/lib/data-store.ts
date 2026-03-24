@@ -121,17 +121,12 @@ async function loadDemoData(opts?: {
   for (let c = 0; c < result.ground_truth.length; c++) {
     const gt = result.ground_truth[c];
     const offset = c * timepointCount;
-    for (let t = 0; t < timepointCount; t++) {
-      gtSpikes[offset + t] = gt.spikes[t];
-      gtCalcium[offset + t] = gt.clean_calcium[t];
-    }
+    gtSpikes.set(gt.spikes, offset);
+    gtCalcium.set(gt.clean_calcium, offset);
   }
 
   // Convert f32 traces to f64 for NpyResult compatibility
-  const data = new Float64Array(result.traces.length);
-  for (let i = 0; i < result.traces.length; i++) {
-    data[i] = result.traces[i];
-  }
+  const data = Float64Array.from(result.traces);
 
   setGroundTruthSpikes(gtSpikes);
   setGroundTruthCalcium(gtCalcium);

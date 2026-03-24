@@ -147,7 +147,6 @@ export function SubmitPanel() {
           recordingLengthS: durationSeconds() ?? undefined,
           datasetData: parsedData()?.data,
           dataSource: dataSource(),
-          demoPresetId: undefined,
         },
         APP_VERSION,
       );

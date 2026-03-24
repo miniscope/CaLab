@@ -24,33 +24,6 @@ export interface SimulationConfiguratorProps {
   onChange: (config: QualitativeSimConfig) => void;
 }
 
-// ── Segmented button row (single-value selection) ────────────────
-
-function SegmentedRow<T extends string>(props: {
-  label: string;
-  options: readonly { id: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div class="sim-configurator__row">
-      <label class="sim-configurator__label">{props.label}</label>
-      <div class="segmented-control">
-        <For each={props.options as { id: T; label: string }[]}>
-          {(opt) => (
-            <button
-              class={`segmented-control__btn${opt.id === props.value ? ' segmented-control__btn--active' : ''}`}
-              onClick={() => props.onChange(opt.id)}
-            >
-              {opt.label}
-            </button>
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
-
 // ── Dual-thumb range slider row (per-cell variation) ─────────────
 
 function RangeSliderRow(props: {
@@ -126,7 +99,7 @@ function RangeSliderRow(props: {
           onPointerDown={(e) => handleThumbDown('high', e)}
         />
         <div class="range-slider__ticks">
-          <For each={props.ticks as { id: string; label: string }[]}>
+          <For each={[...props.ticks]}>
             {(tick, i) => (
               <span
                 class={`range-slider__tick-label${i() >= props.range[0] && i() <= props.range[1] ? ' range-slider__tick-label--active' : ''}`}
@@ -161,11 +134,7 @@ export function SimulationConfigurator(props: SimulationConfiguratorProps) {
             update('indicator', e.currentTarget.value as QualitativeSimConfig['indicator'])
           }
         >
-          <For
-            each={
-              INDICATOR_OPTIONS as unknown as { id: string; label: string; description: string }[]
-            }
-          >
+          <For each={[...INDICATOR_OPTIONS]}>
             {(opt) => <option value={opt.id}>{opt.label}</option>}
           </For>
         </select>

@@ -201,7 +201,7 @@ class SimulationConfig(BaseModel):
     saturation: SaturationConfig = Field(default_factory=SaturationConfig)
     alpha_mean: float = Field(1.0, gt=0, description="Mean per-cell amplitude scaling factor")
     alpha_cv: float = Field(0.3, ge=0, description="Per-cell log-normal CV on alpha (0 = no variation)")
-    seed: int = Field(42, ge=0, description="RNG seed for reproducibility")
+    seed: int = Field(42, ge=0, le=4294967295, description="RNG seed for reproducibility (u32)")
     spike_sim_hz: float = Field(300.0, gt=0, description="Internal spike simulation rate (Hz)")
 
 

@@ -6,7 +6,7 @@
  */
 
 import { computeKernel } from './kernel-math.ts';
-import type { MarkovParams, NoiseParams, SimulationParams } from './demo-presets.ts';
+import type { MarkovParams, NoiseParams } from './demo-presets.ts';
 
 /** Neuronal spike simulation rate — 3.3ms refractory period. */
 const SPIKE_SIM_HZ = 300;
@@ -136,43 +136,4 @@ export function generateSyntheticTrace(
   }
 
   return { raw, spikes, clean };
-}
-
-/**
- * Generate multiple synthetic traces with different seeds (simulating multiple cells).
- * Returns a flat Float64Array in row-major [cells, timepoints] layout, matching .npy format.
- */
-export function generateSyntheticDataset(
-  numCells: number,
-  numTimepoints: number,
-  simParams: SimulationParams,
-  fs: number = 30,
-  baseSeed: number = 42,
-): {
-  data: Float64Array;
-  shape: [number, number];
-  groundTruthSpikes: Float64Array;
-  groundTruthCalcium: Float64Array;
-} {
-  const data = new Float64Array(numCells * numTimepoints);
-  const groundTruthSpikes = new Float64Array(numCells * numTimepoints);
-  const groundTruthCalcium = new Float64Array(numCells * numTimepoints);
-
-  for (let c = 0; c < numCells; c++) {
-    const { raw, spikes, clean } = generateSyntheticTrace(
-      numTimepoints,
-      simParams.tauRise,
-      simParams.tauDecay,
-      fs,
-      baseSeed + c * 7919, // different prime-offset seed per cell
-      simParams.snrBase + (c % 5) * simParams.snrStep,
-      { markov: simParams.markov, noise: simParams.noise },
-    );
-    const offset = c * numTimepoints;
-    data.set(raw, offset);
-    groundTruthSpikes.set(spikes, offset);
-    groundTruthCalcium.set(clean, offset);
-  }
-
-  return { data, shape: [numCells, numTimepoints], groundTruthSpikes, groundTruthCalcium };
 }

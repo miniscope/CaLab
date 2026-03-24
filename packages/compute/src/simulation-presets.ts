@@ -146,6 +146,11 @@ export function getSimulationPresetById(id: string): SimulationPreset | undefine
   return SIMULATION_PRESETS.find((p) => p.id === id);
 }
 
+const SIMULATION_PRESET_LABELS: { id: string; label: string }[] = SIMULATION_PRESETS.map((p) => ({
+  id: p.id,
+  label: p.label,
+}));
+
 export function getSimulationPresetLabels(): { id: string; label: string }[] {
-  return SIMULATION_PRESETS.map((p) => ({ id: p.id, label: p.label }));
+  return SIMULATION_PRESET_LABELS;
 }

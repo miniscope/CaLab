@@ -7,7 +7,6 @@ from pydantic import ValidationError
 import calab
 from calab import (
     KernelConfig,
-    KernelConfig,
     MarkovConfig,
     NoiseConfig,
     PhotobleachingConfig,

@@ -44,12 +44,13 @@ use crate::upsample::downsample_average;
 #[derive(Clone)]
 struct Xorshift32 {
     state: u32,
+    cached_gaussian: Option<f64>,
 }
 
 impl Xorshift32 {
     fn new(seed: u32) -> Self {
         let state = if seed == 0 { 1 } else { seed };
-        Self { state }
+        Self { state, cached_gaussian: None }
     }
 
     #[inline]
@@ -66,12 +67,18 @@ impl Xorshift32 {
     }
 
     fn gaussian(&mut self) -> f64 {
+        if let Some(cached) = self.cached_gaussian.take() {
+            return cached;
+        }
         let u1 = {
             let v = self.next_f64();
             if v == 0.0 { 1e-10 } else { v }
         };
         let u2 = self.next_f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f64::consts::PI * u2;
+        self.cached_gaussian = Some(r * theta.sin());
+        r * theta.cos()
     }
 }
 
@@ -397,6 +404,7 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
     };
 
     let mut high_res_buf = vec![0u8; num_high_res];
+    let mut trace_buf: Vec<f64> = Vec::with_capacity(n_tp);
 
     for cell_idx in 0..n_cells {
         let cell_seed = config.seed.wrapping_add((cell_idx as u32).wrapping_mul(7919));
@@ -465,7 +473,10 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         }
 
         let signal_max = clean_calcium.iter().cloned().fold(0.0_f32, f32::max) as f64;
-        let mut trace: Vec<f64> = clean_calcium.iter().map(|&c| c as f64).collect();
+
+        // Reuse trace buffer across cells
+        trace_buf.clear();
+        trace_buf.extend(clean_calcium.iter().map(|&c| c as f64));
 
         // 9. Per-cell drift intensity
         let cell_drift = match &config.drift {
@@ -478,7 +489,7 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
                 DriftModel::Sinusoidal(SinusoidalDrift { amplitude_fraction: cell_amp, ..*cfg })
             }
         };
-        add_drift(&mut trace, &cell_drift, signal_max, n_tp, &mut rng);
+        add_drift(&mut trace_buf, &cell_drift, signal_max, n_tp, &mut rng);
 
         // 10. Per-cell photobleaching amplitude
         if config.photobleaching.enabled {
@@ -488,13 +499,13 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
                 &mut rng,
             ).min(1.0);
             let cell_pb = PhotobleachingConfig { amplitude_fraction: cell_amp, ..config.photobleaching };
-            apply_photobleaching(&mut trace, &cell_pb, config.fs_hz);
+            apply_photobleaching(&mut trace_buf, &cell_pb, config.fs_hz);
         }
 
         // 11. Add noise
-        add_noise(&mut trace, &config.noise, cell_snr, signal_max, &mut rng);
+        add_noise(&mut trace_buf, &config.noise, cell_snr, signal_max, &mut rng);
 
-        traces.extend(trace.iter().map(|&v| v as f32));
+        traces.extend(trace_buf.iter().map(|&v| v as f32));
         ground_truth.push(CellGroundTruth {
             spikes, clean_calcium, alpha,
             snr: cell_snr, tau_rise_s: cell_tau_rise, tau_decay_s: cell_tau_decay,
@@ -573,9 +584,16 @@ fn convolve_binary_spikes(spikes: &[u8], kernel: &[f32]) -> Vec<f32> {
 
 fn apply_saturation(signal: &mut [f32], hill_n: f64, k_d: f64) {
     let kd_n = k_d.powf(hill_n);
+    // Fast-path for common integer Hill coefficients
+    let hill_int = if (hill_n - hill_n.round()).abs() < 1e-9 { Some(hill_n.round() as i32) } else { None };
     for v in signal.iter_mut() {
         let f = (*v as f64).max(0.0);
-        let f_n = f.powf(hill_n);
+        let f_n = match hill_int {
+            Some(1) => f,
+            Some(2) => f * f,
+            Some(3) => f * f * f,
+            _ => f.powf(hill_n),
+        };
         *v = (f_n / (f_n + kd_n)) as f32;
     }
 }
@@ -608,11 +626,12 @@ fn add_drift(trace: &mut [f64], model: &DriftModel, signal_max: f64, n: usize, r
 // ── Photobleaching ───────────────────────────────────────────────
 
 fn apply_photobleaching(trace: &mut [f64], cfg: &PhotobleachingConfig, fs_hz: f64) {
-    let tau = cfg.decay_time_constant_s;
     let amp = cfg.amplitude_fraction;
-    for (i, v) in trace.iter_mut().enumerate() {
-        let t = i as f64 / fs_hz;
-        *v *= 1.0 - amp * (1.0 - (-t / tau).exp());
+    let decay_per_step = (-1.0 / (fs_hz * cfg.decay_time_constant_s)).exp();
+    let mut bleach_exp = 1.0_f64; // exp(-t/tau), starts at 1.0 and decays
+    for v in trace.iter_mut() {
+        *v *= 1.0 - amp * (1.0 - bleach_exp);
+        bleach_exp *= decay_per_step;
     }
 }
 

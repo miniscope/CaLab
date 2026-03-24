@@ -39,7 +39,6 @@ export interface SubmissionContext {
   recordingLengthS: number | undefined;
   datasetData: ArrayLike<number> | undefined;
   dataSource: AppDataSource;
-  demoPresetId: string | undefined;
   rawFileName: string | undefined;
 }
 
@@ -111,7 +110,7 @@ export async function submitToSupabase(
     filter_enabled: ctx.filterEnabled,
     data_source: communitySource,
     app_version: version,
-    extra_metadata: isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
+    extra_metadata: undefined,
   };
 
   const result = await submitParameters(payload);

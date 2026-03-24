@@ -49,7 +49,6 @@ export interface CadeconSubmissionContext {
   recordingLengthS: number | undefined;
   datasetData: ArrayLike<number> | undefined;
   dataSource: AppDataSource;
-  demoPresetId: string | undefined;
 }
 
 /** Compute the median of a numeric array, or null if empty. */
@@ -173,7 +172,7 @@ export async function submitToSupabase(
     dataset_hash: datasetHash,
     data_source: communitySource,
     app_version: version,
-    extra_metadata: isDemo && ctx.demoPresetId ? { demo_preset: ctx.demoPresetId } : undefined,
+    extra_metadata: undefined,
   };
 
   const result = await submitParameters(payload);

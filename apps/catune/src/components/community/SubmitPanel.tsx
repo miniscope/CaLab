@@ -145,7 +145,6 @@ export function SubmitPanel() {
           recordingLengthS: durationSeconds() ?? undefined,
           datasetData: data?.data,
           dataSource: dataSource(),
-          demoPresetId: undefined,
           rawFileName: rawFile()?.name,
         },
         APP_VERSION,
