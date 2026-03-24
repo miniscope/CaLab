@@ -278,7 +278,11 @@ impl Default for SaturationConfig {
 }
 
 /// Per-cell parameter variation for multi-cell simulations.
-/// Tests CaDecon's single-kernel assumption and alpha estimation.
+///
+/// Each field controls how much a parameter varies across cells.
+/// CV fields use multiplicative log-normal variation: value = nominal * exp(N(0, cv)).
+/// Spread fields use additive uniform variation: value = nominal + U(-spread, +spread).
+/// 0 = no variation (all cells identical for that parameter).
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -293,6 +297,14 @@ pub struct CellVariationConfig {
     pub tau_decay_cv: f64,
     /// Additive SNR spread (+/- this value). Default: 0.0.
     pub snr_spread: f64,
+    /// Drift intensity log-space CV (0 = no variation). Default: 0.0.
+    pub drift_cv: f64,
+    /// Photobleaching amplitude log-space CV (0 = no variation). Default: 0.0.
+    pub bleach_cv: f64,
+    /// Saturation Kd log-space CV (0 = no variation). Default: 0.0.
+    pub saturation_cv: f64,
+    /// Spike rate log-space CV on p_silent_to_active (0 = no variation). Default: 0.0.
+    pub spike_rate_cv: f64,
 }
 
 impl Default for CellVariationConfig {
@@ -303,6 +315,10 @@ impl Default for CellVariationConfig {
             tau_rise_cv: 0.0,
             tau_decay_cv: 0.0,
             snr_spread: 0.0,
+            drift_cv: 0.0,
+            bleach_cv: 0.0,
+            saturation_cv: 0.0,
+            spike_rate_cv: 0.0,
         }
     }
 }
@@ -445,9 +461,27 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
             config.noise.snr
         };
 
-        // 2. Generate high-res spike train + binned counts for ground truth
+        // Per-cell spike rate multiplier (scales p_silent_to_active)
+        let spike_rate_mult = if var.spike_rate_cv > 0.0 {
+            (var.spike_rate_cv * rng.gaussian()).exp()
+        } else {
+            1.0
+        };
+
+        // 2. Generate high-res spike train with per-cell rate variation
+        let cell_spike_model = if spike_rate_mult != 1.0 {
+            match &config.spike_model {
+                SpikeModel::Markov(cfg) => SpikeModel::Markov(MarkovConfig {
+                    p_silent_to_active: (cfg.p_silent_to_active * spike_rate_mult).min(1.0),
+                    ..*cfg
+                }),
+                other => other.clone(),
+            }
+        } else {
+            config.spike_model.clone()
+        };
         generate_high_res_spikes(
-            &config.spike_model, num_high_res, bins_per_frame,
+            &cell_spike_model, num_high_res, bins_per_frame,
             config.spike_sim_hz, &mut rng, &mut high_res_buf,
         );
         let spikes = bin_to_imaging_rate(&high_res_buf[..num_high_res], n_tp, bins_per_frame);
@@ -471,9 +505,18 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
             *v *= alpha as f32;
         }
 
-        // 6. Apply indicator saturation (optional)
+        // 6. Apply indicator saturation with per-cell Kd variation
         if config.saturation.enabled {
-            apply_saturation(&mut clean_calcium, &config.saturation);
+            let cell_sat = if var.saturation_cv > 0.0 {
+                let kd_mult = (var.saturation_cv * rng.gaussian()).exp();
+                SaturationConfig {
+                    k_d: config.saturation.k_d * kd_mult,
+                    ..config.saturation
+                }
+            } else {
+                config.saturation.clone()
+            };
+            apply_saturation(&mut clean_calcium, &cell_sat);
         }
 
         let signal_max = clean_calcium.iter().cloned().fold(0.0_f32, f32::max) as f64;
@@ -481,11 +524,36 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         // 7. Build observed trace in f64 for drift/noise precision
         let mut trace: Vec<f64> = clean_calcium.iter().map(|&c| c as f64).collect();
 
-        add_drift(&mut trace, &config.drift, signal_max, n_tp, &mut rng);
+        // Per-cell drift intensity variation
+        let cell_drift = if var.drift_cv > 0.0 {
+            let drift_mult = (var.drift_cv * rng.gaussian()).exp();
+            match &config.drift {
+                DriftModel::RandomWalk(cfg) => DriftModel::RandomWalk(RandomWalkDrift {
+                    step_std_fraction: cfg.step_std_fraction * drift_mult,
+                    ..*cfg
+                }),
+                DriftModel::Sinusoidal(cfg) => DriftModel::Sinusoidal(SinusoidalDrift {
+                    amplitude_fraction: cfg.amplitude_fraction * drift_mult,
+                    ..*cfg
+                }),
+            }
+        } else {
+            config.drift.clone()
+        };
+        add_drift(&mut trace, &cell_drift, signal_max, n_tp, &mut rng);
 
-        // 8. Apply photobleaching (multiplicative)
+        // 8. Apply photobleaching with per-cell amplitude variation
         if config.photobleaching.enabled {
-            apply_photobleaching(&mut trace, &config.photobleaching, config.fs_hz);
+            let cell_pb = if var.bleach_cv > 0.0 {
+                let bleach_mult = (var.bleach_cv * rng.gaussian()).exp();
+                PhotobleachingConfig {
+                    amplitude_fraction: (config.photobleaching.amplitude_fraction * bleach_mult).min(1.0),
+                    ..config.photobleaching
+                }
+            } else {
+                config.photobleaching.clone()
+            };
+            apply_photobleaching(&mut trace, &cell_pb, config.fs_hz);
         }
 
         // 9. Add noise

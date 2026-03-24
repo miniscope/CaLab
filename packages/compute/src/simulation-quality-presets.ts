@@ -5,8 +5,9 @@
  * object to the array. To adjust values, edit the numbers here. Types are
  * derived from the arrays so they update automatically.
  *
- * The `buildSimulationConfig()` function composes a full SimulationConfig
- * from a QualitativeSimConfig (one level per step + indicator choice).
+ * All steps use dual-thumb range sliders in the UI. Each cell draws its
+ * parameter value from within the selected range. When both thumbs are on
+ * the same tick, all cells share that exact value (no variation).
  */
 
 import type {
@@ -31,6 +32,10 @@ export const INDICATOR_OPTIONS = [
 ] as const;
 
 export type IndicatorId = (typeof INDICATOR_OPTIONS)[number]['id'];
+
+// ══════════════════════════════════════════════════════════════════
+// LEVEL DEFINITIONS (one array per step — edit here to adjust values)
+// ══════════════════════════════════════════════════════════════════
 
 // ── Spike Activity (Markov HMM) ─────────────────────────────────
 
@@ -137,59 +142,95 @@ export const SATURATION_LEVELS = [
 
 export type SaturationLevel = (typeof SATURATION_LEVELS)[number]['id'];
 
-// ── Cell Variation ──────────────────────────────────────────────
+// ── Amplitude Variation ─────────────────────────────────────────
 
-export const CELL_VARIATION_LEVELS = [
-  { id: 'none', label: 'None', alpha_cv: 0, tau_rise_cv: 0, tau_decay_cv: 0, snr_spread: 0 },
-  { id: 'low', label: 'Low', alpha_cv: 0.15, tau_rise_cv: 0.05, tau_decay_cv: 0.05, snr_spread: 2 },
-  {
-    id: 'moderate',
-    label: 'Moderate',
-    alpha_cv: 0.3,
-    tau_rise_cv: 0.1,
-    tau_decay_cv: 0.1,
-    snr_spread: 5,
-  },
-  { id: 'high', label: 'High', alpha_cv: 0.5, tau_rise_cv: 0.2, tau_decay_cv: 0.2, snr_spread: 8 },
+export const AMPLITUDE_VARIATION_LEVELS = [
+  { id: 'none', label: 'None', alpha_cv: 0 },
+  { id: 'low', label: 'Low', alpha_cv: 0.15 },
+  { id: 'moderate', label: 'Moderate', alpha_cv: 0.3 },
+  { id: 'high', label: 'High', alpha_cv: 0.5 },
 ] as const;
 
-export type CellVariationLevel = (typeof CELL_VARIATION_LEVELS)[number]['id'];
+export type AmplitudeVariationLevel = (typeof AMPLITUDE_VARIATION_LEVELS)[number]['id'];
 
-// ── Qualitative Config ──────────────────────────────────────────
+// ── Kernel Variation ────────────────────────────────────────────
 
+export const KERNEL_VARIATION_LEVELS = [
+  { id: 'none', label: 'None', tau_rise_cv: 0, tau_decay_cv: 0 },
+  { id: 'low', label: 'Low', tau_rise_cv: 0.05, tau_decay_cv: 0.05 },
+  { id: 'moderate', label: 'Moderate', tau_rise_cv: 0.1, tau_decay_cv: 0.1 },
+  { id: 'high', label: 'High', tau_rise_cv: 0.2, tau_decay_cv: 0.2 },
+] as const;
+
+export type KernelVariationLevel = (typeof KERNEL_VARIATION_LEVELS)[number]['id'];
+
+// ══════════════════════════════════════════════════════════════════
+// CONFIG & BUILDER
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * All steps use [lowIndex, highIndex] ranges into their level arrays.
+ * When both indices are the same, all cells get that exact value.
+ * When they differ, per-cell values are drawn from within the range.
+ */
 export interface QualitativeSimConfig {
   indicator: IndicatorId;
-  spikeActivity: SpikeActivityLevel;
-  noise: NoiseLevel;
-  drift: DriftLevel;
-  photobleaching: PhotobleachingLevel;
-  saturation: SaturationLevel;
-  cellVariation: CellVariationLevel;
+  spikeActivity: [number, number];
+  noise: [number, number];
+  drift: [number, number];
+  photobleaching: [number, number];
+  saturation: [number, number];
+  amplitudeVariation: [number, number];
+  kernelVariation: [number, number];
 }
 
 export const DEFAULT_QUALITATIVE_CONFIG: QualitativeSimConfig = {
   indicator: 'gcamp6f',
-  spikeActivity: 'moderate',
-  noise: 'low',
-  drift: 'subtle',
-  photobleaching: 'none',
-  saturation: 'none',
-  cellVariation: 'low',
+  spikeActivity: [1, 1], // Moderate
+  noise: [1, 1], // Low
+  drift: [1, 1], // Subtle
+  photobleaching: [0, 0], // None
+  saturation: [0, 0], // None
+  amplitudeVariation: [1, 1], // Low
+  kernelVariation: [0, 0], // None
 };
 
-// ── Builder ─────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────
 
-function findLevel<T extends { id: string }>(levels: readonly T[], id: string): T {
-  const found = levels.find((l) => l.id === id);
-  if (!found) throw new Error(`Unknown level: ${id}`);
-  return found;
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function clampIdx<T>(levels: readonly T[], idx: number): number {
+  return Math.max(0, Math.min(idx, levels.length - 1));
+}
+
+/**
+ * Get the midpoint value between two level indices for a numerical field.
+ * When both indices are the same, returns the exact level value.
+ */
+function midpoint<T>(levels: readonly T[], range: [number, number], field: keyof T): number {
+  const lo = levels[clampIdx(levels, range[0])];
+  const hi = levels[clampIdx(levels, range[1])];
+  return lerp(lo[field] as number, hi[field] as number, 0.5);
+}
+
+/**
+ * Get the CV (spread) implied by a range: half the distance between bounds.
+ * Used to encode per-cell variation into CellVariationConfig spread fields.
+ */
+function rangeCv<T>(levels: readonly T[], range: [number, number], field: keyof T): number {
+  const lo = levels[clampIdx(levels, range[0])];
+  const hi = levels[clampIdx(levels, range[1])];
+  return Math.abs((hi[field] as number) - (lo[field] as number)) / 2;
 }
 
 /**
  * Compose a full SimulationConfig from qualitative choices.
  *
- * Indicator contributes only kernel params (tau_rise, tau_decay).
- * All other parameters come from the qualitative level selections.
+ * For each step, the midpoint of the selected range sets the nominal value.
+ * The width of the range sets the per-cell variation (encoded as CV or spread
+ * fields in CellVariationConfig).
  */
 export function buildSimulationConfig(
   q: QualitativeSimConfig,
@@ -201,56 +242,88 @@ export function buildSimulationConfig(
     spike_sim_hz?: number;
   },
 ): SimulationConfig {
-  // Indicator → kernel params
   const preset = getSimulationPresetById(q.indicator);
   const kernel = preset ? preset.config.kernel : { tau_rise_s: 0.1, tau_decay_s: 0.6 };
 
-  // Look up each qualitative level
-  const spike = findLevel(SPIKE_ACTIVITY_LEVELS, q.spikeActivity);
-  const noise = findLevel(NOISE_LEVELS, q.noise);
-  const drift = findLevel(DRIFT_LEVELS, q.drift);
-  const pb = findLevel(PHOTOBLEACHING_LEVELS, q.photobleaching);
-  const sat = findLevel(SATURATION_LEVELS, q.saturation);
-  const cv = findLevel(CELL_VARIATION_LEVELS, q.cellVariation);
-
+  // Spike activity (midpoint of range, spread → spike_rate_cv)
+  const spkLo = SPIKE_ACTIVITY_LEVELS[clampIdx(SPIKE_ACTIVITY_LEVELS, q.spikeActivity[0])];
+  const spkHi = SPIKE_ACTIVITY_LEVELS[clampIdx(SPIKE_ACTIVITY_LEVELS, q.spikeActivity[1])];
   const spikeModel: MarkovConfig = {
     model_type: 'markov',
-    p_silent_to_active: spike.p_silent_to_active,
-    p_active_to_silent: spike.p_active_to_silent,
-    p_spike_when_active: spike.p_spike_when_active,
-    p_spike_when_silent: spike.p_spike_when_silent,
+    p_silent_to_active: lerp(spkLo.p_silent_to_active, spkHi.p_silent_to_active, 0.5),
+    p_active_to_silent: lerp(spkLo.p_active_to_silent, spkHi.p_active_to_silent, 0.5),
+    p_spike_when_active: lerp(spkLo.p_spike_when_active, spkHi.p_spike_when_active, 0.5),
+    p_spike_when_silent: lerp(spkLo.p_spike_when_silent, spkHi.p_spike_when_silent, 0.5),
   };
+  const spikeRateCv =
+    rangeCv(SPIKE_ACTIVITY_LEVELS, q.spikeActivity, 'p_silent_to_active') /
+    Math.max(spikeModel.p_silent_to_active, 1e-6);
 
+  // Noise (midpoint SNR, spread → snr_spread)
+  const snrMid = midpoint(NOISE_LEVELS, q.noise, 'snr');
+  const snrSpread = rangeCv(NOISE_LEVELS, q.noise, 'snr');
+  const noiseLo = NOISE_LEVELS[clampIdx(NOISE_LEVELS, q.noise[0])];
+  const noiseHi = NOISE_LEVELS[clampIdx(NOISE_LEVELS, q.noise[1])];
   const noiseConfig: NoiseConfig = {
-    snr: noise.snr,
-    shot_noise_enabled: noise.shot_noise_enabled,
-    shot_noise_fraction: noise.shot_noise_fraction,
+    snr: snrMid,
+    shot_noise_enabled: noiseLo.shot_noise_enabled || noiseHi.shot_noise_enabled,
+    shot_noise_fraction: Math.max(noiseLo.shot_noise_fraction, noiseHi.shot_noise_fraction),
   };
 
+  // Drift (midpoint, spread → drift_cv)
+  const driftMidStep = midpoint(DRIFT_LEVELS, q.drift, 'step_std_fraction');
+  const driftMidMr = midpoint(DRIFT_LEVELS, q.drift, 'mean_reversion');
+  const driftCv =
+    driftMidStep > 0 ? rangeCv(DRIFT_LEVELS, q.drift, 'step_std_fraction') / driftMidStep : 0;
   const driftConfig: RandomWalkDrift = {
     model_type: 'random_walk',
-    step_std_fraction: drift.step_std_fraction,
-    mean_reversion: drift.mean_reversion,
+    step_std_fraction: driftMidStep,
+    mean_reversion: driftMidMr,
   };
 
+  // Photobleaching (midpoint, spread → bleach_cv)
+  const pbLo = PHOTOBLEACHING_LEVELS[clampIdx(PHOTOBLEACHING_LEVELS, q.photobleaching[0])];
+  const pbHi = PHOTOBLEACHING_LEVELS[clampIdx(PHOTOBLEACHING_LEVELS, q.photobleaching[1])];
+  const pbAmpMid = lerp(pbLo.amplitude_fraction, pbHi.amplitude_fraction, 0.5);
+  const pbTauMid = lerp(pbLo.decay_time_constant_s, pbHi.decay_time_constant_s, 0.5);
+  const bleachCv =
+    pbAmpMid > 0
+      ? rangeCv(PHOTOBLEACHING_LEVELS, q.photobleaching, 'amplitude_fraction') / pbAmpMid
+      : 0;
   const photobleachingConfig: PhotobleachingConfig = {
-    enabled: pb.enabled,
-    decay_time_constant_s: pb.decay_time_constant_s,
-    amplitude_fraction: pb.amplitude_fraction,
+    enabled: pbLo.enabled || pbHi.enabled,
+    decay_time_constant_s: pbTauMid,
+    amplitude_fraction: pbAmpMid,
   };
 
+  // Saturation (midpoint, spread → saturation_cv)
+  const satLo = SATURATION_LEVELS[clampIdx(SATURATION_LEVELS, q.saturation[0])];
+  const satHi = SATURATION_LEVELS[clampIdx(SATURATION_LEVELS, q.saturation[1])];
+  const kdMid = lerp(satLo.k_d, satHi.k_d, 0.5);
+  const satCv = kdMid > 0 ? rangeCv(SATURATION_LEVELS, q.saturation, 'k_d') / kdMid : 0;
   const saturationConfig: SaturationConfig = {
-    enabled: sat.enabled,
-    hill_coefficient: sat.hill_coefficient,
-    k_d: sat.k_d,
+    enabled: satLo.enabled || satHi.enabled,
+    hill_coefficient: lerp(satLo.hill_coefficient, satHi.hill_coefficient, 0.5),
+    k_d: kdMid,
   };
+
+  // Amplitude variation
+  const alphaCv = midpoint(AMPLITUDE_VARIATION_LEVELS, q.amplitudeVariation, 'alpha_cv');
+
+  // Kernel variation
+  const tauRiseCv = midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_rise_cv');
+  const tauDecayCv = midpoint(KERNEL_VARIATION_LEVELS, q.kernelVariation, 'tau_decay_cv');
 
   const cellVariationConfig: CellVariationConfig = {
     alpha_mean: 1.0,
-    alpha_cv: cv.alpha_cv,
-    tau_rise_cv: cv.tau_rise_cv,
-    tau_decay_cv: cv.tau_decay_cv,
-    snr_spread: cv.snr_spread,
+    alpha_cv: alphaCv,
+    tau_rise_cv: tauRiseCv,
+    tau_decay_cv: tauDecayCv,
+    snr_spread: snrSpread,
+    drift_cv: driftCv,
+    bleach_cv: bleachCv,
+    saturation_cv: satCv,
+    spike_rate_cv: spikeRateCv,
   };
 
   return {

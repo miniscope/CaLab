@@ -30,6 +30,10 @@ const DEFAULT_VARIATION = {
   tau_rise_cv: 0.0,
   tau_decay_cv: 0.0,
   snr_spread: 0.0,
+  drift_cv: 0.0,
+  bleach_cv: 0.0,
+  saturation_cv: 0.0,
+  spike_rate_cv: 0.0,
 };
 
 function makeConfig(overrides: Partial<SimulationConfig>): SimulationConfig {

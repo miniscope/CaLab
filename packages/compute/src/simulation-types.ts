@@ -85,6 +85,10 @@ export interface CellVariationConfig {
   tau_rise_cv: number;
   tau_decay_cv: number;
   snr_spread: number;
+  drift_cv: number;
+  bleach_cv: number;
+  saturation_cv: number;
+  spike_rate_cv: number;
 }
 
 // ── Top-Level Config ────────────────────────────────────────────

@@ -188,6 +188,16 @@ class CellVariationConfig(BaseModel):
         0.0, ge=0, description="Tau_decay log-space CV (0 = no variation)"
     )
     snr_spread: float = Field(0.0, ge=0, description="Additive SNR spread (+/- this value)")
+    drift_cv: float = Field(0.0, ge=0, description="Drift intensity log-space CV (0 = no variation)")
+    bleach_cv: float = Field(
+        0.0, ge=0, description="Photobleaching amplitude log-space CV (0 = no variation)"
+    )
+    saturation_cv: float = Field(
+        0.0, ge=0, description="Saturation Kd log-space CV (0 = no variation)"
+    )
+    spike_rate_cv: float = Field(
+        0.0, ge=0, description="Spike rate log-space CV (0 = no variation)"
+    )
 
 
 # ── Top-Level Config ─────────────────────────────────────────────

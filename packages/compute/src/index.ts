@@ -38,16 +38,7 @@ export {
   getSimulationPresetLabels,
 } from './simulation-presets.ts';
 // Qualitative presets (per-step level selections for UI)
-export type {
-  QualitativeSimConfig,
-  IndicatorId,
-  SpikeActivityLevel,
-  NoiseLevel,
-  DriftLevel,
-  PhotobleachingLevel,
-  SaturationLevel,
-  CellVariationLevel,
-} from './simulation-quality-presets.ts';
+export type { QualitativeSimConfig, IndicatorId } from './simulation-quality-presets.ts';
 export {
   buildSimulationConfig,
   DEFAULT_QUALITATIVE_CONFIG,
@@ -57,5 +48,6 @@ export {
   DRIFT_LEVELS,
   PHOTOBLEACHING_LEVELS,
   SATURATION_LEVELS,
-  CELL_VARIATION_LEVELS,
+  AMPLITUDE_VARIATION_LEVELS,
+  KERNEL_VARIATION_LEVELS,
 } from './simulation-quality-presets.ts';
