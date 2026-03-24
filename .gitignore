@@ -10,3 +10,4 @@ test/
 .env
 .env.local
 .claude/settings.local.json
+python/src/calab/*.so
