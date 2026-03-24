@@ -149,7 +149,7 @@ DriftModel = Annotated[Union[SinusoidalDrift, RandomWalkDrift], Field(discrimina
 
 
 class PhotobleachingConfig(BaseModel):
-    """Exponential photobleaching: F(t) *= 1 - amp * (1 - exp(-t/tau)).
+    r"""Exponential photobleaching: ``F(t) *= 1 - amp * (1 - exp(-t/tau))``.
 
     Attribution: NAOMi (Charles et al., 2019).
     """

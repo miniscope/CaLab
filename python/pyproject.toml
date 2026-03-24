@@ -31,6 +31,7 @@ dependencies = ["numpy>=1.24", "pydantic>=2.0"]
 Homepage = "https://github.com/miniscope/CaLab"
 Repository = "https://github.com/miniscope/CaLab"
 Issues = "https://github.com/miniscope/CaLab/issues"
+Documentation = "https://calab.readthedocs.io"
 
 [project.scripts]
 calab = "calab._cli:main"
@@ -39,6 +40,7 @@ calab = "calab._cli:main"
 loaders = ["h5py>=3.0", "zarr>=2.12"]
 headless = ["playwright>=1.40"]
 all = ["h5py>=3.0", "zarr>=2.12", "playwright>=1.40"]
+docs = ["sphinx>=7.0", "sphinx-autoapi>=3.0", "myst-parser>=3.0", "furo>=2024.0"]
 dev = ["pytest>=7.0", "h5py>=3.0", "zarr>=2.12", "playwright>=1.40"]
 
 [tool.maturin]
