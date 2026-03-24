@@ -43,16 +43,16 @@ class MarkovConfig(BaseModel):
 
     model_type: Literal["markov"] = "markov"
     p_silent_to_active: float = Field(
-        0.01, ge=0, le=1, description="Silent->active transition probability per frame"
+        0.005, ge=0, le=1, description="Silent->active transition probability per frame"
     )
     p_active_to_silent: float = Field(
-        0.2, ge=0, le=1, description="Active->silent transition probability per frame"
+        0.3, ge=0, le=1, description="Active->silent transition probability per frame"
     )
     p_spike_when_active: float = Field(
-        0.7, ge=0, le=1, description="Spike probability in active state (per 300 Hz step)"
+        0.5, ge=0, le=1, description="Spike probability in active state (per 300 Hz step)"
     )
     p_spike_when_silent: float = Field(
-        0.005, ge=0, le=1, description="Spike probability in silent state (per 300 Hz step)"
+        0.002, ge=0, le=1, description="Spike probability in silent state (per 300 Hz step)"
     )
     p_silent_to_active_cv: float = Field(
         0.0, ge=0, description="Per-cell log-normal CV on p_silent_to_active (0 = no variation)"

@@ -42,26 +42,26 @@ export const SPIKE_ACTIVITY_LEVELS = [
   {
     id: 'sparse',
     label: 'Sparse',
+    p_silent_to_active: 0.002,
+    p_active_to_silent: 0.4,
+    p_spike_when_active: 0.3,
+    p_spike_when_silent: 0.001,
+  },
+  {
+    id: 'moderate',
+    label: 'Moderate',
     p_silent_to_active: 0.005,
     p_active_to_silent: 0.3,
     p_spike_when_active: 0.5,
     p_spike_when_silent: 0.002,
   },
   {
-    id: 'moderate',
-    label: 'Moderate',
+    id: 'dense',
+    label: 'Dense',
     p_silent_to_active: 0.01,
     p_active_to_silent: 0.2,
     p_spike_when_active: 0.7,
     p_spike_when_silent: 0.005,
-  },
-  {
-    id: 'dense',
-    label: 'Dense',
-    p_silent_to_active: 0.03,
-    p_active_to_silent: 0.1,
-    p_spike_when_active: 0.8,
-    p_spike_when_silent: 0.01,
   },
 ] as const;
 
@@ -135,8 +135,8 @@ export type PhotobleachingLevel = (typeof PHOTOBLEACHING_LEVELS)[number]['id'];
 
 export const SATURATION_LEVELS = [
   { id: 'none', label: 'None', enabled: false, hill_coefficient: 1.0, k_d: 5.0 },
-  { id: 'mild', label: 'Mild', enabled: true, hill_coefficient: 1.5, k_d: 8.0 },
-  { id: 'strong', label: 'Strong', enabled: true, hill_coefficient: 2.5, k_d: 3.0 },
+  { id: 'mild', label: 'Mild', enabled: true, hill_coefficient: 1.2, k_d: 10.0 },
+  { id: 'strong', label: 'Strong', enabled: true, hill_coefficient: 1.8, k_d: 5.0 },
 ] as const;
 
 export type SaturationLevel = (typeof SATURATION_LEVELS)[number]['id'];

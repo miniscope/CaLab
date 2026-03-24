@@ -104,13 +104,13 @@ fn vary_lognormal(nominal: f64, cv: f64, rng: &mut Xorshift32) -> f64 {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct MarkovConfig {
-    /// Silent→active transition probability per imaging frame. Default: 0.01.
+    /// Silent→active transition probability per imaging frame. Default: 0.005.
     pub p_silent_to_active: f64,
-    /// Active→silent transition probability per imaging frame. Default: 0.2.
+    /// Active→silent transition probability per imaging frame. Default: 0.3.
     pub p_active_to_silent: f64,
-    /// Spike probability per high-resolution timestep in active state. Default: 0.7.
+    /// Spike probability per high-resolution timestep in active state. Default: 0.5.
     pub p_spike_when_active: f64,
-    /// Spike probability per high-resolution timestep in silent state. Default: 0.005.
+    /// Spike probability per high-resolution timestep in silent state. Default: 0.002.
     pub p_spike_when_silent: f64,
     /// Per-cell log-normal CV on p_silent_to_active (0 = no variation). Default: 0.0.
     pub p_silent_to_active_cv: f64,
@@ -119,10 +119,10 @@ pub struct MarkovConfig {
 impl Default for MarkovConfig {
     fn default() -> Self {
         Self {
-            p_silent_to_active: 0.01,
-            p_active_to_silent: 0.2,
-            p_spike_when_active: 0.7,
-            p_spike_when_silent: 0.005,
+            p_silent_to_active: 0.005,
+            p_active_to_silent: 0.3,
+            p_spike_when_active: 0.5,
+            p_spike_when_silent: 0.002,
             p_silent_to_active_cv: 0.0,
         }
     }

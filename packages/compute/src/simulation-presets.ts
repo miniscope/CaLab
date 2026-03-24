@@ -6,10 +6,10 @@ import type { SimulationConfig } from './simulation-types.ts';
 
 const DEFAULT_MARKOV = {
   model_type: 'markov' as const,
-  p_silent_to_active: 0.01,
-  p_active_to_silent: 0.2,
-  p_spike_when_active: 0.7,
-  p_spike_when_silent: 0.005,
+  p_silent_to_active: 0.005,
+  p_active_to_silent: 0.3,
+  p_spike_when_active: 0.5,
+  p_spike_when_silent: 0.002,
 };
 
 const DEFAULT_NOISE = {

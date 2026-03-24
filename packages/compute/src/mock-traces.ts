@@ -63,12 +63,12 @@ export function generateSyntheticTrace(
   const numHighResPoints = numTimepoints * binsPerFrame;
 
   // Scale transition probabilities for high-res timestep so per-frame rate matches
-  const pBaseS2A = simParams?.markov?.pSilentToActive ?? 0.02;
-  const pBaseA2S = simParams?.markov?.pActiveToSilent ?? 0.15;
+  const pBaseS2A = simParams?.markov?.pSilentToActive ?? 0.005;
+  const pBaseA2S = simParams?.markov?.pActiveToSilent ?? 0.3;
   const pSilentToActive = 1 - Math.pow(1 - pBaseS2A, 1 / binsPerFrame);
   const pActiveToSilent = 1 - Math.pow(1 - pBaseA2S, 1 / binsPerFrame);
-  const pSpikeWhenActive = simParams?.markov?.pSpikeWhenActive ?? 0.7;
-  const pSpikeWhenSilent = simParams?.markov?.pSpikeWhenSilent ?? 0.005;
+  const pSpikeWhenActive = simParams?.markov?.pSpikeWhenActive ?? 0.5;
+  const pSpikeWhenSilent = simParams?.markov?.pSpikeWhenSilent ?? 0.002;
 
   // Generate binary spike train at 300 Hz
   const highResSpikes = new Uint8Array(numHighResPoints);
