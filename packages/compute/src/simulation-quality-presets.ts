@@ -71,19 +71,19 @@ export type SpikeActivityLevel = (typeof SPIKE_ACTIVITY_LEVELS)[number]['id'];
 
 export const NOISE_LEVELS = [
   { id: 'clean', label: 'Clean', snr: 200, shot_noise_enabled: false, shot_noise_fraction: 0 },
-  { id: 'low', label: 'Low', snr: 25, shot_noise_enabled: false, shot_noise_fraction: 0 },
+  { id: 'low', label: 'Low', snr: 40, shot_noise_enabled: false, shot_noise_fraction: 0 },
   {
     id: 'moderate',
     label: 'Moderate',
-    snr: 10,
+    snr: 15,
     shot_noise_enabled: false,
     shot_noise_fraction: 0.3,
   },
-  { id: 'high', label: 'High', snr: 5, shot_noise_enabled: true, shot_noise_fraction: 0.3 },
+  { id: 'high', label: 'High', snr: 8, shot_noise_enabled: true, shot_noise_fraction: 0.3 },
   {
     id: 'very_high',
     label: 'Very High',
-    snr: 2,
+    snr: 5,
     shot_noise_enabled: true,
     shot_noise_fraction: 0.5,
   },
