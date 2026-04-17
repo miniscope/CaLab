@@ -61,7 +61,9 @@ export function TracePanel(props: TracePanelProps) {
   };
 
   // Build axes config once — stable references prevent SolidUplot from
-  // recreating the chart on every data update
+  // recreating the chart on every data update. `props.xLabel` is read at
+  // mount; callers never swap it mid-chart-life.
+  /* eslint-disable solid/reactivity */
   const xAxis: uPlot.Axis = {
     stroke: AXIS_TEXT,
     grid: { stroke: AXIS_GRID },
@@ -71,6 +73,7 @@ export function TracePanel(props: TracePanelProps) {
       ? { label: props.xLabel, labelSize: 10, labelGap: 0, labelFont: '10px sans-serif', size: 30 }
       : {}),
   };
+  /* eslint-enable solid/reactivity */
 
   const yAxisBase: uPlot.Axis = {
     stroke: AXIS_TEXT,

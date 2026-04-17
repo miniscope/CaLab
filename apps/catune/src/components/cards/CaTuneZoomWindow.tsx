@@ -279,6 +279,9 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       }
     }
 
+    // The mapper closures below read signals; they're invoked synchronously
+    // by sliceAndDownsample from within this memo's tracked scope.
+    /* eslint-disable solid/reactivity */
     const dsDeconv = sliceAndDownsample(
       props.deconvolvedTrace,
       x,
@@ -313,6 +316,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       dsX.length,
       (vals) => scaleToDeconvBand(vals, pinnedDeconvMinMax(), zMin, zMax),
     );
+    /* eslint-enable solid/reactivity */
 
     let dsGTCalcium: number[];
     if (props.groundTruthCalcium && props.groundTruthCalcium.length > 0) {

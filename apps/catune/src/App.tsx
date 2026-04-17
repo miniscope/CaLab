@@ -64,10 +64,12 @@ function loadBannerDismissedState(): boolean {
 }
 
 const App: Component = () => {
-  // Magic-link callback: show lightweight confirmation instead of full app
-  if (isAuthCallback()) {
-    return <AuthCallback />;
-  }
+  // Magic-link callback: show lightweight confirmation instead of full app.
+  // `isAuthCallback()` inspects window.location at mount time; the URL
+  // doesn't change within a single component lifetime, so the early
+  // return is safe.
+  // eslint-disable-next-line solid/components-return-once
+  if (isAuthCallback()) return <AuthCallback />;
 
   // Auto-load from Python bridge if ?bridge= URL param is present
   const bridgeUrlParam = getBridgeUrl();

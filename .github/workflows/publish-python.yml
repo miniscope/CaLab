@@ -21,7 +21,7 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -29,7 +29,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -76,7 +76,7 @@ jobs:
             target: x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -85,7 +85,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -98,7 +98,7 @@ jobs:
           manylinux: auto
           working-directory: python
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}-py${{ matrix.python-version }}
           path: python/dist
@@ -107,7 +107,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -122,7 +122,7 @@ jobs:
           args: --out dist
           working-directory: python
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
           path: python/dist
@@ -132,7 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true

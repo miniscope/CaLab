@@ -83,6 +83,9 @@ export function CommunityBrowserShell<
 >(props: CommunityBrowserShellProps<T, F, P>) {
   // --- State signals ---
   const [submissions, setSubmissions] = createSignal<T[]>([]);
+  // Seed dataSource from initial props.isDemo(); subsequent changes flow
+  // through the createEffect below.
+  // eslint-disable-next-line solid/reactivity
   const [dataSource, setDataSource] = createSignal<DataSource>(props.isDemo() ? 'demo' : 'user');
   const [loading, setLoading] = createSignal(false);
   const [collapsed, setCollapsed] = createSignal(false);
@@ -173,7 +176,10 @@ export function CommunityBrowserShell<
   const compareLabels = () =>
     props.compareLabel ?? { active: 'Hide my params', inactive: 'Compare my params' };
 
-  // Guard: do not render if Supabase is not configured
+  // Guard: do not render if Supabase is not configured. `supabaseEnabled`
+  // is a module-constant (env-derived at load time), not a reactive signal,
+  // so an early return here is safe and never becomes stale.
+  // eslint-disable-next-line solid/components-return-once
   if (!supabaseEnabled) return null;
 
   return (

@@ -67,6 +67,9 @@ export function KernelDisplay() {
     return computeKernelAnnotations(tau.tauRise, tau.tauDecay, fs);
   });
 
+  // The getter `() => annotations()` is the tracked scope bridge from
+  // Solid into the uPlot plugin API — the plugin invokes it at draw time.
+  // eslint-disable-next-line solid/reactivity
   const kernelPlugins: uPlot.Plugin[] = [kernelAnnotationsPlugin(() => annotations(), 1000)];
 
   return (

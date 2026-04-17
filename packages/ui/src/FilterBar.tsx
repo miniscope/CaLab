@@ -137,7 +137,7 @@ export function FilterBar<F extends BaseFilterState>(props: FilterBarProps<F>) {
       <Show when={props.canHighlight}>
         <button
           class={`filter-bar__highlight-btn ${props.highlightMine ? 'filter-bar__highlight-btn--active' : ''}`}
-          onClick={props.onHighlightMineChange}
+          onClick={() => props.onHighlightMineChange?.()}
         >
           {props.highlightMine ? '\u25CF' : '\u25CB'} My submissions
         </button>

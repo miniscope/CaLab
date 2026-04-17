@@ -49,12 +49,14 @@ export function SidebarTabs(props: SidebarTabsProps) {
     return list;
   };
 
-  let defaultTab: SidebarTab = 'metrics';
-  if (props.communityContent) {
-    defaultTab = 'community';
-  } else if (props.spectrumContent) {
-    defaultTab = 'spectrum';
-  }
+  // Default tab is intentionally computed once at mount from the initial
+  // props; callers never swap communityContent / spectrumContent after first
+  // render. Disable the reactivity rule for these one-shot reads.
+  // eslint-disable-next-line solid/reactivity
+  const hasCommunity = !!props.communityContent;
+  // eslint-disable-next-line solid/reactivity
+  const hasSpectrum = !!props.spectrumContent;
+  const defaultTab: SidebarTab = hasCommunity ? 'community' : hasSpectrum ? 'spectrum' : 'metrics';
 
   setActiveSidebarTab(defaultTab);
 

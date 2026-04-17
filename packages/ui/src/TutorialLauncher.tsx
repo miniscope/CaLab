@@ -10,7 +10,7 @@ export function TutorialLauncher(props: TutorialLauncherProps): JSX.Element {
     <button
       class="btn-secondary btn-small"
       data-tutorial="tutorial-launcher"
-      onClick={props.onToggle}
+      onClick={() => props.onToggle()}
     >
       {props.isOpen() ? 'Close Tutorial' : 'Tutorial'}
     </button>

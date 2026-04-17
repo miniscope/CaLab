@@ -57,7 +57,7 @@ export function SubmissionSummary<T extends BaseSubmission>(props: SubmissionSum
       </Show>
 
       <div class="submission-summary__actions">
-        <button class="btn-primary btn-small" onClick={props.onDismiss}>
+        <button class="btn-primary btn-small" onClick={() => props.onDismiss()}>
           Close
         </button>
         <button class="btn-secondary btn-small" onClick={handleDelete} disabled={deleting()}>

@@ -44,9 +44,9 @@ export function Card(props: CardProps) {
     <div
       class={`calab-card${props.class ? ` ${props.class}` : ''}`}
       style={props.height != null ? { height: `${props.height}px` } : undefined}
-      onClick={props.onClick}
-      onMouseEnter={props.onMouseEnter}
-      onMouseLeave={props.onMouseLeave}
+      onClick={(e) => props.onClick?.(e)}
+      onMouseEnter={(e) => props.onMouseEnter?.(e)}
+      onMouseLeave={(e) => props.onMouseLeave?.(e)}
       data-tutorial={props['data-tutorial']}
       ref={props.ref}
       {...spreadDataAttrs(props)}

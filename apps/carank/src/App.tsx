@@ -10,9 +10,11 @@ import { tutorials } from './tutorials/index.ts';
 import type { CnmfData } from './types.ts';
 
 const App: Component = () => {
-  if (isAuthCallback()) {
-    return <AuthCallback />;
-  }
+  // `isAuthCallback()` inspects window.location at mount time; the URL
+  // doesn't change within a single component lifetime, so the early
+  // return is safe.
+  // eslint-disable-next-line solid/components-return-once
+  if (isAuthCallback()) return <AuthCallback />;
 
   const [data, setData] = createSignal<CnmfData | null>(null);
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
