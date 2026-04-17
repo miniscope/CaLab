@@ -116,7 +116,7 @@ async function resolveUser(authHeader: string | null): Promise<ResolvedUser> {
   }
 }
 
-Deno.serve(async (req) => {
+export async function handleRequest(req: Request): Promise<Response> {
   const origin = req.headers.get('origin');
 
   if (req.method === 'OPTIONS') {
@@ -186,4 +186,13 @@ Deno.serve(async (req) => {
       origin,
     );
   }
-});
+}
+
+// Exposed for tests; not exported by the edge runtime import.
+export { allowedOrigins, corsHeaders, resolveGeo };
+
+// Only attach to Deno.serve when the edge runtime loads this module.
+// Tests import handleRequest directly and never touch the server.
+if (import.meta.main) {
+  Deno.serve(handleRequest);
+}

@@ -118,3 +118,45 @@ jobs:
       - name: Pytest
         run: .venv/bin/pytest -m "not integration"
         working-directory: python
+
+  supabase:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test -d test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: test
+      PGPASSWORD: test
+      PGDATABASE: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Apply migrations and run RLS policy matrix
+        run: ./scripts/test-rls.sh
+        env:
+          USE_DOCKER: ''
+
+      - name: Install Deno
+        uses: denoland/setup-deno@e95548e56dfa95d4e1a28d6f422fafe75c4c26fb # v2.0.3
+        with:
+          deno-version: v1.x
+
+      - name: Deno tests (geo-session edge function)
+        working-directory: supabase/functions/geo-session
+        run: deno test --allow-env --allow-net --lock=deno.lock index.test.ts
