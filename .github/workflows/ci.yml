@@ -159,4 +159,7 @@ jobs:
 
       - name: Deno tests (geo-session edge function)
         working-directory: supabase/functions/geo-session
-        run: deno test --allow-env --allow-net --lock=deno.lock index.test.ts
+        # --no-check skips type-checking of the transitive npm dep graph
+        # (supabase-js pulls @types/node which requires nodeModulesDir).
+        # The edge runtime doesn't type-check at deploy time either.
+        run: deno test --no-check --allow-env --allow-net --lock=deno.lock index.test.ts
