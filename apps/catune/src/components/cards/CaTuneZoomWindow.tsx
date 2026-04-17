@@ -5,7 +5,7 @@
  * Wraps the shared ZoomWindow from @calab/ui/chart.
  */
 
-import { createMemo, createSignal, onCleanup, onMount } from 'solid-js';
+import { createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js';
 import type uPlot from 'uplot';
 import { ZoomWindow, transientZonePlugin } from '@calab/ui/chart';
 import { downsampleMinMax } from '@calab/compute';
@@ -268,7 +268,11 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       props.filteredTrace ? toZScoreFiltered : toZScore,
     );
 
-    const transient = transientTime();
+    // Untrack: transientZonePlugin draws the gray overlay at uPlot draw time
+    // using the live transientTime accessor. Tracking it here too would
+    // re-downsample every visible card on every tau slider tick — the big
+    // reason Peak/FWHM drags felt laggier than Sparsity.
+    const transient = untrack(() => transientTime());
     if (startSample < transient * fs) {
       for (let i = 0; i < dsReconv.length; i++) {
         if (dsX[i] < transient) {

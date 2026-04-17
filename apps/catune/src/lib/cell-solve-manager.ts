@@ -274,6 +274,22 @@ function debouncedDispatch(state: CellSolveState): void {
   }, DEBOUNCE_MS);
 }
 
+// Param-change debounce: invalidates cached padded results (they were computed
+// for stale tau/lambda) before dispatching. Separate from `debouncedDispatch`
+// which is reused by zoom-cache misses where the cache is still valid.
+function debouncedParamTransition(state: CellSolveState): void {
+  if (state.debounceTimer !== null) {
+    clearTimeout(state.debounceTimer);
+  }
+  state.debounceTimer = setTimeout(() => {
+    state.debounceTimer = null;
+    state.fullPaddedSolution = null;
+    state.fullPaddedReconvolution = null;
+    state.fullPaddedFilteredTrace = null;
+    dispatchCellSolve(state);
+  }, DEBOUNCE_MS);
+}
+
 function ensureCellState(
   cellIndex: number,
   data: NpyResult,
@@ -420,27 +436,21 @@ export function initCellSolveManager(): void {
     }),
   );
 
-  // Effect 2: Watch global params — mark all cells stale, cancel all, re-dispatch all
+  // Effect 2: Watch global params — mark all cells stale, defer the rest.
+  // During a slider drag this fires on every tick, so the synchronous body
+  // is kept minimal: null the fields a late worker callback reads to detect
+  // staleness, mark 'stale' (a no-op after tick 1 via the equality guard in
+  // updateOneCellStatus), and restart the debounce. The expensive work —
+  // worker cancel, padded-cache invalidation, re-dispatch — runs ~30ms after
+  // the last tick via debouncedParamTransition → dispatchCellSolve.
   createEffect(
     on([currentTau, lambda, filterEnabled], () => {
       if (cellStates.size === 0) return;
-
-      // Cancel everything
-      if (pool) pool.cancelAll();
-
-      // Mark all stale, clear cached padded results, and re-dispatch.
-      // Priority ordering is handled by the worker pool's priority queue
-      // via each job's getPriority callback, so dispatch order doesn't matter.
       for (const state of cellStates.values()) {
         state.activeJobId = null;
-        state.converged = false;
-        state.deferredRequeue = false;
         state.dispatchedParams = null;
-        state.fullPaddedSolution = null;
-        state.fullPaddedReconvolution = null;
-        state.fullPaddedFilteredTrace = null;
         updateOneCellStatus(state.cellIndex, 'stale');
-        debouncedDispatch(state);
+        debouncedParamTransition(state);
       }
     }),
   );

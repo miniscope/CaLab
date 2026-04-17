@@ -64,6 +64,10 @@ const [pinnedMultiCellResults, setPinnedMultiCellResults] = createStore<CellResu
 // --- Per-cell update helpers ---
 
 function updateOneCellStatus(cellIndex: number, status: CellSolverStatus): void {
+  // Solid stores default to equals:false — without this guard, repeat writes
+  // (e.g., marking 'stale' every slider tick during a drag) retrigger every
+  // subscriber (QualityBadge, cell-card status class) even when nothing changed.
+  if (cellSolverStatuses[cellIndex] === status) return;
   setCellSolverStatuses(cellIndex, status);
   if (status === 'stale') {
     setCellIterationCounts(cellIndex, 0);
