@@ -44,10 +44,16 @@ def cadecon_server():
     server.shutdown()
 
 
-def _get(server: BridgeServer, path: str) -> tuple[int, bytes]:
-    """Make a GET request to the bridge server."""
+def _get(server: BridgeServer, path: str, *, secret: bool = True) -> tuple[int, bytes]:
+    """Make a GET request to the bridge server.
+
+    ``secret=False`` omits the X-Bridge-Secret header, for tests that
+    assert the server rejects unauthenticated requests.
+    """
     url = f"http://127.0.0.1:{server.port}{path}"
     req = urllib.request.Request(url)
+    if secret:
+        req.add_header("X-Bridge-Secret", server.secret)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, resp.read()
@@ -55,12 +61,16 @@ def _get(server: BridgeServer, path: str) -> tuple[int, bytes]:
         return e.code, e.read()
 
 
-def _post(server: BridgeServer, path: str, data: dict) -> tuple[int, bytes]:
+def _post(
+    server: BridgeServer, path: str, data: dict, *, secret: bool = True,
+) -> tuple[int, bytes]:
     """Make a POST request to the bridge server."""
     url = f"http://127.0.0.1:{server.port}{path}"
     body = json.dumps(data).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
+    if secret:
+        req.add_header("X-Bridge-Secret", server.secret)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, resp.read()
@@ -68,11 +78,15 @@ def _post(server: BridgeServer, path: str, data: dict) -> tuple[int, bytes]:
         return e.code, e.read()
 
 
-def _post_binary(server: BridgeServer, path: str, data: bytes) -> tuple[int, bytes]:
+def _post_binary(
+    server: BridgeServer, path: str, data: bytes, *, secret: bool = True,
+) -> tuple[int, bytes]:
     """Make a POST request with binary data."""
     url = f"http://127.0.0.1:{server.port}{path}"
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/octet-stream")
+    if secret:
+        req.add_header("X-Bridge-Secret", server.secret)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, resp.read()
@@ -167,6 +181,7 @@ def test_cors_headers(bridge_server: BridgeServer) -> None:
     """Responses include CORS headers."""
     url = f"http://127.0.0.1:{bridge_server.port}/api/v1/health"
     req = urllib.request.Request(url)
+    req.add_header("X-Bridge-Secret", bridge_server.secret)
     with urllib.request.urlopen(req, timeout=5) as resp:
         assert resp.headers["Access-Control-Allow-Origin"] == "*"
 
@@ -330,6 +345,7 @@ def test_progress_invalid_json(cadecon_server: BridgeServer) -> None:
     url = f"http://127.0.0.1:{cadecon_server.port}/api/v1/progress"
     req = urllib.request.Request(url, data=b"not json", method="POST")
     req.add_header("Content-Type", "application/json")
+    req.add_header("X-Bridge-Secret", cadecon_server.secret)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             status = resp.status
@@ -370,6 +386,101 @@ def test_decon_config_serialization() -> None:
     assert dumped == {"autorun": True, "max_iterations": 10}
     assert "upsample_target" not in dumped
     assert "seed" not in dumped
+
+
+# --- Auth (X-Bridge-Secret) and PNA preflight tests ---
+
+
+def test_secret_is_generated_and_not_trivial() -> None:
+    """Every BridgeServer gets a fresh, non-guessable secret."""
+    s1 = _make_server()
+    s2 = _make_server()
+    try:
+        assert s1.secret != s2.secret
+        assert len(s1.secret) >= 32  # hex-encoded, at least 16 random bytes
+        assert set(s1.secret).issubset(set("0123456789abcdef"))
+    finally:
+        s1.server_close()
+        s2.server_close()
+
+
+def test_get_without_secret_returns_401(bridge_server: BridgeServer) -> None:
+    """Requests lacking X-Bridge-Secret are rejected with 401."""
+    status, body = _get(bridge_server, "/api/v1/health", secret=False)
+    assert status == 401
+    assert b"invalid or missing bridge secret" in body
+
+
+def test_get_with_wrong_secret_returns_401(bridge_server: BridgeServer) -> None:
+    """Requests with the wrong X-Bridge-Secret are rejected with 401."""
+    url = f"http://127.0.0.1:{bridge_server.port}/api/v1/health"
+    req = urllib.request.Request(url)
+    req.add_header("X-Bridge-Secret", "deadbeef" * 8)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            status = resp.status
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        body = e.read()
+    assert status == 401
+    assert b"invalid or missing bridge secret" in body
+
+
+def test_post_without_secret_returns_401(bridge_server: BridgeServer) -> None:
+    """POST endpoints also enforce the secret."""
+    status, _ = _post(bridge_server, "/api/v1/params", {"foo": "bar"}, secret=False)
+    assert status == 401
+    # Payload must NOT have been recorded on a rejected request.
+    assert bridge_server.received_params is None
+
+
+def test_traces_without_secret_returns_401(bridge_server: BridgeServer) -> None:
+    """Sensitive trace data is guarded by the secret too."""
+    status, _ = _get(bridge_server, "/api/v1/traces", secret=False)
+    assert status == 401
+
+
+def test_options_preflight_exempt_from_secret(bridge_server: BridgeServer) -> None:
+    """CORS preflights have no way to carry custom headers and must be allowed."""
+    url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
+    req = urllib.request.Request(url, method="OPTIONS")
+    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Access-Control-Request-Method", "GET")
+    req.add_header("Access-Control-Request-Headers", "x-bridge-secret")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+        assert "X-Bridge-Secret" in allow_headers
+
+
+def test_options_preflight_echoes_private_network_when_requested(
+    bridge_server: BridgeServer,
+) -> None:
+    """PNA preflights (Chrome 124+) must be answered affirmatively.
+
+    Without this, an HTTPS-hosted page cannot reach the localhost
+    bridge server — the SEC-1 workaround of launching headless Chromium
+    with --disable-web-security would still be required. This test
+    pins the PNA behavior so the flag can stay off.
+    """
+    url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
+    req = urllib.request.Request(url, method="OPTIONS")
+    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Access-Control-Request-Method", "GET")
+    req.add_header("Access-Control-Request-Private-Network", "true")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.headers.get("Access-Control-Allow-Private-Network") == "true"
+
+
+def test_options_without_pna_request_omits_pna_header(bridge_server: BridgeServer) -> None:
+    """Don't opt into PNA when the client isn't asking for it."""
+    url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
+    req = urllib.request.Request(url, method="OPTIONS")
+    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Access-Control-Request-Method", "GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.headers.get("Access-Control-Allow-Private-Network") is None
 
 
 # --- Cross-language schema consistency tests ---

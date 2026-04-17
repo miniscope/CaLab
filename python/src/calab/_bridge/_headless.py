@@ -77,13 +77,11 @@ class HeadlessBrowser:
 
         try:
             self._pw = sync_playwright().start()
-            self._browser = self._pw.chromium.launch(
-                headless=self._headless,
-                # Allow the HTTPS-hosted page to fetch from the localhost bridge
-                # server. Headless Chromium enforces Private Network Access (PNA)
-                # restrictions that block HTTPS→localhost requests by default.
-                args=["--disable-web-security"],
-            )
+            # No --disable-web-security: the bridge server answers PNA
+            # preflights with `Access-Control-Allow-Private-Network: true`,
+            # so Chromium allows the HTTPS→localhost fetch without needing
+            # SOP disabled globally. See `_server.py` OPTIONS handler.
+            self._browser = self._pw.chromium.launch(headless=self._headless)
             self._context = self._browser.new_context()
             self._page = self._context.new_page()
         except Exception:

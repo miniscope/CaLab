@@ -85,7 +85,7 @@ def _run_bridge(
     server_thread.start()
 
     bridge_param = f"http://127.0.0.1:{actual_port}"
-    full_url = f"{app_url}?bridge={bridge_param}"
+    full_url = f"{app_url}?bridge={bridge_param}&bridge_secret={server.secret}"
 
     print(f"Bridge server running on http://127.0.0.1:{actual_port}")
     print(f"Opening {app_name}: {full_url}")

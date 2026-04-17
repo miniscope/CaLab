@@ -55,20 +55,59 @@ export interface BridgeProgress {
   status: string;
 }
 
+/** Per-run secret extracted from `?bridge_secret=`, sent back on every bridge call. */
+let cachedBridgeSecret: string | null = null;
+
+/** Loopback hostnames the bridge URL is allowed to target. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
 /**
  * Read the `?bridge=` URL parameter to get the bridge server base URL.
- * Returns null if not present.
+ *
+ * The value must be an `http://` URL pointing at a loopback host. A
+ * non-loopback or non-http target is rejected — if an attacker can
+ * influence the page URL (e.g. phishing link to the hosted app), the
+ * bridge mechanism must not forward traces / params to an arbitrary
+ * origin.
+ *
+ * Also caches the optional `?bridge_secret=` value so subsequent
+ * bridge requests can include it in the `X-Bridge-Secret` header.
+ *
+ * Returns null if the parameter is missing or fails validation.
  */
 export function getBridgeUrl(): string | null {
+  if (typeof window === 'undefined') return null;
   const params = new URLSearchParams(window.location.search);
   const bridge = params.get('bridge');
   if (!bridge) return null;
 
-  // Ensure it has a protocol prefix
-  if (bridge.startsWith('http://') || bridge.startsWith('https://')) {
-    return bridge;
+  const raw = bridge.includes('://') ? bridge : `http://${bridge}`;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
   }
-  return `http://${bridge}`;
+
+  if (parsed.protocol !== 'http:') return null;
+  if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
+
+  cachedBridgeSecret = params.get('bridge_secret');
+  // Normalize: strip trailing slash so callers can safely append paths.
+  return parsed.origin;
+}
+
+/** Return bridge-specific fetch headers (includes the secret if one was set). */
+function bridgeHeaders(base?: HeadersInit): Headers {
+  const h = new Headers(base);
+  if (cachedBridgeSecret) h.set('X-Bridge-Secret', cachedBridgeSecret);
+  return h;
+}
+
+/** Wrapper around fetch() that automatically adds the bridge secret header. */
+function bridgeFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, headers: bridgeHeaders(init.headers) });
 }
 
 /**
@@ -79,7 +118,7 @@ export async function fetchBridgeData(
   bridgeUrl: string,
 ): Promise<{ traces: NpyResult; metadata: BridgeMetadata }> {
   // Fetch traces as .npy binary
-  const tracesResp = await fetch(`${bridgeUrl}/api/v1/traces`);
+  const tracesResp = await bridgeFetch(`${bridgeUrl}/api/v1/traces`);
   if (!tracesResp.ok) {
     throw new Error(`Bridge: failed to fetch traces (${tracesResp.status})`);
   }
@@ -88,7 +127,7 @@ export async function fetchBridgeData(
   const traces = processNpyResult(rawResult);
 
   // Fetch metadata JSON
-  const metaResp = await fetch(`${bridgeUrl}/api/v1/metadata`);
+  const metaResp = await bridgeFetch(`${bridgeUrl}/api/v1/metadata`);
   if (!metaResp.ok) {
     throw new Error(`Bridge: failed to fetch metadata (${metaResp.status})`);
   }
@@ -103,7 +142,7 @@ export async function fetchBridgeData(
  */
 export async function postParamsToBridge(bridgeUrl: string, exportData: unknown): Promise<void> {
   stopBridgeHeartbeat();
-  const resp = await fetch(`${bridgeUrl}/api/v1/params`, {
+  const resp = await bridgeFetch(`${bridgeUrl}/api/v1/params`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(exportData),
@@ -119,7 +158,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 export function startBridgeHeartbeat(bridgeUrl: string, intervalMs = 3000): void {
   stopBridgeHeartbeat();
   heartbeatTimer = setInterval(() => {
-    fetch(`${bridgeUrl}/api/v1/heartbeat`, { method: 'POST' }).catch(() => {
+    bridgeFetch(`${bridgeUrl}/api/v1/heartbeat`, { method: 'POST' }).catch(() => {
       stopBridgeHeartbeat();
     });
   }, intervalMs);
@@ -143,7 +182,7 @@ export async function postActivityToBridge(
   shape: [number, number],
 ): Promise<void> {
   const npyBuffer = writeNpy(activity, shape);
-  const resp = await fetch(`${bridgeUrl}/api/v1/results/activity`, {
+  const resp = await bridgeFetch(`${bridgeUrl}/api/v1/results/activity`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/octet-stream' },
     body: npyBuffer,
@@ -161,7 +200,7 @@ export async function postResultsToBridge(
   bridgeUrl: string,
   results: Record<string, unknown>,
 ): Promise<void> {
-  const resp = await fetch(`${bridgeUrl}/api/v1/results`, {
+  const resp = await bridgeFetch(`${bridgeUrl}/api/v1/results`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(results),
@@ -192,7 +231,7 @@ export async function exportCaDeconToBridge(
  * Returns the parsed BridgeConfig (autorun + optional algorithm overrides).
  */
 export async function fetchBridgeConfig(bridgeUrl: string): Promise<BridgeConfig> {
-  const resp = await fetch(`${bridgeUrl}/api/v1/config`);
+  const resp = await bridgeFetch(`${bridgeUrl}/api/v1/config`);
   if (!resp.ok) {
     throw new Error(`Bridge: failed to fetch config (${resp.status})`);
   }
@@ -204,7 +243,7 @@ export async function fetchBridgeConfig(bridgeUrl: string): Promise<BridgeConfig
  * Errors are silently swallowed — progress is informational, not critical.
  */
 export function postProgressToBridge(bridgeUrl: string, progress: BridgeProgress): void {
-  fetch(`${bridgeUrl}/api/v1/progress`, {
+  bridgeFetch(`${bridgeUrl}/api/v1/progress`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(progress),
