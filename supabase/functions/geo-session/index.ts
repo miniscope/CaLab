@@ -1,15 +1,53 @@
 // Supabase Edge Function: geo-session
-// Receives session start data from client, resolves IP -> country/region
-// server-side (IP is never stored), inserts session, returns session_id.
+// Receives session start data from client, resolves client country/region
+// from the Cloudflare edge headers (no outbound IP lookup, IP never stored),
+// inserts session, returns session_id.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+/**
+ * Origins allowed to call this function. Additional origins (e.g. preview
+ * deploys) can be added via the `GEO_SESSION_EXTRA_ORIGINS` env var as a
+ * comma-separated list.
+ */
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://miniscope.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
 
-const jsonHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
+function allowedOrigins(): Set<string> {
+  const extra = Deno.env.get('GEO_SESSION_EXTRA_ORIGINS') ?? '';
+  const extras = extra
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return new Set([...DEFAULT_ALLOWED_ORIGINS, ...extras]);
+}
+
+function corsHeaders(origin: string | null): Record<string, string> {
+  // Echo the request origin only when it's on the allowlist — prevents the
+  // previous `*` from letting arbitrary third-party pages trigger sessions
+  // via a victim's browser.
+  const allow = origin && allowedOrigins().has(origin) ? origin : '';
+  return {
+    'Access-Control-Allow-Origin': allow,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    Vary: 'Origin',
+  };
+}
+
+function jsonResponse(
+  body: Record<string, unknown>,
+  status: number,
+  origin: string | null,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+  });
+}
 
 interface SessionPayload {
   anonymous_id: string;
@@ -21,64 +59,74 @@ interface SessionPayload {
   referrer_domain?: string;
 }
 
-interface GeoResult {
-  countryCode?: string;
-  regionName?: string;
+/**
+ * Read the client's country/region from Cloudflare edge headers. Supabase's
+ * function gateway sits behind CF, so cf-ipcountry is always populated for
+ * real requests. Falls back to empty if the header is missing (local dev,
+ * non-CF deployment).
+ *
+ * Previously this made an outbound `http://ip-api.com/json/...` call over
+ * plaintext HTTP — an unnecessary dependency and a MITM-poisonable channel.
+ */
+function resolveGeo(req: Request): { countryCode: string | null; regionName: string | null } {
+  const country = req.headers.get('cf-ipcountry');
+  const region = req.headers.get('cf-region');
+  return {
+    countryCode: country && country !== 'XX' && country !== 'T1' ? country : null,
+    regionName: region ?? null,
+  };
 }
 
-function jsonResponse(body: Record<string, unknown>, status: number): Response {
-  return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
-}
-
-async function resolveGeo(ip: string): Promise<GeoResult> {
+/**
+ * Resolve the authenticated user via a verified Supabase session, not by
+ * parsing the JWT payload directly. The previous implementation did
+ * `JSON.parse(atob(...))` on the bearer token body — if the gateway ever
+ * shipped with verify_jwt disabled (or a future config flip), `sub` could
+ * be forged by any caller.
+ */
+async function resolveUserId(authHeader: string | null): Promise<string | null> {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice('Bearer '.length);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,countryCode,regionName`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return {};
-    const data = await res.json();
-    if (data.status !== 'success') return {};
-    return { countryCode: data.countryCode, regionName: data.regionName };
-  } catch {
-    return {};
-  }
-}
-
-function extractUserIdFromJWT(authHeader: string): string | null {
-  if (!authHeader.startsWith('Bearer ')) return null;
-  try {
-    const payload = JSON.parse(atob(authHeader.split('.')[1]));
-    return payload.sub ?? null;
+    const userClient = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_ANON_KEY')!,
+      { global: { headers: { Authorization: `Bearer ${token}` } } },
+    );
+    const { data } = await userClient.auth.getUser();
+    return data.user?.id ?? null;
   } catch {
     return null;
   }
 }
 
 Deno.serve(async (req) => {
+  const origin = req.headers.get('origin');
+
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders(origin) });
+  }
+
+  if (req.method !== 'POST') {
+    return jsonResponse({ error: 'method not allowed' }, 405, origin);
+  }
+
+  // Reject disallowed origins early so we don't do any work for an origin
+  // the browser will refuse to read the response from anyway.
+  if (origin && !allowedOrigins().has(origin)) {
+    return jsonResponse({ error: 'origin not allowed' }, 403, origin);
   }
 
   try {
     const body: SessionPayload = await req.json();
 
     if (!body.anonymous_id || !body.app_name) {
-      return jsonResponse({ error: 'anonymous_id and app_name are required' }, 400);
+      return jsonResponse({ error: 'anonymous_id and app_name are required' }, 400, origin);
     }
 
-    // Resolve IP -> country/region (IP never stored)
-    const ip =
-      req.headers.get('cf-connecting-ip') ||
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      '';
-    const geo = ip ? await resolveGeo(ip) : {};
+    const geo = resolveGeo(req);
+    const userId = await resolveUserId(req.headers.get('authorization'));
 
-    const userId = extractUserIdFromJWT(req.headers.get('authorization') ?? '');
-
-    // Insert session using service_role client
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -91,8 +139,8 @@ Deno.serve(async (req) => {
         user_id: userId,
         app_name: body.app_name,
         app_version: body.app_version ?? null,
-        country_code: geo.countryCode ?? null,
-        region: geo.regionName ?? null,
+        country_code: geo.countryCode,
+        region: geo.regionName,
         screen_width: body.screen_width ?? null,
         screen_height: body.screen_height ?? null,
         user_agent_family: body.user_agent_family ?? null,
@@ -102,11 +150,15 @@ Deno.serve(async (req) => {
       .single();
 
     if (error) {
-      return jsonResponse({ error: error.message }, 500);
+      return jsonResponse({ error: error.message }, 500, origin);
     }
 
-    return jsonResponse({ session_id: data.id }, 200);
+    return jsonResponse({ session_id: data.id }, 200, origin);
   } catch (err) {
-    return jsonResponse({ error: err instanceof Error ? err.message : 'Internal error' }, 500);
+    return jsonResponse(
+      { error: err instanceof Error ? err.message : 'Internal error' },
+      500,
+      origin,
+    );
   }
 });
