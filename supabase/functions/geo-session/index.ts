@@ -77,15 +77,28 @@ function resolveGeo(req: Request): { countryCode: string | null; regionName: str
   };
 }
 
+interface ResolvedUser {
+  id: string | null;
+  isAnonymous: boolean;
+}
+
 /**
  * Resolve the authenticated user via a verified Supabase session, not by
  * parsing the JWT payload directly. The previous implementation did
  * `JSON.parse(atob(...))` on the bearer token body — if the gateway ever
  * shipped with verify_jwt disabled (or a future config flip), `sub` could
  * be forged by any caller.
+ *
+ * Returns both the user id and whether the account is anonymous (Supabase
+ * sets `is_anonymous: true` on accounts created via `signInAnonymously`).
+ * The flag is stored on the session row so the admin UI can distinguish
+ * anonymous visitors from logged-in users even though both now carry a
+ * non-null `user_id`.
  */
-async function resolveUserId(authHeader: string | null): Promise<string | null> {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+async function resolveUser(authHeader: string | null): Promise<ResolvedUser> {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return { id: null, isAnonymous: false };
+  }
   const token = authHeader.slice('Bearer '.length);
   try {
     const userClient = createClient(
@@ -94,9 +107,12 @@ async function resolveUserId(authHeader: string | null): Promise<string | null> 
       { global: { headers: { Authorization: `Bearer ${token}` } } },
     );
     const { data } = await userClient.auth.getUser();
-    return data.user?.id ?? null;
+    return {
+      id: data.user?.id ?? null,
+      isAnonymous: data.user?.is_anonymous ?? false,
+    };
   } catch {
-    return null;
+    return { id: null, isAnonymous: false };
   }
 }
 
@@ -125,7 +141,15 @@ Deno.serve(async (req) => {
     }
 
     const geo = resolveGeo(req);
-    const userId = await resolveUserId(req.headers.get('authorization'));
+    const user = await resolveUser(req.headers.get('authorization'));
+
+    // Require a verified user (anonymous or real). Without one, RLS on
+    // the sessions table would block every subsequent client write
+    // (heartbeat, event inserts, pagehide), so creating a bare session
+    // row would just produce silent orphans.
+    if (!user.id) {
+      return jsonResponse({ error: 'authentication required' }, 401, origin);
+    }
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -136,7 +160,8 @@ Deno.serve(async (req) => {
       .from('analytics_sessions')
       .insert({
         anonymous_id: body.anonymous_id,
-        user_id: userId,
+        user_id: user.id,
+        is_anonymous: user.isAnonymous,
         app_name: body.app_name,
         app_version: body.app_version ?? null,
         country_code: geo.countryCode,

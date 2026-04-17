@@ -1,6 +1,11 @@
 // Lightweight usage analytics.
 // All calls no-op if Supabase is not configured or session init failed.
 // Analytics never throws — all errors are silently caught.
+//
+// After the 008 RLS lockdown, writes require a verified auth.uid(). We
+// sign in anonymously (Supabase's built-in anonymous auth) before the
+// first session write so every insert / update carries a JWT whose `sub`
+// matches the session's owner column.
 
 import { getSupabase, supabaseEnabled, supabaseUrl, supabaseAnonKey } from './supabase.ts';
 
@@ -19,6 +24,11 @@ export type AnalyticsEventName =
 
 let sessionId: string | null = null;
 let sessionEndRegistered = false;
+// Cached access token for the raw-fetch heartbeat / pagehide paths. Kept
+// in module state so the pagehide handler (which can't await) has a
+// current token to send. Refreshed via `onAuthStateChange` below.
+let cachedAccessToken: string | null = null;
+let authStateSubscribed = false;
 
 function getAnonymousId(): string {
   let id = sessionStorage.getItem('calab_anon_id');
@@ -47,6 +57,38 @@ function extractDomain(url: string): string | null {
 }
 
 /**
+ * Ensure a Supabase auth session exists (real user or anonymous) and
+ * cache the access token. Returns the access token, or null if auth is
+ * unavailable / sign-in fails.
+ *
+ * If the user is already signed in (real account), reuse that session.
+ * Otherwise call `signInAnonymously` to get a short-lived anon user.
+ */
+async function ensureAuth(): Promise<string | null> {
+  if (!supabaseEnabled) return null;
+  const supabase = await getSupabase();
+  if (!supabase) return null;
+
+  if (!authStateSubscribed) {
+    authStateSubscribed = true;
+    supabase.auth.onAuthStateChange((_event, session) => {
+      cachedAccessToken = session?.access_token ?? null;
+    });
+  }
+
+  const { data: existing } = await supabase.auth.getSession();
+  if (existing.session) {
+    cachedAccessToken = existing.session.access_token;
+    return cachedAccessToken;
+  }
+
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error || !data.session) return null;
+  cachedAccessToken = data.session.access_token;
+  return cachedAccessToken;
+}
+
+/**
  * Initialize an analytics session by calling the geo-session Edge Function.
  * Stores the returned session_id for subsequent trackEvent calls.
  */
@@ -57,6 +99,9 @@ export async function initSession(
   if (!supabaseEnabled) return;
 
   try {
+    const token = await ensureAuth();
+    if (!token) return;
+
     const supabase = await getSupabase();
     if (!supabase) return;
 
@@ -119,13 +164,15 @@ function startHeartbeat(): void {
 
   const tick = () => {
     if (!sessionId || document.visibilityState === 'hidden') return;
+    const token = cachedAccessToken;
+    if (!token) return;
     try {
       fetch(`${supabaseUrl}/rest/v1/analytics_sessions?id=eq.${sessionId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey!,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
           Prefer: 'return=minimal',
         },
         body: JSON.stringify({ ended_at: new Date().toISOString() }),
@@ -155,6 +202,8 @@ function registerSessionEndListeners(): void {
 
   const handleEnd = () => {
     if (ended || !sessionId || !supabaseUrl || !supabaseAnonKey) return;
+    const token = cachedAccessToken;
+    if (!token) return;
     ended = true;
 
     try {
@@ -163,7 +212,7 @@ function registerSessionEndListeners(): void {
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
           Prefer: 'return=minimal',
         },
         body: JSON.stringify({ ended_at: new Date().toISOString() }),

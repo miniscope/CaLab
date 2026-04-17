@@ -108,7 +108,12 @@ export function computeMetrics(
   sessions: SessionRow[],
   submissions: Pick<SubmissionRow, 'data_source'>[],
 ): AdminMetrics {
-  const uniqueUserIds = new Set(sessions.filter((s) => s.user_id).map((s) => s.user_id));
+  // "Unique users" = distinct real (non-anonymous) accounts. After the
+  // 008 RLS lockdown every session has a non-null user_id (anonymous sign-in
+  // users too), so we key on the is_anonymous flag instead of user_id null.
+  const uniqueUserIds = new Set(
+    sessions.filter((s) => !s.is_anonymous && s.user_id).map((s) => s.user_id),
+  );
 
   // Average session duration derived from ended_at - created_at
   const durations = sessions
@@ -141,7 +146,7 @@ export function computeMetrics(
   return {
     totalSessions: sessions.length,
     uniqueUsers: uniqueUserIds.size,
-    anonymousSessions: sessions.filter((s) => !s.user_id).length,
+    anonymousSessions: sessions.filter((s) => s.is_anonymous).length,
     totalSubmissions: submissions.length,
     avgDurationMinutes,
     topReferrer,

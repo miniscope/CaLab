@@ -3,6 +3,7 @@ export interface SessionRow {
   created_at: string;
   anonymous_id: string;
   user_id: string | null;
+  is_anonymous: boolean;
   app_name: string;
   app_version: string | null;
   country_code: string | null;
