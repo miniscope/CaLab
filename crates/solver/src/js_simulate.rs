@@ -13,8 +13,8 @@ use crate::simulate;
 /// Returns: JsValue containing a SimulationResult-shaped object.
 #[wasm_bindgen]
 pub fn simulate_traces(config_js: JsValue) -> JsValue {
-    let config: simulate::SimulationConfig = serde_wasm_bindgen::from_value(config_js)
-        .expect("Invalid SimulationConfig");
+    let config: simulate::SimulationConfig =
+        serde_wasm_bindgen::from_value(config_js).expect("Invalid SimulationConfig");
     let result = simulate::simulate(&config);
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
