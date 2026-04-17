@@ -6,6 +6,7 @@ packages/*/dist/
 *.tsbuildinfo
 .vite/
 crates/solver/target/
+crates/cala-core/target/
 test/
 .env
 .env.local
