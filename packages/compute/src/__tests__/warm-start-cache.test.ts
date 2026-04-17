@@ -4,7 +4,7 @@ import {
   shouldWarmStart,
   WarmStartCache,
   type WarmStartEntry,
-} from '@calab/compute';
+} from '../warm-start-cache.ts';
 import type { SolverParams } from '@calab/core';
 
 // ---------- computePaddedWindow ----------

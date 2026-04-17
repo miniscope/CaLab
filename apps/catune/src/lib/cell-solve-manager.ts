@@ -27,7 +27,7 @@ const DEBOUNCE_MS = 30;
 // starving the UI event loop. 200 iterations keeps quanta under ~40ms for typical traces while
 // reducing round-trip overhead by ~13×. Cancel responsiveness is still ~2ms via BATCH_SIZE yields.
 const QUANTUM_ITERATIONS = 200;
-export const DEFAULT_ZOOM_WINDOW_S = 20;
+export const CELL_CARD_ZOOM_WINDOW_S = 20;
 
 interface CellSolveState {
   cellIndex: number;
@@ -290,7 +290,7 @@ function ensureCellState(
       cellIndex,
       rawTrace,
       zoomStart: Math.min(zoomOffset, duration),
-      zoomEnd: Math.min(zoomOffset + DEFAULT_ZOOM_WINDOW_S, duration),
+      zoomEnd: Math.min(zoomOffset + CELL_CARD_ZOOM_WINDOW_S, duration),
       warmStartCache: new WarmStartCache(),
       activeJobId: null,
       debounceTimer: null,

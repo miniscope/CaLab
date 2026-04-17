@@ -64,7 +64,7 @@ const DECONV_SCALE = 0.35;
 const RESID_GAP_FRAC = 0.05;
 const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
-const DEFAULT_ZOOM_WINDOW_S = 60;
+const TRACE_INSPECTOR_ZOOM_WINDOW_S = 60;
 
 interface BandLayout {
   deconvTop: number;
@@ -218,7 +218,7 @@ export function TraceInspector(): JSX.Element {
   });
 
   const [zoomStart, setZoomStart] = createSignal(0);
-  const [zoomEnd, setZoomEnd] = createSignal(DEFAULT_ZOOM_WINDOW_S);
+  const [zoomEnd, setZoomEnd] = createSignal(TRACE_INSPECTOR_ZOOM_WINDOW_S);
 
   // Reset zoom only when the selected cell changes — NOT on iteration updates.
   // Uses `on()` with explicit deps to avoid tracking totalDuration/transientEnd
@@ -229,7 +229,7 @@ export function TraceInspector(): JSX.Element {
       if (dur <= 0) return;
       const te = transientEnd();
       setZoomStart(te);
-      setZoomEnd(Math.min(te + DEFAULT_ZOOM_WINDOW_S, dur));
+      setZoomEnd(Math.min(te + TRACE_INSPECTOR_ZOOM_WINDOW_S, dur));
     }),
   );
 

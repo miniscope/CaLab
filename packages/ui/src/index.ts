@@ -11,8 +11,6 @@ export { TutorialLauncher } from './TutorialLauncher.tsx';
 export type { TutorialLauncherProps } from './TutorialLauncher.tsx';
 export { Card } from './Card.tsx';
 export type { CardProps } from './Card.tsx';
-export { AuthMenu } from './AuthMenu.tsx';
-export type { AuthMenuProps } from './AuthMenu.tsx';
 export { AuthCallback } from './AuthCallback.tsx';
 export type { AuthCallbackProps } from './AuthCallback.tsx';
 export { AuthMenuWrapper } from './AuthMenuWrapper.tsx';

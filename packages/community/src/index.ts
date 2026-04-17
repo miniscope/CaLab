@@ -10,7 +10,6 @@ export { createSubmissionService } from './submission-service.ts';
 export type { SubmissionService } from './submission-service.ts';
 
 // Field options
-export { fetchFieldOptions } from './field-options-service.ts';
 export {
   INDICATOR_OPTIONS,
   SPECIES_OPTIONS,

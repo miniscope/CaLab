@@ -12,7 +12,7 @@ import { computePeakSNR, snrToQuality } from '@calab/core';
 import { Card } from '@calab/ui';
 import { setHoveredCell } from '../../lib/multi-cell-store.ts';
 import { cardHeight, setCardHeight, currentTau } from '../../lib/viz-store.ts';
-import { DEFAULT_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
+import { CELL_CARD_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
 
 export interface CellCardProps {
   cellIndex: number;
@@ -54,14 +54,14 @@ export function CellCard(props: CellCardProps) {
   });
   const [zoomStart, setZoomStart] = createSignal(transientEnd());
   const [zoomEnd, setZoomEnd] = createSignal(
-    Math.min(transientEnd() + DEFAULT_ZOOM_WINDOW_S, totalDuration()),
+    Math.min(transientEnd() + CELL_CARD_ZOOM_WINDOW_S, totalDuration()),
   );
 
   // Sync zoom end when trace changes
   createEffect(() => {
     const dur = totalDuration();
     if (zoomEnd() > dur) setZoomEnd(dur);
-    if (zoomEnd() <= zoomStart()) setZoomEnd(Math.min(zoomStart() + DEFAULT_ZOOM_WINDOW_S, dur));
+    if (zoomEnd() <= zoomStart()) setZoomEnd(Math.min(zoomStart() + CELL_CARD_ZOOM_WINDOW_S, dur));
   });
 
   const handleZoomChange = (start: number, end: number) => {

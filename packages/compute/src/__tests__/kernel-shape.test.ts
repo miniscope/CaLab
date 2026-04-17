@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { tauToShape, shapeToTau, computeFWHM, isValidShapePair } from '@calab/compute';
-import { SIMULATION_PRESETS } from '@calab/compute';
+import { tauToShape, shapeToTau, computeFWHM, isValidShapePair } from '../kernel-shape.ts';
+import { SIMULATION_PRESETS } from '../simulation-presets.ts';
 
 describe('tauToShape', () => {
   it('returns null for degenerate inputs (tauDecay <= tauRise)', () => {

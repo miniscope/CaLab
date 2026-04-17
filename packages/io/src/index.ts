@@ -15,6 +15,5 @@ export {
   exportCaDeconToBridge,
   startBridgeHeartbeat,
   stopBridgeHeartbeat,
-  BRIDGE_CONFIG_KEYS,
 } from './bridge.ts';
 export type { BridgeMetadata, BridgeConfig, BridgeProgress } from './bridge.ts';
