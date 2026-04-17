@@ -565,18 +565,19 @@ fn py_simulate_traces<'py>(
     py: Python<'py>,
     config_json: &str,
 ) -> PyResult<(
-    Bound<'py, PyArray1<f32>>,  // traces (flat, row-major)
-    Bound<'py, PyArray1<f32>>,  // spikes (flat, row-major)
-    Bound<'py, PyArray1<f32>>,  // clean_calcium (flat, row-major)
-    Bound<'py, PyArray1<f64>>,  // alphas (per-cell)
-    Bound<'py, PyArray1<f64>>,  // snrs (per-cell)
-    Bound<'py, PyArray1<f64>>,  // tau_rises (per-cell)
-    Bound<'py, PyArray1<f64>>,  // tau_decays (per-cell)
-    usize,                      // num_cells
-    usize,                      // num_timepoints
+    Bound<'py, PyArray1<f32>>, // traces (flat, row-major)
+    Bound<'py, PyArray1<f32>>, // spikes (flat, row-major)
+    Bound<'py, PyArray1<f32>>, // clean_calcium (flat, row-major)
+    Bound<'py, PyArray1<f64>>, // alphas (per-cell)
+    Bound<'py, PyArray1<f64>>, // snrs (per-cell)
+    Bound<'py, PyArray1<f64>>, // tau_rises (per-cell)
+    Bound<'py, PyArray1<f64>>, // tau_decays (per-cell)
+    usize,                     // num_cells
+    usize,                     // num_timepoints
 )> {
-    let config: simulate::SimulationConfig = serde_json::from_str(config_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
+    let config: simulate::SimulationConfig = serde_json::from_str(config_json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid config JSON: {e}"))
+    })?;
 
     let result = simulate::simulate(&config);
     let n_cells = result.num_cells;

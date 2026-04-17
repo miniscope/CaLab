@@ -72,6 +72,7 @@ export function SubmissionsView(): JSX.Element {
     return rows;
   });
 
+  // Row type unifies catune/cadecon submissions for the admin table; shape differs by app.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleDelete = async (row: Record<string, any>) => {
     if (!confirm(`Delete submission ${String(row.id).slice(0, 8)}...?`)) return;

@@ -16,9 +16,9 @@
     "build:wasm": "cd crates/solver && wasm-pack build --target web --release",
     "test": "npm run test --workspaces --if-present",
     "test:watch": "npm run test:watch -w apps/catune",
-    "lint": "eslint apps/ packages/",
-    "lint:fix": "eslint --fix apps/ packages/",
-    "typecheck": "tsc -b apps/catune apps/carank apps/admin apps/cadecon",
+    "lint": "eslint apps/ packages/ scripts/",
+    "lint:fix": "eslint --fix apps/ packages/ scripts/",
+    "typecheck": "tsc -b apps/catune apps/carank apps/admin apps/cadecon apps/_template",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

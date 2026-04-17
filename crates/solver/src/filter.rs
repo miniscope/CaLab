@@ -83,10 +83,6 @@ impl BandpassFilter {
         self.hp_enabled
     }
 
-    pub fn is_lp_enabled(&self) -> bool {
-        self.lp_enabled
-    }
-
     /// Compute bandpass cutoffs from kernel time constants.
     pub fn update_cutoffs(&mut self, tau_rise: f64, tau_decay: f64, fs: f64) {
         self.fs = fs as f32;

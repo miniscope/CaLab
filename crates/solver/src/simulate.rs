@@ -50,7 +50,10 @@ struct Xorshift32 {
 impl Xorshift32 {
     fn new(seed: u32) -> Self {
         let state = if seed == 0 { 1 } else { seed };
-        Self { state, cached_gaussian: None }
+        Self {
+            state,
+            cached_gaussian: None,
+        }
     }
 
     #[inline]
@@ -72,7 +75,11 @@ impl Xorshift32 {
         }
         let u1 = {
             let v = self.next_f64();
-            if v == 0.0 { 1e-10 } else { v }
+            if v == 0.0 {
+                1e-10
+            } else {
+                v
+            }
         };
         let u2 = self.next_f64();
         let r = (-2.0 * u1.ln()).sqrt();
@@ -139,7 +146,9 @@ pub struct PoissonConfig {
 }
 
 impl Default for PoissonConfig {
-    fn default() -> Self { Self { rate_hz: 1.0 } }
+    fn default() -> Self {
+        Self { rate_hz: 1.0 }
+    }
 }
 
 /// Spike train generation model.
@@ -154,7 +163,9 @@ pub enum SpikeModel {
 }
 
 impl Default for SpikeModel {
-    fn default() -> Self { Self::Markov(MarkovConfig::default()) }
+    fn default() -> Self {
+        Self::Markov(MarkovConfig::default())
+    }
 }
 
 /// Double-exponential kernel: h(t) = exp(-t/tau_decay) - exp(-t/tau_rise).
@@ -175,7 +186,12 @@ pub struct KernelConfig {
 
 impl Default for KernelConfig {
     fn default() -> Self {
-        Self { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0.0, tau_decay_cv: 0.0 }
+        Self {
+            tau_rise_s: 0.1,
+            tau_decay_s: 0.6,
+            tau_rise_cv: 0.0,
+            tau_decay_cv: 0.0,
+        }
     }
 }
 
@@ -197,7 +213,12 @@ pub struct NoiseConfig {
 
 impl Default for NoiseConfig {
     fn default() -> Self {
-        Self { snr: 8.0, shot_noise_enabled: false, shot_noise_fraction: 0.3, snr_spread: 0.0 }
+        Self {
+            snr: 8.0,
+            shot_noise_enabled: false,
+            shot_noise_fraction: 0.3,
+            snr_spread: 0.0,
+        }
     }
 }
 
@@ -219,7 +240,12 @@ pub struct SinusoidalDrift {
 
 impl Default for SinusoidalDrift {
     fn default() -> Self {
-        Self { amplitude_fraction: 0.1, cycles_min: 2.0, cycles_max: 4.0, amplitude_cv: 0.0 }
+        Self {
+            amplitude_fraction: 0.1,
+            cycles_min: 2.0,
+            cycles_max: 4.0,
+            amplitude_cv: 0.0,
+        }
     }
 }
 
@@ -239,7 +265,11 @@ pub struct RandomWalkDrift {
 
 impl Default for RandomWalkDrift {
     fn default() -> Self {
-        Self { step_std_fraction: 0.002, mean_reversion: 0.001, step_std_cv: 0.0 }
+        Self {
+            step_std_fraction: 0.002,
+            mean_reversion: 0.001,
+            step_std_cv: 0.0,
+        }
     }
 }
 
@@ -255,7 +285,9 @@ pub enum DriftModel {
 }
 
 impl Default for DriftModel {
-    fn default() -> Self { Self::RandomWalk(RandomWalkDrift::default()) }
+    fn default() -> Self {
+        Self::RandomWalk(RandomWalkDrift::default())
+    }
 }
 
 /// Exponential photobleaching: F(t) *= 1 - amp * (1 - exp(-t/tau)).
@@ -276,7 +308,12 @@ pub struct PhotobleachingConfig {
 
 impl Default for PhotobleachingConfig {
     fn default() -> Self {
-        Self { enabled: false, decay_time_constant_s: 600.0, amplitude_fraction: 0.15, amplitude_cv: 0.0 }
+        Self {
+            enabled: false,
+            decay_time_constant_s: 600.0,
+            amplitude_fraction: 0.15,
+            amplitude_cv: 0.0,
+        }
     }
 }
 
@@ -298,7 +335,12 @@ pub struct SaturationConfig {
 
 impl Default for SaturationConfig {
     fn default() -> Self {
-        Self { enabled: false, hill_coefficient: 1.0, k_d: 5.0, k_d_cv: 0.0 }
+        Self {
+            enabled: false,
+            hill_coefficient: 1.0,
+            k_d: 5.0,
+            k_d_cv: 0.0,
+        }
     }
 }
 
@@ -398,7 +440,11 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
     let num_high_res = n_tp * bins_per_frame;
 
     let shared_kernel = if !has_kernel_variation {
-        Some(build_kernel(config.kernel.tau_rise_s, config.kernel.tau_decay_s, config.spike_sim_hz))
+        Some(build_kernel(
+            config.kernel.tau_rise_s,
+            config.kernel.tau_decay_s,
+            config.spike_sim_hz,
+        ))
     } else {
         None
     };
@@ -407,7 +453,9 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
     let mut trace_buf: Vec<f64> = Vec::with_capacity(n_tp);
 
     for cell_idx in 0..n_cells {
-        let cell_seed = config.seed.wrapping_add((cell_idx as u32).wrapping_mul(7919));
+        let cell_seed = config
+            .seed
+            .wrapping_add((cell_idx as u32).wrapping_mul(7919));
         let mut rng = Xorshift32::new(cell_seed);
 
         // 1. Per-cell alpha
@@ -420,8 +468,16 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         };
 
         // 2. Per-cell kernel
-        let cell_tau_rise = vary_lognormal(config.kernel.tau_rise_s, config.kernel.tau_rise_cv, &mut rng);
-        let cell_tau_decay = vary_lognormal(config.kernel.tau_decay_s, config.kernel.tau_decay_cv, &mut rng);
+        let cell_tau_rise = vary_lognormal(
+            config.kernel.tau_rise_s,
+            config.kernel.tau_rise_cv,
+            &mut rng,
+        );
+        let cell_tau_decay = vary_lognormal(
+            config.kernel.tau_decay_s,
+            config.kernel.tau_decay_cv,
+            &mut rng,
+        );
 
         // 3. Per-cell SNR
         let cell_snr = if config.noise.snr_spread > 0.0 {
@@ -445,8 +501,12 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
 
         // 5. Generate high-res spikes
         generate_high_res_spikes(
-            &cell_spike_model, num_high_res, bins_per_frame,
-            config.spike_sim_hz, &mut rng, &mut high_res_buf,
+            &cell_spike_model,
+            num_high_res,
+            bins_per_frame,
+            config.spike_sim_hz,
+            &mut rng,
+            &mut high_res_buf,
         );
         let spikes = bin_to_imaging_rate(&high_res_buf[..num_high_res], n_tp, bins_per_frame);
 
@@ -469,7 +529,11 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         // 8. Per-cell saturation Kd
         if config.saturation.enabled {
             let cell_kd = vary_lognormal(config.saturation.k_d, config.saturation.k_d_cv, &mut rng);
-            apply_saturation(&mut clean_calcium, config.saturation.hill_coefficient, cell_kd);
+            apply_saturation(
+                &mut clean_calcium,
+                config.saturation.hill_coefficient,
+                cell_kd,
+            );
         }
 
         let signal_max = clean_calcium.iter().cloned().fold(0.0_f32, f32::max) as f64;
@@ -482,11 +546,17 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         let cell_drift = match &config.drift {
             DriftModel::RandomWalk(cfg) => {
                 let cell_step = vary_lognormal(cfg.step_std_fraction, cfg.step_std_cv, &mut rng);
-                DriftModel::RandomWalk(RandomWalkDrift { step_std_fraction: cell_step, ..*cfg })
+                DriftModel::RandomWalk(RandomWalkDrift {
+                    step_std_fraction: cell_step,
+                    ..*cfg
+                })
             }
             DriftModel::Sinusoidal(cfg) => {
                 let cell_amp = vary_lognormal(cfg.amplitude_fraction, cfg.amplitude_cv, &mut rng);
-                DriftModel::Sinusoidal(SinusoidalDrift { amplitude_fraction: cell_amp, ..*cfg })
+                DriftModel::Sinusoidal(SinusoidalDrift {
+                    amplitude_fraction: cell_amp,
+                    ..*cfg
+                })
             }
         };
         add_drift(&mut trace_buf, &cell_drift, signal_max, n_tp, &mut rng);
@@ -497,22 +567,41 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
                 config.photobleaching.amplitude_fraction,
                 config.photobleaching.amplitude_cv,
                 &mut rng,
-            ).min(1.0);
-            let cell_pb = PhotobleachingConfig { amplitude_fraction: cell_amp, ..config.photobleaching };
+            )
+            .min(1.0);
+            let cell_pb = PhotobleachingConfig {
+                amplitude_fraction: cell_amp,
+                ..config.photobleaching
+            };
             apply_photobleaching(&mut trace_buf, &cell_pb, config.fs_hz);
         }
 
         // 11. Add noise
-        add_noise(&mut trace_buf, &config.noise, cell_snr, signal_max, &mut rng);
+        add_noise(
+            &mut trace_buf,
+            &config.noise,
+            cell_snr,
+            signal_max,
+            &mut rng,
+        );
 
         traces.extend(trace_buf.iter().map(|&v| v as f32));
         ground_truth.push(CellGroundTruth {
-            spikes, clean_calcium, alpha,
-            snr: cell_snr, tau_rise_s: cell_tau_rise, tau_decay_s: cell_tau_decay,
+            spikes,
+            clean_calcium,
+            alpha,
+            snr: cell_snr,
+            tau_rise_s: cell_tau_rise,
+            tau_decay_s: cell_tau_decay,
         });
     }
 
-    SimulationResult { traces, num_cells: n_cells, num_timepoints: n_tp, ground_truth }
+    SimulationResult {
+        traces,
+        num_cells: n_cells,
+        num_timepoints: n_tp,
+        ground_truth,
+    }
 }
 
 // ── Spike generation ─────────────────────────────────────────────
@@ -533,25 +622,45 @@ fn generate_high_res_spikes(
     }
 }
 
-fn fill_markov_spikes(cfg: &MarkovConfig, buf: &mut [u8], bins_per_frame: usize, rng: &mut Xorshift32) {
+fn fill_markov_spikes(
+    cfg: &MarkovConfig,
+    buf: &mut [u8],
+    bins_per_frame: usize,
+    rng: &mut Xorshift32,
+) {
     let p_s2a = 1.0 - (1.0 - cfg.p_silent_to_active).powf(1.0 / bins_per_frame as f64);
     let p_a2s = 1.0 - (1.0 - cfg.p_active_to_silent).powf(1.0 / bins_per_frame as f64);
     let mut state = 0u8;
     for spike in buf.iter_mut() {
         if state == 0 {
-            if rng.next_f64() < p_s2a { state = 1; }
+            if rng.next_f64() < p_s2a {
+                state = 1;
+            }
         } else if rng.next_f64() < p_a2s {
             state = 0;
         }
-        let p_spike = if state == 1 { cfg.p_spike_when_active } else { cfg.p_spike_when_silent };
-        if rng.next_f64() < p_spike { *spike = 1; }
+        let p_spike = if state == 1 {
+            cfg.p_spike_when_active
+        } else {
+            cfg.p_spike_when_silent
+        };
+        if rng.next_f64() < p_spike {
+            *spike = 1;
+        }
     }
 }
 
-fn fill_poisson_spikes(cfg: &PoissonConfig, buf: &mut [u8], spike_sim_hz: f64, rng: &mut Xorshift32) {
+fn fill_poisson_spikes(
+    cfg: &PoissonConfig,
+    buf: &mut [u8],
+    spike_sim_hz: f64,
+    rng: &mut Xorshift32,
+) {
     let p_spike = cfg.rate_hz / spike_sim_hz;
     for spike in buf.iter_mut() {
-        if rng.next_f64() < p_spike { *spike = 1; }
+        if rng.next_f64() < p_spike {
+            *spike = 1;
+        }
     }
 }
 
@@ -561,7 +670,9 @@ fn bin_to_imaging_rate(high_res: &[u8], num_timepoints: usize, bins_per_frame: u
         let start = f * bins_per_frame;
         let end = (start + bins_per_frame).min(high_res.len());
         let count: u32 = high_res[start..end].iter().map(|&s| s as u32).sum();
-        if count > 0 { *spike_count = count as f32; }
+        if count > 0 {
+            *spike_count = count as f32;
+        }
     }
     spikes
 }
@@ -573,9 +684,13 @@ fn convolve_binary_spikes(spikes: &[u8], kernel: &[f32]) -> Vec<f32> {
     let k_len = kernel.len();
     let mut out = vec![0.0_f32; n];
     for t in 0..n {
-        if spikes[t] == 0 { continue; }
+        if spikes[t] == 0 {
+            continue;
+        }
         let end = (t + k_len).min(n);
-        for k in 0..(end - t) { out[t + k] += kernel[k]; }
+        for k in 0..(end - t) {
+            out[t + k] += kernel[k];
+        }
     }
     out
 }
@@ -585,7 +700,11 @@ fn convolve_binary_spikes(spikes: &[u8], kernel: &[f32]) -> Vec<f32> {
 fn apply_saturation(signal: &mut [f32], hill_n: f64, k_d: f64) {
     let kd_n = k_d.powf(hill_n);
     // Fast-path for common integer Hill coefficients
-    let hill_int = if (hill_n - hill_n.round()).abs() < 1e-9 { Some(hill_n.round() as i32) } else { None };
+    let hill_int = if (hill_n - hill_n.round()).abs() < 1e-9 {
+        Some(hill_n.round() as i32)
+    } else {
+        None
+    };
     for v in signal.iter_mut() {
         let f = (*v as f64).max(0.0);
         let f_n = match hill_int {
@@ -600,18 +719,30 @@ fn apply_saturation(signal: &mut [f32], hill_n: f64, k_d: f64) {
 
 // ── Drift ────────────────────────────────────────────────────────
 
-fn add_drift(trace: &mut [f64], model: &DriftModel, signal_max: f64, n: usize, rng: &mut Xorshift32) {
+fn add_drift(
+    trace: &mut [f64],
+    model: &DriftModel,
+    signal_max: f64,
+    n: usize,
+    rng: &mut Xorshift32,
+) {
     match model {
         DriftModel::Sinusoidal(cfg) => {
-            if cfg.amplitude_fraction <= 0.0 || signal_max <= 0.0 { return; }
+            if cfg.amplitude_fraction <= 0.0 || signal_max <= 0.0 {
+                return;
+            }
             let cycles = cfg.cycles_min + rng.next_f64() * (cfg.cycles_max - cfg.cycles_min);
             let period = n as f64 / cycles;
             let amp = cfg.amplitude_fraction * signal_max;
             let two_pi = 2.0 * std::f64::consts::PI;
-            for i in 0..n { trace[i] += amp * (two_pi * i as f64 / period).sin(); }
+            for i in 0..n {
+                trace[i] += amp * (two_pi * i as f64 / period).sin();
+            }
         }
         DriftModel::RandomWalk(cfg) => {
-            if cfg.step_std_fraction <= 0.0 || signal_max <= 0.0 { return; }
+            if cfg.step_std_fraction <= 0.0 || signal_max <= 0.0 {
+                return;
+            }
             let step_std = cfg.step_std_fraction * signal_max;
             let mr = cfg.mean_reversion;
             let mut drift = 0.0_f64;
@@ -637,8 +768,16 @@ fn apply_photobleaching(trace: &mut [f64], cfg: &PhotobleachingConfig, fs_hz: f6
 
 // ── Noise ────────────────────────────────────────────────────────
 
-fn add_noise(trace: &mut [f64], cfg: &NoiseConfig, cell_snr: f64, signal_max: f64, rng: &mut Xorshift32) {
-    if cell_snr <= 0.0 || signal_max <= 0.0 { return; }
+fn add_noise(
+    trace: &mut [f64],
+    cfg: &NoiseConfig,
+    cell_snr: f64,
+    signal_max: f64,
+    rng: &mut Xorshift32,
+) {
+    if cell_snr <= 0.0 || signal_max <= 0.0 {
+        return;
+    }
     let noise_std = signal_max / cell_snr;
 
     if cfg.shot_noise_enabled && cfg.shot_noise_fraction > 0.0 {
@@ -652,20 +791,28 @@ fn add_noise(trace: &mut [f64], cfg: &NoiseConfig, cell_snr: f64, signal_max: f6
             *v += gauss + shot;
         }
     } else {
-        for v in trace.iter_mut() { *v += noise_std * rng.gaussian(); }
+        for v in trace.iter_mut() {
+            *v += noise_std * rng.gaussian();
+        }
     }
 }
 
 fn poisson_sample_knuth(lambda: f64, rng: &mut Xorshift32) -> f64 {
-    if lambda <= 0.0 { return 0.0; }
-    if lambda > 30.0 { return (lambda + lambda.sqrt() * rng.gaussian()).max(0.0); }
+    if lambda <= 0.0 {
+        return 0.0;
+    }
+    if lambda > 30.0 {
+        return (lambda + lambda.sqrt() * rng.gaussian()).max(0.0);
+    }
     let l = (-lambda).exp();
     let mut k = 0.0_f64;
     let mut p = 1.0_f64;
     loop {
         k += 1.0;
         p *= rng.next_f64();
-        if p <= l { return k - 1.0; }
+        if p <= l {
+            return k - 1.0;
+        }
     }
 }
 
@@ -674,47 +821,110 @@ fn poisson_sample_knuth(lambda: f64, rng: &mut Xorshift32) -> f64 {
 pub mod presets {
     use super::*;
 
-    pub fn gcamp6f() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.1, tau_decay_s: 0.6, ..Default::default() },
-        noise: NoiseConfig { snr: 20.0, ..Default::default() },
-        ..Default::default()
-    }}
+    pub fn gcamp6f() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.1,
+                tau_decay_s: 0.6,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 20.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
-    pub fn gcamp6s() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.4, tau_decay_s: 1.8, ..Default::default() },
-        noise: NoiseConfig { snr: 25.0, ..Default::default() },
-        ..Default::default()
-    }}
+    pub fn gcamp6s() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.4,
+                tau_decay_s: 1.8,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 25.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
-    pub fn gcamp6m() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.15, tau_decay_s: 0.9, ..Default::default() },
-        noise: NoiseConfig { snr: 22.0, ..Default::default() },
-        ..Default::default()
-    }}
+    pub fn gcamp6m() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.15,
+                tau_decay_s: 0.9,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 22.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
-    pub fn jgcamp8f() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.05, tau_decay_s: 0.3, ..Default::default() },
-        noise: NoiseConfig { snr: 12.0, ..Default::default() },
-        ..Default::default()
-    }}
+    pub fn jgcamp8f() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.05,
+                tau_decay_s: 0.3,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 12.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
-    pub fn ogb1() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.05, tau_decay_s: 1.5, ..Default::default() },
-        noise: NoiseConfig { snr: 15.0, ..Default::default() },
-        ..Default::default()
-    }}
+    pub fn ogb1() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.05,
+                tau_decay_s: 1.5,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 15.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
-    pub fn clean() -> SimulationConfig { SimulationConfig {
-        kernel: KernelConfig { tau_rise_s: 0.1, tau_decay_s: 0.6, ..Default::default() },
-        noise: NoiseConfig { snr: 200.0, ..Default::default() },
-        drift: DriftModel::RandomWalk(RandomWalkDrift { step_std_fraction: 0.0, ..Default::default() }),
-        alpha_cv: 0.0,
-        ..Default::default()
-    }}
+    pub fn clean() -> SimulationConfig {
+        SimulationConfig {
+            kernel: KernelConfig {
+                tau_rise_s: 0.1,
+                tau_decay_s: 0.6,
+                ..Default::default()
+            },
+            noise: NoiseConfig {
+                snr: 200.0,
+                ..Default::default()
+            },
+            drift: DriftModel::RandomWalk(RandomWalkDrift {
+                step_std_fraction: 0.0,
+                ..Default::default()
+            }),
+            alpha_cv: 0.0,
+            ..Default::default()
+        }
+    }
 
     pub fn all() -> Vec<(&'static str, SimulationConfig)> {
-        vec![("gcamp6f", gcamp6f()), ("gcamp6s", gcamp6s()), ("gcamp6m", gcamp6m()),
-             ("jgcamp8f", jgcamp8f()), ("ogb1", ogb1()), ("clean", clean())]
+        vec![
+            ("gcamp6f", gcamp6f()),
+            ("gcamp6s", gcamp6s()),
+            ("gcamp6m", gcamp6m()),
+            ("jgcamp8f", jgcamp8f()),
+            ("ogb1", ogb1()),
+            ("clean", clean()),
+        ]
     }
 }
 
@@ -726,19 +936,26 @@ mod tests {
 
     fn small_config() -> SimulationConfig {
         SimulationConfig {
-            fs_hz: 30.0, num_timepoints: 900, num_cells: 3,
-            noise: NoiseConfig { snr: 20.0, ..Default::default() },
+            fs_hz: 30.0,
+            num_timepoints: 900,
+            num_cells: 3,
+            noise: NoiseConfig {
+                snr: 20.0,
+                ..Default::default()
+            },
             alpha_cv: 0.0,
             ..Default::default()
         }
     }
 
-    #[test] fn determinism() {
+    #[test]
+    fn determinism() {
         let cfg = small_config();
         assert_eq!(simulate(&cfg).traces, simulate(&cfg).traces);
     }
 
-    #[test] fn correct_shape() {
+    #[test]
+    fn correct_shape() {
         let r = simulate(&small_config());
         assert_eq!(r.traces.len(), 3 * 900);
         assert_eq!(r.ground_truth.len(), 3);
@@ -748,86 +965,180 @@ mod tests {
         }
     }
 
-    #[test] fn spikes_non_negative() {
+    #[test]
+    fn spikes_non_negative() {
         for gt in &simulate(&small_config()).ground_truth {
             assert!(gt.spikes.iter().all(|&s| s >= 0.0));
         }
     }
 
-    #[test] fn clean_calcium_non_negative() {
+    #[test]
+    fn clean_calcium_non_negative() {
         for gt in &simulate(&small_config()).ground_truth {
             assert!(gt.clean_calcium.iter().all(|&c| c >= -1e-6));
         }
     }
 
-    #[test] fn markov_produces_spikes() {
-        let cfg = SimulationConfig { num_timepoints: 9000, num_cells: 1, alpha_cv: 0.0, ..Default::default() };
+    #[test]
+    fn markov_produces_spikes() {
+        let cfg = SimulationConfig {
+            num_timepoints: 9000,
+            num_cells: 1,
+            alpha_cv: 0.0,
+            ..Default::default()
+        };
         assert!(simulate(&cfg).ground_truth[0].spikes.iter().sum::<f32>() > 0.0);
     }
 
-    #[test] fn poisson_mean_rate() {
+    #[test]
+    fn poisson_mean_rate() {
         let cfg = SimulationConfig {
-            num_timepoints: 30000, num_cells: 1, alpha_cv: 0.0,
+            num_timepoints: 30000,
+            num_cells: 1,
+            alpha_cv: 0.0,
             spike_model: SpikeModel::Poisson(PoissonConfig { rate_hz: 2.0 }),
             ..Default::default()
         };
-        let rate = simulate(&cfg).ground_truth[0].spikes.iter().sum::<f32>() as f64 / (30000.0 / 30.0);
+        let rate =
+            simulate(&cfg).ground_truth[0].spikes.iter().sum::<f32>() as f64 / (30000.0 / 30.0);
         assert!((rate - 2.0).abs() < 1.0, "Expected ~2.0 Hz, got {rate:.2}");
     }
 
-    #[test] fn alpha_variation() {
+    #[test]
+    fn alpha_variation() {
         let cfg = SimulationConfig {
-            num_timepoints: 900, num_cells: 50, alpha_cv: 0.3, ..Default::default()
+            num_timepoints: 900,
+            num_cells: 50,
+            alpha_cv: 0.3,
+            ..Default::default()
         };
-        let alphas: Vec<f64> = simulate(&cfg).ground_truth.iter().map(|gt| gt.alpha).collect();
+        let alphas: Vec<f64> = simulate(&cfg)
+            .ground_truth
+            .iter()
+            .map(|gt| gt.alpha)
+            .collect();
         let mean = alphas.iter().sum::<f64>() / alphas.len() as f64;
-        let cv = (alphas.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / alphas.len() as f64).sqrt() / mean;
+        let cv = (alphas.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / alphas.len() as f64)
+            .sqrt()
+            / mean;
         assert!(cv > 0.1 && cv < 0.6, "Alpha CV ~0.3, got {cv:.3}");
     }
 
-    #[test] fn kernel_variation() {
+    #[test]
+    fn kernel_variation() {
         let cfg = SimulationConfig {
-            num_timepoints: 900, num_cells: 50, alpha_cv: 0.0,
-            kernel: KernelConfig { tau_decay_cv: 0.15, ..Default::default() },
+            num_timepoints: 900,
+            num_cells: 50,
+            alpha_cv: 0.0,
+            kernel: KernelConfig {
+                tau_decay_cv: 0.15,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        let taus: Vec<f64> = simulate(&cfg).ground_truth.iter().map(|gt| gt.tau_decay_s).collect();
+        let taus: Vec<f64> = simulate(&cfg)
+            .ground_truth
+            .iter()
+            .map(|gt| gt.tau_decay_s)
+            .collect();
         let mean = taus.iter().sum::<f64>() / taus.len() as f64;
         assert!(taus.iter().cloned().fold(f64::NEG_INFINITY, f64::max) > mean * 1.05);
         assert!(taus.iter().cloned().fold(f64::INFINITY, f64::min) < mean * 0.95);
     }
 
-    #[test] fn photobleaching() {
+    #[test]
+    fn photobleaching() {
         let base = SimulationConfig {
-            num_timepoints: 9000, num_cells: 1, alpha_cv: 0.0,
-            noise: NoiseConfig { snr: 200.0, ..Default::default() },
-            drift: DriftModel::RandomWalk(RandomWalkDrift { step_std_fraction: 0.0, ..Default::default() }),
+            num_timepoints: 9000,
+            num_cells: 1,
+            alpha_cv: 0.0,
+            noise: NoiseConfig {
+                snr: 200.0,
+                ..Default::default()
+            },
+            drift: DriftModel::RandomWalk(RandomWalkDrift {
+                step_std_fraction: 0.0,
+                ..Default::default()
+            }),
             ..Default::default()
         };
-        let r_no = simulate(&SimulationConfig { photobleaching: PhotobleachingConfig { enabled: false, ..Default::default() }, ..base.clone() });
-        let r_yes = simulate(&SimulationConfig { photobleaching: PhotobleachingConfig { enabled: true, decay_time_constant_s: 30.0, amplitude_fraction: 0.3, amplitude_cv: 0.0 }, ..base });
+        let r_no = simulate(&SimulationConfig {
+            photobleaching: PhotobleachingConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..base.clone()
+        });
+        let r_yes = simulate(&SimulationConfig {
+            photobleaching: PhotobleachingConfig {
+                enabled: true,
+                decay_time_constant_s: 30.0,
+                amplitude_fraction: 0.3,
+                amplitude_cv: 0.0,
+            },
+            ..base
+        });
         let n = 9000;
         let last = n - n / 10;
-        let frac = (last..n).filter(|&i| r_yes.traces[i] < r_no.traces[i]).count() as f64 / (n - last) as f64;
+        let frac = (last..n)
+            .filter(|&i| r_yes.traces[i] < r_no.traces[i])
+            .count() as f64
+            / (n - last) as f64;
         assert!(frac > 0.8);
     }
 
-    #[test] fn saturation() {
-        let base = SimulationConfig { num_timepoints: 900, num_cells: 1, alpha_cv: 0.0, ..Default::default() };
-        let r_lin = simulate(&SimulationConfig { saturation: SaturationConfig { enabled: false, ..Default::default() }, ..base.clone() });
-        let r_sat = simulate(&SimulationConfig { saturation: SaturationConfig { enabled: true, hill_coefficient: 1.0, k_d: 0.5, k_d_cv: 0.0 }, ..base });
-        let max_lin = r_lin.ground_truth[0].clean_calcium.iter().cloned().fold(0.0_f32, f32::max);
-        let max_sat = r_sat.ground_truth[0].clean_calcium.iter().cloned().fold(0.0_f32, f32::max);
+    #[test]
+    fn saturation() {
+        let base = SimulationConfig {
+            num_timepoints: 900,
+            num_cells: 1,
+            alpha_cv: 0.0,
+            ..Default::default()
+        };
+        let r_lin = simulate(&SimulationConfig {
+            saturation: SaturationConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..base.clone()
+        });
+        let r_sat = simulate(&SimulationConfig {
+            saturation: SaturationConfig {
+                enabled: true,
+                hill_coefficient: 1.0,
+                k_d: 0.5,
+                k_d_cv: 0.0,
+            },
+            ..base
+        });
+        let max_lin = r_lin.ground_truth[0]
+            .clean_calcium
+            .iter()
+            .cloned()
+            .fold(0.0_f32, f32::max);
+        let max_sat = r_sat.ground_truth[0]
+            .clean_calcium
+            .iter()
+            .cloned()
+            .fold(0.0_f32, f32::max);
         assert!(max_sat < max_lin || max_lin < 1e-6);
     }
 
-    #[test] fn presets_valid() {
+    #[test]
+    fn presets_valid() {
         for (name, cfg) in presets::all() {
-            assert!(cfg.fs_hz > 0.0 && cfg.kernel.tau_rise_s > 0.0 && cfg.kernel.tau_decay_s > 0.0 && cfg.noise.snr > 0.0, "Preset {name} invalid");
+            assert!(
+                cfg.fs_hz > 0.0
+                    && cfg.kernel.tau_rise_s > 0.0
+                    && cfg.kernel.tau_decay_s > 0.0
+                    && cfg.noise.snr > 0.0,
+                "Preset {name} invalid"
+            );
         }
     }
 
-    #[test] fn xorshift32_deterministic() {
+    #[test]
+    fn xorshift32_deterministic() {
         let mut rng = Xorshift32::new(42);
         let v1 = rng.next_u32();
         assert_eq!(v1, 11355432);
@@ -840,19 +1151,27 @@ mod tests {
         assert_eq!(rng2.next_u32(), v3);
     }
 
-    #[test] fn ground_truth_populated() {
+    #[test]
+    fn ground_truth_populated() {
         for gt in &simulate(&small_config()).ground_truth {
             assert!(gt.alpha > 0.0 && gt.snr > 0.0 && gt.tau_rise_s > 0.0 && gt.tau_decay_s > 0.0);
         }
     }
 
-    #[test] fn single_cell_single_timepoint() {
-        let r = simulate(&SimulationConfig { num_timepoints: 1, num_cells: 1, alpha_cv: 0.0, ..Default::default() });
+    #[test]
+    fn single_cell_single_timepoint() {
+        let r = simulate(&SimulationConfig {
+            num_timepoints: 1,
+            num_cells: 1,
+            alpha_cv: 0.0,
+            ..Default::default()
+        });
         assert_eq!(r.traces.len(), 1);
     }
 
     #[cfg(feature = "serde")]
-    #[test] fn serde_roundtrip() {
+    #[test]
+    fn serde_roundtrip() {
         let cfg = SimulationConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
         let cfg2: SimulationConfig = serde_json::from_str(&json).unwrap();

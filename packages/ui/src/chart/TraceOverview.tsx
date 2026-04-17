@@ -239,8 +239,6 @@ export function TraceOverview(props: TraceOverviewProps) {
 
     if (!containerRef) return;
     const rect = containerRef.getBoundingClientRect();
-    const startX = e.clientX - rect.left;
-    const startY = e.clientY - rect.top;
     const windowDuration = props.zoomEnd - props.zoomStart;
     let dragged = false;
 

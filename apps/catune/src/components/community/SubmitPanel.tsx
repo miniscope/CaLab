@@ -16,7 +16,6 @@ import {
   durationSeconds,
   isDemo,
   dataSource,
-  demoConfig,
   groundTruthLocked,
   bridgeUrl,
   bridgeExportDone,

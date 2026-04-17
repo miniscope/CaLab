@@ -6,7 +6,7 @@
 import { createSignal } from 'solid-js';
 import { CommunityBrowserShell, FilterBar } from '@calab/ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
-import type { CatuneSubmission, CatuneFilterState } from '../../lib/community/index.ts';
+import type { CatuneFilterState } from '../../lib/community/index.ts';
 import { tPeak, fwhm, lambda } from '../../lib/viz-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
 import { getSimulationPresetLabels } from '@calab/compute';
