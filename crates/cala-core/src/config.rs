@@ -27,6 +27,12 @@ pub const DEFAULT_HIGH_PASS_ORDER: u32 = 4;
 /// keeping search cheap.
 pub const DEFAULT_MOTION_MAX_SHIFT_PX: u32 = 20;
 
+/// Whether motion correction does a second phase-correlation pass
+/// against the running mean of corrected frames (the "global anchor").
+/// Local-anchor alone handles jitter well; the global pass catches
+/// slow drift. On by default per design §3.
+pub const DEFAULT_MOTION_USE_GLOBAL_ANCHOR: bool = true;
+
 /// Physical properties of a recording.
 ///
 /// Required: `pixel_size_um`. Every other field has a documented default
@@ -71,6 +77,10 @@ pub struct PreprocessConfig {
     /// Motion-correction search radius in pixels. The phase-correlation
     /// peak is searched only within `|dy|, |dx| ≤ this`.
     pub motion_max_shift_px: u32,
+    /// Whether to run a second phase-correlation pass against the
+    /// global anchor (cumulative mean of corrected frames) after the
+    /// local-anchor pass.
+    pub motion_use_global_anchor: bool,
 }
 
 impl Default for PreprocessConfig {
@@ -79,6 +89,7 @@ impl Default for PreprocessConfig {
             high_pass_diameters: DEFAULT_HIGH_PASS_DIAMETERS,
             high_pass_order: DEFAULT_HIGH_PASS_ORDER,
             motion_max_shift_px: DEFAULT_MOTION_MAX_SHIFT_PX,
+            motion_use_global_anchor: DEFAULT_MOTION_USE_GLOBAL_ANCHOR,
         }
     }
 }
@@ -96,6 +107,11 @@ impl PreprocessConfig {
 
     pub fn with_motion_max_shift_px(mut self, px: u32) -> Self {
         self.motion_max_shift_px = px;
+        self
+    }
+
+    pub fn with_motion_use_global_anchor(mut self, enabled: bool) -> Self {
+        self.motion_use_global_anchor = enabled;
         self
     }
 }

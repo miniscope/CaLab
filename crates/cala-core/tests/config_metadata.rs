@@ -9,7 +9,7 @@
 
 use calab_cala_core::config::{
     PreprocessConfig, RecordingMetadata, DEFAULT_HIGH_PASS_DIAMETERS, DEFAULT_HIGH_PASS_ORDER,
-    DEFAULT_MOTION_MAX_SHIFT_PX, DEFAULT_NEURON_DIAMETER_UM,
+    DEFAULT_MOTION_MAX_SHIFT_PX, DEFAULT_MOTION_USE_GLOBAL_ANCHOR, DEFAULT_NEURON_DIAMETER_UM,
 };
 use calab_cala_core::preprocess::high_pass_cutoff_cycles_per_pixel;
 
@@ -114,6 +114,29 @@ fn with_motion_max_shift_px_overrides_default() {
     assert_eq!(
         cfg.high_pass_order, DEFAULT_HIGH_PASS_ORDER,
         "order untouched"
+    );
+}
+
+#[test]
+fn default_motion_use_global_anchor_is_on() {
+    // Static assertion: if someone flips DEFAULT_MOTION_USE_GLOBAL_ANCHOR
+    // to false, this fails to compile — the on-by-default contract is
+    // design-level (dual-anchor is required per §3), not a runtime opt-in.
+    const _: () = assert!(DEFAULT_MOTION_USE_GLOBAL_ANCHOR);
+    let cfg = PreprocessConfig::default();
+    assert_eq!(
+        cfg.motion_use_global_anchor,
+        DEFAULT_MOTION_USE_GLOBAL_ANCHOR
+    );
+}
+
+#[test]
+fn with_motion_use_global_anchor_overrides_default() {
+    let cfg = PreprocessConfig::default().with_motion_use_global_anchor(false);
+    assert!(!cfg.motion_use_global_anchor);
+    assert_eq!(
+        cfg.motion_max_shift_px, DEFAULT_MOTION_MAX_SHIFT_PX,
+        "other motion knobs untouched"
     );
 }
 
