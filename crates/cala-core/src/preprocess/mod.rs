@@ -6,9 +6,11 @@
 //! (motion anchors, baseline min-image) is explicit and passed in.
 
 mod band;
+mod baseline;
 mod butterworth;
 mod hot_pixel;
 
 pub use band::band_subtract;
+pub use baseline::BaselineState;
 pub use butterworth::{butterworth_highpass, high_pass_cutoff_cycles_per_pixel};
 pub use hot_pixel::hot_pixel_median_3x3;
