@@ -46,7 +46,7 @@ function cleanupActiveRender(): void {
  * to block manual advancement until the action fires.
  */
 function mapSteps(tutorial: Tutorial): DriveStep[] {
-  return tutorial.steps.map((step, index) => {
+  return tutorial.steps.map((step) => {
     const renderFn = step.onPopoverRender;
 
     const driveStep: DriveStep = {

@@ -6,6 +6,7 @@ interface Column {
   bar?: boolean; // show inline CSS bar
 }
 
+// Rows are heterogeneous submission records; column keys are dynamic per table instance.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRow = Record<string, any>;
 

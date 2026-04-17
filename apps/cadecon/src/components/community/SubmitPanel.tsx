@@ -40,7 +40,6 @@ import {
   durationSeconds,
   isDemo,
   dataSource,
-  demoConfig,
   groundTruthLocked,
 } from '../../lib/data-store.ts';
 import { SubmitForm } from './SubmitForm.tsx';

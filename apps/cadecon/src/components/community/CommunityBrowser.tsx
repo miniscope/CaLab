@@ -6,7 +6,7 @@
 import { createSignal } from 'solid-js';
 import { CommunityBrowserShell, FilterBar } from '@calab/ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
-import type { CadeconSubmission, CadeconFilterState } from '../../lib/community/index.ts';
+import type { CadeconFilterState } from '../../lib/community/index.ts';
 import { currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
 import { getSimulationPresetLabels, tauToShape } from '@calab/compute';

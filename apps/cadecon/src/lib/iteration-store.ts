@@ -1,4 +1,4 @@
-import { createSignal, createMemo, batch } from 'solid-js';
+import { createSignal, createMemo } from 'solid-js';
 
 // --- Types ---
 

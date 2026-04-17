@@ -3,7 +3,6 @@
 
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
-import type { NumericTypedArray } from '@calab/core';
 
 const NUM_TRACES = 5;
 const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];
@@ -32,7 +31,6 @@ export function TracePreview() {
     // Data is always stored in C order (row-major).
     // effectiveShape gives us the logical (cells, timepoints) shape.
     // If swapped, the raw data is [timepoints, cells] in memory but we want to read as [cells, timepoints].
-    const rawRows = originalShape[0];
     const rawCols = originalShape[1];
 
     const tracesToShow = Math.min(NUM_TRACES, numCells);

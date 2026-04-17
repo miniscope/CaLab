@@ -57,6 +57,16 @@ export default tseslint.config(
     },
   },
 
+  // Node globals for build scripts
+  {
+    files: ['scripts/**/*.{js,mjs,cjs,ts}'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+
   // Import boundaries (merged into one block so flat-config doesn't silently override)
   // (community-store uses type imports for User/Session — allowed since it's in the community boundary)
   {
@@ -95,10 +105,10 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-unused-vars': [
-        'warn',
+        'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-explicit-any': 'error',
     },
   },
 

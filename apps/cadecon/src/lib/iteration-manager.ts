@@ -456,9 +456,6 @@ export async function startRun(): Promise<void> {
   let bestResidual = Infinity;
   let bestTauR = tauR;
   let bestTauD = tauD;
-  let bestIteration = 0;
-  const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
-  let residualIncreaseCount = 0;
 
   // Iteration 0: record initial kernel state and alpha=1 baseline
   batch(() => {
@@ -745,10 +742,6 @@ export async function startRun(): Promise<void> {
       bestResidual = medResidual;
       bestTauR = tauR;
       bestTauD = tauD;
-      bestIteration = iter + 1;
-      residualIncreaseCount = 0;
-    } else {
-      residualIncreaseCount++;
     }
 
     // Step 5: Convergence check (relative change in tau values)
