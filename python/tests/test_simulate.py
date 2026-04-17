@@ -252,3 +252,53 @@ def test_high_snr_clean():
     # With very high SNR and no drift, trace should closely match clean signal
     residual = np.abs(result.traces[0] - gt.clean_calcium)
     assert residual.max() < gt.clean_calcium.max() * 0.05 or gt.clean_calcium.max() < 1e-6
+
+
+# ── Sub-frame timing (regression for ac70732) ────────────────────
+
+
+def test_fast_kernel_integral_matches_continuous_time():
+    """Regression for ac70732 (convolve at high-res rate before downsampling).
+
+    For a fast kernel (tau_rise ~ 0.3 frames at fs_hz=30), the continuous-time
+    integral of the clean calcium signal per spike equals alpha * kernel_area,
+    where kernel_area = (tau_d - tau_r) / peak_height for the peak-normalized
+    double-exponential. The fix convolves at spike_sim_hz=300 before
+    bin-average downsampling so this integral is preserved. Under the pre-fix
+    pipeline (bin spikes to imaging rate, convolve with fs_hz-sampled kernel),
+    the relative integral error for this kernel exceeds 5%; the test asserts
+    < 3% so it fails pre-fix and passes post-fix.
+    """
+    tau_r, tau_d = 0.01, 0.1
+    fs_hz = 30.0
+    cfg = SimulationConfig(
+        num_cells=1,
+        num_timepoints=27000,  # 900s — enough spikes for <1% Monte Carlo noise
+        fs_hz=fs_hz,
+        spike_sim_hz=300.0,
+        kernel=KernelConfig(tau_rise_s=tau_r, tau_decay_s=tau_d),
+        spike_model=PoissonConfig(rate_hz=5.0),
+        noise=NoiseConfig(snr=1000.0),
+        drift=SinusoidalDrift(amplitude_fraction=0.0),
+        saturation=SaturationConfig(enabled=False),
+        photobleaching=PhotobleachingConfig(enabled=False),
+        alpha_cv=0.0,
+        seed=42,
+    )
+    result = simulate(cfg)
+    gt = result.ground_truth[0]
+
+    t_peak_s = np.log(tau_d / tau_r) * tau_r * tau_d / (tau_d - tau_r)
+    peak_height = np.exp(-t_peak_s / tau_d) - np.exp(-t_peak_s / tau_r)
+    kernel_area_s = (tau_d - tau_r) / peak_height
+
+    num_spikes = gt.spikes.sum()
+    expected_integral = gt.alpha * num_spikes * kernel_area_s
+    measured_integral = gt.clean_calcium.sum() / fs_hz
+
+    rel_err = abs(measured_integral - expected_integral) / expected_integral
+    assert rel_err < 0.03, (
+        f"clean_calcium integral deviates from continuous-time theory: "
+        f"measured={measured_integral:.4f}, expected={expected_integral:.4f}, "
+        f"rel_err={rel_err:.3%}"
+    )
