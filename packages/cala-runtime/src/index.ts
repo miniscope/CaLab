@@ -23,5 +23,25 @@ export type {
   EventBusStats,
   Unsubscribe,
 } from './events.ts';
-// Surface stubs for modules that land in later tasks — see types.ts TODOs.
-export type { Orchestrator, Todo } from './types.ts';
+export {
+  createRuntime,
+  RuntimeStartupTimeoutError,
+  RuntimeShutdownTimeoutError,
+  RuntimeWorkerError,
+} from './orchestrator.ts';
+export type {
+  RuntimeConfig,
+  RuntimeController,
+  RuntimeSource,
+  RuntimeState,
+  RuntimeStatus,
+  RuntimeStats,
+} from './orchestrator.ts';
+export type {
+  WorkerFactory,
+  WorkerInbound,
+  WorkerOutbound,
+  WorkerInitPayload,
+  WorkerLike,
+  WorkerRole,
+} from './worker-protocol.ts';

@@ -65,8 +65,26 @@ export {
   type Unsubscribe,
 } from './events.ts';
 
-// TODO(task 18): Orchestrator surface — creates workers, wires channels,
-// tracks epochs, owns two-pass toggle. See CALA_DESIGN §7.
-export type Orchestrator = Todo<'Orchestrator'>;
+// Orchestrator surface — creates workers, wires channels, tracks
+// epochs, owns two-pass toggle. See CALA_DESIGN §7.
+export {
+  createRuntime,
+  RuntimeStartupTimeoutError,
+  RuntimeShutdownTimeoutError,
+  RuntimeWorkerError,
+  type RuntimeConfig,
+  type RuntimeController,
+  type RuntimeSource,
+  type RuntimeState,
+  type RuntimeStatus,
+  type RuntimeStats,
+} from './orchestrator.ts';
 
-export type Todo<K extends string> = { readonly __todo: K };
+export type {
+  WorkerFactory,
+  WorkerInbound,
+  WorkerOutbound,
+  WorkerInitPayload,
+  WorkerLike,
+  WorkerRole,
+} from './worker-protocol.ts';
