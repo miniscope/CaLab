@@ -10,6 +10,14 @@
 //! once profiling justifies it). The in-house rep keeps push / value
 //! mutation / compact cheap, which matters for the `EvaluateFootprints`
 //! inner loop that shrinks support morphologically every frame.
+//!
+//! Each component also carries a stable `u32` id and a
+//! `ComponentClass` tag (design §3.1). Ids are never reused; positions
+//! can shift when a component is deprecated, but ids survive so Phase
+//! 3 `PipelineMutation`s can refer to components unambiguously across
+//! apply cycles.
+
+use crate::config::ComponentClass;
 
 /// Sparse non-negative footprint matrix.
 #[derive(Debug, Clone)]
@@ -18,10 +26,16 @@ pub struct Footprints {
     width: usize,
     pixels: usize,
     components: Vec<Component>,
+    next_id: u32,
 }
 
 #[derive(Debug, Clone)]
 struct Component {
+    /// Stable monotonically-assigned identifier. Never reused once
+    /// deprecated, never changes through footprint updates.
+    id: u32,
+    /// Shape-prior tag (cell / slow-baseline / neuropil).
+    class: ComponentClass,
     /// Pixel indices in positive support, sorted strictly ascending.
     support: Vec<u32>,
     /// Values aligned with `support`; all entries are `> 0` after
@@ -45,6 +59,7 @@ impl Footprints {
             width,
             pixels,
             components: Vec::new(),
+            next_id: 0,
         }
     }
 
@@ -68,15 +83,40 @@ impl Footprints {
         self.components.is_empty()
     }
 
-    /// Append a new component with the given positive support.
+    /// Append a new component with the given positive support. The
+    /// component's class defaults to `ComponentClass::Cell`; use
+    /// [`Self::push_component_classified`] to tag a non-cell class.
     ///
     /// `support` must be sorted strictly ascending (which also forbids
     /// duplicates); `values` must have the same length and be strictly
     /// positive; pixel indices must be `< pixels()`.
+    ///
+    /// Returns the component's position index at insertion time.
+    /// The position may shift later if an earlier component is
+    /// deprecated; use [`Self::id`] + [`Self::position_of`] when the
+    /// caller needs id-stable references.
     pub fn push_component(&mut self, support: Vec<u32>, values: Vec<f32>) -> usize {
+        self.push_component_classified(support, values, ComponentClass::Cell);
+        self.components.len() - 1
+    }
+
+    /// Append a new component tagged with the given class. Returns the
+    /// stable `u32` id (never reused, never changes).
+    pub fn push_component_classified(
+        &mut self,
+        support: Vec<u32>,
+        values: Vec<f32>,
+        class: ComponentClass,
+    ) -> u32 {
         validate_component(&support, &values, self.pixels);
-        let id = self.components.len();
-        self.components.push(Component { support, values });
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).expect("next_id overflowed u32");
+        self.components.push(Component {
+            id,
+            class,
+            support,
+            values,
+        });
         id
     }
 
@@ -90,6 +130,44 @@ impl Footprints {
 
     pub fn values_mut(&mut self, i: usize) -> &mut [f32] {
         &mut self.components[i].values
+    }
+
+    /// Stable id of the component at position `i`.
+    pub fn id(&self, i: usize) -> u32 {
+        self.components[i].id
+    }
+
+    /// Class tag of the component at position `i`.
+    pub fn class(&self, i: usize) -> ComponentClass {
+        self.components[i].class
+    }
+
+    /// Map a stable id back to its current position, or `None` if it
+    /// has been deprecated.
+    pub fn position_of(&self, id: u32) -> Option<usize> {
+        self.components.iter().position(|c| c.id == id)
+    }
+
+    /// Remove the component with the given id. Returns its position at
+    /// the time of removal, or `None` if the id is not live.
+    /// Surviving components keep their ids; their positions shift down
+    /// past the removed index.
+    pub fn deprecate_by_id(&mut self, id: u32) -> Option<usize> {
+        let pos = self.position_of(id)?;
+        self.components.remove(pos);
+        Some(pos)
+    }
+
+    /// The next id that will be assigned by a `push_*` call. Primarily
+    /// used by Phase 3 mutation-apply code to allocate ids consistently
+    /// across (A, C, W, M, G) in one atomic step.
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
+    /// Iterator over current ids in position order.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.components.iter().map(|c| c.id)
     }
 
     /// Compute `Aᵀy` — one inner product per column over its support.

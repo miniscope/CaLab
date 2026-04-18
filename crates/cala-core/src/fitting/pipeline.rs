@@ -19,6 +19,7 @@
 
 use crate::assets::{Footprints, Groups, SuffStats, Traces};
 use crate::config::FitConfig;
+use crate::extending::mutation::{Epoch, Snapshot};
 
 use super::{
     evaluate_footprints, evaluate_residual, evaluate_suff_stats, evaluate_traces, trace_throttle,
@@ -34,6 +35,11 @@ pub struct FitPipeline {
     /// Scratch buffer for the residual — reused across frames to avoid
     /// per-frame allocation in the fit hot path.
     residual: Vec<f32>,
+    /// Monotonic counter that advances every time the fit side applies
+    /// a `PipelineMutation` (Phase 3 Task 10). Per-frame `step` calls
+    /// do not bump the epoch — epoch only tracks structural changes
+    /// to `(Ã, C̃, W, M, G)`, not numeric updates.
+    epoch: Epoch,
 }
 
 impl FitPipeline {
@@ -46,7 +52,21 @@ impl FitPipeline {
             residual: vec![0.0f32; pixels],
             fp,
             cfg,
+            epoch: 0,
         }
+    }
+
+    /// Current asset epoch — advances on every mutation apply.
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// Deep-clone of the extend-visible state `(Ã, W, M, epoch)`
+    /// (design §7.2). `C̃` is not part of the snapshot — extend
+    /// reads only the most recent window from the residual ring and
+    /// per-component traces it is passed explicitly.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot::new(self.fp.clone(), self.ss.clone(), self.epoch)
     }
 
     pub fn footprints(&self) -> &Footprints {

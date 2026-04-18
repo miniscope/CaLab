@@ -16,6 +16,7 @@
 //! and is filled in by its dedicated task (3–7).
 
 pub mod merge;
+pub mod mutation;
 pub mod overlap;
 pub mod redundancy;
 pub mod segment;
