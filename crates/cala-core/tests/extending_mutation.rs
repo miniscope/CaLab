@@ -3,7 +3,9 @@
 
 use calab_cala_core::assets::Footprints;
 use calab_cala_core::config::{ComponentClass, FitConfig};
-use calab_cala_core::extending::mutation::{DeprecateReason, PipelineMutation};
+use calab_cala_core::extending::mutation::{
+    DeprecateReason, MutationQueue, PipelineMutation,
+};
 use calab_cala_core::fitting::FitPipeline;
 
 fn make_cell_footprints() -> Footprints {
@@ -183,4 +185,117 @@ fn snapshot_footprints_clone_is_independent() {
     assert_eq!(fp.len(), 1);
     assert_eq!(snap_fp.len(), 2);
     assert_eq!(snap_fp.position_of(0), Some(0));
+}
+
+// ----- MutationQueue (Task 9) -----
+
+fn dep(id: u32, epoch: u64) -> PipelineMutation {
+    PipelineMutation::Deprecate {
+        snapshot_epoch: epoch,
+        id,
+        reason: DeprecateReason::TraceInactive,
+    }
+}
+
+#[test]
+#[should_panic(expected = "capacity must be ≥ 1")]
+fn mutation_queue_rejects_zero_capacity() {
+    let _ = MutationQueue::new(0);
+}
+
+#[test]
+fn mutation_queue_starts_empty() {
+    let q = MutationQueue::new(4);
+    assert!(q.is_empty());
+    assert!(!q.is_full());
+    assert_eq!(q.len(), 0);
+    assert_eq!(q.drops(), 0);
+    assert_eq!(q.capacity(), 4);
+}
+
+#[test]
+fn mutation_queue_push_pop_is_fifo() {
+    let mut q = MutationQueue::new(4);
+    q.push(dep(1, 10));
+    q.push(dep(2, 11));
+    q.push(dep(3, 12));
+    assert_eq!(q.len(), 3);
+    assert_eq!(q.pop().unwrap().snapshot_epoch(), 10);
+    assert_eq!(q.pop().unwrap().snapshot_epoch(), 11);
+    assert_eq!(q.pop().unwrap().snapshot_epoch(), 12);
+    assert!(q.pop().is_none());
+    assert_eq!(q.drops(), 0);
+}
+
+#[test]
+fn mutation_queue_drop_oldest_on_overflow() {
+    let mut q = MutationQueue::new(2);
+    q.push(dep(1, 1));
+    q.push(dep(2, 2));
+    assert!(q.is_full());
+    q.push(dep(3, 3)); // drops id=1
+    assert_eq!(q.drops(), 1);
+    q.push(dep(4, 4)); // drops id=2
+    assert_eq!(q.drops(), 2);
+    // Remaining: [id=3, id=4].
+    let remaining: Vec<u32> = q
+        .drain()
+        .map(|m| match m {
+            PipelineMutation::Deprecate { id, .. } => id,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(remaining, vec![3, 4]);
+}
+
+#[test]
+fn mutation_queue_drain_empties_and_preserves_fifo() {
+    let mut q = MutationQueue::new(8);
+    for i in 0..5u32 {
+        q.push(dep(i, i as u64));
+    }
+    let ids: Vec<u32> = q
+        .drain()
+        .map(|m| match m {
+            PipelineMutation::Deprecate { id, .. } => id,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+    assert!(q.is_empty());
+    assert_eq!(q.drops(), 0);
+}
+
+#[test]
+fn mutation_queue_drop_counter_preserved_across_drains() {
+    let mut q = MutationQueue::new(2);
+    q.push(dep(1, 1));
+    q.push(dep(2, 2));
+    q.push(dep(3, 3)); // drops 1
+    let _: Vec<_> = q.drain().collect();
+    assert_eq!(q.drops(), 1, "drops counter survives drain");
+    assert!(q.is_empty());
+    q.push(dep(4, 4));
+    q.push(dep(5, 5));
+    q.push(dep(6, 6)); // drops 4
+    assert_eq!(q.drops(), 2);
+}
+
+#[test]
+fn mutation_queue_handles_many_overflows() {
+    let mut q = MutationQueue::new(4);
+    for i in 0..1000u32 {
+        q.push(dep(i, i as u64));
+    }
+    assert_eq!(q.len(), 4);
+    assert_eq!(q.drops(), 996);
+    // Last 4 should be 996..=999.
+    let ids: Vec<u32> = q
+        .drain()
+        .map(|m| match m {
+            PipelineMutation::Deprecate { id, .. } => id,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(ids, vec![996, 997, 998, 999]);
 }

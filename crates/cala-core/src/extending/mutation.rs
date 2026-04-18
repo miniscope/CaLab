@@ -101,3 +101,73 @@ impl Snapshot {
         }
     }
 }
+
+/// Bounded FIFO mutation queue with drop-oldest backpressure
+/// (design §7.3, Phase 3 Task 9).
+///
+/// Single-threaded harness stand-in for the real SAB ring used by the
+/// Phase 5 worker runtime. Exposes the same protocol surface —
+/// bounded push, FIFO drain, drop counter — so fit-side apply
+/// (Task 10) and extend's publish path (later phases) can be exercised
+/// without workers.
+#[derive(Debug)]
+pub struct MutationQueue {
+    capacity: usize,
+    buf: std::collections::VecDeque<PipelineMutation>,
+    drops: u64,
+}
+
+impl MutationQueue {
+    /// Allocate a queue with the given capacity. Capacity must be ≥ 1
+    /// (a zero-capacity queue is useless and would turn every push
+    /// into a drop).
+    pub fn new(capacity: usize) -> Self {
+        assert!(capacity >= 1, "capacity must be ≥ 1 (got {capacity})");
+        Self {
+            capacity,
+            buf: std::collections::VecDeque::with_capacity(capacity),
+            drops: 0,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.buf.len() == self.capacity
+    }
+
+    /// Total mutations dropped due to overflow since construction.
+    pub fn drops(&self) -> u64 {
+        self.drops
+    }
+
+    /// Append a mutation. If the queue is at capacity, the oldest
+    /// mutation is discarded and `drops` advances by 1.
+    pub fn push(&mut self, m: PipelineMutation) {
+        if self.buf.len() == self.capacity {
+            self.buf.pop_front();
+            self.drops = self.drops.saturating_add(1);
+        }
+        self.buf.push_back(m);
+    }
+
+    /// Pop the oldest queued mutation, or `None` when empty.
+    pub fn pop(&mut self) -> Option<PipelineMutation> {
+        self.buf.pop_front()
+    }
+
+    /// FIFO draining iterator. Consumes the entire queue.
+    pub fn drain(&mut self) -> std::collections::vec_deque::Drain<'_, PipelineMutation> {
+        self.buf.drain(..)
+    }
+}
