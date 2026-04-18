@@ -73,6 +73,7 @@ export default tseslint.config(
     files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
     ignores: [
       'packages/core/src/wasm-adapter.ts',
+      'packages/cala-core/src/wasm-adapter.ts',
       'packages/community/src/supabase.ts',
       'packages/community/src/auth.ts',
       'packages/community/src/submission-service.ts',
@@ -85,6 +86,10 @@ export default tseslint.config(
             {
               group: ['**/crates/solver/pkg/*'],
               message: 'Import from @calab/core instead of the WASM pkg directly.',
+            },
+            {
+              group: ['**/crates/cala-core/pkg/*'],
+              message: 'Import from @calab/cala-core instead of the WASM pkg directly.',
             },
             {
               group: ['@supabase/supabase-js'],

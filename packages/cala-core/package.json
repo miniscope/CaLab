@@ -1,0 +1,13 @@
+{
+  "name": "@calab/cala-core",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {}
+}
