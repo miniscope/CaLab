@@ -7,11 +7,13 @@
 
 mod footprints;
 mod frame;
+mod groups;
 mod suff_stats;
 mod traces;
 
 pub use footprints::Footprints;
 pub use frame::{Frame, FrameMut, ShapeError};
+pub use groups::Groups;
 pub use suff_stats::SuffStats;
 pub use traces::Traces;
 
