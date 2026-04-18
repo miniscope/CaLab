@@ -43,7 +43,16 @@ export type WorkerInbound =
       epoch: bigint;
       numComponents: number;
       pixels: number;
-    };
+    }
+  // Orchestrator forwards each fit-emitted `PipelineEvent` to the
+  // archive worker (design §9.2). The archive-worker side replays
+  // these onto its local `EventBus` so log append + metric snapshot
+  // share one subscription path.
+  | { kind: 'event'; event: PipelineEvent }
+  // Main-thread dashboard (task 24) asks for a consistent dump of the
+  // archive's in-memory event log and per-name metric snapshot.
+  // `requestId` correlates each dump with the eventual reply.
+  | { kind: 'request-archive-dump'; requestId: number };
 
 /** Messages a worker sends back to the orchestrator. */
 export type WorkerOutbound =
@@ -53,7 +62,17 @@ export type WorkerOutbound =
   | { kind: 'snapshot-request'; role: WorkerRole; requestId: number }
   | { kind: 'event'; role: WorkerRole; event: PipelineEvent }
   | { kind: 'error'; role: WorkerRole; message: string }
-  | { kind: 'done'; role: WorkerRole };
+  | { kind: 'done'; role: WorkerRole }
+  // Archive worker reply to `request-archive-dump`. `events` is a
+  // snapshot of the rolling log (oldest→newest); `metrics` is the
+  // current per-name scalar snapshot (design §9.1 / §10).
+  | {
+      kind: 'archive-dump';
+      role: WorkerRole;
+      requestId: number;
+      events: PipelineEvent[];
+      metrics: Record<string, number>;
+    };
 
 /**
  * Minimal structural subtype of the DOM `Worker` that the orchestrator
