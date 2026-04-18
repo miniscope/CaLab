@@ -80,6 +80,40 @@ jobs:
       - name: Tests
         run: cargo test --no-default-features --features jsbindings
 
+  cala-core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/cala-core
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: 'crates/cala-core -> target'
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # jsbindings feature: the WASM surface the apps ship. Mirrors the
+      # solver job's narrow lib-only clippy check.
+      - name: Clippy (jsbindings)
+        run: cargo clippy --lib --no-default-features --features jsbindings -- -D warnings
+
+      # native-cli feature: the dev-tooling binaries and integration tests
+      # that exercise the full pipeline on local AVIs.
+      - name: Clippy (native-cli, all targets)
+        run: cargo clippy --all-targets --no-default-features --features native-cli -- -D warnings
+
+      - name: Tests
+        run: cargo test --no-default-features --features native-cli
+
   python:
     runs-on: ubuntu-latest
     strategy:

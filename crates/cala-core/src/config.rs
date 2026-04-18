@@ -278,13 +278,11 @@ impl PreprocessConfig {
     }
 
     pub fn with_denoise_median_ksize(mut self, ksize: usize) -> Self {
-        assert!(ksize >= 1 && ksize % 2 == 1, "ksize must be odd (got {ksize})");
+        assert!(
+            ksize >= 1 && ksize % 2 == 1,
+            "ksize must be odd (got {ksize})"
+        );
         self.denoise_median_ksize = ksize;
-        self
-    }
-
-    pub fn with_motion_correlation(mut self, mode: MotionCorrelation) -> Self {
-        self.motion_correlation = mode;
         self
     }
 

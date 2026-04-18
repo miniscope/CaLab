@@ -100,32 +100,13 @@ impl<'a> FrameMut<'a> {
         [Axis::Height, Axis::Width]
     }
 
-    pub fn get(&self, y: usize, x: usize) -> f32 {
-        self.pixels[y * self.width + x]
-    }
-
     pub fn get_mut(&mut self, y: usize, x: usize) -> &mut f32 {
         &mut self.pixels[y * self.width + x]
-    }
-
-    pub fn row(&self, y: usize) -> &[f32] {
-        let start = y * self.width;
-        &self.pixels[start..start + self.width]
     }
 
     pub fn row_mut(&mut self, y: usize) -> &mut [f32] {
         let start = y * self.width;
         &mut self.pixels[start..start + self.width]
-    }
-
-    /// Downgrade to an immutable view. Useful when passing to read-only
-    /// consumers without giving up ownership of the mutable borrow.
-    pub fn as_frame(&self) -> Frame<'_> {
-        Frame {
-            pixels: self.pixels,
-            height: self.height,
-            width: self.width,
-        }
     }
 }
 

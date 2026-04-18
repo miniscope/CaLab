@@ -78,8 +78,7 @@ pub fn median_filter(
             // linear average time without a full sort. `total_cmp` keeps
             // behavior deterministic if NaN slips into the data.
             let window = &mut patch[..kcount];
-            let (_, median, _) =
-                window.select_nth_unstable_by(median_idx, |a, b| a.total_cmp(b));
+            let (_, median, _) = window.select_nth_unstable_by(median_idx, |a, b| a.total_cmp(b));
             *output.get_mut(y, x) = *median;
         }
     }

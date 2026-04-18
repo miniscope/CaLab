@@ -24,8 +24,6 @@ pub struct GaussianKernel {
     kernel: Vec<f32>,
     /// Number of samples on each side of the center.
     radius: usize,
-    /// Original sigma used to build this kernel.
-    sigma: f32,
 }
 
 impl GaussianKernel {
@@ -34,14 +32,6 @@ impl GaussianKernel {
     pub fn from_sigma(sigma: f32) -> Self {
         assert!(sigma > 0.0, "GaussianKernel::from_sigma requires sigma > 0");
         let radius = (3.0 * sigma).ceil() as usize;
-        Self::new(sigma, radius)
-    }
-
-    /// Build a Gaussian kernel with an explicit radius (kernel size = `2·radius + 1`).
-    /// Callers that want to match a reference implementation's kernel size
-    /// exactly use this; otherwise prefer `from_sigma`.
-    pub fn new(sigma: f32, radius: usize) -> Self {
-        assert!(sigma > 0.0, "GaussianKernel::new requires sigma > 0");
         let ksize = 2 * radius + 1;
         let mut kernel = Vec::with_capacity(ksize);
         let two_s2 = 2.0 * sigma * sigma;
@@ -56,19 +46,11 @@ impl GaussianKernel {
         for v in kernel.iter_mut() {
             *v *= inv;
         }
-        Self {
-            kernel,
-            radius,
-            sigma,
-        }
+        Self { kernel, radius }
     }
 
     pub fn radius(&self) -> usize {
         self.radius
-    }
-
-    pub fn sigma(&self) -> f32 {
-        self.sigma
     }
 
     pub fn taps(&self) -> &[f32] {
@@ -168,7 +150,11 @@ mod tests {
         let r = k.radius();
         for (i, &t) in taps.iter().enumerate() {
             if i != r {
-                assert!(t < taps[r], "tap {i} = {t} not less than center {}", taps[r]);
+                assert!(
+                    t < taps[r],
+                    "tap {i} = {t} not less than center {}",
+                    taps[r]
+                );
             }
         }
     }
@@ -224,7 +210,10 @@ mod tests {
         // Total mass is preserved (normalized kernel).
         let sum_in: f32 = input.iter().sum();
         let sum_out: f32 = output.iter().sum();
-        assert!((sum_in - sum_out).abs() < 1e-4, "mass drift: {sum_in} -> {sum_out}");
+        assert!(
+            (sum_in - sum_out).abs() < 1e-4,
+            "mass drift: {sum_in} -> {sum_out}"
+        );
     }
 
     #[test]

@@ -77,32 +77,18 @@ pub struct MotionState {
     smoothed_global_anchor: Vec<f32>,
     global_count: u64,
     // Per-frame working buffers, all sized to the corr crop.
-    shift_scratch: Vec<f32>,      // intermediate after local shift (global pass)
-    smooth_buf: Vec<f32>,         // prepped current-frame crop fed to correlator
+    shift_scratch: Vec<f32>, // intermediate after local shift (global pass)
+    smooth_buf: Vec<f32>,    // prepped current-frame crop fed to correlator
     smooth_row_scratch: Vec<f32>, // row pass of the separable Gaussian
-    corr_scratch: Vec<f32>,       // raw center-cropped current frame
+    corr_scratch: Vec<f32>,  // raw center-cropped current frame
     smooth_kernel: Option<GaussianKernel>, // σ_smooth low-pass kernel
-    demean_row_means: Vec<f32>,   // length corr_h — scratch for double-centering
-    demean_col_means: Vec<f32>,   // length corr_w — scratch for double-centering
+    demean_row_means: Vec<f32>, // length corr_h — scratch for double-centering
+    demean_col_means: Vec<f32>, // length corr_w — scratch for double-centering
 }
 
 impl MotionState {
-    /// Legacy constructor: smoothing disabled, no crop — correlator
-    /// sees the full demeaned frame.
-    pub fn new(height: usize, width: usize) -> Self {
-        Self::build(height, width, 0.0, 1.0)
-    }
-
-    /// Build a motion state with an internal Gaussian pre-smoothing at
-    /// the given sigma, no crop. `smooth_sigma_px == 0.0` disables
-    /// smoothing entirely.
-    pub fn with_smoothing(height: usize, width: usize, smooth_sigma_px: f32) -> Self {
-        Self::build(height, width, smooth_sigma_px, 1.0)
-    }
-
     /// Build a motion state pulling every motion-relevant parameter
-    /// (σ_smooth, corr crop fraction) from a config. Preferred over the
-    /// explicit-arg constructors when a config is in scope.
+    /// (σ_smooth, corr crop fraction) from a config.
     pub fn with_config(height: usize, width: usize, cfg: &PreprocessConfig) -> Self {
         Self::build(
             height,
@@ -155,14 +141,6 @@ impl MotionState {
             demean_row_means: vec![0.0; corr_h],
             demean_col_means: vec![0.0; corr_w],
         }
-    }
-
-    pub fn height(&self) -> usize {
-        self.height
-    }
-
-    pub fn width(&self) -> usize {
-        self.width
     }
 
     pub fn has_anchor(&self) -> bool {
@@ -241,7 +219,8 @@ impl MotionState {
             // the first frame; the cumulative-mean recurrence below
             // handles subsequent updates symmetrically.
             self.global_anchor.copy_from_slice(input.pixels());
-            self.smoothed_global_anchor.copy_from_slice(&self.smooth_buf);
+            self.smoothed_global_anchor
+                .copy_from_slice(&self.smooth_buf);
             self.global_count = 1;
             self.has_anchor = true;
             return Ok(MotionShift { dy: 0.0, dx: 0.0 });
@@ -270,7 +249,12 @@ impl MotionState {
                 let mut scratch_frame =
                     FrameMut::new(&mut self.shift_scratch, self.corr_h, self.corr_w)
                         .expect("shift_scratch length invariant");
-                apply_bilinear_shift(smooth_in, &mut scratch_frame, local_shift.dy, local_shift.dx);
+                apply_bilinear_shift(
+                    smooth_in,
+                    &mut scratch_frame,
+                    local_shift.dy,
+                    local_shift.dx,
+                );
             }
             let global_refinement = detect_shift(
                 &self.shift_scratch,
@@ -298,11 +282,7 @@ impl MotionState {
         // exactly consistent with the sharp anchor.
         self.fill_smoothed(output.pixels())?;
         self.smoothed_local_anchor.copy_from_slice(&self.smooth_buf);
-        update_global_mean(
-            &mut self.global_anchor,
-            output.pixels(),
-            self.global_count,
-        );
+        update_global_mean(&mut self.global_anchor, output.pixels(), self.global_count);
         update_global_mean(
             &mut self.smoothed_global_anchor,
             &self.smooth_buf,
@@ -430,13 +410,7 @@ fn detect_shift(
 ///
 /// For either mode, a shift of `a` relative to `b` (i.e. `a[n] = b[n−δ]`)
 /// places the map's peak at bin `δ`.
-fn fft_correlate(
-    a: &[f32],
-    b: &[f32],
-    h: usize,
-    w: usize,
-    mode: MotionCorrelation,
-) -> Vec<f32> {
+fn fft_correlate(a: &[f32], b: &[f32], h: usize, w: usize, mode: MotionCorrelation) -> Vec<f32> {
     let mut a_c: Vec<Complex32> = a.iter().map(|&r| Complex32::new(r, 0.0)).collect();
     let mut b_c: Vec<Complex32> = b.iter().map(|&r| Complex32::new(r, 0.0)).collect();
 
@@ -454,7 +428,7 @@ fn fft_correlate(
     match mode {
         MotionCorrelation::Cross => {
             for i in 0..a_c.len() {
-                a_c[i] = a_c[i] * b_c[i].conj();
+                a_c[i] *= b_c[i].conj();
             }
         }
         MotionCorrelation::Phase => {
@@ -761,7 +735,10 @@ mod tests {
         }
         let map = fft_correlate(&a, &a, h, w, MotionCorrelation::Cross);
         let peak = map[0];
-        assert!(peak > 0.0, "autocorrelation peak should be positive: {peak}");
+        assert!(
+            peak > 0.0,
+            "autocorrelation peak should be positive: {peak}"
+        );
         // Every other bin must be strictly <= peak.
         for (i, &v) in map.iter().enumerate().skip(1) {
             assert!(v <= peak, "bin {i} = {v} exceeds peak {peak}");

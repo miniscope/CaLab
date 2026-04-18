@@ -47,18 +47,6 @@ impl PreprocessPipeline {
         }
     }
 
-    pub fn height(&self) -> usize {
-        self.height
-    }
-
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    pub fn config(&self) -> &PreprocessConfig {
-        &self.cfg
-    }
-
     pub fn motion_state(&self) -> &MotionState {
         &self.motion
     }

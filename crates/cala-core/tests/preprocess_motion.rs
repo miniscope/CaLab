@@ -4,6 +4,14 @@ use calab_cala_core::assets::{Frame, FrameMut};
 use calab_cala_core::config::{MotionSubpixel, PreprocessConfig};
 use calab_cala_core::preprocess::{MotionShift, MotionState};
 
+// Tests exercise the full-frame correlator (crop_frac=1.0); the production
+// default is 0.6. We override explicitly so the state construction goes
+// through the same `with_config` path production uses.
+fn new_state(h: usize, w: usize) -> MotionState {
+    let cfg = PreprocessConfig::default().with_motion_corr_crop_frac(1.0);
+    MotionState::with_config(h, w, &cfg)
+}
+
 fn make_gaussian_blob(h: usize, w: usize, cy: f32, cx: f32, sigma: f32) -> Vec<f32> {
     let mut out = vec![0.0f32; h * w];
     let s2 = 2.0 * sigma * sigma;
@@ -54,7 +62,7 @@ fn correct(
 #[test]
 fn first_frame_emits_identity_and_becomes_anchor() {
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     let (shift, out) = correct(&mut state, &f, h, w, &cfg);
@@ -67,7 +75,7 @@ fn first_frame_emits_identity_and_becomes_anchor() {
 #[test]
 fn second_identical_frame_returns_zero_shift() {
     let (h, w) = (16, 16);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     correct(&mut state, &f, h, w, &cfg);
@@ -90,7 +98,7 @@ fn integer_translation_is_recovered() {
     let (dy_true, dx_true) = (3isize, 2isize);
     let shifted = roll_2d(&anchor, h, w, dy_true, dx_true);
 
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let _ = correct(&mut state, &anchor, h, w, &cfg);
     let (shift, corrected) = correct(&mut state, &shifted, h, w, &cfg);
@@ -114,7 +122,7 @@ fn integer_translation_is_recovered() {
 #[test]
 fn reset_forgets_anchor() {
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     correct(&mut state, &f, h, w, &cfg);
@@ -138,7 +146,7 @@ fn max_shift_clamps_search() {
     let anchor = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     let shifted = roll_2d(&anchor, h, w, 10, 0);
 
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     // Pin to parabolic subpixel so the per-pass bound is max_shift + 0.5.
     // Centroid (the default) can add up to ±radius, which loosens the
     // bound and obscures what this test is checking.
@@ -160,7 +168,7 @@ fn max_shift_clamps_each_pass_independently() {
     let anchor = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     let shifted = roll_2d(&anchor, h, w, 10, 0);
 
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default()
         .with_motion_max_shift_px(3)
         .with_motion_subpixel(MotionSubpixel::Parabolic);
@@ -173,7 +181,7 @@ fn max_shift_clamps_each_pass_independently() {
 #[test]
 fn global_count_increments_per_frame() {
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     assert_eq!(state.global_count(), 0);
@@ -188,7 +196,7 @@ fn global_count_increments_per_frame() {
 #[test]
 fn global_anchor_first_frame_equals_input() {
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     correct(&mut state, &f, h, w, &cfg);
@@ -210,7 +218,7 @@ fn global_anchor_is_cumulative_mean_of_corrected_frames() {
     // Feed N identical frames. Every corrected output equals the input,
     // so the cumulative mean at every step also equals the input.
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     for _ in 0..5 {
@@ -231,7 +239,7 @@ fn global_anchor_is_cumulative_mean_of_corrected_frames() {
 #[test]
 fn reset_clears_global_count_too() {
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default();
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     correct(&mut state, &f, h, w, &cfg);
@@ -247,7 +255,7 @@ fn disabling_global_anchor_still_tracks_count() {
     // pass is gated on the config flag. This keeps the anchor "warm" if
     // the caller toggles the flag on mid-stream.
     let (h, w) = (8, 8);
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default().with_motion_use_global_anchor(false);
     let f = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     for _ in 0..3 {
@@ -266,7 +274,7 @@ fn integer_translation_is_recovered_under_dual_anchor() {
     let anchor = make_gaussian_blob(h, w, (h / 2) as f32, (w / 2) as f32, 2.0);
     let shifted = roll_2d(&anchor, h, w, 3, 2);
 
-    let mut state = MotionState::new(h, w);
+    let mut state = new_state(h, w);
     let cfg = PreprocessConfig::default(); // global enabled
     let _ = correct(&mut state, &anchor, h, w, &cfg);
     let (shift, corrected) = correct(&mut state, &shifted, h, w, &cfg);
@@ -289,7 +297,7 @@ fn integer_translation_is_recovered_under_dual_anchor() {
 
 #[test]
 fn shape_mismatch_input_errors() {
-    let mut state = MotionState::new(4, 5);
+    let mut state = new_state(4, 5);
     let input = vec![0.0f32; 12];
     let mut output = vec![0.0f32; 20];
     let cfg = PreprocessConfig::default();
@@ -303,7 +311,7 @@ fn shape_mismatch_input_errors() {
 
 #[test]
 fn shape_mismatch_output_errors() {
-    let mut state = MotionState::new(4, 5);
+    let mut state = new_state(4, 5);
     let input = vec![0.0f32; 20];
     let mut output = vec![0.0f32; 12];
     let cfg = PreprocessConfig::default();

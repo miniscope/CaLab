@@ -9,7 +9,7 @@
 use calab_cala_core::assets::{Frame, FrameMut};
 use calab_cala_core::config::{GrayscaleMethod, PreprocessConfig, RecordingMetadata};
 use calab_cala_core::io::{write_uncompressed_avi_8bit, AviUncompressedReader};
-use calab_cala_core::preprocess::PreprocessPipeline;
+use calab_cala_core::preprocess::{MotionShift, PreprocessPipeline};
 
 /// Build a short synthetic recording:
 ///   - constant background
@@ -99,6 +99,87 @@ fn pipeline_preserves_frame_count_and_shape() {
     for f in &run.u8_outputs {
         assert_eq!(f.len(), run.n);
     }
+    // Regression guard: the pipeline is not a pass-through. With the
+    // synthetic drift + hot-pixel stage, at least one output frame must
+    // differ from its corresponding input in at least one pixel.
+    let any_diff = run
+        .u8_outputs
+        .iter()
+        .zip(frames.iter())
+        .any(|(o, i)| o != i);
+    assert!(
+        any_diff,
+        "pipeline output bitwise-matches input on every frame"
+    );
+}
+
+#[test]
+fn pipeline_recovers_known_drift() {
+    // Drive a textured anchor plus three deliberately-shifted frames
+    // through the pipeline and assert the motion stage reports shifts
+    // matching the ground truth. Confirms the full pipeline runs — not
+    // just that it doesn't panic.
+    let (w, h) = (32, 32);
+    let metadata = RecordingMetadata::new(2.0);
+    // Override the default 0.6 center crop: the 32×32 synthetic is too
+    // small to give the correlator enough signal after cropping.
+    let cfg = PreprocessConfig::default().with_motion_corr_crop_frac(1.0);
+    let mut pipeline = PreprocessPipeline::new(h, w, &metadata, cfg);
+
+    // Smooth Gaussian blob — compact peak gives cross-correlation a
+    // clean peak to lock onto.
+    let n = h * w;
+    let mut anchor = vec![0.0_f32; n];
+    for y in 0..h {
+        for x in 0..w {
+            let dy = y as f32 - (h / 2) as f32;
+            let dx = x as f32 - (w / 2) as f32;
+            anchor[y * w + x] = 200.0 * (-(dy * dy + dx * dx) / 18.0).exp();
+        }
+    }
+
+    let drifts: [(isize, isize); 4] = [(0, 0), (2, 1), (-1, 2), (3, -1)];
+    let mut in_buf = vec![0.0_f32; n];
+    let mut out_buf = vec![0.0_f32; n];
+    let mut recovered = Vec::with_capacity(drifts.len());
+
+    for &(dy, dx) in &drifts {
+        for y in 0..h {
+            for x in 0..w {
+                let sy = (y as isize - dy).rem_euclid(h as isize) as usize;
+                let sx = (x as isize - dx).rem_euclid(w as isize) as usize;
+                in_buf[y * w + x] = anchor[sy * w + sx];
+            }
+        }
+        let shift = pipeline
+            .process_frame(
+                Frame::new(&in_buf, h, w).unwrap(),
+                &mut FrameMut::new(&mut out_buf, h, w).unwrap(),
+            )
+            .unwrap();
+        recovered.push(shift);
+    }
+
+    // First frame is identity.
+    assert_eq!(recovered[0], MotionShift { dy: 0.0, dx: 0.0 });
+
+    // Non-first frames: shift recovered within 1 px of ground truth.
+    // Tolerance is loose because the hot-pixel median perturbs the input
+    // before it reaches the correlator.
+    for (i, &(dy_true, dx_true)) in drifts.iter().enumerate().skip(1) {
+        let s = recovered[i];
+        assert!(
+            (s.dy - dy_true as f32).abs() < 1.0,
+            "frame {i}: dy = {}, expected ≈ {dy_true}",
+            s.dy
+        );
+        assert!(
+            (s.dx - dx_true as f32).abs() < 1.0,
+            "frame {i}: dx = {}, expected ≈ {dx_true}",
+            s.dx
+        );
+    }
+    assert_eq!(pipeline.motion_state().global_count(), drifts.len() as u64);
 }
 
 #[test]

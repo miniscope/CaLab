@@ -280,9 +280,7 @@ fn main() -> ExitCode {
             eprintln!("error writing {out_path}: {e}");
             return ExitCode::from(1);
         }
-        eprintln!(
-            "  {name}: range [{vmin:.4}, {vmax:.4}] → {out_path}"
-        );
+        eprintln!("  {name}: range [{vmin:.4}, {vmax:.4}] → {out_path}");
     }
 
     ExitCode::SUCCESS

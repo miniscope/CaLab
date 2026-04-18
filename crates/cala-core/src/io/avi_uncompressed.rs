@@ -13,6 +13,15 @@
 
 use crate::config::GrayscaleMethod;
 
+/// Upper bound on `width · height · channels` we'll accept from an AVI
+/// header. Malformed or hostile files can declare arbitrarily large
+/// dimensions; without a cap, the multiplication silently wraps on
+/// 32-bit targets (wasm32) and forces huge downstream allocations on
+/// 64-bit. 512 MiB is well above realistic miniscope frames (the
+/// largest stream we've seen is ~4 MiB per frame) while keeping
+/// attacks bounded to a single large-but-survivable alloc.
+pub const MAX_FRAME_BYTES: usize = 512 * 1024 * 1024;
+
 /// Errors surfaced by the AVI reader.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AviError {
@@ -30,6 +39,9 @@ pub enum AviError {
     FrameOutOfRange(u32),
     /// Grayscale output buffer is the wrong length for this stream.
     OutputLengthMismatch { expected: usize, actual: usize },
+    /// `width · height · channels` exceeded `MAX_FRAME_BYTES` or
+    /// overflowed `usize` arithmetic.
+    FrameTooLarge,
 }
 
 /// Reader over an in-memory uncompressed AVI.
@@ -122,7 +134,16 @@ impl<'a> AviUncompressedReader<'a> {
         if width == 0 || height == 0 {
             return Err(AviError::BadHeader("zero frame dimension"));
         }
-        let frame_byte_size = (width as usize) * (height as usize) * (channels as usize);
+        // Use checked arithmetic: on 32-bit/wasm32 these multiplications
+        // can silently wrap, so a hostile header would otherwise bypass
+        // any size check. Cap the result at MAX_FRAME_BYTES.
+        let frame_byte_size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(channels as usize))
+            .ok_or(AviError::FrameTooLarge)?;
+        if frame_byte_size > MAX_FRAME_BYTES {
+            return Err(AviError::FrameTooLarge);
+        }
         // Stride-padded rows (common in BMP) are outside Phase 1 scope.
         // Most miniscope recorders pack tightly, so we require that.
         if format.size_image != 0 && (format.size_image as usize) != frame_byte_size {

@@ -17,7 +17,9 @@ fn main() -> ExitCode {
     if args.len() < 3 {
         eprintln!(
             "usage: {} OUTPUT.avi INPUT1.avi [INPUT2.avi ...]",
-            args.first().map(String::as_str).unwrap_or("cala-concat-avi")
+            args.first()
+                .map(String::as_str)
+                .unwrap_or("cala-concat-avi")
         );
         return ExitCode::from(2);
     }
