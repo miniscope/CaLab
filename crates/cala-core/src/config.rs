@@ -373,3 +373,272 @@ impl FitConfig {
         self
     }
 }
+
+// ── Extend loop (Phase 3) ──────────────────────────────────────────────
+
+/// Class tag carried on every component in `Ã`. Phase 3 extend proposes
+/// a class per candidate based on shape + temporal dynamics priors
+/// (design §3.1). Phase 2 footprints are implicitly `Cell` — the class
+/// field was added in Phase 3 without disturbing existing callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComponentClass {
+    /// Localized, compact, cell-scale footprint with fast transients.
+    Cell,
+    /// Large-support, near-DC temporal trace: illumination, vignetting,
+    /// slow focus drift.
+    SlowBaseline,
+    /// Diffuse, larger-than-cell, moderately slow — correlated
+    /// background tied to groups of nearby cells.
+    Neuropil,
+}
+
+/// Default class assigned to components registered without an explicit
+/// tag (e.g. Phase 2 `Footprints::push_component` keeps working).
+pub const DEFAULT_COMPONENT_CLASS: ComponentClass = ComponentClass::Cell;
+
+/// Number of recent residual frames the extend loop has access to when
+/// searching for new components. Two seconds at 30 fps is long enough
+/// for pixel-variance to stabilize over a few spikes but short enough
+/// that a new cell's first transients still dominate the window.
+pub const DEFAULT_EXTEND_WINDOW_FRAMES: u32 = 60;
+
+/// Patch radius around the max-variance pixel, expressed as a multiple
+/// of the recording's neuron diameter. 1.5 × neuron diameter captures
+/// the cell plus a ring of context for the rank-1 NMF to pull a clean
+/// spatial footprint without edge truncation.
+pub const DEFAULT_PATCH_RADIUS_DIAMETERS: f32 = 1.5;
+
+/// Floor on the window's max per-pixel residual variance for extend to
+/// run at all. If the residual is effectively noise, proposing
+/// components just adds spurious estimators. Units are squared
+/// preprocessed-pixel intensity; tune per recording if noise floor
+/// differs substantially from the minian-demo baseline.
+pub const DEFAULT_PATCH_MIN_VARIANCE: f32 = 1e-4;
+
+/// Maximum multiplicative-update iterations for rank-1 NMF on the
+/// candidate patch. Chang's reference converges in ~20–30; 50 gives
+/// headroom for pathological patches without unbounded runtime.
+pub const DEFAULT_NMF_MAX_ITER: u32 = 50;
+
+/// Relative convergence tolerance for the rank-1 NMF inner loop:
+/// stop when `‖Δa‖ + ‖Δc‖ < tol · (‖a‖ + ‖c‖)`. 1e-4 is tight enough
+/// that downstream shape gates see a stable footprint.
+pub const DEFAULT_NMF_TOL: f32 = 1e-4;
+
+/// Relative reconstruction-error ceiling for a candidate patch: the
+/// rank-1 fit's residual Frobenius norm divided by the patch Frobenius
+/// norm. Above this the patch is likely multi-source (two close cells)
+/// and the candidate is rejected — design §3 quality gate.
+pub const DEFAULT_RECON_ERROR_MAX: f32 = 0.5;
+
+/// Minimum equivalent diameter (pixels, derived from footprint support
+/// area) for the cell class, as a multiple of `neuron_diameter_um` in
+/// pixels. 0.5 × = cells cannot be smaller than half the expected body
+/// size — rejects fragment footprints and shot-noise spikes.
+pub const DEFAULT_CELL_DIAMETER_MIN_D: f32 = 0.5;
+
+/// Maximum equivalent diameter for the cell class, as a multiple of
+/// `neuron_diameter_um` in pixels. 1.5 × keeps the upper bound loose
+/// enough to admit elongated / lopsided real cells while still
+/// separating them from neuropil-scale support.
+pub const DEFAULT_CELL_DIAMETER_MAX_D: f32 = 1.5;
+
+/// Lower diameter bound for the neuropil class (multiples of neuron
+/// diameter). Above `cell_diameter_max_d` and below this, the
+/// candidate is ambiguous and rejected. 2.0 × matches the lower end
+/// of the 20–100 px neuropil scale at 10 px cell bodies.
+pub const DEFAULT_NEUROPIL_DIAMETER_MIN_D: f32 = 2.0;
+
+/// Upper diameter bound for the neuropil class. Above this, the
+/// candidate is classified as slow baseline (near-DC, large support).
+/// 10 × neuron diameter comfortably covers full-FOV vignetting on
+/// typical miniscope recordings.
+pub const DEFAULT_NEUROPIL_DIAMETER_MAX_D: f32 = 10.0;
+
+/// Isoperimetric-quotient floor for the cell class: `4π · area /
+/// perimeter²`. 1.0 is a perfect circle. 0.5 allows elongated but
+/// still compact cells while rejecting filament-like or fragmented
+/// supports. Only applied to cell-class candidates.
+pub const DEFAULT_CELL_COMPACTNESS_MIN: f32 = 0.5;
+
+/// Minimum normalized spatial-support overlap between a candidate and
+/// an existing component for them to be considered an overlap pair:
+/// `|supp_new ∩ supp_i| / min(|supp_new|, |supp_i|)`. Below this, the
+/// pair is spatially disjoint and proceeds as a new-component
+/// registration regardless of trace correlation.
+pub const DEFAULT_OVERLAP_FRACTION_MIN: f32 = 0.3;
+
+/// Trace-correlation threshold (Pearson r over the extend window) for
+/// collapsing an overlapping candidate + existing pair into a merge
+/// proposal. Below this, they are treated as distinct components that
+/// happen to share pixels (cells touching but firing independently).
+pub const DEFAULT_TRACE_CORR_MIN: f32 = 0.85;
+
+/// Mutation queue capacity — bounded ring, drop-oldest policy (design
+/// §7.3). 32 slots absorbs a busy extend cycle without stalling while
+/// the drop counter makes saturation user-visible in the UI.
+pub const DEFAULT_MUTATION_QUEUE_CAPACITY: usize = 32;
+
+/// Cap on proposals emitted per extend cycle (design §13 dense-scene
+/// risk mitigation). Limits extend's work-per-cycle so its latency
+/// stays bounded even when many components are proposable at once.
+pub const DEFAULT_PROPOSALS_PER_CYCLE_MAX: u32 = 4;
+
+/// Tuning for the Phase 3 extend loop. Every knob reads from its
+/// `DEFAULT_*` constant via `ExtendConfig::default()`; algorithm code
+/// never reads the constants directly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtendConfig {
+    /// Number of recent residual frames retained for extend search.
+    pub extend_window_frames: u32,
+    /// Patch radius as a multiple of `neuron_diameter_um` in pixels.
+    pub patch_radius_diameters: f32,
+    /// Minimum max-pixel variance threshold to trigger an extend cycle.
+    pub patch_min_variance: f32,
+    /// Rank-1 NMF iteration cap on a candidate patch.
+    pub nmf_max_iter: u32,
+    /// Rank-1 NMF relative convergence tolerance.
+    pub nmf_tol: f32,
+    /// Relative reconstruction-error ceiling for candidate acceptance.
+    pub recon_error_max: f32,
+    /// Minimum cell-class equivalent diameter (multiples of neuron d).
+    pub cell_diameter_min_d: f32,
+    /// Maximum cell-class equivalent diameter (multiples of neuron d).
+    pub cell_diameter_max_d: f32,
+    /// Minimum neuropil-class equivalent diameter.
+    pub neuropil_diameter_min_d: f32,
+    /// Maximum neuropil-class equivalent diameter (above → slow baseline).
+    pub neuropil_diameter_max_d: f32,
+    /// Isoperimetric-quotient floor for cell-class candidates.
+    pub cell_compactness_min: f32,
+    /// Minimum normalized spatial overlap to consider a merge pair.
+    pub overlap_fraction_min: f32,
+    /// Trace-correlation threshold for merge vs distinct components.
+    pub trace_corr_min: f32,
+    /// Mutation queue capacity.
+    pub mutation_queue_capacity: usize,
+    /// Cap on proposals emitted per extend cycle.
+    pub proposals_per_cycle_max: u32,
+}
+
+impl Default for ExtendConfig {
+    fn default() -> Self {
+        Self {
+            extend_window_frames: DEFAULT_EXTEND_WINDOW_FRAMES,
+            patch_radius_diameters: DEFAULT_PATCH_RADIUS_DIAMETERS,
+            patch_min_variance: DEFAULT_PATCH_MIN_VARIANCE,
+            nmf_max_iter: DEFAULT_NMF_MAX_ITER,
+            nmf_tol: DEFAULT_NMF_TOL,
+            recon_error_max: DEFAULT_RECON_ERROR_MAX,
+            cell_diameter_min_d: DEFAULT_CELL_DIAMETER_MIN_D,
+            cell_diameter_max_d: DEFAULT_CELL_DIAMETER_MAX_D,
+            neuropil_diameter_min_d: DEFAULT_NEUROPIL_DIAMETER_MIN_D,
+            neuropil_diameter_max_d: DEFAULT_NEUROPIL_DIAMETER_MAX_D,
+            cell_compactness_min: DEFAULT_CELL_COMPACTNESS_MIN,
+            overlap_fraction_min: DEFAULT_OVERLAP_FRACTION_MIN,
+            trace_corr_min: DEFAULT_TRACE_CORR_MIN,
+            mutation_queue_capacity: DEFAULT_MUTATION_QUEUE_CAPACITY,
+            proposals_per_cycle_max: DEFAULT_PROPOSALS_PER_CYCLE_MAX,
+        }
+    }
+}
+
+impl ExtendConfig {
+    pub fn with_extend_window_frames(mut self, n: u32) -> Self {
+        assert!(n >= 1, "extend_window_frames must be ≥ 1 (got {n})");
+        self.extend_window_frames = n;
+        self
+    }
+
+    pub fn with_patch_radius_diameters(mut self, d: f32) -> Self {
+        assert!(
+            d > 0.0,
+            "patch_radius_diameters must be positive (got {d})"
+        );
+        self.patch_radius_diameters = d;
+        self
+    }
+
+    pub fn with_patch_min_variance(mut self, v: f32) -> Self {
+        assert!(v >= 0.0, "patch_min_variance must be non-negative (got {v})");
+        self.patch_min_variance = v;
+        self
+    }
+
+    pub fn with_nmf_max_iter(mut self, n: u32) -> Self {
+        assert!(n >= 1, "nmf_max_iter must be ≥ 1 (got {n})");
+        self.nmf_max_iter = n;
+        self
+    }
+
+    pub fn with_nmf_tol(mut self, tol: f32) -> Self {
+        assert!(tol > 0.0, "nmf_tol must be positive (got {tol})");
+        self.nmf_tol = tol;
+        self
+    }
+
+    pub fn with_recon_error_max(mut self, e: f32) -> Self {
+        assert!(e > 0.0, "recon_error_max must be positive (got {e})");
+        self.recon_error_max = e;
+        self
+    }
+
+    pub fn with_cell_diameter_range(mut self, min_d: f32, max_d: f32) -> Self {
+        assert!(
+            min_d > 0.0 && max_d >= min_d,
+            "cell diameter range must satisfy 0 < min ≤ max (got {min_d}..={max_d})"
+        );
+        self.cell_diameter_min_d = min_d;
+        self.cell_diameter_max_d = max_d;
+        self
+    }
+
+    pub fn with_neuropil_diameter_range(mut self, min_d: f32, max_d: f32) -> Self {
+        assert!(
+            min_d > 0.0 && max_d >= min_d,
+            "neuropil diameter range must satisfy 0 < min ≤ max (got {min_d}..={max_d})"
+        );
+        self.neuropil_diameter_min_d = min_d;
+        self.neuropil_diameter_max_d = max_d;
+        self
+    }
+
+    pub fn with_cell_compactness_min(mut self, q: f32) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&q),
+            "cell_compactness_min must be in [0, 1] (got {q})"
+        );
+        self.cell_compactness_min = q;
+        self
+    }
+
+    pub fn with_overlap_fraction_min(mut self, f: f32) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&f),
+            "overlap_fraction_min must be in [0, 1] (got {f})"
+        );
+        self.overlap_fraction_min = f;
+        self
+    }
+
+    pub fn with_trace_corr_min(mut self, r: f32) -> Self {
+        assert!(
+            (-1.0..=1.0).contains(&r),
+            "trace_corr_min must be in [-1, 1] (got {r})"
+        );
+        self.trace_corr_min = r;
+        self
+    }
+
+    pub fn with_mutation_queue_capacity(mut self, n: usize) -> Self {
+        assert!(n >= 1, "mutation_queue_capacity must be ≥ 1 (got {n})");
+        self.mutation_queue_capacity = n;
+        self
+    }
+
+    pub fn with_proposals_per_cycle_max(mut self, n: u32) -> Self {
+        assert!(n >= 1, "proposals_per_cycle_max must be ≥ 1 (got {n})");
+        self.proposals_per_cycle_max = n;
+        self
+    }
+}

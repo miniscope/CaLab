@@ -7,7 +7,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod assets;
+pub mod buffers;
 pub mod config;
+pub mod extending;
 pub mod fitting;
 pub mod io;
 pub mod preprocess;
