@@ -27,10 +27,19 @@ export interface ChannelSlot {
   epoch: bigint;
 }
 
-// TODO(task 16): MutationQueue surface — bounded drop-oldest ring used by
-// the extend worker to publish PipelineMutation records to the fit worker.
-// See CALA_DESIGN §7.3.
-export type MutationQueue = Todo<'MutationQueue'>;
+// MutationQueue surface — bounded drop-oldest ring used by the extend
+// worker to publish PipelineMutation records to the fit worker. Single-
+// threaded for now; cross-worker SAB backing lands with the orchestrator
+// in task 18. See CALA_DESIGN §7.3.
+export {
+  MutationQueue,
+  snapshotEpoch,
+  type PipelineMutation,
+  type DeprecateReason,
+  type ComponentClass,
+  type Epoch,
+  type MutationQueueConfig,
+} from './mutation-queue.ts';
 
 // TODO(task 17): Snapshot surface — copy-on-write asset view protocol that
 // gives the extend worker a consistent `A, W, M` at an epoch boundary.

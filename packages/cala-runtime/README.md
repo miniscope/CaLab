@@ -13,7 +13,8 @@ design, mutation queue protocol, asset snapshot protocol.
 - `channel.ts` — SAB-backed single-producer/single-consumer ring for
   frame data (decoder → fit, fit → extend). [landed, task 15]
 - `mutation-queue.ts` — bounded drop-oldest ring (extend → fit).
-  [later task 16]
+  [landed, task 16] Single-threaded TS port of the Rust `MutationQueue`;
+  cross-worker SAB-backed version lands with the orchestrator (task 18).
 - `asset-snapshot.ts` — copy-on-write snapshot of `A, W, M` at an
   epoch boundary. [later task 17]
 - `events.ts` — event bus consumed by the archive worker.
