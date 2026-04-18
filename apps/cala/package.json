@@ -22,6 +22,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run --config ./vitest.e2e.config.ts",
     "verify-sab": "node scripts/verify-sab.mjs"
   },
   "dependencies": {

@@ -20,7 +20,7 @@
       "@calab/ui/*": ["../../packages/ui/src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "e2e"],
   "references": [
     { "path": "../../packages/cala-core" },
     { "path": "../../packages/cala-runtime" },

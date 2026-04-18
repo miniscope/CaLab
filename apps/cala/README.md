@@ -4,14 +4,18 @@ Streaming calcium imaging demixing. Browser-native OMF pipeline port of Raymond 
 
 ## Status
 
-**Coming soon** — scaffolded in Phase 5, functional build lands at Phase 5 exit (task 25). See `.planning/CALA_DESIGN.md` for the full design.
+**Phase 5 exit complete, 2026-04-18.** End-to-end W1→W2→W4 pipeline runs on a real uncompressed 8-bit miniscope AVI. The production runtime is browser-only; see `.planning/CALA_DESIGN.md` for the full phase ledger and what's deferred to Phase 6+.
 
 ## Dev
 
 ```
-npm run dev -w apps/cala       # starts Vite with COOP/COEP headers set
+npm run dev -w apps/cala        # starts Vite with COOP/COEP headers set
 npm run verify-sab -w apps/cala # boots Vite, asserts SAB headers live
+npm run test:e2e -w apps/cala   # Phase 5 exit E2E on a real AVI fixture
+npm run test:e2e:cala           # same, from repo root
 ```
+
+The E2E fixture lives under `.test_data/` (gitignored — local-only). The Phase 5 exit spec reads `.test_data/anchor_v12_prepped.avi` by default; if you don't have that file the test throws with a clear message. See `apps/cala/e2e/phase5-exit.e2e.test.ts` for the full harness — it pipes real AVI bytes through the real W1, W2, and W4 worker modules wired by the real SAB channel, with the WASM numerical core stubbed (Rust/WASM correctness is covered by the Phase 3 exit in `crates/cala-core`).
 
 `SharedArrayBuffer` (used by the worker runtime for SAB-backed channels, mutation queue, and event bus) needs cross-origin isolation:
 
@@ -55,4 +59,4 @@ Per-task layout expansions:
 | 22   | `workers/fit.worker.ts`                                                                                              |
 | 23   | `workers/extend.worker.ts`, `workers/archive.worker.ts`                                                              |
 | 24   | `components/frame/SingleFrameViewer.tsx`, `lib/archive-client.ts`, `lib/dashboard-store.ts`                          |
-| 25   | Phase 5 exit E2E on a real AVI                                                                                       |
+| 25   | `e2e/phase5-exit.e2e.test.ts`, `vitest.e2e.config.ts`, `test:e2e` scripts                                            |
