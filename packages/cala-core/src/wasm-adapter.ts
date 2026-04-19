@@ -12,6 +12,7 @@
 
 import init, {
   AviReader,
+  Extender,
   Fitter,
   MutationQueueHandle,
   Preprocessor,
@@ -19,7 +20,15 @@ import init, {
   init_panic_hook,
 } from '../../../crates/cala-core/pkg/calab_cala_core';
 
-export { AviReader, Fitter, MutationQueueHandle, Preprocessor, SnapshotHandle, init_panic_hook };
+export {
+  AviReader,
+  Extender,
+  Fitter,
+  MutationQueueHandle,
+  Preprocessor,
+  SnapshotHandle,
+  init_panic_hook,
+};
 
 let calaReady: Promise<void> | null = null;
 let calaMemory: WebAssembly.Memory | null = null;

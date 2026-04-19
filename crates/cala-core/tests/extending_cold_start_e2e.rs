@@ -21,13 +21,10 @@
 use calab_cala_core::assets::Footprints;
 use calab_cala_core::buffers::bipbuf::ResidualRingBuf;
 use calab_cala_core::config::{ComponentClass, ExtendConfig, FitConfig, RecordingMetadata};
-use calab_cala_core::extending::mutation::{MutationQueue, PipelineMutation};
-use calab_cala_core::extending::overlap::{overlap_fraction, patch_to_frame_support};
+use calab_cala_core::extending::driver::run_cycle as run_extend_cycle;
+use calab_cala_core::extending::mutation::MutationQueue;
+use calab_cala_core::extending::overlap::overlap_fraction;
 use calab_cala_core::extending::redundancy::pearson_correlation;
-use calab_cala_core::extending::segment::{
-    argmax_yx, classify_candidate, extract_patch_stack, patch_bounds, rank1_nmf, variance_map,
-    ClassDecision,
-};
 use calab_cala_core::fitting::FitPipeline;
 
 // ── Deterministic helpers ─────────────────────────────────────────────
@@ -188,135 +185,6 @@ fn synthesize_frames(
     frames
 }
 
-// ── Extend cycle: patch → NMF → gates → redundancy → mutation ─────────
-
-#[allow(clippy::too_many_arguments)]
-fn run_extend_cycle(
-    buf: &ResidualRingBuf,
-    pipeline: &FitPipeline,
-    height: usize,
-    width: usize,
-    recording: &RecordingMetadata,
-    extend_cfg: &ExtendConfig,
-    queue: &mut MutationQueue,
-) {
-    if buf.is_empty() {
-        return;
-    }
-    let mut vmap = variance_map(buf);
-    let radius_px = (extend_cfg.patch_radius_diameters * recording.neuron_diameter_um
-        / recording.pixel_size_um) as usize;
-    let radius_px = radius_px.max(2);
-
-    let mut proposals = 0u32;
-    let snap_epoch = pipeline.epoch();
-
-    while proposals < extend_cfg.proposals_per_cycle_max {
-        let Some((cy, cx, max_var)) = argmax_yx(&vmap, height, width) else {
-            break;
-        };
-        if max_var < extend_cfg.patch_min_variance {
-            break;
-        }
-        let (y_range, x_range) = patch_bounds(cy, cx, radius_px, height, width);
-        let patch_h = y_range.end - y_range.start;
-        let patch_w = x_range.end - x_range.start;
-        let stack = extract_patch_stack(buf, height, width, y_range.clone(), x_range.clone());
-        let nmf = rank1_nmf(
-            &stack,
-            buf.len(),
-            patch_h * patch_w,
-            extend_cfg.nmf_max_iter,
-            extend_cfg.nmf_tol,
-        );
-        let decision = classify_candidate(&nmf, recording, extend_cfg, patch_h, patch_w);
-
-        // Zero out this patch in vmap so the next iteration finds a
-        // new region — same effect as thesis Alg 9 line 12.
-        for y in y_range.clone() {
-            for x in x_range.clone() {
-                vmap[y * width + x] = 0.0;
-            }
-        }
-
-        let (class, _diameter, _compactness) = match decision {
-            ClassDecision::Accept {
-                class,
-                diameter_px,
-                compactness,
-                ..
-            } => (class, diameter_px, compactness),
-            ClassDecision::Reject(_) => continue,
-        };
-
-        // Build full-frame support + values from the unit-L2 patch `a`.
-        let support = patch_to_frame_support(
-            &nmf.a,
-            patch_h,
-            patch_w,
-            y_range.clone(),
-            x_range.clone(),
-            width,
-            extend_cfg.footprint_support_threshold_rel,
-        );
-        if support.is_empty() {
-            continue;
-        }
-        // Values aligned with `support`: re-read `a` at the same
-        // threshold so the two stay in sync.
-        let a_max = nmf.a.iter().cloned().fold(0.0f32, f32::max);
-        let cutoff = extend_cfg.footprint_support_threshold_rel * a_max;
-        let mut values = Vec::with_capacity(support.len());
-        for py in 0..patch_h {
-            for px in 0..patch_w {
-                let v = nmf.a[py * patch_w + px];
-                if v > cutoff {
-                    values.push(v);
-                }
-            }
-        }
-
-        // Redundancy: candidate overlapping + correlating with an
-        // existing component is skipped — the existing component
-        // owns that source. (A candidate-plus-existing merge path
-        // via `merge_components` is available but disabled for
-        // this E2E: fit already refines existing components through
-        // its own CD loop, so re-merging every cycle tends to drift
-        // the footprint rather than improve it.)
-        let fp = pipeline.footprints();
-        let mut is_redundant = false;
-        for i in 0..fp.len() {
-            let existing_support = fp.support(i);
-            if overlap_fraction(&support, existing_support) < extend_cfg.overlap_fraction_min {
-                continue;
-            }
-            let existing_col = pipeline.traces().column(i);
-            let window = nmf.c.len();
-            if existing_col.len() < window {
-                continue;
-            }
-            let start = existing_col.len() - window;
-            let r = pearson_correlation(&existing_col[start..], &nmf.c);
-            if r >= extend_cfg.trace_corr_min {
-                is_redundant = true;
-                break;
-            }
-        }
-        if is_redundant {
-            continue;
-        }
-
-        queue.push(PipelineMutation::Register {
-            snapshot_epoch: snap_epoch,
-            class,
-            support,
-            values,
-            trace: nmf.c.clone(),
-        });
-        proposals += 1;
-    }
-}
-
 // ── Recovery evaluation ───────────────────────────────────────────────
 
 /// Compare traces only over a trailing window — skips the zero-pad
@@ -452,7 +320,7 @@ fn cold_start_dense_recovery() {
         buf.push(residual);
 
         if (t + 1) % cycle_every == 0 {
-            run_extend_cycle(
+            let _proposed = run_extend_cycle(
                 &buf,
                 &pipeline,
                 height,

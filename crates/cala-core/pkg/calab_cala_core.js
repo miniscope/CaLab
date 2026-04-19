@@ -118,6 +118,104 @@ export class AviReader {
 if (Symbol.dispose) AviReader.prototype[Symbol.dispose] = AviReader.prototype.free;
 
 /**
+ * Wraps a `ResidualRingBuf` plus the parsed `ExtendConfig` /
+ * `RecordingMetadata` so the browser W3 worker can drive one
+ * `extending::driver::run_cycle` per extend tick without re-parsing
+ * JSON every call. The caller pushes residuals each fit frame and
+ * invokes `runCycle` on whatever cadence the worker chooses
+ * (design §7.2, §13 bounded-work-per-cycle).
+ */
+export class Extender {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        ExtenderFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_extender_free(ptr, 0);
+    }
+    /**
+     * Construct an Extender. `residual_window_len` is typically
+     * `ExtendConfig::extend_window_frames` but stays an explicit
+     * argument so the caller can size the buffer against whatever
+     * window they ship to fit without re-reading the config.
+     * @param {number} height
+     * @param {number} width
+     * @param {number} residual_window_len
+     * @param {string} extend_cfg_json
+     * @param {string} metadata_json
+     */
+    constructor(height, width, residual_window_len, extend_cfg_json, metadata_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(extend_cfg_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(metadata_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.extender_new(retptr, height, width, residual_window_len, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            this.__wbg_ptr = r0 >>> 0;
+            ExtenderFinalization.register(this, this.__wbg_ptr, this);
+            return this;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Push one residual frame (length = `height * width`). Drop-oldest
+     * when the window is full.
+     * @param {Float32Array} residual
+     */
+    pushResidual(residual) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArrayF32ToWasm0(residual, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.extender_pushResidual(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Length of the residual window that would feed the next cycle.
+     * Cosmetic accessor the worker exposes as a vitals metric.
+     * @returns {number}
+     */
+    residualLen() {
+        const ret = wasm.extender_residualLen(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Run one extend cycle against `fitter`'s current state.
+     * Proposals land on `queue` (drop-oldest); returns the number
+     * actually pushed this call so the worker can report an
+     * extend-cycle metric.
+     * @param {Fitter} fitter
+     * @param {MutationQueueHandle} queue
+     * @returns {number}
+     */
+    runCycle(fitter, queue) {
+        _assertClass(fitter, Fitter);
+        _assertClass(queue, MutationQueueHandle);
+        const ret = wasm.extender_runCycle(this.__wbg_ptr, fitter.__wbg_ptr, queue.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) Extender.prototype[Symbol.dispose] = Extender.prototype.free;
+
+/**
  * Owning wrapper over `FitPipeline` — the per-frame OMF step. Starts
  * with an empty `Footprints` (`num_components() == 0`); the fit
  * worker grows the model by draining the `MutationQueueHandle`.
@@ -593,6 +691,9 @@ function __wbg_get_imports() {
 const AviReaderFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_avireader_free(ptr >>> 0, 1));
+const ExtenderFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_extender_free(ptr >>> 0, 1));
 const FitterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_fitter_free(ptr >>> 0, 1));

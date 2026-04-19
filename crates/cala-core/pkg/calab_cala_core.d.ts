@@ -33,6 +33,43 @@ export class AviReader {
 }
 
 /**
+ * Wraps a `ResidualRingBuf` plus the parsed `ExtendConfig` /
+ * `RecordingMetadata` so the browser W3 worker can drive one
+ * `extending::driver::run_cycle` per extend tick without re-parsing
+ * JSON every call. The caller pushes residuals each fit frame and
+ * invokes `runCycle` on whatever cadence the worker chooses
+ * (design §7.2, §13 bounded-work-per-cycle).
+ */
+export class Extender {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Construct an Extender. `residual_window_len` is typically
+     * `ExtendConfig::extend_window_frames` but stays an explicit
+     * argument so the caller can size the buffer against whatever
+     * window they ship to fit without re-reading the config.
+     */
+    constructor(height: number, width: number, residual_window_len: number, extend_cfg_json: string, metadata_json: string);
+    /**
+     * Push one residual frame (length = `height * width`). Drop-oldest
+     * when the window is full.
+     */
+    pushResidual(residual: Float32Array): void;
+    /**
+     * Length of the residual window that would feed the next cycle.
+     * Cosmetic accessor the worker exposes as a vitals metric.
+     */
+    residualLen(): number;
+    /**
+     * Run one extend cycle against `fitter`'s current state.
+     * Proposals land on `queue` (drop-oldest); returns the number
+     * actually pushed this call so the worker can report an
+     * extend-cycle metric.
+     */
+    runCycle(fitter: Fitter, queue: MutationQueueHandle): number;
+}
+
+/**
  * Owning wrapper over `FitPipeline` — the per-frame OMF step. Starts
  * with an empty `Footprints` (`num_components() == 0`); the fit
  * worker grows the model by draining the `MutationQueueHandle`.
@@ -174,6 +211,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_avireader_free: (a: number, b: number) => void;
+    readonly __wbg_extender_free: (a: number, b: number) => void;
     readonly __wbg_fitter_free: (a: number, b: number) => void;
     readonly __wbg_mutationqueuehandle_free: (a: number, b: number) => void;
     readonly __wbg_preprocessor_free: (a: number, b: number) => void;
@@ -186,6 +224,9 @@ export interface InitOutput {
     readonly avireader_new: (a: number, b: number, c: number) => void;
     readonly avireader_readFrameGrayscaleF32: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly avireader_width: (a: number) => number;
+    readonly extender_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly extender_pushResidual: (a: number, b: number, c: number, d: number) => void;
+    readonly extender_runCycle: (a: number, b: number, c: number) => number;
     readonly fitter_drainApply: (a: number, b: number, c: number) => void;
     readonly fitter_epoch: (a: number) => bigint;
     readonly fitter_height: (a: number) => number;
@@ -210,6 +251,7 @@ export interface InitOutput {
     readonly snapshothandle_numComponents: (a: number) => number;
     readonly snapshothandle_pixels: (a: number) => number;
     readonly init_panic_hook: () => void;
+    readonly extender_residualLen: (a: number) => number;
     readonly __wbindgen_export: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export2: (a: number, b: number) => number;
     readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;

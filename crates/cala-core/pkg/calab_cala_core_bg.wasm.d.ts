@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_avireader_free: (a: number, b: number) => void;
+export const __wbg_extender_free: (a: number, b: number) => void;
 export const __wbg_fitter_free: (a: number, b: number) => void;
 export const __wbg_mutationqueuehandle_free: (a: number, b: number) => void;
 export const __wbg_preprocessor_free: (a: number, b: number) => void;
@@ -14,6 +15,9 @@ export const avireader_height: (a: number) => number;
 export const avireader_new: (a: number, b: number, c: number) => void;
 export const avireader_readFrameGrayscaleF32: (a: number, b: number, c: number, d: number, e: number) => void;
 export const avireader_width: (a: number) => number;
+export const extender_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const extender_pushResidual: (a: number, b: number, c: number, d: number) => void;
+export const extender_runCycle: (a: number, b: number, c: number) => number;
 export const fitter_drainApply: (a: number, b: number, c: number) => void;
 export const fitter_epoch: (a: number) => bigint;
 export const fitter_height: (a: number) => number;
@@ -38,6 +42,7 @@ export const snapshothandle_epoch: (a: number) => bigint;
 export const snapshothandle_numComponents: (a: number) => number;
 export const snapshothandle_pixels: (a: number) => number;
 export const init_panic_hook: () => void;
+export const extender_residualLen: (a: number) => number;
 export const __wbindgen_export: (a: number, b: number, c: number) => void;
 export const __wbindgen_export2: (a: number, b: number) => number;
 export const __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;

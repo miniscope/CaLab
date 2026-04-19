@@ -1,5 +1,6 @@
 export {
   AviReader,
+  Extender,
   Fitter,
   MutationQueueHandle,
   Preprocessor,

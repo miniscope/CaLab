@@ -15,6 +15,7 @@
 //! Scaffold only: each submodule ships a typed stub in Phase 3 Task 1
 //! and is filled in by its dedicated task (3–7).
 
+pub mod driver;
 pub mod merge;
 pub mod mutation;
 pub mod overlap;

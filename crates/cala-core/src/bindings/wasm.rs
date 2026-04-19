@@ -28,7 +28,9 @@ use super::config_json::{
     ConfigParseError,
 };
 use crate::assets::{Footprints, Frame, FrameMut};
-use crate::config::GrayscaleMethod;
+use crate::buffers::bipbuf::ResidualRingBuf;
+use crate::config::{ExtendConfig, GrayscaleMethod, RecordingMetadata};
+use crate::extending::driver as extend_driver;
 use crate::extending::mutation::{
     DeprecateReason, Epoch, MutationQueue, PipelineMutation, Snapshot,
 };
@@ -438,5 +440,95 @@ impl MutationQueueHandle {
             reason,
         });
         Ok(())
+    }
+}
+
+// ── Extend driver ──────────────────────────────────────────────────
+
+/// Wraps a `ResidualRingBuf` plus the parsed `ExtendConfig` /
+/// `RecordingMetadata` so the browser W3 worker can drive one
+/// `extending::driver::run_cycle` per extend tick without re-parsing
+/// JSON every call. The caller pushes residuals each fit frame and
+/// invokes `runCycle` on whatever cadence the worker chooses
+/// (design §7.2, §13 bounded-work-per-cycle).
+#[wasm_bindgen]
+pub struct Extender {
+    residual_buf: ResidualRingBuf,
+    extend_cfg: ExtendConfig,
+    recording: RecordingMetadata,
+    height: u32,
+    width: u32,
+}
+
+#[wasm_bindgen]
+impl Extender {
+    /// Construct an Extender. `residual_window_len` is typically
+    /// `ExtendConfig::extend_window_frames` but stays an explicit
+    /// argument so the caller can size the buffer against whatever
+    /// window they ship to fit without re-reading the config.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        height: u32,
+        width: u32,
+        residual_window_len: u32,
+        extend_cfg_json: &str,
+        metadata_json: &str,
+    ) -> Result<Extender, JsValue> {
+        let extend_cfg = parse_extend_config(extend_cfg_json).map_err(config_err)?;
+        let recording = parse_recording_metadata(metadata_json).map_err(config_err)?;
+        let residual_buf = ResidualRingBuf::new(
+            (height as usize) * (width as usize),
+            residual_window_len as usize,
+        );
+        Ok(Extender {
+            residual_buf,
+            extend_cfg,
+            recording,
+            height,
+            width,
+        })
+    }
+
+    /// Push one residual frame (length = `height * width`). Drop-oldest
+    /// when the window is full.
+    #[wasm_bindgen(js_name = pushResidual)]
+    pub fn push_residual(&mut self, residual: &[f32]) -> Result<(), JsValue> {
+        let pixels = (self.height as usize) * (self.width as usize);
+        if residual.len() != pixels {
+            return Err(js_err(
+                "extend",
+                format!(
+                    "residual length {} does not match height·width = {}",
+                    residual.len(),
+                    pixels
+                ),
+            ));
+        }
+        self.residual_buf.push(residual);
+        Ok(())
+    }
+
+    /// Length of the residual window that would feed the next cycle.
+    /// Cosmetic accessor the worker exposes as a vitals metric.
+    #[wasm_bindgen(js_name = residualLen)]
+    pub fn residual_len(&self) -> u32 {
+        self.residual_buf.len() as u32
+    }
+
+    /// Run one extend cycle against `fitter`'s current state.
+    /// Proposals land on `queue` (drop-oldest); returns the number
+    /// actually pushed this call so the worker can report an
+    /// extend-cycle metric.
+    #[wasm_bindgen(js_name = runCycle)]
+    pub fn run_cycle(&mut self, fitter: &Fitter, queue: &mut MutationQueueHandle) -> u32 {
+        extend_driver::run_cycle(
+            &self.residual_buf,
+            &fitter.pipeline,
+            self.height as usize,
+            self.width as usize,
+            &self.recording,
+            &self.extend_cfg,
+            &mut queue.inner,
+        )
     }
 }
