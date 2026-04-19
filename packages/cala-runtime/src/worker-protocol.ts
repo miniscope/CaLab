@@ -137,18 +137,24 @@ export type WorkerOutbound =
       pixelIndices: Uint32Array[];
       values: Float32Array[];
     }
-  // W1 preview frame for the dashboard viewer (design §12 frame panel,
-  // Phase 5 exit). Strided like `frame-processed` so the post rate is
-  // bounded even when W1 outruns the main-thread canvas; `pixels` is
-  // an 8-bit grayscale projection of the preprocessed f32 frame
-  // (post-autoscale) so the main thread can `putImageData` without
-  // touching the SAB slot the fit worker is still reading.
+  // W1 + W2 preview frames for the dashboard (design §12 frame
+  // panel). Strided like `frame-processed` so the post rate is
+  // bounded even when the producing worker outruns the main-thread
+  // canvas; `pixels` is an 8-bit grayscale projection of the
+  // producing stage's f32 frame (post-autoscale).
+  //
+  // `stage` disambiguates the four panels (Phase 7 task 5):
+  // - 'raw'            — W1 post-decode, pre-preprocess.
+  // - 'hotPixel'       — W1 post hot-pixel median, pre-motion.
+  // - 'motion'         — W1 post-motion (what fit sees).
+  // - 'reconstruction' — W2 `Ã · c_t` reconstruction.
   | {
       kind: 'frame-preview';
       role: WorkerRole;
       index: number;
       width: number;
       height: number;
+      stage: 'raw' | 'hotPixel' | 'motion' | 'reconstruction';
       pixels: Uint8ClampedArray;
     };
 

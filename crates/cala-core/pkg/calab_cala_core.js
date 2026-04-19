@@ -583,6 +583,38 @@ export class Preprocessor {
         }
     }
     /**
+     * Same as `processFrameF32` but also returns the post-hot-pixel
+     * and post-motion intermediate frames, concatenated after the
+     * final frame. Used by W1's preview path (Phase 7 task 5) so the
+     * dashboard's 4-canvas frame panel can render raw / hot-pixel /
+     * motion / reconstruction side by side.
+     *
+     * Returned layout (all `pixels` = height·width in length):
+     * `[final || hot_pixel || motion]` → total length `3·pixels`.
+     * @param {Float32Array} input
+     * @returns {Float32Array}
+     */
+    processFrameF32WithStages(input) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArrayF32ToWasm0(input, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.preprocessor_processFrameF32WithStages(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            var v2 = getArrayF32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export3(r0, r1 * 4, 4);
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Convenience: decode raw AVI bytes to grayscale and preprocess
      * in one call. Avoids a round-trip across the JS boundary for
      * the intermediate f32 buffer.

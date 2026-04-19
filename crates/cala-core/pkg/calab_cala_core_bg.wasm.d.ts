@@ -37,6 +37,7 @@ export const mutationqueuehandle_new: (a: number, b: number, c: number) => void;
 export const mutationqueuehandle_pushDeprecate: (a: number, b: number, c: bigint, d: number, e: number, f: number) => void;
 export const preprocessor_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const preprocessor_processFrameF32: (a: number, b: number, c: number, d: number) => void;
+export const preprocessor_processFrameF32WithStages: (a: number, b: number, c: number, d: number) => void;
 export const preprocessor_processFrameU8: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const preprocessor_reset: (a: number) => void;
 export const snapshothandle_epoch: (a: number) => bigint;

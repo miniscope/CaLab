@@ -189,6 +189,17 @@ export class Preprocessor {
      */
     processFrameF32(input: Float32Array): Float32Array;
     /**
+     * Same as `processFrameF32` but also returns the post-hot-pixel
+     * and post-motion intermediate frames, concatenated after the
+     * final frame. Used by W1's preview path (Phase 7 task 5) so the
+     * dashboard's 4-canvas frame panel can render raw / hot-pixel /
+     * motion / reconstruction side by side.
+     *
+     * Returned layout (all `pixels` = height·width in length):
+     * `[final || hot_pixel || motion]` → total length `3·pixels`.
+     */
+    processFrameF32WithStages(input: Float32Array): Float32Array;
+    /**
      * Convenience: decode raw AVI bytes to grayscale and preprocess
      * in one call. Avoids a round-trip across the JS boundary for
      * the intermediate f32 buffer.
@@ -261,6 +272,7 @@ export interface InitOutput {
     readonly mutationqueuehandle_pushDeprecate: (a: number, b: number, c: bigint, d: number, e: number, f: number) => void;
     readonly preprocessor_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly preprocessor_processFrameF32: (a: number, b: number, c: number, d: number) => void;
+    readonly preprocessor_processFrameF32WithStages: (a: number, b: number, c: number, d: number) => void;
     readonly preprocessor_processFrameU8: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly preprocessor_reset: (a: number) => void;
     readonly snapshothandle_epoch: (a: number) => bigint;

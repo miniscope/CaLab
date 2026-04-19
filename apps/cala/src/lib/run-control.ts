@@ -68,12 +68,23 @@ export interface LatestFramePreview {
   pixels: Uint8ClampedArray;
 }
 
+export type FrameStage = 'raw' | 'hotPixel' | 'motion' | 'reconstruction';
+
+export type LatestFramesByStage = Partial<Record<FrameStage, LatestFramePreview>>;
+
 // Signal (not store) because the preview updates every few frames and
 // fine-grained store reactivity is wasted overhead — the viewer
 // re-renders the whole canvas per update regardless.
-const [latestFrameSignal, setLatestFrameSignal] = createSignal<LatestFramePreview | null>(null);
+const [latestFramesSignal, setLatestFramesSignal] = createSignal<LatestFramesByStage>({});
 
-export const latestFrame: Accessor<LatestFramePreview | null> = latestFrameSignal;
+export const latestFrames: Accessor<LatestFramesByStage> = latestFramesSignal;
+
+// Back-compat for callers that only want the final preprocess stage
+// (the single-frame viewer reads this; the 4-canvas panel reads
+// `latestFrames` directly). Tracks the `motion` stage since that is
+// what the Phase 6 viewer always showed — the frame fit sees.
+export const latestFrame: Accessor<LatestFramePreview | null> = () =>
+  latestFramesSignal().motion ?? null;
 
 function buildConfig(meta: FrameSourceMeta, factories: WorkerFactories): RuntimeConfig {
   const frameBytes = meta.width * meta.height * BYTES_PER_F32_PIXEL;
@@ -162,12 +173,15 @@ function wrapFactories(base: WorkerFactories): WorkerFactories {
         const listener = (ev: { data: WorkerOutbound }): void => {
           const msg = ev.data;
           if (msg.kind === 'frame-preview') {
-            setLatestFrameSignal({
-              index: msg.index,
-              width: msg.width,
-              height: msg.height,
-              pixels: msg.pixels,
-            });
+            setLatestFramesSignal((prev) => ({
+              ...prev,
+              [msg.stage]: {
+                index: msg.index,
+                width: msg.width,
+                height: msg.height,
+                pixels: msg.pixels,
+              },
+            }));
             return;
           }
         };

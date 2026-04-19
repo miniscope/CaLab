@@ -173,6 +173,13 @@ class StubPreprocessor {
   processFrameF32(input: Float32Array): Float32Array {
     return input;
   }
+  processFrameF32WithStages(input: Float32Array): Float32Array {
+    const out = new Float32Array(input.length * 3);
+    out.set(input, 0);
+    out.set(input, input.length);
+    out.set(input, input.length * 2);
+    return out;
+  }
   free(): void {}
 }
 

@@ -243,6 +243,56 @@ impl Preprocessor {
             .map_err(|e| js_err("preprocess", format!("decode: {e:?}")))?;
         self.process_frame_f32(&gray)
     }
+
+    /// Same as `processFrameF32` but also returns the post-hot-pixel
+    /// and post-motion intermediate frames, concatenated after the
+    /// final frame. Used by W1's preview path (Phase 7 task 5) so the
+    /// dashboard's 4-canvas frame panel can render raw / hot-pixel /
+    /// motion / reconstruction side by side.
+    ///
+    /// Returned layout (all `pixels` = height·width in length):
+    /// `[final || hot_pixel || motion]` → total length `3·pixels`.
+    #[wasm_bindgen(js_name = processFrameF32WithStages)]
+    pub fn process_frame_f32_with_stages(&mut self, input: &[f32]) -> Result<Vec<f32>, JsValue> {
+        let pixels = (self.height as usize) * (self.width as usize);
+        if input.len() != pixels {
+            return Err(js_err(
+                "preprocess",
+                format!(
+                    "input length {} does not match height·width = {}",
+                    input.len(),
+                    pixels
+                ),
+            ));
+        }
+        let mut out = vec![0.0f32; pixels];
+        let mut hot = vec![0.0f32; pixels];
+        let mut motion = vec![0.0f32; pixels];
+        {
+            let input_view = Frame::new(input, self.height as usize, self.width as usize)
+                .map_err(|e| js_err("preprocess", format!("input shape: {e:?}")))?;
+            let mut out_view = FrameMut::new(&mut out, self.height as usize, self.width as usize)
+                .map_err(|e| js_err("preprocess", format!("output shape: {e:?}")))?;
+            let mut hot_view = FrameMut::new(&mut hot, self.height as usize, self.width as usize)
+                .map_err(|e| js_err("preprocess", format!("hot shape: {e:?}")))?;
+            let mut motion_view =
+                FrameMut::new(&mut motion, self.height as usize, self.width as usize)
+                    .map_err(|e| js_err("preprocess", format!("motion shape: {e:?}")))?;
+            self.pipeline
+                .process_frame_with_stages(
+                    input_view,
+                    &mut out_view,
+                    &mut hot_view,
+                    &mut motion_view,
+                )
+                .map_err(|e| js_err("preprocess", format!("{e:?}")))?;
+        }
+        let mut combined = Vec::with_capacity(3 * pixels);
+        combined.extend_from_slice(&out);
+        combined.extend_from_slice(&hot);
+        combined.extend_from_slice(&motion);
+        Ok(combined)
+    }
 }
 
 // ── Fit ────────────────────────────────────────────────────────────

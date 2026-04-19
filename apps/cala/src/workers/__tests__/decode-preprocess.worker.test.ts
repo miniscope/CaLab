@@ -18,6 +18,7 @@ interface MockFrameSource extends FrameSource {
 
 interface MockPreprocessor {
   processFrameF32: ReturnType<typeof vi.fn>;
+  processFrameF32WithStages: ReturnType<typeof vi.fn>;
   free: ReturnType<typeof vi.fn>;
   freed: boolean;
 }
@@ -67,6 +68,7 @@ vi.mock('@calab/io', () => ({
 vi.mock('@calab/cala-core', () => {
   class Preprocessor {
     processFrameF32: ReturnType<typeof vi.fn>;
+    processFrameF32WithStages: ReturnType<typeof vi.fn>;
     free: ReturnType<typeof vi.fn>;
     freed = false;
     constructor() {
@@ -78,6 +80,20 @@ vi.mock('@calab/cala-core', () => {
         const out = new Float32Array(input.length);
         out.set(input);
         out[0] += 1;
+        return out;
+      });
+      this.processFrameF32WithStages = vi.fn((input: Float32Array) => {
+        if (mockState.preprocessShouldThrow) throw mockState.preprocessShouldThrow;
+        // Emit [final || hotPixel || motion]. Final echoes
+        // processFrameF32's +1 adjustment so tests can distinguish the
+        // hot-path from preview-path writes to the SAB channel.
+        const out = new Float32Array(input.length * 3);
+        out.set(input, 0);
+        out[0] += 1;
+        // hotPixel: echo raw input untouched
+        out.set(input, input.length);
+        // motion: raw + marker to disambiguate in assertions
+        out.set(input, input.length * 2);
         return out;
       });
       this.free = vi.fn(() => {

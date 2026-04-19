@@ -159,27 +159,61 @@ async function handleInit(payload: WorkerInitPayload): Promise<void> {
 }
 
 async function decodeLoop(h: RuntimeHandles): Promise<void> {
+  const pixels = h.width * h.height;
   for (let i = 0; i < h.frameCount; i += 1) {
     if (stopRequested) return;
     const frame = await h.frameSource.readFrame(i, h.grayscaleMethod);
     if (stopRequested) return;
-    const processed = h.preprocessor.processFrameF32(frame);
-    // Epoch is fit-owned; W1 tags SAB slots with 0n. Fit does not
-    // rely on this tag for demux — it advances its own epoch on
-    // mutation-applied acks (design §7.3).
-    h.frameChannel.writeSlot(processed, 0n);
-    if ((i + 1) % h.heartbeatStride === 0) {
-      post({ kind: 'frame-processed', role: ROLE, index: i, epoch: 0n });
-    }
-    if (h.framePreviewStride > 0 && (i + 1) % h.framePreviewStride === 0) {
+    const wantPreview = h.framePreviewStride > 0 && (i + 1) % h.framePreviewStride === 0;
+    if (wantPreview) {
+      // Preview stride — call the stage-capturing variant so we can
+      // post raw / hotPixel / motion previews for the 4-canvas panel
+      // (design §12, Phase 7 task 5). Output layout:
+      //   [final || hotPixel || motion]
+      const combined = h.preprocessor.processFrameF32WithStages(frame);
+      const finalFrame = combined.subarray(0, pixels);
+      const hotPixelFrame = combined.subarray(pixels, 2 * pixels);
+      const motionFrame = combined.subarray(2 * pixels, 3 * pixels);
+      // Fit reads the post-preprocess frame from the SAB slot. Write
+      // `finalFrame` (motion-corrected, post-denoise when on) so the
+      // hot path sees the same data it always did.
+      h.frameChannel.writeSlot(finalFrame, 0n);
       post({
         kind: 'frame-preview',
         role: ROLE,
         index: i,
         width: h.width,
         height: h.height,
-        pixels: quantizeToU8(processed),
+        stage: 'raw',
+        pixels: quantizeToU8(frame),
       });
+      post({
+        kind: 'frame-preview',
+        role: ROLE,
+        index: i,
+        width: h.width,
+        height: h.height,
+        stage: 'hotPixel',
+        pixels: quantizeToU8(hotPixelFrame),
+      });
+      post({
+        kind: 'frame-preview',
+        role: ROLE,
+        index: i,
+        width: h.width,
+        height: h.height,
+        stage: 'motion',
+        pixels: quantizeToU8(motionFrame),
+      });
+    } else {
+      const processed = h.preprocessor.processFrameF32(frame);
+      h.frameChannel.writeSlot(processed, 0n);
+    }
+    // Epoch is fit-owned; W1 tags SAB slots with 0n. Fit does not
+    // rely on this tag for demux — it advances its own epoch on
+    // mutation-applied acks (design §7.3).
+    if ((i + 1) % h.heartbeatStride === 0) {
+      post({ kind: 'frame-processed', role: ROLE, index: i, epoch: 0n });
     }
   }
 }

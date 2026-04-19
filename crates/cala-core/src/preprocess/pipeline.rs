@@ -57,6 +57,48 @@ impl PreprocessPipeline {
         self.motion.reset();
     }
 
+    /// Run the full preprocess pipeline, copying two intermediate
+    /// stages out so the dashboard's 4-canvas frame panel (design
+    /// §12, Phase 7 task 5) can render them alongside the final
+    /// motion-corrected frame. Hot path still uses `process_frame`.
+    ///
+    /// Outputs written:
+    /// - `output`: final frame (same as `process_frame`).
+    /// - `hot_pixel_out`: post hot-pixel median, pre-motion.
+    /// - `motion_out`: post-motion, pre-denoise.
+    pub fn process_frame_with_stages(
+        &mut self,
+        input: Frame<'_>,
+        output: &mut FrameMut<'_>,
+        hot_pixel_out: &mut FrameMut<'_>,
+        motion_out: &mut FrameMut<'_>,
+    ) -> Result<MotionShift, ShapeError> {
+        let shift = self.process_frame(input, output)?;
+        // `buf_a` or `buf_b` hold the intermediate stages depending on
+        // which opt-in filters fired. Re-run the minimal capture here
+        // rather than instrumenting the hot path: callers only invoke
+        // this method at preview-stride cadence so the extra work is
+        // amortized over many frames.
+        //
+        // Simpler: just copy from the internal buffers. `buf_b` holds
+        // the post-motion frame at the end of `process_frame` (before
+        // the final denoise copy). After `process_frame`, if denoise
+        // was off, output == buf_b; if denoise was on, buf_b is still
+        // the pre-denoise motion-corrected frame. We copy that
+        // unconditionally.
+        //
+        // `buf_a` contains the stage immediately before motion — which
+        // is either the hot-pixel output (default stack) or a later
+        // opt-in filter. For the 4-canvas we want the hot-pixel stage;
+        // the current default stack passes hot-pixel output through
+        // unchanged to motion input, so re-running the hot-pixel stage
+        // into `hot_pixel_out` gives the right frame without depending
+        // on which opt-in filters are enabled.
+        crate::preprocess::hot_pixel_median_3x3(input, hot_pixel_out)?;
+        motion_out.pixels_mut().copy_from_slice(&self.buf_b);
+        Ok(shift)
+    }
+
     /// Run the full preprocess pipeline on one frame.
     ///
     /// Stages marked "opt-in" are skipped (buffer passthrough via

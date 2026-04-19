@@ -230,6 +230,14 @@ class StubPreprocessor {
     // the shape and magnitude of the data W2 and W4 see.
     return input;
   }
+  processFrameF32WithStages(input: Float32Array): Float32Array {
+    // Identity 3-stage: final || hotPixel || motion all echo input.
+    const out = new Float32Array(input.length * 3);
+    out.set(input, 0);
+    out.set(input, input.length);
+    out.set(input, input.length * 2);
+    return out;
+  }
   free(): void {
     // noop
   }
