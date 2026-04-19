@@ -421,6 +421,74 @@
   display: block;
 }
 
+/* Per-neuron zoom panel (Phase 7 task 12). */
+.neuron-zoom {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.neuron-zoom__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.neuron-zoom__id {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.neuron-zoom__close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 var(--space-xs);
+}
+
+.neuron-zoom__close:hover {
+  color: var(--text-primary);
+}
+
+.neuron-zoom__body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.neuron-zoom__footprint-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+}
+
+.neuron-zoom__footprint {
+  image-rendering: pixelated;
+  width: 64px;
+  height: 64px;
+  background: black;
+}
+
+.neuron-zoom__trace {
+  min-width: 0;
+}
+
+.neuron-zoom__empty {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
 /* Simplified single-frame viewer: no side panel in the new layout. */
 
 .frame-viewer {

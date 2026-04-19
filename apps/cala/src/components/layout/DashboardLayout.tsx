@@ -4,6 +4,7 @@ import { VitalsBar } from '../vitals/VitalsBar.tsx';
 import { EventFeed } from '../events/EventFeed.tsx';
 import { TracesPanel } from '../traces/TracesPanel.tsx';
 import { FootprintsPanel } from '../footprints/FootprintsPanel.tsx';
+import { NeuronZoomPanel } from '../neuron/NeuronZoomPanel.tsx';
 
 /**
  * Running-state layout (design §12): vitals bar along the top, the
@@ -28,6 +29,7 @@ export function DashboardLayout(): JSX.Element {
         <TracesPanel />
       </div>
       <div class="cala-dashboard__events">
+        <NeuronZoomPanel />
         <EventFeed />
       </div>
     </div>
