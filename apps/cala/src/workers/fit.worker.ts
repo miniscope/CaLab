@@ -6,6 +6,7 @@ import {
   METRIC_MEMORY_BYTES,
   METRIC_RESIDUAL_L2,
 } from '../lib/vitals.ts';
+import { FootprintSnapshotScheduler } from './footprint-snapshot-scheduler.ts';
 import {
   SabRingChannel,
   EventBus,
@@ -62,6 +63,10 @@ const DEFAULT_EXTEND_CONFIG_JSON = '{}';
 // either emits the full vitals bundle or none of it. Overridable
 // via `workerConfig.vitalsStride`.
 const DEFAULT_VITALS_STRIDE = 8;
+// Cap on neurons tracked by the log-spaced footprint scheduler
+// (design §9.3). Matches the archive's footprint-history neuron cap
+// so upstream and storage stay within the same envelope.
+const DEFAULT_FOOTPRINT_SCHEDULER_MAX_NEURONS = 512;
 
 const ROLE = 'fit' as const;
 
@@ -78,6 +83,7 @@ interface FitWorkerConfig {
   heartbeatStride: number;
   vitalsStride: number;
   snapshotStride: number;
+  footprintSchedulerMaxNeurons: number;
   mutationDrainMaxPerIteration: number;
   eventBusCapacity: number;
   eventBusMaxSubscribers: number;
@@ -118,6 +124,7 @@ interface RuntimeHandles {
   // Most recent residualL2 from `step()`; cached between frames so the
   // vitals emission can read it without re-running math.
   lastResidualL2: number;
+  footprintScheduler: FootprintSnapshotScheduler;
 }
 
 let handles: RuntimeHandles | null = null;
@@ -162,6 +169,10 @@ function parseConfig(raw: unknown): FitWorkerConfig {
     heartbeatStride: numberOr(cfg.heartbeatStride, DEFAULT_HEARTBEAT_STRIDE),
     vitalsStride: numberOr(cfg.vitalsStride, DEFAULT_VITALS_STRIDE),
     snapshotStride: numberOr(cfg.snapshotStride, DEFAULT_SNAPSHOT_STRIDE),
+    footprintSchedulerMaxNeurons: numberOr(
+      cfg.footprintSchedulerMaxNeurons,
+      DEFAULT_FOOTPRINT_SCHEDULER_MAX_NEURONS,
+    ),
     mutationDrainMaxPerIteration: numberOr(
       cfg.mutationDrainMaxPerIteration,
       DEFAULT_MUTATION_DRAIN_MAX_PER_ITERATION,
@@ -239,6 +250,9 @@ async function handleInit(payload: WorkerInitPayload): Promise<void> {
     lastVitalsTimeMs: 0,
     lastVitalsFrameIndex: 0,
     lastResidualL2: 0,
+    footprintScheduler: new FootprintSnapshotScheduler({
+      maxTrackedNeurons: cfg.footprintSchedulerMaxNeurons,
+    }),
   };
 
   // Test-only hook so unit tests can push mutations into the worker's
@@ -291,6 +305,37 @@ function mutationToEvent(m: PipelineMutation, frameIndex: number): PipelineEvent
   }
 }
 
+function updateSchedulerFromEvent(
+  scheduler: FootprintSnapshotScheduler,
+  ev: PipelineEvent,
+): void {
+  // Mirror every structural event into the scheduler so the
+  // log-spaced floor fires with the latest known footprint per
+  // neuron (§9.3). Mutations without a footprint payload still
+  // update the tracked neuron through their attached snap.
+  switch (ev.kind) {
+    case 'birth':
+      scheduler.onBirth(ev.id, ev.t, ev.footprintSnap);
+      return;
+    case 'merge':
+      scheduler.onMutationFootprint(ev.into, ev.t, ev.footprintSnap);
+      return;
+    case 'split':
+      for (let i = 0; i < ev.into.length; i += 1) {
+        const snap = ev.footprintSnaps[i];
+        if (snap) scheduler.onMutationFootprint(ev.into[i], ev.t, snap);
+      }
+      return;
+    case 'deprecate':
+      scheduler.onDeprecate(ev.id);
+      return;
+    case 'reject':
+    case 'metric':
+    case 'footprint-snapshot':
+      return;
+  }
+}
+
 function drainMutationsOnce(h: RuntimeHandles, frameIndex: number): number {
   // Apply at most `mutationDrainMaxPerIteration` queued mutations so a
   // burst of extend proposals cannot stall the fit loop for more than
@@ -305,11 +350,26 @@ function drainMutationsOnce(h: RuntimeHandles, frameIndex: number): number {
     // two queues this reduces to a single call.
     h.fitter.drainApply(h.mutationQueueHandle);
     const ev = mutationToEvent(m, frameIndex);
-    if (ev) h.eventBus.publish(ev);
+    if (ev) {
+      h.eventBus.publish(ev);
+      updateSchedulerFromEvent(h.footprintScheduler, ev);
+    }
     post({ kind: 'mutation-applied', role: ROLE, epoch: h.fitter.epoch() });
     applied += 1;
   }
   return applied;
+}
+
+function emitScheduledFootprints(h: RuntimeHandles, frameIndex: number): void {
+  const due = h.footprintScheduler.tick(frameIndex);
+  for (const d of due) {
+    h.eventBus.publish({
+      kind: 'footprint-snapshot',
+      t: d.t,
+      neuronId: d.neuronId,
+      footprint: d.footprint,
+    });
+  }
 }
 
 function takeCadencedSnapshot(h: RuntimeHandles, frameIndex: number): void {
@@ -395,6 +455,7 @@ async function fitLoop(h: RuntimeHandles): Promise<void> {
     h.lastResidualL2 = residualL2(residual);
     drainMutationsOnce(h, frameIndex);
     takeCadencedSnapshot(h, frameIndex);
+    emitScheduledFootprints(h, frameIndex);
     emitVitals(h, frameIndex);
     if ((frameIndex + 1) % h.config.heartbeatStride === 0) {
       post({

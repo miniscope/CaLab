@@ -432,6 +432,53 @@ describe('fit worker', () => {
     expect(harness.posted.filter((m) => m.kind === 'done').length).toBe(1);
   });
 
+  it('emits log-spaced footprint-snapshot events after a birth mutation', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    // Drive the scheduler by pushing a register mutation on frame 0
+    // (caches a footprint), then advance the fit loop through several
+    // frames so ages 1, 2, 4 fire.
+    const init = makeInitMsg({ heartbeatStride: 1, snapshotStride: 1000, vitalsStride: 1000 });
+    await harness.deliver(init.msg);
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+
+    mockState.program = [{}, {}, {}, {}, {}];
+    mockState.mutationsToDrain = [
+      {
+        type: 'register',
+        snapshotEpoch: 1n,
+        class: 'cell',
+        support: new Uint32Array([2, 3]),
+        values: new Float32Array([0.4, 0.5]),
+        trace: new Float32Array([0]),
+      },
+    ];
+    // Mutation has to be visible when the worker pops it on frame 0.
+    const handles = getFitHandles();
+    expect(handles).toBeDefined();
+    handles!.mutationQueue.push(mockState.mutationsToDrain.shift()!);
+
+    for (let i = 0; i < 5; i += 1) writeFrameToChannel(init.frameChannel, i);
+
+    await harness.deliver({ kind: 'run' });
+    await runUntil(
+      harness,
+      (p) =>
+        p.filter((m) => m.kind === 'event' && m.event.kind === 'footprint-snapshot').length >= 2,
+    );
+
+    const snaps = harness.posted
+      .filter(
+        (m): m is Extract<WorkerOutbound, { kind: 'event' }> =>
+          m.kind === 'event' && m.event.kind === 'footprint-snapshot',
+      )
+      .map((m) => m.event as Extract<PipelineEvent, { kind: 'footprint-snapshot' }>);
+    // At least the first log-spaced firing should appear; payloads
+    // should carry the cached footprint from the register mutation.
+    expect(snaps.length).toBeGreaterThanOrEqual(1);
+    expect(Array.from(snaps[0].footprint.pixelIndices)).toEqual([2, 3]);
+  });
+
   it('emits the five vitals metrics on the vitalsStride cadence', async () => {
     const harness = createWorkerHarness();
     await loadWorker(harness);
