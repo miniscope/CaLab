@@ -1,4 +1,10 @@
-import { initCalaCore, Fitter, MutationQueueHandle, calaMemoryBytes } from '@calab/cala-core';
+import {
+  initCalaCore,
+  Extender,
+  Fitter,
+  MutationQueueHandle,
+  calaMemoryBytes,
+} from '@calab/cala-core';
 import {
   METRIC_CELL_COUNT,
   METRIC_EXTEND_QUEUE_DEPTH,
@@ -67,6 +73,19 @@ const DEFAULT_VITALS_STRIDE = 8;
 // (design §9.3). Matches the archive's footprint-history neuron cap
 // so upstream and storage stay within the same envelope.
 const DEFAULT_FOOTPRINT_SCHEDULER_MAX_NEURONS = 512;
+// Extend-cycle cadence (design §13 bounded-work-per-cycle). One
+// cycle every N fit steps keeps segmentation cost amortized across
+// the fit hot path; default 32 ≈ ~1 s at 30 fps. Overridable via
+// `workerConfig.extendCycleStride`. Setting to 0 disables extend.
+const DEFAULT_EXTEND_CYCLE_STRIDE = 32;
+// Residual window the Extender keeps. Mirrors
+// `ExtendConfig::extend_window_frames` but lives here so the caller
+// can size the window independently from extend_cfg if needed.
+const DEFAULT_EXTEND_WINDOW_FRAMES = 64;
+// JSON for Extender-side recording metadata. Falls through to the
+// fit worker's caller-supplied `metadataJson` via its own config
+// path in task 5's shared vocabulary.
+const DEFAULT_METADATA_JSON = '{}';
 
 const ROLE = 'fit' as const;
 
@@ -84,6 +103,9 @@ interface FitWorkerConfig {
   vitalsStride: number;
   snapshotStride: number;
   footprintSchedulerMaxNeurons: number;
+  extendCycleStride: number;
+  extendWindowFrames: number;
+  metadataJson: string;
   mutationDrainMaxPerIteration: number;
   eventBusCapacity: number;
   eventBusMaxSubscribers: number;
@@ -125,6 +147,12 @@ interface RuntimeHandles {
   // vitals emission can read it without re-running math.
   lastResidualL2: number;
   footprintScheduler: FootprintSnapshotScheduler;
+  // Extend side (task 11). `null` when extendCycleStride is 0 —
+  // W3's heartbeat still runs, but no real cycles fire. In the v1
+  // architecture extend runs inside the fit worker because
+  // `Extender::runCycle` needs `&Fitter`; a cross-worker snapshot
+  // transport is Phase 7 work (design §7.2).
+  extender: Extender | null;
 }
 
 let handles: RuntimeHandles | null = null;
@@ -173,6 +201,9 @@ function parseConfig(raw: unknown): FitWorkerConfig {
       cfg.footprintSchedulerMaxNeurons,
       DEFAULT_FOOTPRINT_SCHEDULER_MAX_NEURONS,
     ),
+    extendCycleStride: numberOr(cfg.extendCycleStride, DEFAULT_EXTEND_CYCLE_STRIDE),
+    extendWindowFrames: numberOr(cfg.extendWindowFrames, DEFAULT_EXTEND_WINDOW_FRAMES),
+    metadataJson: stringOr(cfg.metadataJson, DEFAULT_METADATA_JSON),
     mutationDrainMaxPerIteration: numberOr(
       cfg.mutationDrainMaxPerIteration,
       DEFAULT_MUTATION_DRAIN_MAX_PER_ITERATION,
@@ -253,6 +284,16 @@ async function handleInit(payload: WorkerInitPayload): Promise<void> {
     footprintScheduler: new FootprintSnapshotScheduler({
       maxTrackedNeurons: cfg.footprintSchedulerMaxNeurons,
     }),
+    extender:
+      cfg.extendCycleStride > 0
+        ? new Extender(
+            cfg.height,
+            cfg.width,
+            cfg.extendWindowFrames,
+            cfg.extendConfigJson,
+            cfg.metadataJson,
+          )
+        : null,
   };
 
   // Test-only hook so unit tests can push mutations into the worker's
@@ -440,6 +481,36 @@ function emitVitals(h: RuntimeHandles, frameIndex: number): void {
   }
 }
 
+// Metric name for the per-cycle extend activity signal. Lives here
+// (not in vitals.ts) because it is a *discovery* signal, not a
+// header vital — the dashboard's event feed + metric timeseries
+// surface it, the sparkline bar does not.
+const METRIC_EXTEND_PROPOSED = 'extend.proposed';
+
+function runExtendCycleIfDue(h: RuntimeHandles, frameIndex: number, residual: Float32Array): void {
+  if (!h.extender || h.config.extendCycleStride <= 0) return;
+  h.extender.pushResidual(residual);
+  if ((frameIndex + 1) % h.config.extendCycleStride !== 0) return;
+  const proposed = h.extender.runCycle(h.fitter, h.mutationQueueHandle);
+  // Report activity to the archive even when zero: a long-running
+  // flat line at 0 is itself a signal (quiet FOV or early residual
+  // window). Non-zero proposals will apply on the next drainApply
+  // and advance the fitter's epoch, which cascades to the cell_count
+  // vital automatically.
+  h.eventBus.publish({
+    kind: 'metric',
+    t: frameIndex,
+    name: METRIC_EXTEND_PROPOSED,
+    value: proposed,
+  });
+  // TODO Phase 7: surface the actual `register` payloads (support +
+  // values + class + new id) as `birth` PipelineEvents. Requires a
+  // new `Fitter.drainApplyEvents()` WASM binding that returns the
+  // applied-mutation metadata alongside the apply counts. Until
+  // then, births are visible through (a) epoch advance and (b)
+  // cell_count vital, but not through the structural event feed.
+}
+
 async function fitLoop(h: RuntimeHandles): Promise<void> {
   let frameIndex = 0;
   while (!stopRequested) {
@@ -453,6 +524,7 @@ async function fitLoop(h: RuntimeHandles): Promise<void> {
     }
     const residual = h.fitter.step(frame);
     h.lastResidualL2 = residualL2(residual);
+    runExtendCycleIfDue(h, frameIndex, residual);
     drainMutationsOnce(h, frameIndex);
     takeCadencedSnapshot(h, frameIndex);
     emitScheduledFootprints(h, frameIndex);

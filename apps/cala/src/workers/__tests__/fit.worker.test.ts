@@ -53,6 +53,10 @@ const mockState = {
   program: [] as FitterProgramStep[],
   autoResidual: new Float32Array(PIXELS),
   mutationsToDrain: [] as PipelineMutation[],
+  // How many proposals the mock Extender claims per cycle. Lets
+  // tests verify the `extend.proposed` metric emission without
+  // dragging in real cala-core.
+  nextCycleProposals: 0,
 };
 
 vi.mock('@calab/cala-core', () => {
@@ -145,11 +149,34 @@ vi.mock('@calab/cala-core', () => {
     free(): void {}
   }
 
+  class Extender {
+    public pushCalls: Float32Array[] = [];
+    public cycleCalls = 0;
+    constructor(
+      _height: number,
+      _width: number,
+      _residualWindowLen: number,
+      _extendCfgJson: string,
+      _metadataJson: string,
+    ) {}
+    pushResidual(r: Float32Array): void {
+      this.pushCalls.push(new Float32Array(r));
+    }
+    runCycle(_fitter: Fitter, _queue: MutationQueueHandle): number {
+      this.cycleCalls += 1;
+      return mockState.nextCycleProposals;
+    }
+    residualLen(): number {
+      return this.pushCalls.length;
+    }
+  }
+
   return {
     initCalaCore: vi.fn(async () => {}),
     calaMemoryBytes: vi.fn(() => 1024 * 1024),
     Fitter,
     MutationQueueHandle,
+    Extender,
     SnapshotHandle: class {},
   };
 });
@@ -160,6 +187,7 @@ function resetMockState(): void {
   mockState.program = [];
   mockState.autoResidual = new Float32Array(PIXELS);
   mockState.mutationsToDrain = [];
+  mockState.nextCycleProposals = 0;
 }
 
 function makeFrameChannel(): SabRingChannel {
@@ -430,6 +458,48 @@ describe('fit worker', () => {
     expect(mockState.fitter!.freed).toBe(true);
     // free posted exactly once: counting 'done' messages stays at 1.
     expect(harness.posted.filter((m) => m.kind === 'done').length).toBe(1);
+  });
+
+  it('drives the Extender each frame and emits extend.proposed metric on cycle stride', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    const init = makeInitMsg({
+      heartbeatStride: 1,
+      snapshotStride: 1000,
+      vitalsStride: 1000,
+      extendCycleStride: 2,
+      extendWindowFrames: 4,
+      metadataJson: JSON.stringify({ pixel_size_um: 2 }),
+    });
+    await harness.deliver(init.msg);
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+
+    mockState.program = [{}, {}, {}, {}];
+    mockState.nextCycleProposals = 3;
+    for (let i = 0; i < 4; i += 1) writeFrameToChannel(init.frameChannel, i);
+
+    await harness.deliver({ kind: 'run' });
+    await runUntil(
+      harness,
+      (p) =>
+        p.filter(
+          (m) =>
+            m.kind === 'event' &&
+            m.event.kind === 'metric' &&
+            m.event.name === 'extend.proposed',
+        ).length >= 2,
+    );
+
+    const proposedEvents = harness.posted
+      .filter(
+        (m): m is Extract<WorkerOutbound, { kind: 'event' }> =>
+          m.kind === 'event' &&
+          m.event.kind === 'metric' &&
+          (m.event as Extract<PipelineEvent, { kind: 'metric' }>).name === 'extend.proposed',
+      )
+      .map((m) => m.event as Extract<PipelineEvent, { kind: 'metric' }>);
+    expect(proposedEvents.length).toBeGreaterThanOrEqual(2);
+    expect(proposedEvents[0].value).toBe(3);
   });
 
   it('emits log-spaced footprint-snapshot events after a birth mutation', async () => {
