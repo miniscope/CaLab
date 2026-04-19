@@ -202,6 +202,30 @@ class StubFitter {
     this.currentEpoch += 1n;
     return new Uint32Array([1, 0, 0]);
   }
+  drainApplyEvents(_handle: unknown): {
+    report: [number, number, number];
+    events: Array<Record<string, unknown>>;
+  } {
+    fitterDrainApplyCount += 1;
+    // Synthesize one birth event per drain — mirrors the behavior
+    // the Phase 6 test was written against, plus the real Phase 7
+    // structural event surface for the bus.
+    const id = Number(this.currentEpoch);
+    this.currentEpoch += 1n;
+    return {
+      report: [1, 0, 0],
+      events: [
+        {
+          kind: 'birth',
+          id,
+          class: 'cell',
+          support: [0],
+          values: [1],
+          patch: [0, 0],
+        },
+      ],
+    };
+  }
   takeSnapshot(): { epoch(): bigint; numComponents(): number; pixels(): number; free(): void } {
     return {
       epoch: () => this.currentEpoch,
@@ -239,6 +263,8 @@ class StubExtender {
 vi.mock('@calab/cala-core', () => ({
   initCalaCore: vi.fn(async () => undefined),
   calaMemoryBytes: vi.fn(() => 1024 * 1024),
+  drainApplyEventsTyped: (fitter: { drainApplyEvents: (q: unknown) => unknown }, queue: unknown) =>
+    fitter.drainApplyEvents(queue),
   AviReader: StubAviReader,
   Preprocessor: StubPreprocessor,
   Fitter: StubFitter,

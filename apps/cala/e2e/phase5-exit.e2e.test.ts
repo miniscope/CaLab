@@ -252,6 +252,15 @@ class StubFitter {
   drainApply(_handle: unknown): Uint32Array {
     return new Uint32Array([0, 0, 0]);
   }
+  drainApplyEvents(_handle: unknown): {
+    report: [number, number, number];
+    events: Array<Record<string, unknown>>;
+  } {
+    // Phase 5 fit stub never proposes mutations — extend is a
+    // heartbeat-only stub in that phase — so this matches `drainApply`
+    // and emits no structural events.
+    return { report: [0, 0, 0], events: [] };
+  }
   takeSnapshot(): { epoch(): bigint; numComponents(): number; pixels(): number; free(): void } {
     return {
       epoch: () => this.currentEpoch,
@@ -295,6 +304,8 @@ class StubExtender {
 vi.mock('@calab/cala-core', () => ({
   initCalaCore: vi.fn(async () => undefined),
   calaMemoryBytes: vi.fn(() => 0),
+  drainApplyEventsTyped: (fitter: { drainApplyEvents: (q: unknown) => unknown }, queue: unknown) =>
+    fitter.drainApplyEvents(queue),
   AviReader: StubAviReader,
   Preprocessor: StubPreprocessor,
   Fitter: StubFitter,

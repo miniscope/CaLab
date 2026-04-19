@@ -4,6 +4,8 @@ import {
   Fitter,
   MutationQueueHandle,
   calaMemoryBytes,
+  drainApplyEventsTyped,
+  type WasmAppliedEvent,
 } from '@calab/cala-core';
 import {
   METRIC_CELL_COUNT,
@@ -483,6 +485,43 @@ function emitVitals(h: RuntimeHandles, frameIndex: number): void {
 // surface it, the sparkline bar does not.
 const METRIC_EXTEND_PROPOSED = 'extend.proposed';
 
+function wasmEventToPipelineEvent(e: WasmAppliedEvent, t: number): PipelineEvent {
+  switch (e.kind) {
+    case 'birth':
+      return {
+        kind: 'birth',
+        t,
+        id: e.id,
+        patch: e.patch,
+        footprintSnap: {
+          pixelIndices: Uint32Array.from(e.support),
+          values: Float32Array.from(e.values),
+        },
+      };
+    case 'merge':
+      return {
+        kind: 'merge',
+        t,
+        ids: [e.ids[0], e.ids[1]],
+        into: e.into,
+        footprintSnap: {
+          pixelIndices: Uint32Array.from(e.support),
+          values: Float32Array.from(e.values),
+        },
+      };
+    case 'deprecate':
+      return { kind: 'deprecate', t, id: e.id, reason: e.reason };
+  }
+}
+
+function publishAppliedEvents(h: RuntimeHandles, wasmEvents: WasmAppliedEvent[], t: number): void {
+  for (const we of wasmEvents) {
+    const ev = wasmEventToPipelineEvent(we, t);
+    h.eventBus.publish(ev);
+    updateSchedulerFromEvent(h.footprintScheduler, ev);
+  }
+}
+
 function runExtendCycleIfDue(h: RuntimeHandles, frameIndex: number, residual: Float32Array): void {
   if (!h.extender || h.config.extendCycleStride <= 0) return;
   h.extender.pushResidual(residual);
@@ -497,21 +536,15 @@ function runExtendCycleIfDue(h: RuntimeHandles, frameIndex: number, residual: Fl
     name: METRIC_EXTEND_PROPOSED,
     value: proposed,
   });
-  // `runCycle` pushes to the Rust-side mutation queue. The JS-side
-  // `drainMutationsOnce` only calls `drainApply` when its own queue
-  // has items (from test injection), so the Rust queue would leak.
-  // Apply any pending Rust mutations right here — epoch advances
-  // and the cell_count vital reflects the extend's work.
   if (proposed > 0) {
-    h.fitter.drainApply(h.mutationQueueHandle);
+    // Apply the queued mutations and surface each one as a real
+    // structural event on the bus (Phase 7 task 3). Phase 6 used
+    // `drainApply` + a metric; the event feed had no `birth` rows
+    // because the mutation payloads never left the Rust side.
+    const { events } = drainApplyEventsTyped(h.fitter, h.mutationQueueHandle);
+    publishAppliedEvents(h, events, frameIndex);
     post({ kind: 'mutation-applied', role: ROLE, epoch: h.fitter.epoch() });
   }
-  // TODO Phase 7: surface the actual `register` payloads (support +
-  // values + class + new id) as `birth` PipelineEvents. Requires a
-  // new `Fitter.drainApplyEvents()` WASM binding that returns the
-  // applied-mutation metadata alongside the apply counts. Until
-  // then, births are visible through (a) epoch advance and (b)
-  // cell_count vital, but not through the structural event feed.
 }
 
 async function fitLoop(h: RuntimeHandles): Promise<void> {

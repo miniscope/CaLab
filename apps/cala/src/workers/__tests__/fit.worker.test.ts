@@ -59,6 +59,35 @@ const mockState = {
   nextCycleProposals: 0,
 };
 
+function mockMutationToAppliedEvent(m: PipelineMutation, _newId: number): Record<string, unknown> {
+  // Minimal translation matching the Rust `AppliedEvent` wire shape.
+  // Ids come from the mock fitter's epoch so tests can match on
+  // deterministic numbers; `values` and `support` come straight from
+  // the queued mutation.
+  switch (m.type) {
+    case 'register':
+      return {
+        kind: 'birth',
+        id: _newId,
+        class: m.class,
+        support: Array.from(m.support),
+        values: Array.from(m.values),
+        patch: [0, 0],
+      };
+    case 'merge':
+      return {
+        kind: 'merge',
+        ids: [m.mergeIds[0], m.mergeIds[1]],
+        into: _newId,
+        class: m.class,
+        support: Array.from(m.support),
+        values: Array.from(m.values),
+      };
+    case 'deprecate':
+      return { kind: 'deprecate', id: m.id, reason: m.reason };
+  }
+}
+
 vi.mock('@calab/cala-core', () => {
   class Fitter {
     stepCalls: Float32Array[] = [];
@@ -119,6 +148,29 @@ vi.mock('@calab/cala-core', () => {
       return new Uint32Array([0, 0, 0]);
     }
 
+    // Phase 7 T2/T3 surface. Returns the same `{ report, events }`
+    // shape the real WASM binding produces. The mock synthesizes
+    // `AppliedEvent`s from `mutationsToDrain` so tests can assert on
+    // structural events without a real WASM pipeline.
+    drainApplyEvents(): {
+      report: [number, number, number];
+      events: Array<Record<string, unknown>>;
+    } {
+      this.drainCalls += 1;
+      this.self.drainCalls = this.drainCalls;
+      const events: Array<Record<string, unknown>> = [];
+      const next = mockState.mutationsToDrain.shift();
+      if (next) {
+        this.self.mutationApplies.push(next);
+        this.currentEpoch += 1n;
+        this.self.epoch = this.currentEpoch;
+        events.push(mockMutationToAppliedEvent(next, Number(this.currentEpoch) - 1));
+        return { report: [1, 0, 0], events };
+      }
+      this.self.epoch = this.currentEpoch;
+      return { report: [0, 0, 0], events };
+    }
+
     takeSnapshot(): { epoch(): bigint; numComponents(): number; pixels(): number; free(): void } {
       this.snapshotCalls += 1;
       this.self.snapshotCalls = this.snapshotCalls;
@@ -174,6 +226,10 @@ vi.mock('@calab/cala-core', () => {
   return {
     initCalaCore: vi.fn(async () => {}),
     calaMemoryBytes: vi.fn(() => 1024 * 1024),
+    drainApplyEventsTyped: (
+      fitter: { drainApplyEvents: (q: unknown) => unknown },
+      queue: unknown,
+    ) => fitter.drainApplyEvents(queue),
     Fitter,
     MutationQueueHandle,
     Extender,
