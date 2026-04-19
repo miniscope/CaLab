@@ -19,7 +19,9 @@
 
 use crate::assets::{Footprints, Groups, SuffStats, Traces};
 use crate::config::{ComponentClass, FitConfig};
-use crate::extending::mutation::{Epoch, MutationQueue, PipelineMutation, Snapshot};
+use crate::extending::mutation::{
+    DeprecateReason, Epoch, MutationQueue, PipelineMutation, Snapshot,
+};
 
 use super::{
     evaluate_footprints, evaluate_residual, evaluate_suff_stats, evaluate_traces, trace_throttle,
@@ -117,6 +119,36 @@ impl FitPipeline {
             stale,
             invalid,
         }
+    }
+
+    /// Drain a mutation queue like `drain_apply`, but also return an
+    /// `AppliedEvent` per successfully-applied mutation. This is what
+    /// W2 uses to surface real `birth`/`merge`/`deprecate` events on
+    /// the pipeline bus (Phase 7 task 1) instead of the Phase 6
+    /// placeholder metric.
+    pub fn drain_apply_events(
+        &mut self,
+        queue: &mut MutationQueue,
+    ) -> (ApplyBatchReport, Vec<AppliedEvent>) {
+        let width = self.fp.width();
+        let mut report = ApplyBatchReport::default();
+        let mut events = Vec::new();
+        for m in queue.drain() {
+            // Inspect before moving. We clone the small `Vec<u32>` /
+            // `Vec<f32>` payloads so we can emit them in the event
+            // regardless of whether apply succeeds — see below for
+            // the success gate.
+            let preview = AppliedEventPreview::from_mutation(&m, self.fp.next_id(), width);
+            match self.apply_mutation(m) {
+                ApplyOutcome::Applied { .. } => {
+                    report.applied += 1;
+                    events.push(preview.into_event());
+                }
+                ApplyOutcome::Stale => report.stale += 1,
+                ApplyOutcome::Invalid(_) => report.invalid += 1,
+            }
+        }
+        (report, events)
     }
 
     fn apply_register(
@@ -289,6 +321,154 @@ pub struct ApplyBatchReport {
     pub applied: u32,
     pub stale: u32,
     pub invalid: u32,
+}
+
+/// Per-mutation payload returned alongside the apply outcome by
+/// [`FitPipeline::drain_apply_events`]. Maps 1:1 onto the JS-side
+/// `PipelineEvent` birth/merge/deprecate variants (§9.2). Kept in this
+/// module (not the runtime `events.ts`) because it is the Rust
+/// structural shape — the WASM binding converts to a JS value at the
+/// boundary.
+#[derive(Debug, Clone)]
+pub enum AppliedEvent {
+    Birth {
+        id: u32,
+        class: ComponentClass,
+        support: Vec<u32>,
+        values: Vec<f32>,
+        patch: (u32, u32),
+    },
+    Merge {
+        ids: [u32; 2],
+        into: u32,
+        class: ComponentClass,
+        support: Vec<u32>,
+        values: Vec<f32>,
+    },
+    Deprecate {
+        id: u32,
+        reason: DeprecateReason,
+    },
+}
+
+/// Lightweight projection of a `PipelineMutation` captured *before*
+/// `apply_mutation` consumes it. Lets `drain_apply_events` emit a
+/// fully-populated `AppliedEvent` without re-reading the mutation
+/// after it has been moved into apply.
+enum AppliedEventPreview {
+    Birth {
+        id: u32,
+        class: ComponentClass,
+        support: Vec<u32>,
+        values: Vec<f32>,
+        patch: (u32, u32),
+    },
+    Merge {
+        ids: [u32; 2],
+        into: u32,
+        class: ComponentClass,
+        support: Vec<u32>,
+        values: Vec<f32>,
+    },
+    Deprecate {
+        id: u32,
+        reason: DeprecateReason,
+    },
+}
+
+impl AppliedEventPreview {
+    fn from_mutation(m: &PipelineMutation, next_id: u32, width: usize) -> Self {
+        match m {
+            PipelineMutation::Register {
+                class,
+                support,
+                values,
+                ..
+            } => Self::Birth {
+                id: next_id,
+                class: *class,
+                support: support.clone(),
+                values: values.clone(),
+                patch: weighted_centroid(support, values, width),
+            },
+            PipelineMutation::Merge {
+                merge_ids,
+                class,
+                support,
+                values,
+                ..
+            } => Self::Merge {
+                ids: *merge_ids,
+                // Merge deprecates both ids and then registers one new
+                // component — the surviving id is whatever `next_id`
+                // the registration consumes. `apply_merge` pushes
+                // after both deprecates, so the id at that moment is
+                // `next_id` captured here.
+                into: next_id,
+                class: *class,
+                support: support.clone(),
+                values: values.clone(),
+            },
+            PipelineMutation::Deprecate { id, reason, .. } => Self::Deprecate {
+                id: *id,
+                reason: *reason,
+            },
+        }
+    }
+
+    fn into_event(self) -> AppliedEvent {
+        match self {
+            Self::Birth {
+                id,
+                class,
+                support,
+                values,
+                patch,
+            } => AppliedEvent::Birth {
+                id,
+                class,
+                support,
+                values,
+                patch,
+            },
+            Self::Merge {
+                ids,
+                into,
+                class,
+                support,
+                values,
+            } => AppliedEvent::Merge {
+                ids,
+                into,
+                class,
+                support,
+                values,
+            },
+            Self::Deprecate { id, reason } => AppliedEvent::Deprecate { id, reason },
+        }
+    }
+}
+
+/// Weighted centroid of a sparse footprint in (row, col) frame coords.
+/// Used as the `patch` anchor on birth events. Empty support returns
+/// `(0, 0)` — caller is expected to filter on support.is_empty(), but
+/// we avoid NaN here so event delivery never stalls on degenerate data.
+fn weighted_centroid(support: &[u32], values: &[f32], width: usize) -> (u32, u32) {
+    let w = width as f32;
+    let mut wsum = 0.0f32;
+    let mut y_acc = 0.0f32;
+    let mut x_acc = 0.0f32;
+    for (idx, v) in support.iter().zip(values.iter()) {
+        let y = (*idx as f32 / w).floor();
+        let x = *idx as f32 - y * w;
+        y_acc += y * v;
+        x_acc += x * v;
+        wsum += v;
+    }
+    if wsum <= 0.0 {
+        return (0, 0);
+    }
+    ((y_acc / wsum).round() as u32, (x_acc / wsum).round() as u32)
 }
 
 /// Construct the per-frame history vector for a newly registered or

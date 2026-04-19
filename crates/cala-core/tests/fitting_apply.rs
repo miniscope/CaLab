@@ -3,7 +3,7 @@
 use calab_cala_core::assets::Footprints;
 use calab_cala_core::config::{ComponentClass, FitConfig};
 use calab_cala_core::extending::mutation::{DeprecateReason, MutationQueue, PipelineMutation};
-use calab_cala_core::fitting::{ApplyOutcome, FitPipeline};
+use calab_cala_core::fitting::{AppliedEvent, ApplyOutcome, FitPipeline};
 
 const F32_TOL: f32 = 1e-5;
 
@@ -330,4 +330,108 @@ fn step_after_merge_advances_traces_and_suffstats() {
     let _ = p.step(&y);
     assert_eq!(p.traces().k(), 1);
     assert_eq!(p.traces().len(), 4);
+}
+
+// ----- drain_apply_events (Phase 7 task 1) -----
+
+#[test]
+fn drain_apply_events_emits_birth_for_register() {
+    let mut p = empty_pipeline();
+    let mut q = MutationQueue::new(2);
+    // Patch centroid: support at (0,0),(0,1),(1,0),(1,1) with equal
+    // values → weighted centroid ≈ (0.5, 0.5), rounds to (1, 1).
+    q.push(PipelineMutation::Register {
+        snapshot_epoch: 0,
+        class: ComponentClass::Cell,
+        support: vec![0, 1, 4, 5],
+        values: vec![1.0, 1.0, 1.0, 1.0],
+        trace: vec![],
+    });
+    let (report, events) = p.drain_apply_events(&mut q);
+    assert_eq!(report.applied, 1);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AppliedEvent::Birth {
+            id,
+            class,
+            support,
+            patch,
+            ..
+        } => {
+            assert_eq!(*id, 0, "first birth takes id 0");
+            assert_eq!(*class, ComponentClass::Cell);
+            assert_eq!(support, &vec![0, 1, 4, 5]);
+            // width is 4 (empty_pipeline uses Footprints::new(4,4)).
+            // Rows of linear indices: 0→(0,0), 1→(0,1), 4→(1,0), 5→(1,1).
+            // Weighted centroid rounds to (1, 1) with equal weights
+            // (0.5 rounds to 1 per IEEE half-to-even; verified below).
+            assert_eq!(*patch, (1, 1));
+        }
+        other => panic!("expected Birth, got {other:?}"),
+    }
+}
+
+#[test]
+fn drain_apply_events_emits_deprecate_with_reason() {
+    let mut p = start_with_two_cells();
+    let id_a = p.footprints().id(0);
+    let mut q = MutationQueue::new(2);
+    q.push(PipelineMutation::Deprecate {
+        snapshot_epoch: 0,
+        id: id_a,
+        reason: DeprecateReason::TraceInactive,
+    });
+    let (report, events) = p.drain_apply_events(&mut q);
+    assert_eq!(report.applied, 1);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AppliedEvent::Deprecate { id, reason } => {
+            assert_eq!(*id, id_a);
+            assert_eq!(*reason, DeprecateReason::TraceInactive);
+        }
+        other => panic!("expected Deprecate, got {other:?}"),
+    }
+}
+
+#[test]
+fn drain_apply_events_emits_merge_with_new_id() {
+    let mut p = start_with_two_cells();
+    let id_a = p.footprints().id(0);
+    let id_b = p.footprints().id(1);
+    let next_id_before = p.footprints().next_id();
+    let mut q = MutationQueue::new(2);
+    q.push(PipelineMutation::Merge {
+        snapshot_epoch: 0,
+        merge_ids: [id_a, id_b],
+        class: ComponentClass::Cell,
+        support: vec![0, 1, 5, 6],
+        values: vec![0.5, 0.5, 0.5, 0.5],
+        trace: vec![],
+    });
+    let (report, events) = p.drain_apply_events(&mut q);
+    assert_eq!(report.applied, 1);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AppliedEvent::Merge { ids, into, .. } => {
+            assert_eq!(*ids, [id_a, id_b]);
+            assert_eq!(*into, next_id_before);
+        }
+        other => panic!("expected Merge, got {other:?}"),
+    }
+}
+
+#[test]
+fn drain_apply_events_skips_events_for_stale_mutations() {
+    let mut p = empty_pipeline();
+    let mut q = MutationQueue::new(2);
+    // Unknown id → Stale → no event.
+    q.push(PipelineMutation::Deprecate {
+        snapshot_epoch: 0,
+        id: 42,
+        reason: DeprecateReason::TraceInactive,
+    });
+    let (report, events) = p.drain_apply_events(&mut q);
+    assert_eq!(report.applied, 0);
+    assert_eq!(report.stale, 1);
+    assert!(events.is_empty());
 }

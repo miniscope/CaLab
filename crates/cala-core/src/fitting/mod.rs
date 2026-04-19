@@ -19,7 +19,7 @@ mod throttle;
 mod trace_bcd;
 
 pub use footprints::evaluate_footprints;
-pub use pipeline::{ApplyBatchReport, ApplyOutcome, FitPipeline};
+pub use pipeline::{AppliedEvent, ApplyBatchReport, ApplyOutcome, FitPipeline};
 pub use residual::evaluate_residual;
 pub use suff_stats::evaluate_suff_stats;
 pub use throttle::trace_throttle;
