@@ -317,15 +317,21 @@
 
 .cala-dashboard {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 360px;
   grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    'vitals vitals'
-    'frame  events'
-    'traces events';
+    'vitals     vitals     vitals'
+    'frame      footprints events'
+    'traces     traces     events';
   gap: var(--space-md);
   padding: var(--space-md);
   height: 100%;
+  min-height: 0;
+}
+
+.cala-dashboard__footprints {
+  grid-area: footprints;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -375,6 +381,44 @@
 
 .traces-panel__chart {
   min-height: 260px;
+}
+
+.footprints-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-height: 0;
+}
+
+.footprints-panel__header {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.footprints-panel__canvas-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  min-height: 260px;
+  padding: var(--space-xs);
+}
+
+.footprints-panel__canvas {
+  image-rendering: pixelated;
+  max-width: 100%;
+  height: auto;
+  cursor: crosshair;
+  display: block;
 }
 
 /* Simplified single-frame viewer: no side panel in the new layout. */

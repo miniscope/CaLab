@@ -3,6 +3,7 @@ import { FrameQuad } from '../frame/FrameQuad.tsx';
 import { VitalsBar } from '../vitals/VitalsBar.tsx';
 import { EventFeed } from '../events/EventFeed.tsx';
 import { TracesPanel } from '../traces/TracesPanel.tsx';
+import { FootprintsPanel } from '../footprints/FootprintsPanel.tsx';
 
 /**
  * Running-state layout (design §12): vitals bar along the top, the
@@ -19,6 +20,9 @@ export function DashboardLayout(): JSX.Element {
       </div>
       <div class="cala-dashboard__frame">
         <FrameQuad />
+      </div>
+      <div class="cala-dashboard__footprints">
+        <FootprintsPanel />
       </div>
       <div class="cala-dashboard__traces">
         <TracesPanel />
