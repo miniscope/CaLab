@@ -296,3 +296,32 @@
   font-size: 0.8rem;
   color: var(--text-secondary);
 }
+
+/* Event feed toolbar (Phase 6 task 13). */
+
+.event-feed__toolbar {
+  display: flex;
+  gap: var(--space-xs);
+  padding-bottom: var(--space-xs);
+}
+
+.event-feed__action {
+  padding: 2px var(--space-sm);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.event-feed__action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.event-feed__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

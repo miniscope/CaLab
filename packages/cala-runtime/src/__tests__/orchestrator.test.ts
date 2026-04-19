@@ -396,6 +396,42 @@ describe('onEvent', () => {
   });
 });
 
+describe('pushUserMutation', () => {
+  it('forwards user-authored deprecate mutations to the fit worker', async () => {
+    const harness = new Harness();
+    const rt = createRuntime(makeCfg(harness));
+    const runP = rt.run(fakeSource());
+    await flush();
+    harness.pushReadyAll();
+    await flush();
+
+    rt.pushUserMutation({ kind: 'deprecate', id: 7, reason: 'traceInactive' });
+
+    const fit = harness.get('fit');
+    const userMsgs = fit.posted.filter(
+      (m: WorkerInbound): m is Extract<WorkerInbound, { kind: 'user-mutation' }> =>
+        m.kind === 'user-mutation',
+    );
+    expect(userMsgs.length).toBe(1);
+    expect(userMsgs[0].mutation).toEqual({ kind: 'deprecate', id: 7, reason: 'traceInactive' });
+
+    harness.pushDoneAll();
+    await runP;
+  });
+
+  it('no-ops when runtime has not been started', () => {
+    const harness = new Harness();
+    const rt = createRuntime(makeCfg(harness));
+    // Must not throw; with no workers spawned, the call is a no-op.
+    expect(() =>
+      rt.pushUserMutation({ kind: 'deprecate', id: 1, reason: 'invalidApply' }),
+    ).not.toThrow();
+    // No worker was even constructed, so the harness has no fit entry
+    // — that's the expected no-op outcome.
+    expect(() => harness.get('fit')).toThrow();
+  });
+});
+
 describe('graceful + hard shutdown', () => {
   it('stop() resolves when all workers reply done', async () => {
     const harness = new Harness();

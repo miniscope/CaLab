@@ -44,4 +44,5 @@ export type {
   WorkerInitPayload,
   WorkerLike,
   WorkerRole,
+  UserMutation,
 } from './worker-protocol.ts';

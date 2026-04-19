@@ -10,6 +10,16 @@
  */
 
 import type { PipelineEvent } from './events.ts';
+import type { DeprecateReason } from './mutation-queue.ts';
+
+/**
+ * Shape of a mutation the main thread can author and hand to the fit
+ * worker (Phase 6 task 13). Kept narrow on purpose: Phase 6 only ships
+ * deprecation, since it needs no footprint payload and maps cleanly
+ * onto a click-to-delete UI affordance. Register / merge from the UI
+ * land with a Phase 7 footprint picker.
+ */
+export type UserMutation = { kind: 'deprecate'; id: number; reason: DeprecateReason };
 
 /** The four workers the orchestrator spawns. Used as a tag in messages. */
 export type WorkerRole = 'decodePreprocess' | 'fit' | 'extend' | 'archive';
@@ -66,7 +76,12 @@ export type WorkerInbound =
   // Per-neuron footprint history query (design §9.3, Phase 6 task 3).
   // Returns every `(t, sparse A column)` snapshot the archive has
   // recorded for `neuronId`, ordered oldest→newest.
-  | { kind: 'request-footprint-history'; requestId: number; neuronId: number };
+  | { kind: 'request-footprint-history'; requestId: number; neuronId: number }
+  // Main-thread authored mutation (Phase 6 task 13). The orchestrator
+  // forwards these to the fit worker so the UI can deprecate a
+  // neuron, force a merge, etc. The worker pushes through the same
+  // drain path an extend-generated mutation would take.
+  | { kind: 'user-mutation'; mutation: UserMutation };
 
 /** Messages a worker sends back to the orchestrator. */
 export type WorkerOutbound =

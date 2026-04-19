@@ -611,6 +611,43 @@ async function handleStop(): Promise<void> {
   cleanup();
 }
 
+function handleUserMutation(mutation: {
+  kind: 'deprecate';
+  id: number;
+  reason: 'footprintCollapsed' | 'traceInactive' | 'mergedInto' | 'invalidApply';
+}): void {
+  if (!handles) return;
+  // Main-thread authored mutation (§7.3). Push the Rust-side queue
+  // via the existing binding, then drain-apply so the deprecate
+  // lands on the next scheduler turn — mirrors the inline
+  // drain-apply the extend cycle does.
+  const reasonMap: Record<typeof mutation.reason, string> = {
+    footprintCollapsed: 'FootprintCollapsed',
+    traceInactive: 'TraceInactive',
+    mergedInto: 'MergedInto',
+    invalidApply: 'InvalidApply',
+  };
+  try {
+    handles.mutationQueueHandle.pushDeprecate(
+      BigInt(handles.fitter.epoch()),
+      mutation.id,
+      reasonMap[mutation.reason],
+    );
+    handles.fitter.drainApply(handles.mutationQueueHandle);
+    post({ kind: 'mutation-applied', role: ROLE, epoch: handles.fitter.epoch() });
+    // Surface as a structural event so the UI feed shows what the
+    // user just did.
+    handles.eventBus.publish({
+      kind: 'deprecate',
+      t: 0,
+      id: mutation.id,
+      reason: mutation.reason,
+    });
+  } catch (err) {
+    postError(err);
+  }
+}
+
 workerSelf.onmessage = (ev: MessageEvent<WorkerInbound>): void => {
   const msg = ev.data;
   switch (msg.kind) {
@@ -628,6 +665,9 @@ workerSelf.onmessage = (ev: MessageEvent<WorkerInbound>): void => {
       // orchestrator forwards snapshot-ack back to fit for bookkeeping;
       // we log nothing — the in-worker SnapshotProtocol handled the
       // capture synchronously at the cadence boundary.
+      return;
+    case 'user-mutation':
+      handleUserMutation(msg.mutation);
       return;
   }
 };

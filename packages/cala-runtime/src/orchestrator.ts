@@ -19,7 +19,13 @@ import type { ChannelConfig, ChannelStats } from './types.ts';
 import type { EventBusConfig, EventBusStats, PipelineEvent, Unsubscribe } from './events.ts';
 import type { MutationQueueConfig } from './mutation-queue.ts';
 import type { SnapshotProtocolConfig, SnapshotProtocolStats } from './asset-snapshot.ts';
-import type { WorkerFactory, WorkerLike, WorkerOutbound, WorkerRole } from './worker-protocol.ts';
+import type {
+  UserMutation,
+  WorkerFactory,
+  WorkerLike,
+  WorkerOutbound,
+  WorkerRole,
+} from './worker-protocol.ts';
 
 const WORKER_ROLES: readonly WorkerRole[] = ['decodePreprocess', 'fit', 'extend', 'archive'];
 
@@ -81,6 +87,13 @@ export interface RuntimeController {
   onEvent(cb: (e: PipelineEvent) => void): Unsubscribe;
   epoch(): bigint;
   stats(): RuntimeStats;
+  /**
+   * Forward a user-authored mutation to the fit worker (design §7.3,
+   * Phase 6 task 13). Currently only `deprecate` is modeled — extend
+   * still owns all structural `register` / `merge` proposals. Silent
+   * no-op when the runtime isn't running.
+   */
+  pushUserMutation(m: UserMutation): void;
 }
 
 export class RuntimeStartupTimeoutError extends Error {
@@ -181,6 +194,13 @@ class Runtime implements RuntimeController {
 
   onEvent(cb: (e: PipelineEvent) => void): Unsubscribe {
     return this.eventBus.subscribe(cb);
+  }
+
+  pushUserMutation(m: UserMutation): void {
+    if (this.currentState !== 'running' && this.currentState !== 'starting') return;
+    const fit = this.workers.get('fit');
+    if (!fit) return;
+    fit.postMessage({ kind: 'user-mutation', mutation: m });
   }
 
   stats(): RuntimeStats {

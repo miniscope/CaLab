@@ -1,5 +1,6 @@
 import { createMemo, For, Show, type JSX } from 'solid-js';
 import { dashboard } from '../../lib/dashboard-store.ts';
+import { pushUserMutation } from '../../lib/run-control.ts';
 import { describeEvent, idForEvent } from './event-format.ts';
 
 // Trailing window of events shown in the feed (design §12 scrolling
@@ -21,8 +22,35 @@ export function EventFeed(props: EventFeedProps): JSX.Element {
     return events.slice(start).slice().reverse();
   });
 
+  // Find the most recent birth so "Deprecate latest" has a target.
+  const latestBirthId = createMemo<number | null>(() => {
+    const events = dashboard.events;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (e.kind === 'birth') return e.id;
+    }
+    return null;
+  });
+
+  const deprecateLatest = (): void => {
+    const id = latestBirthId();
+    if (id === null) return;
+    pushUserMutation({ kind: 'deprecate', id, reason: 'invalidApply' });
+  };
+
   return (
     <div class="event-feed" role="log" aria-live="polite" aria-label="Pipeline event feed">
+      <div class="event-feed__toolbar">
+        <button
+          type="button"
+          class="event-feed__action"
+          onClick={deprecateLatest}
+          disabled={latestBirthId() === null}
+          title="Deprecate the most recently born neuron"
+        >
+          Deprecate latest
+        </button>
+      </div>
       <div class="event-feed__heading">Events (newest first)</div>
       <Show
         when={tail().length > 0}

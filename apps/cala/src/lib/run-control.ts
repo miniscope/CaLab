@@ -6,6 +6,7 @@ import {
   type RuntimeConfig,
   type RuntimeController,
   type RuntimeState,
+  type UserMutation,
   type WorkerFactory,
   type WorkerLike,
   type WorkerOutbound,
@@ -239,4 +240,12 @@ export function currentRunState(): RuntimeState {
 // runtime handle has been released.
 export function __hasActiveRuntimeForTests(): boolean {
   return currentRuntime !== null;
+}
+
+/**
+ * Forward a user-authored mutation (Phase 6 task 13) to the fit
+ * worker via the runtime controller. No-op if nothing is running.
+ */
+export function pushUserMutation(m: UserMutation): void {
+  currentRuntime?.pushUserMutation(m);
 }
