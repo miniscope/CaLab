@@ -111,6 +111,10 @@ function buildConfig(meta: FrameSourceMeta, factories: WorkerFactories): Runtime
       fit: {
         height: meta.height,
         width: meta.width,
+        // Shared with W1's metadata: extend's `RecordingMetadata`
+        // parser (task 11) needs `pixel_size_um` to translate the
+        // neuron-diameter gate into pixels.
+        metadataJson: JSON.stringify({ pixel_size_um: DEFAULT_PIXEL_SIZE_UM }),
       },
     },
   };
