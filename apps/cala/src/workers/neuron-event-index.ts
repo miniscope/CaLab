@@ -49,6 +49,9 @@ export function neuronIdsForEvent(e: PipelineEvent): number[] {
       return [e.id];
     case 'reject':
     case 'metric':
+    case 'footprint-snapshot':
+      // Periodic footprint snapshots are indexed by the footprint
+      // store (§9.3), not the structural-event history.
       return [];
   }
 }

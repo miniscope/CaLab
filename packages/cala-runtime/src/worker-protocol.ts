@@ -62,7 +62,11 @@ export type WorkerInbound =
   // Returns the archive's indexed copy of every birth / merge / split /
   // deprecate event the given neuron participates in. Empty list for
   // an unknown id — same contract as `request-timeseries`.
-  | { kind: 'request-events-for-neuron'; requestId: number; neuronId: number };
+  | { kind: 'request-events-for-neuron'; requestId: number; neuronId: number }
+  // Per-neuron footprint history query (design §9.3, Phase 6 task 3).
+  // Returns every `(t, sparse A column)` snapshot the archive has
+  // recorded for `neuronId`, ordered oldest→newest.
+  | { kind: 'request-footprint-history'; requestId: number; neuronId: number };
 
 /** Messages a worker sends back to the orchestrator. */
 export type WorkerOutbound =
@@ -105,6 +109,18 @@ export type WorkerOutbound =
       requestId: number;
       neuronId: number;
       events: PipelineEvent[];
+    }
+  // Reply to `request-footprint-history`. `times` and the typed-array
+  // payloads are parallel arrays of equal length (one entry per
+  // stored snapshot, oldest→newest).
+  | {
+      kind: 'footprint-history';
+      role: WorkerRole;
+      requestId: number;
+      neuronId: number;
+      times: Float32Array;
+      pixelIndices: Uint32Array[];
+      values: Float32Array[];
     }
   // W1 preview frame for the dashboard viewer (design §12 frame panel,
   // Phase 5 exit). Strided like `frame-processed` so the post rate is

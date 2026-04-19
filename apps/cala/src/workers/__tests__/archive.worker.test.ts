@@ -289,6 +289,62 @@ describe('archive worker', () => {
     expect(reply.events.map((e) => e.kind)).toEqual(['birth', 'merge', 'deprecate']);
   });
 
+  it('harvests footprint history from birth events + periodic footprint-snapshot', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    await harness.deliver(makeInitMsg());
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+    await harness.deliver({ kind: 'run' });
+
+    await harness.deliver({ kind: 'event', event: birthEvent(1, 12) });
+    await harness.deliver({
+      kind: 'event',
+      event: {
+        kind: 'footprint-snapshot',
+        t: 5,
+        neuronId: 12,
+        footprint: {
+          pixelIndices: new Uint32Array([3, 4, 5]),
+          values: new Float32Array([0.7, 0.8, 0.9]),
+        },
+      },
+    });
+
+    await harness.deliver({ kind: 'request-footprint-history', requestId: 80, neuronId: 12 });
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'footprint-history'));
+    const reply = harness.posted.find((m) => m.kind === 'footprint-history') as Extract<
+      WorkerOutbound,
+      { kind: 'footprint-history' }
+    >;
+    expect(reply.neuronId).toBe(12);
+    expect(Array.from(reply.times)).toEqual([1, 5]);
+    expect(reply.pixelIndices.length).toBe(2);
+    expect(Array.from(reply.pixelIndices[1])).toEqual([3, 4, 5]);
+    // Float32 round-trip: tolerant compare avoids spurious precision diffs.
+    const vs = Array.from(reply.values[1]);
+    expect(vs[0]).toBeCloseTo(0.7, 5);
+    expect(vs[1]).toBeCloseTo(0.8, 5);
+    expect(vs[2]).toBeCloseTo(0.9, 5);
+  });
+
+  it('request-footprint-history returns empty arrays for an unknown neuron', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    await harness.deliver(makeInitMsg());
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+    await harness.deliver({ kind: 'run' });
+
+    await harness.deliver({ kind: 'request-footprint-history', requestId: 81, neuronId: 999 });
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'footprint-history'));
+    const reply = harness.posted.find((m) => m.kind === 'footprint-history') as Extract<
+      WorkerOutbound,
+      { kind: 'footprint-history' }
+    >;
+    expect(reply.times.length).toBe(0);
+    expect(reply.pixelIndices.length).toBe(0);
+    expect(reply.values.length).toBe(0);
+  });
+
   it('request-events-for-neuron returns an empty list for an unknown id', async () => {
     const harness = createWorkerHarness();
     await loadWorker(harness);

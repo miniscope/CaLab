@@ -63,6 +63,16 @@ export type PipelineEvent =
       t: number;
       name: string;
       value: number;
+    }
+  // Periodic footprint snapshot emitted by fit (§9.3 log-spaced +
+  // change-triggered schedule). Structural events already carry a
+  // footprint; this variant covers the "quiet" frames where a neuron
+  // hasn't merged/split but the scrubber still wants morph data.
+  | {
+      kind: 'footprint-snapshot';
+      t: number;
+      neuronId: number;
+      footprint: FootprintSnap;
     };
 
 export type Unsubscribe = () => void;

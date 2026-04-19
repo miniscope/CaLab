@@ -27,6 +27,8 @@ function describeEvent(e: PipelineEvent): string {
       return `reject @(${e.at[0]},${e.at[1]}): ${e.reason}`;
     case 'metric':
       return `metric ${e.name}=${e.value.toFixed(3)}`;
+    case 'footprint-snapshot':
+      return `footprint-snap id=${e.neuronId} (${e.footprint.pixelIndices.length}px)`;
   }
 }
 
