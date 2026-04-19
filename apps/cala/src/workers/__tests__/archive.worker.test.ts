@@ -6,6 +6,11 @@ import { createWorkerHarness, type WorkerHarness } from './worker-harness.ts';
 // arbitrary numbers leaking from production defaults.
 const TEST_EVENT_RING_CAPACITY = 4;
 const TEST_METRIC_WINDOW = 16;
+// Tiered timeseries sizing that makes L1 eviction + L2 emission
+// reachable in a handful of appends (see timeseries-store.test.ts).
+const TEST_TS_L1_CAPACITY = 4;
+const TEST_TS_L2_CAPACITY = 8;
+const TEST_TS_L2_STRIDE = 2;
 
 function makeInitMsg(overrides: Record<string, unknown> = {}): WorkerInbound {
   return {
@@ -17,6 +22,9 @@ function makeInitMsg(overrides: Record<string, unknown> = {}): WorkerInbound {
       workerConfig: {
         eventRingCapacity: TEST_EVENT_RING_CAPACITY,
         metricWindow: TEST_METRIC_WINDOW,
+        timeseriesL1Capacity: TEST_TS_L1_CAPACITY,
+        timeseriesL2Capacity: TEST_TS_L2_CAPACITY,
+        timeseriesL2Stride: TEST_TS_L2_STRIDE,
         ...overrides,
       },
     },
@@ -71,6 +79,7 @@ describe('worker-protocol archive extension compiles', () => {
       event: { kind: 'metric', t: 0, name: 'x', value: 1 },
     };
     const inDumpReq: WorkerInbound = { kind: 'request-archive-dump', requestId: 1 };
+    const inTsReq: WorkerInbound = { kind: 'request-timeseries', requestId: 2, name: 'fps' };
     const outDump: WorkerOutbound = {
       kind: 'archive-dump',
       role: 'archive',
@@ -78,9 +87,21 @@ describe('worker-protocol archive extension compiles', () => {
       events: [],
       metrics: {},
     };
+    const outTs: WorkerOutbound = {
+      kind: 'timeseries',
+      role: 'archive',
+      requestId: 2,
+      name: 'fps',
+      l1Times: new Float32Array(0),
+      l1Values: new Float32Array(0),
+      l2Times: new Float32Array(0),
+      l2Values: new Float32Array(0),
+    };
     expect(inEvent.kind).toBe('event');
     expect(inDumpReq.kind).toBe('request-archive-dump');
+    expect(inTsReq.kind).toBe('request-timeseries');
     expect(outDump.kind).toBe('archive-dump');
+    expect(outTs.kind).toBe('timeseries');
   });
 });
 
@@ -173,6 +194,69 @@ describe('archive worker', () => {
       expect(d.events.length).toBe(2);
       expect(d.metrics.fps).toBe(30);
     }
+  });
+
+  it('request-timeseries returns an empty reply for an unknown name', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    await harness.deliver(makeInitMsg());
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+    await harness.deliver({ kind: 'run' });
+
+    await harness.deliver({ kind: 'request-timeseries', requestId: 51, name: 'nope' });
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'timeseries'));
+    const reply = harness.posted.find((m) => m.kind === 'timeseries') as Extract<
+      WorkerOutbound,
+      { kind: 'timeseries' }
+    >;
+    expect(reply.requestId).toBe(51);
+    expect(reply.name).toBe('nope');
+    expect(reply.l1Times.length).toBe(0);
+    expect(reply.l2Times.length).toBe(0);
+  });
+
+  it('request-timeseries returns L1 samples appended from metric events', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    await harness.deliver(makeInitMsg());
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+    await harness.deliver({ kind: 'run' });
+
+    await harness.deliver({ kind: 'event', event: metricEvent(0, 'fps', 10) });
+    await harness.deliver({ kind: 'event', event: metricEvent(1, 'fps', 20) });
+    await harness.deliver({ kind: 'event', event: metricEvent(2, 'fps', 30) });
+
+    await harness.deliver({ kind: 'request-timeseries', requestId: 60, name: 'fps' });
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'timeseries'));
+    const reply = harness.posted.find((m) => m.kind === 'timeseries') as Extract<
+      WorkerOutbound,
+      { kind: 'timeseries' }
+    >;
+    expect(Array.from(reply.l1Times)).toEqual([0, 1, 2]);
+    expect(Array.from(reply.l1Values)).toEqual([10, 20, 30]);
+    expect(reply.l2Times.length).toBe(0);
+  });
+
+  it('request-timeseries surfaces L2 downsampling once L1 overflows', async () => {
+    const harness = createWorkerHarness();
+    await loadWorker(harness);
+    await harness.deliver(makeInitMsg());
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'ready'));
+    await harness.deliver({ kind: 'run' });
+
+    // l1Capacity=4, l2Stride=2 → 6 metric events leave 4 in L1 and 1
+    // averaged sample in L2.
+    for (let i = 0; i < 6; i += 1) {
+      await harness.deliver({ kind: 'event', event: metricEvent(i, 'fps', i * 10) });
+    }
+    await harness.deliver({ kind: 'request-timeseries', requestId: 61, name: 'fps' });
+    await runUntil(harness, (p) => p.some((m) => m.kind === 'timeseries'));
+    const reply = harness.posted.find((m) => m.kind === 'timeseries') as Extract<
+      WorkerOutbound,
+      { kind: 'timeseries' }
+    >;
+    expect(Array.from(reply.l1Times)).toEqual([2, 3, 4, 5]);
+    expect(Array.from(reply.l2Values)).toEqual([5]);
   });
 
   it('stop posts done exactly once even if events arrive after stop', async () => {

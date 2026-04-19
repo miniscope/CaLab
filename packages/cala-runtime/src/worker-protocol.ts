@@ -52,7 +52,12 @@ export type WorkerInbound =
   // Main-thread dashboard (task 24) asks for a consistent dump of the
   // archive's in-memory event log and per-name metric snapshot.
   // `requestId` correlates each dump with the eventual reply.
-  | { kind: 'request-archive-dump'; requestId: number };
+  | { kind: 'request-archive-dump'; requestId: number }
+  // Tiered timeseries query for a single named metric (design §9.1,
+  // Phase 6 task 1). `requestId` correlates the request with the
+  // matching `timeseries` reply. Unknown names return empty arrays,
+  // not an error — the dashboard polls before any samples exist.
+  | { kind: 'request-timeseries'; requestId: number; name: string };
 
 /** Messages a worker sends back to the orchestrator. */
 export type WorkerOutbound =
@@ -72,6 +77,20 @@ export type WorkerOutbound =
       requestId: number;
       events: PipelineEvent[];
       metrics: Record<string, number>;
+    }
+  // Reply to `request-timeseries`. `l1*` arrays are the full-resolution
+  // recent ring for `name`; `l2*` are downsampled older samples
+  // (design §9.1 tiered retention). All arrays are fresh copies in
+  // chronological order so the caller cannot mutate archive state.
+  | {
+      kind: 'timeseries';
+      role: WorkerRole;
+      requestId: number;
+      name: string;
+      l1Times: Float32Array;
+      l1Values: Float32Array;
+      l2Times: Float32Array;
+      l2Values: Float32Array;
     }
   // W1 preview frame for the dashboard viewer (design §12 frame panel,
   // Phase 5 exit). Strided like `frame-processed` so the post rate is

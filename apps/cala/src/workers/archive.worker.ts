@@ -28,6 +28,7 @@ import {
   type WorkerInitPayload,
   type WorkerOutbound,
 } from '@calab/cala-runtime';
+import { TimeseriesStore } from './timeseries-store.ts';
 
 // Rolling event log capacity. Design §9.2 sizes ~500 structural
 // events per typical session at ~2 KB each → ~1 MB budget; we default
@@ -37,6 +38,16 @@ const DEFAULT_EVENT_RING_CAPACITY = 4096;
 // upstream cannot balloon memory. Overridable via
 // `workerConfig.metricWindow`.
 const DEFAULT_METRIC_WINDOW = 256;
+// Tiered timeseries sizing (design §9.1). L1 holds the most recent
+// `l1Capacity` samples at full resolution; L2 holds `l2Capacity`
+// samples downsampled in blocks of `l2Stride` (so L2 covers up to
+// `l2Capacity * l2Stride` historical samples). Defaults sized so
+// one-vitals-per-frame at 30 fps keeps ~8.5 s at full resolution and
+// ~17 min of older context at ~1 Hz, well within the §9 memory
+// budget.
+const DEFAULT_TS_L1_CAPACITY = 256;
+const DEFAULT_TS_L2_CAPACITY = 1024;
+const DEFAULT_TS_L2_STRIDE = 16;
 // Local EventBus sizing. Archive is the sole subscriber post-init and
 // drains synchronously, so these are effectively no-backpressure
 // defaults — but they live in config per the no-magic-numbers rule.
@@ -55,6 +66,9 @@ interface ArchiveWorkerConfig {
   metricWindow: number;
   localBusCapacity: number;
   localBusMaxSubscribers: number;
+  timeseriesL1Capacity: number;
+  timeseriesL2Capacity: number;
+  timeseriesL2Stride: number;
 }
 
 const workerSelf = ((globalThis as unknown as { self?: WorkerGlobalScope }).self ??
@@ -71,6 +85,8 @@ interface RuntimeHandles {
   // not need.
   eventLog: PipelineEvent[];
   metricSnapshot: Map<string, number>;
+  timeseries: TimeseriesStore;
+  unsubscribeTimeseries: () => void;
   running: boolean;
   stopped: boolean;
 }
@@ -105,6 +121,9 @@ function parseConfig(raw: unknown): ArchiveWorkerConfig {
       'localBusMaxSubscribers',
       DEFAULT_LOCAL_BUS_MAX_SUBSCRIBERS,
     ),
+    timeseriesL1Capacity: pickPositiveInt('timeseriesL1Capacity', DEFAULT_TS_L1_CAPACITY),
+    timeseriesL2Capacity: pickPositiveInt('timeseriesL2Capacity', DEFAULT_TS_L2_CAPACITY),
+    timeseriesL2Stride: pickPositiveInt('timeseriesL2Stride', DEFAULT_TS_L2_STRIDE),
   };
 }
 
@@ -116,6 +135,12 @@ function handleInit(payload: WorkerInitPayload): void {
   });
   const eventLog: PipelineEvent[] = [];
   const metricSnapshot = new Map<string, number>();
+  const timeseries = new TimeseriesStore({
+    l1Capacity: cfg.timeseriesL1Capacity,
+    l2Capacity: cfg.timeseriesL2Capacity,
+    l2Stride: cfg.timeseriesL2Stride,
+    maxNames: cfg.metricWindow,
+  });
 
   const unsubscribeLog = bus.subscribe((e) => {
     if (eventLog.length === cfg.eventRingCapacity) {
@@ -136,6 +161,11 @@ function handleInit(payload: WorkerInitPayload): void {
     metricSnapshot.set(e.name, e.value);
   });
 
+  const unsubscribeTimeseries = bus.subscribe((e) => {
+    if (e.kind !== 'metric') return;
+    timeseries.append(e.name, e.t, e.value);
+  });
+
   handles = {
     cfg,
     bus,
@@ -143,6 +173,8 @@ function handleInit(payload: WorkerInitPayload): void {
     unsubscribeMetrics,
     eventLog,
     metricSnapshot,
+    timeseries,
+    unsubscribeTimeseries,
     running: false,
     stopped: false,
   };
@@ -168,6 +200,21 @@ function handleDumpRequest(requestId: number): void {
   });
 }
 
+function handleTimeseriesRequest(requestId: number, name: string): void {
+  if (!handles) return;
+  const q = handles.timeseries.query(name);
+  post({
+    kind: 'timeseries',
+    role: ROLE,
+    requestId,
+    name,
+    l1Times: q.l1Times,
+    l1Values: q.l1Values,
+    l2Times: q.l2Times,
+    l2Values: q.l2Values,
+  });
+}
+
 function postDoneOnce(): void {
   if (donePosted) return;
   donePosted = true;
@@ -182,6 +229,7 @@ function handleStop(): void {
   handles.stopped = true;
   handles.unsubscribeLog();
   handles.unsubscribeMetrics();
+  handles.unsubscribeTimeseries();
   handles.bus.close();
   postDoneOnce();
 }
@@ -204,6 +252,9 @@ workerSelf.onmessage = (ev: MessageEvent<WorkerInbound>): void => {
       return;
     case 'request-archive-dump':
       handleDumpRequest(msg.requestId);
+      return;
+    case 'request-timeseries':
+      handleTimeseriesRequest(msg.requestId, msg.name);
       return;
     case 'stop':
       handleStop();
