@@ -134,6 +134,7 @@ let currentUnsubscribe: (() => void) | null = null;
 // posts. Cleared on run end.
 let currentArchiveWorker: WorkerLike | null = null;
 let currentPreviewDetach: (() => void) | null = null;
+let currentFitDetach: (() => void) | null = null;
 
 export interface StartOptions {
   factories?: WorkerFactories;
@@ -152,9 +153,12 @@ function wrapFactories(base: WorkerFactories): WorkerFactories {
         currentArchiveWorker = worker;
       }
       if (role === 'decodePreprocess') {
-        // Main-thread listener for W1 preview posts + heartbeat frame
-        // indexing. Runs alongside the orchestrator's own listener —
-        // neither interferes with the other.
+        // Main-thread listener for W1 frame-preview posts. Runs
+        // alongside the orchestrator's own listener — neither
+        // interferes with the other. Frame index + epoch for the
+        // dashboard counter come from the fit worker's
+        // `frame-processed` (below) since W1 has no view of the fit
+        // pipeline's epoch and hardcodes 0.
         const listener = (ev: { data: WorkerOutbound }): void => {
           const msg = ev.data;
           if (msg.kind === 'frame-preview') {
@@ -166,13 +170,22 @@ function wrapFactories(base: WorkerFactories): WorkerFactories {
             });
             return;
           }
-          if (msg.kind === 'frame-processed') {
-            recordFrameProcessed(msg.index, msg.epoch);
-            return;
-          }
         };
         worker.addEventListener('message', listener);
         currentPreviewDetach = () => worker.removeEventListener('message', listener);
+      }
+      if (role === 'fit') {
+        // Fit is the only worker that knows the real pipeline epoch,
+        // so the dashboard frame/epoch label is driven from its
+        // heartbeat. W1's `frame-processed` is ignored here.
+        const listener = (ev: { data: WorkerOutbound }): void => {
+          const msg = ev.data;
+          if (msg.kind === 'frame-processed') {
+            recordFrameProcessed(msg.index, msg.epoch);
+          }
+        };
+        worker.addEventListener('message', listener);
+        currentFitDetach = () => worker.removeEventListener('message', listener);
       }
       return worker;
     };
@@ -226,6 +239,8 @@ export async function startRun(opts: StartOptions = {}): Promise<void> {
     currentRuntime = null;
     currentPreviewDetach?.();
     currentPreviewDetach = null;
+    currentFitDetach?.();
+    currentFitDetach = null;
     currentArchiveWorker = null;
   }
 }
