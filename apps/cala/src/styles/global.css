@@ -243,3 +243,56 @@
 .event-feed__item--reject .event-feed__kind {
   color: var(--error, #f87171);
 }
+
+/* ─── Dashboard layout (Phase 6 task 9) ────────────────────────────── */
+
+.cala-dashboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'vitals vitals'
+    'frame events';
+  gap: var(--space-md);
+  padding: var(--space-md);
+  height: 100%;
+  min-height: 0;
+}
+
+.cala-dashboard__vitals {
+  grid-area: vitals;
+}
+
+.cala-dashboard__frame {
+  grid-area: frame;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cala-dashboard__events {
+  grid-area: events;
+  min-height: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Simplified single-frame viewer: no side panel in the new layout. */
+
+.frame-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.frame-viewer__label {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
