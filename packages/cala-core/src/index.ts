@@ -8,4 +8,12 @@ export {
   init_panic_hook,
   initCalaCore,
   calaMemoryBytes,
+  drainApplyEventsTyped,
+} from './wasm-adapter.ts';
+
+export type {
+  WasmAppliedEvent,
+  WasmComponentClass,
+  WasmDeprecateReason,
+  WasmDrainApplyEventsResult,
 } from './wasm-adapter.ts';

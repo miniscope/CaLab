@@ -396,6 +396,7 @@ impl FitConfig {
 /// field was added in Phase 3 without disturbing existing callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum ComponentClass {
     /// Localized, compact, cell-scale footprint with fast transients.
     Cell,

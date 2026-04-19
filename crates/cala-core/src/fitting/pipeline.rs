@@ -328,8 +328,11 @@ pub struct ApplyBatchReport {
 /// `PipelineEvent` birth/merge/deprecate variants (§9.2). Kept in this
 /// module (not the runtime `events.ts`) because it is the Rust
 /// structural shape — the WASM binding converts to a JS value at the
-/// boundary.
+/// boundary. Serde attrs target the JS event shape directly so
+/// `serde_wasm_bindgen::to_value` produces `{kind:"birth", ...}` etc.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "camelCase"))]
 pub enum AppliedEvent {
     Birth {
         id: u32,

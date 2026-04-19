@@ -85,6 +85,21 @@ export class Fitter {
      */
     drainApply(queue: MutationQueueHandle): Uint32Array;
     /**
+     * Drain + apply like `drainApply`, but also return the per-
+     * mutation event payloads. Shape:
+     *
+     * ```js
+     * { report: [applied, stale, invalid], events: AppliedEvent[] }
+     * ```
+     *
+     * Each `AppliedEvent` is a tagged object (`kind: 'birth' | 'merge'
+     * | 'deprecate'`) carrying the minimal fields the event-feed UI
+     * needs (§9.2). `support` and `values` come through as plain
+     * `number[]` — they're small (~50 elements per birth) and cross
+     * the WASM boundary at extend-cycle cadence, not per frame.
+     */
+    drainApplyEvents(queue: MutationQueueHandle): any;
+    /**
      * Current asset epoch. Advances once per successful mutation
      * apply; not touched by per-frame `step` calls.
      */
@@ -228,6 +243,7 @@ export interface InitOutput {
     readonly extender_pushResidual: (a: number, b: number, c: number, d: number) => void;
     readonly extender_runCycle: (a: number, b: number, c: number) => number;
     readonly fitter_drainApply: (a: number, b: number, c: number) => void;
+    readonly fitter_drainApplyEvents: (a: number, b: number, c: number) => void;
     readonly fitter_epoch: (a: number) => bigint;
     readonly fitter_height: (a: number) => number;
     readonly fitter_lastTrace: (a: number, b: number) => void;
@@ -252,9 +268,9 @@ export interface InitOutput {
     readonly snapshothandle_pixels: (a: number) => number;
     readonly init_panic_hook: () => void;
     readonly extender_residualLen: (a: number) => number;
-    readonly __wbindgen_export: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_export2: (a: number, b: number) => number;
-    readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
 }
 

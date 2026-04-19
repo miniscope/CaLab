@@ -57,3 +57,59 @@ export function initCalaCore(): Promise<void> {
 export function calaMemoryBytes(): number | null {
   return calaMemory ? calaMemory.buffer.byteLength : null;
 }
+
+// ── Phase 7: drainApplyEvents wire shape ──────────────────────────────
+//
+// Mirrors the Rust `AppliedEvent` tagged union (see
+// `crates/cala-core/src/fitting/pipeline.rs`). We duplicate the shape
+// here rather than generating it from the `.d.ts` (wasm-bindgen emits
+// `any` for `serde_wasm_bindgen` returns) so TS callers get full
+// autocomplete + exhaustiveness checking on `kind`.
+export type WasmComponentClass = 'cell' | 'slowBaseline' | 'neuropil';
+
+export type WasmDeprecateReason =
+  | 'footprintCollapsed'
+  | 'traceInactive'
+  | 'mergedInto'
+  | 'invalidApply';
+
+export type WasmAppliedEvent =
+  | {
+      kind: 'birth';
+      id: number;
+      class: WasmComponentClass;
+      support: number[];
+      values: number[];
+      patch: [number, number];
+    }
+  | {
+      kind: 'merge';
+      ids: [number, number];
+      into: number;
+      class: WasmComponentClass;
+      support: number[];
+      values: number[];
+    }
+  | {
+      kind: 'deprecate';
+      id: number;
+      reason: WasmDeprecateReason;
+    };
+
+export interface WasmDrainApplyEventsResult {
+  /** `[applied, stale, invalid]` — matches `drainApply`'s return. */
+  report: [number, number, number];
+  events: WasmAppliedEvent[];
+}
+
+/**
+ * Typed wrapper around `Fitter.drainApplyEvents`. Centralizing the
+ * cast keeps callers from repeating `as WasmDrainApplyEventsResult`
+ * and documents the shape the Rust binding promises.
+ */
+export function drainApplyEventsTyped(
+  fitter: Fitter,
+  queue: MutationQueueHandle,
+): WasmDrainApplyEventsResult {
+  return fitter.drainApplyEvents(queue) as WasmDrainApplyEventsResult;
+}

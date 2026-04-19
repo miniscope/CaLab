@@ -34,7 +34,18 @@ use crate::extending::driver as extend_driver;
 use crate::extending::mutation::{
     DeprecateReason, Epoch, MutationQueue, PipelineMutation, Snapshot,
 };
+use crate::fitting::AppliedEvent;
 use crate::fitting::FitPipeline;
+
+// Wire-shape for `Fitter::drainApplyEvents`. Kept private to the
+// binding so the rest of the crate stays unaware of wasm-specific
+// shapes. Serde is available whenever `jsbindings` is on (see
+// Cargo.toml — `jsbindings` implies `serde`).
+#[derive(serde::Serialize)]
+struct DrainApplyEventsResult {
+    report: [u32; 3],
+    events: Vec<AppliedEvent>,
+}
 use crate::io::{decode_grayscale_f32, OwnedAviReader};
 use crate::preprocess::PreprocessPipeline;
 
@@ -323,6 +334,32 @@ impl Fitter {
     pub fn drain_apply(&mut self, queue: &mut MutationQueueHandle) -> Vec<u32> {
         let report = self.pipeline.drain_apply(&mut queue.inner);
         vec![report.applied, report.stale, report.invalid]
+    }
+
+    /// Drain + apply like `drainApply`, but also return the per-
+    /// mutation event payloads. Shape:
+    ///
+    /// ```js
+    /// { report: [applied, stale, invalid], events: AppliedEvent[] }
+    /// ```
+    ///
+    /// Each `AppliedEvent` is a tagged object (`kind: 'birth' | 'merge'
+    /// | 'deprecate'`) carrying the minimal fields the event-feed UI
+    /// needs (§9.2). `support` and `values` come through as plain
+    /// `number[]` — they're small (~50 elements per birth) and cross
+    /// the WASM boundary at extend-cycle cadence, not per frame.
+    #[wasm_bindgen(js_name = drainApplyEvents)]
+    pub fn drain_apply_events(
+        &mut self,
+        queue: &mut MutationQueueHandle,
+    ) -> Result<JsValue, JsValue> {
+        let (report, events) = self.pipeline.drain_apply_events(&mut queue.inner);
+        let payload = DrainApplyEventsResult {
+            report: [report.applied, report.stale, report.invalid],
+            events,
+        };
+        serde_wasm_bindgen::to_value(&payload)
+            .map_err(|e| js_err("drainApplyEvents serialization", e))
     }
 
     /// Take an extend-visible snapshot of `(Ã, W, M, epoch)` — design

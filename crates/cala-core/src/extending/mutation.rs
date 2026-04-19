@@ -65,6 +65,8 @@ impl PipelineMutation {
 /// Why a component is being deprecated. `'static` so mutations stay
 /// cheap to clone and transport across channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum DeprecateReason {
     /// Footprint shrank to empty support during `EvaluateFootprints`.
     FootprintCollapsed,
