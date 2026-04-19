@@ -318,10 +318,11 @@
 .cala-dashboard {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
     'vitals vitals'
-    'frame events';
+    'frame  events'
+    'traces events';
   gap: var(--space-md);
   padding: var(--space-md);
   height: 100%;
@@ -338,6 +339,11 @@
   min-height: 0;
 }
 
+.cala-dashboard__traces {
+  grid-area: traces;
+  min-width: 0;
+}
+
 .cala-dashboard__events {
   grid-area: events;
   min-height: 0;
@@ -347,6 +353,28 @@
   padding: var(--space-sm) var(--space-md);
   display: flex;
   flex-direction: column;
+}
+
+.traces-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.traces-panel__header {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.traces-panel__chart {
+  min-height: 260px;
 }
 
 /* Simplified single-frame viewer: no side panel in the new layout. */
