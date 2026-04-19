@@ -191,13 +191,9 @@ export function createArchiveClient(
   }
 
   function requestTimeseries(name: string): Promise<TimeseriesReply> {
-    return issueRequest<TimeseriesReply>(
-      'timeseries',
-      `timeseries(${name})`,
-      (requestId) => {
-        worker.postMessage({ kind: 'request-timeseries', requestId, name });
-      },
-    );
+    return issueRequest<TimeseriesReply>('timeseries', `timeseries(${name})`, (requestId) => {
+      worker.postMessage({ kind: 'request-timeseries', requestId, name });
+    });
   }
 
   function requestEventsForNeuron(neuronId: number): Promise<PipelineEvent[]> {

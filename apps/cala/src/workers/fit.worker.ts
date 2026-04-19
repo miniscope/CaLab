@@ -346,10 +346,7 @@ function mutationToEvent(m: PipelineMutation, frameIndex: number): PipelineEvent
   }
 }
 
-function updateSchedulerFromEvent(
-  scheduler: FootprintSnapshotScheduler,
-  ev: PipelineEvent,
-): void {
+function updateSchedulerFromEvent(scheduler: FootprintSnapshotScheduler, ev: PipelineEvent): void {
   // Mirror every structural event into the scheduler so the
   // log-spaced floor fires with the latest known footprint per
   // neuron (§9.3). Mutations without a footprint payload still
@@ -464,8 +461,7 @@ function emitVitals(h: RuntimeHandles, frameIndex: number): void {
   const now = Date.now();
   const elapsedMs = now - h.lastVitalsTimeMs;
   const elapsedFrames = frameIndex - h.lastVitalsFrameIndex;
-  const fps =
-    h.lastVitalsTimeMs > 0 && elapsedMs > 0 ? (elapsedFrames * 1000) / elapsedMs : 0;
+  const fps = h.lastVitalsTimeMs > 0 && elapsedMs > 0 ? (elapsedFrames * 1000) / elapsedMs : 0;
   h.lastVitalsTimeMs = now;
   h.lastVitalsFrameIndex = frameIndex;
 

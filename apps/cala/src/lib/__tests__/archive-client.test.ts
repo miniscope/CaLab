@@ -292,9 +292,7 @@ describe('cala archive-client', () => {
     expect(history.length).toBe(2);
     expect(history[0].t).toBe(1);
     expect(Array.from(history[1].pixelIndices)).toEqual([3, 4]);
-    expect(Array.from(history[1].values)).toEqual([
-      0.10000000149011612, 0.20000000298023224,
-    ]);
+    expect(Array.from(history[1].values)).toEqual([0.10000000149011612, 0.20000000298023224]);
   });
 
   it('onEvent delivers PipelineEvent messages posted by the worker', () => {

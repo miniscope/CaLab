@@ -484,9 +484,7 @@ describe('fit worker', () => {
       (p) =>
         p.filter(
           (m) =>
-            m.kind === 'event' &&
-            m.event.kind === 'metric' &&
-            m.event.name === 'extend.proposed',
+            m.kind === 'event' && m.event.kind === 'metric' && m.event.name === 'extend.proposed',
         ).length >= 2,
     );
 

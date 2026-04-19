@@ -52,10 +52,7 @@ export function EventFeed(props: EventFeedProps): JSX.Element {
         </button>
       </div>
       <div class="event-feed__heading">Events (newest first)</div>
-      <Show
-        when={tail().length > 0}
-        fallback={<div class="event-feed__empty">No events yet.</div>}
-      >
+      <Show when={tail().length > 0} fallback={<div class="event-feed__empty">No events yet.</div>}>
         <ul class="event-feed__list">
           <For each={tail()}>
             {(e) => (

@@ -222,13 +222,7 @@ let extenderCycleCount = 0;
 
 class StubExtender {
   private residualPushCount = 0;
-  constructor(
-    _h: number,
-    _w: number,
-    _win: number,
-    _extendCfg: string,
-    _metadata: string,
-  ) {}
+  constructor(_h: number, _w: number, _win: number, _extendCfg: string, _metadata: string) {}
   pushResidual(_r: Float32Array): void {
     this.residualPushCount += 1;
   }

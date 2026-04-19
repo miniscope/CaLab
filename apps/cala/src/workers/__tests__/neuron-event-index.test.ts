@@ -64,9 +64,7 @@ describe('neuronIdsForEvent', () => {
   });
 
   it('returns an empty array for reject + metric', () => {
-    expect(
-      neuronIdsForEvent({ kind: 'reject', t: 0, at: [0, 0], reason: 'low-snr' }),
-    ).toEqual([]);
+    expect(neuronIdsForEvent({ kind: 'reject', t: 0, at: [0, 0], reason: 'low-snr' })).toEqual([]);
     expect(neuronIdsForEvent({ kind: 'metric', t: 0, name: 'x', value: 1 })).toEqual([]);
   });
 });

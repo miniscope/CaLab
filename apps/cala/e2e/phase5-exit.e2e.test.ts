@@ -281,13 +281,7 @@ class StubExtender {
   // real path but here they just no-op so the Phase 5 assertions
   // (frame ticks, metric events, preview frames) remain exactly
   // what they were before task 11 landed.
-  constructor(
-    _h: number,
-    _w: number,
-    _win: number,
-    _extendCfg: string,
-    _metadata: string,
-  ) {}
+  constructor(_h: number, _w: number, _win: number, _extendCfg: string, _metadata: string) {}
   pushResidual(_r: Float32Array): void {}
   runCycle(_fitter: unknown, _queue: unknown): number {
     return 0;
