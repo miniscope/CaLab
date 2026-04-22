@@ -26,12 +26,12 @@ export const workflowTutorial: Tutorial = {
         'Use \u201CTop Active\u201D mode to find cells with strong activity. Look for a cell with clear, well-separated peaks in the raw trace. Avoid cells dominated by noise or slow baseline drift \u2014 a cell with a few clean events is ideal for initial tuning. Click a card below to switch cells.',
       side: 'top',
     },
-    // Step 3: Tune decay time (interactive)
+    // Step 3: Tune FWHM (interactive)
     {
-      element: '[data-tutorial="slider-decay"]',
-      title: 'Step 2: Tune Decay Time',
+      element: '[data-tutorial="slider-fwhm"]',
+      title: 'Step 2: Tune FWHM',
       description:
-        'Decay has the biggest visual impact. Find clean, small-amplitude calcium events first. Drag the slider until the fit\u2019s falling edge matches the filtered trace\u2019s falling edge after each peak. Try it now.',
+        'FWHM has the biggest visual impact. Find clean, small-amplitude calcium events first. Drag the slider until the fit\u2019s falling edge matches the filtered trace\u2019s falling edge after each peak. Try it now.',
       side: 'right',
       waitForAction: 'slider-change',
       disableActiveInteraction: false,
@@ -41,7 +41,7 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Step 3: Check Fit & Residuals',
       description:
-        'Look at how the orange fit line follows the blue raw trace after peaks. The tails should line up. If the fit drops too fast, increase decay. If it lingers too long, decrease decay.<br><br>' +
+        'Look at how the orange fit line follows the blue raw trace after peaks. The tails should line up. If the fit drops too fast, increase FWHM. If it lingers too long, decrease FWHM.<br><br>' +
         'Then look at the red residual trace at the bottom. Residuals should resemble the noise characteristics of your recording. <b>Near-zero residuals = overfitting.</b> Visible transient shapes in residuals = underfitting. Good residuals are flat noise with no structure.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
@@ -51,7 +51,7 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="noise-filter"]',
       title: 'Step 3b: Consider Noise Filtering',
       description:
-        'Noise leads to deconvolution artifacts. Enable the <b>Noise Filter</b> to apply a bandpass filter derived from your kernel parameters. Filtering is conservative \u2014 it removes high-frequency noise without changing rise time dynamics. <b>Toggle it on to try.</b>',
+        'Noise leads to deconvolution artifacts. Enable the <b>Noise Filter</b> to apply a bandpass filter derived from your kernel parameters. Filtering is conservative \u2014 it removes high-frequency noise without changing onset kinetics. <b>Toggle it on to try.</b>',
       side: 'right',
       waitForAction: 'filter-toggle',
       disableActiveInteraction: false,
@@ -72,12 +72,12 @@ export const workflowTutorial: Tutorial = {
         'The power spectral density shows your data\u2019s frequency content. When Noise Filter is on, dashed lines mark the bandpass cutoffs (HP and LP). The passband should preserve your calcium signal frequencies while rejecting noise.',
       side: 'left',
     },
-    // Step 8: Fine-tune rise time (interactive)
+    // Step 8: Fine-tune Peak time (interactive)
     {
-      element: '[data-tutorial="slider-rise"]',
-      title: 'Step 4: Fine-Tune Rise Time',
+      element: '[data-tutorial="slider-peak"]',
+      title: 'Step 4: Fine-Tune Peak Time',
       description:
-        'Now adjust the rise time. This is subtle \u2014 it affects the onset of each event. Watch the leading edge of peaks in the fit. Drag to adjust.',
+        'Now adjust the Peak time. This is subtle \u2014 it affects how quickly each event reaches its peak. Watch the leading edge of peaks in the fit. Drag to adjust.',
       side: 'right',
       waitForAction: 'slider-change',
       disableActiveInteraction: false,
@@ -87,7 +87,7 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Check Rise Slopes',
       description:
-        'Zoom into a peak onset. The orange fit should match the blue trace\u2019s upward slope. If the fit rises too slowly, decrease rise time. If it overshoots, increase it slightly. Note: changing rise time may slightly affect the optimal decay \u2014 re-check.',
+        'Zoom into a peak onset. The orange fit should match the blue trace\u2019s upward slope. If the fit rises too slowly, decrease Peak time. If it overshoots, increase it slightly. Note: changing Peak time may slightly affect the optimal FWHM \u2014 re-check.',
       side: 'bottom',
     },
     // Step 10: Add sparsity (interactive)
