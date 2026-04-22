@@ -64,21 +64,21 @@ export const basicsTutorial: Tutorial = {
         'Use the +/\u2212 buttons to adjust the number of grid columns (1\u20136). Fewer columns means larger cards for detailed inspection; more columns lets you compare many cells at once.',
       side: 'bottom',
     },
-    // Step 7: Decay slider (+ kernel shape info absorbed from former kernel display step)
+    // Step 7: FWHM slider (+ kernel shape info absorbed from former kernel display step)
     {
-      element: '[data-tutorial="slider-decay"]',
-      title: 'Decay Time (tau_decay)',
+      element: '[data-tutorial="slider-fwhm"]',
+      title: 'FWHM (Event Width)',
       description:
-        'The most important parameter \u2014 start here. Controls how quickly calcium decays after a neural event. Too short: the solver places extra activity during the decay phase to explain lingering signal (overfitting). Too long: fit is sluggish and misses fast events. <b>Deconvolved activity should primarily appear during the rise, not spread across the whole decay.</b><br><br>' +
-        'The kernel display shows the resulting template \u2014 it should match what a real calcium transient looks like for your indicator. Its peak time and half-decay time are annotated.',
+        'The most important parameter \u2014 start here. FWHM (full width at half-max) controls the overall duration of each calcium event. Too narrow: the solver places extra activity to explain lingering signal (overfitting). Too wide: fit is sluggish and misses fast events. <b>Deconvolved activity should primarily appear during the rise, not spread across the whole event.</b><br><br>' +
+        'The kernel display shows the resulting template \u2014 it should match what a real calcium transient looks like for your indicator. Its peak time and FWHM are annotated.',
       side: 'right',
     },
-    // Step 8: Rise slider
+    // Step 8: Peak slider
     {
-      element: '[data-tutorial="slider-rise"]',
-      title: 'Rise Time (tau_rise)',
+      element: '[data-tutorial="slider-peak"]',
+      title: 'Peak Time',
       description:
-        'Controls how quickly calcium rises at event onset. Usually much shorter than decay. Fine-tune after decay is set. Note: <b>changing rise slightly changes optimal decay</b> \u2014 they\u2019re coupled, so re-check decay after adjusting rise.',
+        'Controls how quickly calcium rises to its peak after event onset. Usually much shorter than FWHM. Fine-tune after FWHM is set. Note: <b>changing Peak slightly changes optimal FWHM</b> \u2014 they\u2019re coupled, so re-check FWHM after adjusting Peak.',
       side: 'right',
     },
     // Step 9: Lambda slider
@@ -86,7 +86,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="slider-lambda"]',
       title: 'Sparsity Penalty (lambda)',
       description:
-        'Controls event count. Start low and increase until noise artifacts disappear from the green trace without losing real events. A value of 1 is a good starting point. The green deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the reconvolved fit peak starts decreasing away from the raw trace as you increase lambda, your sparsity is too high. <b>Prefer adjusting decay time over relying on high sparsity</b> to control overfitting. Increasing decay can help reduce dense deconvolved activity under big fluorescence events. Most cells will respond well to small sparsity values, but a small percentage of cells may be too noisy for reliable deconvolution \u2014 don\u2019t overfit noisy cells, focus on the average-looking cell.',
+        'Controls event count. Start low and increase until noise artifacts disappear from the green trace without losing real events. A value of 1 is a good starting point. The green deconvolved trace should show clean, sharp peaks at real events with a quiet baseline between them. If the reconvolved fit peak starts decreasing away from the raw trace as you increase lambda, your sparsity is too high. <b>Prefer adjusting FWHM over relying on high sparsity</b> to control overfitting. Increasing FWHM can help reduce dense deconvolved activity under big fluorescence events. Most cells will respond well to small sparsity values, but a small percentage of cells may be too noisy for reliable deconvolution \u2014 don\u2019t overfit noisy cells, focus on the average-looking cell.',
       side: 'right',
     },
     // Step 10: Good vs bad fit

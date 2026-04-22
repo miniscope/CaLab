@@ -23,7 +23,7 @@ export const advancedTutorial: Tutorial = {
       element: '[data-tutorial="card-grid"]',
       title: 'Residual Pattern Analysis',
       description:
-        'The red residual trace reveals model mismatches. Systematic positive bumps after peaks: decay too short. Negative dips before peaks: rise too long. Low-frequency waves: residual baseline drift (the automatic baseline subtraction handles most drift, but very slow trends may remain). <b>Residuals should resemble noise. Near-zero residuals = overfitting. Visible transient shapes = underfitting.</b>',
+        'The red residual trace reveals model mismatches. Systematic positive bumps after peaks: FWHM too narrow. Negative dips before peaks: Peak time too long. Low-frequency waves: residual baseline drift (the automatic baseline subtraction handles most drift, but very slow trends may remain). <b>Residuals should resemble noise. Near-zero residuals = overfitting. Visible transient shapes = underfitting.</b>',
       side: 'bottom',
     },
     // Step 3: Parameter coupling
@@ -31,7 +31,7 @@ export const advancedTutorial: Tutorial = {
       element: '[data-tutorial="param-panel"]',
       title: 'Parameter Coupling',
       description:
-        'Rise and decay times interact. <b>After adjusting decay, always re-check rise.</b> With longer decay, the model explains more variance, so you may need less sparsity. <b>Tune in order: decay \u2192 rise \u2192 lambda.</b>',
+        'Peak and FWHM interact. <b>After adjusting FWHM, always re-check Peak.</b> With a larger FWHM, the model explains more variance, so you may need less sparsity. <b>Tune in order: FWHM \u2192 Peak \u2192 lambda.</b>',
       side: 'left',
     },
     // Step 4: Indicator-specific guidance
@@ -48,7 +48,7 @@ export const advancedTutorial: Tutorial = {
       title: 'Artifacts & Challenging Signals',
       description:
         'Common artifacts that affect fitting: <b>Motion artifacts:</b> sharp, symmetric deflections (not calcium-shaped). <b>Photobleaching:</b> slow downward baseline trend (largely handled by the automatic rolling-percentile baseline subtraction, but extreme cases may still affect results). <b>Neuropil contamination:</b> broad, slow signals mixed with sharp events. Motion artifacts cannot be fixed by parameter tuning \u2014 they require preprocessing. Photobleaching and neuropil contamination are largely handled by CaTune\u2019s automatic baseline subtraction.<br><br>' +
-        'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. <b>Under big fluorescence events, try increasing decay time to reduce dense deconvolved activity</b> \u2014 increase as much as possible without making the fit too poor.',
+        'When neurons fire rapidly, calcium events overlap. The model handles this via superposition, but dense firing can make individual events hard to resolve. <b>Under big fluorescence events, try increasing FWHM to reduce dense deconvolved activity</b> \u2014 increase as much as possible without making the fit too poor.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
@@ -78,7 +78,7 @@ export const advancedTutorial: Tutorial = {
     },
     // Step 9: Sampling rate matters
     {
-      element: '[data-tutorial="slider-decay"]',
+      element: '[data-tutorial="slider-fwhm"]',
       title: 'When Sampling Rate Matters',
       description:
         'If your sampling rate is low (e.g., 10 Hz), fast dynamics are undersampled and parameters may need to be wider to compensate. If your data was recorded at a different rate than entered, all parameter values will be off. Double-check your sampling rate setting.',
@@ -89,7 +89,7 @@ export const advancedTutorial: Tutorial = {
       element: '[data-tutorial="export-panel"]',
       title: 'Publication-Quality Parameters',
       description:
-        'For publications, report: rise time, decay time, lambda, sampling rate, and calcium indicator. Include the AR2 coefficients from the export JSON \u2014 these are the mathematically equivalent autoregressive representation used by most analysis pipelines. Always note the CaTune version.',
+        'For publications, report: Peak time, FWHM, lambda, sampling rate, and calcium indicator. The export JSON also includes the equivalent tau_rise/tau_decay pair and AR2 coefficients used by most analysis pipelines. Always note the CaTune version.',
       side: 'top',
     },
     // Step 11: Completion (centered modal, no element)

@@ -52,7 +52,13 @@ export function Card(props: CardProps) {
       {...spreadDataAttrs(props)}
     >
       {props.children}
-      {props.resizable && <div class="calab-card__resize-handle" onMouseDown={handleResizeStart} />}
+      {props.resizable && (
+        <div
+          class="calab-card__resize-handle"
+          data-tutorial="resize-handle"
+          onMouseDown={handleResizeStart}
+        />
+      )}
     </div>
   );
 }

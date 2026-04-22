@@ -3,7 +3,7 @@
 
 /** A single step in a tutorial tour. */
 export interface TutorialStep {
-  /** CSS selector for the target element (e.g., '[data-tutorial="slider-decay"]'). Omit for centered modal. */
+  /** CSS selector for the target element (e.g., '[data-tutorial="slider-fwhm"]'). Omit for centered modal. */
   element?: string;
   /** Popover title text. */
   title: string;
