@@ -106,7 +106,7 @@ export function TracePreview() {
       // Trace label
       ctx.fillStyle = TRACE_COLORS[t % TRACE_COLORS.length];
       ctx.font = '11px system-ui, sans-serif';
-      ctx.fillText(`Cell ${t}`, 4, yBase + 12);
+      ctx.fillText(`Cell ${t + 1}`, 4, yBase + 12);
     }
   };
 
