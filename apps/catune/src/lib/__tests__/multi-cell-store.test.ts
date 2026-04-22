@@ -72,7 +72,9 @@ function seedCellTraces(cellIndex: number): void {
   setMultiCellResults(cellIndex, {
     cellIndex,
     raw: new Float64Array(10),
+    rawStats: { mean: 0, std: 1, zMin: 0, zMax: 0 },
     deconvolved: new Float32Array(10),
+    deconvMinMax: [0, 0],
     reconvolution: new Float32Array(10),
   });
 }

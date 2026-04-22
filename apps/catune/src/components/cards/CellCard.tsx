@@ -10,14 +10,16 @@ import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '@calab/core';
 import { computePeakSNR, snrToQuality } from '@calab/core';
 import { Card } from '@calab/ui';
-import { setHoveredCell } from '../../lib/multi-cell-store.ts';
+import { setHoveredCell, type RawTraceStats } from '../../lib/multi-cell-store.ts';
 import { cardHeight, setCardHeight, currentTau } from '../../lib/viz-store.ts';
 import { CELL_CARD_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
 
 export interface CellCardProps {
   cellIndex: number;
   rawTrace: Float64Array;
+  rawStats: RawTraceStats;
   deconvolvedTrace?: Float32Array;
+  deconvMinMax: [number, number];
   reconvolutionTrace?: Float32Array;
   filteredTrace?: Float32Array;
   samplingRate: number;
@@ -29,6 +31,7 @@ export interface CellCardProps {
   onZoomChange?: (cellIndex: number, startS: number, endS: number) => void;
   windowStartSample?: number;
   pinnedDeconvolved?: Float32Array;
+  pinnedDeconvMinMax?: [number, number];
   pinnedReconvolution?: Float32Array;
   pinnedWindowStartSample?: number;
   groundTruthSpikes?: Float64Array;
@@ -132,7 +135,9 @@ export function CellCard(props: CellCardProps) {
         <div class="cell-card__zoom">
           <CaTuneZoomWindow
             rawTrace={props.rawTrace}
+            rawStats={props.rawStats}
             deconvolvedTrace={props.deconvolvedTrace}
+            deconvMinMax={props.deconvMinMax}
             reconvolutionTrace={props.reconvolutionTrace}
             filteredTrace={props.filteredTrace}
             samplingRate={props.samplingRate}
@@ -142,6 +147,7 @@ export function CellCard(props: CellCardProps) {
             onZoomChange={handleZoomChange}
             deconvWindowOffset={props.windowStartSample}
             pinnedDeconvolved={props.pinnedDeconvolved}
+            pinnedDeconvMinMax={props.pinnedDeconvMinMax}
             pinnedReconvolution={props.pinnedReconvolution}
             pinnedWindowOffset={props.pinnedWindowStartSample}
             data-tutorial={props.isActive ? 'zoom-window' : undefined}

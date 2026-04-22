@@ -29,10 +29,15 @@ import {
   showGTSpikes,
   currentTau,
 } from '../../lib/viz-store.ts';
+import type { RawTraceStats } from '../../lib/multi-cell-store.ts';
 
 export interface CaTuneZoomWindowProps {
   rawTrace: Float64Array;
+  /** Precomputed z-score stats for the raw trace — immutable per session. */
+  rawStats: RawTraceStats;
   deconvolvedTrace?: Float32Array;
+  /** [min, max] of the deconvolved trace, precomputed on solver write. */
+  deconvMinMax: [number, number];
   reconvolutionTrace?: Float32Array;
   filteredTrace?: Float32Array;
   samplingRate: number;
@@ -43,6 +48,8 @@ export interface CaTuneZoomWindowProps {
   onZoomChange?: (startTime: number, endTime: number) => void;
   deconvWindowOffset?: number;
   pinnedDeconvolved?: Float32Array;
+  /** [min, max] of the pinned deconvolved trace, snapshotted on pin. */
+  pinnedDeconvMinMax?: [number, number];
   pinnedReconvolution?: Float32Array;
   pinnedWindowOffset?: number;
   'data-tutorial'?: string;
@@ -98,31 +105,9 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
   const bucketWidth = () =>
     Math.max(MIN_BUCKET_WIDTH, Math.min(MAX_BUCKET_WIDTH, Math.round(chartWidth())));
 
-  const rawStats = createMemo(() => {
-    const raw = props.rawTrace;
-    if (!raw || raw.length === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
-    let sum = 0;
-    let sumSq = 0;
-    let rawMin = Infinity;
-    let rawMax = -Infinity;
-    for (let i = 0; i < raw.length; i++) {
-      const v = raw[i];
-      sum += v;
-      sumSq += v * v;
-      if (v < rawMin) rawMin = v;
-      if (v > rawMax) rawMax = v;
-    }
-    const n = raw.length;
-    const mean = sum / n;
-    const std = Math.sqrt(sumSq / n - mean * mean) || 1;
-    const zMin = (rawMin - mean) / std;
-    const zMax = (rawMax - mean) / std;
-    return { mean, std, zMin, zMax };
-  });
-
   const globalYRange = createMemo<[number, number]>(() => {
     const raw = props.rawTrace;
-    const { zMin, zMax } = rawStats();
+    const { zMin, zMax } = props.rawStats;
     if (!raw || raw.length === 0) return [-4, 6];
     const rawRange = zMax - zMin;
     const deconvHeight = rawRange * DECONV_SCALE;
@@ -132,8 +117,9 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     return [residBottom, zMax + rawRange * 0.02];
   });
 
-  const deconvMinMax = createMemo(() => typedArrayMinMax(props.deconvolvedTrace));
-  const pinnedDeconvMinMax = createMemo(() => typedArrayMinMax(props.pinnedDeconvolved));
+  // Ground-truth spike min/max is recomputed here rather than in the store
+  // because GT is loaded once per session and swapping the reference via
+  // toggle/visibility is infrequent — memoization amortizes it.
   const gtSpikesMinMax = createMemo(() => typedArrayMinMax(props.groundTruthSpikes));
 
   const sliceAndDownsample = (
@@ -228,7 +214,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     if (startSample >= endSample) return emptySeriesData();
 
     const len = endSample - startSample;
-    const { mean, std, zMin, zMax } = rawStats();
+    const { mean, std, zMin, zMax } = props.rawStats;
 
     const x = new Float64Array(len);
     const dt = 1 / fs;
@@ -294,7 +280,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       offset,
       raw.length,
       dsX.length,
-      (vals) => scaleToDeconvBand(vals, deconvMinMax(), zMin, zMax),
+      (vals) => scaleToDeconvBand(vals, props.deconvMinMax, zMin, zMax),
     );
 
     const dsResid = computeResiduals(dsRaw, dsReconv, zMin, zMax, dsX.length);
@@ -318,7 +304,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       pinnedOffset,
       raw.length,
       dsX.length,
-      (vals) => scaleToDeconvBand(vals, pinnedDeconvMinMax(), zMin, zMax),
+      (vals) => scaleToDeconvBand(vals, props.pinnedDeconvMinMax ?? [0, 0], zMin, zMax),
     );
     /* eslint-enable solid/reactivity */
 

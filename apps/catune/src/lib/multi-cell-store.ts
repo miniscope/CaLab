@@ -13,13 +13,58 @@ import { parsedData, effectiveShape, swapped } from './data-store.ts';
 
 export type SelectionMode = 'top-active' | 'random' | 'manual';
 
+/** Z-score parameters derived from a raw trace. Computed once at ingest. */
+export interface RawTraceStats {
+  mean: number;
+  std: number;
+  zMin: number;
+  zMax: number;
+}
+
 export interface CellTraces {
   cellIndex: number;
   raw: Float64Array;
+  /** Precomputed raw-trace z-score stats. Constant per cell once set. */
+  rawStats: RawTraceStats;
   deconvolved: Float32Array;
+  /** [min, max] of the deconvolved trace. Updated on every solver tick. */
+  deconvMinMax: [number, number];
   reconvolution: Float32Array;
   filteredTrace?: Float32Array;
   windowStartSample?: number;
+}
+
+/** Compute z-score stats for a raw trace. Zero-length input yields identity stats. */
+export function computeRawStats(raw: Float64Array): RawTraceStats {
+  if (raw.length === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
+  let sum = 0;
+  let sumSq = 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < raw.length; i++) {
+    const v = raw[i];
+    sum += v;
+    sumSq += v * v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const n = raw.length;
+  const mean = sum / n;
+  const std = Math.sqrt(sumSq / n - mean * mean) || 1;
+  return { mean, std, zMin: (min - mean) / std, zMax: (max - mean) / std };
+}
+
+/** [min, max] over a typed array. Empty input yields [0, 0]. */
+export function computeArrayMinMax(arr: ArrayLike<number>): [number, number] {
+  if (arr.length === 0) return [0, 0];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return [lo, hi];
 }
 
 // Record types for store-backed per-cell data.
@@ -90,6 +135,7 @@ function updateOneCellTraces(
   setMultiCellResults(cellIndex, {
     ...existing,
     deconvolved,
+    deconvMinMax: computeArrayMinMax(deconvolved),
     reconvolution,
     filteredTrace,
     windowStartSample,

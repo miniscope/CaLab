@@ -101,7 +101,9 @@ export function CardGrid(props: CardGridProps) {
                   <CellCard
                     cellIndex={cellIndex}
                     rawTrace={t().raw}
+                    rawStats={t().rawStats}
                     deconvolvedTrace={t().deconvolved}
+                    deconvMinMax={t().deconvMinMax}
                     reconvolutionTrace={t().reconvolution}
                     filteredTrace={t().filteredTrace}
                     samplingRate={samplingRate() ?? 30}
@@ -113,6 +115,7 @@ export function CardGrid(props: CardGridProps) {
                     onZoomChange={reportCellZoom}
                     windowStartSample={t().windowStartSample}
                     pinnedDeconvolved={pinnedTraces()?.deconvolved}
+                    pinnedDeconvMinMax={pinnedTraces()?.deconvMinMax}
                     pinnedReconvolution={pinnedTraces()?.reconvolution}
                     pinnedWindowStartSample={pinnedTraces()?.windowStartSample}
                     groundTruthSpikes={gt()?.spikes}

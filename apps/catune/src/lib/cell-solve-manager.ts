@@ -14,6 +14,7 @@ import {
   updateOneCellTraces,
   visibleCellIndices,
   hoveredCell,
+  computeRawStats,
 } from './multi-cell-store.ts';
 import { extractCellTrace } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
@@ -321,13 +322,17 @@ function ensureCellState(
     };
     cellStates.set(cellIndex, state);
 
-    // Ensure the cell has an entry in multiCellResults for immediate card rendering
+    // Ensure the cell has an entry in multiCellResults for immediate card rendering.
+    // rawStats is computed once here since the raw trace is immutable per session;
+    // deconvMinMax starts at [0, 0] for the zeros and is refreshed on every solver tick.
     if (multiCellResults[cellIndex] === undefined) {
       const zeros = new Float32Array(rawTrace.length);
       setMultiCellResults(cellIndex, {
         cellIndex,
         raw: rawTrace,
+        rawStats: computeRawStats(rawTrace),
         deconvolved: zeros,
+        deconvMinMax: [0, 0],
         reconvolution: zeros,
       });
     }
