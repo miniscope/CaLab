@@ -5,7 +5,7 @@
  * Click/drag to reposition the zoom window.
  */
 
-import { createEffect, createMemo, on, onCleanup, onMount } from 'solid-js';
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { downsampleMinMax, makeTimeAxis } from '@calab/compute';
 
 /** A highlighted time region drawn as a background band on the minimap. */
@@ -36,10 +36,12 @@ export interface TraceOverviewProps {
 export const ROW_HEIGHT = 24;
 export const ROW_DURATION_S = 20 * 60; // 20 minutes per row
 const PIXELS_PER_ROW = 600; // target downsample width per row
+const EDGE_HANDLE_PX = 6; // hit area radius around zoom-rect edges
 
 export function TraceOverview(props: TraceOverviewProps) {
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
+  const [cursor, setCursor] = createSignal('grab');
 
   const totalDuration = createMemo(() => props.trace.length / props.samplingRate);
   const numRows = createMemo(() => Math.max(1, Math.ceil(totalDuration() / ROW_DURATION_S)));
@@ -154,6 +156,28 @@ export function TraceOverview(props: TraceOverviewProps) {
         ctx.strokeStyle = 'rgba(33, 113, 181, 0.3)';
         ctx.lineWidth = 1;
         ctx.strokeRect(hlStart, rowY, hlEnd - hlStart, ROW_HEIGHT);
+
+        // Draggable edge grips — only drawn where the zoom boundary actually
+        // falls within this row (not where the rect was clipped at the row edge).
+        const leftEdgeVisible = zoomStart >= rowStartTime;
+        const rightEdgeVisible = zoomEnd <= rowEndTime;
+        const gripW = 3;
+        const cy = rowY + ROW_HEIGHT / 2;
+        ctx.fillStyle = 'rgba(33, 113, 181, 0.7)';
+        if (leftEdgeVisible) {
+          ctx.fillRect(hlStart - gripW / 2, rowY, gripW, ROW_HEIGHT);
+        }
+        if (rightEdgeVisible) {
+          ctx.fillRect(hlEnd - gripW / 2, rowY, gripW, ROW_HEIGHT);
+        }
+        // White notch in each grip to hint at the drag affordance
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        if (leftEdgeVisible) {
+          ctx.fillRect(hlStart - 0.5, cy - 4, 1, 8);
+        }
+        if (rightEdgeVisible) {
+          ctx.fillRect(hlEnd - 0.5, cy - 4, 1, 8);
+        }
       }
 
       // Draw trace line
@@ -231,6 +255,85 @@ export function TraceOverview(props: TraceOverviewProps) {
     props.onZoomChange(newStart, newEnd);
   };
 
+  // Hit-test a pointer position against the zoom rectangle. Returns which
+  // part of the rect (if any) the pointer is over. An edge only counts when
+  // its time boundary actually falls within the row under the cursor — this
+  // avoids treating a rect that was clipped at a row boundary as a handle.
+  type Region = 'left-edge' | 'right-edge' | 'body' | 'outside';
+  const hitTest = (mx: number, my: number): Region => {
+    if (!containerRef) return 'outside';
+    const width = containerRef.clientWidth;
+    if (width <= 0) return 'outside';
+
+    const rowIndex = Math.floor(my / ROW_HEIGHT);
+    const rows = rowData();
+    if (rowIndex < 0 || rowIndex >= rows.length) return 'outside';
+
+    const row = rows[rowIndex];
+    const duration = totalDuration();
+    const rowDuration = rows.length === 1 ? duration : ROW_DURATION_S;
+    const rowStartTime = row.timeOffset;
+    const rowEndTime = rowStartTime + rowDuration;
+
+    const zoomStart = props.zoomStart;
+    const zoomEnd = props.zoomEnd;
+    if (zoomEnd <= rowStartTime || zoomStart >= rowEndTime) return 'outside';
+
+    const hlStart = Math.max(0, (zoomStart - rowStartTime) / rowDuration) * width;
+    const hlEnd = Math.min(1, (zoomEnd - rowStartTime) / rowDuration) * width;
+
+    const leftEdgeVisible = zoomStart >= rowStartTime;
+    const rightEdgeVisible = zoomEnd <= rowEndTime;
+
+    if (leftEdgeVisible && Math.abs(mx - hlStart) <= EDGE_HANDLE_PX) return 'left-edge';
+    if (rightEdgeVisible && Math.abs(mx - hlEnd) <= EDGE_HANDLE_PX) return 'right-edge';
+    if (mx >= hlStart && mx <= hlEnd) return 'body';
+    return 'outside';
+  };
+
+  // Update cursor on hover so edge handles are discoverable.
+  const handleHoverMove = (e: MouseEvent) => {
+    if (!containerRef) return;
+    const rect = containerRef.getBoundingClientRect();
+    const region = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (region === 'left-edge' || region === 'right-edge') setCursor('ew-resize');
+    else if (region === 'body') setCursor('grab');
+    else setCursor('crosshair');
+  };
+
+  // Drag one edge of the zoom rectangle; the opposite edge stays fixed.
+  const startEdgeDrag = (side: 'left' | 'right', rect: DOMRect) => {
+    const duration = totalDuration();
+    const minGap = 1 / props.samplingRate; // keep at least one sample wide
+    const fixedStart = props.zoomStart;
+    const fixedEnd = props.zoomEnd;
+    setCursor('ew-resize');
+
+    const onMove = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+      const time = pixelToTime(mx, my);
+      if (time == null) return;
+      if (side === 'left') {
+        const newStart = Math.max(0, Math.min(time, fixedEnd - minGap));
+        props.onZoomChange(newStart, fixedEnd);
+      } else {
+        const newEnd = Math.min(duration, Math.max(time, fixedStart + minGap));
+        props.onZoomChange(fixedStart, newEnd);
+      }
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      setCursor('grab');
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
   // Click + drag handler for repositioning zoom window
   const handleMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
@@ -239,6 +342,15 @@ export function TraceOverview(props: TraceOverviewProps) {
 
     if (!containerRef) return;
     const rect = containerRef.getBoundingClientRect();
+    const mx0 = e.clientX - rect.left;
+    const my0 = e.clientY - rect.top;
+    const region = hitTest(mx0, my0);
+
+    if (region === 'left-edge' || region === 'right-edge') {
+      startEdgeDrag(region === 'left-edge' ? 'left' : 'right', rect);
+      return;
+    }
+
     const windowDuration = props.zoomEnd - props.zoomStart;
     let dragged = false;
 
@@ -273,7 +385,9 @@ export function TraceOverview(props: TraceOverviewProps) {
       ref={containerRef}
       class="trace-overview"
       onMouseDown={handleMouseDown}
-      style={{ cursor: 'grab' }}
+      onMouseMove={handleHoverMove}
+      onMouseLeave={() => setCursor('grab')}
+      style={{ cursor: cursor() }}
     >
       <canvas ref={canvasRef} class="trace-overview__canvas" />
     </div>
