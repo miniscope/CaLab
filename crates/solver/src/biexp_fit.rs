@@ -561,9 +561,14 @@ fn golden_section_refine(
                 }
             }
             1 => {
-                // Refine tau_d
+                // Refine tau_d — cap to match grid-search upper bound (tau_d_hi = 5.0)
+                // Without this cap, values exceeding 5s will cause runaway behavior. 
+                const TAU_D_CAP: f64 = 5.0;
+                if tau_d > TAU_D_CAP {
+                    tau_d = TAU_D_CAP;  // clamp runaway warm-start back to cap
+                }
                 let lo = (tau_d * 0.5).max(tau_r * 1.01);
-                let hi = tau_d * 2.0;
+                let hi = (tau_d * 2.0).min(TAU_D_CAP);
                 if lo < hi {
                     tau_d = golden_bracket(lo, hi, |x| {
                         eval_two_component(h_free, tau_r, x, tau_r_fast, tau_d_fast, dt, skip).2
