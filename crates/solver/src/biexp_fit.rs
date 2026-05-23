@@ -244,13 +244,17 @@ fn refine_candidate(
     }
 }
 
+/// Slow-component decay upper bound (seconds). Shared by the cold-start grid
+/// search and the golden-section refinement so the two stages cannot drift.
+const TAU_D_HI: f64 = 5.0;
+
 /// Cold-start grid search. Returns (best_slow_only, best_two_component).
 fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResult, BiexpResult) {
     // Slow component grid ranges (in seconds).
     let tau_r_lo = (1.0 / fs).max(0.005_f64);
     let tau_r_hi = 0.5_f64;
     let tau_d_lo = 0.05_f64;
-    let tau_d_hi = 5.0_f64;
+    let tau_d_hi = TAU_D_HI;
 
     let grid_n = 20;
     let log_tr_lo = tau_r_lo.ln();
@@ -561,9 +565,13 @@ fn golden_section_refine(
                 }
             }
             1 => {
-                // Refine tau_d
+                // Refine tau_d — cap to the grid-search upper bound. Without this
+                // cap, a warm-started tau_d > TAU_D_HI causes runaway behavior.
+                if tau_d > TAU_D_HI {
+                    tau_d = TAU_D_HI;
+                }
                 let lo = (tau_d * 0.5).max(tau_r * 1.01);
-                let hi = tau_d * 2.0;
+                let hi = (tau_d * 2.0).min(TAU_D_HI);
                 if lo < hi {
                     tau_d = golden_bracket(lo, hi, |x| {
                         eval_two_component(h_free, tau_r, x, tau_r_fast, tau_d_fast, dt, skip).2
