@@ -70,7 +70,7 @@ jobs:
           workspaces: 'crates/solver -> target'
 
       - name: Install wasm-pack
-        uses: taiki-e/install-action@a2352fc6ce487f030a3aa709482d57823eadfb37 # v2
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: wasm-pack@0.13.1
 
