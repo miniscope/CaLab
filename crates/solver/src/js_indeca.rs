@@ -58,6 +58,11 @@ pub fn indeca_solve_trace(
 /// for cold-start.
 ///
 /// Returns the estimated kernel as Float32Array (via Vec<f32>).
+///
+/// Throws a JS error (rather than aborting the WASM module) if the input array
+/// lengths are inconsistent — `alphas`/`baselines` must have one entry per
+/// trace, and `traces_flat`/`spikes_flat` must each be the sum of
+/// `trace_lengths`.
 #[wasm_bindgen]
 pub fn indeca_estimate_kernel(
     traces_flat: &[f32],
@@ -70,14 +75,25 @@ pub fn indeca_estimate_kernel(
     tol: f64,
     warm_kernel: &[f32],
     smooth_lambda: f64,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, JsError> {
     let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
+    let total_len: usize = lengths.iter().sum();
+    if alphas.len() != lengths.len() || baselines.len() != lengths.len() {
+        return Err(JsError::new(
+            "indeca_estimate_kernel: alphas and baselines must have one entry per trace",
+        ));
+    }
+    if traces_flat.len() != total_len || spikes_flat.len() != total_len {
+        return Err(JsError::new(
+            "indeca_estimate_kernel: traces_flat and spikes_flat length must equal sum(trace_lengths)",
+        ));
+    }
     let warm = if warm_kernel.is_empty() {
         None
     } else {
         Some(warm_kernel)
     };
-    kernel_est::estimate_free_kernel(
+    Ok(kernel_est::estimate_free_kernel(
         traces_flat,
         spikes_flat,
         alphas,
@@ -88,7 +104,7 @@ pub fn indeca_estimate_kernel(
         tol,
         warm,
         smooth_lambda,
-    )
+    ))
 }
 
 /// Fit a bi-exponential model to a free-form kernel.

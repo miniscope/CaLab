@@ -22,9 +22,15 @@ async function requireClient(): Promise<SupabaseClient> {
 /**
  * Create a typed CRUD service for a Supabase submission table.
  * Handles auth user injection, base filter application, and RLS-guarded delete.
+ *
+ * `readSource` is the relation used for `fetch` (community browsing). It
+ * defaults to the base table but should be a PII-free public view: base-table
+ * SELECT is restricted to owner+admin (migration 010), so anonymous browsing
+ * must go through the view. Writes and deletes always target `tableName`.
  */
 export function createSubmissionService<T extends BaseSubmission>(
   tableName: string,
+  readSource: string = tableName,
 ): SubmissionService<T> {
   return {
     async submit(payload) {
@@ -48,7 +54,7 @@ export function createSubmissionService<T extends BaseSubmission>(
     async fetch(filters?) {
       const client = await requireClient();
 
-      let query = client.from(tableName).select('*');
+      let query = client.from(readSource).select('*');
 
       if (filters?.indicator) {
         query = query.eq('indicator', filters.indicator);
