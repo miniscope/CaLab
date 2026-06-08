@@ -486,6 +486,20 @@ fn py_indeca_estimate_kernel<'py>(
 
     let warm = optional_to_f32_vec(warm_kernel)?;
 
+    // Validate array-length consistency before handing off, so a caller mistake
+    // surfaces as a clear ValueError instead of a Rust panic across the FFI.
+    let total_len: usize = lengths.iter().sum();
+    if alphas_slice.len() != lengths.len() || baselines_slice.len() != lengths.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "alphas and baselines must have one entry per trace (len == trace_lengths.len())",
+        ));
+    }
+    if traces_f32.len() != total_len || spikes_f32.len() != total_len {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "traces_flat and spikes_flat length must equal sum(trace_lengths)",
+        ));
+    }
+
     let result = kernel_est::estimate_free_kernel(
         &traces_f32,
         &spikes_f32,

@@ -15,13 +15,20 @@ All tables share a common set of base columns defined in `000_base_template.sql`
 | `002_field_options.sql`      | Shared canonical field options lookup table.                                    |
 | `003_analytics.sql`          | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking. |
 | `004_admin_role.sql`         | `is_admin()` helper function and admin moderation policies.                     |
+| `005`–`009`                  | CaDecon table, bridge data source, analytics hardening, and tighter constraints.|
+| `010_restrict_submission_pii.sql` | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views. |
 
 ## Applying migrations
 
 1. Open your Supabase project dashboard.
 2. Navigate to **SQL Editor**.
-3. Run each numbered file in order (001 through 004).
+3. Run each numbered file in order (001 through the highest-numbered). Existing
+   projects only need to run migrations they have not applied yet.
 4. Run `supabase/seed/field_options_seed.sql` to populate the indicator, species, and brain region lookup values.
+
+> **Note:** migration `010` must be applied **before** deploying the app build
+> that reads the `*_public` views, or community browsing will fail until the
+> views exist.
 
 ## Edge Functions
 

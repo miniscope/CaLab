@@ -5,8 +5,14 @@ apps/*/dist/
 packages/*/dist/
 *.tsbuildinfo
 .vite/
-crates/solver/target/
+# Rust build output and wasm-pack artifacts are build-only — never committed.
+# (`crates/*/target` covers solver and any future crate; `pkg/` is the
+# wasm-pack output, rebuilt by scripts/ensure-wasm.mjs.)
+crates/*/target/
+crates/*/pkg/
 test/
+.test_data/
+.playwright-mcp/
 .env
 .env.local
 .claude/

@@ -436,7 +436,11 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
     let mut traces = Vec::with_capacity(n_cells * n_tp);
     let mut ground_truth = Vec::with_capacity(n_cells);
 
-    let bins_per_frame = (config.spike_sim_hz / config.fs_hz).round() as usize;
+    // Clamp to >= 1: `spike_sim_hz` and `fs_hz` come from a user-supplied
+    // config, and a spike rate below half the frame rate would otherwise round
+    // to 0, producing a zero-length high-resolution buffer and a degenerate
+    // (empty) simulation rather than a usable result.
+    let bins_per_frame = ((config.spike_sim_hz / config.fs_hz).round() as usize).max(1);
     let num_high_res = n_tp * bins_per_frame;
 
     let shared_kernel = if !has_kernel_variation {
@@ -962,6 +966,27 @@ mod tests {
         for gt in &r.ground_truth {
             assert_eq!(gt.spikes.len(), 900);
             assert_eq!(gt.clean_calcium.len(), 900);
+        }
+    }
+
+    #[test]
+    fn low_spike_sim_hz_does_not_degenerate() {
+        // spike_sim_hz below fs_hz/2 rounds bins_per_frame to 0; the clamp
+        // keeps the high-resolution buffer non-empty so the simulation still
+        // produces full-length, finite traces instead of a degenerate result.
+        let cfg = SimulationConfig {
+            fs_hz: 30.0,
+            spike_sim_hz: 10.0,
+            num_timepoints: 300,
+            num_cells: 2,
+            alpha_cv: 0.0,
+            ..Default::default()
+        };
+        let r = simulate(&cfg);
+        assert_eq!(r.traces.len(), 2 * 300);
+        assert!(r.traces.iter().all(|v| v.is_finite()));
+        for gt in &r.ground_truth {
+            assert_eq!(gt.spikes.len(), 300);
         }
     }
 

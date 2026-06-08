@@ -152,6 +152,10 @@ SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222",
 -- so RLS filters the candidate rows to zero → query succeeds with 0 rows
 -- affected. Assert no rows were deleted.
 DELETE FROM catune_submissions WHERE dataset_hash = 'hash-alice';
+-- Verify under a privileged identity: as of migration 010, bob can no longer
+-- SELECT alice's row (reads are owner-or-admin only), so the existence check
+-- must run with RLS bypassed or it would read 0 for the wrong reason.
+RESET ROLE;
 SELECT assert_row_count(
   $sql$SELECT COUNT(*)::int FROM catune_submissions WHERE dataset_hash = 'hash-alice'$sql$,
   1,
@@ -191,10 +195,84 @@ BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
 DELETE FROM cadecon_submissions WHERE dataset_hash = 'hash-alice';
+-- See note above: bob cannot read alice's row post-010, so verify privileged.
+RESET ROLE;
 SELECT assert_row_count(
   $sql$SELECT COUNT(*)::int FROM cadecon_submissions WHERE dataset_hash = 'hash-alice'$sql$,
   1,
   'cadecon cross-user DELETE must not remove row'
+);
+ROLLBACK;
+
+-- ── submission PII lockdown (migration 010) ────────────────────────────────
+
+-- anon cannot read the base submission tables at all (no rows leak).
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM catune_submissions$sql$,
+  0,
+  'catune base table: anon SELECT returns 0 rows'
+);
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cadecon_submissions$sql$,
+  0,
+  'cadecon base table: anon SELECT returns 0 rows'
+);
+ROLLBACK;
+
+-- A non-owner authenticated user cannot read another user's base-table rows.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM catune_submissions WHERE dataset_hash = 'hash-alice'$sql$,
+  0,
+  'catune base table: non-owner SELECT cannot see foreign row'
+);
+ROLLBACK;
+
+-- The owner can still read their own base-table row (needed for insert-return).
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM catune_submissions WHERE dataset_hash = 'hash-alice'$sql$,
+  1,
+  'catune base table: owner SELECT sees own row'
+);
+ROLLBACK;
+
+-- Community browsing still works: anon reads all rows through the public view.
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM catune_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+  1,
+  'catune public view: anon can browse submissions'
+);
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+  1,
+  'cadecon public view: anon can browse submissions'
+);
+ROLLBACK;
+
+-- The public view must NOT expose the PII columns. Selecting them errors with
+-- undefined_column (42703), which assert_denied accepts.
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_denied(
+  $sql$SELECT orcid FROM catune_submissions_public LIMIT 1$sql$,
+  'catune public view omits orcid'
+);
+SELECT assert_denied(
+  $sql$SELECT lab_name FROM catune_submissions_public LIMIT 1$sql$,
+  'catune public view omits lab_name'
+);
+SELECT assert_denied(
+  $sql$SELECT notes FROM cadecon_submissions_public LIMIT 1$sql$,
+  'cadecon public view omits notes'
 );
 ROLLBACK;
 

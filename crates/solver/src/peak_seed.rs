@@ -201,13 +201,30 @@ pub fn seed_kernel_estimate(
     fs: f64,
 ) -> SeedKernelResult {
     let total_len: usize = trace_lengths.iter().sum();
-    assert_eq!(traces_flat.len(), total_len);
 
     let min_peak_distance_s = 5.0;
 
     // Kernel length: ~1.5 seconds at the given sampling rate
     let kernel_length = (1.5 * fs).ceil() as usize;
     let kernel_length = kernel_length.clamp(10, 200);
+
+    // Length invariant guaranteed by the FFI wrapper (see py_api). Loud in
+    // debug/tests; in release degrade to an empty result rather than panicking
+    // across the PyO3 boundary.
+    debug_assert_eq!(traces_flat.len(), total_len);
+    if traces_flat.len() != total_len {
+        return SeedKernelResult {
+            free_kernel: vec![0.0; kernel_length],
+            tau_rise: 0.02,
+            tau_decay: 0.4,
+            beta: 0.0,
+            residual: f64::INFINITY,
+            tau_rise_fast: 0.0,
+            tau_decay_fast: 0.0,
+            beta_fast: 0.0,
+            n_seed_spikes: 0,
+        };
+    }
 
     let mut spike_trains = vec![0.0_f32; total_len];
     let mut alphas = Vec::with_capacity(trace_lengths.len());
