@@ -605,8 +605,8 @@ export async function startRun(): Promise<void> {
     // Mean trace-reconstruction residual (1 - pve): This is computed over
     // a fixed subset cells. We select the min-residual iteration and
     // stop once the residual has risen for a few iterations (re-enabled patience
-    // stop, below. usually set around 3 from empircal tests). 
-    // This replaces the biexp fit residual, which selected a later iteration and often 
+    // stop, below. usually set around 3 from empircal tests).
+    // This replaces the biexp fit residual, which selected a later iteration and often
     // saw oscillating t_d and t_r vals. There is an improvement threshold (RECON_EPS) that
     // guards against noise being mistaken for improvement. The patience val guards against
     // noise being mistaken for the end.
@@ -751,10 +751,10 @@ export async function startRun(): Promise<void> {
     // The trace-reconstruction residual (1 - mean pve) tracks spike recovery and is
     // minimized with a best-fit kernel, which the loop reaches EARLY before it
     // overshoots tau_d. We therefore select the minimum-reconstruction-residual iteration
-    // to finalize (replacing the biexp fit residual, which selected a later, overshot
-    // kernel), and allow for the guard. This works by allowing the stop after RESIDUAL_PATIENCE 
+    // to finalize (replacing the biexp fit residual, which selected a later
+    // kernel), and allow for the guard. This works by allowing the stop after RESIDUAL_PATIENCE
     // consecutive iterations that dont change. Because the residual minimizes early and rises as
-    // tau_d overshoots, this stops shortly after the optimum. 
+    // tau_d overshoots, this stops shortly after the optimum.
     // Overall, better kernel and same spike quality spike inference with fewer iterations!.
     const RECON_EPS = 1e-3; // must beat running min by this to update the pick
     if (reconResidual < bestResidual - RECON_EPS) {
@@ -788,7 +788,7 @@ export async function startRun(): Promise<void> {
     }
   }
 
-  // Use the kernel from the iteration with the minimum trace-reconstruction residual. 
+  // Use the kernel from the iteration with the minimum trace-reconstruction residual.
   if (bestResidual < Infinity) {
     tauR = bestTauR;
     tauD = bestTauD;
