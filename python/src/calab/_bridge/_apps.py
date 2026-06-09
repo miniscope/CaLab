@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 HEARTBEAT_TIMEOUT = 10  # seconds without heartbeat = browser disconnected
 
+# Kernel waveforms are truncated to this many decay time-constants
+# (kernel_length = KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay * fs). Five decay
+# constants capture >99% of a bi-exponential's mass.
+KERNEL_LENGTH_DECAY_MULTIPLES = 5.0
+
 # Default app URLs (GitHub Pages deployment)
 _DEFAULT_CATUNE_URL = "https://miniscope.github.io/CaLab/CaTune/"
 _DEFAULT_CADECON_URL = "https://miniscope.github.io/CaLab/CaDecon/"
@@ -300,14 +305,14 @@ def decon(
     tau_rise = results.get("tau_rise", 0.2)
     tau_decay = results.get("tau_decay", 1.0)
     beta = results.get("beta", 1.0)
-    kernel_length = int(5.0 * tau_decay * result_fs)
+    kernel_length = int(KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay * result_fs)
     kernel_slow = _build_biexp_waveform(tau_rise, tau_decay, beta, result_fs, kernel_length)
 
     tau_rise_fast = results.get("tau_rise_fast", 0.0)
     tau_decay_fast = results.get("tau_decay_fast", 0.0)
     beta_fast = results.get("beta_fast", 0.0)
     if tau_decay_fast > 0 and beta_fast != 0:
-        kernel_length_fast = int(5.0 * tau_decay_fast * result_fs)
+        kernel_length_fast = int(KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay_fast * result_fs)
         kernel_fast = _build_biexp_waveform(
             tau_rise_fast, tau_decay_fast, beta_fast, result_fs, kernel_length_fast,
         )

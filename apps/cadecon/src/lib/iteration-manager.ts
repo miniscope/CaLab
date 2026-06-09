@@ -40,6 +40,11 @@ import {
   convergenceTol,
   hpFilterEnabled,
   lpFilterEnabled,
+  traceFistaMaxIters,
+  traceFistaTol,
+  kernelFistaMaxIters,
+  kernelFistaTol,
+  kernelSmoothLambda,
 } from './algorithm-store.ts';
 import {
   parsedData,
@@ -54,15 +59,9 @@ import { dataIndex } from './data-utils.ts';
 import { median } from './math-utils.ts';
 import { reconvolveAR2 } from './reconvolve.ts';
 
-/** Per-trace FISTA solver parameters (shared between subset and finalization passes). */
-const TRACE_FISTA_MAX_ITERS = 500;
-const TRACE_FISTA_TOL = 1e-4;
-
-/** Per-subset kernel estimation solver parameters. */
-const KERNEL_FISTA_MAX_ITERS = 200;
-const KERNEL_FISTA_TOL = 1e-4;
-/** TV-L1 smoothness penalty for free-form kernel estimation. */
-const KERNEL_SMOOTH_LAMBDA = 0;
+// Per-trace and per-kernel FISTA solver parameters are configurable via
+// algorithm-store (traceFistaMaxIters/Tol, kernelFistaMaxIters/Tol,
+// kernelSmoothLambda) so they are overridable and recorded with the run.
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
 export const BIEXP_FIT_SKIP = 0;
 
@@ -269,10 +268,10 @@ function dispatchKernelJobs(
         baselines,
         kernelLength,
         fs,
-        maxIters: KERNEL_FISTA_MAX_ITERS,
-        tol: KERNEL_FISTA_TOL,
+        maxIters: kernelFistaMaxIters(),
+        tol: kernelFistaTol(),
         refine: true,
-        smoothLambda: KERNEL_SMOOTH_LAMBDA,
+        smoothLambda: kernelSmoothLambda(),
         biexpSkip: BIEXP_FIT_SKIP,
         warmKernel,
         warmBiexp,
@@ -517,8 +516,8 @@ export async function startRun(): Promise<void> {
       tauD,
       fs,
       upFactor,
-      TRACE_FISTA_MAX_ITERS,
-      TRACE_FISTA_TOL,
+      traceFistaMaxIters(),
+      traceFistaTol(),
       hpOn,
       lpOn,
       sparsityLambda,
@@ -825,8 +824,8 @@ export async function startRun(): Promise<void> {
           tauDecay: tauD,
           fs,
           upsampleFactor: upFactor,
-          maxIters: TRACE_FISTA_MAX_ITERS,
-          tol: TRACE_FISTA_TOL,
+          maxIters: traceFistaMaxIters(),
+          tol: traceFistaTol(),
           hpEnabled: hpOn,
           lpEnabled: lpOn,
           lambda: sparsityLambda,

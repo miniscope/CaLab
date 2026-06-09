@@ -122,14 +122,25 @@ pub fn estimate_free_kernel(
     smooth_lambda: f64,
 ) -> Vec<f32> {
     let n_traces = trace_lengths.len();
-    assert_eq!(alphas.len(), n_traces);
-    assert_eq!(baselines.len(), n_traces);
-
     let total_len: usize = trace_lengths.iter().sum();
-    assert_eq!(traces.len(), total_len);
-    assert_eq!(spike_trains.len(), total_len);
 
-    if kernel_length == 0 || total_len == 0 {
+    // Length invariants. These are guaranteed by the FFI wrappers, which
+    // validate and return a typed error (see js_indeca / py_api). The
+    // debug_assert keeps the contract loud for internal callers and tests;
+    // the release-mode guard degrades to an empty kernel rather than panicking
+    // across the WASM/PyO3 boundary (a panic there aborts the module).
+    debug_assert_eq!(alphas.len(), n_traces);
+    debug_assert_eq!(baselines.len(), n_traces);
+    debug_assert_eq!(traces.len(), total_len);
+    debug_assert_eq!(spike_trains.len(), total_len);
+
+    if alphas.len() != n_traces
+        || baselines.len() != n_traces
+        || traces.len() != total_len
+        || spike_trains.len() != total_len
+        || kernel_length == 0
+        || total_len == 0
+    {
         return vec![0.0; kernel_length];
     }
 
