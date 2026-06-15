@@ -65,6 +65,16 @@ import { reconvolveAR2 } from './reconvolve.ts';
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
 export const BIEXP_FIT_SKIP = 0;
 
+/**
+ * DIAGNOSTIC ONLY. When true, both early-stop conditions (reconstruction-residual
+ * patience and tau_decay stability) are disabled, so the loop runs the full
+ * maxIterations. Use with a high maxIterations to capture the complete,
+ * untruncated residual trajectory (e.g. to observe the bi-exponential residual's
+ * full non-converging behavior). Best-iterate finalization still applies.
+ * MUST be set back to false for production runs.
+ */
+const DISABLE_EARLY_STOP = true;
+
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
 let pauseResolver: (() => void) | null = null;
@@ -455,6 +465,7 @@ export async function startRun(): Promise<void> {
   let bestResidual = Infinity;
   let bestTauR = tauR;
   let bestTauD = tauD;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained for legacy best-iterate diagnostic / old selection path
   let bestIteration = 0;
   const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
   let residualIncreaseCount = 0;
@@ -691,6 +702,7 @@ export async function startRun(): Promise<void> {
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
     setRunPhase('merge');
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- keeping for original convergence criterion (max relChange of tau_r/tau_d)
     const prevTauR = tauR;
     const prevTauD = tauD;
     // Extract all scalar fields in a single pass for median computation
@@ -764,7 +776,7 @@ export async function startRun(): Promise<void> {
       residualIncreaseCount = 0;
     } else {
       residualIncreaseCount++;
-      if (iter > 0 && residualIncreaseCount >= RESIDUAL_PATIENCE) {
+      if (!DISABLE_EARLY_STOP && iter > 0 && residualIncreaseCount >= RESIDUAL_PATIENCE) {
         setConvergedAtIteration(iter + 1);
         break;
       }
@@ -776,7 +788,7 @@ export async function startRun(): Promise<void> {
     // to maxIter unnecessarily. (tau_r jitters even after the kernel settles,
     // so we key on tau_d only — the stable signal per the trajectory study.)
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
-    if (iter > 0 && relChangeTauD < convTol) {
+    if (!DISABLE_EARLY_STOP && iter > 0 && relChangeTauD < convTol) {
       tdStableCount++;
       if (tdStableCount >= TD_STABLE_PATIENCE) {
         setConvergedAtIteration(iter + 1);
