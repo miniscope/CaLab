@@ -465,8 +465,7 @@ export async function startRun(): Promise<void> {
   let bestResidual = Infinity;
   let bestTauR = tauR;
   let bestTauD = tauD;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained for legacy best-iterate diagnostic / old selection path
-  let bestIteration = 0;
+  let _bestIteration = 0;
   const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
   let residualIncreaseCount = 0;
   const TD_STABLE_PATIENCE = 2;
@@ -702,8 +701,7 @@ export async function startRun(): Promise<void> {
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
     setRunPhase('merge');
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- keeping for original convergence criterion (max relChange of tau_r/tau_d)
-    const prevTauR = tauR;
+    const _prevTauR = tauR;
     const prevTauD = tauD;
     // Extract all scalar fields in a single pass for median computation
     const tauRises: number[] = [];
@@ -772,7 +770,7 @@ export async function startRun(): Promise<void> {
       bestResidual = reconResidual;
       bestTauR = tauR;
       bestTauD = tauD;
-      bestIteration = iter + 1;
+      _bestIteration = iter + 1;
       residualIncreaseCount = 0;
     } else {
       residualIncreaseCount++;
