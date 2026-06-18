@@ -14,6 +14,7 @@ import { initBridgeConfig, setupBridgeEffects } from './lib/bridge-effects.ts';
 import { trackEvent } from '@calab/community';
 import { supabaseEnabled, user, authLoading } from './lib/community/index.ts';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
+import { TutorialPanel } from './components/layout/TutorialPanel.tsx';
 import { ResizableGrid } from './components/layout/ResizableGrid.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -85,6 +86,10 @@ const App: Component = () => {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const toggleSidebar = () => setSidebarOpen((prev) => !prev);
 
+  // Tutorial selection panel open state (owned here, mirrors CaTune).
+  const [tutorialOpen, setTutorialOpen] = createSignal(false);
+  const toggleTutorial = () => setTutorialOpen((prev) => !prev);
+
   const communitySidebarTabs = (): SidebarTabConfig[] => {
     const list: SidebarTabConfig[] = [];
     if (supabaseEnabled) {
@@ -105,22 +110,36 @@ const App: Component = () => {
         <ImportOverlay hasFile={!!rawFile()} onReset={resetImport} onLoadDemo={loadDemoData} />
       }
     >
-      <DashboardShell
-        sidebarOpen={sidebarOpen()}
-        onToggleSidebar={toggleSidebar}
-        header={<CaDeconHeader sidebarOpen={sidebarOpen()} onToggleSidebar={toggleSidebar} />}
-        sidebar={
-          supabaseEnabled ? (
-            <SidebarTabs tabs={communitySidebarTabs()} defaultTab="community" />
-          ) : undefined
-        }
-      >
+      <>
+        {/* Tutorial panel — shown when toggled. Mounted at top so it reads as a
+            banner strip above the dashboard, matching CaTune. */}
+        <Show when={tutorialOpen()}>
+          <TutorialPanel onClose={() => setTutorialOpen(false)} />
+        </Show>
+
+        <DashboardShell
+          sidebarOpen={sidebarOpen()}
+          onToggleSidebar={toggleSidebar}
+          header={
+            <CaDeconHeader
+              sidebarOpen={sidebarOpen()}
+              onToggleSidebar={toggleSidebar}
+              tutorialOpen={tutorialOpen()}
+              onTutorialToggle={toggleTutorial}
+            />
+          }
+          sidebar={
+            supabaseEnabled ? (
+              <SidebarTabs tabs={communitySidebarTabs()} defaultTab="community" />
+            ) : undefined
+          }
+        >
         <VizLayout
           mode="dashboard"
           sidebar={
             <>
               <DashboardPanel id="subset-config" variant="controls">
-                <p class="panel-label panel-label--with-action">
+                <p class="panel-label panel-label--with-action" data-tutorial="subset-config">
                   Subset Configuration
                   <button
                     class="panel-label__action"
@@ -135,12 +154,12 @@ const App: Component = () => {
               </DashboardPanel>
 
               <DashboardPanel id="algorithm-settings" variant="controls">
-                <p class="panel-label">Algorithm Settings</p>
+                <p class="panel-label" data-tutorial="algorithm-settings">Algorithm Settings</p>
                 <AlgorithmSettings />
               </DashboardPanel>
 
               <DashboardPanel id="run-controls" variant="controls">
-                <p class="panel-label">Run Controls</p>
+                <p class="panel-label" data-tutorial="run-controls">Run Controls</p>
                 <RunControls />
                 <ProgressBar />
               </DashboardPanel>
@@ -153,7 +172,9 @@ const App: Component = () => {
         >
           <ResizableGrid>
             <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
-              <p class="panel-label">Raster Overview</p>
+              <p class="panel-label" data-tutorial="raster">
+                Raster Overview
+              </p>
               <RasterOverview />
             </DashboardPanel>
 
@@ -166,18 +187,23 @@ const App: Component = () => {
             </DashboardPanel>
 
             <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
-              <p class="panel-label">Kernel Shape</p>
+              <p class="panel-label" data-tutorial="kernel-display">
+                Kernel Shape
+              </p>
               <KernelDisplay />
             </DashboardPanel>
 
             <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
-              <p class="panel-label">Trace Inspector</p>
+              <p class="panel-label" data-tutorial="trace-viewer">
+                Trace Inspector
+              </p>
               <TraceInspector />
             </DashboardPanel>
           </ResizableGrid>
           <IterationScrubber />
         </VizLayout>
-      </DashboardShell>
+        </DashboardShell>
+      </>
     </Show>
   );
 };
