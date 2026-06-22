@@ -56,7 +56,7 @@ export const theoryTutorial: Tutorial = {
       title: 'Allowing More Than One Spike per Frame',
       description:
         'If your frame rate is low, a neuron can fire several times within a single frame and a plain spike/no spiketrain can only say \u201Csomething happened here,\u201D not \u201Cthree things happened here.\u201D<br><br>' +
-        'InDeCa works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.',    
+        'InDeCa works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.',
     },
     // Step 7:  Weighting only during active portions of the trace
     {
@@ -70,7 +70,7 @@ export const theoryTutorial: Tutorial = {
       title: 'Learning the Kernel',
       description:
         'Given InDeCa\u2019s current best guess at the spikes, it asks: <b>what overall shape, repeated at those spike times, best reproduces the trace?</b> It first builds that shape <b>directly from the data</b> as a free-form average kernel. After this it fits that kernel to a biexponential function. <br><br>' +
-        'When several cells are analyzed together, their traces are <b>pooled</b> so a single <b>shared kernel</b> is learned across them. Because the kernel is a real calcium response, its time constants (\u03C4_r, \u03C4_d) carry <b>biological meaning</b>. Thus, a shift in kernel shape across conditions, like different brain regions, could reflect real differences in those neuron\u2019s responses.', 
+        'When several cells are analyzed together, their traces are <b>pooled</b> so a single <b>shared kernel</b> is learned across them. Because the kernel is a real calcium response, its time constants (\u03C4_r, \u03C4_d) carry <b>biological meaning</b>. Thus, a shift in kernel shape across conditions, like different brain regions, could reflect real differences in those neuron\u2019s responses.',
     },
     // Step 9: Two-component biexp fit
     {

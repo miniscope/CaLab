@@ -134,74 +134,78 @@ const App: Component = () => {
             ) : undefined
           }
         >
-        <VizLayout
-          mode="dashboard"
-          sidebar={
-            <>
-              <DashboardPanel id="subset-config" variant="controls">
-                <p class="panel-label panel-label--with-action" data-tutorial="subset-config">
-                  Subset Configuration
-                  <button
-                    class="panel-label__action"
-                    title="Randomize subset tiling"
-                    disabled={isRunLocked()}
-                    onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
-                  >
-                    <DiceIcon />
-                  </button>
+          <VizLayout
+            mode="dashboard"
+            sidebar={
+              <>
+                <DashboardPanel id="subset-config" variant="controls">
+                  <p class="panel-label panel-label--with-action" data-tutorial="subset-config">
+                    Subset Configuration
+                    <button
+                      class="panel-label__action"
+                      title="Randomize subset tiling"
+                      disabled={isRunLocked()}
+                      onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
+                    >
+                      <DiceIcon />
+                    </button>
+                  </p>
+                  <SubsetConfig />
+                </DashboardPanel>
+
+                <DashboardPanel id="algorithm-settings" variant="controls">
+                  <p class="panel-label" data-tutorial="algorithm-settings">
+                    Algorithm Settings
+                  </p>
+                  <AlgorithmSettings />
+                </DashboardPanel>
+
+                <DashboardPanel id="run-controls" variant="controls">
+                  <p class="panel-label" data-tutorial="run-controls">
+                    Run Controls
+                  </p>
+                  <RunControls />
+                  <ProgressBar />
+                </DashboardPanel>
+
+                <DashboardPanel id="submit" variant="controls">
+                  <SubmitPanel />
+                </DashboardPanel>
+              </>
+            }
+          >
+            <ResizableGrid>
+              <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
+                <p class="panel-label" data-tutorial="raster">
+                  Raster Overview
                 </p>
-                <SubsetConfig />
+                <RasterOverview />
               </DashboardPanel>
 
-              <DashboardPanel id="algorithm-settings" variant="controls">
-                <p class="panel-label" data-tutorial="algorithm-settings">Algorithm Settings</p>
-                <AlgorithmSettings />
+              <DashboardPanel
+                id="kernel-convergence"
+                variant="data"
+                class="viz-grid__col--convergence"
+              >
+                <ConvergencePanel />
               </DashboardPanel>
 
-              <DashboardPanel id="run-controls" variant="controls">
-                <p class="panel-label" data-tutorial="run-controls">Run Controls</p>
-                <RunControls />
-                <ProgressBar />
+              <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
+                <p class="panel-label" data-tutorial="kernel-display">
+                  Kernel Shape
+                </p>
+                <KernelDisplay />
               </DashboardPanel>
 
-              <DashboardPanel id="submit" variant="controls">
-                <SubmitPanel />
+              <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
+                <p class="panel-label" data-tutorial="trace-viewer">
+                  Trace Inspector
+                </p>
+                <TraceInspector />
               </DashboardPanel>
-            </>
-          }
-        >
-          <ResizableGrid>
-            <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
-              <p class="panel-label" data-tutorial="raster">
-                Raster Overview
-              </p>
-              <RasterOverview />
-            </DashboardPanel>
-
-            <DashboardPanel
-              id="kernel-convergence"
-              variant="data"
-              class="viz-grid__col--convergence"
-            >
-              <ConvergencePanel />
-            </DashboardPanel>
-
-            <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
-              <p class="panel-label" data-tutorial="kernel-display">
-                Kernel Shape
-              </p>
-              <KernelDisplay />
-            </DashboardPanel>
-
-            <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
-              <p class="panel-label" data-tutorial="trace-viewer">
-                Trace Inspector
-              </p>
-              <TraceInspector />
-            </DashboardPanel>
-          </ResizableGrid>
-          <IterationScrubber />
-        </VizLayout>
+            </ResizableGrid>
+            <IterationScrubber />
+          </VizLayout>
         </DashboardShell>
       </>
     </Show>

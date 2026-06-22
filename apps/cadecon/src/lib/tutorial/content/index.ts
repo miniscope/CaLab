@@ -10,7 +10,7 @@ import { configureStorageKey, configureTutorialEngine } from '@calab/tutorials';
 // ... existing imports ...
 import '@calab/ui/styles/tutorial.css';
 
-configureStorageKey('cadecon-tutorial-progress-v1');   // already present
+configureStorageKey('cadecon-tutorial-progress-v1'); // already present
 configureTutorialEngine({ popoverClass: 'cadecon-tutorial' });
 /** All tutorials in recommended progression order. */
 export const tutorials: Tutorial[] = [

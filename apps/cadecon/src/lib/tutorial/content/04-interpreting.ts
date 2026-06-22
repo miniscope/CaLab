@@ -63,8 +63,8 @@ export const interpretingTutorial: Tutorial = {
         '<li>Enable the <b>High-Pass Filter</b> if baseline drift is contaminating the fit.</li>' +
         '<li>Enable the <b>Low-Pass Filter</b> for very noisy recordings.</li>' +
         '<li>Raise the <b>Upsample Target</b> only if your sampling rate is low relative to event kinetics.</li>' +
-        '</ul>',      
-        side: 'right',
+        '</ul>',
+      side: 'right',
     },
     // Step 7: Submitting to the community
     {
