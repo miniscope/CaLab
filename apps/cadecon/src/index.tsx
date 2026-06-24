@@ -6,6 +6,7 @@ import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import '@calab/ui/styles/base.css';
 import '@calab/ui/styles/tutorial.css';
 import './styles/global.css';
+import './styles/tutorial.css';
 
 configureStorageKey('cadecon-tutorial-progress-v1');
 configureTutorialEngine({ popoverClass: 'cadecon-tutorial' });

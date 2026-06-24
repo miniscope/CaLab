@@ -1,6 +1,7 @@
 // CADECON-TUTR-03: Understanding How CaDecon Works.
 
 import type { Tutorial } from '@calab/tutorials';
+import { renderKernelShape } from '../theory-figures.ts';
 
 export const theoryTutorial: Tutorial = {
   id: 'theory',
@@ -26,16 +27,18 @@ export const theoryTutorial: Tutorial = {
       description:
         'The absolute simplest question is: <b>which spikes, fired when, would produce the fluorescence trace you actually recorded?</b><br><br>' +
         'CaDecon answers this question by searching for four things at once \u2014 the <b>spikes</b>, the <b>calcium response</b> they generate, a slow <b>baseline</b>, and an overall <b>amplitude</b> that together reconstruct your trace as closely as possible. The goal of CaDecon is to minimize the error between the recording and the reconstruction:<br><br>' +
-        '<b>min \u2016 your trace \u2212 reconstruction \u2016\u00B2</b><br><br>' +
+        '<span class="tutorial-eq">min &#8741; your trace &minus; reconstruction &#8741;<sup>2</sup></span>' +
         'and does so with two constraints: spikes are <b>all-or-nothing</b> events (a neuron either fired or it didn\u2019t), and the corresponding calcium event must follow a realistic <b>rise-and-decay shape</b>. The math behind this is involved and draws on the field of <b>convex optimization</b>, but you don\u2019t need it in depth to understand the core ideas.',
+      popoverClass: 'driver-popover--wide',
     },
     // Step 3: The calcium model
     {
       title: 'The Calcium Model',
       description:
         'A spike doesn\u2019t show up as a spike in your trace \u2014 each one adds a slow bump of fluorescence: calcium <b>rises fast</b> after the spike, then <b>decays slowly</b> as it returns toward baseline. CaDecon models that bump with a <b>bi-exponential kernel</b>: one exponential for the fast rise, another for the slow decay.<br><br>' +
-        '<b>kernel = (slow decay) \u2212 (fast rise)</b><br><br>' +
-        'Two time constants define its shape: the <b>rise constant \u03C4_r</b> (how fast calcium rises) and the <b>decay constant \u03C4_d</b> (how slowly it returns to baseline). Convolving the spike train with this kernel gives the expected fluorescence trace. The kernel is scaled to a peak height of 1, so the separate <b>amplitude</b> term carries the real transient size.',
+        '<span class="tutorial-eq">k(t) = e<sup>&minus;t/\u03C4<sub>d</sub></sup> &minus; e<sup>&minus;t/\u03C4<sub>r</sub></sup></span>' +
+        'Two time constants define its shape: the <b>rise constant \u03C4<sub>r</sub></b> (how fast calcium rises) and the <b>decay constant \u03C4<sub>d</sub></b> (how slowly it returns to baseline). The plot shows this shape, annotated with its rise-to-peak time and full-width at half-maximum (FWHM). Convolving the spike train with this kernel gives the expected fluorescence trace. The kernel is scaled to a peak height of 1, so the separate <b>amplitude</b> term carries the real transient size.',
+      onPopoverRender: renderKernelShape,
     },
     // Step 4: Explaining FISTA
     {
