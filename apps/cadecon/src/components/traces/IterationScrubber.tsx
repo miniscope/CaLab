@@ -27,7 +27,11 @@ export function IterationScrubber(): JSX.Element {
 
   return (
     <Show when={iterationHistory().length > 1}>
-      <div class="iteration-scrubber" classList={{ 'iteration-scrubber--past': !isLatest() }}>
+      <div
+        class="iteration-scrubber"
+        classList={{ 'iteration-scrubber--past': !isLatest() }}
+        data-tutorial="iteration-scrubber"
+      >
         <label class="iteration-scrubber__label">Iteration:</label>
         <input
           class="iteration-scrubber__slider"

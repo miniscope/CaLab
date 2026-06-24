@@ -9,6 +9,8 @@ import { DEFAULT_QUALITATIVE_CONFIG } from '@calab/compute';
 import type { QualitativeSimConfig } from '@calab/compute';
 import { SimulationConfigurator } from '@calab/ui';
 import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '@calab/community';
+import { startTutorial, isTutorialActive } from '@calab/tutorials';
+import { getTutorialById } from '../../lib/tutorial/content/index.ts';
 
 const STEP_LABELS: Record<string, { num: number; label: string }> = {
   drop: { num: 1, label: 'Load Data' },
@@ -156,6 +158,20 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
             </div>
           </div>
         </div>
+        <Show when={!isTutorialActive()}>
+          <div class="theory-tutorial-link">
+            <span>New to calcium deconvolution?</span>
+            <button
+              class="btn-secondary btn-small"
+              onClick={() => {
+                const theory = getTutorialById('theory');
+                if (theory) startTutorial(theory);
+              }}
+            >
+              Start Theory Tutorial
+            </button>
+          </div>
+        </Show>
       </Show>
 
       <Show when={importStep() === 'confirm-dims'}>
