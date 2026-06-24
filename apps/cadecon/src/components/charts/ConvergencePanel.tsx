@@ -33,7 +33,7 @@ export function ConvergencePanel(): JSX.Element {
   const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('kernel');
 
   return (
-    <div class="convergence-panel">
+    <div class="convergence-panel" data-tutorial="kernel-convergence">
       <div class="convergence-panel__tabs">
         <For each={TABS}>
           {(tab) => (

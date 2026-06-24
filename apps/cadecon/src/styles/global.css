@@ -462,6 +462,19 @@
   margin-top: var(--space-sm);
 }
 
+/* "New to deconvolution?" theory-tutorial entry point below the import split. */
+.theory-tutorial-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
 @media (max-width: 768px) {
   .import-split {
     grid-template-columns: 1fr;

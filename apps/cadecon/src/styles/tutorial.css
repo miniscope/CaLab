@@ -1,0 +1,76 @@
+/* CaDecon-specific tutorial styles — popover sizing, theory figures, equations. */
+/* Base tutorial styles (driver.js theme, panel, cards, badges) live in
+   @calab/ui/styles/tutorial.css. */
+
+/* ========================
+   Popover sizing
+   ======================== */
+
+/* Standard CaDecon popovers a bit wider than the driver.js default (~300px),
+   so longer steps (e.g. the upsampling explanation) reflow shorter instead of
+   growing tall enough to run off the top and bottom of the screen. The --wide
+   and figure popovers keep their own larger widths. */
+.driver-popover.cadecon-tutorial {
+  max-width: 460px;
+}
+
+/* Safety net: keep any single step within the viewport height. */
+.driver-popover.cadecon-tutorial .driver-popover-description {
+  max-height: 76vh;
+  overflow-y: auto;
+}
+
+/* ========================
+   Theory figures (canvas)
+   ======================== */
+
+/* Wider popover for steps with a side-by-side figure. */
+.cadecon-tutorial-figure {
+  max-width: 740px !important;
+}
+
+.theory-figure-layout {
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-start;
+}
+
+.theory-figure-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.theory-figure-canvas {
+  flex-shrink: 0;
+}
+
+.theory-figure {
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* ========================
+   Inline equations
+   ======================== */
+
+.tutorial-eq {
+  display: block;
+  margin: var(--space-sm) auto;
+  text-align: center;
+  white-space: nowrap;
+  overflow-x: auto;
+  font-family: 'Cambria Math', Georgia, 'Times New Roman', serif;
+  font-size: 1.2em;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+/* Keep subscripts/superscripts upright against the italic body. */
+.tutorial-eq sub,
+.tutorial-eq sup {
+  font-style: normal;
+  font-size: 0.7em;
+}
