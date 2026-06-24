@@ -455,6 +455,11 @@ export async function startRun(): Promise<void> {
   let bestResidual = Infinity;
   let bestTauR = tauR;
   let bestTauD = tauD;
+  let _bestIteration = 0;
+  const RESIDUAL_PATIENCE = 3; // stop after this many consecutive increases
+  let residualIncreaseCount = 0;
+  const TD_STABLE_PATIENCE = 2;
+  let tdStableCount = 0;
 
   // Iteration 0: record initial kernel state and alpha=1 baseline
   batch(() => {
@@ -596,6 +601,23 @@ export async function startRun(): Promise<void> {
       snapshotIteration(iter + 1, tauR, tauD);
     });
 
+    // Mean trace-reconstruction residual (1 - pve): This is computed over
+    // a fixed subset cells. We select the min-residual iteration and
+    // stop once the residual has risen for a few iterations (re-enabled patience
+    // stop, below. usually set around 3 from empircal tests).
+    // This replaces the biexp fit residual, which selected a later iteration and often
+    // saw oscillating t_d and t_r vals. There is an improvement threshold (RECON_EPS) that
+    // guards against noise being mistaken for improvement. The patience val guards against
+    // noise being mistaken for the end.
+    let pveSum = 0;
+    let pveCount = 0;
+    for (const sc of cellScalars.values()) {
+      pveSum += sc.pve;
+      pveCount++;
+    }
+    const meanInferencePve = pveCount > 0 ? pveSum / pveCount : 0;
+    const reconResidual = 1 - meanInferencePve; // minimize this
+
     // Capture debug trace snapshot: cell 0 from first subset that has it
     if (rects.length > 0 && traceResults[0].size > 0) {
       const debugCell = rects[0].cellStart;
@@ -669,7 +691,7 @@ export async function startRun(): Promise<void> {
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
     setRunPhase('merge');
-    const prevTauR = tauR;
+    const _prevTauR = tauR;
     const prevTauD = tauD;
     // Extract all scalar fields in a single pass for median computation
     const tauRises: number[] = [];
@@ -723,39 +745,49 @@ export async function startRun(): Promise<void> {
       });
     });
 
-    // Step 4: Best-residual tracking & early stop (DISABLED)
+    // Step 4: Best-iterate selection & early stop — RECONSTRUCTION RESIDUAL.
     //
-    // TODO: The current stopping criterion uses the bi-exponential fit residual
-    // (||h_free - β·template||²), which measures kernel shape mismatch. This
-    // doesn't always work — it can be noisy or non-monotonic depending on the
-    // data. A more robust approach would use the trace-reconstruction residual
-    // (||y - α·(K*s) - b||² across cells), which directly measures how well
-    // the model explains the data. That's more expensive to compute but would
-    // be a stronger signal for when the kernel has overshot.
-    //
-    // Disabled: with damped tau updates the residual-patience early stop fires
-    // too aggressively before the damped parameters have had time to settle.
-    // Re-enable once a better stopping metric is implemented.
-    //
-    if (medResidual < bestResidual) {
-      bestResidual = medResidual;
+    // The trace-reconstruction residual (1 - mean pve) tracks spike recovery and is
+    // minimized with a best-fit kernel, which the loop reaches EARLY before it
+    // overshoots tau_d. We therefore select the minimum-reconstruction-residual iteration
+    // to finalize (replacing the biexp fit residual, which selected a later
+    // kernel), and allow for the guard. This works by allowing the stop after RESIDUAL_PATIENCE
+    // consecutive iterations that dont change. Because the residual minimizes early and rises as
+    // tau_d overshoots, this stops shortly after the optimum.
+    // Overall, better kernel and same spike quality spike inference with fewer iterations!.
+    const RECON_EPS = 1e-3; // must beat running min by this to update the pick
+    if (reconResidual < bestResidual - RECON_EPS) {
+      bestResidual = reconResidual;
       bestTauR = tauR;
       bestTauD = tauD;
+      _bestIteration = iter + 1;
+      residualIncreaseCount = 0;
+    } else {
+      residualIncreaseCount++;
+      if (iter > 0 && residualIncreaseCount >= RESIDUAL_PATIENCE) {
+        setConvergedAtIteration(iter + 1);
+        break;
+      }
     }
 
-    // Step 5: Convergence check (relative change in tau values)
-    const relChangeTauR = Math.abs(tauR - prevTauR) / (prevTauR + 1e-20);
+    // Secondary safety stop: tau_d stability. If the reconstruction residual
+    // never triggers the patience guard (e.g. a very flat recovery surface, as on
+    // some seeds), still stop once tau_d has plateaued so the loop doesn't run
+    // to maxIter unnecessarily. (tau_r jitters even after the kernel settles,
+    // so we key on tau_d only — the stable signal per the trajectory study.)
     const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
-    const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
-    if (iter > 0 && maxRelChange < convTol) {
-      setConvergedAtIteration(iter + 1);
-      break;
+    if (iter > 0 && relChangeTauD < convTol) {
+      tdStableCount++;
+      if (tdStableCount >= TD_STABLE_PATIENCE) {
+        setConvergedAtIteration(iter + 1);
+        break;
+      }
+    } else {
+      tdStableCount = 0;
     }
   }
 
-  // Use the best-residual kernel for finalization. If the loop ran to maxIter
-  // without early-stopping, the current tauR/tauD may have overshot. Revert to
-  // the iteration that produced the lowest bi-exponential fit residual.
+  // Use the kernel from the iteration with the minimum trace-reconstruction residual.
   if (bestResidual < Infinity) {
     tauR = bestTauR;
     tauD = bestTauD;
