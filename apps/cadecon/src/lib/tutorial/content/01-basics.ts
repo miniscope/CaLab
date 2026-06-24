@@ -92,7 +92,7 @@ export const basicsTutorial: Tutorial = {
     {
       title: 'First Run Complete',
       description:
-        'That’s the full loop. Take a moment to explore each panel once your results are shown. Next, try <b>Learning What Subsetting Does for CaDecon</b> to see how subsets influence kernel construction, or <b>Understanding InDeCa, the algorithm underlying CaDecon</b> for the theory behind it. Good luck with your analysis.',
+        'That’s the full loop. Take a moment to explore each panel once your results are shown. Next, try <b>Learning What Subsetting Does for CaDecon</b> to see how subsets influence kernel construction, or <b>Understanding How CaDecon Works</b> for the theory behind it. Good luck with your analysis.',
     },
   ],
 };

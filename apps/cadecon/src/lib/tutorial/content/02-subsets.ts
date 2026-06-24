@@ -76,7 +76,7 @@ export const subsetsTutorial: Tutorial = {
         '<li><b>Aspect ratio</b> shapes where it samples.</li>' +
         '<li><b>Re-tiling</b> tests stability.</li>' +
         '</ul>' +
-        'For the theory behind how a shared kernel is constructed, see <b>Understanding InDeCa, the algorithm underlying CaDecon</b>.',
+        'For the theory behind how a shared kernel is constructed, see <b>Understanding How CaDecon Works</b>.',
     },
   ],
 };
