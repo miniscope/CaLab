@@ -226,7 +226,13 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
     // Peak (rise-to-peak) vertical line + label
     const peakPx = area.x + ((annot.peakTime - range.xMin) / xSpan) * area.w;
     drawDashedVertical(ctx, peakPx, area.y, area.y + area.h, LABEL_COLOR);
-    drawLabel(ctx, `Peak: ${Math.round(annot.peakTime * 1000)}ms`, peakPx + 4, area.y + 4, LABEL_COLOR);
+    drawLabel(
+      ctx,
+      `Peak: ${Math.round(annot.peakTime * 1000)}ms`,
+      peakPx + 4,
+      area.y + 4,
+      LABEL_COLOR,
+    );
 
     // FWHM double-arrow at y = 0.5
     const halfRisePx = area.x + ((annot.halfRiseTime - range.xMin) / xSpan) * area.w;

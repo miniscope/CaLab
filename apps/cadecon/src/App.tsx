@@ -153,17 +153,17 @@ const App: Component = () => {
                   <SubsetConfig />
                 </DashboardPanel>
 
-                <DashboardPanel id="algorithm-settings" variant="controls" data-tutorial="algorithm-settings">
-                  <p class="panel-label">
-                    Algorithm Settings
-                  </p>
+                <DashboardPanel
+                  id="algorithm-settings"
+                  variant="controls"
+                  data-tutorial="algorithm-settings"
+                >
+                  <p class="panel-label">Algorithm Settings</p>
                   <AlgorithmSettings />
                 </DashboardPanel>
 
                 <DashboardPanel id="run-controls" variant="controls" data-tutorial="run-controls">
-                  <p class="panel-label">
-                    Run Controls
-                  </p>
+                  <p class="panel-label">Run Controls</p>
                   <RunControls />
                   <ProgressBar />
                 </DashboardPanel>
@@ -181,9 +181,7 @@ const App: Component = () => {
                 class="viz-grid__col--raster raster-panel"
                 data-tutorial="raster"
               >
-                <p class="panel-label">
-                  Raster Overview
-                </p>
+                <p class="panel-label">Raster Overview</p>
                 <RasterOverview />
               </DashboardPanel>
 
@@ -201,9 +199,7 @@ const App: Component = () => {
                 class="viz-grid__col--kernel"
                 data-tutorial="kernel-display"
               >
-                <p class="panel-label">
-                  Kernel Shape
-                </p>
+                <p class="panel-label">Kernel Shape</p>
                 <KernelDisplay />
               </DashboardPanel>
 
@@ -213,9 +209,7 @@ const App: Component = () => {
                 class="viz-grid__col--trace"
                 data-tutorial="trace-viewer"
               >
-                <p class="panel-label">
-                  Trace Inspector
-                </p>
+                <p class="panel-label">Trace Inspector</p>
                 <TraceInspector />
               </DashboardPanel>
             </ResizableGrid>
