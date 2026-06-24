@@ -49,10 +49,10 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="run-controls"]',
       title: 'Start the Run',
       description:
-        'Press <b>Start</b> to begin. CaDecon assigns traces across the worker pool and iterates: it constructs a kernel from the subsets, deconvolves the data, then refines both the kernel and the inferred activity. You can <b>Pause</b>, <b>Stop</b>, or <b>Reset</b> at any time, and the progress bar below tracks completion. <b>Press Start now to launch your first run</b> — the tutorial will continue once it begins.',
+        'Press <b>Start</b> to begin a run. CaDecon assigns traces across the worker pool and iterates: it constructs a kernel from the subsets, deconvolves the data, then refines both the kernel and the inferred activity. You can <b>Pause</b>, <b>Stop</b>, or <b>Reset</b> at any time, and the progress bar below tracks completion.<br><br>' +
+        'If a run isn’t already going, <b>press Start now</b> so the panels in the next few steps fill with live results. Already running one? Just continue — you can read on while it works.',
       side: 'right',
       disableActiveInteraction: false,
-      waitForAction: 'run-start',
     },
     // Step 6: Raster overview
     {

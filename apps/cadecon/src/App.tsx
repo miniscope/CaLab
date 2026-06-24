@@ -138,8 +138,8 @@ const App: Component = () => {
             mode="dashboard"
             sidebar={
               <>
-                <DashboardPanel id="subset-config" variant="controls">
-                  <p class="panel-label panel-label--with-action" data-tutorial="subset-config">
+                <DashboardPanel id="subset-config" variant="controls" data-tutorial="subset-config">
+                  <p class="panel-label panel-label--with-action">
                     Subset Configuration
                     <button
                       class="panel-label__action"
@@ -153,15 +153,15 @@ const App: Component = () => {
                   <SubsetConfig />
                 </DashboardPanel>
 
-                <DashboardPanel id="algorithm-settings" variant="controls">
-                  <p class="panel-label" data-tutorial="algorithm-settings">
+                <DashboardPanel id="algorithm-settings" variant="controls" data-tutorial="algorithm-settings">
+                  <p class="panel-label">
                     Algorithm Settings
                   </p>
                   <AlgorithmSettings />
                 </DashboardPanel>
 
-                <DashboardPanel id="run-controls" variant="controls">
-                  <p class="panel-label" data-tutorial="run-controls">
+                <DashboardPanel id="run-controls" variant="controls" data-tutorial="run-controls">
+                  <p class="panel-label">
                     Run Controls
                   </p>
                   <RunControls />
@@ -175,8 +175,13 @@ const App: Component = () => {
             }
           >
             <ResizableGrid>
-              <DashboardPanel id="raster" variant="data" class="viz-grid__col--raster raster-panel">
-                <p class="panel-label" data-tutorial="raster">
+              <DashboardPanel
+                id="raster"
+                variant="data"
+                class="viz-grid__col--raster raster-panel"
+                data-tutorial="raster"
+              >
+                <p class="panel-label">
                   Raster Overview
                 </p>
                 <RasterOverview />
@@ -190,15 +195,25 @@ const App: Component = () => {
                 <ConvergencePanel />
               </DashboardPanel>
 
-              <DashboardPanel id="kernel-display" variant="data" class="viz-grid__col--kernel">
-                <p class="panel-label" data-tutorial="kernel-display">
+              <DashboardPanel
+                id="kernel-display"
+                variant="data"
+                class="viz-grid__col--kernel"
+                data-tutorial="kernel-display"
+              >
+                <p class="panel-label">
                   Kernel Shape
                 </p>
                 <KernelDisplay />
               </DashboardPanel>
 
-              <DashboardPanel id="trace-viewer" variant="data" class="viz-grid__col--trace">
-                <p class="panel-label" data-tutorial="trace-viewer">
+              <DashboardPanel
+                id="trace-viewer"
+                variant="data"
+                class="viz-grid__col--trace"
+                data-tutorial="trace-viewer"
+              >
+                <p class="panel-label">
                   Trace Inspector
                 </p>
                 <TraceInspector />

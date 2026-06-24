@@ -58,7 +58,7 @@ export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
           </>
         }
         actions={
-          <span class="header-actions">
+          <>
             {/* Trigger for the tutorial selection panel (state owned by App). */}
             <TutorialLauncher
               isOpen={() => !!props.tutorialOpen}
@@ -78,7 +78,7 @@ export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
               Change Data
             </button>
             <AuthMenuWrapper />
-          </span>
+          </>
         }
       />
     </div>

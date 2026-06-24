@@ -1,5 +1,4 @@
 import { Show, type JSX } from 'solid-js';
-import { notifyTutorialAction, isTutorialActive } from '@calab/tutorials';
 import { runState } from '../../lib/iteration-store.ts';
 import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
 import { parsedData, samplingRate } from '../../lib/data-store.ts';
@@ -65,11 +64,7 @@ export function RunControls(): JSX.Element {
         <button
           class="btn-primary btn-small btn-icon"
           disabled={runState() !== 'idle' || !hasData()}
-          onClick={() => {
-            // Advance the "press Start" step of the basics tutorial.
-            if (isTutorialActive()) notifyTutorialAction();
-            void startRun();
-          }}
+          onClick={() => void startRun()}
         >
           <PlayIcon />
           Start
