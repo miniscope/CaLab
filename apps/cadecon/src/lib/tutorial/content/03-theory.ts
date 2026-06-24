@@ -9,7 +9,7 @@ export const theoryTutorial: Tutorial = {
     'How CaDecon infers spikes: the calcium model, deconvolution, upsampling, identifying a biologically interpretable kernel, and the alternating loop that ties everything together.',
   level: 'theory',
   prerequisites: [],
-  estimatedMinutes: 20,
+  estimatedMinutes: 8,
   recommended: true,
   requiresData: false,
   steps: [
@@ -27,7 +27,7 @@ export const theoryTutorial: Tutorial = {
         'The absolute simplest question is: <b>which spikes, fired when, would produce the fluorescence trace you actually recorded?</b><br><br>' +
         'InDeCa answers this question by searching for four things at once \u2014 the <b>spikes</b>, the <b>calcium response</b> they generate, a slow <b>baseline</b>, and an overall <b>amplitude</b> that together reconstruct your trace as closely as possible. The goal of InDeCa is to minimize the error between the recording and the reconstruction:<br><br>' +
         '<b>min \u2016 your trace \u2212 reconstruction \u2016\u00B2</b><br><br>' +
-        'and does so with two constraints: spikes are <b>all-or-nothing</b> events (a neuron either fired or it didn\u2019t), and the corresponding calcium event must follow a realistic <b>rise-and-decay shape</b>. The math behind this is complex and uses principles from the field of <b>convex optimization</b>, but you don\u2019t need to know the math in-depth to understand the core concepts :).',
+        'and does so with two constraints: spikes are <b>all-or-nothing</b> events (a neuron either fired or it didn\u2019t), and the corresponding calcium event must follow a realistic <b>rise-and-decay shape</b>. The math behind this is involved and draws on the field of <b>convex optimization</b>, but you don\u2019t need it in depth to understand the core ideas.',
     },
     // Step 3: The calcium model
     {
@@ -41,8 +41,8 @@ export const theoryTutorial: Tutorial = {
     {
       title: 'The Hard Part: All-or-Nothing Spikes',
       description:
-        'Earlier, I mentioned that the math underlying InDeCa is from the field of <b>convex optimization</b>. Requiring spikes to be strictly 0 or 1 makes this mathematical problem difficult because there are an ABSURD number of spike/no spike combinations to consider.<br><br>' +
-        'InDeCa\u2019s trick is to <b>pretend spikes aren\u2019t all-or-nothing</b>: instead of forcing each spike to be 0 or 1, it lets them take any value in between. This problem is much easier to mathematically solve with known linear programming techniques. In our case we use a method called <b>FISTA</b>. The result is a <b>graded spike estimate</b> at each time point. This looks like higher values where a spike almost certainly happened and lower values where it didn\u2019t. In the next step we will learn how to return to to the clean spike/no spike train we ultimately want.',
+        'As mentioned, the math underlying InDeCa comes from the field of <b>convex optimization</b>. Requiring spikes to be strictly 0 or 1 makes the problem hard, because there is an enormous number of spike / no-spike combinations to consider.<br><br>' +
+        'InDeCa\u2019s trick is to <b>relax the all-or-nothing rule</b>: instead of forcing each spike to be 0 or 1, it lets it take any value in between. This relaxed problem is a convex one that can be solved efficiently with a method called <b>FISTA</b>. The result is a <b>graded spike estimate</b> at each time point \u2014 higher where a spike almost certainly happened, lower where it didn\u2019t. The next step covers how InDeCa returns to the clean spike / no-spike train we ultimately want.',
     },
     // Step 5: Binarization step
     {
@@ -55,17 +55,17 @@ export const theoryTutorial: Tutorial = {
     {
       title: 'Allowing More Than One Spike per Frame',
       description:
-        'If your frame rate is low, a neuron can fire several times within a single frame and a plain spike/no spiketrain can only say \u201Csomething happened here,\u201D not \u201Cthree things happened here.\u201D<br><br>' +
+        'If your frame rate is low, a neuron can fire several times within a single frame, and a plain spike / no-spike train can only say \u201Csomething happened here,\u201D not \u201Cthree things happened here.\u201D<br><br>' +
         'InDeCa works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.',
     },
-    // Step 7:  Weighting only during active portions of the trace
+    // Step 7: How fit quality is measured (PVE)
     {
-      title: 'Looking for Spikes Only At The Right Times',
+      title: 'Measuring How Well the Fit Explains the Trace',
       description:
-        'When judging how well a fit explains the trace, InDeCa pays attention mainly to the moments <b>right after a spike</b> \u2014 the window where a calcium transient should still be rising or decaying. Quiet stretches between events carry little information about the kernel, so they\u2019re <b>not weighted as much</b> during the fitting process.<br><br>' +
-        'Once an appropriate amplitude is found, InDeCa does one final pass weighting <b>all</b> time points equally. Overall fit quality is summarized by <b>PVE</b> (proportion of variance explained) which is the same number you watch climb in the convergence panel.',
+        'Every choice InDeCa makes \u2014 the spikes, the cutoff, the amplitude, the kernel \u2014 is judged by a single standard: how closely the <b>reconstruction</b> (spikes convolved with the kernel, plus baseline and amplitude) matches the recording you actually collected. The winning answer is always the one that reconstructs your trace most faithfully.<br><br>' +
+        'Overall fit quality is summarized by <b>PVE</b> (proportion of variance explained): the fraction of the trace\u2019s variation the model accounts for. This is the same number you watch climb in the convergence panel.',
     },
-    // Step 8: Learning the  kernel. I might be tired but pls check to make sure I didn't leave anything out about the biological interpretability of the shared kernel
+    // Step 8: Learning the kernel
     {
       title: 'Learning the Kernel',
       description:
@@ -84,24 +84,29 @@ export const theoryTutorial: Tutorial = {
       title: 'InDeCa\u2019s Alternating Loop',
       description:
         'Spikes and kernel depend on each other: you need a kernel to find spikes, but you need spikes to learn the kernel. How does InDeCa deal with this problem?<br><br>' +
-        'It starts by guessing where the spikes could be using a rough peak finding approach. Once there is a rough idea of the spike locations, InDeCa is able to estimate a <b>first kernel</b>. After that,InDeCa can then alternate between two steps:<br><br>' +
+        'It starts by guessing where the spikes could be using a rough peak-finding approach. With a rough idea of the spike locations, InDeCa can estimate a <b>first kernel</b>. After that, it alternates between two steps:<br><br>' +
         '<b>1.</b> Use the current kernel to infer spikes.<br>' +
         '<b>2.</b> Use those spikes to re-learn the kernel.<br><br>' +
-        'Both parts of the loop improve each other over each iterations until they converge on a consistent answer. To handle large recordings, many <b>subsets</b> of cells and time are solved in parallel and their kernels combined. This back and forthis exactly what you see happening in the convergence panel.',
+        'Both parts of the loop improve each other over each iteration until they converge on a consistent answer. To handle large recordings, many <b>subsets</b> of cells and time are solved in parallel and their kernels combined. This back-and-forth is exactly what you see happening in the convergence panel.',
     },
-    // Step 11: Iteration + final selection
+    // Step 11: Stopping + final inference.
+    // NOTE: The exact stop criterion \u2014 and whether the reported kernel comes from
+    // the stopping iteration or a potentially better earlier iteration \u2014 is still
+    // being finalized (see iteration-manager.ts: best-residual tracking + the
+    // currently-disabled patience early-stop). Keep this description general until
+    // the approach is locked in, then tighten the wording here.
     {
       title: 'How does InDeCa know when to stop?',
       description:
-        'More iterations aren\u2019t always better! One issue with constantly iterating is that the fit can drift after it peaks. So, InDeCa <b>keeps the best iteration</b> (the one that explained the trace most accurately) and stops once a few more iterations fail to improve it. On average the kernel tends to settle within roughly <b>10\u201312 iterations</b>.<br><br>' +
-        'With the best kernel in hand, InDeCa runs one <b>final inference across every cell</b> which is why results appear for all your cells, not just the subsets it learned from.',
+        'More iterations aren\u2019t always better. Once the kernel and spikes stop changing much from one pass to the next, extra iterations add little \u2014 and the fit can even drift after it has peaked. InDeCa watches how much the kernel changes between iterations and <b>settles once it stabilizes</b>. In practice a good solution usually emerges within just a handful of iterations.<br><br>' +
+        'There is also a maximum-iteration limit, but that is only a <b>safety cap</b> to stop a run that never settles \u2014 it is not how a healthy run should normally end. With a stable kernel in hand, InDeCa runs one <b>final inference across every cell</b>, which is why results appear for all your cells, not just the subsets it learned from.',
     },
     // Step 12: Completion
     {
       title: 'That\u2019s InDeCa!',
       description:
         'In summary: InDeCa learns a kernel directly from your data and uses it to infer spikes with minimal to no manual tuning.<br><br>' +
-        'To put it into practice, try <b>Your First Automated Deconvolution</b>; to control what the kernel learns from, see <b>Tuning Subset Strategy</b>; and to better understand a finished run, try <b>Reading Convergence & Results</b>.',
+        'To put it into practice, try <b>Your First Automated Deconvolution</b>; to control what the kernel learns from, see <b>Learning What Subsetting Does for CaDecon</b>; and to better understand a finished run, try <b>Reading Convergence &amp; Results</b>.',
     },
   ],
 };

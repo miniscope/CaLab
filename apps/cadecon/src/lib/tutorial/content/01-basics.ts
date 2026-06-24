@@ -13,17 +13,17 @@ export const basicsTutorial: Tutorial = {
   steps: [
     // Step 1: Welcome
     {
-      title: 'Welcome to CaDecon :)',
+      title: 'Welcome to CaDecon',
       description:
-        'CaDecon performs <b>automated</b> calcium deconvolution. Unlike manual tuned approaches, you don\u2019t set most parameters by hand. Instead, CaDecon <b>constructs a shared kernel from your data</b> and refines it over several iterations.<br><br>' +
-        'Together we will walk through one complete run where we will set the deconvolution parameter configuration, start a run, and interpret the results we get. If you don\u2019t have data loaded, use the demo dataset from the import screen to follow along.',
+        'CaDecon performs <b>automated</b> calcium deconvolution. Unlike manually tuned approaches, you don\u2019t set most parameters by hand. Instead, CaDecon <b>constructs a shared kernel from your data</b> and refines it over several iterations.<br><br>' +
+        'This tutorial walks through one complete run: setting the deconvolution configuration, starting the run, and interpreting the results. If you don\u2019t have data loaded, use the demo dataset from the import screen to follow along.',
     },
     // Step 2: Header bar
     {
       element: '[data-tutorial="header-bar"]',
       title: 'The Dashboard',
       description:
-        'The header shows your dataset: filename, cell count, timepoints, sampling rate, and duration. The worker indicator (light grey "w" with a number)shows how many parallel workers are available. CaDecon deconvolves many traces at once and the number of workers is automatically optimized by available memory. Action buttons on the right open tutorials, the community sidebar, feedback, and even lets you switch datasets.',
+        'The header shows your dataset: filename, cell count, timepoints, sampling rate, and duration. The worker indicator (a light-grey “w” with a number) shows how many parallel workers are available — CaDecon deconvolves many traces at once, and the worker count is optimized automatically based on available memory. Action buttons on the right open the tutorials, the community sidebar, and feedback, and let you switch datasets.',
       side: 'bottom',
     },
     // Step 3: The control sidebar overview
@@ -41,7 +41,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="algorithm-settings"]',
       title: 'Algorithm Settings',
       description:
-        'These control <b>how</b> the algorithm runs: the upsample target, the maximum number of iterations, the convergence tolerance, and optional high-pass / low-pass filters applied before deconvolution. Defaults should work for data. Leave them for now but if you want to learn more, go to the \u201CLearning What Subsetting Does for CaDecon\u201D and the \u201CReading Convergence & Results\u201D tutorials explain when and how to change them.',
+        'These control <b>how</b> the algorithm runs: the upsample target, the maximum number of iterations, the convergence tolerance, and optional high-pass / low-pass filters applied before deconvolution. The defaults work well for most datasets, so leave them as they are for now. The <b>Reading Convergence &amp; Results</b> tutorial explains when and how to adjust them.',
       side: 'right',
     },
     // Step 5: Start the run
@@ -49,9 +49,10 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="run-controls"]',
       title: 'Start the Run',
       description:
-        'Press <b>Start</b> to begin. CaDecon assigns traces across the worker pool and iterates. It constructs a kernel from the subsets, deconvolves the data, then refines both the kernel and inferred activity. You can <b>Pause</b>, <b>Stop</b>, or <b>Reset</b> at any time. The progress bar below tracks completion. <b>Press Start now and see how it runs!!</b>',
+        'Press <b>Start</b> to begin. CaDecon assigns traces across the worker pool and iterates: it constructs a kernel from the subsets, deconvolves the data, then refines both the kernel and the inferred activity. You can <b>Pause</b>, <b>Stop</b>, or <b>Reset</b> at any time, and the progress bar below tracks completion. <b>Press Start now to launch your first run</b> — the tutorial will continue once it begins.',
       side: 'right',
       disableActiveInteraction: false,
+      waitForAction: 'run-start',
     },
     // Step 6: Raster overview
     {
@@ -83,15 +84,15 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="trace-viewer"]',
       title: 'Inspecting a Trace',
       description:
-        'The Trace Inspector overlays, for the selected cell: <b>raw</b> fluorescence, the optional <b>filtered</b> trace, the model <b>fit</b>, the <b>deconvolved</b> activity, and the <b>residual</b>. Toggle any band in the legend. When the run is good, the fit tracks the raw peaks and residuals look like noise. Use the minimap to pan and Ctrl+Scroll to zoom, just like in CaTune.',
+        'The Trace Inspector overlays, for the selected cell: <b>raw</b> fluorescence, the optional <b>filtered</b> trace, the model <b>fit</b>, the <b>deconvolved</b> activity, and the <b>residual</b>. Toggle any band in the legend. When the run is good, the fit tracks the raw peaks and the residuals look like noise. Use the minimap to pan and Ctrl+Scroll to zoom.',
       side: 'top',
       popoverClass: 'driver-popover--wide',
     },
     // Step 10: Completion
     {
-      title: 'First Run Complete!',
+      title: 'First Run Complete',
       description:
-        'Huzzah!! You made it through the full loop! Take time to look at each of the panels after your results are shown. Next, try <b>Learning What Subsetting Does for CaDecon</b> to learn more about how subsets influence kernel construction, or <b>Understanding InDeCa, the algorithm underlying CaDecon</b> for the theory behind CaDecon. Best of luck with your analysis!',
+        'That’s the full loop. Take a moment to explore each panel once your results are shown. Next, try <b>Learning What Subsetting Does for CaDecon</b> to see how subsets influence kernel construction, or <b>Understanding InDeCa, the algorithm underlying CaDecon</b> for the theory behind it. Good luck with your analysis.',
     },
   ],
 };

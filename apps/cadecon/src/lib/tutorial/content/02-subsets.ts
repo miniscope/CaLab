@@ -15,7 +15,7 @@ export const subsetsTutorial: Tutorial = {
     {
       title: 'Why Subsets?',
       description:
-        'CaDecon learns a <b>single shared kernel</b> for your recording, but it doesn\u2019t need every cell and every timepoint to do so. This would be slow and redundant and would require a LOT more computing time as the number of cells increase in a dataset. Instead, it learns from <b>subsets</b>: rectangular regions of the cells \u00D7 time raster. Choosing these well gives a clean kernel quickly; choosing them poorly can give a noisy or inappropriate kernel.',
+        'CaDecon learns a <b>single shared kernel</b> for your recording, but it doesn\u2019t need every cell and every timepoint to do so. Using all of the data would be slow and redundant, and the cost grows quickly as datasets get larger. Instead, it learns from <b>subsets</b>: rectangular regions of the cells \u00D7 time raster. Choosing these well gives a clean kernel quickly; choosing them poorly can give a noisy or unrepresentative kernel.',
     },
     // Step 2: See the subsets on the raster
     {
@@ -68,15 +68,15 @@ export const subsetsTutorial: Tutorial = {
     },
     // Step 8: Completion
     {
-      title: 'That\u2019s Subset Strategy!',
+      title: 'That\u2019s Subset Strategy',
       description:
-        'Yay! You should now understand how subset parameters affect how the kernel is constructed.<br>' +
+        'You should now understand how the subset parameters shape what the kernel is constructed from:<br>' +
         '<ul>' +
         '<li><b>K</b> and <b>coverage</b> set how much data informs the kernel.</li>' +
         '<li><b>Aspect ratio</b> shapes where it samples.</li>' +
         '<li><b>Re-tiling</b> tests stability.</li>' +
         '</ul>' +
-        'To understand more of the theory behind how a shared-kernel is constructed, see <b>Understanding InDeCa, the algorithm underlying CaDecon</b>.',
+        'For the theory behind how a shared kernel is constructed, see <b>Understanding InDeCa, the algorithm underlying CaDecon</b>.',
     },
   ],
 };
