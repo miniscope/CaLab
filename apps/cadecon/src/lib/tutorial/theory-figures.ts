@@ -22,6 +22,10 @@ const FIG_FS = 30; // Hz
 const KERNEL_COLOR = 'hsl(280,70%,60%)';
 const LABEL_COLOR = '#ccc';
 const AXIS_COLOR = 'rgba(255,255,255,0.15)';
+const KEEP_COLOR = 'hsl(280,70%,60%)'; // graded values above the cutoff
+const DROP_COLOR = '#6f6f7a'; // graded values below the cutoff (muted grey)
+const SPIKE_COLOR = '#2ca02c'; // recovered spikes
+const THRESH_COLOR = '#ff7f0e'; // cutoff line
 
 // --- Dimensions ---
 const SINGLE_W = 400;
@@ -267,6 +271,126 @@ export function renderKernelShape(descriptionEl: HTMLElement): (() => void) | vo
   }
 
   drawLabel(ctx, 'Time (s)', area.x + area.w, area.y + area.h + 6, LABEL_COLOR, 'right', 'top');
+
+  const { figCol, cleanup } = createFigureLayout(descriptionEl);
+  figCol.appendChild(canvas);
+  return cleanup;
+}
+
+// ============================================================
+// Figure: Relaxation → cutoff → spikes (Step 5 — "Getting Back to Real Spikes")
+// ============================================================
+
+// Illustrative graded estimate: stem positions (0..1) and heights (0..1).
+// Hand-chosen so some stems clear the cutoff and some (noise) fall below it.
+const RELAX_X = [0.06, 0.13, 0.21, 0.3, 0.37, 0.44, 0.52, 0.6, 0.66, 0.73, 0.81, 0.9];
+const RELAX_H = [0.22, 0.85, 0.3, 0.55, 0.18, 0.62, 0.95, 0.28, 0.12, 0.48, 0.7, 0.25];
+const RELAX_CUTOFF = 0.4;
+const RELAX_Y_MAX = 1.08;
+
+/** Draw one panel of vertical stems; returns the y of the zero baseline. */
+function drawStemPanel(
+  ctx: CanvasRenderingContext2D,
+  area: { x: number; y: number; w: number; h: number },
+  xs: number[],
+  heights: number[],
+  colorFor: (h: number, i: number) => string,
+): number {
+  const baseY = area.y + area.h;
+
+  // Zero baseline
+  ctx.strokeStyle = AXIS_COLOR;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(area.x, baseY);
+  ctx.lineTo(area.x + area.w, baseY);
+  ctx.stroke();
+
+  for (let i = 0; i < xs.length; i++) {
+    const px = area.x + xs[i] * area.w;
+    const py = baseY - (heights[i] / RELAX_Y_MAX) * area.h;
+    const color = colorFor(heights[i], i);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px, baseY);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return baseY;
+}
+
+/**
+ * Show how the relaxed (graded) FISTA estimate becomes discrete spikes: the
+ * top panel is the graded estimate with a dashed cutoff; values above it
+ * (kept) line up with the unit spikes recovered in the bottom panel.
+ */
+export function renderRelaxToSpikes(descriptionEl: HTMLElement): (() => void) | void {
+  markFigurePopover(descriptionEl);
+  const W = SINGLE_W;
+  const H = 300;
+  const canvas = createHiDpiCanvas(W, H);
+  const ctx = canvas.getContext('2d')!;
+
+  const gap = 30;
+  const titleH = 16;
+  const panelW = W - MARGIN.left - MARGIN.right;
+  const panelH = (H - MARGIN.top - MARGIN.bottom - gap - 2 * titleH) / 2;
+  const topArea = { x: MARGIN.left, y: MARGIN.top + titleH, w: panelW, h: panelH };
+  const botArea = {
+    x: MARGIN.left,
+    y: MARGIN.top + titleH + panelH + gap + titleH,
+    w: panelW,
+    h: panelH,
+  };
+
+  // --- Top: relaxed estimate + cutoff ---
+  drawLabel(ctx, 'Relaxed estimate (FISTA)', topArea.x, MARGIN.top, LABEL_COLOR);
+  const topBase = drawStemPanel(ctx, topArea, RELAX_X, RELAX_H, (h) =>
+    h >= RELAX_CUTOFF ? KEEP_COLOR : DROP_COLOR,
+  );
+
+  // Dashed cutoff line + label
+  const cutoffY = topBase - (RELAX_CUTOFF / RELAX_Y_MAX) * topArea.h;
+  ctx.save();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = THRESH_COLOR;
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.moveTo(topArea.x, cutoffY);
+  ctx.lineTo(topArea.x + topArea.w, cutoffY);
+  ctx.stroke();
+  ctx.restore();
+  drawLabel(ctx, 'cutoff', topArea.x + topArea.w, cutoffY - 12, THRESH_COLOR, 'right');
+
+  // Faint connectors from kept stems down to the recovered spikes
+  ctx.save();
+  ctx.setLineDash([2, 4]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < RELAX_X.length; i++) {
+    if (RELAX_H[i] < RELAX_CUTOFF) continue;
+    const px = topArea.x + RELAX_X[i] * topArea.w;
+    ctx.beginPath();
+    ctx.moveTo(px, topBase);
+    ctx.lineTo(px, botArea.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // --- Bottom: recovered (unit) spikes ---
+  drawLabel(ctx, 'Recovered spikes', botArea.x, botArea.y - titleH, SPIKE_COLOR);
+  drawStemPanel(
+    ctx,
+    botArea,
+    RELAX_X.filter((_, i) => RELAX_H[i] >= RELAX_CUTOFF),
+    RELAX_X.filter((_, i) => RELAX_H[i] >= RELAX_CUTOFF).map(() => 1),
+    () => SPIKE_COLOR,
+  );
 
   const { figCol, cleanup } = createFigureLayout(descriptionEl);
   figCol.appendChild(canvas);

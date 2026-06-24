@@ -1,7 +1,7 @@
 // CADECON-TUTR-03: Understanding How CaDecon Works.
 
 import type { Tutorial } from '@calab/tutorials';
-import { renderKernelShape } from '../theory-figures.ts';
+import { renderKernelShape, renderRelaxToSpikes } from '../theory-figures.ts';
 
 export const theoryTutorial: Tutorial = {
   id: 'theory',
@@ -51,15 +51,18 @@ export const theoryTutorial: Tutorial = {
     {
       title: 'Getting Back to Real Spikes',
       description:
-        'To get back to real spikes, CaDecon picks a <b>cutoff</b>: anything above it counts as a spike, anything below is dropped. But it doesn\u2019t guess the cutoff, it <b>tries many</b> and for each one rebuilds the predicted trace and checks how well it matches the recording.<br><br>' +
-        'The cutoff whose spikes <b>best reconstruct your data</b> wins. The amplitude is handled differently: at each step it is fit to best match the trace, then re-estimated from one step to the next until it stops changing. The logic throughout is the same: the BEST answer is the one that explains the trace you actually saw.',
+        'To get back to real spikes, CaDecon picks a <b>cutoff</b>: anything above it counts as a spike, anything below is dropped (the plot shows the graded estimate cut at the cutoff, with the surviving values becoming spikes). But it doesn\u2019t guess the cutoff \u2014 it <b>tries many</b>, and for each one rebuilds the predicted trace and checks how well it matches the recording.<br><br>' +
+        'The cutoff whose spikes <b>best reconstruct your data</b> wins. The amplitude is handled differently: at each step it is fit to best match the trace, then re-estimated from one step to the next until it stops changing. The logic throughout is the same: the best answer is the one that explains the trace you actually saw.',
+      onPopoverRender: renderRelaxToSpikes,
     },
     // Step 6: Integer spikes via upsampling
     {
-      title: 'Allowing More Than One Spike per Frame',
+      title: 'Upsampling & the Refractory Period',
       description:
         'If your frame rate is low, a neuron can fire several times within a single frame, and a plain spike / no-spike train can only say \u201Csomething happened here,\u201D not \u201Cthree things happened here.\u201D<br><br>' +
-        'CaDecon works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.',
+        'CaDecon works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.<br><br>' +
+        'The bin width isn\u2019t arbitrary \u2014 it\u2019s what makes the one-spike-or-none rule <b>biologically valid</b>. By default CaDecon upsamples to <b>300&nbsp;Hz</b>, so each bin spans about <b>3.3&nbsp;ms</b> \u2014 roughly a neuron\u2019s <b>refractory period</b>, the minimum time between two action potentials. A real neuron physically can\u2019t fire twice that fast, so at most one spike belongs in a bin, and binarizing each bin to 0 or 1 mirrors biology. In effect, the bin width sets the <b>minimum inter-spike interval (ISI)</b> CaDecon can resolve.<br><br>' +
+        'Without it, forcing binary spikes onto the raw frame grid would distort the count either way: <b>too few</b> spikes when real events are merged into one frame, or <b>too many</b> when spikes are packed closer than a neuron could actually fire. You can change the target under <b>Upsample Target</b> in Algorithm Settings.',
     },
     // Step 7: How fit quality is measured (PVE)
     {
@@ -73,14 +76,14 @@ export const theoryTutorial: Tutorial = {
       title: 'Learning the Kernel',
       description:
         'Given CaDecon\u2019s current best guess at the spikes, it asks: <b>what overall shape, repeated at those spike times, best reproduces the trace?</b> It first builds that shape <b>directly from the data</b> as a free-form average kernel. After this it fits that kernel to a biexponential function. <br><br>' +
-        'When several cells are analyzed together, their traces are <b>pooled</b> so a single <b>shared kernel</b> is learned across them. Because the kernel is a real calcium response, its time constants (\u03C4_r, \u03C4_d) carry <b>biological meaning</b>. Thus, a shift in kernel shape across conditions, like different brain regions, could reflect real differences in those neuron\u2019s responses.',
+        'When several cells are analyzed together, their traces are <b>pooled</b> so a single <b>shared kernel</b> is learned across them. Because the kernel is a real calcium response, its time constants (\u03C4<sub>r</sub>, \u03C4<sub>d</sub>) carry <b>biological meaning</b>. Thus, a shift in kernel shape across conditions, like different brain regions, could reflect real differences in those neuron\u2019s responses.',
     },
     // Step 9: Two-component biexp fit
     {
       title: 'Separating Real Calcium from Noise',
       description:
         'Each trace\u2019s calcium transient usually contains two things mixed together: the genuine <b>slow calcium transient</b>, and a <b>fast blip</b> from noise or imaging artifacts on top of that signal.<br><br>' +
-        'CaDecon fits the shape as the sum of a <b>slow component</b> and a <b>fast component</b>, deliberately preventing the fast one from fitting to anything but putative noise and/or artifacts. It then keeps the <b>slow component</b> as the reported kernel. This is the (\u03C4_r, \u03C4_d) that describes your indicator\u2019s true dynamics.',
+        'CaDecon fits the shape as the sum of a <b>slow component</b> and a <b>fast component</b>, deliberately preventing the fast one from fitting to anything but putative noise and/or artifacts. It then keeps the <b>slow component</b> as the reported kernel. This is the (\u03C4<sub>r</sub>, \u03C4<sub>d</sub>) that describes your indicator\u2019s true dynamics.',
     },
     // Step 10: The alternating loop
     {
