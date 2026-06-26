@@ -18,6 +18,7 @@ import { createSignal, createEffect, createMemo, Show, on } from 'solid-js';
 import type { JSX, Accessor } from 'solid-js';
 import type { BaseSubmission, BaseFilterState, DataSource } from '@calab/community';
 import { supabaseEnabled, user, fieldOptions, loadFieldOptions } from '@calab/community';
+import { matchesSourceBucket } from './source-bucket.ts';
 import './styles/community.css';
 
 /** Stale-while-revalidate threshold: 5 minutes in milliseconds. */
@@ -110,7 +111,7 @@ export function CommunityBrowserShell<
     const f = props.filters();
     const ds = dataSource();
     return subs.filter((s) => {
-      if (s.data_source !== ds) return false;
+      if (!matchesSourceBucket(s.data_source, ds)) return false;
       if (f.indicator && s.indicator !== f.indicator) return false;
       if (f.species && s.species !== f.species) return false;
       if (f.brainRegion && s.brain_region !== f.brainRegion) return false;
@@ -127,7 +128,7 @@ export function CommunityBrowserShell<
   /** Submissions matching the current data source (before dropdown filters). */
   const sourceSubmissions = createMemo(() => {
     const ds = dataSource();
-    return submissions().filter((s) => s.data_source === ds);
+    return submissions().filter((s) => matchesSourceBucket(s.data_source, ds));
   });
 
   /** User params for "Compare my params" overlay. */

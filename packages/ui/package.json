@@ -11,6 +11,10 @@
     "./chart/chart-theme.css": "./src/chart/chart-theme.css",
     "./styles/*": "./src/styles/*"
   },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
     "@calab/community": "*",
     "@calab/compute": "*",

@@ -117,20 +117,6 @@ export function FilterBar<F extends BaseFilterState>(props: FilterBarProps<F>) {
               <option value={br}>{br}</option>
             ))}
           </select>
-
-          {/* Render extra filters alongside base filters when not in extra-only mode */}
-          {(props.extraFilters ?? []).map((ef) => (
-            <select
-              class="filter-bar__select"
-              value={((props.filters as Record<string, unknown>)[ef.id] as string) ?? ''}
-              onChange={(e) => handleFilterChange(ef.id, e.currentTarget.value)}
-            >
-              <option value="">{ef.label}</option>
-              {ef.options.map((opt) => (
-                <option value={opt.id}>{opt.label}</option>
-              ))}
-            </select>
-          ))}
         </>
       )}
 
