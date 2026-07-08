@@ -2,15 +2,26 @@ use crate::kernel::clamp_tau_rise;
 
 /// Banded AR(2) convolution engine — O(T) replacement for FFT-based O(T log T).
 ///
-/// The AR(2) model c[t] = g1*c[t-1] + g2*c[t-2] + s[t] defines a banded
+/// The AR(2) model c[t] = g1*c[t-1] + g2*c[t-2] + s[t-1] defines a banded
 /// deconvolution matrix G. The convolution K = G^{-1} is applied via recursion
 /// rather than FFT, reducing per-iteration cost from O(T log T) to O(T).
+///
+/// Note the one-sample delay on the source term (`s[t-1]`, not `s[t]`). This
+/// makes the impulse response identical, sample-for-sample, to the FFT-mode
+/// `build_kernel` bi-exponential: zero at the spike sample and rising after
+/// (h[0] = 0, h[n] = build_kernel[n]). Without the delay the AR(2) recursion
+/// places a nonzero value at the spike sample — the same shape advanced one
+/// sample earlier — so the two conv modes would disagree by one sample. Both
+/// modes, the ground-truth simulation, the kernel display, and the tau→shape
+/// math all use this same "calcium rises from zero" convention.
 ///
 /// The raw AR2 impulse peak is sampling-rate-dependent (larger at higher fs
 /// because the recursion accumulates over more timesteps during the rise phase).
 /// To make alpha rate-independent, the forward and adjoint convolutions are
 /// normalized by the impulse peak so that a single spike always produces a
-/// peak of 1.0 in the output regardless of sampling rate.
+/// peak of 1.0 in the output regardless of sampling rate. The one-sample delay
+/// leaves the peak *value* unchanged (it is the max over the same geometric
+/// sequence), so the impulse-peak and Lipschitz calculations are unaffected.
 pub(crate) struct BandedAR2 {
     g1: f64,           // d + r (sum of AR2 roots)
     g2: f64,           // -(d * r) (negative product of AR2 roots)
@@ -46,7 +57,10 @@ impl BandedAR2 {
     /// Forward convolution: s -> normalized AR2 output, O(T).
     ///
     /// Pre-scales input by 1/peak so the AR2 recursion directly produces
-    /// a peak-normalized output — no second normalization pass needed.
+    /// a peak-normalized output — no second normalization pass needed. The
+    /// source is fed with a one-sample delay (`s[t-1]`) so the impulse response
+    /// matches `build_kernel` exactly: output[0] = 0, and a spike at sample k
+    /// begins its rise at k+1.
     pub(crate) fn convolve_forward(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
@@ -57,12 +71,14 @@ impl BandedAR2 {
         let g2 = self.g2 as f32;
         let inv_peak = (1.0 / self.impulse_peak) as f32;
 
-        output[0] = source[0] * inv_peak;
+        // Delayed source: output[0] is always 0 (no s[-1] term); the g2*output[-1]
+        // term at t=1 is likewise absent.
+        output[0] = 0.0;
         if n > 1 {
-            output[1] = g1 * output[0] + source[1] * inv_peak;
+            output[1] = g1 * output[0] + source[0] * inv_peak;
         }
         for t in 2..n {
-            output[t] = g1 * output[t - 1] + g2 * output[t - 2] + source[t] * inv_peak;
+            output[t] = g1 * output[t - 1] + g2 * output[t - 2] + source[t - 1] * inv_peak;
         }
     }
 
@@ -70,6 +86,12 @@ impl BandedAR2 {
     ///
     /// Pre-scales input by 1/peak so the backward AR2 recursion directly
     /// produces a peak-normalized output — no second normalization pass needed.
+    ///
+    /// The forward operator carries a one-sample source delay (`z^-1`), so its
+    /// adjoint carries the corresponding advance (`z^+1`): the backward AR(2)
+    /// recursion `a[t] = s[t]/peak + g1*a[t+1] + g2*a[t+2]` is written shifted
+    /// up one index — `output[t-1] = a[t]`, with `output[n-1] = 0`. Computed
+    /// with rolling state so it stays O(T) and allocation-free.
     pub(crate) fn convolve_adjoint(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
@@ -80,12 +102,16 @@ impl BandedAR2 {
         let g2 = self.g2 as f32;
         let inv_peak = (1.0 / self.impulse_peak) as f32;
 
-        output[n - 1] = source[n - 1] * inv_peak;
-        if n > 1 {
-            output[n - 2] = source[n - 2] * inv_peak + g1 * output[n - 1];
-        }
-        for t in (0..n.saturating_sub(2)).rev() {
-            output[t] = source[t] * inv_peak + g1 * output[t + 1] + g2 * output[t + 2];
+        output[n - 1] = 0.0;
+        let mut a_tp1 = 0.0_f32; // a[t+1]
+        let mut a_tp2 = 0.0_f32; // a[t+2]
+        for t in (0..n).rev() {
+            let a_t = source[t] * inv_peak + g1 * a_tp1 + g2 * a_tp2;
+            if t >= 1 {
+                output[t - 1] = a_t;
+            }
+            a_tp2 = a_tp1;
+            a_tp1 = a_t;
         }
     }
 
@@ -217,8 +243,10 @@ mod tests {
 
     #[test]
     fn forward_produces_decaying_calcium() {
-        // Banded forward (now peak-normalized) should produce a calcium-like shape
-        // with peak = 1.0 regardless of sampling rate.
+        // Banded forward (peak-normalized) produces a calcium-like shape with
+        // peak = 1.0. With the one-sample source delay the spike sample itself
+        // is zero and the response rises starting the sample after — matching
+        // the build_kernel convention (h[0] = 0).
         let banded = BandedAR2::new(0.02, 0.4, 30.0);
         let n = 200;
 
@@ -228,21 +256,21 @@ mod tests {
         let mut result = vec![0.0_f32; n];
         banded.convolve_forward(&signal, &mut result);
 
-        // Before the spike: all zeros
-        for i in 0..10 {
+        // Up to and including the spike sample: zero (response is delayed one sample).
+        for i in 0..=10 {
             assert!(
                 result[i].abs() < 1e-6,
-                "Expected zero before spike at index {}, got {}",
+                "Expected zero at/before spike at index {}, got {}",
                 i,
                 result[i]
             );
         }
 
-        // At the spike: positive response
+        // One sample after the spike: positive rise.
         assert!(
-            result[10] > 0.01,
-            "Expected positive response at spike, got {}",
-            result[10]
+            result[11] > 0.01,
+            "Expected positive response one sample after spike, got {}",
+            result[11]
         );
 
         // After the spike: non-negative response
@@ -270,6 +298,35 @@ mod tests {
             result[n - 1],
             result[15]
         );
+    }
+
+    #[test]
+    fn impulse_response_matches_build_kernel() {
+        // The banded forward operator and the FFT-mode build_kernel are the SAME
+        // discrete operator: a unit impulse through convolve_forward must equal
+        // build_kernel sample-for-sample. This is the direct regression guard for
+        // the one-sample alignment between the two conv modes.
+        for &(tau_r, tau_d, fs) in &[(0.02, 0.4, 30.0), (0.05, 0.25, 100.0), (0.01, 0.15, 300.0)] {
+            let banded = BandedAR2::new(tau_r, tau_d, fs);
+            let kernel = build_kernel(tau_r, tau_d, fs);
+            let n = kernel.len();
+
+            let mut impulse = vec![0.0_f32; n];
+            impulse[0] = 1.0;
+            let mut response = vec![0.0_f32; n];
+            banded.convolve_forward(&impulse, &mut response);
+
+            for i in 0..n {
+                assert!(
+                    (response[i] - kernel[i]).abs() < 1e-4,
+                    "fs={} sample {}: banded {} != build_kernel {}",
+                    fs,
+                    i,
+                    response[i],
+                    kernel[i]
+                );
+            }
+        }
     }
 
     #[test]
@@ -327,37 +384,37 @@ mod tests {
         let mut banded_spikes: Vec<(usize, f32)> = sol_banded.iter().copied().enumerate().collect();
         banded_spikes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-        // Both should identify at least 3 of the 4 true spike locations (within +-2 samples)
-        let fft_top4: Vec<usize> = fft_spikes.iter().take(4).map(|&(i, _)| i).collect();
-        let banded_top4: Vec<usize> = banded_spikes.iter().take(4).map(|&(i, _)| i).collect();
+        // Both should identify at least 3 of the 4 true spike locations exactly.
+        // With the operators aligned, an exact-index match is achievable (the
+        // ground-truth trace is built from build_kernel, which both modes now
+        // implement identically) — a tolerance here would mask a re-introduced
+        // one-sample shift, which is the whole point of this test.
+        let mut fft_top4: Vec<usize> = fft_spikes.iter().take(4).map(|&(i, _)| i).collect();
+        let mut banded_top4: Vec<usize> = banded_spikes.iter().take(4).map(|&(i, _)| i).collect();
+        fft_top4.sort_unstable();
+        banded_top4.sort_unstable();
 
-        let mut fft_matches = 0;
-        let mut banded_matches = 0;
-        for &true_spike in &spikes {
-            if fft_top4
-                .iter()
-                .any(|&s| (s as isize - true_spike as isize).unsigned_abs() <= 2)
-            {
-                fft_matches += 1;
-            }
-            if banded_top4
-                .iter()
-                .any(|&s| (s as isize - true_spike as isize).unsigned_abs() <= 2)
-            {
-                banded_matches += 1;
-            }
-        }
+        let fft_matches = spikes.iter().filter(|&&s| fft_top4.contains(&s)).count();
+        let banded_matches = spikes.iter().filter(|&&s| banded_top4.contains(&s)).count();
         assert!(
             fft_matches >= 3,
-            "FFT mode should find >= 3 of 4 spikes, found {} (locations: {:?})",
+            "FFT mode should find >= 3 of 4 spikes exactly, found {} (locations: {:?})",
             fft_matches,
             fft_top4
         );
         assert!(
             banded_matches >= 3,
-            "Banded mode should find >= 3 of 4 spikes, found {} (locations: {:?})",
+            "Banded mode should find >= 3 of 4 spikes exactly, found {} (locations: {:?})",
             banded_matches,
             banded_top4
+        );
+
+        // The two modes are the same operator, so they must agree with each other
+        // on the recovered spike locations — this is the direct alignment guard.
+        assert_eq!(
+            fft_top4, banded_top4,
+            "FFT and Banded modes must recover identical spike locations; a mismatch \
+             indicates a one-sample forward-model shift between conv modes"
         );
     }
 
