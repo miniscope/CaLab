@@ -5,6 +5,7 @@
  */
 
 import { createSignal, For, type JSX } from 'solid-js';
+import { AsymptoteTrends } from './AsymptoteTrends.tsx';
 import { KernelConvergence } from './KernelConvergence.tsx';
 import { AlphaTrends } from './AlphaTrends.tsx';
 import { ThresholdTrends } from './ThresholdTrends.tsx';
@@ -12,7 +13,14 @@ import { PveTrends } from './PveTrends.tsx';
 import { EventRateTrends } from './EventRateTrends.tsx';
 import { SpikeEfficiencyTrends } from './SpikeEfficiencyTrends.tsx';
 
-type ConvergenceTab = 'kernel' | 'alpha' | 'threshold' | 'pve' | 'event-rate' | 'spike-eff';
+type ConvergenceTab =
+  | 'asymptote'
+  | 'kernel'
+  | 'alpha'
+  | 'threshold'
+  | 'pve'
+  | 'event-rate'
+  | 'spike-eff';
 
 interface TabEntry {
   id: ConvergenceTab;
@@ -21,6 +29,7 @@ interface TabEntry {
 }
 
 const TABS: TabEntry[] = [
+  { id: 'asymptote', label: 'Asymptote', content: () => <AsymptoteTrends /> },
   { id: 'kernel', label: 'Kernel', content: () => <KernelConvergence /> },
   { id: 'alpha', label: 'Alpha', content: () => <AlphaTrends /> },
   { id: 'threshold', label: 'Threshold', content: () => <ThresholdTrends /> },
@@ -30,7 +39,7 @@ const TABS: TabEntry[] = [
 ];
 
 export function ConvergencePanel(): JSX.Element {
-  const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('kernel');
+  const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('asymptote');
 
   return (
     <div class="convergence-panel" data-tutorial="kernel-convergence">

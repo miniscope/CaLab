@@ -83,6 +83,43 @@ const SHAPE_EPS = 1e-9;
 const RISE_CLAMP_FLOOR_S = 0.005;
 /** tau_rise within this factor of the clamp floor is flagged "rise unresolved". */
 const RISE_FLOOR_MARGIN = 1.05;
+/** Denominator guard for the normalized trace-stability delta. */
+const STABILITY_EPS = 1e-9;
+/** Minimum activity norm for a cell to enter the trace-stability median (excludes silent cells). */
+const STABILITY_MIN_ACTIVITY = 1e-6;
+
+/** Sum of squares of an array. */
+function sumSq(a: ArrayLike<number>): number {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * a[i];
+  return s;
+}
+
+/**
+ * Median normalized L2 change in per-cell activity between two iterations'
+ * stitched s_counts maps: median over cells present in both (and non-silent) of
+ * ||s_new - s_old|| / (||s_new|| + eps). Returns null if no comparable cells.
+ */
+function computeTraceStability(
+  prev: Map<number, Float32Array> | undefined,
+  next: Map<number, Float32Array>,
+): number | null {
+  if (!prev || prev.size === 0) return null;
+  const deltas: number[] = [];
+  for (const [cell, sNew] of next) {
+    const sOld = prev.get(cell);
+    if (!sOld || sOld.length !== sNew.length) continue;
+    const normNew = Math.sqrt(sumSq(sNew));
+    if (normNew < STABILITY_MIN_ACTIVITY) continue;
+    let diff = 0;
+    for (let i = 0; i < sNew.length; i++) {
+      const d = sNew[i] - sOld[i];
+      diff += d * d;
+    }
+    deltas.push(Math.sqrt(diff) / (normNew + STABILITY_EPS));
+  }
+  return deltas.length > 0 ? median(deltas) : null;
+}
 
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
@@ -493,6 +530,9 @@ export async function startRun(): Promise<void> {
       fwhm: prevShape?.fwhm ?? null,
       shapeDelta: null,
       riseUnresolved: false,
+      kernelFitR2: null,
+      medianPve: null,
+      traceStability: null,
       subsets: [],
     });
     const initEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
@@ -549,6 +589,8 @@ export async function startRun(): Promise<void> {
     // Collect s_counts for warm-starting next iteration and accumulate batch entries.
     // Subset traces only cover a time window, so we store the subset-windowed s_counts
     // keyed by cell and reconstruct full-trace s_counts where available.
+    // Hold onto the previous iteration's stitched activity to measure stability.
+    const prevIterCounts = prevTraceCounts;
     prevTraceCounts = new Map();
     // Map cell → latest scalar results from whichever subset last processed it
     const cellScalars = new Map<
@@ -614,6 +656,14 @@ export async function startRun(): Promise<void> {
         pve: scalars.pve,
       };
     }
+
+    // Asymptote diagnostics computed from this iteration's activity:
+    //  - stability: how much the deconvolved activity changed vs the last iteration
+    //  - median PVE across the cells processed this iteration
+    const traceStability = computeTraceStability(prevIterCounts, prevTraceCounts);
+    const pveVals: number[] = [];
+    for (const s of cellScalars.values()) pveVals.push(s.pve);
+    const medianPve = pveVals.length > 0 ? median(pveVals) : null;
 
     // Single batched reactive update: all trace results + snapshot in one traversal
     batch(() => {
@@ -727,6 +777,16 @@ export async function startRun(): Promise<void> {
     const medTauRiseFast = median(tauRiseFasts);
     const medTauDecayFast = median(tauDecayFasts);
     const medBetaFast = median(betaFasts);
+
+    // Normalized kernel-fit quality: median over subsets of 1 - SSE/||h_free||².
+    // (Raw SSE scales with kernel amplitude, so it is not comparable across
+    // iterations/cells; the normalized form asymptotes to a stable plateau.)
+    const r2s: number[] = [];
+    for (const r of kernelResults) {
+      const hh = sumSq(r.hFree);
+      if (hh > 0) r2s.push(1 - r.residual / hh);
+    }
+    const kernelFitR2 = r2s.length > 0 ? median(r2s) : null;
     batch(() => {
       setCurrentTauRise(tauR);
       setCurrentTauDecay(tauD);
@@ -744,6 +804,9 @@ export async function startRun(): Promise<void> {
         fwhm: shape?.fwhm ?? null,
         shapeDelta,
         riseUnresolved,
+        kernelFitR2,
+        medianPve,
+        traceStability,
         subsets: kernelResults.map((r) => ({
           subsetIdx: r.subsetIdx,
           tauRise: r.tauRise,
