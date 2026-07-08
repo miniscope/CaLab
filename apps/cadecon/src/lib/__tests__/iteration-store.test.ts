@@ -184,8 +184,12 @@ describe('iteration-store: derived memos', () => {
         tauDecayFast: 0.4,
         betaFast: 1,
         fs: 30,
+        // subsetIdx deliberately does not match array position — kernel results
+        // arrive in worker-completion order, so subsetVarianceData must read the
+        // subsetIdx field, not the array index.
         subsets: [
           {
+            subsetIdx: 2,
             tauRise: 0.05,
             tauDecay: 0.4,
             beta: 1,
@@ -196,6 +200,7 @@ describe('iteration-store: derived memos', () => {
             hFree: new Float32Array(),
           },
           {
+            subsetIdx: 0,
             tauRise: 0.06,
             tauDecay: 0.5,
             beta: 1,
@@ -209,6 +214,8 @@ describe('iteration-store: derived memos', () => {
       });
       const variance = subsetVarianceData();
       expect(variance).toHaveLength(2);
+      expect(variance[0].subsetIdx).toBe(2);
+      expect(variance[1].subsetIdx).toBe(0);
       expect(variance[0].tauRise).toBeCloseTo(50); // ms
       expect(variance[0].tauDecay).toBeCloseTo(400);
       expect(variance[1].tauRise).toBeCloseTo(60);

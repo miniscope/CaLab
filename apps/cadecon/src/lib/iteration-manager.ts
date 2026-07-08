@@ -65,6 +65,15 @@ import { reconvolveAR2 } from './reconvolve.ts';
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
 export const BIEXP_FIT_SKIP = 0;
 
+/**
+ * A kernel-estimation result tagged with the subset it came from.
+ * Kernel jobs complete in worker-completion order (not dispatch order), so the
+ * subset index must travel with each result rather than being inferred from
+ * array position — otherwise per-subset kernels, warm-starts, and snapshots get
+ * bound to the wrong subset when jobs finish out of order.
+ */
+type KernelJobResult = KernelResult & { subsetIdx: number };
+
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
 let pauseResolver: (() => void) | null = null;
@@ -87,14 +96,6 @@ function extractCellTrace(
     trace[t] = Number(data.data[idx]);
   }
   return trace;
-}
-
-/** Check whether a subset's trace results contain at least one usable cell (non-zero alpha and spikes). */
-function hasValidTraceResults(subsetResults: Map<number, TraceResult>): boolean {
-  for (const [, r] of subsetResults) {
-    if (r.alpha !== 0 && !r.sCounts.every((v) => v === 0)) return true;
-  }
-  return false;
 }
 
 // --- Dispatch helpers ---
@@ -195,9 +196,9 @@ function dispatchKernelJobs(
   kernelLength: number,
   prevKernels?: Float32Array[],
   prevBiexpResults?: WarmBiexp[],
-): Promise<KernelResult[]> {
+): Promise<KernelJobResult[]> {
   return new Promise((resolve) => {
-    const kernelResults: KernelResult[] = [];
+    const kernelResults: KernelJobResult[] = [];
     let completed = 0;
     let totalKernelJobs = 0;
 
@@ -276,7 +277,7 @@ function dispatchKernelJobs(
         warmKernel,
         warmBiexp,
         onComplete(result: KernelResult) {
-          kernelResults.push(result);
+          kernelResults.push({ ...result, subsetIdx: si });
           completed++;
           if (completed === totalKernelJobs) resolve(kernelResults);
         },
@@ -650,21 +651,15 @@ export async function startRun(): Promise<void> {
     }
 
     // Store kernels and biexp results for warm-starting next iteration.
-    // dispatchKernelJobs skips subsets with no valid traces, so kernelResults
-    // may have fewer entries than rects. Map them back by replaying the skip logic.
+    // dispatchKernelJobs skips subsets with no valid traces and results arrive in
+    // worker-completion order, so index each result by its own subsetIdx rather
+    // than by array position.
     prevKernels = new Array(rects.length);
     prevBiexpResults = new Array(rects.length);
-    {
-      let ki = 0;
-      for (let si = 0; si < rects.length; si++) {
-        if (hasValidTraceResults(traceResults[si]) && ki < kernelResults.length) {
-          const kr = kernelResults[ki];
-          prevKernels[si] = new Float32Array(kr.hFree);
-          const { hFree: _, ...warmFields } = kr;
-          prevBiexpResults[si] = warmFields;
-          ki++;
-        }
-      }
+    for (const kr of kernelResults) {
+      const { hFree, subsetIdx, ...warmFields } = kr;
+      prevKernels[subsetIdx] = new Float32Array(hFree);
+      prevBiexpResults[subsetIdx] = warmFields;
     }
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
@@ -711,6 +706,7 @@ export async function startRun(): Promise<void> {
         betaFast: medBetaFast,
         fs,
         subsets: kernelResults.map((r) => ({
+          subsetIdx: r.subsetIdx,
           tauRise: r.tauRise,
           tauDecay: r.tauDecay,
           beta: r.beta,
