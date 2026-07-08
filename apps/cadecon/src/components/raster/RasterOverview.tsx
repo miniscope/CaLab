@@ -5,17 +5,17 @@ import {
   selectedSubsetIdx,
   setSelectedSubsetIdx,
 } from '../../lib/subset-store.ts';
-import { VIRIDIS_LUT, viridisRGB, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
+import { VIRIDIS_LUT, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
 import '../../styles/raster.css';
 
-// Plot margins (CSS px) reserved for the cell axis (left), time axis (bottom),
-// and intensity colorbar (right); the heatmap fills the inner plot rect.
+// Plot margins (CSS px) reserved for the cell axis (left) and time axis
+// (bottom); the heatmap fills the inner plot rect. No intensity colorbar —
+// viridis runs low→high activity and the absolute values aren't meaningful.
+// Right margin is just enough to keep the last time-axis label from clipping.
 const MARGIN_LEFT = 42;
-const MARGIN_RIGHT = 76;
+const MARGIN_RIGHT = 14;
 const MARGIN_TOP = 10;
 const MARGIN_BOTTOM = 30;
-const COLORBAR_GAP = 14;
-const COLORBAR_WIDTH = 12;
 
 // High-contrast colors chosen to stand out against viridis (purple-teal-yellow):
 // warm reds, oranges, and pinks that don't appear in the viridis palette. This
@@ -46,14 +46,6 @@ const SUBSET_FILL = [
 /** Format an axis value: integers plain, otherwise one decimal. */
 function formatTick(v: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
-}
-
-/** Format a colorbar intensity value with a sensible number of digits. */
-function formatIntensity(v: number): string {
-  const a = Math.abs(v);
-  if (a >= 100) return v.toFixed(0);
-  if (a >= 1) return v.toFixed(1);
-  return v.toFixed(2);
 }
 
 export function RasterOverview(): JSX.Element {
@@ -121,7 +113,7 @@ export function RasterOverview(): JSX.Element {
     plotW = Math.max(1, displayWidth - MARGIN_LEFT - MARGIN_RIGHT);
     plotH = Math.max(1, displayHeight - MARGIN_TOP - MARGIN_BOTTOM);
 
-    const { p1, p99, range } = percentileBounds();
+    const { p1, range } = percentileBounds();
 
     // Draw heatmap into the plot rect at physical resolution (putImageData
     // ignores canvas transforms, so position/size in physical pixels).
@@ -157,7 +149,6 @@ export function RasterOverview(): JSX.Element {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     drawAxes(ctx, N, T);
-    drawColorbar(ctx, p1, p99);
     drawSubsets(ctx, N, T);
   };
 
@@ -203,54 +194,6 @@ export function RasterOverview(): JSX.Element {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('Cell', 0, 0);
-    ctx.restore();
-  };
-
-  /** Vertical viridis intensity colorbar (right) with min/mid/max tick labels. */
-  const drawColorbar = (ctx: CanvasRenderingContext2D, p1: number, p99: number) => {
-    const cbX = plotX + plotW + COLORBAR_GAP;
-    const cbY = plotY;
-    const cbH = plotH;
-
-    // High intensity at the top: slice t from 1 (top) down to 0 (bottom).
-    const steps = Math.max(1, Math.round(cbH));
-    for (let i = 0; i < steps; i++) {
-      const [r, g, b] = viridisRGB(1 - i / steps);
-      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-      ctx.fillRect(cbX, cbY + i, COLORBAR_WIDTH, 1);
-    }
-    ctx.strokeStyle = AXIS_TEXT;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(cbX, cbY, COLORBAR_WIDTH, cbH);
-
-    // Tick labels: p99 (top), midpoint, p1 (bottom).
-    ctx.fillStyle = AXIS_TEXT;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const labelX = cbX + COLORBAR_WIDTH + 5;
-    const ticks: [number, number][] = [
-      [cbY, p99],
-      [cbY + cbH / 2, (p1 + p99) / 2],
-      [cbY + cbH, p1],
-    ];
-    for (const [yy, val] of ticks) {
-      ctx.beginPath();
-      ctx.moveTo(cbX + COLORBAR_WIDTH, yy);
-      ctx.lineTo(cbX + COLORBAR_WIDTH + 3, yy);
-      ctx.stroke();
-      ctx.fillText(formatIntensity(val), labelX, yy);
-    }
-
-    // Rotated colorbar title at the far right.
-    ctx.save();
-    ctx.translate(
-      cbX + COLORBAR_WIDTH + MARGIN_RIGHT - COLORBAR_GAP - COLORBAR_WIDTH - 6,
-      cbY + cbH / 2,
-    );
-    ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Intensity (a.u.)', 0, 0);
     ctx.restore();
   };
 
