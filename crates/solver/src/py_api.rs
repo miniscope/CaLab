@@ -9,12 +9,20 @@ const BATCH_SIZE: u32 = 100;
 const CONTIGUOUS_ERR: &str =
     "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
 
-/// Convert a numpy f64 array to a Vec<f32>, validating contiguity.
+const NONFINITE_ERR: &str = "input array contains a non-finite value (NaN or infinity)";
+
+/// Convert a numpy f64 array to a Vec<f32>, validating contiguity and finiteness.
 fn to_f32_vec(arr: &PyReadonlyArray1<f64>) -> PyResult<Vec<f32>> {
     let slice = arr
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-    Ok(slice.iter().map(|&v| v as f32).collect())
+    let v: Vec<f32> = slice.iter().map(|&x| x as f32).collect();
+    if let Some(i) = crate::first_nonfinite(&v) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{NONFINITE_ERR} at index {i}"
+        )));
+    }
+    Ok(v)
 }
 
 /// Convert an optional numpy f64 array to an optional Vec<f32>.
@@ -79,6 +87,11 @@ impl PySolver {
         let slice = trace
             .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+        if let Some(i) = crate::first_nonfinite(slice) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{NONFINITE_ERR} at index {i}"
+            )));
+        }
         self.inner.set_trace(slice);
         Ok(())
     }
@@ -309,6 +322,11 @@ fn deconvolve_batch<'py>(
     for cell_idx in 0..n_cells {
         trace_f32.clear();
         trace_f32.extend(traces_ref.row(cell_idx).iter().map(|&v| v as f32));
+        if let Some(i) = crate::first_nonfinite(&trace_f32) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{NONFINITE_ERR} at row {cell_idx}, index {i}"
+            )));
+        }
         solver.set_trace(&trace_f32);
 
         if hp_enabled || lp_enabled {
@@ -377,6 +395,11 @@ fn seed_kernel_estimate<'py>(
     for cell_idx in 0..n_cells {
         traces_flat.extend(traces_ref.row(cell_idx).iter().map(|&v| v as f32));
         trace_lengths.push(n_timepoints);
+    }
+    if let Some(i) = crate::first_nonfinite(&traces_flat) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{NONFINITE_ERR} at flattened index {i}"
+        )));
     }
 
     let result = crate::peak_seed::seed_kernel_estimate(&traces_flat, &trace_lengths, fs);
