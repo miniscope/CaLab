@@ -83,11 +83,11 @@ Components are organized by feature area under `src/components/`: `cards/`, `com
 
 ### Internal Packages
 
-| Package            | Role in CaTune                                                                         |
-| ------------------ | -------------------------------------------------------------------------------------- |
-| `@calab/core`      | Shared types, WASM adapter (`initWasm`, `Solver`), metrics, FFT, parameter ranges      |
-| `@calab/compute`   | Worker pool, warm-start cache, kernel math, downsampling, demo presets, synthetic data |
-| `@calab/io`        | .npy/.npz parsing, trace validation, cell ranking, JSON export                         |
-| `@calab/community` | Supabase client, CRUD operations, submission logic, field options                      |
-| `@calab/tutorials` | Tutorial types, progress persistence, tutorial engine                                  |
-| `@calab/ui`        | DashboardShell, DashboardPanel, VizLayout, CompactHeader, CardGrid                     |
+| Package            | Role in CaTune                                                                                           |
+| ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `@calab/core`      | Shared types, WASM adapter (`initWasm`, `Solver`), metrics, FFT, parameter ranges                        |
+| `@calab/compute`   | Worker pool, warm-start cache, kernel math, downsampling, demo presets, synthetic data                   |
+| `@calab/io`        | .npy/.npz parsing, trace validation, cell ranking, JSON export                                           |
+| `@calab/community` | Supabase client, CRUD operations, submission logic, field options                                        |
+| `@calab/tutorials` | Tutorial types, progress persistence, tutorial engine                                                    |
+| `@calab/ui`        | DashboardShell, DashboardPanel, VizLayout, CompactHeader, CardGrid, chart primitives (`@calab/ui/chart`) |

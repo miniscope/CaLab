@@ -61,7 +61,7 @@ npm auto-discovers the new workspace under `apps/*`.
 ```jsonc
 // package.json (root)
 "scripts": {
-  "typecheck": "tsc -b apps/catune apps/carank apps/<name>"
+  "typecheck": "tsc -b apps/catune apps/carank apps/cadecon apps/admin apps/<name>"
 }
 ```
 

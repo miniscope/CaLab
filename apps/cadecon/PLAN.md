@@ -186,7 +186,7 @@
   - 20×20 log-spaced grid search over (tau_r, tau_d)
   - Closed-form beta per grid point
   - Golden-section refinement (not Nelder-Mead)
-  - `BiexpResult { tau_rise, tau_decay, beta, residual }`
+  - `BiexpResult { tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast, fit_mode }` (two-component slow+fast model; `fit_mode` is a `FitMode` enum — `TwoComponent` / `SlowOnly` / `Degenerate` / `Empty` — reporting the outcome)
   - tau_d > tau_r enforced, validity checks
   - 6 tests (recovers known taus, tau_d > tau_r enforced, refinement improves fit, positive beta, empty kernel, various parameter ranges)
 
@@ -199,6 +199,7 @@
   - `indeca_compute_upsample_factor(fs, target_fs) -> usize`
   - Added `serde` + `serde-wasm-bindgen` optional deps to Cargo.toml
   - `InDecaResult` and `BiexpResult` derive `Serialize` when `jsbindings` feature is active
+  - **Non-finite input guard:** the WASM entry points reject input traces containing `NaN`/`Inf` (throw a JS error via `crate::first_nonfinite`) instead of propagating garbage results
 
 ### 2.7 TypeScript: CaDecon worker — ✅ DONE
 
@@ -221,8 +222,9 @@
     2. Per-subset kernel estimation (parallel kernel-jobs via pool)
     3. Merge: median tauRise/tauDecay across subsets
     4. Record in convergenceHistory, update currentTauRise/currentTauDecay
-    5. Convergence check: `max(|Δτ_r|/τ_r, |Δτ_d|/τ_d) < convergenceTol`
-    6. Finalization pass: re-run trace inference on ALL cells with converged kernel
+    5. Convergence check (kernel **shape space**, not tau deltas — (τ_r, τ_d) is a degenerate coordinate): an iteration is "stable" when the relative change of BOTH the kernel peak time (tPeak) AND FWHM is `< convergenceTol`; convergence is declared after `convergencePatience` consecutive stable iterations, gated by `convergenceMinIters`. Defaults come from `@calab/core` `CONVERGENCE_RANGES`.
+    6. Final kernel = median of the last `finalSelectionWindow` iterates' shapes
+    7. Finalization pass: re-run trace inference on ALL cells with the converged kernel
   - **pauseRun():** sets `runState('paused')`, blocks loop via Promise resolver
   - **resumeRun():** resolves pause Promise, sets `runState('running')`
   - **stopRun():** `pool.cancelAll()`, resolves pause, stores intermediate results
@@ -295,21 +297,24 @@
 ### 3.1 Kernel convergence plot — ✅ DONE
 
 - [x] `src/components/charts/KernelConvergence.tsx` — **rewrote** from canvas to SolidUplot
-  - Left Y-axis: tau_rise + tau_decay (ms) as line series with dot markers
-  - Right Y-axis (secondary): residual on `'res'` scale, dashed gray line
+  - Now the **"Kernel" tab** of the consolidated `ConvergencePanel.tsx` (tabs: Asymptote / Kernel / Distributions), not a standalone panel
+  - Left Y-axis: tau_rise + tau_decay (ms) as line series with dot markers, plus the shape-space metrics (peak time, FWHM) that drive convergence
+  - Residual series **removed** (convergence is judged in shape space, not on residual)
   - Per-subset scatter: custom `draw` hook plugin draws faint circles behind median lines
   - Convergence marker: `convergence-marker-plugin.ts` draws vertical dashed green line at `convergedAtIteration()`
   - Empty state: `<Show when={convergenceHistory().length > 0}>` gate with placeholder text
   - Wheel zoom + cursor sync key `'cadecon-convergence'`
+  - Sibling tab `AsymptoteTrends.tsx` — small-multiples of the four convergence signals (asymptote dashboard)
 
 ### 3.2 Kernel shape display — ✅ DONE
 
 - [x] **Deleted** `src/components/charts/DebugKernelChart.tsx`
 - [x] **Created** `src/components/kernel/KernelDisplay.tsx` — uPlot chart with:
-  - Per-subset h_free as faint colored lines (D3 category10 with 0.4 opacity)
-  - Merged bi-exponential fit as bold dashed purple line
+  - Per-subset h_free as faint colored lines (shared colorblind-safe Okabe-Ito palette from `@calab/ui/chart`, low opacity)
+  - Merged bi-exponential fit as a bold dashed line (merged-fit color from the shared palette)
   - X-axis: time in ms, Y-axis: amplitude
   - DOM overlay stats: tau_r, tau_d, beta values
+  - Degeneracy warning: shows `⚠ {bad}/{total} fits degenerate` when subset fits report `FitMode::Degenerate`/`Empty`
   - Reads `viewedIteration()` from viz-store (null = latest)
   - Handles dynamic subset count via recreating series config
   - Cursor sync key `'cadecon-kernel'`
@@ -390,12 +395,14 @@
 ### 3.9 Chart infrastructure — ✅ DONE
 
 - [x] Added `uplot` + `@dschz/solid-uplot` to `apps/cadecon/package.json`
-- [x] `src/lib/chart/series-config.ts` — 11 series factories + `withOpacity` helper + D3 category10 palette
+- [x] `src/lib/chart/series-config.ts` — 11 series factories, now sourcing colors from the shared colorblind-safe Okabe-Ito palette in `@calab/ui/chart` (was a local D3 category10 palette)
 - [x] `src/lib/chart/chart-theme.css` — uPlot theme overrides (copied from CaTune)
 - [x] `src/lib/chart/wheel-zoom-plugin.ts` — scroll zoom + drag pan (copied from CaTune)
 - [x] `src/lib/chart/theme-colors.ts` — CSS custom property reader (adapted for CaDecon accent)
 - [x] `src/lib/chart/transient-zone-plugin.ts` — pad zone shading (copied from CaTune)
 - [x] `src/lib/chart/convergence-marker-plugin.ts` — convergence vertical dashed line
+
+> **Later centralized (PRs #158–160):** the palette (Okabe-Ito), viridis colormap, tick math (`niceTicks`), and uPlot axis/cursor/range helpers (`chartAxis`, `labeledAxis`, `syncCursor`, `safeRange`) now live in the shared `@calab/ui/chart` module rather than as CaDecon-local copies. `series-config.ts` and the CaDecon charts consume them from there.
 
 ### 3.10 CSS — ✅ DONE
 
@@ -537,6 +544,7 @@ CaDecon uses banded AR(2) convolution exclusively (no FFT). The existing `Banded
 - `convolve_forward(s, c)`: given spikes s, produce calcium c
 - `convolve_adjoint(r, g)`: transpose operation for FISTA gradient
 - AR(2) coefficients computed from bi-exponential (tau_r, tau_d) at the upsampled sampling rate
+- **One-sample source delay** (`output[t] += source[t-1] * inv_peak`): the AR(2) forward model is aligned so its impulse response matches the reference `build_kernel` double-exponential (which is 0 at t=0). The same delay is mirrored in `apps/cadecon/src/lib/reconvolve.ts` so the on-demand reconvolution overlay stays aligned with the solver's forward model.
 
 ### Threshold Search Strategy (Designed)
 
@@ -724,7 +732,7 @@ crates/solver/src/
 
 ### Raster rendering
 
-- `RasterOverview.tsx` uses a viridis LUT (11-stop linear interpolation, 256 entries) with 1st–99th percentile scaling.
+- `RasterOverview.tsx` uses the shared `VIRIDIS_LUT` (256 entries) from `@calab/ui/chart` with 1st–99th percentile scaling, and shared `niceTicks` for the axes. The intensity **colorbar was intentionally removed** — activity is assumed to span 0→full and the absolute values are not meaningful.
 - Canvas renders at `devicePixelRatio` for HiDPI. Height is `min(max(200, N*3), 500)` pixels.
 - Click detection uses pixel-to-data coordinate mapping against `subsetRectangles`.
 
@@ -778,7 +786,7 @@ The iteration loop runs on the main thread and dispatches jobs to the worker poo
 1. **Per-trace inference**: dispatches `TraceJob` for each cell in each subset rectangle
 2. **Kernel estimation**: dispatches `KernelJob` per subset with concatenated traces/spikes
 3. **Merge**: median of subset tau estimates (no informativeness weighting yet)
-4. **Convergence**: `max(|Δτ_r|/τ_r, |Δτ_d|/τ_d) < convergenceTol`
+4. **Convergence**: shape-space test — both kernel peak time (tPeak) and FWHM must change by `< convergenceTol` for `convergencePatience` consecutive iterations (gated by `convergenceMinIters`); final kernel = median of the last `finalSelectionWindow` iterates' shapes. Defaults in `@calab/core` `CONVERGENCE_RANGES`.
 5. **Finalization**: re-runs all cells with converged kernel
 
 Pause/resume uses a Promise-based mechanism — the loop `await`s a resolver that only fires on resume.
@@ -817,9 +825,9 @@ The canvas in `KernelConvergence.tsx` must be `position: absolute` inside a `pos
 
 ### Chart infrastructure
 
-All chart files live in `src/lib/chart/`. Four files were copied from CaTune (`chart-theme.css`, `wheel-zoom-plugin.ts`, `theme-colors.ts`, `transient-zone-plugin.ts`) with minor adjustments (accent color default in theme-colors). Two new files were created: `series-config.ts` (CaDecon-specific series factories with D3 category10 palette) and `convergence-marker-plugin.ts`.
+CaDecon-local chart files live in `src/lib/chart/`: `series-config.ts` (CaDecon-specific series factories) and `convergence-marker-plugin.ts`. The palette, viridis colormap, tick math, uPlot theme, axis/cursor/range helpers, and zoom/transient-zone plugins are now shared via `@calab/ui/chart` (PRs #158–160) rather than kept as CaTune copies; `series-config.ts` sources its colors from the shared Okabe-Ito palette there.
 
-`TracePanel.tsx` was also copied from CaTune into `src/components/traces/` with import path adjustments.
+The reusable `TracePanel` now lives in `@calab/ui/chart`; CaDecon's `src/components/traces/` holds the app-specific `CellSelector.tsx`, `IterationScrubber.tsx`, and `TraceInspector.tsx`.
 
 ### uPlot integration pattern
 

@@ -6,7 +6,7 @@ CaLab is a monorepo of calcium imaging analysis tools built with SolidJS, TypeSc
 
 ## Monorepo Structure
 
-CaLab uses npm workspaces with seven packages and two applications:
+CaLab uses npm workspaces with six built packages and four applications (plus an `apps/_template`). The tree below details `catune` and `carank`; the other apps (`cadecon`, `admin`) follow the same `src/{App.tsx,components,lib,workers,styles}` shape. `apps/cala` and `packages/cala-*` are reserved scaffolding for the in-progress streaming-cala port and are not yet built.
 
 ```
 .
@@ -51,6 +51,9 @@ CaLab uses npm workspaces with seven packages and two applications:
 │       ├── vite.config.ts
 │       ├── tsconfig.json
 │       └── package.json
+│   ├── cadecon/                 # SolidJS SPA — automated InDeCa deconvolution (kernel + params from data)
+│   └── admin/                   # SolidJS SPA — community-submission admin
+│   # apps/cala/ — reserved scaffolding for the streaming-cala port (not yet built)
 ├── packages/
 │   ├── core/                    # @calab/core — shared types, pure math, WASM adapter
 │   │   └── src/
@@ -59,7 +62,7 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── solver-types.ts  # Worker protocol types
 │   │       ├── types.ts         # NpyResult, ValidationResult, etc.
 │   │       ├── ar2.ts           # AR(2) coefficient derivation
-│   │       ├── param-config.ts  # Parameter ranges
+│   │       ├── param-config.ts  # Parameter ranges + CONVERGENCE_RANGES (shape-space convergence defaults)
 │   │       ├── format-utils.ts  # Number formatting
 │   │       ├── metrics/         # snr.ts, solver-metrics.ts
 │   │       ├── spectrum/        # fft.ts (periodogram computation)
@@ -96,16 +99,22 @@ CaLab uses npm workspaces with seven packages and two applications:
 │   │       ├── index.ts
 │   │       ├── types.ts         # Tutorial, TutorialStep, TutorialProgress
 │   │       └── progress.ts      # localStorage persistence
-│   └── ui/                      # @calab/ui — shared layout components
-│       └── src/
-│           ├── index.ts         # Barrel: DashboardShell, DashboardPanel, VizLayout
-│           ├── DashboardShell.tsx  # 3-section grid (header/main/sidebar)
-│           ├── DashboardPanel.tsx  # Variant-based panel wrapper
-│           ├── VizLayout.tsx    # Scroll/dashboard mode switcher
-│           └── styles/
-│               └── layout.css   # Layout CSS rules
+│   ├── ui/                      # @calab/ui — shared layout + chart primitives
+│   │   └── src/
+│   │       ├── index.ts         # Barrel: layout components + chart re-exports
+│   │       ├── DashboardShell.tsx  # 3-section grid (header/main/sidebar)
+│   │       ├── DashboardPanel.tsx  # Variant-based panel wrapper
+│   │       ├── VizLayout.tsx    # Scroll/dashboard mode switcher
+│   │       ├── chart/           # Shared uPlot primitives (subpath @calab/ui/chart)
+│   │       │   ├── series-utils.ts   # Okabe-Ito colorblind palette (TRACE_COLORS, …), subsetColor
+│   │       │   ├── colormap.ts        # VIRIDIS_LUT, viridisRGB/viridisCss
+│   │       │   ├── chart-math.ts      # niceTicks
+│   │       │   └── axis-helpers.ts    # chartAxis, labeledAxis, syncCursor, safeRange
+│   │       └── styles/
+│   │           └── layout.css   # Layout CSS rules
+│   # cala-core/, cala-runtime/ — reserved for the streaming-cala port (not yet built)
 ├── crates/
-│   └── solver/                  # Rust FISTA solver crate (WASM + PyO3)
+│   └── solver/                  # Rust FISTA + InDeCa solver crate (WASM + PyO3)
 │       └── pkg/                 # wasm-pack output (committed)
 ├── supabase/                    # Supabase config
 ├── python/                      # Python utilities
@@ -126,23 +135,30 @@ CaLab uses npm workspaces with seven packages and two applications:
 @calab/io            ← @calab/core
 @calab/community     ← @calab/core
 @calab/tutorials     ← leaf (no local deps)
-@calab/ui            ← leaf (solid-js only)
+@calab/ui            ← leaf (solid-js + uplot only)
 apps/catune           ← all packages
 apps/carank           ← @calab/core, @calab/io, @calab/ui
+apps/cadecon          ← @calab/core, @calab/io, @calab/ui, @calab/compute, @calab/community, @calab/tutorials
+apps/admin            ← @calab/community, @calab/ui
 ```
+
+> The exact per-app dependency set is authoritative in each app's `package.json`;
+> the lines above summarize the intended layering.
 
 ## Package Responsibilities
 
-| Package            | Responsibility                                             | Key deps                                |
-| ------------------ | ---------------------------------------------------------- | --------------------------------------- |
-| `@calab/core`      | Shared types, pure utilities, domain math, WASM adapter    | `valibot`                               |
-| `@calab/compute`   | Generic worker pool, warm-start caching                    | `@calab/core`                           |
-| `@calab/io`        | File parsers (.npy/.npz), data validation, JSON export     | `@calab/core`, `fflate`, `valibot`      |
-| `@calab/community` | Supabase DAL, submission logic, field options              | `@calab/core`, `@supabase/supabase-js`  |
-| `@calab/tutorials` | Tutorial type definitions, progress persistence            | none                                    |
-| `@calab/ui`        | Shared layout: DashboardShell, DashboardPanel, VizLayout   | `solid-js`                              |
-| `apps/catune`      | SolidJS app — UI components, reactive stores, worker entry | all packages                            |
-| `apps/carank`      | SolidJS app — CNMF trace quality ranking                   | `@calab/core`, `@calab/io`, `@calab/ui` |
+| Package            | Responsibility                                                                                                                           | Key deps                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `@calab/core`      | Shared types, pure utilities, domain math, WASM adapter                                                                                  | `valibot`                                   |
+| `@calab/compute`   | Generic worker pool, warm-start caching                                                                                                  | `@calab/core`                               |
+| `@calab/io`        | File parsers (.npy/.npz), data validation, JSON export                                                                                   | `@calab/core`, `fflate`, `valibot`          |
+| `@calab/community` | Supabase DAL, submission logic, field options                                                                                            | `@calab/core`, `@supabase/supabase-js`      |
+| `@calab/tutorials` | Tutorial type definitions, progress persistence                                                                                          | none                                        |
+| `@calab/ui`        | Shared layout (DashboardShell, DashboardPanel, VizLayout) + chart primitives (`@calab/ui/chart`: palette, colormap, axis/cursor helpers) | `solid-js`, `uplot`                         |
+| `apps/catune`      | SolidJS app — deconvolution parameter tuning                                                                                             | all packages                                |
+| `apps/carank`      | SolidJS app — CNMF trace quality ranking                                                                                                 | `@calab/core`, `@calab/io`, `@calab/ui`     |
+| `apps/cadecon`     | SolidJS app — automated InDeCa deconvolution                                                                                             | core, io, ui, compute, community, tutorials |
+| `apps/admin`       | SolidJS app — community-submission admin                                                                                                 | `@calab/community`, `@calab/ui`             |
 
 Packages export pure logic. The app wires packages to SolidJS signals.
 
