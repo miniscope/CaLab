@@ -21,15 +21,17 @@ import {
   type KernelSnapshot,
 } from '../../lib/iteration-store.ts';
 import { viewedIteration } from '../../lib/viz-store.ts';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK, METRIC_COLORS } from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
-const TPEAK_COLOR = '#42a5f5'; // blue
-const FWHM_COLOR = '#ef5350'; // red
-const R2_COLOR = '#26a69a'; // teal
-const PVE_COLOR = '#66bb6a'; // green
-const STABILITY_COLOR = '#ab47bc'; // purple
+// Colorblind-safe Okabe-Ito metric colors (shared palette). t_peak and FWHM
+// never appear as a red/green pair.
+const TPEAK_COLOR = METRIC_COLORS.tPeak;
+const FWHM_COLOR = METRIC_COLORS.fwhm;
+const R2_COLOR = METRIC_COLORS.r2;
+const PVE_COLOR = METRIC_COLORS.pve;
+const STABILITY_COLOR = METRIC_COLORS.stability;
 
 interface SeriesDef {
   label: string;

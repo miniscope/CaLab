@@ -18,22 +18,32 @@ import {
   groundTruthTauDecay,
 } from '../../lib/data-store.ts';
 import { tauToShape } from '@calab/compute';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import {
+  wheelZoomPlugin,
+  AXIS_TEXT,
+  AXIS_GRID,
+  AXIS_TICK,
+  METRIC_COLORS,
+  withOpacity,
+} from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
-const TAU_RISE_COLOR = '#66bb6a'; // green
-const TAU_DECAY_COLOR = '#ffa726'; // orange
-const TPEAK_COLOR = '#42a5f5'; // blue
-const FWHM_COLOR = '#ef5350'; // red
-const TAU_RISE_FAST_COLOR = '#ab47bc'; // purple
-const TAU_DECAY_FAST_COLOR = '#78909c'; // blue-grey
-const RESIDUAL_COLOR = '#9e9e9e';
+// Colorblind-safe Okabe-Ito metric colors (shared palette). No red/green pair:
+// FWHM is orange (not red) and tau_rise is bluish-green, which Okabe-Ito keeps
+// distinguishable from the warm vermillion/orange series.
+const TAU_RISE_COLOR = METRIC_COLORS.tauRise;
+const TAU_DECAY_COLOR = METRIC_COLORS.tauDecay;
+const TPEAK_COLOR = METRIC_COLORS.tPeak;
+const FWHM_COLOR = METRIC_COLORS.fwhm;
+const TAU_RISE_FAST_COLOR = METRIC_COLORS.tauRiseFast;
+const TAU_DECAY_FAST_COLOR = METRIC_COLORS.tauDecayFast;
+const RESIDUAL_COLOR = METRIC_COLORS.residual;
 
-const TAU_RISE_FAINT = 'rgba(102, 187, 106, 0.3)';
-const TAU_DECAY_FAINT = 'rgba(255, 167, 38, 0.3)';
-const TPEAK_FAINT = 'rgba(66, 165, 245, 0.3)';
-const FWHM_FAINT = 'rgba(239, 83, 80, 0.3)';
+const TAU_RISE_FAINT = withOpacity(TAU_RISE_COLOR, 0.3);
+const TAU_DECAY_FAINT = withOpacity(TAU_DECAY_COLOR, 0.3);
+const TPEAK_FAINT = withOpacity(TPEAK_COLOR, 0.3);
+const FWHM_FAINT = withOpacity(FWHM_COLOR, 0.3);
 
 /** Draw a single horizontal line at `yVal` on scale `'y'`. Caller must save/restore ctx. */
 function drawHLine(ctx: CanvasRenderingContext2D, u: uPlot, yVal: number, color: string): void {

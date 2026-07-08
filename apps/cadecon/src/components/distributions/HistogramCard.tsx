@@ -8,7 +8,7 @@ import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
-import { withOpacity, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import { withOpacity, AXIS_TEXT, AXIS_GRID, AXIS_TICK, OKABE_ITO } from '@calab/ui/chart';
 import { median, iqr } from '../../lib/math-utils.ts';
 
 export interface HistogramCardProps {
@@ -49,7 +49,7 @@ function computeBins(values: number[], binCount: number): { centers: number[]; c
 }
 
 export function HistogramCard(props: HistogramCardProps): JSX.Element {
-  const color = () => props.color ?? '#1f77b4';
+  const color = () => props.color ?? OKABE_ITO.blue;
   const bins = () => props.binCount ?? 15;
 
   const binData = createMemo(() => computeBins(props.values(), bins()));

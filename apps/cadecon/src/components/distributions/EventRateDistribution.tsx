@@ -1,4 +1,5 @@
 import { createMemo, type JSX } from 'solid-js';
+import { DISTRIBUTION_COLORS } from '@calab/ui/chart';
 import { HistogramCard } from './HistogramCard.tsx';
 import { cellResultLookup } from '../../lib/iteration-store.ts';
 import { durationSeconds } from '../../lib/data-store.ts';
@@ -14,5 +15,11 @@ export function EventRateDistribution(): JSX.Element {
     });
   });
 
-  return <HistogramCard title="Event Rate (Hz)" values={eventRates} color="#ff7f0e" />;
+  return (
+    <HistogramCard
+      title="Event Rate (Hz)"
+      values={eventRates}
+      color={DISTRIBUTION_COLORS.eventRate}
+    />
+  );
 }
