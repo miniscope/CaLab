@@ -16,6 +16,8 @@ test/
 .env
 .env.local
 .claude/
+# Python virtualenvs (any variant: .venv, .venv-headless, ...) — never committed.
+.venv*/
 python/src/calab/*.so
 python/docs/_build/
 python/docs/autoapi/
