@@ -11,6 +11,7 @@
  */
 
 import { computeKernel, computeKernelAnnotations } from '@calab/compute';
+import { OKABE_ITO, NEUTRAL } from '@calab/ui/chart';
 
 // --- Illustrative kernel for the figure (a generic GCaMP-like shape; these are
 //     display-only constants, not algorithm parameters). ---
@@ -18,14 +19,14 @@ const FIG_TAU_RISE = 0.1; // s
 const FIG_TAU_DECAY = 0.6; // s
 const FIG_FS = 30; // Hz
 
-// --- Colors (match the dashboard palette) ---
-const KERNEL_COLOR = 'hsl(280,70%,60%)';
+// --- Colors (shared colorblind-safe Okabe-Ito palette, matching the dashboard) ---
+const KERNEL_COLOR = OKABE_ITO.reddishPurple; // kernel / slow component
 const LABEL_COLOR = '#ccc';
 const AXIS_COLOR = 'rgba(255,255,255,0.15)';
-const KEEP_COLOR = 'hsl(280,70%,60%)'; // graded values above the cutoff
-const DROP_COLOR = '#6f6f7a'; // graded values below the cutoff (muted grey)
-const SPIKE_COLOR = '#2ca02c'; // recovered spikes
-const THRESH_COLOR = '#ff7f0e'; // cutoff line
+const KEEP_COLOR = OKABE_ITO.reddishPurple; // graded values above the cutoff
+const DROP_COLOR = NEUTRAL; // graded values below the cutoff (muted grey)
+const SPIKE_COLOR = OKABE_ITO.bluishGreen; // recovered spikes (matches deconv activity)
+const THRESH_COLOR = OKABE_ITO.orange; // cutoff line
 
 // --- Dimensions ---
 const SINGLE_W = 400;

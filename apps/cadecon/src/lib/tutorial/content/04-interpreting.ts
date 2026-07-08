@@ -22,7 +22,7 @@ export const interpretingTutorial: Tutorial = {
       element: '[data-tutorial="kernel-convergence"]',
       title: 'Signs of Healthy Convergence',
       description:
-        'Click through the tabs. <b>Kernel</b> and <b>PVE</b> are your first checks: the kernel shape should stop changing and PVE should plateau. <b>Threshold</b> and <b>Alpha</b> should settle rather than drift. <b>Warning signs:</b> values still moving when the run ends (the kernel never stabilized — usually low SNR or an unlucky subset draw; try higher coverage or re-tiling), or a sharp reset mid-run followed by divergence.',
+        'Start on the <b>Asymptote</b> tab — its four small charts are your first check. Kernel shape (peak time &amp; FWHM), kernel-fit R², reconstruction PVE, and activity stability should all <b>flatten toward a plateau</b> as the run settles; the green marker shows the iteration where CaDecon declared convergence. The <b>Kernel</b> tab shows the shape itself over iterations, and <b>Distributions</b> shows the per-cell alpha, PVE, and event-rate spread. <b>Warning signs:</b> curves still moving when the run ends (the kernel never stabilized — usually low SNR or an unlucky subset draw; try higher coverage or re-tiling), or a sharp reset mid-run followed by divergence.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
@@ -31,7 +31,7 @@ export const interpretingTutorial: Tutorial = {
       element: '[data-tutorial="kernel-display"]',
       title: 'Judging Kernel Quality',
       description:
-        'The learned kernel should look like a real calcium transient: a fast rise to a single peak, then a smooth decay. The per-subset free-kernel curves should <b>cluster tightly</b> around the fitted model. Bumpy, multi-peaked, or widely scattered curves mean the subsets disagreed which makes the kernel uncertain. If this is the case, don\u2019t over-trust the deconvolved output. If ground truth is available (like in demo data), it overlays here for comparison.',
+        'The learned kernel should look like a real calcium transient: a fast rise to a single peak, then a smooth decay. The per-subset free-kernel curves should <b>cluster tightly</b> around the fitted model. Bumpy, multi-peaked, or widely scattered curves mean the subsets disagreed which makes the kernel uncertain. If this is the case, don\u2019t over-trust the deconvolved output. Watch for a <b>degenerate-fit warning</b> here (e.g. \u201c\u26a0 2/8 fits degenerate\u201d): it means some subsets produced no usable calcium shape \u2014 typically the subsets that caught mostly noise \u2014 which is a cue to raise coverage or re-tile. If ground truth is available (like in demo data), it overlays here for comparison.',
       side: 'left',
     },
     // Step 4: Iteration selector
