@@ -36,6 +36,13 @@ export interface KernelSnapshot {
   shapeDelta: number | null;
   /** True when tau_rise is pinned at the sampling-rate clamp floor (rise unresolved at this fs). */
   riseUnresolved: boolean;
+  // --- Asymptote diagnostics (per iteration) ---
+  /** Normalized bi-exp fit quality of the free kernel: median over subsets of 1 - SSE/||h||². */
+  kernelFitR2: number | null;
+  /** Median percent-variance-explained across this iteration's cells. */
+  medianPve: number | null;
+  /** Median normalized change in deconvolved activity vs the previous iteration (→ 0 as it stabilizes). */
+  traceStability: number | null;
   subsets: SubsetKernelSnapshot[];
 }
 

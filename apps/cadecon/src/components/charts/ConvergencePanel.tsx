@@ -1,18 +1,16 @@
 /**
- * Tabbed panel switching between Kernel Convergence, Alpha Trends, Threshold Trends,
- * PVE Trends, and Event Rate Trends.
- * All charts remain mounted (display toggled) to preserve uPlot state across tab switches.
+ * Tabbed panel for the convergence section:
+ *  - Asymptote: small-multiples of the four signals that should stabilize.
+ *  - Kernel: detailed kernel convergence (raw taus, per-subset scatter, GT overlay).
+ * Both charts stay mounted (display toggled) to preserve uPlot state across switches.
  */
 
 import { createSignal, For, type JSX } from 'solid-js';
+import { AsymptoteTrends } from './AsymptoteTrends.tsx';
 import { KernelConvergence } from './KernelConvergence.tsx';
-import { AlphaTrends } from './AlphaTrends.tsx';
-import { ThresholdTrends } from './ThresholdTrends.tsx';
-import { PveTrends } from './PveTrends.tsx';
-import { EventRateTrends } from './EventRateTrends.tsx';
-import { SpikeEfficiencyTrends } from './SpikeEfficiencyTrends.tsx';
+import { DistributionsPanel } from '../distributions/DistributionsPanel.tsx';
 
-type ConvergenceTab = 'kernel' | 'alpha' | 'threshold' | 'pve' | 'event-rate' | 'spike-eff';
+type ConvergenceTab = 'asymptote' | 'kernel' | 'distributions';
 
 interface TabEntry {
   id: ConvergenceTab;
@@ -21,16 +19,13 @@ interface TabEntry {
 }
 
 const TABS: TabEntry[] = [
+  { id: 'asymptote', label: 'Asymptote', content: () => <AsymptoteTrends /> },
   { id: 'kernel', label: 'Kernel', content: () => <KernelConvergence /> },
-  { id: 'alpha', label: 'Alpha', content: () => <AlphaTrends /> },
-  { id: 'threshold', label: 'Threshold', content: () => <ThresholdTrends /> },
-  { id: 'pve', label: 'PVE', content: () => <PveTrends /> },
-  { id: 'event-rate', label: 'Event Rate', content: () => <EventRateTrends /> },
-  { id: 'spike-eff', label: 'Spike Eff.', content: () => <SpikeEfficiencyTrends /> },
+  { id: 'distributions', label: 'Distributions', content: () => <DistributionsPanel /> },
 ];
 
 export function ConvergencePanel(): JSX.Element {
-  const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('kernel');
+  const [activeTab, setActiveTab] = createSignal<ConvergenceTab>('asymptote');
 
   return (
     <div class="convergence-panel" data-tutorial="kernel-convergence">

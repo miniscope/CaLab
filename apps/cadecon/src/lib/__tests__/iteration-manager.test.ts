@@ -261,6 +261,13 @@ describe('iteration-manager: startRun dispatch sequence', () => {
     expect(last.fwhm).not.toBeNull();
     expect(last.riseUnresolved).toBe(false);
 
+    // Asymptote signals populate: R² = 1 - residual(0.01)/||h||²(1) = 0.99,
+    // median PVE = 0.9 (fake pool), and stability is defined by iteration 2.
+    expect(last.kernelFitR2!).toBeCloseTo(0.99, 2);
+    expect(last.medianPve!).toBeCloseTo(0.9, 5);
+    expect(last.traceStability).not.toBeNull();
+    expect(last.traceStability!).toBeCloseTo(0, 5);
+
     // Final kernel comes from the median-of-tail shape selection; the fake pool
     // reports tauRise=0.05, tauDecay=0.4, so the round-tripped selection lands near it.
     expect(currentTauRise()!).toBeGreaterThan(0.045);

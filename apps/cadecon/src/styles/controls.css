@@ -502,6 +502,59 @@
   font-size: 0.8rem;
 }
 
+/* Asymptote dashboard: 2x2 small-multiples of the convergence signals */
+.asymptote-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+  overflow: auto;
+  padding: var(--space-xs) 0;
+}
+
+.asymptote-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.asymptote-cell__title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  font-size: 0.68rem;
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  text-align: center;
+  padding-bottom: 2px;
+}
+
+.asymptote-cell__legend {
+  display: inline-flex;
+  gap: var(--space-sm);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-normal);
+}
+
+.asymptote-cell__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.asymptote-cell__swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 /* ========================
    Progress Bar
    ======================== */
