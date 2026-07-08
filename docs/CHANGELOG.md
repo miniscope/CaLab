@@ -5,13 +5,43 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
-### Changed
-
-- Improved tutorial terminology and scientific accuracy (PR #59)
+> Note: entries between PR #59 and #156 were not recorded here as they merged;
+> the list below resumes changelog coverage from the CaDecon pre-publication
+> review series (PRs #156–163).
 
 ### Added
 
+- **CaDecon** bi-exponential fit outcome surfaced as `FitMode`
+  (`TwoComponent` / `SlowOnly` / `Degenerate` / `Empty`) on the kernel result;
+  Python `fit_biexponential` now returns an 8-tuple (trailing `fit_mode` string)
+  and `BiexpFitResult` gained a `fit_mode` field; KernelDisplay warns when
+  subset fits are degenerate (PR #162)
+- Shared uPlot chart primitives in `@calab/ui/chart` — colorblind-safe
+  Okabe-Ito palette (`TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`,
+  `METRIC_COLORS`, `subsetColor`), viridis colormap (`VIRIDIS_LUT`,
+  `viridisRGB`/`viridisCss`), tick math (`niceTicks`), and axis/cursor/range
+  helpers (`chartAxis`, `labeledAxis`, `syncCursor`, `safeRange`) (PRs #158, #159, #160)
 - Comprehensive README files across all packages and apps (PR #58)
+
+### Changed
+
+- **CaDecon** raster overview uses the shared viridis colormap and drops the
+  intensity colorbar (activity is assumed to span 0→full; absolute values are
+  not meaningful) (PR #159)
+- `calab-solver` tuning-constant hygiene: introduced `SeedConfig`, shared
+  `baseline::DEFAULT_BASELINE_QUANTILE`, and a named `BASELINE_EMA_WEIGHT`;
+  deduplicated the bi-exponential fast-component grid bounds so the grid search
+  and golden-section refinement cannot drift (no behavior change) (PR #163)
+- Repo hygiene: ignore local Python virtualenvs (`.venv*/`) (PR #156)
+- Improved tutorial terminology and scientific accuracy (PR #59)
+
+### Fixed
+
+- `calab-solver` FFI boundaries (WASM and PyO3) reject non-finite (NaN/Inf)
+  input traces with an explicit error instead of returning garbage results
+  (PR #161)
+- Banded AR(2) forward model aligned via a one-sample source delay so the
+  reconvolution matches the double-exponential kernel (PR #157)
 
 ## [2.0.6] - 2026-02-19
 

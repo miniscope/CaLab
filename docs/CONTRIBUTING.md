@@ -21,16 +21,18 @@ npm run dev          # Start dev server
 
 CaLab is an npm workspaces monorepo:
 
-| Workspace          | Path                  | Description                                     |
-| ------------------ | --------------------- | ----------------------------------------------- |
-| `catune`           | `apps/catune/`        | SolidJS app — deconvolution parameter tuning    |
-| `carank`           | `apps/carank/`        | SolidJS app — CNMF trace quality ranking        |
-| `@calab/core`      | `packages/core/`      | Shared types, pure math, WASM adapter           |
-| `@calab/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache           |
-| `@calab/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export    |
-| `@calab/community` | `packages/community/` | Supabase DAL, submission logic, field options   |
-| `@calab/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence |
-| `@calab/ui`        | `packages/ui/`        | Shared layout: Shell, Panel, VizLayout          |
+| Workspace          | Path                  | Description                                                                    |
+| ------------------ | --------------------- | ------------------------------------------------------------------------------ |
+| `catune`           | `apps/catune/`        | SolidJS app — deconvolution parameter tuning                                   |
+| `carank`           | `apps/carank/`        | SolidJS app — CNMF trace quality ranking                                       |
+| `cadecon`          | `apps/cadecon/`       | SolidJS app — automated InDeCa deconvolution                                   |
+| `admin`            | `apps/admin/`         | SolidJS app — community-submission admin                                       |
+| `@calab/core`      | `packages/core/`      | Shared types, pure math, WASM adapter                                          |
+| `@calab/compute`   | `packages/compute/`   | Generic worker pool, warm-start cache                                          |
+| `@calab/io`        | `packages/io/`        | File parsers (.npy/.npz), validation, export                                   |
+| `@calab/community` | `packages/community/` | Supabase DAL, submission logic, field options                                  |
+| `@calab/tutorials` | `packages/tutorials/` | Tutorial type definitions, progress persistence                                |
+| `@calab/ui`        | `packages/ui/`        | Shared layout (Shell, Panel, VizLayout) + chart primitives (`@calab/ui/chart`) |
 
 All packages are consumed as TypeScript source — Vite transpiles them directly via path aliases. No separate build step needed for development.
 
@@ -58,6 +60,8 @@ You can also run scripts in a specific workspace:
 ```bash
 npm run dev -w apps/catune      # Start CaTune dev server
 npm run dev -w apps/carank      # Start CaRank dev server
+npm run dev -w apps/cadecon     # Start CaDecon dev server
+npm run dev -w apps/admin       # Start admin dev server
 npm run test -w apps/catune     # Run app tests only
 npm run test -w packages/io     # Run io package tests only
 ```

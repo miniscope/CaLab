@@ -224,6 +224,8 @@ calab.solve_trace(
 
 Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`.
 
+Raises `ValueError` if `trace` (or `warm_counts`) contains a non-finite value (`NaN` or `Inf`) — the FFI boundary rejects non-finite input rather than returning garbage.
+
 ### `estimate_kernel()`
 
 Estimate a free-form kernel from traces and their corresponding spike trains. This is the "kernel step" of the InDeCa iteration.
@@ -259,6 +261,8 @@ calab.estimate_kernel(
 
 Returns a float32 array of shape `(kernel_length,)` -- the estimated free-form kernel.
 
+Raises `ValueError` if any input array contains a non-finite value (`NaN` or `Inf`).
+
 ### `fit_biexponential()`
 
 Fit a parametric biexponential model to a free-form kernel. Optionally refines with a two-component (slow + fast) model.
@@ -282,7 +286,9 @@ calab.fit_biexponential(
 | `skip`    | Number of leading samples to skip in the fit.     |
 | `warm`    | Previous `BiexpFitResult` for warm-start.         |
 
-Returns a `BiexpFitResult` namedtuple with fields: `tau_rise`, `tau_decay`, `beta`, `residual`, `tau_rise_fast`, `tau_decay_fast`, `beta_fast`. Fast-component fields are 0 if a single-component fit was used.
+Returns a `BiexpFitResult` namedtuple with fields: `tau_rise`, `tau_decay`, `beta`, `residual`, `tau_rise_fast`, `tau_decay_fast`, `beta_fast`, `fit_mode`. Fast-component fields are 0 if a single-component fit was used. `fit_mode` is a string reporting the fit outcome — one of `"TwoComponent"`, `"SlowOnly"`, `"Degenerate"` (no positive slow amplitude — untrustworthy), or `"Empty"` (no fit produced).
+
+Raises `ValueError` if `h_free` contains a non-finite value (`NaN` or `Inf`).
 
 ### `compute_upsample_factor()`
 
