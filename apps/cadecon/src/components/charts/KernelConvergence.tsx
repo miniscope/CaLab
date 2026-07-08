@@ -18,22 +18,31 @@ import {
   groundTruthTauDecay,
 } from '../../lib/data-store.ts';
 import { tauToShape } from '@calab/compute';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from '@calab/ui/chart';
+import {
+  wheelZoomPlugin,
+  AXIS_TEXT,
+  AXIS_GRID,
+  AXIS_TICK,
+  METRIC_COLORS,
+  withOpacity,
+} from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
-const TAU_RISE_COLOR = '#66bb6a'; // green
-const TAU_DECAY_COLOR = '#ffa726'; // orange
-const TPEAK_COLOR = '#42a5f5'; // blue
-const FWHM_COLOR = '#ef5350'; // red
-const TAU_RISE_FAST_COLOR = '#ab47bc'; // purple
-const TAU_DECAY_FAST_COLOR = '#78909c'; // blue-grey
-const RESIDUAL_COLOR = '#9e9e9e';
+// Colorblind-safe Okabe-Ito metric colors (shared palette). No red/green pair:
+// FWHM is orange (not red) and tau_rise is bluish-green, which Okabe-Ito keeps
+// distinguishable from the warm vermillion/orange series.
+const TAU_RISE_COLOR = METRIC_COLORS.tauRise;
+const TAU_DECAY_COLOR = METRIC_COLORS.tauDecay;
+const TPEAK_COLOR = METRIC_COLORS.tPeak;
+const FWHM_COLOR = METRIC_COLORS.fwhm;
+const TAU_RISE_FAST_COLOR = METRIC_COLORS.tauRiseFast;
+const TAU_DECAY_FAST_COLOR = METRIC_COLORS.tauDecayFast;
 
-const TAU_RISE_FAINT = 'rgba(102, 187, 106, 0.3)';
-const TAU_DECAY_FAINT = 'rgba(255, 167, 38, 0.3)';
-const TPEAK_FAINT = 'rgba(66, 165, 245, 0.3)';
-const FWHM_FAINT = 'rgba(239, 83, 80, 0.3)';
+const TAU_RISE_FAINT = withOpacity(TAU_RISE_COLOR, 0.3);
+const TAU_DECAY_FAINT = withOpacity(TAU_DECAY_COLOR, 0.3);
+const TPEAK_FAINT = withOpacity(TPEAK_COLOR, 0.3);
+const FWHM_FAINT = withOpacity(FWHM_COLOR, 0.3);
 
 /** Draw a single horizontal line at `yVal` on scale `'y'`. Caller must save/restore ctx. */
 function drawHLine(ctx: CanvasRenderingContext2D, u: uPlot, yVal: number, color: string): void {
@@ -178,7 +187,7 @@ export function KernelConvergence(): JSX.Element {
     const h = filteredHistory();
     if (h.length === 0)
       return {
-        aligned: [[], [], [], [], [], [], [], []] as uPlot.AlignedData,
+        aligned: [[], [], [], [], [], [], []] as uPlot.AlignedData,
         scatter: [] as SubsetScatterPoint[],
       };
 
@@ -187,7 +196,6 @@ export function KernelConvergence(): JSX.Element {
     const tauDecays: number[] = new Array(h.length);
     const tPeaks: number[] = new Array(h.length);
     const fwhms: number[] = new Array(h.length);
-    const residuals: number[] = new Array(h.length);
     const tauRiseFasts: number[] = new Array(h.length);
     const tauDecayFasts: number[] = new Array(h.length);
     const pts: SubsetScatterPoint[] = [];
@@ -200,7 +208,6 @@ export function KernelConvergence(): JSX.Element {
       const shape = tauToShape(s.tauRise, s.tauDecay);
       tPeaks[i] = shape ? shape.tPeak * 1000 : 0;
       fwhms[i] = shape ? shape.fwhm * 1000 : 0;
-      residuals[i] = s.residual;
       tauRiseFasts[i] = s.tauRiseFast * 1000;
       tauDecayFasts[i] = s.tauDecayFast * 1000;
 
@@ -225,7 +232,6 @@ export function KernelConvergence(): JSX.Element {
         tauDecays,
         tPeaks,
         fwhms,
-        residuals,
         tauRiseFasts,
         tauDecayFasts,
       ] as uPlot.AlignedData,
@@ -260,13 +266,6 @@ export function KernelConvergence(): JSX.Element {
       points: { show: true, size: 6 },
     },
     {
-      label: 'residual',
-      stroke: RESIDUAL_COLOR,
-      width: 1,
-      scale: 'res',
-      dash: [4, 2],
-    },
-    {
       label: 'τ_r_fast',
       stroke: TAU_RISE_FAST_COLOR,
       width: 1,
@@ -285,7 +284,6 @@ export function KernelConvergence(): JSX.Element {
   const scales: uPlot.Scales = {
     x: { time: false },
     y: {},
-    res: {},
   };
 
   const axes: uPlot.Axis[] = [
@@ -304,16 +302,6 @@ export function KernelConvergence(): JSX.Element {
       grid: { stroke: AXIS_GRID },
       ticks: { stroke: AXIS_TICK },
       label: 'ms',
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-    },
-    {
-      stroke: RESIDUAL_COLOR,
-      scale: 'res',
-      side: 1,
-      grid: { show: false },
-      ticks: { stroke: AXIS_TICK },
-      label: 'Residual',
       labelSize: 10,
       labelFont: '10px sans-serif',
     },

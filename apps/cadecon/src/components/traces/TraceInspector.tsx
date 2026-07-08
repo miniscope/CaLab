@@ -8,7 +8,14 @@
 import { createMemo, createSignal, createEffect, on, Show, type JSX } from 'solid-js';
 import type uPlot from 'uplot';
 import { downsampleMinMax } from '@calab/compute';
-import { TraceOverview, ZoomWindow, type HighlightZone } from '@calab/ui/chart';
+import {
+  TraceOverview,
+  ZoomWindow,
+  type HighlightZone,
+  TRACE_COLORS,
+  GROUND_TRUTH_COLORS,
+  withOpacity,
+} from '@calab/ui/chart';
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import { transientZonePlugin } from '@calab/ui/chart';
 import {
@@ -414,11 +421,11 @@ export function TraceInspector(): JSX.Element {
       : { show: false };
     return [
       {},
-      { label: 'Raw', stroke: '#1f77b4', width: 1, show: showRaw() },
-      { label: 'Filtered', stroke: '#17becf', width: 1.5, show: showFiltered() },
-      { label: 'Fit', stroke: '#ff7f0e', width: 1.5, show: showFit() },
-      { label: 'Deconv', stroke: '#2ca02c', width: 1, show: showDeconv() },
-      { label: 'Residual', stroke: '#d62728', width: 1, show: showResidual() },
+      { label: 'Raw', stroke: TRACE_COLORS.raw, width: 1, show: showRaw() },
+      { label: 'Filtered', stroke: TRACE_COLORS.filtered, width: 1.5, show: showFiltered() },
+      { label: 'Fit', stroke: TRACE_COLORS.fit, width: 1.5, show: showFit() },
+      { label: 'Deconv', stroke: TRACE_COLORS.deconv, width: 1, show: showDeconv() },
+      { label: 'Residual', stroke: TRACE_COLORS.resid, width: 1, show: showResidual() },
       gtCaSeries,
       gtSpkSeries,
     ];
@@ -427,25 +434,37 @@ export function TraceInspector(): JSX.Element {
   // Legend items
   const legendItems = createMemo((): LegendItemConfig[] => {
     const items: LegendItemConfig[] = [
-      { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
+      {
+        key: 'raw',
+        color: TRACE_COLORS.raw,
+        label: 'Raw',
+        visible: showRaw,
+        setVisible: setShowRaw,
+      },
       {
         key: 'filtered',
-        color: '#17becf',
+        color: TRACE_COLORS.filtered,
         label: 'Filtered',
         visible: showFiltered,
         setVisible: setShowFiltered,
       },
-      { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
+      {
+        key: 'fit',
+        color: TRACE_COLORS.fit,
+        label: 'Fit',
+        visible: showFit,
+        setVisible: setShowFit,
+      },
       {
         key: 'deconv',
-        color: '#2ca02c',
+        color: TRACE_COLORS.deconv,
         label: 'Deconv',
         visible: showDeconv,
         setVisible: setShowDeconv,
       },
       {
         key: 'resid',
-        color: '#d62728',
+        color: TRACE_COLORS.resid,
         label: 'Resid',
         visible: showResidual,
         setVisible: setShowResidual,
@@ -455,7 +474,7 @@ export function TraceInspector(): JSX.Element {
       items.push(
         {
           key: 'gt-ca',
-          color: 'rgba(0, 188, 212, 0.7)',
+          color: withOpacity(GROUND_TRUTH_COLORS.calcium, 0.75),
           label: 'True Ca',
           visible: showGTCalcium,
           setVisible: setShowGTCalcium,
@@ -463,7 +482,7 @@ export function TraceInspector(): JSX.Element {
         },
         {
           key: 'gt-spk',
-          color: 'rgba(255, 193, 7, 0.7)',
+          color: withOpacity(GROUND_TRUTH_COLORS.spikes, 0.7),
           label: 'True Spk',
           visible: showGTSpikes,
           setVisible: setShowGTSpikes,

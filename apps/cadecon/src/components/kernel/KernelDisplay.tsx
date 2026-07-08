@@ -32,7 +32,9 @@ import {
   peakNormalize,
 } from '../../lib/chart/series-config.ts';
 import {
-  D3_CATEGORY10,
+  subsetColor,
+  KERNEL_FIT_COLORS,
+  GROUND_TRUTH_COLORS,
   withOpacity,
   wheelZoomPlugin,
   AXIS_TEXT,
@@ -208,7 +210,7 @@ export function KernelDisplay(): JSX.Element {
     const selected = selectedSubsetIdx();
     const s: uPlot.Series[] = [{}];
     for (let i = 0; i < snap.subsets.length; i++) {
-      const color = D3_CATEGORY10[i % D3_CATEGORY10.length];
+      const color = subsetColor(i);
       const isSelected = selected === i;
       const hasSelection = selected != null;
       s.push({
@@ -341,7 +343,7 @@ export function KernelDisplay(): JSX.Element {
           <span class="kernel-display__legend-item">
             <span
               class="kernel-display__legend-swatch kernel-display__legend-swatch--dashed"
-              style={{ 'border-color': '#9467bd' }}
+              style={{ 'border-color': KERNEL_FIT_COLORS.slow }}
             />
             Slow
           </span>
@@ -349,12 +351,15 @@ export function KernelDisplay(): JSX.Element {
             <span class="kernel-display__legend-item">
               <span
                 class="kernel-display__legend-swatch kernel-display__legend-swatch--dashed"
-                style={{ 'border-color': '#d62728' }}
+                style={{ 'border-color': KERNEL_FIT_COLORS.fast }}
               />
               Fast
             </span>
             <span class="kernel-display__legend-item">
-              <span class="kernel-display__legend-swatch" style={{ background: '#e377c2' }} />
+              <span
+                class="kernel-display__legend-swatch"
+                style={{ background: KERNEL_FIT_COLORS.full }}
+              />
               Full
             </span>
           </Show>
@@ -362,7 +367,7 @@ export function KernelDisplay(): JSX.Element {
             <span class="kernel-display__legend-item">
               <span
                 class="kernel-display__legend-swatch kernel-display__legend-swatch--dashed"
-                style={{ 'border-color': 'rgba(233, 30, 99, 0.8)' }}
+                style={{ 'border-color': withOpacity(GROUND_TRUTH_COLORS.kernel, 0.8) }}
               />
               True
             </span>

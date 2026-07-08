@@ -1,39 +1,50 @@
 // CaTune-specific uPlot series configuration builders for trace panels.
-// Trace colors follow the D3 category10 scheme for scientific consistency.
+// Colors come from the shared colorblind-safe Okabe-Ito palette (@calab/ui/chart),
+// so "Raw"/"Fit"/etc. match CaDecon.
 
 import type uPlot from 'uplot';
-import { withOpacity } from '@calab/ui/chart';
+import { TRACE_COLORS, GROUND_TRUTH_COLORS, withOpacity } from '@calab/ui/chart';
 
 export function createRawSeries(): uPlot.Series {
-  return { label: 'Raw', stroke: '#1f77b4', width: 1 };
+  return { label: 'Raw', stroke: TRACE_COLORS.raw, width: 1 };
 }
 
 export function createFilteredSeries(): uPlot.Series {
-  return { label: 'Filtered', stroke: '#17becf', width: 1.5 };
+  return { label: 'Filtered', stroke: TRACE_COLORS.filtered, width: 1.5 };
 }
 
 export function createFitSeries(): uPlot.Series {
-  return { label: 'Fit', stroke: '#ff7f0e', width: 1.5 };
+  return { label: 'Fit', stroke: TRACE_COLORS.fit, width: 1.5 };
 }
 
 export function createDeconvolvedSeries(): uPlot.Series {
-  return { label: 'Deconvolved', stroke: '#2ca02c', width: 1 };
+  return { label: 'Deconvolved', stroke: TRACE_COLORS.deconv, width: 1 };
 }
 
 export function createResidualSeries(): uPlot.Series {
-  return { label: 'Residuals', stroke: '#d62728', width: 1 };
+  return { label: 'Residuals', stroke: TRACE_COLORS.resid, width: 1 };
 }
 
 export function createGroundTruthSpikesSeries(): uPlot.Series {
-  return { label: 'True Spikes', stroke: 'rgba(255, 193, 7, 0.7)', width: 1.5 };
+  return { label: 'True Spikes', stroke: withOpacity(GROUND_TRUTH_COLORS.spikes, 0.7), width: 1.5 };
 }
 
 export function createGroundTruthCalciumSeries(): uPlot.Series {
-  return { label: 'True Calcium', stroke: 'rgba(0, 188, 212, 0.7)', width: 1.5, dash: [6, 3] };
+  return {
+    label: 'True Calcium',
+    stroke: withOpacity(GROUND_TRUTH_COLORS.calcium, 0.75),
+    width: 1.5,
+    dash: [6, 3],
+  };
 }
 
 export function createGroundTruthKernelSeries(): uPlot.Series {
-  return { label: 'True Kernel', stroke: 'rgba(233, 30, 99, 0.8)', width: 1.5, dash: [6, 3] };
+  return {
+    label: 'True Kernel',
+    stroke: withOpacity(GROUND_TRUTH_COLORS.kernel, 0.8),
+    width: 1.5,
+    dash: [6, 3],
+  };
 }
 
 export function createPinnedOverlaySeries(
