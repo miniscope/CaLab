@@ -28,7 +28,7 @@ pub struct SeedTraceResult {
 pub fn seed_trace(trace: &[f32], fs: f64) -> SeedTraceResult {
     let n = trace.len();
     let (bl, _) = median_and_mad(trace);
-    let onsets = find_seed_spikes(trace, fs, 5.0);
+    let onsets = find_seed_spikes(trace, fs, &SeedConfig::default());
 
     let mut s_counts = vec![0.0_f32; n];
     for &idx in &onsets {
@@ -108,16 +108,45 @@ pub(crate) fn median_and_mad(data: &[f32]) -> (f32, f32) {
     (med, mad_val)
 }
 
+/// Tunable parameters for peak-seeded spike detection.
+///
+/// `Default` reproduces the values that were previously hardcoded in
+/// `find_seed_spikes`, so behaviour is unchanged unless a caller overrides a
+/// field. Every field shifts which onsets get seeded, so per the no-magic-number
+/// rule none of them appears as a bare literal in the detection logic.
+#[derive(Clone, Copy, Debug)]
+pub struct SeedConfig {
+    /// Peak threshold = median + `mad_multiplier` × MAD.
+    pub mad_multiplier: f32,
+    /// Onset threshold = baseline + `onset_fraction` × (peak − baseline).
+    pub onset_fraction: f32,
+    /// Maximum walk-back from a peak to its onset, in seconds.
+    pub max_walkback_s: f64,
+    /// Minimum spacing between accepted peaks, in seconds.
+    pub min_peak_distance_s: f64,
+}
+
+impl Default for SeedConfig {
+    fn default() -> Self {
+        SeedConfig {
+            mad_multiplier: 4.0,
+            onset_fraction: 0.10,
+            max_walkback_s: 1.0,
+            min_peak_distance_s: 5.0,
+        }
+    }
+}
+
 /// Find seed spike onset locations from a single trace.
 ///
 /// 1. Compute baseline = median(trace)
-/// 2. Compute threshold = baseline + 4 * MAD
-/// 3. Find local maxima above threshold, at least `min_peak_distance_s` seconds apart
-/// 4. Walk back from each peak to onset (where trace drops to baseline + 10% of peak height)
-///    with a max walk-back of 1 second
+/// 2. Compute threshold = baseline + `cfg.mad_multiplier` * MAD
+/// 3. Find local maxima above threshold, at least `cfg.min_peak_distance_s` seconds apart
+/// 4. Walk back from each peak to onset (where trace drops to
+///    baseline + `cfg.onset_fraction` * peak height), bounded by `cfg.max_walkback_s`
 ///
 /// Returns indices into the trace where spikes should be placed.
-pub fn find_seed_spikes(trace: &[f32], fs: f64, min_peak_distance_s: f64) -> Vec<usize> {
+pub fn find_seed_spikes(trace: &[f32], fs: f64, cfg: &SeedConfig) -> Vec<usize> {
     let n = trace.len();
     if n < 3 {
         return Vec::new();
@@ -128,10 +157,10 @@ pub fn find_seed_spikes(trace: &[f32], fs: f64, min_peak_distance_s: f64) -> Vec
     if mad_val < 1e-10 {
         return Vec::new();
     }
-    let threshold = baseline + 4.0 * mad_val;
+    let threshold = baseline + cfg.mad_multiplier * mad_val;
 
-    let min_peak_dist = (min_peak_distance_s * fs).round() as usize;
-    let max_walkback = (1.0 * fs).round() as usize;
+    let min_peak_dist = (cfg.min_peak_distance_s * fs).round() as usize;
+    let max_walkback = (cfg.max_walkback_s * fs).round() as usize;
 
     // Find local maxima above threshold
     let mut peaks: Vec<(usize, f32)> = Vec::new();
@@ -160,7 +189,7 @@ pub fn find_seed_spikes(trace: &[f32], fs: f64, min_peak_distance_s: f64) -> Vec
     let mut onsets: Vec<usize> = Vec::with_capacity(selected_peaks.len());
     for &peak_idx in &selected_peaks {
         let peak_val = trace[peak_idx];
-        let onset_threshold = baseline + 0.10 * (peak_val - baseline);
+        let onset_threshold = baseline + cfg.onset_fraction * (peak_val - baseline);
 
         let earliest = peak_idx.saturating_sub(max_walkback);
 
@@ -202,7 +231,7 @@ pub fn seed_kernel_estimate(
 ) -> SeedKernelResult {
     let total_len: usize = trace_lengths.iter().sum();
 
-    let min_peak_distance_s = 5.0;
+    let seed_cfg = SeedConfig::default();
 
     // Kernel length: ~1.5 seconds at the given sampling rate
     let kernel_length = (1.5 * fs).ceil() as usize;
@@ -236,7 +265,7 @@ pub fn seed_kernel_estimate(
         let trace = &traces_flat[offset..offset + len];
         let (bl, _) = median_and_mad(trace);
 
-        let onsets = find_seed_spikes(trace, fs, min_peak_distance_s);
+        let onsets = find_seed_spikes(trace, fs, &seed_cfg);
         for &onset in &onsets {
             spike_trains[offset + onset] = 1.0;
             total_seed_spikes += 1;
@@ -344,7 +373,7 @@ mod tests {
             }
         }
 
-        let onsets = find_seed_spikes(&trace, fs, 5.0);
+        let onsets = find_seed_spikes(&trace, fs, &SeedConfig::default());
 
         assert!(
             onsets.len() >= 2 && onsets.len() <= 5,

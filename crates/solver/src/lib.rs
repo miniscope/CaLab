@@ -43,6 +43,12 @@ pub(crate) fn first_nonfinite(data: &[f32]) -> Option<usize> {
     data.iter().position(|v| !v.is_finite())
 }
 
+/// EMA weight for the displayed scalar baseline. The per-iteration raw baseline
+/// is smoothed as `ema = W·raw + (1-W)·ema` purely to keep the displayed value
+/// steady across iterations; it does not enter the solve. Named here so the
+/// smoothing strength is a single, documented knob rather than a bare literal.
+const BASELINE_EMA_WEIGHT: f64 = 0.3;
+
 /// Convolution mode for forward/adjoint operations in FISTA.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "jsbindings", wasm_bindgen)]
@@ -428,7 +434,8 @@ impl Solver {
             self.baseline_ema = raw_baseline;
             self.baseline_ema_init = true;
         } else {
-            self.baseline_ema = 0.3 * raw_baseline + 0.7 * self.baseline_ema;
+            self.baseline_ema = BASELINE_EMA_WEIGHT * raw_baseline
+                + (1.0 - BASELINE_EMA_WEIGHT) * self.baseline_ema;
         }
     }
 
@@ -477,7 +484,11 @@ impl Solver {
             return;
         }
         let window = baseline::baseline_window(self.tau_decay, self.fs);
-        baseline::subtract_rolling_baseline(&mut self.trace[..n], window, 0.2);
+        baseline::subtract_rolling_baseline(
+            &mut self.trace[..n],
+            window,
+            baseline::DEFAULT_BASELINE_QUANTILE,
+        );
         self.filtered = true;
     }
 
