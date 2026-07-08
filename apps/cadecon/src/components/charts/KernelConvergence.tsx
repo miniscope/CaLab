@@ -38,7 +38,6 @@ const TPEAK_COLOR = METRIC_COLORS.tPeak;
 const FWHM_COLOR = METRIC_COLORS.fwhm;
 const TAU_RISE_FAST_COLOR = METRIC_COLORS.tauRiseFast;
 const TAU_DECAY_FAST_COLOR = METRIC_COLORS.tauDecayFast;
-const RESIDUAL_COLOR = METRIC_COLORS.residual;
 
 const TAU_RISE_FAINT = withOpacity(TAU_RISE_COLOR, 0.3);
 const TAU_DECAY_FAINT = withOpacity(TAU_DECAY_COLOR, 0.3);
@@ -188,7 +187,7 @@ export function KernelConvergence(): JSX.Element {
     const h = filteredHistory();
     if (h.length === 0)
       return {
-        aligned: [[], [], [], [], [], [], [], []] as uPlot.AlignedData,
+        aligned: [[], [], [], [], [], [], []] as uPlot.AlignedData,
         scatter: [] as SubsetScatterPoint[],
       };
 
@@ -197,7 +196,6 @@ export function KernelConvergence(): JSX.Element {
     const tauDecays: number[] = new Array(h.length);
     const tPeaks: number[] = new Array(h.length);
     const fwhms: number[] = new Array(h.length);
-    const residuals: number[] = new Array(h.length);
     const tauRiseFasts: number[] = new Array(h.length);
     const tauDecayFasts: number[] = new Array(h.length);
     const pts: SubsetScatterPoint[] = [];
@@ -210,7 +208,6 @@ export function KernelConvergence(): JSX.Element {
       const shape = tauToShape(s.tauRise, s.tauDecay);
       tPeaks[i] = shape ? shape.tPeak * 1000 : 0;
       fwhms[i] = shape ? shape.fwhm * 1000 : 0;
-      residuals[i] = s.residual;
       tauRiseFasts[i] = s.tauRiseFast * 1000;
       tauDecayFasts[i] = s.tauDecayFast * 1000;
 
@@ -235,7 +232,6 @@ export function KernelConvergence(): JSX.Element {
         tauDecays,
         tPeaks,
         fwhms,
-        residuals,
         tauRiseFasts,
         tauDecayFasts,
       ] as uPlot.AlignedData,
@@ -270,13 +266,6 @@ export function KernelConvergence(): JSX.Element {
       points: { show: true, size: 6 },
     },
     {
-      label: 'residual',
-      stroke: RESIDUAL_COLOR,
-      width: 1,
-      scale: 'res',
-      dash: [4, 2],
-    },
-    {
       label: 'τ_r_fast',
       stroke: TAU_RISE_FAST_COLOR,
       width: 1,
@@ -295,7 +284,6 @@ export function KernelConvergence(): JSX.Element {
   const scales: uPlot.Scales = {
     x: { time: false },
     y: {},
-    res: {},
   };
 
   const axes: uPlot.Axis[] = [
@@ -314,16 +302,6 @@ export function KernelConvergence(): JSX.Element {
       grid: { stroke: AXIS_GRID },
       ticks: { stroke: AXIS_TICK },
       label: 'ms',
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-    },
-    {
-      stroke: RESIDUAL_COLOR,
-      scale: 'res',
-      side: 1,
-      grid: { show: false },
-      ticks: { stroke: AXIS_TICK },
-      label: 'Residual',
       labelSize: 10,
       labelFont: '10px sans-serif',
     },
