@@ -202,6 +202,11 @@ export function RasterOverview(): JSX.Element {
     const rects = subsetRectangles();
     const selected = selectedSubsetIdx();
 
+    // Reset text alignment — drawAxes leaves it right/middle, which would
+    // misplace the label inside its shaded background box.
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
     for (const r of rects) {
       const x = plotX + (r.tStart / T) * plotW;
       const w = ((r.tEnd - r.tStart) / T) * plotW;
