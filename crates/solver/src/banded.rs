@@ -306,11 +306,7 @@ mod tests {
         // discrete operator: a unit impulse through convolve_forward must equal
         // build_kernel sample-for-sample. This is the direct regression guard for
         // the one-sample alignment between the two conv modes.
-        for &(tau_r, tau_d, fs) in &[
-            (0.02, 0.4, 30.0),
-            (0.05, 0.25, 100.0),
-            (0.01, 0.15, 300.0),
-        ] {
+        for &(tau_r, tau_d, fs) in &[(0.02, 0.4, 30.0), (0.05, 0.25, 100.0), (0.01, 0.15, 300.0)] {
             let banded = BandedAR2::new(tau_r, tau_d, fs);
             let kernel = build_kernel(tau_r, tau_d, fs);
             let n = kernel.len();
