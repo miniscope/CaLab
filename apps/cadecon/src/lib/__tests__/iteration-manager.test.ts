@@ -27,6 +27,8 @@ import {
   setCurrentIteration,
   convergenceHistory,
   convergedAtIteration,
+  currentTauRise,
+  currentTauDecay,
   resetIterationState,
 } from '../iteration-store.ts';
 import {
@@ -251,17 +253,33 @@ describe('iteration-manager: startRun dispatch sequence', () => {
     expect(kinds).toContain('trace');
     // Convergence history records iteration 0 + at least one iteration
     expect(convergenceHistory().length).toBeGreaterThanOrEqual(2);
+
+    // Snapshots carry the shape coordinate; the constant-kernel fake pool
+    // resolves to a well-defined (non-degenerate) shape and is not rise-clamped.
+    const last = convergenceHistory().at(-1)!;
+    expect(last.tPeak).not.toBeNull();
+    expect(last.fwhm).not.toBeNull();
+    expect(last.riseUnresolved).toBe(false);
+
+    // Final kernel comes from the median-of-tail shape selection; the fake pool
+    // reports tauRise=0.05, tauDecay=0.4, so the round-tripped selection lands near it.
+    expect(currentTauRise()!).toBeGreaterThan(0.045);
+    expect(currentTauRise()!).toBeLessThan(0.055);
+    expect(currentTauDecay()!).toBeGreaterThan(0.38);
+    expect(currentTauDecay()!).toBeLessThan(0.42);
   });
 
-  it('converges and stops early when tau stabilises', async () => {
-    // Fake pool always returns the same tauRise/tauDecay, so iteration 2
-    // shows ~0% relative change and the loop should exit via the convergence
-    // branch (iter > 0 && maxRelChange < convTol).
+  it('converges early when the kernel shape stabilises (patience streak)', async () => {
+    // The fake pool always returns the same tauRise/tauDecay, so every
+    // iteration's (tPeak, FWHM) is identical → shapeDelta ~ 0 < convTol. After
+    // `patience` consecutive stable iterations (past minIters) the loop stops and
+    // records the FIRST iteration of the confirming window.
     seedMinimalRun();
     setMaxIterations(10);
     setConvergenceTol(0.1);
     await startRun();
     expect(convergedAtIteration()).not.toBeNull();
+    // Default minIters=2, patience=3 → first stable iteration is 2.
     expect(convergedAtIteration()!).toBeLessThanOrEqual(3);
   });
 

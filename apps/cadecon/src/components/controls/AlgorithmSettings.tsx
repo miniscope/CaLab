@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js';
+import { CONVERGENCE_RANGES } from '@calab/core';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
@@ -12,6 +13,8 @@ import {
   setMaxIterations,
   convergenceTol,
   setConvergenceTol,
+  convergencePatience,
+  setConvergencePatience,
 } from '../../lib/algorithm-store.ts';
 import { isRunLocked } from '../../lib/iteration-store.ts';
 
@@ -48,10 +51,23 @@ export function AlgorithmSettings(): JSX.Element {
           label="Convergence Tol"
           value={convergenceTol}
           setValue={setConvergenceTol}
-          min={0.001}
-          max={0.1}
-          step={0.001}
+          min={CONVERGENCE_RANGES.convergenceTol.min}
+          max={CONVERGENCE_RANGES.convergenceTol.max}
+          step={CONVERGENCE_RANGES.convergenceTol.step}
           format={(v) => v.toFixed(3)}
+          disabled={isRunLocked()}
+          noSlider
+        />
+
+        <ParameterSlider
+          label="Patience"
+          value={convergencePatience}
+          setValue={(v) => setConvergencePatience(Math.round(v))}
+          min={CONVERGENCE_RANGES.convergencePatience.min}
+          max={CONVERGENCE_RANGES.convergencePatience.max}
+          step={CONVERGENCE_RANGES.convergencePatience.step}
+          format={(v) => String(Math.round(v))}
+          unit="iters"
           disabled={isRunLocked()}
           noSlider
         />

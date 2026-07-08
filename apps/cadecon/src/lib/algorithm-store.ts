@@ -1,13 +1,31 @@
 import { createSignal, createMemo } from 'solid-js';
+import { CONVERGENCE_RANGES } from '@calab/core';
 import { samplingRate } from './data-store.ts';
 
 // --- Algorithm parameter signals ---
 
 const [upsampleTarget, setUpsampleTarget] = createSignal(300);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
-const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);
+const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
 const [maxIterations, setMaxIterations] = createSignal(20);
-const [convergenceTol, setConvergenceTol] = createSignal(0.01);
+
+// Convergence is tested in kernel SHAPE space (peak time + FWHM). convergenceTol
+// is the relative change of BOTH peak and FWHM below which an iteration counts as
+// stable; patience/minIters gate when convergence may be declared; the final
+// kernel is the median of the last `finalSelectionWindow` iterates' shapes.
+// Defaults live in @calab/core CONVERGENCE_RANGES (single source of truth).
+const [convergenceTol, setConvergenceTol] = createSignal<number>(
+  CONVERGENCE_RANGES.convergenceTol.default,
+);
+const [convergencePatience, setConvergencePatience] = createSignal<number>(
+  CONVERGENCE_RANGES.convergencePatience.default,
+);
+const [convergenceMinIters, setConvergenceMinIters] = createSignal<number>(
+  CONVERGENCE_RANGES.convergenceMinIters.default,
+);
+const [finalSelectionWindow, setFinalSelectionWindow] = createSignal<number>(
+  CONVERGENCE_RANGES.finalSelectionWindow.default,
+);
 
 // Inner-loop solver parameters. These directly affect deconvolution output, so
 // they are configurable (not hardcoded) and travel with the run; defaults match
@@ -39,6 +57,12 @@ export {
   setMaxIterations,
   convergenceTol,
   setConvergenceTol,
+  convergencePatience,
+  setConvergencePatience,
+  convergenceMinIters,
+  setConvergenceMinIters,
+  finalSelectionWindow,
+  setFinalSelectionWindow,
   traceFistaMaxIters,
   setTraceFistaMaxIters,
   traceFistaTol,

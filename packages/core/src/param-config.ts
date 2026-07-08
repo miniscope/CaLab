@@ -26,3 +26,41 @@ export const PARAM_RANGES = {
     logScale: false,
   },
 } as const;
+
+/**
+ * CaDecon iterative-loop convergence parameters.
+ *
+ * Convergence is tested in kernel SHAPE space (peak time + FWHM) rather than in
+ * (tau_rise, tau_decay): the tau pair is degenerate (tau_rise <-> tau_decay
+ * thrash inflates the delta), so a shape-space tolerance settles meaningfully.
+ */
+export const CONVERGENCE_RANGES = {
+  /** Relative change of peak time AND FWHM below which an iteration counts as "stable". */
+  convergenceTol: {
+    min: 0.005,
+    max: 0.1,
+    default: 0.02,
+    step: 0.005,
+  },
+  /** Consecutive stable iterations required before declaring convergence. */
+  convergencePatience: {
+    min: 1,
+    max: 10,
+    default: 3,
+    step: 1,
+  },
+  /** Minimum iterations before convergence is eligible (keeps the seed from trivially "converging"). */
+  convergenceMinIters: {
+    min: 0,
+    max: 10,
+    default: 2,
+    step: 1,
+  },
+  /** Number of trailing iterates whose shapes are median-combined into the final kernel. */
+  finalSelectionWindow: {
+    min: 1,
+    max: 20,
+    default: 5,
+    step: 1,
+  },
+} as const;
