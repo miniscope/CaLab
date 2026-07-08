@@ -34,6 +34,15 @@ let wasmReady: Promise<void> | null = null;
  * multiple sites; only the first call triggers actual initialization.
  */
 export function initWasm(): Promise<void> {
-  if (!wasmReady) wasmReady = init().then(() => {});
+  if (!wasmReady) {
+    wasmReady = init()
+      .then(() => {})
+      .catch((err) => {
+        // Clear the cached promise so a later call can retry instead of
+        // being permanently stuck on a rejected init.
+        wasmReady = null;
+        throw err;
+      });
+  }
   return wasmReady;
 }

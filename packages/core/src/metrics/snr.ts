@@ -35,14 +35,19 @@ export function computePeakSNR(trace: Float64Array): number {
   // Baseline: lower 25th percentile
   const q25Idx = Math.floor(n * 0.25);
   let baselineSum = 0;
-  let baselineSumSq = 0;
   for (let i = 0; i < q25Idx; i++) {
     baselineSum += sorted[i];
-    baselineSumSq += sorted[i] * sorted[i];
   }
   const baselineMean = baselineSum / q25Idx;
-  const baselineVar = baselineSumSq / q25Idx - baselineMean * baselineMean;
-  const baselineStd = Math.sqrt(Math.max(0, baselineVar));
+  // Two-pass variance: the one-pass form (E[x^2] - E[x]^2) suffers
+  // catastrophic cancellation when the baseline sits on a large DC offset.
+  let baselineSqDiff = 0;
+  for (let i = 0; i < q25Idx; i++) {
+    const d = sorted[i] - baselineMean;
+    baselineSqDiff += d * d;
+  }
+  const baselineVar = baselineSqDiff / q25Idx;
+  const baselineStd = Math.sqrt(baselineVar);
 
   if (baselineStd === 0) {
     snrCache.set(trace, Infinity);

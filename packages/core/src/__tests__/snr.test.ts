@@ -26,6 +26,22 @@ describe('computePeakSNR', () => {
     const trace = new Float64Array(100).fill(0);
     expect(computePeakSNR(trace)).toBe(Infinity);
   });
+
+  it('computes a finite SNR when the baseline sits on a large DC offset', () => {
+    // Regression for catastrophic cancellation: with a large offset the one-pass
+    // variance (E[x^2] - E[x]^2) collapses to ~0 (std 0 → SNR Infinity). The
+    // two-pass form recovers the true baseline spread.
+    const OFFSET = 1e8;
+    const trace = new Float64Array(200);
+    for (let i = 0; i < 200; i++) {
+      // Baseline with a small, non-degenerate spread; a chunk of clear peaks so
+      // the 95th percentile lands on signal, not baseline.
+      trace[i] = i < 180 ? OFFSET + ((i % 7) - 3) : OFFSET + 100;
+    }
+    const snr = computePeakSNR(trace);
+    expect(Number.isFinite(snr)).toBe(true);
+    expect(snr).toBeGreaterThan(10);
+  });
 });
 
 describe('snrToQuality', () => {

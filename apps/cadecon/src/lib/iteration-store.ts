@@ -6,6 +6,8 @@ export type RunState = 'idle' | 'running' | 'paused' | 'stopping' | 'complete';
 export type RunPhase = 'idle' | 'inference' | 'kernel-update' | 'merge' | 'finalization';
 
 export interface SubsetKernelSnapshot {
+  /** Index of the subset rectangle this kernel came from. */
+  subsetIdx: number;
   tauRise: number;
   tauDecay: number;
   beta: number;
@@ -116,8 +118,8 @@ const subsetVarianceData = createMemo(() => {
   const history = convergenceHistory();
   if (history.length === 0) return [];
   const latest = history[history.length - 1];
-  return latest.subsets.map((s, idx) => ({
-    subsetIdx: idx,
+  return latest.subsets.map((s) => ({
+    subsetIdx: s.subsetIdx,
     tauRise: s.tauRise * 1000,
     tauDecay: s.tauDecay * 1000,
   }));
