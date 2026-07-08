@@ -8,7 +8,7 @@ import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
-import { withOpacity, AXIS_TEXT, AXIS_GRID, AXIS_TICK, OKABE_ITO } from '@calab/ui/chart';
+import { withOpacity, chartAxis, staticCursor, OKABE_ITO } from '@calab/ui/chart';
 import { median, iqr } from '../../lib/math-utils.ts';
 
 export interface HistogramCardProps {
@@ -96,22 +96,12 @@ export function HistogramCard(props: HistogramCardProps): JSX.Element {
   });
 
   const axes: uPlot.Axis[] = [
-    {
-      stroke: AXIS_TEXT,
-      grid: { show: false },
-      ticks: { stroke: AXIS_TICK },
-      size: 24,
-    },
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      size: 30,
-    },
+    chartAxis({ grid: { show: false }, size: 24 }),
+    chartAxis({ size: 30 }),
   ];
 
   const scales: uPlot.Scales = { x: { time: false } };
-  const cursor: uPlot.Cursor = { drag: { x: false, y: false } };
+  const cursor = staticCursor;
 
   const medVal = createMemo(() => median(props.values()));
   const iqrVal = createMemo(() => iqr(props.values()));
