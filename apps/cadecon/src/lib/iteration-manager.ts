@@ -8,7 +8,7 @@
 //   5. On convergence/max iters: finalization pass on ALL cells
 
 import { batch } from 'solid-js';
-import type { WorkerPool } from '@calab/compute';
+import { tauToShape, shapeToTau, type WorkerPool } from '@calab/compute';
 import { createCaDeconWorkerPool, type CaDeconPoolJob } from './cadecon-pool.ts';
 import type {
   TraceResult,
@@ -38,6 +38,9 @@ import {
   upsampleFactor,
   maxIterations,
   convergenceTol,
+  convergencePatience,
+  convergenceMinIters,
+  finalSelectionWindow,
   hpFilterEnabled,
   lpFilterEnabled,
   traceFistaMaxIters,
@@ -73,6 +76,13 @@ export const BIEXP_FIT_SKIP = 0;
  * bound to the wrong subset when jobs finish out of order.
  */
 type KernelJobResult = KernelResult & { subsetIdx: number };
+
+/** Denominator guard for relative shape deltas (peak/FWHM are in seconds). */
+const SHAPE_EPS = 1e-9;
+/** Absolute floor of the Rust tau_rise clamp (mirrors biexp_fit.rs tau_r_lo). */
+const RISE_CLAMP_FLOOR_S = 0.005;
+/** tau_rise within this factor of the clamp floor is flagged "rise unresolved". */
+const RISE_FLOOR_MARGIN = 1.05;
 
 let pool: WorkerPool<CaDeconPoolJob> | null = null;
 let nextJobId = 0;
@@ -385,7 +395,14 @@ export async function startRun(): Promise<void> {
   let tauD = TAU_DECAY_FALLBACK;
   const upFactor = upsampleFactor();
   const maxIter = maxIterations();
+  // Shape-space convergence controls (see algorithm-store / CONVERGENCE_RANGES).
   const convTol = convergenceTol();
+  const patience = convergencePatience();
+  const minIters = convergenceMinIters();
+  const selWindow = finalSelectionWindow();
+  // tau_rise clamp floor mirrored from the Rust biexp fit (biexp_fit.rs:
+  // tau_r_lo = max(1/fs, 0.005)); used only to flag an unresolved rise.
+  const tauRiseFloor = Math.max(1 / fs, RISE_CLAMP_FLOOR_S);
   const rects = subsetRectangles();
   const isSwap = swapped();
   const nCells = numCells();
@@ -448,14 +465,17 @@ export async function startRun(): Promise<void> {
   let prevKernels: Float32Array[] | undefined;
   let prevBiexpResults: WarmBiexp[] | undefined;
 
-  // Best-residual tracking: remember the kernel parameters from the iteration
-  // whose bi-exponential fit residual was lowest. This prevents the rise time
-  // from collapsing toward 0 — the residual has a U-shape, so the minimum
-  // corresponds to the correct kernel even though the optimizer keeps pushing
-  // tau_rise down on subsequent iterations.
-  let bestResidual = Infinity;
-  let bestTauR = tauR;
-  let bestTauD = tauD;
+  // Shape-space convergence tracking. (tau_rise, tau_decay) is a degenerate
+  // convergence coordinate (tau_rise <-> tau_decay thrash inflates the delta), so
+  // we test convergence in (tPeak, FWHM) space: an iteration is "stable" when both
+  // move less than convTol relative to the previous one, and we declare
+  // convergence after `patience` consecutive stable iterations. The final kernel
+  // is the median of the last `selWindow` iterates' shapes — not the argmin of the
+  // (bouncy, unreliable) bi-exponential residual, which the old revert used.
+  let prevShape = tauToShape(tauR, tauD);
+  let stableCount = 0;
+  let firstStableIter: number | null = null;
+  const shapeTrail: Array<{ tauRise: number; tauDecay: number; tPeak: number; fwhm: number }> = [];
 
   // Iteration 0: record initial kernel state and alpha=1 baseline
   batch(() => {
@@ -469,6 +489,10 @@ export async function startRun(): Promise<void> {
       tauDecayFast: 0,
       betaFast: 0,
       fs,
+      tPeak: prevShape?.tPeak ?? null,
+      fwhm: prevShape?.fwhm ?? null,
+      shapeDelta: null,
+      riseUnresolved: false,
       subsets: [],
     });
     const initEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
@@ -664,8 +688,6 @@ export async function startRun(): Promise<void> {
 
     // Step 3: Merge — median tauRise/tauDecay across subsets
     setRunPhase('merge');
-    const prevTauR = tauR;
-    const prevTauD = tauD;
     // Extract all scalar fields in a single pass for median computation
     const tauRises: number[] = [];
     const tauDecays: number[] = [];
@@ -686,6 +708,19 @@ export async function startRun(): Promise<void> {
     tauR = median(tauRises);
     tauD = median(tauDecays);
 
+    // Convergence coordinate: kernel shape (peak time + FWHM).
+    const shape = tauToShape(tauR, tauD);
+    let shapeDelta: number | null = null;
+    if (shape && prevShape) {
+      const dPeak = Math.abs(shape.tPeak - prevShape.tPeak) / (prevShape.tPeak + SHAPE_EPS);
+      const dFwhm = Math.abs(shape.fwhm - prevShape.fwhm) / (prevShape.fwhm + SHAPE_EPS);
+      shapeDelta = Math.max(dPeak, dFwhm);
+    }
+    const riseUnresolved = tauR <= tauRiseFloor * RISE_FLOOR_MARGIN;
+    if (shape) {
+      shapeTrail.push({ tauRise: tauR, tauDecay: tauD, tPeak: shape.tPeak, fwhm: shape.fwhm });
+    }
+
     // Record convergence history with per-subset data
     const medBeta = median(betas);
     const medResidual = median(residuals);
@@ -705,6 +740,10 @@ export async function startRun(): Promise<void> {
         tauDecayFast: medTauDecayFast,
         betaFast: medBetaFast,
         fs,
+        tPeak: shape?.tPeak ?? null,
+        fwhm: shape?.fwhm ?? null,
+        shapeDelta,
+        riseUnresolved,
         subsets: kernelResults.map((r) => ({
           subsetIdx: r.subsetIdx,
           tauRise: r.tauRise,
@@ -719,42 +758,43 @@ export async function startRun(): Promise<void> {
       });
     });
 
-    // Step 4: Best-residual tracking & early stop (DISABLED)
-    //
-    // TODO: The current stopping criterion uses the bi-exponential fit residual
-    // (||h_free - β·template||²), which measures kernel shape mismatch. This
-    // doesn't always work — it can be noisy or non-monotonic depending on the
-    // data. A more robust approach would use the trace-reconstruction residual
-    // (||y - α·(K*s) - b||² across cells), which directly measures how well
-    // the model explains the data. That's more expensive to compute but would
-    // be a stronger signal for when the kernel has overshot.
-    //
-    // Disabled: with damped tau updates the residual-patience early stop fires
-    // too aggressively before the damped parameters have had time to settle.
-    // Re-enable once a better stopping metric is implemented.
-    //
-    if (medResidual < bestResidual) {
-      bestResidual = medResidual;
-      bestTauR = tauR;
-      bestTauD = tauD;
+    // Step 4: Convergence check in shape space. An iteration is "stable" when
+    // both peak time and FWHM change less than convTol; convergence is declared
+    // after `patience` consecutive stable iterations, once past `minIters`. A
+    // degenerate (null) shape resets the streak — it can never count as stable.
+    if (shape && shapeDelta !== null && iter + 1 >= minIters && shapeDelta < convTol) {
+      if (stableCount === 0) firstStableIter = iter + 1;
+      stableCount++;
+    } else {
+      stableCount = 0;
+      firstStableIter = null;
     }
+    if (shape) prevShape = shape;
 
-    // Step 5: Convergence check (relative change in tau values)
-    const relChangeTauR = Math.abs(tauR - prevTauR) / (prevTauR + 1e-20);
-    const relChangeTauD = Math.abs(tauD - prevTauD) / (prevTauD + 1e-20);
-    const maxRelChange = Math.max(relChangeTauR, relChangeTauD);
-    if (iter > 0 && maxRelChange < convTol) {
-      setConvergedAtIteration(iter + 1);
+    if (stableCount >= patience) {
+      setConvergedAtIteration(firstStableIter);
       break;
     }
   }
 
-  // Use the best-residual kernel for finalization. If the loop ran to maxIter
-  // without early-stopping, the current tauR/tauD may have overshot. Revert to
-  // the iteration that produced the lowest bi-exponential fit residual.
-  if (bestResidual < Infinity) {
-    tauR = bestTauR;
-    tauD = bestTauD;
+  // Final kernel = robust central estimate of the converged tail in shape space:
+  // the median of the last `selWindow` iterates' (tPeak, FWHM). This is stable
+  // against the bi-exponential residual's bounce and against tau_rise <-> tau_decay
+  // anti-correlation, and it operates in the non-degenerate coordinate.
+  if (shapeTrail.length > 0) {
+    const tail = shapeTrail.slice(-Math.max(1, selWindow));
+    const medPeak = median(tail.map((s) => s.tPeak));
+    const medFwhm = median(tail.map((s) => s.fwhm));
+    const tau = shapeToTau(medPeak, medFwhm);
+    if (tau) {
+      tauR = tau.tauRise;
+      tauD = tau.tauDecay;
+    } else {
+      // Shape pair fell outside the k-ratio lookup range — fall back to
+      // tau-space medians of the same tail.
+      tauR = median(tail.map((s) => s.tauRise));
+      tauD = median(tail.map((s) => s.tauDecay));
+    }
     setCurrentTauRise(tauR);
     setCurrentTauDecay(tauD);
   }

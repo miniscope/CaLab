@@ -184,6 +184,10 @@ describe('iteration-store: derived memos', () => {
         tauDecayFast: 0.4,
         betaFast: 1,
         fs: 30,
+        tPeak: 0.05,
+        fwhm: 0.2,
+        shapeDelta: null,
+        riseUnresolved: false,
         // subsetIdx deliberately does not match array position — kernel results
         // arrive in worker-completion order, so subsetVarianceData must read the
         // subsetIdx field, not the array index.
@@ -239,6 +243,10 @@ describe('iteration-store: history actions', () => {
         tauDecayFast: 0,
         betaFast: 0,
         fs: 30,
+        tPeak: null,
+        fwhm: null,
+        shapeDelta: null,
+        riseUnresolved: false,
         subsets: [],
       });
       expect(convergenceHistory()).toHaveLength(1);
@@ -335,6 +343,10 @@ describe('iteration-store: resetIterationState', () => {
         tauDecayFast: 0,
         betaFast: 0,
         fs: 30,
+        tPeak: null,
+        fwhm: null,
+        shapeDelta: null,
+        riseUnresolved: false,
         subsets: [],
       });
       updateTraceResult(cellSubsetKey(0, 0), makeTraceEntry(0, 0, 1, 0.5));
