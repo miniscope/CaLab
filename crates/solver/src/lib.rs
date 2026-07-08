@@ -33,6 +33,16 @@ use std::io::{Cursor, Read};
 #[cfg(feature = "jsbindings")]
 use wasm_bindgen::prelude::*;
 
+/// Index of the first non-finite (NaN or ±infinity) value in `data`, if any.
+///
+/// Used by the FFI boundaries (PyO3 / WASM) to reject non-finite input traces
+/// up front. A NaN would otherwise propagate silently — e.g. `total_cmp` sorts
+/// NaN last, corrupting the rolling-baseline percentile — and yield garbage
+/// alpha/PVE results that are indistinguishable from a legitimately hard trace.
+pub(crate) fn first_nonfinite(data: &[f32]) -> Option<usize> {
+    data.iter().position(|v| !v.is_finite())
+}
+
 /// Convolution mode for forward/adjoint operations in FISTA.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "jsbindings", wasm_bindgen)]
@@ -567,4 +577,22 @@ fn read_f64_le(cur: &mut Cursor<&[u8]>) -> f64 {
     let mut buf = [0u8; 8];
     cur.read_exact(&mut buf).unwrap();
     f64::from_le_bytes(buf)
+}
+
+#[cfg(test)]
+mod finite_guard_tests {
+    use super::first_nonfinite;
+
+    #[test]
+    fn clean_slice_has_no_nonfinite() {
+        assert_eq!(first_nonfinite(&[0.0, 1.5, -2.0, 3.0]), None);
+        assert_eq!(first_nonfinite(&[]), None);
+    }
+
+    #[test]
+    fn detects_nan_and_inf_at_first_index() {
+        assert_eq!(first_nonfinite(&[0.0, 1.0, f32::NAN, 3.0]), Some(2));
+        assert_eq!(first_nonfinite(&[f32::INFINITY, 1.0]), Some(0));
+        assert_eq!(first_nonfinite(&[1.0, 2.0, f32::NEG_INFINITY]), Some(2));
+    }
 }

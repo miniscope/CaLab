@@ -17,6 +17,10 @@ use crate::upsample;
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
+///
+/// Throws a JS error (rather than returning garbage) if `trace` contains a
+/// non-finite value — a NaN/Inf would otherwise propagate silently and yield
+/// results indistinguishable from a legitimately hard trace.
 #[wasm_bindgen]
 pub fn indeca_solve_trace(
     trace: &[f32],
@@ -30,7 +34,12 @@ pub fn indeca_solve_trace(
     lp_enabled: bool,
     warm_counts: &[f32],
     lambda: f64,
-) -> JsValue {
+) -> Result<JsValue, JsError> {
+    if let Some(i) = crate::first_nonfinite(trace) {
+        return Err(JsError::new(&format!(
+            "indeca_solve_trace: trace contains a non-finite value (NaN or infinity) at index {i}"
+        )));
+    }
     let warm = if warm_counts.is_empty() {
         None
     } else {
@@ -49,7 +58,7 @@ pub fn indeca_solve_trace(
         lp_enabled,
         lambda,
     );
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
 }
 
 /// Estimate a free-form kernel from multiple traces and their spike trains.
@@ -158,8 +167,15 @@ pub fn indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
 ///
 /// Returns a JsValue containing the serialized SeedTraceResult:
 /// { s_counts, alpha, baseline }
+///
+/// Throws a JS error if `trace` contains a non-finite value.
 #[wasm_bindgen]
-pub fn seed_trace(trace: &[f32], fs: f64) -> JsValue {
+pub fn seed_trace(trace: &[f32], fs: f64) -> Result<JsValue, JsError> {
+    if let Some(i) = crate::first_nonfinite(trace) {
+        return Err(JsError::new(&format!(
+            "seed_trace: trace contains a non-finite value (NaN or infinity) at index {i}"
+        )));
+    }
     let result = peak_seed::seed_trace(trace, fs);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
 }
