@@ -96,16 +96,11 @@ export const theoryTutorial: Tutorial = {
         'Both parts of the loop improve each other over each iteration until they converge on a consistent answer. To handle large recordings, many <b>subsets</b> of cells and time are solved in parallel and their kernels combined. This back-and-forth is exactly what you see happening in the convergence panel.',
     },
     // Step 11: Stopping + final inference.
-    // NOTE: The exact stop criterion \u2014 and whether the reported kernel comes from
-    // the stopping iteration or a potentially better earlier iteration \u2014 is still
-    // being finalized (see iteration-manager.ts: best-residual tracking + the
-    // currently-disabled patience early-stop). Keep this description general until
-    // the approach is locked in, then tighten the wording here.
     {
       title: 'How does CaDecon know when to stop?',
       description:
-        'More iterations aren\u2019t always better. Once the kernel and spikes stop changing much from one pass to the next, extra iterations add little \u2014 and the fit can even drift after it has peaked. CaDecon watches how much the kernel changes between iterations and <b>settles once it stabilizes</b>. In practice a good solution usually emerges within just a handful of iterations.<br><br>' +
-        'There is also a maximum-iteration limit, but that is only a <b>safety cap</b> to stop a run that never settles \u2014 it is not how a healthy run should normally end. With a stable kernel in hand, CaDecon runs one <b>final inference across every cell</b>, which is why results appear for all your cells, not just the subsets it learned from.',
+        'More iterations aren\u2019t always better. Once the kernel stops changing much from one pass to the next, extra iterations add little \u2014 and the fit can even drift after it has peaked. Rather than watch the raw time constants (which can trade off against each other), CaDecon judges convergence by the kernel\u2019s <b>shape</b> \u2014 its <b>rise-to-peak time</b> and its <b>width (FWHM)</b>. An iteration counts as <b>stable</b> when both change by less than a small tolerance, and CaDecon declares convergence only after <b>several consecutive stable iterations</b>, so one lucky pass can\u2019t stop it early. In practice a good solution usually emerges within just a handful of iterations.<br><br>' +
+        'To guard against any late drift, the <b>reported kernel is the consensus</b> (the median shape) of the last few iterations, not whatever the final pass happened to produce. You can make the run stop sooner or keep refining with the <b>Convergence Tolerance</b> setting. There is also a maximum-iteration limit, but that is only a <b>safety cap</b> for a run that never settles \u2014 not how a healthy run should normally end. With a stable kernel in hand, CaDecon runs one <b>final inference across every cell</b>, which is why results appear for all your cells, not just the subsets it learned from.',
     },
     // Step 12: Completion
     {

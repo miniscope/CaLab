@@ -67,7 +67,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="kernel-convergence"]',
       title: 'Watching It Converge',
       description:
-        'As the run increases in iterations, these tabbed charts track the learning process: <b>Kernel</b> shape over iterations, plus <b>Alpha</b>, <b>Threshold</b>, <b>PVE</b>, <b>Event Rate</b>, and <b>Spike Eff.</b> trends. A good run shows these settling toward stable values. Don\u2019t judge a fit until the run has converged.',
+        'As the run iterates, these tabbed charts track the learning process. <b>Asymptote</b> (shown first) is the at-a-glance health check \u2014 small charts of the four things that should <b>flatten out</b> as the run settles: kernel shape (peak time &amp; FWHM), kernel-fit quality (R\u00b2), reconstruction quality (PVE), and activity stability. <b>Kernel</b> shows the kernel shape evolving over iterations with the per-subset spread; <b>Distributions</b> shows per-cell histograms once the run finishes. A good run shows the Asymptote curves leveling off \u2014 don\u2019t judge a fit until the run has converged.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
