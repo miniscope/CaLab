@@ -71,16 +71,18 @@
 ///   • No external state: works identically on iteration 1 and iteration N,
 ///     no dependence on warm-start or previous iteration history.
 ///
-/// **TODO**: investigate whether this sequential ceiling is still necessary
-/// now that the fast grid ranges have been tightened (tau_r_fast ≤ 2×dt,
-/// tau_d_fast ≤ min(8×dt, tau_d×0.15), sub-sample floors).  The original
-/// slow/fast mixing problem may have been caused entirely by the fast grid
-/// floors being too high (tau_r_fast ≥ dt, tau_d_fast ≥ 2×dt), which at
-/// low sampling rates left almost no search range and forced wide fast
-/// templates that overlapped heavily with the slow component.  If removing
-/// the ceiling with the current grid ranges does not reintroduce mixing,
-/// the ceiling logic in eval_two_component can be simplified back to a
-/// plain `bs >= bf` gate.
+/// **Design decision — the ceiling is retained.**  The fast grid ranges were
+/// since tightened (tau_r_fast ≤ 2×dt, tau_d_fast ≤ min(8×dt, tau_d×0.15),
+/// sub-sample floors), which addresses the *original* trigger of slow/fast
+/// mixing: fast grid floors that were too high (tau_r_fast ≥ dt,
+/// tau_d_fast ≥ 2×dt) left almost no search range at low sampling rates and
+/// forced wide fast templates overlapping the slow component.  Even so, the
+/// sequential ceiling is kept as defence in depth rather than reverted to a
+/// plain `bs >= bf` gate: it is O(1) (reuses inner products already computed),
+/// self-calibrating (large artifact → generous ceiling), and independent of
+/// the grid — so it still bounds redistribution for any (tau_r, tau_d) the
+/// joint NNLS reaches, including warm-started points outside the cold grid.
+/// The two guards are complementary, and the cost of keeping both is nil.
 
 /// Explicit outcome of a bi-exponential fit, so a degenerate / fallback fit is
 /// reported rather than silently inferred by the caller from `beta_fast == 0`.
@@ -301,6 +303,21 @@ fn refine_candidate(
 /// search and the golden-section refinement so the two stages cannot drift.
 const TAU_D_HI: f64 = 5.0;
 
+/// Fast-component grid bounds. Expressed as multipliers of `dt` (the sample
+/// interval) except `TDF_REL_CAP`, which is relative to the slow `tau_d`.
+///
+/// These are the single source of truth for the fast (noise-artifact) template's
+/// search range: [`cold_grid_search`] uses them to lay down the initial grid, and
+/// [`golden_section_refine`] uses the same values to clamp its narrowing search.
+/// Keeping them here prevents the two stages from drifting apart (an earlier
+/// version let refinement explore `tau_r_fast` down to `0.1 × dt` while the grid
+/// floored at `0.25 × dt`, so refinement searched a region the grid never saw).
+const TRF_LO_FACTOR: f64 = 0.25; // tau_r_fast floor            = 0.25 × dt
+const TRF_HI_FACTOR: f64 = 2.0; // tau_r_fast ceiling          = 2 × dt
+const TDF_LO_FACTOR: f64 = 0.5; // tau_d_fast floor            = 0.5 × dt
+const TDF_HI_FACTOR: f64 = 8.0; // tau_d_fast absolute ceiling = 8 × dt
+const TDF_REL_CAP: f64 = 0.15; // tau_d_fast ≤ tau_d × 0.15 (relative ceiling)
+
 /// Cold-start grid search. Returns (best_slow_only, best_two_component).
 fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResult, BiexpResult) {
     // Slow component grid ranges (in seconds).
@@ -337,21 +354,23 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
     //   - relative cap (tau_d × 0.15) prevents the fast template's decay
     //     from extending into the slow component's domain
     //
-    // TODO: revisit whether these bounds should depend on dt at all, or
-    // whether fixed absolute limits in milliseconds would be more physically
-    // meaningful.  The noise artifact's shape comes from the noise
-    // autocorrelation structure, which has a characteristic timescale
-    // independent of the sampling rate.  dt-relative bounds were chosen
-    // pragmatically (the artifact occupies 1-3 discrete bins), but the
-    // underlying physics may justify fixed ms bounds (e.g. tau_r_fast ≤ 20ms,
-    // tau_d_fast ≤ 60ms) that would behave more consistently across sampling
-    // rates.
+    // Design decision — bounds are dt-relative (not fixed ms).  One could argue
+    // for fixed absolute limits (e.g. tau_r_fast ≤ 20ms) on the grounds that the
+    // noise autocorrelation has a characteristic timescale independent of fs.
+    // We keep dt-relative bounds because the artifact this template absorbs is a
+    // *discretization* artifact: false-positive spikes imprint a feature onto
+    // h_free that occupies a small, fixed number of discrete bins (1-3) around
+    // the kernel's rising edge, so its extent in seconds scales with dt by
+    // construction.  Fixed-ms bounds would, at high fs, span many bins (letting
+    // the fast template poach real slow-kernel structure) and, at low fs, span
+    // less than one bin (making it unrepresentable).  The shared factors above
+    // (TRF_*/TDF_*) are the single knob if this ever needs revisiting.
     let trf_grid_n = 5;
     let tdf_grid_n = 8;
-    let trf_lo = 0.25 * dt;
-    let trf_hi = 2.0 * dt;
-    let tdf_lo = 0.5 * dt;
-    let tdf_abs_hi = 8.0 * dt;
+    let trf_lo = TRF_LO_FACTOR * dt;
+    let trf_hi = TRF_HI_FACTOR * dt;
+    let tdf_lo = TDF_LO_FACTOR * dt;
+    let tdf_abs_hi = TDF_HI_FACTOR * dt;
 
     let mut best_slow = BiexpResult::sentinel();
     let mut best_two = BiexpResult::sentinel();
@@ -388,7 +407,7 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
             // Inner grid: scan independent (tau_r_fast, tau_d_fast)
             // Upper bound for tau_d_fast is the tighter of the absolute cap
             // (8×dt) and a relative cap (tau_d × 0.15) to prevent degeneracy.
-            let tdf_hi = tdf_abs_hi.min(tau_d * 0.15);
+            let tdf_hi = tdf_abs_hi.min(tau_d * TDF_REL_CAP);
             if tdf_hi <= tdf_lo {
                 continue; // tau_d too small for a distinct fast component
             }
@@ -634,9 +653,10 @@ fn golden_section_refine(
                 }
             }
             2 => {
-                // Refine tau_r_fast
-                let lo = (tau_r_fast * 0.5).max(0.1 * dt);
-                let hi = (tau_r_fast * 2.0).min((2.0 * dt).min(tau_d_fast * 0.99));
+                // Refine tau_r_fast — clamped to the same grid bounds so
+                // refinement cannot wander outside the range the grid searched.
+                let lo = (tau_r_fast * 0.5).max(TRF_LO_FACTOR * dt);
+                let hi = (tau_r_fast * 2.0).min((TRF_HI_FACTOR * dt).min(tau_d_fast * 0.99));
                 if lo < hi {
                     tau_r_fast = golden_bracket(lo, hi, |x| {
                         eval_two_component(h_free, tau_r, tau_d, x, tau_d_fast, dt, skip).2
@@ -644,9 +664,12 @@ fn golden_section_refine(
                 }
             }
             _ => {
-                // Refine tau_d_fast
-                let lo = (tau_d_fast * 0.5).max(tau_r_fast * 1.01);
-                let hi = (tau_d_fast * 2.0).min((8.0 * dt).min(tau_d * 0.15));
+                // Refine tau_d_fast — floor clamped to the grid floor and the
+                // ordering constraint; ceiling to the shared absolute/relative caps.
+                let lo = (tau_d_fast * 0.5)
+                    .max(tau_r_fast * 1.01)
+                    .max(TDF_LO_FACTOR * dt);
+                let hi = (tau_d_fast * 2.0).min((TDF_HI_FACTOR * dt).min(tau_d * TDF_REL_CAP));
                 if lo < hi {
                     tau_d_fast = golden_bracket(lo, hi, |x| {
                         eval_two_component(h_free, tau_r, tau_d, tau_r_fast, x, dt, skip).2
@@ -978,7 +1001,7 @@ mod tests {
                     tau_d,
                     fs
                 );
-                let tdf_cap = (8.0 * dt).min(tau_d * 0.15);
+                let tdf_cap = (TDF_HI_FACTOR * dt).min(tau_d * TDF_REL_CAP);
                 assert!(
                     result.tau_decay_fast <= tdf_cap * 1.05,
                     "tau_d_fast ({:.6}) should be ≤ cap ({:.6}) for (tau_r={}, tau_d={}, fs={})",
@@ -1085,7 +1108,7 @@ mod tests {
 
         // If there's a fast component, it should be confined
         if result.tau_decay_fast > 0.0 {
-            let tdf_cap = (8.0 * dt).min(tau_d_true * 0.15);
+            let tdf_cap = (TDF_HI_FACTOR * dt).min(tau_d_true * TDF_REL_CAP);
             assert!(
                 result.tau_decay_fast <= tdf_cap * 1.05,
                 "tau_d_fast ({:.6}s = {:.1} bins) should be ≤ cap ({:.6}s) for large tau_d",

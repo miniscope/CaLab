@@ -233,7 +233,11 @@ pub fn solve_trace(
 
     // Rolling-percentile baseline subtraction: brings the floor to ~0.
     let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
-    crate::baseline::subtract_rolling_baseline(&mut working_trace, bl_window, 0.2);
+    crate::baseline::subtract_rolling_baseline(
+        &mut working_trace,
+        bl_window,
+        crate::baseline::DEFAULT_BASELINE_QUANTILE,
+    );
 
     // ── Step 2: Boundary padding + initial alpha estimate ───────────────
     // Compute boundary padding: edge effects from AR2 convolution make the first

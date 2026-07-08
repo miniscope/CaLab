@@ -9,6 +9,13 @@
 /// Uses a coordinate-compressed Fenwick tree (Binary Indexed Tree) for
 /// O(N log M) sliding-window k-th element queries, where M = distinct values.
 
+/// Default rolling-baseline percentile (quantile of the causal window taken as
+/// the floor estimate). Single source of truth for the callers that subtract a
+/// rolling baseline (`Solver::subtract_baseline` and `indeca::solve_trace`), so
+/// the two paths cannot drift; `subtract_rolling_baseline` still accepts any
+/// quantile for callers that want to override it.
+pub const DEFAULT_BASELINE_QUANTILE: f64 = 0.2;
+
 /// Compute the rolling-baseline window size in samples.
 ///
 /// `5 * kernel_length` where `kernel_length = ceil(5 * tau_d * fs)`,
