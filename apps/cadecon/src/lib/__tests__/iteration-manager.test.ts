@@ -106,6 +106,7 @@ function completeJob(job: DispatchedJob): void {
       tauRiseFast: 0.05,
       tauDecayFast: 0.4,
       betaFast: 1,
+      fitMode: 'TwoComponent',
     });
   } else {
     // seed-trace

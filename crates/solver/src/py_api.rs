@@ -557,7 +557,7 @@ fn py_indeca_fit_biexponential(
     warm_beta_fast: f64,
     warm_residual: f64,
     use_warm: bool,
-) -> PyResult<(f64, f64, f64, f64, f64, f64, f64)> {
+) -> PyResult<(f64, f64, f64, f64, f64, f64, f64, String)> {
     let h_f32 = to_f32_vec(&h_free)?;
 
     let warm_start = if use_warm {
@@ -569,6 +569,8 @@ fn py_indeca_fit_biexponential(
             tau_rise_fast: warm_tau_rise_fast,
             tau_decay_fast: warm_tau_decay_fast,
             beta_fast: warm_beta_fast,
+            // Placeholder; fit_biexponential reclassifies the returned result.
+            fit_mode: biexp_fit::FitMode::default(),
         })
     } else {
         None
@@ -584,6 +586,7 @@ fn py_indeca_fit_biexponential(
         result.tau_rise_fast,
         result.tau_decay_fast,
         result.beta_fast,
+        result.fit_mode.as_str().to_string(),
     ))
 }
 

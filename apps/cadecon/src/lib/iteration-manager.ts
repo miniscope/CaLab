@@ -533,6 +533,8 @@ export async function startRun(): Promise<void> {
       kernelFitR2: null,
       medianPve: null,
       traceStability: null,
+      degenerateSubsets: 0,
+      totalSubsetFits: 0,
       subsets: [],
     });
     const initEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
@@ -787,6 +789,13 @@ export async function startRun(): Promise<void> {
       if (hh > 0) r2s.push(1 - r.residual / hh);
     }
     const kernelFitR2 = r2s.length > 0 ? median(r2s) : null;
+
+    // Defensibility: count subsets whose bi-exponential fit was untrustworthy
+    // (no positive slow amplitude) or empty, so the UI can flag a suspect kernel.
+    const degenerateSubsets = kernelResults.filter(
+      (r) => r.fitMode === 'Degenerate' || r.fitMode === 'Empty',
+    ).length;
+
     batch(() => {
       setCurrentTauRise(tauR);
       setCurrentTauDecay(tauD);
@@ -807,6 +816,8 @@ export async function startRun(): Promise<void> {
         kernelFitR2,
         medianPve,
         traceStability,
+        degenerateSubsets,
+        totalSubsetFits: kernelResults.length,
         subsets: kernelResults.map((r) => ({
           subsetIdx: r.subsetIdx,
           tauRise: r.tauRise,

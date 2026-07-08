@@ -43,6 +43,10 @@ export interface KernelSnapshot {
   medianPve: number | null;
   /** Median normalized change in deconvolved activity vs the previous iteration (→ 0 as it stabilizes). */
   traceStability: number | null;
+  /** Count of subsets whose bi-exp fit was Degenerate/Empty this iteration (untrustworthy kernel). */
+  degenerateSubsets: number;
+  /** Total subset fits this iteration (denominator for degenerateSubsets). */
+  totalSubsetFits: number;
   subsets: SubsetKernelSnapshot[];
 }
 

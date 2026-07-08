@@ -8,7 +8,7 @@ import {
   indeca_fit_biexponential,
   seed_trace,
 } from '@calab/core';
-import type { CaDeconWorkerInbound, CaDeconWorkerOutbound } from './cadecon-types.ts';
+import type { CaDeconWorkerInbound, CaDeconWorkerOutbound, FitMode } from './cadecon-types.ts';
 
 let cancelled = false;
 const EMPTY_F32 = new Float32Array(0);
@@ -129,6 +129,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
       tau_rise_fast: number;
       tau_decay_fast: number;
       beta_fast: number;
+      fit_mode: string;
     };
 
     post(
@@ -144,6 +145,7 @@ function handleKernelJob(req: Extract<CaDeconWorkerInbound, { type: 'kernel-job'
           tauRiseFast: biexpJs.tau_rise_fast,
           tauDecayFast: biexpJs.tau_decay_fast,
           betaFast: biexpJs.beta_fast,
+          fitMode: biexpJs.fit_mode as FitMode,
         },
       },
       [hFreeArr.buffer],

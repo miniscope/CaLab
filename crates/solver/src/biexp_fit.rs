@@ -82,6 +82,37 @@
 /// the ceiling logic in eval_two_component can be simplified back to a
 /// plain `bs >= bf` gate.
 
+/// Explicit outcome of a bi-exponential fit, so a degenerate / fallback fit is
+/// reported rather than silently inferred by the caller from `beta_fast == 0`.
+///
+/// Serializes to its variant name ("TwoComponent", ...) for the JS/Python FFI.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
+pub enum FitMode {
+    /// Slow + fast bi-exponential — a distinct fast component was resolved.
+    TwoComponent,
+    /// Single (slow-only) bi-exponential — no fast component (the default fit).
+    #[default]
+    SlowOnly,
+    /// A fit was produced but has no positive slow amplitude (beta <= 0):
+    /// the free kernel had no real transient (noise/flat) — result is untrustworthy.
+    Degenerate,
+    /// No fit could be produced (empty input): sentinel defaults, residual = inf.
+    Empty,
+}
+
+impl FitMode {
+    /// Stable string form for the PyO3 tuple return.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FitMode::TwoComponent => "TwoComponent",
+            FitMode::SlowOnly => "SlowOnly",
+            FitMode::Degenerate => "Degenerate",
+            FitMode::Empty => "Empty",
+        }
+    }
+}
+
 #[derive(Clone)]
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct BiexpResult {
@@ -92,6 +123,9 @@ pub struct BiexpResult {
     pub tau_rise_fast: f64,
     pub tau_decay_fast: f64,
     pub beta_fast: f64,
+    /// Outcome classification; authoritative only on the value returned by
+    /// `fit_biexponential` (intermediate candidates carry a placeholder).
+    pub fit_mode: FitMode,
 }
 
 impl BiexpResult {
@@ -104,12 +138,29 @@ impl BiexpResult {
             tau_rise_fast: 0.0,
             tau_decay_fast: 0.0,
             beta_fast: 0.0,
+            fit_mode: FitMode::Empty,
         }
     }
 
     /// Returns true if the fit includes a fast component.
     pub fn has_fast_component(&self) -> bool {
         self.tau_rise_fast > 0.0 && self.tau_decay_fast > self.tau_rise_fast
+    }
+
+    /// Classify the fit outcome from the fitted parameters. Called once on the
+    /// final result so the reported mode reflects what was actually selected.
+    fn classify(&self) -> FitMode {
+        if !self.residual.is_finite() {
+            return FitMode::Empty;
+        }
+        if self.beta <= 0.0 {
+            return FitMode::Degenerate;
+        }
+        if self.has_fast_component() && self.beta_fast > 0.0 {
+            FitMode::TwoComponent
+        } else {
+            FitMode::SlowOnly
+        }
     }
 }
 
@@ -209,6 +260,7 @@ pub fn fit_biexponential(
         best.residual = full_residual;
     }
 
+    best.fit_mode = best.classify();
     best
 }
 
@@ -240,6 +292,7 @@ fn refine_candidate(
             tau_rise_fast: refined_trf,
             tau_decay_fast: refined_tdf,
             beta_fast: beta_f,
+            fit_mode: candidate.fit_mode,
         };
     }
 }
@@ -328,6 +381,7 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
                     tau_rise_fast: 0.0,
                     tau_decay_fast: 0.0,
                     beta_fast: 0.0,
+                    fit_mode: FitMode::SlowOnly,
                 };
             }
 
@@ -365,6 +419,7 @@ fn cold_grid_search(h_free: &[f32], fs: f64, dt: f64, skip: usize) -> (BiexpResu
                             tau_rise_fast: tau_r_fast,
                             tau_decay_fast: tau_d_fast,
                             beta_fast: beta_f,
+                            fit_mode: FitMode::TwoComponent,
                         };
                     }
                 }
@@ -607,6 +662,32 @@ fn golden_section_refine(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_mode_empty_on_empty_input() {
+        let r = fit_biexponential(&[], 30.0, false, 0, None);
+        assert_eq!(r.fit_mode, FitMode::Empty);
+    }
+
+    #[test]
+    fn fit_mode_degenerate_on_flat_kernel() {
+        // A flat (no-transient) kernel has no positive slow amplitude.
+        let flat = vec![0.0_f32; 100];
+        let r = fit_biexponential(&flat, 30.0, true, 0, None);
+        assert_eq!(r.fit_mode, FitMode::Degenerate);
+    }
+
+    #[test]
+    fn fit_mode_real_kernel_is_not_degenerate() {
+        let kernel = make_biexp(0.02, 0.4, 1.0, 30.0, 200);
+        let r = fit_biexponential(&kernel, 30.0, true, 0, None);
+        assert!(
+            matches!(r.fit_mode, FitMode::SlowOnly | FitMode::TwoComponent),
+            "clean biexp kernel should fit to a usable mode, got {:?}",
+            r.fit_mode
+        );
+        assert!(r.beta > 0.0);
+    }
 
     /// Generate a bi-exponential kernel with known parameters.
     fn make_biexp(tau_r: f64, tau_d: f64, beta: f64, fs: f64, n: usize) -> Vec<f32> {

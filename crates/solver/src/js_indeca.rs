@@ -149,6 +149,8 @@ pub fn indeca_fit_biexponential(
             tau_rise_fast: warm_tau_rise_fast,
             tau_decay_fast: warm_tau_decay_fast,
             beta_fast: warm_beta_fast,
+            // Placeholder; fit_biexponential reclassifies the returned result.
+            fit_mode: biexp_fit::FitMode::default(),
         })
     } else {
         None

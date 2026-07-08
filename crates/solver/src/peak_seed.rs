@@ -282,6 +282,7 @@ pub fn seed_kernel_estimate(
         tau_rise_fast,
         tau_decay_fast,
         beta_fast,
+        fit_mode: _,
     } = fit_biexponential(&free_kernel, fs, true, 0, None);
 
     SeedKernelResult {
