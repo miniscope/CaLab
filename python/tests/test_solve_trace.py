@@ -182,9 +182,10 @@ class TestFitBiexponential:
         fs = 30.0
         t = np.arange(50) / fs
         h = np.exp(-t / 0.4) - np.exp(-t / 0.02)
-        tau_r, tau_d, beta, residual, tau_rf, tau_df, beta_f = fit_biexponential(h, fs)
+        tau_r, tau_d, beta, residual, tau_rf, tau_df, beta_f, fit_mode = fit_biexponential(h, fs)
         assert isinstance(tau_r, float)
         assert isinstance(residual, float)
+        assert isinstance(fit_mode, str)
 
 
 # ---------------------------------------------------------------------------
