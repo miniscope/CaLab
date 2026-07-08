@@ -36,6 +36,12 @@
 }
 
 /* Ground truth stat styling (pink) */
+.kernel-display__warning {
+  color: #d55e00; /* Okabe-Ito vermillion — matches the colorblind-safe palette */
+  font-weight: 600;
+  cursor: help;
+}
+
 .kernel-display__gt-stat {
   color: rgba(233, 30, 99, 0.8);
 }

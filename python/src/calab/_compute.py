@@ -326,6 +326,10 @@ class BiexpFitResult(NamedTuple):
         Fast-component decay time constant (seconds), 0 if single-component.
     beta_fast : float
         Fast-component amplitude, 0 if single-component.
+    fit_mode : str
+        Outcome of the fit: ``"TwoComponent"``, ``"SlowOnly"``, ``"Degenerate"``
+        (a fit was produced but has no positive slow amplitude — the kernel had
+        no real transient), or ``"Empty"`` (no fit; empty input).
     """
 
     tau_rise: float
@@ -335,6 +339,7 @@ class BiexpFitResult(NamedTuple):
     tau_rise_fast: float
     tau_decay_fast: float
     beta_fast: float
+    fit_mode: str = "SlowOnly"
 
 
 def solve_trace(

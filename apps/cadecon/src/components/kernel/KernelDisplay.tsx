@@ -95,6 +95,17 @@ export function KernelDisplay(): JSX.Element {
     return (energyFast / total) * 100;
   });
 
+  // How many subset kernel fits at this iteration were degenerate/empty
+  // (no usable bi-exponential). A nonzero count means the displayed kernel is
+  // built from at least one untrustworthy subset fit.
+  const degenerateFits = createMemo(() => {
+    const snap = snapshot();
+    if (!snap || snap.totalSubsetFits === 0) return null;
+    return snap.degenerateSubsets > 0
+      ? { bad: snap.degenerateSubsets, total: snap.totalSubsetFits }
+      : null;
+  });
+
   const gtShape = createMemo(() => {
     const tauR = groundTruthTauRise();
     const tauD = groundTruthTauDecay();
@@ -272,6 +283,16 @@ export function KernelDisplay(): JSX.Element {
             <span>
               Fast: <strong>{fastRatio()!.toFixed(0)}%</strong>
             </span>
+          </Show>
+          <Show when={degenerateFits()} keyed>
+            {(info) => (
+              <span
+                class="kernel-display__warning"
+                title="Subset fits with no usable bi-exponential (degenerate/empty); the displayed kernel is less reliable."
+              >
+                ⚠ {info.bad}/{info.total} fits degenerate
+              </span>
+            )}
           </Show>
           <Show when={showGroundTruth() && gtShape()} keyed>
             {(shape) => (

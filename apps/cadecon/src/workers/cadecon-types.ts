@@ -20,6 +20,9 @@ export interface SeedTraceResult {
 }
 
 /** Results from kernel estimation + bi-exponential fitting. */
+/** Outcome of the bi-exponential fit; mirrors the Rust FitMode enum. */
+export type FitMode = 'TwoComponent' | 'SlowOnly' | 'Degenerate' | 'Empty';
+
 export interface KernelResult {
   hFree: Float32Array;
   tauRise: number;
@@ -29,10 +32,11 @@ export interface KernelResult {
   tauRiseFast: number;
   tauDecayFast: number;
   betaFast: number;
+  fitMode: FitMode;
 }
 
-/** Previous biexponential result for warm-starting the next fit. */
-export type WarmBiexp = Omit<KernelResult, 'hFree'>;
+/** Previous biexponential result for warm-starting the next fit (fit_mode not needed). */
+export type WarmBiexp = Omit<KernelResult, 'hFree' | 'fitMode'>;
 
 /** Messages sent TO a CaDecon worker. */
 export type CaDeconWorkerInbound =
