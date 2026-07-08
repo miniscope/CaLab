@@ -44,6 +44,7 @@ import './styles/layout.css';
 import './styles/trace-inspector.css';
 import './styles/iteration-scrubber.css';
 import './styles/kernel-display.css';
+import './styles/distributions.css';
 import './styles/community.css';
 
 function DiceIcon(): JSX.Element {
