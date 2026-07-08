@@ -6,7 +6,7 @@ import { samplingRate } from './data-store.ts';
 
 const [upsampleTarget, setUpsampleTarget] = createSignal(300);
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
-const [lpFilterEnabled, setLpFilterEnabled] = createSignal(false);
+const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
 const [maxIterations, setMaxIterations] = createSignal(20);
 
 // Convergence is tested in kernel SHAPE space (peak time + FWHM). convergenceTol
