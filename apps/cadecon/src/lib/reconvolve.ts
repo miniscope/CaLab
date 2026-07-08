@@ -1,7 +1,11 @@
 /**
  * Reconvolve a spike train through the peak-normalized AR2 forward model.
- * Mirrors the Rust BandedAR2 convolution: c[t] = g1*c[t-1] + g2*c[t-2] + s[t],
+ * Mirrors the Rust BandedAR2 convolution: c[t] = g1*c[t-1] + g2*c[t-2] + s[t-1],
  * then normalize by impulse peak so recon = alpha * (c / peak) + baseline.
+ *
+ * Note the one-sample source delay (s[t-1], not s[t]): it makes the impulse
+ * response identical to build_kernel (c[0] = 0, spike rises the sample after),
+ * matching the Rust forward model and the displayed kernel. See banded.rs.
  */
 
 import { computeAR2 } from '@calab/core';
@@ -33,7 +37,9 @@ export function reconvolveAR2(
   const reconvolved = new Float32Array(n);
   const c = new Float64Array(n);
   for (let t = 0; t < n; t++) {
-    c[t] = sCounts[t] + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
+    // Delayed source (s[t-1]) so c[0] = 0 and the response matches build_kernel.
+    c[t] =
+      (t >= 1 ? sCounts[t - 1] : 0) + (t >= 1 ? g1 * c[t - 1] : 0) + (t >= 2 ? g2 * c[t - 2] : 0);
     reconvolved[t] = alpha * (c[t] / impPeak) + baseline;
   }
   return reconvolved;
