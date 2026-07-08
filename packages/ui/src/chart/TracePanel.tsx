@@ -8,7 +8,8 @@ import { SolidUplot } from '@dschz/solid-uplot';
 import type uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import './chart-theme.css';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK } from './index.ts';
+import { wheelZoomPlugin } from './index.ts';
+import { chartAxis, hiddenTickValues } from './axis-helpers.ts';
 
 export interface TracePanelProps {
   /** uPlot AlignedData format: [x, y1, y2, ...] -- signal accessor for reactivity */
@@ -64,28 +65,17 @@ export function TracePanel(props: TracePanelProps) {
   // recreating the chart on every data update. `props.xLabel` is read at
   // mount; callers never swap it mid-chart-life.
   /* eslint-disable solid/reactivity */
-  const xAxis: uPlot.Axis = {
-    stroke: AXIS_TEXT,
-    grid: { stroke: AXIS_GRID },
-    ticks: { stroke: AXIS_TICK },
+  const xAxis: uPlot.Axis = chartAxis({
     values: formatTimeValues,
     ...(props.xLabel
       ? { label: props.xLabel, labelSize: 10, labelGap: 0, labelFont: '10px sans-serif', size: 30 }
       : {}),
-  };
+  });
   /* eslint-enable solid/reactivity */
 
-  const yAxisBase: uPlot.Axis = {
-    stroke: AXIS_TEXT,
-    grid: { stroke: AXIS_GRID },
-    ticks: { stroke: AXIS_TICK },
-  };
+  const yAxisBase: uPlot.Axis = chartAxis();
 
-  const yAxisHidden: uPlot.Axis = {
-    ...yAxisBase,
-    values: (_u: uPlot, vals: number[]) => vals.map(() => ''),
-    size: 20,
-  };
+  const yAxisHidden: uPlot.Axis = chartAxis({ values: hiddenTickValues, size: 20 });
 
   const yAxis = () => (props.hideYValues ? yAxisHidden : yAxisBase);
 

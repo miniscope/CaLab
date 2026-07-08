@@ -20,9 +20,9 @@ import {
 import { tauToShape } from '@calab/compute';
 import {
   wheelZoomPlugin,
-  AXIS_TEXT,
-  AXIS_GRID,
-  AXIS_TICK,
+  labeledAxis,
+  integerTickValues,
+  syncCursor,
   METRIC_COLORS,
   withOpacity,
 } from '@calab/ui/chart';
@@ -287,24 +287,8 @@ export function KernelConvergence(): JSX.Element {
   };
 
   const axes: uPlot.Axis[] = [
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      label: 'Iteration',
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-      values: (_u: uPlot, splits: number[]) =>
-        splits.map((v) => (Number.isInteger(v) ? String(v) : '')),
-    },
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      label: 'ms',
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-    },
+    labeledAxis('Iteration', { values: integerTickValues }),
+    labeledAxis('ms'),
   ];
 
   const plugins = [
@@ -315,9 +299,7 @@ export function KernelConvergence(): JSX.Element {
     wheelZoomPlugin(),
   ];
 
-  const cursor: uPlot.Cursor = {
-    sync: { key: 'cadecon-convergence', setSeries: true },
-  };
+  const cursor = syncCursor('cadecon-convergence');
 
   return (
     <Show

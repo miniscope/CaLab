@@ -21,7 +21,15 @@ import {
   type KernelSnapshot,
 } from '../../lib/iteration-store.ts';
 import { viewedIteration } from '../../lib/viz-store.ts';
-import { wheelZoomPlugin, AXIS_TEXT, AXIS_GRID, AXIS_TICK, METRIC_COLORS } from '@calab/ui/chart';
+import {
+  wheelZoomPlugin,
+  chartAxis,
+  labeledAxis,
+  integerTickValues,
+  syncCursor,
+  safeRange,
+  METRIC_COLORS,
+} from '@calab/ui/chart';
 import { convergenceMarkerPlugin } from '../../lib/chart/convergence-marker-plugin.ts';
 import { viewedIterationPlugin } from '../../lib/chart/viewed-iteration-plugin.ts';
 
@@ -73,23 +81,11 @@ const PANELS: PanelDef[] = [
   },
 ];
 
-/** Y range that never degenerates: uPlot throws in drawAxesGrid on a zero span. */
-function yRange(_u: uPlot, dataMin: number, dataMax: number): [number, number] {
-  if (dataMin == null || dataMax == null || !isFinite(dataMin) || !isFinite(dataMax)) return [0, 1];
-  if (dataMin === dataMax) {
-    const pad = Math.abs(dataMin) * 0.05 || 0.5;
-    return [dataMin - pad, dataMax + pad];
-  }
-  const pad = (dataMax - dataMin) * 0.1;
-  return [dataMin - pad, dataMax + pad];
-}
-
-/** X range = exact iteration extent; pad only the single-point case (also avoids a zero span). */
-function xRange(_u: uPlot, dataMin: number, dataMax: number): [number, number] {
-  if (dataMin == null || dataMax == null || !isFinite(dataMin) || !isFinite(dataMax)) return [0, 1];
-  if (dataMin === dataMax) return [dataMin - 0.5, dataMax + 0.5];
-  return [dataMin, dataMax];
-}
+// Degenerate-span guards (uPlot throws in drawAxesGrid on a zero span). Y pads
+// 10%; X uses the exact iteration extent (the createEffect below drives the
+// real x-scale — these are the fallbacks).
+const yRange = safeRange(0.1);
+const xRange = safeRange(0);
 
 /** One compact trend chart; reads convergence history reactively. */
 function MiniTrend(props: { panel: PanelDef }): JSX.Element {
@@ -158,22 +154,8 @@ function MiniTrend(props: { panel: PanelDef }): JSX.Element {
   ];
 
   const axes: uPlot.Axis[] = [
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      size: 24,
-      values: (_u, splits) => (splits ?? []).map((v) => (Number.isInteger(v) ? String(v) : '')),
-    },
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      label: props.panel.unit,
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-      size: 38,
-    },
+    chartAxis({ size: 24, values: integerTickValues }),
+    labeledAxis(props.panel.unit, { size: 38 }),
   ];
 
   const plugins = [
@@ -182,7 +164,7 @@ function MiniTrend(props: { panel: PanelDef }): JSX.Element {
     wheelZoomPlugin(),
   ];
 
-  const cursor: uPlot.Cursor = { sync: { key: 'cadecon-asymptote', setSeries: true } };
+  const cursor = syncCursor('cadecon-asymptote');
 
   return (
     <div class="asymptote-cell">

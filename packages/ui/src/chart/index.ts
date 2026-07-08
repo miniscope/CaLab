@@ -6,6 +6,15 @@ export { AXIS_TEXT, AXIS_GRID, AXIS_TICK, getThemeColors } from './theme-colors.
 export { VIRIDIS_LUT, viridisRGB, viridisCss } from './colormap.ts';
 export { niceTicks } from './chart-math.ts';
 export {
+  chartAxis,
+  labeledAxis,
+  integerTickValues,
+  hiddenTickValues,
+  syncCursor,
+  staticCursor,
+  safeRange,
+} from './axis-helpers.ts';
+export {
   OKABE_ITO,
   OKABE_ITO_CYCLE,
   NEUTRAL,

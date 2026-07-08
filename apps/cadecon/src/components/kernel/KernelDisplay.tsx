@@ -37,9 +37,9 @@ import {
   GROUND_TRUTH_COLORS,
   withOpacity,
   wheelZoomPlugin,
-  AXIS_TEXT,
-  AXIS_GRID,
-  AXIS_TICK,
+  chartAxis,
+  labeledAxis,
+  syncCursor,
   kernelAnnotationsPlugin,
   type KernelAnnotations,
 } from '@calab/ui/chart';
@@ -230,28 +230,14 @@ export function KernelDisplay(): JSX.Element {
     return s;
   });
 
-  const axes: uPlot.Axis[] = [
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-      label: 'Time (ms)',
-      labelSize: 10,
-      labelFont: '10px sans-serif',
-    },
-    {
-      stroke: AXIS_TEXT,
-      grid: { stroke: AXIS_GRID },
-      ticks: { stroke: AXIS_TICK },
-    },
-  ];
+  const axes: uPlot.Axis[] = [labeledAxis('Time (ms)'), chartAxis()];
 
   const scales: uPlot.Scales = { x: { time: false } };
   const plugins = createMemo(() => [
     wheelZoomPlugin(),
     kernelAnnotationsPlugin(() => annotations()),
   ]);
-  const cursor: uPlot.Cursor = { sync: { key: 'cadecon-kernel', setSeries: true } };
+  const cursor = syncCursor('cadecon-kernel');
 
   const tauRMs = () => formatTauMs(currentTauRise());
   const tauDMs = () => formatTauMs(currentTauDecay());
