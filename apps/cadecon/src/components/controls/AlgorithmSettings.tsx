@@ -48,7 +48,7 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ParameterSlider
-          label="Convergence Tol (peak/FWHM)"
+          label="Convergence Tol"
           value={convergenceTol}
           setValue={setConvergenceTol}
           min={CONVERGENCE_RANGES.convergenceTol.min}
@@ -60,7 +60,7 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ParameterSlider
-          label="Convergence Patience"
+          label="Patience"
           value={convergencePatience}
           setValue={(v) => setConvergencePatience(Math.round(v))}
           min={CONVERGENCE_RANGES.convergencePatience.min}
