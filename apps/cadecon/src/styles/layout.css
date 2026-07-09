@@ -1,3 +1,12 @@
+/* Controls sidebar: keep each panel at its natural height and let the sidebar
+   scroll, instead of letting flexbox compress the panels together when the
+   viewport is short or the browser text size is large. Without this, the flex
+   column shrinks every panel (default flex-shrink: 1), squishing and overlapping
+   their contents even though a scrollbar is present. */
+.viz-layout__sidebar > * {
+  flex-shrink: 0;
+}
+
 /* 2-column, 2-row resizable visualization grid */
 
 .viz-grid {

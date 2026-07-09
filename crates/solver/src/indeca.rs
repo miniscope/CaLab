@@ -13,11 +13,133 @@
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
-use crate::threshold::{threshold_search, ThresholdResult};
+use crate::threshold::{threshold_search_opts, Selection, ThresholdResult};
 use crate::upsample::{
-    downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
+    collapse_runs, downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
 use crate::{Constraint, ConvMode, Solver};
+use realfft::RealFftPlanner;
+
+/// Optional spike-inference behaviors, off by default (current shipping path).
+///
+/// Both target the ~2× spike overcount without changing the default output:
+/// `noise_constrained` chooses the binarization threshold at the noise floor
+/// instead of maximizing fit (suppresses low-SNR spurious events), and
+/// `collapse_runs` collapses each smeared bump to one event before the
+/// bin-summing downsample (removes the run-length count inflation).
+#[derive(Clone, Copy, Default)]
+pub struct SolveOptions {
+    pub noise_constrained: bool,
+    pub collapse_runs: bool,
+}
+
+/// Raw measurement-noise std from the high-frequency band of the periodogram
+/// (standard OASIS / CaImAn approach). Calcium signal energy sits at low
+/// frequencies; averaging power in the top half of the spectrum (≈[0.25,0.5]·fs)
+/// isolates the white-noise floor and is unaffected by how busy the trace is
+/// (unlike MAD-of-differences, which transient onsets inflate). Runs on the
+/// UNFILTERED trace, so it is immune to any HP/LP applied downstream.
+///
+/// For a plain periodogram P_k = |X_k|²/N with an unnormalized DFT, white noise
+/// of variance σ² has E[P_k] = σ², so σ² = mean of P_k over the high band.
+pub fn high_band_sigma(raw_trace: &[f32]) -> f64 {
+    let n = raw_trace.len();
+    if n < 8 {
+        return 0.0;
+    }
+    let mean = raw_trace.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    let mut input: Vec<f32> = raw_trace.iter().map(|&v| v - mean as f32).collect();
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let r2c = planner.plan_fft_forward(n);
+    let mut spectrum = r2c.make_output_vec();
+    if r2c.process(&mut input, &mut spectrum).is_err() {
+        return 0.0;
+    }
+
+    let nyq = spectrum.len(); // n/2 + 1
+    let lo = nyq / 2;
+    let mut acc = 0.0_f64;
+    let mut cnt = 0usize;
+    for c in &spectrum[lo..nyq] {
+        acc += (c.re as f64 * c.re as f64 + c.im as f64 * c.im as f64) / n as f64;
+        cnt += 1;
+    }
+    if cnt == 0 {
+        return 0.0;
+    }
+    (acc / cnt as f64).max(0.0).sqrt()
+}
+
+fn variance(x: &[f32]) -> f64 {
+    let n = x.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    x.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n as f64
+}
+
+/// Per-sample noise std of the FILTERED trace at original-grid positions — the
+/// quantity the residual budget needs. Estimates the raw noise std from the
+/// unfiltered trace (LP-immune) and scales by the empirically-measured
+/// noise-variance gain of the actual upsample→HP/LP chain: a deterministic
+/// white probe is pushed through the same path and its grid-sample variance
+/// ratio gives the gain. This makes the budget track whatever noise survives
+/// the filters, regardless of where the (kernel-derived) LP cutoff falls.
+/// (The rolling-baseline subtraction is a mild high-pass and is not replicated
+/// in the probe; its effect on noise variance is negligible.)
+fn estimate_grid_noise_sigma(
+    raw_trace: &[f32],
+    upsample_factor: usize,
+    tau_r: f64,
+    tau_d: f64,
+    fs_up: f64,
+    hp: bool,
+    lp: bool,
+) -> f64 {
+    let sigma_raw = high_band_sigma(raw_trace);
+    if sigma_raw <= 0.0 {
+        return 0.0;
+    }
+    // No filtering: grid samples equal the raw samples, so gain is 1.
+    if !hp && !lp {
+        return sigma_raw;
+    }
+
+    // Deterministic unit-ish white probe (LCG); absolute scale cancels in the ratio.
+    let n = raw_trace.len();
+    let mut probe = vec![0.0_f32; n];
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    for v in probe.iter_mut() {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *v = (((state >> 33) as f64) / ((1u64 << 31) as f64) - 1.0) as f32;
+    }
+
+    let up = upsample_trace(&probe, upsample_factor);
+    let mut solver = Solver::new();
+    solver.set_conv_mode(ConvMode::BandedAR2);
+    solver.set_params(tau_r, tau_d, 0.0, fs_up);
+    solver.set_trace(&up);
+    solver.set_hp_filter_enabled(hp);
+    solver.set_lp_filter_enabled(lp);
+    solver.apply_filter();
+    let filt = solver.get_trace();
+
+    let grid: Vec<f32> = filt
+        .iter()
+        .step_by(upsample_factor.max(1))
+        .copied()
+        .collect();
+    let var_probe = variance(&probe);
+    if var_probe <= 0.0 {
+        return sigma_raw;
+    }
+    let gain = (variance(&grid) / var_probe).max(0.0);
+    sigma_raw * gain.sqrt()
+}
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct InDecaResult {
@@ -195,6 +317,7 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
 /// used as FISTA warm-start, which typically reduces iterations by 30-60%.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_trace(
     trace: &[f32],
     tau_r: f64,
@@ -207,6 +330,39 @@ pub fn solve_trace(
     hp_enabled: bool,
     lp_enabled: bool,
     lambda: f64,
+) -> InDecaResult {
+    solve_trace_opts(
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm_counts,
+        hp_enabled,
+        lp_enabled,
+        lambda,
+        SolveOptions::default(),
+    )
+}
+
+/// See [`solve_trace`]; adds optional [`SolveOptions`] for the count-debiasing
+/// experiments (noise-constrained threshold selection and run collapse).
+#[allow(clippy::too_many_arguments)]
+pub fn solve_trace_opts(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_counts: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    opts: SolveOptions,
 ) -> InDecaResult {
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
@@ -256,6 +412,26 @@ pub fn solve_trace(
     let warm_binary = warm_counts.map(|counts| upsample_counts_to_binary(counts, upsample_factor));
 
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
+
+    // Noise-constrained threshold selection needs the per-sample noise std of the
+    // filtered trace at the original grid. Estimated LP-cutoff-agnostically from
+    // the raw trace's high band scaled by the filter chain's measured noise gain.
+    // Fully data-derived — no knob.
+    let selection = if opts.noise_constrained {
+        Selection::NoiseFloor {
+            sigma: estimate_grid_noise_sigma(
+                trace,
+                upsample_factor,
+                tau_r,
+                tau_d,
+                fs_up,
+                hp_enabled,
+                lp_enabled,
+            ),
+        }
+    } else {
+        Selection::MaxPve
+    };
 
     // ── Step 3: Scale iteration loop ────────────────────────────────────
     // Each round: prescale by alpha_est → Box[0,1] FISTA → threshold search
@@ -325,7 +501,7 @@ pub fn solve_trace(
             threshold,
             pve,
             ..
-        } = threshold_search(
+        } = threshold_search_opts(
             s_norm_slice,
             &working_trace,
             &banded,
@@ -333,6 +509,7 @@ pub fn solve_trace(
             fs_up,
             upsample_factor,
             f64::INFINITY,
+            selection,
         );
 
         // Track the best result by PVE.
@@ -368,6 +545,14 @@ pub fn solve_trace(
             // Fallback: no valid result found (shouldn't happen)
             (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
         });
+
+    // Optionally collapse each smeared bump to a single event before summing,
+    // so the bin-sum reports events rather than run length.
+    let s_binary = if opts.collapse_runs {
+        collapse_runs(&s_binary)
+    } else {
+        s_binary
+    };
 
     // Downsample binary spike train to original rate using centered bins
     let s_counts = downsample_binary(&s_binary, upsample_factor);

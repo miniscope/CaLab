@@ -53,9 +53,11 @@ import {
   setShowGTCalcium,
   showGTSpikes,
   setShowGTSpikes,
+  showSparsityCompare,
+  setShowSparsityCompare,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { upsampleFactor } from '../../lib/algorithm-store.ts';
+import { upsampleFactor, noiseConstrained } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createGroundTruthCalciumSeries,
@@ -72,6 +74,8 @@ const RESID_GAP_FRAC = 0.05;
 const RESID_SCALE = 0.25;
 const TRANSIENT_TAU_MULTIPLIER = 2;
 const TRACE_INSPECTOR_ZOOM_WINDOW_S = 60;
+// Distinct dashed color for the sparsity-comparison overlay (the OPPOSITE setting).
+const COMPARE_COLOR = '#e040fb';
 
 interface BandLayout {
   deconvTop: number;
@@ -211,6 +215,18 @@ export function TraceInspector(): JSX.Element {
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
 
+  // Sparsity-comparison overlay: the opposite-setting spike counts, precomputed
+  // per iteration during the run (when the comparison option is enabled) and
+  // stored on the result. Read-only here — no solving on the browse path.
+  const comparisonDeconv = createMemo(
+    (): Float32Array | null => effectiveResult()?.comparisonSCounts ?? null,
+  );
+  const hasComparison = createMemo(() => comparisonDeconv() != null);
+
+  // Labels for the two deconv traces, by their actual setting.
+  const deconvLabel = () => (noiseConstrained() ? 'Deconv (noise-constr.)' : 'Deconv (standard)');
+  const compareLabel = () => (noiseConstrained() ? 'Deconv (standard)' : 'Deconv (noise-constr.)');
+
   // Zoom window state
   const totalDuration = createMemo(() => {
     const raw = fullRawTrace();
@@ -311,7 +327,7 @@ export function TraceInspector(): JSX.Element {
     });
   };
 
-  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], [], [], []];
+  const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], [], [], [], []];
   const DOWNSAMPLE_BUCKETS = 600;
 
   const zoomData = createMemo<[number[], ...number[][]]>(() => {
@@ -378,6 +394,17 @@ export function TraceInspector(): JSX.Element {
       dsDeconv = new Array(dsX.length).fill(null) as number[];
     }
 
+    // Sparsity comparison — opposite-setting deconv, same deconv band
+    const comp = comparisonDeconv();
+    let dsCompare: number[];
+    if (comp && comp.length >= endSample) {
+      const compSlice = comp.subarray(startSample, endSample);
+      const [, dsCompRaw] = downsampleMinMax(x, compSlice, DOWNSAMPLE_BUCKETS);
+      dsCompare = scaleToDeconvBand(dsCompRaw, rawMin, rawMax);
+    } else {
+      dsCompare = new Array(dsX.length).fill(null) as number[];
+    }
+
     // Residual — compute against the working trace (what the solver actually fit)
     const residSource = isFiltered ? (dsFiltered as number[]) : dsRaw;
     const dsResid = computeResiduals(residSource, dsFit, rawMin, rawMax, dsX.length);
@@ -409,6 +436,7 @@ export function TraceInspector(): JSX.Element {
       dsResid,
       dsGTCalcium,
       dsGTSpikes,
+      dsCompare,
     ];
   });
 
@@ -424,10 +452,17 @@ export function TraceInspector(): JSX.Element {
       { label: 'Raw', stroke: TRACE_COLORS.raw, width: 1, show: showRaw() },
       { label: 'Filtered', stroke: TRACE_COLORS.filtered, width: 1.5, show: showFiltered() },
       { label: 'Fit', stroke: TRACE_COLORS.fit, width: 1.5, show: showFit() },
-      { label: 'Deconv', stroke: TRACE_COLORS.deconv, width: 1, show: showDeconv() },
+      { label: deconvLabel(), stroke: TRACE_COLORS.deconv, width: 1, show: showDeconv() },
       { label: 'Residual', stroke: TRACE_COLORS.resid, width: 1, show: showResidual() },
       gtCaSeries,
       gtSpkSeries,
+      {
+        label: compareLabel(),
+        stroke: COMPARE_COLOR,
+        width: 1,
+        dash: [4, 3],
+        show: showSparsityCompare() && hasComparison(),
+      },
     ];
   });
 
@@ -458,7 +493,7 @@ export function TraceInspector(): JSX.Element {
       {
         key: 'deconv',
         color: TRACE_COLORS.deconv,
-        label: 'Deconv',
+        label: deconvLabel(),
         visible: showDeconv,
         setVisible: setShowDeconv,
       },
@@ -470,6 +505,16 @@ export function TraceInspector(): JSX.Element {
         setVisible: setShowResidual,
       },
     ];
+    if (hasComparison()) {
+      items.push({
+        key: 'compare',
+        color: COMPARE_COLOR,
+        label: compareLabel(),
+        visible: showSparsityCompare,
+        setVisible: setShowSparsityCompare,
+        dashed: true,
+      });
+    }
     if (gtVisible()) {
       items.push(
         {
@@ -502,6 +547,11 @@ export function TraceInspector(): JSX.Element {
     const r = effectiveResult();
     return r ? r.sCounts.reduce((s, v) => s + v, 0).toFixed(0) : '--';
   };
+  const comparisonSpikeCount = () => {
+    const c = comparisonDeconv();
+    return c ? c.reduce((s, v) => s + v, 0).toFixed(0) : null;
+  };
+  const settingShort = (nc: boolean) => (nc ? 'noise-constr.' : 'standard');
 
   // Subset highlight zones for the minimap — show which time regions
   // the algorithm operates on for the currently selected cell.
@@ -545,7 +595,15 @@ export function TraceInspector(): JSX.Element {
         <div class="trace-inspector__stats">
           <span>alpha: {alpha()}</span>
           <span>PVE: {pve()}</span>
-          <span>spikes: {spikeCount()}</span>
+          <Show
+            when={hasComparison() && comparisonSpikeCount() != null}
+            fallback={<span>spikes: {spikeCount()}</span>}
+          >
+            <span>
+              spikes: {spikeCount()} ({settingShort(noiseConstrained())}) · {comparisonSpikeCount()}{' '}
+              ({settingShort(!noiseConstrained())})
+            </span>
+          </Show>
         </div>
       </div>
 

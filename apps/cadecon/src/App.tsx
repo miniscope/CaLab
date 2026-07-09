@@ -20,6 +20,7 @@ import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
 import { SubsetConfig } from './components/controls/SubsetConfig.tsx';
 import { AlgorithmSettings } from './components/controls/AlgorithmSettings.tsx';
+import { DisplaySettings } from './components/controls/DisplaySettings.tsx';
 import { RunControls } from './components/controls/RunControls.tsx';
 import { ProgressBar } from './components/controls/ProgressBar.tsx';
 import { ConvergencePanel } from './components/charts/ConvergencePanel.tsx';
@@ -161,6 +162,15 @@ const App: Component = () => {
                 >
                   <p class="panel-label">Algorithm Settings</p>
                   <AlgorithmSettings />
+                </DashboardPanel>
+
+                <DashboardPanel
+                  id="display-options"
+                  variant="controls"
+                  data-tutorial="display-options"
+                >
+                  <p class="panel-label">Display Options</p>
+                  <DisplaySettings />
                 </DashboardPanel>
 
                 <DashboardPanel id="run-controls" variant="controls" data-tutorial="run-controls">

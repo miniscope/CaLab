@@ -34,6 +34,7 @@ pub fn indeca_solve_trace(
     lp_enabled: bool,
     warm_counts: &[f32],
     lambda: f64,
+    noise_constrained: bool,
 ) -> Result<JsValue, JsError> {
     if let Some(i) = crate::first_nonfinite(trace) {
         return Err(JsError::new(&format!(
@@ -45,7 +46,7 @@ pub fn indeca_solve_trace(
     } else {
         Some(warm_counts)
     };
-    let result = indeca::solve_trace(
+    let result = indeca::solve_trace_opts(
         trace,
         tau_r,
         tau_d,
@@ -57,6 +58,10 @@ pub fn indeca_solve_trace(
         hp_enabled,
         lp_enabled,
         lambda,
+        indeca::SolveOptions {
+            noise_constrained,
+            collapse_runs: false,
+        },
     );
     Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
 }

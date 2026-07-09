@@ -423,7 +423,8 @@ fn seed_kernel_estimate<'py>(
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged).
 #[pyfunction]
-#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0))]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false, collapse_runs=false))]
+#[allow(clippy::too_many_arguments)]
 fn py_indeca_solve_trace<'py>(
     py: Python<'py>,
     trace: PyReadonlyArray1<f64>,
@@ -437,6 +438,8 @@ fn py_indeca_solve_trace<'py>(
     lp_enabled: bool,
     warm_counts: Option<PyReadonlyArray1<f64>>,
     lambda_: f64,
+    noise_constrained: bool,
+    collapse_runs: bool,
 ) -> PyResult<(
     Bound<'py, PyArray1<f32>>, // s_counts
     f64,                       // alpha
@@ -449,7 +452,7 @@ fn py_indeca_solve_trace<'py>(
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
 
-    let result = indeca::solve_trace(
+    let result = indeca::solve_trace_opts(
         &trace_f32,
         tau_rise,
         tau_decay,
@@ -461,6 +464,10 @@ fn py_indeca_solve_trace<'py>(
         hp_enabled,
         lp_enabled,
         lambda_,
+        indeca::SolveOptions {
+            noise_constrained,
+            collapse_runs,
+        },
     );
 
     Ok((

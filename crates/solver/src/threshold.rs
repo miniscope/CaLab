@@ -18,6 +18,20 @@ pub struct ThresholdResult {
     pub error: f64,
 }
 
+/// How the binarization threshold is chosen.
+#[derive(Clone, Copy)]
+pub enum Selection {
+    /// Current behavior: threshold that minimizes reconstruction error (max PVE).
+    /// This overfits — it drives the residual below the noise floor.
+    MaxPve,
+    /// Noise-constrained: the sparsest support (highest threshold) whose residual
+    /// at original-rate grid positions stays within the noise floor
+    /// `sigma^2 * n_grid_interior`. `sigma` is the noise std of the filtered trace
+    /// at original rate (data-derived, no tuning knob). Realizes an OASIS-style
+    /// "don't fit below the noise" sparsity at the stage where counts are decided.
+    NoiseFloor { sigma: f64 },
+}
+
 /// Compute boundary padding for threshold search: ceil(2 * tau_d * fs_up).
 /// Used to exclude edge effects from the error computation.
 pub fn boundary_padding(tau_decay: f64, fs_up: f64) -> usize {
@@ -39,6 +53,30 @@ pub fn threshold_search(
     fs_up: f64,
     upsample_factor: usize,
     max_alpha: f64,
+) -> ThresholdResult {
+    threshold_search_opts(
+        s_relaxed,
+        y,
+        banded,
+        tau_decay,
+        fs_up,
+        upsample_factor,
+        max_alpha,
+        Selection::MaxPve,
+    )
+}
+
+/// Threshold search with a selectable criterion. See [`Selection`].
+#[allow(clippy::too_many_arguments)]
+pub fn threshold_search_opts(
+    s_relaxed: &[f32],
+    y: &[f32],
+    banded: &BandedAR2,
+    tau_decay: f64,
+    fs_up: f64,
+    upsample_factor: usize,
+    max_alpha: f64,
+    selection: Selection,
 ) -> ThresholdResult {
     let n = s_relaxed.len();
     let pad = boundary_padding(tau_decay, fs_up).min(n / 4);
@@ -79,91 +117,109 @@ pub fn threshold_search(
         error: f64::INFINITY,
     };
 
-    // Phase 1: Coarse search — ~50 evenly spaced thresholds
-    let coarse_n = 50.min(vals.len());
-    let coarse_step = if vals.len() > 1 {
-        (vals.len() - 1) as f64 / (coarse_n - 1).max(1) as f64
-    } else {
-        1.0
-    };
-
-    let mut coarse_thresholds: Vec<f64> = Vec::with_capacity(coarse_n);
-    for i in 0..coarse_n {
-        let idx = (i as f64 * coarse_step).round() as usize;
-        let idx = idx.min(vals.len() - 1);
-        coarse_thresholds.push(vals[idx] as f64);
-    }
-    coarse_thresholds.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
-
-    // Enforce minimum threshold floor
-    coarse_thresholds.retain(|&t| t >= min_threshold);
-    if coarse_thresholds.is_empty() {
-        // All candidates below minimum — use min_threshold as the only candidate
-        coarse_thresholds.push(min_threshold);
-    }
-
-    let mut consecutive_increases = 0;
-    for &thresh in &coarse_thresholds {
-        let err = evaluate_threshold(
+    // Noise-constrained selection scans for the sparsest support within the
+    // noise floor; the max-PVE path keeps the original coarse→fine search.
+    if let Selection::NoiseFloor { sigma } = selection {
+        best.threshold = select_noise_floor_threshold(
             s_relaxed,
             y,
             banded,
-            thresh,
             pad,
+            upsample_factor,
             max_alpha,
+            sigma,
+            &vals,
+            min_threshold,
             &mut s_bin,
             &mut conv_buf,
         );
-        if err < best.error {
-            best.error = err;
-            best.threshold = thresh;
-            consecutive_increases = 0;
-        } else {
-            consecutive_increases += 1;
-            if consecutive_increases >= 10 {
-                break;
-            }
-        }
-    }
-
-    // Phase 2: Fine search — ~50 thresholds around the best coarse result
-    let spread = if vals.len() > 1 {
-        (vals[vals.len() - 1] - vals[0]) as f64 / coarse_n as f64 * 2.0
     } else {
-        best.threshold * 0.2
-    };
-    let fine_lo = (best.threshold - spread).max(min_threshold);
-    let fine_hi = best.threshold + spread;
-    let fine_n = 50;
-    let fine_step = (fine_hi - fine_lo) / (fine_n - 1).max(1) as f64;
-
-    consecutive_increases = 0;
-    for i in 0..fine_n {
-        let thresh = fine_lo + i as f64 * fine_step;
-        if thresh < 0.0 {
-            continue;
-        }
-        let err = evaluate_threshold(
-            s_relaxed,
-            y,
-            banded,
-            thresh,
-            pad,
-            max_alpha,
-            &mut s_bin,
-            &mut conv_buf,
-        );
-        if err < best.error {
-            best.error = err;
-            best.threshold = thresh;
-            consecutive_increases = 0;
+        // Phase 1: Coarse search — ~50 evenly spaced thresholds
+        let coarse_n = 50.min(vals.len());
+        let coarse_step = if vals.len() > 1 {
+            (vals.len() - 1) as f64 / (coarse_n - 1).max(1) as f64
         } else {
-            consecutive_increases += 1;
-            if consecutive_increases >= 10 {
-                break;
+            1.0
+        };
+
+        let mut coarse_thresholds: Vec<f64> = Vec::with_capacity(coarse_n);
+        for i in 0..coarse_n {
+            let idx = (i as f64 * coarse_step).round() as usize;
+            let idx = idx.min(vals.len() - 1);
+            coarse_thresholds.push(vals[idx] as f64);
+        }
+        coarse_thresholds.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+
+        // Enforce minimum threshold floor
+        coarse_thresholds.retain(|&t| t >= min_threshold);
+        if coarse_thresholds.is_empty() {
+            // All candidates below minimum — use min_threshold as the only candidate
+            coarse_thresholds.push(min_threshold);
+        }
+
+        let mut consecutive_increases = 0;
+        for &thresh in &coarse_thresholds {
+            let err = evaluate_threshold(
+                s_relaxed,
+                y,
+                banded,
+                thresh,
+                pad,
+                max_alpha,
+                &mut s_bin,
+                &mut conv_buf,
+            );
+            if err < best.error {
+                best.error = err;
+                best.threshold = thresh;
+                consecutive_increases = 0;
+            } else {
+                consecutive_increases += 1;
+                if consecutive_increases >= 10 {
+                    break;
+                }
             }
         }
-    }
+
+        // Phase 2: Fine search — ~50 thresholds around the best coarse result
+        let spread = if vals.len() > 1 {
+            (vals[vals.len() - 1] - vals[0]) as f64 / coarse_n as f64 * 2.0
+        } else {
+            best.threshold * 0.2
+        };
+        let fine_lo = (best.threshold - spread).max(min_threshold);
+        let fine_hi = best.threshold + spread;
+        let fine_n = 50;
+        let fine_step = (fine_hi - fine_lo) / (fine_n - 1).max(1) as f64;
+
+        consecutive_increases = 0;
+        for i in 0..fine_n {
+            let thresh = fine_lo + i as f64 * fine_step;
+            if thresh < 0.0 {
+                continue;
+            }
+            let err = evaluate_threshold(
+                s_relaxed,
+                y,
+                banded,
+                thresh,
+                pad,
+                max_alpha,
+                &mut s_bin,
+                &mut conv_buf,
+            );
+            if err < best.error {
+                best.error = err;
+                best.threshold = thresh;
+                consecutive_increases = 0;
+            } else {
+                consecutive_increases += 1;
+                if consecutive_increases >= 10 {
+                    break;
+                }
+            }
+        }
+    } // end max-PVE search branch
 
     // Final pass: compute full result at best threshold
     binarize(s_relaxed, best.threshold, &mut s_bin);
@@ -238,6 +294,102 @@ fn evaluate_threshold(
         err += d * d;
     }
     err
+}
+
+/// Scan candidate thresholds and return the highest (sparsest) one whose
+/// grid-residual stays within the noise budget `sigma^2 * n_grid_interior`.
+/// Residual increases as the threshold rises (fewer spikes → worse fit), so the
+/// highest feasible threshold is the sparsest support that still explains the
+/// signal down to — but not below — the noise floor. Falls back to the
+/// min-grid-residual threshold if none is feasible (budget tighter than the
+/// best achievable fit).
+#[allow(clippy::too_many_arguments)]
+fn select_noise_floor_threshold(
+    s_relaxed: &[f32],
+    y: &[f32],
+    banded: &BandedAR2,
+    pad: usize,
+    upsample_factor: usize,
+    max_alpha: f64,
+    sigma: f64,
+    vals: &[f32],
+    min_threshold: f64,
+    s_bin: &mut [f32],
+    conv_buf: &mut [f32],
+) -> f64 {
+    let n = y.len();
+    let stride = upsample_factor.max(1);
+    let n_grid = (pad..n.saturating_sub(pad)).step_by(stride).count();
+    let budget = sigma * sigma * n_grid as f64;
+
+    // Up to 256 candidate thresholds, evenly spaced through the sorted values.
+    let cap = 256usize;
+    let step = if vals.len() > cap {
+        vals.len() as f64 / cap as f64
+    } else {
+        1.0
+    };
+
+    let mut best_feasible = f64::NEG_INFINITY; // highest feasible threshold
+    let mut best_effort_thr = min_threshold; // min grid-SSE fallback
+    let mut best_effort_sse = f64::INFINITY;
+
+    let mut idx = 0.0_f64;
+    while (idx as usize) < vals.len() {
+        let thr = vals[idx as usize] as f64;
+        idx += step;
+        if thr < min_threshold {
+            continue;
+        }
+        let sse = grid_sse_at_threshold(
+            s_relaxed, y, banded, thr, pad, stride, max_alpha, s_bin, conv_buf,
+        );
+        if sse <= budget && thr > best_feasible {
+            best_feasible = thr;
+        }
+        if sse < best_effort_sse {
+            best_effort_sse = sse;
+            best_effort_thr = thr;
+        }
+    }
+
+    if best_feasible.is_finite() {
+        best_feasible
+    } else {
+        best_effort_thr
+    }
+}
+
+/// Residual SSE at original-rate grid positions only (stride = upsample_factor),
+/// with alpha/baseline fit over the full interior. Evaluating the noise
+/// constraint on the original grid — where the upsampled trace equals the real
+/// samples — avoids the correlated, reduced-variance noise at interpolated
+/// positions, so the budget can use a noise std estimated at the original rate.
+#[allow(clippy::too_many_arguments)]
+fn grid_sse_at_threshold(
+    s_relaxed: &[f32],
+    y: &[f32],
+    banded: &BandedAR2,
+    threshold: f64,
+    pad: usize,
+    stride: usize,
+    max_alpha: f64,
+    s_bin: &mut [f32],
+    conv_buf: &mut [f32],
+) -> f64 {
+    binarize(s_relaxed, threshold, s_bin);
+    banded.convolve_forward(s_bin, conv_buf);
+    let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad, max_alpha);
+    let n = y.len();
+    let mut sse = 0.0_f64;
+    let mut i = pad;
+    while i < n.saturating_sub(pad) {
+        let pred = alpha * conv_buf[i] as f64 + baseline;
+        let d = y[i] as f64 - pred;
+        sse += d * d;
+        i += stride;
+    }
+    sse
 }
 
 /// Least-squares fit for alpha and baseline: y ≈ alpha * conv + baseline.

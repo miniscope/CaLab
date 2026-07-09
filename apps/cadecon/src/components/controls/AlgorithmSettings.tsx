@@ -9,6 +9,8 @@ import {
   setHpFilterEnabled,
   lpFilterEnabled,
   setLpFilterEnabled,
+  noiseConstrained,
+  setNoiseConstrained,
   maxIterations,
   setMaxIterations,
   convergenceTol,
@@ -85,6 +87,14 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove high-frequency noise before deconvolution"
           checked={lpFilterEnabled()}
           onChange={setLpFilterEnabled}
+          disabled={isRunLocked()}
+        />
+
+        <ToggleSwitch
+          label="Noise-Constrained Sparsity"
+          description="Keep only spikes needed to reach the noise floor (helps low SNR)"
+          checked={noiseConstrained()}
+          onChange={setNoiseConstrained}
           disabled={isRunLocked()}
         />
       </div>
