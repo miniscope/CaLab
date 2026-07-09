@@ -423,7 +423,7 @@ fn seed_kernel_estimate<'py>(
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged).
 #[pyfunction]
-#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false, collapse_runs=false))]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
 #[allow(clippy::too_many_arguments)]
 fn py_indeca_solve_trace<'py>(
     py: Python<'py>,
@@ -439,7 +439,6 @@ fn py_indeca_solve_trace<'py>(
     warm_counts: Option<PyReadonlyArray1<f64>>,
     lambda_: f64,
     noise_constrained: bool,
-    collapse_runs: bool,
 ) -> PyResult<(
     Bound<'py, PyArray1<f32>>, // s_counts
     f64,                       // alpha
@@ -464,10 +463,7 @@ fn py_indeca_solve_trace<'py>(
         hp_enabled,
         lp_enabled,
         lambda_,
-        indeca::SolveOptions {
-            noise_constrained,
-            collapse_runs,
-        },
+        indeca::SolveOptions { noise_constrained },
     );
 
     Ok((

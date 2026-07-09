@@ -89,34 +89,6 @@ pub fn downsample_average(signal: &[f32], factor: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Collapse each maximal run of consecutive nonzero samples in an upsampled
-/// binary spike train to a single spike at the run's center, zeroing the rest.
-///
-/// The Box[0,1] FISTA relaxation spreads one true event into a smooth bump that
-/// binarizes to a multi-sample run; `downsample_binary` would then SUM that run
-/// and report one event as several spikes (count inflation ∝ run length). This
-/// collapse makes each contiguous bump count as exactly one event while still
-/// preserving genuinely-separated events (they are broken by zeros, so remain
-/// distinct runs and are not merged).
-pub fn collapse_runs(s_bin: &[f32]) -> Vec<f32> {
-    let n = s_bin.len();
-    let mut out = vec![0.0_f32; n];
-    let mut i = 0;
-    while i < n {
-        if s_bin[i] > 0.0 {
-            let start = i;
-            while i < n && s_bin[i] > 0.0 {
-                i += 1;
-            }
-            let center = start + (i - start - 1) / 2;
-            out[center] = 1.0;
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
 /// Downsample a binary spike signal by bin-summing with centered bins.
 ///
 /// Each output bin is centered on the original sample position (`i * factor`)

@@ -205,6 +205,7 @@ calab.solve_trace(
     lp_enabled: bool = False,
     warm_counts: np.ndarray | None = None,
     lambda_: float = 0.0,
+    noise_constrained: bool = False,
 ) -> SolveTraceResult
 ```
 
@@ -221,6 +222,7 @@ calab.solve_trace(
 | `lp_enabled`      | Enable low-pass filtering.                             |
 | `warm_counts`     | Spike counts from a previous iteration for warm-start. |
 | `lambda_`         | L1 sparsity penalty (0 = auto).                        |
+| `noise_constrained` | Pick the binarization threshold as the sparsest spike support whose residual still reaches the data-derived noise floor, instead of the fit-maximizing threshold. Knob-free; suppresses spurious low-SNR spikes. Default `False`. |
 
 Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`.
 

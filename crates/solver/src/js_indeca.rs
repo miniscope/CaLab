@@ -58,10 +58,7 @@ pub fn indeca_solve_trace(
         hp_enabled,
         lp_enabled,
         lambda,
-        indeca::SolveOptions {
-            noise_constrained,
-            collapse_runs: false,
-        },
+        indeca::SolveOptions { noise_constrained },
     );
     Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
 }

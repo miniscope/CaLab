@@ -15,22 +15,19 @@
 use crate::banded::BandedAR2;
 use crate::threshold::{threshold_search_opts, Selection, ThresholdResult};
 use crate::upsample::{
-    collapse_runs, downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
+    downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
 use crate::{Constraint, ConvMode, Solver};
 use realfft::RealFftPlanner;
 
 /// Optional spike-inference behaviors, off by default (current shipping path).
 ///
-/// Both target the ~2× spike overcount without changing the default output:
-/// `noise_constrained` chooses the binarization threshold at the noise floor
-/// instead of maximizing fit (suppresses low-SNR spurious events), and
-/// `collapse_runs` collapses each smeared bump to one event before the
-/// bin-summing downsample (removes the run-length count inflation).
+/// `noise_constrained` chooses the binarization threshold at the data-derived
+/// noise floor instead of maximizing fit, suppressing low-SNR spurious spikes
+/// without changing the default (max-PVE) output.
 #[derive(Clone, Copy, Default)]
 pub struct SolveOptions {
     pub noise_constrained: bool,
-    pub collapse_runs: bool,
 }
 
 /// Raw measurement-noise std from the high-frequency band of the periodogram
@@ -348,7 +345,7 @@ pub fn solve_trace(
 }
 
 /// See [`solve_trace`]; adds optional [`SolveOptions`] for the count-debiasing
-/// experiments (noise-constrained threshold selection and run collapse).
+/// experiment (noise-constrained threshold selection).
 #[allow(clippy::too_many_arguments)]
 pub fn solve_trace_opts(
     trace: &[f32],
@@ -545,14 +542,6 @@ pub fn solve_trace_opts(
             // Fallback: no valid result found (shouldn't happen)
             (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
         });
-
-    // Optionally collapse each smeared bump to a single event before summing,
-    // so the bin-sum reports events rather than run length.
-    let s_binary = if opts.collapse_runs {
-        collapse_runs(&s_binary)
-    } else {
-        s_binary
-    };
 
     // Downsample binary spike train to original rate using centered bins
     let s_counts = downsample_binary(&s_binary, upsample_factor);

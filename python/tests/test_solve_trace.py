@@ -86,6 +86,15 @@ class TestSolveTrace:
         assert isinstance(alpha, float)
         assert isinstance(converged, bool)
 
+    def test_noise_constrained_accepted(self):
+        # The noise_constrained knob is exposed through the binding and produces
+        # a valid result without changing output shape.
+        trace = _make_trace(0.02, 0.4, 30.0, 300, [30, 100, 200], alpha=10.0, baseline=2.0)
+        result = solve_trace(trace, 0.02, 0.4, 30.0, noise_constrained=True)
+        assert isinstance(result, SolveTraceResult)
+        assert result.s_counts.shape == (300,)
+        assert result.s_counts.sum() >= 0
+
 
 # ---------------------------------------------------------------------------
 # estimate_kernel

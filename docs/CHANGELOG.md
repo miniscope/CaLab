@@ -3,83 +3,92 @@
 Repo-level changelog for the CaLab monorepo. Uses [Keep a Changelog](https://keepachangelog.com/) format.
 Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
-## [Unreleased]
+## [2.6.0]
 
-> This section accumulates every monorepo change since `v2.0.6` (PRs #58–#165);
-> there has been no version tag in this window. Entries for PRs #60–#155 were
-> reconstructed from git history (the changelog had lapsed) and consolidate
-> closely-related PRs into single bullets for readability.
+> Unreleased. Covers every change since `v2.5.0` (PR #168).
 
 ### Added
 
-- **CaDecon** — a new app for automated calcium deconvolution (the InDeCa
-  algorithm) that estimates the kernel and deconvolution parameters directly
-  from the data, no manual tuning required: app scaffold + data loading +
-  subset UI, the InDeCa compute engine with warm-start, visualization / QC
-  distributions / drill-down, community-database integration, ground-truth
-  overlay, and reaching functional parity with the reference InDeCa
-  implementation (PRs #85, #86, #87, #88, #90, #91, #94)
-- CaDecon convergence redesign — converge in kernel **shape space** (peak time +
-  FWHM asymptote) with median-tail kernel selection (PR #154), plus an
-  **asymptote dashboard** charting the four convergence signals (PR #155);
-  earlier migrated the kernel parameterization from (tau_rise, tau_decay) to
-  (t_peak, FWHM) (PR #104)
+- **CaDecon** noise-constrained sparsity — an optional `noise_constrained`
+  spike-inference mode that picks the binarization threshold as the sparsest
+  spike support whose residual still reaches the data-derived noise floor,
+  instead of the fit-maximizing threshold. Knob-free and off by default;
+  suppresses spurious low-SNR spikes. Exposed through the WASM solver, the
+  CaDecon UI, and the `calab.solve_trace` Python binding (PR #168)
+
+## [2.5.0] - 2026-07-08
+
+> Covers PRs #153–#167 (all merged 2026-07-08).
+
+### Added
+
 - **CaDecon** bi-exponential fit outcome surfaced as `FitMode`
   (`TwoComponent` / `SlowOnly` / `Degenerate` / `Empty`) on the kernel result;
   Python `fit_biexponential` now returns an 8-tuple (trailing `fit_mode` string)
   and `BiexpFitResult` gained a `fit_mode` field; KernelDisplay warns when
   subset fits are degenerate (PR #162)
-- **`calab` Python package** greatly expanded — PyO3 bindings, CaImAn/Minian
-  loaders, browser bridge, and a CLI (PR #66); CaDecon Python bridge with
-  config, autorun, progress, and auto-export (PRs #108, #109); headless-browser
-  batch mode + InDeCa PyO3 bindings (PR #110)
-- Shared Rust **simulation module** producing synthetic ground-truth traces,
-  exposed to both Python and WASM (PR #113)
-- **Usage-analytics pipeline + admin dashboard** with breakdowns and bulk
-  moderation (PRs #62, #69), extended to track CaDecon submissions (PR #93)
-- Shared **auth menu** in the header across all CaLab apps (PR #61)
-- Community: highlight your own submissions in the scatter plot (PR #63);
-  DataSource tracking + bridge export button & heartbeat detection (PR #67)
-- Solver: banded AR(2) O(T) convolution + box constraint (PR #78); peak-seeded
-  initial-kernel auto-estimation (PR #103); an independent fast component in the
-  bi-exponential fit (PR #105); a `skip` parameter for bi-exponential fitting
-  (PR #99)
-- Dynamic worker-pool scaling with a URL override (PR #77)
+- **CaDecon** convergence redesign — converge in kernel **shape space** (peak
+  time + FWHM asymptote) with median-tail kernel selection and both filters on
+  by default (PR #154), plus an **asymptote dashboard** charting the four
+  convergence signals (PR #155)
 - Shared uPlot chart primitives in `@calab/ui/chart` — colorblind-safe
   Okabe-Ito palette (`TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`,
   `METRIC_COLORS`, `subsetColor`), viridis colormap (`VIRIDIS_LUT`,
   `viridisRGB`/`viridisCss`), tick math (`niceTicks`), and axis/cursor/range
   helpers (`chartAxis`, `labeledAxis`, `syncCursor`, `safeRange`) (PRs #158, #159, #160)
-- Chart/UX: transient-zone visual indicator (PR #81); draggable minimap edges on
-  the trace overview (PR #145)
-- Tutorials: CaDecon tutorial set (PR #151); Python Package tutorial (PR #68);
-  Python syntax highlighting in code blocks (PR #75)
-- Sphinx + ReadTheDocs documentation site for the Python package (PR #115)
-- Comprehensive README files across all packages and apps (PR #58)
 
 ### Changed
 
-- Moved the Rust solver to `crates/solver/` with dual WASM (`jsbindings`) /
-  PyO3 (`pybindings`) Cargo features (PR #65)
-- Made `@calab/community` app-agnostic (PR #60)
 - **CaDecon** raster overview uses the shared viridis colormap and drops the
   intensity colorbar (activity is assumed to span 0→full; absolute values are
   not meaningful) (PR #159)
-- Replaced the export-to-Python page with a dismissible modal (PR #79)
-- CaDecon left-sidebar layout/UX (PR #89); convergence-UI improvements and
-  kernel-estimation groundwork (PR #94)
-- CaTune: log-scale DualRangeSlider, card-grid fix, tutorial baseline docs (PR #96)
-- Performance: FISTA pipeline (SIMD, loop fusion, Fenwick baseline) (PR #92);
-  CaDecon iteration hot paths (PR #107); solver cleanup/dedup/optimize (PR #106);
-  snappier Peak/FWHM slider drag (PR #134)
 - `calab-solver` tuning-constant hygiene: introduced `SeedConfig`, shared
   `baseline::DEFAULT_BASELINE_QUANTILE`, and a named `BASELINE_EMA_WEIGHT`;
   deduplicated the bi-exponential fast-component grid bounds so the grid search
   and golden-section refinement cannot drift (no behavior change) (PR #163)
+- Tooling: ignore local Python virtualenvs `.venv*/` (PR #156)
+- Documentation: reconciled repo docs with the CaDecon review series (PR #164),
+  aligned the CaDecon tutorials with it (PR #165), and backfilled the changelog
+  from git history (PR #167)
+
+### Fixed
+
+- `calab-solver` FFI boundaries (WASM and PyO3) reject non-finite (NaN/Inf)
+  input traces with an explicit error instead of returning garbage results
+  (PR #161)
+- Solver: banded AR(2) forward model aligned via a one-sample source delay so
+  the reconvolution matches the double-exponential kernel (PR #157)
+- CaDecon: correct per-subset kernel attribution + init/variance robustness
+  (PR #153)
+
+## [2.4.0] - 2026-03-20
+
+> Covers the entire 2.4.x line (PRs #99–#152). Reconstructed from git history;
+> closely-related PRs are consolidated into single bullets for readability.
+
+### Added
+
+- **`calab` Python package** — CaDecon Python bridge with config, autorun,
+  progress, and auto-export (PRs #108, #109); headless-browser batch mode +
+  InDeCa PyO3 bindings (PR #110)
+- Shared Rust **simulation module** producing synthetic ground-truth traces,
+  exposed to both Python and WASM (PR #113)
+- Solver: peak-seeded initial-kernel auto-estimation (PR #103); an independent
+  fast component in the bi-exponential fit (PR #105); a `skip` parameter for
+  bi-exponential fitting (PR #99)
+- Migrated the kernel parameterization from (tau_rise, tau_decay) to
+  (t_peak, FWHM) (PR #104)
+- CaDecon tutorial set (PR #151)
+- Draggable minimap edges on the trace overview (PR #145)
+- Sphinx + ReadTheDocs documentation site for the Python package (PR #115)
+
+### Changed
+
+- Performance: CaDecon iteration hot paths (PR #107); solver
+  cleanup/dedup/optimize (PR #106); snappier Peak/FWHM slider drag (PR #134)
 - Tooling: ESLint/Prettier/lint-surface cleanup (PR #120); prune unused exports
   and internalize test-only surface (PR #125); bump GHA for Node 24 and clear
-  reactivity lint (PR #133); gitignore the whole `.claude/` directory (PR #135);
-  ignore local Python virtualenvs `.venv*/` (PR #156)
+  reactivity lint (PR #133); gitignore the whole `.claude/` directory (PR #135)
 - CI: Rust + Python lint/type jobs, a build matrix, and SHA-pinned actions
   (PR #124)
 - Tests: smoke / export-roundtrip / sub-frame-timing / warm-start quick-wins
@@ -88,29 +97,16 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   RLS policy matrix (PR #130); bridge timeout & mid-run crash detection (PR #131)
 - Documentation: separated CaTune and CaDecon into dedicated guides (PR #117);
   promoted CaDecon to stable + root README update (PR #118); reviewed/improved
-  all Python docs (PR #116); improved tutorial terminology and scientific
-  accuracy (PR #59); reconciled repo docs with the review series (PR #164) and
-  aligned the CaDecon tutorials with it (PR #165)
+  all Python docs (PR #116)
 
 ### Fixed
 
-- Codebase-wide quality sweep — 26 fixes (PR #64)
 - Address pre-merge audit findings — WASM drift, RLS PII, FFI panics, config,
   tests (PR #150)
-- `calab-solver` FFI boundaries (WASM and PyO3) reject non-finite (NaN/Inf)
-  input traces with an explicit error instead of returning garbage results
-  (PR #161)
 - Solver: corrected a binning-induced time offset in iterative kernel fitting
-  (PR #102); golden-section refinement bug fix (PR #147); banded AR(2) forward
-  model aligned via a one-sample source delay so the reconvolution matches the
-  double-exponential kernel (PR #157)
-- CaDecon: correct per-subset kernel attribution + init/variance robustness
-  (PR #153)
-- CaTune: minimap no longer pushes the zoom window off-screen (PRs #70, #82);
-  clamp rise/decay sliders to prevent a negative kernel (PR #83); GT marker
-  alignment + spectrum/zoom-window perf sweep (PR #142); repair tutorial
-  highlighting after the Peak/FWHM migration (PR #143)
-- Analytics: reliable session-duration tracking via heartbeat (PR #84)
+  (PR #102); golden-section refinement bug fix (PR #147)
+- CaTune: GT marker alignment + spectrum/zoom-window perf sweep (PR #142);
+  repair tutorial highlighting after the Peak/FWHM migration (PR #143)
 - Headless: prevent resource leaks on browser start/close failures (PR #121)
 - Logic + UX polish — tau constraints, bridge errors, reactivity (PR #126)
 - Community: show bridge/training submissions and hide demo presets under
@@ -122,6 +118,81 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Hardened the bridge URL, added localhost bridge auth, and secured the
   geo-session edge function (PR #122)
 - Locked down analytics row-level security (PR #123)
+
+## [2.3.0] - 2026-02-26
+
+> Covers the entire 2.3.x line (PRs #85–#96). Reconstructed from git history.
+
+### Added
+
+- **CaDecon** — a new app for automated calcium deconvolution (the InDeCa
+  algorithm) that estimates the kernel and deconvolution parameters directly
+  from the data, no manual tuning required: app scaffold + data loading +
+  subset UI, the InDeCa compute engine with warm-start, visualization / QC
+  distributions / drill-down, community-database integration, and ground-truth
+  overlay (PRs #85, #86, #87, #88, #90, #91)
+- Usage analytics extended to track CaDecon submissions (PR #93)
+
+### Changed
+
+- CaDecon left-sidebar layout/UX (PR #89); convergence-UI improvements and
+  kernel-estimation groundwork, including rise-time-collapse mitigation (PR #94)
+- CaTune: log-scale DualRangeSlider, card-grid fix, tutorial baseline docs (PR #96)
+- Performance: FISTA pipeline (SIMD, loop fusion, Fenwick baseline) (PR #92)
+
+### Fixed
+
+- Solver: alpha/PVE double-counting and energy-pooling correctness (PR #91)
+
+## [2.2.0] - 2026-02-23
+
+> Covers the entire 2.2.x line (PRs #65–#84). Reconstructed from git history.
+
+### Added
+
+- **`calab` Python package** greatly expanded — PyO3 bindings, CaImAn/Minian
+  loaders, browser bridge, and a CLI (PR #66)
+- Community: DataSource tracking + bridge export button & heartbeat detection
+  (PR #67)
+- Solver: banded AR(2) O(T) convolution + box constraint (PR #78)
+- Dynamic worker-pool scaling with a URL override (PR #77)
+- Admin dashboard: analytics breakdowns and bulk moderation (PR #69)
+- Chart/UX: transient-zone visual indicator (PR #81)
+- Tutorials: Python Package tutorial (PR #68); Python syntax highlighting in
+  code blocks (PR #75)
+
+### Changed
+
+- Moved the Rust solver to `crates/solver/` with dual WASM (`jsbindings`) /
+  PyO3 (`pybindings`) Cargo features (PR #65)
+- Replaced the export-to-Python page with a dismissible modal (PR #79)
+
+### Fixed
+
+- CaTune: minimap no longer pushes the zoom window off-screen (PRs #70, #82);
+  clamp rise/decay sliders to prevent a negative kernel (PR #83)
+- Analytics: reliable session-duration tracking via heartbeat (PR #84)
+
+## [2.1.0] - 2026-02-20
+
+> Covers the 2.0.8, 2.0.9, and 2.1.x patch line (PRs #58–#64). Reconstructed
+> from git history.
+
+### Added
+
+- **Usage-analytics pipeline + admin dashboard** (PR #62)
+- Shared **auth menu** in the header across all CaLab apps (PR #61)
+- Community: highlight your own submissions in the scatter plot (PR #63)
+- Comprehensive README files across all packages and apps (PR #58)
+
+### Changed
+
+- Made `@calab/community` app-agnostic (PR #60)
+- Documentation: improved tutorial terminology and scientific accuracy (PR #59)
+
+### Fixed
+
+- Codebase-wide quality sweep — 26 fixes (PR #64)
 
 ## [2.0.6] - 2026-02-19
 
@@ -214,7 +285,12 @@ Major restructuring into a monorepo with reusable packages.
 - Renamed repo references from CaTune to CaLab
 - Stabilized tooling and codified conventions (Prettier, ESLint, CI) (PR #41)
 
-[Unreleased]: https://github.com/miniscope/CaLab/compare/v2.0.6...HEAD
+[2.6.0]: https://github.com/miniscope/CaLab/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/miniscope/CaLab/compare/v2.4.10...v2.5.0
+[2.4.0]: https://github.com/miniscope/CaLab/compare/v2.3.8...v2.4.10
+[2.3.0]: https://github.com/miniscope/CaLab/compare/v2.2.7...v2.3.8
+[2.2.0]: https://github.com/miniscope/CaLab/compare/v2.1.2...v2.2.7
+[2.1.0]: https://github.com/miniscope/CaLab/compare/v2.0.6...v2.1.2
 [2.0.6]: https://github.com/miniscope/CaLab/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/miniscope/CaLab/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/miniscope/CaLab/compare/v2.0.3...v2.0.4
