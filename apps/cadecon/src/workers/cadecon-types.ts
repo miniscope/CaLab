@@ -10,6 +10,9 @@ export interface TraceResult {
   pve: number;
   iterations: number;
   converged: boolean;
+  /** Spike counts from the OPPOSITE noise-constrained setting, for the comparison
+   *  overlay. Present only when the trace job requested `computeComparison`. */
+  comparisonSCounts?: Float32Array;
 }
 
 /** Results from peak-seeded spike detection on a single trace. */
@@ -54,6 +57,12 @@ export type CaDeconWorkerInbound =
       lpEnabled: boolean;
       /** L1 sparsity penalty on spike solution. */
       lambda: number;
+      /** Noise-constrained threshold selection: choose the sparsest spike support
+       *  whose residual meets the data-derived noise floor (no tuning knob). */
+      noiseConstrained: boolean;
+      /** Also solve with the OPPOSITE noise-constrained setting and return it as
+       *  comparisonSCounts (for the teaching/impact overlay). */
+      computeComparison: boolean;
       /** Previous iteration's s_counts at original rate for warm-start. */
       warmCounts?: Float32Array;
     }

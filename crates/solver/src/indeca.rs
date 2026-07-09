@@ -13,11 +13,132 @@
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
-use crate::threshold::{threshold_search, ThresholdResult};
+use crate::threshold::{threshold_search_opts, Selection, ThresholdResult};
 use crate::upsample::{
     downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
 use crate::{Constraint, ConvMode, Solver};
+use realfft::RealFftPlanner;
+
+/// Optional spike-inference behaviors. The library default is off (`MaxPve`,
+/// preserving the historical output); the CaDecon app enables `noise_constrained`
+/// by default.
+///
+/// `noise_constrained` chooses the binarization threshold at the data-derived
+/// noise floor instead of maximizing fit, suppressing low-SNR spurious spikes
+/// without changing the default (max-PVE) output.
+#[derive(Clone, Copy, Default)]
+pub struct SolveOptions {
+    pub noise_constrained: bool,
+}
+
+/// Raw measurement-noise std from the high-frequency band of the periodogram
+/// (standard OASIS / CaImAn approach). Calcium signal energy sits at low
+/// frequencies; averaging power in the top half of the spectrum (≈[0.25,0.5]·fs)
+/// isolates the white-noise floor and is unaffected by how busy the trace is
+/// (unlike MAD-of-differences, which transient onsets inflate). Runs on the
+/// UNFILTERED trace, so it is immune to any HP/LP applied downstream.
+///
+/// For a plain periodogram P_k = |X_k|²/N with an unnormalized DFT, white noise
+/// of variance σ² has E[P_k] = σ², so σ² = mean of P_k over the high band.
+pub fn high_band_sigma(raw_trace: &[f32]) -> f64 {
+    let n = raw_trace.len();
+    if n < 8 {
+        return 0.0;
+    }
+    let mean = raw_trace.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    let mut input: Vec<f32> = raw_trace.iter().map(|&v| v - mean as f32).collect();
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let r2c = planner.plan_fft_forward(n);
+    let mut spectrum = r2c.make_output_vec();
+    if r2c.process(&mut input, &mut spectrum).is_err() {
+        return 0.0;
+    }
+
+    let nyq = spectrum.len(); // n/2 + 1
+    let lo = nyq / 2;
+    let mut acc = 0.0_f64;
+    let mut cnt = 0usize;
+    for c in &spectrum[lo..nyq] {
+        acc += (c.re as f64 * c.re as f64 + c.im as f64 * c.im as f64) / n as f64;
+        cnt += 1;
+    }
+    if cnt == 0 {
+        return 0.0;
+    }
+    (acc / cnt as f64).max(0.0).sqrt()
+}
+
+fn variance(x: &[f32]) -> f64 {
+    let n = x.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    x.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n as f64
+}
+
+/// Per-sample noise std of the FILTERED trace at original-grid positions — the
+/// quantity the residual budget needs. Estimates the raw noise std from the
+/// unfiltered trace (LP-immune) and scales by the empirically-measured
+/// noise-variance gain of the actual upsample→HP/LP chain: a deterministic
+/// white probe is pushed through the same path and its grid-sample variance
+/// ratio gives the gain. This makes the budget track whatever noise survives
+/// the filters, regardless of where the (kernel-derived) LP cutoff falls.
+/// (The rolling-baseline subtraction is a mild high-pass and is not replicated
+/// in the probe; its effect on noise variance is negligible.)
+fn estimate_grid_noise_sigma(
+    raw_trace: &[f32],
+    upsample_factor: usize,
+    tau_r: f64,
+    tau_d: f64,
+    fs_up: f64,
+    hp: bool,
+    lp: bool,
+) -> f64 {
+    let sigma_raw = high_band_sigma(raw_trace);
+    if sigma_raw <= 0.0 {
+        return 0.0;
+    }
+    // No filtering: grid samples equal the raw samples, so gain is 1.
+    if !hp && !lp {
+        return sigma_raw;
+    }
+
+    // Deterministic unit-ish white probe (LCG); absolute scale cancels in the ratio.
+    let n = raw_trace.len();
+    let mut probe = vec![0.0_f32; n];
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    for v in probe.iter_mut() {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *v = (((state >> 33) as f64) / ((1u64 << 31) as f64) - 1.0) as f32;
+    }
+
+    let up = upsample_trace(&probe, upsample_factor);
+    let mut solver = Solver::new();
+    solver.set_conv_mode(ConvMode::BandedAR2);
+    solver.set_params(tau_r, tau_d, 0.0, fs_up);
+    solver.set_trace(&up);
+    solver.set_hp_filter_enabled(hp);
+    solver.set_lp_filter_enabled(lp);
+    solver.apply_filter();
+    let filt = solver.get_trace();
+
+    let grid: Vec<f32> = filt
+        .iter()
+        .step_by(upsample_factor.max(1))
+        .copied()
+        .collect();
+    let var_probe = variance(&probe);
+    if var_probe <= 0.0 {
+        return sigma_raw;
+    }
+    let gain = (variance(&grid) / var_probe).max(0.0);
+    sigma_raw * gain.sqrt()
+}
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct InDecaResult {
@@ -195,6 +316,7 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
 /// used as FISTA warm-start, which typically reduces iterations by 30-60%.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_trace(
     trace: &[f32],
     tau_r: f64,
@@ -207,6 +329,39 @@ pub fn solve_trace(
     hp_enabled: bool,
     lp_enabled: bool,
     lambda: f64,
+) -> InDecaResult {
+    solve_trace_opts(
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm_counts,
+        hp_enabled,
+        lp_enabled,
+        lambda,
+        SolveOptions::default(),
+    )
+}
+
+/// See [`solve_trace`]; adds optional [`SolveOptions`] for noise-constrained
+/// threshold selection.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_trace_opts(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_counts: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    opts: SolveOptions,
 ) -> InDecaResult {
     let fs_up = fs * upsample_factor as f64;
     let upsampled = upsample_trace(trace, upsample_factor);
@@ -257,6 +412,26 @@ pub fn solve_trace(
 
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
 
+    // Noise-constrained threshold selection needs the per-sample noise std of the
+    // filtered trace at the original grid. Estimated LP-cutoff-agnostically from
+    // the raw trace's high band scaled by the filter chain's measured noise gain.
+    // Fully data-derived — no knob.
+    let selection = if opts.noise_constrained {
+        Selection::NoiseFloor {
+            sigma: estimate_grid_noise_sigma(
+                trace,
+                upsample_factor,
+                tau_r,
+                tau_d,
+                fs_up,
+                hp_enabled,
+                lp_enabled,
+            ),
+        }
+    } else {
+        Selection::MaxPve
+    };
+
     // ── Step 3: Scale iteration loop ────────────────────────────────────
     // Each round: prescale by alpha_est → Box[0,1] FISTA → threshold search
     // against the *original* trace → lstsq recovers alpha directly.
@@ -265,6 +440,7 @@ pub fn solve_trace(
     const SCALE_RTOL: f64 = 0.05;
 
     let mut best_pve = f64::NEG_INFINITY;
+    let mut best_scale_err = f64::INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
 
     // Pre-allocate scratch buffers reused across scale iterations.
@@ -325,7 +501,7 @@ pub fn solve_trace(
             threshold,
             pve,
             ..
-        } = threshold_search(
+        } = threshold_search_opts(
             s_norm_slice,
             &working_trace,
             &banded,
@@ -333,12 +509,33 @@ pub fn solve_trace(
             fs_up,
             upsample_factor,
             f64::INFINITY,
+            selection,
         );
 
-        // Track the best result by PVE.
-        // alpha_lstsq is already the true alpha (fit against original trace).
-        if pve > best_pve {
+        // Scale-loop convergence error: how close the lstsq-recovered alpha is to
+        // the prescale used this round. This is the loop's own objective.
+        let scale_err = if alpha_est > 1e-10 {
+            (alpha_lstsq / alpha_est - 1.0).abs()
+        } else {
+            f64::INFINITY
+        };
+
+        // Select the best iterate across scale rounds. alpha_lstsq is already the
+        // true alpha (fit against the original trace).
+        //
+        // MaxPve keeps the highest-PVE iterate (historical behavior). Under
+        // NoiseFloor, ranking by PVE would defeat the criterion — the inner search
+        // deliberately stops at the noise floor (below max PVE), so a max-PVE outer
+        // pick would re-select the densest-fitting iteration and re-launder the
+        // sparsity. Instead select the best-calibrated prescale (smallest scale
+        // error) — the scale loop's own fixed point, which is criterion-neutral.
+        let is_better = match selection {
+            Selection::MaxPve => pve > best_pve,
+            Selection::NoiseFloor { .. } => scale_err < best_scale_err,
+        };
+        if is_better {
             best_pve = pve;
+            best_scale_err = scale_err;
             best_result = Some((
                 s_binary,
                 alpha_lstsq,
@@ -351,7 +548,7 @@ pub fn solve_trace(
         }
 
         // Converged: alpha_lstsq ≈ alpha_est means the prescale was correct.
-        if alpha_est > 1e-10 && (alpha_lstsq / alpha_est - 1.0).abs() < SCALE_RTOL {
+        if scale_err < SCALE_RTOL {
             break;
         }
 
@@ -773,6 +970,97 @@ mod tests {
             "Should detect at least 1 spike with LP-only filter, got {} (pve={:.4})",
             total_spikes,
             result.pve
+        );
+    }
+
+    /// Deterministic white-ish noise in [-amp, amp) (variance ≈ amp²/3).
+    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let u = ((state >> 32) as f64) / ((1u64 << 31) as f64) - 1.0;
+                (u as f32) * amp
+            })
+            .collect()
+    }
+
+    #[test]
+    fn high_band_sigma_recovers_white_noise_std() {
+        // On pure white noise the high-band periodogram mean estimates the noise
+        // variance, so its sqrt should recover the injected std.
+        let n = 4096;
+        let amp = 0.3_f32;
+        let noise = lcg_noise(n, amp, 0x1234_5678);
+        let sigma_true = (amp as f64) / 3.0_f64.sqrt();
+        let sigma_est = high_band_sigma(&noise);
+        let rel = (sigma_est - sigma_true).abs() / sigma_true;
+        assert!(
+            rel < 0.15,
+            "estimated sigma {:.4} should match injected {:.4} (rel err {:.3})",
+            sigma_est,
+            sigma_true,
+            rel
+        );
+    }
+
+    #[test]
+    fn noise_constrained_recovers_events_on_noisy_trace() {
+        // Exercise the noise-floor selection path end-to-end (solve_trace_opts →
+        // estimate_grid_noise_sigma → Selection::NoiseFloor) on a genuinely noisy
+        // trace. It should recover the real events with a reasonable fit and not
+        // wildly overcount. The per-trace count is NOT guaranteed to be below the
+        // max-PVE default — the two criteria use different search strategies — so
+        // the sparsity ordering is asserted deterministically in the threshold
+        // unit test `noise_floor_larger_budget_is_sparser` instead.
+        let spike_positions = [30usize, 100, 200, 260];
+        let alpha_true = 6.0_f32;
+        let baseline_true = 2.0_f32;
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 300;
+        let mut trace = vec![baseline_true; n];
+        for &pos in &spike_positions {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n {
+                    trace[pos + k] += alpha_true * kv;
+                }
+            }
+        }
+        let noise = lcg_noise(n, 0.4, 0x0BADC0DE);
+        for (t, &e) in trace.iter_mut().zip(&noise) {
+            *t += e;
+        }
+
+        let constrained = solve_trace_opts(
+            &trace,
+            0.02,
+            0.4,
+            30.0,
+            1,
+            500,
+            1e-4,
+            None,
+            false,
+            false,
+            0.0,
+            SolveOptions {
+                noise_constrained: true,
+            },
+        );
+
+        assert_eq!(constrained.s_counts.len(), n);
+        let count: f32 = constrained.s_counts.iter().sum();
+        assert!(
+            (1.0..=(spike_positions.len() as f32 * 2.0)).contains(&count),
+            "should recover the events without gross overcounting, got {}",
+            count
+        );
+        assert!(
+            constrained.pve > 0.5,
+            "fit should be reasonable, pve {}",
+            constrained.pve
         );
     }
 }

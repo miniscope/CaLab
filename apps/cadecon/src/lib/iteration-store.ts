@@ -59,6 +59,8 @@ export interface TraceResultEntry {
   baseline: number;
   threshold: number;
   pve: number;
+  /** Spike counts from the opposite noise-constrained setting (comparison overlay). */
+  comparisonSCounts?: Float32Array;
 }
 
 function cellSubsetKey(cellIndex: number, subsetIdx: number): string {

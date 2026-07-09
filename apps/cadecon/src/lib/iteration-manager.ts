@@ -43,6 +43,8 @@ import {
   finalSelectionWindow,
   hpFilterEnabled,
   lpFilterEnabled,
+  noiseConstrained,
+  sparsityCompareEnabled,
   traceFistaMaxIters,
   traceFistaTol,
   kernelFistaMaxIters,
@@ -164,6 +166,8 @@ function dispatchTraceJobs(
   hpEnabled: boolean,
   lpEnabled: boolean,
   lambda: number,
+  noiseConstrained: boolean,
+  computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
   return new Promise((resolve) => {
@@ -211,6 +215,8 @@ function dispatchTraceJobs(
         hpEnabled,
         lpEnabled,
         lambda,
+        noiseConstrained,
+        computeComparison,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -447,6 +453,8 @@ export async function startRun(): Promise<void> {
   const hpOn = hpFilterEnabled();
   const lpOn = lpFilterEnabled();
   const sparsityLambda = 0.0;
+  const noiseConstrainedOn = noiseConstrained();
+  const computeComparison = sparsityCompareEnabled();
 
   // Create pool
   pool = createCaDeconWorkerPool();
@@ -583,6 +591,8 @@ export async function startRun(): Promise<void> {
       hpOn,
       lpOn,
       sparsityLambda,
+      noiseConstrainedOn,
+      computeComparison,
       prevTraceCounts,
     );
 
@@ -601,6 +611,8 @@ export async function startRun(): Promise<void> {
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
     const cellFiltered = new Map<number, Float32Array>();
+    // Map cell → full-length opposite-setting counts (comparison overlay)
+    const cellComparison = new Map<number, Float32Array>();
     const batchEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -621,6 +633,15 @@ export async function startRun(): Promise<void> {
           }
           fullFilt.set(result.filteredTrace, rect.tStart);
         }
+        // Stitch comparison counts subset windows into full-length arrays
+        if (result.comparisonSCounts) {
+          let fullCmp = cellComparison.get(cell);
+          if (!fullCmp) {
+            fullCmp = new Float32Array(nTp);
+            cellComparison.set(cell, fullCmp);
+          }
+          fullCmp.set(result.comparisonSCounts, rect.tStart);
+        }
         cellScalars.set(cell, {
           alpha: result.alpha,
           baseline: result.baseline,
@@ -638,6 +659,7 @@ export async function startRun(): Promise<void> {
           baseline: result.baseline,
           threshold: result.threshold,
           pve: result.pve,
+          comparisonSCounts: result.comparisonSCounts,
         };
       }
     }
@@ -656,6 +678,7 @@ export async function startRun(): Promise<void> {
         baseline: scalars.baseline,
         threshold: scalars.threshold,
         pve: scalars.pve,
+        comparisonSCounts: cellComparison.get(cell),
       };
     }
 
@@ -907,6 +930,8 @@ export async function startRun(): Promise<void> {
           hpEnabled: hpOn,
           lpEnabled: lpOn,
           lambda: sparsityLambda,
+          noiseConstrained: noiseConstrainedOn,
+          computeComparison,
           warmCounts,
           onComplete(result: TraceResult) {
             batch(() => {
@@ -919,6 +944,7 @@ export async function startRun(): Promise<void> {
                 baseline: result.baseline,
                 threshold: result.threshold,
                 pve: result.pve,
+                comparisonSCounts: result.comparisonSCounts,
               });
               finCompleted++;
               setCompletedSubsetTraceJobs(finCompleted);

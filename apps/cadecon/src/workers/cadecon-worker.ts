@@ -37,6 +37,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.lpEnabled,
       req.warmCounts ?? EMPTY_F32,
       req.lambda,
+      req.noiseConstrained,
     ) as {
       s_counts: number[];
       filtered_trace: number[] | null;
@@ -59,6 +60,29 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       : undefined;
     const transfers: ArrayBuffer[] = [sCounts.buffer];
     if (filteredTrace) transfers.push(filteredTrace.buffer);
+
+    // Teaching/impact overlay: also solve with the OPPOSITE sparsity setting.
+    // Same trace + kernel; only the threshold-selection stage differs.
+    let comparisonSCounts: Float32Array | undefined;
+    if (req.computeComparison) {
+      const cmp = indeca_solve_trace(
+        req.trace,
+        req.tauRise,
+        req.tauDecay,
+        req.fs,
+        req.upsampleFactor,
+        req.maxIters,
+        req.tol,
+        req.hpEnabled,
+        req.lpEnabled,
+        req.warmCounts ?? EMPTY_F32,
+        req.lambda,
+        !req.noiseConstrained,
+      ) as { s_counts: number[] };
+      comparisonSCounts = new Float32Array(cmp.s_counts);
+      transfers.push(comparisonSCounts.buffer as ArrayBuffer);
+    }
+
     post(
       {
         type: 'trace-complete',
@@ -72,6 +96,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           pve: jsResult.pve,
           iterations: jsResult.iterations,
           converged: jsResult.converged,
+          comparisonSCounts,
         },
       },
       transfers,
