@@ -224,8 +224,9 @@ export function TraceInspector(): JSX.Element {
   const hasComparison = createMemo(() => comparisonDeconv() != null);
 
   // Labels for the two deconv traces, by their actual setting.
-  const deconvLabel = () => (noiseConstrained() ? 'Deconv (noise-constr.)' : 'Deconv (standard)');
-  const compareLabel = () => (noiseConstrained() ? 'Deconv (standard)' : 'Deconv (noise-constr.)');
+  const settingShort = (nc: boolean) => (nc ? 'noise-constr.' : 'standard');
+  const deconvLabel = () => `Deconv (${settingShort(noiseConstrained())})`;
+  const compareLabel = () => `Deconv (${settingShort(!noiseConstrained())})`;
 
   // Zoom window state
   const totalDuration = createMemo(() => {
@@ -551,7 +552,6 @@ export function TraceInspector(): JSX.Element {
     const c = comparisonDeconv();
     return c ? c.reduce((s, v) => s + v, 0).toFixed(0) : null;
   };
-  const settingShort = (nc: boolean) => (nc ? 'noise-constr.' : 'standard');
 
   // Subset highlight zones for the minimap — show which time regions
   // the algorithm operates on for the currently selected cell.

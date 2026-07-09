@@ -92,7 +92,7 @@ export function AlgorithmSettings(): JSX.Element {
 
         <ToggleSwitch
           label="Noise-Constrained Sparsity"
-          description="Keep only spikes needed to reach the noise floor (helps low SNR)"
+          description="Stops adding spikes once the fit reaches the noise floor (suppresses spurious low-SNR spikes; below SNR≈1 it may trim real signal — toggle off)"
           checked={noiseConstrained()}
           onChange={setNoiseConstrained}
           disabled={isRunLocked()}

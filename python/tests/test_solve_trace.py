@@ -95,6 +95,22 @@ class TestSolveTrace:
         assert result.s_counts.shape == (300,)
         assert result.s_counts.sum() >= 0
 
+    def test_noise_constrained_detects_events_with_noise(self):
+        # Exercise the noise-floor selection path end-to-end on a genuinely noisy
+        # trace (a noiseless trace only hits the fallback branch). The option
+        # should still recover the real events and produce a valid fit. Note the
+        # per-trace spike count is not guaranteed to be <= the default: the two
+        # criteria use different search strategies (see the Rust
+        # `noise_floor_larger_budget_is_sparser` test for the sparsity invariant).
+        rng = np.random.default_rng(0)
+        clean = _make_trace(0.02, 0.4, 30.0, 400, [40, 150, 300], alpha=4.0, baseline=2.0)
+        trace = clean + rng.normal(0.0, 0.4, size=clean.shape)
+
+        result = solve_trace(trace, 0.02, 0.4, 30.0, noise_constrained=True)
+        assert result.s_counts.shape == (400,)
+        assert result.s_counts.sum() >= 1
+        assert result.pve > 0.5
+
 
 # ---------------------------------------------------------------------------
 # estimate_kernel

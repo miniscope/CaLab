@@ -19,9 +19,10 @@ const [showResidual, setShowResidual] = createSignal(false);
 const [showGTCalcium, setShowGTCalcium] = createSignal(true);
 const [showGTSpikes, setShowGTSpikes] = createSignal(true);
 
-// Sparsity comparison overlay: when on, TraceInspector re-runs inference for the
-// inspected cell with the OPPOSITE noise-constrained setting (same converged
-// kernel) and overlays it, so the impact of noise-constrained sparsity is visible.
+// Sparsity comparison overlay (display toggle): when on, TraceInspector overlays
+// the opposite-noise-constrained deconvolution that was precomputed during the
+// run (requires `sparsityCompareEnabled`), so the impact of noise-constrained
+// sparsity is visible. Read-only on the browse path — no live solve here.
 const [showSparsityCompare, setShowSparsityCompare] = createSignal(true);
 
 export {

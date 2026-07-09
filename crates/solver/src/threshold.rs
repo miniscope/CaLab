@@ -165,6 +165,7 @@ pub fn threshold_search_opts(
                 banded,
                 thresh,
                 pad,
+                1,
                 max_alpha,
                 &mut s_bin,
                 &mut conv_buf,
@@ -204,6 +205,7 @@ pub fn threshold_search_opts(
                 banded,
                 thresh,
                 pad,
+                1,
                 max_alpha,
                 &mut s_bin,
                 &mut conv_buf,
@@ -269,13 +271,21 @@ fn binarize(s: &[f32], threshold: f64, s_bin: &mut [f32]) {
     }
 }
 
-/// Evaluate a single threshold: binarize → convolve → lstsq → error.
+/// Evaluate a single threshold: binarize → convolve → lstsq → residual SSE.
+///
+/// Alpha/baseline are always fit over the full interior; the SSE is accumulated
+/// over the interior sampling every `stride`-th position (`stride >= 1`).
+/// `stride == 1` sums the whole interior — the max-PVE search. A larger stride
+/// restricts the residual to original-rate grid positions (`stride == upsample_
+/// factor`), where the upsampled trace equals the real samples and the noise is
+/// uncorrelated — the quantity the noise-floor budget is calibrated against.
 fn evaluate_threshold(
     s_relaxed: &[f32],
     y: &[f32],
     banded: &BandedAR2,
     threshold: f64,
     pad: usize,
+    stride: usize,
     max_alpha: f64,
     s_bin: &mut [f32],
     conv_buf: &mut [f32],
@@ -285,13 +295,14 @@ fn evaluate_threshold(
 
     let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad, max_alpha);
 
-    // Error over the interior (excluding boundary padding)
     let n = y.len();
     let mut err = 0.0_f64;
-    for i in pad..n.saturating_sub(pad) {
+    let mut i = pad;
+    while i < n.saturating_sub(pad) {
         let pred = alpha * conv_buf[i] as f64 + baseline;
         let d = y[i] as f64 - pred;
         err += d * d;
+        i += stride.max(1);
     }
     err
 }
@@ -318,78 +329,53 @@ fn select_noise_floor_threshold(
     conv_buf: &mut [f32],
 ) -> f64 {
     let n = y.len();
+    // Evaluate the noise constraint on original-rate grid positions only
+    // (stride = upsample_factor): there the upsampled trace equals the real
+    // samples, avoiding the correlated, reduced-variance noise at interpolated
+    // positions, so the budget can use a noise std estimated at the original rate.
     let stride = upsample_factor.max(1);
     let n_grid = (pad..n.saturating_sub(pad)).step_by(stride).count();
     let budget = sigma * sigma * n_grid as f64;
 
-    // Up to 256 candidate thresholds, evenly spaced through the sorted values.
+    // Up to `cap` candidate thresholds, evenly spaced through the sorted values.
+    // `cap` is a fixed search resolution (mirroring the coarse/fine counts in the
+    // max-PVE path), not a result-affecting tuning knob.
     let cap = 256usize;
     let step = if vals.len() > cap {
         vals.len() as f64 / cap as f64
     } else {
         1.0
     };
-
-    let mut best_feasible = f64::NEG_INFINITY; // highest feasible threshold
-    let mut best_effort_thr = min_threshold; // min grid-SSE fallback
-    let mut best_effort_sse = f64::INFINITY;
-
+    let mut candidates: Vec<f64> = Vec::with_capacity(cap.min(vals.len()));
     let mut idx = 0.0_f64;
     while (idx as usize) < vals.len() {
         let thr = vals[idx as usize] as f64;
         idx += step;
-        if thr < min_threshold {
-            continue;
+        if thr >= min_threshold {
+            candidates.push(thr);
         }
-        let sse = grid_sse_at_threshold(
+    }
+
+    // Grid residual rises as the threshold rises (fewer spikes → worse fit), so
+    // the sparsest feasible support is the *highest* threshold within budget.
+    // Scan top-down and return the first feasible one. If none is feasible
+    // (budget tighter than the best achievable fit), fall back to the
+    // min-residual threshold found over the same scan.
+    let mut best_effort_thr = min_threshold;
+    let mut best_effort_sse = f64::INFINITY;
+    for &thr in candidates.iter().rev() {
+        let sse = evaluate_threshold(
             s_relaxed, y, banded, thr, pad, stride, max_alpha, s_bin, conv_buf,
         );
-        if sse <= budget && thr > best_feasible {
-            best_feasible = thr;
+        if sse <= budget {
+            return thr;
         }
         if sse < best_effort_sse {
             best_effort_sse = sse;
             best_effort_thr = thr;
         }
     }
-
-    if best_feasible.is_finite() {
-        best_feasible
-    } else {
-        best_effort_thr
-    }
-}
-
-/// Residual SSE at original-rate grid positions only (stride = upsample_factor),
-/// with alpha/baseline fit over the full interior. Evaluating the noise
-/// constraint on the original grid — where the upsampled trace equals the real
-/// samples — avoids the correlated, reduced-variance noise at interpolated
-/// positions, so the budget can use a noise std estimated at the original rate.
-#[allow(clippy::too_many_arguments)]
-fn grid_sse_at_threshold(
-    s_relaxed: &[f32],
-    y: &[f32],
-    banded: &BandedAR2,
-    threshold: f64,
-    pad: usize,
-    stride: usize,
-    max_alpha: f64,
-    s_bin: &mut [f32],
-    conv_buf: &mut [f32],
-) -> f64 {
-    binarize(s_relaxed, threshold, s_bin);
-    banded.convolve_forward(s_bin, conv_buf);
-    let (alpha, baseline) = lstsq_alpha_baseline(conv_buf, y, pad, max_alpha);
-    let n = y.len();
-    let mut sse = 0.0_f64;
-    let mut i = pad;
-    while i < n.saturating_sub(pad) {
-        let pred = alpha * conv_buf[i] as f64 + baseline;
-        let d = y[i] as f64 - pred;
-        sse += d * d;
-        i += stride;
-    }
-    sse
+    best_effort_thr
 }
 
 /// Least-squares fit for alpha and baseline: y ≈ alpha * conv + baseline.
@@ -581,5 +567,143 @@ mod tests {
         assert_eq!(boundary_padding(0.4, 30.0), 24);
         assert_eq!(boundary_padding(0.2, 100.0), 40);
         assert_eq!(boundary_padding(1.0, 10.0), 20);
+    }
+
+    /// Deterministic white-ish noise in [-amp, amp) via an LCG (tests must not
+    /// use real RNG). Zero-mean in expectation; variance ≈ amp²/3.
+    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let u = ((state >> 32) as f64) / ((1u64 << 31) as f64) - 1.0;
+                (u as f32) * amp
+            })
+            .collect()
+    }
+
+    /// Build a graded relaxed solution + noisy observed trace with three true
+    /// spikes whose relaxed values differ (1.0 / 0.85 / 0.7) plus weaker spurious
+    /// bumps (0.55), so the budget genuinely controls how many survive.
+    fn graded_case(banded: &BandedAR2, n: usize) -> (Vec<f32>, Vec<f32>, f64) {
+        let true_pos = [80usize, 250, 430];
+        let true_val = [1.0_f32, 0.85, 0.7];
+        let mut s_bin_true = vec![0.0_f32; n];
+        let mut s_relaxed = vec![0.0_f32; n];
+        for (&p, &v) in true_pos.iter().zip(&true_val) {
+            s_bin_true[p] = 1.0;
+            s_relaxed[p] = v;
+        }
+        for &p in &[40usize, 150, 320, 500, 560] {
+            s_relaxed[p] = 0.55;
+        }
+        let mut conv = vec![0.0_f32; n];
+        banded.convolve_forward(&s_bin_true, &mut conv);
+        let alpha = 8.0_f64;
+        let baseline = 1.0_f64;
+        let amp = 0.25_f32;
+        let noise = lcg_noise(n, amp, 0xABCDEF01);
+        let y: Vec<f32> = conv
+            .iter()
+            .zip(&noise)
+            .map(|(&c, &e)| (alpha * c as f64 + baseline) as f32 + e)
+            .collect();
+        let noise_std = (amp as f64) / 3.0_f64.sqrt();
+        (s_relaxed, y, noise_std)
+    }
+
+    #[test]
+    fn noise_floor_larger_budget_is_sparser() {
+        // A larger noise budget admits sparser (higher) thresholds, so it should
+        // never yield more spikes than a tight budget. With a huge budget the
+        // sparsest support (highest candidate) is immediately feasible; with a
+        // budget just above the noise floor, all three true spikes are required.
+        let banded = BandedAR2::new(0.02, 0.4, 30.0);
+        let n = 600;
+        let (s_relaxed, y, noise_std) = graded_case(&banded, n);
+
+        let tight = threshold_search_opts(
+            &s_relaxed,
+            &y,
+            &banded,
+            0.4,
+            30.0,
+            1,
+            f64::INFINITY,
+            Selection::NoiseFloor {
+                sigma: 1.5 * noise_std,
+            },
+        );
+        let loose = threshold_search_opts(
+            &s_relaxed,
+            &y,
+            &banded,
+            0.4,
+            30.0,
+            1,
+            f64::INFINITY,
+            Selection::NoiseFloor { sigma: 100.0 },
+        );
+
+        let tight_count: f32 = tight.s_binary.iter().sum();
+        let loose_count: f32 = loose.s_binary.iter().sum();
+        assert!(
+            loose.threshold >= tight.threshold,
+            "looser budget should pick a higher threshold ({} vs {})",
+            loose.threshold,
+            tight.threshold
+        );
+        assert!(
+            loose_count <= tight_count,
+            "looser budget should not add spikes ({} vs {})",
+            loose_count,
+            tight_count
+        );
+        assert!(
+            (tight_count - 3.0).abs() < 0.5,
+            "tight budget should keep all three true spikes, got {}",
+            tight_count
+        );
+        assert!(
+            loose_count < tight_count,
+            "huge budget should drop the weaker spikes ({} vs {})",
+            loose_count,
+            tight_count
+        );
+    }
+
+    #[test]
+    fn noise_floor_falls_back_when_infeasible() {
+        // sigma → 0 makes the budget unreachable, so no threshold is feasible and
+        // the scan must fall back to the minimum-residual threshold — which on
+        // this signal recovers the true spikes rather than returning garbage.
+        let banded = BandedAR2::new(0.02, 0.4, 30.0);
+        let n = 600;
+        let (s_relaxed, y, _) = graded_case(&banded, n);
+
+        let result = threshold_search_opts(
+            &s_relaxed,
+            &y,
+            &banded,
+            0.4,
+            30.0,
+            1,
+            f64::INFINITY,
+            Selection::NoiseFloor { sigma: 1e-9 },
+        );
+        assert!(result.threshold.is_finite());
+        let count: f32 = result.s_binary.iter().sum();
+        assert!(
+            (count - 3.0).abs() < 0.5,
+            "fallback should recover the three true spikes, got {}",
+            count
+        );
+        assert!(
+            result.pve > 0.9,
+            "fallback fit should explain the signal, pve {}",
+            result.pve
+        );
     }
 }

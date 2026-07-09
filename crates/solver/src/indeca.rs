@@ -20,7 +20,9 @@ use crate::upsample::{
 use crate::{Constraint, ConvMode, Solver};
 use realfft::RealFftPlanner;
 
-/// Optional spike-inference behaviors, off by default (current shipping path).
+/// Optional spike-inference behaviors. The library default is off (`MaxPve`,
+/// preserving the historical output); the CaDecon app enables `noise_constrained`
+/// by default.
 ///
 /// `noise_constrained` chooses the binarization threshold at the data-derived
 /// noise floor instead of maximizing fit, suppressing low-SNR spurious spikes
@@ -344,8 +346,8 @@ pub fn solve_trace(
     )
 }
 
-/// See [`solve_trace`]; adds optional [`SolveOptions`] for the count-debiasing
-/// experiment (noise-constrained threshold selection).
+/// See [`solve_trace`]; adds optional [`SolveOptions`] for noise-constrained
+/// threshold selection.
 #[allow(clippy::too_many_arguments)]
 pub fn solve_trace_opts(
     trace: &[f32],
@@ -438,6 +440,7 @@ pub fn solve_trace_opts(
     const SCALE_RTOL: f64 = 0.05;
 
     let mut best_pve = f64::NEG_INFINITY;
+    let mut best_scale_err = f64::INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
 
     // Pre-allocate scratch buffers reused across scale iterations.
@@ -509,10 +512,30 @@ pub fn solve_trace_opts(
             selection,
         );
 
-        // Track the best result by PVE.
-        // alpha_lstsq is already the true alpha (fit against original trace).
-        if pve > best_pve {
+        // Scale-loop convergence error: how close the lstsq-recovered alpha is to
+        // the prescale used this round. This is the loop's own objective.
+        let scale_err = if alpha_est > 1e-10 {
+            (alpha_lstsq / alpha_est - 1.0).abs()
+        } else {
+            f64::INFINITY
+        };
+
+        // Select the best iterate across scale rounds. alpha_lstsq is already the
+        // true alpha (fit against the original trace).
+        //
+        // MaxPve keeps the highest-PVE iterate (historical behavior). Under
+        // NoiseFloor, ranking by PVE would defeat the criterion — the inner search
+        // deliberately stops at the noise floor (below max PVE), so a max-PVE outer
+        // pick would re-select the densest-fitting iteration and re-launder the
+        // sparsity. Instead select the best-calibrated prescale (smallest scale
+        // error) — the scale loop's own fixed point, which is criterion-neutral.
+        let is_better = match selection {
+            Selection::MaxPve => pve > best_pve,
+            Selection::NoiseFloor { .. } => scale_err < best_scale_err,
+        };
+        if is_better {
             best_pve = pve;
+            best_scale_err = scale_err;
             best_result = Some((
                 s_binary,
                 alpha_lstsq,
@@ -525,7 +548,7 @@ pub fn solve_trace_opts(
         }
 
         // Converged: alpha_lstsq ≈ alpha_est means the prescale was correct.
-        if alpha_est > 1e-10 && (alpha_lstsq / alpha_est - 1.0).abs() < SCALE_RTOL {
+        if scale_err < SCALE_RTOL {
             break;
         }
 
@@ -947,6 +970,97 @@ mod tests {
             "Should detect at least 1 spike with LP-only filter, got {} (pve={:.4})",
             total_spikes,
             result.pve
+        );
+    }
+
+    /// Deterministic white-ish noise in [-amp, amp) (variance ≈ amp²/3).
+    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let u = ((state >> 32) as f64) / ((1u64 << 31) as f64) - 1.0;
+                (u as f32) * amp
+            })
+            .collect()
+    }
+
+    #[test]
+    fn high_band_sigma_recovers_white_noise_std() {
+        // On pure white noise the high-band periodogram mean estimates the noise
+        // variance, so its sqrt should recover the injected std.
+        let n = 4096;
+        let amp = 0.3_f32;
+        let noise = lcg_noise(n, amp, 0x1234_5678);
+        let sigma_true = (amp as f64) / 3.0_f64.sqrt();
+        let sigma_est = high_band_sigma(&noise);
+        let rel = (sigma_est - sigma_true).abs() / sigma_true;
+        assert!(
+            rel < 0.15,
+            "estimated sigma {:.4} should match injected {:.4} (rel err {:.3})",
+            sigma_est,
+            sigma_true,
+            rel
+        );
+    }
+
+    #[test]
+    fn noise_constrained_recovers_events_on_noisy_trace() {
+        // Exercise the noise-floor selection path end-to-end (solve_trace_opts →
+        // estimate_grid_noise_sigma → Selection::NoiseFloor) on a genuinely noisy
+        // trace. It should recover the real events with a reasonable fit and not
+        // wildly overcount. The per-trace count is NOT guaranteed to be below the
+        // max-PVE default — the two criteria use different search strategies — so
+        // the sparsity ordering is asserted deterministically in the threshold
+        // unit test `noise_floor_larger_budget_is_sparser` instead.
+        let spike_positions = [30usize, 100, 200, 260];
+        let alpha_true = 6.0_f32;
+        let baseline_true = 2.0_f32;
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let n = 300;
+        let mut trace = vec![baseline_true; n];
+        for &pos in &spike_positions {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n {
+                    trace[pos + k] += alpha_true * kv;
+                }
+            }
+        }
+        let noise = lcg_noise(n, 0.4, 0x0BADC0DE);
+        for (t, &e) in trace.iter_mut().zip(&noise) {
+            *t += e;
+        }
+
+        let constrained = solve_trace_opts(
+            &trace,
+            0.02,
+            0.4,
+            30.0,
+            1,
+            500,
+            1e-4,
+            None,
+            false,
+            false,
+            0.0,
+            SolveOptions {
+                noise_constrained: true,
+            },
+        );
+
+        assert_eq!(constrained.s_counts.len(), n);
+        let count: f32 = constrained.s_counts.iter().sum();
+        assert!(
+            (1.0..=(spike_positions.len() as f32 * 2.0)).contains(&count),
+            "should recover the events without gross overcounting, got {}",
+            count
+        );
+        assert!(
+            constrained.pve > 0.5,
+            "fit should be reasonable, pve {}",
+            constrained.pve
         );
     }
 }
