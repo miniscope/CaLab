@@ -209,19 +209,19 @@ calab.solve_trace(
 ) -> SolveTraceResult
 ```
 
-| Parameter         | Description                                            |
-| ----------------- | ------------------------------------------------------ |
-| `trace`           | 1-D calcium trace.                                     |
-| `tau_rise`        | Rise time constant in seconds.                         |
-| `tau_decay`       | Decay time constant in seconds.                        |
-| `fs`              | Sampling rate in Hz.                                   |
-| `upsample_factor` | Upsampling multiplier (1 = no upsampling).             |
-| `max_iters`       | Maximum FISTA iterations.                              |
-| `tol`             | Convergence tolerance.                                 |
-| `hp_enabled`      | Enable high-pass filtering.                            |
-| `lp_enabled`      | Enable low-pass filtering.                             |
-| `warm_counts`     | Spike counts from a previous iteration for warm-start. |
-| `lambda_`         | L1 sparsity penalty (0 = auto).                        |
+| Parameter           | Description                                                                                                                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trace`             | 1-D calcium trace.                                                                                                                                                                                                                |
+| `tau_rise`          | Rise time constant in seconds.                                                                                                                                                                                                    |
+| `tau_decay`         | Decay time constant in seconds.                                                                                                                                                                                                   |
+| `fs`                | Sampling rate in Hz.                                                                                                                                                                                                              |
+| `upsample_factor`   | Upsampling multiplier (1 = no upsampling).                                                                                                                                                                                        |
+| `max_iters`         | Maximum FISTA iterations.                                                                                                                                                                                                         |
+| `tol`               | Convergence tolerance.                                                                                                                                                                                                            |
+| `hp_enabled`        | Enable high-pass filtering.                                                                                                                                                                                                       |
+| `lp_enabled`        | Enable low-pass filtering.                                                                                                                                                                                                        |
+| `warm_counts`       | Spike counts from a previous iteration for warm-start.                                                                                                                                                                            |
+| `lambda_`           | L1 sparsity penalty (0 = auto).                                                                                                                                                                                                   |
 | `noise_constrained` | Pick the binarization threshold as the sparsest spike support whose residual still reaches the data-derived noise floor, instead of the fit-maximizing threshold. Knob-free; suppresses spurious low-SNR spikes. Default `False`. |
 
 Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`.
