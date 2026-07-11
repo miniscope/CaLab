@@ -783,13 +783,20 @@ export async function startRun(): Promise<void> {
     tauR = median(tauRises);
     tauD = median(tauDecays);
 
-    // Convergence coordinate: kernel shape (peak time + FWHM).
+    // Convergence coordinate: kernel shape. Peak time (RTP) is rise-weighted and inherits
+    // tau_rise's persistent ~2-3%/iter jitter, so it never reliably settles; gating on it
+    // (max(dPeak,dFwhm) < convTol) stalls convergence — runs converge very late or hit
+    // maxIter. Convergence is therefore tested on FWHM alone (the decay-dominated width,
+    // which does settle), mirroring the tau_d-only rationale of the legacy stability net.
+    // shapeDelta (peak + FWHM) is still computed and exported as a dashboard diagnostic.
     const shape = tauToShape(tauR, tauD);
-    let shapeDelta: number | null = null;
+    let shapeDelta: number | null = null; // exported diagnostic: max(peak-time, FWHM) change
+    let fwhmDelta: number | null = null; // convergence test signal: FWHM change only
     if (shape && prevShape) {
       const dPeak = Math.abs(shape.tPeak - prevShape.tPeak) / (prevShape.tPeak + SHAPE_EPS);
       const dFwhm = Math.abs(shape.fwhm - prevShape.fwhm) / (prevShape.fwhm + SHAPE_EPS);
       shapeDelta = Math.max(dPeak, dFwhm);
+      fwhmDelta = dFwhm;
     }
     const riseUnresolved = tauR <= tauRiseFloor * RISE_FLOOR_MARGIN;
     if (shape) {
@@ -855,11 +862,11 @@ export async function startRun(): Promise<void> {
       });
     });
 
-    // Step 4: Convergence check in shape space. An iteration is "stable" when
-    // both peak time and FWHM change less than convTol; convergence is declared
-    // after `patience` consecutive stable iterations, once past `minIters`. A
+    // Step 4: Convergence check in shape space. An iteration is "stable" when the kernel
+    // FWHM changes less than convTol (peak time excluded — see note above); convergence is
+    // declared after `patience` consecutive stable iterations, once past `minIters`. A
     // degenerate (null) shape resets the streak — it can never count as stable.
-    if (shape && shapeDelta !== null && iter + 1 >= minIters && shapeDelta < convTol) {
+    if (shape && fwhmDelta !== null && iter + 1 >= minIters && fwhmDelta < convTol) {
       if (stableCount === 0) firstStableIter = iter + 1;
       stableCount++;
     } else {
