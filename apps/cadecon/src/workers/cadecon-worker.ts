@@ -38,6 +38,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.warmCounts ?? EMPTY_F32,
       req.lambda,
       req.noiseConstrained,
+      req.massCount,
     ) as {
       s_counts: number[];
       filtered_trace: number[] | null;
@@ -78,6 +79,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
         req.warmCounts ?? EMPTY_F32,
         req.lambda,
         !req.noiseConstrained,
+        req.massCount,
       ) as { s_counts: number[] };
       comparisonSCounts = new Float32Array(cmp.s_counts);
       transfers.push(comparisonSCounts.buffer as ArrayBuffer);

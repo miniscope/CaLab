@@ -284,6 +284,10 @@ class SolveTraceResult(NamedTuple):
     ----------
     s_counts : np.ndarray
         Spike counts at the original sampling rate, shape ``(n_timepoints,)``, float32.
+    s_rate : np.ndarray
+        Calibrated continuous firing-rate estimate (graded, same absolute scale as
+        ``s_counts`` but not rounded). Populated only when ``mass_count=True``; an
+        empty array otherwise. See ``docs/masscount_R_metrics.pdf``.
     alpha : float
         Amplitude scaling factor.
     baseline : float
@@ -299,6 +303,7 @@ class SolveTraceResult(NamedTuple):
     """
 
     s_counts: np.ndarray
+    s_rate: np.ndarray
     alpha: float
     baseline: float
     threshold: float
@@ -356,6 +361,7 @@ def solve_trace(
     warm_counts: np.ndarray | None = None,
     lambda_: float = 0.0,
     noise_constrained: bool = False,
+    mass_count: bool = False,
 ) -> SolveTraceResult:
     """Run the InDeCa pipeline on a single trace. Delegates to Rust.
 
@@ -385,6 +391,12 @@ def solve_trace(
         that maximizes fit. Suppresses noise fit as spurious spikes; the effect
         concentrates at low SNR. Knob-free (the noise floor is measured from the
         trace). Default False.
+    mass_count : bool
+        Mass-based count readout: count each contiguous event by its deconvolved
+        mass (calibrated to the single-spike mass) and refit alpha, instead of
+        the per-bin binarize→bin-sum. Corrects the coherent-grid spike overcount
+        that inflates counts and halves alpha at high upsampling. Knob-free.
+        Default False. See ``docs/cadecon-mass-count.md``.
 
     Returns
     -------
@@ -395,14 +407,15 @@ def solve_trace(
     if warm_counts is not None:
         warm = np.ascontiguousarray(warm_counts, dtype=np.float64)
 
-    s_counts, alpha, baseline, threshold, pve, iterations, converged = _indeca_solve_trace(
+    s_counts, s_rate, alpha, baseline, threshold, pve, iterations, converged = _indeca_solve_trace(
         trace_1d, tau_rise, tau_decay, fs,
         upsample_factor, max_iters, tol,
         hp_enabled, lp_enabled, warm, lambda_,
-        noise_constrained,
+        noise_constrained, mass_count,
     )
     return SolveTraceResult(
         s_counts=np.asarray(s_counts),
+        s_rate=np.asarray(s_rate),
         alpha=float(alpha),
         baseline=float(baseline),
         threshold=float(threshold),

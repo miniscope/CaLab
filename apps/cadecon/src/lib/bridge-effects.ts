@@ -13,6 +13,7 @@ import {
   setUpsampleTarget,
   setHpFilterEnabled,
   setLpFilterEnabled,
+  setMassCount,
   setMaxIterations,
   setConvergenceTol,
 } from './algorithm-store.ts';
@@ -47,6 +48,7 @@ function applyConfig(config: BridgeConfig): void {
   if (config.upsample_target != null) setUpsampleTarget(config.upsample_target);
   if (config.hp_filter_enabled != null) setHpFilterEnabled(config.hp_filter_enabled);
   if (config.lp_filter_enabled != null) setLpFilterEnabled(config.lp_filter_enabled);
+  if (config.mass_count != null) setMassCount(config.mass_count);
   if (config.max_iterations != null) setMaxIterations(config.max_iterations);
   if (config.convergence_tol != null) setConvergenceTol(config.convergence_tol);
   if (config.num_subsets != null) setNumSubsets(config.num_subsets);

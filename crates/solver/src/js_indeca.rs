@@ -35,6 +35,7 @@ pub fn indeca_solve_trace(
     warm_counts: &[f32],
     lambda: f64,
     noise_constrained: bool,
+    mass_count: bool,
 ) -> Result<JsValue, JsError> {
     if let Some(i) = crate::first_nonfinite(trace) {
         return Err(JsError::new(&format!(
@@ -58,7 +59,10 @@ pub fn indeca_solve_trace(
         hp_enabled,
         lp_enabled,
         lambda,
-        indeca::SolveOptions { noise_constrained },
+        indeca::SolveOptions {
+            noise_constrained,
+            mass_count,
+        },
     );
     Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
 }

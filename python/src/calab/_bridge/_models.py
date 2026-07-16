@@ -19,6 +19,11 @@ class DeconConfig(BaseModel):
     )
     hp_filter_enabled: bool | None = Field(None, description="Enable high-pass filter")
     lp_filter_enabled: bool | None = Field(None, description="Enable low-pass filter")
+    mass_count: bool | None = Field(
+        None,
+        description="Mass-based count readout: count events by deconvolved mass and "
+        "refit alpha, correcting the upsampling spike overcount / halved alpha",
+    )
     max_iterations: int | None = Field(
         None, gt=0, le=200, description="Maximum solver iterations (1-200)"
     )

@@ -383,7 +383,7 @@ fn select_noise_floor_threshold(
 /// Alpha is constrained to [0, max_alpha]. When max_alpha is f64::INFINITY
 /// (the default from solve_trace), alpha is effectively uncapped — the
 /// free-solve phase calibrates the prescale so alpha_lstsq lands near 1.0.
-fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize, max_alpha: f64) -> (f64, f64) {
+pub(crate) fn lstsq_alpha_baseline(conv: &[f32], y: &[f32], pad: usize, max_alpha: f64) -> (f64, f64) {
     let n = y.len();
     let lo = pad;
     let hi = n.saturating_sub(pad);

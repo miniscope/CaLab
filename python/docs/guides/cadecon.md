@@ -206,6 +206,7 @@ calab.solve_trace(
     warm_counts: np.ndarray | None = None,
     lambda_: float = 0.0,
     noise_constrained: bool = False,
+    mass_count: bool = False,
 ) -> SolveTraceResult
 ```
 
@@ -223,8 +224,9 @@ calab.solve_trace(
 | `warm_counts`       | Spike counts from a previous iteration for warm-start.                                                                                                                                                                            |
 | `lambda_`           | L1 sparsity penalty (0 = auto).                                                                                                                                                                                                   |
 | `noise_constrained` | Pick the binarization threshold as the sparsest spike support whose residual still reaches the data-derived noise floor, instead of the fit-maximizing threshold. Knob-free; suppresses spurious low-SNR spikes. Default `False`. |
+| `mass_count`        | Count each contiguous event by its deconvolved mass (calibrated to the single-spike mass) and refit alpha, instead of the per-bin binarize→bin-sum. Corrects the upsampling spike overcount / halved alpha; preserves multiplicity for resolvable bursts. Knob-free. Default `False`. See `docs/cadecon-mass-count.md`. |
 
-Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`.
+Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `s_rate`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`. `s_rate` is a calibrated **continuous firing-rate** estimate (graded, same absolute scale as `s_counts` but not rounded); it is populated only when `mass_count=True` and is an empty array otherwise. See `docs/masscount_R_metrics.pdf`.
 
 Raises `ValueError` if `trace` (or `warm_counts`) contains a non-finite value (`NaN` or `Inf`) — the FFI boundary rejects non-finite input rather than returning garbage.
 

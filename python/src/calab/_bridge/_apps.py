@@ -208,6 +208,7 @@ def decon(
     upsample_target: int | None = None,
     hp_filter_enabled: bool | None = None,
     lp_filter_enabled: bool | None = None,
+    mass_count: bool | None = None,
     max_iterations: int | None = None,
     convergence_tol: float | None = None,
     num_subsets: int | None = None,
@@ -247,6 +248,10 @@ def decon(
         Enable high-pass filter.
     lp_filter_enabled : bool, optional
         Enable low-pass filter.
+    mass_count : bool, optional
+        Mass-based count readout: count events by deconvolved mass and refit
+        alpha, correcting the upsampling spike overcount / halved alpha. See
+        ``docs/cadecon-mass-count.md``.
     max_iterations : int, optional
         Maximum solver iterations (1–200).
     convergence_tol : float, optional
@@ -273,6 +278,7 @@ def decon(
         upsample_target=upsample_target,
         hp_filter_enabled=hp_filter_enabled,
         lp_filter_enabled=lp_filter_enabled,
+        mass_count=mass_count,
         max_iterations=max_iterations,
         convergence_tol=convergence_tol,
         num_subsets=num_subsets,
