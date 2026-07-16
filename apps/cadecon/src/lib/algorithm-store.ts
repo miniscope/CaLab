@@ -11,6 +11,12 @@ const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
 // still reaches the data-derived noise floor (no tuning knob). Suppresses noise
 // fit as spurious spikes; benefit concentrates at low SNR. Off = current max-PVE.
 const [noiseConstrained, setNoiseConstrained] = createSignal(true);
+// Mass-based count readout: count events by relaxed mass (calibrated to the
+// single-spike mass) and refit alpha, instead of binarize->bin-sum. Undoes the
+// coherent-grid overcount that inflates spike counts and halves alpha at high
+// upsampling. Off by default (preserves historical output); see
+// docs/cadecon-mass-count.md.
+const [massCount, setMassCount] = createSignal(false);
 // Opt-in: during each iteration, also solve every trace with the OPPOSITE
 // noise-constrained setting and store it, so the Trace Inspector can overlay the
 // two instantly (no live solve). Doubles inference cost — off by default.
@@ -63,6 +69,8 @@ export {
   setLpFilterEnabled,
   noiseConstrained,
   setNoiseConstrained,
+  massCount,
+  setMassCount,
   sparsityCompareEnabled,
   setSparsityCompareEnabled,
   maxIterations,

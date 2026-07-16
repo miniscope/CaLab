@@ -44,6 +44,7 @@ import {
   hpFilterEnabled,
   lpFilterEnabled,
   noiseConstrained,
+  massCount,
   sparsityCompareEnabled,
   traceFistaMaxIters,
   traceFistaTol,
@@ -167,6 +168,7 @@ function dispatchTraceJobs(
   lpEnabled: boolean,
   lambda: number,
   noiseConstrained: boolean,
+  massCount: boolean,
   computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<Array<Map<number, TraceResult>>> {
@@ -216,6 +218,7 @@ function dispatchTraceJobs(
         lpEnabled,
         lambda,
         noiseConstrained,
+        massCount,
         computeComparison,
         warmCounts,
         onComplete(result: TraceResult) {
@@ -454,6 +457,7 @@ export async function startRun(): Promise<void> {
   const lpOn = lpFilterEnabled();
   const sparsityLambda = 0.0;
   const noiseConstrainedOn = noiseConstrained();
+  const massCountOn = massCount();
   const computeComparison = sparsityCompareEnabled();
 
   // Create pool
@@ -592,6 +596,7 @@ export async function startRun(): Promise<void> {
       lpOn,
       sparsityLambda,
       noiseConstrainedOn,
+      massCountOn,
       computeComparison,
       prevTraceCounts,
     );
@@ -931,6 +936,7 @@ export async function startRun(): Promise<void> {
           lpEnabled: lpOn,
           lambda: sparsityLambda,
           noiseConstrained: noiseConstrainedOn,
+          massCount: massCountOn,
           computeComparison,
           warmCounts,
           onComplete(result: TraceResult) {

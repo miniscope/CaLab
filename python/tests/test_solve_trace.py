@@ -111,6 +111,47 @@ class TestSolveTrace:
         assert result.s_counts.sum() >= 1
         assert result.pve > 0.5
 
+    def test_mass_count_accepted(self):
+        # The mass_count knob is exposed through the binding and produces a valid
+        # result without changing output shape.
+        trace = _make_trace(0.02, 0.4, 30.0, 300, [30, 100, 200], alpha=10.0, baseline=2.0)
+        result = solve_trace(trace, 0.02, 0.4, 30.0, mass_count=True)
+        assert isinstance(result, SolveTraceResult)
+        assert result.s_counts.shape == (300,)
+        assert result.s_counts.sum() >= 0
+
+    def test_mass_count_recovers_alpha_at_upsample(self):
+        # At upsampling the default readout inflates the count and halves alpha;
+        # mass_count should recover an alpha much closer to truth on clean, well-
+        # separated spikes.
+        alpha_true = 5.0
+        trace = _make_trace(
+            0.1, 0.6, 30.0, 1200, [150, 450, 750, 1050], alpha=alpha_true, baseline=2.0
+        )
+        off = solve_trace(trace, 0.1, 0.6, 30.0, upsample_factor=10)
+        on = solve_trace(trace, 0.1, 0.6, 30.0, upsample_factor=10, mass_count=True)
+        # Default path under-estimates alpha; mass_count lands near truth.
+        assert on.alpha > 1.5 * off.alpha
+        assert abs(on.alpha - alpha_true) / alpha_true < 0.2
+
+    def test_s_rate_graded_and_mass_count_only(self):
+        # s_rate is the graded, calibrated continuous rate: populated only under
+        # mass_count, fractional (not integer), same length as the trace, and
+        # integrating to roughly the true spike count.
+        n_true = 5
+        trace = _make_trace(
+            0.1, 0.6, 30.0, 1500, [150, 450, 750, 1050, 1350], alpha=5.0, baseline=2.0
+        )
+        off = solve_trace(trace, 0.1, 0.6, 30.0, upsample_factor=10)
+        on = solve_trace(trace, 0.1, 0.6, 30.0, upsample_factor=10, mass_count=True)
+        # empty without mass_count, populated with it
+        assert off.s_rate.size == 0
+        assert on.s_rate.shape == (1500,)
+        # graded: has fractional values strictly between 0 and 1
+        assert bool(((on.s_rate > 1e-4) & (on.s_rate < 0.99)).any())
+        # calibrated: integrates to roughly the true count
+        assert abs(on.s_rate.sum() - n_true) < 0.5 * n_true
+
 
 # ---------------------------------------------------------------------------
 # estimate_kernel

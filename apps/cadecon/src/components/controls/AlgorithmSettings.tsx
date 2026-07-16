@@ -11,6 +11,8 @@ import {
   setLpFilterEnabled,
   noiseConstrained,
   setNoiseConstrained,
+  massCount,
+  setMassCount,
   maxIterations,
   setMaxIterations,
   convergenceTol,
@@ -95,6 +97,14 @@ export function AlgorithmSettings(): JSX.Element {
           description="Stops adding spikes once the fit reaches the noise floor (suppresses spurious low-SNR spikes; below SNR≈1 it may trim real signal — toggle off)"
           checked={noiseConstrained()}
           onChange={setNoiseConstrained}
+          disabled={isRunLocked()}
+        />
+
+        <ToggleSwitch
+          label="Mass-Based Count"
+          description="Counts each event by its deconvolved mass and refits amplitude, correcting the spike overcount and halved alpha that upsampling causes (bursts closer than one kernel width may still merge)"
+          checked={massCount()}
+          onChange={setMassCount}
           disabled={isRunLocked()}
         />
       </div>

@@ -3,6 +3,7 @@
   "upsample_target": 300,
   "hp_filter_enabled": true,
   "lp_filter_enabled": false,
+  "mass_count": true,
   "max_iterations": 20,
   "convergence_tol": 0.01,
   "num_subsets": 4,

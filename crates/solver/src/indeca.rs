@@ -13,7 +13,7 @@
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
-use crate::threshold::{threshold_search_opts, Selection, ThresholdResult};
+use crate::threshold::{lstsq_alpha_baseline, threshold_search_opts, Selection, ThresholdResult};
 use crate::upsample::{
     downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
@@ -27,9 +27,19 @@ use realfft::RealFftPlanner;
 /// `noise_constrained` chooses the binarization threshold at the data-derived
 /// noise floor instead of maximizing fit, suppressing low-SNR spurious spikes
 /// without changing the default (max-PVE) output.
+///
+/// `mass_count` replaces the per-bin binarize→bin-sum readout with a mass-based
+/// count: on an upsampled grid the shifted-kernel dictionary is coherent, so a
+/// single spike's mass smears across adjacent bins and bin-summing overcounts it
+/// (inflating the count ~k× and halving alpha to conserve α·count). Instead, each
+/// contiguous supra-threshold run is an event whose spike count is its mass
+/// divided by the calibrated single-spike mass, and alpha is refit against
+/// that event train. Restores an unbiased, rate-independent count and alpha while
+/// preserving genuine multiplicity for temporally resolvable bursts.
 #[derive(Clone, Copy, Default)]
 pub struct SolveOptions {
     pub noise_constrained: bool,
+    pub mass_count: bool,
 }
 
 /// Raw measurement-noise std from the high-frequency band of the periodogram
@@ -143,6 +153,10 @@ fn estimate_grid_noise_sigma(
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct InDecaResult {
     pub s_counts: Vec<f32>,
+    /// Calibrated continuous firing-rate estimate (graded), on the same absolute scale
+    /// as `s_counts` but not rounded. Populated only by the `mass_count` path; empty
+    /// otherwise. See docs/masscount_R_metrics.pdf.
+    pub s_rate: Vec<f32>,
     pub filtered_trace: Option<Vec<f32>>,
     pub alpha: f64,
     pub baseline: f64,
@@ -346,6 +360,179 @@ pub fn solve_trace(
     )
 }
 
+/// Mass of a single isolated spike, used to calibrate the
+/// mass-based count. Deconvolves a synthetic peak-normalized single-spike
+/// transient through the identical Box[0,1] FISTA path, normalizes the relaxed
+/// solution to unit interior peak, and integrates it above `mass_floor` (the fixed
+/// low floor also used for the events, so both masses cover the whole bump
+/// and are comparable).
+/// Depends only on (tau, fs_up, mass_floor)
+#[allow(clippy::too_many_arguments)]
+fn single_spike_mass(
+    solver: &mut Solver,
+    banded: &BandedAR2,
+    tau_r: f64,
+    tau_d: f64,
+    fs_up: f64,
+    max_iters: u32,
+    tol: f64,
+    lambda: f64,
+    mass_floor: f64,
+) -> f64 {
+    let n = ((8.0 * tau_d * fs_up).ceil() as usize).max(64);
+    let mut s = vec![0.0_f32; n];
+    s[n / 2] = 1.0;
+    let mut transient = vec![0.0_f32; n];
+    banded.convolve_forward(&s, &mut transient); // peak-normalized (peak = 1.0)
+
+    let (relaxed, _, _, _) = solve_upsampled(
+        solver,
+        &transient,
+        tau_r,
+        tau_d,
+        fs_up,
+        max_iters,
+        tol,
+        None,
+        false,
+        false,
+        Constraint::Box01,
+        true,
+        lambda,
+    );
+
+    let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(n / 4);
+    let peak = interior_peak(&relaxed, pad);
+    if peak <= 1e-10 {
+        return 1.0;
+    }
+    let thr = mass_floor as f32;
+    let mass: f64 = relaxed
+        .iter()
+        .map(|&v| v / peak)
+        .filter(|&v| v >= thr)
+        .map(|v| v as f64)
+        .sum();
+    mass.max(1e-6)
+}
+
+/// Mass-based count readout. Each maximal contiguous run of the relaxed solution
+/// above the low floor `mass_floor` is one event (kept only if its peak clears the
+/// realness gate `theta`); its spike count is `round(run_mass / calibration_mass)`
+/// (at least 1), where `run_mass` is the integral of the relaxed solution over the
+/// run. The `count` spikes are placed within the run (single events at the run peak;
+/// bursts spread across the run span) and alpha/baseline are refit by least squares
+/// against the resulting event train, so alpha becomes the per-spike amplitude rather
+/// than the mass-conserving halved value. `s_rate` is the graded relaxed/calibration_mass
+/// over the kept runs — a continuous firing-rate estimate on the same absolute scale.
+///
+/// Returns `(s_counts, s_rate, alpha, baseline, pve)` at the original rate.
+#[allow(clippy::too_many_arguments)]
+fn mass_count_readout(
+    relaxed: &[f32],
+    theta: f64,
+    mass_floor: f64,
+    working_trace: &[f32],
+    banded: &BandedAR2,
+    tau_d: f64,
+    fs_up: f64,
+    upsample_factor: usize,
+    calibration_mass: f64,
+) -> (Vec<f32>, Vec<f32>, f64, f64, f64) {
+    let n = relaxed.len();
+    // Runs (events) are extracted down to the low floor mass_floor so the mass covers the
+    // whole bump; theta only gates realness (a run is kept iff its peak clears theta). 
+    let flo = mass_floor as f32;
+    let mut s_events = vec![0.0_f32; n];
+    // Graded s_rate: the s_relaxed is scaled by the single-spike
+    // calibration mass. Each run integrates to
+    // mass/calibration_mass ≈ true count, so summed to the frame rate it is a
+    // continuous firing-rate estimate on the correct scale. 
+    let mut s_soft = vec![0.0_f32; n];
+    let inv_calibration_mass = (1.0 / calibration_mass) as f32;
+
+    let mut i = 0;
+    while i < n {
+        if relaxed[i] >= flo {
+            let start = i;
+            let mut mass = 0.0_f64;
+            let mut peak = 0.0_f32;
+            let mut arg = i;
+            while i < n && relaxed[i] >= flo {
+                mass += relaxed[i] as f64;
+                if relaxed[i] > peak {
+                    peak = relaxed[i];
+                    arg = i;
+                }
+                i += 1;
+            }
+            let end = i; // exclusive
+            let span = end - start;
+            // Drop runs whose peak never clears the noise/selection floor.
+            if (peak as f64) < theta {
+                continue;
+            }
+            // Graded rate over the whole run.
+            for t in start..end {
+                s_soft[t] = relaxed[t] * inv_calibration_mass;
+            }
+            let count = (mass / calibration_mass).round().max(1.0) as usize;
+
+            if count <= 1 || span <= 1 {
+                s_events[arg] += 1.0; // single event at the run peak
+            } else {
+                // Spread the events across the run so the reconvolution matches a
+                // burst rather than a single tall spike.
+                let placeable = count.min(span);
+                for j in 0..placeable {
+                    let idx = start + (j * span) / placeable + span / (2 * placeable);
+                    s_events[idx.min(end - 1)] += 1.0;
+                }
+                // If there are more events than distinct bins, stack the remainder at the peak.
+                if count > placeable {
+                    s_events[arg] += (count - placeable) as f32;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    // Refit alpha + baseline against the event train.
+    let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(n / 4);
+    let mut conv = vec![0.0_f32; n];
+    banded.convolve_forward(&s_events, &mut conv);
+    let (alpha, baseline) = lstsq_alpha_baseline(&conv, working_trace, pad, f64::INFINITY);
+
+    // PVE over the interior.
+    let lo = pad;
+    let hi = n.saturating_sub(pad);
+    let mut pve = 0.0;
+    if hi > lo {
+        let len = (hi - lo) as f64;
+        let mut y_sum = 0.0_f64;
+        for i in lo..hi {
+            y_sum += working_trace[i] as f64;
+        }
+        let y_mean = y_sum / len;
+        let mut ss_tot = 0.0_f64;
+        let mut ss_res = 0.0_f64;
+        for i in lo..hi {
+            let yi = working_trace[i] as f64;
+            let d = yi - y_mean;
+            ss_tot += d * d;
+            let pred = alpha * conv[i] as f64 + baseline;
+            let r = yi - pred;
+            ss_res += r * r;
+        }
+        pve = if ss_tot > 1e-20 { 1.0 - ss_res / ss_tot } else { 0.0 };
+    }
+
+    let s_counts = downsample_binary(&s_events, upsample_factor);
+    let s_rate = downsample_binary(&s_soft, upsample_factor); // sum graded values per frame
+    (s_counts, s_rate, alpha, baseline, pve)
+}
+
 /// See [`solve_trace`]; adds optional [`SolveOptions`] for noise-constrained
 /// threshold selection.
 #[allow(clippy::too_many_arguments)]
@@ -442,6 +629,9 @@ pub fn solve_trace_opts(
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_scale_err = f64::INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
+    // Relaxed (normalized) solution of the selected iterate — only needed for
+    // the mass-count readout, so captured only when that mode is on.
+    let mut best_relaxed: Vec<f32> = Vec::new();
 
     // Pre-allocate scratch buffers reused across scale iterations.
     let wt_len = working_trace.len();
@@ -534,6 +724,9 @@ pub fn solve_trace_opts(
             Selection::NoiseFloor { .. } => scale_err < best_scale_err,
         };
         if is_better {
+            if opts.mass_count {
+                best_relaxed = s_norm_slice.to_vec();
+            }
             best_pve = pve;
             best_scale_err = scale_err;
             best_result = Some((
@@ -560,14 +753,46 @@ pub fn solve_trace_opts(
     }
 
     // ── Step 4: Extract best result ─────────────────────────────────────
-    let (s_binary, alpha, baseline, threshold, pve, iterations, converged) = best_result
+    let (s_binary, mut alpha, mut baseline, threshold, mut pve, iterations, converged) = best_result
         .unwrap_or_else(|| {
             // Fallback: no valid result found (shouldn't happen)
             (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
         });
 
-    // Downsample binary spike train to original rate using centered bins
-    let s_counts = downsample_binary(&s_binary, upsample_factor);
+    // ── Step 4b (optional): mass-based count readout ────────────────────
+    // Replace the bin-summed binary count with a mass-based event count that
+    // undoes the coherent-grid overcount (see [`SolveOptions::mass_count`]).
+    // `s_rate` (mass_count only): calibrated continuous firing-rate estimate — graded and
+    // on the correct absolute scale, complementary to the integer `s_counts` (empty otherwise).
+    let (s_counts, s_rate) = if opts.mass_count && !best_relaxed.is_empty() && threshold > 1e-9 {
+        // Mass is integrated over the WHOLE bump down to a fixed low floor mass_floor,
+        // not the (possibly near-peak) selection threshold — integrating at the tip
+        // is ill-conditioned (see docs/cadecon-mass-count.md §"calibration floor").
+        // The selection threshold is used only as a realness gate (peak >= threshold).
+        let mass_floor = (0.5 / upsample_factor.max(1) as f64).min(0.15);
+        let calibration_mass = single_spike_mass(
+            &mut solver, &banded, tau_r, tau_d, fs_up, max_iters, tol, lambda, mass_floor,
+        );
+        let (s_counts_mc, s_rate_mc, alpha_mc, baseline_mc, pve_mc) = mass_count_readout(
+            &best_relaxed,
+            threshold, // realness gate (peak >= threshold)
+            mass_floor,
+            &working_trace,
+            &banded,
+            tau_d,
+            fs_up,
+            upsample_factor,
+            calibration_mass,
+        );
+        alpha = alpha_mc;
+        baseline = baseline_mc;
+        pve = pve_mc;
+        (s_counts_mc, s_rate_mc)
+    } else {
+        // Downsample binary spike train to original rate using centered bins.
+        // s_rate is only produced by the mass-count path.
+        (downsample_binary(&s_binary, upsample_factor), Vec::new())
+    };
 
     // Downsample filtered trace to original rate directly from working_trace
     // (working_trace is not modified after baseline subtraction).
@@ -575,6 +800,7 @@ pub fn solve_trace_opts(
 
     InDecaResult {
         s_counts,
+        s_rate,
         filtered_trace,
         alpha,
         baseline,
@@ -857,6 +1083,143 @@ mod tests {
         );
     }
 
+    /// Fast guard for the readout logic (no FISTA): a run of mass ≈ calibration_mass
+    /// counts as one spike, a run of mass ≈ 2·calibration_mass as two, a sub-threshold
+    /// run is dropped, and s_rate is the graded relaxed/calibration_mass over kept runs.
+    #[test]
+    fn mass_count_readout_counts_and_gates() {
+        use crate::banded::BandedAR2;
+        let (tau_d, fs_up, factor) = (0.6, 300.0, 10usize);
+        let banded = BandedAR2::new(0.1, tau_d, fs_up);
+        let n = 300;
+        let calibration_mass = 3.0; // mass of the unit bump below
+        let (theta, mass_floor) = (0.5, 0.05);
+
+        let mut relaxed = vec![0.0_f32; n];
+        for (o, &v) in [0.3, 0.7, 1.0, 0.7, 0.3].iter().enumerate() {
+            relaxed[90 + o] = v; // event A: mass 3.0 = calibration_mass → count 1
+        }
+        for (o, &v) in [0.6, 1.0, 1.0, 1.0, 1.0, 1.0, 0.4].iter().enumerate() {
+            relaxed[130 + o] = v; // burst B: one run, mass 6.0 = 2·calibration_mass → count 2
+        }
+        relaxed[190] = 0.3; // sub-threshold C: peak 0.3 < theta → gated out
+        relaxed[191] = 0.3;
+
+        // Working trace correlated with the events so the alpha refit is well-posed.
+        let mut probe = vec![0.0_f32; n];
+        for &p in &[92usize, 131, 134] {
+            probe[p] = 1.0;
+        }
+        let mut wt = vec![0.0_f32; n];
+        banded.convolve_forward(&probe, &mut wt);
+        for v in wt.iter_mut() {
+            *v = 5.0 * *v + 2.0;
+        }
+
+        let (s_counts, s_rate, alpha, _b, _pve) = mass_count_readout(
+            &relaxed, theta, mass_floor, &wt, &banded, tau_d, fs_up, factor, calibration_mass,
+        );
+
+        // counts: A → 1, B → 2, C gated → total 3
+        assert!((s_counts.iter().sum::<f32>() - 3.0).abs() < 1e-6);
+        // s_rate integrates to (3+6)/calibration_mass = 3 over kept runs, graded (fractional)
+        assert!((s_rate.iter().sum::<f32>() - 3.0).abs() < 1e-2);
+        assert!(s_rate.iter().any(|&v| (v - v.round()).abs() > 0.05));
+        assert!(alpha.is_finite() && alpha > 0.0);
+    }
+
+    /// mass_count readout restores an unbiased alpha and spike count at the
+    /// default 10x upsample, where the bin-sum readout inflates the count ~k x
+    /// and halves alpha. Uses moderate (~1 Hz) firing where events are mostly
+    /// temporally resolvable, so both count and alpha should recover.
+    #[test]
+    #[ignore = "slow end-to-end regression (2 full + 2 calibration solves); run in CI with `cargo test -- --ignored`"]
+    fn mass_count_restores_alpha_and_count() {
+        let tau_r = 0.1;
+        let tau_d = 0.6;
+        let fs = 30.0;
+        let n = 1500;
+        let factor = 10;
+        let alpha_true = 5.0_f32;
+        let baseline = 2.0_f32;
+        let kernel = build_kernel(tau_r, tau_d, fs);
+
+        // Deterministic ~1 Hz spike train (xorshift; no rand/Date dependency).
+        let mut seed: u64 = 0x51A5_2025;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let p = 1.0 / fs; // ~1 Hz
+        let mut s_true = vec![0.0_f32; n];
+        for v in s_true.iter_mut() {
+            if next() < p {
+                *v = 1.0;
+            }
+        }
+        let n_true: f32 = s_true.iter().sum();
+        let mut trace = vec![baseline; n];
+        for i in 0..n {
+            if s_true[i] > 0.5 {
+                for (k, &kv) in kernel.iter().enumerate() {
+                    if i + k < n {
+                        trace[i + k] += alpha_true * kv;
+                    }
+                }
+            }
+        }
+        // SNR ~20 additive Gaussian noise.
+        let sigma = alpha_true / 20.0;
+        for v in trace.iter_mut() {
+            let u1 = next().max(1e-12);
+            let u2 = next();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            *v += (z as f32) * sigma;
+        }
+
+        let solve = |mass_count: bool| {
+            solve_trace_opts(
+                &trace, tau_r, tau_d, fs, factor, 1000, 1e-4, None, false, false, 0.0,
+                SolveOptions { noise_constrained: true, mass_count },
+            )
+        };
+
+        // Baseline (current behavior): alpha collapses, count inflates.
+        let off = solve(false);
+        let count_off: f32 = off.s_counts.iter().sum();
+        let alpha_ratio_off = off.alpha / alpha_true as f64;
+        assert!(
+            alpha_ratio_off < 0.4,
+            "sanity: without mass_count alpha should be badly under-estimated, got ratio {:.3}",
+            alpha_ratio_off
+        );
+        assert!(
+            count_off as f32 / n_true > 2.0,
+            "sanity: without mass_count count should be inflated, got ratio {:.2}",
+            count_off / n_true
+        );
+
+        // Fixed: alpha and count both recover.
+        let on = solve(true);
+        let count_on: f32 = on.s_counts.iter().sum();
+        let alpha_ratio_on = on.alpha / alpha_true as f64;
+        let count_ratio_on = count_on / n_true;
+        assert!(
+            (0.8..=1.2).contains(&alpha_ratio_on),
+            "mass_count alpha ratio should be ~1, got {:.3} (count_ratio {:.2})",
+            alpha_ratio_on,
+            count_ratio_on
+        );
+        assert!(
+            (0.75..=1.25).contains(&count_ratio_on),
+            "mass_count count ratio should be ~1 at 1 Hz, got {:.2} (alpha_ratio {:.3})",
+            count_ratio_on,
+            alpha_ratio_on
+        );
+    }
+
     /// HP+LP filter path should produce valid results and return a filtered trace.
     #[test]
     fn filter_path_hp_lp() {
@@ -1047,6 +1410,7 @@ mod tests {
             0.0,
             SolveOptions {
                 noise_constrained: true,
+                mass_count: false,
             },
         );
 
