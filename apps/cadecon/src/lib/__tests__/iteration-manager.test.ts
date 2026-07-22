@@ -279,7 +279,7 @@ describe('iteration-manager: startRun dispatch sequence', () => {
 
   it('converges early when the kernel shape stabilises (patience streak)', async () => {
     // The fake pool always returns the same tauRise/tauDecay, so every
-    // iteration's (tPeak, FWHM) is identical → shapeDelta ~ 0 < convTol. After
+    // iteration's kernel is identical → kernelRmse ~ 0 < convTol. After
     // `patience` consecutive stable iterations (past minIters) the loop stops and
     // records the FIRST iteration of the confirming window.
     seedMinimalRun();

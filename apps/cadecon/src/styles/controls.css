@@ -533,28 +533,6 @@
   padding-bottom: 2px;
 }
 
-.asymptote-cell__legend {
-  display: inline-flex;
-  gap: var(--space-sm);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text-tertiary);
-  font-weight: var(--font-weight-normal);
-}
-
-.asymptote-cell__legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.asymptote-cell__swatch {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  display: inline-block;
-}
-
 /* ========================
    Progress Bar
    ======================== */

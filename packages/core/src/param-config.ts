@@ -30,17 +30,24 @@ export const PARAM_RANGES = {
 /**
  * CaDecon iterative-loop convergence parameters.
  *
- * Convergence is tested in kernel SHAPE space (peak time + FWHM) rather than in
- * (tau_rise, tau_decay): the tau pair is degenerate (tau_rise <-> tau_decay
- * thrash inflates the delta), so a shape-space tolerance settles meaningfully.
+ * Convergence is tested with the peak-normalized RMSE between successive
+ * iterations' bi-exponential kernels (a fraction of peak, → 0 at convergence),
+ * rather than a relative change of (tau_rise, tau_decay) or (peak time, FWHM):
+ * the waveform RMSE weights each parameter's change by how much it actually moves
+ * the kernel, so a jittery t_peak on the poorly-constrained rising edge no longer
+ * delays convergence over a change that barely alters the shape.
  */
 export const CONVERGENCE_RANGES = {
-  /** Relative change of peak time AND FWHM below which an iteration counts as "stable". */
+  /**
+   * Peak-normalized kernel RMSE below which an iteration counts as "stable",
+   * as a fraction of peak (0.005 ≈ 0.5%-of-peak typical deviation ≈ a ~2% change
+   * in tau).
+   */
   convergenceTol: {
-    min: 0.005,
-    max: 0.1,
-    default: 0.02,
-    step: 0.005,
+    min: 0.001,
+    max: 0.05,
+    default: 0.005,
+    step: 0.001,
   },
   /** Consecutive stable iterations required before declaring convergence. */
   convergencePatience: {

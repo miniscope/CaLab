@@ -22,7 +22,7 @@ export const interpretingTutorial: Tutorial = {
       element: '[data-tutorial="kernel-convergence"]',
       title: 'Signs of Healthy Convergence',
       description:
-        'Start on the <b>Asymptote</b> tab — its four small charts are your first check. Kernel shape (peak time &amp; FWHM), kernel-fit R², reconstruction PVE, and activity stability should all <b>flatten toward a plateau</b> as the run settles; the green marker shows the iteration where CaDecon declared convergence. The <b>Kernel</b> tab shows the shape itself over iterations, and <b>Distributions</b> shows the per-cell alpha, PVE, and event-rate spread. <b>Warning signs:</b> curves still moving when the run ends (the kernel never stabilized — usually low SNR or an unlucky subset draw; try higher coverage or re-tiling), or a sharp reset mid-run followed by divergence.',
+        'Start on the <b>Asymptote</b> tab — its four small charts are your first check. The kernel-change RMSE and activity change should <b>decay toward 0</b> (the RMSE toward its tolerance band), while kernel-fit R² and reconstruction PVE <b>rise to a plateau</b>, as the run settles; the green marker shows the iteration where CaDecon declared convergence. The <b>Kernel</b> tab shows the shape itself over iterations, and <b>Distributions</b> shows the per-cell alpha, PVE, and event-rate spread. <b>Warning signs:</b> curves still moving when the run ends (the kernel never stabilized — usually low SNR or an unlucky subset draw; try higher coverage or re-tiling), or a sharp reset mid-run followed by divergence.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
