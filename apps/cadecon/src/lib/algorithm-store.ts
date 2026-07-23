@@ -17,11 +17,12 @@ const [noiseConstrained, setNoiseConstrained] = createSignal(true);
 const [sparsityCompareEnabled, setSparsityCompareEnabled] = createSignal(false);
 const [maxIterations, setMaxIterations] = createSignal(20);
 
-// Convergence is tested in kernel SHAPE space (peak time + FWHM). convergenceTol
-// is the relative change of BOTH peak and FWHM below which an iteration counts as
-// stable; patience/minIters gate when convergence may be declared; the final
-// kernel is the median of the last `finalSelectionWindow` iterates' shapes.
-// Defaults live in @calab/core CONVERGENCE_RANGES (single source of truth).
+// Convergence is tested with the peak-normalized RMSE between successive
+// iterations' kernels. convergenceTol is the fraction-of-peak change below which
+// an iteration counts as stable; patience/minIters gate when convergence may be
+// declared; the final kernel is the median of the last `finalSelectionWindow`
+// iterates' shapes. Defaults live in @calab/core CONVERGENCE_RANGES (single
+// source of truth).
 const [convergenceTol, setConvergenceTol] = createSignal<number>(
   CONVERGENCE_RANGES.convergenceTol.default,
 );

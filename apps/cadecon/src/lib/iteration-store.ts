@@ -28,12 +28,16 @@ export interface KernelSnapshot {
   tauDecayFast: number;
   betaFast: number;
   fs: number;
-  /** Kernel peak time (s), the convergence coordinate. null if shape is degenerate. */
+  /** Kernel peak time (s), the final-selection coordinate / Kernel-tab diagnostic. null if degenerate. */
   tPeak: number | null;
-  /** Kernel full-width-half-max (s), the convergence coordinate. null if degenerate. */
+  /** Kernel full-width-half-max (s), the final-selection coordinate / Kernel-tab diagnostic. null if degenerate. */
   fwhm: number | null;
-  /** Max relative change of tPeak/FWHM vs the previous iteration. null on iter 0 / degenerate. */
-  shapeDelta: number | null;
+  /**
+   * Peak-normalized RMSE between this iteration's kernel and the previous one
+   * (fraction of peak, → 0 at convergence) — the convergence metric. null on
+   * iter 0 / degenerate shape.
+   */
+  kernelRmse: number | null;
   /** True when tau_rise is pinned at the sampling-rate clamp floor (rise unresolved at this fs). */
   riseUnresolved: boolean;
   // --- Asymptote diagnostics (per iteration) ---

@@ -4,7 +4,14 @@ export { createCaTuneWorkerPool } from './catune-pool.ts';
 export type { CaTunePoolJob } from './catune-pool.ts';
 export { resolveWorkerCount, getWorkersOverride, getDefaultWorkerCount } from './worker-sizing.ts';
 export { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-start-cache.ts';
-export { computeKernel, computeKernelAnnotations } from './kernel-math.ts';
+export {
+  computeKernel,
+  computeKernelAnnotations,
+  sampleBiexp,
+  kernelShapeRmse,
+  KERNEL_DURATION_MULTIPLE,
+  KERNEL_RMSE_MIN_SAMPLES,
+} from './kernel-math.ts';
 export { tauToShape, shapeToTau, isValidShapePair } from './kernel-shape.ts';
 export { downsampleMinMax } from './downsample.ts';
 export { makeTimeAxis } from './time-axis.ts';

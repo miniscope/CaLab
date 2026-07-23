@@ -8,7 +8,13 @@
 //   5. On convergence/max iters: finalization pass on ALL cells
 
 import { batch } from 'solid-js';
-import { tauToShape, shapeToTau, type WorkerPool } from '@calab/compute';
+import {
+  tauToShape,
+  shapeToTau,
+  kernelShapeRmse,
+  KERNEL_DURATION_MULTIPLE,
+  type WorkerPool,
+} from '@calab/compute';
 import { createCaDeconWorkerPool, type CaDeconPoolJob } from './cadecon-pool.ts';
 import type {
   TraceResult,
@@ -79,8 +85,6 @@ export const BIEXP_FIT_SKIP = 0;
  */
 type KernelJobResult = KernelResult & { subsetIdx: number };
 
-/** Denominator guard for relative shape deltas (peak/FWHM are in seconds). */
-const SHAPE_EPS = 1e-9;
 /** Absolute floor of the Rust tau_rise clamp (mirrors biexp_fit.rs tau_r_lo). */
 const RISE_CLAMP_FLOOR_S = 0.005;
 /** tau_rise within this factor of the clamp floor is flagged "rise unresolved". */
@@ -100,7 +104,14 @@ function sumSq(a: ArrayLike<number>): number {
 /**
  * Median normalized L2 change in per-cell activity between two iterations'
  * stitched s_counts maps: median over cells present in both (and non-silent) of
- * ||s_new - s_old|| / (||s_new|| + eps). Returns null if no comparable cells.
+ * ||s_new - s_old|| / (max(||s_new||, ||s_old||) + eps). Returns null if no
+ * comparable cells.
+ *
+ * The symmetric max(...) denominator keeps the ratio bounded to [0, sqrt(2)] and
+ * stops it from exploding when a cell's activity collapses toward zero between
+ * iterations (which a ||s_new||-only denominator would). s_counts are native-rate
+ * bin counts (the solver downsamples the upsampled train before returning), so
+ * this measures change at the resolution the data actually constrains.
  */
 function computeTraceStability(
   prev: Map<number, Float32Array> | undefined,
@@ -112,13 +123,15 @@ function computeTraceStability(
     const sOld = prev.get(cell);
     if (!sOld || sOld.length !== sNew.length) continue;
     const normNew = Math.sqrt(sumSq(sNew));
-    if (normNew < STABILITY_MIN_ACTIVITY) continue;
+    const normOld = Math.sqrt(sumSq(sOld));
+    const denom = Math.max(normNew, normOld);
+    if (denom < STABILITY_MIN_ACTIVITY) continue;
     let diff = 0;
     for (let i = 0; i < sNew.length; i++) {
       const d = sNew[i] - sOld[i];
       diff += d * d;
     }
-    deltas.push(Math.sqrt(diff) / (normNew + STABILITY_EPS));
+    deltas.push(Math.sqrt(diff) / (denom + STABILITY_EPS));
   }
   return deltas.length > 0 ? median(deltas) : null;
 }
@@ -438,7 +451,8 @@ export async function startRun(): Promise<void> {
   let tauD = TAU_DECAY_FALLBACK;
   const upFactor = upsampleFactor();
   const maxIter = maxIterations();
-  // Shape-space convergence controls (see algorithm-store / CONVERGENCE_RANGES).
+  // Convergence controls (see algorithm-store / CONVERGENCE_RANGES). convTol is
+  // the kernel-RMSE threshold; selWindow is still a shape-space (median) control.
   const convTol = convergenceTol();
   const patience = convergencePatience();
   const minIters = convergenceMinIters();
@@ -502,22 +516,26 @@ export async function startRun(): Promise<void> {
     return;
   }
 
-  // Kernel length: 5x tau_decay in samples (matches CaTune's computeKernel convention)
-  const kernelLength = Math.max(10, Math.ceil(5.0 * tauD * fs));
+  // Kernel length: KERNEL_DURATION_MULTIPLE x tau_decay in samples (matches CaTune's computeKernel convention)
+  const kernelLength = Math.max(10, Math.ceil(KERNEL_DURATION_MULTIPLE * tauD * fs));
 
   // Warm-start state carried between iterations
   let prevTraceCounts: Map<number, Float32Array> | undefined;
   let prevKernels: Float32Array[] | undefined;
   let prevBiexpResults: WarmBiexp[] | undefined;
 
-  // Shape-space convergence tracking. (tau_rise, tau_decay) is a degenerate
-  // convergence coordinate (tau_rise <-> tau_decay thrash inflates the delta), so
-  // we test convergence in (tPeak, FWHM) space: an iteration is "stable" when both
-  // move less than convTol relative to the previous one, and we declare
-  // convergence after `patience` consecutive stable iterations. The final kernel
-  // is the median of the last `selWindow` iterates' shapes — not the argmin of the
-  // (bouncy, unreliable) bi-exponential residual, which the old revert used.
+  // Convergence tracking. We test convergence with the peak-normalized RMSE
+  // between successive iterations' bi-exponential kernels (kernelShapeRmse): an
+  // iteration is "stable" when that whole-waveform change is < convTol, and we
+  // declare convergence after `patience` consecutive stable iterations. RMSE on
+  // the waveform avoids the old (tPeak, FWHM) relative delta's over-sensitivity to
+  // t_peak jitter on the poorly-constrained rising edge. (tPeak/FWHM are still
+  // tracked for the Kernel-tab diagnostics and the final-selection step.) The
+  // final kernel is the median of the last `selWindow` iterates' shapes — not the
+  // argmin of the (bouncy, unreliable) bi-exponential residual.
   let prevShape = tauToShape(tauR, tauD);
+  let prevTauR = tauR;
+  let prevTauD = tauD;
   let stableCount = 0;
   let firstStableIter: number | null = null;
   const shapeTrail: Array<{ tauRise: number; tauDecay: number; tPeak: number; fwhm: number }> = [];
@@ -536,7 +554,7 @@ export async function startRun(): Promise<void> {
       fs,
       tPeak: prevShape?.tPeak ?? null,
       fwhm: prevShape?.fwhm ?? null,
-      shapeDelta: null,
+      kernelRmse: null,
       riseUnresolved: false,
       kernelFitR2: null,
       medianPve: null,
@@ -783,13 +801,13 @@ export async function startRun(): Promise<void> {
     tauR = median(tauRises);
     tauD = median(tauDecays);
 
-    // Convergence coordinate: kernel shape (peak time + FWHM).
+    // Convergence metric: peak-normalized RMSE between this iteration's kernel and
+    // the previous one (fraction of peak, → 0 at convergence). A degenerate shape
+    // (current or previous) leaves it null, which resets the stability streak.
     const shape = tauToShape(tauR, tauD);
-    let shapeDelta: number | null = null;
+    let kernelRmse: number | null = null;
     if (shape && prevShape) {
-      const dPeak = Math.abs(shape.tPeak - prevShape.tPeak) / (prevShape.tPeak + SHAPE_EPS);
-      const dFwhm = Math.abs(shape.fwhm - prevShape.fwhm) / (prevShape.fwhm + SHAPE_EPS);
-      shapeDelta = Math.max(dPeak, dFwhm);
+      kernelRmse = kernelShapeRmse(prevTauR, prevTauD, tauR, tauD, fs);
     }
     const riseUnresolved = tauR <= tauRiseFloor * RISE_FLOOR_MARGIN;
     if (shape) {
@@ -834,7 +852,7 @@ export async function startRun(): Promise<void> {
         fs,
         tPeak: shape?.tPeak ?? null,
         fwhm: shape?.fwhm ?? null,
-        shapeDelta,
+        kernelRmse,
         riseUnresolved,
         kernelFitR2,
         medianPve,
@@ -855,18 +873,23 @@ export async function startRun(): Promise<void> {
       });
     });
 
-    // Step 4: Convergence check in shape space. An iteration is "stable" when
-    // both peak time and FWHM change less than convTol; convergence is declared
-    // after `patience` consecutive stable iterations, once past `minIters`. A
-    // degenerate (null) shape resets the streak — it can never count as stable.
-    if (shape && shapeDelta !== null && iter + 1 >= minIters && shapeDelta < convTol) {
+    // Step 4: Convergence check on kernel-shape RMSE. An iteration is "stable"
+    // when the peak-normalized kernel changed less than convTol vs the previous
+    // iteration; convergence is declared after `patience` consecutive stable
+    // iterations, once past `minIters`. A null RMSE (degenerate current/previous
+    // shape) resets the streak — it can never count as stable.
+    if (kernelRmse !== null && iter + 1 >= minIters && kernelRmse < convTol) {
       if (stableCount === 0) firstStableIter = iter + 1;
       stableCount++;
     } else {
       stableCount = 0;
       firstStableIter = null;
     }
-    if (shape) prevShape = shape;
+    if (shape) {
+      prevShape = shape;
+      prevTauR = tauR;
+      prevTauD = tauD;
+    }
 
     if (stableCount >= patience) {
       setConvergedAtIteration(firstStableIter);

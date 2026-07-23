@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKernel } from '@calab/compute';
+import { computeKernel, kernelShapeRmse, KERNEL_RMSE_MIN_SAMPLES } from '@calab/compute';
 
 describe('computeKernel', () => {
   const tauRise = 0.02;
@@ -67,5 +67,40 @@ describe('computeKernel', () => {
 
     // Last value should be much smaller than peak
     expect(y[y.length - 1]).toBeLessThan(0.05);
+  });
+});
+
+describe('kernelShapeRmse', () => {
+  const fs = 30;
+
+  it('is 0 for identical kernels', () => {
+    expect(kernelShapeRmse(0.05, 0.5, 0.05, 0.5, fs)).toBe(0);
+  });
+
+  it('is symmetric', () => {
+    const a = kernelShapeRmse(0.05, 0.5, 0.06, 0.55, fs);
+    const b = kernelShapeRmse(0.06, 0.55, 0.05, 0.5, fs);
+    expect(a).toBeCloseTo(b, 12);
+  });
+
+  it('grows with the size of the shape change', () => {
+    const small = kernelShapeRmse(0.05, 0.5, 0.05, 0.505, fs); // 1% tau_decay change
+    const large = kernelShapeRmse(0.05, 0.5, 0.05, 0.55, fs); // 10% tau_decay change
+    expect(small).toBeGreaterThan(0);
+    expect(large).toBeGreaterThan(small);
+  });
+
+  it('reports a small change as a small fraction of peak', () => {
+    // ~2% tau_decay change should land near the 0.005 default tolerance scale.
+    const d = kernelShapeRmse(0.05, 0.5, 0.05, 0.51, fs);
+    expect(d).toBeGreaterThan(0.001);
+    expect(d).toBeLessThan(0.02);
+  });
+
+  it('densifies the grid to KERNEL_RMSE_MIN_SAMPLES for a fast kernel at low fs', () => {
+    // At 10 Hz with tau_decay 0.2 s the native window is only ~10 samples; the
+    // floor keeps the RMS estimate stable (identical kernels still give 0).
+    expect(kernelShapeRmse(0.02, 0.2, 0.02, 0.2, 10)).toBe(0);
+    expect(KERNEL_RMSE_MIN_SAMPLES).toBe(24);
   });
 });

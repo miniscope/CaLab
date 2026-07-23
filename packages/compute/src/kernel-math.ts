@@ -3,46 +3,88 @@
  * h(t) = exp(-t/tauDecay) - exp(-t/tauRise), normalized to peak = 1.
  */
 
+/** Kernel duration as a multiple of tauDecay (e^-5 ≈ 0.7% of peak remains). */
+export const KERNEL_DURATION_MULTIPLE = 5;
+
+/** Floor on the convergence-RMSE grid sample count (see kernelShapeRmse). */
+export const KERNEL_RMSE_MIN_SAMPLES = 24;
+
+/**
+ * Sample a peak-normalized double-exponential kernel h(t)=exp(-t/τ_d)-exp(-t/τ_r)
+ * onto `n` points at spacing `dt`, normalized to its sampled peak of 1. The
+ * shared sampling primitive behind both computeKernel and kernelShapeRmse.
+ */
+export function sampleBiexp(tauRise: number, tauDecay: number, n: number, dt: number): number[] {
+  const y = new Array<number>(n);
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i * dt;
+    const v = Math.exp(-t / tauDecay) - Math.exp(-t / tauRise);
+    y[i] = v;
+    if (v > peak) peak = v;
+  }
+  if (peak > 0) {
+    for (let i = 0; i < n; i++) y[i] /= peak;
+  }
+  return y;
+}
+
 /**
  * Compute a double-exponential calcium impulse response kernel.
  *
  * @param tauRise - Rise time constant in seconds (e.g., 0.02)
  * @param tauDecay - Decay time constant in seconds (e.g., 0.4)
  * @param fs - Sampling rate in Hz (e.g., 30)
- * @param durationMultiple - Multiple of tauDecay for kernel duration (default 5)
+ * @param durationMultiple - Multiple of tauDecay for kernel duration
  * @returns Object with x (time in seconds) and y (kernel amplitude) as number[]
  */
 export function computeKernel(
   tauRise: number,
   tauDecay: number,
   fs: number,
-  durationMultiple: number = 5,
+  durationMultiple: number = KERNEL_DURATION_MULTIPLE,
 ): { x: number[]; y: number[] } {
   const dt = 1 / fs;
-  const duration = durationMultiple * tauDecay;
-  const numPoints = Math.ceil(duration * fs);
-
+  const numPoints = Math.ceil(durationMultiple * tauDecay * fs);
+  const y = sampleBiexp(tauRise, tauDecay, numPoints, dt);
   const x: number[] = new Array(numPoints);
-  const y: number[] = new Array(numPoints);
-
-  for (let i = 0; i < numPoints; i++) {
-    const t = i * dt;
-    x[i] = t;
-    y[i] = Math.exp(-t / tauDecay) - Math.exp(-t / tauRise);
-  }
-
-  // Normalize to peak = 1
-  let peak = 0;
-  for (let i = 0; i < numPoints; i++) {
-    if (y[i] > peak) peak = y[i];
-  }
-  if (peak > 0) {
-    for (let i = 0; i < numPoints; i++) {
-      y[i] /= peak;
-    }
-  }
-
+  for (let i = 0; i < numPoints; i++) x[i] = i * dt;
   return { x, y };
+}
+
+/**
+ * Convergence metric: peak-normalized RMSE between two bi-exponential kernels.
+ *
+ * Both kernels are sampled on a shared grid spanning [0, 5·max(τ_d)] — the `max`
+ * guarantees neither decay tail is truncated when τ_decay changes between
+ * iterations — at the native sampling rate (grid spacing ≈ 1/fs), floored to
+ * KERNEL_RMSE_MIN_SAMPLES points so a low fs / fast kernel doesn't reduce it to a
+ * handful of samples. Each is normalized to peak 1, so the result is a fraction
+ * of peak: 0 = identical, ~0.01 ≈ a 1%-of-peak typical deviation.
+ *
+ * Measuring the whole waveform (rather than a relative (t_peak, FWHM) delta)
+ * weights each parameter's change by how much it actually moves the kernel, so a
+ * jittery t_peak on the poorly-constrained rising edge no longer delays
+ * convergence over a change that barely alters the shape.
+ */
+export function kernelShapeRmse(
+  tauR1: number,
+  tauD1: number,
+  tauR2: number,
+  tauD2: number,
+  fs: number,
+): number {
+  const window = KERNEL_DURATION_MULTIPLE * Math.max(tauD1, tauD2);
+  const n = Math.max(KERNEL_RMSE_MIN_SAMPLES, Math.ceil(window * fs));
+  const dt = window / n;
+  const k1 = sampleBiexp(tauR1, tauD1, n, dt);
+  const k2 = sampleBiexp(tauR2, tauD2, n, dt);
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    const d = k1[i] - k2[i];
+    s += d * d;
+  }
+  return Math.sqrt(s / n);
 }
 
 /**
