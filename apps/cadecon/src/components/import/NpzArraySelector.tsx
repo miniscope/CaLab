@@ -37,8 +37,8 @@ export function NpzArraySelector(): JSX.Element {
       <div class="card">
         <h3 class="card__title">Select Array</h3>
         <p class="text-secondary">
-          This .npz file contains {twoDArrays().length} arrays with 2D data. Select the one
-          containing your calcium traces:
+          This file contains {twoDArrays().length} arrays with 2D data. Select the one containing
+          your calcium traces:
         </p>
         <div class="npz-array-list">
           <For each={twoDArrays()}>
