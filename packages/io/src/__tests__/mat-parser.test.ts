@@ -200,6 +200,53 @@ describe('parseMat', () => {
       h[127] = 0;
       expect(() => parseMat(toArrayBuffer(h))).toThrow('endian indicator');
     });
+
+    it('rejects a small data element claiming more than 4 bytes', () => {
+      // Small-element tags pack the byte count into the upper 16 bits and can
+      // carry at most 4 inline bytes, so a larger count means this is not a tag.
+      const tag = new Uint8Array(8);
+      new DataView(tag.buffer).setUint32(0, (5 << 16) | miMATRIX, true);
+      const mat = concat([header(), tag]);
+      expect(() => parseMat(toArrayBuffer(mat))).toThrow('maximum is 4');
+    });
+  });
+
+  describe('skipped variables', () => {
+    /** miMATRIX element for a non-numeric class, with a name but no data part. */
+    const nonNumericElement = (name: string, arrayClass: number): Uint8Array => {
+      const flags = element(miUINT32, u32([arrayClass, 0]));
+      const dimsEl = element(miINT32, i32([1, 1]));
+      const nameEl = element(miINT8, new TextEncoder().encode(name));
+      return element(miMATRIX, concat([flags, dimsEl, nameEl]));
+    };
+
+    it('names skipped non-numeric variables in the error', () => {
+      const mat = concat([
+        header(),
+        nonNumericElement('session', 2), // mxSTRUCT
+        nonNumericElement('label', 4), // mxCHAR
+      ]);
+
+      expect(() => parseMat(toArrayBuffer(mat))).toThrow(
+        /Found instead: session \(struct\), label \(char array\)/,
+      );
+    });
+
+    it('points at struct nesting as the likely cause', () => {
+      const mat = concat([header(), nonNumericElement('session', 2)]);
+      expect(() => parseMat(toArrayBuffer(mat))).toThrow(/nested\s+inside a struct or cell/);
+    });
+
+    it('still returns numeric variables alongside skipped ones', () => {
+      const mat = concat([
+        header(),
+        nonNumericElement('notes', 4), // mxCHAR
+        doubleMatrixElement('traces', [2, 2], [1, 3, 2, 4]),
+      ]);
+
+      const result = parseMat(toArrayBuffer(mat));
+      expect(result.arrayNames).toEqual(['traces']);
+    });
   });
 });
 
@@ -243,5 +290,13 @@ describe('parseMat: real scipy fixtures', () => {
     expect(Array.from(r.arrays['fps'].data)).toEqual([30]);
     expect(r.arrays['tvec'].shape).toEqual([1, 5]);
     expect(Array.from(r.arrays['tvec'].data)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('rejects a file whose traces are nested in a struct, naming what it saw', () => {
+    // `save('f.mat', 'session')` where session.traces holds the matrix -- a
+    // common MATLAB layout this reader deliberately does not follow into.
+    expect(() => parseMat(fixture('traces_struct.mat'))).toThrow(
+      /Found instead: .*session \(struct\)/,
+    );
   });
 });

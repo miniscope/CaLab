@@ -10,6 +10,7 @@ import {
   setDataSource,
   importError,
 } from '../../lib/data-store.ts';
+import { soleTraceCandidate, traceCandidates } from '../../lib/trace-candidates.ts';
 
 export function FileDropZone(): JSX.Element {
   const [isDragging, setIsDragging] = createSignal(false);
@@ -20,26 +21,20 @@ export function FileDropZone(): JSX.Element {
     return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
   };
 
-  // Shared handling for multi-array containers (.npz and .mat): pick the single
-  // 2D array automatically, or hand off to the array selector when ambiguous.
+  // Shared handling for multi-array containers (.npz and .mat): load the traces
+  // directly when the choice is unambiguous, or hand off to the array selector.
   const handleMultiArrayResult = (result: NpzResult, ext: string) => {
-    const twoDArrayNames = result.arrayNames.filter(
-      (name) => result.arrays[name].shape.length === 2,
-    );
-
-    if (twoDArrayNames.length === 0) {
+    if (traceCandidates(result).length === 0) {
       setImportError(
-        `No 2D arrays found in .${ext} file. CaDecon requires a 2D array (cells x timepoints).`,
+        `No trace matrix found in .${ext} file. CaDecon requires a 2D array (cells x timepoints).`,
       );
       return;
     }
 
-    if (twoDArrayNames.length === 1) {
-      // Auto-select the only 2D array
-      const processed = processNpyResult(result.arrays[twoDArrayNames[0]]);
-      setParsedData(processed);
+    const sole = soleTraceCandidate(result);
+    if (sole !== null) {
+      setParsedData(processNpyResult(result.arrays[sole]));
     } else {
-      // Multiple 2D arrays: let user select
       setNpzArrays(result);
     }
   };

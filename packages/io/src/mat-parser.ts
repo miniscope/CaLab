@@ -13,7 +13,8 @@
 //
 // NOT supported: v7.3 files, which are HDF5-based and require a full HDF5
 // reader. These are detected and reported with a clear remediation message.
-// Non-numeric variables (structs, cells, chars, sparse) are skipped.
+// Non-numeric variables (structs, cells, chars, sparse) are skipped, and named
+// in the error if the file turns out to hold nothing else.
 //
 // Reference: MAT-File Format, MathWorks (Level 5).
 
@@ -39,6 +40,17 @@ const mxDOUBLE = 6;
 const mxUINT64 = 15;
 // Numeric classes are the contiguous range mxDOUBLE(6)..mxUINT64(15). Anything
 // below that (cell, struct, object, char, sparse) is skipped.
+
+// Names for the skippable classes, so a file with no usable arrays can say what
+// it did contain -- traces nested in a struct is a common MATLAB layout and an
+// unexplained "no numeric arrays" is a dead end for that user.
+const NON_NUMERIC_CLASS_NAMES: Record<number, string> = {
+  1: 'cell array',
+  2: 'struct',
+  3: 'object',
+  4: 'char array',
+  5: 'sparse matrix',
+};
 
 interface StorageInfo {
   Ctor: new (buffer: ArrayBuffer, byteOffset: number, length: number) => NumericTypedArray;
@@ -85,6 +97,13 @@ function readTag(view: DataView, offset: number, le: boolean): Tag {
   const upper = raw >>> 16;
   if (upper !== 0) {
     // Small element format: [byteCount(2) | mdtype(2)] then <=4 data bytes.
+    // A count above 4 means we are not looking at a real tag, so stop rather
+    // than let a misread cascade into bogus offsets.
+    if (upper > 4) {
+      throw new Error(
+        `Not a valid .mat file: small data element claims ${upper} bytes (maximum is 4)`,
+      );
+    }
     return {
       mdtype: raw & 0xffff,
       byteCount: upper,
@@ -152,17 +171,17 @@ function readNumericData(
   return { data: arr, dtype: info.dtype };
 }
 
+/** A parsed numeric variable, or the reason a variable was passed over. */
+type MatrixEntry = { name: string; result: NpyResult } | { name: string; skipped: string };
+
 /**
  * Parse a single miMATRIX element body into a named NpyResult.
  *
- * Returns null for non-numeric classes (struct/cell/char/sparse/object), which
- * are skipped rather than treated as an error.
+ * Non-numeric classes (struct/cell/char/sparse/object) are reported as skipped
+ * rather than treated as an error, so the caller can name them if nothing
+ * usable turns up.
  */
-function parseMatrix(
-  buffer: ArrayBuffer,
-  start: number,
-  le: boolean,
-): { name: string; result: NpyResult } | null {
+function parseMatrix(buffer: ArrayBuffer, start: number, le: boolean): MatrixEntry {
   const view = new DataView(buffer);
   let off = start;
 
@@ -190,7 +209,10 @@ function parseMatrix(
 
   // Skip non-numeric classes (cell, struct, object, char, sparse).
   if (arrayClass < mxDOUBLE || arrayClass > mxUINT64) {
-    return null;
+    return {
+      name: name || 'unnamed',
+      skipped: NON_NUMERIC_CLASS_NAMES[arrayClass] ?? `class ${arrayClass}`,
+    };
   }
 
   // 4. Real part (pr). Imaginary part, if present, is ignored.
@@ -208,8 +230,8 @@ function parseMatrix(
 }
 
 /**
- * Parse a top-level data element (compressed or matrix) and add its variable
- * to `arrays`/`arrayNames` if it is a supported numeric matrix.
+ * Parse a top-level data element (compressed or matrix) into `arrays` /
+ * `arrayNames`, recording non-numeric variables in `skipped` instead.
  */
 function parseTopLevelElement(
   buffer: ArrayBuffer,
@@ -217,7 +239,17 @@ function parseTopLevelElement(
   le: boolean,
   arrays: Record<string, NpyResult>,
   arrayNames: string[],
+  skipped: string[],
 ): void {
+  const collect = (entry: MatrixEntry): void => {
+    if ('skipped' in entry) {
+      skipped.push(`${entry.name} (${entry.skipped})`);
+      return;
+    }
+    arrays[entry.name] = entry.result;
+    arrayNames.push(entry.name);
+  };
+
   if (tag.mdtype === miCOMPRESSED) {
     const compressed = new Uint8Array(buffer, tag.dataStart, tag.byteCount);
     const inflated = unzlibSync(compressed);
@@ -226,21 +258,13 @@ function parseTopLevelElement(
     const infView = new DataView(infBuf);
     const innerTag = readTag(infView, 0, le);
     if (innerTag.mdtype === miMATRIX) {
-      const parsed = parseMatrix(infBuf, innerTag.dataStart, le);
-      if (parsed) {
-        arrays[parsed.name] = parsed.result;
-        arrayNames.push(parsed.name);
-      }
+      collect(parseMatrix(infBuf, innerTag.dataStart, le));
     }
     return;
   }
 
   if (tag.mdtype === miMATRIX) {
-    const parsed = parseMatrix(buffer, tag.dataStart, le);
-    if (parsed) {
-      arrays[parsed.name] = parsed.result;
-      arrayNames.push(parsed.name);
-    }
+    collect(parseMatrix(buffer, tag.dataStart, le));
   }
   // Other top-level element types are not expected; ignore silently.
 }
@@ -290,20 +314,26 @@ export function parseMat(buffer: ArrayBuffer): NpzResult {
 
   const arrays: Record<string, NpyResult> = {};
   const arrayNames: string[] = [];
+  const skipped: string[] = [];
 
   let offset = 128;
   while (offset + 8 <= buffer.byteLength) {
     const tag = readTag(view, offset, littleEndian);
     // Guard against a corrupt tag that would not advance the cursor.
     if (tag.elementEnd <= offset || tag.elementEnd > buffer.byteLength) break;
-    parseTopLevelElement(buffer, tag, littleEndian, arrays, arrayNames);
+    parseTopLevelElement(buffer, tag, littleEndian, arrays, arrayNames, skipped);
     offset = tag.elementEnd;
   }
 
   if (arrayNames.length === 0) {
+    // Name what was skipped: arrays nested inside a struct or cell are invisible
+    // to this reader, and that is the most likely reason a real file lands here.
+    const found = skipped.length > 0 ? ` Found instead: ${skipped.join(', ')}.` : '';
     throw new Error(
       '.mat file contains no numeric arrays. CaDecon requires a numeric matrix ' +
-        '(cells x timepoints) saved as a top-level variable.',
+        `(cells x timepoints) saved as a top-level variable.${found} Arrays nested ` +
+        'inside a struct or cell are not read -- save the matrix itself with ' +
+        "save('traces.mat', 'traces', '-v7').",
     );
   }
 

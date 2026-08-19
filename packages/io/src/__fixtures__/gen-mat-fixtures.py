@@ -17,6 +17,9 @@ Produces, next to this script:
     traces_v6.mat     uncompressed (savemat do_compression=False, ~= MATLAB -v6)
     traces_v7.mat     zlib-compressed (do_compression=True,        ~= MATLAB -v7)
     traces_multi.mat  compressed, multiple variables (traces + fps + tvec)
+    traces_struct.mat traces nested in a struct -- unreadable by design, and a
+                      common enough MATLAB layout that the error path for it
+                      deserves a real-writer fixture
 """
 
 import os
@@ -38,7 +41,19 @@ def main() -> None:
         {"traces": TRACES, "fps": 30.0, "tvec": np.arange(5.0)},
         do_compression=True,
     )
-    for name in ("traces_v6.mat", "traces_v7.mat", "traces_multi.mat"):
+    # Everything wrapped in a struct, plus a char array: no top-level numeric
+    # variable, so parseMat must fail and say what it saw instead.
+    sio.savemat(
+        os.path.join(HERE, "traces_struct.mat"),
+        {"session": {"traces": TRACES, "fps": 30.0}, "label": "mouse1"},
+        do_compression=True,
+    )
+    for name in (
+        "traces_v6.mat",
+        "traces_v7.mat",
+        "traces_multi.mat",
+        "traces_struct.mat",
+    ):
         path = os.path.join(HERE, name)
         print(f"wrote {name}: {os.path.getsize(path)} bytes")
 

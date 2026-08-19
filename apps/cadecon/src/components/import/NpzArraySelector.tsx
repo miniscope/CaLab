@@ -6,18 +6,17 @@ import {
   setImportError,
 } from '../../lib/data-store.ts';
 import { processNpyResult } from '@calab/io';
+import { traceCandidates } from '../../lib/trace-candidates.ts';
 
 export function NpzArraySelector(): JSX.Element {
   const twoDArrays = createMemo(() => {
     const npz = npzArrays();
     if (!npz) return [];
-    return npz.arrayNames
-      .filter((name) => npz.arrays[name].shape.length === 2)
-      .map((name) => ({
-        name,
-        shape: npz.arrays[name].shape,
-        dtype: npz.arrays[name].dtype,
-      }));
+    return traceCandidates(npz).map((name) => ({
+      name,
+      shape: npz.arrays[name].shape,
+      dtype: npz.arrays[name].dtype,
+    }));
   });
 
   const handleSelect = (name: string) => {
@@ -37,8 +36,8 @@ export function NpzArraySelector(): JSX.Element {
       <div class="card">
         <h3 class="card__title">Select Array</h3>
         <p class="text-secondary">
-          This file contains {twoDArrays().length} arrays with 2D data. Select the one containing
-          your calcium traces:
+          This file contains {twoDArrays().length} arrays that could hold 2D trace data. Select the
+          one containing your calcium traces:
         </p>
         <div class="npz-array-list">
           <For each={twoDArrays()}>
