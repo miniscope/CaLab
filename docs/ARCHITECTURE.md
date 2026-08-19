@@ -78,6 +78,7 @@ CaLab uses npm workspaces with six built packages and four applications (plus an
 │   │       ├── index.ts
 │   │       ├── npy-parser.ts    # NumPy .npy parser
 │   │       ├── npz-parser.ts    # NumPy .npz parser
+│   │       ├── mat-parser.ts    # MATLAB Level-5 .mat parser (v5/v6/v7)
 │   │       ├── validation.ts    # Trace data validation
 │   │       ├── array-utils.ts   # Cell extraction, transpose
 │   │       ├── cell-ranking.ts  # Activity-based ranking

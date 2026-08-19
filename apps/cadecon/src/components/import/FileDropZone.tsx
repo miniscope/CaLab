@@ -1,5 +1,6 @@
 import { createSignal, Show, type JSX } from 'solid-js';
-import { parseNpy, parseNpz, processNpyResult } from '@calab/io';
+import { parseNpy, parseNpz, parseMat, processNpyResult } from '@calab/io';
+import type { NpzResult } from '@calab/core';
 import {
   rawFile,
   setRawFile,
@@ -9,6 +10,7 @@ import {
   setDataSource,
   importError,
 } from '../../lib/data-store.ts';
+import { soleTraceCandidate, traceCandidates } from '../../lib/trace-candidates.ts';
 
 export function FileDropZone(): JSX.Element {
   const [isDragging, setIsDragging] = createSignal(false);
@@ -19,12 +21,30 @@ export function FileDropZone(): JSX.Element {
     return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
   };
 
+  // Shared handling for multi-array containers (.npz and .mat): load the traces
+  // directly when the choice is unambiguous, or hand off to the array selector.
+  const handleMultiArrayResult = (result: NpzResult, ext: string) => {
+    if (traceCandidates(result).length === 0) {
+      setImportError(
+        `No trace matrix found in .${ext} file. CaDecon requires a 2D array (cells x timepoints).`,
+      );
+      return;
+    }
+
+    const sole = soleTraceCandidate(result);
+    if (sole !== null) {
+      setParsedData(processNpyResult(result.arrays[sole]));
+    } else {
+      setNpzArrays(result);
+    }
+  };
+
   const handleFile = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
 
-    if (ext !== 'npy' && ext !== 'npz') {
+    if (ext !== 'npy' && ext !== 'npz' && ext !== 'mat') {
       setImportError(
-        `Unsupported file format: .${ext ?? 'unknown'}. Please use .npy or .npz files.`,
+        `Unsupported file format: .${ext ?? 'unknown'}. Please use .npy, .npz, or .mat files.`,
       );
       return;
     }
@@ -37,28 +57,9 @@ export function FileDropZone(): JSX.Element {
       const buffer = await file.arrayBuffer();
 
       if (ext === 'npz') {
-        const npzResult = parseNpz(buffer);
-        // Filter to only 2D numeric arrays
-        const twoDArrayNames = npzResult.arrayNames.filter((name) => {
-          const arr = npzResult.arrays[name];
-          return arr.shape.length === 2;
-        });
-
-        if (twoDArrayNames.length === 0) {
-          setImportError(
-            'No 2D arrays found in .npz file. CaDecon requires a 2D array (cells x timepoints).',
-          );
-          return;
-        }
-
-        if (twoDArrayNames.length === 1) {
-          // Auto-select the only 2D array
-          const processed = processNpyResult(npzResult.arrays[twoDArrayNames[0]]);
-          setParsedData(processed);
-        } else {
-          // Multiple 2D arrays: let user select
-          setNpzArrays(npzResult);
-        }
+        handleMultiArrayResult(parseNpz(buffer), 'npz');
+      } else if (ext === 'mat') {
+        handleMultiArrayResult(parseMat(buffer), 'mat');
       } else {
         // .npy file
         const result = parseNpy(buffer);
@@ -121,13 +122,13 @@ export function FileDropZone(): JSX.Element {
           </svg>
         </div>
         <p class="drop-zone__text">
-          Drop a <strong>.npy</strong> or <strong>.npz</strong> file here
+          Drop a <strong>.npy</strong>, <strong>.npz</strong>, or <strong>.mat</strong> file here
         </p>
         <p class="drop-zone__subtext">or click to browse</p>
         <input
           ref={inputRef}
           type="file"
-          accept=".npy,.npz"
+          accept=".npy,.npz,.mat"
           style="display:none"
           onChange={handleInputChange}
         />
