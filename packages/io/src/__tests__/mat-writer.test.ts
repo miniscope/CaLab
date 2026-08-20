@@ -1,3 +1,16 @@
+// These are round-trip tests against our own parser, so on their own they would
+// also pass if writer and parser shared the same misreading of the format.
+//
+// The output was therefore checked by hand against a real reader (scipy 1.15.3
+// / numpy 2.1.3, 2026-08-19): loadmat returns float32 with the row-major values
+// intact through the column-major transpose, whosmat reports the variable as
+// 'single', and the degenerate [1,3], [3,1] and [0,0] shapes all load. Redo
+// that by hand when touching the byte layout.
+//
+// To assert it in CI instead, follow python/tests/test_cross_language.py: commit
+// a writeMat buffer as a fixture and load it in a pytest. That needs scipy added
+// to the python job's deps, which is why this is a comment today.
+
 import { describe, it, expect } from 'vitest';
 import { writeMat } from '../mat-writer.ts';
 import { parseMat } from '../mat-parser.ts';

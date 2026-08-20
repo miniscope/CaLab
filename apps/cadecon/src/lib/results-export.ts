@@ -5,26 +5,27 @@
  * plus the results JSON (see export-utils.ts) -- into a single ZIP:
  *
  *   <source>_cadecon_results.zip
- *     activity.<ext>   the activity matrix, in the imported file's format
+ *     activity.npy|.mat   the activity matrix (format rule below)
  *     results.json     buildCaDeconResultsPayload() + self-documenting descriptions
  *
- * The array format mirrors the imported file (.npy / .npz / .mat), falling back
- * to .npy for demo- or bridge-loaded runs with no source file (which is exactly
- * what the bridge itself emits).
+ * .mat imports get activity.mat; everything else (.npy/.npz imports, plus demo-
+ * or bridge-loaded runs with no source file) gets activity.npy -- the outer ZIP
+ * is already a container, so nesting an .npz inside it would just deflate the
+ * same bytes twice for no gain. numpy's np.load reads either from the archive.
  */
 
-import { writeNpy, writeNpz, writeMat, zipFiles } from '@calab/io';
+import { writeNpy, writeMat, zipFiles } from '@calab/io';
 import { buildCaDeconActivityMatrix, buildCaDeconResultsPayload } from './export-utils.ts';
 import { rawFile } from './data-store.ts';
 
-type ArrayFormat = 'npy' | 'npz' | 'mat';
+type ArrayFormat = 'npy' | 'mat';
 
 /**
  * Human-readable explanation of every field in results.json (and the sibling
  * activity array). Definitions are sourced from the solver, not inferred:
- * the kernel fit is the two-component bi-exponential of crates/solver/biexp_fit.rs.
+ * the kernel fit is the two-component bi-exponential of crates/solver/src/biexp_fit.rs.
  */
-const FIELD_DESCRIPTIONS: Record<string, string> = {
+export const FIELD_DESCRIPTIONS: Record<string, string> = {
   activity:
     'Deconvolved per-cell activity (event counts), shape [n_cells, n_timepoints], float32. ' +
     'Stored in the sibling activity.<ext> file. Rows are ordered by ascending cell index and ' +
@@ -69,7 +70,7 @@ function resolveOutput(): { format: ArrayFormat; base: string } {
   const dot = file.name.lastIndexOf('.');
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
   const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : '';
-  const format: ArrayFormat = ext === 'npz' ? 'npz' : ext === 'mat' ? 'mat' : 'npy';
+  const format: ArrayFormat = ext === 'mat' ? 'mat' : 'npy';
   return { format, base };
 }
 
@@ -80,8 +81,6 @@ function serializeActivity(
   shape: [number, number],
 ): ArrayBuffer {
   switch (format) {
-    case 'npz':
-      return writeNpz({ activity: { data, shape } });
     case 'mat':
       return writeMat('activity', data, shape);
     case 'npy':
@@ -104,11 +103,19 @@ function triggerDownload(buffer: ArrayBuffer, filename: string): void {
 
 /**
  * Build and download the CaDecon results ZIP for the completed run.
- * Safe to call only when a run has finished (activity matrix populated).
+ *
+ * Throws when there are no results yet: an empty activity matrix serializes into
+ * a perfectly valid 0-row .npy/.mat that scipy/numpy read without complaint, so
+ * without this an early call downloads a plausible-looking archive containing
+ * nothing. Callers still keep the button disabled pre-completion; this is the
+ * backstop, not the gate.
  */
 export function downloadResults(): void {
   const { format, base } = resolveOutput();
   const { data, shape } = buildCaDeconActivityMatrix();
+  if (shape[0] === 0 || shape[1] === 0) {
+    throw new Error('No results to export -- run the solver first.');
+  }
 
   const activityBuffer = serializeActivity(format, data, shape);
   const results = { ...buildCaDeconResultsPayload(), field_descriptions: FIELD_DESCRIPTIONS };

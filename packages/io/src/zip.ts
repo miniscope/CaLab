@@ -5,7 +5,9 @@
 import { zipSync } from 'fflate';
 
 /**
- * Bundle named byte blobs into an uncompressed-container-friendly ZIP.
+ * Bundle named byte blobs into a ZIP archive. Entries are deflated (fflate's
+ * zipSync default), which any ZIP reader -- including Python's zipfile and
+ * numpy's np.load -- handles transparently.
  *
  * @param files - map of entry name (e.g. "results.json") to its bytes
  * @returns ArrayBuffer containing the ZIP archive

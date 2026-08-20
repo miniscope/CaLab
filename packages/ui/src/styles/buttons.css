@@ -41,10 +41,15 @@
     background var(--transition-fast);
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-muted);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .btn-small {
