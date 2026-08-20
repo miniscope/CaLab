@@ -22,6 +22,7 @@ export interface BridgeConfig {
   upsample_target?: number;
   hp_filter_enabled?: boolean;
   lp_filter_enabled?: boolean;
+  mass_count?: boolean;
   max_iterations?: number;
   convergence_tol?: number;
   num_subsets?: number;
@@ -36,6 +37,7 @@ export const BRIDGE_CONFIG_KEYS: readonly string[] = [
   'upsample_target',
   'hp_filter_enabled',
   'lp_filter_enabled',
+  'mass_count',
   'max_iterations',
   'convergence_tol',
   'num_subsets',

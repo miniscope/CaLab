@@ -423,7 +423,7 @@ fn seed_kernel_estimate<'py>(
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged).
 #[pyfunction]
-#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false, mass_count=false))]
 #[allow(clippy::too_many_arguments)]
 fn py_indeca_solve_trace<'py>(
     py: Python<'py>,
@@ -439,8 +439,10 @@ fn py_indeca_solve_trace<'py>(
     warm_counts: Option<PyReadonlyArray1<f64>>,
     lambda_: f64,
     noise_constrained: bool,
+    mass_count: bool,
 ) -> PyResult<(
     Bound<'py, PyArray1<f32>>, // s_counts
+    Bound<'py, PyArray1<f32>>, // s_rate (graded calibrated rate; empty unless mass_count)
     f64,                       // alpha
     f64,                       // baseline
     f64,                       // threshold
@@ -463,11 +465,15 @@ fn py_indeca_solve_trace<'py>(
         hp_enabled,
         lp_enabled,
         lambda_,
-        indeca::SolveOptions { noise_constrained },
+        indeca::SolveOptions {
+            noise_constrained,
+            mass_count,
+        },
     );
 
     Ok((
         PyArray1::from_vec(py, result.s_counts),
+        PyArray1::from_vec(py, result.s_rate),
         result.alpha,
         result.baseline,
         result.threshold,

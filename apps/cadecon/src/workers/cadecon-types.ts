@@ -60,6 +60,9 @@ export type CaDeconWorkerInbound =
       /** Noise-constrained threshold selection: choose the sparsest spike support
        *  whose residual meets the data-derived noise floor (no tuning knob). */
       noiseConstrained: boolean;
+      /** Mass-based count readout: count events by relaxed mass and refit alpha,
+       *  undoing the coherent-grid overcount that halves alpha (no tuning knob). */
+      massCount: boolean;
       /** Also solve with the OPPOSITE noise-constrained setting and return it as
        *  comparisonSCounts (for the teaching/impact overlay). */
       computeComparison: boolean;

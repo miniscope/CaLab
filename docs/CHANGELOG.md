@@ -15,6 +15,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   instead of the fit-maximizing threshold. Knob-free and off by default;
   suppresses spurious low-SNR spikes. Exposed through the WASM solver, the
   CaDecon UI, and the `calab.solve_trace` Python binding (PR #168)
+- **CaDecon** calibrated continuous rate — when `mass_count` is on, `solve_trace`
+  additionally returns `s_rate`, a graded firing-rate estimate on the correct absolute
+  scale (the relaxed solution scaled by the single-spike mass and gated by realness).
+  Unlike the integer `s_counts`, it preserves the smoothed rate envelope, so it matches
+  the uncorrected bin-sum's correlation-based recovery while also being correctly scaled. 
+  Exposed via the WASM solver result and the `calab.solve_trace` Python binding; 
+  empty unless `mass_count=True`
+- **CaDecon** mass-based count readout — an optional `mass_count` mode that
+  counts each contiguous event by its deconvolved mass (calibrated to the
+  single-spike mass) and refits alpha, replacing the per-bin binarize→bin-sum.
+  Corrects the coherent-grid spike overcount that inflates counts and halves
+  alpha at high upsampling, while preserving multiplicity for temporally
+  resolvable bursts. Knob-free and off by default; exposed through the WASM
+  solver, the CaDecon UI, the bridge config, and the `calab.solve_trace` /
+  `calab.decon` Python bindings. 
 
 ## [2.5.0] - 2026-07-08
 
