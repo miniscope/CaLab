@@ -73,7 +73,7 @@ impl FenwickTree {
         i += 1; // convert to 1-indexed
         while i < self.tree.len() {
             self.tree[i] += delta;
-            i += i & i.wrapping_neg(); // i += lowbit(i)
+            i += i.isolate_lowest_one(); // i += lowbit(i)
         }
     }
 
