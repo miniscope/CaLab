@@ -14,6 +14,7 @@ import {
 } from '../../lib/data-store.ts';
 import { runState } from '../../lib/iteration-store.ts';
 import { isBridgeAutorun, runBridgeExport } from '../../lib/bridge-effects.ts';
+import { downloadResults } from '../../lib/results-export.ts';
 
 export function GroundTruthControls(): JSX.Element {
   function handleToggle(): void {
@@ -58,16 +59,19 @@ export function ExportButton(): JSX.Element {
 
   const isComplete = () => runState() === 'complete';
   const isBridge = () => !!bridgeUrl();
-  const isDisabled = () => isBridgeAutorun() || !isComplete() || exporting() || bridgeExportDone();
+  // bridgeExportDone/autorun describe the bridge handshake only -- a local
+  // download is repeatable, so it must not latch to a disabled "Exported".
+  const isDisabled = () =>
+    !isComplete() || exporting() || (isBridge() && (isBridgeAutorun() || bridgeExportDone()));
 
   async function handleExport(): Promise<void> {
     const url = bridgeUrl();
-    if (!url) return;
 
     setExporting(true);
     setBridgeExportError(null);
     try {
-      await runBridgeExport(url);
+      if (url) await runBridgeExport(url);
+      else downloadResults();
     } catch (e) {
       setBridgeExportError(e instanceof Error ? e.message : 'Export failed');
     } finally {
@@ -89,7 +93,7 @@ export function ExportButton(): JSX.Element {
                 ? 'Run solver first'
                 : isBridge()
                   ? 'Export results to Python'
-                  : 'Export coming soon'
+                  : 'Download results as a .zip (activity + results.json)'
         }
         onClick={handleExport}
       >
@@ -101,7 +105,7 @@ export function ExportButton(): JSX.Element {
               ? 'Exported'
               : isBridge()
                 ? 'Export to Python'
-                : 'Export Locally'}
+                : 'Download Results'}
       </button>
       <Show when={error()}>
         <span class="submit-panel__error">{error()}</span>

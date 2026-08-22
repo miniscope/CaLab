@@ -2,6 +2,8 @@ export { parseNpy } from './npy-parser.ts';
 export { writeNpy } from './npy-writer.ts';
 export { parseNpz } from './npz-parser.ts';
 export { parseMat } from './mat-parser.ts';
+export { writeMat } from './mat-writer.ts';
+export { zipFiles } from './zip.ts';
 export { validateTraceData } from './validation.ts';
 export { extractCellTrace, processNpyResult } from './array-utils.ts';
 export { rankCellsByActivity, sampleRandomCells } from './cell-ranking.ts';
