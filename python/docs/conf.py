@@ -4,7 +4,7 @@ from importlib.metadata import version as _pkg_version
 
 project = "CaLab"
 copyright = "2026, Daniel Aharoni"
-author = "Daniel Aharoni"
+author = "Daniel Aharoni, Marcel Brosch, Krisha Aghi"
 
 # Pull version from installed package when available (e.g. on Read the Docs);
 # fall back gracefully so a local `sphinx-build` still works without installing.

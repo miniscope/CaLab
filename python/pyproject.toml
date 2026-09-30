@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Daniel Aharoni" }]
+authors = [
+    { name = "Daniel Aharoni" },
+    { name = "Marcel Brosch" },
+    { name = "Krisha Aghi" },
+]
 keywords = ["calcium-imaging", "deconvolution", "neuroscience", "FISTA", "spike-inference"]
 # Minimum 3.11 because the Minian loader uses zarr v3's `create_array` API
 # and zarr v3 dropped support for 3.10. CI covers every claimed version.
