@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { shapeToTau, tauToShape } from '@calab/compute';
 
-// App-level smoke: the kernel shape ↔ tau transforms that the CaTune UI
-// round-trips on every slider change are importable and invertible.
-describe('catune smoke', () => {
+// The kernel shape ↔ tau transforms that the CaTune UI round-trips on every
+// slider change resolve through the @calab/compute barrel from the app and are
+// invertible at the default GCaMP6f-like kernel. This is not an app smoke test:
+// the transforms themselves are covered in depth by
+// packages/compute/src/__tests__/kernel-shape.test.ts. It is kept because it is
+// the app's only test file (vitest is configured with passWithNoTests: false)
+// and it checks the app-side workspace resolution of @calab/compute.
+describe('kernel shape round-trip via @calab/compute', () => {
   it('round-trips tau ↔ shape through @calab/compute', () => {
     const tauIn = { tauRise: 0.02, tauDecay: 0.4 };
     const shape = tauToShape(tauIn.tauRise, tauIn.tauDecay);
