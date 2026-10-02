@@ -52,7 +52,39 @@
 --   extra_metadata JSONB DEFAULT '{}'::jsonb,
 --
 --   -- Constraints
---   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training'))
+--   -- Every client-supplied column needs a CHECK (see 014): the anon key can
+--   -- send anything PostgREST accepts, including 'NaN'/'Infinity' for
+--   -- float8. Postgres orders NaN above every number, so keep float checks
+--   -- TWO-SIDED (finite upper bound rejects NaN/+Inf, lower bound -Inf).
+--   -- Add CHECKs for your app-specific columns too.
+--   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training', 'bridge')),
+--   CONSTRAINT valid_indicator_len CHECK (length(indicator) <= 128),
+--   CONSTRAINT valid_species_len CHECK (length(species) <= 128),
+--   CONSTRAINT valid_brain_region_len CHECK (length(brain_region) <= 128),
+--   CONSTRAINT valid_microscope_type_len CHECK (length(microscope_type) <= 128),
+--   CONSTRAINT valid_cell_type_len CHECK (length(cell_type) <= 128),
+--   CONSTRAINT valid_virus_construct_len CHECK (length(virus_construct) <= 256),
+--   CONSTRAINT valid_lab_name_len CHECK (length(lab_name) <= 256),
+--   CONSTRAINT valid_notes_len CHECK (length(notes) <= 2000),
+--   CONSTRAINT valid_dataset_hash_len CHECK (length(dataset_hash) <= 128),
+--   CONSTRAINT valid_app_version_len CHECK (length(app_version) <= 64),
+--   CONSTRAINT valid_orcid CHECK (
+--     orcid ~ '^(https?://orcid\.org/)?[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$'
+--   ),
+--   CONSTRAINT valid_time_since_injection_days CHECK (
+--     time_since_injection_days >= 0 AND time_since_injection_days <= 10000
+--   ),
+--   CONSTRAINT valid_num_cells CHECK (num_cells >= 0 AND num_cells <= 10000000),
+--   CONSTRAINT valid_recording_length_s CHECK (
+--     recording_length_s >= 0 AND recording_length_s <= 10000000
+--   ),
+--   CONSTRAINT valid_fps CHECK (fps > 0 AND fps <= 10000),
+--   CONSTRAINT valid_imaging_depth_um CHECK (
+--     imaging_depth_um >= 0 AND imaging_depth_um <= 20000
+--   ),
+--   CONSTRAINT valid_extra_metadata CHECK (
+--     jsonb_typeof(extra_metadata) = 'object' AND length(extra_metadata::text) <= 4096
+--   )
 -- );
 --
 -- -- Enable RLS

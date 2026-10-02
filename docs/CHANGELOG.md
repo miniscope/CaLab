@@ -71,6 +71,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   function the only way to create a session, restricts client updates to
   `ended_at`/`duration_seconds`, and caps each session at 500 events
 
+- **Supabase** submission columns other than the kernel parameters were
+  unvalidated server-side: negative counts, `NaN`/`Infinity` floats, unbounded
+  text, and an unbounded `extra_metadata` that is republished to every visitor.
+  Migration 014 adds length caps, two-sided finite range checks, an ORCID
+  format check and a 4 KB `extra_metadata` cap, and aligns CaTune's
+  `lambda`/`sampling_rate` minimums with the client. Constraints are added
+  `NOT VALID`; existing rows must be checked and the constraints validated
+  manually
+
 ## [2.7.2] - 2026-08-27
 
 ### Fixed
