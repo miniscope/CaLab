@@ -7,6 +7,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **CaTune, CaDecon** the residual trace in the zoom charts subtracted two
+  independently min/max-downsampled series, so once a window held more than
+  2× the chart's bucket count (>1200 samples in the CaDecon Trace Inspector;
+  high sampling rates or zoomed-out CaTune cards) it paired one series' bucket
+  minimum with the other's maximum and drew spurious residual spikes. The
+  residual is now computed at full resolution and downsampled afterwards. The
+  band layout and residual math shared by both charts now live in
+  `@calab/compute` (`computeBandLayout`, `scaleToBand`, `residualBandSeries`)
+
+- **Charts** `downsampleMinMax` emitted `Infinity, -Infinity` for a bucket with
+  no finite sample (e.g. an all-NaN stretch), breaking uPlot's autoscale. Such
+  buckets are now `null` gaps; non-finite samples are skipped within mixed
+  buckets and returned as `null` when no downsampling is needed
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never

@@ -8,7 +8,13 @@
 import { createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js';
 import type uPlot from 'uplot';
 import { ZoomWindow, transientZonePlugin } from '@calab/ui/chart';
-import { downsampleMinMax } from '@calab/compute';
+import {
+  computeBandLayout,
+  downsampleMinMax,
+  residualBandSeries,
+  scaleToBand,
+  type BandSpacing,
+} from '@calab/compute';
 import {
   createRawSeries,
   createFilteredSeries,
@@ -63,6 +69,12 @@ const DECONV_GAP = -2;
 const DECONV_SCALE = 0.35;
 const RESID_GAP = 0.5;
 const RESID_SCALE = 0.25;
+const BAND_SPACING: BandSpacing = {
+  deconvGap: DECONV_GAP,
+  deconvScale: DECONV_SCALE,
+  residGap: RESID_GAP,
+  residScale: RESID_SCALE,
+};
 const TRANSIENT_TAU_MULTIPLIER = 2;
 
 const SERIES_COUNT = 10;
@@ -109,18 +121,36 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     const raw = props.rawTrace;
     const { zMin, zMax } = props.rawStats;
     if (!raw || raw.length === 0) return [-4, 6];
-    const rawRange = zMax - zMin;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-    const residHeight = rawRange * RESID_SCALE;
-    const residBottom = deconvBottom - RESID_GAP - residHeight;
-    return [residBottom, zMax + rawRange * 0.02];
+    const { residBottom } = computeBandLayout(zMin, zMax, BAND_SPACING);
+    return [residBottom, zMax + (zMax - zMin) * 0.02];
   });
 
   // Ground-truth spike min/max is recomputed here rather than in the store
   // because GT is loaded once per session and swapping the reference via
   // toggle/visibility is infrequent — memoization amortizes it.
   const gtSpikesMinMax = createMemo(() => typedArrayMinMax(props.groundTruthSpikes));
+
+  /**
+   * Full-resolution slice of `trace` aligned to raw samples [startSample, endSample),
+   * or null when the trace is missing or doesn't cover that range. `offset` is the
+   * raw-sample index of trace[0] for windowed solver output.
+   */
+  const sliceWindow = (
+    trace: Float32Array | undefined,
+    startSample: number,
+    endSample: number,
+    offset: number,
+    rawLength: number,
+  ): Float32Array | null => {
+    if (!trace || trace.length === 0) return null;
+    const windowStart = startSample - offset;
+    const windowEnd = endSample - offset;
+    if (windowStart >= 0 && windowEnd <= trace.length) {
+      return trace.subarray(windowStart, windowEnd);
+    }
+    if (trace.length === rawLength) return trace.subarray(startSample, endSample);
+    return null;
+  };
 
   const sliceAndDownsample = (
     trace: Float32Array | undefined,
@@ -130,81 +160,26 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     offset: number,
     rawLength: number,
     dsXLength: number,
-    transform: (dsValues: number[]) => number[],
-  ): number[] => {
-    if (!trace || trace.length === 0) {
-      return new Array(dsXLength).fill(null) as number[];
-    }
-    const windowStart = startSample - offset;
-    const windowEnd = endSample - offset;
-    if (windowStart >= 0 && windowEnd <= trace.length) {
-      const slice = trace.subarray(windowStart, windowEnd);
-      const [, dsValues] = downsampleMinMax(x, slice, bucketWidth());
-      return transform(dsValues);
-    }
-    if (trace.length === rawLength) {
-      const slice = trace.subarray(startSample, endSample);
-      const [, dsValues] = downsampleMinMax(x, slice, bucketWidth());
-      return transform(dsValues);
-    }
-    return new Array(dsXLength).fill(null) as number[];
+    transform: (dsValues: (number | null)[]) => (number | null)[],
+  ): (number | null)[] => {
+    const slice = sliceWindow(trace, startSample, endSample, offset, rawLength);
+    if (!slice) return new Array<null>(dsXLength).fill(null);
+    const [, dsValues] = downsampleMinMax(x, slice, bucketWidth());
+    return transform(dsValues);
   };
 
   const scaleToDeconvBand = (
-    dsDeconvRaw: number[],
+    dsDeconvRaw: (number | null)[],
     deconvMinMaxPair: [number, number],
     zMin: number,
     zMax: number,
-  ): number[] => {
+  ): (number | null)[] => {
     const [dMin, dMax] = deconvMinMaxPair;
-    const dRange = dMax - dMin || 1;
-    const deconvHeight = (zMax - zMin) * DECONV_SCALE;
-    const deconvTop = zMin - DECONV_GAP;
-    const deconvBottom = deconvTop - deconvHeight;
-    return dsDeconvRaw.map((v) => {
-      const norm = (v - dMin) / dRange;
-      return deconvBottom + norm * deconvHeight;
-    });
+    const { deconvBottom, deconvHeight } = computeBandLayout(zMin, zMax, BAND_SPACING);
+    return scaleToBand(dsDeconvRaw, dMin, dMax, deconvBottom, deconvHeight);
   };
 
-  const computeResiduals = (
-    dsRaw: number[],
-    dsReconv: (number | null)[],
-    zMin: number,
-    zMax: number,
-    dsXLength: number,
-  ): number[] => {
-    if (!dsReconv.some((v) => v !== null)) {
-      return new Array(dsXLength).fill(null) as number[];
-    }
-    const rawRange = zMax - zMin;
-    const deconvHeight = rawRange * DECONV_SCALE;
-    const deconvBottom = zMin - DECONV_GAP - deconvHeight;
-    const residHeight = rawRange * RESID_SCALE;
-    const residTop = deconvBottom - RESID_GAP;
-    const residBottom = residTop - residHeight;
-    const rawResid: (number | null)[] = [];
-    let rMin = Infinity;
-    let rMax = -Infinity;
-    for (let i = 0; i < dsRaw.length; i++) {
-      if (dsReconv[i] == null) {
-        rawResid.push(null);
-      } else {
-        const r = dsRaw[i] - (dsReconv[i] as number);
-        rawResid.push(r);
-        if (r < rMin) rMin = r;
-        if (r > rMax) rMax = r;
-      }
-    }
-    const rRange = rMax - rMin || 1;
-    return rawResid.map((r) => {
-      if (r === null) return null as unknown as number;
-      const norm = (r - rMin) / rRange;
-      return residBottom + norm * residHeight;
-    });
-  };
-
-  const zoomData = createMemo<[number[], ...number[][]]>(() => {
+  const zoomData = createMemo<uPlot.AlignedData>(() => {
     const raw = props.rawTrace;
     const fs = props.samplingRate;
     if (!raw || raw.length === 0) return emptySeriesData();
@@ -224,13 +199,15 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
 
     const rawSlice = raw.subarray(startSample, endSample);
     const [dsX, dsRawRaw] = downsampleMinMax(x, rawSlice, bucketWidth());
-    const dsRaw = dsRawRaw.map((v) => (v - mean) / std);
+    const dsRaw = dsRawRaw.map((v) => (v === null ? null : (v - mean) / std));
 
     const offset = props.deconvWindowOffset ?? 0;
     const pinnedOffset = props.pinnedWindowOffset ?? 0;
 
-    const toZScore = (values: number[]) => values.map((v) => (v - mean) / std);
-    const toZScoreFiltered = (values: number[]) => values.map((v) => v / std);
+    const toZScore = (values: (number | null)[]) =>
+      values.map((v) => (v === null ? null : (v - mean) / std));
+    const toZScoreFiltered = (values: (number | null)[]) =>
+      values.map((v) => (v === null ? null : v / std));
 
     const dsFiltered = sliceAndDownsample(
       props.filteredTrace,
@@ -243,7 +220,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       props.filteredTrace ? toZScoreFiltered : toZScore,
     );
 
-    const dsReconv: (number | null)[] = sliceAndDownsample(
+    const dsReconv = sliceAndDownsample(
       props.reconvolutionTrace,
       x,
       startSample,
@@ -259,7 +236,9 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     // re-downsample every visible card on every tau slider tick — the big
     // reason Peak/FWHM drags felt laggier than Sparsity.
     const transient = untrack(() => transientTime());
-    if (startSample < transient * fs) {
+    let fitStartIndex = 0;
+    while (fitStartIndex < len && x[fitStartIndex] < transient) fitStartIndex++;
+    if (fitStartIndex > 0) {
       for (let i = 0; i < dsReconv.length; i++) {
         if (dsX[i] < transient) {
           dsReconv[i] = null;
@@ -283,7 +262,19 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       (vals) => scaleToDeconvBand(vals, props.deconvMinMax, zMin, zMax),
     );
 
-    const dsResid = computeResiduals(dsRaw, dsReconv, zMin, zMax, dsX.length);
+    // Residual is computed at full resolution, then downsampled: subtracting
+    // two independently min/max-downsampled series pairs unrelated samples.
+    // Its band normalization is affine-invariant, so z-scoring is skipped.
+    const { residBottom, residHeight } = computeBandLayout(zMin, zMax, BAND_SPACING);
+    const dsResid = residualBandSeries(
+      x,
+      rawSlice,
+      sliceWindow(props.reconvolutionTrace, startSample, endSample, offset, raw.length),
+      bucketWidth(),
+      residBottom,
+      residHeight,
+      fitStartIndex,
+    );
 
     const dsPinnedReconv = sliceAndDownsample(
       props.pinnedReconvolution,
@@ -308,22 +299,22 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     );
     /* eslint-enable solid/reactivity */
 
-    let dsGTCalcium: number[];
+    let dsGTCalcium: (number | null)[];
     if (props.groundTruthCalcium && props.groundTruthCalcium.length > 0) {
       const gtcSlice = props.groundTruthCalcium.subarray(startSample, endSample);
       const [, dsGTCRaw] = downsampleMinMax(x, gtcSlice, bucketWidth());
-      dsGTCalcium = dsGTCRaw.map((v) => (v - mean) / std);
+      dsGTCalcium = toZScore(dsGTCRaw);
     } else {
-      dsGTCalcium = new Array(dsX.length).fill(null) as number[];
+      dsGTCalcium = new Array<null>(dsX.length).fill(null);
     }
 
-    let dsGTSpikes: number[];
+    let dsGTSpikes: (number | null)[];
     if (props.groundTruthSpikes && props.groundTruthSpikes.length > 0) {
       const gtsSlice = props.groundTruthSpikes.subarray(startSample, endSample);
       const [, dsGTSRaw] = downsampleMinMax(x, gtsSlice, bucketWidth());
       dsGTSpikes = scaleToDeconvBand(dsGTSRaw, gtSpikesMinMax(), zMin, zMax);
     } else {
-      dsGTSpikes = new Array(dsX.length).fill(null) as number[];
+      dsGTSpikes = new Array<null>(dsX.length).fill(null);
     }
 
     return [
@@ -331,7 +322,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       dsRaw,
       dsFiltered,
       dsDeconv,
-      dsReconv as number[],
+      dsReconv,
       dsResid,
       dsPinnedDeconv,
       dsPinnedReconv,
