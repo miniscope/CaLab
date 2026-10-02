@@ -154,6 +154,77 @@ SELECT assert_denied(
 );
 ROLLBACK;
 
+-- ── submissions: anonymous-auth users cannot submit (012) ─────────────────
+
+-- signInAnonymously() users carry the `authenticated` role plus an
+-- `is_anonymous: true` claim. They must not be able to post submissions even
+-- for their own user_id.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","is_anonymous":true}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '44444444-4444-4444-4444-444444444444', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-anon', 'test'
+  )
+  $sql$,
+  'catune INSERT by anonymous-auth user denied'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, num_iterations, converged,
+    indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '44444444-4444-4444-4444-444444444444', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-anon', 'test'
+  )
+  $sql$,
+  'cadecon INSERT by anonymous-auth user denied'
+);
+ROLLBACK;
+
+-- A real user whose JWT carries is_anonymous=false explicitly (what Supabase
+-- issues after magic-link sign-in) can still submit to both tables.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","is_anonymous":false}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-alice-real', 'test'
+  )
+  $sql$,
+  'catune INSERT by real user (is_anonymous=false)'
+);
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, num_iterations, converged,
+    indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-alice-real', 'test'
+  )
+  $sql$,
+  'cadecon INSERT by real user (is_anonymous=false)'
+);
+ROLLBACK;
+
 -- ── catune_submissions: cross-user DELETE denied ───────────────────────────
 
 BEGIN;
@@ -392,17 +463,84 @@ SELECT assert_denied(
 );
 ROLLBACK;
 
--- ── analytics_sessions: owner INSERT allowed ──────────────────────────────
+-- ── analytics_sessions: direct INSERT denied even for own user_id (013) ───
 
+-- Sessions are created only by the geo-session edge function (service_role),
+-- so clients cannot choose country_code / region / is_anonymous / created_at.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, country_code)
+  VALUES ('anon-alice-2', '11111111-1111-1111-1111-111111111111', false, 'catune', 'XX')
+  $sql$,
+  'analytics_sessions direct own INSERT denied'
+);
+ROLLBACK;
+
+-- Same for an anonymous-auth visitor (the common case in production).
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","is_anonymous":true}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
+  VALUES ('anon-visitor', '44444444-4444-4444-4444-444444444444', true, 'catune')
+  $sql$,
+  'analytics_sessions direct INSERT by anonymous-auth user denied'
+);
+ROLLBACK;
+
+-- service_role (edge function) can still create sessions.
+BEGIN;
+SET LOCAL ROLE service_role;
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, country_code)
+  VALUES ('edge-fn', '44444444-4444-4444-4444-444444444444', true, 'catune', 'US')
+  $sql$,
+  'analytics_sessions service_role INSERT allowed'
+);
+ROLLBACK;
+
+-- ── analytics_sessions: column-scoped UPDATE of own row (013) ─────────────
+
+-- ended_at / duration_seconds are the only client-writable columns.
 BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
 SELECT assert_allowed(
   $sql$
-  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
-  VALUES ('anon-alice-2', '11111111-1111-1111-1111-111111111111', false, 'catune')
+  UPDATE analytics_sessions SET ended_at = now(), duration_seconds = 60
+  WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   $sql$,
-  'analytics_sessions own INSERT'
+  'analytics_sessions own UPDATE of ended_at/duration_seconds'
+);
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM analytics_sessions
+      WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        AND ended_at IS NOT NULL AND duration_seconds = 60$sql$,
+  1,
+  'analytics_sessions own UPDATE lands'
+);
+ROLLBACK;
+
+-- Every other column is denied at the privilege layer, even on own rows.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET country_code = 'XX' WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of country_code denied'
+);
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET is_anonymous = true WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of is_anonymous denied'
+);
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET user_id = '22222222-2222-2222-2222-222222222222' WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of user_id denied'
 );
 ROLLBACK;
 
@@ -538,10 +676,12 @@ ROLLBACK;
 BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+-- Sessions are only created by the edge function (013), so exercise the CHECK
+-- through the one column-scoped UPDATE path clients still have.
 SELECT assert_denied(
   $sql$
-  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, duration_seconds)
-  VALUES ('duration-test', '11111111-1111-1111-1111-111111111111', false, 'catune', 100000)
+  UPDATE analytics_sessions SET duration_seconds = 100000
+  WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   $sql$,
   'analytics_sessions duration > 86400 denied',
   '23514'
@@ -565,6 +705,42 @@ SELECT assert_denied(
   $sql$,
   'catune tau_rise > 0.5 denied',
   '23514'
+);
+ROLLBACK;
+
+-- ── analytics_events: per-session cap (013) ───────────────────────────────
+
+-- Seed 500 events (the cap) as the privileged test owner, then the owner's
+-- next insert must be rejected with program_limit_exceeded (54000).
+BEGIN;
+INSERT INTO analytics_events (session_id, event_name, event_data)
+SELECT 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}'
+FROM generate_series(1, 499);
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}')
+  $sql$,
+  'analytics_events 500th event in a session allowed'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}')
+  $sql$,
+  'analytics_events 501st event in a session denied',
+  '54000'
+);
+-- Other sessions are unaffected by alice's cap.
+SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'file_imported', '{}')
+  $sql$,
+  'analytics_events cap is per session'
 );
 ROLLBACK;
 
