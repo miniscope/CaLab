@@ -41,6 +41,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   constant (~0.7 s at K≈13.8k kernel samples). For the non-negative kernels the
   solver builds, `max|H(ω)| = H(0)`, so `L = (Σh)²` is now computed in O(K); the
   DFT remains the fallback for kernels with negative taps
+
 - **CaTune / CaDecon** a solver worker whose WASM failed to initialize only
   logged to the console, so its jobs queued forever: CaTune cells showed
   "solving" indefinitely and a CaDecon run never finished. Workers now report
