@@ -67,7 +67,7 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
 
       <Show when={props.hasFile}>
         <div class="start-over-row">
-          <button class="btn-secondary btn-small" onClick={props.onReset}>
+          <button class="btn-secondary btn-small" onClick={() => props.onReset()}>
             Start Over
           </button>
         </div>
