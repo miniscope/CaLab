@@ -206,7 +206,7 @@ export function SubmitForm(props: SubmitFormProps) {
 
         <button
           class="btn-primary"
-          onClick={props.onSubmit}
+          onClick={() => props.onSubmit()}
           disabled={!props.requiredFieldsFilled() || props.submitting()}
         >
           {props.submitting() ? 'Submitting...' : 'Submit Parameters'}

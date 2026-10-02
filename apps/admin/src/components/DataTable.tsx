@@ -22,6 +22,9 @@ interface DataTableProps {
 }
 
 export function DataTable(props: DataTableProps): JSX.Element {
+  // Seed the sort column from the initial columns; afterwards the user owns it
+  // via header clicks. Callers pass a static column list.
+  // eslint-disable-next-line solid/reactivity
   const [sortKey, setSortKey] = createSignal<string>(props.columns[0]?.key ?? '');
   const [sortAsc, setSortAsc] = createSignal(true);
 
@@ -105,7 +108,7 @@ export function DataTable(props: DataTableProps): JSX.Element {
               )}
             </For>
             <Show when={props.onDeleteRow}>
-              <th class="data-table__th"></th>
+              <th class="data-table__th" />
             </Show>
           </tr>
         </thead>
