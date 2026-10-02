@@ -14,6 +14,8 @@ export {
 } from './kernel-math.ts';
 export { tauToShape, shapeToTau, isValidShapePair } from './kernel-shape.ts';
 export { downsampleMinMax } from './downsample.ts';
+export { computeBandLayout, scaleToBand, residualBandSeries } from './residual.ts';
+export type { BandLayout, BandSpacing } from './residual.ts';
 export { makeTimeAxis } from './time-axis.ts';
 export { generateSyntheticTrace } from './mock-traces.ts';
 // Simulation types consumed by apps' data-store. Internal shape

@@ -26,6 +26,26 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **CaTune, CaDecon** the residual trace in the zoom charts subtracted two
+  independently min/max-downsampled series, so once a window held more than
+  2× the chart's bucket count (>1200 samples in the CaDecon Trace Inspector;
+  high sampling rates or zoomed-out CaTune cards) it paired one series' bucket
+  minimum with the other's maximum and drew spurious residual spikes. The
+  residual is now computed at full resolution and downsampled afterwards. The
+  band layout and residual math shared by both charts now live in
+  `@calab/compute` (`computeBandLayout`, `scaleToBand`, `residualBandSeries`)
+
+- **Charts** `downsampleMinMax` emitted `Infinity, -Infinity` for a bucket with
+  no finite sample (e.g. an all-NaN stretch), breaking uPlot's autoscale. Such
+  buckets are now `null` gaps; non-finite samples are skipped within mixed
+  buckets and returned as `null` when no downsampling is needed
+
+- **Import** the partial-NaN validation warning claimed "CaTune will skip NaN
+  values during deconvolution"; nothing skips them. It now says the solver does
+  not support NaN/Inf samples, that affected cells will fail to solve, and to
+  interpolate over or remove them before importing. It remains a warning, so
+  files whose other cells solve still import
+
 - **CaTune** moving a parameter slider orphaned every cell's in-flight solver
   job instead of cancelling it: the job ran its full quantum, its result was
   discarded, and with more cells than workers the orphans queued ahead of the
