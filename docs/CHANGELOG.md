@@ -7,6 +7,22 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **Solver** the FISTA solve depended on how often the UI polled the fit.
+  The display getters (`get_reconvolution`, `get_reconvolution_with_baseline`,
+  `get_baseline`) overwrote the scalar baseline that `step_batch` adds into the
+  residual, and CaTune (which always subtracts a rolling baseline, so the solver
+  never re-estimates it) polls those getters every 100 ms. Results therefore
+  varied with wall-clock timing, and `load_state` restored the leaked value so
+  warm and cold starts disagreed. The display baseline is now a separate,
+  display-only EMA; the solver's baseline is pinned to 0 for filtered traces.
+  **CaTune deconvolved activity can change** slightly versus earlier builds;
+  results are now deterministic for a given trace and parameters
+
+- **Solver** `set_params` spent O(K²) on a direct DFT to compute the Lipschitz
+  constant (~0.7 s at K≈13.8k kernel samples). For the non-negative kernels the
+  solver builds, `max|H(ω)| = H(0)`, so `L = (Σh)²` is now computed in O(K); the
+  DFT remains the fallback for kernels with negative taps
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never

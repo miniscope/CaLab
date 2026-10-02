@@ -54,10 +54,16 @@ impl Solver {
             //     Skip when bandpass-filtered — DC is already removed, and the baseline
             //     mathematically cancels in the gradient (residual = mean-centered signals).
             //     Computing it anyway would produce pure momentum-oscillation noise.
-            if !self.filtered {
+            //     When filtered the solver baseline is pinned to 0: it is never
+            //     re-estimated here and nothing else (display getters, load_state)
+            //     may inject a value, so the iterate sequence is deterministic.
+            if self.filtered {
+                self.baseline = 0.0;
+            } else {
                 let raw =
                     crate::compute_raw_baseline(&self.trace[..n], &self.reconvolution[..n], n);
-                self.update_baseline_ema(raw);
+                self.baseline = raw;
+                self.update_display_baseline(raw);
             }
 
             // 2. Compute residual = K * y_k + b - trace
@@ -205,6 +211,114 @@ mod tests {
             }
         }
         trace
+    }
+
+    /// Spiky trace with a DC offset and a deterministic wiggle, so the
+    /// display baseline is far from zero and the subtracted trace is non-trivial.
+    fn offset_trace(n: usize) -> Vec<f32> {
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let mut trace = build_trace(&kernel, n, &[15, 60, 61, 140, 230, 300, 410]);
+        for (i, v) in trace.iter_mut().enumerate() {
+            *v = 2.0 * *v + 5.0 + 0.05 * ((i as f32) * 0.7).sin();
+        }
+        trace
+    }
+
+    /// Run `batches` batches of 10 steps; optionally poll every display getter
+    /// between batches (what the CaTune worker does every 100 ms).
+    fn run_batches(solver: &mut Solver, batches: u32, poll_getters: bool) {
+        for _ in 0..batches {
+            if poll_getters {
+                let _ = solver.get_reconvolution_with_baseline();
+                let _ = solver.get_reconvolution();
+                let _ = solver.get_baseline();
+            }
+            if solver.step_batch(10) {
+                break;
+            }
+        }
+    }
+
+    fn fresh(conv_mode: crate::ConvMode, subtract: bool, trace: &[f32]) -> Solver {
+        let mut solver = Solver::new();
+        solver.set_conv_mode(conv_mode);
+        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_trace(trace);
+        if subtract {
+            solver.subtract_baseline();
+        }
+        solver
+    }
+
+    #[test]
+    fn display_getters_do_not_change_the_solve() {
+        let trace = offset_trace(500);
+        for mode in [crate::ConvMode::Fft, crate::ConvMode::BandedAR2] {
+            for subtract in [true, false] {
+                let mut quiet = fresh(mode, subtract, &trace);
+                run_batches(&mut quiet, 100, false);
+                let mut polled = fresh(mode, subtract, &trace);
+                run_batches(&mut polled, 100, true);
+
+                assert_eq!(
+                    quiet.iteration_count(),
+                    polled.iteration_count(),
+                    "iteration count differs (subtract={subtract})"
+                );
+                let a = quiet.get_solution();
+                let b = polled.get_solution();
+                assert!(
+                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "solution differs with interleaved getters (subtract={subtract})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn display_baseline_still_aligns_fit_after_subtraction() {
+        // The fit shown to the user must still sit on the (subtracted) trace.
+        let trace = offset_trace(500);
+        let mut solver = fresh(crate::ConvMode::Fft, true, &trace);
+        run_batches(&mut solver, 200, false);
+        let b = solver.get_baseline();
+        let t = solver.get_trace();
+        let r = solver.get_reconvolution();
+        let mean_resid: f64 =
+            t.iter().zip(&r).map(|(&a, &c)| (a - c) as f64).sum::<f64>() / t.len() as f64;
+        assert!(
+            (b - mean_resid).abs() < 1e-6,
+            "display baseline {b} vs {mean_resid}"
+        );
+        // ...but the solver's own baseline stayed pinned at 0.
+        assert_eq!(solver.baseline, 0.0);
+    }
+
+    #[test]
+    fn save_load_state_continues_identically() {
+        let trace = offset_trace(500);
+        for mode in [crate::ConvMode::Fft, crate::ConvMode::BandedAR2] {
+            for subtract in [true, false] {
+                // Reference: one uninterrupted solve (with getter polling, which
+                // previously leaked a baseline into the saved state).
+                let mut reference = fresh(mode, subtract, &trace);
+                run_batches(&mut reference, 5, true);
+                let state = reference.export_state();
+                run_batches(&mut reference, 20, false);
+
+                let mut resumed = fresh(mode, subtract, &trace);
+                resumed.load_state(&state);
+                run_batches(&mut resumed, 20, false);
+
+                assert_eq!(reference.iteration_count(), resumed.iteration_count());
+                let a = reference.get_solution();
+                let b = resumed.get_solution();
+                assert!(
+                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "resumed solve diverged from uninterrupted solve (subtract={subtract})"
+                );
+            }
+        }
     }
 
     // Test 1: Delta impulse recovery
@@ -565,9 +679,7 @@ mod tests {
         solver.set_trace(&trace);
 
         // Set up a known signal in solution_prev
-        for i in 0..n {
-            solver.solution_prev[i] = trace[i];
-        }
+        solver.solution_prev[..n].copy_from_slice(&trace[..n]);
 
         // FFT-based forward convolution
         let mut fft_result = vec![0.0_f32; n];
@@ -659,7 +771,7 @@ mod tests {
         let solution = solver.get_solution();
         for (i, &v) in solution.iter().enumerate() {
             assert!(
-                v >= 0.0 && v <= 1.0,
+                (0.0..=1.0).contains(&v),
                 "Box01 solution at index {} should be in [0,1], got {}",
                 i,
                 v

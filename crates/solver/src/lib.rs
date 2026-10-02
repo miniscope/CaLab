@@ -106,7 +106,13 @@ pub struct Solver {
     pub(crate) lipschitz_constant: f64,
 
     // Baseline and kernel scaling
+    /// Scalar baseline `b` that enters the FISTA residual. Written ONLY by
+    /// `step_batch` (and reset by `set_trace`); display getters never touch it,
+    /// so polling the fit mid-solve cannot change the optimization. When the
+    /// trace is `filtered` the solver treats `b` as 0 regardless of this value.
     pub(crate) baseline: f64,
+    /// Display-only EMA of the raw baseline `mean(trace - K*s)`. Read by
+    /// `get_baseline` / `get_reconvolution_with_baseline`; never read by the solver.
     baseline_ema: f64,
     baseline_ema_init: bool,
     kernel_dc_gain: f64,
@@ -420,16 +426,18 @@ impl Solver {
         // Recompute baseline at current solution for display alignment.
         // In step_batch, baseline is skipped when filtered (cancels in gradient),
         // but the display path always needs it to align fit with trace.
+        // This only feeds the display EMA — it must NOT write `self.baseline`,
+        // which step_batch consumes (see `baseline` field docs).
         let raw = compute_raw_baseline(&self.trace[..n], &self.reconvolution[..n], n);
-        self.update_baseline_ema(raw);
+        self.update_display_baseline(raw);
 
         self.reconvolution_stale = false;
     }
 
-    /// Update the baseline EMA from a raw baseline estimate.
-    /// Called by both `step_batch` (per-iteration) and `compute_reconvolution` (lazy display path).
-    fn update_baseline_ema(&mut self, raw_baseline: f64) {
-        self.baseline = raw_baseline;
+    /// Fold a raw baseline estimate into the display-only EMA.
+    /// Called by both `step_batch` (per-iteration) and `compute_reconvolution`
+    /// (lazy display path). Never touches the solver's `baseline`.
+    pub(crate) fn update_display_baseline(&mut self, raw_baseline: f64) {
         if !self.baseline_ema_init {
             self.baseline_ema = raw_baseline;
             self.baseline_ema_init = true;
@@ -468,6 +476,7 @@ impl Solver {
         let applied = self.bandpass.apply(&mut self.trace[..n]);
         if applied && self.bandpass.is_hp_enabled() {
             self.filtered = true;
+            self.baseline = 0.0;
         }
         applied
     }
@@ -490,6 +499,7 @@ impl Solver {
             baseline::DEFAULT_BASELINE_QUANTILE,
         );
         self.filtered = true;
+        self.baseline = 0.0;
     }
 
     /// Get the power spectrum of the current trace (N/2+1 bins).
@@ -519,6 +529,10 @@ impl Solver {
     }
 
     /// Load warm-start state. If state is empty or wrong size, performs cold-start (zero solution).
+    ///
+    /// The serialized baseline is restored only for unfiltered traces; when
+    /// the trace is `filtered` the solver's baseline is pinned to 0, so a
+    /// warm start continues exactly like the solve that produced the state.
     pub fn load_state(&mut self, state: &[u8]) {
         if state.is_empty() {
             return; // cold start -- solution already zeroed by set_trace
@@ -540,7 +554,8 @@ impl Solver {
 
         self.t_fista = read_f64_le(&mut cur);
         self.iteration = read_u32_le(&mut cur);
-        self.baseline = read_f64_le(&mut cur);
+        let saved_baseline = read_f64_le(&mut cur);
+        self.baseline = if self.filtered { 0.0 } else { saved_baseline };
         self.converged = false;
         self.prev_objective = f64::INFINITY;
 
