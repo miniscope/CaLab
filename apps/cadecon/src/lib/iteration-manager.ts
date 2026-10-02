@@ -33,6 +33,8 @@ import {
   setCurrentTauRise,
   setCurrentTauDecay,
   setConvergedAtIteration,
+  setRunError,
+  setFailedJobs,
   addConvergenceSnapshot,
   addDebugTraceSnapshot,
   updateTraceResult,
@@ -73,7 +75,9 @@ import { reconvolveAR2 } from './reconvolve.ts';
 
 // Per-trace and per-kernel FISTA solver parameters are configurable via
 // algorithm-store (traceFistaMaxIters/Tol, kernelFistaMaxIters/Tol,
-// kernelSmoothLambda) so they are overridable and recorded with the run.
+// kernelSmoothLambda) so they are overridable and recorded with the run. Like
+// every other run parameter they are snapshotted once at run start
+// (SolverSettings), so editing them mid-run cannot change a run in progress.
 /** Number of early free-kernel samples to skip in bi-exponential fitting. */
 export const BIEXP_FIT_SKIP = 0;
 
@@ -156,9 +160,114 @@ function computeTraceStability(
   return deltas.length > 0 ? median(deltas) : null;
 }
 
-let pool: WorkerPool<CaDeconPoolJob> | null = null;
+type Pool = WorkerPool<CaDeconPoolJob>;
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+/** A job as the phase code describes it; runJobs assigns the id and settle callbacks. */
+type JobSpec = DistributiveOmit<CaDeconPoolJob, 'jobId' | 'onCancelled' | 'onError'>;
+
+/**
+ * The live run's pool, kept at module level only so stopRun/resetRun can reach
+ * it. The run loop itself uses the pool it created (passed down as a local), so
+ * a reset that nulls or replaces this can never make an old loop dispatch onto
+ * the wrong pool or onto null.
+ */
+let pool: Pool | null = null;
 let nextJobId = 0;
 let pauseResolver: (() => void) | null = null;
+/**
+ * Run generation. Each startRun captures `++currentRun`; resetRun bumps it.
+ * After every await the loop checks it still owns the generation and bails
+ * (via RunSuperseded) if not, so a reset run never resumes.
+ */
+let currentRun = 0;
+
+/** A phase aborts the run when more than this fraction of its jobs failed. */
+const MAX_PHASE_FAILURE_FRACTION = 0.5;
+
+/** Thrown inside a run to unwind it silently: a newer run (or reset) owns the state. */
+class RunSuperseded extends Error {}
+
+function assertCurrent(runId: number): void {
+  if (runId !== currentRun) throw new RunSuperseded();
+}
+
+/** Outcome of one batch of jobs. Cancelled jobs are neither failures nor results. */
+interface PhaseOutcome {
+  total: number;
+  failed: number;
+  firstError: string | null;
+}
+
+/**
+ * Dispatch `count` jobs and resolve once every one has settled (completed,
+ * cancelled, or failed). `makeJob` builds job `i`; its `onComplete` must do its
+ * own bookkeeping and then call `settle()`. Failures are counted here.
+ */
+function runJobs(
+  runPool: Pool,
+  count: number,
+  makeJob: (i: number, settle: () => void) => JobSpec | null,
+  onSettled?: (settled: number) => void,
+): Promise<PhaseOutcome> {
+  return new Promise((resolve) => {
+    const outcome: PhaseOutcome = { total: 0, failed: 0, firstError: null };
+    let settled = 0;
+    let dispatching = true;
+    const settle = (): void => {
+      settled++;
+      onSettled?.(settled);
+      if (!dispatching && settled === outcome.total) resolve(outcome);
+    };
+    for (let i = 0; i < count; i++) {
+      const job = makeJob(i, settle);
+      if (!job) continue;
+      outcome.total++;
+      runPool.dispatch({
+        ...job,
+        jobId: nextJobId++,
+        onCancelled: settle,
+        onError(msg: string) {
+          outcome.failed++;
+          outcome.firstError ??= msg;
+          settle();
+        },
+      });
+    }
+    // Jobs may settle synchronously (e.g. a fatal or disposed pool), so only
+    // resolve once every job has been dispatched.
+    dispatching = false;
+    if (settled === outcome.total) resolve(outcome);
+  });
+}
+
+/**
+ * Record a phase's job failures and abort the run if too many failed. A
+ * phase where most jobs failed would otherwise quietly produce a fallback
+ * kernel (or none) and report the run as complete.
+ */
+function checkPhase(phase: string, outcome: PhaseOutcome): void {
+  if (outcome.failed === 0) return;
+  setFailedJobs((n) => n + outcome.failed);
+  console.warn(
+    `[CaDecon] ${outcome.failed}/${outcome.total} ${phase} jobs failed:`,
+    outcome.firstError,
+  );
+  if (outcome.failed > outcome.total * MAX_PHASE_FAILURE_FRACTION) {
+    throw new Error(
+      `${outcome.failed} of ${outcome.total} ${phase} jobs failed` +
+        (outcome.firstError ? `: ${outcome.firstError}` : ''),
+    );
+  }
+}
+
+/** Per-run snapshot of the FISTA solver settings (read once, not live mid-run). */
+interface SolverSettings {
+  traceMaxIters: number;
+  traceTol: number;
+  kernelMaxIters: number;
+  kernelTol: number;
+  kernelSmoothLambda: number;
+}
 
 // --- Helpers ---
 
@@ -182,13 +291,30 @@ function extractCellTrace(
 
 // --- Dispatch helpers ---
 
+type TraceInput = { data: ArrayLike<number>; shape: number[] };
+
+/** Flatten subset rectangles into one (cell, rect, subsetIdx) entry per cell×subset. */
+function subsetCellJobs(
+  rects: SubsetRectangle[],
+): { cell: number; rect: SubsetRectangle; subsetIdx: number }[] {
+  const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
+  for (let si = 0; si < rects.length; si++) {
+    const rect = rects[si];
+    for (let c = rect.cellStart; c < rect.cellEnd; c++) {
+      jobs.push({ cell: c, rect, subsetIdx: si });
+    }
+  }
+  return jobs;
+}
+
 /**
  * Run trace inference for all cells in all subsets.
  * Returns an array (one per subset) of Map<cellIndex, TraceResult>.
  */
-function dispatchTraceJobs(
+async function dispatchTraceJobs(
+  runPool: Pool,
   rects: SubsetRectangle[],
-  data: { data: ArrayLike<number>; shape: number[] },
+  data: TraceInput,
   isSwapped: boolean,
   tauR: number,
   tauD: number,
@@ -202,30 +328,18 @@ function dispatchTraceJobs(
   noiseConstrained: boolean,
   computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
-): Promise<Array<Map<number, TraceResult>>> {
-  return new Promise((resolve) => {
-    const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
-    for (let si = 0; si < rects.length; si++) {
-      const rect = rects[si];
-      for (let c = rect.cellStart; c < rect.cellEnd; c++) {
-        jobs.push({ cell: c, rect, subsetIdx: si });
-      }
-    }
+): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
+  const jobs = subsetCellJobs(rects);
+  setTotalSubsetTraceJobs(jobs.length);
+  setCompletedSubsetTraceJobs(0);
 
-    setTotalSubsetTraceJobs(jobs.length);
-    setCompletedSubsetTraceJobs(0);
-
-    if (jobs.length === 0) {
-      resolve(rects.map(() => new Map()));
-      return;
-    }
-
-    const results: Array<Map<number, TraceResult>> = rects.map(() => new Map());
-    let completed = 0;
-
-    for (const { cell, rect, subsetIdx } of jobs) {
+  const results: Array<Map<number, TraceResult>> = rects.map(() => new Map());
+  const outcome = await runJobs(
+    runPool,
+    jobs.length,
+    (i, settle) => {
+      const { cell, rect, subsetIdx } = jobs[i];
       const trace = extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped);
-      const jobId = nextJobId++;
 
       // Warm-start: extract the relevant segment of previous s_counts for this subset window.
       // Previous s_counts cover the full trace; we need just [tStart, tEnd).
@@ -235,8 +349,7 @@ function dispatchTraceJobs(
         warmCounts = prevCounts.subarray(rect.tStart, rect.tEnd);
       }
 
-      pool!.dispatch({
-        jobId,
+      return {
         kind: 'trace',
         trace,
         tauRise: tauR,
@@ -253,133 +366,106 @@ function dispatchTraceJobs(
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
+          settle();
         },
-        onCancelled() {
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
-        },
-        onError() {
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
-        },
-      });
-    }
-  });
+      };
+    },
+    setCompletedSubsetTraceJobs,
+  );
+  return { results, outcome };
 }
 
 /** Run kernel estimation for each subset. Returns per-subset kernel results. */
-function dispatchKernelJobs(
+async function dispatchKernelJobs(
+  runPool: Pool,
+  solver: SolverSettings,
   rects: SubsetRectangle[],
   perSubsetResults: Array<Map<number, TraceResult>>,
-  data: { data: ArrayLike<number>; shape: number[] },
+  data: TraceInput,
   isSwapped: boolean,
   fs: number,
   kernelLength: number,
   prevKernels?: Float32Array[],
   prevBiexpResults?: WarmBiexp[],
-): Promise<KernelJobResult[]> {
-  return new Promise((resolve) => {
-    const kernelResults: KernelJobResult[] = [];
-    let completed = 0;
-    let totalKernelJobs = 0;
+): Promise<{ results: KernelJobResult[]; outcome: PhaseOutcome }> {
+  const kernelResults: KernelJobResult[] = [];
 
-    for (let si = 0; si < rects.length; si++) {
-      const rect = rects[si];
-      const subsetResults = perSubsetResults[si];
+  const outcome = await runJobs(runPool, rects.length, (si, settle) => {
+    const rect = rects[si];
+    const subsetResults = perSubsetResults[si];
 
-      // Two-pass: first identify valid cells and count total length, then allocate and fill
-      type ValidCell = {
-        trace: Float32Array;
-        sCounts: Float32Array;
-        alpha: number;
-        baseline: number;
-      };
-      const validCells: ValidCell[] = [];
-      let totalSamples = 0;
+    // Two-pass: first identify valid cells and count total length, then allocate and fill
+    type ValidCell = {
+      trace: Float32Array;
+      sCounts: Float32Array;
+      alpha: number;
+      baseline: number;
+    };
+    const validCells: ValidCell[] = [];
+    let totalSamples = 0;
 
-      for (let c = rect.cellStart; c < rect.cellEnd; c++) {
-        const r = subsetResults.get(c);
-        if (!r) continue;
-        if (r.alpha === 0 || r.sCounts.every((v) => v === 0)) continue;
+    for (let c = rect.cellStart; c < rect.cellEnd; c++) {
+      const r = subsetResults.get(c);
+      if (!r) continue;
+      if (r.alpha === 0 || r.sCounts.every((v) => v === 0)) continue;
 
-        // Use the working trace (after filter + baseline subtraction) for kernel
-        // estimation — this is the domain the solver operated in. Fall back to
-        // raw only if the working trace is unavailable.
-        const trace = r.filteredTrace
-          ? r.filteredTrace
-          : extractCellTrace(c, rect.tStart, rect.tEnd, data, isSwapped);
-        validCells.push({ trace, sCounts: r.sCounts, alpha: r.alpha, baseline: r.baseline });
-        totalSamples += trace.length;
-      }
-
-      if (validCells.length === 0) {
-        continue;
-      }
-
-      const tracesFlat = new Float32Array(totalSamples);
-      const spikesFlat = new Float32Array(totalSamples);
-      const traceLengths = new Uint32Array(validCells.length);
-      const alphas = new Float64Array(validCells.length);
-      const baselines = new Float64Array(validCells.length);
-
-      let offset = 0;
-      for (let i = 0; i < validCells.length; i++) {
-        const vc = validCells[i];
-        tracesFlat.set(vc.trace, offset);
-        spikesFlat.set(vc.sCounts, offset);
-        traceLengths[i] = vc.trace.length;
-        alphas[i] = vc.alpha;
-        baselines[i] = vc.baseline;
-        offset += vc.trace.length;
-      }
-
-      totalKernelJobs++;
-      const jobId = nextJobId++;
-
-      // Warm-start: use previous iteration's kernel and biexp result for this subset
-      const warmKernel = prevKernels?.[si];
-      const warmBiexp = prevBiexpResults?.[si];
-
-      pool!.dispatch({
-        jobId,
-        kind: 'kernel',
-        tracesFlat,
-        spikesFlat,
-        traceLengths,
-        alphas,
-        baselines,
-        kernelLength,
-        fs,
-        maxIters: kernelFistaMaxIters(),
-        tol: kernelFistaTol(),
-        refine: true,
-        smoothLambda: kernelSmoothLambda(),
-        biexpSkip: BIEXP_FIT_SKIP,
-        warmKernel,
-        warmBiexp,
-        onComplete(result: KernelResult) {
-          kernelResults.push({ ...result, subsetIdx: si });
-          completed++;
-          if (completed === totalKernelJobs) resolve(kernelResults);
-        },
-        onCancelled() {
-          completed++;
-          if (completed === totalKernelJobs) resolve(kernelResults);
-        },
-        onError() {
-          completed++;
-          if (completed === totalKernelJobs) resolve(kernelResults);
-        },
-      });
+      // Use the working trace (after filter + baseline subtraction) for kernel
+      // estimation — this is the domain the solver operated in. Fall back to
+      // raw only if the working trace is unavailable.
+      const trace = r.filteredTrace
+        ? r.filteredTrace
+        : extractCellTrace(c, rect.tStart, rect.tEnd, data, isSwapped);
+      validCells.push({ trace, sCounts: r.sCounts, alpha: r.alpha, baseline: r.baseline });
+      totalSamples += trace.length;
     }
 
-    if (totalKernelJobs === 0) resolve([]);
+    // Subsets with no valid traces dispatch no job.
+    if (validCells.length === 0) return null;
+
+    const tracesFlat = new Float32Array(totalSamples);
+    const spikesFlat = new Float32Array(totalSamples);
+    const traceLengths = new Uint32Array(validCells.length);
+    const alphas = new Float64Array(validCells.length);
+    const baselines = new Float64Array(validCells.length);
+
+    let offset = 0;
+    for (let i = 0; i < validCells.length; i++) {
+      const vc = validCells[i];
+      tracesFlat.set(vc.trace, offset);
+      spikesFlat.set(vc.sCounts, offset);
+      traceLengths[i] = vc.trace.length;
+      alphas[i] = vc.alpha;
+      baselines[i] = vc.baseline;
+      offset += vc.trace.length;
+    }
+
+    // Warm-start: use previous iteration's kernel and biexp result for this subset
+    const warmKernel = prevKernels?.[si];
+    const warmBiexp = prevBiexpResults?.[si];
+
+    return {
+      kind: 'kernel',
+      tracesFlat,
+      spikesFlat,
+      traceLengths,
+      alphas,
+      baselines,
+      kernelLength,
+      fs,
+      maxIters: solver.kernelMaxIters,
+      tol: solver.kernelTol,
+      refine: true,
+      smoothLambda: solver.kernelSmoothLambda,
+      biexpSkip: BIEXP_FIT_SKIP,
+      warmKernel,
+      warmBiexp,
+      onComplete(result: KernelResult) {
+        kernelResults.push({ ...result, subsetIdx: si });
+        settle();
+      },
+    };
   });
+  return { results: kernelResults, outcome };
 }
 
 // --- Seed trace dispatch (parallel, Rust WASM via worker pool) ---
@@ -389,40 +475,26 @@ function dispatchKernelJobs(
  * Each worker runs Rust peak detection (find_seed_spikes) — no kernel needed.
  * Returns the same shape as dispatchTraceJobs so it feeds directly into dispatchKernelJobs.
  */
-function dispatchSeedTraceJobs(
+async function dispatchSeedTraceJobs(
+  runPool: Pool,
   rects: SubsetRectangle[],
-  data: { data: ArrayLike<number>; shape: number[] },
+  data: TraceInput,
   isSwapped: boolean,
   fs: number,
-): Promise<Array<Map<number, TraceResult>>> {
-  return new Promise((resolve) => {
-    const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
-    for (let si = 0; si < rects.length; si++) {
-      const rect = rects[si];
-      for (let c = rect.cellStart; c < rect.cellEnd; c++) {
-        jobs.push({ cell: c, rect, subsetIdx: si });
-      }
-    }
+): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
+  const jobs = subsetCellJobs(rects);
+  setTotalSubsetTraceJobs(jobs.length);
+  setCompletedSubsetTraceJobs(0);
 
-    setTotalSubsetTraceJobs(jobs.length);
-    setCompletedSubsetTraceJobs(0);
-
-    if (jobs.length === 0) {
-      resolve(rects.map(() => new Map()));
-      return;
-    }
-
-    const results: Array<Map<number, TraceResult>> = rects.map(() => new Map());
-    let completed = 0;
-
-    for (const { cell, rect, subsetIdx } of jobs) {
-      const trace = extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped);
-      const jobId = nextJobId++;
-
-      pool!.dispatch({
-        jobId,
+  const results: Array<Map<number, TraceResult>> = rects.map(() => new Map());
+  const outcome = await runJobs(
+    runPool,
+    jobs.length,
+    (i, settle) => {
+      const { cell, rect, subsetIdx } = jobs[i];
+      return {
         kind: 'seed-trace',
-        trace,
+        trace: extractCellTrace(cell, rect.tStart, rect.tEnd, data, isSwapped),
         fs,
         onComplete(result: SeedTraceResult) {
           // Wrap SeedTraceResult into a TraceResult so it feeds into dispatchKernelJobs
@@ -435,34 +507,72 @@ function dispatchSeedTraceJobs(
             iterations: 0,
             converged: true,
           });
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
+          settle();
         },
-        onCancelled() {
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
-        },
-        onError(msg: string) {
-          console.warn('[CaDecon] seed-trace error:', msg);
-          completed++;
-          setCompletedSubsetTraceJobs(completed);
-          if (completed === jobs.length) resolve(results);
-        },
-      });
-    }
-  });
+      };
+    },
+    setCompletedSubsetTraceJobs,
+  );
+  return { results, outcome };
 }
 
 // --- Main Loop ---
 
+type RunData = NonNullable<ReturnType<typeof parsedData>>;
+
+/**
+ * Start a run. Never rejects: callers fire it with `void startRun()`.
+ *
+ * Every exit leaves a terminal state: 'complete' (finished, or stopped early by
+ * the user — partial results are kept), 'error' (a thrown error, a fatal pool,
+ * or too many job failures; the reason is in `runError`), or untouched if a
+ * resetRun superseded this run (reset already moved the store to 'idle'). The
+ * run's pool is disposed on every exit.
+ */
 export async function startRun(): Promise<void> {
   const data = parsedData();
   const fs = samplingRate();
   const shape = effectiveShape();
   if (!data || !fs || !shape) return;
 
+  // Supersede any previous run that is somehow still live.
+  const runId = ++currentRun;
+  pool?.dispose();
+
+  setRunError(null);
+  setFailedJobs(0);
+  const runPool = createCaDeconWorkerPool(undefined, {
+    onFatal(message) {
+      console.error('[CaDecon] solver workers failed:', message);
+      if (runId === currentRun) setRunError(`Solver workers failed: ${message}`);
+    },
+  });
+  pool = runPool;
+  setRunState('running');
+
+  try {
+    await executeRun(runId, runPool, data, fs);
+    if (runId === currentRun) {
+      setRunPhase('idle');
+      setRunState('complete');
+    }
+  } catch (err) {
+    if (err instanceof RunSuperseded || runId !== currentRun) return;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[CaDecon] run failed:', err);
+    // Prefer the pool's root cause (e.g. WASM failed to load) over the
+    // downstream "N jobs failed" it produces.
+    setRunError((prev) => prev ?? message);
+    setRunPhase('idle');
+    setRunState('error');
+  } finally {
+    runPool.dispose();
+    if (pool === runPool) pool = null;
+    if (runId === currentRun) pauseResolver = null;
+  }
+}
+
+async function executeRun(runId: number, runPool: Pool, data: RunData, fs: number): Promise<void> {
   // Snapshot parameters — tau values are auto-detected by the seed phase below;
   // these fallbacks are only used if the seed phase yields zero kernel results.
   const TAU_RISE_FALLBACK = 0.2;
@@ -489,23 +599,34 @@ export async function startRun(): Promise<void> {
   const sparsityLambda = 0.0;
   const noiseConstrainedOn = noiseConstrained();
   const computeComparison = sparsityCompareEnabled();
+  const solver: SolverSettings = {
+    traceMaxIters: traceFistaMaxIters(),
+    traceTol: traceFistaTol(),
+    kernelMaxIters: kernelFistaMaxIters(),
+    kernelTol: kernelFistaTol(),
+    kernelSmoothLambda: kernelSmoothLambda(),
+  };
 
-  // Create pool
-  pool = createCaDeconWorkerPool();
-  setRunState('running');
   setCurrentIteration(0);
 
   // Seed phase: detect peaks in raw traces → kernel estimation → bootstrap taus.
   // Uses the same subset rectangles and dispatchKernelJobs as the iterative loop,
   // but replaces FISTA trace inference with Rust peak detection (no kernel needed).
   setRunPhase('inference');
-  const seedTraceResults = await dispatchSeedTraceJobs(rects, data, isSwap, fs);
+  const seedTraces = await dispatchSeedTraceJobs(runPool, rects, data, isSwap, fs);
+  assertCurrent(runId);
+  checkPhase('seed-trace', seedTraces.outcome);
+  const seedTraceResults = seedTraces.results;
+
+  if (runState() === 'stopping') return;
 
   // Use a generous kernel length for the seed phase (~1.5s) since tauD is unknown
   const seedKernelLength = Math.max(10, Math.min(200, Math.ceil(1.5 * fs)));
 
   setRunPhase('kernel-update');
-  const seedKernelResults = await dispatchKernelJobs(
+  const seedKernels = await dispatchKernelJobs(
+    runPool,
+    solver,
     rects,
     seedTraceResults,
     data,
@@ -513,6 +634,9 @@ export async function startRun(): Promise<void> {
     fs,
     seedKernelLength,
   );
+  assertCurrent(runId);
+  checkPhase('seed-kernel', seedKernels.outcome);
+  const seedKernelResults = seedKernels.results;
 
   // Seed only from subsets whose fit resolved a real transient. A degenerate
   // seed is worse than no seed: it is not merely inaccurate, it points the
@@ -547,11 +671,7 @@ export async function startRun(): Promise<void> {
     );
   }
 
-  if (runState() === 'stopping') {
-    setRunPhase('idle');
-    setRunState('complete');
-    return;
-  }
+  if (runState() === 'stopping') return;
 
   // Kernel length: KERNEL_DURATION_MULTIPLE x tau_decay in samples (matches CaTune's computeKernel convention)
   const kernelLength = Math.max(10, Math.ceil(KERNEL_DURATION_MULTIPLE * tauD * fs));
@@ -627,6 +747,7 @@ export async function startRun(): Promise<void> {
       await new Promise<void>((resolve) => {
         pauseResolver = resolve;
       });
+      assertCurrent(runId);
       if (runState() === 'stopping') break;
     }
 
@@ -634,7 +755,8 @@ export async function startRun(): Promise<void> {
 
     // Step 1: Per-trace inference (warm-started from previous iteration's s_counts)
     setRunPhase('inference');
-    const traceResults = await dispatchTraceJobs(
+    const traceJobs = await dispatchTraceJobs(
+      runPool,
       rects,
       data,
       isSwap,
@@ -642,8 +764,8 @@ export async function startRun(): Promise<void> {
       tauD,
       fs,
       upFactor,
-      traceFistaMaxIters(),
-      traceFistaTol(),
+      solver.traceMaxIters,
+      solver.traceTol,
       hpOn,
       lpOn,
       sparsityLambda,
@@ -651,6 +773,9 @@ export async function startRun(): Promise<void> {
       computeComparison,
       prevTraceCounts,
     );
+    assertCurrent(runId);
+    checkPhase('trace inference', traceJobs.outcome);
+    const traceResults = traceJobs.results;
 
     if (runState() === 'stopping') break;
 
@@ -788,7 +913,9 @@ export async function startRun(): Promise<void> {
 
     // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
     setRunPhase('kernel-update');
-    const kernelResults = await dispatchKernelJobs(
+    const kernelJobs = await dispatchKernelJobs(
+      runPool,
+      solver,
       rects,
       traceResults,
       data,
@@ -798,6 +925,9 @@ export async function startRun(): Promise<void> {
       prevKernels,
       prevBiexpResults,
     );
+    assertCurrent(runId);
+    checkPhase('kernel estimation', kernelJobs.outcome);
+    const kernelResults = kernelJobs.results;
 
     if (runState() === 'stopping') break;
 
@@ -980,73 +1110,49 @@ export async function startRun(): Promise<void> {
     setRunPhase('finalization');
     setTotalSubsetTraceJobs(nCells);
     setCompletedSubsetTraceJobs(0);
-    let finCompleted = 0;
 
-    await new Promise<void>((resolve) => {
-      if (nCells === 0) {
-        resolve();
-        return;
-      }
-
-      for (let c = 0; c < nCells; c++) {
-        const trace = extractCellTrace(c, 0, nTp, data, isSwap);
-        const jobId = nextJobId++;
-
+    const finOutcome = await runJobs(
+      runPool,
+      nCells,
+      (c, settle) => ({
+        kind: 'trace',
+        trace: extractCellTrace(c, 0, nTp, data, isSwap),
+        tauRise: tauR,
+        tauDecay: tauD,
+        fs,
+        upsampleFactor: upFactor,
+        maxIters: solver.traceMaxIters,
+        tol: solver.traceTol,
+        hpEnabled: hpOn,
+        lpEnabled: lpOn,
+        lambda: sparsityLambda,
+        noiseConstrained: noiseConstrainedOn,
+        computeComparison,
         // Warm-start finalization from subset iteration results where available.
         // prevTraceCounts has full-length s_counts for cells that appeared in subsets.
-        const warmCounts = prevTraceCounts?.get(c);
-
-        pool!.dispatch({
-          jobId,
-          kind: 'trace',
-          trace,
-          tauRise: tauR,
-          tauDecay: tauD,
-          fs,
-          upsampleFactor: upFactor,
-          maxIters: traceFistaMaxIters(),
-          tol: traceFistaTol(),
-          hpEnabled: hpOn,
-          lpEnabled: lpOn,
-          lambda: sparsityLambda,
-          noiseConstrained: noiseConstrainedOn,
-          computeComparison,
-          warmCounts,
-          onComplete(result: TraceResult) {
-            batch(() => {
-              updateTraceResult(cellSubsetKey(c, -1), {
-                cellIndex: c,
-                subsetIdx: -1,
-                sCounts: result.sCounts,
-                filteredTrace: result.filteredTrace,
-                alpha: result.alpha,
-                baseline: result.baseline,
-                threshold: result.threshold,
-                pve: result.pve,
-                comparisonSCounts: result.comparisonSCounts,
-              });
-              finCompleted++;
-              setCompletedSubsetTraceJobs(finCompleted);
+        warmCounts: prevTraceCounts?.get(c),
+        onComplete(result: TraceResult) {
+          batch(() => {
+            updateTraceResult(cellSubsetKey(c, -1), {
+              cellIndex: c,
+              subsetIdx: -1,
+              sCounts: result.sCounts,
+              filteredTrace: result.filteredTrace,
+              alpha: result.alpha,
+              baseline: result.baseline,
+              threshold: result.threshold,
+              pve: result.pve,
+              comparisonSCounts: result.comparisonSCounts,
             });
-            if (finCompleted === nCells) resolve();
-          },
-          onCancelled() {
-            finCompleted++;
-            setCompletedSubsetTraceJobs(finCompleted);
-            if (finCompleted === nCells) resolve();
-          },
-          onError() {
-            finCompleted++;
-            setCompletedSubsetTraceJobs(finCompleted);
-            if (finCompleted === nCells) resolve();
-          },
-        });
-      }
-    });
+            settle();
+          });
+        },
+      }),
+      setCompletedSubsetTraceJobs,
+    );
+    assertCurrent(runId);
+    checkPhase('finalization', finOutcome);
   }
-
-  setRunPhase('idle');
-  setRunState('complete');
 }
 
 export function pauseRun(): void {
@@ -1065,6 +1171,12 @@ export function resumeRun(): void {
   }
 }
 
+/**
+ * Ask the live run to finish early. Queued jobs are cancelled at once; jobs
+ * already running in a worker finish first, because CaDecon's WASM solves are
+ * synchronous and the worker cannot see the cancel message until they return.
+ * The run then ends as 'complete' with the results gathered so far.
+ */
 export function stopRun(): void {
   setRunState('stopping');
   setRunPhase('idle');
@@ -1076,10 +1188,20 @@ export function stopRun(): void {
   }
 }
 
+/**
+ * Abandon any run and clear all iteration state. Safe at any point, including
+ * while 'stopping': bumping the run generation makes the old loop unwind at its
+ * next await instead of resuming against the reset state, and disposing the
+ * pool settles its outstanding jobs so that await actually returns.
+ */
 export function resetRun(): void {
+  currentRun++;
   pool?.dispose();
   pool = null;
+  // Wake a paused loop so it can observe the new generation and unwind.
+  const resolvePause = pauseResolver;
   pauseResolver = null;
+  resolvePause?.();
   nextJobId = 0;
   resetIterationState();
 }
