@@ -21,6 +21,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   buckets are now `null` gaps; non-finite samples are skipped within mixed
   buckets and returned as `null` when no downsampling is needed
 
+- **Import** the partial-NaN validation warning claimed "CaTune will skip NaN
+  values during deconvolution"; nothing skips them. It now says the solver does
+  not support NaN/Inf samples, that affected cells will fail to solve, and to
+  interpolate over or remove them before importing. It remains a warning, so
+  files whose other cells solve still import
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never
