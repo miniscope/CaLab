@@ -5,6 +5,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- **Core** WASM ↔ native parity test. Until now no TypeScript test loaded the
+  WASM build of the solver (all of them mock it), and nothing compared its
+  output with the native build. `packages/core` now loads the real
+  `crates/solver/pkg` through `initWasm` and asserts it reproduces the native
+  golden fixtures in `python/tests/fixtures/` — same iteration counts, and
+  kernel, filtered trace, solution, baseline and reconvolution within
+  `atol=rtol=1e-4` (observed max difference 1.4e-5). The fixtures README now
+  lists all five fixtures and the tolerances each consumer actually uses; the
+  CaTune `smoke.test.ts` is renamed to `kernel-shape-roundtrip.test.ts`, which
+  is what it tests
+
 ### Changed
 
 - **README** the "no data upload" claim now states precisely what is collected:
