@@ -11,6 +11,15 @@ on:
   push:
     branches: [main]
 
+# Least privilege: nothing in this workflow writes to the repo.
+permissions:
+  contents: read
+
+# A new push to the same PR/branch supersedes the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Third-party actions pinned to SHAs; first-party actions/* stay on major
 # version tags. SHA pins prevent a compromised or retagged action release
 # from silently landing on CI. When bumping, resolve the new SHA with
@@ -53,15 +62,19 @@ jobs:
       - name: Build WASM
         run: npm run build:wasm
 
+      # tsbuildinfo and the packages' emitted dist/ must be cached together:
+      # a restored tsbuildinfo without its dist/ makes `tsc -b` report TS6305
+      # ("output file has not been built from source") for every consumer.
       - name: Cache build artifacts
         uses: actions/cache@v5
         with:
           path: |
-            **/.tsbuildinfo
+            **/tsconfig.tsbuildinfo
+            packages/*/dist
             **/node_modules/.vite
-          key: ${{ runner.os }}-build-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-build-v2-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-build-
+            ${{ runner.os }}-build-v2-
 
       - name: Format check
         run: npm run format:check
@@ -99,11 +112,18 @@ jobs:
       - name: Format check
         run: cargo fmt --all --check
 
-      # `--no-default-features --features jsbindings` skips the pyo3 feature
-      # (which needs Python dev headers) and keeps clippy focused on the WASM
-      # surface the apps actually ship.
-      - name: Clippy
-        run: cargo clippy --no-default-features --features jsbindings -- -D warnings
+      # Lint each binding feature set separately. `--all-targets` includes the
+      # test modules.
+      - name: Clippy (jsbindings)
+        run: cargo clippy --all-targets --no-default-features --features jsbindings -- -D warnings
+
+      # The pyo3 path is otherwise only compiled by `maturin develop` in the
+      # python job, which never runs clippy. Clippy type-checks every target
+      # (so it also covers `cargo check`). `cargo test` can't link with
+      # pybindings: pyo3's `extension-module` feature leaves libpython
+      # unresolved, and pytest exercises that path at runtime anyway.
+      - name: Clippy (pybindings)
+        run: cargo clippy --all-targets --no-default-features --features pybindings -- -D warnings
 
       - name: Tests
         run: cargo test --no-default-features --features jsbindings

@@ -2,9 +2,14 @@
 
 ## Prerequisites
 
-- **Node.js 22** (LTS) — use `.nvmrc`: `nvm use`
-- **Rust stable** — use `rust-toolchain.toml`: `rustup show`
-- **wasm-pack** — `cargo install wasm-pack`
+- **Node.js 22** (LTS): use `.nvmrc` (`nvm use`)
+- **Rust stable** with the `wasm32-unknown-unknown` target, plus **wasm-pack**. These are
+  required for any JS work, not just solver changes. `crates/solver/pkg/` is gitignored, so
+  `npm run dev`/`test`/`typecheck`/`build:apps` build it first (`scripts/ensure-wasm.mjs`).
+  Install with [rustup](https://rustup.rs), then `cargo install wasm-pack` (or
+  `brew install wasm-pack`). `rust-toolchain.toml` pins the channel and the wasm target.
+- **Python >= 3.11** + **maturin**: only needed for the Python package (`python/`)
+- **Docker**: only needed to run the Supabase RLS tests locally (`scripts/test-rls.sh`)
 
 ## Setup
 
@@ -13,8 +18,7 @@ git clone https://github.com/miniscope/CaLab.git
 cd CaLab
 nvm use              # Node 22
 npm install          # JS dependencies (all workspaces)
-npm run build:wasm   # Compile Rust → WASM (only needed if changing solver)
-npm run dev          # Start dev server
+npm run dev          # Start CaTune; builds crates/solver/pkg/ first if missing or stale
 ```
 
 ## Workspace Structure
@@ -40,20 +44,22 @@ All packages are consumed as TypeScript source — Vite transpiles them directly
 
 Run from the repo root:
 
-| Script                 | Description                                       |
-| ---------------------- | ------------------------------------------------- |
-| `npm run dev`          | Start CaTune dev server                           |
-| `npm run dev:carank`   | Start CaRank dev server                           |
-| `npm run build`        | Build WASM + both apps                            |
-| `npm run build:pages`  | Build + combine dist for GitHub Pages             |
-| `npm run build:wasm`   | Compile Rust solver to WASM                       |
-| `npm run test`         | Run Vitest tests across all workspaces            |
-| `npm run test:watch`   | Run tests in watch mode (`apps/catune`)           |
-| `npm run lint`         | Run ESLint on `apps/` + `packages/`               |
-| `npm run lint:fix`     | Auto-fix ESLint issues                            |
-| `npm run typecheck`    | Run TypeScript type checking (all packages + app) |
-| `npm run format`       | Format all files with Prettier                    |
-| `npm run format:check` | Check formatting (CI gate)                        |
+| Script                 | Description                                      |
+| ---------------------- | ------------------------------------------------ |
+| `npm run dev`          | Start CaTune dev server                          |
+| `npm run dev:carank`   | Start CaRank dev server                          |
+| `npm run dev:cadecon`  | Start CaDecon dev server                         |
+| `npm run dev:admin`    | Start admin dev server                           |
+| `npm run build`        | Build WASM + every app in `apps/`                |
+| `npm run build:pages`  | Build + combine dist for GitHub Pages            |
+| `npm run build:wasm`   | Compile Rust solver to WASM                      |
+| `npm run test`         | Run Vitest tests across all workspaces           |
+| `npm run test:watch`   | Run tests in watch mode (`apps/catune`)          |
+| `npm run lint`         | Run ESLint on `apps/` + `packages/`              |
+| `npm run lint:fix`     | Auto-fix ESLint issues                           |
+| `npm run typecheck`    | `tsc -b` every `apps/*` and `packages/*` project |
+| `npm run format`       | Format all files with Prettier                   |
+| `npm run format:check` | Check formatting (CI gate)                       |
 
 You can also run scripts in a specific workspace:
 
@@ -71,8 +77,10 @@ npm run test -w packages/io     # Run io package tests only
 1. Create `packages/<name>/` with `package.json`, `tsconfig.json`, and `src/index.ts`
 2. Add `@calab/<name>` to `apps/catune/package.json` dependencies as `"*"`
 3. Add path mapping to `apps/catune/tsconfig.json` and `apps/catune/vite.config.ts`
-4. Add the package to the root `typecheck` script in `package.json`
-5. Run `npm install` to link the workspace
+4. Run `npm install` to link the workspace
+
+`npm run typecheck` discovers every `apps/*` and `packages/*` directory that has a
+`tsconfig.json` (`scripts/typecheck.mjs`), so there is no list to update.
 
 ## Code Style
 
@@ -94,7 +102,7 @@ ESLint enforces these import boundaries:
 
 ## CI
 
-The CI pipeline runs on every PR to `main`:
+The CI pipeline runs on every PR and on pushes to `main`:
 
 1. Format check (`prettier --check`)
 2. Lint (`eslint`)
@@ -102,7 +110,9 @@ The CI pipeline runs on every PR to `main`:
 4. Tests (`vitest run` across all workspaces)
 5. Build (`vite build`)
 
-The WASM package is committed to the repo, so CI does not require Rust.
+`crates/solver/pkg/` is not committed: CI installs Rust + wasm-pack and builds it before
+these steps. Separate jobs run `cargo fmt`/`clippy`/`test` for the solver, the Python
+package's ruff/mypy/pytest, and the Supabase RLS policy tests.
 
 ## Commit Conventions
 

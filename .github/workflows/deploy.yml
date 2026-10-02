@@ -5,10 +5,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default; only the deploy job gets the Pages/OIDC grants.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: 'pages'
@@ -23,6 +22,8 @@ jobs:
   # a tag can deploy commits that would fail CI.
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -66,6 +67,10 @@ jobs:
 
   deploy:
     needs: [check]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

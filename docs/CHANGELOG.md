@@ -20,6 +20,16 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- **Tooling** `npm run typecheck` now discovers every `apps/*` and `packages/*`
+  project instead of a hardcoded list. `ensure-wasm` checks up front for
+  `cargo`/`wasm-pack` and prints install steps. `rust-toolchain.toml` requests
+  the `wasm32-unknown-unknown` target. Added `dev:cadecon` / `dev:admin`, and
+  the setup docs now list the real prerequisites (Rust + wasm-pack are required).
+
+- **CI** tokens are read-only by default (Pages/OIDC grants only on the jobs
+  that publish). Superseded CI runs are cancelled. Clippy covers all targets
+  and the `pybindings` feature set. Dependabot is enabled
+
 - **README** the "no data upload" claim now states precisely what is collected:
   trace data never leaves the browser, anonymous usage analytics are collected
   via Supabase, and community sharing is explicit and opt-in
