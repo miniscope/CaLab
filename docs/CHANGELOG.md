@@ -37,6 +37,23 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   **CaTune deconvolved activity can change** slightly versus earlier builds;
   results are now deterministic for a given trace and parameters
 
+- **Solver** invalid input no longer traps the WASM module or panics the
+  Python extension. A single validation layer (`crates/solver/src/validate.rs`),
+  shared by both bindings, rejects non-finite traces/arrays, `fs <= 0`,
+  `tau_rise >= tau_decay` (FFT and banded modes previously built opposite-sign
+  kernels), negative `lambda`, `upsample_factor = 0`, negative or overflowing
+  trace lengths, `kernel_length = 0`, and kernels above 2^20 samples (which
+  used to abort on allocation). Also fixed: a longer kernel set after
+  `set_trace` in FFT mode panicked on the next `step_batch`; toggling HP/LP after
+  an `apply_filter` on a same-length trace reused the stale gain curve; an empty
+  threshold search reported a NaN baseline; realfft errors `unwrap()`ed instead
+  of propagating. **JS:** `Solver.set_params`, `Solver.set_trace`,
+  `Solver.step_batch`, `indeca_solve_trace`, `indeca_estimate_kernel`,
+  `indeca_fit_biexponential`, `indeca_compute_upsample_factor`, `seed_trace`,
+  `simulate_traces` and `get_simulation_presets` now throw on invalid input or
+  serialization failure instead of trapping or returning `null`. **Python:** the
+  same cases raise `ValueError` (numerical failures `RuntimeError`)
+
 - **Solver** `set_params` spent O(K²) on a direct DFT to compute the Lipschitz
   constant (~0.7 s at K≈13.8k kernel samples). For the non-negative kernels the
   solver builds, `max|H(ω)| = H(0)`, so `L = (Σh)²` is now computed in O(K); the

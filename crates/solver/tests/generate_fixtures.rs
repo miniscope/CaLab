@@ -49,10 +49,10 @@ fn build_trace(kernel: &[f32], n: usize, spikes: &[usize]) -> Vec<f32> {
 }
 
 fn solve_to_convergence(solver: &mut Solver, trace: &[f32], max_batches: u32, batch_size: u32) {
-    solver.set_trace(trace);
+    solver.set_trace(trace).unwrap();
     solver.subtract_baseline();
     for _ in 0..max_batches {
-        if solver.step_batch(batch_size) {
+        if solver.step_batch(batch_size).unwrap() {
             break;
         }
     }
@@ -74,7 +74,7 @@ fn generate_fixtures() {
     // GCaMP6f-like at 30 Hz: tau_rise=0.04s (>1 sample at 33ms dt)
     {
         let mut solver = Solver::new();
-        solver.set_params(0.04, 0.4, 0.01, 30.0);
+        solver.set_params(0.04, 0.4, 0.01, 30.0).unwrap();
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -106,7 +106,7 @@ fn generate_fixtures() {
     // Same kernel as standard_clean, with +5.0 DC offset
     {
         let mut solver = Solver::new();
-        solver.set_params(0.04, 0.4, 0.01, 30.0);
+        solver.set_params(0.04, 0.4, 0.01, 30.0).unwrap();
         let kernel = solver.get_kernel();
         let mut trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         for v in trace.iter_mut() {
@@ -141,7 +141,7 @@ fn generate_fixtures() {
     // jGCaMP8f-like at 100 Hz: tau_rise=0.015s (1.5 samples at 10ms dt)
     {
         let mut solver = Solver::new();
-        solver.set_params(0.015, 0.15, 0.01, 100.0);
+        solver.set_params(0.015, 0.15, 0.01, 100.0).unwrap();
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 500, &[50, 200, 400]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -173,7 +173,7 @@ fn generate_fixtures() {
     // Same kernel as standard_clean, high sparsity penalty
     {
         let mut solver = Solver::new();
-        solver.set_params(0.04, 0.4, 1.0, 30.0);
+        solver.set_params(0.04, 0.4, 1.0, 30.0).unwrap();
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 300, &[20, 80, 150, 230]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
@@ -205,14 +205,14 @@ fn generate_fixtures() {
     // Moderate kinetics at 100 Hz with bandpass filter enabled
     {
         let mut solver = Solver::new();
-        solver.set_params(0.04, 0.4, 0.01, 100.0);
+        solver.set_params(0.04, 0.4, 0.01, 100.0).unwrap();
         solver.set_filter_enabled(true);
         let kernel = solver.get_kernel();
         let trace = build_trace(&kernel, 1024, &[100, 300, 600, 800]);
         let trace_f64: Vec<f64> = trace.iter().map(|&v| v as f64).collect();
 
         // Apply filter (modifies the trace in the solver)
-        solver.set_trace(&trace);
+        solver.set_trace(&trace).unwrap();
         solver.apply_filter();
         // Capture filtered trace BEFORE baseline subtraction (for filter comparison test)
         let filtered_trace: Vec<f64> = solver.get_trace().iter().map(|&v| v as f64).collect();
@@ -220,7 +220,7 @@ fn generate_fixtures() {
 
         // Now solve on the filtered + baseline-subtracted trace
         for _ in 0..200 {
-            if solver.step_batch(10) {
+            if solver.step_batch(10).unwrap() {
                 break;
             }
         }

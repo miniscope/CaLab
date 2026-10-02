@@ -3,13 +3,25 @@ use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::simulate;
-use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver};
+use crate::validate;
+use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver, SolverError};
 
 const BATCH_SIZE: u32 = 100;
 const CONTIGUOUS_ERR: &str =
     "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
 
 const NONFINITE_ERR: &str = "input array contains a non-finite value (NaN or infinity)";
+
+/// Map a core validation/numerical error to the matching Python exception:
+/// bad parameters or inputs raise `ValueError`, numerical failures `RuntimeError`.
+fn py_err(e: SolverError) -> PyErr {
+    match e {
+        SolverError::InvalidParams(_) | SolverError::InvalidInput(_) => {
+            pyo3::exceptions::PyValueError::new_err(e.to_string())
+        }
+        SolverError::Numerical(_) => pyo3::exceptions::PyRuntimeError::new_err(e.to_string()),
+    }
+}
 
 /// Convert a numpy f64 array to a Vec<f32>, validating contiguity and finiteness.
 fn to_f32_vec(arr: &PyReadonlyArray1<f64>) -> PyResult<Vec<f32>> {
@@ -51,13 +63,14 @@ fn parse_constraint(s: &str) -> PyResult<Constraint> {
 }
 
 /// Run the solver in batches until convergence or max_iters is reached.
-fn run_to_convergence(solver: &mut Solver, max_iters: u32) {
+fn run_to_convergence(solver: &mut Solver, max_iters: u32) -> PyResult<()> {
     let n_batches = max_iters.div_ceil(BATCH_SIZE);
     for _ in 0..n_batches {
-        if solver.step_batch(BATCH_SIZE) {
+        if solver.step_batch(BATCH_SIZE).map_err(py_err)? {
             break;
         }
     }
+    Ok(())
 }
 
 /// Python-facing wrapper around the Rust FISTA Solver.
@@ -78,8 +91,13 @@ impl PySolver {
     }
 
     /// Set solver parameters and rebuild kernel.
-    fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) {
-        self.inner.set_params(tau_rise, tau_decay, lambda, fs);
+    ///
+    /// Raises ValueError unless fs > 0, 0 < tau_rise < tau_decay, lambda >= 0
+    /// (all finite) and the implied kernel is within the length cap.
+    fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) -> PyResult<()> {
+        self.inner
+            .set_params(tau_rise, tau_decay, lambda, fs)
+            .map_err(py_err)
     }
 
     /// Load a trace (numpy float32 array) for deconvolution.
@@ -87,24 +105,18 @@ impl PySolver {
         let slice = trace
             .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-        if let Some(i) = crate::first_nonfinite(slice) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{NONFINITE_ERR} at index {i}"
-            )));
-        }
-        self.inner.set_trace(slice);
-        Ok(())
+        self.inner.set_trace(slice).map_err(py_err)
     }
 
     /// Run n FISTA iterations. Returns true if converged.
-    fn step_batch(&mut self, n_steps: u32) -> bool {
-        self.inner.step_batch(n_steps)
+    fn step_batch(&mut self, n_steps: u32) -> PyResult<bool> {
+        self.inner.step_batch(n_steps).map_err(py_err)
     }
 
     /// Run solver to convergence (up to max_iters). Returns iterations run.
-    fn solve(&mut self, max_iters: u32) -> u32 {
-        run_to_convergence(&mut self.inner, max_iters);
-        self.inner.iteration_count()
+    fn solve(&mut self, max_iters: u32) -> PyResult<u32> {
+        run_to_convergence(&mut self.inner, max_iters)?;
+        Ok(self.inner.iteration_count())
     }
 
     /// Get the deconvolved activity (non-negative spike train).
@@ -200,9 +212,10 @@ fn py_build_kernel<'py>(
     tau_rise: f64,
     tau_decay: f64,
     fs: f64,
-) -> Bound<'py, PyArray1<f32>> {
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    validate::validate_params(tau_rise, tau_decay, 0.0, fs).map_err(py_err)?;
     let kernel = build_kernel(tau_rise, tau_decay, fs);
-    PyArray1::from_vec(py, kernel)
+    Ok(PyArray1::from_vec(py, kernel))
 }
 
 /// Compute Lipschitz constant for a kernel.
@@ -249,11 +262,13 @@ fn deconvolve_single<'py>(
     bool,
 )> {
     let mut solver = Solver::new();
-    solver.set_params(tau_rise, tau_decay, lambda_, fs);
+    solver
+        .set_params(tau_rise, tau_decay, lambda_, fs)
+        .map_err(py_err)?;
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
     let trace_f32 = to_f32_vec(&trace)?;
-    solver.set_trace(&trace_f32);
+    solver.set_trace(&trace_f32).map_err(py_err)?;
 
     if hp_enabled || lp_enabled {
         solver.set_hp_filter_enabled(hp_enabled);
@@ -263,7 +278,7 @@ fn deconvolve_single<'py>(
 
     solver.subtract_baseline();
 
-    run_to_convergence(&mut solver, max_iters);
+    run_to_convergence(&mut solver, max_iters)?;
 
     Ok((
         PyArray1::from_vec(py, solver.get_solution()),
@@ -301,7 +316,9 @@ fn deconvolve_batch<'py>(
     let n_cells = shape[0];
 
     let mut solver = Solver::new();
-    solver.set_params(tau_rise, tau_decay, lambda_, fs);
+    solver
+        .set_params(tau_rise, tau_decay, lambda_, fs)
+        .map_err(py_err)?;
     configure_solver_options(&mut solver, conv_mode, constraint)?;
 
     if hp_enabled || lp_enabled {
@@ -327,7 +344,7 @@ fn deconvolve_batch<'py>(
                 "{NONFINITE_ERR} at row {cell_idx}, index {i}"
             )));
         }
-        solver.set_trace(&trace_f32);
+        solver.set_trace(&trace_f32).map_err(py_err)?;
 
         if hp_enabled || lp_enabled {
             solver.apply_filter();
@@ -335,7 +352,7 @@ fn deconvolve_batch<'py>(
 
         solver.subtract_baseline();
 
-        run_to_convergence(&mut solver, max_iters);
+        run_to_convergence(&mut solver, max_iters)?;
 
         activities.push(PyArray1::from_vec(py, solver.get_solution()));
         baselines.push(solver.get_baseline());
@@ -366,6 +383,7 @@ fn py_seed_trace<'py>(
     fs: f64,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, f64, f64)> {
     let trace_f32 = to_f32_vec(&trace)?;
+    validate::validate_fs(fs).map_err(py_err)?;
     let result = crate::peak_seed::seed_trace(&trace_f32, fs);
     Ok((
         PyArray1::from_vec(py, result.s_counts),
@@ -399,6 +417,7 @@ fn seed_kernel_estimate<'py>(
     usize,
     String,
 )> {
+    validate::validate_fs(fs).map_err(py_err)?;
     let shape = traces.shape();
     let n_cells = shape[0];
     let n_timepoints = shape[1];
@@ -466,6 +485,16 @@ fn py_indeca_solve_trace<'py>(
 )> {
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
+    validate::validate_indeca_params(
+        trace_f32.len(),
+        tau_rise,
+        tau_decay,
+        fs,
+        upsample_factor,
+        lambda_,
+        tol,
+    )
+    .map_err(py_err)?;
 
     let result = indeca::solve_trace_opts(
         &trace_f32,
@@ -517,7 +546,9 @@ fn py_indeca_estimate_kernel<'py>(
     let lengths_slice = trace_lengths
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-    let lengths: Vec<usize> = lengths_slice.iter().map(|&v| v as usize).collect();
+    // Reject negatives: `v as usize` wrapped -1 to usize::MAX, the length sum
+    // wrapped back around, passed the consistency check, then indexing panicked.
+    let lengths = validate::lengths_from_i64(lengths_slice).map_err(py_err)?;
 
     let alphas_slice = alphas
         .as_slice()
@@ -528,19 +559,21 @@ fn py_indeca_estimate_kernel<'py>(
 
     let warm = optional_to_f32_vec(warm_kernel)?;
 
-    // Validate array-length consistency before handing off, so a caller mistake
-    // surfaces as a clear ValueError instead of a Rust panic across the FFI.
-    let total_len: usize = lengths.iter().sum();
-    if alphas_slice.len() != lengths.len() || baselines_slice.len() != lengths.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "alphas and baselines must have one entry per trace (len == trace_lengths.len())",
-        ));
-    }
-    if traces_f32.len() != total_len || spikes_f32.len() != total_len {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "traces_flat and spikes_flat length must equal sum(trace_lengths)",
-        ));
-    }
+    // Shared with the WASM binding: array-length consistency, finiteness of
+    // every array (alphas/baselines included), and kernel_length bounds, so a
+    // caller mistake surfaces as a clear ValueError instead of a Rust panic.
+    validate::validate_kernel_estimate_inputs(
+        &traces_f32,
+        &spikes_f32,
+        &lengths,
+        alphas_slice,
+        baselines_slice,
+        kernel_length,
+        tol,
+        warm.as_deref(),
+        smooth_lambda,
+    )
+    .map_err(py_err)?;
 
     let result = kernel_est::estimate_free_kernel(
         &traces_f32,
@@ -579,21 +612,19 @@ fn py_indeca_fit_biexponential(
 ) -> PyResult<(f64, f64, f64, f64, f64, f64, f64, String)> {
     let h_f32 = to_f32_vec(&h_free)?;
 
-    let warm_start = if use_warm {
-        Some(biexp_fit::BiexpResult {
-            tau_rise: warm_tau_rise,
-            tau_decay: warm_tau_decay,
-            beta: warm_beta,
-            residual: warm_residual,
-            tau_rise_fast: warm_tau_rise_fast,
-            tau_decay_fast: warm_tau_decay_fast,
-            beta_fast: warm_beta_fast,
-            // Placeholder; fit_biexponential reclassifies the returned result.
-            fit_mode: biexp_fit::FitMode::default(),
-        })
-    } else {
-        None
-    };
+    let warm_start = validate::biexp_fit_inputs(
+        &h_f32,
+        fs,
+        use_warm,
+        warm_tau_rise,
+        warm_tau_decay,
+        warm_tau_rise_fast,
+        warm_tau_decay_fast,
+        warm_beta,
+        warm_beta_fast,
+        warm_residual,
+    )
+    .map_err(py_err)?;
 
     let result = biexp_fit::fit_biexponential(&h_f32, fs, refine, skip, warm_start.as_ref());
 
@@ -611,8 +642,9 @@ fn py_indeca_fit_biexponential(
 
 /// Compute the upsample factor for a given sampling rate and target rate.
 #[pyfunction]
-fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
-    upsample::compute_upsample_factor(fs, target_fs)
+fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> PyResult<usize> {
+    validate::validate_upsample_rates(fs, target_fs).map_err(py_err)?;
+    Ok(upsample::compute_upsample_factor(fs, target_fs))
 }
 
 /// Generate synthetic calcium traces from a JSON config string.

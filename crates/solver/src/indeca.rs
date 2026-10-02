@@ -120,8 +120,8 @@ fn estimate_grid_noise_sigma(
     let up = upsample_trace(&probe, upsample_factor);
     let mut solver = Solver::new();
     solver.set_conv_mode(ConvMode::BandedAR2);
-    solver.set_params(tau_r, tau_d, 0.0, fs_up);
-    solver.set_trace(&up);
+    solver.apply_params(tau_r, tau_d, 0.0, fs_up);
+    solver.load_trace(&up);
     solver.set_hp_filter_enabled(hp);
     solver.set_lp_filter_enabled(lp);
     solver.apply_filter();
@@ -213,9 +213,9 @@ fn solve_upsampled(
     lambda: f64,
 ) -> (Vec<f32>, Option<Vec<f32>>, u32, bool) {
     solver.set_conv_mode(ConvMode::BandedAR2);
-    solver.set_params(tau_r, tau_d, lambda, fs_up);
+    solver.apply_params(tau_r, tau_d, lambda, fs_up);
     solver.set_constraint(constraint);
-    solver.set_trace(upsampled);
+    solver.load_trace(upsampled);
 
     if baseline_subtracted {
         solver.filtered = true;
@@ -244,8 +244,11 @@ fn solve_upsampled(
     let batch_size = 50;
     let max_batches = max_iters.div_ceil(batch_size);
     for _ in 0..max_batches {
-        if solver.step_batch(batch_size) {
-            break;
+        // Banded mode has no fallible step (only FFT setup/overflow can fail);
+        // should that ever change, stop and report "not converged" rather than panic.
+        match solver.step_batch(batch_size) {
+            Ok(true) | Err(_) => break,
+            Ok(false) => {}
         }
         if solver.iteration_count() >= max_iters {
             break;
@@ -376,8 +379,8 @@ pub fn solve_trace_opts(
     let mut working_trace = if hp_enabled || lp_enabled {
         // Apply bandpass filter directly — no need for a full FISTA solve
         solver.set_conv_mode(ConvMode::BandedAR2);
-        solver.set_params(tau_r, tau_d, 0.0, fs_up);
-        solver.set_trace(&upsampled);
+        solver.apply_params(tau_r, tau_d, 0.0, fs_up);
+        solver.load_trace(&upsampled);
         solver.set_hp_filter_enabled(hp_enabled);
         solver.set_lp_filter_enabled(lp_enabled);
         solver.apply_filter();
