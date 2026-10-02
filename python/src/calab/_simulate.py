@@ -29,7 +29,9 @@ from typing import Annotated, Literal, Union
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._solver import py_simulate_traces as _simulate_traces
+from ._native import _solver
+
+_simulate_traces = _solver.py_simulate_traces
 
 
 # ── Spike Models ─────────────────────────────────────────────────

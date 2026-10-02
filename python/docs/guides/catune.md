@@ -114,16 +114,16 @@ calab.run_deconvolution(
 ) -> np.ndarray
 ```
 
-| Parameter    | Description                                                               |
-| ------------ | ------------------------------------------------------------------------- |
-| `traces`     | Calcium traces. Shape `(n_timepoints,)` or `(n_cells, n_timepoints)`.     |
-| `fs`         | Sampling rate in Hz.                                                      |
-| `tau_r`      | Rise time constant in seconds.                                            |
-| `tau_d`      | Decay time constant in seconds.                                           |
-| `lam`        | L1 sparsity penalty (regularization strength).                            |
-| `max_iters`  | Maximum FISTA iterations. Default: `2000`.                                |
-| `conv_mode`  | Convolution mode: `"fft"` (default) or `"banded"` (O(T) AR2).             |
-| `constraint` | Constraint type: `"nonneg"` (L1 + non-negative) or `"box01"` ([0,1] box). |
+| Parameter    | Description                                                                                                                   |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `traces`     | Calcium traces. Shape `(n_timepoints,)` or `(n_cells, n_timepoints)`.                                                         |
+| `fs`         | Sampling rate in Hz.                                                                                                          |
+| `tau_r`      | Rise time constant in seconds.                                                                                                |
+| `tau_d`      | Decay time constant in seconds.                                                                                               |
+| `lam`        | L1 sparsity penalty (regularization strength).                                                                                |
+| `max_iters`  | Maximum FISTA iterations. Default: `2000`.                                                                                    |
+| `conv_mode`  | Convolution mode: `"fft"` (default) or `"banded"` (O(T) AR2).                                                                 |
+| `constraint` | Constraint type: `"nonneg"` (L1 + non-negative) or `"box01"` (clamp to [0,1], same L1 penalty; use `lam=0` for the pure box). |
 
 Returns a `np.ndarray` of non-negative activity estimates, same shape as the input `traces`.
 
@@ -137,8 +137,9 @@ result = calab.run_deconvolution_full(
 )
 
 result.activity        # np.ndarray  -- deconvolved activity
-result.baseline        # float | np.ndarray  -- estimated baseline(s)
-result.reconvolution   # np.ndarray  -- model fit (K*activity + baseline)
+result.baseline        # float | np.ndarray  -- estimated baseline(s), in the input's units
+result.reconvolution   # np.ndarray  -- model fit in the input's frame (K*activity + baseline,
+                       #                including any slow drift removed before solving)
 result.iterations      # int | np.ndarray  -- FISTA iterations used
 result.converged       # bool | np.ndarray  -- convergence flag(s)
 ```

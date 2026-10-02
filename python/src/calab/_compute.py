@@ -10,17 +10,32 @@ from typing import NamedTuple
 
 import numpy as np
 
-from ._solver import (
-    PySolver,
-    deconvolve_batch as _deconvolve_batch,
-    deconvolve_single as _deconvolve_single,
-    py_build_kernel as _build_kernel,
-    py_compute_lipschitz as _compute_lipschitz,
-    py_indeca_solve_trace as _indeca_solve_trace,
-    py_indeca_estimate_kernel as _indeca_estimate_kernel,
-    py_indeca_fit_biexponential as _indeca_fit_biexponential,
-    py_indeca_compute_upsample_factor as _indeca_compute_upsample_factor,
-)
+from ._native import _solver
+
+PySolver = _solver.PySolver
+_deconvolve_batch = _solver.deconvolve_batch
+_deconvolve_single = _solver.deconvolve_single
+_build_kernel = _solver.py_build_kernel
+_compute_lipschitz = _solver.py_compute_lipschitz
+_indeca_solve_trace = _solver.py_indeca_solve_trace
+_indeca_estimate_kernel = _solver.py_indeca_estimate_kernel
+_indeca_fit_biexponential = _solver.py_indeca_fit_biexponential
+_indeca_compute_upsample_factor = _solver.py_indeca_compute_upsample_factor
+
+
+def _as_traces_2d(traces: np.ndarray, name: str = "traces") -> tuple[np.ndarray, bool]:
+    """Coerce ``traces`` (array-like) to a float64 2-D array.
+
+    Returns ``(traces_2d, single_trace)``. Accepts lists and other array-likes,
+    and raises a clear ``ValueError`` for anything that is not 1-D or 2-D.
+    """
+    arr = np.asarray(traces, dtype=np.float64)
+    if arr.ndim not in (1, 2):
+        raise ValueError(
+            f"{name} must be 1-D (n_timepoints,) or 2-D (n_cells, n_timepoints); "
+            f"got an array with shape {arr.shape}"
+        )
+    return np.atleast_2d(arr), arr.ndim == 1
 
 
 class CaDeconResult(NamedTuple):
@@ -88,9 +103,15 @@ class DeconvolutionResult(NamedTuple):
     activity : np.ndarray
         Non-negative deconvolved activity estimates, same shape as input traces.
     baseline : float | np.ndarray
-        Estimated scalar baseline (per-trace if multi-trace input).
+        Estimated scalar baseline in the input trace's units (per-trace if
+        multi-trace input). The solver first removes a slowly varying
+        rolling-percentile baseline; this is the mean of that removed
+        baseline plus the residual offset of the fit, so for a trace with a
+        constant offset it is approximately that offset.
     reconvolution : np.ndarray
-        K*activity + baseline, the model fit to the trace.
+        The model fit in the input trace's frame: ``K*activity`` plus the full
+        (possibly slowly varying) baseline, directly comparable to the input
+        trace. Without baseline drift this is ≈ ``K*activity + baseline``.
     iterations : int | np.ndarray
         Number of FISTA iterations run (per-trace if multi-trace input).
     converged : bool | np.ndarray
@@ -190,15 +211,21 @@ def run_deconvolution(
         Convolution mode: ``'fft'`` (default) or ``'banded'`` (O(T) AR2).
     constraint : str, optional
         Constraint type: ``'nonneg'`` (default, L1 + non-negative) or
-        ``'box01'`` (box constraint [0, 1], no L1 penalty).
+        ``'box01'`` (clamp to [0, 1], with the same L1 penalty; pass
+        ``lam=0`` for the pure box constraint).
 
     Returns
     -------
     np.ndarray
         Non-negative activity estimates, same shape as input ``traces``.
+
+    Raises
+    ------
+    ValueError
+        If ``traces`` is not 1-D or 2-D, contains NaN/inf, or the parameters
+        are invalid (``fs <= 0``, ``tau_r >= tau_d``, ``lam < 0``, ...).
     """
-    single_trace = traces.ndim == 1
-    traces_2d = np.atleast_2d(np.asarray(traces, dtype=np.float64))
+    traces_2d, single_trace = _as_traces_2d(traces)
 
     if traces_2d.shape[0] == 1:
         activity, _, _, _, _ = _deconvolve_single(
@@ -246,16 +273,23 @@ def run_deconvolution_full(
         Convolution mode: ``'fft'`` (default) or ``'banded'`` (O(T) AR2).
     constraint : str, optional
         Constraint type: ``'nonneg'`` (default, L1 + non-negative) or
-        ``'box01'`` (box constraint [0, 1], no L1 penalty).
+        ``'box01'`` (clamp to [0, 1], with the same L1 penalty; pass
+        ``lam=0`` for the pure box constraint).
 
     Returns
     -------
     DeconvolutionResult
         Namedtuple with fields: ``activity``, ``baseline``, ``reconvolution``,
-        ``iterations``, ``converged``.
+        ``iterations``, ``converged``. ``baseline`` and ``reconvolution`` are
+        in the input trace's frame (see :class:`DeconvolutionResult`).
+
+    Raises
+    ------
+    ValueError
+        If ``traces`` is not 1-D or 2-D, contains NaN/inf, or the parameters
+        are invalid (``fs <= 0``, ``tau_r >= tau_d``, ``lam < 0``, ...).
     """
-    single_trace = traces.ndim == 1
-    traces_2d = np.atleast_2d(np.asarray(traces, dtype=np.float64))
+    traces_2d, single_trace = _as_traces_2d(traces)
 
     if single_trace:
         activity, baseline, reconvolution, iterations, converged = _deconvolve_single(
@@ -500,7 +534,11 @@ def fit_biexponential(
     fs : float
         Sampling rate in Hz.
     refine : bool
-        Whether to refine with a fast (second) component.
+        Whether to polish the grid-search optimum with golden-section
+        refinement of the time constants (default True). This does not control
+        the fast (second) component — the grid always searches both the
+        slow-only and two-component models, and ``fit_mode`` on the result
+        reports which one won.
     skip : int
         Number of leading samples to skip in the fit.
     warm : BiexpFitResult, optional

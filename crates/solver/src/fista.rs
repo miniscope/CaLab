@@ -1,11 +1,11 @@
-use crate::{Constraint, ConvMode, Solver};
+use crate::{Constraint, ConvMode, Solver, SolverError};
 
-#[cfg(feature = "jsbindings")]
-use wasm_bindgen::prelude::*;
-
-#[cfg_attr(feature = "jsbindings", wasm_bindgen)]
 impl Solver {
-    /// Run n_steps of FISTA iterations. Returns true if converged.
+    /// Run n_steps of FISTA iterations. Returns `Ok(true)` if converged.
+    ///
+    /// Returns an error (instead of panicking) if the FFT engine cannot be set
+    /// up or a convolution goes non-finite. Exposed to JS as `step_batch`
+    /// (see `js_step_batch` in lib.rs), where the error becomes a thrown `Error`.
     ///
     /// Uses the standard Beck & Teboulle FISTA with two sequences:
     /// - x_k (solution): the proximal update point
@@ -19,12 +19,16 @@ impl Solver {
     ///
     /// Uses FFT-based O(n log n) convolutions instead of time-domain O(n*k), and
     /// primal residual convergence criterion to eliminate one convolution per iteration.
-    pub fn step_batch(&mut self, n_steps: u32) -> bool {
+    pub fn step_batch(&mut self, n_steps: u32) -> Result<bool, SolverError> {
         let n = self.active_len;
         if n == 0 {
             self.converged = true;
-            return true;
+            return Ok(true);
         }
+        // Make sure the FFT plan matches the current trace + kernel (a
+        // set_params with a longer kernel after set_trace used to leave it
+        // invalid, and the convolution below panicked).
+        self.ensure_fft_ready()?;
 
         let step_size = 1.0 / self.lipschitz_constant;
         let threshold = step_size * self.effective_lambda();
@@ -32,7 +36,7 @@ impl Solver {
 
         for _ in 0..n_steps {
             if self.converged {
-                return true;
+                return Ok(true);
             }
 
             // solution_prev holds the extrapolated point y_k
@@ -44,7 +48,7 @@ impl Solver {
                     &self.solution_prev[..n],
                     n,
                     &mut self.reconvolution[..n],
-                ),
+                )?,
                 ConvMode::BandedAR2 => self
                     .banded
                     .convolve_forward(&self.solution_prev[..n], &mut self.reconvolution[..n]),
@@ -74,10 +78,11 @@ impl Solver {
 
             // 3. Adjoint convolution: gradient = K^T * residual
             match self.conv_mode {
-                ConvMode::Fft => {
-                    self.fft
-                        .convolve_adjoint(&self.residual_buf[..n], n, &mut self.gradient[..n])
-                }
+                ConvMode::Fft => self.fft.convolve_adjoint(
+                    &self.residual_buf[..n],
+                    n,
+                    &mut self.gradient[..n],
+                )?,
                 ConvMode::BandedAR2 => self
                     .banded
                     .convolve_adjoint(&self.residual_buf[..n], &mut self.gradient[..n]),
@@ -173,7 +178,7 @@ impl Solver {
             self.reconvolution_stale = true;
         }
 
-        self.converged
+        Ok(self.converged)
     }
 }
 
@@ -189,11 +194,11 @@ mod tests {
         max_batches: u32,
         batch_size: u32,
     ) -> u32 {
-        solver.set_trace(trace);
+        solver.set_trace(trace).unwrap();
         let mut total_batches = 0;
         for _ in 0..max_batches {
             total_batches += 1;
-            if solver.step_batch(batch_size) {
+            if solver.step_batch(batch_size).unwrap() {
                 break;
             }
         }
@@ -233,7 +238,7 @@ mod tests {
                 let _ = solver.get_reconvolution();
                 let _ = solver.get_baseline();
             }
-            if solver.step_batch(10) {
+            if solver.step_batch(10).unwrap() {
                 break;
             }
         }
@@ -242,8 +247,8 @@ mod tests {
     fn fresh(conv_mode: crate::ConvMode, subtract: bool, trace: &[f32]) -> Solver {
         let mut solver = Solver::new();
         solver.set_conv_mode(conv_mode);
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
-        solver.set_trace(trace);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
+        solver.set_trace(trace).unwrap();
         if subtract {
             solver.subtract_baseline();
         }
@@ -327,7 +332,7 @@ mod tests {
     #[test]
     fn delta_impulse_recovery() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.001, 30.0); // very low lambda for clean recovery
+        solver.set_params(0.02, 0.4, 0.001, 30.0).unwrap(); // very low lambda for clean recovery
 
         // The trace IS the kernel (what you'd get from a single spike at t=0)
         let trace = build_kernel(0.02, 0.4, 30.0);
@@ -380,7 +385,7 @@ mod tests {
     #[test]
     fn zero_trace_produces_zero_solution() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
 
         let trace = vec![0.0_f32; 100];
         solve_to_convergence(&mut solver, &trace, 100, 10);
@@ -398,7 +403,7 @@ mod tests {
     #[test]
     fn convergence_flag_set() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let trace = build_trace(&kernel, 200, &[10, 50, 100, 150]);
@@ -416,7 +421,7 @@ mod tests {
     #[test]
     fn solution_non_negative() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
 
         // Create a noisy trace
         let kernel = build_kernel(0.02, 0.4, 30.0);
@@ -451,13 +456,13 @@ mod tests {
 
         // Run 1
         let mut solver1 = Solver::new();
-        solver1.set_params(0.02, 0.4, 0.01, 30.0);
+        solver1.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solve_to_convergence(&mut solver1, &trace, 200, 10);
         let sol1 = solver1.get_solution();
 
         // Run 2
         let mut solver2 = Solver::new();
-        solver2.set_params(0.02, 0.4, 0.01, 30.0);
+        solver2.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solve_to_convergence(&mut solver2, &trace, 200, 10);
         let sol2 = solver2.get_solution();
 
@@ -477,7 +482,7 @@ mod tests {
     #[test]
     fn reconvolution_quality() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.001, 30.0); // low lambda for faithful reconstruction
+        solver.set_params(0.02, 0.4, 0.001, 30.0).unwrap(); // low lambda for faithful reconstruction
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 200;
@@ -512,7 +517,7 @@ mod tests {
 
         // Cold start solve with original lambda
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solve_to_convergence(&mut solver, &trace, 200, 10);
 
         // Export state from converged solution
@@ -520,8 +525,8 @@ mod tests {
 
         // Warm-start: set new lambda, load trace, restore state, solve
         let mut warm_solver = Solver::new();
-        warm_solver.set_params(0.02, 0.4, 0.012, 30.0);
-        warm_solver.set_trace(&trace);
+        warm_solver.set_params(0.02, 0.4, 0.012, 30.0).unwrap();
+        warm_solver.set_trace(&trace).unwrap();
         warm_solver.load_state(&state);
         // load_state restores the solution; need to also copy into solution_prev
         // (the extrapolated point y_0 = x_0 for warm-start)
@@ -533,7 +538,7 @@ mod tests {
         warm_solver.t_fista = 1.0;
 
         for _ in 0..200 {
-            if warm_solver.step_batch(10) {
+            if warm_solver.step_batch(10).unwrap() {
                 break;
             }
         }
@@ -541,7 +546,7 @@ mod tests {
 
         // Cold start with new lambda
         let mut cold_solver = Solver::new();
-        cold_solver.set_params(0.02, 0.4, 0.012, 30.0);
+        cold_solver.set_params(0.02, 0.4, 0.012, 30.0).unwrap();
         solve_to_convergence(&mut cold_solver, &trace, 200, 10);
         let cold_iters = cold_solver.iteration_count();
 
@@ -557,7 +562,7 @@ mod tests {
     #[test]
     fn momentum_reset_after_kernel_change() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 100;
@@ -568,9 +573,9 @@ mod tests {
             }
         }
 
-        solver.set_trace(&trace);
+        solver.set_trace(&trace).unwrap();
         // Run a few iterations to build up momentum
-        solver.step_batch(20);
+        solver.step_batch(20).unwrap();
         assert!(
             solver.t_fista > 1.0,
             "t_fista should have increased from 1.0"
@@ -600,7 +605,7 @@ mod tests {
     #[test]
     fn baseline_recovery_with_dc_offset() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.001, 30.0); // low lambda for clean recovery
+        solver.set_params(0.02, 0.4, 0.001, 30.0).unwrap(); // low lambda for clean recovery
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 200;
@@ -647,14 +652,14 @@ mod tests {
 
         // Solve with low lambda
         let mut solver_low = Solver::new();
-        solver_low.set_params(0.02, 0.4, 0.01, 30.0);
+        solver_low.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solve_to_convergence(&mut solver_low, &trace, 200, 10);
         let sol_low = solver_low.get_solution();
         let nnz_low = sol_low.iter().filter(|&&v| v > 1e-6).count();
 
         // Solve with high lambda
         let mut solver_high = Solver::new();
-        solver_high.set_params(0.02, 0.4, 1.0, 30.0);
+        solver_high.set_params(0.02, 0.4, 1.0, 30.0).unwrap();
         solve_to_convergence(&mut solver_high, &trace, 200, 10);
         let sol_high = solver_high.get_solution();
         let nnz_high = sol_high.iter().filter(|&&v| v > 1e-6).count();
@@ -671,12 +676,12 @@ mod tests {
     #[test]
     fn fft_convolution_matches_time_domain() {
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
 
         let kernel = build_kernel(0.02, 0.4, 30.0);
         let n = 200;
         let trace = build_trace(&kernel, n, &[10, 50, 100, 150]);
-        solver.set_trace(&trace);
+        solver.set_trace(&trace).unwrap();
 
         // Set up a known signal in solution_prev
         solver.solution_prev[..n].copy_from_slice(&trace[..n]);
@@ -685,7 +690,8 @@ mod tests {
         let mut fft_result = vec![0.0_f32; n];
         solver
             .fft
-            .convolve_forward(&solver.solution_prev[..n], n, &mut fft_result);
+            .convolve_forward(&solver.solution_prev[..n], n, &mut fft_result)
+            .unwrap();
 
         // Time-domain forward convolution for comparison
         let k_len = kernel.len();
@@ -725,7 +731,7 @@ mod tests {
         let trace = build_trace(&kernel, 200, &[10, 50, 100, 150]);
 
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.01, 30.0);
+        solver.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solver.set_conv_mode(ConvMode::BandedAR2);
         solve_to_convergence(&mut solver, &trace, 200, 10);
 
@@ -763,7 +769,7 @@ mod tests {
         let scaled_trace: Vec<f32> = trace.iter().map(|&v| v * 5.0).collect();
 
         let mut solver = Solver::new();
-        solver.set_params(0.02, 0.4, 0.001, 30.0); // low lambda for large values
+        solver.set_params(0.02, 0.4, 0.001, 30.0).unwrap(); // low lambda for large values
         solver.set_conv_mode(ConvMode::BandedAR2);
         solver.set_constraint(Constraint::Box01);
         solve_to_convergence(&mut solver, &scaled_trace, 200, 10);

@@ -16,6 +16,12 @@ pub(crate) mod simulate;
 pub(crate) mod threshold;
 #[allow(dead_code)]
 pub(crate) mod upsample;
+pub(crate) mod validate;
+
+pub use validate::SolverError;
+
+#[cfg(test)]
+mod degenerate_tests;
 
 #[cfg(feature = "pybindings")]
 mod py_api;
@@ -65,7 +71,11 @@ pub enum ConvMode {
 pub enum Constraint {
     /// Current: max(0, z - threshold) — L1 + non-negativity.
     NonNegative = 0,
-    /// InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+    /// clamp(z - threshold, 0, 1) — box constraint [0, 1] with the same
+    /// L1 shrinkage (`step · lambda · G_dc`) as `NonNegative`. With
+    /// `lambda = 0` (what `indeca::solve_bounded` uses) this is exactly the
+    /// unpenalized box constraint of InDeCa Eq. 3; CaDecon passes a non-zero
+    /// lambda to add sparsity on top of the box.
     Box01 = 1,
 }
 
@@ -123,6 +133,12 @@ pub struct Solver {
     pub(crate) conv_mode: ConvMode,
     pub(crate) constraint: Constraint,
     pub(crate) reconvolution_stale: bool, // dirty flag for lazy reconvolution
+    /// Kernel changed since the FFT kernel spectrum was last computed.
+    fft_kernel_stale: bool,
+    /// Last FFT setup failure, if any; cleared by a later successful setup.
+    /// Setup runs eagerly from infallible setters, so the error is reported by
+    /// the next `step_batch` instead of being lost.
+    fft_setup_error: Option<SolverError>,
 
     // Bandpass filter
     bandpass: BandpassFilter,
@@ -166,6 +182,8 @@ impl Solver {
             conv_mode: ConvMode::Fft,
             constraint: Constraint::NonNegative,
             reconvolution_stale: true,
+            fft_kernel_stale: true,
+            fft_setup_error: None,
             bandpass: BandpassFilter::new(),
             filtered: false,
         };
@@ -176,82 +194,6 @@ impl Solver {
         solver.kernel_dc_gain = solver.kernel.iter().map(|&k| k as f64).sum();
 
         solver
-    }
-
-    /// Update solver parameters and rebuild kernel.
-    pub fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) {
-        self.tau_rise = tau_rise;
-        self.tau_decay = tau_decay;
-        self.lambda = lambda;
-        self.fs = fs;
-        self.kernel = build_kernel(tau_rise, tau_decay, fs);
-        self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
-        self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
-
-        // Update convolution engines (only the active one + compute Lipschitz)
-        match self.conv_mode {
-            ConvMode::BandedAR2 => {
-                self.banded.update(tau_rise, tau_decay, fs);
-            }
-            ConvMode::Fft => {
-                // banded will be updated lazily if conv_mode switches
-            }
-        }
-        self.lipschitz_constant = self.current_lipschitz();
-
-        // Update kernel FFT if buffers are already set up and large enough.
-        // On re-enqueue quanta with unchanged trace length, this avoids a full
-        // FFT plan + buffer rebuild in ensure_buffers.
-        if self.conv_mode == ConvMode::Fft && self.fft.fft_len() > 0 && self.active_len > 0 {
-            let min_len = self.active_len + self.kernel.len() - 1;
-            if min_len <= self.fft.fft_len() {
-                self.fft.prepare_kernel(&self.kernel);
-            } else {
-                self.fft.invalidate();
-            }
-        }
-    }
-
-    /// Load a trace for deconvolution. Grows buffers if needed (never shrinks).
-    /// Resets iteration state for a fresh solve.
-    pub fn set_trace(&mut self, trace: &[f32]) {
-        self.active_len = trace.len();
-
-        // Grow buffers if needed (never shrink to prevent WASM memory fragmentation)
-        if self.trace.len() < trace.len() {
-            let n = trace.len();
-            self.trace.resize(n, 0.0);
-            self.solution.resize(n, 0.0);
-            self.solution_prev.resize(n, 0.0);
-            self.gradient.resize(n, 0.0);
-            self.reconvolution.resize(n, 0.0);
-            self.residual_buf.resize(n, 0.0);
-        }
-
-        // Copy trace data and zero out solution buffers for active region
-        let n = trace.len();
-        self.trace[..n].copy_from_slice(trace);
-        self.solution[..n].fill(0.0);
-        self.solution_prev[..n].fill(0.0);
-        self.gradient[..n].fill(0.0);
-        self.reconvolution[..n].fill(0.0);
-        self.residual_buf[..n].fill(0.0);
-
-        // Reset iteration state
-        self.iteration = 0;
-        self.t_fista = 1.0;
-        self.converged = false;
-        self.prev_objective = f64::INFINITY;
-        self.baseline = 0.0;
-        self.baseline_ema = 0.0;
-        self.baseline_ema_init = false;
-        self.filtered = false;
-        self.reconvolution_stale = true;
-
-        // Prepare FFT infrastructure for this trace length (skip if using banded mode)
-        if self.conv_mode == ConvMode::Fft {
-            self.fft.ensure_buffers(self.active_len, &self.kernel);
-        }
     }
 
     /// Returns a copy of the kernel.
@@ -343,10 +285,9 @@ impl Solver {
                 self.banded.update(self.tau_rise, self.tau_decay, self.fs);
             }
             ConvMode::Fft => {
-                // Ensure FFT buffers exist if switching to FFT mode with an active trace
-                if self.active_len > 0 {
-                    self.fft.ensure_buffers(self.active_len, &self.kernel);
-                }
+                // Ensure FFT buffers exist (and the kernel spectrum is current —
+                // params may have changed while in banded mode).
+                self.fft_setup_error = self.sync_fft_exact().err();
             }
         }
         self.lipschitz_constant = self.current_lipschitz();
@@ -400,26 +341,27 @@ impl Solver {
             return;
         }
 
-        match self.conv_mode {
-            ConvMode::BandedAR2 => {
-                self.banded
-                    .convolve_forward(&self.solution[..n], &mut self.reconvolution[..n]);
-            }
-            ConvMode::Fft if self.fft.fft_len() > 0 => {
-                self.fft
-                    .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n]);
-            }
-            _ => {
-                // Fallback to time-domain convolution for very small cases
-                let k_len = self.kernel.len();
-                for t in 0..n {
-                    let mut sum = 0.0;
-                    let k_max = k_len.min(t + 1);
-                    for k in 0..k_max {
-                        sum += self.kernel[k] * self.solution[t - k];
-                    }
-                    self.reconvolution[t] = sum;
+        let fft_ok = self.conv_mode == ConvMode::Fft
+            && self.ensure_fft_ready().is_ok()
+            && self
+                .fft
+                .convolve_forward(&self.solution[..n], n, &mut self.reconvolution[..n])
+                .is_ok();
+        if self.conv_mode == ConvMode::BandedAR2 {
+            self.banded
+                .convolve_forward(&self.solution[..n], &mut self.reconvolution[..n]);
+        } else if !fft_ok {
+            // Time-domain fallback: the display path must not fail, so if the
+            // FFT engine is unusable (step_batch reports that error) or the
+            // trace is tiny, convolve directly.
+            let k_len = self.kernel.len();
+            for t in 0..n {
+                let mut sum = 0.0;
+                let k_max = k_len.min(t + 1);
+                for k in 0..k_max {
+                    sum += self.kernel[k] * self.solution[t - k];
                 }
+                self.reconvolution[t] = sum;
             }
         }
 
@@ -565,6 +507,182 @@ impl Solver {
         for i in 0..saved_len {
             self.solution_prev[i] = read_f32_le(&mut cur);
         }
+    }
+}
+
+/// Rust-native, validated entry points. The `jsbindings` wrappers below and the
+/// Python bindings both go through these, so both FFIs reject the same inputs.
+impl Solver {
+    /// Validate and apply solver parameters, rebuilding the kernel.
+    ///
+    /// Rejects `fs <= 0`, `tau_rise >= tau_decay`, negative `lambda`, any
+    /// non-finite value, and kernels longer than [`validate::MAX_KERNEL_LEN`]
+    /// (see [`validate::validate_params`]). On error the solver is unchanged.
+    pub fn set_params(
+        &mut self,
+        tau_rise: f64,
+        tau_decay: f64,
+        lambda: f64,
+        fs: f64,
+    ) -> Result<(), SolverError> {
+        validate::validate_params(tau_rise, tau_decay, lambda, fs)?;
+        self.apply_params(tau_rise, tau_decay, lambda, fs);
+        Ok(())
+    }
+
+    /// Validate and load a trace for deconvolution (see [`Solver::load_trace`]).
+    /// Rejects non-finite samples, which would otherwise poison the FFT.
+    pub fn set_trace(&mut self, trace: &[f32]) -> Result<(), SolverError> {
+        validate::validate_finite_f32("trace", trace)?;
+        self.load_trace(trace);
+        Ok(())
+    }
+
+    /// Apply parameters without validation. Callers must have validated them
+    /// (internal pipelines whose public entry point already did).
+    pub(crate) fn apply_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) {
+        self.tau_rise = tau_rise;
+        self.tau_decay = tau_decay;
+        self.lambda = lambda;
+        self.fs = fs;
+        self.kernel = build_kernel(tau_rise, tau_decay, fs);
+        self.kernel_dc_gain = self.kernel.iter().map(|&k| k as f64).sum();
+        self.bandpass.update_cutoffs(tau_rise, tau_decay, fs);
+        self.fft_kernel_stale = true;
+
+        // Update convolution engines (only the active one + compute Lipschitz)
+        match self.conv_mode {
+            ConvMode::BandedAR2 => {
+                self.banded.update(tau_rise, tau_decay, fs);
+            }
+            ConvMode::Fft => {
+                // banded will be updated lazily if conv_mode switches
+            }
+        }
+        self.lipschitz_constant = self.current_lipschitz();
+
+        // Update the kernel FFT now if a trace is loaded. If the existing FFT
+        // buffers are large enough they are reused (on re-enqueue quanta with
+        // unchanged trace length this avoids a plan + buffer rebuild);
+        // otherwise they are rebuilt for the longer kernel. (Previously the
+        // too-short case only invalidated the plan, and the next step_batch
+        // panicked slicing a zero-length FFT buffer.)
+        self.fft_setup_error = self.ensure_fft_ready().err();
+    }
+
+    /// Load a trace without validation. Grows buffers if needed (never shrinks).
+    /// Resets iteration state for a fresh solve.
+    pub(crate) fn load_trace(&mut self, trace: &[f32]) {
+        self.active_len = trace.len();
+
+        // Grow buffers if needed (never shrink to prevent WASM memory fragmentation)
+        if self.trace.len() < trace.len() {
+            let n = trace.len();
+            self.trace.resize(n, 0.0);
+            self.solution.resize(n, 0.0);
+            self.solution_prev.resize(n, 0.0);
+            self.gradient.resize(n, 0.0);
+            self.reconvolution.resize(n, 0.0);
+            self.residual_buf.resize(n, 0.0);
+        }
+
+        // Copy trace data and zero out solution buffers for active region
+        let n = trace.len();
+        self.trace[..n].copy_from_slice(trace);
+        self.solution[..n].fill(0.0);
+        self.solution_prev[..n].fill(0.0);
+        self.gradient[..n].fill(0.0);
+        self.reconvolution[..n].fill(0.0);
+        self.residual_buf[..n].fill(0.0);
+
+        // Reset iteration state
+        self.iteration = 0;
+        self.t_fista = 1.0;
+        self.converged = false;
+        self.prev_objective = f64::INFINITY;
+        self.baseline = 0.0;
+        self.baseline_ema = 0.0;
+        self.baseline_ema_init = false;
+        self.filtered = false;
+        self.reconvolution_stale = true;
+
+        // Prepare FFT infrastructure for this trace length (skip if using banded mode)
+        self.fft_setup_error = self.sync_fft_exact().err();
+    }
+
+    /// Size the FFT buffers exactly for the active trace + kernel and make sure
+    /// the kernel spectrum is current. No-op outside FFT mode or without a trace.
+    fn sync_fft_exact(&mut self) -> Result<(), SolverError> {
+        if self.conv_mode != ConvMode::Fft || self.active_len == 0 {
+            return Ok(());
+        }
+        let len_before = self.fft.fft_len();
+        self.fft.ensure_buffers(self.active_len, &self.kernel)?;
+        // ensure_buffers recomputes the kernel spectrum only when it re-plans.
+        if self.fft_kernel_stale && self.fft.fft_len() == len_before {
+            self.fft.prepare_kernel(&self.kernel)?;
+        }
+        self.fft_kernel_stale = false;
+        Ok(())
+    }
+
+    /// Make the FFT engine usable for the current trace and kernel, reusing
+    /// existing buffers when they are large enough. Called eagerly by setters
+    /// and defensively at the top of `step_batch`.
+    pub(crate) fn ensure_fft_ready(&mut self) -> Result<(), SolverError> {
+        if self.conv_mode != ConvMode::Fft || self.active_len == 0 {
+            return Ok(());
+        }
+        let min_len = self
+            .active_len
+            .checked_add(self.kernel.len().saturating_sub(1))
+            .ok_or_else(|| SolverError::InvalidInput("trace + kernel length overflows".into()))?;
+        let fft_len = self.fft.fft_len();
+        let result = if fft_len == 0 || fft_len < min_len || self.fft_setup_error.is_some() {
+            self.sync_fft_exact()
+        } else if self.fft_kernel_stale {
+            let r = self.fft.prepare_kernel(&self.kernel);
+            if r.is_ok() {
+                self.fft_kernel_stale = false;
+            }
+            r
+        } else {
+            Ok(())
+        };
+        self.fft_setup_error = result.clone().err();
+        result
+    }
+}
+
+/// WASM exports of the validated entry points. Errors surface in JS as a
+/// thrown `Error` carrying the `SolverError` message, instead of a WASM trap
+/// (which would leave the worker's module unusable).
+#[cfg(feature = "jsbindings")]
+#[wasm_bindgen]
+impl Solver {
+    /// Update solver parameters and rebuild kernel. Throws on invalid parameters.
+    #[wasm_bindgen(js_name = set_params)]
+    pub fn js_set_params(
+        &mut self,
+        tau_rise: f64,
+        tau_decay: f64,
+        lambda: f64,
+        fs: f64,
+    ) -> Result<(), JsError> {
+        Ok(self.set_params(tau_rise, tau_decay, lambda, fs)?)
+    }
+
+    /// Load a trace for deconvolution. Throws if it contains NaN/infinity.
+    #[wasm_bindgen(js_name = set_trace)]
+    pub fn js_set_trace(&mut self, trace: &[f32]) -> Result<(), JsError> {
+        Ok(self.set_trace(trace)?)
+    }
+
+    /// Run n_steps of FISTA iterations. Returns true if converged.
+    /// Throws on a numerical failure instead of trapping.
+    #[wasm_bindgen(js_name = step_batch)]
+    pub fn js_step_batch(&mut self, n_steps: u32) -> Result<bool, JsError> {
+        Ok(self.step_batch(n_steps)?)
     }
 }
 
