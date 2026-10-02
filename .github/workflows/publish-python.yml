@@ -5,9 +5,10 @@ on:
     tags: ['py/v*']
   workflow_dispatch:
 
+# Read-only by default; only the publish job gets id-token: write (PyPI
+# trusted publishing).
 permissions:
   contents: read
-  id-token: write
 
 # Third-party actions pinned to SHAs; see ci.yml header for the update
 # procedure. pypi-publish is the most critical since it runs with
@@ -228,6 +229,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/py/v')
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
