@@ -36,6 +36,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `RangeError: Invalid array length` and killing the page. Replaced with a
   bounded `logSplits` (PR #176)
 
+### Security
+
+- Resolved all 22 `npm audit` findings (2 critical, 12 high) with in-range
+  updates, including vite 7.3.6 (dev-server path traversal) and seroval (Solid
+  transitive). Bumped solid-js 1.9.15, valibot 1.5, @supabase/supabase-js 2.117,
+  driver.js 1.8, vitest 4.1, eslint 9.39.5, typescript-eslint 8.71; root
+  `package.json` now declares `engines.node >= 22`
+
 ## [2.7.2] - 2026-08-27
 
 ### Fixed
