@@ -194,6 +194,9 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
     const theme = getThemeColors();
 
+    // The getters below bridge Solid reactivity into uPlot's draw-time hook;
+    // they're tracked scopes by virtue of being invoked inside the plot.
+    /* eslint-disable solid/reactivity */
     const drawFn = makeDrawPoints(
       pveColors,
       () => props.userParams,
@@ -202,6 +205,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
       theme.textPrimary,
       theme.textSecondary,
     );
+    /* eslint-enable solid/reactivity */
 
     const xVals = subs.map((s) => s.t_peak * 1000);
     const yVals = subs.map((s) => s.fwhm * 1000);

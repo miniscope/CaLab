@@ -69,9 +69,12 @@ function DiceIcon(): JSX.Element {
 }
 
 const App: Component = () => {
-  if (isAuthCallback()) {
-    return <AuthCallback user={user} loading={authLoading} />;
-  }
+  // Magic-link callback: show lightweight confirmation instead of full app.
+  // `isAuthCallback()` inspects window.location at mount time; the URL
+  // doesn't change within a single component lifetime, so the early
+  // return is safe.
+  // eslint-disable-next-line solid/components-return-once
+  if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   const bridgeUrlParam = getBridgeUrl();
   if (bridgeUrlParam) {
