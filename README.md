@@ -124,9 +124,14 @@ pip install calab[headless]      # + headless browser for CaDecon
 
 ### Prerequisites
 
-- **Node.js 22** (LTS) — use `.nvmrc`: `nvm use`
-- **Rust stable** + **wasm-pack** — only needed if modifying the solver
-- **Python >= 3.10** — only needed for the Python package
+- **Node.js 22** (LTS): use `.nvmrc` (`nvm use`)
+- **Rust stable** with the `wasm32-unknown-unknown` target, plus **wasm-pack**. These are
+  required for any JS work, not just solver changes. `crates/solver/pkg/` is gitignored, so
+  `npm run dev`/`test`/`typecheck`/`build:apps` build it first (`scripts/ensure-wasm.mjs`).
+  Install with [rustup](https://rustup.rs), then `cargo install wasm-pack` (or
+  `brew install wasm-pack`). `rust-toolchain.toml` pins the channel and the wasm target.
+- **Python >= 3.11** + **maturin**: only needed for the Python package (`python/`)
+- **Docker**: only needed to run the Supabase RLS tests locally (`scripts/test-rls.sh`)
 
 ### Setup
 
@@ -135,20 +140,23 @@ git clone https://github.com/miniscope/CaLab.git
 cd CaLab
 nvm use
 npm install
-npm run dev
+npm run dev            # CaTune; first run builds the WASM solver
 ```
+
+Start any app with `npm run dev -w apps/<name>` (or the `dev:carank`, `dev:cadecon`,
+`dev:admin` shortcuts).
 
 ### Key Scripts
 
 | Script                | Description                            |
 | --------------------- | -------------------------------------- |
 | `npm run dev`         | Start dev server                       |
-| `npm run build`       | Build WASM + all apps                  |
+| `npm run build`       | Build WASM + every app in `apps/`      |
 | `npm run build:pages` | Build + combine dist for GitHub Pages  |
 | `npm run build:wasm`  | Compile Rust solver to WASM            |
 | `npm run test`        | Run Vitest tests across all workspaces |
 | `npm run lint`        | Run ESLint                             |
-| `npm run typecheck`   | Run TypeScript type checking           |
+| `npm run typecheck`   | Type-check every app and package       |
 | `npm run format`      | Format all files with Prettier         |
 
 See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the full development guide.

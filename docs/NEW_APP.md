@@ -56,16 +56,7 @@ npm auto-discovers the new workspace under `apps/*`.
 }
 ```
 
-### 5. Add to typecheck
-
-```jsonc
-// package.json (root)
-"scripts": {
-  "typecheck": "tsc -b apps/catune apps/carank apps/cadecon apps/admin apps/<name>"
-}
-```
-
-### 6. Verify
+### 5. Verify
 
 ```bash
 npm run dev:<name>     # Dev server starts
@@ -73,8 +64,9 @@ npm run typecheck      # No errors
 npm run build:apps     # Builds all apps including yours
 ```
 
-The build and deploy scripts auto-discover apps from `apps/*/package.json`,
-so no changes are needed to `build-apps.mjs`, `combine-dist.mjs`, or CI.
+The build, typecheck and deploy scripts auto-discover apps (`apps/*/package.json`
+and `apps/*/tsconfig.json`), so no changes are needed to `build-apps.mjs`,
+`typecheck.mjs`, `combine-dist.mjs`, or CI.
 
 ## Adding more `@calab/*` packages
 
