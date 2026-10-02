@@ -309,6 +309,9 @@ function LogDecayTrend(props: {
     return [x, y] as uPlot.AlignedData;
   });
 
+  // uPlot config is built once at mount; stable references keep the chart from
+  // being recreated. Every caller passes static literals/constants for these.
+  /* eslint-disable solid/reactivity */
   const series: uPlot.Series[] = [
     {},
     { label: props.seriesLabel, stroke: props.color, width: 2, points: { show: true, size: 5 } },
@@ -322,6 +325,7 @@ function LogDecayTrend(props: {
     viewedIterationPlugin(() => viewedIteration()),
     wheelZoomPlugin(),
   ];
+  /* eslint-enable solid/reactivity */
 
   const computeYRange = (d: uPlot.AlignedData): [number, number] => {
     let lo = Infinity;
@@ -369,6 +373,9 @@ function MiniTrend(props: { history: HistoryAccessor; panel: PanelDef }): JSX.El
     return [x, ...cols] as uPlot.AlignedData;
   });
 
+  // uPlot config is built once at mount; `panel` comes from the static PANELS
+  // table and never changes for a given chart.
+  /* eslint-disable solid/reactivity */
   const series: uPlot.Series[] = [
     {},
     ...props.panel.series.map((s) => ({
@@ -382,6 +389,7 @@ function MiniTrend(props: { history: HistoryAccessor; panel: PanelDef }): JSX.El
     chartAxis({ size: 24, values: integerTickValues }),
     labeledAxis(props.panel.unit, { size: 38 }),
   ];
+  /* eslint-enable solid/reactivity */
   const plugins = [
     convergenceMarkerPlugin(() => convergedAtIteration()),
     viewedIterationPlugin(() => viewedIteration()),
