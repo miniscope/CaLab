@@ -45,6 +45,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   not support NaN/Inf samples, that affected cells will fail to solve, and to
   interpolate over or remove them before importing. It remains a warning, so
   files whose other cells solve still import
+
 - **CaTune** moving a parameter slider orphaned every cell's in-flight solver
   job instead of cancelling it: the job ran its full quantum, its result was
   discarded, and with more cells than workers the orphans queued ahead of the
