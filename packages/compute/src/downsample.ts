@@ -8,26 +8,43 @@
  * Reduce data to at most 2 * targetBuckets points by computing min and max
  * values within each bucket. Pushes min/max in time order to preserve waveform shape.
  *
- * @param xData - Time axis values (Float64Array or number[])
- * @param yData - Trace values (Float64Array or number[])
+ * Non-finite samples (NaN, ±Infinity) are ignored when picking a bucket's
+ * min/max. A bucket with no finite sample emits two `null`s (a uPlot gap) at
+ * the bucket's first and last x, so every bucket still contributes exactly two
+ * points and series downsampled over the same x stay the same length. When no
+ * downsampling is needed, non-finite samples are likewise returned as `null`.
+ *
+ * Each bucket's min/max order follows that series' own data, so the i-th
+ * outputs of two independently downsampled series need not come from the same
+ * sample. Never combine downsampled series element-wise (e.g. a residual):
+ * derive the combined series at full resolution and downsample the result.
+ *
+ * @param xData - Time axis values (typed array or number[])
+ * @param yData - Trace values (typed array or number[])
  * @param targetBuckets - Number of pixel-width buckets (typically chart width in px)
  * @returns [xValues, yValues] suitable for uPlot
  */
 export function downsampleMinMax(
-  xData: Float64Array | Float32Array | number[],
-  yData: Float64Array | Float32Array | number[],
+  xData: ArrayLike<number>,
+  yData: ArrayLike<number>,
   targetBuckets: number,
-): [number[], number[]] {
+): [number[], (number | null)[]] {
   const len = xData.length;
 
-  // No downsampling needed
+  // No downsampling needed. y is still copied so non-finite samples become
+  // gaps (uPlot's autoscale is poisoned by NaN/Infinity).
   if (len <= targetBuckets * 2) {
-    return [Array.from(xData), Array.from(yData)];
+    const outY: (number | null)[] = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const v = yData[i];
+      outY[i] = Number.isFinite(v) ? v : null;
+    }
+    return [Array.from(xData), outY];
   }
 
   const bucketSize = len / targetBuckets;
   const outX: number[] = [];
-  const outY: number[] = [];
+  const outY: (number | null)[] = [];
 
   for (let i = 0; i < targetBuckets; i++) {
     const start = Math.floor(i * bucketSize);
@@ -35,11 +52,12 @@ export function downsampleMinMax(
 
     let min = Infinity;
     let max = -Infinity;
-    let minIdx = start;
-    let maxIdx = start;
+    let minIdx = -1;
+    let maxIdx = -1;
 
     for (let j = start; j < end; j++) {
-      const v = yData[j] as number;
+      const v = yData[j];
+      if (!Number.isFinite(v)) continue;
       if (v < min) {
         min = v;
         minIdx = j;
@@ -50,12 +68,16 @@ export function downsampleMinMax(
       }
     }
 
-    // Push min and max in time order to preserve shape
-    if (minIdx <= maxIdx) {
-      outX.push(xData[minIdx] as number, xData[maxIdx] as number);
+    if (minIdx < 0) {
+      // No finite sample in this bucket: emit a gap rather than ±Infinity.
+      outX.push(xData[start], xData[end - 1]);
+      outY.push(null, null);
+    } else if (minIdx <= maxIdx) {
+      // Push min and max in time order to preserve shape
+      outX.push(xData[minIdx], xData[maxIdx]);
       outY.push(min, max);
     } else {
-      outX.push(xData[maxIdx] as number, xData[minIdx] as number);
+      outX.push(xData[maxIdx], xData[minIdx]);
       outY.push(max, min);
     }
   }

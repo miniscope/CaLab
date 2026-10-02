@@ -21,6 +21,6 @@
     "@calab/io": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",
-    "solid-js": "^1.9.11"
+    "solid-js": "^1.9.15"
   }
 }

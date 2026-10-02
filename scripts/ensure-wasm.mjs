@@ -51,6 +51,36 @@ if (!reason) {
   process.exit(0);
 }
 
+/** True when `cmd --version` runs, i.e. the tool is on PATH. */
+function hasTool(cmd) {
+  try {
+    execFileSync(cmd, ['--version'], { stdio: 'ignore', shell: process.platform === 'win32' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const missing = ['cargo', 'wasm-pack'].filter((cmd) => !hasTool(cmd));
+if (missing.length > 0) {
+  console.error(
+    [
+      `[ensure-wasm] Cannot build the WASM solver (${reason}): ${missing.join(' and ')} not found on PATH.`,
+      '',
+      '  Rust is required even if you never touch the solver: crates/solver/pkg/ is',
+      '  gitignored, so a fresh clone has to build it before dev/test/typecheck/build.',
+      '',
+      '  Install:',
+      '    curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust via rustup',
+      '    rustup target add wasm32-unknown-unknown   # rust-toolchain.toml also requests it',
+      '    cargo install wasm-pack                    # or: brew install wasm-pack',
+      '',
+      '  Then open a new shell (so ~/.cargo/bin is on PATH) and re-run.',
+    ].join('\n'),
+  );
+  process.exit(1);
+}
+
 console.log(`[ensure-wasm] Rebuilding WASM (${reason})...`);
 try {
   // Invoke wasm-pack directly (no shell) — mirrors the `build:wasm` npm script.
@@ -60,8 +90,10 @@ try {
   });
 } catch {
   console.error(
-    '[ensure-wasm] WASM build failed. Install the Rust toolchain + wasm-pack ' +
-      '(see rust-toolchain.toml), or run `npm run build:wasm` manually.',
+    '[ensure-wasm] WASM build failed (see the wasm-pack output above). Rust and ' +
+      'wasm-pack are required on a fresh clone because crates/solver/pkg/ is ' +
+      'gitignored. Check that `rustup target list --installed` includes ' +
+      'wasm32-unknown-unknown, then retry with `npm run build:wasm`.',
   );
   process.exit(1);
 }

@@ -261,23 +261,72 @@ def test_short_trace():
 
 
 # ---------------------------------------------------------------------------
+# Test 12b: Output frame matches the input, single and batch
+# ---------------------------------------------------------------------------
+
+def test_reconvolution_plus_baseline_in_input_frame_with_dc_offset():
+    """For a constant offset, reconvolution ≈ K*activity + baseline ≈ trace."""
+    kernel = build_kernel(0.02, 0.4, 30.0)
+    n = 300
+    offsets = [5.0, -3.0]
+    clean = make_synthetic_trace(kernel, n, [20, 90, 160, 240])
+    traces = np.stack([clean + o for o in offsets])
+
+    batch = run_deconvolution_full(traces, 30.0, 0.02, 0.4, 0.001)
+    for i, off in enumerate(offsets):
+        single = run_deconvolution_full(traces[i], 30.0, 0.02, 0.4, 0.001)
+        assert single.baseline == pytest.approx(batch.baseline[i])
+        np.testing.assert_allclose(single.reconvolution, batch.reconvolution[i])
+
+        k_act = np.convolve(batch.activity[i], kernel)[:n]
+        model = k_act + batch.baseline[i]
+        # Constant offset -> rolling baseline is ~flat -> reconvolution is
+        # K*activity + scalar baseline, and both overlay the original trace.
+        assert np.max(np.abs(batch.reconvolution[i] - model)) < 0.05
+        assert abs(batch.baseline[i] - off) < 0.5
+        rel = np.linalg.norm(traces[i] - model) / np.linalg.norm(clean)
+        assert rel < 0.2, f"offset {off}: fit to original trace rel err {rel:.3f}"
+
+
+def test_list_input_and_bad_ndim():
+    trace = [0.0] * 50 + [1.0] + [0.5] * 49
+    out = run_deconvolution(trace, 30.0, 0.02, 0.4, 0.01)
+    assert out.shape == (100,)
+    full = run_deconvolution_full([trace, trace], 30.0, 0.02, 0.4, 0.01)
+    assert full.activity.shape == (2, 100)
+    with pytest.raises(ValueError, match="1-D .* or 2-D"):
+        run_deconvolution(np.zeros((2, 3, 4)), 30.0, 0.02, 0.4, 0.01)
+    with pytest.raises(ValueError, match="1-D .* or 2-D"):
+        run_deconvolution_full(np.float64(1.0), 30.0, 0.02, 0.4, 0.01)
+
+
+# ---------------------------------------------------------------------------
 # Test 12: Baseline recovery with DC offset
 # ---------------------------------------------------------------------------
 
 def test_baseline_recovery_with_dc_offset():
-    """Trace with DC offset: baseline subtraction removes DC before solving,
-    so the solver baseline should be ~0 (not the original DC offset)."""
+    """Trace with DC offset: results are reported in the caller's frame.
+
+    The solver removes a rolling-percentile baseline internally, but the
+    returned ``baseline`` and ``reconvolution`` add it back, so the baseline
+    recovers the DC offset and the fit overlays the ORIGINAL trace.
+    """
     kernel = build_kernel(0.02, 0.4, 30.0)
     n = 200
     dc_offset = 5.0
-    trace = make_synthetic_trace(kernel, n, [10, 50, 100, 150])
-    trace += dc_offset
+    clean = make_synthetic_trace(kernel, n, [10, 50, 100, 150])
+    trace = clean + dc_offset
 
     result = run_deconvolution_full(trace, 30.0, 0.02, 0.4, 0.001)
 
-    assert abs(result.baseline) < 1.0, (
-        f"Baseline {result.baseline} should be near 0 after baseline subtraction"
+    assert abs(result.baseline - dc_offset) < 0.5, (
+        f"Baseline {result.baseline} should recover the DC offset {dc_offset}"
     )
+    # The fit is directly comparable to the original (offset) trace...
+    rel_err = np.linalg.norm(trace - result.reconvolution) / np.linalg.norm(clean)
+    assert rel_err < 0.2, f"Fit to the original trace has relative error {rel_err:.3f}"
+    # ...and the offset-free part of the fit is K*activity + (baseline - offset).
+    assert abs(np.mean(result.reconvolution) - np.mean(trace)) < 1e-3
     # Baseline subtraction preserves transients, so spikes should still appear
     n_spikes = np.sum(result.activity > 0)
     assert n_spikes >= 2, (

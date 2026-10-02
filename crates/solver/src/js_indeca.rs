@@ -2,6 +2,11 @@
 ///
 /// These functions are exposed to JavaScript via wasm-bindgen and use
 /// serde-wasm-bindgen for complex return types (InDecaResult, BiexpResult).
+///
+/// Every entry point validates its inputs with the shared checks in
+/// `crate::validate` (the same ones the Python bindings use) and throws a JS
+/// `Error` on bad input instead of trapping the WASM module or returning
+/// garbage.
 use wasm_bindgen::prelude::*;
 
 use crate::biexp_fit;
@@ -9,6 +14,19 @@ use crate::indeca;
 use crate::kernel_est;
 use crate::peak_seed;
 use crate::upsample;
+use crate::validate::{self, SolverError};
+
+/// Prefix a validation error with the function name, as a JS error.
+fn js_err(func: &str, e: SolverError) -> JsError {
+    JsError::new(&format!("{func}: {e}"))
+}
+
+/// Serialize a result for JS, surfacing serialization failures as a thrown
+/// error instead of silently returning `null`.
+pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValue, JsError> {
+    serde_wasm_bindgen::to_value(value)
+        .map_err(|e| JsError::new(&format!("{func}: failed to serialize result: {e}")))
+}
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
@@ -18,9 +36,9 @@ use crate::upsample;
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
 ///
-/// Throws a JS error (rather than returning garbage) if `trace` contains a
-/// non-finite value — a NaN/Inf would otherwise propagate silently and yield
-/// results indistinguishable from a legitimately hard trace.
+/// Throws a JS error (rather than returning garbage) if `trace` or
+/// `warm_counts` contains a non-finite value, or if the parameters are invalid
+/// (`fs <= 0`, `tau_r >= tau_d`, `upsample_factor == 0`, negative `lambda`, ...).
 #[wasm_bindgen]
 pub fn indeca_solve_trace(
     trace: &[f32],
@@ -36,11 +54,11 @@ pub fn indeca_solve_trace(
     lambda: f64,
     noise_constrained: bool,
 ) -> Result<JsValue, JsError> {
-    if let Some(i) = crate::first_nonfinite(trace) {
-        return Err(JsError::new(&format!(
-            "indeca_solve_trace: trace contains a non-finite value (NaN or infinity) at index {i}"
-        )));
-    }
+    const F: &str = "indeca_solve_trace";
+    validate::validate_finite_f32("trace", trace).map_err(|e| js_err(F, e))?;
+    validate::validate_finite_f32("warm_counts", warm_counts).map_err(|e| js_err(F, e))?;
+    validate::validate_indeca_params(trace.len(), tau_r, tau_d, fs, upsample_factor, lambda, tol)
+        .map_err(|e| js_err(F, e))?;
     let warm = if warm_counts.is_empty() {
         None
     } else {
@@ -60,7 +78,7 @@ pub fn indeca_solve_trace(
         lambda,
         indeca::SolveOptions { noise_constrained },
     );
-    Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
+    to_js(F, &result)
 }
 
 /// Estimate a free-form kernel from multiple traces and their spike trains.
@@ -73,7 +91,8 @@ pub fn indeca_solve_trace(
 /// Throws a JS error (rather than aborting the WASM module) if the input array
 /// lengths are inconsistent — `alphas`/`baselines` must have one entry per
 /// trace, and `traces_flat`/`spikes_flat` must each be the sum of
-/// `trace_lengths`.
+/// `trace_lengths` — if any array contains a non-finite value, or if
+/// `kernel_length` is 0 or above the kernel-length cap.
 #[wasm_bindgen]
 pub fn indeca_estimate_kernel(
     traces_flat: &[f32],
@@ -87,23 +106,25 @@ pub fn indeca_estimate_kernel(
     warm_kernel: &[f32],
     smooth_lambda: f64,
 ) -> Result<Vec<f32>, JsError> {
+    const F: &str = "indeca_estimate_kernel";
     let lengths: Vec<usize> = trace_lengths.iter().map(|&v| v as usize).collect();
-    let total_len: usize = lengths.iter().sum();
-    if alphas.len() != lengths.len() || baselines.len() != lengths.len() {
-        return Err(JsError::new(
-            "indeca_estimate_kernel: alphas and baselines must have one entry per trace",
-        ));
-    }
-    if traces_flat.len() != total_len || spikes_flat.len() != total_len {
-        return Err(JsError::new(
-            "indeca_estimate_kernel: traces_flat and spikes_flat length must equal sum(trace_lengths)",
-        ));
-    }
     let warm = if warm_kernel.is_empty() {
         None
     } else {
         Some(warm_kernel)
     };
+    validate::validate_kernel_estimate_inputs(
+        traces_flat,
+        spikes_flat,
+        &lengths,
+        alphas,
+        baselines,
+        kernel_length,
+        tol,
+        warm,
+        smooth_lambda,
+    )
+    .map_err(|e| js_err(F, e))?;
     Ok(kernel_est::estimate_free_kernel(
         traces_flat,
         spikes_flat,
@@ -126,7 +147,10 @@ pub fn indeca_estimate_kernel(
 /// Pass `use_warm=false` (and any values for warm_* fields) for cold-start only.
 ///
 /// Returns a JsValue containing the serialized BiexpResult:
-/// { tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast }
+/// { tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast, fit_mode }
+///
+/// Throws a JS error if `h_free` contains a non-finite value, `fs <= 0`, or
+/// (with `use_warm`) a warm field is non-finite (`warm_residual` may be +inf).
 #[wasm_bindgen]
 pub fn indeca_fit_biexponential(
     h_free: &[f32],
@@ -141,30 +165,34 @@ pub fn indeca_fit_biexponential(
     warm_beta_fast: f64,
     warm_residual: f64,
     use_warm: bool,
-) -> JsValue {
-    let warm_start = if use_warm {
-        Some(biexp_fit::BiexpResult {
-            tau_rise: warm_tau_rise,
-            tau_decay: warm_tau_decay,
-            beta: warm_beta,
-            residual: warm_residual,
-            tau_rise_fast: warm_tau_rise_fast,
-            tau_decay_fast: warm_tau_decay_fast,
-            beta_fast: warm_beta_fast,
-            // Placeholder; fit_biexponential reclassifies the returned result.
-            fit_mode: biexp_fit::FitMode::default(),
-        })
-    } else {
-        None
-    };
+) -> Result<JsValue, JsError> {
+    const F: &str = "indeca_fit_biexponential";
+    let warm_start = validate::biexp_fit_inputs(
+        h_free,
+        fs,
+        use_warm,
+        warm_tau_rise,
+        warm_tau_decay,
+        warm_tau_rise_fast,
+        warm_tau_decay_fast,
+        warm_beta,
+        warm_beta_fast,
+        warm_residual,
+    )
+    .map_err(|e| js_err(F, e))?;
     let result = biexp_fit::fit_biexponential(h_free, fs, refine, skip, warm_start.as_ref());
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    to_js(F, &result)
 }
 
 /// Compute the upsample factor for a given sampling rate and target rate.
+///
+/// Throws if either rate is non-finite or <= 0 (a zero `fs` used to produce a
+/// saturated, effectively infinite factor).
 #[wasm_bindgen]
-pub fn indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
-    upsample::compute_upsample_factor(fs, target_fs)
+pub fn indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> Result<usize, JsError> {
+    validate::validate_upsample_rates(fs, target_fs)
+        .map_err(|e| js_err("indeca_compute_upsample_factor", e))?;
+    Ok(upsample::compute_upsample_factor(fs, target_fs))
 }
 
 /// Run peak-seeded spike detection on a single trace.
@@ -172,14 +200,12 @@ pub fn indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
 /// Returns a JsValue containing the serialized SeedTraceResult:
 /// { s_counts, alpha, baseline }
 ///
-/// Throws a JS error if `trace` contains a non-finite value.
+/// Throws a JS error if `trace` contains a non-finite value or `fs <= 0`.
 #[wasm_bindgen]
 pub fn seed_trace(trace: &[f32], fs: f64) -> Result<JsValue, JsError> {
-    if let Some(i) = crate::first_nonfinite(trace) {
-        return Err(JsError::new(&format!(
-            "seed_trace: trace contains a non-finite value (NaN or infinity) at index {i}"
-        )));
-    }
+    const F: &str = "seed_trace";
+    validate::validate_finite_f32("trace", trace).map_err(|e| js_err(F, e))?;
+    validate::validate_fs(fs).map_err(|e| js_err(F, e))?;
     let result = peak_seed::seed_trace(trace, fs);
-    Ok(serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL))
+    to_js(F, &result)
 }

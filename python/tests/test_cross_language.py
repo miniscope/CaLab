@@ -19,6 +19,7 @@ import pytest
 
 from calab import build_kernel, run_deconvolution, run_deconvolution_full, bandpass_filter
 from calab._io import deconvolve_from_export
+from calab._solver import PySolver
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -126,7 +127,16 @@ def test_baseline_matches_rust(name: str):
     else:
         trace = np.array(data["trace"], dtype=np.float64)
 
-    rust_baseline = data["baseline"]
+    # The fixture records the Solver-level baseline, which is relative to the
+    # rolling-baseline-subtracted trace. run_deconvolution_full reports it in
+    # the input frame (adds the mean of the subtracted baseline back), so
+    # convert the fixture value into that frame before comparing.
+    probe = PySolver()
+    probe.set_params(params["tau_rise"], params["tau_decay"], params["lambda"], params["fs"])
+    probe.set_trace(np.ascontiguousarray(trace, dtype=np.float32))
+    probe.subtract_baseline()
+    removed_mean = float(np.mean(trace.astype(np.float32) - probe.get_trace()))
+    rust_baseline = data["baseline"] + removed_mean
 
     result = run_deconvolution_full(
         trace,

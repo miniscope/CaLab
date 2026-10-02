@@ -352,11 +352,11 @@ mod tests {
 
         // Solve with FFT mode
         let mut solver_fft = Solver::new();
-        solver_fft.set_params(0.02, 0.4, 0.01, 30.0);
+        solver_fft.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solver_fft.set_conv_mode(ConvMode::Fft);
-        solver_fft.set_trace(&trace);
+        solver_fft.set_trace(&trace).unwrap();
         for _ in 0..200 {
-            if solver_fft.step_batch(10) {
+            if solver_fft.step_batch(10).unwrap() {
                 break;
             }
         }
@@ -364,11 +364,11 @@ mod tests {
 
         // Solve with Banded mode
         let mut solver_banded = Solver::new();
-        solver_banded.set_params(0.02, 0.4, 0.01, 30.0);
+        solver_banded.set_params(0.02, 0.4, 0.01, 30.0).unwrap();
         solver_banded.set_conv_mode(ConvMode::BandedAR2);
-        solver_banded.set_trace(&trace);
+        solver_banded.set_trace(&trace).unwrap();
         for _ in 0..200 {
-            if solver_banded.step_batch(10) {
+            if solver_banded.step_batch(10).unwrap() {
                 break;
             }
         }
