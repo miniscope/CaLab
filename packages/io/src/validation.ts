@@ -106,7 +106,9 @@ export function validateTraceData(
       type: 'nan_values',
       message: `${nanCount} NaN values detected (${pct}%)`,
       details:
-        'NaN values may indicate preprocessing errors. CaTune will skip NaN values during deconvolution.',
+        'NaN values usually indicate preprocessing errors. The deconvolution solver does not ' +
+        'support NaN or Inf samples: any cell whose trace contains them will fail to solve. ' +
+        'Interpolate over or remove these samples before importing.',
       count: nanCount,
     });
   }

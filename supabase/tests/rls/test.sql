@@ -1,8 +1,11 @@
 -- RLS policy test matrix.
 --
--- Boots every migration (001–009) against a Postgres instance seeded by
--- preamble.sql, then asserts the owner/non-owner/anon/admin matrix for:
+-- Boots every migration in supabase/migrations/ against a Postgres instance
+-- seeded by preamble.sql, then asserts the owner/non-owner/anon/admin matrix
+-- for:
 --   - catune_submissions, cadecon_submissions  (INSERT, DELETE)
+--   - catune_submissions_public,
+--     cadecon_submissions_public               (SELECT only; writes denied)
 --   - analytics_sessions, analytics_events     (INSERT, UPDATE, SELECT)
 --   - field_options                            (INSERT as anon — denied)
 --
@@ -60,25 +63,33 @@ INSERT INTO analytics_sessions (id, anonymous_id, user_id, is_anonymous, app_nam
 
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
-CREATE OR REPLACE FUNCTION assert_denied(sql TEXT, label TEXT)
+-- assert_denied runs `sql` and requires it to fail with exactly
+-- `expected_state`. Any other outcome fails the suite:
+--   * success                      -> "EXPECTED DENY BUT PASSED"
+--   * a different SQLSTATE         -> "WRONG SQLSTATE" (so a typo'd column or
+--                                     table name can no longer masquerade as
+--                                     a successful denial)
+-- Common states:
+--   42501 insufficient_privilege  (missing GRANT *and* RLS WITH CHECK failure)
+--   23514 check_violation         (CHECK constraint)
+--   42703 undefined_column        (column intentionally absent from a view)
+CREATE OR REPLACE FUNCTION assert_denied(
+  sql TEXT,
+  label TEXT,
+  expected_state TEXT DEFAULT '42501'
+)
 RETURNS VOID LANGUAGE plpgsql AS $$
-DECLARE
-  succeeded BOOLEAN := false;
 BEGIN
   BEGIN
     EXECUTE sql;
-    succeeded := true;
-  EXCEPTION WHEN insufficient_privilege OR check_violation THEN
-    -- Expected denial
-    RETURN;
-  WHEN OTHERS THEN
-    -- Anything else is also a form of denial that happens to surface as a
-    -- different SQLSTATE; record it so we still count the test as a pass.
-    RETURN;
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLSTATE = expected_state THEN
+      RETURN;
+    END IF;
+    RAISE EXCEPTION 'WRONG SQLSTATE (%): expected %, got % (%)',
+      label, expected_state, SQLSTATE, SQLERRM;
   END;
-  IF succeeded THEN
-    RAISE EXCEPTION 'EXPECTED DENY BUT PASSED: %', label;
-  END IF;
+  RAISE EXCEPTION 'EXPECTED DENY BUT PASSED: %', label;
 END
 $$;
 
@@ -140,6 +151,77 @@ SELECT assert_denied(
   )
   $sql$,
   'catune INSERT forging foreign user_id'
+);
+ROLLBACK;
+
+-- ── submissions: anonymous-auth users cannot submit (012) ─────────────────
+
+-- signInAnonymously() users carry the `authenticated` role plus an
+-- `is_anonymous: true` claim. They must not be able to post submissions even
+-- for their own user_id.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","is_anonymous":true}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '44444444-4444-4444-4444-444444444444', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-anon', 'test'
+  )
+  $sql$,
+  'catune INSERT by anonymous-auth user denied'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, num_iterations, converged,
+    indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '44444444-4444-4444-4444-444444444444', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-anon', 'test'
+  )
+  $sql$,
+  'cadecon INSERT by anonymous-auth user denied'
+);
+ROLLBACK;
+
+-- A real user whose JWT carries is_anonymous=false explicitly (what Supabase
+-- issues after magic-link sign-in) can still submit to both tables.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","is_anonymous":false}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-alice-real', 'test'
+  )
+  $sql$,
+  'catune INSERT by real user (is_anonymous=false)'
+);
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, num_iterations, converged,
+    indicator, species, brain_region, dataset_hash, app_version
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-alice-real', 'test'
+  )
+  $sql$,
+  'cadecon INSERT by real user (is_anonymous=false)'
 );
 ROLLBACK;
 
@@ -259,20 +341,112 @@ SELECT assert_row_count(
 ROLLBACK;
 
 -- The public view must NOT expose the PII columns. Selecting them errors with
--- undefined_column (42703), which assert_denied accepts.
+-- undefined_column (42703).
 BEGIN;
 SET LOCAL ROLE anon;
 SELECT assert_denied(
   $sql$SELECT orcid FROM catune_submissions_public LIMIT 1$sql$,
-  'catune public view omits orcid'
+  'catune public view omits orcid',
+  '42703'
 );
 SELECT assert_denied(
   $sql$SELECT lab_name FROM catune_submissions_public LIMIT 1$sql$,
-  'catune public view omits lab_name'
+  'catune public view omits lab_name',
+  '42703'
 );
 SELECT assert_denied(
   $sql$SELECT notes FROM cadecon_submissions_public LIMIT 1$sql$,
-  'cadecon public view omits notes'
+  'cadecon public view omits notes',
+  '42703'
+);
+ROLLBACK;
+
+-- ── public views are read-only (migration 011) ────────────────────────────
+
+-- The *_public views run as their owner (security_invoker = false), so RLS on
+-- the base tables does NOT apply to writes routed through them, and as
+-- single-table projections Postgres treats them as auto-updatable. The only
+-- thing preventing an anon-key holder from inserting forged rows or
+-- rewriting/deleting every submission through a view is the privilege layer:
+-- 011 revokes everything except SELECT. Every write must fail with 42501, for
+-- both anon and an authenticated non-owner.
+BEGIN;
+DO $$
+DECLARE
+  who TEXT;
+BEGIN
+  FOREACH who IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    PERFORM set_config(
+      'request.jwt.claims',
+      CASE who
+        WHEN 'anon' THEN ''
+        ELSE '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}'
+      END,
+      true
+    );
+    EXECUTE format('SET LOCAL ROLE %I', who);
+
+    PERFORM assert_denied(
+      $sql$
+      INSERT INTO catune_submissions_public (
+        user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+        ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+      ) VALUES (
+        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+        0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-via-view', 'test'
+      )
+      $sql$,
+      who || ': catune_submissions_public INSERT denied'
+    );
+    PERFORM assert_denied(
+      $sql$UPDATE catune_submissions_public SET species = 'pwned' WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': catune_submissions_public UPDATE denied'
+    );
+    PERFORM assert_denied(
+      $sql$DELETE FROM catune_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': catune_submissions_public DELETE denied'
+    );
+
+    PERFORM assert_denied(
+      $sql$
+      INSERT INTO cadecon_submissions_public (
+        user_id, tau_rise, tau_decay, t_peak, fwhm, upsample_factor, sampling_rate,
+        num_subsets, target_coverage, max_iterations, convergence_tol,
+        num_iterations, converged, indicator, species, brain_region,
+        dataset_hash, app_version
+      ) VALUES (
+        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 10, 30,
+        4, 0.25, 20, 0.01, 10, true, 'GCaMP6f', 'mouse', 'V1',
+        'hash-via-view', 'test'
+      )
+      $sql$,
+      who || ': cadecon_submissions_public INSERT denied'
+    );
+    PERFORM assert_denied(
+      $sql$UPDATE cadecon_submissions_public SET species = 'pwned' WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': cadecon_submissions_public UPDATE denied'
+    );
+    PERFORM assert_denied(
+      $sql$DELETE FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': cadecon_submissions_public DELETE denied'
+    );
+
+    RESET ROLE;
+  END LOOP;
+END
+$$;
+
+-- Belt-and-braces: the privilege catalogue must show SELECT as the only grant
+-- anon/authenticated/PUBLIC hold on the views.
+SELECT assert_row_count(
+  $sql$
+  SELECT COUNT(*)::int FROM information_schema.role_table_grants
+  WHERE table_name IN ('catune_submissions_public', 'cadecon_submissions_public')
+    AND grantee IN ('anon', 'authenticated', 'PUBLIC')
+    AND privilege_type <> 'SELECT'
+  $sql$,
+  0,
+  'public views grant nothing but SELECT to anon/authenticated/PUBLIC'
 );
 ROLLBACK;
 
@@ -289,17 +463,84 @@ SELECT assert_denied(
 );
 ROLLBACK;
 
--- ── analytics_sessions: owner INSERT allowed ──────────────────────────────
+-- ── analytics_sessions: direct INSERT denied even for own user_id (013) ───
 
+-- Sessions are created only by the geo-session edge function (service_role),
+-- so clients cannot choose country_code / region / is_anonymous / created_at.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, country_code)
+  VALUES ('anon-alice-2', '11111111-1111-1111-1111-111111111111', false, 'catune', 'XX')
+  $sql$,
+  'analytics_sessions direct own INSERT denied'
+);
+ROLLBACK;
+
+-- Same for an anonymous-auth visitor (the common case in production).
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","is_anonymous":true}';
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
+  VALUES ('anon-visitor', '44444444-4444-4444-4444-444444444444', true, 'catune')
+  $sql$,
+  'analytics_sessions direct INSERT by anonymous-auth user denied'
+);
+ROLLBACK;
+
+-- service_role (edge function) can still create sessions.
+BEGIN;
+SET LOCAL ROLE service_role;
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, country_code)
+  VALUES ('edge-fn', '44444444-4444-4444-4444-444444444444', true, 'catune', 'US')
+  $sql$,
+  'analytics_sessions service_role INSERT allowed'
+);
+ROLLBACK;
+
+-- ── analytics_sessions: column-scoped UPDATE of own row (013) ─────────────
+
+-- ended_at / duration_seconds are the only client-writable columns.
 BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
 SELECT assert_allowed(
   $sql$
-  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
-  VALUES ('anon-alice-2', '11111111-1111-1111-1111-111111111111', false, 'catune')
+  UPDATE analytics_sessions SET ended_at = now(), duration_seconds = 60
+  WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   $sql$,
-  'analytics_sessions own INSERT'
+  'analytics_sessions own UPDATE of ended_at/duration_seconds'
+);
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM analytics_sessions
+      WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        AND ended_at IS NOT NULL AND duration_seconds = 60$sql$,
+  1,
+  'analytics_sessions own UPDATE lands'
+);
+ROLLBACK;
+
+-- Every other column is denied at the privilege layer, even on own rows.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET country_code = 'XX' WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of country_code denied'
+);
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET is_anonymous = true WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of is_anonymous denied'
+);
+SELECT assert_denied(
+  $sql$UPDATE analytics_sessions SET user_id = '22222222-2222-2222-2222-222222222222' WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+  'analytics_sessions own UPDATE of user_id denied'
 );
 ROLLBACK;
 
@@ -425,7 +666,8 @@ SELECT assert_denied(
     $fmt$,
     repeat('x', 5000)
   ),
-  'analytics_events event_data > 4KB denied'
+  'analytics_events event_data > 4KB denied',
+  '23514'
 );
 ROLLBACK;
 
@@ -434,12 +676,15 @@ ROLLBACK;
 BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+-- Sessions are only created by the edge function (013), so exercise the CHECK
+-- through the one column-scoped UPDATE path clients still have.
 SELECT assert_denied(
   $sql$
-  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, duration_seconds)
-  VALUES ('duration-test', '11111111-1111-1111-1111-111111111111', false, 'catune', 100000)
+  UPDATE analytics_sessions SET duration_seconds = 100000
+  WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   $sql$,
-  'analytics_sessions duration > 86400 denied'
+  'analytics_sessions duration > 86400 denied',
+  '23514'
 );
 ROLLBACK;
 
@@ -458,8 +703,156 @@ SELECT assert_denied(
     0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-tau-oob', 'test'
   )
   $sql$,
-  'catune tau_rise > 0.5 denied'
+  'catune tau_rise > 0.5 denied',
+  '23514'
 );
+ROLLBACK;
+
+-- ── analytics_events: per-session cap (013) ───────────────────────────────
+
+-- Seed 500 events (the cap) as the privileged test owner, then the owner's
+-- next insert must be rejected with program_limit_exceeded (54000).
+BEGIN;
+INSERT INTO analytics_events (session_id, event_name, event_data)
+SELECT 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}'
+FROM generate_series(1, 499);
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}')
+  $sql$,
+  'analytics_events 500th event in a session allowed'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file_imported', '{}')
+  $sql$,
+  'analytics_events 501st event in a session denied',
+  '54000'
+);
+-- Other sessions are unaffected by alice's cap.
+SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_events (session_id, event_name, event_data)
+  VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'file_imported', '{}')
+  $sql$,
+  'analytics_events cap is per session'
+);
+ROLLBACK;
+
+-- ── submission payload validation (014) ───────────────────────────────────
+
+-- A realistic, fully populated row must still pass every new constraint.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version,
+    lab_name, orcid, virus_construct, time_since_injection_days, notes,
+    num_cells, recording_length_s, fps, microscope_type, imaging_depth_um,
+    cell_type, extra_metadata
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'thalamus — ventral posteromedial (VPM)',
+    repeat('a', 64), '2.7.2',
+    'Some Lab', '0000-0002-1825-009X', 'AAV1.Syn.GCaMP6f.WPRE.SV40', 21, 'ok',
+    120, 600, 30, 'miniscope', 150, 'pyramidal', '{"demo_preset":"gcamp6f"}'
+  )
+  $sql$,
+  'catune fully populated valid row'
+);
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, beta, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, median_alpha, median_pve, mean_event_rate,
+    num_iterations, converged, indicator, species, brain_region,
+    dataset_hash, app_version, orcid
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 1.2, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.005, 3.5, -0.2, 0.8, 12, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-valid', 'test',
+    'https://orcid.org/0000-0002-1825-0097'
+  )
+  $sql$,
+  'cadecon fully populated valid row (URL-form ORCID, negative PVE)'
+);
+ROLLBACK;
+
+-- Each rejection below is a CHECK violation (23514). The template row is the
+-- known-good fixture with exactly one field corrupted.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+CREATE FUNCTION pg_temp.catune_insert(col TEXT, val TEXT) RETURNS TEXT
+LANGUAGE sql AS $fn$
+  SELECT format(
+    $q$INSERT INTO catune_submissions (
+      user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+      ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version, %I
+    ) VALUES (
+      '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+      0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-bad', 'test', %s
+    )$q$, col, val)
+$fn$;
+SELECT assert_denied(pg_temp.catune_insert('notes', quote_literal(repeat('x', 2001))),
+  'catune notes > 2000 chars denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('microscope_type', quote_literal(repeat('x', 129))),
+  'catune microscope_type > 128 chars denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('fps', $v$'NaN'$v$),
+  'catune fps NaN denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('recording_length_s', $v$'Infinity'$v$),
+  'catune recording_length_s Infinity denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('imaging_depth_um', $v$'-Infinity'$v$),
+  'catune imaging_depth_um -Infinity denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('num_cells', '-1'),
+  'catune negative num_cells denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('time_since_injection_days', '-5'),
+  'catune negative time_since_injection_days denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('orcid', quote_literal('not-an-orcid')),
+  'catune malformed orcid denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('orcid', quote_literal('0000-0002-1825-009')),
+  'catune truncated orcid denied', '23514');
+SELECT assert_denied(
+  pg_temp.catune_insert('extra_metadata',
+    format('jsonb_build_object(%L, %L)', 'blob', repeat('x', 5000))),
+  'catune extra_metadata > 4KB denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('extra_metadata', $v$'[1,2,3]'$v$),
+  'catune extra_metadata non-object denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('quality_score', $v$'NaN'$v$),
+  'catune quality_score NaN denied', '23514');
+ROLLBACK;
+
+-- lambda / sampling_rate now match the client's HARD_LIMITS. Both are part of
+-- the template row, so corrupt them with UPDATE on alice's own fixture row
+-- (owner has no UPDATE policy, so do it as the privileged test owner).
+BEGIN;
+SELECT assert_denied(
+  $sql$UPDATE catune_submissions SET lambda = 0 WHERE dataset_hash = 'hash-alice'$sql$,
+  'catune lambda below 1e-6 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE catune_submissions SET sampling_rate = 0.5 WHERE dataset_hash = 'hash-alice'$sql$,
+  'catune sampling_rate below 1 Hz denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET median_alpha = 'NaN' WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon median_alpha NaN denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET median_pve = 1.5 WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon median_pve > 1 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET num_subsets = 0 WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon num_subsets 0 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET lab_name = repeat('x', 257) WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon lab_name > 256 chars denied', '23514');
 ROLLBACK;
 
 DO $$ BEGIN RAISE NOTICE 'ALL RLS ASSERTIONS PASSED'; END $$;

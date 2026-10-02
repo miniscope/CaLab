@@ -1,7 +1,10 @@
 /**
  * Authentication gate for community features.
- * Shows email sign-in form when unauthenticated,
- * user info with sign-out when authenticated.
+ * Shows email sign-in form when unauthenticated (or signed in only
+ * anonymously), user info with sign-out when signed in with a real account.
+ *
+ * Anonymous-auth users (`signInAnonymously`, used for analytics) cannot
+ * submit — the database rejects their inserts — so they get the sign-in form.
  *
  * Prop-driven: does not import any app-level store directly.
  */
@@ -11,7 +14,7 @@ import type { Accessor } from 'solid-js';
 import './styles/community.css';
 
 export interface AuthGateProps {
-  user: Accessor<{ email?: string } | null>;
+  user: Accessor<{ email?: string; is_anonymous?: boolean } | null>;
   authLoading: Accessor<boolean>;
   signInWithEmail: (email: string) => Promise<{ error?: string | null }>;
   signOut: () => Promise<void> | void;
@@ -22,6 +25,10 @@ export function AuthGate(props: AuthGateProps) {
   const [sending, setSending] = createSignal(false);
   const [sent, setSent] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const signedInUser = () => {
+    const u = props.user();
+    return u && !u.is_anonymous ? u : null;
+  };
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -45,7 +52,7 @@ export function AuthGate(props: AuthGateProps) {
         fallback={<span class="auth-gate__loading">Loading...</span>}
       >
         <Show
-          when={props.user()}
+          when={signedInUser()}
           fallback={
             <div class="auth-gate__login">
               <Show
@@ -78,7 +85,7 @@ export function AuthGate(props: AuthGateProps) {
           }
         >
           <div class="auth-gate__user-row">
-            <span class="auth-gate__email">{props.user()?.email ?? 'Authenticated'}</span>
+            <span class="auth-gate__email">{signedInUser()?.email ?? 'Signed in'}</span>
             <button class="auth-gate__btn auth-gate__btn--signout" onClick={() => props.signOut()}>
               Sign Out
             </button>

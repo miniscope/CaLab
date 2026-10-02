@@ -1,4 +1,4 @@
--- Minimal Supabase auth scaffolding so migrations 001-009 apply cleanly
+-- Minimal Supabase auth scaffolding so every migration applies cleanly
 -- against a vanilla Postgres instance. Mirrors just enough of Supabase's
 -- `auth` schema and role system for RLS policies to compile and execute
 -- correctly.
@@ -47,10 +47,23 @@ $$;
 GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
 GRANT SELECT ON auth.users TO anon, authenticated, service_role;
 
--- Mirror Supabase's default public-schema grants so RLS gets a chance to
--- run. Without these, the base-level permission check would deny every
--- write before RLS policies evaluate.
+-- Mirror Supabase's default public-schema grants EXACTLY. A stock Supabase
+-- project runs (as `postgres` / `supabase_admin`):
+--
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON TABLES    TO anon, authenticated, service_role;
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+--
+-- so every new table AND VIEW in `public` is fully writable by `anon` at the
+-- privilege layer, and RLS is the only thing standing in the way. An earlier
+-- version of this preamble granted anon SELECT only, which hid the fact that
+-- the security-definer `*_public` views (migration 010) were writable by
+-- anyone holding the anon key (fixed in 011). Keep this faithful: a harness
+-- that is stricter than production gives false confidence.
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
