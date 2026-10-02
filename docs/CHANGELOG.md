@@ -158,6 +158,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Security
 
+- Resolved all 22 `npm audit` findings (2 critical, 12 high) with in-range
+  updates, including vite 7.3.6 (dev-server path traversal) and seroval (Solid
+  transitive). Bumped solid-js 1.9.15, valibot 1.5, @supabase/supabase-js 2.117,
+  driver.js 1.8, vitest 4.1, eslint 9.39.5, typescript-eslint 8.71; root
+  `package.json` now declares `engines.node >= 22`
+
 - **Supabase** the community `catune_submissions_public` and
   `cadecon_submissions_public` views (migration 010) run with their owner's
   privileges and are auto-updatable, and Supabase's default privileges grant
