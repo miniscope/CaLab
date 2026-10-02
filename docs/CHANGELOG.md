@@ -5,6 +5,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Security
+
+- **Supabase** the community `catune_submissions_public` and
+  `cadecon_submissions_public` views (migration 010) run with their owner's
+  privileges and are auto-updatable, and Supabase's default privileges grant
+  `anon`/`authenticated` ALL on new views, so anyone holding the public anon key
+  could insert forged submissions or rewrite/delete every submission through
+  them, bypassing RLS. Migration 011 revokes everything but `SELECT` on both
+  views. The RLS test harness now mirrors Supabase's real default grants, and
+  `assert_denied` requires a specific SQLSTATE instead of accepting any error
+
 ### Fixed
 
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**

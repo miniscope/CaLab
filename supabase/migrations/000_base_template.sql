@@ -58,11 +58,35 @@
 -- -- Enable RLS
 -- ALTER TABLE <app>_submissions ENABLE ROW LEVEL SECURITY;
 --
--- -- Anyone can read (community browsing)
--- CREATE POLICY "Public read access"
+-- -- Base-table reads are owner-or-admin only (free-text PII such as orcid,
+-- -- lab_name and notes must not leak; see 010).
+-- CREATE POLICY "Owner and admin read access"
 -- ON <app>_submissions FOR SELECT
 -- TO anon, authenticated
--- USING (true);
+-- USING ((select auth.uid()) = user_id OR public.is_admin());
+--
+-- -- Community browsing reads a PII-free projection. It runs as the view
+-- -- owner (security_invoker = false) so every contributor's row is visible,
+-- -- which also means base-table RLS does NOT apply to writes through it and
+-- -- Postgres treats it as auto-updatable. Supabase's default privileges
+-- -- grant ALL on new views to anon/authenticated, so the REVOKE below is
+-- -- REQUIRED — without it anyone with the anon key can INSERT/UPDATE/DELETE
+-- -- through the view (see 011).
+-- CREATE VIEW <app>_submissions_public
+-- WITH (security_invoker = false) AS
+-- SELECT
+--   id, created_at, user_id,
+--   -- <app-specific columns>,
+--   indicator, species, brain_region,
+--   virus_construct, time_since_injection_days,
+--   num_cells, recording_length_s, fps,
+--   dataset_hash, app_version, data_source,
+--   microscope_type, imaging_depth_um, cell_type,
+--   extra_metadata
+-- FROM <app>_submissions;
+--
+-- REVOKE ALL ON <app>_submissions_public FROM anon, authenticated, PUBLIC;
+-- GRANT SELECT ON <app>_submissions_public TO anon, authenticated;
 --
 -- -- Only authenticated users can insert
 -- CREATE POLICY "Authenticated users can submit"

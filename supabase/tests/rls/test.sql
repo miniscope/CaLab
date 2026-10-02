@@ -1,8 +1,11 @@
 -- RLS policy test matrix.
 --
--- Boots every migration (001–009) against a Postgres instance seeded by
--- preamble.sql, then asserts the owner/non-owner/anon/admin matrix for:
+-- Boots every migration in supabase/migrations/ against a Postgres instance
+-- seeded by preamble.sql, then asserts the owner/non-owner/anon/admin matrix
+-- for:
 --   - catune_submissions, cadecon_submissions  (INSERT, DELETE)
+--   - catune_submissions_public,
+--     cadecon_submissions_public               (SELECT only; writes denied)
 --   - analytics_sessions, analytics_events     (INSERT, UPDATE, SELECT)
 --   - field_options                            (INSERT as anon — denied)
 --
@@ -60,25 +63,33 @@ INSERT INTO analytics_sessions (id, anonymous_id, user_id, is_anonymous, app_nam
 
 -- ── Helpers ────────────────────────────────────────────────────────────────
 
-CREATE OR REPLACE FUNCTION assert_denied(sql TEXT, label TEXT)
+-- assert_denied runs `sql` and requires it to fail with exactly
+-- `expected_state`. Any other outcome fails the suite:
+--   * success                      -> "EXPECTED DENY BUT PASSED"
+--   * a different SQLSTATE         -> "WRONG SQLSTATE" (so a typo'd column or
+--                                     table name can no longer masquerade as
+--                                     a successful denial)
+-- Common states:
+--   42501 insufficient_privilege  (missing GRANT *and* RLS WITH CHECK failure)
+--   23514 check_violation         (CHECK constraint)
+--   42703 undefined_column        (column intentionally absent from a view)
+CREATE OR REPLACE FUNCTION assert_denied(
+  sql TEXT,
+  label TEXT,
+  expected_state TEXT DEFAULT '42501'
+)
 RETURNS VOID LANGUAGE plpgsql AS $$
-DECLARE
-  succeeded BOOLEAN := false;
 BEGIN
   BEGIN
     EXECUTE sql;
-    succeeded := true;
-  EXCEPTION WHEN insufficient_privilege OR check_violation THEN
-    -- Expected denial
-    RETURN;
-  WHEN OTHERS THEN
-    -- Anything else is also a form of denial that happens to surface as a
-    -- different SQLSTATE; record it so we still count the test as a pass.
-    RETURN;
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLSTATE = expected_state THEN
+      RETURN;
+    END IF;
+    RAISE EXCEPTION 'WRONG SQLSTATE (%): expected %, got % (%)',
+      label, expected_state, SQLSTATE, SQLERRM;
   END;
-  IF succeeded THEN
-    RAISE EXCEPTION 'EXPECTED DENY BUT PASSED: %', label;
-  END IF;
+  RAISE EXCEPTION 'EXPECTED DENY BUT PASSED: %', label;
 END
 $$;
 
@@ -259,20 +270,112 @@ SELECT assert_row_count(
 ROLLBACK;
 
 -- The public view must NOT expose the PII columns. Selecting them errors with
--- undefined_column (42703), which assert_denied accepts.
+-- undefined_column (42703).
 BEGIN;
 SET LOCAL ROLE anon;
 SELECT assert_denied(
   $sql$SELECT orcid FROM catune_submissions_public LIMIT 1$sql$,
-  'catune public view omits orcid'
+  'catune public view omits orcid',
+  '42703'
 );
 SELECT assert_denied(
   $sql$SELECT lab_name FROM catune_submissions_public LIMIT 1$sql$,
-  'catune public view omits lab_name'
+  'catune public view omits lab_name',
+  '42703'
 );
 SELECT assert_denied(
   $sql$SELECT notes FROM cadecon_submissions_public LIMIT 1$sql$,
-  'cadecon public view omits notes'
+  'cadecon public view omits notes',
+  '42703'
+);
+ROLLBACK;
+
+-- ── public views are read-only (migration 011) ────────────────────────────
+
+-- The *_public views run as their owner (security_invoker = false), so RLS on
+-- the base tables does NOT apply to writes routed through them, and as
+-- single-table projections Postgres treats them as auto-updatable. The only
+-- thing preventing an anon-key holder from inserting forged rows or
+-- rewriting/deleting every submission through a view is the privilege layer:
+-- 011 revokes everything except SELECT. Every write must fail with 42501, for
+-- both anon and an authenticated non-owner.
+BEGIN;
+DO $$
+DECLARE
+  who TEXT;
+BEGIN
+  FOREACH who IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    PERFORM set_config(
+      'request.jwt.claims',
+      CASE who
+        WHEN 'anon' THEN ''
+        ELSE '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}'
+      END,
+      true
+    );
+    EXECUTE format('SET LOCAL ROLE %I', who);
+
+    PERFORM assert_denied(
+      $sql$
+      INSERT INTO catune_submissions_public (
+        user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+        ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version
+      ) VALUES (
+        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+        0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-via-view', 'test'
+      )
+      $sql$,
+      who || ': catune_submissions_public INSERT denied'
+    );
+    PERFORM assert_denied(
+      $sql$UPDATE catune_submissions_public SET species = 'pwned' WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': catune_submissions_public UPDATE denied'
+    );
+    PERFORM assert_denied(
+      $sql$DELETE FROM catune_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': catune_submissions_public DELETE denied'
+    );
+
+    PERFORM assert_denied(
+      $sql$
+      INSERT INTO cadecon_submissions_public (
+        user_id, tau_rise, tau_decay, t_peak, fwhm, upsample_factor, sampling_rate,
+        num_subsets, target_coverage, max_iterations, convergence_tol,
+        num_iterations, converged, indicator, species, brain_region,
+        dataset_hash, app_version
+      ) VALUES (
+        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 10, 30,
+        4, 0.25, 20, 0.01, 10, true, 'GCaMP6f', 'mouse', 'V1',
+        'hash-via-view', 'test'
+      )
+      $sql$,
+      who || ': cadecon_submissions_public INSERT denied'
+    );
+    PERFORM assert_denied(
+      $sql$UPDATE cadecon_submissions_public SET species = 'pwned' WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': cadecon_submissions_public UPDATE denied'
+    );
+    PERFORM assert_denied(
+      $sql$DELETE FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice'$sql$,
+      who || ': cadecon_submissions_public DELETE denied'
+    );
+
+    RESET ROLE;
+  END LOOP;
+END
+$$;
+
+-- Belt-and-braces: the privilege catalogue must show SELECT as the only grant
+-- anon/authenticated/PUBLIC hold on the views.
+SELECT assert_row_count(
+  $sql$
+  SELECT COUNT(*)::int FROM information_schema.role_table_grants
+  WHERE table_name IN ('catune_submissions_public', 'cadecon_submissions_public')
+    AND grantee IN ('anon', 'authenticated', 'PUBLIC')
+    AND privilege_type <> 'SELECT'
+  $sql$,
+  0,
+  'public views grant nothing but SELECT to anon/authenticated/PUBLIC'
 );
 ROLLBACK;
 
@@ -425,7 +528,8 @@ SELECT assert_denied(
     $fmt$,
     repeat('x', 5000)
   ),
-  'analytics_events event_data > 4KB denied'
+  'analytics_events event_data > 4KB denied',
+  '23514'
 );
 ROLLBACK;
 
@@ -439,7 +543,8 @@ SELECT assert_denied(
   INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name, duration_seconds)
   VALUES ('duration-test', '11111111-1111-1111-1111-111111111111', false, 'catune', 100000)
   $sql$,
-  'analytics_sessions duration > 86400 denied'
+  'analytics_sessions duration > 86400 denied',
+  '23514'
 );
 ROLLBACK;
 
@@ -458,7 +563,8 @@ SELECT assert_denied(
     0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-tau-oob', 'test'
   )
   $sql$,
-  'catune tau_rise > 0.5 denied'
+  'catune tau_rise > 0.5 denied',
+  '23514'
 );
 ROLLBACK;
 
