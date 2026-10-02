@@ -13,6 +13,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **CaTune** moving a parameter slider orphaned every cell's in-flight solver
+  job instead of cancelling it: the job ran its full quantum, its result was
+  discarded, and with more cells than workers the orphans queued ahead of the
+  fresh jobs. On initial load every cell's first quantum was also solved twice.
+  Superseded jobs are now cancelled on the first tick of a parameter change,
+  and the parameter watcher no longer fires on mount
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never
