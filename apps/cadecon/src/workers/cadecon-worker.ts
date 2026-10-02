@@ -209,21 +209,27 @@ function handleSeedTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'seed-tra
   }
 }
 
+// Each handler catches its own errors; the outer try/catch is a backstop so a
+// job always gets a terminal message instead of leaving the pool waiting.
 onmessage = (e: MessageEvent<CaDeconWorkerInbound>) => {
   const msg = e.data;
-  switch (msg.type) {
-    case 'cancel':
-      cancelled = true;
-      break;
-    case 'trace-job':
-      handleTraceJob(msg);
-      break;
-    case 'kernel-job':
-      handleKernelJob(msg);
-      break;
-    case 'seed-trace-job':
-      handleSeedTraceJob(msg);
-      break;
+  try {
+    switch (msg.type) {
+      case 'cancel':
+        cancelled = true;
+        break;
+      case 'trace-job':
+        handleTraceJob(msg);
+        break;
+      case 'kernel-job':
+        handleKernelJob(msg);
+        break;
+      case 'seed-trace-job':
+        handleSeedTraceJob(msg);
+        break;
+    }
+  } catch (err) {
+    if (msg.type !== 'cancel') post({ type: 'error', jobId: msg.jobId, message: String(err) });
   }
 };
 
@@ -234,4 +240,7 @@ initWasm()
   })
   .catch((err) => {
     console.error('CaDecon WASM initialization failed:', err);
+    // Pool-level protocol message (WorkerInitErrorMessage in @calab/compute):
+    // lets the pool fail this worker's jobs instead of queueing them forever.
+    workerScope.postMessage({ type: 'init-error', message: String(err) });
   });

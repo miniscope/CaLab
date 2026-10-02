@@ -1,5 +1,5 @@
 import { Show, type JSX } from 'solid-js';
-import { runState } from '../../lib/iteration-store.ts';
+import { runState, runError } from '../../lib/iteration-store.ts';
 import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
 import { parsedData, samplingRate } from '../../lib/data-store.ts';
 
@@ -51,52 +51,62 @@ export function RunControls(): JSX.Element {
   const hasData = () => !!parsedData() && !!samplingRate();
 
   return (
-    <div class="run-controls">
-      <Show
-        when={runState() !== 'paused'}
-        fallback={
-          <button class="btn-primary btn-small btn-icon" onClick={resumeRun}>
-            <PlayIcon />
-            Resume
-          </button>
-        }
-      >
-        <button
-          class="btn-primary btn-small btn-icon"
-          disabled={runState() !== 'idle' || !hasData()}
-          onClick={() => void startRun()}
+    <>
+      <div class="run-controls">
+        <Show
+          when={runState() !== 'paused'}
+          fallback={
+            <button class="btn-primary btn-small btn-icon" onClick={resumeRun}>
+              <PlayIcon />
+              Resume
+            </button>
+          }
         >
-          <PlayIcon />
-          Start
+          <button
+            class="btn-primary btn-small btn-icon"
+            disabled={runState() !== 'idle' || !hasData()}
+            onClick={() => void startRun()}
+          >
+            <PlayIcon />
+            Start
+          </button>
+        </Show>
+
+        <button
+          class="btn-secondary btn-small btn-icon"
+          disabled={runState() !== 'running'}
+          onClick={pauseRun}
+        >
+          <PauseIcon />
+          Pause
         </button>
+
+        <button
+          class="btn-secondary btn-small btn-icon"
+          disabled={runState() !== 'running' && runState() !== 'paused'}
+          onClick={stopRun}
+        >
+          <StopIcon />
+          Stop
+        </button>
+
+        <button
+          class="btn-secondary btn-small btn-icon"
+          disabled={runState() !== 'complete' && runState() !== 'stopping'}
+          onClick={resetRun}
+        >
+          <ResetIcon />
+          Reset
+        </button>
+      </div>
+      <Show when={runError()}>
+        {(message) => (
+          <div class="error-card" role="alert">
+            <span class="error-card__icon">!</span>
+            <span>{message()}</span>
+          </div>
+        )}
       </Show>
-
-      <button
-        class="btn-secondary btn-small btn-icon"
-        disabled={runState() !== 'running'}
-        onClick={pauseRun}
-      >
-        <PauseIcon />
-        Pause
-      </button>
-
-      <button
-        class="btn-secondary btn-small btn-icon"
-        disabled={runState() !== 'running' && runState() !== 'paused'}
-        onClick={stopRun}
-      >
-        <StopIcon />
-        Stop
-      </button>
-
-      <button
-        class="btn-secondary btn-small btn-icon"
-        disabled={runState() !== 'complete' && runState() !== 'stopping'}
-        onClick={resetRun}
-      >
-        <ResetIcon />
-        Reset
-      </button>
-    </div>
+    </>
   );
 }

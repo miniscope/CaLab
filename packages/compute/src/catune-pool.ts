@@ -4,6 +4,7 @@ import {
   type BaseJob,
   type MessageRouter,
   type WorkerPool,
+  type WorkerPoolOptions,
 } from './worker-pool.ts';
 
 export interface CaTunePoolJob extends BaseJob {
@@ -84,6 +85,12 @@ const caTuneRouter: MessageRouter<CaTunePoolJob, PoolWorkerOutbound> = {
 export function createCaTuneWorkerPool(
   createWorker: () => Worker,
   poolSize?: number,
+  options?: WorkerPoolOptions,
 ): WorkerPool<CaTunePoolJob> {
-  return createWorkerPool<CaTunePoolJob, PoolWorkerOutbound>(createWorker, caTuneRouter, poolSize);
+  return createWorkerPool<CaTunePoolJob, PoolWorkerOutbound>(
+    createWorker,
+    caTuneRouter,
+    poolSize,
+    options,
+  );
 }

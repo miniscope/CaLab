@@ -33,6 +33,7 @@ import {
   setCurrentTauRise,
   setCurrentTauDecay,
   setConvergedAtIteration,
+  setRunError,
   addConvergenceSnapshot,
   addDebugTraceSnapshot,
   updateTraceResult,
@@ -491,7 +492,13 @@ export async function startRun(): Promise<void> {
   const computeComparison = sparsityCompareEnabled();
 
   // Create pool
-  pool = createCaDeconWorkerPool();
+  setRunError(null);
+  pool = createCaDeconWorkerPool(undefined, {
+    onFatal(message) {
+      console.error('[CaDecon] solver workers failed:', message);
+      setRunError(`Solver workers failed: ${message}`);
+    },
+  });
   setRunState('running');
   setCurrentIteration(0);
 

@@ -7,6 +7,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **CaTune / CaDecon** a solver worker whose WASM failed to initialize only
+  logged to the console, so its jobs queued forever: CaTune cells showed
+  "solving" indefinitely and a CaDecon run never finished. Workers now report
+  init failures to the pool, which also handles `onerror`/`onmessageerror`. A
+  failed worker's in-flight job fails; a worker that dies after starting is
+  replaced once. If every worker dies, all pending jobs fail and the app shows
+  an error message. Disposing the pool now settles in-flight jobs as cancelled
+  instead of leaving their callers waiting
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never

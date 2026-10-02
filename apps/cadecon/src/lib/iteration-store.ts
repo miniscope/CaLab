@@ -120,6 +120,8 @@ const [perTraceResults, setPerTraceResults] = createSignal<Record<string, TraceR
 const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 const [runPhase, setRunPhase] = createSignal<RunPhase>('idle');
 const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | null>(null);
+/** User-facing reason the last run failed (worker pool died, too many job failures, or a thrown error). null while healthy. */
+const [runError, setRunError] = createSignal<string | null>(null);
 
 // --- Derived ---
 
@@ -176,6 +178,7 @@ function resetIterationState(): void {
   setDebugTraceSnapshots([]);
   setConvergedAtIteration(null);
   setIterationHistory([]);
+  setRunError(null);
 }
 
 /** Snapshot current perTraceResults into the iteration history.
@@ -225,6 +228,8 @@ export {
   setRunPhase,
   convergedAtIteration,
   setConvergedAtIteration,
+  runError,
+  setRunError,
   alphaValues,
   pveValues,
   cellResultLookup,
