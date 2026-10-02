@@ -744,4 +744,115 @@ SELECT assert_allowed(
 );
 ROLLBACK;
 
+-- ── submission payload validation (014) ───────────────────────────────────
+
+-- A realistic, fully populated row must still pass every new constraint.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO catune_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+    ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version,
+    lab_name, orcid, virus_construct, time_since_injection_days, notes,
+    num_cells, recording_length_s, fps, microscope_type, imaging_depth_um,
+    cell_type, extra_metadata
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+    0.9, -0.1, 'GCaMP6f', 'mouse', 'thalamus — ventral posteromedial (VPM)',
+    repeat('a', 64), '2.7.2',
+    'Some Lab', '0000-0002-1825-009X', 'AAV1.Syn.GCaMP6f.WPRE.SV40', 21, 'ok',
+    120, 600, 30, 'miniscope', 150, 'pyramidal', '{"demo_preset":"gcamp6f"}'
+  )
+  $sql$,
+  'catune fully populated valid row'
+);
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO cadecon_submissions (
+    user_id, tau_rise, tau_decay, t_peak, fwhm, beta, ar2_g1, ar2_g2,
+    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_iterations, convergence_tol, median_alpha, median_pve, mean_event_rate,
+    num_iterations, converged, indicator, species, brain_region,
+    dataset_hash, app_version, orcid
+  ) VALUES (
+    '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 1.2, 0.9, -0.1,
+    10, 30, 4, 0.25, 20, 0.005, 3.5, -0.2, 0.8, 12, true,
+    'GCaMP6f', 'mouse', 'V1', 'hash-valid', 'test',
+    'https://orcid.org/0000-0002-1825-0097'
+  )
+  $sql$,
+  'cadecon fully populated valid row (URL-form ORCID, negative PVE)'
+);
+ROLLBACK;
+
+-- Each rejection below is a CHECK violation (23514). The template row is the
+-- known-good fixture with exactly one field corrupted.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+CREATE FUNCTION pg_temp.catune_insert(col TEXT, val TEXT) RETURNS TEXT
+LANGUAGE sql AS $fn$
+  SELECT format(
+    $q$INSERT INTO catune_submissions (
+      user_id, tau_rise, tau_decay, t_peak, fwhm, lambda, sampling_rate,
+      ar2_g1, ar2_g2, indicator, species, brain_region, dataset_hash, app_version, %I
+    ) VALUES (
+      '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.01, 30,
+      0.9, -0.1, 'GCaMP6f', 'mouse', 'V1', 'hash-bad', 'test', %s
+    )$q$, col, val)
+$fn$;
+SELECT assert_denied(pg_temp.catune_insert('notes', quote_literal(repeat('x', 2001))),
+  'catune notes > 2000 chars denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('microscope_type', quote_literal(repeat('x', 129))),
+  'catune microscope_type > 128 chars denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('fps', $v$'NaN'$v$),
+  'catune fps NaN denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('recording_length_s', $v$'Infinity'$v$),
+  'catune recording_length_s Infinity denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('imaging_depth_um', $v$'-Infinity'$v$),
+  'catune imaging_depth_um -Infinity denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('num_cells', '-1'),
+  'catune negative num_cells denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('time_since_injection_days', '-5'),
+  'catune negative time_since_injection_days denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('orcid', quote_literal('not-an-orcid')),
+  'catune malformed orcid denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('orcid', quote_literal('0000-0002-1825-009')),
+  'catune truncated orcid denied', '23514');
+SELECT assert_denied(
+  pg_temp.catune_insert('extra_metadata',
+    format('jsonb_build_object(%L, %L)', 'blob', repeat('x', 5000))),
+  'catune extra_metadata > 4KB denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('extra_metadata', $v$'[1,2,3]'$v$),
+  'catune extra_metadata non-object denied', '23514');
+SELECT assert_denied(pg_temp.catune_insert('quality_score', $v$'NaN'$v$),
+  'catune quality_score NaN denied', '23514');
+ROLLBACK;
+
+-- lambda / sampling_rate now match the client's HARD_LIMITS. Both are part of
+-- the template row, so corrupt them with UPDATE on alice's own fixture row
+-- (owner has no UPDATE policy, so do it as the privileged test owner).
+BEGIN;
+SELECT assert_denied(
+  $sql$UPDATE catune_submissions SET lambda = 0 WHERE dataset_hash = 'hash-alice'$sql$,
+  'catune lambda below 1e-6 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE catune_submissions SET sampling_rate = 0.5 WHERE dataset_hash = 'hash-alice'$sql$,
+  'catune sampling_rate below 1 Hz denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET median_alpha = 'NaN' WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon median_alpha NaN denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET median_pve = 1.5 WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon median_pve > 1 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET num_subsets = 0 WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon num_subsets 0 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cadecon_submissions SET lab_name = repeat('x', 257) WHERE dataset_hash = 'hash-alice'$sql$,
+  'cadecon lab_name > 256 chars denied', '23514');
+ROLLBACK;
+
 DO $$ BEGIN RAISE NOTICE 'ALL RLS ASSERTIONS PASSED'; END $$;
