@@ -17,6 +17,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   lists all five fixtures and the tolerances each consumer actually uses; the
   CaTune `smoke.test.ts` is renamed to `kernel-shape-roundtrip.test.ts`, which
   is what it tests
+
 ### Changed
 
 - **README** the "no data upload" claim now states precisely what is collected:
