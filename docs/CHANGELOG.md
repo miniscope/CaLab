@@ -47,6 +47,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   The trace/kernel FISTA settings are now read once at run start like every
   other run parameter, and Stop during the seed traces no longer runs the seed
   kernel phase first
+
 - **CaTune, CaDecon** the residual trace in the zoom charts subtracted two
   independently min/max-downsampled series, so once a window held more than
   2× the chart's bucket count (>1200 samples in the CaDecon Trace Inspector;
