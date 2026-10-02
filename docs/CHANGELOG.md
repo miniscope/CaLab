@@ -16,6 +16,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   an error message. Disposing the pool now settles in-flight jobs as cancelled
   instead of leaving their callers waiting
 
+- **CaDecon** a run could get stuck or finish with made-up numbers. Any
+  exception in the run loop left the run state at "running" with no message.
+  A Reset while stopping could let the abandoned loop resume and dispatch onto
+  a disposed pool. If every solver job failed, the run quietly fell back to
+  τ_rise=0.2 s / τ_decay=1.0 s and reported "complete". The run now always ends
+  in a terminal state. A new **error** state shows the reason under the run
+  controls, and the pool is disposed on every exit. A run aborts when more than
+  half of any phase's jobs fail; smaller failure counts are shown as a warning.
+  Reset during a run (including while stopping or paused) abandons it cleanly.
+  The trace/kernel FISTA settings are now read once at run start like every
+  other run parameter, and Stop during the seed traces no longer runs the seed
+  kernel phase first
+
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
   the midpoint of its narrowed interval — a point it never evaluated and never

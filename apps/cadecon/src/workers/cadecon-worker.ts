@@ -1,5 +1,14 @@
-// CaDecon pool worker: WASM-backed InDeCa solver with cooperative cancellation.
-// Handles trace-job (spike inference) and kernel-job (kernel estimation + biexp fit).
+// CaDecon pool worker: WASM-backed InDeCa solver.
+// Handles trace-job (spike inference), kernel-job (kernel estimation + biexp fit)
+// and seed-trace-job (peak detection).
+//
+// Cancellation is NOT cooperative mid-job: each handler makes synchronous WASM
+// calls, so a `cancel` message is not processed until the current job returns.
+// Each handler resets `cancelled` on entry, so its `if (cancelled)` checks can
+// never fire: a cancel sent for an in-flight job is effectively a no-op and
+// that job delivers its normal result. Only queued jobs are cancelled (by the
+// pool, without reaching the worker). Stopping a run therefore waits for
+// in-flight jobs; resetRun / pool.dispose() terminates the workers outright.
 
 import {
   initWasm,

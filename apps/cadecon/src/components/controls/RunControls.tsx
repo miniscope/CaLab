@@ -1,5 +1,5 @@
 import { Show, type JSX } from 'solid-js';
-import { runState, runError } from '../../lib/iteration-store.ts';
+import { runState, runError, failedJobs } from '../../lib/iteration-store.ts';
 import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
 import { parsedData, samplingRate } from '../../lib/data-store.ts';
 
@@ -92,7 +92,11 @@ export function RunControls(): JSX.Element {
 
         <button
           class="btn-secondary btn-small btn-icon"
-          disabled={runState() !== 'complete' && runState() !== 'stopping'}
+          // Allowed while 'stopping' too: resetRun abandons the run safely, and it is
+          // the way out if an in-flight WASM solve takes a long time to return.
+          disabled={
+            runState() !== 'complete' && runState() !== 'error' && runState() !== 'stopping'
+          }
           onClick={resetRun}
         >
           <ResetIcon />
@@ -106,6 +110,15 @@ export function RunControls(): JSX.Element {
             <span>{message()}</span>
           </div>
         )}
+      </Show>
+      <Show when={!runError() && failedJobs() > 0}>
+        <div class="error-card" role="status">
+          <span class="error-card__icon">!</span>
+          <span>
+            {failedJobs()} solver job{failedJobs() === 1 ? '' : 's'} failed this run; results may be
+            incomplete.
+          </span>
+        </div>
       </Show>
     </>
   );
