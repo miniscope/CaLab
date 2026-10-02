@@ -22,7 +22,7 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -30,7 +30,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -85,7 +85,7 @@ jobs:
             target: x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -94,7 +94,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11' # abi3 floor; the wheel it emits runs on 3.11+
 
@@ -116,7 +116,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/py/v')
@@ -160,7 +160,7 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -240,6 +240,6 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/

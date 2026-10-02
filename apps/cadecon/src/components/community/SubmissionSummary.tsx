@@ -13,6 +13,15 @@ interface SubmissionSummaryProps {
 }
 
 export function SubmissionSummary(props: SubmissionSummaryProps) {
+  // Extracting the async handler out of the JSX props avoids the
+  // `solid/reactivity` lint rule flagging an inline async arrow as a
+  // tracked scope — it isn't a tracked scope, but the rule can't tell
+  // once the handler is bound to a prop named `onDelete`.
+  async function handleDelete(id: string): Promise<void> {
+    await deleteSubmission(id);
+    props.onDelete();
+  }
+
   return (
     <SharedSubmissionSummary
       submission={props.submission}
@@ -25,10 +34,7 @@ export function SubmissionSummary(props: SubmissionSummaryProps) {
         </>
       )}
       onDismiss={props.onDismiss}
-      onDelete={async (id: string) => {
-        await deleteSubmission(id);
-        props.onDelete();
-      }}
+      onDelete={handleDelete}
     />
   );
 }
