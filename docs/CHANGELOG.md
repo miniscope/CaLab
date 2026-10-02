@@ -26,6 +26,28 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- **CaTune / CaDecon** a solver worker whose WASM failed to initialize only
+  logged to the console, so its jobs queued forever: CaTune cells showed
+  "solving" indefinitely and a CaDecon run never finished. Workers now report
+  init failures to the pool, which also handles `onerror`/`onmessageerror`. A
+  failed worker's in-flight job fails; a worker that dies after starting is
+  replaced once. If every worker dies, all pending jobs fail and the app shows
+  an error message. Disposing the pool now settles in-flight jobs as cancelled
+  instead of leaving their callers waiting
+
+- **CaDecon** a run could get stuck or finish with made-up numbers. Any
+  exception in the run loop left the run state at "running" with no message.
+  A Reset while stopping could let the abandoned loop resume and dispatch onto
+  a disposed pool. If every solver job failed, the run quietly fell back to
+  τ_rise=0.2 s / τ_decay=1.0 s and reported "complete". The run now always ends
+  in a terminal state. A new **error** state shows the reason under the run
+  controls, and the pool is disposed on every exit. A run aborts when more than
+  half of any phase's jobs fail; smaller failure counts are shown as a warning.
+  Reset during a run (including while stopping or paused) abandons it cleanly.
+  The trace/kernel FISTA settings are now read once at run start like every
+  other run parameter, and Stop during the seed traces no longer runs the seed
+  kernel phase first
+
 - **CaTune, CaDecon** the residual trace in the zoom charts subtracted two
   independently min/max-downsampled series, so once a window held more than
   2× the chart's bucket count (>1200 samples in the CaDecon Trace Inspector;

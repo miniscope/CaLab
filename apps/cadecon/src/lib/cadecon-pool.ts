@@ -168,10 +168,15 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
   },
 };
 
-export function createCaDeconWorkerPool(poolSize?: number): WorkerPool<CaDeconPoolJob> {
+/** `onFatal` fires once if every worker dies (e.g. WASM failed to initialize). */
+export function createCaDeconWorkerPool(
+  poolSize?: number,
+  options?: { onFatal?(message: string): void },
+): WorkerPool<CaDeconPoolJob> {
   return createWorkerPool<CaDeconPoolJob, CaDeconWorkerOutbound>(
     () => new Worker(new URL('../workers/cadecon-worker.ts', import.meta.url), { type: 'module' }),
     caDeconRouter,
     poolSize,
+    options,
   );
 }

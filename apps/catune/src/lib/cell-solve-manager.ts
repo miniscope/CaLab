@@ -2,7 +2,7 @@
 // Watches selectedCells + global params, dispatches per-cell jobs through the worker pool.
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
-import { createEffect, on, onCleanup } from 'solid-js';
+import { createEffect, createSignal, on, onCleanup } from 'solid-js';
 import { currentTau, lambda, selectedCell, filterEnabled } from './viz-store.ts';
 import { parsedData, effectiveShape, swapped, samplingRate } from './data-store.ts';
 import {
@@ -50,6 +50,12 @@ interface CellSolveState {
 }
 
 let pool: WorkerPool<CaTunePoolJob> | null = null;
+
+// Set when every solver worker has died (e.g. WASM failed to load). By then the
+// pool has already failed every queued job, so affected cells show 'error';
+// this carries the one user-facing explanation.
+const [solverFatalError, setSolverFatalError] = createSignal<string | null>(null);
+export { solverFatalError };
 let jobCounter = 0;
 const cellStates = new Map<number, CellSolveState>();
 
@@ -408,8 +414,16 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 }
 
 export function initCellSolveManager(): void {
+  setSolverFatalError(null);
   pool = createCaTuneWorkerPool(
     () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
+    undefined,
+    {
+      onFatal(message) {
+        console.error('CaTune solver workers failed:', message);
+        setSolverFatalError(message);
+      },
+    },
   );
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves
