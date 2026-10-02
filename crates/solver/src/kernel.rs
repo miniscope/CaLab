@@ -72,9 +72,26 @@ pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
 /// largest eigenvalue of K^T K for a circulant convolution matrix, and is a
 /// tight upper bound for the Toeplitz (causal) convolution matrix used in practice.
 ///
-/// Computed via direct DFT in f64 — O(n²) but zero-allocation and fast for
-/// typical kernel sizes (~200–600 samples). Only runs on parameter changes.
+/// For a non-negative kernel (every kernel `build_kernel` produces for
+/// `tau_rise < tau_decay`) the triangle inequality gives
+/// `|H(w)| <= sum|h| = H(0)`, so the maximum is attained at DC and
+/// `L = (sum h)^2` in O(n). The O(n²) direct DFT is kept as the fallback for
+/// kernels with negative taps (e.g. user-supplied or degenerate kernels);
+/// at K≈13.8k samples it cost ~0.7 s per `set_params`.
 pub fn compute_lipschitz(kernel: &[f32]) -> f64 {
+    if kernel.is_empty() {
+        return 1e-10;
+    }
+    if kernel.iter().all(|&h| h >= 0.0) {
+        let dc: f64 = kernel.iter().map(|&h| h as f64).sum();
+        return (dc * dc).max(1e-10);
+    }
+    compute_lipschitz_dft(kernel)
+}
+
+/// Direct-DFT Lipschitz constant: `max_w |H(w)|²` over a zero-padded grid.
+/// O(n²) in f64. Valid for any real kernel; used when taps can be negative.
+pub(crate) fn compute_lipschitz_dft(kernel: &[f32]) -> f64 {
     let n = kernel.len();
     if n == 0 {
         return 1e-10;
@@ -225,6 +242,37 @@ mod tests {
         // Both roots in (0, 1) for stable decaying kernel
         assert!(d > 0.0 && d < 1.0, "Decay root d = {} not in (0,1)", d);
         assert!(r > 0.0 && r < 1.0, "Rise root r = {} not in (0,1)", r);
+    }
+
+    #[test]
+    fn lipschitz_closed_form_matches_dft_for_nonnegative_kernels() {
+        for &(tr, td, fs) in &[
+            (0.02, 0.4, 30.0),
+            (0.001, 2.0, 100.0),
+            (0.05, 1.0, 20.0),
+            (0.1, 0.15, 10.0),
+            (0.005, 0.3, 500.0),
+        ] {
+            let kernel = build_kernel(tr, td, fs);
+            assert!(kernel.iter().all(|&h| h >= 0.0));
+            let closed = compute_lipschitz(&kernel);
+            let dft = compute_lipschitz_dft(&kernel);
+            let rel = (closed - dft).abs() / dft;
+            assert!(
+                rel < 1e-9,
+                "closed form {closed} vs DFT {dft} (rel {rel:e}) for ({tr},{td},{fs})"
+            );
+        }
+    }
+
+    #[test]
+    fn lipschitz_falls_back_to_dft_for_signed_kernels() {
+        // Alternating kernel: |H| peaks at Nyquist, not DC, so (sum h)^2 would
+        // under-estimate L. The fallback must catch it.
+        let kernel = [1.0_f32, -1.0, 1.0, -1.0];
+        let l = compute_lipschitz(&kernel);
+        assert!((l - compute_lipschitz_dft(&kernel)).abs() < 1e-12);
+        assert!(l > 15.9, "expected ~16 at Nyquist, got {l}");
     }
 
     // Test 8: Lipschitz constant is positive and >= sum of kernel squared

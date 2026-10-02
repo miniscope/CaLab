@@ -751,7 +751,7 @@ mod tests {
         // several upsampled bins. The count may exceed the true spike count, but
         // alpha × count (total energy) should still be conserved.
         assert!(
-            total_counts >= 2.0 && total_counts <= 30.0,
+            (2.0..=30.0).contains(&total_counts),
             "Expected spike counts in [2, 30] at 10x upsample, got {}",
             total_counts
         );
