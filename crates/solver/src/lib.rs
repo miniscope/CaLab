@@ -71,7 +71,11 @@ pub enum ConvMode {
 pub enum Constraint {
     /// Current: max(0, z - threshold) — L1 + non-negativity.
     NonNegative = 0,
-    /// InDeCa Eq. 3: clamp(z, 0, 1) — box constraint, no L1 penalty.
+    /// clamp(z - threshold, 0, 1) — box constraint [0, 1] with the same
+    /// L1 shrinkage (`step · lambda · G_dc`) as `NonNegative`. With
+    /// `lambda = 0` (what `indeca::solve_bounded` uses) this is exactly the
+    /// unpenalized box constraint of InDeCa Eq. 3; CaDecon passes a non-zero
+    /// lambda to add sparsity on top of the box.
     Box01 = 1,
 }
 

@@ -37,6 +37,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   **CaTune deconvolved activity can change** slightly versus earlier builds;
   results are now deterministic for a given trace and parameters
 
+- **Python** `run_deconvolution_full` (and `deconvolve_single`/`deconvolve_batch`)
+  returned `baseline` and `reconvolution` relative to the internally
+  rolling-baseline-subtracted trace, contradicting the `DeconvolutionResult`
+  docs. They are now in the input trace's frame: `reconvolution` is the full
+  model fit including the removed slow baseline, and `baseline` is in input
+  units (≈ the offset for a trace with a constant DC offset). **`baseline`
+  values change** for any trace with a non-zero floor; `activity` is unchanged.
+  Also: list input is accepted and non-1-D/2-D input raises a clear
+  `ValueError` (was `AttributeError`); a missing compiled extension raises an
+  `ImportError` explaining how to install or build it; the long-running solves
+  release the GIL; and the `refine` (`fit_biexponential`) and `box01`
+  (it keeps the L1 penalty; use `lam=0` for the pure box) docs now match the
+  code
+
 - **Solver** invalid input no longer traps the WASM module or panics the
   Python extension. A single validation layer (`crates/solver/src/validate.rs`),
   shared by both bindings, rejects non-finite traces/arrays, `fs <= 0`,
