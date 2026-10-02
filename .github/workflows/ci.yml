@@ -62,15 +62,19 @@ jobs:
       - name: Build WASM
         run: npm run build:wasm
 
+      # tsbuildinfo and the packages' emitted dist/ must be cached together:
+      # a restored tsbuildinfo without its dist/ makes `tsc -b` report TS6305
+      # ("output file has not been built from source") for every consumer.
       - name: Cache build artifacts
         uses: actions/cache@v5
         with:
           path: |
             **/tsconfig.tsbuildinfo
+            packages/*/dist
             **/node_modules/.vite
-          key: ${{ runner.os }}-build-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-build-v2-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-build-
+            ${{ runner.os }}-build-v2-
 
       - name: Format check
         run: npm run format:check
