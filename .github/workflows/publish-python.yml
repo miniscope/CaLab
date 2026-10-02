@@ -30,7 +30,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -94,7 +94,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: python3 -c "import re,os; v=os.environ['REF_NAME'].removeprefix('py/v'); p='python/pyproject.toml'; t=open(p).read(); open(p,'w').write(re.sub(r'^version = .*',f'version = \"{v}\"',t,flags=re.M))"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11' # abi3 floor; the wheel it emits runs on 3.11+
 
@@ -160,7 +160,7 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
