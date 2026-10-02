@@ -88,11 +88,16 @@
 -- REVOKE ALL ON <app>_submissions_public FROM anon, authenticated, PUBLIC;
 -- GRANT SELECT ON <app>_submissions_public TO anon, authenticated;
 --
--- -- Only authenticated users can insert
+-- -- Only real (non-anonymous) signed-in users can insert. Anonymous-auth
+-- -- users (signInAnonymously, used for analytics) also carry the
+-- -- `authenticated` role, so the is_anonymous claim must be checked (see 012).
 -- CREATE POLICY "Authenticated users can submit"
 -- ON <app>_submissions FOR INSERT
 -- TO authenticated
--- WITH CHECK ((select auth.uid()) = user_id);
+-- WITH CHECK (
+--   (select auth.uid()) = user_id
+--   AND coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
+-- );
 --
 -- -- Users can only delete their own submissions
 -- CREATE POLICY "Users can delete own submissions"
