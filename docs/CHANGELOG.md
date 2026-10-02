@@ -5,7 +5,122 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- **Core** WASM ↔ native parity test. Until now no TypeScript test loaded the
+  WASM build of the solver (all of them mock it), and nothing compared its
+  output with the native build. `packages/core` now loads the real
+  `crates/solver/pkg` through `initWasm` and asserts it reproduces the native
+  golden fixtures in `python/tests/fixtures/` — same iteration counts, and
+  kernel, filtered trace, solution, baseline and reconvolution within
+  `atol=rtol=1e-4` (observed max difference 1.4e-5). The fixtures README now
+  lists all five fixtures and the tolerances each consumer actually uses; the
+  CaTune `smoke.test.ts` is renamed to `kernel-shape-roundtrip.test.ts`, which
+  is what it tests
+
+### Changed
+
+- **README** the "no data upload" claim now states precisely what is collected:
+  trace data never leaves the browser, anonymous usage analytics are collected
+  via Supabase, and community sharing is explicit and opt-in
+
 ### Fixed
+
+- **Solver** the FISTA solve depended on how often the UI polled the fit.
+  The display getters (`get_reconvolution`, `get_reconvolution_with_baseline`,
+  `get_baseline`) overwrote the scalar baseline that `step_batch` adds into the
+  residual, and CaTune (which always subtracts a rolling baseline, so the solver
+  never re-estimates it) polls those getters every 100 ms. Results therefore
+  varied with wall-clock timing, and `load_state` restored the leaked value so
+  warm and cold starts disagreed. The display baseline is now a separate,
+  display-only EMA; the solver's baseline is pinned to 0 for filtered traces.
+  **CaTune deconvolved activity can change** slightly versus earlier builds;
+  results are now deterministic for a given trace and parameters
+
+- **Python** `run_deconvolution_full` (and `deconvolve_single`/`deconvolve_batch`)
+  returned `baseline` and `reconvolution` relative to the internally
+  rolling-baseline-subtracted trace, contradicting the `DeconvolutionResult`
+  docs. They are now in the input trace's frame: `reconvolution` is the full
+  model fit including the removed slow baseline, and `baseline` is in input
+  units (≈ the offset for a trace with a constant DC offset). **`baseline`
+  values change** for any trace with a non-zero floor; `activity` is unchanged.
+  Also: list input is accepted and non-1-D/2-D input raises a clear
+  `ValueError` (was `AttributeError`); a missing compiled extension raises an
+  `ImportError` explaining how to install or build it; the long-running solves
+  release the GIL; and the `refine` (`fit_biexponential`) and `box01`
+  (it keeps the L1 penalty; use `lam=0` for the pure box) docs now match the
+  code
+
+- **Solver** invalid input no longer traps the WASM module or panics the
+  Python extension. A single validation layer (`crates/solver/src/validate.rs`),
+  shared by both bindings, rejects non-finite traces/arrays, `fs <= 0`,
+  `tau_rise >= tau_decay` (FFT and banded modes previously built opposite-sign
+  kernels), negative `lambda`, `upsample_factor = 0`, negative or overflowing
+  trace lengths, `kernel_length = 0`, and kernels above 2^20 samples (which
+  used to abort on allocation). Also fixed: a longer kernel set after
+  `set_trace` in FFT mode panicked on the next `step_batch`; toggling HP/LP after
+  an `apply_filter` on a same-length trace reused the stale gain curve; an empty
+  threshold search reported a NaN baseline; realfft errors `unwrap()`ed instead
+  of propagating. **JS:** `Solver.set_params`, `Solver.set_trace`,
+  `Solver.step_batch`, `indeca_solve_trace`, `indeca_estimate_kernel`,
+  `indeca_fit_biexponential`, `indeca_compute_upsample_factor`, `seed_trace`,
+  `simulate_traces` and `get_simulation_presets` now throw on invalid input or
+  serialization failure instead of trapping or returning `null`. **Python:** the
+  same cases raise `ValueError` (numerical failures `RuntimeError`)
+
+- **Solver** `set_params` spent O(K²) on a direct DFT to compute the Lipschitz
+  constant (~0.7 s at K≈13.8k kernel samples). For the non-negative kernels the
+  solver builds, `max|H(ω)| = H(0)`, so `L = (Σh)²` is now computed in O(K); the
+  DFT remains the fallback for kernels with negative taps
+
+- **CaTune / CaDecon** a solver worker whose WASM failed to initialize only
+  logged to the console, so its jobs queued forever: CaTune cells showed
+  "solving" indefinitely and a CaDecon run never finished. Workers now report
+  init failures to the pool, which also handles `onerror`/`onmessageerror`. A
+  failed worker's in-flight job fails; a worker that dies after starting is
+  replaced once. If every worker dies, all pending jobs fail and the app shows
+  an error message. Disposing the pool now settles in-flight jobs as cancelled
+  instead of leaving their callers waiting
+
+- **CaDecon** a run could get stuck or finish with made-up numbers. Any
+  exception in the run loop left the run state at "running" with no message.
+  A Reset while stopping could let the abandoned loop resume and dispatch onto
+  a disposed pool. If every solver job failed, the run quietly fell back to
+  τ_rise=0.2 s / τ_decay=1.0 s and reported "complete". The run now always ends
+  in a terminal state. A new **error** state shows the reason under the run
+  controls, and the pool is disposed on every exit. A run aborts when more than
+  half of any phase's jobs fail; smaller failure counts are shown as a warning.
+  Reset during a run (including while stopping or paused) abandons it cleanly.
+  The trace/kernel FISTA settings are now read once at run start like every
+  other run parameter, and Stop during the seed traces no longer runs the seed
+  kernel phase first
+
+- **CaTune, CaDecon** the residual trace in the zoom charts subtracted two
+  independently min/max-downsampled series, so once a window held more than
+  2× the chart's bucket count (>1200 samples in the CaDecon Trace Inspector;
+  high sampling rates or zoomed-out CaTune cards) it paired one series' bucket
+  minimum with the other's maximum and drew spurious residual spikes. The
+  residual is now computed at full resolution and downsampled afterwards. The
+  band layout and residual math shared by both charts now live in
+  `@calab/compute` (`computeBandLayout`, `scaleToBand`, `residualBandSeries`)
+
+- **Charts** `downsampleMinMax` emitted `Infinity, -Infinity` for a bucket with
+  no finite sample (e.g. an all-NaN stretch), breaking uPlot's autoscale. Such
+  buckets are now `null` gaps; non-finite samples are skipped within mixed
+  buckets and returned as `null` when no downsampling is needed
+
+- **Import** the partial-NaN validation warning claimed "CaTune will skip NaN
+  values during deconvolution"; nothing skips them. It now says the solver does
+  not support NaN/Inf samples, that affected cells will fail to solve, and to
+  interpolate over or remove them before importing. It remains a warning, so
+  files whose other cells solve still import
+
+- **CaTune** moving a parameter slider orphaned every cell's in-flight solver
+  job instead of cancelling it: the job ran its full quantum, its result was
+  discarded, and with more cells than workers the orphans queued ahead of the
+  fresh jobs. On initial load every cell's first quantum was also solved twice.
+  Superseded jobs are now cancelled on the first tick of a parameter change,
+  and the parameter watcher no longer fires on mount
 
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
@@ -19,10 +134,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   its input; the fixed 10 iterations become a relative-width tolerance.
 
   **Reported time constants change.** Measured against synthetic ground truth,
+
   recovered `tau_decay` error improves from 0.5% to 0.0% on the single-component
+
   fixture and 0.4% to 0.05% on the two-component fixture. For values falling
+
   between grid nodes the pre-fix error reached 12.88% (the grid's worst case);
+
   results produced before this release are quantised to the 20 cold-grid nodes
+
   and are not comparable with results produced after it (PR #176)
 
 - **CaDecon** `tau_rise` refinement was not clamped to the grid's upper bound,
@@ -43,6 +163,36 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   transitive). Bumped solid-js 1.9.15, valibot 1.5, @supabase/supabase-js 2.117,
   driver.js 1.8, vitest 4.1, eslint 9.39.5, typescript-eslint 8.71; root
   `package.json` now declares `engines.node >= 22`
+- **Supabase** the community `catune_submissions_public` and
+  `cadecon_submissions_public` views (migration 010) run with their owner's
+  privileges and are auto-updatable, and Supabase's default privileges grant
+  `anon`/`authenticated` ALL on new views, so anyone holding the public anon key
+  could insert forged submissions or rewrite/delete every submission through
+  them, bypassing RLS. Migration 011 revokes everything but `SELECT` on both
+  views. The RLS test harness now mirrors Supabase's real default grants, and
+  `assert_denied` requires a specific SQLSTATE instead of accepting any error
+
+- **Supabase** anonymous-auth visitors (every app signs in anonymously at load
+  for analytics) carry the `authenticated` role and could post community
+  submissions without ever entering an email. Migration 012 requires
+  `is_anonymous = false` in the JWT for submission inserts; `subscribeAuth`
+  and `AuthGate` now treat anonymous sessions as signed out, so the email
+  sign-in prompt is shown
+
+- **Supabase** clients could insert `analytics_sessions` rows directly and
+  choose `country_code`, `region`, `is_anonymous`, `created_at`, and rewrite
+  any column of their own sessions. Migration 013 makes the geo-session edge
+  function the only way to create a session, restricts client updates to
+  `ended_at`/`duration_seconds`, and caps each session at 500 events
+
+- **Supabase** submission columns other than the kernel parameters were
+  unvalidated server-side: negative counts, `NaN`/`Infinity` floats, unbounded
+  text, and an unbounded `extra_metadata` that is republished to every visitor.
+  Migration 014 adds length caps, two-sided finite range checks, an ORCID
+  format check and a 4 KB `extra_metadata` cap, and aligns CaTune's
+  `lambda`/`sampling_rate` minimums with the client. Constraints are added
+  `NOT VALID`; existing rows must be checked and the constraints validated
+  manually
 
 ## [2.7.2] - 2026-08-27
 

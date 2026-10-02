@@ -64,6 +64,14 @@ impl BandpassFilter {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.hp_enabled = enabled;
         self.lp_enabled = enabled;
+        self.invalidate_gain_curve();
+    }
+
+    /// The cached gain curve encodes which of HP/LP is active, so any toggle
+    /// must force it to be rebuilt — otherwise e.g. enabling LP after an
+    /// HP-only `apply` on a same-length trace silently re-applied HP-only.
+    fn invalidate_gain_curve(&mut self) {
+        self.planned_len = 0;
     }
 
     /// Returns true if either HP or LP is active.
@@ -73,10 +81,12 @@ impl BandpassFilter {
 
     pub fn set_hp_enabled(&mut self, enabled: bool) {
         self.hp_enabled = enabled;
+        self.invalidate_gain_curve();
     }
 
     pub fn set_lp_enabled(&mut self, enabled: bool) {
         self.lp_enabled = enabled;
+        self.invalidate_gain_curve();
     }
 
     pub fn is_hp_enabled(&self) -> bool {
@@ -203,7 +213,8 @@ impl BandpassFilter {
     }
 
     /// Perform forward FFT and cache power spectrum. Used by both `apply` and `compute_spectrum_only`.
-    fn forward_fft_and_cache_power(&mut self, trace: &[f32]) {
+    /// Returns false (leaving the trace untouched) if the transform fails.
+    fn forward_fft_and_cache_power(&mut self, trace: &[f32]) -> bool {
         let n = trace.len();
         self.ensure_buffers(n);
         let spectrum_len = n / 2 + 1;
@@ -212,13 +223,19 @@ impl BandpassFilter {
         self.fft_input[..n].copy_from_slice(trace);
 
         // Forward FFT
-        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
-        fwd.process_with_scratch(
-            &mut self.fft_input[..n],
-            &mut self.spectrum[..spectrum_len],
-            &mut self.scratch_fwd,
-        )
-        .unwrap();
+        let Some(fwd) = self.plan_fwd.as_ref() else {
+            return false;
+        };
+        if fwd
+            .process_with_scratch(
+                &mut self.fft_input[..n],
+                &mut self.spectrum[..spectrum_len],
+                &mut self.scratch_fwd,
+            )
+            .is_err()
+        {
+            return false;
+        }
 
         // Cache pre-filter power spectrum
         for (ps, c) in self.power_spectrum[..spectrum_len]
@@ -227,6 +244,7 @@ impl BandpassFilter {
         {
             *ps = c.re * c.re + c.im * c.im;
         }
+        true
     }
 
     /// Apply bandpass filter in-place. Caches power spectrum. Returns false if skipped.
@@ -241,7 +259,9 @@ impl BandpassFilter {
         }
 
         let n = trace.len();
-        self.forward_fft_and_cache_power(trace);
+        if !self.forward_fft_and_cache_power(trace) {
+            return false;
+        }
         let spectrum_len = n / 2 + 1;
 
         // Apply gain curve
@@ -253,13 +273,21 @@ impl BandpassFilter {
         }
 
         // Inverse FFT (use cached plan — no hash-map lookup)
-        let inv = self.plan_inv.as_ref().expect("plans not initialized");
-        inv.process_with_scratch(
-            &mut self.spectrum[..spectrum_len],
-            &mut self.fft_input[..n],
-            &mut self.scratch_inv,
-        )
-        .unwrap();
+        // On failure (only possible with non-finite data, which the FFI rejects)
+        // report "not applied" and leave the trace untouched instead of panicking.
+        let Some(inv) = self.plan_inv.as_ref() else {
+            return false;
+        };
+        if inv
+            .process_with_scratch(
+                &mut self.spectrum[..spectrum_len],
+                &mut self.fft_input[..n],
+                &mut self.scratch_inv,
+            )
+            .is_err()
+        {
+            return false;
+        }
 
         // Normalize (realfft doesn't normalize)
         let scale = 1.0 / n as f32;

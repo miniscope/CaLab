@@ -44,7 +44,7 @@ import {
   unpinSnapshot,
 } from './lib/viz-store.ts';
 import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
-import { initCellSolveManager } from './lib/cell-solve-manager.ts';
+import { initCellSolveManager, solverFatalError } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/community/index.ts';
 import { isTutorialActive, startTutorial } from '@calab/tutorials';
 import { getTutorialById } from './lib/tutorial/content/index.ts';
@@ -263,6 +263,17 @@ const App: Component = () => {
               </>
             }
           >
+            <Show when={solverFatalError()}>
+              {(message) => (
+                <div class="error-card" role="alert">
+                  <span class="error-card__icon">!</span>
+                  <span>
+                    The solver workers failed, so traces can't be deconvolved. Try reloading the
+                    page. ({message()})
+                  </span>
+                </div>
+              )}
+            </Show>
             <CellSelector />
             <CardGrid onCellClick={(idx) => setSelectedCell(idx)} />
           </VizLayout>

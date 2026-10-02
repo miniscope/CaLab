@@ -267,7 +267,7 @@ Raises `ValueError` if any input array contains a non-finite value (`NaN` or `In
 
 ### `fit_biexponential()`
 
-Fit a parametric biexponential model to a free-form kernel. Optionally refines with a two-component (slow + fast) model.
+Fit a parametric biexponential model to a free-form kernel. The grid search always considers both a slow-only and a two-component (slow + fast) model; `fit_mode` on the result reports which one won.
 
 ```python
 calab.fit_biexponential(
@@ -280,13 +280,13 @@ calab.fit_biexponential(
 ) -> BiexpFitResult
 ```
 
-| Parameter | Description                                       |
-| --------- | ------------------------------------------------- |
-| `h_free`  | Free-form kernel (1-D).                           |
-| `fs`      | Sampling rate in Hz.                              |
-| `refine`  | Whether to refine with a fast (second) component. |
-| `skip`    | Number of leading samples to skip in the fit.     |
-| `warm`    | Previous `BiexpFitResult` for warm-start.         |
+| Parameter | Description                                                                              |
+| --------- | ---------------------------------------------------------------------------------------- |
+| `h_free`  | Free-form kernel (1-D).                                                                  |
+| `fs`      | Sampling rate in Hz.                                                                     |
+| `refine`  | Whether to polish the grid optimum with golden-section refinement of the time constants. |
+| `skip`    | Number of leading samples to skip in the fit.                                            |
+| `warm`    | Previous `BiexpFitResult` for warm-start.                                                |
 
 Returns a `BiexpFitResult` namedtuple with fields: `tau_rise`, `tau_decay`, `beta`, `residual`, `tau_rise_fast`, `tau_decay_fast`, `beta_fast`, `fit_mode`. Fast-component fields are 0 if a single-component fit was used. `fit_mode` is a string reporting the fit outcome — one of `"TwoComponent"`, `"SlowOnly"`, `"Degenerate"` (no positive slow amplitude — untrustworthy), or `"Empty"` (no fit produced).
 

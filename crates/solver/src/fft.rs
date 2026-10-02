@@ -2,6 +2,30 @@ use realfft::RealFftPlanner;
 use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
+use crate::validate::SolverError;
+
+/// Map a realfft error to a `SolverError` instead of unwrapping it.
+///
+/// Buffer-length errors indicate an internal sizing bug; `InputValues` is
+/// raised by the inverse transform when the DC/Nyquist bins have a non-zero
+/// imaginary part, which for the real-kernel products computed here happens
+/// only when the data has gone non-finite (NaN/inf). Either way the caller
+/// gets an error rather than a panic (a WASM trap that kills the module).
+fn fft_err(e: realfft::FftError) -> SolverError {
+    match e {
+        realfft::FftError::InputValues(..) => SolverError::Numerical(
+            "FFT convolution produced a non-finite value (NaN or infinity); \
+             the input or parameters overflowed f32 range"
+                .into(),
+        ),
+        other => SolverError::Numerical(format!("FFT buffer size mismatch: {other}")),
+    }
+}
+
+fn plans_missing() -> SolverError {
+    SolverError::Numerical("FFT plans not initialized (ensure_buffers not called)".into())
+}
+
 /// Self-contained FFT convolution engine.
 ///
 /// Owns all FFT plans, scratch buffers, and the pre-computed kernel spectrum.
@@ -52,27 +76,23 @@ impl FftConvolver {
         self.fft_len
     }
 
-    /// Invalidate cached FFT length, forcing a full rebuild on next `ensure_buffers`.
-    pub(crate) fn invalidate(&mut self) {
-        self.fft_len = 0;
-        self.plan_fwd = None;
-        self.plan_inv = None;
-    }
-
     /// Ensure FFT buffers are allocated for the given signal + kernel size.
     /// Recomputes kernel FFT when the padded FFT length changes.
     /// Buffers grow but never shrink.
-    pub(crate) fn ensure_buffers(&mut self, signal_len: usize, kernel: &[f32]) {
+    pub(crate) fn ensure_buffers(
+        &mut self,
+        signal_len: usize,
+        kernel: &[f32],
+    ) -> Result<(), SolverError> {
         let k_len = kernel.len();
         if signal_len == 0 || k_len == 0 {
-            return;
+            return Ok(());
         }
 
-        let min_len = signal_len + k_len - 1;
-        let padded_len = min_len.next_power_of_two();
+        let padded_len = Self::padded_len_for(signal_len, k_len)?;
 
         if padded_len == self.fft_len {
-            return; // Already set up for this length
+            return Ok(()); // Already set up for this length
         }
 
         self.fft_len = padded_len;
@@ -114,14 +134,30 @@ impl FftConvolver {
         self.plan_inv = Some(inv);
 
         // Pre-compute kernel FFT and its conjugate
-        self.prepare_kernel(kernel);
+        self.prepare_kernel(kernel)
+    }
+
+    /// Padded (power-of-two) FFT length for a linear convolution of a
+    /// `signal_len` signal with a `k_len` kernel.
+    pub(crate) fn padded_len_for(signal_len: usize, k_len: usize) -> Result<usize, SolverError> {
+        signal_len
+            .checked_add(k_len.saturating_sub(1))
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or_else(|| {
+                SolverError::InvalidInput(format!(
+                    "trace length {signal_len} + kernel length {k_len} is too large for FFT convolution"
+                ))
+            })
     }
 
     /// Recompute kernel FFT using the current padded length.
     /// Call after kernel changes when buffers are already large enough.
-    pub(crate) fn prepare_kernel(&mut self, kernel: &[f32]) {
+    pub(crate) fn prepare_kernel(&mut self, kernel: &[f32]) -> Result<(), SolverError> {
         let k_len = kernel.len();
         let padded_len = self.fft_len;
+        if padded_len == 0 || k_len > padded_len {
+            return Err(plans_missing());
+        }
         let spectrum_len = padded_len / 2 + 1;
 
         // Zero-pad kernel into fft_input
@@ -129,18 +165,19 @@ impl FftConvolver {
         self.fft_input[k_len..padded_len].fill(0.0);
 
         // Forward FFT of kernel
-        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
+        let fwd = self.plan_fwd.as_ref().ok_or_else(plans_missing)?;
         fwd.process_with_scratch(
             &mut self.fft_input[..padded_len],
             &mut self.kernel_fft[..spectrum_len],
             &mut self.fft_scratch_fwd,
         )
-        .unwrap();
+        .map_err(fft_err)?;
 
         // Conjugate for adjoint (correlation = convolution with reversed kernel)
         for i in 0..spectrum_len {
             self.kernel_conj_fft[i] = self.kernel_fft[i].conj();
         }
+        Ok(())
     }
 
     /// FFT-based forward convolution: output[..signal_len] = (K * source)[..signal_len].
@@ -149,8 +186,8 @@ impl FftConvolver {
         source: &[f32],
         signal_len: usize,
         output: &mut [f32],
-    ) {
-        self.convolve_impl(source, signal_len, output, false);
+    ) -> Result<(), SolverError> {
+        self.convolve_impl(source, signal_len, output, false)
     }
 
     /// FFT-based adjoint convolution (correlation): output[..signal_len] = (K^T * source)[..signal_len].
@@ -159,8 +196,8 @@ impl FftConvolver {
         source: &[f32],
         signal_len: usize,
         output: &mut [f32],
-    ) {
-        self.convolve_impl(source, signal_len, output, true);
+    ) -> Result<(), SolverError> {
+        self.convolve_impl(source, signal_len, output, true)
     }
 
     /// Shared FFT convolution implementation.
@@ -171,8 +208,19 @@ impl FftConvolver {
         signal_len: usize,
         output: &mut [f32],
         use_conjugate: bool,
-    ) {
+    ) -> Result<(), SolverError> {
         let padded_len = self.fft_len;
+        // Guard the slicing below: an un-set-up (or stale, too-short) plan used
+        // to panic with "slice index starts at N but ends at 0".
+        if padded_len == 0
+            || signal_len > padded_len
+            || source.len() < signal_len
+            || output.len() < signal_len
+        {
+            return Err(SolverError::Numerical(format!(
+                "FFT convolver not prepared for a length-{signal_len} signal (fft_len {padded_len})"
+            )));
+        }
         let spectrum_len = padded_len / 2 + 1;
 
         // Zero-pad source into fft_input
@@ -180,13 +228,13 @@ impl FftConvolver {
         self.fft_input[signal_len..padded_len].fill(0.0);
 
         // Forward FFT of source
-        let fwd = self.plan_fwd.as_ref().expect("plans not initialized");
+        let fwd = self.plan_fwd.as_ref().ok_or_else(plans_missing)?;
         fwd.process_with_scratch(
             &mut self.fft_input[..padded_len],
             &mut self.fft_spectrum[..spectrum_len],
             &mut self.fft_scratch_fwd,
         )
-        .unwrap();
+        .map_err(fft_err)?;
 
         // Pointwise multiply with kernel spectrum
         if use_conjugate {
@@ -200,19 +248,20 @@ impl FftConvolver {
         }
 
         // Inverse FFT
-        let inv = self.plan_inv.as_ref().expect("plans not initialized");
+        let inv = self.plan_inv.as_ref().ok_or_else(plans_missing)?;
         inv.process_with_scratch(
             &mut self.fft_spectrum[..spectrum_len],
             &mut self.fft_output[..padded_len],
             &mut self.fft_scratch_inv,
         )
-        .unwrap();
+        .map_err(fft_err)?;
 
         // Normalize and copy first signal_len samples to output
         let scale = 1.0 / padded_len as f32;
         for i in 0..signal_len {
             output[i] = self.fft_output[i] * scale;
         }
+        Ok(())
     }
 }
 
@@ -228,14 +277,14 @@ mod tests {
         let n = kernel.len();
 
         let mut conv = FftConvolver::new();
-        conv.ensure_buffers(n, &kernel);
+        conv.ensure_buffers(n, &kernel).unwrap();
 
         // Impulse at t=0
         let mut impulse = vec![0.0_f32; n];
         impulse[0] = 1.0;
 
         let mut output = vec![0.0_f32; n];
-        conv.convolve_forward(&impulse, n, &mut output);
+        conv.convolve_forward(&impulse, n, &mut output).unwrap();
 
         for i in 0..n {
             let diff = (output[i] - kernel[i]).abs();
@@ -257,7 +306,7 @@ mod tests {
         let n = 64;
 
         let mut conv = FftConvolver::new();
-        conv.ensure_buffers(n, &kernel);
+        conv.ensure_buffers(n, &kernel).unwrap();
 
         // Deterministic test vectors
         let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.3).sin()).collect();
@@ -265,11 +314,11 @@ mod tests {
 
         // Kx = forward convolution of x
         let mut kx = vec![0.0_f32; n];
-        conv.convolve_forward(&x, n, &mut kx);
+        conv.convolve_forward(&x, n, &mut kx).unwrap();
 
         // K^T y = adjoint convolution of y
         let mut kty = vec![0.0_f32; n];
-        conv.convolve_adjoint(&y, n, &mut kty);
+        conv.convolve_adjoint(&y, n, &mut kty).unwrap();
 
         // <Kx, y>
         let lhs: f64 = kx

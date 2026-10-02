@@ -7,7 +7,13 @@
 
 import { createMemo, createSignal, createEffect, on, Show, type JSX } from 'solid-js';
 import type uPlot from 'uplot';
-import { downsampleMinMax } from '@calab/compute';
+import {
+  computeBandLayout as computeSharedBandLayout,
+  downsampleMinMax,
+  residualBandSeries,
+  scaleToBand,
+  type BandLayout,
+} from '@calab/compute';
 import {
   TraceOverview,
   ZoomWindow,
@@ -77,27 +83,15 @@ const TRACE_INSPECTOR_ZOOM_WINDOW_S = 60;
 // Distinct dashed color for the sparsity-comparison overlay (the OPPOSITE setting).
 const COMPARE_COLOR = '#e040fb';
 
-interface BandLayout {
-  deconvTop: number;
-  deconvBottom: number;
-  deconvHeight: number;
-  residTop: number;
-  residBottom: number;
-  residHeight: number;
-}
-
 /** Compute the Y-axis positions for the deconv and residual bands below the raw trace. */
 function computeBandLayout(rawMin: number, rawMax: number): BandLayout {
   const rawRange = rawMax - rawMin;
-  const deconvGap = rawRange * DECONV_GAP_FRAC;
-  const deconvHeight = rawRange * DECONV_SCALE;
-  const deconvTop = rawMin - deconvGap;
-  const deconvBottom = deconvTop - deconvHeight;
-  const residGap = rawRange * RESID_GAP_FRAC;
-  const residHeight = rawRange * RESID_SCALE;
-  const residTop = deconvBottom - residGap;
-  const residBottom = residTop - residHeight;
-  return { deconvTop, deconvBottom, deconvHeight, residTop, residBottom, residHeight };
+  return computeSharedBandLayout(rawMin, rawMax, {
+    deconvGap: rawRange * DECONV_GAP_FRAC,
+    deconvScale: DECONV_SCALE,
+    residGap: rawRange * RESID_GAP_FRAC,
+    residScale: RESID_SCALE,
+  });
 }
 
 export function TraceInspector(): JSX.Element {
@@ -290,48 +284,21 @@ export function TraceInspector(): JSX.Element {
     return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
-  const scaleToDeconvBand = (values: number[], yMin: number, yMax: number): number[] => {
-    const dMax = upsampleFactor();
-    const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
-    return values.map((v) => {
-      const norm = Math.min(v / dMax, 1);
-      return deconvBottom + norm * deconvHeight;
-    });
-  };
-
-  const computeResiduals = (
-    dsRaw: number[],
-    dsReconv: (number | null)[],
+  const scaleToDeconvBand = (
+    values: (number | null)[],
     yMin: number,
     yMax: number,
-    len: number,
-  ): number[] => {
-    if (!dsReconv.some((v) => v !== null)) return new Array(len).fill(null) as number[];
-    const { residBottom, residHeight } = computeBandLayout(yMin, yMax);
-    const rawResid: (number | null)[] = [];
-    let rMin = Infinity;
-    let rMax = -Infinity;
-    for (let i = 0; i < dsRaw.length; i++) {
-      if (dsReconv[i] == null) {
-        rawResid.push(null);
-      } else {
-        const r = dsRaw[i] - (dsReconv[i] as number);
-        rawResid.push(r);
-        if (r < rMin) rMin = r;
-        if (r > rMax) rMax = r;
-      }
-    }
-    const rRange = rMax - rMin || 1;
-    return rawResid.map((r) => {
-      if (r === null) return null as unknown as number;
-      return residBottom + ((r - rMin) / rRange) * residHeight;
+  ): (number | null)[] => {
+    const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
+    return scaleToBand(values, 0, upsampleFactor(), deconvBottom, deconvHeight, {
+      clampTop: true,
     });
   };
 
   const EMPTY_DATA: [number[], ...number[][]] = [[], [], [], [], [], [], [], [], []];
   const DOWNSAMPLE_BUCKETS = 600;
 
-  const zoomData = createMemo<[number[], ...number[][]]>(() => {
+  const zoomData = createMemo<uPlot.AlignedData>(() => {
     const raw = fullRawTrace();
     const fs = samplingRate();
     if (!raw || !fs || raw.length === 0) return EMPTY_DATA;
@@ -358,26 +325,28 @@ export function TraceInspector(): JSX.Element {
     if (isFiltered) {
       const filtSlice = filt.subarray(startSample, endSample);
       const [, dsFilt] = downsampleMinMax(x, filtSlice, DOWNSAMPLE_BUCKETS);
-      dsFiltered = dsFilt as (number | null)[];
+      dsFiltered = dsFilt;
     } else {
-      dsFiltered = new Array(dsX.length).fill(null) as (number | null)[];
+      dsFiltered = new Array<null>(dsX.length).fill(null);
     }
 
     // Reconvolved (fit) — raw values from reconvolveAR2
     const recon = reconvolvedTrace();
+    const reconSlice =
+      recon && recon.length >= endSample ? recon.subarray(startSample, endSample) : null;
     let dsFit: (number | null)[];
-    if (recon && recon.length >= endSample) {
-      const reconSlice = recon.subarray(startSample, endSample);
-      const [, dsFitRaw] = downsampleMinMax(x, reconSlice, DOWNSAMPLE_BUCKETS);
-      dsFit = dsFitRaw as (number | null)[];
+    if (reconSlice) {
+      [, dsFit] = downsampleMinMax(x, reconSlice, DOWNSAMPLE_BUCKETS);
     } else {
-      dsFit = new Array(dsX.length).fill(null) as (number | null)[];
+      dsFit = new Array<null>(dsX.length).fill(null);
     }
 
     // Mask transient
     const tauD = effectiveTauDecay();
     const transientTime = tauD != null ? TRANSIENT_TAU_MULTIPLIER * tauD : 0;
-    if (startSample < transientTime * fs) {
+    let fitStartIndex = 0;
+    while (fitStartIndex < len && x[fitStartIndex] < transientTime) fitStartIndex++;
+    if (fitStartIndex > 0) {
       for (let i = 0; i < dsFit.length; i++) {
         if (dsX[i] < transientTime) dsFit[i] = null;
         else break;
@@ -386,59 +355,60 @@ export function TraceInspector(): JSX.Element {
 
     // Deconv — scaled to band below raw trace
     const result = effectiveResult();
-    let dsDeconv: number[];
+    let dsDeconv: (number | null)[];
     if (result && result.sCounts.length >= endSample) {
       const deconvSlice = result.sCounts.subarray(startSample, endSample);
       const [, dsDeconvRaw] = downsampleMinMax(x, deconvSlice, DOWNSAMPLE_BUCKETS);
       dsDeconv = scaleToDeconvBand(dsDeconvRaw, rawMin, rawMax);
     } else {
-      dsDeconv = new Array(dsX.length).fill(null) as number[];
+      dsDeconv = new Array<null>(dsX.length).fill(null);
     }
 
     // Sparsity comparison — opposite-setting deconv, same deconv band
     const comp = comparisonDeconv();
-    let dsCompare: number[];
+    let dsCompare: (number | null)[];
     if (comp && comp.length >= endSample) {
       const compSlice = comp.subarray(startSample, endSample);
       const [, dsCompRaw] = downsampleMinMax(x, compSlice, DOWNSAMPLE_BUCKETS);
       dsCompare = scaleToDeconvBand(dsCompRaw, rawMin, rawMax);
     } else {
-      dsCompare = new Array(dsX.length).fill(null) as number[];
+      dsCompare = new Array<null>(dsX.length).fill(null);
     }
 
     // Residual — compute against the working trace (what the solver actually fit)
-    const residSource = isFiltered ? (dsFiltered as number[]) : dsRaw;
-    const dsResid = computeResiduals(residSource, dsFit, rawMin, rawMax, dsX.length);
+    // computed at full resolution, then downsampled: subtracting two independently
+    // min/max-downsampled series would pair unrelated samples.
+    const residSource = isFiltered ? filt.subarray(startSample, endSample) : rawSlice;
+    const { residBottom, residHeight } = computeBandLayout(rawMin, rawMax);
+    const dsResid = residualBandSeries(
+      x,
+      residSource,
+      reconSlice,
+      DOWNSAMPLE_BUCKETS,
+      residBottom,
+      residHeight,
+      fitStartIndex,
+    );
 
     // Ground truth traces
     const gt = gtTraces();
-    let dsGTCalcium: number[];
-    let dsGTSpikes: number[];
+    let dsGTCalcium: (number | null)[];
+    let dsGTSpikes: (number | null)[];
     if (gt && gt.calcium.length >= endSample) {
       // GT calcium — raw values (same fluorescence units as raw trace)
       const gtCaSlice = gt.calcium.subarray(startSample, endSample);
       const [, dsGTCa] = downsampleMinMax(x, gtCaSlice, DOWNSAMPLE_BUCKETS);
-      dsGTCalcium = dsGTCa as number[];
+      dsGTCalcium = dsGTCa;
 
       const gtSpkSlice = gt.spikes.subarray(startSample, endSample);
       const [, dsGTSpkRaw] = downsampleMinMax(x, gtSpkSlice, DOWNSAMPLE_BUCKETS);
       dsGTSpikes = scaleToDeconvBand(dsGTSpkRaw, rawMin, rawMax);
     } else {
-      dsGTCalcium = new Array(dsX.length).fill(null) as number[];
-      dsGTSpikes = new Array(dsX.length).fill(null) as number[];
+      dsGTCalcium = new Array<null>(dsX.length).fill(null);
+      dsGTSpikes = new Array<null>(dsX.length).fill(null);
     }
 
-    return [
-      dsX,
-      dsRaw,
-      dsFiltered as number[],
-      dsFit as number[],
-      dsDeconv,
-      dsResid,
-      dsGTCalcium,
-      dsGTSpikes,
-      dsCompare,
-    ];
+    return [dsX, dsRaw, dsFiltered, dsFit, dsDeconv, dsResid, dsGTCalcium, dsGTSpikes, dsCompare];
   });
 
   const seriesConfig = createMemo<uPlot.Series[]>(() => {

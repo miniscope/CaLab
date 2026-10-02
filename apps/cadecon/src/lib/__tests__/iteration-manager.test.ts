@@ -31,6 +31,8 @@ import {
   currentTauRise,
   currentTauDecay,
   resetIterationState,
+  runError,
+  failedJobs,
 } from '../iteration-store.ts';
 import {
   setParsedData,
@@ -40,7 +42,12 @@ import {
   resetImport,
 } from '../data-store.ts';
 import { setNumSubsets } from '../subset-store.ts';
-import { setMaxIterations, setConvergenceTol } from '../algorithm-store.ts';
+import {
+  setMaxIterations,
+  setConvergenceTol,
+  kernelFistaMaxIters,
+  setKernelFistaMaxIters,
+} from '../algorithm-store.ts';
 
 // ── Fake pool ──────────────────────────────────────────────────────────────
 
@@ -51,11 +58,21 @@ interface FakePool {
   cancelAll(): void;
   dispose(): void;
   jobs: DispatchedJob[];
+  /** Jobs parked by `jobBehavior` returning 'hold'; settled (cancelled) by dispose(). */
+  held: DispatchedJob[];
   cancelCount: number;
   disposeCount: number;
 }
 
 let fakePool: FakePool | null = null;
+
+/**
+ * Per-job override of how the fake pool settles a job: 'complete' (default),
+ * 'error' (onError), 'hold' (never settles until dispose), or 'throw' (the
+ * dispatch call itself throws, modelling an unexpected bug in the run loop).
+ */
+type JobBehavior = 'complete' | 'error' | 'hold' | 'throw';
+let jobBehavior: ((job: DispatchedJob, index: number) => JobBehavior) | null = null;
 
 /**
  * Per-call override for the fake pool's kernel results, so a test can hand
@@ -69,19 +86,31 @@ let kernelCallCount = 0;
 function createFakePool(): FakePool {
   const pool: FakePool = {
     jobs: [],
+    held: [],
     cancelCount: 0,
     disposeCount: 0,
     dispatch(job) {
+      const behavior = jobBehavior?.(job, pool.jobs.length) ?? 'complete';
+      if (behavior === 'throw') throw new Error('dispatch exploded');
       pool.jobs.push(job);
+      if (behavior === 'hold') {
+        pool.held.push(job);
+        return;
+      }
       // Resolve on a microtask so the iteration manager can continue its async
       // loop naturally (no synchronous re-entry from inside dispatch).
-      queueMicrotask(() => completeJob(job));
+      queueMicrotask(() =>
+        behavior === 'error' ? job.onError(`job ${job.jobId} failed`) : completeJob(job),
+      );
     },
     cancelAll() {
       pool.cancelCount++;
     },
     dispose() {
       pool.disposeCount++;
+      // Like the real pool: disposing settles outstanding jobs as cancelled.
+      const held = pool.held.splice(0);
+      for (const job of held) job.onCancelled();
     },
   };
   fakePool = pool;
@@ -317,10 +346,11 @@ describe('iteration-manager: startRun dispatch sequence', () => {
     expect(fakePool!.cancelCount).toBeGreaterThan(0);
   });
 
-  it('resetRun after completion disposes the pool', async () => {
+  it('disposes the pool when the run completes, and resetRun does not double-dispose', async () => {
     seedMinimalRun();
     await startRun();
     const pool = fakePool!;
+    expect(pool.disposeCount).toBe(1);
     resetRun();
     expect(pool.disposeCount).toBe(1);
     expect(runState()).toBe('idle');
@@ -434,5 +464,163 @@ describe('iteration-manager: only fits that resolved something get a vote', () =
     expect(Number.isFinite(last.tauDecay)).toBe(true);
     expect(last.tauDecay).toBeGreaterThan(0);
     expect(last.tauRise).toBeLessThan(last.tauDecay);
+  });
+});
+
+// ── Failure safety ─────────────────────────────────────────────────────────
+
+describe('iteration-manager: startRun is failure-safe', () => {
+  beforeEach(() => {
+    resetIterationState();
+    resetImport();
+  });
+
+  afterEach(() => {
+    resetRun();
+    resetImport();
+    fakePool = null;
+    jobBehavior = null;
+    kernelResultOverride = null;
+    kernelCallCount = 0;
+    setKernelFistaMaxIters(200);
+  });
+
+  /** Let queued microtasks (fake job completions) and their continuations run. */
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  it('a thrown error ends in runState "error" with a message and a disposed pool', async () => {
+    seedMinimalRun();
+    jobBehavior = () => 'throw';
+    await expect(startRun()).resolves.toBeUndefined(); // never rejects
+
+    expect(runState()).toBe('error');
+    expect(runPhase()).toBe('idle');
+    expect(runError()).toContain('dispatch exploded');
+    expect(fakePool!.disposeCount).toBe(1);
+  });
+
+  it('aborts with an error instead of falling back when every seed job fails', async () => {
+    seedMinimalRun();
+    jobBehavior = (job) => (job.kind === 'seed-trace' ? 'error' : 'complete');
+    await startRun();
+
+    expect(runState()).toBe('error');
+    const seedJobs = fakePool!.jobs.length;
+    expect(seedJobs).toBeGreaterThan(0);
+    expect(runError()).toContain(`${seedJobs} of ${seedJobs} seed-trace jobs failed`);
+    expect(failedJobs()).toBe(seedJobs);
+    // The run stopped at the seed phase: no kernel/trace jobs were dispatched.
+    expect(fakePool!.jobs.every((j) => j.kind === 'seed-trace')).toBe(true);
+    expect(fakePool!.disposeCount).toBe(1);
+  });
+
+  it('aborts when more than half of a later phase fails', async () => {
+    seedMinimalRun({ numCells: 4 });
+    jobBehavior = (job) => (job.kind === 'trace' ? 'error' : 'complete');
+    await startRun();
+
+    expect(runState()).toBe('error');
+    expect(runError()).toMatch(/(\d+) of \1 trace inference jobs failed/);
+    // Aborted in iteration 1: finalization never ran.
+    expect(convergenceHistory()).toHaveLength(1);
+  });
+
+  it('tolerates a minority of failed jobs and reports the count', async () => {
+    seedMinimalRun({ numCells: 4 });
+    let seedJobs = 0;
+    jobBehavior = (job) => (job.kind === 'seed-trace' && seedJobs++ === 0 ? 'error' : 'complete');
+    await startRun();
+
+    expect(runState()).toBe('complete');
+    expect(runError()).toBeNull();
+    expect(failedJobs()).toBe(1);
+  });
+
+  it('resetRun during a run: the old loop does not resume', async () => {
+    seedMinimalRun();
+    jobBehavior = () => 'hold';
+    const runPromise = startRun();
+    await flush();
+    expect(fakePool!.jobs.length).toBeGreaterThan(0);
+    const pool = fakePool!;
+    const dispatchedBeforeReset = pool.jobs.length;
+
+    resetRun();
+    await runPromise;
+    await flush();
+
+    expect(runState()).toBe('idle');
+    expect(runError()).toBeNull();
+    expect(convergenceHistory()).toEqual([]);
+    // Disposing settled the held jobs; the superseded loop dispatched nothing more.
+    expect(pool.jobs.length).toBe(dispatchedBeforeReset);
+    expect(pool.disposeCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('resetRun while stopping is safe', async () => {
+    seedMinimalRun();
+    jobBehavior = () => 'hold';
+    const runPromise = startRun();
+    await flush();
+    stopRun();
+    expect(runState()).toBe('stopping');
+
+    resetRun();
+    await runPromise;
+    expect(runState()).toBe('idle');
+  });
+
+  it('resetRun while paused wakes the loop and it unwinds', async () => {
+    seedMinimalRun();
+    setMaxIterations(5);
+    let paused = false;
+    jobBehavior = (job) => {
+      // Pause as soon as the seed phase is done so the loop parks on the pause gate.
+      if (!paused && job.kind === 'kernel') {
+        paused = true;
+        queueMicrotask(pauseRun);
+      }
+      return 'complete';
+    };
+    const runPromise = startRun();
+    await flush();
+    expect(runState()).toBe('paused');
+    const dispatched = fakePool!.jobs.length;
+
+    resetRun();
+    await runPromise;
+    expect(runState()).toBe('idle');
+    expect(fakePool!.jobs.length).toBe(dispatched);
+  });
+
+  it('snapshots solver settings at start: mid-run changes do not leak into the run', async () => {
+    seedMinimalRun();
+    setMaxIterations(3);
+    const original = kernelFistaMaxIters();
+    jobBehavior = (job) => {
+      // Change the setting as soon as the first job is dispatched.
+      if (job.kind === 'seed-trace') setKernelFistaMaxIters(original + 123);
+      return 'complete';
+    };
+    await startRun();
+
+    const kernelJobs = fakePool!.jobs.filter((j) => j.kind === 'kernel');
+    expect(kernelJobs.length).toBeGreaterThan(0);
+    for (const j of kernelJobs) {
+      if (j.kind === 'kernel') expect(j.maxIters).toBe(original);
+    }
+  });
+
+  it('stopping during the seed traces skips the seed kernel phase', async () => {
+    seedMinimalRun();
+    jobBehavior = (job) => {
+      if (job.kind === 'seed-trace') queueMicrotask(stopRun);
+      return 'complete';
+    };
+    await startRun();
+    expect(runState()).toBe('complete');
+    expect(fakePool!.jobs.some((j) => j.kind === 'kernel')).toBe(false);
   });
 });

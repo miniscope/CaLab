@@ -17,6 +17,8 @@ function statusLabel(state: RunState): string | null {
       return 'Stopping...';
     case 'complete':
       return 'Complete';
+    case 'error':
+      return 'Failed';
     default:
       return null;
   }

@@ -2,7 +2,7 @@
 // Watches selectedCells + global params, dispatches per-cell jobs through the worker pool.
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
-import { createEffect, on, onCleanup } from 'solid-js';
+import { createEffect, createSignal, on, onCleanup } from 'solid-js';
 import { currentTau, lambda, selectedCell, filterEnabled } from './viz-store.ts';
 import { parsedData, effectiveShape, swapped, samplingRate } from './data-store.ts';
 import {
@@ -50,6 +50,12 @@ interface CellSolveState {
 }
 
 let pool: WorkerPool<CaTunePoolJob> | null = null;
+
+// Set when every solver worker has died (e.g. WASM failed to load). By then the
+// pool has already failed every queued job, so affected cells show 'error';
+// this carries the one user-facing explanation.
+const [solverFatalError, setSolverFatalError] = createSignal<string | null>(null);
+export { solverFatalError };
 let jobCounter = 0;
 const cellStates = new Map<number, CellSolveState>();
 
@@ -408,8 +414,16 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 }
 
 export function initCellSolveManager(): void {
+  setSolverFatalError(null);
   pool = createCaTuneWorkerPool(
     () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
+    undefined,
+    {
+      onFatal(message) {
+        console.error('CaTune solver workers failed:', message);
+        setSolverFatalError(message);
+      },
+    },
   );
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves
@@ -443,21 +457,37 @@ export function initCellSolveManager(): void {
 
   // Effect 2: Watch global params — mark all cells stale, defer the rest.
   // During a slider drag this fires on every tick, so the synchronous body
-  // is kept minimal: null the fields a late worker callback reads to detect
-  // staleness, mark 'stale' (a no-op after tick 1 via the equality guard in
-  // updateOneCellStatus), and restart the debounce. The expensive work —
-  // worker cancel, padded-cache invalidation, re-dispatch — runs ~30ms after
-  // the last tick via debouncedParamTransition → dispatchCellSolve.
+  // is kept minimal: cancel the cell's queued/in-flight job (one queue splice
+  // or postMessage per cell; a no-op after tick 1 because cancelActiveJob
+  // nulls activeJobId, which also makes late callbacks from the superseded
+  // job fail the stale guard), null dispatchedParams, mark 'stale' (a no-op
+  // after tick 1 via the equality guard in updateOneCellStatus), and restart
+  // the debounce. The expensive work — padded-cache invalidation and
+  // re-dispatch — runs ~30ms after the last tick via
+  // debouncedParamTransition → dispatchCellSolve.
+  //
+  // The cancel must happen here, not in the later dispatchCellSolve: once
+  // activeJobId is null that call has nothing to cancel, so the superseded
+  // job would run its full quantum and, with more cells than workers, queue
+  // ahead of the fresh jobs.
+  //
+  // `defer: true` skips the initial run: Effect 1 already dispatched every
+  // cell with the current params, so running here on mount would cancel and
+  // re-solve every cell's first quantum.
   createEffect(
-    on([currentTau, lambda, filterEnabled], () => {
-      if (cellStates.size === 0) return;
-      for (const state of cellStates.values()) {
-        state.activeJobId = null;
-        state.dispatchedParams = null;
-        updateOneCellStatus(state.cellIndex, 'stale');
-        debouncedParamTransition(state);
-      }
-    }),
+    on(
+      [currentTau, lambda, filterEnabled],
+      () => {
+        if (cellStates.size === 0) return;
+        for (const state of cellStates.values()) {
+          cancelActiveJob(state);
+          state.dispatchedParams = null;
+          updateOneCellStatus(state.cellIndex, 'stale');
+          debouncedParamTransition(state);
+        }
+      },
+      { defer: true },
+    ),
   );
 
   onCleanup(disposeCellSolveManager);
