@@ -52,23 +52,84 @@
 --   extra_metadata JSONB DEFAULT '{}'::jsonb,
 --
 --   -- Constraints
---   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training'))
+--   -- Every client-supplied column needs a CHECK (see 014): the anon key can
+--   -- send anything PostgREST accepts, including 'NaN'/'Infinity' for
+--   -- float8. Postgres orders NaN above every number, so keep float checks
+--   -- TWO-SIDED (finite upper bound rejects NaN/+Inf, lower bound -Inf).
+--   -- Add CHECKs for your app-specific columns too.
+--   CONSTRAINT valid_data_source CHECK (data_source IN ('user', 'demo', 'training', 'bridge')),
+--   CONSTRAINT valid_indicator_len CHECK (length(indicator) <= 128),
+--   CONSTRAINT valid_species_len CHECK (length(species) <= 128),
+--   CONSTRAINT valid_brain_region_len CHECK (length(brain_region) <= 128),
+--   CONSTRAINT valid_microscope_type_len CHECK (length(microscope_type) <= 128),
+--   CONSTRAINT valid_cell_type_len CHECK (length(cell_type) <= 128),
+--   CONSTRAINT valid_virus_construct_len CHECK (length(virus_construct) <= 256),
+--   CONSTRAINT valid_lab_name_len CHECK (length(lab_name) <= 256),
+--   CONSTRAINT valid_notes_len CHECK (length(notes) <= 2000),
+--   CONSTRAINT valid_dataset_hash_len CHECK (length(dataset_hash) <= 128),
+--   CONSTRAINT valid_app_version_len CHECK (length(app_version) <= 64),
+--   CONSTRAINT valid_orcid CHECK (
+--     orcid ~ '^(https?://orcid\.org/)?[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$'
+--   ),
+--   CONSTRAINT valid_time_since_injection_days CHECK (
+--     time_since_injection_days >= 0 AND time_since_injection_days <= 10000
+--   ),
+--   CONSTRAINT valid_num_cells CHECK (num_cells >= 0 AND num_cells <= 10000000),
+--   CONSTRAINT valid_recording_length_s CHECK (
+--     recording_length_s >= 0 AND recording_length_s <= 10000000
+--   ),
+--   CONSTRAINT valid_fps CHECK (fps > 0 AND fps <= 10000),
+--   CONSTRAINT valid_imaging_depth_um CHECK (
+--     imaging_depth_um >= 0 AND imaging_depth_um <= 20000
+--   ),
+--   CONSTRAINT valid_extra_metadata CHECK (
+--     jsonb_typeof(extra_metadata) = 'object' AND length(extra_metadata::text) <= 4096
+--   )
 -- );
 --
 -- -- Enable RLS
 -- ALTER TABLE <app>_submissions ENABLE ROW LEVEL SECURITY;
 --
--- -- Anyone can read (community browsing)
--- CREATE POLICY "Public read access"
+-- -- Base-table reads are owner-or-admin only (free-text PII such as orcid,
+-- -- lab_name and notes must not leak; see 010).
+-- CREATE POLICY "Owner and admin read access"
 -- ON <app>_submissions FOR SELECT
 -- TO anon, authenticated
--- USING (true);
+-- USING ((select auth.uid()) = user_id OR public.is_admin());
 --
--- -- Only authenticated users can insert
+-- -- Community browsing reads a PII-free projection. It runs as the view
+-- -- owner (security_invoker = false) so every contributor's row is visible,
+-- -- which also means base-table RLS does NOT apply to writes through it and
+-- -- Postgres treats it as auto-updatable. Supabase's default privileges
+-- -- grant ALL on new views to anon/authenticated, so the REVOKE below is
+-- -- REQUIRED — without it anyone with the anon key can INSERT/UPDATE/DELETE
+-- -- through the view (see 011).
+-- CREATE VIEW <app>_submissions_public
+-- WITH (security_invoker = false) AS
+-- SELECT
+--   id, created_at, user_id,
+--   -- <app-specific columns>,
+--   indicator, species, brain_region,
+--   virus_construct, time_since_injection_days,
+--   num_cells, recording_length_s, fps,
+--   dataset_hash, app_version, data_source,
+--   microscope_type, imaging_depth_um, cell_type,
+--   extra_metadata
+-- FROM <app>_submissions;
+--
+-- REVOKE ALL ON <app>_submissions_public FROM anon, authenticated, PUBLIC;
+-- GRANT SELECT ON <app>_submissions_public TO anon, authenticated;
+--
+-- -- Only real (non-anonymous) signed-in users can insert. Anonymous-auth
+-- -- users (signInAnonymously, used for analytics) also carry the
+-- -- `authenticated` role, so the is_anonymous claim must be checked (see 012).
 -- CREATE POLICY "Authenticated users can submit"
 -- ON <app>_submissions FOR INSERT
 -- TO authenticated
--- WITH CHECK ((select auth.uid()) = user_id);
+-- WITH CHECK (
+--   (select auth.uid()) = user_id
+--   AND coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
+-- );
 --
 -- -- Users can only delete their own submissions
 -- CREATE POLICY "Users can delete own submissions"

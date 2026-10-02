@@ -17,8 +17,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   lists all five fixtures and the tolerances each consumer actually uses; the
   CaTune `smoke.test.ts` is renamed to `kernel-shape-roundtrip.test.ts`, which
   is what it tests
+### Changed
+
+- **README** the "no data upload" claim now states precisely what is collected:
+  trace data never leaves the browser, anonymous usage analytics are collected
+  via Supabase, and community sharing is explicit and opt-in
 
 ### Fixed
+
+- **CaTune** moving a parameter slider orphaned every cell's in-flight solver
+  job instead of cancelling it: the job ran its full quantum, its result was
+  discarded, and with more cells than workers the orphans queued ahead of the
+  fresh jobs. On initial load every cell's first quantum was also solved twice.
+  Superseded jobs are now cancelled on the first tick of a parameter change,
+  and the parameter watcher no longer fires on mount
 
 - **CaDecon** the bi-exponential kernel fit reported **cold-grid preset values**
   for `tau_rise`/`tau_decay` instead of measured ones. `golden_bracket` returned
@@ -32,10 +44,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   its input; the fixed 10 iterations become a relative-width tolerance.
 
   **Reported time constants change.** Measured against synthetic ground truth,
+
   recovered `tau_decay` error improves from 0.5% to 0.0% on the single-component
+
   fixture and 0.4% to 0.05% on the two-component fixture. For values falling
+
   between grid nodes the pre-fix error reached 12.88% (the grid's worst case);
+
   results produced before this release are quantised to the 20 cold-grid nodes
+
   and are not comparable with results produced after it (PR #176)
 
 - **CaDecon** `tau_rise` refinement was not clamped to the grid's upper bound,
@@ -48,6 +65,39 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   decimal map, the tick then rounds to zero, and the loop never exits — throwing
   `RangeError: Invalid array length` and killing the page. Replaced with a
   bounded `logSplits` (PR #176)
+
+### Security
+
+- **Supabase** the community `catune_submissions_public` and
+  `cadecon_submissions_public` views (migration 010) run with their owner's
+  privileges and are auto-updatable, and Supabase's default privileges grant
+  `anon`/`authenticated` ALL on new views, so anyone holding the public anon key
+  could insert forged submissions or rewrite/delete every submission through
+  them, bypassing RLS. Migration 011 revokes everything but `SELECT` on both
+  views. The RLS test harness now mirrors Supabase's real default grants, and
+  `assert_denied` requires a specific SQLSTATE instead of accepting any error
+
+- **Supabase** anonymous-auth visitors (every app signs in anonymously at load
+  for analytics) carry the `authenticated` role and could post community
+  submissions without ever entering an email. Migration 012 requires
+  `is_anonymous = false` in the JWT for submission inserts; `subscribeAuth`
+  and `AuthGate` now treat anonymous sessions as signed out, so the email
+  sign-in prompt is shown
+
+- **Supabase** clients could insert `analytics_sessions` rows directly and
+  choose `country_code`, `region`, `is_anonymous`, `created_at`, and rewrite
+  any column of their own sessions. Migration 013 makes the geo-session edge
+  function the only way to create a session, restricts client updates to
+  `ended_at`/`duration_seconds`, and caps each session at 500 events
+
+- **Supabase** submission columns other than the kernel parameters were
+  unvalidated server-side: negative counts, `NaN`/`Infinity` floats, unbounded
+  text, and an unbounded `extra_metadata` that is republished to every visitor.
+  Migration 014 adds length caps, two-sided finite range checks, an ORCID
+  format check and a 4 KB `extra_metadata` cap, and aligns CaTune's
+  `lambda`/`sampling_rate` minimums with the client. Constraints are added
+  `NOT VALID`; existing rows must be checked and the constraints validated
+  manually
 
 ## [2.7.2] - 2026-08-27
 

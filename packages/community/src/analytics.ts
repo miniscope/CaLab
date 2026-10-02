@@ -6,6 +6,11 @@
 // sign in anonymously (Supabase's built-in anonymous auth) before the
 // first session write so every insert / update carries a JWT whose `sub`
 // matches the session's owner column.
+//
+// Sessions are created ONLY by the geo-session Edge Function (service_role);
+// since migration 013 the database rejects direct client inserts. If the
+// function call fails, analytics are skipped for this page load. Clients may
+// afterwards update only `ended_at` / `duration_seconds` on their own row.
 
 import { getSupabase, supabaseEnabled, supabaseUrl, supabaseAnonKey } from './supabase.ts';
 

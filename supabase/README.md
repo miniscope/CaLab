@@ -8,15 +8,19 @@ usage analytics, and admin moderation.
 Each CaLab app has its own submissions table (e.g., `catune_submissions`).
 All tables share a common set of base columns defined in `000_base_template.sql`.
 
-| Migration                         | Purpose                                                                          |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| `000_base_template.sql`           | **Template only** (not executed). Copy and extend for new apps.                  |
-| `001_catune_submissions.sql`      | CaTune submissions table with deconvolution-specific columns.                    |
-| `002_field_options.sql`           | Shared canonical field options lookup table.                                     |
-| `003_analytics.sql`               | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.  |
-| `004_admin_role.sql`              | `is_admin()` helper function and admin moderation policies.                      |
-| `005`–`009`                       | CaDecon table, bridge data source, analytics hardening, and tighter constraints. |
-| `010_restrict_submission_pii.sql` | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.  |
+| Migration                              | Purpose                                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `000_base_template.sql`                | **Template only** (not executed). Copy and extend for new apps.                                                           |
+| `001_catune_submissions.sql`           | CaTune submissions table with deconvolution-specific columns.                                                             |
+| `002_field_options.sql`                | Shared canonical field options lookup table.                                                                              |
+| `003_analytics.sql`                    | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.                                           |
+| `004_admin_role.sql`                   | `is_admin()` helper function and admin moderation policies.                                                               |
+| `005`–`009`                            | CaDecon table, bridge data source, analytics hardening, and tighter constraints.                                          |
+| `010_restrict_submission_pii.sql`      | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.                                           |
+| `011_revoke_public_view_writes.sql`    | Makes the `*_public` views SELECT-only for `anon`/`authenticated` (no writes through the views).                          |
+| `012_block_anonymous_submissions.sql`  | Submission INSERT requires a real (non-anonymous) sign-in.                                                                |
+| `013_lock_analytics_writes.sql`        | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap. |
+| `014_validate_submission_payloads.sql` | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                        |
 
 ## Applying migrations
 
