@@ -170,8 +170,8 @@ impl BiexpResult {
 ///
 /// Uses a 20×20×(5×8+1) grid search over (tau_r, tau_d, tau_r_fast, tau_d_fast)
 /// with 2-variable NNLS at each grid point, followed by optional golden-section
-/// refinement. When `warm_start` is provided, skips the grid and refines directly
-/// from the previous result's parameters.
+/// refinement. The cold grid always runs; when `warm_start` is provided its
+/// parameters are refined as an additional candidate and the best fit wins.
 ///
 /// Arguments:
 /// - `h_free`: the free-form kernel to fit (from estimate_free_kernel)

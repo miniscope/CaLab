@@ -2,7 +2,11 @@ import { createSignal, createMemo } from 'solid-js';
 
 // --- Types ---
 
-export type RunState = 'idle' | 'running' | 'paused' | 'stopping' | 'complete';
+/**
+ * 'complete' covers both a finished run and one the user stopped early (partial
+ * results are kept). 'error' means the run aborted; `runError` says why.
+ */
+export type RunState = 'idle' | 'running' | 'paused' | 'stopping' | 'complete' | 'error';
 export type RunPhase = 'idle' | 'inference' | 'kernel-update' | 'merge' | 'finalization';
 
 export interface SubsetKernelSnapshot {
@@ -120,11 +124,17 @@ const [perTraceResults, setPerTraceResults] = createSignal<Record<string, TraceR
 const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 const [runPhase, setRunPhase] = createSignal<RunPhase>('idle');
 const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | null>(null);
+/** User-facing reason the last run failed (worker pool died, too many job failures, or a thrown error). null while healthy. */
+const [runError, setRunError] = createSignal<string | null>(null);
+/** Solver jobs that failed in the current run (below the abort threshold the run continues without them). */
+const [failedJobs, setFailedJobs] = createSignal(0);
 
 // --- Derived ---
 
-/** True when the algorithm is actively running (not idle or complete). */
-const isRunLocked = createMemo(() => runState() !== 'idle' && runState() !== 'complete');
+/** True when the algorithm is actively running (not idle, complete, or failed). */
+const isRunLocked = createMemo(
+  () => runState() !== 'idle' && runState() !== 'complete' && runState() !== 'error',
+);
 
 const progress = createMemo(() => {
   const total = totalSubsetTraceJobs();
@@ -176,6 +186,8 @@ function resetIterationState(): void {
   setDebugTraceSnapshots([]);
   setConvergedAtIteration(null);
   setIterationHistory([]);
+  setRunError(null);
+  setFailedJobs(0);
 }
 
 /** Snapshot current perTraceResults into the iteration history.
@@ -225,6 +237,10 @@ export {
   setRunPhase,
   convergedAtIteration,
   setConvergedAtIteration,
+  runError,
+  setRunError,
+  failedJobs,
+  setFailedJobs,
   alphaValues,
   pveValues,
   cellResultLookup,

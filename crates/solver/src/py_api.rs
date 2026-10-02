@@ -3,13 +3,25 @@ use pyo3::prelude::*;
 
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::simulate;
-use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver};
+use crate::validate;
+use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver, SolverError};
 
 const BATCH_SIZE: u32 = 100;
 const CONTIGUOUS_ERR: &str =
     "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
 
 const NONFINITE_ERR: &str = "input array contains a non-finite value (NaN or infinity)";
+
+/// Map a core validation/numerical error to the matching Python exception:
+/// bad parameters or inputs raise `ValueError`, numerical failures `RuntimeError`.
+fn py_err(e: SolverError) -> PyErr {
+    match e {
+        SolverError::InvalidParams(_) | SolverError::InvalidInput(_) => {
+            pyo3::exceptions::PyValueError::new_err(e.to_string())
+        }
+        SolverError::Numerical(_) => pyo3::exceptions::PyRuntimeError::new_err(e.to_string()),
+    }
+}
 
 /// Convert a numpy f64 array to a Vec<f32>, validating contiguity and finiteness.
 fn to_f32_vec(arr: &PyReadonlyArray1<f64>) -> PyResult<Vec<f32>> {
@@ -51,13 +63,14 @@ fn parse_constraint(s: &str) -> PyResult<Constraint> {
 }
 
 /// Run the solver in batches until convergence or max_iters is reached.
-fn run_to_convergence(solver: &mut Solver, max_iters: u32) {
+fn run_to_convergence(solver: &mut Solver, max_iters: u32) -> PyResult<()> {
     let n_batches = max_iters.div_ceil(BATCH_SIZE);
     for _ in 0..n_batches {
-        if solver.step_batch(BATCH_SIZE) {
+        if solver.step_batch(BATCH_SIZE).map_err(py_err)? {
             break;
         }
     }
+    Ok(())
 }
 
 /// Python-facing wrapper around the Rust FISTA Solver.
@@ -78,8 +91,13 @@ impl PySolver {
     }
 
     /// Set solver parameters and rebuild kernel.
-    fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) {
-        self.inner.set_params(tau_rise, tau_decay, lambda, fs);
+    ///
+    /// Raises ValueError unless fs > 0, 0 < tau_rise < tau_decay, lambda >= 0
+    /// (all finite) and the implied kernel is within the length cap.
+    fn set_params(&mut self, tau_rise: f64, tau_decay: f64, lambda: f64, fs: f64) -> PyResult<()> {
+        self.inner
+            .set_params(tau_rise, tau_decay, lambda, fs)
+            .map_err(py_err)
     }
 
     /// Load a trace (numpy float32 array) for deconvolution.
@@ -87,24 +105,18 @@ impl PySolver {
         let slice = trace
             .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-        if let Some(i) = crate::first_nonfinite(slice) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{NONFINITE_ERR} at index {i}"
-            )));
-        }
-        self.inner.set_trace(slice);
-        Ok(())
+        self.inner.set_trace(slice).map_err(py_err)
     }
 
     /// Run n FISTA iterations. Returns true if converged.
-    fn step_batch(&mut self, n_steps: u32) -> bool {
-        self.inner.step_batch(n_steps)
+    fn step_batch(&mut self, n_steps: u32) -> PyResult<bool> {
+        self.inner.step_batch(n_steps).map_err(py_err)
     }
 
     /// Run solver to convergence (up to max_iters). Returns iterations run.
-    fn solve(&mut self, max_iters: u32) -> u32 {
-        run_to_convergence(&mut self.inner, max_iters);
-        self.inner.iteration_count()
+    fn solve(&mut self, max_iters: u32) -> PyResult<u32> {
+        run_to_convergence(&mut self.inner, max_iters)?;
+        Ok(self.inner.iteration_count())
     }
 
     /// Get the deconvolved activity (non-negative spike train).
@@ -200,9 +212,10 @@ fn py_build_kernel<'py>(
     tau_rise: f64,
     tau_decay: f64,
     fs: f64,
-) -> Bound<'py, PyArray1<f32>> {
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    validate::validate_params(tau_rise, tau_decay, 0.0, fs).map_err(py_err)?;
     let kernel = build_kernel(tau_rise, tau_decay, fs);
-    PyArray1::from_vec(py, kernel)
+    Ok(PyArray1::from_vec(py, kernel))
 }
 
 /// Compute Lipschitz constant for a kernel.
@@ -214,19 +227,99 @@ fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> PyResult<f64> {
     Ok(compute_lipschitz(slice))
 }
 
-/// Configure solver conv_mode and constraint from string args.
-fn configure_solver_options(
-    solver: &mut Solver,
+/// One deconvolution result, in the caller's (input-trace) frame.
+struct FrameResult {
+    activity: Vec<f32>,
+    baseline: f64,
+    reconvolution: Vec<f32>,
+    iterations: u32,
+    converged: bool,
+}
+
+/// Build a solver for the one-shot deconvolution entry points.
+fn one_shot_solver(
+    tau_rise: f64,
+    tau_decay: f64,
+    lambda: f64,
+    fs: f64,
     conv_mode: &str,
     constraint: &str,
-) -> PyResult<()> {
+    hp_enabled: bool,
+    lp_enabled: bool,
+) -> PyResult<Solver> {
+    let mut solver = Solver::new();
+    solver
+        .set_params(tau_rise, tau_decay, lambda, fs)
+        .map_err(py_err)?;
     solver.set_conv_mode(parse_conv_mode(conv_mode)?);
     solver.set_constraint(parse_constraint(constraint)?);
-    Ok(())
+    if hp_enabled || lp_enabled {
+        solver.set_hp_filter_enabled(hp_enabled);
+        solver.set_lp_filter_enabled(lp_enabled);
+    }
+    Ok(solver)
+}
+
+/// Solve one trace and report the fit in the caller's frame.
+///
+/// The solver works on the trace with its rolling-percentile baseline removed
+/// (`subtract_baseline`), so its own baseline / reconvolution are relative to
+/// that subtracted trace. Here the removed baseline is added back:
+///
+/// - `reconvolution = K*s + b_fit + b_roll(t)`: the full model fit to the
+///   input trace (to the filtered trace if HP/LP filtering is enabled),
+///   including the slowly varying rolling baseline `b_roll`.
+/// - `baseline = b_fit + mean(b_roll)`: the scalar baseline in input units —
+///   for a trace with a constant offset, ≈ that offset.
+///
+/// Touches no Python objects, so it runs with the GIL released.
+fn solve_in_input_frame(
+    solver: &mut Solver,
+    trace: &[f32],
+    filter: bool,
+    max_iters: u32,
+) -> Result<FrameResult, SolverError> {
+    solver.set_trace(trace)?;
+    if filter {
+        solver.apply_filter();
+    }
+    let before = solver.get_trace();
+    solver.subtract_baseline();
+    let after = solver.get_trace();
+
+    let n_batches = max_iters.div_ceil(BATCH_SIZE);
+    for _ in 0..n_batches {
+        if solver.step_batch(BATCH_SIZE)? {
+            break;
+        }
+    }
+
+    let mut reconvolution = solver.get_reconvolution_with_baseline();
+    let mut removed_sum = 0.0_f64;
+    for ((r, &b), &a) in reconvolution.iter_mut().zip(&before).zip(&after) {
+        let removed = b - a;
+        *r += removed;
+        removed_sum += removed as f64;
+    }
+    let removed_mean = if before.is_empty() {
+        0.0
+    } else {
+        removed_sum / before.len() as f64
+    };
+
+    Ok(FrameResult {
+        activity: solver.get_solution(),
+        baseline: solver.get_baseline() + removed_mean,
+        reconvolution,
+        iterations: solver.iteration_count(),
+        converged: solver.converged(),
+    })
 }
 
 /// One-shot deconvolution for a single 1D trace.
-/// Returns (activity, baseline, reconvolution, iterations, converged).
+/// Returns (activity, baseline, reconvolution, iterations, converged), with
+/// `baseline` and `reconvolution` in the input trace's frame (see
+/// `solve_in_input_frame`).
 #[pyfunction]
 #[pyo3(signature = (trace, fs, tau_rise, tau_decay, lambda_, hp_enabled=false, lp_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_single<'py>(
@@ -248,34 +341,28 @@ fn deconvolve_single<'py>(
     u32,
     bool,
 )> {
-    let mut solver = Solver::new();
-    solver.set_params(tau_rise, tau_decay, lambda_, fs);
-    configure_solver_options(&mut solver, conv_mode, constraint)?;
-
+    let mut solver = one_shot_solver(
+        tau_rise, tau_decay, lambda_, fs, conv_mode, constraint, hp_enabled, lp_enabled,
+    )?;
     let trace_f32 = to_f32_vec(&trace)?;
-    solver.set_trace(&trace_f32);
+    let filter = hp_enabled || lp_enabled;
 
-    if hp_enabled || lp_enabled {
-        solver.set_hp_filter_enabled(hp_enabled);
-        solver.set_lp_filter_enabled(lp_enabled);
-        solver.apply_filter();
-    }
-
-    solver.subtract_baseline();
-
-    run_to_convergence(&mut solver, max_iters);
+    let r = py
+        .allow_threads(|| solve_in_input_frame(&mut solver, &trace_f32, filter, max_iters))
+        .map_err(py_err)?;
 
     Ok((
-        PyArray1::from_vec(py, solver.get_solution()),
-        solver.get_baseline(),
-        PyArray1::from_vec(py, solver.get_reconvolution_with_baseline()),
-        solver.iteration_count(),
-        solver.converged(),
+        PyArray1::from_vec(py, r.activity),
+        r.baseline,
+        PyArray1::from_vec(py, r.reconvolution),
+        r.iterations,
+        r.converged,
     ))
 }
 
 /// Batch deconvolution for a 2D array of traces (n_cells x n_timepoints).
-/// Returns (activities, baselines, reconvolutions, iterations, convergeds).
+/// Returns (activities, baselines, reconvolutions, iterations, convergeds),
+/// with baselines / reconvolutions in the input frame (see `deconvolve_single`).
 #[pyfunction]
 #[pyo3(signature = (traces, fs, tau_rise, tau_decay, lambda_, hp_enabled=false, lp_enabled=false, max_iters=2000, conv_mode="fft", constraint="nonneg"))]
 fn deconvolve_batch<'py>(
@@ -298,53 +385,47 @@ fn deconvolve_batch<'py>(
     Vec<bool>,
 )> {
     let shape = traces.shape();
-    let n_cells = shape[0];
+    let (n_cells, n_timepoints) = (shape[0], shape[1]);
 
-    let mut solver = Solver::new();
-    solver.set_params(tau_rise, tau_decay, lambda_, fs);
-    configure_solver_options(&mut solver, conv_mode, constraint)?;
+    let mut solver = one_shot_solver(
+        tau_rise, tau_decay, lambda_, fs, conv_mode, constraint, hp_enabled, lp_enabled,
+    )?;
+    let filter = hp_enabled || lp_enabled;
 
-    if hp_enabled || lp_enabled {
-        solver.set_hp_filter_enabled(hp_enabled);
-        solver.set_lp_filter_enabled(lp_enabled);
+    // Copy the rows out (as f32, half the input's size) so the solve loop can
+    // run with the GIL released without borrowing numpy memory.
+    let traces_ref = traces.as_array();
+    let mut rows: Vec<Vec<f32>> = Vec::with_capacity(n_cells);
+    for cell_idx in 0..n_cells {
+        let row: Vec<f32> = traces_ref.row(cell_idx).iter().map(|&v| v as f32).collect();
+        if let Some(i) = crate::first_nonfinite(&row) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{NONFINITE_ERR} at row {cell_idx}, index {i}"
+            )));
+        }
+        rows.push(row);
     }
+    debug_assert!(rows.iter().all(|r| r.len() == n_timepoints));
+
+    let results = py
+        .allow_threads(|| {
+            rows.iter()
+                .map(|row| solve_in_input_frame(&mut solver, row, filter, max_iters))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(py_err)?;
 
     let mut activities = Vec::with_capacity(n_cells);
     let mut baselines = Vec::with_capacity(n_cells);
     let mut reconvolutions = Vec::with_capacity(n_cells);
     let mut iterations = Vec::with_capacity(n_cells);
     let mut convergeds = Vec::with_capacity(n_cells);
-
-    let traces_ref = traces.as_array();
-    let n_timepoints = shape[1];
-    let mut trace_f32: Vec<f32> = Vec::with_capacity(n_timepoints);
-
-    for cell_idx in 0..n_cells {
-        trace_f32.clear();
-        trace_f32.extend(traces_ref.row(cell_idx).iter().map(|&v| v as f32));
-        if let Some(i) = crate::first_nonfinite(&trace_f32) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{NONFINITE_ERR} at row {cell_idx}, index {i}"
-            )));
-        }
-        solver.set_trace(&trace_f32);
-
-        if hp_enabled || lp_enabled {
-            solver.apply_filter();
-        }
-
-        solver.subtract_baseline();
-
-        run_to_convergence(&mut solver, max_iters);
-
-        activities.push(PyArray1::from_vec(py, solver.get_solution()));
-        baselines.push(solver.get_baseline());
-        reconvolutions.push(PyArray1::from_vec(
-            py,
-            solver.get_reconvolution_with_baseline(),
-        ));
-        iterations.push(solver.iteration_count());
-        convergeds.push(solver.converged());
+    for r in results {
+        activities.push(PyArray1::from_vec(py, r.activity));
+        baselines.push(r.baseline);
+        reconvolutions.push(PyArray1::from_vec(py, r.reconvolution));
+        iterations.push(r.iterations);
+        convergeds.push(r.converged);
     }
 
     Ok((
@@ -366,6 +447,7 @@ fn py_seed_trace<'py>(
     fs: f64,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, f64, f64)> {
     let trace_f32 = to_f32_vec(&trace)?;
+    validate::validate_fs(fs).map_err(py_err)?;
     let result = crate::peak_seed::seed_trace(&trace_f32, fs);
     Ok((
         PyArray1::from_vec(py, result.s_counts),
@@ -399,6 +481,7 @@ fn seed_kernel_estimate<'py>(
     usize,
     String,
 )> {
+    validate::validate_fs(fs).map_err(py_err)?;
     let shape = traces.shape();
     let n_cells = shape[0];
     let n_timepoints = shape[1];
@@ -466,21 +549,34 @@ fn py_indeca_solve_trace<'py>(
 )> {
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
-
-    let result = indeca::solve_trace_opts(
-        &trace_f32,
+    validate::validate_indeca_params(
+        trace_f32.len(),
         tau_rise,
         tau_decay,
         fs,
         upsample_factor,
-        max_iters,
-        tol,
-        warm.as_deref(),
-        hp_enabled,
-        lp_enabled,
         lambda_,
-        indeca::SolveOptions { noise_constrained },
-    );
+        tol,
+    )
+    .map_err(py_err)?;
+
+    // Pure Rust on owned buffers: release the GIL for the solve.
+    let result = py.allow_threads(|| {
+        indeca::solve_trace_opts(
+            &trace_f32,
+            tau_rise,
+            tau_decay,
+            fs,
+            upsample_factor,
+            max_iters,
+            tol,
+            warm.as_deref(),
+            hp_enabled,
+            lp_enabled,
+            lambda_,
+            indeca::SolveOptions { noise_constrained },
+        )
+    });
 
     Ok((
         PyArray1::from_vec(py, result.s_counts),
@@ -517,7 +613,9 @@ fn py_indeca_estimate_kernel<'py>(
     let lengths_slice = trace_lengths
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
-    let lengths: Vec<usize> = lengths_slice.iter().map(|&v| v as usize).collect();
+    // Reject negatives: `v as usize` wrapped -1 to usize::MAX, the length sum
+    // wrapped back around, passed the consistency check, then indexing panicked.
+    let lengths = validate::lengths_from_i64(lengths_slice).map_err(py_err)?;
 
     let alphas_slice = alphas
         .as_slice()
@@ -528,32 +626,40 @@ fn py_indeca_estimate_kernel<'py>(
 
     let warm = optional_to_f32_vec(warm_kernel)?;
 
-    // Validate array-length consistency before handing off, so a caller mistake
-    // surfaces as a clear ValueError instead of a Rust panic across the FFI.
-    let total_len: usize = lengths.iter().sum();
-    if alphas_slice.len() != lengths.len() || baselines_slice.len() != lengths.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "alphas and baselines must have one entry per trace (len == trace_lengths.len())",
-        ));
-    }
-    if traces_f32.len() != total_len || spikes_f32.len() != total_len {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "traces_flat and spikes_flat length must equal sum(trace_lengths)",
-        ));
-    }
-
-    let result = kernel_est::estimate_free_kernel(
+    // Shared with the WASM binding: array-length consistency, finiteness of
+    // every array (alphas/baselines included), and kernel_length bounds, so a
+    // caller mistake surfaces as a clear ValueError instead of a Rust panic.
+    validate::validate_kernel_estimate_inputs(
         &traces_f32,
         &spikes_f32,
+        &lengths,
         alphas_slice,
         baselines_slice,
-        &lengths,
         kernel_length,
-        max_iters,
         tol,
         warm.as_deref(),
         smooth_lambda,
-    );
+    )
+    .map_err(py_err)?;
+
+    // Copy the (per-trace, small) numpy-backed slices so the GIL-free solve
+    // never reads memory another Python thread could mutate.
+    let alphas_v = alphas_slice.to_vec();
+    let baselines_v = baselines_slice.to_vec();
+    let result = py.allow_threads(|| {
+        kernel_est::estimate_free_kernel(
+            &traces_f32,
+            &spikes_f32,
+            &alphas_v,
+            &baselines_v,
+            &lengths,
+            kernel_length,
+            max_iters,
+            tol,
+            warm.as_deref(),
+            smooth_lambda,
+        )
+    });
 
     Ok(PyArray1::from_vec(py, result))
 }
@@ -564,6 +670,7 @@ fn py_indeca_estimate_kernel<'py>(
 #[pyfunction]
 #[pyo3(signature = (h_free, fs, refine=true, skip=0, warm_tau_rise=0.0, warm_tau_decay=0.0, warm_tau_rise_fast=0.0, warm_tau_decay_fast=0.0, warm_beta=0.0, warm_beta_fast=0.0, warm_residual=f64::INFINITY, use_warm=false))]
 fn py_indeca_fit_biexponential(
+    py: Python<'_>,
     h_free: PyReadonlyArray1<f64>,
     fs: f64,
     refine: bool,
@@ -579,23 +686,23 @@ fn py_indeca_fit_biexponential(
 ) -> PyResult<(f64, f64, f64, f64, f64, f64, f64, String)> {
     let h_f32 = to_f32_vec(&h_free)?;
 
-    let warm_start = if use_warm {
-        Some(biexp_fit::BiexpResult {
-            tau_rise: warm_tau_rise,
-            tau_decay: warm_tau_decay,
-            beta: warm_beta,
-            residual: warm_residual,
-            tau_rise_fast: warm_tau_rise_fast,
-            tau_decay_fast: warm_tau_decay_fast,
-            beta_fast: warm_beta_fast,
-            // Placeholder; fit_biexponential reclassifies the returned result.
-            fit_mode: biexp_fit::FitMode::default(),
-        })
-    } else {
-        None
-    };
+    let warm_start = validate::biexp_fit_inputs(
+        &h_f32,
+        fs,
+        use_warm,
+        warm_tau_rise,
+        warm_tau_decay,
+        warm_tau_rise_fast,
+        warm_tau_decay_fast,
+        warm_beta,
+        warm_beta_fast,
+        warm_residual,
+    )
+    .map_err(py_err)?;
 
-    let result = biexp_fit::fit_biexponential(&h_f32, fs, refine, skip, warm_start.as_ref());
+    let result = py.allow_threads(|| {
+        biexp_fit::fit_biexponential(&h_f32, fs, refine, skip, warm_start.as_ref())
+    });
 
     Ok((
         result.tau_rise,
@@ -611,8 +718,9 @@ fn py_indeca_fit_biexponential(
 
 /// Compute the upsample factor for a given sampling rate and target rate.
 #[pyfunction]
-fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> usize {
-    upsample::compute_upsample_factor(fs, target_fs)
+fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> PyResult<usize> {
+    validate::validate_upsample_rates(fs, target_fs).map_err(py_err)?;
+    Ok(upsample::compute_upsample_factor(fs, target_fs))
 }
 
 /// Generate synthetic calcium traces from a JSON config string.

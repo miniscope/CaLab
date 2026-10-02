@@ -97,7 +97,12 @@ pub fn threshold_search_opts(
         return ThresholdResult {
             s_binary: vec![0.0; n],
             alpha: 0.0,
-            baseline: y.iter().map(|&v| v as f64).sum::<f64>() / n as f64,
+            // Guard the empty trace: 0/0 would report a NaN baseline.
+            baseline: if n == 0 {
+                0.0
+            } else {
+                y.iter().map(|&v| v as f64).sum::<f64>() / n as f64
+            },
             threshold: 0.0,
             pve: 0.0,
             error: f64::INFINITY,

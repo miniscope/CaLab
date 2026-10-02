@@ -54,7 +54,7 @@ export function TraceOverview(props: TraceOverviewProps) {
     const fs = props.samplingRate;
     const rows = numRows();
     const samplesPerRow = Math.floor(ROW_DURATION_S * fs);
-    const result: { dsX: number[]; dsY: number[]; timeOffset: number }[] = [];
+    const result: { dsX: number[]; dsY: (number | null)[]; timeOffset: number }[] = [];
 
     for (let r = 0; r < rows; r++) {
       const start = r * samplesPerRow;
@@ -102,6 +102,7 @@ export function TraceOverview(props: TraceOverviewProps) {
     let globalMax = -Infinity;
     for (const row of rows) {
       for (const v of row.dsY) {
+        if (v === null) continue;
         if (v < globalMin) globalMin = v;
         if (v > globalMax) globalMax = v;
       }
@@ -185,12 +186,20 @@ export function TraceOverview(props: TraceOverviewProps) {
       ctx.lineWidth = 1;
       ctx.beginPath();
 
+      let penDown = false;
       for (let i = 0; i < row.dsX.length; i++) {
+        const y = row.dsY[i];
+        if (y === null) {
+          // Gap (no finite samples in this bucket): lift the pen.
+          penDown = false;
+          continue;
+        }
         const xPos = (row.dsX[i] / rowDuration) * width;
-        const yPos = rowY + ROW_HEIGHT - ((row.dsY[i] - globalMin) / yRange) * (ROW_HEIGHT - 4) - 2;
+        const yPos = rowY + ROW_HEIGHT - ((y - globalMin) / yRange) * (ROW_HEIGHT - 4) - 2;
 
-        if (i === 0) ctx.moveTo(xPos, yPos);
+        if (!penDown) ctx.moveTo(xPos, yPos);
         else ctx.lineTo(xPos, yPos);
+        penDown = true;
       }
       ctx.stroke();
     }

@@ -12,10 +12,24 @@ export interface AuthState {
 }
 
 /**
+ * Return `user` only if it is a real (non-anonymous) account.
+ *
+ * Every app calls `signInAnonymously()` at load so analytics writes carry a
+ * verified JWT. Those anonymous-auth users are not "signed in" from the
+ * product's point of view: the database refuses their community submissions
+ * (migration 012), so the UI must keep showing the email sign-in prompt.
+ */
+export function realUser(user: User | null | undefined): User | null {
+  return user && !user.is_anonymous ? user : null;
+}
+
+/**
  * Subscribe to Supabase auth state changes.
  * Returns an unsubscribe function. If Supabase is not configured,
  * immediately calls the callback with { user: null, loading: false }
  * and returns a no-op unsubscribe.
+ *
+ * Anonymous-auth sessions are reported as `user: null` (see `realUser`).
  */
 export function subscribeAuth(callback: (state: AuthState) => void): () => void {
   if (!supabaseEnabled) {
@@ -37,7 +51,7 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, session) => {
-      if (!disposed) callback({ user: session?.user ?? null, loading: false });
+      if (!disposed) callback({ user: realUser(session?.user), loading: false });
     });
 
     // If cleanup was called before the promise resolved, unsubscribe immediately
@@ -50,7 +64,7 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
 
     // Load initial session
     client.auth.getSession().then(({ data: { session } }) => {
-      if (!disposed) callback({ user: session?.user ?? null, loading: false });
+      if (!disposed) callback({ user: realUser(session?.user), loading: false });
     });
   });
 

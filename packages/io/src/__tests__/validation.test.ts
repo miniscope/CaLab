@@ -46,6 +46,10 @@ describe('validateTraceData', () => {
       expect(nanWarning!.count).toBe(2);
       expect(nanWarning!.message).toContain('2');
       expect(nanWarning!.message).toContain('33.3%');
+      // Must not claim NaNs are skipped: the solver rejects non-finite traces.
+      expect(nanWarning!.details).not.toMatch(/skip/i);
+      expect(nanWarning!.details).toMatch(/fail to solve/);
+      expect(nanWarning!.details).toMatch(/interpolate/i);
     });
 
     it('warns about Inf values with count', () => {

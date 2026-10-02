@@ -136,16 +136,22 @@ async function handleSolve(req: Extract<PoolWorkerInbound, { type: 'solve' }>): 
 }
 
 // Message handler
+// handleSolve catches its own errors; the outer try/catch and .catch cover
+// anything thrown before/around it so a job always gets a terminal message.
 onmessage = (e: MessageEvent<PoolWorkerInbound>) => {
   const msg = e.data;
-  if (msg.type === 'cancel') {
-    cancelled = true;
-    return;
-  }
-  if (msg.type === 'solve') {
-    handleSolve(msg).catch((err) => {
-      post({ type: 'error', jobId: msg.jobId, message: String(err) });
-    });
+  try {
+    if (msg.type === 'cancel') {
+      cancelled = true;
+      return;
+    }
+    if (msg.type === 'solve') {
+      handleSolve(msg).catch((err) => {
+        post({ type: 'error', jobId: msg.jobId, message: String(err) });
+      });
+    }
+  } catch (err) {
+    if (msg.type === 'solve') post({ type: 'error', jobId: msg.jobId, message: String(err) });
   }
 };
 
@@ -157,4 +163,7 @@ initWasm()
   })
   .catch((err) => {
     console.error('WASM initialization failed:', err);
+    // Pool-level protocol message (WorkerInitErrorMessage in @calab/compute):
+    // lets the pool fail this worker's jobs instead of queueing them forever.
+    workerScope.postMessage({ type: 'init-error', message: String(err) });
   });

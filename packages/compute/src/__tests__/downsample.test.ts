@@ -29,7 +29,9 @@ describe('downsampleMinMax', () => {
     const globalMin = Math.min(...y);
     const globalMax = Math.max(...y);
 
-    const [, ry] = downsampleMinMax(x, y, 100);
+    const [, dsY] = downsampleMinMax(x, y, 100);
+    const ry = dsY.filter((v): v is number => v !== null);
+    expect(ry.length).toBe(dsY.length);
 
     expect(Math.min(...ry)).toBeCloseTo(globalMin, 10);
     expect(Math.max(...ry)).toBeCloseTo(globalMax, 10);
@@ -78,5 +80,31 @@ describe('downsampleMinMax', () => {
     const [rx, ry] = downsampleMinMax([0], [5], 10);
     expect(rx).toEqual([0]);
     expect(ry).toEqual([5]);
+  });
+
+  it('emits null (not ±Infinity) for an all-NaN bucket', () => {
+    const x = Array.from({ length: 20 }, (_, i) => i);
+    const y = Array.from({ length: 20 }, (_, i) => (i < 10 ? NaN : i));
+    const [rx, ry] = downsampleMinMax(x, y, 2);
+
+    expect(ry).toEqual([null, null, 10, 19]);
+    // The gap keeps two points spanning the bucket so series stay length-aligned.
+    expect(rx).toEqual([0, 9, 10, 19]);
+  });
+
+  it('ignores NaN samples in a mixed bucket', () => {
+    const x = Array.from({ length: 20 }, (_, i) => i);
+    const y = [NaN, 3, NaN, -2, NaN, 7, NaN, NaN, 1, NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const [rx, ry] = downsampleMinMax(x, y, 2);
+
+    expect(rx.slice(0, 2)).toEqual([3, 5]);
+    expect(ry.slice(0, 2)).toEqual([-2, 7]);
+    expect(ry.every((v) => v !== null && Number.isFinite(v))).toBe(true);
+  });
+
+  it('returns non-finite samples as null when no downsampling is needed', () => {
+    const [rx, ry] = downsampleMinMax([0, 1, 2, 3], [1, NaN, Infinity, 4], 10);
+    expect(rx).toEqual([0, 1, 2, 3]);
+    expect(ry).toEqual([1, null, null, 4]);
   });
 });

@@ -10,7 +10,9 @@ Calcium imaging analysis tools
 
 ## What is CaLab?
 
-CaLab is a suite of tools for calcium imaging deconvolution — recovering neural spiking activity from fluorescence traces. The tools run entirely in the browser (no installation, no server, no data upload) and are backed by a fast FISTA solver written in Rust.
+CaLab is a suite of tools for calcium imaging deconvolution — recovering neural spiking activity from fluorescence traces. The tools run entirely in the browser (no installation, no server-side processing) and are backed by a fast FISTA solver written in Rust.
+
+Your trace data never leaves the browser. The apps collect anonymous usage analytics through Supabase (country/region, screen size, browser family, referrer domain, app version, and high-level event names). Sharing parameters with the community is a separate, explicit opt-in that requires email sign-in.
 
 CaLab provides two deconvolution approaches:
 

@@ -7,6 +7,7 @@ DC removal, short trace handling, and invalid cutoff handling.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from calab import bandpass_filter
 
@@ -85,12 +86,15 @@ def test_short_trace_skip():
 # Test 5: Invalid cutoffs (f_hp >= f_lp) returns input unchanged
 # ---------------------------------------------------------------------------
 
-def test_invalid_cutoffs_returns_unchanged():
-    """When tau_rise is very large, f_hp > f_lp -> return input unchanged."""
+def test_reversed_taus_rejected():
+    """tau_rise >= tau_decay is rejected rather than silently skipping the filter.
+
+    The only way to get f_hp > f_lp is tau_rise > 64 * tau_decay, which the
+    shared parameter validation now refuses with a clear ValueError.
+    """
     trace = np.ones(64)
-    # tau_rise=10.0, tau_decay=0.001 -> f_hp ~ 9.95 Hz, f_lp ~ 0.064 Hz -> HP > LP
-    filtered = bandpass_filter(trace, tau_rise=10.0, tau_decay=0.001, fs=30.0)
-    np.testing.assert_array_equal(filtered, trace)
+    with pytest.raises(ValueError, match="tau_rise"):
+        bandpass_filter(trace, tau_rise=10.0, tau_decay=0.001, fs=30.0)
 
 
 # ---------------------------------------------------------------------------
