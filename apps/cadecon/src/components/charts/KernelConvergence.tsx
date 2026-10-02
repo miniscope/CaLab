@@ -291,6 +291,10 @@ export function KernelConvergence(): JSX.Element {
     labeledAxis('ms'),
   ];
 
+  // The accessors below are read by uPlot's draw hook, not at setup. New data
+  // redraws via setData, and the effect above redraws on viewed-iteration and
+  // ground-truth visibility changes.
+  /* eslint-disable solid/reactivity */
   const plugins = [
     subsetScatterPlugin(() => convergenceData().scatter),
     groundTruthPlugin(gtValues),
@@ -298,6 +302,7 @@ export function KernelConvergence(): JSX.Element {
     viewedIterationPlugin(() => viewedIteration()),
     wheelZoomPlugin(),
   ];
+  /* eslint-enable solid/reactivity */
 
   const cursor = syncCursor('cadecon-convergence');
 
