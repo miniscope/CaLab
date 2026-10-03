@@ -1,0 +1,16 @@
+{
+  // Shared tsconfig for every apps/* web app. An app's tsconfig.json is just
+  //   { "extends": "../../tsconfig.app.json" }
+  //
+  // No `paths` / `references`: every @calab/* package's package.json points
+  // main/types/exports at its TypeScript source, so tsc resolves the workspace
+  // symlinks the same way Vite does, and a new package dependency needs no
+  // tsconfig edit. `${configDir}` is the extending app's directory.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js"
+  },
+  "include": ["${configDir}/src", "packages/vite-config/client.d.ts"]
+}

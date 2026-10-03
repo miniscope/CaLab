@@ -14,5 +14,5 @@ configureTutorialEngine({ popoverClass: 'catune-tutorial' });
 
 render(() => <App />, document.getElementById('root')!);
 
-void initSession('catune', import.meta.env.VITE_APP_VERSION || 'dev');
+void initSession(__APP_ID__, import.meta.env.VITE_APP_VERSION || 'dev');
 setupAnalyticsEffects();

@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# Runs for the same ref queue rather than cancel: cancelling a run partway
+# through the publish job could leave a release half-uploaded to PyPI.
+# Different tags use different groups and never block each other.
+concurrency:
+  group: publish-python-${{ github.ref }}
+  cancel-in-progress: false
+
 # Third-party actions pinned to SHAs; see ci.yml header for the update
 # procedure. pypi-publish is the most critical since it runs with
 # id-token: write on the pypi environment.
@@ -58,6 +65,46 @@ jobs:
         run: .venv/bin/pytest -m "not integration"
         working-directory: python
 
+  # Mirrors ci.yml's rust job: maturin only compiles the pybindings path and
+  # never runs clippy or the Rust unit tests, so without this a py/v* tag
+  # could publish a solver that ci.yml would reject.
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/solver
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: 'crates/solver -> target'
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # Lint each binding feature set separately. `--all-targets` includes the
+      # test modules.
+      - name: Clippy (jsbindings)
+        run: cargo clippy --all-targets --no-default-features --features jsbindings -- -D warnings
+
+      # The pyo3 path is otherwise only compiled by `maturin develop` in the
+      # test job above, which never runs clippy. Clippy type-checks every target
+      # (so it also covers `cargo check`). `cargo test` can't link with
+      # pybindings: pyo3's `extension-module` feature leaves libpython
+      # unresolved, and pytest exercises that path at runtime anyway.
+      - name: Clippy (pybindings)
+        run: cargo clippy --all-targets --no-default-features --features pybindings -- -D warnings
+
+      - name: Tests
+        run: cargo test --no-default-features --features jsbindings
+
   # One abi3 wheel per platform: `abi3-py311` (crates/solver/Cargo.toml) targets
   # CPython's stable ABI, so a single cp311-abi3 wheel covers 3.11 and every
   # later interpreter. That's why there is no python-version axis here.
@@ -68,7 +115,7 @@ jobs:
   # to windows-latest/x64. See "Expanding or adding matrix configurations" in
   # the GitHub Actions matrix docs.
   build-wheels:
-    needs: test
+    needs: [test, rust]
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +160,7 @@ jobs:
           path: python/dist
 
   build-sdist:
-    needs: test
+    needs: [test, rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

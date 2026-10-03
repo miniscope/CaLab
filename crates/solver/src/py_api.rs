@@ -782,6 +782,13 @@ fn py_simulate_traces<'py>(
     ))
 }
 
+/// The solver version (see `crate::SOLVER_VERSION`), used by the Python
+/// bridge's version handshake. Same value as `calab._solver.__version__`.
+#[pyfunction]
+fn protocol_version() -> &'static str {
+    crate::SOLVER_VERSION
+}
+
 /// Register the Python module.
 /// The function name must match the leaf of module-name in pyproject.toml: "calab._solver" → "_solver".
 #[pymodule]
@@ -800,7 +807,8 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_indeca_compute_upsample_factor, m)?)?;
     // Simulation
     m.add_function(wrap_pyfunction!(py_simulate_traces, m)?)?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add_function(wrap_pyfunction!(protocol_version, m)?)?;
+    m.add("__version__", crate::SOLVER_VERSION)?;
     Ok(())
 }
 

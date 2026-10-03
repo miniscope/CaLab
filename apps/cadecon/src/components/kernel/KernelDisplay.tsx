@@ -248,7 +248,6 @@ export function KernelDisplay(): JSX.Element {
     wheelZoomPlugin(),
     // The getter is the bridge from Solid into the uPlot plugin API; the
     // plugin invokes it at draw time.
-    // eslint-disable-next-line solid/reactivity
     kernelAnnotationsPlugin(() => annotations()),
   ]);
   const cursor = syncCursor('cadecon-kernel');

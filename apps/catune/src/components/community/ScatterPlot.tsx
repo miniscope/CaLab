@@ -221,7 +221,6 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
     // The getters below bridge Solid reactivity into uPlot's draw-time hook;
     // they're tracked scopes by virtue of being invoked inside the plot.
-    /* eslint-disable solid/reactivity */
     const drawFn = makeDrawPoints(
       lambdaColors,
       () => props.userParams,
@@ -230,7 +229,6 @@ export function ScatterPlot(props: ScatterPlotProps) {
       theme.textPrimary,
       theme.textSecondary,
     );
-    /* eslint-enable solid/reactivity */
 
     // Compute padded ranges so points aren't on the edge
     const xVals = subs.map((s) => s.t_peak * 1000);

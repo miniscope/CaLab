@@ -1,4 +1,5 @@
-"""Bridge orchestrators: tune() and decon() functions for CaTune/CaDecon."""
+"""Bridge orchestrator: :func:`launch` runs any registered app; ``tune()`` and
+``decon()`` are thin wrappers for CaTune and CaDecon."""
 
 from __future__ import annotations
 
@@ -6,28 +7,26 @@ import contextlib
 import sys
 import threading
 import time
+import warnings
 import webbrowser
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ._handshake import BridgeVersionWarning
 from ._headless import HeadlessBrowser
 from ._models import DeconConfig
+from ._postprocess import (  # noqa: F401  (re-exported for existing importers)
+    KERNEL_LENGTH_DECAY_MULTIPLES,
+    _build_cadecon_result,
+)
+from ._registry import get_app
 from ._server import BridgeServer
 
 if TYPE_CHECKING:
     from .._compute import CaDeconResult
 
 HEARTBEAT_TIMEOUT = 10  # seconds without heartbeat = browser disconnected
-
-# Kernel waveforms are truncated to this many decay time-constants
-# (kernel_length = KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay * fs). Five decay
-# constants capture >99% of a bi-exponential's mass.
-KERNEL_LENGTH_DECAY_MULTIPLES = 5.0
-
-# Default app URLs (GitHub Pages deployment)
-_DEFAULT_CATUNE_URL = "https://miniscope.github.io/CaLab/CaTune/"
-_DEFAULT_CADECON_URL = "https://miniscope.github.io/CaLab/CaDecon/"
 
 
 def _format_progress(progress: dict) -> str:
@@ -139,6 +138,91 @@ def _run_bridge(
     return received
 
 
+def launch(
+    app: str,
+    traces: np.ndarray,
+    fs: float = 30.0,
+    *,
+    timeout: float | None = None,
+    port: int | None = None,
+    app_url: str | None = None,
+    open_browser: bool = True,
+    headless: HeadlessBrowser | bool | None = None,
+    config: dict | None = None,
+    show_progress: bool = False,
+    raw: bool = False,
+) -> Any:
+    """Open a registered CaLab web app on *traces* and wait for its results.
+
+    Generic orchestrator behind :func:`tune` and :func:`decon`; any app in the
+    registry (:mod:`calab._bridge._registry`) can be launched by slug.
+
+    Parameters
+    ----------
+    app : str
+        Registry slug, e.g. ``"catune"`` or ``"cadecon"`` (case-insensitive).
+    traces : np.ndarray
+        Calcium traces, shape ``(n_cells, n_timepoints)`` or ``(n_timepoints,)``.
+    fs : float
+        Sampling rate in Hz. Default: 30.0.
+    timeout : float, optional
+        Seconds to wait for results. None = wait forever (until Ctrl-C).
+    port : int, optional
+        Port to bind to. None = auto-assign.
+    app_url : str, optional
+        Override the app URL (for local dev). Default: the registered
+        GitHub Pages URL.
+    open_browser : bool
+        Whether to auto-open the browser. Default: True.
+    headless : HeadlessBrowser or bool or None
+        See :func:`decon`.
+    config : dict, optional
+        Served to the app at ``GET /api/v1/config``.
+    show_progress : bool
+        Print progress updates the app posts to ``/api/v1/progress``.
+    raw : bool
+        Return the :class:`BridgeResult` instead of applying the app's
+        post-processing hook.
+
+    Returns
+    -------
+    Any
+        The app's post-processed result (see the registry entry), the raw
+        :class:`BridgeResult` when the app has no hook or ``raw=True``, or
+        None on timeout/cancel.
+
+    Raises
+    ------
+    ValueError
+        If *app* is not registered or has no bridge export.
+    BridgeVersionError
+        If the app's results fail the version handshake.
+    """
+    spec = get_app(app)
+    if spec.result_schema is None:
+        raise ValueError(f"{spec.display_name} does not support the Python bridge yet")
+
+    server = BridgeServer(traces, fs, port=port or 0, app=spec.slug, config=config)
+    with _managed_headless(headless) as headless_browser:
+        received = _run_bridge(
+            server, server.result_event, spec.display_name,
+            app_url or spec.default_url, open_browser, timeout,
+            show_progress=show_progress,
+            headless=headless_browser,
+        )
+
+    if not received:
+        return None
+    result = server.result()  # raises BridgeVersionError on a failed handshake
+    if result is None:
+        return None
+    for message in result.warnings:
+        warnings.warn(message, BridgeVersionWarning, stacklevel=2)
+    if raw or spec.postprocess is None:
+        return result
+    return spec.postprocess(result, fs)
+
+
 def tune(
     traces: np.ndarray,
     fs: float = 30.0,
@@ -173,117 +257,17 @@ def tune(
     dict or None
         Exported parameters dict if received, None if timeout/cancelled.
         Keys: ``tau_rise``, ``tau_decay``, ``lambda_``, ``fs``, ``filter_enabled``.
+
+    Raises
+    ------
+    BridgeVersionError
+        If the app's export is incompatible with this version of calab.
     """
-    server = BridgeServer(traces, fs, port=port or 0)
-    received = _run_bridge(
-        server, server.params_event, "CaTune",
-        app_url or _DEFAULT_CATUNE_URL, open_browser, timeout,
+    result: dict | None = launch(
+        "catune", traces, fs,
+        timeout=timeout, port=port, app_url=app_url, open_browser=open_browser,
     )
-
-    if received and server.received_params is not None:
-        raw = server.received_params
-        # Normalize parameter keys from CaTune export format
-        params = raw.get("parameters", raw)
-        return {
-            "tau_rise": params.get("tau_rise_s", params.get("tau_rise")),
-            "tau_decay": params.get("tau_decay_s", params.get("tau_decay")),
-            "lambda_": params.get("lambda", params.get("lambda_")),
-            "fs": params.get("sampling_rate_hz", params.get("fs", fs)),
-            "filter_enabled": params.get("filter_enabled", False),
-        }
-
-    return None
-
-
-def _build_cadecon_result(
-    results: dict, activity: object, fs: float,
-) -> CaDeconResult:
-    """Assemble a :class:`CaDeconResult` from the browser's results payload.
-
-    Split out of :func:`decon` so the null-handling below is reachable from
-    tests without standing up a bridge server and a browser.
-    """
-    # Imported here rather than at module scope: `_compute` imports the
-    # compiled extension, and importing it eagerly would make `_bridge` depend
-    # on it circularly.
-    from .._compute import CaDeconResult, _build_biexp_waveform
-
-    # Build kernel waveforms from biexp params.
-    #
-    # Schema 2 sends null for these when the run produced no fit at all -- it
-    # stopped before completing an iteration, so nothing was ever fitted.
-    # Missing keys land in the same place. Either way there is nothing to build
-    # a kernel from, and the previous defaults (0.2 / 1.0 / 1.0) manufactured
-    # here exactly the fit the browser had declined to claim.
-    result_fs = results.get("fs", fs)
-    tau_rise = results.get("tau_rise")
-    tau_decay = results.get("tau_decay")
-    beta = results.get("beta")
-    if tau_rise is None or tau_decay is None or beta is None:
-        print(
-            "Warning: CaDecon reported no bi-exponential fit (the run stopped before "
-            "completing an iteration). Kernel waveforms are empty and the tau_*, beta, "
-            "and residual metadata is None."
-        )
-        kernel_slow = np.empty(0, dtype=np.float32)
-    else:
-        kernel_length = int(KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay * result_fs)
-        kernel_slow = _build_biexp_waveform(tau_rise, tau_decay, beta, result_fs, kernel_length)
-
-    tau_rise_fast = results.get("tau_rise_fast")
-    tau_decay_fast = results.get("tau_decay_fast")
-    beta_fast = results.get("beta_fast")
-    # Inline rather than via a `has_fast` flag: mypy narrows Optional through a
-    # condition, not through an intermediate bool.
-    if (
-        tau_rise_fast is not None
-        and tau_decay_fast is not None
-        and beta_fast is not None
-        and tau_decay_fast > 0
-        and beta_fast != 0
-    ):
-        kernel_length_fast = int(KERNEL_LENGTH_DECAY_MULTIPLES * tau_decay_fast * result_fs)
-        kernel_fast = _build_biexp_waveform(
-            tau_rise_fast, tau_decay_fast, beta_fast, result_fs, kernel_length_fast,
-        )
-    else:
-        kernel_fast = np.empty(0, dtype=np.float32)
-
-    # Assemble per-cell arrays
-    alphas = np.array(results.get("alphas", []), dtype=np.float64)
-    baselines = np.array(results.get("baselines", []), dtype=np.float64)
-    pves = np.array(results.get("pves", []), dtype=np.float64)
-
-    # Build metadata dict
-    metadata = {
-        "tau_rise": tau_rise,
-        "tau_decay": tau_decay,
-        "beta": beta,
-        "tau_rise_fast": tau_rise_fast,
-        "tau_decay_fast": tau_decay_fast,
-        "beta_fast": beta_fast,
-    }
-    for key in (
-        "residual", "h_free", "num_iterations", "converged",
-        "converged_at_iteration", "schema_version", "calab_version",
-        "export_date",
-    ):
-        if key in results:
-            value = results[key]
-            if key == "h_free" and not isinstance(value, list):
-                value = list(value)
-            metadata[key] = value
-
-    return CaDeconResult(
-        activity=np.asarray(activity, dtype=np.float32),
-        alphas=alphas,
-        baselines=baselines,
-        pves=pves,
-        kernel_slow=kernel_slow,
-        kernel_fast=kernel_fast,
-        fs=result_fs,
-        metadata=metadata,
-    )
+    return result
 
 
 def decon(
@@ -355,6 +339,11 @@ def decon(
     -------
     CaDeconResult or None
         Deconvolution results if received, None if timeout/cancelled.
+
+    Raises
+    ------
+    BridgeVersionError
+        If the app's results are incompatible with this version of calab.
     """
     # Build and validate config via pydantic
     config = DeconConfig(
@@ -369,24 +358,11 @@ def decon(
         aspect_ratio=aspect_ratio,
         seed=seed,
     )
-    config_dict = config.model_dump(exclude_none=True)
-
-    server = BridgeServer(traces, fs, port=port or 0, app="cadecon", config=config_dict)
-    with _managed_headless(headless) as headless_browser:
-        received = _run_bridge(
-            server, server.results_event, "CaDecon",
-            app_url or _DEFAULT_CADECON_URL, open_browser, timeout,
-            show_progress=autorun,
-            headless=headless_browser,
-        )
-
-    if not received or server.received_results is None:
-        return None
-
-    results = server.received_results
-    activity = server.received_activity
-    if activity is None:
-        print("Warning: results received but activity matrix was missing.")
-        return None
-
-    return _build_cadecon_result(results, activity, fs)
+    result: CaDeconResult | None = launch(
+        "cadecon", traces, fs,
+        timeout=timeout, port=port, app_url=app_url, open_browser=open_browser,
+        headless=headless,
+        config=config.model_dump(exclude_none=True),
+        show_progress=autorun,
+    )
+    return result

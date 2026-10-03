@@ -118,6 +118,9 @@ export default tseslint.config(
       'solid/style-prop': 'off',
       // Early returns in components are sometimes intentional (loading guards)
       'solid/components-return-once': 'warn',
+      // ESLint 10 recommended rule; it can't see Solid's `ref={el}` JSX
+      // assignment, so every `let el: HTMLElement | undefined` ref is a false positive.
+      'no-unassigned-vars': 'off',
     },
   },
 );
