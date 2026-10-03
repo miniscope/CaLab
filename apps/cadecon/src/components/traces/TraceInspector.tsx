@@ -23,7 +23,7 @@ import {
   withOpacity,
 } from '@calab/ui/chart';
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
-import { transientZonePlugin } from '@calab/ui/chart';
+import { transientZonePlugin, solverInputLabel } from '@calab/ui/chart';
 import {
   runState,
   cellResultLookup,
@@ -63,7 +63,12 @@ import {
   setShowSparsityCompare,
   viewedIteration,
 } from '../../lib/viz-store.ts';
-import { upsampleFactor, noiseConstrained } from '../../lib/algorithm-store.ts';
+import {
+  upsampleFactor,
+  noiseConstrained,
+  hpFilterEnabled,
+  lpFilterEnabled,
+} from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
 import {
   createGroundTruthCalciumSeries,
@@ -204,10 +209,13 @@ export function TraceInspector(): JSX.Element {
     return reconvolveAR2(result.sCounts, tauR, tauD, fs, result.alpha, result.baseline);
   });
 
-  // Filtered trace from solver (only present when HP/LP filtering is active)
+  // The solver's working trace: baseline-subtracted always, HP/LP-filtered when
+  // those are on. Present on every result; null only before the first solve.
   const filteredTrace = createMemo(
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
+  // "Filtered" only when a filter actually ran; "Baseline-corrected" otherwise.
+  const filteredLabel = () => solverInputLabel(hpFilterEnabled() || lpFilterEnabled());
 
   // Sparsity-comparison overlay: the opposite-setting spike counts, precomputed
   // per iteration during the run (when the comparison option is enabled) and
@@ -421,7 +429,7 @@ export function TraceInspector(): JSX.Element {
     return [
       {},
       { label: 'Raw', stroke: TRACE_COLORS.raw, width: 1, show: showRaw() },
-      { label: 'Filtered', stroke: TRACE_COLORS.filtered, width: 1.5, show: showFiltered() },
+      { label: filteredLabel(), stroke: TRACE_COLORS.filtered, width: 1.5, show: showFiltered() },
       { label: 'Fit', stroke: TRACE_COLORS.fit, width: 1.5, show: showFit() },
       { label: deconvLabel(), stroke: TRACE_COLORS.deconv, width: 1, show: showDeconv() },
       { label: 'Residual', stroke: TRACE_COLORS.resid, width: 1, show: showResidual() },
@@ -450,7 +458,7 @@ export function TraceInspector(): JSX.Element {
       {
         key: 'filtered',
         color: TRACE_COLORS.filtered,
-        label: 'Filtered',
+        label: filteredLabel(),
         visible: showFiltered,
         setVisible: setShowFiltered,
       },

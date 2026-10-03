@@ -3,14 +3,18 @@
 // so "Raw"/"Fit"/etc. match CaDecon.
 
 import type uPlot from 'uplot';
-import { TRACE_COLORS, GROUND_TRUTH_COLORS, withOpacity } from '@calab/ui/chart';
+import { TRACE_COLORS, GROUND_TRUTH_COLORS, withOpacity, solverInputLabel } from '@calab/ui/chart';
 
 export function createRawSeries(): uPlot.Series {
   return { label: 'Raw', stroke: TRACE_COLORS.raw, width: 1 };
 }
 
-export function createFilteredSeries(): uPlot.Series {
-  return { label: 'Filtered', stroke: TRACE_COLORS.filtered, width: 1.5 };
+/**
+ * The solver's working trace (what Fit/Deconv are computed against): raw minus
+ * the rolling-percentile baseline, plus the bandpass when the Noise Filter is on.
+ */
+export function createFilteredSeries(filterEnabled: boolean): uPlot.Series {
+  return { label: solverInputLabel(filterEnabled), stroke: TRACE_COLORS.filtered, width: 1.5 };
 }
 
 export function createFitSeries(): uPlot.Series {

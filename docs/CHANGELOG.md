@@ -5,6 +5,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CaTune** always draws the solver's working trace (raw minus the
+  rolling-percentile baseline, bandpass-filtered too when the Noise Filter is
+  on) in light blue, but the legend only listed it once the Noise Filter was
+  enabled, leaving an unlabeled trace that could not be hidden. The legend now
+  always lists it, as "Baseline-corrected" with the filter off and "Filtered"
+  with it on, and the legend's "?" popover says this is the trace the solver
+  fits. **CaDecon**'s Trace Inspector uses the same rule: "Filtered" only when
+  the high-pass or low-pass filter is actually on
+- **CaTune**'s Resid band is now the working trace minus Fit, as in CaDecon.
+  It was Raw minus Fit, so it carried the rolling baseline the solver never
+  saw and could look worse than the fit actually was
+
 ## [2.9.0] - 2026-10-03
 
 Web apps `v2.9.0`; Python package `calab` `py/v0.3.0`. Phase 2 of the October

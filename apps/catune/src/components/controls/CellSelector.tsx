@@ -35,6 +35,7 @@ import {
   setShowGTSpikes,
 } from '../../lib/viz-store.ts';
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
+import { solverInputLabel } from '@calab/ui/chart';
 import '../../styles/multi-trace.css';
 
 export function CellSelector() {
@@ -71,16 +72,18 @@ export function CellSelector() {
   const legendItems = createMemo((): LegendItemConfig[] => {
     const items: LegendItemConfig[] = [
       { key: 'raw', color: '#1f77b4', label: 'Raw', visible: showRaw, setVisible: setShowRaw },
-    ];
-    if (filterEnabled()) {
-      items.push({
+      // The solver's working trace is always drawn (the worker always
+      // baseline-subtracts, and bandpass-filters when the Noise Filter is on),
+      // so it must always be listed — otherwise it is an unlabeled trace the
+      // user cannot hide.
+      {
         key: 'filtered',
         color: '#17becf',
-        label: 'Filtered',
+        label: solverInputLabel(filterEnabled()),
         visible: showFiltered,
         setVisible: setShowFiltered,
-      });
-    }
+      },
+    ];
     items.push(
       { key: 'fit', color: '#ff7f0e', label: 'Fit', visible: showFit, setVisible: setShowFit },
       {
@@ -126,7 +129,11 @@ export function CellSelector() {
         <strong>Raw</strong> — Original fluorescence recording
       </div>
       <div class="legend-info__row">
-        <strong>Filtered</strong> — Bandpass-filtered trace (drift + noise removed)
+        <strong>{solverInputLabel(filterEnabled())}</strong> — The trace the solver fits. Raw with a
+        rolling-percentile baseline subtracted (floor at ~0)
+        {filterEnabled() ? ', then bandpass-filtered (drift + noise removed)' : ''}. Fit and Deconv
+        are computed from this trace, not from Raw; turning on the Noise Filter changes it (and the
+        fit), turning it off does not restore Raw.
       </div>
       <div class="legend-info__row">
         <strong>Fit</strong> — Reconvolved model fit (kernel * deconvolved activity + baseline)
@@ -135,7 +142,7 @@ export function CellSelector() {
         <strong>Deconv</strong> — Estimated neural activity (deconvolution result)
       </div>
       <div class="legend-info__row">
-        <strong>Resid</strong> — Residuals (Raw minus Fit)
+        <strong>Resid</strong> — Residuals ({solverInputLabel(filterEnabled())} minus Fit)
       </div>
       <div class="legend-info__row">
         <strong>True Ca/Spk</strong> — Ground truth (demo only)

@@ -27,6 +27,7 @@ import {
 } from '../../lib/chart/series-config.ts';
 import {
   showRaw,
+  filterEnabled,
   showFiltered,
   showFit,
   showDeconv,
@@ -261,13 +262,18 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
       (vals) => scaleToDeconvBand(vals, props.deconvMinMax, zMin, zMax),
     );
 
-    // Residual is computed at full resolution, then downsampled: subtracting
-    // two independently min/max-downsampled series pairs unrelated samples.
-    // Its band normalization is affine-invariant, so z-scoring is skipped.
+    // Residual = the solver's working trace minus Fit: what the solver could
+    // not explain. Raw is only a fallback before the first result arrives
+    // (Fit is null then too, so the band is empty). Computed at full
+    // resolution, then downsampled: subtracting two independently
+    // min/max-downsampled series pairs unrelated samples. Its band
+    // normalization is affine-invariant, so z-scoring is skipped.
     const { residBottom, residHeight } = computeBandLayout(zMin, zMax, BAND_SPACING);
+    const residSource =
+      sliceWindow(props.filteredTrace, startSample, endSample, offset, raw.length) ?? rawSlice;
     const dsResid = residualBandSeries(
       x,
-      rawSlice,
+      residSource,
       sliceWindow(props.reconvolutionTrace, startSample, endSample, offset, raw.length),
       bucketWidth(),
       residBottom,
@@ -333,7 +339,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     const base: uPlot.Series[] = [{}, { ...createRawSeries(), show: showRaw() }];
     base.push(
       props.filteredTrace
-        ? { ...createFilteredSeries(), show: showFiltered() }
+        ? { ...createFilteredSeries(filterEnabled()), show: showFiltered() }
         : ({ show: false } as uPlot.Series),
     );
     base.push(
