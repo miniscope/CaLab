@@ -20,6 +20,80 @@ pub(crate) mod validate;
 
 pub use validate::SolverError;
 
+/// The solver's version: the one number shared by the WASM build
+/// (`solver_version()`), the native extension (`calab._solver.__version__` and
+/// `calab._solver.protocol_version()`), and the Python bridge's version
+/// handshake.
+///
+/// Sourced from `version` in this crate's Cargo.toml, so there is exactly one
+/// place to bump. Semver, read with Cargo's caret rules: bump the major (the
+/// minor while still `0.x`) when the same inputs no longer produce results a
+/// consumer of the previous version can accept as equivalent; bump the minor
+/// (the patch while `0.x`) for compatible changes. The Python bridge rejects a
+/// result produced by an incompatible solver and warns on compatible drift.
+pub const SOLVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// WASM export of [`SOLVER_VERSION`], so the web apps can report which solver
+/// produced a result.
+#[cfg(feature = "jsbindings")]
+#[wasm_bindgen]
+pub fn solver_version() -> String {
+    SOLVER_VERSION.to_string()
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::SOLVER_VERSION;
+
+    /// `version = "..."` from the `[package]` table of this crate's Cargo.toml.
+    fn cargo_toml_package_version() -> String {
+        let manifest = include_str!("../Cargo.toml");
+        let mut in_package = false;
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_package = line == "[package]";
+                continue;
+            }
+            if in_package {
+                if let Some(rest) = line.strip_prefix("version") {
+                    let value = rest.trim_start().trim_start_matches('=').trim();
+                    return value.trim_matches('"').to_string();
+                }
+            }
+        }
+        panic!("no version in the [package] table of Cargo.toml");
+    }
+
+    #[test]
+    fn solver_version_matches_cargo_toml() {
+        assert_eq!(SOLVER_VERSION, cargo_toml_package_version());
+    }
+
+    #[test]
+    fn solver_version_is_plain_semver() {
+        // The Python handshake parses MAJOR.MINOR.PATCH; keep it parseable.
+        let parts: Vec<&str> = SOLVER_VERSION.split('.').collect();
+        assert_eq!(
+            parts.len(),
+            3,
+            "expected MAJOR.MINOR.PATCH, got {SOLVER_VERSION}"
+        );
+        for part in parts {
+            assert!(
+                part.parse::<u64>().is_ok(),
+                "non-numeric component in {SOLVER_VERSION}"
+            );
+        }
+    }
+
+    #[cfg(feature = "jsbindings")]
+    #[test]
+    fn wasm_export_returns_solver_version() {
+        assert_eq!(super::solver_version(), SOLVER_VERSION);
+    }
+}
+
 #[cfg(test)]
 mod degenerate_tests;
 

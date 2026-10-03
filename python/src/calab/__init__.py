@@ -1,6 +1,13 @@
 """CaLab: calcium imaging analysis tools — deconvolution and data preparation."""
 
-from ._bridge import DeconConfig, HeadlessBrowser, decon, tune
+from ._bridge import (
+    BridgeVersionError,
+    BridgeVersionWarning,
+    DeconConfig,
+    HeadlessBrowser,
+    decon,
+    tune,
+)
 from ._compute import (
     BiexpFitResult,
     CaDeconResult,
@@ -42,6 +49,8 @@ from importlib.metadata import version as _pkg_version
 __version__ = _pkg_version("calab")
 __all__ = [
     # Bridge
+    "BridgeVersionError",
+    "BridgeVersionWarning",
     "DeconConfig",
     "HeadlessBrowser",
     "decon",
