@@ -15,6 +15,7 @@ import init, {
   seed_trace,
   simulate_traces,
   get_simulation_presets,
+  solver_version,
 } from '../../../crates/solver/pkg/calab_solver';
 export {
   Solver,
@@ -25,6 +26,10 @@ export {
   seed_trace,
   simulate_traces,
   get_simulation_presets,
+  // Solver version (crates/solver Cargo.toml `version`); requires initWasm().
+  // An app that adds it to its bridge results as `solver_version` gets it
+  // checked against `calab._solver.protocol_version()` by the Python bridge.
+  solver_version,
 };
 
 let wasmReady: Promise<void> | null = null;
