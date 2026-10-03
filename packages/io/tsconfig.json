@@ -6,13 +6,8 @@
     "emitDeclarationOnly": true,
     "declaration": true,
     "rootDir": "src",
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "@calab/core": ["../core/src/index.ts"],
-      "@calab/core/*": ["../core/src/*"]
-    }
+    "outDir": "dist"
   },
   "include": ["src", "src/__fixtures__/*.json"],
-  "references": [{ "path": "../core" }]
+  "references": [{ "path": "../compute" }, { "path": "../core" }]
 }
