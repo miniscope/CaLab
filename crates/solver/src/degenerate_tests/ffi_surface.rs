@@ -25,11 +25,12 @@
 //! | `seed_trace` / `py_seed_trace`                               | finite trace, `validate_fs`    | `peak_seed::seed_trace`                |
 //! | — / `seed_kernel_estimate`                                   | finite traces, `validate_fs`   | `peak_seed::seed_kernel_estimate`      |
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
+//! | — / `py_compute_lipschitz`                                   | `validate_kernel`              | `kernel::compute_lipschitz`            |
 //! | `simulate_traces` / `py_simulate_traces`                     | `validate_simulation_config`   | `simulate::simulate`                   |
 
 use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
-use crate::kernel::build_kernel;
+use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::validate::{self, SolverError, MAX_KERNEL_LEN};
 use crate::{kernel_est, peak_seed, simulate, upsample};
 
@@ -655,6 +656,37 @@ fn build_kernel_validation_and_cap_boundary() {
     validate::validate_params(1.0, at, 0.0, 1.0).unwrap();
     assert_eq!(build_kernel(1.0, at, 1.0).len(), MAX_KERNEL_LEN);
     assert!(is_param_err(validate::validate_params(1.0, over, 0.0, 1.0)));
+}
+
+// --- py_compute_lipschitz ---------------------------------------------------------
+
+/// Regression: an empty or NaN kernel used to silently return the 1e-10 floor
+/// and an infinite one returned inf.
+#[test]
+fn compute_lipschitz_rejects_degenerate_kernels() {
+    for (label, k) in [
+        ("empty", vec![]),
+        ("nan", vec![f32::NAN, 1.0]),
+        ("inf", vec![f32::INFINITY, 1.0]),
+    ] {
+        assert!(
+            matches!(
+                validate::validate_kernel(&k),
+                Err(SolverError::InvalidInput(_))
+            ),
+            "{label}"
+        );
+    }
+    for k in [
+        vec![1.0],
+        vec![1.0, -2.0, 0.5],
+        vec![0.0; 8],
+        vec![f32::MAX; 4],
+    ] {
+        validate::validate_kernel(&k).unwrap();
+        let l = compute_lipschitz(&k);
+        assert!(l.is_finite() && l > 0.0, "{k:?}: {l}");
+    }
 }
 
 // --- simulate_traces / py_simulate_traces ---------------------------------------

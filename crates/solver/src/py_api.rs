@@ -219,11 +219,14 @@ fn py_build_kernel<'py>(
 }
 
 /// Compute Lipschitz constant for a kernel.
+///
+/// Raises ValueError for an empty or non-finite kernel.
 #[pyfunction]
 fn py_compute_lipschitz(kernel: PyReadonlyArray1<f32>) -> PyResult<f64> {
     let slice = kernel
         .as_slice()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err(CONTIGUOUS_ERR))?;
+    validate::validate_kernel(slice).map_err(py_err)?;
     Ok(compute_lipschitz(slice))
 }
 

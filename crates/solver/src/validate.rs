@@ -176,6 +176,17 @@ pub fn validate_finite_f64(name: &str, data: &[f64]) -> Result<(), SolverError> 
     }
 }
 
+/// A caller-supplied kernel (e.g. for `py_compute_lipschitz`) must be
+/// non-empty and finite. `kernel::compute_lipschitz` returns a 1e-10 floor
+/// for an empty or NaN kernel and `inf` for an infinite one, any of which
+/// would silently become a nonsense FISTA step size.
+pub fn validate_kernel(kernel: &[f32]) -> Result<(), SolverError> {
+    if kernel.is_empty() {
+        return Err(input_err("kernel must not be empty".into()));
+    }
+    validate_finite_f32("kernel", kernel)
+}
+
 /// Convert signed trace lengths (numpy int64) to `usize`, rejecting negatives
 /// instead of wrapping them to `usize::MAX`.
 pub fn lengths_from_i64(lengths: &[i64]) -> Result<Vec<usize>, SolverError> {
@@ -598,6 +609,22 @@ mod tests {
             0.0,
         );
         assert!(nan_warm.is_err());
+    }
+
+    #[test]
+    fn kernel_checked() {
+        assert!(validate_kernel(&[1.0, -2.0, 0.5]).is_ok());
+        for bad in [
+            &[][..],
+            &[f32::NAN, 1.0],
+            &[1.0, f32::INFINITY],
+            &[f32::NEG_INFINITY],
+        ] {
+            assert!(
+                matches!(validate_kernel(bad), Err(SolverError::InvalidInput(_))),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

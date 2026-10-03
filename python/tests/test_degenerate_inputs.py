@@ -372,24 +372,15 @@ def test_compute_lipschitz_finite_kernels():
         _solver.py_compute_lipschitz(np.ones(8, np.float32)[::2])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="real gap: py_compute_lipschitz does not validate its kernel -- a NaN or empty "
-    "kernel silently returns the 1e-10 floor and +inf returns inf. Follow-up: reject "
-    "empty / non-finite kernels in py_api.rs.",
-)
 @pytest.mark.parametrize(
     "kernel",
     [np.zeros(0, np.float32), np.array([NAN, 1.0], np.float32), np.array([INF, 1.0], np.float32)],
     ids=["empty", "nan", "inf"],
 )
 def test_compute_lipschitz_rejects_degenerate_kernels(kernel):
-    try:
+    # Regression: a NaN or empty kernel used to return the 1e-10 floor, +inf returned inf.
+    with pytest.raises(ValueError, match="kernel"):
         _solver.py_compute_lipschitz(kernel)
-    except ValueError:
-        return
-    pytest.fail("accepted a degenerate kernel")
 
 
 # ---------------------------------------------------------------------------
