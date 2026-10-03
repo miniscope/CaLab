@@ -47,11 +47,27 @@ interface CalabPackageJson {
   calab?: { id?: string; displayName?: string };
 }
 
-/** The `calab` identity of the app in `appDir`, validated. */
-export function readAppIdentity(appDir: string): { id: string; displayName: string } {
+/** The scaffold value in apps/_template/package.json before `new-app` fills it in. */
+export const APP_ID_PLACEHOLDER = '__APP_ID__';
+
+/**
+ * The `calab` identity of the app in `appDir`, validated.
+ *
+ * `allowPlaceholder` lets the unfilled template load under Vitest (the root
+ * coverage run globs every `apps/*` and `npm test` runs each workspace's
+ * `test` script); dev and build still fail on it so a copied template cannot
+ * ship without a real id.
+ */
+export function readAppIdentity(
+  appDir: string,
+  { allowPlaceholder = false }: { allowPlaceholder?: boolean } = {},
+): { id: string; displayName: string } {
   const pkgPath = path.join(appDir, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as CalabPackageJson;
   const id = pkg.calab?.id;
+  if (allowPlaceholder && id === APP_ID_PLACEHOLDER) {
+    return { id, displayName: pkg.calab?.displayName ?? path.basename(appDir) };
+  }
   if (!id || !APP_ID_PATTERN.test(id)) {
     throw new Error(
       `${pkgPath}: calab.id must be a lowercase slug matching ${APP_ID_PATTERN} ` +
@@ -78,7 +94,9 @@ export function appBase(displayName: string, env: NodeJS.ProcessEnv = process.en
 
 /** Build the Vite config for the app whose directory is `appDir`. */
 export function defineCalabApp(appDir: string, options: CalabAppOptions = {}): ViteUserConfig {
-  const { id, displayName } = readAppIdentity(appDir);
+  const { id, displayName } = readAppIdentity(appDir, {
+    allowPlaceholder: Boolean(process.env.VITEST),
+  });
   // The apps' former vitest.config.ts files never loaded the WASM plugin;
   // keep it out of the test pipeline so test behaviour is unchanged.
   const useWasm = options.wasm === true && !process.env.VITEST;
