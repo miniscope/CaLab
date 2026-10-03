@@ -95,32 +95,39 @@ pip install calab[headless]      # + headless browser for CaDecon
 ├── apps/
 │   ├── catune/                  # SolidJS SPA — interactive parameter tuning
 │   ├── cadecon/                 # SolidJS SPA — automated deconvolution
-│   └── carank/                  # SolidJS SPA — trace quality ranking
+│   ├── carank/                  # SolidJS SPA — trace quality ranking
+│   ├── admin/                   # SolidJS SPA — usage analytics and moderation (unlisted)
+│   └── _template/               # Scaffold for a new app (docs/NEW_APP.md)
 ├── packages/
 │   ├── core/                    # @calab/core — shared types, pure math, WASM adapter
 │   ├── compute/                 # @calab/compute — worker pool, warm-start cache
 │   ├── io/                      # @calab/io — file parsers, validation, export
 │   ├── community/               # @calab/community — Supabase DAL, submission logic
+│   ├── community-ui/            # @calab/community-ui — community sharing widgets
 │   ├── tutorials/               # @calab/tutorials — tutorial types, progress persistence
-│   └── ui/                      # @calab/ui — shared layout components
+│   ├── ui/                      # @calab/ui — shared layout components
+│   └── vite-config/             # @calab/vite-config — shared Vite/Vitest config
 ├── crates/
 │   └── solver/                  # Rust FISTA solver crate (WASM + PyO3)
 ├── python/                      # Python companion package
 ├── docs/                        # Documentation
+├── e2e/                         # Playwright smoke tests for the built site
 ├── scripts/                     # Build and deploy scripts
 └── supabase/                    # Supabase config
 ```
 
 ## Packages
 
-| Package                                   | Description                                                          |
-| ----------------------------------------- | -------------------------------------------------------------------- |
-| [`@calab/core`](packages/core/)           | Shared types, pure utilities, domain math, WASM adapter              |
-| [`@calab/compute`](packages/compute/)     | Generic worker pool, warm-start caching, kernel math, downsampling   |
-| [`@calab/io`](packages/io/)               | File parsers (.npy/.npz), data validation, cell ranking, JSON export |
-| [`@calab/community`](packages/community/) | Supabase data access layer for community parameter sharing           |
-| [`@calab/tutorials`](packages/tutorials/) | Tutorial type definitions, progress persistence (localStorage)       |
-| [`@calab/ui`](packages/ui/)               | Shared SolidJS layout components (DashboardShell, panels, cards)     |
+| Package                                         | Description                                                          |
+| ----------------------------------------------- | -------------------------------------------------------------------- |
+| [`@calab/core`](packages/core/)                 | Shared types, pure utilities, domain math, WASM adapter              |
+| [`@calab/compute`](packages/compute/)           | Generic worker pool, warm-start caching, kernel math, downsampling   |
+| [`@calab/io`](packages/io/)                     | File parsers (.npy/.npz), data validation, cell ranking, JSON export |
+| [`@calab/community`](packages/community/)       | Supabase data access layer for community parameter sharing           |
+| [`@calab/community-ui`](packages/community-ui/) | SolidJS widgets for community sharing (browser, submit form)         |
+| [`@calab/tutorials`](packages/tutorials/)       | Tutorial type definitions, progress persistence (localStorage)       |
+| [`@calab/ui`](packages/ui/)                     | Shared SolidJS layout components (DashboardShell, panels, cards)     |
+| [`@calab/vite-config`](packages/vite-config/)   | Shared Vite/Vitest config every app's `vite.config.ts` calls         |
 
 ## Development
 
@@ -133,6 +140,8 @@ pip install calab[headless]      # + headless browser for CaDecon
   Install with [rustup](https://rustup.rs), then `cargo install wasm-pack` (or
   `brew install wasm-pack`). `rust-toolchain.toml` pins the channel and the wasm target.
 - **Python >= 3.11** + **maturin**: only needed for the Python package (`python/`)
+- **Playwright Chromium**: only needed for the browser smoke tests
+  (`npx playwright install chromium`, once per Playwright version)
 - **Docker**: only needed to run the Supabase RLS tests locally (`scripts/test-rls.sh`)
 
 ### Setup
@@ -145,21 +154,26 @@ npm install
 npm run dev            # CaTune; first run builds the WASM solver
 ```
 
-Start any app with `npm run dev -w apps/<name>` (or the `dev:carank`, `dev:cadecon`,
-`dev:admin` shortcuts).
+Start any app with `npm run dev <app>` (`npm run dev cadecon`, `npm run dev carank`, ...;
+the directory name, `calab.id` or display name all work). Apps are discovered from
+`apps/*/package.json`, so a new app needs no script of its own. `npm run dev -w apps/<name>`
+also works once the solver has been built, but skips the WASM check.
 
 ### Key Scripts
 
-| Script                | Description                            |
-| --------------------- | -------------------------------------- |
-| `npm run dev`         | Start dev server                       |
-| `npm run build`       | Build WASM + every app in `apps/`      |
-| `npm run build:pages` | Build + combine dist for GitHub Pages  |
-| `npm run build:wasm`  | Compile Rust solver to WASM            |
-| `npm run test`        | Run Vitest tests across all workspaces |
-| `npm run lint`        | Run ESLint                             |
-| `npm run typecheck`   | Type-check every app and package       |
-| `npm run format`      | Format all files with Prettier         |
+| Script                  | Description                                                             |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `npm run dev [app]`     | Start an app's dev server (default CaTune)                              |
+| `npm run build`         | Build WASM + every app in `apps/`                                       |
+| `npm run build:pages`   | Build + combine dist for GitHub Pages (`dist/CaLab/`, with `apps.json`) |
+| `npm run build:wasm`    | Compile Rust solver to WASM                                             |
+| `npm run test`          | Run Vitest tests across all workspaces                                  |
+| `npm run test:coverage` | Tests under V8 coverage, with per-package floors                        |
+| `npm run build:e2e`     | Build the combined site for the smoke tests                             |
+| `npm run test:e2e`      | Playwright smoke tests (run `build:e2e` first)                          |
+| `npm run lint`          | Run ESLint                                                              |
+| `npm run typecheck`     | Type-check every app and package                                        |
+| `npm run format`        | Format all files with Prettier                                          |
 
 See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the full development guide.
 
