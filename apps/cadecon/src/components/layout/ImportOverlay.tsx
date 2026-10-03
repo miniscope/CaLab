@@ -210,15 +210,15 @@ export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
       </Show>
 
       <footer class="import-feedback">
-        <a href={buildFeedbackUrl('cadecon')} target="_blank" rel="noopener noreferrer">
+        <a href={buildFeedbackUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
           Feedback
         </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildFeatureRequestUrl('cadecon')} target="_blank" rel="noopener noreferrer">
+        <a href={buildFeatureRequestUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
           Feature Request
         </a>
         <span class="import-feedback__sep">&middot;</span>
-        <a href={buildBugReportUrl('cadecon')} target="_blank" rel="noopener noreferrer">
+        <a href={buildBugReportUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
           Bug Report
         </a>
       </footer>
