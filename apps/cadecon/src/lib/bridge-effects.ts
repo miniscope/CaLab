@@ -33,6 +33,7 @@ import {
   setBridgeExportError,
 } from './data-store.ts';
 import { startRun } from './iteration-manager.ts';
+import { getSolverVersion } from '@calab/core/wasm';
 import { buildCaDeconActivityMatrix, buildCaDeconResultsPayload } from './export-utils.ts';
 
 const [bridgeAutorun, setBridgeAutorun] = createSignal(false);
@@ -78,7 +79,7 @@ export async function initBridgeConfig(url: string): Promise<void> {
  */
 export async function runBridgeExport(url: string): Promise<void> {
   const { data, shape } = buildCaDeconActivityMatrix();
-  const results = buildCaDeconResultsPayload();
+  const results = buildCaDeconResultsPayload(await getSolverVersion());
   await exportCaDeconToBridge(url, data, shape, results);
   setBridgeExportDone(true);
 }
