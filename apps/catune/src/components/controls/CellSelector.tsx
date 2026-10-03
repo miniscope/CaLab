@@ -142,7 +142,7 @@ export function CellSelector() {
         <strong>Deconv</strong> — Estimated neural activity (deconvolution result)
       </div>
       <div class="legend-info__row">
-        <strong>Resid</strong> — Residuals (Raw minus Fit)
+        <strong>Resid</strong> — Residuals ({solverInputLabel(filterEnabled())} minus Fit)
       </div>
       <div class="legend-info__row">
         <strong>True Ca/Spk</strong> — Ground truth (demo only)

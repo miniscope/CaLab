@@ -15,6 +15,9 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   with it on, and the legend's "?" popover says this is the trace the solver
   fits. **CaDecon**'s Trace Inspector uses the same rule: "Filtered" only when
   the high-pass or low-pass filter is actually on
+- **CaTune**'s Resid band is now the working trace minus Fit, as in CaDecon.
+  It was Raw minus Fit, so it carried the rolling baseline the solver never
+  saw and could look worse than the fit actually was
 
 ## [2.9.0] - 2026-10-03
 
