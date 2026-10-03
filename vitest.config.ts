@@ -5,7 +5,8 @@ import { defineConfig } from 'vitest/config';
 // single report. `npm test` still runs each workspace separately.
 export default defineConfig({
   test: {
-    projects: ['apps/*/vitest.config.ts', 'packages/*/vitest.config.ts'],
+    // Apps configure Vitest inside vite.config.ts via @calab/vite-config.
+    projects: ['apps/*/vite.config.ts', 'packages/*/vitest.config.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'text', 'lcov'],

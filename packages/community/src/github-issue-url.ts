@@ -2,7 +2,13 @@
 
 const REPO_BASE = 'https://github.com/miniscope/CaLab/issues/new';
 
-export type AppLabel = 'catune' | 'carank' | 'cadecon' | 'python';
+/**
+ * Repo label naming where the issue comes from: an app's `calab.id` (apps pass
+ * their build-time `__APP_ID__`) or `'python'` for the Python package. Any
+ * string is accepted so a new app needs no edit here; GitHub ignores labels
+ * that don't exist on the repo.
+ */
+export type AppLabel = string;
 
 const FIELD_LABELS: Record<string, string> = {
   indicator: 'Calcium Indicator',

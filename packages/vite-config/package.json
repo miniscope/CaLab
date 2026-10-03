@@ -1,0 +1,12 @@
+{
+  "name": "@calab/vite-config",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./client.d.ts"
+  }
+}

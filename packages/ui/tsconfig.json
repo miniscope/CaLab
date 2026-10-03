@@ -7,9 +7,9 @@
     "declaration": true,
     "rootDir": "src",
     "outDir": "dist",
-    "baseUrl": ".",
     "jsx": "preserve",
     "jsxImportSource": "solid-js"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "references": [{ "path": "../community" }, { "path": "../compute" }, { "path": "../tutorials" }]
 }

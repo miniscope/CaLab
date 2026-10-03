@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "calab": {
+    "id": "carank",
     "displayName": "CaRank",
     "description": "Trace quality ranking",
     "longDescription": "Rank and classify calcium imaging traces by quality. Quickly sort through cells to identify clean signals, noisy recordings, and motion artifacts.",
@@ -28,5 +29,8 @@
     "@calab/community": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "@calab/vite-config": "*"
   }
 }

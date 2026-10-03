@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "calab": {
+    "id": "cadecon",
     "displayName": "CaDecon",
     "description": "Automated calcium deconvolution",
     "longDescription": "Automated binary spike inference with shared kernel learning. Load fluorescence traces, configure subset-based optimization, and run InDeCa-inspired deconvolution across all cells.",
@@ -33,5 +34,8 @@
     "@dschz/solid-uplot": "^0.5.2",
     "solid-js": "^1.9.15",
     "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@calab/vite-config": "*"
   }
 }
