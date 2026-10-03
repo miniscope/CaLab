@@ -1,5 +1,6 @@
 # Weekly dependency update PRs. Minor/patch bumps are grouped into one PR per
-# ecosystem; major bumps arrive one PR each so they can be reviewed on their own.
+# ecosystem; major bumps arrive one PR each so they can be reviewed on their own,
+# except for the npm lint/build/test toolchain (see below).
 version: 2
 updates:
   - package-ecosystem: npm
@@ -7,9 +8,38 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # Dependabot puts each dependency in the FIRST group that matches it, so
+    # lint-build-toolchain must stay above npm-minor-patch.
     groups:
+      # These packages peer-depend on each other (eslint <-> typescript-eslint
+      # <-> eslint-plugin-solid; vite <-> vite-plugin-* <-> vitest <->
+      # @vitest/*; typescript <-> typescript-eslint), so a lone bump fails
+      # `npm ci` with ERESOLVE. One PR for the whole cluster, majors included.
+      lint-build-toolchain:
+        patterns:
+          - 'eslint'
+          - '@eslint/*'
+          - 'eslint-plugin-*'
+          - 'typescript-eslint'
+          - '@typescript-eslint/*'
+          - 'vite'
+          - 'vite-plugin-*'
+          - '@vitejs/*'
+          - 'vitest'
+          - '@vitest/*'
+          - 'typescript'
+          - 'prettier'
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # Not supported yet by vite-plugin-solid / typescript-eslint (#205 and
+      # #207 were closed for this). Left in, they would turn every
+      # lint-build-toolchain PR red. Remove each entry once its blockers
+      # support the new major.
+      - dependency-name: 'vite'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: cargo
     directory: /crates/solver
