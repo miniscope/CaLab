@@ -303,9 +303,10 @@ jobs:
 
       - uses: actions/configure-pages@v6
 
+      # combine-dist writes the site to dist/<repo name> (see scripts/lib/apps.mjs).
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: './dist/CaLab'
+          path: './dist/${{ github.event.repository.name }}'
 
       - id: deployment
         uses: actions/deploy-pages@v5
