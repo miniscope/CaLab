@@ -47,8 +47,17 @@ def test_surface_inventory_is_covered():
         "py_indeca_solve_trace",
         "py_seed_trace",
         "py_simulate_traces",
+        "protocol_version",
         "seed_kernel_estimate",
     }
+
+
+def test_protocol_version_is_semver():
+    """Added by the bridge version handshake (#212); no inputs to degrade."""
+    version = _solver.protocol_version()
+    assert version == _solver.__version__
+    major, minor, patch = version.split(".")
+    assert all(part.isdigit() for part in (major, minor, patch))
 
 
 def spiky(n: int = 200) -> np.ndarray:
