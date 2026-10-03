@@ -312,7 +312,6 @@ export function TraceOverview(props: TraceOverviewProps) {
 
   // Drag one edge of the zoom rectangle; the opposite edge stays fixed.
   const startEdgeDrag = (side: 'left' | 'right', rect: DOMRect) => {
-    const duration = totalDuration();
     const minGap = 1 / props.samplingRate; // keep at least one sample wide
     const fixedStart = props.zoomStart;
     const fixedEnd = props.zoomEnd;
@@ -328,7 +327,7 @@ export function TraceOverview(props: TraceOverviewProps) {
         const newStart = Math.max(0, Math.min(time, fixedEnd - minGap));
         props.onZoomChange(newStart, fixedEnd);
       } else {
-        const newEnd = Math.min(duration, Math.max(time, fixedStart + minGap));
+        const newEnd = Math.min(totalDuration(), Math.max(time, fixedStart + minGap));
         props.onZoomChange(fixedStart, newEnd);
       }
     };
