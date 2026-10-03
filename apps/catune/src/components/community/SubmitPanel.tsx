@@ -34,15 +34,16 @@ import {
   loadFieldOptions,
   supabaseEnabled,
   submitToSupabase,
+  deleteSubmission,
 } from '../../lib/community/index.ts';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
 import {
   GroundTruthControls,
   GroundTruthNotices,
   SubmitForm,
+  SubmissionSummary,
   createSubmitFormFields,
 } from '@calab/community-ui';
-import { SubmissionSummary } from './SubmissionSummary.tsx';
 import '../../styles/community.css';
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
@@ -212,8 +213,15 @@ export function SubmitPanel() {
         {(submission) => (
           <SubmissionSummary
             submission={submission()}
+            renderParams={(s: CatuneSubmission) => (
+              <>
+                <span>tau_rise: {(s.tau_rise * 1000).toFixed(1)}ms</span>
+                <span>tau_decay: {(s.tau_decay * 1000).toFixed(1)}ms</span>
+                <span>lambda: {s.lambda.toExponential(2)}</span>
+              </>
+            )}
             onDismiss={handleDismissSummary}
-            onDelete={handleDismissSummary}
+            onDelete={deleteSubmission}
           />
         )}
       </Show>

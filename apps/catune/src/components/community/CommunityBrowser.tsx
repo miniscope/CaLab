@@ -1,16 +1,10 @@
 /**
  * CaTune community browser — thin wrapper around CommunityBrowserShell.
- * Supplies CaTune-specific fetch, filter bar, scatter plot, and user params.
+ * Supplies CaTune-specific fetch, scatter plot, and user params.
  */
 
 import { createSignal } from 'solid-js';
-import {
-  CommunityBrowserShell,
-  CommunityScatterPlot,
-  FilterBar,
-  DEMO_PRESET_FILTER,
-  scatterRampColor,
-} from '@calab/community-ui';
+import { CommunityBrowserShell, CommunityScatterPlot, scatterRampColor } from '@calab/community-ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CatuneFilterState } from '../../lib/community/index.ts';
 import { tPeak, fwhm, lambda } from '../../lib/viz-store.ts';
@@ -45,20 +39,6 @@ export function CommunityBrowser() {
         lambda: lambda(),
       })}
       compareLabel={{ active: 'Hide my params', inactive: 'Compare my params' }}
-      filterBar={(ctx) => (
-        <FilterBar
-          filters={ctx.filters}
-          onFilterChange={ctx.setFilters}
-          options={ctx.options}
-          filteredCount={ctx.filteredCount}
-          totalCount={ctx.totalCount}
-          extraFilters={[DEMO_PRESET_FILTER]}
-          showExtraFiltersOnly={ctx.dataSource === 'demo'}
-          highlightMine={ctx.highlightMine}
-          onHighlightMineChange={ctx.toggleHighlightMine}
-          canHighlight={ctx.canHighlight}
-        />
-      )}
       renderChart={(ctx) => (
         <CommunityScatterPlot
           submissions={ctx.data}

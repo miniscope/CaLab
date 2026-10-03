@@ -1,16 +1,10 @@
 /**
  * CaDecon community browser — thin wrapper around CommunityBrowserShell.
- * Supplies CaDecon-specific fetch, filter bar, scatter plot, and user params.
+ * Supplies CaDecon-specific fetch, scatter plot, and user params.
  */
 
 import { createSignal } from 'solid-js';
-import {
-  CommunityBrowserShell,
-  CommunityScatterPlot,
-  FilterBar,
-  DEMO_PRESET_FILTER,
-  scatterRampColor,
-} from '@calab/community-ui';
+import { CommunityBrowserShell, CommunityScatterPlot, scatterRampColor } from '@calab/community-ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CadeconFilterState } from '../../lib/community/index.ts';
 import { currentTauRise, currentTauDecay } from '../../lib/iteration-store.ts';
@@ -42,20 +36,6 @@ export function CommunityBrowser() {
         return { tPeak: shape.tPeak, fwhm: shape.fwhm };
       }}
       compareLabel={{ active: 'Hide my run', inactive: 'Compare my run' }}
-      filterBar={(ctx) => (
-        <FilterBar
-          filters={ctx.filters}
-          onFilterChange={ctx.setFilters}
-          options={ctx.options}
-          filteredCount={ctx.filteredCount}
-          totalCount={ctx.totalCount}
-          extraFilters={[DEMO_PRESET_FILTER]}
-          showExtraFiltersOnly={ctx.dataSource === 'demo'}
-          highlightMine={ctx.highlightMine}
-          onHighlightMineChange={ctx.toggleHighlightMine}
-          canHighlight={ctx.canHighlight}
-        />
-      )}
       renderChart={(ctx) => (
         <CommunityScatterPlot
           submissions={ctx.data}

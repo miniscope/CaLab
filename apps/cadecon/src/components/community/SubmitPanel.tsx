@@ -12,6 +12,7 @@ import {
   loadFieldOptions,
   supabaseEnabled,
   submitToSupabase,
+  deleteSubmission,
 } from '../../lib/community/index.ts';
 import type { CadeconSubmission } from '../../lib/community/index.ts';
 import {
@@ -49,9 +50,9 @@ import {
   GroundTruthControls,
   GroundTruthNotices,
   SubmitForm,
+  SubmissionSummary,
   createSubmitFormFields,
 } from '@calab/community-ui';
-import { SubmissionSummary } from './SubmissionSummary.tsx';
 import { ExportButton } from './ExportButton.tsx';
 import { isBridgeAutorun } from '../../lib/bridge-effects.ts';
 import '../../styles/community.css';
@@ -201,8 +202,16 @@ export function SubmitPanel() {
         {(submission) => (
           <SubmissionSummary
             submission={submission()}
+            renderParams={(s: CadeconSubmission) => (
+              <>
+                <span>tau_rise: {(s.tau_rise * 1000).toFixed(1)}ms</span>
+                <span>tau_decay: {(s.tau_decay * 1000).toFixed(1)}ms</span>
+                <span>iterations: {s.num_iterations}</span>
+                <span>{s.converged ? 'converged' : 'stopped'}</span>
+              </>
+            )}
             onDismiss={handleDismissSummary}
-            onDelete={handleDismissSummary}
+            onDelete={deleteSubmission}
           />
         )}
       </Show>
