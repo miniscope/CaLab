@@ -10,15 +10,20 @@
     "longDescription": "",
     "features": [],
     "status": "coming-soon",
+    "hidden": true,
     "screenshot": ""
   },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@calab/community": "*",
+    "@calab/community-ui": "*",
+    "@calab/compute": "*",
     "@calab/core": "*",
     "@calab/io": "*",
     "@calab/tutorials": "*",
