@@ -17,9 +17,10 @@ concurrency:
 # to update a pin.
 
 jobs:
-  # Gate the deploy on the same lint/typecheck/test suite that gates main.
-  # CI passing on `main` doesn't transfer to a tag push — without this job
-  # a tag can deploy commits that would fail CI.
+  # Gate the deploy on the same suite that gates main (TS checks here; Rust,
+  # Python and RLS in the jobs below). CI passing on `main` doesn't transfer
+  # to a tag push — without these jobs a tag can deploy commits that would
+  # fail CI.
   check:
     runs-on: ubuntu-latest
     permissions:
@@ -62,11 +63,138 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: App test scripts
+        run: npm run check:app-tests
+
       - name: Tests
         run: npm run test
 
+  # The rust, python and supabase jobs below mirror ci.yml's jobs of the same
+  # name, so a tag cannot deploy a commit that CI would reject. Keep them in
+  # sync with ci.yml when either changes.
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/solver
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: 'crates/solver -> target'
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # Lint each binding feature set separately. `--all-targets` includes the
+      # test modules.
+      - name: Clippy (jsbindings)
+        run: cargo clippy --all-targets --no-default-features --features jsbindings -- -D warnings
+
+      # The pyo3 path is otherwise only compiled by `maturin develop` in the
+      # python job, which never runs clippy. Clippy type-checks every target
+      # (so it also covers `cargo check`). `cargo test` can't link with
+      # pybindings: pyo3's `extension-module` feature leaves libpython
+      # unresolved, and pytest exercises that path at runtime anyway.
+      - name: Clippy (pybindings)
+        run: cargo clippy --all-targets --no-default-features --features pybindings -- -D warnings
+
+      - name: Tests
+        run: cargo test --no-default-features --features jsbindings
+
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+
+      - name: Create venv and install deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin[patchelf] numpy pydantic pytest h5py zarr ruff mypy
+        working-directory: python
+
+      - name: Build and install (dev)
+        run: .venv/bin/maturin develop --features pybindings
+        working-directory: python
+
+      - name: Ruff
+        run: .venv/bin/ruff check src/ tests/
+        working-directory: python
+
+      - name: Mypy
+        run: .venv/bin/mypy src/
+        working-directory: python
+
+      # `-m "not integration"` skips tests that require Playwright + a live
+      # browser (see pytest marker in pyproject.toml). Those run outside CI.
+      - name: Pytest
+        run: .venv/bin/pytest -m "not integration"
+        working-directory: python
+
+  supabase:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test -d test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: test
+      PGPASSWORD: test
+      PGDATABASE: test
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Apply migrations and run RLS policy matrix
+        run: ./scripts/test-rls.sh
+        env:
+          USE_DOCKER: ''
+
+      - name: Install Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+
+      - name: Deno tests (geo-session edge function)
+        working-directory: supabase/functions/geo-session
+        # --no-check skips type-checking of the transitive npm dep graph
+        # (supabase-js pulls @types/node which requires nodeModulesDir).
+        # The edge runtime doesn't type-check at deploy time either.
+        run: deno test --no-check --allow-env --allow-net --lock=deno.lock index.test.ts
+
   deploy:
-    needs: [check]
+    needs: [check, rust, python, supabase]
     permissions:
       contents: read
       pages: write

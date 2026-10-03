@@ -85,8 +85,24 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: App test scripts
+        run: npm run check:app-tests
+
       - name: Tests
         run: npm run test
+
+      # Re-runs the suite once under V8 coverage (merged across workspaces via
+      # the root vitest.config.ts) and fails if a packages/* floor regresses.
+      - name: Coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: warn
 
       - name: Build
         run: npm run build:apps
