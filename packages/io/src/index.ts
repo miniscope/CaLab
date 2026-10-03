@@ -2,6 +2,8 @@ export { parseNpy } from './npy-parser.ts';
 export { writeNpy } from './npy-writer.ts';
 export { parseNpz } from './npz-parser.ts';
 export { parseMat } from './mat-parser.ts';
+export { DEFAULT_MAX_DECOMPRESSED_BYTES, DecompressedSizeLimitError } from './size-limit.ts';
+export type { ArchiveParseOptions } from './size-limit.ts';
 export { writeMat } from './mat-writer.ts';
 export { zipFiles } from './zip.ts';
 export { validateTraceData } from './validation.ts';
