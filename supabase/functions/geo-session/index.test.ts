@@ -10,7 +10,13 @@
  */
 
 import { assertEquals, assertStringIncludes } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { allowedOrigins, corsHeaders, handleRequest, resolveGeo } from './index.ts';
+import {
+  APP_NAME_PATTERN,
+  allowedOrigins,
+  corsHeaders,
+  handleRequest,
+  resolveGeo,
+} from './index.ts';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -168,6 +174,36 @@ Deno.test('POST missing app_name returns 400', async () => {
     makeRequest('POST', { origin: ALLOWED_ORIGIN, body: { anonymous_id: 'x' } }),
   );
   assertEquals(res.status, 400);
+});
+
+Deno.test('APP_NAME_PATTERN accepts app slugs and rejects everything else', () => {
+  for (const ok of ['catune', 'carank', 'cadecon', 'admin', 'caview', 'ca-view', 'ca_view2']) {
+    assertEquals(APP_NAME_PATTERN.test(ok), true, ok);
+  }
+  for (const bad of ['', 'c', 'CaTune', '1app', '-app', 'ca view', 'a'.repeat(33), "x');--"]) {
+    assertEquals(APP_NAME_PATTERN.test(bad), false, bad);
+  }
+});
+
+Deno.test('POST with a malformed app_name returns 400', async () => {
+  for (const app_name of ['CaTune', 'bad app', 42]) {
+    const res = await handleRequest(
+      makeRequest('POST', { origin: ALLOWED_ORIGIN, body: { anonymous_id: 'x', app_name } }),
+    );
+    assertEquals(res.status, 400);
+    assertStringIncludes((await responseJson(res)).error as string, 'slug');
+  }
+});
+
+Deno.test('POST with an app_name not seen before passes validation', async () => {
+  // A new app needs no edge-function change: validation passes, auth fails.
+  const res = await handleRequest(
+    makeRequest('POST', {
+      origin: ALLOWED_ORIGIN,
+      body: { anonymous_id: 'x', app_name: 'caview' },
+    }),
+  );
+  assertEquals(res.status, 401);
 });
 
 Deno.test('POST with valid body but no Authorization header returns 401', async () => {

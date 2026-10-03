@@ -65,7 +65,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.indicator}
             placeholder="e.g. GCaMP6f (AAV)"
             fieldName="indicator"
-            appLabel="cadecon"
+            appLabel={__APP_ID__}
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -75,7 +75,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.species}
             placeholder="e.g. mouse"
             fieldName="species"
-            appLabel="cadecon"
+            appLabel={__APP_ID__}
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -85,7 +85,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.brainRegion}
             placeholder="e.g. cortex"
             fieldName="brain_region"
-            appLabel="cadecon"
+            appLabel={__APP_ID__}
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -94,7 +94,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.microscopeType}
             placeholder="e.g. 2-photon"
             fieldName="microscope_type"
-            appLabel="cadecon"
+            appLabel={__APP_ID__}
             loading={fieldOptionsLoading()}
           />
           <SearchableField
@@ -103,7 +103,7 @@ export function SubmitForm(props: SubmitFormProps) {
             signal={props.cellType}
             placeholder="e.g. pyramidal cell"
             fieldName="cell_type"
-            appLabel="cadecon"
+            appLabel={__APP_ID__}
             loading={fieldOptionsLoading()}
           />
 

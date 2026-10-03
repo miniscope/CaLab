@@ -6,12 +6,7 @@
     "emitDeclarationOnly": true,
     "declaration": true,
     "rootDir": "src",
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "@calab/core": ["../core/src/index.ts"],
-      "@calab/core/*": ["../core/src/*"]
-    }
+    "outDir": "dist"
   },
   "include": ["src"],
   "references": [{ "path": "../core" }]

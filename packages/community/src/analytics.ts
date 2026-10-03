@@ -96,11 +96,12 @@ async function ensureAuth(): Promise<string | null> {
 /**
  * Initialize an analytics session by calling the geo-session Edge Function.
  * Stores the returned session_id for subsequent trackEvent calls.
+ *
+ * `appName` is the app's `calab.id` slug (apps pass their build-time
+ * `__APP_ID__`). The edge function and the analytics_sessions CHECK both
+ * validate it against the slug pattern, not a list of known apps.
  */
-export async function initSession(
-  appName: 'catune' | 'carank' | 'cadecon',
-  appVersion?: string,
-): Promise<void> {
+export async function initSession(appName: string, appVersion?: string): Promise<void> {
   if (!supabaseEnabled) return;
 
   try {

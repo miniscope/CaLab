@@ -10,14 +10,18 @@ const MENU_ITEMS = [
   {
     label: 'General Feedback',
     desc: 'Share thoughts or suggestions',
-    url: () => buildFeedbackUrl('catune'),
+    url: () => buildFeedbackUrl(__APP_ID__),
   },
   {
     label: 'Feature Request',
     desc: 'Suggest a new feature',
-    url: () => buildFeatureRequestUrl('catune'),
+    url: () => buildFeatureRequestUrl(__APP_ID__),
   },
-  { label: 'Bug Report', desc: 'Report something broken', url: () => buildBugReportUrl('catune') },
+  {
+    label: 'Bug Report',
+    desc: 'Report something broken',
+    url: () => buildBugReportUrl(__APP_ID__),
+  },
 ] as const;
 
 export function FeedbackMenu() {

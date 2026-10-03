@@ -504,6 +504,37 @@ SELECT assert_allowed(
 );
 ROLLBACK;
 
+-- ── analytics_sessions: app_name validated by slug, not by list (015) ─────
+
+-- A new app's sessions are accepted without a migration; malformed names are
+-- still rejected by the CHECK.
+BEGIN;
+SET LOCAL ROLE service_role;
+SELECT assert_allowed(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
+  VALUES ('new-app', '44444444-4444-4444-4444-444444444444', true, 'caview')
+  $sql$,
+  'analytics_sessions INSERT for an unlisted app slug allowed'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
+  VALUES ('bad-case', '44444444-4444-4444-4444-444444444444', true, 'CaTune')
+  $sql$,
+  'analytics_sessions INSERT with uppercase app_name denied',
+  '23514'
+);
+SELECT assert_denied(
+  $sql$
+  INSERT INTO analytics_sessions (anonymous_id, user_id, is_anonymous, app_name)
+  VALUES ('bad-space', '44444444-4444-4444-4444-444444444444', true, 'ca tune')
+  $sql$,
+  'analytics_sessions INSERT with non-slug app_name denied',
+  '23514'
+);
+ROLLBACK;
+
 -- ── analytics_sessions: column-scoped UPDATE of own row (013) ─────────────
 
 -- ended_at / duration_seconds are the only client-writable columns.

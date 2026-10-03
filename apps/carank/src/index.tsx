@@ -10,4 +10,4 @@ configureStorageKey('carank-tutorial-progress-v1');
 
 render(() => <App />, document.getElementById('root')!);
 
-void initSession('carank', import.meta.env.VITE_APP_VERSION || 'dev');
+void initSession(__APP_ID__, import.meta.env.VITE_APP_VERSION || 'dev');
