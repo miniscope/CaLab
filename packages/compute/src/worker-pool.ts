@@ -59,10 +59,7 @@ export interface WorkerPoolOptions {
 }
 
 type WorkerState =
-  | { status: 'init' }
-  | { status: 'idle' }
-  | { status: 'busy'; jobId: number }
-  | { status: 'dead' };
+  { status: 'init' } | { status: 'idle' } | { status: 'busy'; jobId: number } | { status: 'dead' };
 
 interface PoolEntry {
   worker: Worker;
