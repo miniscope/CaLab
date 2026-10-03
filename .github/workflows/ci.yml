@@ -117,8 +117,13 @@ jobs:
       # to appear on the landing page and in apps.json, with no other edits.
       # Last in the job: it adds a workspace. Builds only the new app; the
       # others' dist/ come from the Build step above.
+      # The scaffolded app must not survive the job: the build cache above
+      # globs **/tsconfig.tsbuildinfo, so a leftover apps/smoketest/ would be
+      # saved into the cache and restored on the next run, where the scaffolder
+      # then refuses to overwrite it (seen on main after #219 merged).
       - name: Scaffolder (new-app)
         run: |
+          rm -rf apps/smoketest
           npm run new-app smoketest SmokeTest
           npx prettier --check apps/smoketest
           npx eslint apps/smoketest
@@ -129,6 +134,12 @@ jobs:
           node scripts/combine-dist.mjs
           npm run check:apps-manifest
           grep -q 'href="SmokeTest/"' dist/CaLab/index.html
+
+      - name: Remove scaffolded app
+        if: always()
+        run: |
+          rm -rf apps/smoketest dist/CaLab/SmokeTest
+          git checkout -- package.json package-lock.json
 
   # Browser smoke tests (e2e/): build the combined Pages site and load every
   # app in headless Chromium — WASM init, worker boot, demo data, first
