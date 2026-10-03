@@ -69,9 +69,7 @@ function spreadDataAttrs(props: CardProps): Record<string, string | number | und
   for (const key of Object.keys(props)) {
     if (key.startsWith('data-') && key !== 'data-tutorial') {
       attrs[key] = (props as unknown as Record<string, unknown>)[key] as
-        | string
-        | number
-        | undefined;
+        string | number | undefined;
     }
   }
   return attrs;

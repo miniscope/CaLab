@@ -21,3 +21,6 @@ test/
 python/src/calab/*.so
 python/docs/_build/
 python/docs/autoapi/
+
+# Vitest coverage output (npm run test:coverage)
+coverage/
