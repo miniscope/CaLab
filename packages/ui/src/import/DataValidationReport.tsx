@@ -1,55 +1,27 @@
+// Validation results for the imported array. Validation runs automatically
+// whenever the parsed data or its effective shape changes.
+
 import { createEffect, Show, For, type JSX } from 'solid-js';
-import { validateTraceData } from '@calab/io';
-import type { NumericTypedArray } from '@calab/core';
-import {
-  parsedData,
-  effectiveShape,
-  validationResult,
-  setValidationResult,
-} from '../../lib/data-store.ts';
+import { validateParsedData } from '@calab/io';
+import type { ImportStore } from '@calab/io';
 
-export function DataValidationReport(): JSX.Element {
+export interface DataValidationReportProps {
+  store: ImportStore;
+}
+
+export function DataValidationReport(props: DataValidationReportProps): JSX.Element {
   createEffect(() => {
-    const data = parsedData();
-    const shape = effectiveShape();
+    const data = props.store.parsedData();
+    const shape = props.store.effectiveShape();
     if (!data || !shape) return;
-
-    const arr = data.data;
-    if (arr instanceof Float64Array || arr instanceof Float32Array) {
-      setValidationResult(validateTraceData(arr, shape));
-    } else {
-      // For integer types, compute basic stats manually
-      let min = Infinity,
-        max = -Infinity,
-        sum = 0;
-      for (let i = 0; i < arr.length; i++) {
-        const v = (arr as NumericTypedArray)[i];
-        if (v < min) min = v;
-        if (v > max) max = v;
-        sum += v;
-      }
-      setValidationResult({
-        isValid: true,
-        warnings: [],
-        errors: [],
-        stats: {
-          min,
-          max,
-          mean: arr.length > 0 ? sum / arr.length : NaN,
-          nanCount: 0,
-          infCount: 0,
-          negativeCount: 0,
-          totalElements: arr.length,
-        },
-      });
-    }
+    props.store.setValidationResult(validateParsedData(data, shape));
   });
 
   return (
     <div class="card">
       <h3 class="card__title">Data Validation</h3>
 
-      <Show when={validationResult()}>
+      <Show when={props.store.validationResult()}>
         {(result) => (
           <>
             <Show when={result().errors.length > 0}>

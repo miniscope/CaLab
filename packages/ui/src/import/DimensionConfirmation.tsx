@@ -1,17 +1,18 @@
-import { Show, type JSX } from 'solid-js';
-import {
-  effectiveShape,
-  swapped,
-  setSwapped,
-  setDimensionsConfirmed,
-} from '../../lib/data-store.ts';
+// Detected dimensions with swap / confirm buttons.
 
-export function DimensionConfirmation(): JSX.Element {
+import { Show, type JSX } from 'solid-js';
+import type { ImportStore } from '@calab/io';
+
+export interface DimensionConfirmationProps {
+  store: ImportStore;
+}
+
+export function DimensionConfirmation(props: DimensionConfirmationProps): JSX.Element {
   return (
     <div class="card">
       <h3 class="card__title">Confirm Dimensions</h3>
 
-      <Show when={effectiveShape()}>
+      <Show when={props.store.effectiveShape()}>
         {(shape) => (
           <>
             <div class="dimension-display">
@@ -39,10 +40,13 @@ export function DimensionConfirmation(): JSX.Element {
             </Show>
 
             <div class="dimension-actions">
-              <button class="btn-secondary" onClick={() => setSwapped(!swapped())}>
+              <button
+                class="btn-secondary"
+                onClick={() => props.store.setSwapped(!props.store.swapped())}
+              >
                 Swap Dimensions
               </button>
-              <button class="btn-primary" onClick={() => setDimensionsConfirmed(true)}>
+              <button class="btn-primary" onClick={() => props.store.setDimensionsConfirmed(true)}>
                 Confirm
               </button>
             </div>

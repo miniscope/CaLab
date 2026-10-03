@@ -69,7 +69,7 @@ import {
   effectiveShape,
 } from './data-store.ts';
 import { subsetRectangles, type SubsetRectangle } from './subset-store.ts';
-import { dataIndex } from './data-utils.ts';
+import { dataIndex } from '@calab/io';
 import { median } from './math-utils.ts';
 import { reconvolveAR2 } from './reconvolve.ts';
 

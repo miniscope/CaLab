@@ -1,14 +1,23 @@
+// Sampling-rate gate: presets plus a custom value. The import cannot proceed
+// until a positive rate is confirmed.
+
 import { createSignal, Show, For, type JSX } from 'solid-js';
 import { SAMPLING_RATE_PRESETS } from '@calab/core';
-import { numTimepoints, setSamplingRate } from '../../lib/data-store.ts';
+import type { ImportStore } from '@calab/io';
 
-export function SamplingRateInput(): JSX.Element {
+export interface SamplingRateInputProps {
+  store: ImportStore;
+  /** What the rate is needed for, finishing "This is required for correct ...". */
+  purpose: string;
+}
+
+export function SamplingRateInput(props: SamplingRateInputProps): JSX.Element {
   const [selectedRate, setSelectedRate] = createSignal<number | null>(null);
   const [customValue, setCustomValue] = createSignal<string>('');
 
   const duration = () => {
     const rate = selectedRate();
-    const tp = numTimepoints();
+    const tp = props.store.numTimepoints();
     if (!rate || rate <= 0 || !tp) return null;
     return tp / rate;
   };
@@ -38,7 +47,7 @@ export function SamplingRateInput(): JSX.Element {
   const handleConfirm = () => {
     const rate = selectedRate();
     if (rate && rate > 0) {
-      setSamplingRate(rate);
+      props.store.setSamplingRate(rate);
     }
   };
 
@@ -46,7 +55,8 @@ export function SamplingRateInput(): JSX.Element {
     <div class="card">
       <h3 class="card__title">Set Sampling Rate</h3>
       <p class="text-secondary">
-        Select a preset or enter a custom sampling rate. This is required for correct deconvolution.
+        Select a preset or enter a custom sampling rate. This is required for correct{' '}
+        {props.purpose}.
       </p>
 
       <div class="preset-buttons">

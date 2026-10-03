@@ -8,8 +8,7 @@ import {
   durationSeconds,
   resetImport,
 } from '../../lib/data-store.ts';
-import { FeedbackMenu } from './FeedbackMenu.tsx';
-import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
+import { FeedbackMenu, CommunityAuthMenu } from '@calab/community-ui';
 import { TutorialLauncher } from './TutorialLauncher.tsx';
 import { formatDuration } from '@calab/core';
 
@@ -65,7 +64,7 @@ export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
               onToggle={() => props.onTutorialToggle?.()}
             />
             <span data-tutorial="feedback-menu">
-              <FeedbackMenu />
+              <FeedbackMenu appId={__APP_ID__} />
             </span>
             <button
               class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
@@ -77,7 +76,7 @@ export function CaDeconHeader(props: CaDeconHeaderProps): JSX.Element {
             <button class="btn-secondary btn-small" onClick={resetImport}>
               Change Data
             </button>
-            <AuthMenuWrapper />
+            <CommunityAuthMenu />
           </>
         }
       />

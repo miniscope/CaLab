@@ -1,30 +1,40 @@
-import { createSignal, onCleanup, Show } from 'solid-js';
-import {
-  buildFeedbackUrl,
-  buildFeatureRequestUrl,
-  buildBugReportUrl,
-} from '../../lib/community/index.ts';
-import '../../styles/feedback-menu.css';
+/**
+ * Header "Feedback" dropdown (general feedback / feature request / bug report)
+ * and the plain-link variant shown in the import screen's footer. Both open
+ * pre-filled GitHub issues labelled with the app id.
+ */
+
+import { createSignal, onCleanup, Show, type JSX } from 'solid-js';
+import type { AppLabel } from '@calab/community';
+import { buildFeedbackUrl, buildFeatureRequestUrl, buildBugReportUrl } from '@calab/community';
+import './styles/feedback-menu.css';
 
 const MENU_ITEMS = [
   {
     label: 'General Feedback',
     desc: 'Share thoughts or suggestions',
-    url: () => buildFeedbackUrl(__APP_ID__),
+    url: buildFeedbackUrl,
   },
   {
     label: 'Feature Request',
     desc: 'Suggest a new feature',
-    url: () => buildFeatureRequestUrl(__APP_ID__),
+    url: buildFeatureRequestUrl,
   },
   {
     label: 'Bug Report',
     desc: 'Report something broken',
-    url: () => buildBugReportUrl(__APP_ID__),
+    url: buildBugReportUrl,
   },
 ] as const;
 
-export function FeedbackMenu() {
+export interface FeedbackMenuProps {
+  /** The app's id (its build-time `__APP_ID__`), added as an issue label. */
+  appId: AppLabel;
+  /** `data-tutorial` anchor on the menu, for tutorials that point at it. */
+  tutorialAnchor?: string;
+}
+
+export function FeedbackMenu(props: FeedbackMenuProps): JSX.Element {
   const [open, setOpen] = createSignal(false);
   let containerRef!: HTMLDivElement;
 
@@ -58,7 +68,7 @@ export function FeedbackMenu() {
   };
 
   return (
-    <div class="feedback-menu" data-tutorial="feedback-menu" ref={containerRef}>
+    <div class="feedback-menu" data-tutorial={props.tutorialAnchor} ref={containerRef}>
       <button
         class="btn-secondary btn-small"
         aria-expanded={open()}
@@ -73,7 +83,7 @@ export function FeedbackMenu() {
             <a
               class="feedback-menu__item"
               role="menuitem"
-              href={item.url()}
+              href={item.url(props.appId)}
               target="_blank"
               rel="noopener noreferrer"
               onClick={close}
@@ -85,5 +95,29 @@ export function FeedbackMenu() {
         </div>
       </Show>
     </div>
+  );
+}
+
+export interface ImportFeedbackLinksProps {
+  /** The app's id (its build-time `__APP_ID__`), added as an issue label. */
+  appId: AppLabel;
+}
+
+/** Inline feedback links for the import screen footer. */
+export function ImportFeedbackLinks(props: ImportFeedbackLinksProps): JSX.Element {
+  return (
+    <footer class="import-feedback">
+      <a href={buildFeedbackUrl(props.appId)} target="_blank" rel="noopener noreferrer">
+        Feedback
+      </a>
+      <span class="import-feedback__sep">&middot;</span>
+      <a href={buildFeatureRequestUrl(props.appId)} target="_blank" rel="noopener noreferrer">
+        Feature Request
+      </a>
+      <span class="import-feedback__sep">&middot;</span>
+      <a href={buildBugReportUrl(props.appId)} target="_blank" rel="noopener noreferrer">
+        Bug Report
+      </a>
+    </footer>
   );
 }

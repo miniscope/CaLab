@@ -11,8 +11,7 @@ import {
 import { clearMultiCellState } from '../../lib/multi-cell-store.ts';
 import { resetSpectrumStore } from '../../lib/spectrum/spectrum-store.ts';
 import { TutorialLauncher } from '../tutorial/TutorialLauncher.tsx';
-import { FeedbackMenu } from './FeedbackMenu.tsx';
-import { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
+import { FeedbackMenu, CommunityAuthMenu } from '@calab/community-ui';
 import { formatDuration } from '@calab/core';
 
 export interface CaTuneHeaderProps {
@@ -71,7 +70,7 @@ export function CaTuneHeader(props: CaTuneHeaderProps): JSX.Element {
       }
       actions={
         <>
-          <FeedbackMenu />
+          <FeedbackMenu appId={__APP_ID__} tutorialAnchor="feedback-menu" />
           <TutorialLauncher isOpen={props.tutorialOpen} onToggle={props.onTutorialToggle} />
           <button
             class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
@@ -83,7 +82,7 @@ export function CaTuneHeader(props: CaTuneHeaderProps): JSX.Element {
           <button class="btn-secondary btn-small" onClick={handleChangeData}>
             Change Data
           </button>
-          <AuthMenuWrapper />
+          <CommunityAuthMenu />
         </>
       }
     />

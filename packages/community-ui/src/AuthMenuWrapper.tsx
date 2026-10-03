@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js';
 import { createEffect, createSignal, Show } from 'solid-js';
 import { AuthMenu } from './AuthMenu.tsx';
+import { user, authLoading, signInWithEmail, signOut, supabaseEnabled } from '@calab/community';
 
 export interface AuthMenuWrapperProps {
   user: Accessor<{ email?: string } | null>;
@@ -75,6 +76,19 @@ export function AuthMenuWrapper(props: AuthMenuWrapperProps) {
       enabled={props.enabled}
       onSignOut={() => props.signOut()}
       signInForm={signInForm}
+    />
+  );
+}
+
+/** AuthMenuWrapper wired to the shared community store: the header sign-in menu. */
+export function CommunityAuthMenu() {
+  return (
+    <AuthMenuWrapper
+      user={user}
+      loading={authLoading}
+      enabled={supabaseEnabled}
+      signInWithEmail={signInWithEmail}
+      signOut={signOut}
     />
   );
 }

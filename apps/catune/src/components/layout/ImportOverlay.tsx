@@ -1,285 +1,43 @@
-import { Show, createSignal, type JSX } from 'solid-js';
-import { FileDropZone } from '../import/FileDropZone.tsx';
-import { NpzArraySelector } from '../import/NpzArraySelector.tsx';
-import { DimensionConfirmation } from '../import/DimensionConfirmation.tsx';
-import { SamplingRateInput } from '../import/SamplingRateInput.tsx';
-import { DataValidationReport } from '../import/DataValidationReport.tsx';
-import { TracePreview } from '../import/TracePreview.tsx';
-import {
-  importStep,
-  rawFile,
-  effectiveShape,
-  samplingRate,
-  durationSeconds,
-  validationResult,
-  npzArrays,
-} from '../../lib/data-store.ts';
-import { formatDuration } from '@calab/core';
-import { DEFAULT_QUALITATIVE_CONFIG } from '@calab/compute';
-import type { QualitativeSimConfig } from '@calab/compute';
-import { SimulationConfigurator } from '@calab/ui';
-import {
-  buildFeedbackUrl,
-  buildFeatureRequestUrl,
-  buildBugReportUrl,
-} from '../../lib/community/index.ts';
+import type { JSX } from 'solid-js';
+import { ImportOverlay as SharedImportOverlay, type DemoLoadRequest } from '@calab/ui/import';
+import { ImportFeedbackLinks } from '@calab/community-ui';
+import { startTutorial } from '@calab/tutorials';
+import { importStore } from '../../lib/data-store.ts';
 import { getTutorialById } from '../../lib/tutorial/content/index.ts';
-import { startTutorial, isTutorialActive } from '@calab/tutorials';
-
-const STEP_LABELS: Record<string, { num: number; label: string }> = {
-  drop: { num: 1, label: 'Load Data' },
-  'confirm-dims': { num: 2, label: 'Confirm Dimensions' },
-  'sampling-rate': { num: 3, label: 'Set Sampling Rate' },
-  validation: { num: 4, label: 'Validate Data' },
-  ready: { num: 4, label: 'Ready' },
-};
-
-const TOTAL_STEPS = 4;
 
 export interface ImportOverlayProps {
   hasFile: boolean;
   onReset: () => void;
-  onLoadDemo: (opts: {
-    numCells: number;
-    durationMinutes: number;
-    fps: number;
-    qualitativeConfig: QualitativeSimConfig;
-    seed?: number | 'random';
-  }) => void;
+  onLoadDemo: (opts: DemoLoadRequest) => void;
 }
 
 export function ImportOverlay(props: ImportOverlayProps): JSX.Element {
-  const stepInfo = () => STEP_LABELS[importStep()] ?? { num: 1, label: 'Load Data' };
-
-  // Demo data config
-  const [demoCells, setDemoCells] = createSignal(100);
-  const [demoDuration, setDemoDuration] = createSignal(15);
-  const [demoFps, setDemoFps] = createSignal(30);
-  const [simConfig, setSimConfig] = createSignal<QualitativeSimConfig>(DEFAULT_QUALITATIVE_CONFIG);
-  const [useRandomSeed, setUseRandomSeed] = createSignal(false);
-
-  const durationDisplay = () => formatDuration(durationSeconds(), true);
-
   return (
-    <main class="import-container">
-      {/* Header */}
-      <header class="app-header" data-tutorial="app-header">
-        <h1 class="app-header__title">CaTune</h1>
-        <span class="app-header__version">CaLab {import.meta.env.VITE_APP_VERSION || 'dev'}</span>
-        <p class="app-header__subtitle">Calcium Deconvolution Parameter Tuning</p>
-      </header>
-
-      {/* Step indicator */}
-      <div class="step-indicator">
-        <div class="step-indicator__bar">
-          {[1, 2, 3, 4].map((n) => (
-            <div
-              class={`step-dot ${n <= stepInfo().num ? 'step-dot--active' : ''} ${n === stepInfo().num ? 'step-dot--current' : ''}`}
-            >
-              {n}
-            </div>
-          ))}
-        </div>
-        <p class="step-indicator__label">
-          Step {stepInfo().num} of {TOTAL_STEPS}: {stepInfo().label}
-        </p>
-      </div>
-
-      {/* Start Over button */}
-      <Show when={props.hasFile}>
-        <div class="start-over-row">
-          <button class="btn-secondary btn-small" onClick={() => props.onReset()}>
-            Start Over
-          </button>
-        </div>
-      </Show>
-
-      {/* Step 1: File Drop */}
-      <Show when={importStep() === 'drop'}>
-        <FileDropZone />
-        <Show when={npzArrays()}>
-          <NpzArraySelector />
-        </Show>
-        <div class="demo-data-row">
-          <span class="demo-data-row__divider">or generate synthetic data</span>
-          <SimulationConfigurator config={simConfig()} onChange={setSimConfig} />
-          <div class="demo-data-row__fields">
-            <label class="demo-data-row__field">
-              <span>Cells</span>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={demoCells()}
-                onInput={(e) => {
-                  const v = parseInt(e.currentTarget.value, 10);
-                  if (!isNaN(v) && v >= 1) setDemoCells(Math.min(v, 200));
-                }}
-              />
-            </label>
-            <label class="demo-data-row__field">
-              <span>Duration (min)</span>
-              <input
-                type="number"
-                min={0.5}
-                max={60}
-                step={0.5}
-                value={demoDuration()}
-                onInput={(e) => {
-                  const v = parseFloat(e.currentTarget.value);
-                  if (!isNaN(v) && v >= 0.5) setDemoDuration(Math.min(v, 60));
-                }}
-              />
-            </label>
-            <label class="demo-data-row__field">
-              <span>FPS</span>
-              <input
-                type="number"
-                min={1}
-                max={120}
-                value={demoFps()}
-                onInput={(e) => {
-                  const v = parseInt(e.currentTarget.value, 10);
-                  if (!isNaN(v) && v >= 1) setDemoFps(Math.min(v, 120));
-                }}
-              />
-            </label>
-          </div>
-          <label class="demo-data-row__checkbox">
-            <input
-              type="checkbox"
-              checked={useRandomSeed()}
-              onChange={(e) => setUseRandomSeed(e.currentTarget.checked)}
-            />
-            <span>Random seed</span>
-          </label>
-          <button
-            class="btn-secondary"
-            onClick={() =>
-              props.onLoadDemo({
-                numCells: demoCells(),
-                durationMinutes: demoDuration(),
-                fps: demoFps(),
-                qualitativeConfig: simConfig(),
-                seed: useRandomSeed() ? 'random' : undefined,
-              })
-            }
-          >
-            Load Demo Data
-          </button>
-          <Show when={!isTutorialActive()}>
-            <div class="theory-tutorial-link">
-              <span>New to deconvolution?</span>
-              <button
-                class="btn-secondary btn-small"
-                onClick={() => {
-                  const theory = getTutorialById('theory');
-                  if (theory) startTutorial(theory);
-                }}
-              >
-                Start Theory Tutorial
-              </button>
-            </div>
-          </Show>
-        </div>
-      </Show>
-
-      {/* Step 2: Confirm Dimensions */}
-      <Show when={importStep() === 'confirm-dims'}>
-        <div class="file-info-dimmed">
-          <FileDropZone />
-        </div>
-        <DimensionConfirmation />
-      </Show>
-
-      {/* Step 3: Sampling Rate */}
-      <Show when={importStep() === 'sampling-rate'}>
-        <Show when={effectiveShape()}>
-          {(shape) => (
-            <div class="info-summary">
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-            </div>
-          )}
-        </Show>
-        <SamplingRateInput />
-      </Show>
-
-      {/* Step 4: Validation */}
-      <Show when={importStep() === 'validation'}>
-        <Show when={effectiveShape()}>
-          {(shape) => (
-            <div class="info-summary">
-              <span>{shape()[0].toLocaleString()} cells</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{shape()[1].toLocaleString()} timepoints</span>
-              <span class="info-summary__sep">&middot;</span>
-              <span>{samplingRate()} Hz</span>
-            </div>
-          )}
-        </Show>
-        <DataValidationReport />
-      </Show>
-
-      {/* Step 5 (ready): shown briefly before dashboard transition */}
-      <Show when={importStep() === 'ready'}>
-        <div class="info-summary">
-          <Show when={rawFile()}>
-            {(file) => (
-              <>
-                <span>{file().name}</span>
-                <span class="info-summary__sep">&middot;</span>
-              </>
-            )}
-          </Show>
-          <Show when={effectiveShape()}>
-            {(shape) => (
-              <>
-                <span>{shape()[0].toLocaleString()} cells</span>
-                <span class="info-summary__sep">&middot;</span>
-                <span>{shape()[1].toLocaleString()} timepoints</span>
-                <span class="info-summary__sep">&middot;</span>
-              </>
-            )}
-          </Show>
-          <span>{samplingRate()} Hz</span>
-          <Show when={durationDisplay()}>
-            <span class="info-summary__sep">&middot;</span>
-            <span>{durationDisplay()}</span>
-          </Show>
-        </div>
-        <Show when={validationResult()}>
-          {(result) => (
-            <Show when={result().warnings.length > 0}>
-              <p class="text-warning" style="text-align: center; margin-bottom: 12px;">
-                {result().warnings.length} warning{result().warnings.length > 1 ? 's' : ''}
-              </p>
-            </Show>
-          )}
-        </Show>
-        <TracePreview />
-        <div class="card ready-card">
-          <p class="text-success" style="font-weight: 600; text-align: center;">
-            Data loaded and validated. Ready for parameter tuning.
-          </p>
-        </div>
-      </Show>
-
-      {/* Feedback links */}
-      <footer class="import-feedback">
-        <a href={buildFeedbackUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
-          Feedback
-        </a>
-        <span class="import-feedback__sep">&middot;</span>
-        <a href={buildFeatureRequestUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
-          Feature Request
-        </a>
-        <span class="import-feedback__sep">&middot;</span>
-        <a href={buildBugReportUrl(__APP_ID__)} target="_blank" rel="noopener noreferrer">
-          Bug Report
-        </a>
-      </footer>
-    </main>
+    <SharedImportOverlay
+      store={importStore}
+      title="CaTune"
+      subtitle="Calcium Deconvolution Parameter Tuning"
+      version={`CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`}
+      layout="stacked"
+      demoButtonLabel="Load Demo Data"
+      samplingRatePurpose="parameter tuning"
+      headerTutorialAnchor="app-header"
+      readyStep={{
+        message: 'Data loaded and validated. Ready for parameter tuning.',
+        tracePreviewCaption: 'Full interactive plotting available after parameter tuning.',
+        cellIndexBase: 1,
+      }}
+      theoryTutorial={{
+        prompt: 'New to deconvolution?',
+        onStart: () => {
+          const theory = getTutorialById('theory');
+          if (theory) startTutorial(theory);
+        },
+      }}
+      footer={<ImportFeedbackLinks appId={__APP_ID__} />}
+      hasFile={props.hasFile}
+      onReset={props.onReset}
+      onLoadDemo={props.onLoadDemo}
+    />
   );
 }

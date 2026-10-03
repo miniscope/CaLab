@@ -5,7 +5,7 @@
 // Auth
 export { AuthCallback } from './AuthCallback.tsx';
 export type { AuthCallbackProps } from './AuthCallback.tsx';
-export { AuthMenuWrapper } from './AuthMenuWrapper.tsx';
+export { AuthMenuWrapper, CommunityAuthMenu } from './AuthMenuWrapper.tsx';
 export type { AuthMenuWrapperProps } from './AuthMenuWrapper.tsx';
 export { AuthGate } from './AuthGate.tsx';
 export type { AuthGateProps } from './AuthGate.tsx';
@@ -29,3 +29,7 @@ export { SubmitFormModal } from './SubmitFormModal.tsx';
 export type { SubmitFormModalProps } from './SubmitFormModal.tsx';
 export { SearchableField } from './SearchableField.tsx';
 export type { SearchableFieldProps, FieldSignal } from './SearchableField.tsx';
+
+// Feedback links (GitHub issues)
+export { FeedbackMenu, ImportFeedbackLinks } from './FeedbackMenu.tsx';
+export type { FeedbackMenuProps, ImportFeedbackLinksProps } from './FeedbackMenu.tsx';

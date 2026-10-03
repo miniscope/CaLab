@@ -1,13 +1,22 @@
-// TracePreview - Canvas-based trace preview of first few traces
-// Minimal preview: no zoom/pan. Full plotting comes in Phase 3.
+// Canvas preview of the first few traces (no zoom/pan) shown once the import
+// is complete, before the app's dashboard takes over.
 
-import { onMount, onCleanup, createEffect } from 'solid-js';
-import { parsedData, effectiveShape, swapped } from '../../lib/data-store.ts';
+import { onMount, onCleanup, createEffect, on, type JSX } from 'solid-js';
+import { dataIndex } from '@calab/io';
+import type { ImportStore } from '@calab/io';
 
 const NUM_TRACES = 5;
 const TRACE_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'];
 
-export function TracePreview() {
+export interface TracePreviewProps {
+  store: ImportStore;
+  /** Number shown for the first cell in the trace labels (default 0). */
+  cellIndexBase?: 0 | 1;
+  /** Text after "First 5 traces." in the caption. */
+  caption?: string;
+}
+
+export function TracePreview(props: TracePreviewProps): JSX.Element {
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
   let resizeObserver: ResizeObserver | undefined;
@@ -18,24 +27,16 @@ export function TracePreview() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const data = parsedData();
-    const shape = effectiveShape();
+    const data = props.store.parsedData();
+    const shape = props.store.effectiveShape();
     if (!data || !shape) return;
 
     const [numCells, numTimepoints] = shape;
     const typedData = data.data;
-    const isSwapped = swapped();
-    const originalShape = data.shape;
-
-    // Determine how to index the data based on swap state
-    // Data is always stored in C order (row-major).
-    // effectiveShape gives us the logical (cells, timepoints) shape.
-    // If swapped, the raw data is [timepoints, cells] in memory but we want to read as [cells, timepoints].
-    const rawCols = originalShape[1];
-
+    const isSwapped = props.store.swapped();
+    const rawCols = data.shape[1];
     const tracesToShow = Math.min(NUM_TRACES, numCells);
 
-    // Get container dimensions for HiDPI
     const rect = canvas.parentElement?.getBoundingClientRect();
     const displayWidth = rect?.width ?? 700;
     const displayHeight = 200;
@@ -53,20 +54,10 @@ export function TracePreview() {
     const padding = 2;
 
     for (let t = 0; t < tracesToShow; t++) {
-      // Find min/max for this trace
       let min = Infinity;
       let max = -Infinity;
       for (let i = 0; i < numTimepoints; i++) {
-        let idx: number;
-        if (isSwapped) {
-          // Raw data is [rawRows x rawCols], logical is [rawCols x rawRows] (swapped)
-          // Cell t, timepoint i: raw index = i * rawCols + t
-          idx = i * rawCols + t;
-        } else {
-          // Cell t, timepoint i: raw index = t * rawCols + i
-          idx = t * rawCols + i;
-        }
-        const v = typedData[idx];
+        const v = typedData[dataIndex(t, i, rawCols, isSwapped)];
         if (Number.isFinite(v)) {
           if (v < min) min = v;
           if (v > max) max = v;
@@ -82,17 +73,10 @@ export function TracePreview() {
       ctx.strokeStyle = TRACE_COLORS[t % TRACE_COLORS.length];
       ctx.lineWidth = 1;
 
-      // Downsample if more points than pixels
       const step = Math.max(1, Math.ceil(numTimepoints / displayWidth));
 
       for (let i = 0; i < numTimepoints; i += step) {
-        let idx: number;
-        if (isSwapped) {
-          idx = i * rawCols + t;
-        } else {
-          idx = t * rawCols + i;
-        }
-        const v = typedData[idx];
+        const v = typedData[dataIndex(t, i, rawCols, isSwapped)];
         const x = (i / numTimepoints) * displayWidth;
         const y = Number.isFinite(v)
           ? yBase + usableHeight - (v - min) * yScale
@@ -103,18 +87,15 @@ export function TracePreview() {
       }
       ctx.stroke();
 
-      // Trace label
       ctx.fillStyle = TRACE_COLORS[t % TRACE_COLORS.length];
       ctx.font = '11px system-ui, sans-serif';
-      ctx.fillText(`Cell ${t + 1}`, 4, yBase + 12);
+      ctx.fillText(`Cell ${t + (props.cellIndexBase ?? 0)}`, 4, yBase + 12);
     }
   };
 
   onMount(() => {
     if (containerRef) {
-      resizeObserver = new ResizeObserver(() => {
-        drawTraces();
-      });
+      resizeObserver = new ResizeObserver(() => drawTraces());
       resizeObserver.observe(containerRef);
     }
     drawTraces();
@@ -124,20 +105,22 @@ export function TracePreview() {
     resizeObserver?.disconnect();
   });
 
-  // Redraw when data or shape changes
-  createEffect(() => {
-    // Access reactive dependencies
-    parsedData();
-    effectiveShape();
-    swapped();
-    drawTraces();
-  });
+  createEffect(
+    on(
+      [
+        () => props.store.parsedData(),
+        () => props.store.effectiveShape(),
+        () => props.store.swapped(),
+      ],
+      drawTraces,
+    ),
+  );
 
   return (
     <div class="card">
       <h3 class="card__title">Trace Preview</h3>
       <p class="text-secondary" style="margin-bottom: 12px;">
-        First {NUM_TRACES} traces. Full interactive plotting available after parameter tuning.
+        First {NUM_TRACES} traces.{props.caption ? ` ${props.caption}` : ''}
       </p>
       <div class="trace-preview" ref={containerRef}>
         <canvas ref={canvasRef} />

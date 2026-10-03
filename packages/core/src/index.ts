@@ -11,6 +11,7 @@ export type {
   DataStats,
   ValidationResult,
   ImportStep,
+  DataSource,
 } from './types.ts';
 export { SAMPLING_RATE_PRESETS } from './types.ts';
 
