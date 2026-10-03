@@ -3,6 +3,10 @@ import tseslint from 'typescript-eslint';
 import solid from 'eslint-plugin-solid/configs/typescript';
 import globals from 'globals';
 
+// Every app and package source tree. Globbed rather than listed so a new app or
+// package gets the Solid rules and browser globals without editing this file.
+const SOURCE_FILES = ['apps/*/src/**/*.{ts,tsx}', 'packages/*/src/**/*.{ts,tsx}'];
+
 export default tseslint.config(
   // Global ignores
   {
@@ -23,23 +27,15 @@ export default tseslint.config(
   // TypeScript recommended (non-type-checked for speed)
   ...tseslint.configs.recommended,
 
-  // SolidJS rules for app TS/TSX files and UI package
+  // SolidJS rules for every app and package
   {
-    files: [
-      'apps/catune/src/**/*.{ts,tsx}',
-      'apps/carank/src/**/*.{ts,tsx}',
-      'packages/ui/src/**/*.{ts,tsx}',
-    ],
+    files: SOURCE_FILES,
     ...solid,
   },
 
-  // Browser globals for app src/ and UI package
+  // Browser globals for every app and package
   {
-    files: [
-      'apps/catune/src/**/*.{ts,tsx}',
-      'apps/carank/src/**/*.{ts,tsx}',
-      'packages/ui/src/**/*.{ts,tsx}',
-    ],
+    files: SOURCE_FILES,
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -49,7 +45,7 @@ export default tseslint.config(
 
   // Worker globals for app workers/
   {
-    files: ['apps/catune/src/workers/**/*.ts'],
+    files: ['apps/*/src/workers/**/*.{ts,tsx}'],
     languageOptions: {
       globals: {
         ...globals.worker,
@@ -70,7 +66,7 @@ export default tseslint.config(
   // Import boundaries (merged into one block so flat-config doesn't silently override)
   // (community-store uses type imports for User/Session — allowed since it's in the community boundary)
   {
-    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.ts'],
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
     ignores: [
       'packages/core/src/wasm-adapter.ts',
       'packages/community/src/supabase.ts',
@@ -114,11 +110,7 @@ export default tseslint.config(
 
   // SolidJS-specific rule overrides (scoped to files where solid plugin is loaded)
   {
-    files: [
-      'apps/catune/src/**/*.{ts,tsx}',
-      'apps/carank/src/**/*.{ts,tsx}',
-      'packages/ui/src/**/*.{ts,tsx}',
-    ],
+    files: SOURCE_FILES,
     rules: {
       // .map() is fine for small static arrays; <For> migration is incremental
       'solid/prefer-for': 'off',
