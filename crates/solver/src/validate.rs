@@ -176,6 +176,17 @@ pub fn validate_finite_f64(name: &str, data: &[f64]) -> Result<(), SolverError> 
     }
 }
 
+/// A caller-supplied kernel (e.g. for `py_compute_lipschitz`) must be
+/// non-empty and finite. `kernel::compute_lipschitz` returns a 1e-10 floor
+/// for an empty or NaN kernel and `inf` for an infinite one, any of which
+/// would silently become a nonsense FISTA step size.
+pub fn validate_kernel(kernel: &[f32]) -> Result<(), SolverError> {
+    if kernel.is_empty() {
+        return Err(input_err("kernel must not be empty".into()));
+    }
+    validate_finite_f32("kernel", kernel)
+}
+
 /// Convert signed trace lengths (numpy int64) to `usize`, rejecting negatives
 /// instead of wrapping them to `usize::MAX`.
 pub fn lengths_from_i64(lengths: &[i64]) -> Result<Vec<usize>, SolverError> {
@@ -252,6 +263,18 @@ pub fn validate_kernel_estimate_inputs(
 /// Validate `fit_biexponential` inputs and build the optional warm-start
 /// candidate. `warm_residual` may be `+inf` (the "no previous fit" default);
 /// every other warm field must be finite.
+///
+/// The warm taus must also be physical, else the call is rejected:
+/// `0 < warm_tau_rise < warm_tau_decay`, and the fast pair is either absent
+/// (`warm_tau_rise_fast == warm_tau_decay_fast == 0`, what a slow-only fit
+/// returns) or `0 < warm_tau_rise_fast < warm_tau_decay_fast`. The warm
+/// candidate competes with the cold grid as-is, so a non-physical pair (e.g.
+/// negative taus against an all-negative kernel) could otherwise win and be
+/// returned verbatim as the fit. `fit_biexponential` only ever returns
+/// physical taus, so a warm start fed from a previous result always passes;
+/// anything else is a caller bug, which is reported rather than silently
+/// dropped (consistent with the non-finite check). The warm betas are not
+/// constrained: they are recomputed by NNLS on the current kernel.
 #[allow(clippy::too_many_arguments)]
 pub fn biexp_fit_inputs(
     h_free: &[f32],
@@ -285,6 +308,20 @@ pub fn biexp_fit_inputs(
     }
     if warm_residual.is_nan() {
         return Err(param_err("warm_residual must not be NaN".into()));
+    }
+    if !(warm_tau_rise > 0.0 && warm_tau_decay > warm_tau_rise) {
+        return Err(param_err(format!(
+            "warm taus must satisfy 0 < warm_tau_rise < warm_tau_decay, \
+             got warm_tau_rise={warm_tau_rise}, warm_tau_decay={warm_tau_decay}"
+        )));
+    }
+    let no_fast = warm_tau_rise_fast == 0.0 && warm_tau_decay_fast == 0.0;
+    if !no_fast && !(warm_tau_rise_fast > 0.0 && warm_tau_decay_fast > warm_tau_rise_fast) {
+        return Err(param_err(format!(
+            "warm fast taus must both be 0 (no fast component) or satisfy \
+             0 < warm_tau_rise_fast < warm_tau_decay_fast, got \
+             warm_tau_rise_fast={warm_tau_rise_fast}, warm_tau_decay_fast={warm_tau_decay_fast}"
+        )));
     }
     Ok(Some(BiexpResult {
         tau_rise: warm_tau_rise,
@@ -575,6 +612,22 @@ mod tests {
     }
 
     #[test]
+    fn kernel_checked() {
+        assert!(validate_kernel(&[1.0, -2.0, 0.5]).is_ok());
+        for bad in [
+            &[][..],
+            &[f32::NAN, 1.0],
+            &[1.0, f32::INFINITY],
+            &[f32::NEG_INFINITY],
+        ] {
+            assert!(
+                matches!(validate_kernel(bad), Err(SolverError::InvalidInput(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
     fn biexp_inputs_checked() {
         let h = [0.0_f32, 1.0, 0.5];
         let inf = f64::INFINITY;
@@ -593,5 +646,25 @@ mod tests {
             biexp_fit_inputs(&[f32::NAN], 30.0, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, inf).is_err()
         );
         assert!(biexp_fit_inputs(&h, 30.0, true, f64::NAN, 0.4, 0.0, 0.0, 1.0, 0.0, inf).is_err());
+        // Non-physical warm taus: slow pair, then fast pair.
+        for (tr, td) in [
+            (-1.0, -2.0),
+            (0.0, 0.0),
+            (0.0, 0.4),
+            (0.4, 0.02),
+            (0.4, 0.4),
+        ] {
+            assert!(
+                biexp_fit_inputs(&h, 30.0, true, tr, td, 0.0, 0.0, 1.0, 0.0, inf).is_err(),
+                "({tr}, {td})"
+            );
+        }
+        for (trf, tdf) in [(-0.01, 0.05), (0.05, 0.01), (0.0, 0.05), (0.01, 0.0)] {
+            assert!(
+                biexp_fit_inputs(&h, 30.0, true, 0.02, 0.4, trf, tdf, 1.0, 0.5, inf).is_err(),
+                "fast ({trf}, {tdf})"
+            );
+        }
+        assert!(biexp_fit_inputs(&h, 30.0, true, 0.02, 0.4, 0.005, 0.05, 1.0, 0.5, inf).is_ok());
     }
 }
