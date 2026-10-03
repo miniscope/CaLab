@@ -68,9 +68,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `calab.id` or display name (default CaTune), running the WASM `predev` step
   that `npm run dev -w apps/<name>` skips (#217)
 
-<!-- TODO(merge): replace #TBD with the template/scaffolder PR number. -->
-
-- **Tooling** `npm run new-app <id> "<Display Name>"` scaffolds a runnable app from a real `apps/_template` (#TBD)
+- **Tooling** `apps/_template` is now a minimal real app (auth callback,
+  analytics session, import flow, chart, real test), and
+  `npm run new-app -- <id> <DisplayName> [--wasm]` scaffolds a new app that
+  runs, tests, builds and appears on the landing page and in `apps.json` with
+  no further edits. CI runs the scaffolder end to end on every push (#219)
 
 - **Tests** Playwright smoke test per app (`e2e/`), run against the production
   build in headless Chromium: CaTune's demo data solves, a CaDecon run reaches
