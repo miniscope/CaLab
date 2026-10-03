@@ -1,6 +1,18 @@
 """Localhost HTTP bridge server for CaLab <-> Python communication.
 
-Serves traces as .npy binary and receives exported params/results.
+Serves traces as .npy binary and receives exported results. One server
+runs one app session; the app is looked up in the registry
+(:mod:`._registry`), which supplies everything app-specific:
+
+* ``POST /api/v1/results/{app}`` -- JSON results; the completion signal.
+  Version-checked by :mod:`._handshake` before it is accepted (409 on an
+  incompatible version).
+* ``POST /api/v1/results/{app}/{array}`` -- a ``.npy`` array the app
+  uploads before its JSON (CaDecon's ``activity``).
+* The pre-registry routes the deployed apps still use
+  (``/api/v1/params``, ``/api/v1/results``, ``/api/v1/results/activity``)
+  are kept as aliases for the matching app's generic routes.
+
 Binds to 127.0.0.1 only (not network-reachable). Every request must
 include an ``X-Bridge-Secret`` header matching the server's per-run
 secret — prevents other local tabs/processes from reading the served
@@ -21,6 +33,17 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import numpy as np
+
+from ._handshake import (
+    BridgeResult,
+    BridgeVersionError,
+    check_result,
+    local_calab_version,
+    local_solver_version,
+)
+from ._registry import APPS, RESERVED_SLUGS, AppSpec, get_app
+
+_RESULTS_PREFIX = "/api/v1/results/"
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -114,7 +137,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/v1/config":
             self._send_json(self.server.config)
         elif self.path == "/api/v1/status":
-            self._send_json({"ready": True, "app": self.server.app})
+            self._send_json(self.server.status())
         elif self.path == "/api/v1/health":
             self._send_cors_response(b"ok", content_type="text/plain")
         else:
@@ -123,17 +146,48 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._check_secret():
             return
-        if self.path == "/api/v1/params":
-            self._receive_params()
-        elif self.path == "/api/v1/heartbeat":
+        if self.path == "/api/v1/heartbeat":
             self.server.last_heartbeat = time.monotonic()
             self._send_json({"status": "ok"})
         elif self.path == "/api/v1/progress":
             self._receive_progress()
-        elif self.path == "/api/v1/results/activity":
-            self._receive_results_activity()
-        elif self.path == "/api/v1/results":
+        else:
+            self._route_results()
+
+    def _route_results(self) -> None:
+        """Dispatch a POST to the results JSON or array handler, or 404/409."""
+        spec = self.server.app_spec
+        path = self.path
+        if spec.result_schema is not None:
+            if path in spec.legacy_result_paths:
+                self._receive_results()
+                return
+            # Legacy array route: /api/v1/results/activity (reserved names only).
+            if path.startswith(_RESULTS_PREFIX):
+                name = path[len(_RESULTS_PREFIX):]
+                if name in RESERVED_SLUGS and name in spec.arrays:
+                    self._receive_array(name)
+                    return
+
+        if not path.startswith(_RESULTS_PREFIX):
+            self.send_error(404, "Not Found")
+            return
+        parts = path[len(_RESULTS_PREFIX):].split("/")
+        slug = parts[0]
+        if slug != spec.slug:
+            if slug in APPS:
+                self._send_error_cors(
+                    409, f"this bridge session is serving {spec.slug!r}, not {slug!r}",
+                )
+            else:
+                self.send_error(404, "Not Found")
+            return
+        if spec.result_schema is None:
+            self._send_error_cors(404, f"{spec.slug!r} has no bridge results endpoint")
+        elif len(parts) == 1:
             self._receive_results()
+        elif len(parts) == 2 and parts[1] in spec.arrays:
+            self._receive_array(parts[1])
         else:
             self.send_error(404, "Not Found")
 
@@ -151,21 +205,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "num_timepoints": int(self.server.traces.shape[1]),
         })
 
-    def _receive_params(self) -> None:
-        """Receive exported params JSON from web app."""
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
-
-        try:
-            params = json.loads(body)
-        except json.JSONDecodeError:
-            self._send_error_cors(400, "Invalid JSON")
-            return
-
-        self.server.received_params = params
-        self.server.params_event.set()
-        self._send_json({"status": "ok"})
-
     def _receive_progress(self) -> None:
         """Receive a progress update from the browser."""
         content_length = int(self.headers.get("Content-Length", 0))
@@ -180,8 +219,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.server.latest_progress = progress
         self._send_json({"status": "ok"})
 
-    def _receive_results_activity(self) -> None:
-        """Receive activity matrix as .npy binary from CaDecon."""
+    def _receive_array(self, name: str) -> None:
+        """Receive a ``.npy`` array the app uploads before its JSON results."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
@@ -191,27 +230,48 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_error_cors(400, "Invalid .npy data")
             return
 
-        self.server.received_activity = arr
+        self.server.received_arrays[name] = arr
         self._send_json({"status": "ok"})
 
     def _receive_results(self) -> None:
-        """Receive CaDecon results JSON (scalars + metadata). Triggers completion event."""
+        """Receive the app's JSON results, run the version handshake, and
+        trigger the completion event.
+
+        An incompatible payload is answered with 409 and the error is stored
+        on the server so the waiting Python call raises it; the event fires
+        either way so the caller stops waiting.
+        """
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
         try:
-            results = json.loads(body)
+            payload = json.loads(body)
         except json.JSONDecodeError:
             self._send_error_cors(400, "Invalid JSON")
             return
+        if not isinstance(payload, dict):
+            self._send_error_cors(400, "Results must be a JSON object")
+            return
 
-        self.server.received_results = results
-        self.server.results_event.set()
-        self._send_json({"status": "ok"})
+        server = self.server
+        try:
+            warnings = check_result(
+                server.app_spec, payload, solver_version=server.solver_version,
+            )
+        except BridgeVersionError as exc:
+            server.result_error = exc
+            server.result_event.set()
+            self._send_error_cors(409, str(exc))
+            return
+
+        server.received_payload = payload
+        server.handshake_warnings = warnings
+        server.result_event.set()
+        self._send_json({"status": "ok", "warnings": warnings})
 
 
 class BridgeServer(HTTPServer):
-    """HTTP server that holds trace data and waits for params/results."""
+    """HTTP server that holds trace data and waits for one app's results."""
 
     def __init__(
         self,
@@ -222,18 +282,23 @@ class BridgeServer(HTTPServer):
         config: dict | None = None,
         secret: str | None = None,
     ) -> None:
+        self.app_spec: AppSpec = get_app(app)
+        self.app = self.app_spec.slug
         self.traces = np.atleast_2d(np.asarray(traces, dtype=np.float64))
         self.fs = fs
-        self.app = app
         self.config: dict = config if config is not None else {"autorun": False}
         self.latest_progress: dict | None = None
-        self.received_params: dict | None = None
-        self.params_event = threading.Event()
         self.last_heartbeat: float | None = None
-        # CaDecon results (two-POST pattern)
-        self.received_activity: np.ndarray | None = None
-        self.received_results: dict | None = None
-        self.results_event = threading.Event()
+        # Results: zero or more .npy arrays, then the JSON payload, which sets
+        # the event. A payload that fails the handshake sets `result_error`
+        # instead of `received_payload`.
+        self.received_arrays: dict[str, np.ndarray] = {}
+        self.received_payload: dict | None = None
+        self.handshake_warnings: list[str] = []
+        self.result_error: BridgeVersionError | None = None
+        self.result_event = threading.Event()
+        # Local solver version for the handshake, resolved once per session.
+        self.solver_version: str | None = local_solver_version()
         # Per-run secret. Each BridgeServer gets a fresh 32-byte token that
         # the opened URL passes to the browser via ?bridge_secret=...; every
         # bridge HTTP request must echo it back in the X-Bridge-Secret
@@ -246,3 +311,67 @@ class BridgeServer(HTTPServer):
     @property
     def port(self) -> int:
         return self.server_address[1]
+
+    def status(self) -> dict[str, Any]:
+        """``GET /api/v1/status`` body: the session's app and what it expects."""
+        spec = self.app_spec
+        body: dict[str, Any] = {
+            "ready": True,
+            "app": spec.slug,
+            "calab_version": local_calab_version(),
+            "solver_version": self.solver_version,
+        }
+        if spec.result_schema is not None:
+            body["results"] = {
+                "path": spec.result_path,
+                "arrays": {name: spec.array_path(name) for name in spec.arrays},
+                "schema": spec.result_schema.name,
+                "schema_version": spec.result_schema.version,
+            }
+        return body
+
+    def result(self) -> BridgeResult | None:
+        """The received results, or None if none arrived.
+
+        Raises
+        ------
+        BridgeVersionError
+            If the app's results failed the version handshake.
+        """
+        if self.result_error is not None:
+            raise self.result_error
+        if self.received_payload is None:
+            return None
+        return BridgeResult(
+            app=self.app,
+            payload=self.received_payload,
+            arrays=dict(self.received_arrays),
+            warnings=list(self.handshake_warnings),
+        )
+
+    # -- Pre-registry attribute names, kept for callers of the old API. --
+
+    @property
+    def params_event(self) -> threading.Event:
+        """Alias of :attr:`result_event` (was CaTune's completion event)."""
+        return self.result_event
+
+    @property
+    def results_event(self) -> threading.Event:
+        """Alias of :attr:`result_event` (was CaDecon's completion event)."""
+        return self.result_event
+
+    @property
+    def received_params(self) -> dict | None:
+        """Alias of :attr:`received_payload` (was CaTune's payload)."""
+        return self.received_payload
+
+    @property
+    def received_results(self) -> dict | None:
+        """Alias of :attr:`received_payload` (was CaDecon's payload)."""
+        return self.received_payload
+
+    @property
+    def received_activity(self) -> np.ndarray | None:
+        """The ``activity`` array, if the app uploaded one."""
+        return self.received_arrays.get("activity")

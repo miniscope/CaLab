@@ -137,6 +137,7 @@ def test_traces_endpoint(bridge_server: BridgeServer) -> None:
 def test_params_post(bridge_server: BridgeServer) -> None:
     """POST /api/v1/params stores params and triggers event."""
     params = {
+        "schema_version": "1.2.0",
         "parameters": {
             "tau_rise_s": 0.02,
             "tau_decay_s": 0.4,
@@ -156,7 +157,7 @@ def test_params_post(bridge_server: BridgeServer) -> None:
 
 def test_params_event_wait(bridge_server: BridgeServer) -> None:
     """params_event.wait() returns True after POST."""
-    params = {"parameters": {"tau_rise_s": 0.05}}
+    params = {"schema_version": "1.2.0", "parameters": {"tau_rise_s": 0.05}}
 
     # Post in background
     def post_later():
@@ -251,7 +252,7 @@ def test_results_activity_post(cadecon_server: BridgeServer) -> None:
 
 def test_results_json_post(cadecon_server: BridgeServer) -> None:
     """POST /api/v1/results stores JSON and triggers results_event."""
-    results = {"alphas": [1.0, 2.0], "fs": 30.0, "tau_rise": 0.2}
+    results = {"alphas": [1.0, 2.0], "fs": 30.0, "tau_rise": 0.2, "schema_version": 2}
 
     status, body = _post(cadecon_server, "/api/v1/results", results)
     assert status == 200
@@ -274,7 +275,7 @@ def test_results_two_post_sequence(cadecon_server: BridgeServer) -> None:
     assert not cadecon_server.results_event.is_set()
 
     # 2. POST results JSON
-    results = {"alphas": [1.0, 1.0], "fs": 30.0}
+    results = {"alphas": [1.0, 1.0], "fs": 30.0, "schema_version": 2}
     status, _ = _post(cadecon_server, "/api/v1/results", results)
     assert status == 200
 
