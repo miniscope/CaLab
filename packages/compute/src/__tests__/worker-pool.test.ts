@@ -4,9 +4,7 @@ import { createWorkerPool, type BaseJob, type MessageRouter } from '@calab/compu
 // ── Test doubles ────────────────────────────────────────────────────────────
 
 type TestMsg =
-  | { type: 'ready' }
-  | { type: 'result'; jobId: number }
-  | { type: 'init-error'; message: string };
+  { type: 'ready' } | { type: 'result'; jobId: number } | { type: 'init-error'; message: string };
 
 /** Minimal stand-in for the DOM Worker the pool drives. */
 class FakeWorker {
