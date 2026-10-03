@@ -1,4 +1,4 @@
-import { AuthMenuWrapper as SharedAuthMenuWrapper } from '@calab/ui';
+import { AuthMenuWrapper as SharedAuthMenuWrapper } from '@calab/community-ui';
 import { user, authLoading, signInWithEmail, signOut } from '../../lib/community/index.ts';
 import { supabaseEnabled } from '@calab/community';
 

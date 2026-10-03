@@ -1,13 +1,3 @@
-import { createSignal } from 'solid-js';
-import { subscribeAuth } from '@calab/community';
-import type { User } from '@calab/community';
-
-const [user, setUser] = createSignal<User | null>(null);
-const [authLoading, setAuthLoading] = createSignal<boolean>(true);
-
-subscribeAuth((state) => {
-  setUser(state.user);
-  setAuthLoading(state.loading);
-});
-
-export { user, authLoading };
+// Auth signals come from the shared community store, so CaRank runs a single
+// auth subscription (started by initCommunityStore() in index.tsx).
+export { user, authLoading } from '@calab/community';

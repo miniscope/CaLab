@@ -4,7 +4,8 @@
 import type { Component } from 'solid-js';
 import { Show, createEffect, createSignal, on } from 'solid-js';
 
-import { DashboardPanel, VizLayout, DashboardShell, isAuthCallback } from '@calab/ui';
+import { DashboardPanel, VizLayout, DashboardShell } from '@calab/ui';
+import { isAuthCallback } from '@calab/community-ui';
 import { AuthCallback } from './components/auth/AuthCallback.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';

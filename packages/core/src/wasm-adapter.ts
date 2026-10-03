@@ -51,3 +51,20 @@ export function initWasm(): Promise<void> {
   }
   return wasmReady;
 }
+
+/**
+ * Initialize WASM (if needed) and return the solver version, or `undefined`
+ * if the module fails to load. Apps add the result to their bridge payloads
+ * as the optional `solver_version` field, which the Python bridge compares
+ * against `calab._solver.protocol_version()`. A missing value skips that half
+ * of the handshake rather than failing the export.
+ */
+export async function getSolverVersion(): Promise<string | undefined> {
+  try {
+    await initWasm();
+    return solver_version();
+  } catch (err) {
+    console.warn('Could not read solver_version from WASM:', err);
+    return undefined;
+  }
+}

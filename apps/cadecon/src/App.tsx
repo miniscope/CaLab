@@ -1,14 +1,8 @@
 import type { Component, JSX } from 'solid-js';
 import { createSignal, Show } from 'solid-js';
-import {
-  DashboardShell,
-  DashboardPanel,
-  VizLayout,
-  isAuthCallback,
-  AuthCallback,
-  SidebarTabs,
-} from '@calab/ui';
-import type { SidebarTabConfig } from '@calab/ui';
+import { DashboardShell, DashboardPanel, VizLayout } from '@calab/ui';
+import { isAuthCallback, AuthCallback, SidebarTabs } from '@calab/community-ui';
+import type { SidebarTabConfig } from '@calab/community-ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
 import { initBridgeConfig, setupBridgeEffects } from './lib/bridge-effects.ts';
 import { trackEvent } from '@calab/community';

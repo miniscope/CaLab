@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js';
 import { Show } from 'solid-js';
+import './styles/auth-menu.css';
 
 export interface AuthCallbackProps {
   user: Accessor<{ email?: string } | null>;

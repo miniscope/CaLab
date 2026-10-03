@@ -25,7 +25,7 @@ apps/catune, apps/carank
 | `TutorialLauncher` | `TutorialLauncher.tsx` | Tutorial launch button component                                      |
 | `Card`             | `Card.tsx`             | Generic card wrapper component                                        |
 
-The table above covers the layout components; the barrel (`src/index.ts`) also re-exports the community/auth widgets and the chart utilities below. Consult `src/index.ts` for the authoritative export list.
+The table above covers the layout components; the barrel (`src/index.ts`) also re-exports the chart utilities below. Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
 
 ## Chart utilities (`@calab/ui/chart`)
 

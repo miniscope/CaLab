@@ -50,3 +50,16 @@ describe('buildExportData → parseExport roundtrip', () => {
     expect(parsed.parameters.tau_decay_s).toBe(valid.parameters.tau_decay_s);
   });
 });
+
+describe('buildExportData solver_version', () => {
+  it('omits solver_version when not given', () => {
+    const data = buildExportData(tPeak, fwhm, 0.01, 30, false);
+    expect('solver_version' in data).toBe(false);
+  });
+
+  it('sets solver_version when given, leaving schema_version alone', () => {
+    const data = buildExportData(tPeak, fwhm, 0.01, 30, false, undefined, 'dev', '1.2.3');
+    expect(data.solver_version).toBe('1.2.3');
+    expect(data.schema_version).toBe('1.2.0');
+  });
+});

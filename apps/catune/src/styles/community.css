@@ -1,7 +1,7 @@
 /* CaTune app-specific community styles.
    Shared styles (AuthGate, PrivacyNotice, SubmitModal, SubmissionSummary,
    FilterBar, SearchableSelect, SidebarTabs, SubmitPanel fields,
-   CommunityBrowser, ScatterPlot) now live in @calab/ui. */
+   CommunityBrowser, ScatterPlot) now live in @calab/community-ui. */
 
 /* ========================
    SubmitPanel (CaTune-specific)

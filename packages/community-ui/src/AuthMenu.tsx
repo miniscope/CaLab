@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js';
 import { Show, createSignal, onCleanup } from 'solid-js';
+import './styles/auth-menu.css';
 
 export interface AuthMenuProps {
   userEmail: string | null;

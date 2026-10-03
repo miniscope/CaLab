@@ -4,7 +4,7 @@
  */
 
 import { createSignal } from 'solid-js';
-import { CommunityBrowserShell, FilterBar, DEMO_PRESET_FILTER } from '@calab/ui';
+import { CommunityBrowserShell, FilterBar, DEMO_PRESET_FILTER } from '@calab/community-ui';
 import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CatuneFilterState } from '../../lib/community/index.ts';
 import { tPeak, fwhm, lambda } from '../../lib/viz-store.ts';

@@ -11,5 +11,5 @@
     "jsxImportSource": "solid-js"
   },
   "include": ["src"],
-  "references": [{ "path": "../compute" }, { "path": "../tutorials" }]
+  "references": [{ "path": "../community" }, { "path": "../compute" }]
 }

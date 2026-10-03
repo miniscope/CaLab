@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js';
 import { Show, createSignal } from 'solid-js';
-import { DashboardShell, VizLayout, TutorialPanel, isAuthCallback } from '@calab/ui';
+import { DashboardShell, VizLayout, TutorialPanel } from '@calab/ui';
+import { isAuthCallback } from '@calab/community-ui';
 import { startTutorial } from '@calab/tutorials';
 import { Header } from './components/Header.tsx';
 import { AuthCallback } from './components/AuthCallback.tsx';

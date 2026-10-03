@@ -25,6 +25,7 @@ import {
   setBridgeExportError,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
+import { getSolverVersion } from '@calab/core/wasm';
 import type { CaTuneExport } from '@calab/io';
 import {
   validateSubmission,
@@ -68,7 +69,7 @@ export function SubmitPanel() {
 
   // --- Handlers ---
 
-  function buildCurrentExport(): CaTuneExport {
+  function buildCurrentExport(solverVersion?: string): CaTuneExport {
     const fs = samplingRate() ?? 30;
     const shape = effectiveShape();
     const file = rawFile();
@@ -85,6 +86,7 @@ export function SubmitPanel() {
         numTimepoints: shape?.[1],
       },
       APP_VERSION,
+      solverVersion,
     );
   }
 
@@ -96,7 +98,8 @@ export function SubmitPanel() {
     const url = bridgeUrl();
     if (!url) return;
     setBridgeExportError(null);
-    postParamsToBridge(url, buildCurrentExport())
+    getSolverVersion()
+      .then((solverVersion) => postParamsToBridge(url, buildCurrentExport(solverVersion)))
       .then(() => setBridgeExportDone(true))
       .catch((err: unknown) => {
         setBridgeExportError(err instanceof Error ? err.message : 'Bridge export failed');

@@ -5,7 +5,7 @@ import { createSignal, createMemo } from 'solid-js';
 import type { NpyResult, NpzResult, ValidationResult, ImportStep } from '@calab/core';
 import { buildSimulationConfig, DEFAULT_QUALITATIVE_CONFIG } from '@calab/compute';
 import type { IndicatorId, QualitativeSimConfig, SimulationConfig } from '@calab/compute';
-import { initWasm, simulate_traces } from '@calab/core';
+import { initWasm, simulate_traces } from '@calab/core/wasm';
 import type { SimulationResult } from '@calab/compute';
 import { fetchBridgeData, validateTraceData } from '@calab/io';
 

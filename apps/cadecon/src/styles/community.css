@@ -1,7 +1,7 @@
 /* CaDecon app-specific community styles.
    Shared styles (AuthGate, PrivacyNotice, SubmitModal, SubmissionSummary,
    FilterBar, SearchableSelect, SidebarTabs, SubmitPanel fields,
-   CommunityBrowser, ScatterPlot) come from @calab/ui. */
+   CommunityBrowser, ScatterPlot) come from @calab/community-ui. */
 
 /* ========================
    SubmitPanel (CaDecon-specific)

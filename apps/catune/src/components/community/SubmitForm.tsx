@@ -1,12 +1,12 @@
 /**
  * Modal form for community parameter submission.
- * Uses shared SubmitFormModal shell from @calab/ui.
+ * Uses shared SubmitFormModal shell from @calab/community-ui.
  */
 
 import { Show, For } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { SubmitFormModal, SearchableField, AuthGate, PrivacyNotice } from '@calab/ui';
-import type { FieldSignal } from '@calab/ui';
+import { SubmitFormModal, SearchableField, AuthGate, PrivacyNotice } from '@calab/community-ui';
+import type { FieldSignal } from '@calab/community-ui';
 import { isDemo } from '../../lib/data-store.ts';
 import {
   user,

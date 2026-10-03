@@ -2,7 +2,7 @@
  * CaDecon SubmissionSummary — wraps the shared SubmissionSummary with CaDecon rendering.
  */
 
-import { SubmissionSummary as SharedSubmissionSummary } from '@calab/ui';
+import { SubmissionSummary as SharedSubmissionSummary } from '@calab/community-ui';
 import { deleteSubmission } from '../../lib/community/index.ts';
 import type { CadeconSubmission } from '../../lib/community/index.ts';
 

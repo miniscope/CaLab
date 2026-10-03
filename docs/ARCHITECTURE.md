@@ -131,16 +131,18 @@ CaLab uses npm workspaces with six built packages and four applications (plus an
 ## Dependency DAG
 
 ```
-@calab/core          ← leaf (no local deps)
+@calab/core          ← leaf (no local deps; `@calab/core/wasm` is the solver adapter)
 @calab/compute       ← @calab/core
-@calab/io            ← @calab/core
-@calab/community     ← @calab/core
-@calab/tutorials     ← leaf (no local deps)
-@calab/ui            ← leaf (solid-js + uplot only)
+@calab/io            ← @calab/core, @calab/compute
+@calab/community     ← leaf (no local deps; Supabase SDK)
+@calab/tutorials     ← leaf (no local deps; driver.js)
+@calab/ui            ← @calab/compute, @calab/tutorials (no community/auth code)
+@calab/community-ui  ← @calab/community, @calab/compute
 apps/catune           ← all packages
-apps/carank           ← @calab/core, @calab/io, @calab/ui
-apps/cadecon          ← @calab/core, @calab/io, @calab/ui, @calab/compute, @calab/community, @calab/tutorials
-apps/admin            ← @calab/community, @calab/ui
+apps/cadecon          ← all packages
+apps/carank           ← @calab/core, @calab/io, @calab/tutorials, @calab/community, @calab/community-ui, @calab/ui
+apps/admin            ← @calab/community, @calab/community-ui, @calab/ui
+apps/_template        ← @calab/core, @calab/io, @calab/tutorials, @calab/ui
 ```
 
 > The exact per-app dependency set is authoritative in each app's `package.json`;
@@ -148,18 +150,19 @@ apps/admin            ← @calab/community, @calab/ui
 
 ## Package Responsibilities
 
-| Package            | Responsibility                                                                                                                           | Key deps                                    |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `@calab/core`      | Shared types, pure utilities, domain math, WASM adapter                                                                                  | `valibot`                                   |
-| `@calab/compute`   | Generic worker pool, warm-start caching                                                                                                  | `@calab/core`                               |
-| `@calab/io`        | File parsers (.npy/.npz), data validation, JSON export                                                                                   | `@calab/core`, `fflate`, `valibot`          |
-| `@calab/community` | Supabase DAL, submission logic, field options                                                                                            | `@calab/core`, `@supabase/supabase-js`      |
-| `@calab/tutorials` | Tutorial type definitions, progress persistence                                                                                          | none                                        |
-| `@calab/ui`        | Shared layout (DashboardShell, DashboardPanel, VizLayout) + chart primitives (`@calab/ui/chart`: palette, colormap, axis/cursor helpers) | `solid-js`, `uplot`                         |
-| `apps/catune`      | SolidJS app — deconvolution parameter tuning                                                                                             | all packages                                |
-| `apps/carank`      | SolidJS app — CNMF trace quality ranking                                                                                                 | `@calab/core`, `@calab/io`, `@calab/ui`     |
-| `apps/cadecon`     | SolidJS app — automated InDeCa deconvolution                                                                                             | core, io, ui, compute, community, tutorials |
-| `apps/admin`       | SolidJS app — community-submission admin                                                                                                 | `@calab/community`, `@calab/ui`             |
+| Package               | Responsibility                                                                                                                                                   | Key deps                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `@calab/core`         | Shared types, pure utilities, domain math; WASM adapter at `@calab/core/wasm`                                                                                    | `valibot`                                                 |
+| `@calab/compute`      | Generic worker pool, warm-start caching                                                                                                                          | `@calab/core`                                             |
+| `@calab/io`           | File parsers (.npy/.npz), data validation, JSON export                                                                                                           | `@calab/core`, `fflate`, `valibot`                        |
+| `@calab/community`    | Supabase DAL, submission logic, field options                                                                                                                    | `@calab/core`, `@supabase/supabase-js`                    |
+| `@calab/tutorials`    | Tutorial type definitions, progress persistence                                                                                                                  | none                                                      |
+| `@calab/ui`           | Shared layout (DashboardShell, DashboardPanel, VizLayout) + chart primitives (`@calab/ui/chart`: palette, colormap, axis/cursor helpers); no community/auth code | `solid-js`, `uplot`, `@calab/compute`, `@calab/tutorials` |
+| `@calab/community-ui` | Community and auth widgets (CommunityBrowserShell, FilterBar, SubmitFormModal, AuthGate, AuthMenuWrapper, AuthCallback, …)                                       | `@calab/community`, `@calab/compute`, `solid-js`          |
+| `apps/catune`         | SolidJS app — deconvolution parameter tuning                                                                                                                     | all packages                                              |
+| `apps/carank`         | SolidJS app — CNMF trace quality ranking                                                                                                                         | `@calab/core`, `@calab/io`, `@calab/ui`                   |
+| `apps/cadecon`        | SolidJS app — automated InDeCa deconvolution                                                                                                                     | core, io, ui, compute, community, tutorials               |
+| `apps/admin`          | SolidJS app — community-submission admin                                                                                                                         | `@calab/community`, `@calab/ui`                           |
 
 Packages export pure logic. The app wires packages to SolidJS signals.
 
@@ -170,9 +173,9 @@ CaTune (the app) uses **module-level SolidJS signals** instead of Context provid
 - `data-store.ts` — loaded traces, parameters, solver results
 - `viz-store.ts` — zoom range, selected cell, UI toggles
 - `multi-cell-store.ts` — multi-cell selection and ranking
-- `spectrum-store.ts` — power spectrum computation
-- `community-store.ts` — auth state, field options (imports from `@calab/community`)
-- `tutorial-store.ts` — active tutorial state (imports from `@calab/tutorials`)
+- `spectrum/spectrum-store.ts` — power spectrum computation
+
+Auth state and field options come from the shared `community-store` in `@calab/community` (re-exported by `lib/community/index.ts`); it starts its auth subscription on `initCommunityStore()` or first read. Tutorial state lives in `@calab/tutorials`.
 
 This pattern avoids provider nesting and makes state accessible from non-component code (e.g., the tutorial engine).
 
@@ -201,7 +204,7 @@ Key design decisions:
 
 ### WASM Adapter Rule
 
-Only `packages/core/src/wasm-adapter.ts` imports from `crates/solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core`. Enforced by ESLint `no-restricted-imports`.
+Only `packages/core/src/wasm-adapter.ts` imports from `crates/solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core/wasm` (the `@calab/core` barrel is wasm-free). Enforced by ESLint `no-restricted-imports`.
 
 ### Supabase Isolation
 

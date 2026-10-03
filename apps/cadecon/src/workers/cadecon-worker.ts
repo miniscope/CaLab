@@ -16,7 +16,7 @@ import {
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   seed_trace,
-} from '@calab/core';
+} from '@calab/core/wasm';
 import type { CaDeconWorkerInbound, CaDeconWorkerOutbound, FitMode } from './cadecon-types.ts';
 
 let cancelled = false;

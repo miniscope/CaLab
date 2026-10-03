@@ -13,8 +13,12 @@ import { computeAR2, CaTuneExportSchema } from '@calab/core';
 import type { CaTuneExportData } from '@calab/core';
 import { shapeToTau } from '@calab/compute';
 
-/** Alias preserving the public API name used by io consumers. */
-export type CaTuneExport = CaTuneExportData;
+/**
+ * CaTune export payload. `solver_version` (the WASM build's
+ * `solver_version()`) is optional and only set by callers that have it, e.g.
+ * the bridge export, where the Python side checks it against its own solver.
+ */
+export type CaTuneExport = CaTuneExportData & { solver_version?: string };
 
 export function buildExportData(
   tPeak: number,
@@ -28,6 +32,7 @@ export function buildExportData(
     numTimepoints?: number;
   },
   version: string = 'dev',
+  solverVersion?: string,
 ): CaTuneExport {
   const tau = shapeToTau(tPeak, fwhm);
   if (!tau) {
@@ -65,6 +70,7 @@ export function buildExportData(
       num_cells: metadata?.numCells,
       num_timepoints: metadata?.numTimepoints,
     },
+    ...(solverVersion !== undefined ? { solver_version: solverVersion } : {}),
   };
 }
 

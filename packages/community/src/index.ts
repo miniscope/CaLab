@@ -36,7 +36,10 @@ export {
 export type { AppLabel } from './github-issue-url.ts';
 
 // Reactive community store (SolidJS signals — requires solid-js peer dep)
+// Importing is side-effect free; the auth subscription starts on
+// initCommunityStore() or the first user()/authLoading() read.
 export {
+  initCommunityStore,
   user,
   authLoading,
   fieldOptions,

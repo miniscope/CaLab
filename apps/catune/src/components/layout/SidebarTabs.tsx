@@ -4,8 +4,8 @@
  */
 
 import { createSignal, type JSX } from 'solid-js';
-import { SidebarTabs as SharedSidebarTabs } from '@calab/ui';
-import type { SidebarTabConfig } from '@calab/ui';
+import { SidebarTabs as SharedSidebarTabs } from '@calab/community-ui';
+import type { SidebarTabConfig } from '@calab/community-ui';
 import { trackEvent } from '@calab/community';
 
 export type SidebarTab = 'community' | 'spectrum' | 'metrics';

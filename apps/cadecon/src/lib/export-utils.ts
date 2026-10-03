@@ -37,7 +37,7 @@ export function buildCaDeconActivityMatrix(): {
 /**
  * Build the JSON results payload with per-cell scalars, kernel params, and metadata.
  */
-export function buildCaDeconResultsPayload(): Record<string, unknown> {
+export function buildCaDeconResultsPayload(solverVersion?: string): Record<string, unknown> {
   const lookup = cellResultLookup();
   const history = convergenceHistory();
   const fs = samplingRate() ?? 30;
@@ -99,5 +99,7 @@ export function buildCaDeconResultsPayload(): Record<string, unknown> {
     converged_at_iteration: convergedAt,
     schema_version: 2,
     export_date: new Date().toISOString(),
+    // Optional: WASM solver_version(), checked by the Python bridge handshake.
+    ...(solverVersion !== undefined ? { solver_version: solverVersion } : {}),
   };
 }
