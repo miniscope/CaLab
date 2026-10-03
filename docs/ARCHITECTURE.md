@@ -204,7 +204,7 @@ Key design decisions:
 
 ### WASM Adapter Rule
 
-Only `packages/core/src/wasm-adapter.ts` imports from `crates/solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core`. Enforced by ESLint `no-restricted-imports`.
+Only `packages/core/src/wasm-adapter.ts` imports from `crates/solver/pkg/`. All other code imports `{ initWasm, Solver }` from `@calab/core/wasm` (the `@calab/core` barrel is wasm-free). Enforced by ESLint `no-restricted-imports`.
 
 ### Supabase Isolation
 
