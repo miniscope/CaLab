@@ -1,7 +1,7 @@
 /**
  * CaDecon submit panel — always visible, with disabled button before completion.
  * Thin orchestrator that manages form state and delegates to:
- *  - SubmitForm for the modal form rendering
+ *  - SubmitForm (@calab/community-ui) for the modal form rendering
  *  - SubmissionSummary for the post-submission card
  *  - submitToSupabase for the actual submission logic
  */
@@ -42,12 +42,18 @@ import {
   dataSource,
   demoIndicator,
   groundTruthLocked,
+  bridgeExportDone,
+  importStore,
 } from '../../lib/data-store.ts';
-import { SubmitForm } from './SubmitForm.tsx';
+import {
+  GroundTruthControls,
+  GroundTruthNotices,
+  SubmitForm,
+  createSubmitFormFields,
+} from '@calab/community-ui';
 import { SubmissionSummary } from './SubmissionSummary.tsx';
-import { GroundTruthControls, GroundTruthNotices, ExportButton } from './GroundTruthControls.tsx';
+import { ExportButton } from './ExportButton.tsx';
 import { isBridgeAutorun } from '../../lib/bridge-effects.ts';
-import { bridgeExportDone } from '../../lib/data-store.ts';
 import '../../styles/community.css';
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
@@ -60,22 +66,7 @@ export function SubmitPanel() {
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const [validationErrors, setValidationErrors] = createSignal<string[]>([]);
 
-  // --- Form field signals ---
-  const [indicator, setIndicator] = createSignal('');
-  const [species, setSpecies] = createSignal('');
-  const [brainRegion, setBrainRegion] = createSignal('');
-  const [labName, setLabName] = createSignal('');
-  const [orcid, setOrcid] = createSignal('');
-  const [virusConstruct, setVirusConstruct] = createSignal('');
-  const [timeSinceInjection, setTimeSinceInjection] = createSignal('');
-  const [notes, setNotes] = createSignal('');
-  const [microscopeType, setMicroscopeType] = createSignal('');
-  const [cellType, setCellType] = createSignal('');
-  const [imagingDepth, setImagingDepth] = createSignal('');
-
-  const requiredFieldsFilled = () =>
-    isDemo() ||
-    (indicator().trim() !== '' && species().trim() !== '' && brainRegion().trim() !== '');
+  const fields = createSubmitFormFields(isDemo);
 
   const isComplete = () => runState() === 'complete';
   const isConverged = () => convergedAtIteration() !== null;
@@ -112,19 +103,7 @@ export function SubmitPanel() {
 
     try {
       const result = await submitToSupabase(
-        {
-          indicator: indicator(),
-          species: species(),
-          brainRegion: brainRegion(),
-          labName: labName(),
-          orcid: orcid(),
-          virusConstruct: virusConstruct(),
-          timeSinceInjection: timeSinceInjection(),
-          notes: notes(),
-          microscopeType: microscopeType(),
-          cellType: cellType(),
-          imagingDepth: imagingDepth(),
-        },
+        fields.values(),
         {
           tauRise,
           tauDecay,
@@ -153,27 +132,13 @@ export function SubmitPanel() {
       );
 
       setLastSubmission(result);
-      clearFormFields();
+      fields.clear();
       setFormOpen(false);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Submission failed');
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function clearFormFields(): void {
-    setIndicator('');
-    setSpecies('');
-    setBrainRegion('');
-    setLabName('');
-    setOrcid('');
-    setVirusConstruct('');
-    setTimeSinceInjection('');
-    setNotes('');
-    setMicroscopeType('');
-    setCellType('');
-    setImagingDepth('');
   }
 
   function handleDismissSummary(): void {
@@ -202,7 +167,7 @@ export function SubmitPanel() {
       {/* Action buttons */}
       <div class="submit-panel__actions">
         <ExportButton />
-        <GroundTruthControls />
+        <GroundTruthControls state={importStore} />
 
         <Show when={supabaseEnabled}>
           <button
@@ -223,7 +188,7 @@ export function SubmitPanel() {
         <div class="submit-panel__autoexport-notice">Results auto-exported to Python</div>
       </Show>
 
-      <GroundTruthNotices />
+      <GroundTruthNotices state={importStore} />
 
       <Show when={!isComplete() && !groundTruthLocked()}>
         <p class="submit-panel__disabled-hint">
@@ -248,20 +213,21 @@ export function SubmitPanel() {
           onClose={() => setFormOpen(false)}
           onSubmit={handleSubmit}
           submitting={submitting}
-          requiredFieldsFilled={requiredFieldsFilled}
           validationErrors={validationErrors}
           submitError={submitError}
-          indicator={{ get: indicator, set: setIndicator }}
-          species={{ get: species, set: setSpecies }}
-          brainRegion={{ get: brainRegion, set: setBrainRegion }}
-          microscopeType={{ get: microscopeType, set: setMicroscopeType }}
-          cellType={{ get: cellType, set: setCellType }}
-          imagingDepth={{ get: imagingDepth, set: setImagingDepth }}
-          virusConstruct={{ get: virusConstruct, set: setVirusConstruct }}
-          timeSinceInjection={{ get: timeSinceInjection, set: setTimeSinceInjection }}
-          labName={{ get: labName, set: setLabName }}
-          orcid={{ get: orcid, set: setOrcid }}
-          notes={{ get: notes, set: setNotes }}
+          fields={fields}
+          appId={__APP_ID__}
+          isDemo={isDemo}
+          demoNotice={<>You're running on simulated demo data — submitting is encouraged!</>}
+          notesPlaceholder="Optional notes about this dataset or run"
+          privacySharedItems={
+            <>
+              When you submit, CaDecon sends only: kernel parameters (tau_rise, tau_decay, beta),
+              aggregate statistics (median alpha, median PVE, mean event rate), run configuration,
+              your experimental metadata (indicator, species, brain region), and a dataset
+              fingerprint for duplicate detection.
+            </>
+          }
         />
       </Show>
     </div>

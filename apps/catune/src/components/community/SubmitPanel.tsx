@@ -1,8 +1,8 @@
 /**
  * Unified save-and-share panel for CaTune.
  * Thin orchestrator that manages form state and delegates to:
- *  - SubmitForm for the modal form rendering
- *  - GroundTruthControls for demo ground truth UI
+ *  - SubmitForm (@calab/community-ui) for the modal form rendering
+ *  - GroundTruthControls (@calab/community-ui) for demo ground truth UI
  *  - submitToSupabase for the actual submission logic
  */
 
@@ -23,6 +23,7 @@ import {
   setBridgeExportDone,
   bridgeExportError,
   setBridgeExportError,
+  importStore,
 } from '../../lib/data-store.ts';
 import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
 import { getSolverVersion } from '@calab/core/wasm';
@@ -34,8 +35,12 @@ import {
   submitToSupabase,
 } from '../../lib/community/index.ts';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
-import { GroundTruthControls, GroundTruthNotices } from './GroundTruthControls.tsx';
-import { SubmitForm } from './SubmitForm.tsx';
+import {
+  GroundTruthControls,
+  GroundTruthNotices,
+  SubmitForm,
+  createSubmitFormFields,
+} from '@calab/community-ui';
 import { SubmissionSummary } from './SubmissionSummary.tsx';
 import '../../styles/community.css';
 
@@ -49,23 +54,7 @@ export function SubmitPanel() {
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const [validationErrors, setValidationErrors] = createSignal<string[]>([]);
 
-  // --- Form field signals ---
-  const [indicator, setIndicator] = createSignal('');
-  const [species, setSpecies] = createSignal('');
-  const [brainRegion, setBrainRegion] = createSignal('');
-  const [labName, setLabName] = createSignal('');
-  const [orcid, setOrcid] = createSignal('');
-  const [virusConstruct, setVirusConstruct] = createSignal('');
-  const [timeSinceInjection, setTimeSinceInjection] = createSignal('');
-  const [notes, setNotes] = createSignal('');
-  const [microscopeType, setMicroscopeType] = createSignal('');
-  const [cellType, setCellType] = createSignal('');
-  const [imagingDepth, setImagingDepth] = createSignal('');
-
-  // --- Derived ---
-  const requiredFieldsFilled = () =>
-    isDemo() ||
-    (indicator().trim() !== '' && species().trim() !== '' && brainRegion().trim() !== '');
+  const fields = createSubmitFormFields(isDemo);
 
   // --- Handlers ---
 
@@ -130,19 +119,7 @@ export function SubmitPanel() {
 
     try {
       const result = await submitToSupabase(
-        {
-          indicator: indicator(),
-          species: species(),
-          brainRegion: brainRegion(),
-          labName: labName(),
-          orcid: orcid(),
-          virusConstruct: virusConstruct(),
-          timeSinceInjection: timeSinceInjection(),
-          notes: notes(),
-          microscopeType: microscopeType(),
-          cellType: cellType(),
-          imagingDepth: imagingDepth(),
-        },
+        fields.values(),
         {
           tPeak: tPeak(),
           fwhm: fwhm(),
@@ -160,27 +137,13 @@ export function SubmitPanel() {
       );
 
       setLastSubmission(result);
-      clearFormFields();
+      fields.clear();
       setFormOpen(false);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Submission failed');
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function clearFormFields(): void {
-    setIndicator('');
-    setSpecies('');
-    setBrainRegion('');
-    setLabName('');
-    setOrcid('');
-    setVirusConstruct('');
-    setTimeSinceInjection('');
-    setNotes('');
-    setMicroscopeType('');
-    setCellType('');
-    setImagingDepth('');
   }
 
   function handleDismissSummary(): void {
@@ -220,7 +183,7 @@ export function SubmitPanel() {
           </span>
         </Show>
 
-        <GroundTruthControls />
+        <GroundTruthControls state={importStore} />
 
         <Show when={supabaseEnabled}>
           <button
@@ -241,7 +204,7 @@ export function SubmitPanel() {
         </Show>
       </div>
 
-      <GroundTruthNotices />
+      <GroundTruthNotices state={importStore} />
 
       {/* Submission summary card */}
       <Show when={lastSubmission()}>
@@ -260,20 +223,25 @@ export function SubmitPanel() {
           onClose={() => setFormOpen(false)}
           onSubmit={handleSubmit}
           submitting={submitting}
-          requiredFieldsFilled={requiredFieldsFilled}
           validationErrors={validationErrors}
           submitError={submitError}
-          indicator={{ get: indicator, set: setIndicator }}
-          species={{ get: species, set: setSpecies }}
-          brainRegion={{ get: brainRegion, set: setBrainRegion }}
-          microscopeType={{ get: microscopeType, set: setMicroscopeType }}
-          cellType={{ get: cellType, set: setCellType }}
-          imagingDepth={{ get: imagingDepth, set: setImagingDepth }}
-          virusConstruct={{ get: virusConstruct, set: setVirusConstruct }}
-          timeSinceInjection={{ get: timeSinceInjection, set: setTimeSinceInjection }}
-          labName={{ get: labName, set: setLabName }}
-          orcid={{ get: orcid, set: setOrcid }}
-          notes={{ get: notes, set: setNotes }}
+          fields={fields}
+          appId={__APP_ID__}
+          isDemo={isDemo}
+          demoNotice={
+            <>
+              You're tuning on simulated demo data — submitting is encouraged! This helps the
+              community see what parameters work well for the demo dataset.
+            </>
+          }
+          notesPlaceholder="Optional notes about this dataset or tuning"
+          privacySharedItems={
+            <>
+              When you submit, CaTune sends only: parameter values (tau_rise, tau_decay, lambda),
+              AR2 coefficients, sampling rate, your experimental metadata (indicator, species, brain
+              region), and a dataset fingerprint for duplicate detection.
+            </>
+          }
         />
       </Show>
     </div>
