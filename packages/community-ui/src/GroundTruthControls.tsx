@@ -5,6 +5,7 @@
  */
 
 import { Show, type Accessor, type JSX } from 'solid-js';
+import './styles/ground-truth.css';
 
 /** The slice of an import store (createImportStore in @calab/io) these use. */
 export interface GroundTruthState {

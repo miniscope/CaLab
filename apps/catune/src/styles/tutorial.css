@@ -1,32 +1,9 @@
 /* CaTune-specific tutorial styles — theory figure layout */
 /* Base tutorial styles (driver.js theme, panel, cards, badges, banner) in @calab/ui/styles/tutorial.css */
-
 /* ========================
    Theory Figures (canvas)
    ======================== */
-
 /* Wider popover for steps with side-by-side figures */
 .catune-tutorial-figure {
   max-width: 740px !important;
-}
-
-.theory-figure-layout {
-  display: flex;
-  gap: var(--space-md);
-  align-items: flex-start;
-}
-
-.theory-figure-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.theory-figure-canvas {
-  flex-shrink: 0;
-}
-
-.theory-figure {
-  display: block;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
 }
