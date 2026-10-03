@@ -299,6 +299,151 @@ pub fn biexp_fit_inputs(
     }))
 }
 
+/// Upper bound on `num_cells · num_timepoints` for `simulate_traces`.
+///
+/// The simulator returns three f32 arrays of this size (traces, spikes, clean
+/// calcium) plus the copies the bindings make, so 2^26 samples is ~0.8 GiB of
+/// output -- the most that is sensible inside wasm32's 4 GiB address space.
+pub const MAX_SIM_SAMPLES: usize = 1 << 26;
+
+/// Largest accepted per-cell log-normal CV. `exp(cv · N(0,1))` with larger
+/// values over- or underflows f64 for realistic draws, which only produces
+/// infinite or zero amplitudes.
+pub const MAX_SIM_CV: f64 = 10.0;
+
+/// Validate a `SimulationConfig` before `simulate` allocates anything.
+///
+/// The simulator sizes its buffers from the config: `num_cells ·
+/// num_timepoints` output samples, `num_timepoints · round(spike_sim_hz /
+/// fs_hz)` high-resolution bins per cell, and a kernel of
+/// `ceil(-ln(1e-6) · tau_decay_s · spike_sim_hz)` samples. Unvalidated, a zero
+/// `fs_hz` or a units mistake in `tau_decay_s` made those sizes overflow
+/// (panic) or exhaust memory (abort -- which kills the Python interpreter or
+/// traps the WASM module), and bad kernel taus silently produced NaN traces
+/// or negative calcium. The same caps as the solver apply: kernel length
+/// <= [`MAX_KERNEL_LEN`], high-resolution length <= [`MAX_UPSAMPLED_LEN`].
+pub fn validate_simulation_config(
+    c: &crate::simulate::SimulationConfig,
+) -> Result<(), SolverError> {
+    use crate::simulate::{DriftModel, SpikeModel};
+
+    validate_fs(c.fs_hz)?;
+    if !(c.spike_sim_hz.is_finite() && c.spike_sim_hz > 0.0) {
+        return Err(param_err(format!(
+            "spike_sim_hz must be finite and > 0 Hz, got {}",
+            c.spike_sim_hz
+        )));
+    }
+    // Kernel: same rules as the solver (0 < tau_rise < tau_decay, length cap),
+    // at the rate the simulator builds it.
+    validate_params(
+        c.kernel.tau_rise_s,
+        c.kernel.tau_decay_s,
+        0.0,
+        c.spike_sim_hz,
+    )
+    .map_err(|e| match e {
+        SolverError::InvalidParams(m) => param_err(format!("kernel: {m}")),
+        other => other,
+    })?;
+
+    match c.num_cells.checked_mul(c.num_timepoints) {
+        Some(n) if n <= MAX_SIM_SAMPLES => {}
+        _ => {
+            return Err(param_err(format!(
+                "num_cells ({}) x num_timepoints ({}) exceeds the {MAX_SIM_SAMPLES}-sample limit",
+                c.num_cells, c.num_timepoints
+            )))
+        }
+    }
+    // Mirrors `bins_per_frame` in simulate().
+    let bins_per_frame = (c.spike_sim_hz / c.fs_hz).round().max(1.0);
+    if bins_per_frame * c.num_timepoints as f64 > MAX_UPSAMPLED_LEN as f64 {
+        return Err(param_err(format!(
+            "num_timepoints ({}) x spike_sim_hz / fs_hz ({bins_per_frame}) exceeds the \
+             {MAX_UPSAMPLED_LEN}-sample limit",
+            c.num_timepoints
+        )));
+    }
+
+    let finite_ge0 = |name: &str, v: f64| -> Result<(), SolverError> {
+        if v.is_finite() && v >= 0.0 {
+            Ok(())
+        } else {
+            Err(param_err(format!(
+                "{name} must be finite and >= 0, got {v}"
+            )))
+        }
+    };
+    let finite_gt0 = |name: &str, v: f64| -> Result<(), SolverError> {
+        if v.is_finite() && v > 0.0 {
+            Ok(())
+        } else {
+            Err(param_err(format!("{name} must be finite and > 0, got {v}")))
+        }
+    };
+    let unit = |name: &str, v: f64| -> Result<(), SolverError> {
+        if (0.0..=1.0).contains(&v) {
+            Ok(())
+        } else {
+            Err(param_err(format!("{name} must be in [0, 1], got {v}")))
+        }
+    };
+    let cv = |name: &str, v: f64| -> Result<(), SolverError> {
+        if (0.0..=MAX_SIM_CV).contains(&v) {
+            Ok(())
+        } else {
+            Err(param_err(format!(
+                "{name} must be in [0, {MAX_SIM_CV}], got {v}"
+            )))
+        }
+    };
+
+    cv("kernel.tau_rise_cv", c.kernel.tau_rise_cv)?;
+    cv("kernel.tau_decay_cv", c.kernel.tau_decay_cv)?;
+    finite_gt0("alpha_mean", c.alpha_mean)?;
+    cv("alpha_cv", c.alpha_cv)?;
+    finite_gt0("noise.snr", c.noise.snr)?;
+    unit("noise.shot_noise_fraction", c.noise.shot_noise_fraction)?;
+    finite_ge0("noise.snr_spread", c.noise.snr_spread)?;
+    match &c.spike_model {
+        SpikeModel::Markov(m) => {
+            unit("spike_model.p_silent_to_active", m.p_silent_to_active)?;
+            unit("spike_model.p_active_to_silent", m.p_active_to_silent)?;
+            unit("spike_model.p_spike_when_active", m.p_spike_when_active)?;
+            unit("spike_model.p_spike_when_silent", m.p_spike_when_silent)?;
+            cv("spike_model.p_silent_to_active_cv", m.p_silent_to_active_cv)?;
+        }
+        SpikeModel::Poisson(p) => finite_ge0("spike_model.rate_hz", p.rate_hz)?,
+    }
+    match &c.drift {
+        DriftModel::Sinusoidal(d) => {
+            finite_ge0("drift.amplitude_fraction", d.amplitude_fraction)?;
+            finite_ge0("drift.cycles_min", d.cycles_min)?;
+            finite_ge0("drift.cycles_max", d.cycles_max)?;
+            cv("drift.amplitude_cv", d.amplitude_cv)?;
+        }
+        DriftModel::RandomWalk(d) => {
+            finite_ge0("drift.step_std_fraction", d.step_std_fraction)?;
+            unit("drift.mean_reversion", d.mean_reversion)?;
+            cv("drift.step_std_cv", d.step_std_cv)?;
+        }
+    }
+    finite_gt0(
+        "photobleaching.decay_time_constant_s",
+        c.photobleaching.decay_time_constant_s,
+    )?;
+    finite_ge0(
+        "photobleaching.amplitude_fraction",
+        c.photobleaching.amplitude_fraction,
+    )?;
+    cv("photobleaching.amplitude_cv", c.photobleaching.amplitude_cv)?;
+    finite_gt0("saturation.hill_coefficient", c.saturation.hill_coefficient)?;
+    finite_gt0("saturation.k_d", c.saturation.k_d)?;
+    cv("saturation.k_d_cv", c.saturation.k_d_cv)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,7 +25,7 @@
 //! | `seed_trace` / `py_seed_trace`                               | finite trace, `validate_fs`    | `peak_seed::seed_trace`                |
 //! | — / `seed_kernel_estimate`                                   | finite traces, `validate_fs`   | `peak_seed::seed_kernel_estimate`      |
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
-//! | `simulate_traces` / `py_simulate_traces`                     | **none** (see ignored test)    | `simulate::simulate`                   |
+//! | `simulate_traces` / `py_simulate_traces`                     | `validate_simulation_config`   | `simulate::simulate`                   |
 
 use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
@@ -673,70 +673,138 @@ fn simulate_handles_zero_and_one_sized_configs() {
             num_timepoints: tp,
             ..small_config()
         };
+        validate::validate_simulation_config(&cfg).unwrap();
         let r = simulate::simulate(&cfg);
         assert_eq!(r.traces.len(), cells * tp, "({cells}, {tp})");
         assert_eq!(r.ground_truth.len(), cells, "({cells}, {tp})");
         assert!(finite32(&r.traces), "({cells}, {tp})");
     }
     // spike_sim_hz below fs is clamped to one bin per frame (documented).
-    let r = simulate::simulate(&simulate::SimulationConfig {
-        spike_sim_hz: 0.0,
+    let cfg = simulate::SimulationConfig {
+        spike_sim_hz: 10.0,
         ..small_config()
-    });
-    assert!(finite32(&r.traces));
+    };
+    validate::validate_simulation_config(&cfg).unwrap();
+    assert!(finite32(&simulate::simulate(&cfg).traces));
 }
 
 #[test]
-#[ignore = "real gap: simulate_traces / py_simulate_traces run no input validation. \
-            fs_hz = 0 overflows `n_tp * bins_per_frame` (panic: WASM trap / Python \
-            PanicException), tau_rise_s = 0 yields NaN traces, tau_rise_s > tau_decay_s \
-            yields negative calcium, and num_cells * num_timepoints overflows. \
-            (tau_decay_s = 1e12 aborts the process on allocation, so it is only \
-            exercised from Python in a subprocess.) Follow-up: add \
-            validate::validate_simulation_config and call it from both bindings."]
-fn simulate_rejects_or_survives_degenerate_configs() {
-    let mut reversed = small_config();
-    reversed.kernel.tau_rise_s = 1.0;
-    reversed.kernel.tau_decay_s = 0.1;
-    let mut tau0 = small_config();
-    tau0.kernel.tau_rise_s = 0.0;
-    let cases: Vec<(&str, simulate::SimulationConfig)> = vec![
-        (
-            "fs_hz = 0",
-            simulate::SimulationConfig {
-                fs_hz: 0.0,
-                ..small_config()
-            },
-        ),
-        (
-            "fs_hz < 0",
-            simulate::SimulationConfig {
-                fs_hz: -30.0,
-                ..small_config()
-            },
-        ),
-        (
-            "num_cells * num_timepoints overflows",
-            simulate::SimulationConfig {
-                num_cells: usize::MAX / 2,
-                num_timepoints: 4,
-                ..small_config()
-            },
-        ),
-        ("tau_rise_s = 0", tau0),
-        ("reversed taus", reversed),
+fn simulate_presets_and_defaults_pass_validation() {
+    validate::validate_simulation_config(&simulate::SimulationConfig::default()).unwrap();
+    for (name, cfg) in simulate::presets::all() {
+        validate::validate_simulation_config(&cfg).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+/// Regression: simulate_traces / py_simulate_traces used to run no input
+/// validation. `fs_hz = 0` overflowed `n_tp * bins_per_frame` (panic: WASM
+/// trap / Python PanicException), `tau_decay_s = 1e12` made `build_kernel`
+/// request a ~10^14-sample Vec (OOM abort: SIGABRT in the Python interpreter),
+/// `tau_rise_s = 0` produced NaN traces, reversed taus negative calcium, and
+/// `num_cells * num_timepoints` overflowed. The bindings now reject all of
+/// these before anything is allocated. (Only the validator is called here:
+/// running simulate() on these configs is exactly what used to abort.)
+#[test]
+fn simulate_config_validation_rejects_degenerate_configs() {
+    type Edit = fn(&mut simulate::SimulationConfig);
+    let cases: &[(&str, &str, Edit)] = &[
+        ("fs_hz = 0", "fs", |c| c.fs_hz = 0.0),
+        ("fs_hz < 0", "fs", |c| c.fs_hz = -30.0),
+        ("fs_hz NaN", "fs", |c| c.fs_hz = NAN),
+        ("spike_sim_hz = 0", "spike_sim_hz", |c| c.spike_sim_hz = 0.0),
+        ("spike_sim_hz inf", "spike_sim_hz", |c| c.spike_sim_hz = INF),
+        ("tau_rise_s = 0", "tau_rise", |c| c.kernel.tau_rise_s = 0.0),
+        ("tau_decay_s < 0", "tau_decay", |c| {
+            c.kernel.tau_decay_s = -1.0
+        }),
+        ("reversed taus", "tau_rise", |c| {
+            c.kernel.tau_rise_s = 1.0;
+            c.kernel.tau_decay_s = 0.1;
+        }),
+        ("tau_decay_s = 1e12 (kernel would abort)", "kernel", |c| {
+            c.kernel.tau_decay_s = 1e12
+        }),
+        ("tau_decay_s in ms (kernel over cap)", "kernel", |c| {
+            c.kernel.tau_decay_s = 600.0
+        }),
+        ("cells x timepoints overflows", "num_cells", |c| {
+            c.num_cells = usize::MAX / 2;
+            c.num_timepoints = 4;
+        }),
+        ("cells x timepoints over cap", "num_cells", |c| {
+            c.num_cells = 1 << 14;
+            c.num_timepoints = 1 << 13;
+        }),
+        ("high-res bins over cap", "num_timepoints", |c| {
+            c.num_cells = 1;
+            c.num_timepoints = 1 << 22;
+            c.spike_sim_hz = 3000.0; // 100 bins per frame
+        }),
+        ("fs tiny -> huge bins per frame", "num_timepoints", |c| {
+            c.fs_hz = 1e-300
+        }),
+        ("tau cv over max", "tau_decay_cv", |c| {
+            c.kernel.tau_decay_cv = 1e3
+        }),
+        ("alpha_mean = 0", "alpha_mean", |c| c.alpha_mean = 0.0),
+        ("alpha_cv NaN", "alpha_cv", |c| c.alpha_cv = NAN),
+        ("snr = 0", "snr", |c| c.noise.snr = 0.0),
+        ("shot noise fraction > 1", "shot_noise_fraction", |c| {
+            c.noise.shot_noise_fraction = 1.5
+        }),
+        ("probability > 1", "p_spike_when_active", |c| {
+            c.spike_model = simulate::SpikeModel::Markov(simulate::MarkovConfig {
+                p_spike_when_active: 2.0,
+                ..Default::default()
+            })
+        }),
+        ("poisson rate inf", "rate_hz", |c| {
+            c.spike_model = simulate::SpikeModel::Poisson(simulate::PoissonConfig { rate_hz: INF })
+        }),
+        ("bleaching tau = 0", "decay_time_constant_s", |c| {
+            c.photobleaching.decay_time_constant_s = 0.0
+        }),
+        ("hill coefficient NaN", "hill_coefficient", |c| {
+            c.saturation.hill_coefficient = NAN
+        }),
+        ("k_d < 0", "k_d", |c| c.saturation.k_d = -1.0),
     ];
-    for (label, cfg) in cases {
-        // Until a validator exists the only acceptable outcome is a finite,
-        // physically meaningful (non-negative calcium) result without a panic.
-        let r = std::panic::catch_unwind(|| simulate::simulate(&cfg));
-        let r = r.unwrap_or_else(|_| panic!("{label}: simulate panicked"));
-        assert!(finite32(&r.traces), "{label}: non-finite traces");
-        for gt in &r.ground_truth {
-            assert!(
-                gt.clean_calcium.iter().all(|&c| c >= 0.0),
-                "{label}: negative calcium"
-            );
-        }
+    for (label, needle, edit) in cases {
+        let mut cfg = small_config();
+        edit(&mut cfg);
+        let err = validate::validate_simulation_config(&cfg).unwrap_err();
+        assert!(
+            matches!(err, SolverError::InvalidParams(_)),
+            "{label}: {err}"
+        );
+        assert!(err.to_string().contains(needle), "{label}: {err}");
+    }
+}
+
+#[test]
+fn simulate_bounds_extreme_per_cell_tau_draws() {
+    // The nominal taus are valid, but a CV of 10 makes exp(10 · N(0,1)) draws
+    // span ~e^±40: without the per-cell clamp some cells' kernels would exceed
+    // the length cap (allocation abort) or have rise >= decay.
+    let mut cfg = simulate::SimulationConfig {
+        num_cells: 8,
+        num_timepoints: 60,
+        ..small_config()
+    };
+    cfg.kernel.tau_rise_cv = validate::MAX_SIM_CV;
+    cfg.kernel.tau_decay_cv = validate::MAX_SIM_CV;
+    validate::validate_simulation_config(&cfg).unwrap();
+    let r = simulate::simulate(&cfg);
+    assert!(finite32(&r.traces));
+    let max_tau_d = MAX_KERNEL_LEN as f64 / (-(1e-6_f64.ln()) * cfg.spike_sim_hz);
+    for gt in &r.ground_truth {
+        assert!(gt.tau_decay_s <= max_tau_d, "tau_decay {}", gt.tau_decay_s);
+        assert!(
+            0.0 < gt.tau_rise_s && gt.tau_rise_s < gt.tau_decay_s,
+            "taus ({}, {})",
+            gt.tau_rise_s,
+            gt.tau_decay_s
+        );
+        assert!(gt.clean_calcium.iter().all(|&c| c.is_finite() && c >= 0.0));
     }
 }

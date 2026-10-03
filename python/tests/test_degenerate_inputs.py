@@ -19,9 +19,6 @@ from __future__ import annotations
 
 import json
 import math
-import subprocess
-import sys
-import textwrap
 
 import numpy as np
 import pytest
@@ -715,50 +712,59 @@ def test_simulate_zero_and_one_sized(cells, timepoints):
     assert finite(traces, spikes, clean)
 
 
-SIM_PROBE = textwrap.dedent(
-    """
-    import json, sys
-    import numpy as np
-    import calab._solver as s
-    try:
-        out = s.py_simulate_traces(sys.argv[1])
-    except ValueError:
-        print("VALUE_ERROR"); sys.exit(0)
-    except BaseException as e:  # PanicException derives from BaseException
-        print("RAISED", type(e).__name__, e); sys.exit(3)
-    traces, clean = out[0], out[2]
-    ok = bool(np.all(np.isfinite(traces)) and np.all(clean >= 0))
-    print("OK" if ok else "GARBAGE"); sys.exit(0 if ok else 4)
-    """
-)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="real gap: py_simulate_traces / simulate_traces run no input validation. fs_hz=0 "
-    "and oversized num_cells*num_timepoints panic (PanicException), tau_decay_s=1e12 aborts "
-    "the interpreter on allocation, tau_rise_s=0 returns NaN traces and reversed taus "
-    "negative calcium. Follow-up: a shared validate_simulation_config in validate.rs.",
-)
+# Regression: py_simulate_traces used to run no validation at all. fs_hz=0 and
+# oversized num_cells*num_timepoints panicked (PanicException), and
+# tau_decay_s=1e12 made build_kernel request a ~10^14-sample Vec -- a Rust OOM
+# *abort* (SIGABRT) that killed the interpreter. tau_rise_s=0 returned NaN
+# traces and reversed taus negative calcium. All are now ValueError, raised
+# before anything is allocated.
 @pytest.mark.parametrize(
-    "overrides",
+    "overrides, needle",
     [
-        {"fs_hz": 0.0},
-        {"num_cells": 2**40, "num_timepoints": 2**40},
-        {"kernel.tau_decay_s": 1e12},
-        {"kernel.tau_rise_s": 0.0},
-        {"kernel.tau_rise_s": 1.0, "kernel.tau_decay_s": 0.1},
+        ({"fs_hz": 0.0}, "fs"),
+        ({"fs_hz": -30.0}, "fs"),
+        ({"spike_sim_hz": 0.0}, "spike_sim_hz"),
+        ({"num_cells": 2**40, "num_timepoints": 2**40}, "num_cells"),
+        ({"num_cells": 2**14, "num_timepoints": 2**13}, "num_cells"),
+        ({"kernel.tau_decay_s": 1e12}, "kernel"),
+        ({"kernel.tau_decay_s": 600.0}, "kernel"),  # ms passed as s
+        ({"kernel.tau_rise_s": 0.0}, "tau_rise"),
+        ({"kernel.tau_rise_s": 1.0, "kernel.tau_decay_s": 0.1}, "tau_rise"),
+        ({"kernel.tau_decay_cv": 1e3}, "tau_decay_cv"),
+        ({"alpha_mean": 0.0}, "alpha_mean"),
+        ({"noise.snr": 0.0}, "snr"),
+        ({"photobleaching.decay_time_constant_s": 0.0}, "decay_time_constant_s"),
+        ({"saturation.k_d": -1.0}, "k_d"),
     ],
-    ids=["fs-0", "size-overflow", "huge-tau-decay-aborts", "tau-rise-0", "reversed-taus"],
+    ids=[
+        "fs-0",
+        "fs-negative",
+        "spike-sim-hz-0",
+        "size-overflow",
+        "size-over-cap",
+        "huge-tau-decay-used-to-abort",
+        "tau-decay-in-ms",
+        "tau-rise-0",
+        "reversed-taus",
+        "cv-too-large",
+        "alpha-0",
+        "snr-0",
+        "bleach-tau-0",
+        "kd-negative",
+    ],
 )
-def test_simulate_rejects_degenerate_configs(overrides):
-    # Isolated in a subprocess: some of these currently abort the interpreter.
-    proc = subprocess.run(
-        [sys.executable, "-c", SIM_PROBE, json.dumps(sim_config(**overrides))],
-        capture_output=True,
-        text=True,
-        timeout=120,
+def test_simulate_rejects_degenerate_configs(overrides, needle):
+    with pytest.raises(ValueError, match=f"invalid parameter.*{needle}"):
+        _solver.py_simulate_traces(json.dumps(sim_config(**overrides)))
+
+
+def test_simulate_extreme_per_cell_tau_variation_is_bounded():
+    # Valid nominal taus with the maximum CV: per-cell draws are clamped so no
+    # cell's kernel exceeds the length cap or has rise >= decay.
+    cfg = sim_config(**{"kernel.tau_rise_cv": 10.0, "kernel.tau_decay_cv": 10.0, "num_cells": 6})
+    traces, _spikes, clean, _a, _s, taus_r, taus_d, _n, _t = _solver.py_simulate_traces(
+        json.dumps(cfg)
     )
-    last = (proc.stdout.strip().splitlines() or [f"<no output, rc={proc.returncode}>"])[-1]
-    assert last == "VALUE_ERROR", f"rc={proc.returncode}: {last} {proc.stderr[-300:]}"
+    assert finite(traces, clean) and np.all(clean >= 0)
+    assert np.all((taus_r > 0) & (taus_r < taus_d))
+    assert np.all(np.ceil(KERNEL_TAIL * taus_d * cfg["spike_sim_hz"]) <= MAX_KERNEL_LEN)

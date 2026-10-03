@@ -19,6 +19,10 @@ use crate::simulate;
 pub fn simulate_traces(config_js: JsValue) -> Result<JsValue, JsError> {
     let config: simulate::SimulationConfig = serde_wasm_bindgen::from_value(config_js)
         .map_err(|e| JsError::new(&format!("simulate_traces: invalid SimulationConfig: {e}")))?;
+    // Validate before simulate() sizes its buffers and kernel from the config
+    // (an unchecked fs_hz = 0 or tau_decay_s in ms used to trap the module).
+    crate::validate::validate_simulation_config(&config)
+        .map_err(|e| JsError::new(&format!("simulate_traces: {e}")))?;
     let result = simulate::simulate(&config);
     to_js("simulate_traces", &result)
 }

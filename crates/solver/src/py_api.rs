@@ -745,8 +745,11 @@ fn py_simulate_traces<'py>(
     let config: simulate::SimulationConfig = serde_json::from_str(config_json).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("Invalid config JSON: {e}"))
     })?;
+    // Sizes every buffer and the kernel before simulate() allocates them.
+    validate::validate_simulation_config(&config).map_err(py_err)?;
 
-    let result = simulate::simulate(&config);
+    // Pure Rust on an owned config: release the GIL for the simulation.
+    let result = py.allow_threads(|| simulate::simulate(&config));
     let n_cells = result.num_cells;
     let n_tp = result.num_timepoints;
 
