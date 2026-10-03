@@ -5,6 +5,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-03
+
+Web apps `v2.9.0`; Python package `calab` `py/v0.3.0`. Phase 2 of the October
+2026 codebase review: the structural work that makes adding a new web app a
+single command.
+
 ### Added
 
 - **CaTune** imports MATLAB `.mat` files, using the same trace-candidate rules
