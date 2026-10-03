@@ -8,7 +8,7 @@ This crate implements calcium trace deconvolution: a FISTA (Fast Iterative Shrin
 
 It builds two ways, gated by Cargo features:
 
-- **`jsbindings`** (default) — compiled to WebAssembly via `wasm-pack` and run in Web Workers in the browser. The compiled output in `pkg/` is committed to the repository so that CI and development do not require a Rust toolchain.
+- **`jsbindings`** (default) — compiled to WebAssembly via `wasm-pack` and run in Web Workers in the browser. The compiled output in `pkg/` is gitignored and built on demand by `scripts/ensure-wasm.mjs` (which runs before `dev`, `test`, `typecheck` and `build`), so a Rust toolchain plus `wasm-pack` are required for development and CI.
 - **`pybindings`** — compiled as a native PyO3 extension module for the `calab` Python package (see `python/`).
 
 `cargo test` uses the default (`jsbindings`); the PyO3 surface is checked separately with `--no-default-features --features pybindings`.
@@ -130,7 +130,7 @@ cd crates/solver
 wasm-pack build --target web --release
 ```
 
-Output goes to `pkg/` which is committed to the repository. You only need to rebuild when modifying the solver Rust source.
+Output goes to `pkg/`, which is gitignored. `npm run build:wasm` (or the automatic `ensure-wasm` step) rebuilds it; you only need to do so by hand after modifying the solver Rust source.
 
 From the repo root:
 
