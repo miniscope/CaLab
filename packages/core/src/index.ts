@@ -1,6 +1,3 @@
-export { CaTuneExportSchema } from './schemas/export-schema.ts';
-export type { CaTuneExportData } from './schemas/export-schema.ts';
-
 // Shared types
 export type {
   NumericTypedArray,
@@ -16,14 +13,7 @@ export type {
 export { SAMPLING_RATE_PRESETS } from './types.ts';
 
 // Solver types
-export type {
-  ConvMode,
-  CellSolverStatus,
-  SolverParams,
-  WarmStartStrategy,
-  PoolWorkerInbound,
-  PoolWorkerOutbound,
-} from './solver-types.ts';
+export type { ConvMode, SolverParams, WarmStartStrategy } from './solver-types.ts';
 
 // AR(2) coefficients
 export { computeAR2 } from './ar2.ts';

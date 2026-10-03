@@ -1,8 +1,13 @@
 /**
- * Bridge utilities for communicating with a local Python calab server.
+ * Client for the local Python bridge server (`calab._bridge`), shared by every
+ * app: when an app is opened with ?bridge=localhost:PORT it fetches traces from
+ * the server and posts its results back. Only the server's routes live here;
+ * each app builds its own result payload (CaTune: lib/export.ts, CaDecon:
+ * lib/export-utils.ts) and sequences its own export.
  *
- * When CaTune is opened with ?bridge=localhost:PORT, it fetches trace data
- * from the Python bridge server and sends exported parameters back.
+ * BridgeConfig mirrors Python's DeconConfig (sent to CaDecon) and stays here
+ * with the cross-language fixture python/tests/test_bridge.py reads from
+ * packages/io/src/__fixtures__/.
  */
 
 import { parseNpy } from './npy-parser.ts';
@@ -173,8 +178,8 @@ export function stopBridgeHeartbeat(): void {
 }
 
 /**
- * POST the activity matrix as .npy binary to the bridge server.
- * Used by CaDecon to send the large activity array before the JSON results.
+ * POST an activity matrix as .npy binary to the bridge server (sent before
+ * the JSON results by apps that return one, e.g. CaDecon).
  */
 export async function postActivityToBridge(
   bridgeUrl: string,
@@ -194,7 +199,7 @@ export async function postActivityToBridge(
 
 /**
  * POST the results JSON (scalars + metadata) to the bridge server.
- * This acts as the "done" signal for the two-POST CaDecon export.
+ * This acts as the "done" signal for a results export.
  */
 export async function postResultsToBridge(
   bridgeUrl: string,
@@ -208,22 +213,6 @@ export async function postResultsToBridge(
   if (!resp.ok) {
     throw new Error(`Bridge: failed to post results (${resp.status})`);
   }
-}
-
-/**
- * Export CaDecon results to the bridge server.
- * Sequences: activity POST first (large binary), then results POST (small JSON, triggers done).
- * Stops the heartbeat after both succeed.
- */
-export async function exportCaDeconToBridge(
-  bridgeUrl: string,
-  activity: Float32Array,
-  shape: [number, number],
-  results: Record<string, unknown>,
-): Promise<void> {
-  await postActivityToBridge(bridgeUrl, activity, shape);
-  await postResultsToBridge(bridgeUrl, results);
-  stopBridgeHeartbeat();
 }
 
 /**

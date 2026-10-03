@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as v from 'valibot';
-import { CaTuneExportSchema } from '../schemas/export-schema.ts';
+import { CaTuneExportSchema } from '../export-schema.ts';
 
 function makeValidExport() {
   return {

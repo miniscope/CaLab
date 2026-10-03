@@ -25,9 +25,10 @@ import {
   setBridgeExportError,
   importStore,
 } from '../../lib/data-store.ts';
-import { buildExportData, downloadExport, postParamsToBridge } from '@calab/io';
+import { postParamsToBridge } from '@calab/io';
 import { getSolverVersion } from '@calab/core/wasm';
-import type { CaTuneExport } from '@calab/io';
+import { buildExportData, downloadExport } from '../../lib/export.ts';
+import type { CaTuneExport } from '../../lib/export.ts';
 import {
   validateSubmission,
   loadFieldOptions,

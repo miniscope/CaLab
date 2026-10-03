@@ -9,7 +9,7 @@ Depends on `@calab/core`.
   ↑
 @calab/compute
   ↑
-apps/catune
+apps/catune, apps/cadecon
 ```
 
 ## Exports

@@ -2,7 +2,7 @@
 
 Shared SolidJS layout components, chart primitives, and CSS design tokens for the CaLab monorepo.
 
-Depends on `@calab/tutorials` (for TutorialPanel and TutorialLauncher components). External dependencies: `solid-js`, `uplot`.
+Depends on `@calab/tutorials` (for TutorialPanel and TutorialLauncher components), and `@calab/io` for the import flow. External dependencies: `solid-js`, `uplot`.
 
 ```
 @calab/tutorials
@@ -26,6 +26,14 @@ apps/catune, apps/carank
 | `Card`             | `Card.tsx`             | Generic card wrapper component                                        |
 
 The table above covers the layout components; the barrel (`src/index.ts`) also re-exports the chart utilities below. Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
+
+## Import flow (`@calab/ui/import`)
+
+The data-import screen shared by the apps. Every component takes the app's `ImportStore` (`createImportStore` in `@calab/io`) as `store`: `ImportOverlay` (the whole flow, `layout: 'stacked' | 'split'`), `FileDropZone`, `NpzArraySelector`, `DimensionConfirmation`, `SamplingRateInput`, `DataValidationReport`, `TracePreview`. A separate entry so apps without an import flow never load `@calab/io`.
+
+## Shared app stylesheets (`@calab/ui/styles/*`)
+
+`base.css` and `tutorial.css` are the design-system base. `app-global.css` (import screen, cards, buttons) and `app-controls.css` (control panels) hold the rules CaTune and CaDecon share; each app imports them just before its own `styles/global.css` / `styles/controls.css`, which keep only app-specific rules.
 
 ## Chart utilities (`@calab/ui/chart`)
 

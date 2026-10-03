@@ -1,11 +1,16 @@
-import type { PoolWorkerOutbound, SolverParams, WarmStartStrategy } from '@calab/core';
+// CaTune's solver worker pool: the shared createWorkerPool() from
+// @calab/compute with CaTune's message router (protocol in
+// workers/catune-types.ts). CaDecon's equivalent is lib/cadecon-pool.ts.
+
+import type { SolverParams, WarmStartStrategy } from '@calab/core';
 import {
   createWorkerPool,
   type BaseJob,
   type MessageRouter,
   type WorkerPool,
   type WorkerPoolOptions,
-} from './worker-pool.ts';
+} from '@calab/compute';
+import type { PoolWorkerOutbound } from '../workers/catune-types.ts';
 
 export interface CaTunePoolJob extends BaseJob {
   trace: Float32Array;

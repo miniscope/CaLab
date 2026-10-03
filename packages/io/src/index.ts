@@ -13,15 +13,14 @@ export { traceCandidates, soleTraceCandidate } from './trace-candidates.ts';
 export { createImportStore, IMPORT_FILE_EXTENSIONS } from './import-store.ts';
 export type { ImportStore, ImportStoreOptions, DemoDataOptions } from './import-store.ts';
 export { rankCellsByActivity, sampleRandomCells } from './cell-ranking.ts';
-export { buildExportData, downloadExport, parseExport } from './export.ts';
-export type { CaTuneExport } from './export.ts';
 export {
   getBridgeUrl,
   fetchBridgeData,
   fetchBridgeConfig,
   postParamsToBridge,
   postProgressToBridge,
-  exportCaDeconToBridge,
+  postActivityToBridge,
+  postResultsToBridge,
   startBridgeHeartbeat,
   stopBridgeHeartbeat,
 } from './bridge.ts';

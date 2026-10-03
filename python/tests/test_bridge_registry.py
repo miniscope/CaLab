@@ -145,7 +145,7 @@ def test_path_segment_matches_app_package_json(slug: str) -> None:
 
 def test_schema_versions_match_typescript_sources() -> None:
     """Registry schema versions equal the literals the apps send."""
-    catune_src = (REPO_ROOT / "packages" / "io" / "src" / "export.ts").read_text()
+    catune_src = (REPO_ROOT / "apps" / "catune" / "src" / "lib" / "export.ts").read_text()
     m = re.search(r"schema_version:\s*'([^']+)'", catune_src)
     assert m is not None
     assert APPS["catune"].result_schema is not None

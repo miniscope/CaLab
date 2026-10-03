@@ -7,7 +7,13 @@
  */
 
 import { createEffect, on, createSignal } from 'solid-js';
-import { fetchBridgeConfig, postProgressToBridge, exportCaDeconToBridge } from '@calab/io';
+import {
+  fetchBridgeConfig,
+  postProgressToBridge,
+  postActivityToBridge,
+  postResultsToBridge,
+  stopBridgeHeartbeat,
+} from '@calab/io';
 import type { BridgeConfig } from '@calab/io';
 import {
   setUpsampleTarget,
@@ -74,13 +80,17 @@ export async function initBridgeConfig(url: string): Promise<void> {
 }
 
 /**
- * Build and export CaDecon results to the bridge server.
+ * Build and export CaDecon results to the bridge server: the activity matrix
+ * first (large binary), then the results JSON, which the server treats as the
+ * "done" signal. Stops the heartbeat after both succeed.
  * Shared by both auto-export (effect) and manual export (ExportButton).
  */
 export async function runBridgeExport(url: string): Promise<void> {
   const { data, shape } = buildCaDeconActivityMatrix();
   const results = buildCaDeconResultsPayload(await getSolverVersion());
-  await exportCaDeconToBridge(url, data, shape, results);
+  await postActivityToBridge(url, data, shape);
+  await postResultsToBridge(url, results);
+  stopBridgeHeartbeat();
   setBridgeExportDone(true);
 }
 

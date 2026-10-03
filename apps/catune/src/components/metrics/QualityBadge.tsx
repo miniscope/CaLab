@@ -7,7 +7,7 @@
  */
 
 import type { QualityTier } from '@calab/core';
-import type { CellSolverStatus } from '@calab/core';
+import type { CellSolverStatus } from '../../workers/catune-types.ts';
 
 export interface QualityBadgeProps {
   quality: QualityTier;
