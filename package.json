@@ -30,6 +30,7 @@
     "test:e2e:ui": "playwright test --ui",
     "check:app-tests": "node scripts/check-app-tests.mjs",
     "check:apps-manifest": "node scripts/check-apps-manifest.mjs",
+    "new-app": "node scripts/new-app.mjs",
     "lint": "eslint apps/ packages/ scripts/ e2e/",
     "lint:fix": "eslint --fix apps/ packages/ scripts/ e2e/",
     "pretypecheck": "npm run ensure-wasm",

@@ -3,6 +3,12 @@
  * of apps. An app is any `apps/<dir>/package.json` (except `_template`) with a
  * `calab.displayName`; everything else about it comes from that `calab` block.
  *
+ * `apps/_template` is the source `npm run new-app` copies (scripts/new-app.mjs).
+ * It is linted, type-checked and tested like an app, but never built, listed or
+ * deployed: its `calab.id` is still the `__APP_ID__` placeholder, which
+ * @calab/vite-config accepts only under Vitest. It is also `hidden: true`, so
+ * a copy made by hand stays off the landing page until someone unhides it.
+ *
  * Also owns the shape of `apps.json`, the build-time manifest combine-dist
  * writes next to the landing page and the Python bridge reads at runtime
  * (python/src/calab/_bridge/_manifest.py). Bump MANIFEST_VERSION only for a
@@ -14,6 +20,22 @@ import { join, resolve } from 'node:path';
 
 export const repoRoot = resolve(import.meta.dirname, '../..');
 export const appsDir = join(repoRoot, 'apps');
+
+/** The scaffold under apps/ that discovery and the build skip. */
+export const TEMPLATE_DIR = '_template';
+
+/**
+ * Valid `calab.id` slugs: `APP_ID_PATTERN` in @calab/vite-config, the one
+ * definition (it also mirrors the analytics_sessions.app_name CHECK). That
+ * module is TypeScript that pulls in Vite, so plain Node scripts read the
+ * literal from its source instead of keeping a copy.
+ */
+export const APP_ID_PATTERN = (() => {
+  const src = readFileSync(join(repoRoot, 'packages/vite-config/src/index.ts'), 'utf-8');
+  const m = src.match(/export const APP_ID_PATTERN = \/(.+)\/;/);
+  if (!m) throw new Error('APP_ID_PATTERN not found in packages/vite-config/src/index.ts');
+  return new RegExp(m[1]);
+})();
 
 /** File name of the manifest, at the root of the combined site. */
 export const MANIFEST_FILE = 'apps.json';
@@ -44,7 +66,7 @@ export function siteDir(env = process.env) {
  */
 export function discoverApps() {
   return readdirSync(appsDir)
-    .filter((dir) => dir !== '_template' && statSync(join(appsDir, dir)).isDirectory())
+    .filter((dir) => dir !== TEMPLATE_DIR && statSync(join(appsDir, dir)).isDirectory())
     .flatMap((dir) => {
       let pkg;
       try {

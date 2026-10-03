@@ -53,6 +53,11 @@ covered automatically: its landing card must link to `<DisplayName>/`, and the
 page must load with the display name in its `<title>` and something mounted in
 `#root`. Hidden apps must have no card.
 
+An app made with `npm run new-app` (docs/NEW_APP.md) opens on the shared import
+flow with a "Load Demo Data" button, so its spec can load a few demo cells and
+wait for the trace view (`[data-panel-id="trace"] canvas`) until the app has a
+real result to assert on.
+
 Then add `e2e/<app-id>.spec.ts` that exercises the app's primary path:
 
 ```ts
