@@ -7,6 +7,22 @@ import globals from 'globals';
 // package gets the Solid rules and browser globals without editing this file.
 const SOURCE_FILES = ['apps/*/src/**/*.{ts,tsx}', 'packages/*/src/**/*.{ts,tsx}'];
 
+// Repo-wide import boundaries (see the boundary blocks below).
+const BOUNDARY_PATTERNS = [
+  {
+    group: ['**/crates/solver/pkg/*'],
+    message: 'Import from @calab/core/wasm instead of the WASM pkg directly.',
+  },
+  {
+    group: ['@supabase/supabase-js'],
+    message: 'Import from @calab/community instead of @supabase/supabase-js directly.',
+  },
+  {
+    group: ['@calab/*/src/*'],
+    message: 'Import from the package barrel (@calab/<pkg>) instead of reaching into src/.',
+  },
+];
+
 export default tseslint.config(
   // Global ignores
   {
@@ -63,7 +79,9 @@ export default tseslint.config(
     },
   },
 
-  // Import boundaries (merged into one block so flat-config doesn't silently override)
+  // Import boundaries. Flat config gives each file the LAST matching block's
+  // `no-restricted-imports`, so the narrower blocks below repeat
+  // BOUNDARY_PATTERNS rather than relying on a merge.
   // (community-store uses type imports for User/Session — allowed since it's in the community boundary)
   {
     files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
@@ -74,22 +92,56 @@ export default tseslint.config(
       'packages/community/src/submission-service.ts',
     ],
     rules: {
+      'no-restricted-imports': ['error', { patterns: BOUNDARY_PATTERNS }],
+    },
+  },
+
+  // @calab/ui is the backend-free shell: dashboard layout, charts, styles. Community
+  // and auth widgets live in @calab/community-ui so an app can use @calab/ui
+  // without loading Supabase or auth code.
+  {
+    files: ['packages/ui/**/*.{ts,tsx}'],
+    rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
+            ...BOUNDARY_PATTERNS,
             {
-              group: ['**/crates/solver/pkg/*'],
-              message: 'Import from @calab/core instead of the WASM pkg directly.',
-            },
-            {
-              group: ['@supabase/supabase-js'],
-              message: 'Import from @calab/community instead of @supabase/supabase-js directly.',
-            },
-            {
-              group: ['@calab/*/src/*'],
+              group: [
+                '@calab/community',
+                '@calab/community/*',
+                '@calab/community-ui',
+                '@calab/community-ui/*',
+              ],
               message:
-                'Import from the package barrel (@calab/<pkg>) instead of reaching into src/.',
+                '@calab/ui must not depend on the community backend. Put community-coupled components in @calab/community-ui.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The `@calab/core` barrel stays wasm-free: only the `./wasm` entry
+  // (src/wasm.ts -> src/wasm-adapter.ts) may reach the solver glue.
+  {
+    files: ['packages/core/src/**/*.{ts,tsx}'],
+    ignores: [
+      'packages/core/src/wasm.ts',
+      'packages/core/src/wasm-adapter.ts',
+      'packages/core/src/__tests__/**',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            ...BOUNDARY_PATTERNS,
+            {
+              group: ['**/wasm-adapter*', '**/wasm.ts', '@calab/core/wasm'],
+              message:
+                'Keep @calab/core wasm-free; the solver is exported only from @calab/core/wasm.',
             },
           ],
         },

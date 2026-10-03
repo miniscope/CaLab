@@ -2,7 +2,7 @@
  * CaTune SubmissionSummary — wraps the shared SubmissionSummary with CaTune rendering.
  */
 
-import { SubmissionSummary as SharedSubmissionSummary } from '@calab/ui';
+import { SubmissionSummary as SharedSubmissionSummary } from '@calab/community-ui';
 import { deleteSubmission } from '../../lib/community/index.ts';
 import type { CatuneSubmission } from '../../lib/community/index.ts';
 

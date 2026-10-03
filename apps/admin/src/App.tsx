@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js';
 import { Switch, Match } from 'solid-js';
-import { DashboardShell, CompactHeader, isAuthCallback, AuthCallback } from '@calab/ui';
+import { DashboardShell, CompactHeader } from '@calab/ui';
+import { isAuthCallback, AuthCallback } from '@calab/community-ui';
 import { AdminGuard } from './components/AdminGuard.tsx';
 import { NavBar } from './components/NavBar.tsx';
 import { OverviewView } from './components/OverviewView.tsx';
