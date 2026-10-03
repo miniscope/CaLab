@@ -27,6 +27,7 @@ export {
   D3_CATEGORY10,
   subsetColor,
   withOpacity,
+  solverInputLabel,
 } from './series-utils.ts';
 export { TracePanel } from './TracePanel.tsx';
 export type { TracePanelProps } from './TracePanel.tsx';

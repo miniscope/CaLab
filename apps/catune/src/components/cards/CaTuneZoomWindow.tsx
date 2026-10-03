@@ -27,6 +27,7 @@ import {
 } from '../../lib/chart/series-config.ts';
 import {
   showRaw,
+  filterEnabled,
   showFiltered,
   showFit,
   showDeconv,
@@ -333,7 +334,7 @@ export function CaTuneZoomWindow(props: CaTuneZoomWindowProps) {
     const base: uPlot.Series[] = [{}, { ...createRawSeries(), show: showRaw() }];
     base.push(
       props.filteredTrace
-        ? { ...createFilteredSeries(), show: showFiltered() }
+        ? { ...createFilteredSeries(filterEnabled()), show: showFiltered() }
         : ({ show: false } as uPlot.Series),
     );
     base.push(

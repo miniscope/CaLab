@@ -51,6 +51,18 @@ export const TRACE_COLORS = {
 } as const;
 
 /**
+ * Legend label for the solver's working trace — the trace the deconvolution is
+ * actually fit to (drawn in `TRACE_COLORS.filtered`). Both apps always subtract
+ * a baseline from the raw trace before solving; the optional noise filters are
+ * applied on top of that. So this series is never "just Raw": it is
+ * "Baseline-corrected" with filters off and "Filtered" with any filter on.
+ * Fit, Deconv and the residual are all computed against it, not against Raw.
+ */
+export function solverInputLabel(filtered: boolean): string {
+  return filtered ? 'Filtered' : 'Baseline-corrected';
+}
+
+/**
  * Ground-truth overlays — distinct from every hue they co-plot with. Calcium is
  * reddish-purple (vs the trace bands); the GT kernel is black (vs the blue/
  * reddish-purple/orange kernel-fit components in KernelDisplay).
