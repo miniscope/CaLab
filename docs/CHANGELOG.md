@@ -5,6 +5,191 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- **CaTune** imports MATLAB `.mat` files, using the same trace-candidate rules
+  as CaDecon: 1×1 arrays are never offered, a lone matrix among vectors is
+  auto-selected, and the drop text and errors list `.mat` (#218)
+
+- **Import** `.npy` files in float16, int64/uint64 (widened to Float64), bool
+  and big-endian byte order now load; they used to be rejected (#213)
+
+- **Python** version handshake for the bridge. Results from a web app carry
+  `schema_version` (required) and `solver_version` (optional), checked with
+  Cargo's caret rule against what the installed `calab` reads. An incompatible
+  version raises `calab.BridgeVersionError` (and the app gets HTTP 409); a
+  compatible but different one warns with `calab.BridgeVersionWarning`. The
+  error says which side to upgrade. The solver version is the single `version`
+  in `crates/solver/Cargo.toml`, exposed as `solver_version()` in WASM and as
+  `calab._solver.__version__` / `calab._solver.protocol_version()` in Python.
+  CaTune and CaDecon now send `solver_version` in their bridge exports
+  (#212, #215)
+
+- **Python** the bridge has an app registry (`calab._bridge.APPS`, one
+  `AppSpec` per app slug), a generic `calab._bridge.launch(slug, traces, fs)`
+  that `calab.tune()` / `calab.decon()` now wrap with unchanged signatures, and
+  generic `POST /api/v1/results/{app}[/{array}]` routes. It reads the deployed
+  site's `apps.json` (2 s timeout, fetched once per process), so a pinned
+  `calab` follows renamed app paths and can tell you to upgrade for an app newer
+  than itself; offline it falls back to the built-in registry.
+  `CALAB_APPS_MANIFEST` points it at another manifest URL or turns it `off`
+  (#212, #217)
+
+- **Site** `apps.json`, a manifest of the published apps (id, display name,
+  path, description, status, plus the release and commit), at the root of the
+  GitHub Pages site. It is generated from each app's `package.json` `calab`
+  block; `scripts/check-apps-manifest.mjs` fails CI and `build:pages` if it is
+  missing or stale (#217)
+
+- **Packages** `@calab/vite-config`: `defineCalabApp(appDir, { wasm })` is an
+  app's whole Vite/Vitest config, so each `vite.config.ts` is three lines, and a
+  root `tsconfig.app.json` replaces the per-app paths and references. App
+  identity is `calab.id` in the app's `package.json`, injected as the build-time
+  `__APP_ID__` and validated against a slug regex (#211)
+
+- **Packages** `@calab/community-ui`, holding the community and auth widgets
+  that used to be in `@calab/ui` (`AuthGate`, `CommunityBrowserShell`,
+  `FilterBar`, `SubmitFormModal`, ...), plus the widgets hoisted from the apps:
+  `SubmitForm` + `createSubmitFormFields`, `CommunityScatterPlot`,
+  `FeedbackMenu`, `GroundTruthControls` and the submission payload builder
+  (`buildBaseSubmissionPayload`, `toCommunityDataSource`) (#215, #218)
+
+- **Packages** `createImportStore()` in `@calab/io` and the `@calab/ui/import`
+  components (`ImportOverlay`, `FileDropZone`, ...): the import flow CaTune and
+  CaDecon each kept a copy of. Shared app CSS moved to
+  `@calab/ui/styles/app-global.css` and `app-controls.css` (#218)
+
+- **Packages** `@calab/core/wasm` entry point: the solver adapter (`initWasm`,
+  `Solver`, `solver_version`, the new `getSolverVersion()`, ...) is no longer in
+  the `@calab/core` barrel, so importing types or math never bundles the WASM
+  glue (#215)
+
+- **Tooling** `npm run dev [app]` starts any app's dev server by directory name,
+  `calab.id` or display name (default CaTune), running the WASM `predev` step
+  that `npm run dev -w apps/<name>` skips (#217)
+
+<!-- TODO(merge): replace #TBD with the template/scaffolder PR number. -->
+
+- **Tooling** `npm run new-app <id> "<Display Name>"` scaffolds a runnable app from a real `apps/_template` (#TBD)
+
+- **Tests** Playwright smoke test per app (`e2e/`), run against the production
+  build in headless Chromium: CaTune's demo data solves, a CaDecon run reaches
+  "Complete" and paints its raster, CaRank ranks an imported `.npy`, Admin's
+  auth guard holds, and the landing page and `apps.json` list every app. Any
+  console error, 4xx/5xx response or off-site request fails the test. Run with
+  `npm run build:e2e && npm run test:e2e`; see `e2e/README.md` (#216)
+
+- **Tests** degenerate-input sweeps over every FFI entry point: Rust
+  (`solver_degenerate.rs`, `ffi_surface.rs`, and `proptest` property tests),
+  pytest (`test_degenerate_inputs.py`, with an inventory test that fails if a
+  new export is not swept) and WASM (`wasm-degenerate.test.ts`, against the
+  real build). Parser tests cover every dtype, truncation at every byte, random
+  corruption and zip/zlib bombs (#213)
+
+- **CI** coverage: `npm run test:coverage` merges V8 coverage across workspaces
+  and fails if a package drops below its floor (core, io, compute, community,
+  ui, community-ui); the report is uploaded as `coverage-lcov`. New `e2e` job.
+  `check:app-tests` fails if an app has no `test` script, which `npm test`
+  would otherwise skip silently (#210, #216)
+
+### Changed
+
+- **Import** `.npz` and `.mat` decompression is capped at 1 GiB by default
+  (`DEFAULT_MAX_DECOMPRESSED_BYTES`); larger archives throw
+  `DecompressedSizeLimitError`. The `.npz` check runs on declared sizes before
+  allocating, so a forged header is rejected up front, and `.mat` inflates in a
+  stream that stops at the cap. `parseNpz` / `parseMat` take
+  `{ maxDecompressedBytes }` to raise it. Parser error text no longer names
+  CaTune or CaDecon (#213)
+
+- **Community** a non-numeric "time since injection" or "imaging depth" is now
+  dropped from a CaTune submission instead of being stored as `NaN` (#218)
+
+- **CaTune** the λ legend in the community scatter plot reads `0` / `10`
+  instead of `0.0e+0` / `10.000`, and when every point coincides the axis pads
+  by 10% of the value (1 ms at zero) instead of collapsing (#218)
+
+- **Python** bridge behaviour changes: a result payload without
+  `schema_version` is rejected; the legacy routes (`/api/v1/params`,
+  `/api/v1/results`, `/api/v1/results/activity`) accept results only for their
+  own app (`/api/v1/params` on a CaDecon session now returns 404 instead of
+  being stored and ignored); `BridgeServer(app=...)` rejects unknown slugs
+  (#212)
+
+- **Python** `calab.compute_lipschitz` raises `ValueError` for an empty, NaN or
+  infinite kernel; it used to return `1e-10` (empty/NaN) or `inf` (#214)
+
+- **Solver** biexponential fits reject a non-physical warm start: warm taus must
+  satisfy `0 < tau_rise < tau_decay`, and the fast pair must be absent (both 0)
+  or satisfy the same, else `ValueError` / a thrown `Error`. Feeding a previous
+  fit back in always passes (#214)
+
+- **Solver** `get_spectrum_frequencies()` always has the same length as
+  `get_power_spectrum()`: empty with no trace or fewer than 8 samples (it
+  returned `[NaN]`, or bins with no matching spectrum) (#214)
+
+- **Supabase** analytics sessions validate `app_name` by shape, not by a list
+  of apps: migration `015_app_name_slug_check.sql` replaces the `IN (...)`
+  check with the regex `^[a-z][a-z0-9_-]{1,31}$`, and the `geo-session` edge
+  function returns 400 for a malformed name. A new app's analytics no longer
+  need a migration (#211)
+
+- **CaRank** no longer ships the WASM solver: its `dist/` drops from 860 KB to
+  348 KB (#215)
+
+- **Community** importing `@calab/community` has no side effects. The auth
+  subscription starts on `initCommunityStore()` (called in each app's
+  `index.tsx`) or on the first `user()` / `authLoading()` read, so each app has
+  exactly one auth subscription; CaRank, CaDecon and Admin used to open a
+  second (#215)
+
+- **Packages** `@calab/ui` no longer depends on `@calab/community`; an ESLint
+  boundary keeps it that way. Code only one app uses moved into that app:
+  CaTune's worker pool, worker protocol, export builder and export schema.
+  There is one app-side `DataSource` (`'file' | 'demo' | 'bridge'`, in
+  `@calab/core`) and one conversion to the stored vocabulary,
+  `toCommunityDataSource` (#215, #218)
+
+- **Tooling** ESLint 10, eslint-plugin-solid 0.18, Prettier 3.9 and Vitest 5
+  (Vite stays on 7, TypeScript on 5). Dependabot updates these lint/build
+  packages together in one `lint-build-toolchain` group (#210)
+
+- **CI** the tag deploy now needs the same `rust`, `python`, `supabase` and
+  `e2e` jobs as CI, not just the TypeScript checks, so a tag cannot deploy a
+  commit CI would reject. `publish-python.yml` gains the `rust` job and a
+  no-cancel concurrency group. The Pages output directory and upload path come
+  from the repository name, so a fork or rename deploys correctly
+  (#210, #216, #217)
+
+- **Docs** README and CONTRIBUTING list `@calab/community-ui`,
+  `@calab/vite-config`, `apps/admin`, `apps/_template` and `e2e/`, drop the
+  path-alias instructions (packages resolve through `package.json` `exports`),
+  and document Playwright, coverage and the e2e scripts.
+  `python/docs/guides/bridge.md` documents the app manifest (#217)
+
+### Removed
+
+- **Tooling** the `dev:carank`, `dev:cadecon` and `dev:admin` root scripts; use
+  `npm run dev carank` (etc.) instead (#217)
+
+### Fixed
+
+- **Python** `simulate_traces` could **abort the Python interpreter** (a Rust
+  out-of-memory abort, SIGABRT; in the browser, a WASM trap) when given a huge
+  `tau_decay_s` such as a units mistake, and overflowed on `fs_hz = 0` or an
+  oversized cells × timepoints. Simulation input is now validated before
+  anything is allocated, in both bindings, and raises `ValueError` / throws an
+  `Error`. `tau_rise_s = 0` (NaN traces) and reversed taus (negative calcium)
+  are rejected too, and extreme per-cell tau draws are clamped (#213)
+
+- **Import** a 0-d `.npy` array counts as one element (it read as zero); a
+  truncated last variable in a `.mat` file is reported instead of silently
+  dropped; and corrupt `.mat` offsets raise "Not a valid .mat file" instead of
+  a bare `RangeError` (#213)
+
+- **Charts** dragging an edge of the trace overview's selection clamped against
+  the total duration read at drag start rather than its current value (#210)
+
 ## [2.8.0] - 2026-10-02
 
 ### Added
