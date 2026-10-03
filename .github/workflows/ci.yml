@@ -112,6 +112,24 @@ jobs:
       - name: Apps manifest
         run: node scripts/combine-dist.mjs && npm run check:apps-manifest
 
+      # The scaffolder end to end (docs/NEW_APP.md): generate an app from
+      # apps/_template and require it to lint, type-check, test and build, and
+      # to appear on the landing page and in apps.json, with no other edits.
+      # Last in the job: it adds a workspace. Builds only the new app; the
+      # others' dist/ come from the Build step above.
+      - name: Scaffolder (new-app)
+        run: |
+          npm run new-app smoketest SmokeTest
+          npx prettier --check apps/smoketest
+          npx eslint apps/smoketest
+          npx tsc -b apps/smoketest
+          npm run check:app-tests
+          npm test -w apps/smoketest
+          npm run build -w apps/smoketest
+          node scripts/combine-dist.mjs
+          npm run check:apps-manifest
+          grep -q 'href="SmokeTest/"' dist/CaLab/index.html
+
   # Browser smoke tests (e2e/): build the combined Pages site and load every
   # app in headless Chromium — WASM init, worker boot, demo data, first
   # render — failing on any console error. The unit tests mock all of that.
