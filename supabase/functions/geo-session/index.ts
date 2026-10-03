@@ -49,9 +49,17 @@ function jsonResponse(
   });
 }
 
+/**
+ * Valid `app_name` values: an app's `calab.id` slug. Validated by shape, not
+ * against a list, so a new app needs no edge-function deploy. Keep in sync
+ * with the analytics_sessions CHECK (migrations/015_app_name_slug_check.sql)
+ * and APP_ID_PATTERN in packages/vite-config.
+ */
+const APP_NAME_PATTERN = /^[a-z][a-z0-9_-]{1,31}$/;
+
 interface SessionPayload {
   anonymous_id: string;
-  app_name: 'catune' | 'carank' | 'cadecon';
+  app_name: string;
   app_version?: string;
   screen_width?: number;
   screen_height?: number;
@@ -139,6 +147,9 @@ export async function handleRequest(req: Request): Promise<Response> {
     if (!body.anonymous_id || !body.app_name) {
       return jsonResponse({ error: 'anonymous_id and app_name are required' }, 400, origin);
     }
+    if (typeof body.app_name !== 'string' || !APP_NAME_PATTERN.test(body.app_name)) {
+      return jsonResponse({ error: 'app_name must be a lowercase app slug' }, 400, origin);
+    }
 
     const geo = resolveGeo(req);
     const user = await resolveUser(req.headers.get('authorization'));
@@ -189,7 +200,7 @@ export async function handleRequest(req: Request): Promise<Response> {
 }
 
 // Exposed for tests; not exported by the edge runtime import.
-export { allowedOrigins, corsHeaders, resolveGeo };
+export { APP_NAME_PATTERN, allowedOrigins, corsHeaders, resolveGeo };
 
 // Only attach to Deno.serve when the edge runtime loads this module.
 // Tests import handleRequest directly and never touch the server.
