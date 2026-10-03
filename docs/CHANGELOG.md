@@ -5,6 +5,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-02
+
 ### Added
 
 - **Core** WASM ↔ native parity test. Until now no TypeScript test loaded the
@@ -28,7 +30,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 - **CI** tokens are read-only by default (Pages/OIDC grants only on the jobs
   that publish). Superseded CI runs are cancelled. Clippy covers all targets
-  and the `pybindings` feature set. Dependabot is enabled
+  and the `pybindings` feature set. Dependabot is enabled, and its first
+  round of safe bumps is merged: GitHub Actions majors (checkout, setup-node,
+  setup-python, cache), serde patches, `@types/node` 26 and jsdom 30
+  (#195, #198-#203, #206)
 
 - **README** the "no data upload" claim now states precisely what is collected:
   trace data never leaves the browser, anonymous usage analytics are collected
