@@ -15,7 +15,7 @@ import {
   generateSyntheticTrace,
   tauToShape,
 } from '@calab/compute';
-import { initWasm, Solver } from '@calab/core';
+import { initWasm, Solver } from '@calab/core/wasm';
 
 /** Run the FISTA solver synchronously on the main thread (fine for small traces). */
 function runSolver(

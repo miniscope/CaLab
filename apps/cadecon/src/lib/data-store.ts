@@ -7,7 +7,7 @@ import type {
   SimulationConfig,
   SimulationResult,
 } from '@calab/compute';
-import { initWasm, simulate_traces } from '@calab/core';
+import { initWasm, simulate_traces } from '@calab/core/wasm';
 import { fetchBridgeData, validateTraceData } from '@calab/io';
 
 // --- Core Signals ---
