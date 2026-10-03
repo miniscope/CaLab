@@ -16,13 +16,15 @@ export default defineConfig({
       // Per-package floors, set a point or two under the numbers measured when
       // coverage was introduced (Oct 2026) so a regression fails CI. Raise
       // them as tests are added. Apps and packages/tutorials (no tests yet)
-      // are reported but not gated.
+      // are reported but not gated. ui/community-ui were re-measured when the
+      // community widgets moved out of ui (review 2.4).
       thresholds: {
         'packages/core/src/**': { lines: 96, statements: 96, functions: 90, branches: 92 },
         'packages/io/src/**': { lines: 75, statements: 74, functions: 58, branches: 68 },
         'packages/compute/src/**': { lines: 66, statements: 64, functions: 69, branches: 58 },
-        'packages/community/src/**': { lines: 41, statements: 36, functions: 42, branches: 20 },
-        'packages/ui/src/**': { lines: 4, statements: 4, functions: 2, branches: 6 },
+        'packages/community/src/**': { lines: 43, statements: 38, functions: 46, branches: 21 },
+        'packages/ui/src/**': { lines: 4, statements: 4, functions: 1, branches: 7 },
+        'packages/community-ui/src/**': { lines: 2, statements: 3, functions: 4, branches: 3 },
       },
     },
   },
