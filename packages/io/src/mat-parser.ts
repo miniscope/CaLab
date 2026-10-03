@@ -16,10 +16,21 @@
 // Non-numeric variables (structs, cells, chars, sparse) are skipped, and named
 // in the error if the file turns out to hold nothing else.
 //
+// Compressed (v7) variables are inflated in a streaming fashion against a
+// decompressed-size cap (see size-limit.ts), so a zlib bomb is stopped after
+// at most one chunk past the cap instead of being inflated in full. Every
+// offset read from the file is bounds-checked; a truncated or corrupt file
+// raises a "Not a valid .mat file" error rather than a bare RangeError.
+//
 // Reference: MAT-File Format, MathWorks (Level 5).
 
-import { unzlibSync } from 'fflate';
+import { Unzlib } from 'fflate';
 import type { NpyResult, NpzResult, NumericTypedArray } from '@calab/core';
+import {
+  DecompressedSizeLimitError,
+  resolveSizeLimit,
+  type ArchiveParseOptions,
+} from './size-limit.ts';
 
 // --- MAT data element storage types (miXXX) ---
 const miINT8 = 1;
@@ -85,6 +96,67 @@ interface Tag {
   elementEnd: number; // absolute byte offset where the next element begins
 }
 
+/** Error for structurally invalid files (out-of-range offsets, bad sizes). */
+function corrupt(detail: string): Error {
+  return new Error(`Not a valid .mat file: ${detail}`);
+}
+
+/** Throw unless `[start, start + length)` lies inside `buffer`. */
+function checkRange(buffer: ArrayBuffer, start: number, length: number, what: string): void {
+  if (start < 0 || length < 0 || start + length > buffer.byteLength) {
+    throw corrupt(
+      `${what} runs past the end of the data (needs bytes ${start}..${start + length}, ` +
+        `have ${buffer.byteLength}); the file is truncated or corrupt`,
+    );
+  }
+}
+
+// Compressed input is fed to the inflater in chunks this size, so the output
+// can overshoot the cap by at most ~1032x this (deflate's maximum ratio)
+// before the check fires: ~16 MiB.
+const INFLATE_CHUNK_BYTES = 16 * 1024;
+
+/** Running total of inflated bytes for one parseMat call. */
+interface InflateBudget {
+  used: number;
+  limit: number;
+}
+
+/**
+ * Inflate a zlib stream, failing as soon as the running total across the file
+ * exceeds the budget -- without first materialising the whole output.
+ */
+function inflateCapped(compressed: Uint8Array, budget: InflateBudget): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const inflater = new Unzlib((chunk) => {
+    total += chunk.length;
+    if (budget.used + total > budget.limit) {
+      throw new DecompressedSizeLimitError('.mat', budget.used + total, budget.limit);
+    }
+    chunks.push(chunk);
+  });
+  try {
+    if (compressed.length === 0) inflater.push(compressed, true);
+    for (let i = 0; i < compressed.length; i += INFLATE_CHUNK_BYTES) {
+      const end = Math.min(i + INFLATE_CHUNK_BYTES, compressed.length);
+      inflater.push(compressed.subarray(i, end), end === compressed.length);
+    }
+  } catch (err) {
+    if (err instanceof DecompressedSizeLimitError) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw corrupt(`compressed variable could not be decompressed (${msg})`);
+  }
+  budget.used += total;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
 /**
  * Read a data-element tag at `offset`.
  *
@@ -93,6 +165,7 @@ interface Tag {
  * up to 4 bytes of data follow inline). Matches scipy's read_tag logic.
  */
 function readTag(view: DataView, offset: number, le: boolean): Tag {
+  checkRange(view.buffer as ArrayBuffer, offset, 8, 'data element tag');
   const raw = view.getUint32(offset, le);
   const upper = raw >>> 16;
   if (upper !== 0) {
@@ -136,6 +209,7 @@ function readNumericData(
   mdtype: number,
   le: boolean,
 ): { data: NumericTypedArray; dtype: string } {
+  checkRange(buffer, dataStart, byteCount, 'numeric data');
   if (mdtype === miINT64 || mdtype === miUINT64) {
     const view = new DataView(buffer);
     const count = Math.floor(byteCount / 8);
@@ -187,12 +261,14 @@ function parseMatrix(buffer: ArrayBuffer, start: number, le: boolean): MatrixEnt
 
   // 1. Array flags (miUINT32, 2 words). Low byte of word 0 is the class.
   const flagsTag = readTag(view, off, le);
+  checkRange(buffer, flagsTag.dataStart, 4, 'array flags');
   const flags0 = view.getUint32(flagsTag.dataStart, le);
   const arrayClass = flags0 & 0xff;
   off = flagsTag.elementEnd;
 
   // 2. Dimensions (miINT32).
   const dimsTag = readTag(view, off, le);
+  checkRange(buffer, dimsTag.dataStart, dimsTag.byteCount, 'array dimensions');
   const ndim = Math.floor(dimsTag.byteCount / 4);
   const dims: number[] = [];
   for (let i = 0; i < ndim; i++) {
@@ -202,6 +278,7 @@ function parseMatrix(buffer: ArrayBuffer, start: number, le: boolean): MatrixEnt
 
   // 3. Array name (miINT8).
   const nameTag = readTag(view, off, le);
+  checkRange(buffer, nameTag.dataStart, nameTag.byteCount, 'array name');
   const name = new TextDecoder('latin1')
     .decode(new Uint8Array(buffer, nameTag.dataStart, nameTag.byteCount))
     .trim();
@@ -215,6 +292,15 @@ function parseMatrix(buffer: ArrayBuffer, start: number, le: boolean): MatrixEnt
     };
   }
 
+  const label = name || 'unnamed';
+  if (dims.length < 2 || dims.some((d) => d < 0)) {
+    throw corrupt(`variable "${label}" has invalid dimensions [${dims.join(', ')}]`);
+  }
+  const expected = dims.reduce((a, b) => a * b, 1);
+  if (!Number.isSafeInteger(expected)) {
+    throw corrupt(`variable "${label}" dimensions [${dims.join(', ')}] overflow`);
+  }
+
   // 4. Real part (pr). Imaginary part, if present, is ignored.
   const prTag = readTag(view, off, le);
   const { data, dtype } = readNumericData(
@@ -225,8 +311,15 @@ function parseMatrix(buffer: ArrayBuffer, start: number, le: boolean): MatrixEnt
     le,
   );
 
+  if (data.length !== expected) {
+    throw corrupt(
+      `variable "${label}" declares dimensions [${dims.join(', ')}] (${expected} elements) ` +
+        `but stores ${data.length}`,
+    );
+  }
+
   // MATLAB stores column-major; mark Fortran order so 2D arrays get transposed.
-  return { name: name || 'unnamed', result: { data, shape: dims, dtype, fortranOrder: true } };
+  return { name: label, result: { data, shape: dims, dtype, fortranOrder: true } };
 }
 
 /**
@@ -240,6 +333,7 @@ function parseTopLevelElement(
   arrays: Record<string, NpyResult>,
   arrayNames: string[],
   skipped: string[],
+  budget: InflateBudget,
 ): void {
   const collect = (entry: MatrixEntry): void => {
     if ('skipped' in entry) {
@@ -252,9 +346,8 @@ function parseTopLevelElement(
 
   if (tag.mdtype === miCOMPRESSED) {
     const compressed = new Uint8Array(buffer, tag.dataStart, tag.byteCount);
-    const inflated = unzlibSync(compressed);
-    // Copy to a standalone, offset-0 buffer for safe DataView/typed-array views.
-    const infBuf = new Uint8Array(inflated).buffer as ArrayBuffer;
+    // inflateCapped returns a fresh, offset-0 buffer, safe for DataView/typed-array views.
+    const infBuf = inflateCapped(compressed, budget).buffer as ArrayBuffer;
     const infView = new DataView(infBuf);
     const innerTag = readTag(infView, 0, le);
     if (innerTag.mdtype === miMATRIX) {
@@ -273,11 +366,15 @@ function parseTopLevelElement(
  * Parse a MATLAB Level 5 .mat buffer into named numeric arrays.
  *
  * @param buffer - The raw ArrayBuffer from reading a .mat file
+ * @param options - Optional cap on the total bytes inflated from compressed
+ *        (v7) variables; default 1 GiB (`DEFAULT_MAX_DECOMPRESSED_BYTES`)
  * @returns NpzResult with parsed arrays and their variable names
- * @throws Error for v7.3 (HDF5) files, invalid headers, or files with no
- *         numeric arrays
+ * @throws DecompressedSizeLimitError if compressed variables inflate past the cap
+ * @throws Error for v7.3 (HDF5) files, invalid headers, truncated or corrupt
+ *         data, or files with no numeric arrays
  */
-export function parseMat(buffer: ArrayBuffer): NpzResult {
+export function parseMat(buffer: ArrayBuffer, options?: ArchiveParseOptions): NpzResult {
+  const budget: InflateBudget = { used: 0, limit: resolveSizeLimit(options) };
   if (buffer.byteLength < 128) {
     throw new Error('Not a valid .mat file: file too small for header');
   }
@@ -319,10 +416,33 @@ export function parseMat(buffer: ArrayBuffer): NpzResult {
   let offset = 128;
   while (offset + 8 <= buffer.byteLength) {
     const tag = readTag(view, offset, littleEndian);
+    const isVariable = tag.mdtype === miMATRIX || tag.mdtype === miCOMPRESSED;
+    // A variable whose data runs past the end of the file is a truncated
+    // download or a corrupt file: say so instead of silently dropping it (only
+    // the last element's alignment padding may be missing). Anything else past
+    // the end (trailing padding/garbage) just ends the scan.
+    if (tag.dataStart + tag.byteCount > buffer.byteLength) {
+      if (isVariable) {
+        throw corrupt(
+          `variable at byte ${offset} claims ${tag.byteCount} bytes but only ` +
+            `${buffer.byteLength - tag.dataStart} remain; the file is truncated or corrupt`,
+        );
+      }
+      break;
+    }
     // Guard against a corrupt tag that would not advance the cursor.
-    if (tag.elementEnd <= offset || tag.elementEnd > buffer.byteLength) break;
-    parseTopLevelElement(buffer, tag, littleEndian, arrays, arrayNames, skipped);
+    if (tag.elementEnd <= offset) break;
+    parseTopLevelElement(buffer, tag, littleEndian, arrays, arrayNames, skipped, budget);
     offset = tag.elementEnd;
+  }
+  // Fewer than 8 bytes left: zero padding is harmless, anything else is the
+  // start of a tag that was cut off.
+  if (offset < buffer.byteLength && offset + 8 > buffer.byteLength) {
+    if (bytes.subarray(offset).some((b) => b !== 0)) {
+      throw corrupt(
+        `${buffer.byteLength - offset} stray bytes at the end; the file is truncated or corrupt`,
+      );
+    }
   }
 
   if (arrayNames.length === 0) {
@@ -330,7 +450,7 @@ export function parseMat(buffer: ArrayBuffer): NpzResult {
     // to this reader, and that is the most likely reason a real file lands here.
     const found = skipped.length > 0 ? ` Found instead: ${skipped.join(', ')}.` : '';
     throw new Error(
-      '.mat file contains no numeric arrays. CaDecon requires a numeric matrix ' +
+      '.mat file contains no numeric arrays. Expected a numeric matrix ' +
         `(cells x timepoints) saved as a top-level variable.${found} Arrays nested ` +
         'inside a struct or cell are not read -- save the matrix itself with ' +
         "save('traces.mat', 'traces', '-v7').",

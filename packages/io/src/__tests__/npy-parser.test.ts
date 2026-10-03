@@ -230,20 +230,23 @@ describe('parseNpy', () => {
       expect(() => parseNpy(buffer)).toThrow('Not a valid .npy file');
     });
 
-    it('rejects big-endian dtype (>f8)', () => {
+    it('decodes big-endian dtype (>f8) into native order', () => {
       const data = [1.0, 2.0, 3.0, 4.0];
       const buffer = makeNpyBuffer(data, [2, 2], '>f8');
-      // We need to fix the dtype in the buffer to actually be >f8
-      // The makeNpyBuffer already writes >f8 in the header
 
-      expect(() => parseNpy(buffer)).toThrow('Big-endian');
+      const result = parseNpy(buffer);
+      expect(result.data).toBeInstanceOf(Float64Array);
+      expect(Array.from(result.data)).toEqual(data);
+      expect(result.dtype).toBe('>f8');
     });
 
-    it('rejects big-endian dtype (>f4)', () => {
-      const data = [1.0, 2.0, 3.0, 4.0];
+    it('decodes big-endian dtype (>f4) into native order', () => {
+      const data = [1.5, -2.0, 3.25, 4.0];
       const buffer = makeNpyBuffer(data, [2, 2], '>f4');
 
-      expect(() => parseNpy(buffer)).toThrow('Big-endian');
+      const result = parseNpy(buffer);
+      expect(result.data).toBeInstanceOf(Float32Array);
+      expect(Array.from(result.data)).toEqual(data);
     });
 
     it('rejects unsupported dtype (complex, string, object)', () => {

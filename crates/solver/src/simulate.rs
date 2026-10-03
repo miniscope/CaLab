@@ -92,6 +92,23 @@ impl Xorshift32 {
 /// Draw a per-cell value with log-normal variation: nominal * exp(N(0, cv)).
 /// Returns nominal unchanged when cv <= 0.
 #[inline]
+/// Clamp a per-cell (tau_rise, tau_decay) draw so its kernel at `kernel_fs`
+/// stays within `validate::MAX_KERNEL_LEN` and `0 < tau_rise < tau_decay`.
+/// Only extreme log-normal draws are affected; the nominal taus have already
+/// passed `validate_simulation_config`.
+fn bound_cell_taus(tau_rise: f64, tau_decay: f64, kernel_fs: f64) -> (f64, f64) {
+    // ceil(-ln(1e-6) · tau_decay · fs) <= MAX_KERNEL_LEN, with a little slack.
+    let max_tau_decay =
+        (crate::validate::MAX_KERNEL_LEN as f64 - 1.0) / (-(1e-6_f64.ln()) * kernel_fs);
+    let tau_decay = tau_decay.min(max_tau_decay);
+    let tau_rise = if tau_rise < tau_decay {
+        tau_rise
+    } else {
+        0.5 * tau_decay
+    };
+    (tau_rise.max(f64::MIN_POSITIVE), tau_decay)
+}
+
 fn vary_lognormal(nominal: f64, cv: f64, rng: &mut Xorshift32) -> f64 {
     if cv > 0.0 {
         nominal * (cv * rng.gaussian()).exp()
@@ -482,6 +499,11 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
             config.kernel.tau_decay_cv,
             &mut rng,
         );
+        // A heavy log-normal tail can push a per-cell draw outside what the
+        // nominal values were validated against: keep the per-cell kernel
+        // within the length cap and keep rise < decay. No-op for typical CVs.
+        let (cell_tau_rise, cell_tau_decay) =
+            bound_cell_taus(cell_tau_rise, cell_tau_decay, config.spike_sim_hz);
 
         // 3. Per-cell SNR
         let cell_snr = if config.noise.snr_spread > 0.0 {
