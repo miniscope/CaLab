@@ -800,3 +800,136 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
+
+// Rust-side unit tests for the pure-Rust helpers behind the Python bindings.
+//
+// `cargo test --features pybindings` cannot link a test binary on its own:
+// pyo3's `extension-module` feature leaves the libpython symbols for the
+// interpreter that loads the extension to provide. CI therefore only
+// type-checks this module (`cargo clippy --all-targets --features
+// pybindings`); the Python-facing behaviour is exercised end-to-end by pytest
+// (python/tests/test_degenerate_inputs.py). To run these locally on macOS:
+//
+//   PYLIB=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+//   RUSTFLAGS="-C link-arg=-undefined -C link-arg=dynamic_lookup" \
+//   DYLD_INSERT_LIBRARIES="$PYLIB/libpython3.12.dylib" \
+//   CARGO_TARGET_DIR=target/pytests \
+//   cargo test --no-default-features --features pybindings --lib py_api
+//
+// None of these tests touch the interpreter: `PyErr::new_err` is lazy, so
+// they only check `is_err()` / `is_ok()`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_and_constraint_strings() {
+        assert!(matches!(parse_conv_mode("fft"), Ok(ConvMode::Fft)));
+        assert!(matches!(parse_conv_mode("banded"), Ok(ConvMode::BandedAR2)));
+        assert!(matches!(
+            parse_constraint("nonneg"),
+            Ok(Constraint::NonNegative)
+        ));
+        assert!(matches!(parse_constraint("box01"), Ok(Constraint::Box01)));
+        for bad in ["", "FFT", "fft ", "banded\0", "box", "nonnegative"] {
+            assert!(parse_conv_mode(bad).is_err(), "{bad:?}");
+            assert!(parse_constraint(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn one_shot_solver_rejects_degenerate_params_and_strings() {
+        let build = |tr, td, lam, fs, mode, c| {
+            one_shot_solver(tr, td, lam, fs, mode, c, false, false).map(|_| ())
+        };
+        assert!(build(0.02, 0.4, 0.01, 30.0, "fft", "nonneg").is_ok());
+        for (tr, td, lam, fs) in [
+            (0.4, 0.02, 0.01, 30.0),
+            (0.0, 0.4, 0.01, 30.0),
+            (-0.02, 0.4, 0.01, 30.0),
+            (0.02, 0.4, 0.01, 0.0),
+            (0.02, 0.4, 0.01, -30.0),
+            (0.02, 0.4, -0.01, 30.0),
+            (0.02, f64::NAN, 0.01, 30.0),
+            (0.02, 1e12, 0.01, 30.0),
+        ] {
+            assert!(
+                build(tr, td, lam, fs, "fft", "nonneg").is_err(),
+                "({tr}, {td}, {lam}, {fs})"
+            );
+        }
+        assert!(build(0.02, 0.4, 0.01, 30.0, "nope", "nonneg").is_err());
+        assert!(build(0.02, 0.4, 0.01, 30.0, "fft", "nope").is_err());
+    }
+
+    fn solver(mode: &str) -> Solver {
+        match one_shot_solver(0.02, 0.4, 0.01, 30.0, mode, "nonneg", false, false) {
+            Ok(s) => s,
+            Err(_) => panic!("valid params rejected"),
+        }
+    }
+
+    #[test]
+    fn solve_in_input_frame_handles_empty_and_tiny_traces() {
+        for mode in ["fft", "banded"] {
+            for n in [0_usize, 1, 2, 5] {
+                for filter in [false, true] {
+                    let mut s = solver(mode);
+                    let trace: Vec<f32> = (0..n).map(|i| 3.0 + i as f32).collect();
+                    let r = solve_in_input_frame(&mut s, &trace, filter, 200).unwrap();
+                    let ctx = format!("{mode} n={n} filter={filter}");
+                    assert_eq!(r.activity.len(), n, "{ctx}");
+                    assert_eq!(r.reconvolution.len(), n, "{ctx}");
+                    assert!(r.activity.iter().all(|v| v.is_finite()), "{ctx}");
+                    assert!(r.reconvolution.iter().all(|v| v.is_finite()), "{ctx}");
+                    assert!(r.baseline.is_finite(), "{ctx}");
+                    if n == 0 {
+                        assert_eq!(r.baseline, 0.0, "{ctx}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn solve_in_input_frame_reports_baseline_in_the_input_frame() {
+        // A constant trace is all baseline: activity ~0, baseline ~ the offset,
+        // and the reconvolution reproduces the input.
+        for mode in ["fft", "banded"] {
+            let mut s = solver(mode);
+            let r = solve_in_input_frame(&mut s, &[7.5; 300], false, 2000).unwrap();
+            assert!(r.activity.iter().all(|v| v.abs() < 1e-3), "{mode}");
+            assert!((r.baseline - 7.5).abs() < 1e-2, "{mode}: {}", r.baseline);
+            assert!(
+                r.reconvolution.iter().all(|v| (v - 7.5).abs() < 1e-2),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn solve_in_input_frame_rejects_non_finite_and_recovers() {
+        let mut s = solver("fft");
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let r = solve_in_input_frame(&mut s, &[1.0, bad, 1.0], false, 100);
+            assert!(matches!(r, Err(SolverError::InvalidInput(_))), "{bad}");
+        }
+        // deconvolve_batch reuses one solver across rows: a later row must not
+        // see state from an earlier one.
+        let a = solve_in_input_frame(&mut s, &[2.0; 50], false, 500).unwrap();
+        let mut fresh = solver("fft");
+        let b = solve_in_input_frame(&mut fresh, &[2.0; 50], false, 500).unwrap();
+        assert_eq!(a.activity, b.activity);
+        assert_eq!(a.baseline, b.baseline);
+    }
+
+    #[test]
+    fn zero_max_iters_runs_no_iterations() {
+        let mut s = solver("fft");
+        let r = solve_in_input_frame(&mut s, &[1.0; 40], false, 0).unwrap();
+        assert_eq!(r.iterations, 0);
+        assert!(!r.converged);
+        assert!(r.activity.iter().all(|&v| v == 0.0));
+        assert!(run_to_convergence(&mut s, 0).is_ok());
+    }
+}

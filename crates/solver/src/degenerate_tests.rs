@@ -3,6 +3,11 @@
 //! Each case here used to panic (a WASM trap that kills the worker's module),
 //! abort on allocation, or silently return garbage. They now either work or
 //! return a `SolverError`, and the solver stays usable afterwards.
+//!
+//! `ffi_surface` covers the free functions each binding exports; the public
+//! `Solver` API is covered by `tests/solver_degenerate.rs`.
+
+mod ffi_surface;
 
 use crate::banded::BandedAR2;
 use crate::kernel::build_kernel;
