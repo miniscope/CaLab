@@ -1,5 +1,5 @@
 import { createEffect, on } from 'solid-js';
-import { trackEvent, subscribeAuth } from '@calab/community';
+import { trackEvent, user, authLoading } from '@calab/community';
 import { importStep, isDemo, rawFile } from './data-store.ts';
 
 export function setupAnalyticsEffects(): void {
@@ -20,9 +20,11 @@ export function setupAnalyticsEffects(): void {
 
   // Auth events
   let wasSignedIn = false;
-  subscribeAuth((state) => {
-    if (state.loading) return;
-    const isSignedIn = state.user !== null;
+  // Reads the shared community store instead of opening a second auth
+  // subscription.
+  createEffect(() => {
+    if (authLoading()) return;
+    const isSignedIn = user() !== null;
     if (isSignedIn && !wasSignedIn) {
       void trackEvent('auth_signed_in');
     } else if (!isSignedIn && wasSignedIn) {

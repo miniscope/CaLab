@@ -1,12 +1,11 @@
 // Admin auth + role signals.
 
 import { createSignal } from 'solid-js';
-import { subscribeAuth, supabaseEnabled } from '@calab/community';
-import type { User } from '@calab/community';
+// user/authLoading come from the shared community store, so the admin app runs
+// a single auth subscription (started by initCommunityStore() in index.tsx).
+import { user, authLoading, supabaseEnabled } from '@calab/community';
 import type { AdminView, DateRange } from './types.ts';
 
-const [user, setUser] = createSignal<User | null>(null);
-const [authLoading, setAuthLoading] = createSignal(true);
 const [activeView, setActiveView] = createSignal<AdminView>('overview');
 
 const today = new Date();
@@ -16,11 +15,6 @@ thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 const [dateRange, setDateRange] = createSignal<DateRange>({
   start: thirtyDaysAgo.toISOString().slice(0, 10),
   end: today.toISOString().slice(0, 10),
-});
-
-subscribeAuth((state) => {
-  setUser(state.user);
-  setAuthLoading(state.loading);
 });
 
 function isAdmin(): boolean {

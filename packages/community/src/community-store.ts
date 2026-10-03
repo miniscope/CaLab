@@ -1,11 +1,13 @@
 /**
  * Singleton community store using SolidJS reactive primitives (createSignal).
- * Designed for SPA usage — signals are created at module scope on first import.
+ *
+ * Importing this module has no side effects beyond creating signals: the
+ * Supabase auth subscription starts only when the app opts in, either by
+ * calling `initCommunityStore()` (typically next to `initSession()` in the
+ * app's index.tsx) or implicitly on the first read of `user()` /
+ * `authLoading()`. Either way the start is memoised, so an app has exactly
+ * one auth subscription however many modules read the store.
  */
-
-// Shared reactive auth and community data signals.
-// Uses shared auth helpers from @calab/community and pipes into SolidJS signals.
-// Consumed by all CaLab apps (CaTune, CaDecon, etc.)
 
 import { createSignal } from 'solid-js';
 import { subscribeAuth } from './auth.ts';
@@ -23,14 +25,37 @@ import type { FieldOptions } from './types.ts';
 
 // --- Auth signals ---
 
-const [user, setUser] = createSignal<User | null>(null);
-const [authLoading, setAuthLoading] = createSignal<boolean>(true);
+const [userSignal, setUser] = createSignal<User | null>(null);
+const [authLoadingSignal, setAuthLoading] = createSignal<boolean>(true);
 
-// Subscribe to auth state changes using the shared helper
-subscribeAuth((state) => {
-  setUser(state.user);
-  setAuthLoading(state.loading);
-});
+let authStarted = false;
+
+/**
+ * Start the store's auth subscription. Idempotent: only the first call
+ * subscribes; later calls (and the implicit call inside `user()` /
+ * `authLoading()`) are no-ops. Call it at app start-up so auth state begins
+ * resolving before the first component reads it.
+ */
+function initCommunityStore(): void {
+  if (authStarted) return;
+  authStarted = true;
+  subscribeAuth((state) => {
+    setUser(state.user);
+    setAuthLoading(state.loading);
+  });
+}
+
+/** Current real (non-anonymous) user, or null. Starts the store on first read. */
+function user(): User | null {
+  initCommunityStore();
+  return userSignal();
+}
+
+/** True until the first auth state arrives. Starts the store on first read. */
+function authLoading(): boolean {
+  initCommunityStore();
+  return authLoadingSignal();
+}
 
 // --- Field options signals ---
 
@@ -76,6 +101,8 @@ async function loadFieldOptions(): Promise<void> {
 // --- Exports ---
 
 export {
+  // Auth lifecycle
+  initCommunityStore,
   // Auth signals (getters)
   user,
   authLoading,
