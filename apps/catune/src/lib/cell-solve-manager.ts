@@ -18,7 +18,8 @@ import {
 } from './multi-cell-store.ts';
 import { extractCellTrace } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
-import { createCaTuneWorkerPool, type WorkerPool, type CaTunePoolJob } from '@calab/compute';
+import type { WorkerPool } from '@calab/compute';
+import { createCaTuneWorkerPool, type CaTunePoolJob } from './catune-pool.ts';
 import type { SolverParams } from '@calab/core';
 import type { NpyResult } from '@calab/core';
 

@@ -5,6 +5,8 @@ import { initCommunityStore, initSession } from '@calab/community';
 import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import '@calab/ui/styles/base.css';
 import '@calab/ui/styles/tutorial.css';
+import '@calab/ui/styles/theory-figures.css';
+import '@calab/ui/styles/app-global.css';
 import './styles/global.css';
 import './styles/tutorial.css';
 

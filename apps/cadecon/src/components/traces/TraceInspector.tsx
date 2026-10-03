@@ -69,7 +69,7 @@ import {
   createGroundTruthCalciumSeries,
   createGroundTruthSpikesSeries,
 } from '../../lib/chart/series-config.ts';
-import { dataIndex } from '../../lib/data-utils.ts';
+import { dataIndex } from '@calab/io';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
 import '../../styles/trace-inspector.css';

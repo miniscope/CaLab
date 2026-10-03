@@ -17,6 +17,7 @@ import { notifyTutorialAction } from '@calab/tutorials';
 import { isDemo, demoConfig, groundTruthVisible } from '../../lib/data-store.ts';
 import { PARAM_RANGES } from '@calab/core';
 import { ParameterSlider } from './ParameterSlider.tsx';
+import '@calab/ui/styles/app-controls.css';
 import '../../styles/controls.css';
 
 export function ParameterPanel() {

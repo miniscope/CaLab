@@ -19,10 +19,8 @@ const fake = vi.hoisted(() => ({
   cancelled: [] as number[],
 }));
 
-vi.mock('@calab/compute', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@calab/compute')>();
+vi.mock('../catune-pool.ts', () => {
   return {
-    ...actual,
     createCaTuneWorkerPool: () => ({
       size: 2,
       dispatch(job: FakeJob) {

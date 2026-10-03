@@ -1,31 +1,20 @@
 /**
- * CaDecon submission business logic: dataset hashing, AR2 computation,
- * aggregate statistic computation, payload construction, and Supabase submit.
+ * CaDecon submission: derives the kernel shape and AR2 coefficients, computes
+ * aggregate run statistics, adds them to the shared payload fields
+ * (buildBaseSubmissionPayload in @calab/community-ui), and submits.
  */
 
 import { computeAR2 } from '@calab/core';
+import type { DataSource } from '@calab/core';
 import { tauToShape } from '@calab/compute';
 import type { IndicatorId } from '@calab/compute';
-import { computeDatasetHash, demoPresetMetadata, trackEvent } from '@calab/community';
+import { trackEvent } from '@calab/community';
+import { buildBaseSubmissionPayload, hashSubmissionDataset } from '@calab/community-ui';
+import type { FormFields } from '@calab/community-ui';
 import { submitParameters } from './cadecon-service.ts';
 import type { CadeconSubmissionPayload, CadeconSubmission } from './types.ts';
-import type { DataSource as CommunityDataSource } from '@calab/community';
-import type { DataSource as AppDataSource } from '../data-store.ts';
 
-/** Form field values collected from the submission form. */
-export interface FormFields {
-  indicator: string;
-  species: string;
-  brainRegion: string;
-  labName: string;
-  orcid: string;
-  virusConstruct: string;
-  timeSinceInjection: string;
-  notes: string;
-  microscopeType: string;
-  cellType: string;
-  imagingDepth: string;
-}
+export type { FormFields };
 
 /** CaDecon-specific context needed to build the submission payload. */
 export interface CadeconSubmissionContext {
@@ -49,7 +38,7 @@ export interface CadeconSubmissionContext {
   numCells: number | undefined;
   recordingLengthS: number | undefined;
   datasetData: ArrayLike<number> | undefined;
-  dataSource: AppDataSource;
+  dataSource: DataSource | null;
   /** Simulated indicator when dataSource is 'demo' (recorded for demo filtering). */
   demoIndicator: IndicatorId | undefined;
 }
@@ -60,13 +49,6 @@ function medianOrNull(values: number[]): number | null {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-/** Parse a string to a number, returning undefined if empty or NaN. */
-function parseOptionalNumber(value: string, parser: (s: string) => number): number | undefined {
-  if (!value) return undefined;
-  const n = parser(value);
-  return Number.isNaN(n) ? undefined : n;
 }
 
 /** Compute mean event rate: sum(sCounts > 0) / (numCells * durationSeconds). */
@@ -96,25 +78,12 @@ export async function submitToSupabase(
   ctx: CadeconSubmissionContext,
   version: string = 'dev',
 ): Promise<CadeconSubmission> {
-  // Compute dataset hash from parsed data
-  let datasetHash = 'no-data';
-  if (ctx.datasetData) {
-    const floatData =
-      ctx.datasetData instanceof Float64Array ? ctx.datasetData : new Float64Array(ctx.datasetData);
-    datasetHash = await computeDatasetHash(floatData);
-  }
-
   // Compute derived kernel shape (t_peak, fwhm)
   const shape = tauToShape(ctx.tauRise, ctx.tauDecay);
   if (!shape) throw new Error('Invalid tau parameters: cannot compute t_peak/fwhm');
 
   // Compute AR2 coefficients
   const ar2 = computeAR2(ctx.tauRise, ctx.tauDecay, ctx.samplingRate);
-
-  // Map app-level DataSource to community DataSource
-  const isDemo = ctx.dataSource === 'demo';
-  const communitySource: CommunityDataSource =
-    ctx.dataSource === 'demo' ? 'demo' : ctx.dataSource === 'bridge' ? 'bridge' : 'user';
 
   // Compute aggregate statistics
   const medianAlpha = medianOrNull(ctx.alphaValues);
@@ -123,6 +92,16 @@ export async function submitToSupabase(
 
   // Build payload
   const payload: CadeconSubmissionPayload = {
+    ...buildBaseSubmissionPayload(fields, {
+      dataSource: ctx.dataSource,
+      demoIndicator: ctx.demoIndicator,
+      samplingRate: ctx.samplingRate,
+      numCells: ctx.numCells,
+      recordingLengthS: ctx.recordingLengthS,
+      datasetHash: await hashSubmissionDataset(ctx.datasetData),
+      appVersion: version,
+    }),
+
     // Kernel results
     tau_rise: ctx.tauRise,
     tau_decay: ctx.tauDecay,
@@ -148,34 +127,6 @@ export async function submitToSupabase(
     mean_event_rate: meanEventRate,
     num_iterations: ctx.numIterations,
     converged: ctx.converged,
-
-    // Required metadata
-    indicator: isDemo ? 'simulated' : fields.indicator.trim(),
-    species: isDemo ? 'simulated' : fields.species.trim(),
-    brain_region: isDemo ? 'simulated' : fields.brainRegion.trim(),
-
-    // Optional metadata
-    lab_name: fields.labName.trim() || undefined,
-    orcid: fields.orcid.trim() || undefined,
-    virus_construct: isDemo ? undefined : fields.virusConstruct.trim() || undefined,
-    time_since_injection_days: isDemo
-      ? undefined
-      : parseOptionalNumber(fields.timeSinceInjection, (s) => parseInt(s, 10)),
-    notes: fields.notes.trim() || undefined,
-    microscope_type: isDemo ? undefined : fields.microscopeType.trim() || undefined,
-    imaging_depth_um: isDemo ? undefined : parseOptionalNumber(fields.imagingDepth, parseFloat),
-    cell_type: isDemo ? undefined : fields.cellType.trim() || undefined,
-
-    // Dataset metadata
-    num_cells: ctx.numCells,
-    recording_length_s: ctx.recordingLengthS,
-    fps: ctx.samplingRate,
-
-    // Deduplication & versioning
-    dataset_hash: datasetHash,
-    data_source: communitySource,
-    app_version: version,
-    extra_metadata: isDemo && ctx.demoIndicator ? demoPresetMetadata(ctx.demoIndicator) : undefined,
   };
 
   const result = await submitParameters(payload);

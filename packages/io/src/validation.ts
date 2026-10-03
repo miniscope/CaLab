@@ -1,7 +1,14 @@
 // Data validation for calcium imaging trace data
 // Single-pass validation: detects NaN, Inf, suspicious shapes, and computes stats
 
-import type { ValidationResult, ValidationWarning, ValidationError, DataStats } from '@calab/core';
+import type {
+  DataStats,
+  NpyResult,
+  NumericTypedArray,
+  ValidationError,
+  ValidationResult,
+  ValidationWarning,
+} from '@calab/core';
 
 /**
  * Create empty/default stats for early-return error cases.
@@ -142,5 +149,42 @@ export function validateTraceData(
     warnings,
     errors,
     stats,
+  };
+}
+
+/**
+ * Validate an imported array as logical [cells, timepoints] data.
+ *
+ * Float arrays get the full {@link validateTraceData} checks. Integer arrays
+ * cannot hold NaN/Inf, so they are accepted as valid with basic min/max/mean
+ * stats (the import UI's previous behaviour, now shared by every app).
+ */
+export function validateParsedData(data: NpyResult, shape: [number, number]): ValidationResult {
+  const arr = data.data;
+  if (arr instanceof Float64Array || arr instanceof Float32Array) {
+    return validateTraceData(arr, shape);
+  }
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const v = (arr as NumericTypedArray)[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  return {
+    isValid: true,
+    warnings: [],
+    errors: [],
+    stats: {
+      min,
+      max,
+      mean: arr.length > 0 ? sum / arr.length : NaN,
+      nanCount: 0,
+      infCount: 0,
+      negativeCount: 0,
+      totalElements: arr.length,
+    },
   };
 }

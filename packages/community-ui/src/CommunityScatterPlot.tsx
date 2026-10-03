@@ -1,42 +1,72 @@
 /**
- * CaDecon community scatter plot: t_peak (x) vs FWHM (y) in ms, with median_pve color coding.
- * Uses uPlot mode:2 with a custom paths draw function for per-point coloring.
- * Optionally overlays the user's current run parameters as a larger marker.
+ * Community scatter plot: t_peak (x) vs FWHM (y) in ms, one point per
+ * submission, coloured by an app-chosen value (CaTune: lambda, CaDecon:
+ * median PVE). Draws the community median as a crosshair + marker and can
+ * overlay the user's current parameters as a larger marker.
+ * Uses uPlot mode:2 with a custom paths draw function for per-point colours.
  */
 
-import { createEffect, createMemo, on, onCleanup } from 'solid-js';
-import type { CadeconSubmission } from '../../lib/community/index.ts';
-import { median } from '../../lib/math-utils.ts';
+import { createEffect, createMemo, on, onCleanup, type JSX } from 'solid-js';
 import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import uPlot from 'uplot';
 import { getThemeColors } from '@calab/ui/chart';
 
-export interface ScatterPlotProps {
-  submissions: CadeconSubmission[];
+/** The submission fields the plot reads (seconds). */
+export interface ScatterSubmission {
+  t_peak: number;
+  fwhm: number;
+}
+
+export interface CommunityScatterPlotProps<T extends ScatterSubmission> {
+  submissions: T[];
+  /** CSS colour for one submission's point. */
+  pointColor: (submission: T) => string;
+  /** The user's current kernel shape (seconds), drawn as a larger marker. */
   userParams?: { tPeak: number; fwhm: number } | null;
+  /** CSS colour of the user marker. */
+  userColor?: string;
   highlightFlags?: boolean[] | null;
+  /** Colour bar under the plot: end labels, title, and its gradient. */
+  legend: {
+    minLabel: string;
+    maxLabel: string;
+    title: string;
+    /** CSS colour at position t in [0, 1]. */
+    colorAt: (t: number) => string;
+  };
 }
 
-/** Map a PVE value (0–1) to a viridis-inspired HSLA color. */
-function pveToColor(pve: number | null): string {
-  if (pve == null) return 'hsla(200, 10%, 60%, 0.5)';
-  const clamped = Math.max(0, Math.min(1, pve));
-  // Viridis-inspired: purple (270) -> yellow (60)
+/**
+ * Viridis-inspired hue ramp, purple (t=0) to yellow (t=1), as an HSLA colour.
+ * The default point/legend colouring for both apps; `t` is clamped to [0, 1].
+ */
+export function scatterRampColor(t: number, alpha = 0.7): string {
+  const clamped = Math.max(0, Math.min(1, t));
   const h = 270 - clamped * 210;
-  return `hsla(${h}, 80%, 55%, 0.7)`;
+  return `hsla(${h}, 80%, 55%, ${alpha})`;
 }
 
-/** Pre-compute PVE color array for all submissions. */
-function computePveColors(submissions: CadeconSubmission[]): string[] {
-  return submissions.map((s) => pveToColor(s.median_pve));
+/** Median of a numeric array; 0 for an empty one. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export function ScatterPlot(props: ScatterPlotProps) {
+/** Axis padding: 15% of the span, or 10% of the value (1 ms at zero) when every point coincides. */
+function axisPad(min: number, max: number): number {
+  return (max - min) * 0.15 || Math.abs(min) * 0.1 || 1;
+}
+
+export function CommunityScatterPlot<T extends ScatterSubmission>(
+  props: CommunityScatterPlotProps<T>,
+): JSX.Element {
   let containerRef: HTMLDivElement | undefined;
   let uplotInstance: uPlot | undefined;
 
-  const pveColors = createMemo(() => computePveColors(props.submissions));
+  const pointColors = createMemo(() => props.submissions.map((s) => props.pointColor(s)));
 
   const medianPoint = createMemo(() => {
     const subs = props.submissions;
@@ -47,6 +77,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     };
   });
 
+  /** Build mode:2 data: [[x0,x1,...],[y0,y1,...]] per series facet. */
   const chartData = createMemo((): uPlot.AlignedData => {
     const subs = props.submissions;
     if (subs.length === 0) {
@@ -57,12 +88,15 @@ export function ScatterPlot(props: ScatterPlotProps) {
     }
     const xs = subs.map((s) => s.t_peak * 1000);
     const ys = subs.map((s) => s.fwhm * 1000);
+    // mode:2 data format: [xValues, [xFacetValues, yFacetValues]]
     return [xs, [xs, ys] as unknown as number[]];
   });
 
+  /** Create custom paths draw function for colored scatter points. */
   function makeDrawPoints(
     colors: () => string[],
-    userParams: () => ScatterPlotProps['userParams'],
+    userParams: () => CommunityScatterPlotProps<T>['userParams'],
+    userColor: () => string,
     medianPt: () => { x: number; y: number } | null,
     highlightFlags: () => boolean[] | null,
     markerStroke: string,
@@ -85,7 +119,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
           const scaleValid =
             scaleX.min != null && scaleX.max != null && scaleY.min != null && scaleY.max != null;
 
-          // Median crosshairs
+          // Draw median crosshair lines (behind points)
           const mp = medianPt();
           if (mp && scaleValid) {
             const mcx = valToPosX(mp.x, scaleX, xDim, xOff);
@@ -95,18 +129,23 @@ export function ScatterPlot(props: ScatterPlotProps) {
             ctx.strokeStyle = medianColor;
             ctx.lineWidth = 1 * devicePixelRatio;
             ctx.globalAlpha = 0.5;
+
+            // Vertical line at median t_peak
             ctx.beginPath();
             ctx.moveTo(mcx, yOff);
             ctx.lineTo(mcx, yOff + yDim);
             ctx.stroke();
+
+            // Horizontal line at median FWHM
             ctx.beginPath();
             ctx.moveTo(xOff, mcy);
             ctx.lineTo(xOff + xDim, mcy);
             ctx.stroke();
+
             ctx.restore();
           }
 
-          // Community points
+          // Draw community points
           const flags = highlightFlags();
           const highlighting = flags != null && flags.length > 0;
 
@@ -136,11 +175,12 @@ export function ScatterPlot(props: ScatterPlotProps) {
           }
           ctx.globalAlpha = 1;
 
-          // Median marker
+          // Draw median marker on top of community points
           if (mp && scaleValid) {
             const mcx = valToPosX(mp.x, scaleX, xDim, xOff);
             const mcy = valToPosY(mp.y, scaleY, yDim, yOff);
             const mSize = 8 * devicePixelRatio;
+
             ctx.fillStyle = medianColor;
             ctx.strokeStyle = markerStroke;
             ctx.lineWidth = 1.5 * devicePixelRatio;
@@ -150,7 +190,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
             ctx.stroke();
           }
 
-          // User overlay marker
+          // Draw user parameter marker on top if provided
           const up = userParams();
           if (up) {
             const ux = up.tPeak * 1000;
@@ -166,7 +206,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
               const ucy = valToPosY(uy, scaleY, yDim, yOff);
               const uSize = 14 * devicePixelRatio;
 
-              ctx.fillStyle = 'hsla(30, 100%, 55%, 0.9)'; // Orange marker for user's run
+              ctx.fillStyle = userColor();
               ctx.strokeStyle = markerStroke;
               ctx.lineWidth = 2 * devicePixelRatio;
               ctx.beginPath();
@@ -185,6 +225,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     const subs = props.submissions;
     const data = chartData();
 
+    // Destroy previous instance
     if (uplotInstance) {
       uplotInstance.destroy();
       uplotInstance = undefined;
@@ -192,19 +233,22 @@ export function ScatterPlot(props: ScatterPlotProps) {
 
     if (!containerRef || subs.length === 0) return;
 
+    // Read CSS custom properties for theme-aware colors
     const theme = getThemeColors();
 
     // The getters below bridge Solid reactivity into uPlot's draw-time hook;
     // they're tracked scopes by virtue of being invoked inside the plot.
     const drawFn = makeDrawPoints(
-      pveColors,
+      pointColors,
       () => props.userParams,
+      () => props.userColor ?? 'hsla(30, 100%, 55%, 0.9)',
       medianPoint,
       () => props.highlightFlags ?? null,
       theme.textPrimary,
       theme.textSecondary,
     );
 
+    // Compute padded ranges so points aren't on the edge
     const xVals = subs.map((s) => s.t_peak * 1000);
     const yVals = subs.map((s) => s.fwhm * 1000);
     const up = props.userParams;
@@ -216,8 +260,8 @@ export function ScatterPlot(props: ScatterPlotProps) {
     const xMax = Math.max(...xVals);
     const yMin = Math.min(...yVals);
     const yMax = Math.max(...yVals);
-    const xPad = (xMax - xMin) * 0.15 || 1;
-    const yPad = (yMax - yMin) * 0.15 || 1;
+    const xPad = axisPad(xMin, xMax);
+    const yPad = axisPad(yMin, yMax);
 
     const opts: uPlot.Options = {
       mode: 2,
@@ -262,6 +306,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     uplotInstance = new uPlot(opts, data, containerRef);
   });
 
+  // Force redraw when highlightFlags changes (without recreating the chart)
   createEffect(
     on(
       () => props.highlightFlags,
@@ -272,6 +317,7 @@ export function ScatterPlot(props: ScatterPlotProps) {
     ),
   );
 
+  // ResizeObserver: resize chart when sidebar opens/closes
   let resizeRaf: number | undefined;
   const resizeObserver = new ResizeObserver(() => {
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
@@ -303,15 +349,15 @@ export function ScatterPlot(props: ScatterPlotProps) {
       ) : (
         <>
           <div ref={containerRef} class="scatter-plot__canvas" />
-          <PVELegend />
+          <ScatterLegend {...props.legend} />
         </>
       )}
     </div>
   );
 }
 
-/** Color legend bar showing the PVE gradient (0 to 1). */
-function PVELegend() {
+/** Colour bar showing the point-colour gradient. */
+function ScatterLegend(props: CommunityScatterPlotProps<ScatterSubmission>['legend']): JSX.Element {
   let canvasRef: HTMLCanvasElement | undefined;
 
   createEffect(() => {
@@ -323,21 +369,18 @@ function PVELegend() {
     const w = canvas.width;
     const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-
     for (let x = 0; x < w; x++) {
-      const t = x / (w - 1);
-      const hue = 270 - t * 210;
-      ctx.fillStyle = `hsla(${hue}, 80%, 55%, 0.9)`;
+      ctx.fillStyle = props.colorAt(x / (w - 1));
       ctx.fillRect(x, 0, 1, h);
     }
   });
 
   return (
     <div class="scatter-plot__legend">
-      <span class="scatter-plot__legend-label">0</span>
+      <span class="scatter-plot__legend-label">{props.minLabel}</span>
       <canvas ref={canvasRef} width={200} height={12} class="scatter-plot__legend-bar" />
-      <span class="scatter-plot__legend-label">1</span>
-      <span class="scatter-plot__legend-title">median PVE</span>
+      <span class="scatter-plot__legend-label">{props.maxLabel}</span>
+      <span class="scatter-plot__legend-title">{props.title}</span>
     </div>
   );
 }

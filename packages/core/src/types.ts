@@ -65,6 +65,18 @@ export interface ValidationResult {
 
 export type ImportStep = 'drop' | 'confirm-dims' | 'sampling-rate' | 'validation' | 'ready';
 
+/**
+ * How the current dataset was loaded into an app (the app-side vocabulary):
+ * 'file' (user upload), 'demo' (generated in the browser) or 'bridge' (sent
+ * by the Python `calab` package). Import stores hold `DataSource | null`.
+ *
+ * Community submissions store a different vocabulary
+ * ('user' | 'demo' | 'bridge' | 'training', the `DataSource` type exported by
+ * @calab/community). Convert with `toCommunityDataSource` from
+ * @calab/community-ui rather than comparing strings ad hoc.
+ */
+export type DataSource = 'file' | 'demo' | 'bridge';
+
 // --- Sampling Rate Presets ---
 
 export const SAMPLING_RATE_PRESETS = [

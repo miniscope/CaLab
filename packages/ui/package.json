@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./chart": "./src/chart/index.ts",
+    "./import": "./src/import/index.ts",
     "./chart/chart-theme.css": "./src/chart/chart-theme.css",
     "./styles/*": "./src/styles/*"
   },
@@ -17,6 +18,8 @@
   },
   "dependencies": {
     "@calab/compute": "*",
+    "@calab/core": "*",
+    "@calab/io": "*",
     "@calab/tutorials": "*",
     "@dschz/solid-uplot": "^0.5.2",
     "solid-js": "^1.9.15",

@@ -34,6 +34,7 @@ import {
 import { setSeed } from './lib/subset-store.ts';
 import { isRunLocked } from './lib/iteration-store.ts';
 
+import '@calab/ui/styles/app-controls.css';
 import './styles/controls.css';
 import './styles/layout.css';
 import './styles/trace-inspector.css';

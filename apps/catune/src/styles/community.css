@@ -2,11 +2,9 @@
    Shared styles (AuthGate, PrivacyNotice, SubmitModal, SubmissionSummary,
    FilterBar, SearchableSelect, SidebarTabs, SubmitPanel fields,
    CommunityBrowser, ScatterPlot) now live in @calab/community-ui. */
-
 /* ========================
    SubmitPanel (CaTune-specific)
    ======================== */
-
 .submit-panel__form {
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
@@ -18,7 +16,6 @@
 /* ========================
    MarginalHistogram
    ======================== */
-
 .marginal-histogram {
   overflow: hidden;
 }
@@ -31,22 +28,4 @@
 .marginal-histogram--vertical {
   width: 80px;
   height: 340px;
-}
-
-/* ========================
-   Ground Truth Warning/Notice
-   ======================== */
-
-.submit-panel__gt-warning {
-  font-size: 0.8rem;
-  color: var(--warning, #e09800);
-  font-style: italic;
-  line-height: 1.4;
-}
-
-.submit-panel__gt-locked-notice {
-  font-size: 0.8rem;
-  color: var(--text-tertiary);
-  font-style: italic;
-  line-height: 1.4;
 }

@@ -16,6 +16,9 @@
   "dependencies": {
     "@calab/community": "*",
     "@calab/compute": "*",
-    "solid-js": "^1.9.15"
+    "@calab/core": "*",
+    "@calab/ui": "*",
+    "solid-js": "^1.9.15",
+    "uplot": "^1.6.32"
   }
 }

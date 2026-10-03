@@ -1,0 +1,23 @@
+/* Theory-tutorial figures (text + canvas side by side in a tutorial step),
+   used by the CaTune and CaDecon theory tutorials. */
+
+.theory-figure-layout {
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-start;
+}
+
+.theory-figure-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.theory-figure-canvas {
+  flex-shrink: 0;
+}
+
+.theory-figure {
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}

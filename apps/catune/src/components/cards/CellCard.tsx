@@ -7,7 +7,7 @@ import { createSignal, createMemo, createEffect, untrack, Show } from 'solid-js'
 import { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from '@calab/ui/chart';
 import { CaTuneZoomWindow } from './CaTuneZoomWindow.tsx';
 import { QualityBadge } from '../metrics/QualityBadge.tsx';
-import type { CellSolverStatus } from '@calab/core';
+import type { CellSolverStatus } from '../../workers/catune-types.ts';
 import { computePeakSNR, snrToQuality } from '@calab/core';
 import { Card } from '@calab/ui';
 import { setHoveredCell, type RawTraceStats } from '../../lib/multi-cell-store.ts';

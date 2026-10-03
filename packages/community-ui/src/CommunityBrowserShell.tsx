@@ -7,7 +7,8 @@
  *
  * Apps provide a thin wrapper that supplies:
  *   - fetch / loadFieldOptions functions
- *   - filter bar JSX (via `filterBar` prop)
+ *   - optionally, filter bar JSX (via `filterBar`; defaults to FilterBar with
+ *     the demo-preset filter)
  *   - chart render prop
  *   - user params accessor
  *
@@ -17,9 +18,11 @@
 import { createSignal, createEffect, createMemo, Show, on, batch } from 'solid-js';
 import type { JSX, Accessor } from 'solid-js';
 import type { BaseSubmission, BaseFilterState, DataSource } from '@calab/community';
+import type { DataSource as AppDataSource } from '@calab/core';
 import { supabaseEnabled, user, fieldOptions, loadFieldOptions } from '@calab/community';
 import { matchesSourceBucket, matchesDemoPreset } from './source-bucket.ts';
-import { clearedFilterState } from './filter-state.ts';
+import { clearedFilterState, DEMO_PRESET_FILTER } from './filter-state.ts';
+import { FilterBar } from './FilterBar.tsx';
 import './styles/community.css';
 
 /** Stale-while-revalidate threshold: 5 minutes in milliseconds. */
@@ -45,8 +48,9 @@ export interface CommunityBrowserShellProps<
 
   /** App-specific filter bar JSX. Receives fieldOptions, filteredCount,
    *  totalCount, highlightMine state, and its toggle so apps can wire
-   *  their own FilterBar variant. */
-  filterBar: (ctx: {
+   *  their own FilterBar variant. Defaults to FilterBar with the demo-preset
+   *  filter, which replaces the metadata filters while browsing demo rows. */
+  filterBar?: (ctx: {
     filters: F;
     setFilters: (f: F) => void;
     options: ReturnType<typeof fieldOptions>;
@@ -72,8 +76,8 @@ export interface CommunityBrowserShellProps<
   /** Reactive accessor: is the app currently showing demo data? */
   isDemo: Accessor<boolean>;
 
-  /** Reactive accessor: app-level data source (e.g. from data-store). */
-  appDataSource: Accessor<DataSource | string | null>;
+  /** Reactive accessor: the app's import-store data source. */
+  appDataSource: Accessor<AppDataSource | null>;
 
   /** Title shown in the collapsible header. */
   title?: string;
@@ -87,6 +91,21 @@ export function CommunityBrowserShell<
   F extends BrowserFilterState,
   P = Record<string, unknown>,
 >(props: CommunityBrowserShellProps<T, F, P>) {
+  const defaultFilterBar: NonNullable<CommunityBrowserShellProps<T, F, P>['filterBar']> = (ctx) => (
+    <FilterBar
+      filters={ctx.filters}
+      onFilterChange={ctx.setFilters}
+      options={ctx.options}
+      filteredCount={ctx.filteredCount}
+      totalCount={ctx.totalCount}
+      extraFilters={[DEMO_PRESET_FILTER]}
+      showExtraFiltersOnly={ctx.dataSource === 'demo'}
+      highlightMine={ctx.highlightMine}
+      onHighlightMineChange={ctx.toggleHighlightMine}
+      canHighlight={ctx.canHighlight}
+    />
+  );
+
   // --- State signals ---
   const [submissions, setSubmissions] = createSignal<T[]>([]);
   // Seed dataSource from initial props.isDemo(); subsequent changes flow
@@ -250,7 +269,7 @@ export function CommunityBrowserShell<
             </div>
 
             {/* Filter bar (app-specific) */}
-            {props.filterBar({
+            {(props.filterBar ?? defaultFilterBar)({
               filters: props.filters(),
               setFilters: props.setFilters,
               options: fieldOptions(),

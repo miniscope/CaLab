@@ -68,3 +68,17 @@ export function processNpyResult(result: NpyResult): NpyResult {
   }
   return result;
 }
+
+/**
+ * Flat index into a C-order 2D trace array for logical (cell, timepoint),
+ * accounting for a dimension swap. `rawCols` is the stored array's second
+ * dimension (`data.shape[1]`), not the logical one.
+ */
+export function dataIndex(
+  cell: number,
+  timepoint: number,
+  rawCols: number,
+  isSwapped: boolean,
+): number {
+  return isSwapped ? timepoint * rawCols + cell : cell * rawCols + timepoint;
+}

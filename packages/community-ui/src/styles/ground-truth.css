@@ -1,0 +1,15 @@
+/* GroundTruthNotices: shown under the submit panel for demo data. */
+
+.submit-panel__gt-warning {
+  font-size: 0.8rem;
+  color: var(--warning, #e09800);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.submit-panel__gt-locked-notice {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+  line-height: 1.4;
+}

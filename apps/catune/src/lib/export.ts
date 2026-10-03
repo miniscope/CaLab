@@ -1,5 +1,8 @@
 /**
- * JSON export schema construction and Blob download trigger.
+ * CaTune JSON export: payload construction and Blob download trigger.
+ * Also the payload `postParamsToBridge` sends back to `calab.tune()`; the
+ * Python bridge registry pins `schema_version` below
+ * (python/tests/test_bridge_registry.py reads this file).
  *
  * Produces a scientifically complete JSON file containing:
  * - Parameter values (tau_rise, tau_decay, lambda, sampling_rate)
@@ -9,9 +12,10 @@
  */
 
 import * as v from 'valibot';
-import { computeAR2, CaTuneExportSchema } from '@calab/core';
-import type { CaTuneExportData } from '@calab/core';
+import { computeAR2 } from '@calab/core';
 import { shapeToTau } from '@calab/compute';
+import { CaTuneExportSchema } from './export-schema.ts';
+import type { CaTuneExportData } from './export-schema.ts';
 
 /**
  * CaTune export payload. `solver_version` (the WASM build's
