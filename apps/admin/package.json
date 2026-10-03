@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "calab": {
+    "id": "admin",
     "displayName": "Admin",
     "description": "Usage analytics and moderation",
     "status": "stable",
@@ -18,5 +19,8 @@
     "@calab/community": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "@calab/vite-config": "*"
   }
 }

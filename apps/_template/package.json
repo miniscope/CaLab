@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "calab": {
+    "id": "__APP_ID__",
     "displayName": "__APP_DISPLAY_NAME__",
     "description": "",
     "longDescription": "",
@@ -22,5 +23,8 @@
     "@calab/tutorials": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "@calab/vite-config": "*"
   }
 }
