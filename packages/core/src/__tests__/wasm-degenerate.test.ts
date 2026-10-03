@@ -161,6 +161,24 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       }
     });
 
+    it('spectrum frequency axis always matches the power spectrum length', () => {
+      const s = new Solver();
+      try {
+        // No trace loaded: both empty (the axis used to be [NaN]).
+        expect(s.get_spectrum_frequencies().length).toBe(0);
+        expect(s.get_power_spectrum().length).toBe(0);
+        for (const n of [1, 2, 7, 8, 9, 64]) {
+          s.set_trace(new Float32Array(n).fill(1));
+          const freqs = s.get_spectrum_frequencies();
+          expect(freqs.length, `n=${n}`).toBe(s.get_power_spectrum().length);
+          expect(freqs.length, `n=${n}`).toBe(n < 8 ? 0 : Math.floor(n / 2) + 1);
+          expect(finite(freqs), `n=${n}`).toBe(true);
+        }
+      } finally {
+        s.free();
+      }
+    });
+
     it('display getters are idempotent and do not change the solve (bug 1.2)', () => {
       const polled = new Solver();
       const quiet = new Solver();
