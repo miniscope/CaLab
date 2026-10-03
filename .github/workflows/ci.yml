@@ -107,6 +107,11 @@ jobs:
       - name: Build
         run: npm run build:apps
 
+      # combine-dist writes dist/<repo>/apps.json, which the Python bridge reads
+      # from the deployed site; fail if it is missing or skips a listed app.
+      - name: Apps manifest
+        run: node scripts/combine-dist.mjs && npm run check:apps-manifest
+
   # Browser smoke tests (e2e/): build the combined Pages site and load every
   # app in headless Chromium — WASM init, worker boot, demo data, first
   # render — failing on any console error. The unit tests mock all of that.

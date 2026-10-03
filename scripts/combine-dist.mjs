@@ -1,18 +1,17 @@
 #!/usr/bin/env node
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { resolve, join } from 'node:path';
+  MANIFEST_FILE,
+  appsDir,
+  buildManifest,
+  discoverApps,
+  repoRoot as root,
+  siteDir,
+} from './lib/apps.mjs';
 
-const root = resolve(import.meta.dirname, '..');
-const appsDir = resolve(root, 'apps');
-const out = resolve(root, 'dist/CaLab');
+// dist/<repo>: the Pages project name, derived like appBase in @calab/vite-config.
+const out = siteDir();
 
 // Load .env file (same vars Vite reads for the apps)
 const envPath = resolve(root, '.env');
@@ -47,48 +46,25 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-const statusOrder = { stable: 0, beta: 1, 'coming-soon': 2 };
-
-const apps = readdirSync(appsDir)
-  .filter((name) => {
-    if (name === '_template') return false;
-    const dir = join(appsDir, name);
-    if (!statSync(dir).isDirectory()) return false;
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'));
-      return pkg.calab?.displayName != null;
-    } catch {
-      return false;
+const apps = discoverApps().map((app) => {
+  let screenshotFile = '';
+  if (app.screenshot) {
+    const screenshotPath = join(appsDir, app.dir, app.screenshot);
+    if (existsSync(screenshotPath)) {
+      screenshotFile = `${app.dir}-screenshot.png`;
+      cpSync(screenshotPath, join(out, screenshotFile));
     }
-  })
-  .map((name) => {
-    const pkg = JSON.parse(readFileSync(join(appsDir, name, 'package.json'), 'utf-8'));
-    const screenshot = pkg.calab.screenshot ?? '';
-    let screenshotFile = '';
-    if (screenshot) {
-      const screenshotPath = join(appsDir, name, screenshot);
-      if (existsSync(screenshotPath)) {
-        screenshotFile = `${name}-screenshot.png`;
-        cpSync(screenshotPath, join(out, screenshotFile));
-      }
-    }
-    return {
-      dir: name,
-      displayName: pkg.calab.displayName,
-      description: pkg.calab.description ?? '',
-      longDescription: pkg.calab.longDescription ?? '',
-      features: pkg.calab.features ?? [],
-      status: pkg.calab.status ?? 'coming-soon',
-      hidden: pkg.calab.hidden ?? false,
-      screenshotFile,
-    };
-  })
-  .sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
+  }
+  return { ...app, screenshotFile };
+});
 
 for (const app of apps) {
   const src = resolve(appsDir, app.dir, 'dist');
-  cpSync(src, resolve(out, app.displayName), { recursive: true });
+  cpSync(src, resolve(out, app.path), { recursive: true });
 }
+
+// Machine-readable list of the published apps (python/src/calab/_bridge reads it).
+writeFileSync(join(out, MANIFEST_FILE), JSON.stringify(buildManifest(apps), null, 2) + '\n');
 
 const statusBadge = {
   stable: { label: 'Stable', color: '#2e7d32', bg: 'rgba(46,125,50,0.08)' },
@@ -107,7 +83,7 @@ function renderCard(app) {
     ? `<ul class="features">${app.features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
     : '';
 
-  return `    <a class="card" href="${escapeHtml(app.displayName)}/">
+  return `    <a class="card" href="${escapeHtml(app.path)}/">
       ${screenshotHtml}
       <div class="card-body">
         <div class="card-header">
@@ -547,4 +523,6 @@ ${cards}
 `,
 );
 
-console.log(`Combined dist created at dist/CaLab/ (${apps.length} apps)`);
+console.log(
+  `Combined dist created at ${relative(root, out)}/ (${apps.length} apps, ${MANIFEST_FILE})`,
+);

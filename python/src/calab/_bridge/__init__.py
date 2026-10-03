@@ -13,7 +13,7 @@ from ._apps import decon, launch, tune
 from ._handshake import BridgeResult, BridgeVersionError, BridgeVersionWarning
 from ._headless import HeadlessBrowser
 from ._models import DeconConfig
-from ._registry import APPS, AppSpec, ResultSchema, app_url, get_app
+from ._registry import APPS, AppSpec, ResultSchema, app_url, get_app, resolve_app
 
 __all__ = [
     "APPS",
@@ -28,5 +28,6 @@ __all__ = [
     "decon",
     "get_app",
     "launch",
+    "resolve_app",
     "tune",
 ]

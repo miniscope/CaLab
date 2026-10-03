@@ -20,7 +20,7 @@ from ._postprocess import (  # noqa: F401  (re-exported for existing importers)
     KERNEL_LENGTH_DECAY_MULTIPLES,
     _build_cadecon_result,
 )
-from ._registry import get_app
+from ._registry import bridge_app
 from ._server import BridgeServer
 
 if TYPE_CHECKING:
@@ -170,8 +170,9 @@ def launch(
     port : int, optional
         Port to bind to. None = auto-assign.
     app_url : str, optional
-        Override the app URL (for local dev). Default: the registered
-        GitHub Pages URL.
+        Override the app URL (for local dev). Default: the app's URL from the
+        deployed site's ``apps.json``, falling back to the registry's GitHub
+        Pages URL. When given, the manifest is not fetched.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
     headless : HeadlessBrowser or bool or None
@@ -194,13 +195,12 @@ def launch(
     Raises
     ------
     ValueError
-        If *app* is not registered or has no bridge export.
+        If *app* is not registered, is newer than this ``calab`` (listed by
+        the site's manifest only), or has no bridge export.
     BridgeVersionError
         If the app's results fail the version handshake.
     """
-    spec = get_app(app)
-    if spec.result_schema is None:
-        raise ValueError(f"{spec.display_name} does not support the Python bridge yet")
+    spec = bridge_app(app, app_url=app_url)
 
     server = BridgeServer(traces, fs, port=port or 0, app=spec.slug, config=config)
     with _managed_headless(headless) as headless_browser:
