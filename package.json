@@ -30,6 +30,7 @@
     "test:watch": "npm run test:watch -w apps/catune",
     "pretest:coverage": "npm run ensure-wasm",
     "test:coverage": "vitest run --coverage",
+    "check:app-tests": "node scripts/check-app-tests.mjs",
     "lint": "eslint apps/ packages/ scripts/",
     "lint:fix": "eslint --fix apps/ packages/ scripts/",
     "pretypecheck": "npm run ensure-wasm",
