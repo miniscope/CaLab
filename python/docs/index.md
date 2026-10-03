@@ -38,6 +38,7 @@ guides/catune
 guides/cadecon
 guides/loaders
 guides/simulation
+guides/bridge
 cli
 ```
 
