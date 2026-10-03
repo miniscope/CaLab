@@ -11,6 +11,10 @@ use std::sync::Arc;
 const MARGIN_FACTOR_HP: f32 = 16.0;
 const MARGIN_FACTOR_LP: f32 = 4.0;
 
+/// Shortest trace the filter and the power spectrum operate on. Below this the
+/// spectrum (and its frequency axis) is empty and the filter is a no-op.
+pub const MIN_SPECTRUM_LEN: usize = 8;
+
 /// FFT-based bandpass filter derived from kernel time constants.
 /// Buffers grow but never shrink (matching Solver convention).
 pub struct BandpassFilter {
@@ -249,7 +253,7 @@ impl BandpassFilter {
 
     /// Apply bandpass filter in-place. Caches power spectrum. Returns false if skipped.
     pub fn apply(&mut self, trace: &mut [f32]) -> bool {
-        if !self.is_enabled() || !self.valid || trace.len() < 8 {
+        if !self.is_enabled() || !self.valid || trace.len() < MIN_SPECTRUM_LEN {
             return false;
         }
 
@@ -300,7 +304,7 @@ impl BandpassFilter {
 
     /// Compute power spectrum without filtering (for visualization when filter is off).
     pub fn compute_spectrum_only(&mut self, trace: &[f32]) {
-        if trace.len() < 8 {
+        if trace.len() < MIN_SPECTRUM_LEN {
             return;
         }
         self.forward_fft_and_cache_power(trace);
@@ -316,8 +320,13 @@ impl BandpassFilter {
         }
     }
 
-    /// Get frequency axis in Hz for the spectrum bins.
+    /// Get frequency axis in Hz for the spectrum bins of an `n`-sample trace:
+    /// `n/2 + 1` bins, or empty when `n < MIN_SPECTRUM_LEN` (no spectrum is
+    /// computed for such traces, and `n = 0` would divide by zero).
     pub fn get_spectrum_frequencies(&self, n: usize) -> Vec<f32> {
+        if n < MIN_SPECTRUM_LEN {
+            return Vec::new();
+        }
         let spectrum_len = n / 2 + 1;
         let df = self.fs / n as f32;
         (0..spectrum_len).map(|i| i as f32 * df).collect()

@@ -69,7 +69,7 @@ jobs:
       - name: Tests
         run: npm run test
 
-  # The rust, python and supabase jobs below mirror ci.yml's jobs of the same
+  # The rust, python, supabase and e2e jobs below mirror ci.yml's jobs of the same
   # name, so a tag cannot deploy a commit that CI would reject. Keep them in
   # sync with ci.yml when either changes.
   rust:
@@ -193,8 +193,76 @@ jobs:
         # The edge runtime doesn't type-check at deploy time either.
         run: deno test --no-check --allow-env --allow-net --lock=deno.lock index.test.ts
 
+  # Browser smoke tests (e2e/): build the combined Pages site and load every
+  # app in headless Chromium — WASM init, worker boot, demo data, first
+  # render — failing on any console error. The unit tests mock all of that.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: 'crates/solver -> target'
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: wasm-pack@0.13.1
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      # Production base path, Supabase env blanked (see e2e/build-site.mjs).
+      - name: Build site
+        run: npm run build:e2e
+
+      # Browser binaries are cached by Playwright version; the OS packages
+      # Chromium needs are installed every run (`--with-deps`), cache or not.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Type check (e2e)
+        run: npm run typecheck:e2e
+
+      - name: Smoke tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report and traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   deploy:
-    needs: [check, rust, python, supabase]
+    needs: [check, rust, python, supabase, e2e]
     permissions:
       contents: read
       pages: write

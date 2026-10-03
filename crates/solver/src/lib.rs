@@ -518,10 +518,11 @@ impl Solver {
         self.baseline = 0.0;
     }
 
-    /// Get the power spectrum of the current trace (N/2+1 bins).
+    /// Get the power spectrum of the current trace: N/2+1 bins, or empty when
+    /// no trace is loaded or it is shorter than 8 samples (`filter::MIN_SPECTRUM_LEN`).
     pub fn get_power_spectrum(&mut self) -> Vec<f32> {
         let n = self.active_len;
-        if n < 8 {
+        if n < filter::MIN_SPECTRUM_LEN {
             return Vec::new();
         }
         // If power spectrum is not already cached from apply(), compute it
@@ -534,7 +535,9 @@ impl Solver {
         }
     }
 
-    /// Get frequency axis in Hz for the spectrum bins.
+    /// Get frequency axis in Hz for the spectrum bins. Always the same length
+    /// as [`Solver::get_power_spectrum`]: N/2+1 bins, or empty when no trace
+    /// is loaded or it is shorter than 8 samples (`filter::MIN_SPECTRUM_LEN`).
     pub fn get_spectrum_frequencies(&self) -> Vec<f32> {
         self.bandpass.get_spectrum_frequencies(self.active_len)
     }

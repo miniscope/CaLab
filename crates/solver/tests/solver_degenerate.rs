@@ -122,7 +122,7 @@ fn getters_on_a_fresh_solver_are_empty_and_finite() {
         assert!(!s.converged(), "{m}");
         assert_eq!(s.iteration_count(), 0, "{m}");
         assert!(s.get_power_spectrum().is_empty(), "{m}");
-        // (get_spectrum_frequencies: see the ignored test below.)
+        assert!(s.get_spectrum_frequencies().is_empty(), "{m}");
         assert!(all_finite(&s.get_filter_cutoffs()), "{m}");
         assert_eq!(s.export_state().len(), 24, "{m}: header only");
         // Mutators with nothing loaded are no-ops, not panics.
@@ -139,10 +139,9 @@ fn getters_on_a_fresh_solver_are_empty_and_finite() {
     }
 }
 
+/// Regression: with no trace (n = 0) the axis used to be `[NaN]` (0 * fs/0),
+/// and for 1..7-sample traces it had n/2+1 bins while the spectrum had none.
 #[test]
-#[ignore = "real gap: get_spectrum_frequencies() returns [NaN] (0 * fs/0) with no trace loaded, \
-            and n/2+1 bins for 1..7-sample traces while get_power_spectrum() returns none; \
-            follow-up: return an empty axis whenever the spectrum is empty (lib.rs)"]
 fn spectrum_frequencies_match_the_power_spectrum_for_tiny_traces() {
     for n in [0_usize, 1, 2, 7, 8, 9] {
         let mut s = solver(ConvMode::Fft);

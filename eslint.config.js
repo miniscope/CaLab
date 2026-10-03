@@ -69,9 +69,9 @@ export default tseslint.config(
     },
   },
 
-  // Node globals for build scripts
+  // Node globals for build scripts and the Playwright suite (runs in Node)
   {
-    files: ['scripts/**/*.{js,mjs,cjs,ts}'],
+    files: ['scripts/**/*.{js,mjs,cjs,ts}', 'e2e/**/*.{js,mjs,cjs,ts}'],
     languageOptions: {
       globals: {
         ...globals.node,

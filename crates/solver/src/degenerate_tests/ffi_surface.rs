@@ -25,11 +25,12 @@
 //! | `seed_trace` / `py_seed_trace`                               | finite trace, `validate_fs`    | `peak_seed::seed_trace`                |
 //! | — / `seed_kernel_estimate`                                   | finite traces, `validate_fs`   | `peak_seed::seed_kernel_estimate`      |
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
+//! | — / `py_compute_lipschitz`                                   | `validate_kernel`              | `kernel::compute_lipschitz`            |
 //! | `simulate_traces` / `py_simulate_traces`                     | `validate_simulation_config`   | `simulate::simulate`                   |
 
 use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
-use crate::kernel::build_kernel;
+use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::validate::{self, SolverError, MAX_KERNEL_LEN};
 use crate::{kernel_est, peak_seed, simulate, upsample};
 
@@ -524,12 +525,10 @@ fn fit_biexponential_core_handles_accepted_degenerate_kernels() {
     }
 }
 
+/// Regression: warm taus used to be checked only for finiteness, so negative or
+/// reversed warm taus passed validation and could be returned verbatim as the
+/// fit (e.g. (-1, -2) for an all-negative kernel). They are now rejected.
 #[test]
-#[ignore = "real gap: biexp_fit_inputs only checks that warm-start fields are finite, so \
-            negative or reversed warm taus pass validation, and fit_biexponential can return \
-            them verbatim as the best candidate (e.g. tau_rise = -1, tau_decay = -2 for an \
-            all-negative kernel). Follow-up: require 0 < warm_tau_rise < warm_tau_decay \
-            (and the same for the fast pair when beta_fast != 0) in validate.rs."]
 fn fit_biexponential_never_returns_non_physical_warm_taus() {
     let kernels: Vec<(&str, Vec<f32>)> = vec![
         ("all negative", vec![-1.0; 50]),
@@ -541,7 +540,11 @@ fn fit_biexponential_never_returns_non_physical_warm_taus() {
             let ctx = format!("{label} warm=({tr}, {td})");
             let ws = match validate::biexp_fit_inputs(&h, FS, true, tr, td, 0.0, 0.0, 1.0, 0.0, INF)
             {
-                Err(_) => continue, // rejected up front: the fix
+                Err(e) => {
+                    // Rejected up front with the standard validation error.
+                    assert!(matches!(e, SolverError::InvalidParams(_)), "{ctx}: {e}");
+                    continue;
+                }
                 Ok(ws) => ws.unwrap(),
             };
             let r = biexp_fit::fit_biexponential(&h, FS, true, 0, Some(&ws));
@@ -653,6 +656,37 @@ fn build_kernel_validation_and_cap_boundary() {
     validate::validate_params(1.0, at, 0.0, 1.0).unwrap();
     assert_eq!(build_kernel(1.0, at, 1.0).len(), MAX_KERNEL_LEN);
     assert!(is_param_err(validate::validate_params(1.0, over, 0.0, 1.0)));
+}
+
+// --- py_compute_lipschitz ---------------------------------------------------------
+
+/// Regression: an empty or NaN kernel used to silently return the 1e-10 floor
+/// and an infinite one returned inf.
+#[test]
+fn compute_lipschitz_rejects_degenerate_kernels() {
+    for (label, k) in [
+        ("empty", vec![]),
+        ("nan", vec![f32::NAN, 1.0]),
+        ("inf", vec![f32::INFINITY, 1.0]),
+    ] {
+        assert!(
+            matches!(
+                validate::validate_kernel(&k),
+                Err(SolverError::InvalidInput(_))
+            ),
+            "{label}"
+        );
+    }
+    for k in [
+        vec![1.0],
+        vec![1.0, -2.0, 0.5],
+        vec![0.0; 8],
+        vec![f32::MAX; 4],
+    ] {
+        validate::validate_kernel(&k).unwrap();
+        let l = compute_lipschitz(&k);
+        assert!(l.is_finite() && l > 0.0, "{k:?}: {l}");
+    }
 }
 
 // --- simulate_traces / py_simulate_traces ---------------------------------------

@@ -24,3 +24,8 @@ python/docs/autoapi/
 
 # Vitest coverage output (npm run test:coverage)
 coverage/
+
+# Playwright smoke suite output (npm run test:e2e)
+playwright-report/
+test-results/
+blob-report/
