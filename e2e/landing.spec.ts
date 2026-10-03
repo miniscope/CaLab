@@ -62,3 +62,26 @@ for (const app of listed) {
     await expect(page.locator('#root > *').first()).toBeVisible();
   });
 }
+
+test('apps.json is served and lists the same apps as the landing cards', async ({ page }) => {
+  await page.goto('./');
+  // Fetched from the page so the fixture's same-origin status check applies.
+  const manifest = await page.evaluate(async () => {
+    const res = await fetch('apps.json');
+    return { status: res.status, type: res.headers.get('content-type'), body: await res.json() };
+  });
+  expect(manifest.status).toBe(200);
+  expect(manifest.type).toContain('application/json');
+  expect(manifest.body.manifest_version).toBe(1);
+  expect(typeof manifest.body.release).toBe('string');
+  expect(Number.isNaN(Date.parse(manifest.body.generated_at))).toBe(false);
+
+  const entries: { displayName: string; path: string }[] = manifest.body.apps;
+  const cards = page.getByRole('link').filter({ has: page.getByRole('heading', { level: 2 }) });
+  const cardHrefs = await cards.evaluateAll((els) => els.map((el) => el.getAttribute('href')));
+  const cardNames = await cards.getByRole('heading', { level: 2 }).allTextContents();
+  // Same apps, in the same order as the cards.
+  expect(entries.map((e) => `${e.path}/`)).toEqual(cardHrefs);
+  expect(entries.map((e) => e.displayName)).toEqual(cardNames);
+  expect(entries.map((e) => e.displayName).sort()).toEqual(listed.map((a) => a.displayName).sort());
+});

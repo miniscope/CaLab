@@ -11,6 +11,19 @@ import numpy as np
 from calab import build_kernel
 
 
+@pytest.fixture(autouse=True)
+def _no_app_manifest_fetch(monkeypatch: pytest.MonkeyPatch):
+    """Keep tests off the network: the bridge would otherwise fetch the
+    deployed site's apps.json on the first URL lookup. Tests that exercise the
+    manifest re-enable it against a stub (see test_bridge_manifest.py)."""
+    from calab._bridge import _manifest
+
+    monkeypatch.setenv(_manifest.MANIFEST_ENV, "off")
+    _manifest.clear_cache()
+    yield
+    _manifest.clear_cache()
+
+
 @pytest.fixture
 def standard_params() -> dict:
     """Standard calcium imaging parameters.
