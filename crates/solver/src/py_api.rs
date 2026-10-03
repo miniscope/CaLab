@@ -667,6 +667,10 @@ fn py_indeca_estimate_kernel<'py>(
 /// Fit a bi-exponential model to a free-form kernel.
 ///
 /// Returns (tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast).
+///
+/// Raises ValueError for a non-finite `h_free`, a bad `fs`, or (with
+/// `use_warm`) non-finite or non-physical warm fields (see
+/// `validate::biexp_fit_inputs`).
 #[pyfunction]
 #[pyo3(signature = (h_free, fs, refine=true, skip=0, warm_tau_rise=0.0, warm_tau_decay=0.0, warm_tau_rise_fast=0.0, warm_tau_decay_fast=0.0, warm_beta=0.0, warm_beta_fast=0.0, warm_residual=f64::INFINITY, use_warm=false))]
 fn py_indeca_fit_biexponential(

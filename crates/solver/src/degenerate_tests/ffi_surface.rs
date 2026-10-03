@@ -524,12 +524,10 @@ fn fit_biexponential_core_handles_accepted_degenerate_kernels() {
     }
 }
 
+/// Regression: warm taus used to be checked only for finiteness, so negative or
+/// reversed warm taus passed validation and could be returned verbatim as the
+/// fit (e.g. (-1, -2) for an all-negative kernel). They are now rejected.
 #[test]
-#[ignore = "real gap: biexp_fit_inputs only checks that warm-start fields are finite, so \
-            negative or reversed warm taus pass validation, and fit_biexponential can return \
-            them verbatim as the best candidate (e.g. tau_rise = -1, tau_decay = -2 for an \
-            all-negative kernel). Follow-up: require 0 < warm_tau_rise < warm_tau_decay \
-            (and the same for the fast pair when beta_fast != 0) in validate.rs."]
 fn fit_biexponential_never_returns_non_physical_warm_taus() {
     let kernels: Vec<(&str, Vec<f32>)> = vec![
         ("all negative", vec![-1.0; 50]),
@@ -541,7 +539,11 @@ fn fit_biexponential_never_returns_non_physical_warm_taus() {
             let ctx = format!("{label} warm=({tr}, {td})");
             let ws = match validate::biexp_fit_inputs(&h, FS, true, tr, td, 0.0, 0.0, 1.0, 0.0, INF)
             {
-                Err(_) => continue, // rejected up front: the fix
+                Err(e) => {
+                    // Rejected up front with the standard validation error.
+                    assert!(matches!(e, SolverError::InvalidParams(_)), "{ctx}: {e}");
+                    continue;
+                }
                 Ok(ws) => ws.unwrap(),
             };
             let r = biexp_fit::fit_biexponential(&h, FS, true, 0, Some(&ws));

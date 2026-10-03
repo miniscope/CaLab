@@ -333,6 +333,10 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       );
     });
 
+    it.each([-1, 0, TAU_D, 1])('rejects non-physical warm tau_rise = %d', (tr) => {
+      expectRejected(() => call(new Float32Array(10).fill(1), FS, true, tr), 'warm_tau_rise');
+    });
+
     it.each([0, 1, 2, 50])('accepts a %i-sample kernel', (n) => {
       const r = call(new Float32Array(n).fill(1));
       expect(Number.isFinite(r.tau_rise) && Number.isFinite(r.tau_decay)).toBe(true);

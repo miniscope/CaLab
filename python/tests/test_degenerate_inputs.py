@@ -621,21 +621,34 @@ def test_fit_biexponential_rejects_non_finite_kernel_and_nan_residual():
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="real gap: warm-start taus are only checked for finiteness, so negative warm taus "
-    "pass validation and can be returned verbatim as the best fit. Follow-up: require "
-    "0 < warm_tau_rise < warm_tau_decay in validate.rs.",
+@pytest.mark.parametrize(
+    "warm",
+    [
+        {"warm_tau_rise": -1.0, "warm_tau_decay": -2.0},
+        {"warm_tau_rise": 0.0, "warm_tau_decay": 0.0},
+        {"warm_tau_rise": TAU_D, "warm_tau_decay": TAU_R},
+        {
+            "warm_tau_rise": TAU_R,
+            "warm_tau_decay": TAU_D,
+            "warm_tau_rise_fast": 0.05,
+            "warm_tau_decay_fast": -0.01,
+            "warm_beta_fast": 0.5,
+        },
+    ],
+    ids=["negative", "zero", "reversed", "fast-negative"],
 )
-def test_fit_biexponential_rejects_or_ignores_non_physical_warm_taus():
-    try:
-        out = _solver.py_indeca_fit_biexponential(
-            -np.ones(50), FS, use_warm=True, warm_tau_rise=-1.0, warm_tau_decay=-2.0, warm_beta=1.0
+def test_fit_biexponential_rejects_non_physical_warm_taus(warm):
+    # Regression: warm taus used to be checked only for finiteness, so negative warm
+    # taus passed validation and could be returned verbatim as the best fit. The
+    # contract is now 0 < tau_rise < tau_decay (fast pair: both 0, or the same).
+    with pytest.raises(ValueError, match="warm"):
+        _solver.py_indeca_fit_biexponential(
+            -np.ones(50), FS, use_warm=True, warm_beta=1.0, **warm
         )
-    except ValueError:
-        return
-    assert out[0] > 0 and out[1] > out[0], f"returned taus {out[:2]}"
+    # A previous fit's (physical) result is always accepted as a warm start.
+    _solver.py_indeca_fit_biexponential(
+        -np.ones(50), FS, use_warm=True, warm_tau_rise=TAU_R, warm_tau_decay=TAU_D, warm_beta=1.0
+    )
 
 
 @pytest.mark.parametrize(
