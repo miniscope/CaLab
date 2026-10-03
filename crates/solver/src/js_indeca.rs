@@ -150,7 +150,8 @@ pub fn indeca_estimate_kernel(
 /// { tau_rise, tau_decay, beta, residual, tau_rise_fast, tau_decay_fast, beta_fast, fit_mode }
 ///
 /// Throws a JS error if `h_free` contains a non-finite value, `fs <= 0`, or
-/// (with `use_warm`) a warm field is non-finite (`warm_residual` may be +inf).
+/// (with `use_warm`) a warm field is non-finite (`warm_residual` may be +inf)
+/// or the warm taus are non-physical (see `validate::biexp_fit_inputs`).
 #[wasm_bindgen]
 pub fn indeca_fit_biexponential(
     h_free: &[f32],

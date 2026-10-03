@@ -7,6 +7,7 @@ All tests verify numerical equivalence with the Rust solver implementation.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from calab import build_kernel, tau_to_ar2, compute_lipschitz
@@ -171,9 +172,9 @@ def test_ar2_multiple_param_sets(
 
 
 def test_lipschitz_empty_kernel() -> None:
-    """Empty kernel returns floor value 1e-10."""
-    result = compute_lipschitz(np.array([]))
-    assert result == 1e-10
+    """Empty kernel is rejected (it used to return the 1e-10 floor silently)."""
+    with pytest.raises(ValueError, match="kernel"):
+        compute_lipschitz(np.array([]))
 
 
 def test_lipschitz_single_element() -> None:
