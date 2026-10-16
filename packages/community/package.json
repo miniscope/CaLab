@@ -10,9 +10,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.2"
+    "@supabase/supabase-js": "^2.117.3"
   },
   "peerDependencies": {
-    "solid-js": "^1.9.15"
+    "solid-js": "^1.9.17"
   }
 }
