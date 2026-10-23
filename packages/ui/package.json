@@ -22,7 +22,7 @@
     "@calab/io": "*",
     "@calab/tutorials": "*",
     "@dschz/solid-uplot": "^0.5.2",
-    "solid-js": "^1.9.15",
+    "solid-js": "^1.9.17",
     "uplot": "^1.6.32"
   }
 }
