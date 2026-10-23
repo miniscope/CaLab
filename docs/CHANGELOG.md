@@ -5,6 +5,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-23
+
+Web apps `v2.10.0`; Python package `calab` unchanged (`py/v0.3.0`). Retires
+CaRank from the site and adds the CaBaNA placeholder (#232), plus the CaTune
+legend and residual fix (#223).
+
 ### Added
 
 - **CaBaNA** (Calcium Behavioral and Neural Analysis) placeholder app,
