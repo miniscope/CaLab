@@ -31,7 +31,7 @@ CaLab is an npm workspaces monorepo:
 | Workspace             | Path                     | Description                                                                    |
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------ |
 | `catune`              | `apps/catune/`           | SolidJS app — deconvolution parameter tuning                                   |
-| `carank`              | `apps/carank/`           | SolidJS app — CNMF trace quality ranking                                       |
+| `cabana`              | `apps/cabana/`           | SolidJS app — behavioral and neural analysis (placeholder)                     |
 | `cadecon`             | `apps/cadecon/`          | SolidJS app — automated InDeCa deconvolution                                   |
 | `admin`               | `apps/admin/`            | SolidJS app — community-submission admin                                       |
 | `@calab/core`         | `packages/core/`         | Shared types, pure math, WASM adapter                                          |
@@ -79,7 +79,7 @@ You can also run scripts in a specific workspace. These skip the root `pre*` hoo
 `npm run ensure-wasm` (or any root `dev`/`test`/`build` script) once first on a fresh clone:
 
 ```bash
-npm run dev -w apps/carank      # CaRank dev server, without the WASM check
+npm run dev -w apps/cabana      # CaBaNA dev server, without the WASM check
 npm run test -w apps/catune     # Run app tests only
 npm run test -w packages/io     # Run io package tests only
 ```

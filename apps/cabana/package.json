@@ -1,0 +1,41 @@
+{
+  "name": "cabana",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "calab": {
+    "id": "cabana",
+    "displayName": "CaBaNA",
+    "description": "Neural activity meets behavioral states",
+    "longDescription": "Relates calcium activity to behavioral states, from place fields to social bouts, with shuffle-based null distributions and corrected p-values. Coming soon: this page is a placeholder while the port of the Python CaBaNA project is prepared.",
+    "features": [
+      "One model for place cells, behavioral syllables and scored social bouts",
+      "Metrics such as information content, AUROC, PETH and decoders",
+      "Shuffle engine with circular-shift, block and bout nulls and corrected p-values",
+      "Per-cell evidence cards and cell classes",
+      "Imports Minian, CaImAn, DeepLabCut, BORIS and CaLab deconvolution output"
+    ],
+    "status": "coming-soon",
+    "hidden": false
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@calab/community": "*",
+    "@calab/community-ui": "*",
+    "@calab/compute": "*",
+    "@calab/core": "*",
+    "@calab/io": "*",
+    "@calab/tutorials": "*",
+    "@calab/ui": "*",
+    "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "@calab/vite-config": "*"
+  }
+}

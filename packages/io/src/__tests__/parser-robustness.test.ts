@@ -216,7 +216,7 @@ describe('parseNpy: dtype edge cases', () => {
       try {
         fn();
       } catch (e) {
-        expect((e as Error).message).not.toMatch(/CaTune|CaDecon|CaRank/);
+        expect((e as Error).message).not.toMatch(/CaTune|CaDecon|CaBaNA/);
       }
     },
   );
@@ -344,7 +344,7 @@ describe('parseNpz: decompressed-size cap', () => {
     expect(e.message).toMatch(
       /\.npz file would decompress to at least 4\.00 GiB, above the 1\.00 GiB limit/,
     );
-    expect(e.message).not.toMatch(/CaTune|CaDecon|CaRank/);
+    expect(e.message).not.toMatch(/CaTune|CaDecon|CaBaNA/);
   });
 
   it('rejects a genuinely highly-compressible entry over a custom cap', () => {
@@ -694,7 +694,7 @@ describe('parseMat: inconsistent shapes and corrupt files', () => {
       expect.unreachable();
     } catch (e) {
       expect((e as Error).message).toMatch('contains no numeric arrays');
-      expect((e as Error).message).not.toMatch(/CaTune|CaDecon|CaRank/);
+      expect((e as Error).message).not.toMatch(/CaTune|CaDecon|CaBaNA/);
     }
   });
 

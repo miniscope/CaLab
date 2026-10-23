@@ -38,7 +38,7 @@ def _doc(*entries: dict[str, Any], release: str = "v9.1.0") -> dict[str, Any]:
 
 
 CURRENT = _doc(_entry("cadecon", "CaDecon"), _entry("catune", "CaTune"),
-               _entry("carank", "CaRank", status="coming-soon"))
+               _entry("cabana", "CaBaNA", status="coming-soon"))
 
 
 class StubSite:
@@ -74,10 +74,10 @@ def test_parse_manifest_reads_identity_and_site_root() -> None:
     assert manifest.base_url == SITE
     assert manifest.release == "v9.1.0"
     assert manifest.generated_at.startswith("2026-10-02")
-    assert list(manifest.apps) == ["cadecon", "catune", "carank"]
-    carank = manifest.apps["carank"]
-    assert (carank.display_name, carank.path, carank.status) == ("CaRank", "CaRank", "coming-soon")
-    assert manifest.url_for(carank) == SITE + "CaRank/"
+    assert list(manifest.apps) == ["cadecon", "catune", "cabana"]
+    cabana = manifest.apps["cabana"]
+    assert (cabana.display_name, cabana.path, cabana.status) == ("CaBaNA", "CaBaNA", "coming-soon")
+    assert manifest.url_for(cabana) == SITE + "CaBaNA/"
 
 
 @pytest.mark.parametrize(
@@ -129,7 +129,7 @@ def test_manifest_version_matches_build_script() -> None:
 def test_manifest_is_fetched_once_per_session(site: StubSite) -> None:
     assert app_url("catune") == SITE + "CaTune/"
     assert app_url("cadecon") == SITE + "CaDecon/"
-    resolve_app("carank")
+    resolve_app("cabana")
     assert site.fetched == [MANIFEST_URL]
 
 
@@ -227,7 +227,7 @@ def test_reserved_slug_in_manifest_is_ignored(site: StubSite) -> None:
 
 def test_app_without_bridge_export_is_still_rejected(site: StubSite) -> None:
     with pytest.raises(ValueError, match="does not support the Python bridge"):
-        bridge_app("carank")
+        bridge_app("cabana")
 
 
 # ---------------------------------------------------------------------------

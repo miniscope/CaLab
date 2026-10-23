@@ -9,7 +9,7 @@ Depends on `@calab/tutorials` (for TutorialPanel and TutorialLauncher components
   ↑
 @calab/ui
   ↑
-apps/catune, apps/carank
+apps/catune, apps/cabana
 ```
 
 ## Exports

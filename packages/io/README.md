@@ -9,7 +9,7 @@ Depends on `@calab/core` and `@calab/compute`. External dependencies: `fflate` (
   ↑
 @calab/io
   ↑
-apps/catune, apps/cadecon, apps/carank
+apps/catune, apps/cadecon, apps/cabana
 ```
 
 ## Exports
