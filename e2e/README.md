@@ -79,7 +79,8 @@ Guidelines:
 - Assert on something the real WASM/worker path produces. See `catune.spec.ts`
   (per-card SNR labels appear only after a solve) and `cadecon.spec.ts` (a run
   reaches "Complete" and the raster canvas has pixels).
-- Without a demo dataset, build a small input in the test. `carank.spec.ts`
-  writes a `.npy` in memory and passes it to the file input.
+- Without a demo dataset, build a small input in the test: write a `.npy` in
+  memory and pass it to the file input. A placeholder app only needs the
+  import overlay to render (see `cabana.spec.ts`).
 - An app behind auth cannot get past its gate without Supabase. Assert that the
   gate renders and the protected view does not (see `admin.spec.ts`).

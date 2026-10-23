@@ -59,7 +59,7 @@ below):
 | --------- | -------------------------------------------- | ----------------------- |
 | `catune`  | `https://miniscope.github.io/CaLab/CaTune/`  | `catune-export` 1.2.0   |
 | `cadecon` | `https://miniscope.github.io/CaLab/CaDecon/` | `cadecon-results` 2     |
-| `carank`  | `https://miniscope.github.io/CaLab/CaRank/`  | none (no bridge export) |
+| `cabana`  | `https://miniscope.github.io/CaLab/CaBaNA/`  | none (no bridge export) |
 
 An app posts its results to the generic routes:
 

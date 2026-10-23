@@ -7,7 +7,7 @@ This is a **leaf package** with no local dependencies (`valibot` is the only ext
 ```
 @calab/core  ← leaf (no local deps)
   ↑
-@calab/compute, @calab/io, @calab/community, apps/catune, apps/carank
+@calab/compute, @calab/io, @calab/community, apps/catune, apps/cabana
 ```
 
 ## Boundary Rule

@@ -177,7 +177,7 @@ Deno.test('POST missing app_name returns 400', async () => {
 });
 
 Deno.test('APP_NAME_PATTERN accepts app slugs and rejects everything else', () => {
-  for (const ok of ['catune', 'carank', 'cadecon', 'admin', 'caview', 'ca-view', 'ca_view2']) {
+  for (const ok of ['catune', 'cabana', 'cadecon', 'admin', 'caview', 'ca-view', 'ca_view2']) {
     assertEquals(APP_NAME_PATTERN.test(ok), true, ok);
   }
   for (const bad of ['', 'c', 'CaTune', '1app', '-app', 'ca view', 'a'.repeat(33), "x');--"]) {

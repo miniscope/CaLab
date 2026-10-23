@@ -111,7 +111,7 @@ def _npy(arr: np.ndarray) -> bytes:
 
 
 def test_registry_keys_are_lowercase_slugs() -> None:
-    assert set(APPS) == {"catune", "cadecon", "carank"}
+    assert set(APPS) == {"catune", "cadecon", "cabana"}
     for key, spec in APPS.items():
         assert key == spec.slug == key.lower()
 
@@ -120,7 +120,7 @@ def test_default_urls_match_current_deployment() -> None:
     # Must stay byte-identical to what GitHub Pages serves today.
     assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
     assert app_url("cadecon") == "https://miniscope.github.io/CaLab/CaDecon/"
-    assert app_url("carank") == "https://miniscope.github.io/CaLab/CaRank/"
+    assert app_url("cabana") == "https://miniscope.github.io/CaLab/CaBaNA/"
 
 
 def test_get_app_is_case_insensitive_and_rejects_unknown() -> None:
@@ -259,9 +259,9 @@ def test_unroutable_results_paths_are_404(cadecon_server: BridgeServer, path: st
 
 
 def test_app_without_bridge_export_has_no_results_route() -> None:
-    server = _server("carank")
+    server = _server("cabana")
     try:
-        status, _ = _call(server, "/api/v1/results/carank", json_body={"schema_version": 1})
+        status, _ = _call(server, "/api/v1/results/cabana", json_body={"schema_version": 1})
         assert status == 404
     finally:
         server.shutdown()
@@ -453,7 +453,7 @@ def test_launch_warns_on_drift_and_can_return_raw(monkeypatch: pytest.MonkeyPatc
 
 def test_launch_rejects_app_without_bridge_export() -> None:
     with pytest.raises(ValueError, match="does not support the Python bridge"):
-        _apps.launch("carank", np.zeros((1, 20)), timeout=1)
+        _apps.launch("cabana", np.zeros((1, 20)), timeout=1)
 
 
 def test_bridge_version_warning_is_user_warning() -> None:

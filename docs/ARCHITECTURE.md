@@ -11,7 +11,7 @@ community sharing and usage analytics.
 ## Monorepo Structure
 
 npm workspaces cover `apps/*` and `packages/*` (root `package.json`). There are
-eight packages and five app directories: four apps (`catune`, `cadecon`, `carank`,
+eight packages and five app directories: four apps (`catune`, `cadecon`, `cabana`,
 `admin`) and `apps/_template`, the starting point for a new app. The build
 scripts skip `_template`. The tree shows the shape of each area rather than every
 file.
@@ -39,7 +39,7 @@ file.
 │   │                              # subset-, viz-store, iteration-manager,
 │   │                              # cadecon-pool, bridge-effects; workers/
 │   │                              # has cadecon-worker.ts + cadecon-types.ts
-│   ├── carank/                    # CaRank: trace quality ranking (no solver)
+│   ├── cabana/                    # CaBaNA: coming-soon placeholder (no solver)
 │   ├── admin/                     # Admin: analytics + moderation (hidden app)
 │   └── _template/                 # Minimal app scaffold (placeholder calab.id)
 ├── packages/
@@ -111,7 +111,7 @@ graph TD
   cui --> ui
   catune -.-> cui
   cadecon -.-> cui
-  carank -.-> cui
+  cabana -.-> cui
   admin -.-> cui
   template["_template"] -.-> ui
 ```
@@ -128,7 +128,7 @@ graph TD
 | `@calab/vite-config`  | none (uses the root `vite`/`vitest`/plugin devDependencies) | none                                       |
 | `apps/catune`         | all seven runtime packages                                  | `uplot`, `@dschz/solid-uplot`, `valibot`   |
 | `apps/cadecon`        | all seven runtime packages                                  | `uplot`, `@dschz/solid-uplot`              |
-| `apps/carank`         | core, io, tutorials, community, community-ui, ui            | none                                       |
+| `apps/cabana`         | all seven runtime packages                                  | none                                       |
 | `apps/admin`          | community, community-ui, ui                                 | none                                       |
 | `apps/_template`      | core, io, tutorials, ui                                     | none                                       |
 
@@ -163,7 +163,7 @@ one of `'file'`, `'demo'`, `'bridge'`), solver input types (`SolverParams`, `Con
 `Solver`, the `indeca_*` functions, `seed_trace`, `simulate_traces`,
 `get_simulation_presets`, `solver_version` and `getSolverVersion()` (inits WASM,
 returns the version, or `undefined` if WASM fails to load). Keeping the solver out
-of the barrel is what lets CaRank ship without the `.wasm` asset.
+of the barrel is what lets CaBaNA ship without the `.wasm` asset.
 
 **`@calab/compute`**. `createWorkerPool` (see [Solver Pipeline](#solver-pipeline))
 and its sizing helpers (`resolveWorkerCount`, `getWorkersOverride` for the
@@ -252,10 +252,10 @@ writes `dist/<repo>/apps.json` (`manifest_version`, `release`, `commit`,
 non-hidden app). The Python bridge reads that manifest from the deployed site (see
 [python/docs/guides/bridge.md](../python/docs/guides/bridge.md)).
 
-**Start-up.** `index.tsx` in CaTune, CaDecon and CaRank follows one sequence:
+**Start-up.** `index.tsx` in CaTune, CaDecon and CaBaNA follows one sequence:
 
-1. Import `@calab/ui/styles/base.css` (plus `tutorial.css`, and for CaTune/CaDecon
-   `theory-figures.css` and `app-global.css`), then the app's own styles.
+1. Import `@calab/ui/styles/base.css` and `app-global.css` (CaTune/CaDecon also
+   `tutorial.css` and `theory-figures.css`), then the app's own styles.
 2. `configureStorageKey(...)` for tutorial progress (CaTune/CaDecon also
    `configureTutorialEngine(...)`).
 3. `initCommunityStore()`, starting the app's single auth subscription before the
@@ -287,9 +287,8 @@ non-component code (the tutorial engine, the solve managers) read the same state
 - **CaDecon**: `data-store.ts` (also `createImportStore()`), `algorithm-store.ts`,
   `iteration-store.ts`, `subset-store.ts`, `viz-store.ts`, and
   `iteration-manager.ts`, which owns the pool and runs the iteration loop.
-- **CaRank / Admin**: `carank/src/lib/auth-store.ts` and `admin/src/lib/admin-store.ts`
-  re-export the community store's `user` / `authLoading`; Admin adds its own
-  signals.
+- **Admin**: `admin/src/lib/admin-store.ts` re-exports the community store's
+  `user` / `authLoading` and adds its own signals. CaBaNA has no auth store yet.
 - **Shared**: the community store in `@calab/community` is side-effect free on
   import; `initCommunityStore()` (idempotent, also triggered by the first
   `user()` / `authLoading()` read) starts one auth subscription per app. Tutorial
@@ -394,8 +393,7 @@ components import from it.
 workers), page error, same-origin 4xx/5xx, or request to another host. Per spec:
 `catune.spec.ts` loads demo data and waits for every visible card to show a solved
 `SNR x.x` label; `cadecon.spec.ts` generates data, runs to "Complete" and checks
-the raster canvas is painted; `carank.spec.ts` imports an in-memory `.npy` and
-checks the ranking table; `admin.spec.ts` checks the auth guard blocks the
+the raster canvas is painted; `cabana.spec.ts` checks the coming-soon page renders; `admin.spec.ts` checks the auth guard blocks the
 dashboard without Supabase; `landing.spec.ts` checks one card per non-hidden app
 and that `apps.json` matches the cards. See [e2e/README.md](../e2e/README.md).
 

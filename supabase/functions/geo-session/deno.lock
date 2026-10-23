@@ -90,6 +90,20 @@
           ]
         }
       },
+      "apps/cabana": {
+        "packageJson": {
+          "dependencies": [
+            "npm:@calab/community-ui@*",
+            "npm:@calab/community@*",
+            "npm:@calab/compute@*",
+            "npm:@calab/core@*",
+            "npm:@calab/io@*",
+            "npm:@calab/tutorials@*",
+            "npm:@calab/ui@*",
+            "npm:solid-js@^1.9.15"
+          ]
+        }
+      },
       "apps/cadecon": {
         "packageJson": {
           "dependencies": [
@@ -102,18 +116,6 @@
             "npm:@dschz/solid-uplot@~0.5.2",
             "npm:solid-js@^1.9.11",
             "npm:uplot@^1.6.32"
-          ]
-        }
-      },
-      "apps/carank": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community@*",
-            "npm:@calab/core@*",
-            "npm:@calab/io@*",
-            "npm:@calab/tutorials@*",
-            "npm:@calab/ui@*",
-            "npm:solid-js@^1.9.11"
           ]
         }
       },

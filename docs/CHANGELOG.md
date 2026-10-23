@@ -5,6 +5,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- **CaBaNA** (Calcium Behavioral and Neural Analysis) placeholder app,
+  scaffolded from `apps/_template` and listed as "coming soon". It will relate
+  neural activity to behavioral states with a cell x state x metric table and
+  shuffle-based null distributions. It has no result schema and no bridge export
+
+### Removed
+
+- **CaRank** (`apps/carank`, `e2e/carank.spec.ts`): unused, with no plans to
+  continue it. CaBaNA takes its place in the registries
+
 ### Fixed
 
 - **CaTune** always draws the solver's working trace (raw minus the

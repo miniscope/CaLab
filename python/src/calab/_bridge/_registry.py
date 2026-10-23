@@ -8,7 +8,7 @@ into the value the Python caller gets. The HTTP server
 read everything from the entry, so wiring up a new app is one entry in
 :data:`APPS` -- no new endpoint, event, or orchestrator.
 
-Keys are lowercase app slugs (``catune``, ``cadecon``, ``carank``), the same
+Keys are lowercase app slugs (``catune``, ``cadecon``, ``cabana``), the same
 slugs as ``calab.id`` in ``apps/*/package.json``.
 
 Where an app lives is also published by the deployed site in ``apps.json``
@@ -169,10 +169,10 @@ APPS: dict[str, AppSpec] = {
             postprocess=_postprocess_cadecon,
         ),
         AppSpec(
-            slug="carank",
-            display_name="CaRank",
-            path_segment="CaRank",
-            # CaRank has no bridge export yet.
+            slug="cabana",
+            display_name="CaBaNA",
+            path_segment="CaBaNA",
+            # CaBaNA has no bridge export yet.
             result_schema=None,
         ),
     )

@@ -44,7 +44,7 @@ describe('GitHub issue URL builders', () => {
   describe('app label', () => {
     it('appends app label when provided', () => {
       expect(buildFeedbackUrl('catune')).toContain('labels=feedback%2Ccatune');
-      expect(buildFeatureRequestUrl('carank')).toContain('labels=enhancement%2Ccarank');
+      expect(buildFeatureRequestUrl('cabana')).toContain('labels=enhancement%2Ccabana');
       expect(buildBugReportUrl('python')).toContain('labels=bug%2Cpython');
       expect(buildFieldOptionRequestUrl('indicator', 'catune')).toContain(
         'labels=field-option-request%2Ccatune',
@@ -55,7 +55,7 @@ describe('GitHub issue URL builders', () => {
       const url = buildFeedbackUrl();
       expect(url).toContain('labels=feedback');
       expect(url).not.toContain('catune');
-      expect(url).not.toContain('carank');
+      expect(url).not.toContain('cabana');
     });
   });
 });

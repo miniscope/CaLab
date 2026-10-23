@@ -68,7 +68,7 @@ See the **[Python documentation](https://calab.readthedocs.io)** for the full AP
 | ----------------------------------------------------- | ---------------------------------------------- | ----------- |
 | [CaTune](https://miniscope.github.io/CaLab/CaTune/)   | Interactive deconvolution parameter tuning     | Stable      |
 | [CaDecon](https://miniscope.github.io/CaLab/CaDecon/) | Automated deconvolution with kernel estimation | Stable      |
-| [CaRank](apps/carank/)                                | Trace quality ranking                          | Coming soon |
+| [CaBaNA](apps/cabana/)                                | Behavioral and neural analysis                 | Coming soon |
 
 ## Python Package
 
@@ -95,7 +95,7 @@ pip install calab[headless]      # + headless browser for CaDecon
 ├── apps/
 │   ├── catune/                  # SolidJS SPA — interactive parameter tuning
 │   ├── cadecon/                 # SolidJS SPA — automated deconvolution
-│   ├── carank/                  # SolidJS SPA — trace quality ranking
+│   ├── cabana/                  # SolidJS SPA — behavioral & neural analysis
 │   ├── admin/                   # SolidJS SPA — usage analytics and moderation (unlisted)
 │   └── _template/               # Scaffold for a new app (docs/NEW_APP.md)
 ├── packages/
@@ -154,7 +154,7 @@ npm install
 npm run dev            # CaTune; first run builds the WASM solver
 ```
 
-Start any app with `npm run dev <app>` (`npm run dev cadecon`, `npm run dev carank`, ...;
+Start any app with `npm run dev <app>` (`npm run dev cadecon`, `npm run dev cabana`, ...;
 the directory name, `calab.id` or display name all work). Apps are discovered from
 `apps/*/package.json`, so a new app needs no script of its own. `npm run dev -w apps/<name>`
 also works once the solver has been built, but skips the WASM check.
