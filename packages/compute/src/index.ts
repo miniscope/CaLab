@@ -36,3 +36,65 @@ export {
   AMPLITUDE_VARIATION_LEVELS,
   KERNEL_VARIATION_LEVELS,
 } from './simulation-quality-presets.ts';
+// Solver backends: tile work queue, consumers, and the dev backend switch.
+export type {
+  SolveTile,
+  TileWarmStart,
+  TileCellUpdate,
+  TileCellResult,
+  TileCallbacks,
+  TileConsumer,
+  ConsumerContext,
+  TileAssignPolicy,
+  BackendCalibration,
+} from './solve-tiles.ts';
+export { createTileScheduler, preferFirstAccepting, anyAccepting } from './tile-scheduler.ts';
+export type { TileScheduler, TileSchedulerOptions } from './tile-scheduler.ts';
+export { createWasmPoolConsumer } from './wasm-pool-consumer.ts';
+export type { WasmPoolConsumerOptions, CellJobCallbacks } from './wasm-pool-consumer.ts';
+export {
+  createGpuBatchConsumer,
+  DEFAULT_GPU_MEMORY_BUDGET,
+  DEFAULT_REFILL_FRACTION,
+} from './gpu-batch-consumer.ts';
+export {
+  GpuOutOfMemoryError,
+  GpuDeviceLostError,
+  isGpuOutOfMemoryError,
+  isGpuDeviceLostError,
+} from './gpu-errors.ts';
+export type {
+  BatchSolutions,
+  BatchWarmStart,
+  BatchStatus,
+  BatchStepResult,
+  DisplayReconvolution,
+  GpuBatchConsumer,
+  GpuBatchConsumerOptions,
+  GpuBatchStats,
+  BatchFistaEngine,
+  BatchFistaParams,
+} from './gpu-batch-consumer.ts';
+export { createQuantumSizer } from './quantum-sizer.ts';
+export type { QuantumSizer, QuantumSizerOptions } from './quantum-sizer.ts';
+export {
+  encodeSolverState,
+  decodeSolverState,
+  solverStateByteLength,
+} from './solver-state-codec.ts';
+export type { DecodedSolverState } from './solver-state-codec.ts';
+export {
+  getRequestedBackend,
+  getRequestedGpuGate,
+  webGpuUnavailableReason,
+  BACKEND_STORAGE_KEY,
+  GPU_GATE_STORAGE_KEY,
+} from './backend-selection.ts';
+export type { RequestedBackend, GpuGateMode } from './backend-selection.ts';
+export {
+  createCalibrationStore,
+  softwareAdapterReason,
+  gpuParticipationVerdict,
+  CALIBRATION_MAX_AGE_MS,
+} from './calibration.ts';
+export type { CalibrationStore, AdapterLike } from './calibration.ts';

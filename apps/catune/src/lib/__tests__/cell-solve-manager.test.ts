@@ -99,6 +99,14 @@ describe('cell-solve-manager: job dispatch and cancellation', () => {
     expect(fake.cancelled).toHaveLength(NUM_CELLS);
   });
 
+  it('re-dispatches every cell from one timer callback after a param change', () => {
+    setLambda(0.5);
+    expect(vi.getTimerCount()).toBe(1); // one shared debounce, not one per cell
+    vi.advanceTimersToNextTimer();
+    // All cells reached the pool in the same task, so a batch consumer sees them together.
+    expect(fake.dispatched).toHaveLength(2 * NUM_CELLS);
+  });
+
   it('cancels once per cell across a multi-tick slider drag', () => {
     setLambda(0.1);
     setLambda(0.2);

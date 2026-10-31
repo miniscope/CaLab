@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": ["@webgpu/types", "node", "vite/client"]
+  },
+  "include": ["src", "harness", "gpu-tests"],
+  "references": [{ "path": "../core" }, { "path": "../compute" }]
+}
