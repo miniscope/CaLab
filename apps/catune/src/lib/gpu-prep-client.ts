@@ -1,9 +1,18 @@
 // Main-thread client for gpu-prep-worker.ts: working traces for the GPU
 // backend (cached per cell, window, filter setting and kernel, since the
-// bandpass cutoffs and the baseline window both depend on tau), and WASM
-// reference solves for the dev readout's GPU-vs-WASM check.
+// bandpass cutoffs and the baseline window both depend on tau; LRU), and
+// WASM reference solves for the dev readout's GPU-vs-WASM check.
+//
+// TODO(gpu-backend): preprocessing runs on ONE worker, serially, so a
+// parameter change that misses the cache (tau or filter changed) costs
+// cells x per-cell prep before the GPU batch can load. Measured in Chromium
+// on an Apple M5 Max, demo data (20 cells, 30 Hz, 1381-sample padded
+// windows), round trip per trace from `prepStats`: 11.4 ms (8 to 10 ms with
+// 5 cells), so ~0.23 s before a 20-cell batch can start, growing linearly
+// with cells and window length. Spread it over the WASM pool or a few prep
+// workers once that shows up next to the GPU solve time.
 
-import type { SolverParams } from '@calab/core';
+import type { SolverParams, WarmStartStrategy } from '@calab/core';
 import type { GpuPrepInbound, GpuPrepOutbound } from '../workers/gpu-prep-types.ts';
 
 const CACHE_LIMIT = 256;
@@ -11,9 +20,21 @@ const CACHE_LIMIT = 256;
 export interface ReferenceSolve {
   working: Float32Array;
   solution: Float32Array;
+  /** Cumulative (including iterations carried in by the warm start). */
   iterations: number;
+  /** Iterations the reference solve ran itself. */
+  iterationsRun: number;
   converged: boolean;
   ms: number;
+  /** Solve loop only (no preprocessing). */
+  solveMs: number;
+}
+
+/** Cache misses served by the prep worker: count and summed round-trip time. */
+export interface PrepStats {
+  computed: number;
+  totalMs: number;
+  cacheHits: number;
 }
 
 type Pending = {
@@ -32,8 +53,10 @@ export interface GpuPrepClient {
     trace: Float32Array,
     params: SolverParams,
     warmState?: Uint8Array | null,
+    warmStrategy?: WarmStartStrategy,
     maxIters?: number,
   ): Promise<ReferenceSolve>;
+  prepStats(): PrepStats;
   dispose(): void;
 }
 
@@ -51,7 +74,9 @@ export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
   let ready: Promise<void> | null = null;
   let counter = 0;
   const pending = new Map<number, Pending>();
+  /** Insertion order = recency (a hit re-inserts), so the first key is least recently used. */
   const cache = new Map<string, Promise<Float32Array>>();
+  const stats: PrepStats = { computed: 0, totalMs: 0, cacheHits: 0 };
 
   function start(): Promise<void> {
     if (ready) return ready;
@@ -88,25 +113,47 @@ export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
 
   return {
     workingTrace(cellIndex, windowStart, trace, params) {
-      const key = workingTraceKey(cellIndex, windowStart, trace.length, params);
-      const hit = cache.get(key);
-      if (hit) return hit;
+      // The key identifies the trace by cell index; without one, never share an entry.
+      const key =
+        cellIndex >= 0 ? workingTraceKey(cellIndex, windowStart, trace.length, params) : null;
+      const hit = key === null ? undefined : cache.get(key);
+      if (hit && key !== null) {
+        cache.delete(key);
+        cache.set(key, hit); // most recently used
+        stats.cacheHits++;
+        return hit;
+      }
       const copy = new Float32Array(trace);
+      const t0 = performance.now();
       const p = request({ type: 'prep', id: ++counter, trace: copy, params }, [copy.buffer]).then(
-        (m) => (m as Extract<GpuPrepOutbound, { type: 'prepped' }>).working,
+        (m) => {
+          stats.computed++;
+          stats.totalMs += performance.now() - t0;
+          return (m as Extract<GpuPrepOutbound, { type: 'prepped' }>).working;
+        },
       );
+      if (key === null) return p;
       p.catch(() => cache.delete(key));
       cache.set(key, p);
       if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
       return p;
     },
-    async reference(trace, params, warmState = null, maxIters = 20000) {
+    prepStats: () => ({ ...stats }),
+    async reference(trace, params, warmState = null, warmStrategy = 'warm', maxIters = 20000) {
       const copy = new Float32Array(trace);
       const warm = warmState ? new Uint8Array(warmState) : null;
       const transfer: Transferable[] = [copy.buffer];
       if (warm) transfer.push(warm.buffer);
       const m = await request(
-        { type: 'reference', id: ++counter, trace: copy, params, maxIters, warmState: warm },
+        {
+          type: 'reference',
+          id: ++counter,
+          trace: copy,
+          params,
+          maxIters,
+          warmState: warm,
+          warmStrategy,
+        },
         transfer,
       );
       const r = m as Extract<GpuPrepOutbound, { type: 'referenced' }>;
@@ -114,8 +161,10 @@ export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
         working: r.working,
         solution: r.solution,
         iterations: r.iterations,
+        iterationsRun: r.iterationsRun,
         converged: r.converged,
         ms: r.ms,
+        solveMs: r.solveMs,
       };
     },
     dispose() {

@@ -12,6 +12,7 @@ import type { CaTunePoolJob } from '../catune-pool.ts';
 import {
   createSolverPool,
   backendStatus,
+  calibrations,
   makeReconvolve,
   type GpuModule,
   type SolverPoolDeps,
@@ -70,6 +71,8 @@ function fakePrepWorker(): Worker {
 
 function fakeGpuModule(opts: { device?: boolean; convergeAt?: number; vendor?: string } = {}) {
   const devices: { lose(reason: string): void; destroy: () => void }[] = [];
+  /** nCells of every engine load. */
+  const loads: number[] = [];
   const convergeAt = opts.convergeAt ?? 40;
   const mod: GpuModule = {
     async requestGpuDevice() {
@@ -97,19 +100,19 @@ function fakeGpuModule(opts: { device?: boolean; convergeAt?: number; vendor?: s
       let done = 0;
       const tick = () => new Promise((r) => setTimeout(r, 0));
       return {
-        load(tr, nCells, len) {
+        async load(tr, nCells, len) {
           traces = tr;
           n = nCells;
           T = len;
           done = 0;
+          loads.push(nCells);
         },
         async step(k) {
           await tick();
           done += k;
-          return { allConverged: done >= convergeAt, iterationsRun: k };
-        },
-        async readStatus() {
           return {
+            allConverged: done >= convergeAt,
+            iterationsRun: k,
             iterations: new Uint32Array(n).fill(Math.min(done, convergeAt)),
             converged: new Uint8Array(n).fill(done >= convergeAt ? 1 : 0),
           };
@@ -129,7 +132,7 @@ function fakeGpuModule(opts: { device?: boolean; convergeAt?: number; vendor?: s
     },
     computeBandedParams: () => ({ g1F32: 0.5, g2F32: 0, invPeakF32: 1 }),
   };
-  return { mod, devices };
+  return { mod, devices, loads };
 }
 
 function gpuDeps(mod: GpuModule, extra: Partial<SolverPoolDeps> = {}): SolverPoolDeps {
@@ -307,8 +310,69 @@ describe('solver backend selection', () => {
   it('reconvolution adds the mean residual as display baseline', () => {
     const rc = makeReconvolve(() => ({ g1F32: 0, g2F32: 0, invPeakF32: 1 }));
     // g = 0: K*s is s delayed by one sample.
-    const out = rc(new Float32Array([1, 0, 0, 0]), new Float32Array([2, 2, 2, 2]), PARAMS);
+    const out = rc(new Float32Array([1, 0, 0, 0]), new Float32Array([2, 2, 2, 2]), PARAMS, null);
     // K*s = [0, 1, 0, 0]; baseline = mean([2, 1, 2, 2]) = 1.75
-    expect(Array.from(out)).toEqual([1.75, 2.75, 1.75, 1.75]);
+    expect(Array.from(out.reconvolution)).toEqual([1.75, 2.75, 1.75, 1.75]);
+    expect(out.displayBaseline).toBe(1.75);
+  });
+
+  it('display baseline is an EMA over readbacks, like the WASM getter', () => {
+    const rc = makeReconvolve(() => ({ g1F32: 0, g2F32: 0, invPeakF32: 1 }));
+    const s = new Float32Array(4);
+    // raw baseline = mean(working) = 4; previous EMA 1.75: 0.3 * 4 + 0.7 * 1.75 = 2.425
+    const out = rc(s, new Float32Array([4, 4, 4, 4]), PARAMS, 1.75);
+    expect(out.displayBaseline).toBeCloseTo(2.425, 12);
+    expect(out.reconvolution[0]).toBe(Math.fround(2.425));
+  });
+
+  it('sends tiles without a cell index to the WASM pool', async () => {
+    const wasm = fakeWasmPools();
+    const gpu = fakeGpuModule();
+    const pool = createSolverPool(wasm.make, gpuDeps(gpu.mod));
+    pool.dispatch(job(1, -1, log));
+    pool.dispatch(job(2, 3, log));
+    await flush();
+    expect(wasm.allJobs().map((j) => j.jobId)).toEqual([1]);
+    expect(log.complete).toEqual([2]);
+    expect(backendStatus().reason).toMatch(/no cell index/);
+    pool.dispose();
+  });
+
+  it('batches jobs dispatched in one task into one GPU load', async () => {
+    const wasm = fakeWasmPools();
+    const gpu = fakeGpuModule();
+    const pool = createSolverPool(wasm.make, gpuDeps(gpu.mod));
+    await flush(); // engine ready
+    for (let c = 0; c < 5; c++) pool.dispatch(job(10 + c, c, log));
+    await flush();
+    expect(gpu.loads).toEqual([5]);
+    pool.dispose();
+  });
+
+  it('auto gate routes on calibration; the default gate is advisory', async () => {
+    const now = Date.now();
+    const slowGpu = () => {
+      calibrations.clear();
+      calibrations.record({ backend: 'webgpu', sampleItersPerSec: 1, measuredAt: now });
+      calibrations.record({ backend: 'wasm-pool', sampleItersPerSec: 10, measuredAt: now });
+    };
+    slowGpu();
+    const wasm = fakeWasmPools();
+    const pool = createSolverPool(wasm.make, gpuDeps(fakeGpuModule().mod, { gpuGate: 'auto' }));
+    pool.dispatch(job(1, 0, log));
+    await flush();
+    expect(wasm.allJobs().map((j) => j.jobId)).toEqual([1]);
+    expect(backendStatus().reason).toMatch(/GPU measured 0.10x the WASM pool/);
+    pool.dispose();
+
+    slowGpu();
+    const wasm2 = fakeWasmPools();
+    const pool2 = createSolverPool(wasm2.make, gpuDeps(fakeGpuModule().mod));
+    pool2.dispatch(job(2, 0, log));
+    await flush();
+    expect(wasm2.allJobs()).toHaveLength(0);
+    expect(log.complete).toContain(2);
+    pool2.dispose();
+    calibrations.clear();
   });
 });

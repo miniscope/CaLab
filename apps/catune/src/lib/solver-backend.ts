@@ -17,9 +17,13 @@
 // cell-solve-manager keeps dispatching one job per cell; each job becomes a
 // single-cell tile. Status, throughput and the GPU-vs-WASM check feed the dev
 // readout (components/dev/BackendDevReadout.tsx).
+//
+// The calibration gate is advisory by default (the readout shows it); with
+// `?gpuGate=auto` it routes: the GPU takes tiles only while its measured rate
+// beats the WASM pool's estimate by the gate margin.
 
 import { createSignal } from 'solid-js';
-import type { SolverParams } from '@calab/core';
+import type { SolverParams, WarmStartStrategy } from '@calab/core';
 import {
   createCalibrationStore,
   createGpuBatchConsumer,
@@ -27,20 +31,22 @@ import {
   createWasmPoolConsumer,
   getDefaultWorkerCount,
   getRequestedBackend,
+  getRequestedGpuGate,
   gpuParticipationVerdict,
-  GpuOutOfMemoryError,
   softwareAdapterReason,
   webGpuUnavailableReason,
   type AdapterLike,
   type BatchFistaEngine,
+  type DisplayReconvolution,
   type GpuBatchConsumer,
+  type GpuGateMode,
   type GpuBatchStats,
   type SolveTile,
   type TileConsumer,
   type WorkerPool,
 } from '@calab/compute';
 import type { CaTunePoolJob } from './catune-pool.ts';
-import { createGpuPrepClient, type GpuPrepClient } from './gpu-prep-client.ts';
+import { createGpuPrepClient, type GpuPrepClient, type PrepStats } from './gpu-prep-client.ts';
 
 export interface BackendStatus {
   requested: 'wasm' | 'gpu';
@@ -61,6 +67,8 @@ export interface GpuCellRecord {
   iterations: number;
   /** Warm-start state the GPU solve began from (null = cold). */
   warmState: Uint8Array | null;
+  /** How the GPU used it ('warm' continues momentum, like WASM load_state). */
+  warmStrategy: WarmStartStrategy;
   warmStarted: boolean;
   converged: boolean;
 }
@@ -71,6 +79,8 @@ export interface BackendComparison {
   maxAbs: number;
   gpuIterations: number;
   gpuWarmStarted: boolean;
+  /** The warm-start strategy both solves used. */
+  warmStrategy: WarmStartStrategy;
   wasmIterations: number;
   wasmConverged: boolean;
   wasmMs: number;
@@ -105,23 +115,37 @@ export function latestGpuResult(cellIndex: number): GpuCellRecord | undefined {
 }
 
 let referenceClient: GpuPrepClient | null = null;
+let prepClient: GpuPrepClient | null = null;
+
+/** Working-trace preprocessing done for the GPU so far (dev readout), or null without the GPU path. */
+export function gpuPrepStats(): PrepStats | null {
+  return prepClient?.prepStats() ?? null;
+}
 let fullPoolSize = 1;
 
 /**
  * Solve the GPU's latest window for `cellIndex` with a WASM Solver (in a
- * worker, from the same warm start with momentum reset, no mid-solve getters)
- * and compare; iteration counts are then cumulative on both sides. Also records a
- * WASM-pool calibration estimate: one worker's rate x the full pool size.
+ * worker, from the same warm start and strategy, so momentum continues or
+ * resets exactly as on the GPU; no mid-solve getters) and compare; iteration
+ * counts are then cumulative on both sides. Also records a WASM-pool
+ * calibration estimate: one worker's rate (iterations it actually ran, solve
+ * time only) x the full pool size.
  */
 export async function compareWithWasm(cellIndex: number): Promise<BackendComparison | null> {
   const rec = latestGpuResult(cellIndex);
   if (!rec || !referenceClient) return null;
-  const ref = await referenceClient.reference(rec.rawWindow, rec.params, rec.warmState);
-  if (ref.ms > 0 && ref.iterations > 0) {
+  const ref = await referenceClient.reference(
+    rec.rawWindow,
+    rec.params,
+    rec.warmState,
+    rec.warmStrategy,
+  );
+  if (ref.solveMs > 0 && ref.iterationsRun > 0) {
     calibrations.record({
       backend: 'wasm-pool',
       adapter: `wasm x${fullPoolSize} workers (ideal-scaling estimate)`,
-      sampleItersPerSec: ((rec.rawWindow.length * ref.iterations) / ref.ms) * 1000 * fullPoolSize,
+      sampleItersPerSec:
+        ((rec.rawWindow.length * ref.iterationsRun) / ref.solveMs) * 1000 * fullPoolSize,
       measuredAt: Date.now(),
     });
     updateVerdict();
@@ -132,6 +156,7 @@ export async function compareWithWasm(cellIndex: number): Promise<BackendCompari
     maxAbs: maxAbs(rec.solution, ref.solution),
     gpuIterations: rec.iterations,
     gpuWarmStarted: rec.warmStarted,
+    warmStrategy: rec.warmStrategy,
     wasmIterations: ref.iterations,
     wasmConverged: ref.converged,
     wasmMs: ref.ms,
@@ -162,16 +187,29 @@ type BandedParamsFn = (
   lambda: number,
 ) => { g1F32: number; g2F32: number; invPeakF32: number };
 
+/** Weight of the newest raw baseline in the display EMA (BASELINE_EMA_WEIGHT in crates/solver). */
+export const DISPLAY_BASELINE_EMA_WEIGHT = 0.3;
+
 /**
  * Display reconvolution for GPU results: the banded AR(2) forward recursion
- * (port of BandedAR2::convolve_forward, f32) plus mean(working - K*s), the
- * raw display baseline the WASM getter would fold into its EMA.
+ * (port of BandedAR2::convolve_forward, f32) plus the display baseline, as
+ * the WASM getter `get_reconvolution_with_baseline` computes it: the raw
+ * baseline mean(working - K*s) (f64) is folded into an EMA
+ * (`update_display_baseline`: the first value as is, then 0.3 new + 0.7 old)
+ * that starts fresh with each solve hand-out (set_trace resets it), and the
+ * EMA is added in f32. `prev` is this cell's EMA from the previous readback
+ * of the same hand-out, or null.
  */
 export function makeReconvolve(computeBandedParams: BandedParamsFn) {
   let key = '';
   let bp: ReturnType<BandedParamsFn> | null = null;
   const f = Math.fround;
-  return (s: Float32Array, working: Float32Array, p: SolverParams): Float32Array => {
+  return (
+    s: Float32Array,
+    working: Float32Array,
+    p: SolverParams,
+    prev: number | null = null,
+  ): DisplayReconvolution => {
     const k = `${p.tauRise}|${p.tauDecay}|${p.fs}`;
     if (k !== key || !bp) {
       bp = computeBandedParams(p.tauRise, p.tauDecay, p.fs, p.lambda);
@@ -185,10 +223,15 @@ export function makeReconvolve(computeBandedParams: BandedParamsFn) {
       out[t] = f(f(f(g1 * out[t - 1]) + f(g2 * out[t - 2])) + f(s[t - 1] * inv));
     }
     let sum = 0;
-    for (let t = 0; t < n; t++) sum += working[t] - out[t];
-    const b = n > 0 ? sum / n : 0;
-    for (let t = 0; t < n; t++) out[t] += b;
-    return out;
+    for (let t = 0; t < n; t++) sum += f(working[t] - out[t]);
+    const raw = n > 0 ? sum / n : 0;
+    const ema =
+      prev === null
+        ? raw
+        : DISPLAY_BASELINE_EMA_WEIGHT * raw + (1 - DISPLAY_BASELINE_EMA_WEIGHT) * prev;
+    const b = f(ema);
+    for (let t = 0; t < n; t++) out[t] = f(out[t] + b);
+    return { reconvolution: out, displayBaseline: ema };
   };
 }
 
@@ -218,6 +261,7 @@ function jobToTile(job: CaTunePoolJob): SolveTile {
           solution: r.solution,
           iterations: r.iteration,
           warmState: job.warmStrategy !== 'cold' ? job.warmState : null,
+          warmStrategy: job.warmStrategy,
           warmStarted: job.warmState !== null && job.warmStrategy !== 'cold',
           converged: r.converged,
         });
@@ -288,6 +332,8 @@ export interface SolverPoolDeps {
   wasmWorkersWithGpu?: number;
   /** Full pool size after a GPU failure. Default: the normal worker count. */
   wasmWorkersFull?: number;
+  /** Calibration gate mode; default from `?gpuGate=` (advisory unless 'auto'). */
+  gpuGate?: GpuGateMode;
 }
 
 const defaultPrepWorker = () =>
@@ -319,6 +365,7 @@ export function createSolverPool(
   }
 
   fullPoolSize = deps.wasmWorkersFull ?? getDefaultWorkerCount();
+  const gate = deps.gpuGate ?? getRequestedGpuGate();
   const unavailable = (deps.webGpuUnavailable ?? webGpuUnavailableReason)();
   const reducedSize = Math.max(1, Math.min(deps.wasmWorkersWithGpu ?? 2, fullPoolSize));
   // Without WebGPU the pool runs at full size from the start.
@@ -330,6 +377,7 @@ export function createSolverPool(
   let reacquireLeft = 1;
   let disposed = false;
   const prep = createGpuPrepClient(deps.createPrepWorker ?? defaultPrepWorker);
+  prepClient = prep;
   referenceClient = createGpuPrepClient(deps.createPrepWorker ?? defaultPrepWorker);
 
   function makeGpuConsumer(): GpuBatchConsumer {
@@ -361,24 +409,19 @@ export function createSolverPool(
         const fista = await mod.createGpuFista(device, { maxGroupBytes });
         setBackendStatus((s) => ({ ...s, active: 'webgpu', adapter }));
         return {
-          async load(...a) {
-            device.pushErrorScope('out-of-memory');
-            try {
-              fista.load(...a);
-            } catch (err) {
-              await device.popErrorScope();
-              if (err instanceof RangeError) throw new GpuOutOfMemoryError(err.message);
-              throw err;
-            }
-            const oom = await device.popErrorScope();
-            if (oom) throw new GpuOutOfMemoryError(oom.message);
-          },
+          // load() is async and wraps every allocation, upload and bind group
+          // in its own out-of-memory + validation error scopes, awaiting both
+          // pops before it resolves; it rejects with GpuOutOfMemoryError (also
+          // for validation errors that follow an OOM). The consumer serializes
+          // engine calls, so no other device work interleaves with the scopes.
+          load: (...a) => fista.load(...a),
           step: (n) => fista.step(n),
-          readStatus: () => fista.readStatus(),
-          readSolutionsFor: (cells) => fista.readSolutionsFor(cells),
+          readSolutionsFor: (cells, o) => fista.readSolutionsFor(cells, o),
           get groupCount() {
             return fista.groupCount;
           },
+          maxTraceLength: fista.maxTraceLength,
+          estimateBytes: fista.estimateBytes ? (n, T) => fista.estimateBytes!(n, T) : undefined,
           adapter,
           destroy() {
             fista.destroy();
@@ -386,13 +429,23 @@ export function createSolverPool(
           },
         };
       },
+      // CaTune's preprocessing always ends with subtract_baseline, which pins
+      // the solver's baseline to 0 (`filtered` in Rust); constraint nonneg.
+      filtered: true,
+      constraint: 'nonneg',
       prepare: (tile) =>
         Promise.all(
           tile.traces.map((t, k) =>
             prep.workingTrace(tile.cells[k], tile.windowStart, t, tile.params),
           ),
         ),
-      reconvolve: (s, w, p) => reconvolveImpl!(s, w, p),
+      reconvolve: (s, w, p, prev) => reconvolveImpl!(s, w, p, prev),
+      participate(tile) {
+        // The prep cache is keyed by cell; a tile without a cell index goes to WASM.
+        if (tile.cells.some((c) => c < 0)) return 'tile has no cell index (prep cache key)';
+        if (gate !== 'auto') return null;
+        return gpuParticipationVerdict(calibrations.get('webgpu'), calibrations.get('wasm-pool'));
+      },
       quantum: { targetMs: 100, initialIterations: 20 },
       onStats: setGpuStats,
       onCalibration(cal) {
@@ -460,6 +513,7 @@ export function createSolverPool(
       disposed = true;
       scheduler.dispose();
       prep.dispose();
+      if (prepClient === prep) prepClient = null;
       referenceClient?.dispose();
       referenceClient = null;
     },

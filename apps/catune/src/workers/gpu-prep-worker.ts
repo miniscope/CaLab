@@ -5,7 +5,8 @@
 //   apply_filter, subtract_baseline, get_trace), returning the working trace
 //   the GPU solves.
 // - 'reference': the same preprocessing, the GPU's warm start if it had one
-//   (load_state + reset_momentum), then step_batch to convergence with no
+//   (load_state, plus reset_momentum for 'warm-no-momentum', exactly as the
+//   pool worker and the GPU treat it), then step_batch to convergence with no
 //   getter calls in between. pool-worker.ts polls
 //   get_reconvolution_with_baseline every 100 ms, which writes the solver's
 //   baseline (CODEBASE-REVIEW-2026-10 §1.2), so its results depend on timing;
@@ -47,13 +48,16 @@ onmessage = (e: MessageEvent<GpuPrepInbound>) => {
     }
     const t0 = performance.now();
     const working = preprocess(solver, msg.trace, msg.params);
-    if (msg.warmState) {
+    if (msg.warmState && msg.warmStrategy !== 'cold') {
       solver.load_state(msg.warmState);
-      solver.reset_momentum();
+      if (msg.warmStrategy === 'warm-no-momentum') solver.reset_momentum();
     }
-    while (!solver.converged() && solver.iteration_count() < msg.maxIters) {
+    const startIter = solver.iteration_count();
+    const t1 = performance.now();
+    while (!solver.converged() && solver.iteration_count() - startIter < msg.maxIters) {
       solver.step_batch(REFERENCE_BATCH);
     }
+    const solveMs = performance.now() - t1;
     const solution = solver.get_solution();
     workerScope.postMessage(
       {
@@ -62,8 +66,10 @@ onmessage = (e: MessageEvent<GpuPrepInbound>) => {
         working,
         solution,
         iterations: solver.iteration_count(),
+        iterationsRun: solver.iteration_count() - startIter,
         converged: solver.converged(),
         ms: performance.now() - t0,
+        solveMs,
       },
       [working.buffer, solution.buffer],
     );

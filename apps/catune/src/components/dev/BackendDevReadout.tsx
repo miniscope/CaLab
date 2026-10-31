@@ -2,7 +2,9 @@
 // requested (`?backend=gpu` or localStorage 'calab:backend' = 'gpu'). Shows the
 // active backend, adapter, batch size and throughput, and for the selected
 // cell a GPU-vs-WASM check: the GPU's latest converged window re-solved with a
-// WASM Solver in a worker (same warm start, no mid-solve getters).
+// WASM Solver in a worker (same warm start and strategy, no mid-solve getters).
+// At most one reference solve is in flight; while it runs, only the newest
+// request is remembered, and stale ones are skipped.
 
 import { Show, createEffect, createSignal, on, onCleanup, type Component } from 'solid-js';
 import { selectedCell } from '../../lib/viz-store.ts';
@@ -10,6 +12,7 @@ import {
   backendStatus,
   calibrationVerdict,
   compareWithWasm,
+  gpuPrepStats,
   gpuResultVersion,
   gpuStats,
   latestGpuResult,
@@ -46,43 +49,67 @@ export const BackendDevReadout: Component = () => {
   const [cmp, setCmp] = createSignal<BackendComparison | null>(null);
   const [cmpState, setCmpState] = createSignal<string>('waiting for a converged GPU result');
   const [collapsed, setCollapsed] = createSignal(false);
+  const [prep, setPrep] = createSignal(gpuPrepStats());
   let lastCompared: GpuCellRecord | undefined;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let seq = 0;
+  /** A reference solve is running in the worker. */
+  let running = false;
+  /** Cell to compare once the running solve is done (newest request only). */
+  let queued: number | null = null;
+  let alive = true;
+
+  function runCompare(cell: number): void {
+    const rec = latestGpuResult(cell);
+    if (!rec) {
+      setCmpState(`cell ${cell}: no converged GPU result yet`);
+      return;
+    }
+    if (rec === lastCompared) return;
+    if (running) {
+      queued = cell; // replaces any older queued request
+      setCmpState(`cell ${rec.cellIndex}: queued behind the running WASM reference`);
+      return;
+    }
+    lastCompared = rec;
+    running = true;
+    setCmpState(`cell ${rec.cellIndex}: running WASM reference...`);
+    compareWithWasm(cell)
+      .then((c) => {
+        if (!alive) return;
+        setCmp(c);
+        setCmpState('');
+        if (c) {
+          console.info(
+            `[solver-backend] cell ${c.cellIndex}: GPU vs WASM relL2 ${c.relL2.toExponential(2)}, ` +
+              `max|d| ${c.maxAbs.toExponential(1)}, iterations GPU ${c.gpuIterations}` +
+              `${c.gpuWarmStarted ? ` (${c.warmStrategy})` : ''} / WASM ${c.wasmIterations}`,
+          );
+        }
+      })
+      .catch((err) => {
+        if (alive) setCmpState(`compare failed: ${String(err)}`);
+      })
+      .finally(() => {
+        running = false;
+        setPrep(gpuPrepStats());
+        const next = queued;
+        queued = null;
+        if (alive && next !== null) runCompare(next);
+      });
+  }
 
   createEffect(
     on([selectedCell, gpuResultVersion], ([cell]) => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        const rec = latestGpuResult(cell);
-        if (!rec) {
-          setCmpState(`cell ${cell}: no converged GPU result yet`);
-          return;
-        }
-        if (rec === lastCompared) return;
-        lastCompared = rec;
-        const mine = ++seq;
-        setCmpState(`cell ${rec.cellIndex}: running WASM reference...`);
-        compareWithWasm(cell)
-          .then((c) => {
-            if (mine !== seq) return;
-            setCmp(c);
-            setCmpState('');
-            if (c) {
-              console.info(
-                `[solver-backend] cell ${c.cellIndex}: GPU vs WASM relL2 ${c.relL2.toExponential(2)}, ` +
-                  `iterations GPU ${c.gpuIterations}${c.gpuWarmStarted ? ' (warm)' : ''} / WASM ${c.wasmIterations}`,
-              );
-            }
-          })
-          .catch((err) => {
-            if (mine === seq) setCmpState(`compare failed: ${String(err)}`);
-          });
+        setPrep(gpuPrepStats());
+        runCompare(cell);
       }, COMPARE_DEBOUNCE_MS);
     }),
   );
   onCleanup(() => {
+    alive = false;
     if (timer) clearTimeout(timer);
   });
 
@@ -111,7 +138,8 @@ export const BackendDevReadout: Component = () => {
               <div>
                 gpu {s().state}: {s().cellsLoaded} cells x {s().samplesPerCell} samples
                 {s().groups > 1 ? `, ${s().groups} groups` : ''}; read back {s().lastReadbackCells};
-                budget {(s().memoryBudgetBytes / 2 ** 20).toFixed(0)} MiB
+                yielded {s().yieldedTiles}; budget {(s().memoryBudgetBytes / 2 ** 20).toFixed(0)}{' '}
+                MiB
               </div>
               <div>
                 {s().iterationsPerSec.toFixed(0)} it/s, {fmtRate(s().sampleItersPerSec)}
@@ -119,6 +147,15 @@ export const BackendDevReadout: Component = () => {
                 ms)
               </div>
             </>
+          )}
+        </Show>
+        <Show when={prep()}>
+          {(p) => (
+            <div>
+              prep: {p().computed} traces
+              {p().computed > 0 ? `, ${(p().totalMs / p().computed).toFixed(1)} ms avg` : ''};{' '}
+              {p().cacheHits} cache hits
+            </div>
           )}
         </Show>
         <Show when={backendStatus().wasmWorkers}>
@@ -134,7 +171,7 @@ export const BackendDevReadout: Component = () => {
             <div>
               cell {c().cellIndex} GPU vs WASM: relL2 {c().relL2.toExponential(2)}, max|d|{' '}
               {c().maxAbs.toExponential(1)}; it GPU {c().gpuIterations}
-              {c().gpuWarmStarted ? ' (warm)' : ''} / WASM {c().wasmIterations}
+              {c().gpuWarmStarted ? ` (${c().warmStrategy})` : ''} / WASM {c().wasmIterations}
               {c().wasmConverged ? '' : ' (unconverged)'} ({c().wasmMs.toFixed(0)} ms)
             </div>
           )}

@@ -39,7 +39,6 @@ interface CellSolveState {
   zoomEnd: number; // seconds
   warmStartCache: WarmStartCache;
   activeJobId: number | null;
-  debounceTimer: ReturnType<typeof setTimeout> | null;
   converged: boolean;
   deferredRequeue: boolean;
   dispatchedParams: SolverParams | null;
@@ -60,6 +59,45 @@ const [solverFatalError, setSolverFatalError] = createSignal<string | null>(null
 export { solverFatalError };
 let jobCounter = 0;
 const cellStates = new Map<number, CellSolveState>();
+
+// One shared debounce for every cell. Per-cell timers fired in separate
+// tasks, and the tile scheduler pumps per task (microtask), so after a
+// parameter change the GPU got a 1-cell batch followed by the rest. With one
+// timer, every pending cell is dispatched in the same task and reaches the
+// scheduler together. Value: also invalidate the cached padded result.
+const pendingDispatch = new Map<number, boolean>();
+let dispatchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleDispatch(state: CellSolveState, invalidate: boolean): void {
+  pendingDispatch.set(
+    state.cellIndex,
+    (pendingDispatch.get(state.cellIndex) ?? false) || invalidate,
+  );
+  if (dispatchTimer !== null) clearTimeout(dispatchTimer);
+  dispatchTimer = setTimeout(flushPendingDispatches, DEBOUNCE_MS);
+}
+
+function flushPendingDispatches(): void {
+  dispatchTimer = null;
+  const due = [...pendingDispatch];
+  pendingDispatch.clear();
+  for (const [cellIndex, invalidate] of due) {
+    const state = cellStates.get(cellIndex);
+    if (!state) continue;
+    if (invalidate) {
+      state.fullPaddedSolution = null;
+      state.fullPaddedReconvolution = null;
+      state.fullPaddedFilteredTrace = null;
+    }
+    dispatchCellSolve(state);
+  }
+}
+
+function clearPendingDispatches(): void {
+  if (dispatchTimer !== null) clearTimeout(dispatchTimer);
+  dispatchTimer = null;
+  pendingDispatch.clear();
+}
 
 function nextJobId(): number {
   return ++jobCounter;
@@ -276,29 +314,14 @@ function reEnqueueCell(state: CellSolveState): void {
 }
 
 function debouncedDispatch(state: CellSolveState): void {
-  if (state.debounceTimer !== null) {
-    clearTimeout(state.debounceTimer);
-  }
-  state.debounceTimer = setTimeout(() => {
-    state.debounceTimer = null;
-    dispatchCellSolve(state);
-  }, DEBOUNCE_MS);
+  scheduleDispatch(state, false);
 }
 
 // Param-change debounce: invalidates cached padded results (they were computed
 // for stale tau/lambda) before dispatching. Separate from `debouncedDispatch`
 // which is reused by zoom-cache misses where the cache is still valid.
 function debouncedParamTransition(state: CellSolveState): void {
-  if (state.debounceTimer !== null) {
-    clearTimeout(state.debounceTimer);
-  }
-  state.debounceTimer = setTimeout(() => {
-    state.debounceTimer = null;
-    state.fullPaddedSolution = null;
-    state.fullPaddedReconvolution = null;
-    state.fullPaddedFilteredTrace = null;
-    dispatchCellSolve(state);
-  }, DEBOUNCE_MS);
+  scheduleDispatch(state, true);
 }
 
 function ensureCellState(
@@ -320,7 +343,6 @@ function ensureCellState(
       zoomEnd: Math.min(zoomOffset + CELL_CARD_ZOOM_WINDOW_S, duration),
       warmStartCache: new WarmStartCache(),
       activeJobId: null,
-      debounceTimer: null,
       converged: false,
       deferredRequeue: false,
       dispatchedParams: null,
@@ -353,7 +375,7 @@ function ensureCellState(
 function removeCellState(cellIndex: number): void {
   const state = cellStates.get(cellIndex);
   if (state) {
-    if (state.debounceTimer !== null) clearTimeout(state.debounceTimer);
+    pendingDispatch.delete(cellIndex);
     if (state.activeJobId !== null && pool) pool.cancel(state.activeJobId);
     cellStates.delete(cellIndex);
   }
@@ -502,10 +524,7 @@ export function initCellSolveManager(): void {
 }
 
 export function disposeCellSolveManager(): void {
-  // Clear all debounce timers
-  for (const state of cellStates.values()) {
-    if (state.debounceTimer !== null) clearTimeout(state.debounceTimer);
-  }
+  clearPendingDispatches();
   cellStates.clear();
 
   if (pool) {
