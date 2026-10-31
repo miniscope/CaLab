@@ -232,6 +232,7 @@ fn threshold_search_on_empty_trace_has_finite_baseline() {
         1,
         f64::INFINITY,
         crate::threshold::Selection::MaxPve,
+        None,
     );
     assert_eq!(r.baseline, 0.0);
 }

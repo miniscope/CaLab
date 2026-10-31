@@ -13,20 +13,20 @@
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
-use crate::threshold::{threshold_search_opts, Selection, ThresholdResult};
+use crate::filter::BandpassFilter;
+use crate::threshold::{threshold_search_opts, NoiseModel, Selection, ThresholdResult};
 use crate::upsample::{
     downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
 use crate::{Constraint, ConvMode, Solver};
 use realfft::RealFftPlanner;
 
-/// Optional spike-inference behaviors. The library default is off (`MaxPve`,
-/// preserving the historical output); the CaDecon app enables `noise_constrained`
-/// by default.
+/// Optional spike-inference behaviors. The library default is off (`MaxPve`);
+/// the CaDecon app enables `noise_constrained` by default.
 ///
 /// `noise_constrained` chooses the binarization threshold at the data-derived
-/// noise floor instead of maximizing fit, suppressing low-SNR spurious spikes
-/// without changing the default (max-PVE) output.
+/// noise floor instead of at the best fit, suppressing low-SNR spurious spikes
+/// (see the `threshold` module docs).
 #[derive(Clone, Copy, Default)]
 pub struct SolveOptions {
     pub noise_constrained: bool,
@@ -70,74 +70,92 @@ pub fn high_band_sigma(raw_trace: &[f32]) -> f64 {
     (acc / cnt as f64).max(0.0).sqrt()
 }
 
-fn variance(x: &[f32]) -> f64 {
-    let n = x.len();
-    if n == 0 {
-        return 0.0;
-    }
-    let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
-    x.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n as f64
+/// The bandpass applied to the upsampled trace (cutoffs derived from the
+/// kernel at the upsampled rate).
+fn trace_filter(tau_r: f64, tau_d: f64, fs_up: f64, hp: bool, lp: bool) -> BandpassFilter {
+    let mut f = BandpassFilter::new();
+    f.update_cutoffs(tau_r, tau_d, fs_up);
+    f.set_hp_enabled(hp);
+    f.set_lp_enabled(lp);
+    f
 }
 
-/// Per-sample noise std of the FILTERED trace at original-grid positions — the
-/// quantity the residual budget needs. Estimates the raw noise std from the
-/// unfiltered trace (LP-immune) and scales by the empirically-measured
-/// noise-variance gain of the actual upsample→HP/LP chain: a deterministic
-/// white probe is pushed through the same path and its grid-sample variance
-/// ratio gives the gain. This makes the budget track whatever noise survives
-/// the filters, regardless of where the (kernel-derived) LP cutoff falls.
-/// (The rolling-baseline subtraction is a mild high-pass and is not replicated
-/// in the probe; its effect on noise variance is negligible.)
-fn estimate_grid_noise_sigma(
+/// Noise statistics of the preprocessed (upsampled, filtered) trace.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NoiseEstimate {
+    /// Noise at original-rate grid positions: the threshold-search statistic.
+    pub grid: NoiseModel,
+}
+
+/// Estimate the noise of the preprocessed trace from the raw trace.
+///
+/// The raw noise std comes from the high band of the unfiltered trace
+/// ([`high_band_sigma`]). Upsampling (linear interpolation) and the bandpass
+/// are linear and, at original-rate grid positions, shift-invariant, so white
+/// raw noise of variance `sigma^2` leaves the chain as white noise convolved
+/// with the chain's impulse response `h`, sampled on the grid as `h_grid`:
+///
+/// - grid variance `sigma^2 * sum(h_grid^2)`,
+/// - grid autocorrelation `rho = acf(h_grid) / acf(h_grid)(0)`, so
+///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval).
+///
+/// `h` is measured exactly by pushing a unit impulse through the same
+/// upsample → filter path (no random probe). (The rolling-baseline subtraction
+/// that follows is a slow, mild high-pass and is not modelled.)
+pub(crate) fn estimate_noise_model(
     raw_trace: &[f32],
     upsample_factor: usize,
-    tau_r: f64,
-    tau_d: f64,
-    fs_up: f64,
-    hp: bool,
-    lp: bool,
-) -> f64 {
-    let sigma_raw = high_band_sigma(raw_trace);
-    if sigma_raw <= 0.0 {
-        return 0.0;
-    }
-    // No filtering: grid samples equal the raw samples, so gain is 1.
-    if !hp && !lp {
-        return sigma_raw;
-    }
-
-    // Deterministic unit-ish white probe (LCG); absolute scale cancels in the ratio.
+    filter: Option<&mut BandpassFilter>,
+) -> NoiseEstimate {
+    let k = upsample_factor.max(1);
     let n = raw_trace.len();
+    let sigma_raw = high_band_sigma(raw_trace);
+    let zero = NoiseEstimate {
+        grid: NoiseModel {
+            sigma: 0.0,
+            corr_sum: 1.0,
+        },
+    };
+    if n == 0 || sigma_raw <= 0.0 {
+        return zero;
+    }
+
     let mut probe = vec![0.0_f32; n];
-    let mut state: u64 = 0x9E3779B97F4A7C15;
-    for v in probe.iter_mut() {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *v = (((state >> 33) as f64) / ((1u64 << 31) as f64) - 1.0) as f32;
+    probe[n / 2] = 1.0;
+    let mut h = upsample_trace(&probe, k);
+    if let Some(f) = filter {
+        f.apply(&mut h);
     }
+    let mut h_grid: Vec<f32> = h.iter().step_by(k).copied().collect();
 
-    let up = upsample_trace(&probe, upsample_factor);
-    let mut solver = Solver::new();
-    solver.set_conv_mode(ConvMode::BandedAR2);
-    solver.apply_params(tau_r, tau_d, 0.0, fs_up);
-    solver.load_trace(&up);
-    solver.set_hp_filter_enabled(hp);
-    solver.set_lp_filter_enabled(lp);
-    solver.apply_filter();
-    let filt = solver.get_trace();
-
-    let grid: Vec<f32> = filt
-        .iter()
-        .step_by(upsample_factor.max(1))
-        .copied()
-        .collect();
-    let var_probe = variance(&probe);
-    if var_probe <= 0.0 {
-        return sigma_raw;
+    // Full-spectrum sums of |H|^2 and |H|^4 from the half spectrum.
+    let mut planner = RealFftPlanner::<f32>::new();
+    let r2c = planner.plan_fft_forward(n);
+    let mut spectrum = r2c.make_output_vec();
+    let (mut s2, mut s4) = (0.0_f64, 0.0_f64);
+    if r2c.process(&mut h_grid, &mut spectrum).is_ok() {
+        let last = spectrum.len() - 1;
+        for (f, c) in spectrum.iter().enumerate() {
+            let p = c.re as f64 * c.re as f64 + c.im as f64 * c.im as f64;
+            let w = if f == 0 || (n % 2 == 0 && f == last) {
+                1.0
+            } else {
+                2.0
+            };
+            s2 += w * p;
+            s4 += w * p * p;
+        }
     }
-    let gain = (variance(&grid) / var_probe).max(0.0);
-    sigma_raw * gain.sqrt()
+    if s2.is_nan() || s2 <= 0.0 {
+        return zero;
+    }
+    let grid_gain = s2 / n as f64;
+    NoiseEstimate {
+        grid: NoiseModel {
+            sigma: sigma_raw * grid_gain.sqrt(),
+            corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
+        },
+    }
 }
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
@@ -303,14 +321,27 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
+/// Per-round diagnostics of [`solve_trace_stats`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RoundStats {
+    pub alpha_est: f64,
+    pub iterations: u32,
+    pub converged: bool,
+    /// Some interior bin of the relaxed solution sits at the box upper bound.
+    pub upper_bound_active: bool,
+    /// The threshold pick came from the noise budget (`None`: no search this
+    /// round).
+    pub noise_path: Option<bool>,
+}
+
 /// Full InDeCa trace processing pipeline with scale iteration.
 ///
 /// Mirrors InDeCa's `solve_scale` loop:
-/// 1. Upsample, apply optional bandpass filter
+/// 1. Upsample, apply optional bandpass filter, subtract rolling baseline
 /// 2. Estimate initial alpha from trace peak-to-trough
 /// 3. Iterate: prescale → Box[0,1] FISTA → threshold search → update alpha
-///    until alpha_lstsq converges near 1.0 (prescale matches true amplitude)
-/// 4. Recover original-scale alpha, downsample spike train
+///    until alpha_lstsq converges near alpha_est (prescale matches amplitude)
+/// 4. Downsample the spike train of the best round
 ///
 /// The iteration loop is the key difference from the single-pass approach:
 /// each round refines the prescale so Box[0,1] maps correctly, preventing
@@ -366,27 +397,53 @@ pub fn solve_trace_opts(
     lambda: f64,
     opts: SolveOptions,
 ) -> InDecaResult {
+    solve_trace_stats(
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm_counts,
+        hp_enabled,
+        lp_enabled,
+        lambda,
+        opts,
+    )
+    .0
+}
+
+/// [`solve_trace_opts`] plus per-round diagnostics.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_trace_stats(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_counts: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    opts: SolveOptions,
+) -> (InDecaResult, Vec<RoundStats>) {
     let fs_up = fs * upsample_factor as f64;
-    let upsampled = upsample_trace(trace, upsample_factor);
+    let mut working_trace = upsample_trace(trace, upsample_factor);
 
     // Single solver allocation reused across all solve_upsampled calls.
     // set_trace() resets all state; buffers grow but never shrink.
     let mut solver = Solver::new();
 
     // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
-    // Apply bandpass filter directly (if HP/LP enabled), then
-    // subtract the rolling-percentile baseline so the floor is ~0.
-    let mut working_trace = if hp_enabled || lp_enabled {
-        // Apply bandpass filter directly — no need for a full FISTA solve
-        solver.set_conv_mode(ConvMode::BandedAR2);
-        solver.apply_params(tau_r, tau_d, 0.0, fs_up);
-        solver.load_trace(&upsampled);
-        solver.set_hp_filter_enabled(hp_enabled);
-        solver.set_lp_filter_enabled(lp_enabled);
-        solver.apply_filter();
-        solver.get_trace()
+    // The filter is kept for the noise model (it shapes the noise that remains).
+    let mut filter = if hp_enabled || lp_enabled {
+        let mut f = trace_filter(tau_r, tau_d, fs_up, hp_enabled, lp_enabled);
+        f.apply(&mut working_trace).then_some(f)
     } else {
-        upsampled
+        None
     };
 
     // Rolling-percentile baseline subtraction: brings the floor to ~0.
@@ -415,25 +472,17 @@ pub fn solve_trace_opts(
 
     let banded = BandedAR2::new(tau_r, tau_d, fs_up);
 
-    // Noise-constrained threshold selection needs the per-sample noise std of the
-    // filtered trace at the original grid. Estimated LP-cutoff-agnostically from
-    // the raw trace's high band scaled by the filter chain's measured noise gain.
-    // Fully data-derived — no knob.
+    // Noise of the preprocessed trace, from the raw trace's high band pushed
+    // through the same upsample → filter chain. Fully data-derived — no knob.
+    // It sets the threshold search's noise budget and standard error (both
+    // selections).
+    let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
     let selection = if opts.noise_constrained {
-        Selection::NoiseFloor {
-            sigma: estimate_grid_noise_sigma(
-                trace,
-                upsample_factor,
-                tau_r,
-                tau_d,
-                fs_up,
-                hp_enabled,
-                lp_enabled,
-            ),
-        }
+        Selection::NoiseFloor
     } else {
         Selection::MaxPve
     };
+    let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
 
     // ── Step 3: Scale iteration loop ────────────────────────────────────
     // Each round: prescale by alpha_est → Box[0,1] FISTA → threshold search
@@ -445,6 +494,7 @@ pub fn solve_trace_opts(
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_scale_err = f64::INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
+    let mut stats = Vec::new();
 
     // Pre-allocate scratch buffers reused across scale iterations.
     let wt_len = working_trace.len();
@@ -482,6 +532,14 @@ pub fn solve_trace_opts(
             lambda,
         );
 
+        let mut round = RoundStats {
+            alpha_est,
+            iterations,
+            converged,
+            upper_bound_active: interior_peak(&s_relaxed, pad) >= 1.0,
+            noise_path: None,
+        };
+
         // Normalize relaxed solution to [0,1] before threshold search.
         // Use the interior peak only (excluding boundary padding) so that edge
         // artifacts from trace subsets starting mid-transient don't dominate.
@@ -503,6 +561,7 @@ pub fn solve_trace_opts(
             baseline: baseline_lstsq,
             threshold,
             pve,
+            noise_path,
             ..
         } = threshold_search_opts(
             s_norm_slice,
@@ -513,7 +572,10 @@ pub fn solve_trace_opts(
             upsample_factor,
             f64::INFINITY,
             selection,
+            noise_model,
         );
+        round.noise_path = Some(noise_path);
+        stats.push(round);
 
         // Scale-loop convergence error: how close the lstsq-recovered alpha is to
         // the prescale used this round. This is the loop's own objective.
@@ -534,7 +596,7 @@ pub fn solve_trace_opts(
         // error) — the scale loop's own fixed point, which is criterion-neutral.
         let is_better = match selection {
             Selection::MaxPve => pve > best_pve,
-            Selection::NoiseFloor { .. } => scale_err < best_scale_err,
+            Selection::NoiseFloor => scale_err < best_scale_err,
         };
         if is_better {
             best_pve = pve;
@@ -576,16 +638,19 @@ pub fn solve_trace_opts(
     // (working_trace is not modified after baseline subtraction).
     let filtered_trace = Some(downsample_average(&working_trace, upsample_factor));
 
-    InDecaResult {
-        s_counts,
-        filtered_trace,
-        alpha,
-        baseline,
-        threshold,
-        pve,
-        iterations,
-        converged,
-    }
+    (
+        InDecaResult {
+            s_counts,
+            filtered_trace,
+            alpha,
+            baseline,
+            threshold,
+            pve,
+            iterations,
+            converged,
+        },
+        stats,
+    )
 }
 
 #[cfg(test)]
@@ -1012,7 +1077,7 @@ mod tests {
     #[test]
     fn noise_constrained_recovers_events_on_noisy_trace() {
         // Exercise the noise-floor selection path end-to-end (solve_trace_opts →
-        // estimate_grid_noise_sigma → Selection::NoiseFloor) on a genuinely noisy
+        // estimate_noise_model → Selection::NoiseFloor) on a genuinely noisy
         // trace. It should recover the real events with a reasonable fit and not
         // wildly overcount. The per-trace count is NOT guaranteed to be below the
         // max-PVE default — the two criteria use different search strategies — so
@@ -1065,5 +1130,50 @@ mod tests {
             "fit should be reasonable, pve {}",
             constrained.pve
         );
+    }
+
+    #[test]
+    fn noise_model_matches_white_noise_pushed_through_the_chain() {
+        // The impulse-response derivation must agree with what white noise
+        // actually looks like after upsample → bandpass.
+        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
+        let n = 6000;
+        let noise = lcg_noise(n, 1.0, 0x5EED);
+        let sigma_raw = (1.0_f64 / 3.0).sqrt();
+        let mut f = trace_filter(tr, td, fs * k as f64, true, true);
+        let est = estimate_noise_model(&noise, k, Some(&mut f));
+
+        let mut up = upsample_trace(&noise, k);
+        assert!(trace_filter(tr, td, fs * k as f64, true, true).apply(&mut up));
+        let grid: Vec<f64> = up.iter().step_by(k).map(|&v| v as f64).collect();
+        let var = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
+        let grid_var = var(&grid);
+        // Empirical sum of squared autocorrelations over the lags that matter.
+        let rho = |lag: usize| {
+            (0..n - lag).map(|i| grid[i] * grid[i + lag]).sum::<f64>()
+                / ((n - lag) as f64 * grid_var)
+        };
+        let corr_emp = 1.0 + 2.0 * (1..40).map(|l| rho(l).powi(2)).sum::<f64>();
+
+        let rel = |a: f64, b: f64| (a / b - 1.0).abs();
+        assert!(rel(high_band_sigma(&noise), sigma_raw) < 0.1);
+        assert!(
+            rel(est.grid.sigma.powi(2), grid_var) < 0.15,
+            "{} vs {}",
+            est.grid.sigma.powi(2),
+            grid_var
+        );
+        assert!(est.grid.corr_sum > 1.5, "LP should correlate grid samples");
+        assert!(
+            rel(est.grid.corr_sum, corr_emp) < 0.25,
+            "{} vs {}",
+            est.grid.corr_sum,
+            corr_emp
+        );
+
+        // Without filtering the grid samples are the raw samples.
+        let plain = estimate_noise_model(&noise, k, None);
+        assert!(rel(plain.grid.sigma, high_band_sigma(&noise)) < 1e-6);
+        assert!((plain.grid.corr_sum - 1.0).abs() < 1e-6);
     }
 }
