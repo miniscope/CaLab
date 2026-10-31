@@ -1,6 +1,6 @@
 /**
  * Batched banded-AR(2) FISTA on WebGPU: every cell of a recording is solved
- * at once, one dispatch per stage per iteration (see shaders/fista-wgsl.ts).
+ * at once, two dispatches per iteration (see shaders/fista-wgsl.ts).
  *
  * Cells are split into groups whose per-cell buffers fit the device's
  * maxStorageBufferBindingSize / maxBufferSize; each group has its own buffers
@@ -9,15 +9,21 @@
  * `checkEvery` iterations), so the GPU is not stalled every iteration.
  */
 import { computeBandedParams } from './banded-params.ts';
-import { BLOCK, K, WG } from './scan-reference.ts';
+import { BLOCK, K, WG, buildScanTables } from './scan-reference.ts';
 import { fistaShaderSource } from './shaders/fista-wgsl.ts';
 import type { GpuFistaParams } from './types.ts';
 
 const CELL_STRUCT_BYTES = 32;
-const PARAMS_BYTES = 80;
+const PARAMS_BYTES = 64;
+/** f32 slots per (cell, block) record in the aux buffer (REC in the WGSL). */
+const AUX_REC = 20;
 const PER_CELL_WG = 64;
-/** Iterations per command buffer, so one submit never runs too long. */
-const ITERS_PER_SUBMIT = 50;
+/** Default wall-clock target for one command buffer (see GpuFistaOptions). */
+const DEFAULT_TARGET_SUBMIT_MS = 75;
+/** Iterations in a group's first command buffer, before any timing exists. */
+const FIRST_SUBMIT_ITERS = 4;
+/** Upper bound on iterations per command buffer (tiny problems). */
+const MAX_SUBMIT_ITERS = 1000;
 
 /** Feature-detect WebGPU and request a device with the adapter's buffer limits. */
 export async function requestGpuDevice(): Promise<GPUDevice | null> {
@@ -39,7 +45,7 @@ export async function requestGpuDevice(): Promise<GPUDevice | null> {
 /** Bytes of GPU memory one solve needs (all groups, all buffers). */
 export function estimateGpuBytes(nCells: number, T: number): number {
   const nBlocks = Math.ceil(T / BLOCK);
-  return nCells * (5 * T * 4 + 6 * nBlocks * 4 + CELL_STRUCT_BYTES);
+  return nCells * (3 * T * 4 + AUX_REC * nBlocks * 4 + CELL_STRUCT_BYTES);
 }
 
 /** Largest number of cells one group can hold for traces of length T. */
@@ -67,6 +73,14 @@ export interface GpuFistaOptions {
    * device limits alone decide. Mainly for tests that need several groups.
    */
   maxGroupBytes?: number;
+  /**
+   * Wall-clock target for one command buffer, in ms (default 75). step()
+   * times each submit (queue.onSubmittedWorkDone) and sizes the next one to
+   * about this long, so a single submission stays well under OS GPU watchdog
+   * limits (e.g. Windows TDR at ~2 s) and does not starve a shared
+   * compositor. Submit sizing never changes the arithmetic.
+   */
+  targetSubmitMs?: number;
 }
 
 export interface GpuSolutions {
@@ -97,24 +111,17 @@ interface Group {
   cellOffset: number;
   nCells: number;
   buffers: GPUBuffer[];
-  xs: GPUBuffer;
+  /** Ping-pong solution buffers: x_k is in xa for even k, xb for odd k. */
+  xa: GPUBuffer;
+  xb: GPUBuffer;
   cells: GPUBuffer;
   bindGroup: GPUBindGroup;
   allConverged: boolean;
+  /** Measured GPU ms per iteration from the last submit; 0 until measured. */
+  msPerIter: number;
 }
 
-const ENTRY_POINTS = [
-  'fwd1',
-  'fwd2',
-  'fwd3',
-  'bfin',
-  'carryD',
-  'carryR',
-  'adj1',
-  'adj2',
-  'prox',
-  'fin',
-] as const;
+const ENTRY_POINTS = ['prep', 'carry', 'sweep', 'fin'] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
 
 export async function createGpuFista(
@@ -122,6 +129,7 @@ export async function createGpuFista(
   options: GpuFistaOptions = {},
 ): Promise<GpuFista> {
   const maxGroupBytes = options.maxGroupBytes ?? Infinity;
+  const targetSubmitMs = options.targetSubmitMs ?? DEFAULT_TARGET_SUBMIT_MS;
   const module = device.createShaderModule({ code: fistaShaderSource(WG, K) });
   const info = await module.getCompilationInfo();
   const errors = info.messages.filter((m) => m.type === 'error');
@@ -141,10 +149,8 @@ export async function createGpuFista(
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: storage(true) },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
-      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: storage(true) },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: storage(false) },
     ],
   });
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
@@ -195,11 +201,7 @@ export async function createGpuFista(
     const bp = computeBandedParams(p.tauRise, p.tauDecay, p.fs, p.lambda);
     const d = bp.decayRootF32;
     const r = bp.riseRootF32;
-    const pows = new Float32Array(2 * (BLOCK + 1));
-    for (let j = 0; j <= BLOCK; j++) {
-      pows[j] = Math.pow(d, j);
-      pows[BLOCK + 1 + j] = Math.pow(r, j);
-    }
+    const tables = buildScanTables(d, r, T, WG, K).data;
 
     const perGroup = maxCellsPerGroup(device, T, maxGroupBytes);
     if (perGroup < 1) {
@@ -223,7 +225,7 @@ export async function createGpuFista(
         p.filtered ? 1 : 0,
         p.constraint === 'box01' ? 1 : 0,
       ]);
-      new Float32Array(u, 32, 12).set([
+      new Float32Array(u, 32, 8).set([
         d,
         r,
         bp.invPeakF32,
@@ -231,36 +233,50 @@ export async function createGpuFista(
         bp.threshF32,
         p.tol * p.tol,
         1 / T,
-        Math.pow(d, BLOCK),
-        Math.pow(r, BLOCK),
       ]);
       const cellInit = new ArrayBuffer(n * CELL_STRUCT_BYTES);
       const cf = new Float32Array(cellInit);
-      for (let c = 0; c < n; c++) cf[c * 8] = 1; // t_fista = 1, all else 0
+      const cu = new Uint32Array(cellInit);
+      for (let c = 0; c < n; c++) {
+        cf[c * 8] = 1; // t_fista = 1
+        cu[c * 8 + 3] = 1; // useX: y_0 = x_0
+      }
 
       const uniform = makeBuffer(PARAMS_BYTES, GPUBufferUsage.UNIFORM | DST, new Uint8Array(u));
       const trace = makeBuffer(bytes, S | DST, slice);
-      const xs = makeBuffer(bytes, S | DST | SRC, warm);
-      const ys = makeBuffer(bytes, S | DST, warm);
-      const s1 = makeBuffer(bytes, S);
-      const s2 = makeBuffer(bytes, S);
-      const aux = makeBuffer(6 * n * nBlocks * 4, S);
-      const powBuf = makeBuffer(pows.byteLength, S | DST, pows);
+      const xa = makeBuffer(bytes, S | DST | SRC, warm);
+      const xb = makeBuffer(bytes, S | SRC);
+      const aux = makeBuffer(AUX_REC * n * nBlocks * 4, S);
+      const tab = makeBuffer(tables.byteLength, S | DST, tables);
       const cells = makeBuffer(n * CELL_STRUCT_BYTES, S | DST | SRC, new Uint8Array(cellInit));
-      const all = [uniform, trace, xs, ys, s1, s2, aux, powBuf, cells];
+      const all = [uniform, trace, xa, xb, aux, tab, cells];
       const bindGroup = device.createBindGroup({
         layout,
         entries: all.map((buffer, binding) => ({ binding, resource: { buffer } })),
       });
-      groups.push({
+      const group: Group = {
         cellOffset: off,
         nCells: n,
         buffers: all,
-        xs,
+        xa,
+        xb,
         cells,
         bindGroup,
         allConverged: false,
-      });
+        msPerIter: 0,
+      };
+      groups.push(group);
+
+      // Trace terms and the x_0 candidate, then the first carries.
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setBindGroup(0, bindGroup);
+      pass.setPipeline(pipelines.prep);
+      pass.dispatchWorkgroups(nBlocks, n);
+      pass.setPipeline(pipelines.carry);
+      pass.dispatchWorkgroups(Math.ceil(n / PER_CELL_WG));
+      pass.end();
+      device.queue.submit([enc.finish()]);
     }
   }
 
@@ -276,19 +292,7 @@ export async function createGpuFista(
     };
     pass.setBindGroup(0, g.bindGroup);
     for (let i = 0; i < n; i++) {
-      block('fwd1');
-      perCell('carryD');
-      block('fwd2');
-      perCell('carryR');
-      if (!params!.filtered) {
-        block('fwd3');
-        perCell('bfin');
-      }
-      block('adj1');
-      perCell('carryD');
-      block('adj2');
-      perCell('carryR');
-      block('prox');
+      block('sweep');
       perCell('fin');
     }
   }
@@ -320,12 +324,21 @@ export async function createGpuFista(
     const active = groups.filter((g) => !g.allConverged);
     if (run > 0) {
       for (const g of active) {
-        for (let done = 0; done < run; done += ITERS_PER_SUBMIT) {
+        for (let done = 0; done < run;) {
+          const want =
+            g.msPerIter > 0
+              ? Math.max(1, Math.min(MAX_SUBMIT_ITERS, Math.floor(targetSubmitMs / g.msPerIter)))
+              : FIRST_SUBMIT_ITERS;
+          const chunk = Math.min(want, run - done);
           const enc = device.createCommandEncoder();
           const pass = enc.beginComputePass();
-          encodeIterations(pass, g, Math.min(ITERS_PER_SUBMIT, run - done));
+          encodeIterations(pass, g, chunk);
           pass.end();
+          const t0 = performance.now();
           device.queue.submit([enc.finish()]);
+          await device.queue.onSubmittedWorkDone();
+          g.msPerIter = (performance.now() - t0) / chunk;
+          done += chunk;
         }
       }
       itersDone += run;
@@ -344,16 +357,29 @@ export async function createGpuFista(
     const iterations = new Uint32Array(totalCells);
     const converged = new Uint8Array(totalCells);
     for (const g of groups) {
-      const [x, st] = await Promise.all([
-        readBuffer(g.xs, g.nCells * T * 4),
-        readBuffer(g.cells, g.nCells * CELL_STRUCT_BYTES),
-      ]);
-      solutions.set(new Float32Array(x), g.cellOffset * T);
-      const u = new Uint32Array(st);
+      const u = new Uint32Array(await readBuffer(g.cells, g.nCells * CELL_STRUCT_BYTES));
       for (let c = 0; c < g.nCells; c++) {
         iterations[g.cellOffset + c] = u[c * 8 + 1];
         converged[g.cellOffset + c] = u[c * 8 + 2];
       }
+      // x_k is in xa or xb by the parity of each cell's iteration count:
+      // gather with one copy per cell (no state is modified).
+      const rowBytes = T * 4;
+      const size = g.nCells * rowBytes;
+      const staging = device.createBuffer({
+        size,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      const enc = device.createCommandEncoder();
+      for (let c = 0; c < g.nCells; c++) {
+        const src = u[c * 8 + 1] % 2 === 0 ? g.xa : g.xb;
+        enc.copyBufferToBuffer(src, c * rowBytes, staging, c * rowBytes, rowBytes);
+      }
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      solutions.set(new Float32Array(staging.getMappedRange()), g.cellOffset * T);
+      staging.unmap();
+      staging.destroy();
     }
     return { solutions, iterations, converged };
   }
