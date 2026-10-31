@@ -1,5 +1,9 @@
 use crate::{Constraint, ConvMode, Solver, SolverError};
 
+/// Window (iterations) of the optional fit-window stopping rule
+/// ([`Solver::set_fit_stop`]).
+pub(crate) const FIT_STOP_WINDOW: usize = 50;
+
 impl Solver {
     /// Run n_steps of FISTA iterations. Returns `Ok(true)` if converged.
     ///
@@ -72,8 +76,21 @@ impl Solver {
 
             // 2. Compute residual = K * y_k + b - trace
             let baseline_f32 = self.baseline as f32;
-            for i in 0..n {
-                self.residual_buf[i] = self.reconvolution[i] + baseline_f32 - self.trace[i];
+            if self.fit_stop.is_some() {
+                // Same residual, plus the data-fit term 0.5*||r||^2 for the
+                // fit-window stopping rule (only when that rule is active, so
+                // the default path is untouched).
+                let mut fit = 0.0_f64;
+                for i in 0..n {
+                    let r = self.reconvolution[i] + baseline_f32 - self.trace[i];
+                    self.residual_buf[i] = r;
+                    fit += r as f64 * r as f64;
+                }
+                self.fit_history.push(0.5 * fit);
+            } else {
+                for i in 0..n {
+                    self.residual_buf[i] = self.reconvolution[i] + baseline_f32 - self.trace[i];
+                }
             }
 
             // 3. Adjoint convolution: gradient = K^T * residual
@@ -169,8 +186,17 @@ impl Solver {
                 self.t_fista = t_new;
             }
 
-            // 7. Convergence check using primal residual (squared comparison)
-            if self.iteration > 5 && diff_sq < tol_sq * (xk_sq + 1e-20) {
+            // 7. Convergence check. Default: primal residual (squared comparison).
+            //    With a fit-window rule: stop once the data-fit term improved by
+            //    no more than `min_gain` over the last FIT_STOP_WINDOW iterations.
+            if let Some(min_gain) = self.fit_stop {
+                let h = &self.fit_history;
+                if h.len() > FIT_STOP_WINDOW
+                    && h[h.len() - 1 - FIT_STOP_WINDOW] - h[h.len() - 1] <= min_gain
+                {
+                    self.converged = true;
+                }
+            } else if self.iteration > 5 && diff_sq < tol_sq * (xk_sq + 1e-20) {
                 self.converged = true;
             }
 
@@ -783,5 +809,60 @@ mod tests {
                 v
             );
         }
+    }
+
+    fn fit_term(solver: &mut Solver, trace: &[f32]) -> f64 {
+        let recon = solver.get_reconvolution();
+        recon
+            .iter()
+            .zip(trace)
+            .map(|(&r, &t)| 0.5 * ((r - t) as f64).powi(2))
+            .sum()
+    }
+
+    #[test]
+    fn fit_window_stop_ends_on_a_plateau_and_default_is_untouched() {
+        use crate::{Constraint, ConvMode};
+        let kernel = build_kernel(0.02, 0.4, 30.0);
+        let trace = build_trace(&kernel, 400, &[20, 90, 91, 200, 330]);
+        let setup = || {
+            let mut s = Solver::new();
+            s.set_conv_mode(ConvMode::BandedAR2);
+            s.set_params(0.02, 0.4, 0.0, 30.0).unwrap();
+            s.set_constraint(Constraint::Box01);
+            s.set_trace(&trace).unwrap();
+            s.filtered = true; // no baseline term, as on the InDeCa path
+            s
+        };
+
+        // Default rule: identical to a solver that never touched the option.
+        let mut a = setup();
+        let mut b = setup();
+        b.set_fit_stop(None);
+        for _ in 0..20 {
+            a.step_batch(25).unwrap();
+            b.step_batch(25).unwrap();
+        }
+        assert_eq!(a.get_solution(), b.get_solution());
+        assert_eq!(a.iteration_count(), b.iteration_count());
+
+        // A generous gain threshold stops early; a zero threshold runs much
+        // longer (only a non-improving window stops it).
+        let mut loose = setup();
+        loose.set_fit_stop(Some(1e-3));
+        let mut strict = setup();
+        strict.set_fit_stop(Some(0.0));
+        for _ in 0..40 {
+            loose.step_batch(50).unwrap();
+            strict.step_batch(50).unwrap();
+        }
+        assert!(loose.converged());
+        assert!(loose.iteration_count() > super::FIT_STOP_WINDOW as u32);
+        assert!(loose.iteration_count() < strict.iteration_count());
+        // The early stop happened on a plateau: the fit is already close to
+        // where the longer run ends up.
+        let (f_loose, f_strict) = (fit_term(&mut loose, &trace), fit_term(&mut strict, &trace));
+        assert!(f_loose >= f_strict - 1e-9);
+        assert!(f_loose - f_strict < 0.05 * fit_term(&mut setup(), &trace));
     }
 }

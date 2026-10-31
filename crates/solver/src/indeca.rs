@@ -1,14 +1,34 @@
 /// InDeCa (Informed Deconvolution of Calcium imaging data) pipeline.
 ///
-/// Uses a scale iteration loop mirroring the original Python InDeCa:
+/// The scale loop is block-coordinate descent on the relaxed problem
 ///
-/// 1. Estimate initial alpha from trace peak-to-trough
-/// 2. Iterate: prescale by alpha_est → Box[0,1] FISTA → threshold search
-///    → lstsq recovers alpha_lstsq → update alpha_est *= alpha_lstsq
-/// 3. Converges when alpha_lstsq ≈ 1.0 (prescale matches true amplitude)
+/// ```text
+/// min over s in [0,1]^T, alpha >= 0:  || y - alpha K s ||^2
+/// ```
 ///
-/// The iteration prevents the single-pass problem where an inaccurate initial
-/// prescale causes the solver to settle on high alpha with too few spikes.
+/// (`y` the upsampled, filtered, baseline-subtracted trace, `K` the
+/// peak-normalized AR(2) kernel), followed by one terminal binarization (the
+/// threshold search, which also fits the reported amplitude and offset).
+///
+/// - s-step: Box[0,1] FISTA on `y / alpha`.
+/// - alpha-step: least squares of `y` on the relaxed reconvolution `K s`.
+///
+/// The relaxed objective cannot identify the amplitude: any `alpha` at or
+/// above the saturation amplitude (where the box upper bound stops binding)
+/// gives the same fit, and the s-step there is the scale-free non-negative fit,
+/// so its normalized solution, and the binarization, do not depend on
+/// `alpha`. The fixed points are exactly that set. Starting from the trace's
+/// peak-to-trough (which no relaxed bin can exceed, since the kernel is
+/// peak-normalized) the loop is at a fixed point after its first round; from a
+/// binding start it raises `alpha` with a non-increasing objective until the
+/// box is inactive. The amplitude is identified only by the binarization.
+///
+/// The original InDeCa update takes `alpha` from the binarized train instead.
+/// That map is not a descent step on the relaxed objective; on the simulation
+/// presets its fixed point lies at 0.15-0.4x the true spike amplitude, with
+/// several bins per spike (the overfit regime the InDeCa paper describes), and
+/// stopping it at a 5% tolerance stops it at an arbitrary round. It remains
+/// available as [`ScaleLoop::binary_alpha`] for characterization.
 ///
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
@@ -85,6 +105,9 @@ fn trace_filter(tau_r: f64, tau_d: f64, fs_up: f64, hp: bool, lp: bool) -> Bandp
 pub(crate) struct NoiseEstimate {
     /// Noise at original-rate grid positions: the threshold-search statistic.
     pub grid: NoiseModel,
+    /// Per-sample noise variance averaged over all upsampled positions: the
+    /// noise energy per sample of the FISTA data-fit term (before prescaling).
+    pub upsampled_var: f64,
 }
 
 /// Estimate the noise of the preprocessed trace from the raw trace.
@@ -97,7 +120,8 @@ pub(crate) struct NoiseEstimate {
 ///
 /// - grid variance `sigma^2 * sum(h_grid^2)`,
 /// - grid autocorrelation `rho = acf(h_grid) / acf(h_grid)(0)`, so
-///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval).
+///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval),
+/// - average variance over all upsampled positions `sigma^2 * sum(h^2) / k`.
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
 /// upsample → filter path (no random probe). (The rolling-baseline subtraction
@@ -115,6 +139,7 @@ pub(crate) fn estimate_noise_model(
             sigma: 0.0,
             corr_sum: 1.0,
         },
+        upsampled_var: 0.0,
     };
     if n == 0 || sigma_raw <= 0.0 {
         return zero;
@@ -126,6 +151,7 @@ pub(crate) fn estimate_noise_model(
     if let Some(f) = filter {
         f.apply(&mut h);
     }
+    let up_gain = h.iter().map(|&v| v as f64 * v as f64).sum::<f64>() / k as f64;
     let mut h_grid: Vec<f32> = h.iter().step_by(k).copied().collect();
 
     // Full-spectrum sums of |H|^2 and |H|^4 from the half spectrum.
@@ -155,6 +181,7 @@ pub(crate) fn estimate_noise_model(
             sigma: sigma_raw * grid_gain.sqrt(),
             corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
         },
+        upsampled_var: sigma_raw * sigma_raw * up_gain,
     }
 }
 
@@ -197,6 +224,7 @@ pub fn solve_bounded(
         fs_up,
         max_iters,
         tol,
+        None,
         warm_start,
         hp_enabled,
         lp_enabled,
@@ -223,6 +251,7 @@ fn solve_upsampled(
     fs_up: f64,
     max_iters: u32,
     tol: f64,
+    fit_stop: Option<f64>,
     warm_start: Option<&[f32]>,
     hp_enabled: bool,
     lp_enabled: bool,
@@ -257,6 +286,7 @@ fn solve_upsampled(
     }
 
     solver.tolerance = tol;
+    solver.set_fit_stop(fit_stop);
 
     // Run FISTA in batches
     let batch_size = 50;
@@ -321,35 +351,33 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
-/// Per-round diagnostics of [`solve_trace_stats`].
-#[derive(Clone, Debug, Default)]
-pub(crate) struct RoundStats {
-    pub alpha_est: f64,
-    pub iterations: u32,
-    pub converged: bool,
-    /// Some interior bin of the relaxed solution sits at the box upper bound.
-    pub upper_bound_active: bool,
-    /// The threshold pick came from the noise budget (`None`: no search this
-    /// round).
-    pub noise_path: Option<bool>,
-}
-
-/// Full InDeCa trace processing pipeline with scale iteration.
+/// Full InDeCa trace processing pipeline.
 ///
-/// Mirrors InDeCa's `solve_scale` loop:
 /// 1. Upsample, apply optional bandpass filter, subtract rolling baseline
-/// 2. Estimate initial alpha from trace peak-to-trough
-/// 3. Iterate: prescale → Box[0,1] FISTA → threshold search → update alpha
-///    until alpha_lstsq converges near alpha_est (prescale matches amplitude)
-/// 4. Downsample the spike train of the best round
+/// 2. Prescale by the trace's peak-to-trough
+/// 3. Scale loop (see the module docs): Box[0,1] FISTA, relaxed amplitude
+///    step, until a fixed point (normally after one round)
+/// 4. Binarize the last relaxed solution (threshold search) and downsample
 ///
-/// The iteration loop is the key difference from the single-pass approach:
-/// each round refines the prescale so Box[0,1] maps correctly, preventing
-/// the solver from settling on high alpha with too few spikes.
+/// `max_iters` and `tol` set the inner FISTA solve (relative-step rule). With
+/// `lambda = 0` the relaxed problem is ill-posed at the upsampled rate (sub-bin
+/// rearrangements barely change the fit), so the solve does not reach the
+/// step tolerance within the usual budget (500 iterations; it fires only
+/// around 3,300-4,100 iterations on the simulation presets), so `max_iters`
+/// acts as an early-stopping regularizer: the binarized output depends on it. A data-dependent stop
+/// (the noise-scaled fit-window rule) is available as
+/// [`ScaleLoop::fit_stop`] but makes the output sensitive to tiny input
+/// changes, because it moves the stopping point along that drift.
 ///
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
-/// used as FISTA warm-start, which typically reduces iterations by 30-60%.
+/// used as the first round's FISTA warm-start **only on the non-default
+/// `binary_alpha` loop**. The default loop ignores it: with a fixed iteration
+/// budget acting as the regularizer, a binary (all 1.0) seed at the
+/// peak-to-trough prescale (relaxed peak ~0.02) is a 40-100x mismatch and
+/// makes the output depend on the seed, with no speed benefit. Every outer
+/// iteration is then a deterministic function of the data. The parameter is
+/// kept for API compatibility.
 #[allow(clippy::too_many_arguments)]
 pub fn solve_trace(
     trace: &[f32],
@@ -414,6 +442,230 @@ pub fn solve_trace_opts(
     .0
 }
 
+/// Where each scale round takes its amplitude update from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AlphaSource {
+    /// Least squares on the threshold search's binarized train (the original
+    /// InDeCa update). Not a descent step on the relaxed objective: the map
+    /// `alpha -> alpha_lstsq(binarize(relaxed(alpha)))` has its fixed point
+    /// where binarization stops paying for smaller amplitudes, which on the
+    /// simulation presets is 0.15-0.4x the true spike amplitude (overfit).
+    Binary,
+    /// Least squares on the relaxed solution's reconvolution, an approximation
+    /// to the amplitude block of block-coordinate descent on the relaxed
+    /// objective: it is fitted with a free offset over all upsampled samples,
+    /// whereas the objective has no offset and is evaluated on the grid.
+    Relaxed,
+}
+
+/// How the first round's prescale is chosen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AlphaInit {
+    /// Peak-to-trough of the working trace's interior. The kernel is
+    /// peak-normalized and the relaxed solution non-negative, so no relaxed
+    /// bin can exceed this amplitude: the box upper bound cannot bind.
+    PeakToTrough,
+    /// A given prescale (tests and characterization).
+    Fixed(f64),
+}
+
+/// When the scale loop stops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ScaleStop {
+    /// `|alpha_new / alpha_est - 1| < rtol` (the original rule).
+    AlphaRtol(f64),
+    /// The round is a fixed point of block-coordinate descent: the box upper
+    /// bound is inactive (the s-step is then invariant to the prescale, so the
+    /// amplitude step cannot change the normalized solution) and, when the
+    /// baseline is re-estimated, the joint objective decreased by no more than
+    /// the sampling standard error of the noise energy.
+    FixedPoint,
+}
+
+/// Structure of the scale loop. `Default` is the shipped behavior; the other
+/// settings exist for characterization and are crate-internal.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScaleLoop {
+    pub alpha_source: AlphaSource,
+    pub alpha_init: AlphaInit,
+    pub stop: ScaleStop,
+    /// Re-estimate the slow baseline each round as the rolling median of the
+    /// residual `F(y) - alpha * K s` (window [`crate::baseline::baseline_window`]).
+    pub rebaseline: bool,
+    /// Inner solves stop on the noise-scaled fit-window rule
+    /// ([`Solver::set_fit_stop`], gain `tol` times the fit term's noise
+    /// energy) instead of the relative-step rule, leaving `max_iters` as a
+    /// safety cap.
+    pub fit_stop: bool,
+    /// Seed round 0 with the caller's `warm_counts`. Off by default: the
+    /// seed is far from the relaxed solution at the peak-to-trough prescale
+    /// and, with a fixed iteration budget, changes the output.
+    pub use_warm_counts: bool,
+    /// Warm-start each round from the previous round's relaxed solution,
+    /// rescaled to the new prescale.
+    pub warm_rounds: bool,
+    /// Report the last round (else the best round: highest PVE under
+    /// `MaxPve`, smallest scale error under `NoiseFloor`).
+    pub take_last: bool,
+    /// Safety net on the number of rounds.
+    pub max_rounds: usize,
+}
+
+impl ScaleLoop {
+    /// The loop before this module's rework, with the noise-scaled inner stop
+    /// and warm-started rounds (the loop shipped before the scale-loop rework).
+    pub(crate) fn binary_alpha() -> Self {
+        Self {
+            alpha_source: AlphaSource::Binary,
+            alpha_init: AlphaInit::PeakToTrough,
+            stop: ScaleStop::AlphaRtol(0.05),
+            rebaseline: false,
+            fit_stop: true,
+            use_warm_counts: true,
+            warm_rounds: true,
+            take_last: false,
+            max_rounds: 10,
+        }
+    }
+}
+
+impl Default for ScaleLoop {
+    /// Block-coordinate descent on the relaxed objective with a fixed inner
+    /// iteration budget (see the module docs).
+    fn default() -> Self {
+        Self {
+            alpha_source: AlphaSource::Relaxed,
+            alpha_init: AlphaInit::PeakToTrough,
+            stop: ScaleStop::FixedPoint,
+            rebaseline: false,
+            fit_stop: false,
+            use_warm_counts: false,
+            warm_rounds: true,
+            take_last: true,
+            max_rounds: 10,
+        }
+    }
+}
+
+/// Per-round diagnostics of [`solve_trace_stats`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RoundStats {
+    pub alpha_est: f64,
+    /// The amplitude this round hands to the next one.
+    pub alpha_next: f64,
+    /// Least-squares amplitude of the relaxed reconvolution.
+    pub alpha_relaxed: f64,
+    /// Least-squares amplitude of the binarized train.
+    pub alpha_binary: f64,
+    /// Smallest prescale at which this round's relaxed solution fits in the
+    /// box (`alpha_est` times the relaxed interior peak).
+    pub alpha_sat: f64,
+    pub iterations: u32,
+    pub converged: bool,
+    /// Some interior bin of the relaxed solution sits at the box upper bound.
+    pub upper_bound_active: bool,
+    /// The threshold pick came from the noise budget (`None`: no search this
+    /// round).
+    pub noise_path: Option<bool>,
+    /// Spikes in the binarized train (upsampled bins).
+    pub count: f64,
+    /// Joint objective `||y - b - alpha_est K s||^2` on the interior grid,
+    /// after the s-step (trace units).
+    pub objective: f64,
+    /// Grid residual energy of the binarized train (selection statistic).
+    pub binary_error: f64,
+    /// Noise budget of the grid residual (0 without a noise model).
+    pub budget: f64,
+}
+
+/// The preprocessed trace and what is derived from it once per solve.
+pub(crate) struct Prepared {
+    /// Upsampled, filtered trace before any baseline removal: `F(y)`.
+    pub filtered: Vec<f32>,
+    /// `filtered` minus the initial rolling-quantile baseline.
+    pub working: Vec<f32>,
+    pub pad: usize,
+    pub bl_window: usize,
+    pub banded: BandedAR2,
+    pub noise: NoiseEstimate,
+    pub noise_model: Option<NoiseModel>,
+}
+
+pub(crate) fn prepare(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs_up: f64,
+    upsample_factor: usize,
+    hp_enabled: bool,
+    lp_enabled: bool,
+) -> Prepared {
+    let mut filtered = upsample_trace(trace, upsample_factor);
+    // The filter is kept for the noise model (it shapes the noise that remains).
+    let mut filter = if hp_enabled || lp_enabled {
+        let mut f = trace_filter(tau_r, tau_d, fs_up, hp_enabled, lp_enabled);
+        f.apply(&mut filtered).then_some(f)
+    } else {
+        None
+    };
+    // Rolling-percentile baseline subtraction: brings the floor to ~0.
+    let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
+    let mut working = filtered.clone();
+    crate::baseline::subtract_rolling_baseline(
+        &mut working,
+        bl_window,
+        crate::baseline::DEFAULT_BASELINE_QUANTILE,
+    );
+    // Boundary padding: edge effects from AR2 convolution make the first and
+    // last `pad` samples unreliable (subsets may start mid-transient).
+    let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(working.len() / 4);
+    // Noise of the preprocessed trace, from the raw trace's high band pushed
+    // through the same upsample → filter chain. Fully data-derived — no knob.
+    // It sets the threshold search's noise budget and standard error, the
+    // scale loop's objective tolerance, and the optional fit-window stop.
+    let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
+    let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
+    Prepared {
+        filtered,
+        working,
+        pad,
+        bl_window,
+        banded: BandedAR2::new(tau_r, tau_d, fs_up),
+        noise,
+        noise_model,
+    }
+}
+
+/// `||y - alpha * conv||^2` over the interior grid positions (every
+/// `stride`-th sample, where the upsampled trace equals the recorded one).
+fn grid_energy(y: &[f32], conv: &[f32], alpha: f64, pad: usize, stride: usize) -> f64 {
+    let n = y.len();
+    let mut e = 0.0;
+    for i in (pad..n.saturating_sub(pad)).step_by(stride.max(1)) {
+        let d = y[i] as f64 - alpha * conv[i] as f64;
+        e += d * d;
+    }
+    e
+}
+
+/// Centered rolling median of `x` over `window` samples (edge windows are
+/// truncated).
+fn rolling_median_centered(x: &[f32], window: usize) -> Vec<f32> {
+    let n = x.len();
+    if n == 0 || window == 0 {
+        return vec![0.0; n];
+    }
+    let half = window / 2;
+    // The causal rolling median of x extended by `half` samples, shifted back
+    // by `half`, is the centered one.
+    let mut ext: Vec<f32> = Vec::with_capacity(n + half);
+    ext.extend_from_slice(x);
+    ext.extend(std::iter::repeat_n(x[n - 1], half));
+    let mut resid = ext.clone();
+    crate::baseline::subtract_rolling_baseline(&mut resid, window, 0.5);
+    (0..n).map(|t| ext[t + half] - resid[t + half]).collect()
+}
+
 /// [`solve_trace_opts`] plus per-round diagnostics.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_trace_stats(
@@ -430,91 +682,127 @@ pub(crate) fn solve_trace_stats(
     lambda: f64,
     opts: SolveOptions,
 ) -> (InDecaResult, Vec<RoundStats>) {
+    solve_trace_cfg(
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        upsample_factor,
+        max_iters,
+        tol,
+        warm_counts,
+        hp_enabled,
+        lp_enabled,
+        lambda,
+        opts,
+        ScaleLoop::default(),
+    )
+}
+
+/// [`solve_trace_stats`] with an explicit scale-loop structure.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_trace_cfg(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_counts: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    opts: SolveOptions,
+    cfg: ScaleLoop,
+) -> (InDecaResult, Vec<RoundStats>) {
+    let k = upsample_factor.max(1);
     let fs_up = fs * upsample_factor as f64;
-    let mut working_trace = upsample_trace(trace, upsample_factor);
+    let prep = prepare(
+        trace,
+        tau_r,
+        tau_d,
+        fs_up,
+        upsample_factor,
+        hp_enabled,
+        lp_enabled,
+    );
+    let pad = prep.pad;
+    let wt_len = prep.working.len();
 
     // Single solver allocation reused across all solve_upsampled calls.
-    // set_trace() resets all state; buffers grow but never shrink.
     let mut solver = Solver::new();
 
-    // ── Step 1: Apply optional bandpass filter + rolling baseline subtraction ──
-    // The filter is kept for the noise model (it shapes the noise that remains).
-    let mut filter = if hp_enabled || lp_enabled {
-        let mut f = trace_filter(tau_r, tau_d, fs_up, hp_enabled, lp_enabled);
-        f.apply(&mut working_trace).then_some(f)
-    } else {
-        None
-    };
-
-    // Rolling-percentile baseline subtraction: brings the floor to ~0.
-    let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
-    crate::baseline::subtract_rolling_baseline(
-        &mut working_trace,
-        bl_window,
-        crate::baseline::DEFAULT_BASELINE_QUANTILE,
-    );
-
-    // ── Step 2: Boundary padding + initial alpha estimate ───────────────
-    // Compute boundary padding: edge effects from AR2 convolution make the first
-    // and last `pad` samples unreliable. When solving trace subsets (common in
-    // CaDecon iteration), the trace may start mid-transient, creating a large
-    // spurious spike at position 0. Zeroing the boundary region of the FISTA
-    // solution prevents these edge artifacts from corrupting the threshold search.
-    let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(working_trace.len() / 4);
-
-    // Estimate alpha from the interior of the trace only (excluding edges).
-    let mut alpha_est = estimate_alpha_interior(&working_trace, pad);
-
-    // Convert original-rate spike counts to upsampled-rate binary for warm-start.
-    // upsample_counts_to_binary centers spikes on original sample positions,
-    // matching the centered bins used by downsample_binary.
-    let warm_binary = warm_counts.map(|counts| upsample_counts_to_binary(counts, upsample_factor));
-
-    let banded = BandedAR2::new(tau_r, tau_d, fs_up);
-
-    // Noise of the preprocessed trace, from the raw trace's high band pushed
-    // through the same upsample → filter chain. Fully data-derived — no knob.
-    // It sets the threshold search's noise budget and standard error (both
-    // selections).
-    let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
     let selection = if opts.noise_constrained {
         Selection::NoiseFloor
     } else {
         Selection::MaxPve
     };
-    let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
+    let n_grid = (pad..wt_len.saturating_sub(pad)).step_by(k).count();
+    let budget = prep.noise_model.map_or(0.0, |nm| nm.budget(n_grid));
+    // Objective changes below the sampling error of the noise energy are not
+    // resolvable from the data.
+    let objective_tol = prep.noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
+    // Expected noise energy of the FISTA data-fit term at unit prescale.
+    let fit_noise_energy = 0.5 * prep.noise.upsampled_var * wt_len as f64;
 
-    // ── Step 3: Scale iteration loop ────────────────────────────────────
-    // Each round: prescale by alpha_est → Box[0,1] FISTA → threshold search
-    // against the *original* trace → lstsq recovers alpha directly.
-    // Converges when alpha_lstsq ≈ alpha_est (prescale matches true amplitude).
-    const MAX_SCALE_ITERS: usize = 10;
-    const SCALE_RTOL: f64 = 0.05;
+    // The baseline-subtracted trace the rounds fit (re-estimated per round
+    // when `cfg.rebaseline`).
+    let mut y = prep.working.clone();
+
+    let mut alpha_est = match cfg.alpha_init {
+        AlphaInit::PeakToTrough => estimate_alpha_interior(&y, pad),
+        AlphaInit::Fixed(a) => a,
+    };
+
+    // Convert original-rate spike counts to upsampled-rate binary for warm-start.
+    // upsample_counts_to_binary centers spikes on original sample positions,
+    // matching the centered bins used by downsample_binary.
+    let warm_binary = warm_counts
+        .filter(|_| cfg.use_warm_counts)
+        .map(|counts| upsample_counts_to_binary(counts, upsample_factor));
 
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_scale_err = f64::INFINITY;
     let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
-    let mut stats = Vec::new();
+    let mut stats: Vec<RoundStats> = Vec::new();
 
-    // Pre-allocate scratch buffers reused across scale iterations.
-    let wt_len = working_trace.len();
+    // Scratch buffers reused across rounds.
     let mut scaled = vec![0.0_f32; wt_len];
     let mut s_normalized = vec![0.0_f32; wt_len];
+    let mut conv = vec![0.0_f32; wt_len];
+    let mut warm_buf = vec![0.0_f32; wt_len];
+    // Previous round's relaxed solution and the prescale it was solved at.
+    let mut previous: Option<(Vec<f32>, f64)> = None;
+    let mut prev_objective = f64::INFINITY;
 
-    for scale_iter in 0..MAX_SCALE_ITERS {
-        // Fill scaled buffer in-place (multiply by reciprocal instead of dividing).
+    for _ in 0..cfg.max_rounds.max(1) {
+        // ── s-step: Box[0,1] FISTA on y / alpha_est ──
         let inv_alpha = 1.0 / alpha_est as f32;
         for i in 0..wt_len {
-            scaled[i] = working_trace[i] * inv_alpha;
+            scaled[i] = y[i] * inv_alpha;
         }
 
-        // Use warm-start from user on first iteration only;
-        // subsequent iterations start fresh with the refined prescale.
-        let warm_start = if scale_iter == 0 {
-            warm_binary.as_deref()
-        } else {
-            None
+        // Round 0 takes the caller's warm start. Later rounds (optionally)
+        // continue from the previous relaxed solution, rescaled to the new
+        // prescale (the same reconvolution in trace units) and clamped back
+        // into the box.
+        let warm_start = match &previous {
+            None => warm_binary.as_deref(),
+            Some((prev, prev_alpha)) if cfg.warm_rounds => {
+                let r = (*prev_alpha / alpha_est) as f32;
+                for (w, &v) in warm_buf.iter_mut().zip(prev) {
+                    *w = (v * r).clamp(0.0, 1.0);
+                }
+                Some(&warm_buf[..])
+            }
+            Some(_) => None,
         };
+
+        // The prescale divides the trace, so the noise energy scales by 1/alpha^2.
+        let fit_stop = cfg
+            .fit_stop
+            .then(|| tol * fit_noise_energy / (alpha_est * alpha_est));
 
         let (s_relaxed, _, iterations, converged) = solve_upsampled(
             &mut solver,
@@ -524,6 +812,7 @@ pub(crate) fn solve_trace_stats(
             fs_up,
             max_iters,
             tol,
+            fit_stop,
             warm_start,
             false,
             false,
@@ -532,13 +821,11 @@ pub(crate) fn solve_trace_stats(
             lambda,
         );
 
-        let mut round = RoundStats {
-            alpha_est,
-            iterations,
-            converged,
-            upper_bound_active: interior_peak(&s_relaxed, pad) >= 1.0,
-            noise_path: None,
-        };
+        // Joint objective after the s-step, and the relaxed amplitude step.
+        prep.banded.convolve_forward(&s_relaxed, &mut conv);
+        let objective = grid_energy(&y, &conv, alpha_est, pad, k);
+        let (alpha_relaxed, _) =
+            crate::threshold::lstsq_alpha_baseline(&conv, &y, pad, f64::INFINITY);
 
         // Normalize relaxed solution to [0,1] before threshold search.
         // Use the interior peak only (excluding boundary padding) so that edge
@@ -546,58 +833,100 @@ pub(crate) fn solve_trace_stats(
         let s_peak = interior_peak(&s_relaxed, pad);
         if s_peak > 1e-10 {
             let inv_peak = 1.0 / s_peak;
-            for i in 0..s_relaxed.len() {
+            for i in 0..wt_len {
                 s_normalized[i] = s_relaxed[i] * inv_peak;
             }
         } else {
-            s_normalized[..s_relaxed.len()].copy_from_slice(&s_relaxed);
+            s_normalized.copy_from_slice(&s_relaxed);
         }
-        let s_norm_slice = &s_normalized[..s_relaxed.len()];
 
-        // Threshold search fits binarized spikes against the ORIGINAL trace.
+        // ── Binarization: threshold search against the working trace ──
         let ThresholdResult {
             s_binary,
             alpha: alpha_lstsq,
             baseline: baseline_lstsq,
             threshold,
             pve,
+            error,
             noise_path,
-            ..
         } = threshold_search_opts(
-            s_norm_slice,
-            &working_trace,
-            &banded,
+            &s_normalized,
+            &y,
+            &prep.banded,
             tau_d,
             fs_up,
             upsample_factor,
             f64::INFINITY,
             selection,
-            noise_model,
+            prep.noise_model,
         );
-        round.noise_path = Some(noise_path);
-        stats.push(round);
 
-        // Scale-loop convergence error: how close the lstsq-recovered alpha is to
-        // the prescale used this round. This is the loop's own objective.
+        let alpha_new = match cfg.alpha_source {
+            AlphaSource::Binary => alpha_lstsq,
+            AlphaSource::Relaxed => alpha_relaxed,
+        };
+        let upper_bound_active = s_peak >= 1.0;
+        stats.push(RoundStats {
+            alpha_est,
+            alpha_next: alpha_new,
+            alpha_relaxed,
+            alpha_binary: alpha_lstsq,
+            alpha_sat: alpha_est * s_peak as f64,
+            iterations,
+            converged,
+            upper_bound_active,
+            noise_path: Some(noise_path),
+            count: s_binary.iter().map(|&v| v as f64).sum(),
+            objective,
+            binary_error: error,
+            budget,
+        });
+
+        // Scale-loop convergence error: how close the new amplitude is to the
+        // prescale used this round.
         let scale_err = if alpha_est > 1e-10 {
-            (alpha_lstsq / alpha_est - 1.0).abs()
+            (alpha_new / alpha_est - 1.0).abs()
         } else {
             f64::INFINITY
         };
 
-        // Select the best iterate across scale rounds. alpha_lstsq is already the
-        // true alpha (fit against the original trace).
-        //
-        // MaxPve keeps the highest-PVE iterate (historical behavior). Under
-        // NoiseFloor, ranking by PVE would defeat the criterion — the inner search
-        // deliberately stops at the noise floor (below max PVE), so a max-PVE outer
-        // pick would re-select the densest-fitting iteration and re-launder the
-        // sparsity. Instead select the best-calibrated prescale (smallest scale
-        // error) — the scale loop's own fixed point, which is criterion-neutral.
-        let is_better = match selection {
-            Selection::MaxPve => pve > best_pve,
-            Selection::NoiseFloor => scale_err < best_scale_err,
+        let is_better = cfg.take_last
+            || match selection {
+                // MaxPve keeps the highest-PVE iterate (historical behavior).
+                Selection::MaxPve => pve > best_pve,
+                // Under NoiseFloor, ranking by PVE would re-select the densest
+                // round; use the best-calibrated prescale instead.
+                Selection::NoiseFloor => scale_err < best_scale_err,
+            };
+
+        let stalled = prev_objective - objective <= objective_tol;
+        prev_objective = objective;
+        let done = match cfg.stop {
+            ScaleStop::AlphaRtol(rtol) => scale_err < rtol,
+            ScaleStop::FixedPoint if cfg.rebaseline => stats.len() > 1 && stalled,
+            ScaleStop::FixedPoint => !upper_bound_active || stalled,
         };
+        let last = done || alpha_new < 1e-10;
+
+        // ── b-step: rolling median of the residual against the model ──
+        // (only when another round follows; its reconvolution is the one the
+        // amplitude step was fit to).
+        if cfg.rebaseline && !last {
+            if cfg.alpha_source == AlphaSource::Binary {
+                prep.banded.convolve_forward(&s_binary, &mut conv);
+            }
+            let resid: Vec<f32> = prep
+                .filtered
+                .iter()
+                .zip(&conv)
+                .map(|(&f, &c)| f - alpha_new as f32 * c)
+                .collect();
+            let b = rolling_median_centered(&resid, prep.bl_window);
+            for i in 0..wt_len {
+                y[i] = prep.filtered[i] - b[i];
+            }
+        }
+
         if is_better {
             best_pve = pve;
             best_scale_err = scale_err;
@@ -611,20 +940,15 @@ pub(crate) fn solve_trace_stats(
                 converged,
             ));
         }
-
-        // Converged: alpha_lstsq ≈ alpha_est means the prescale was correct.
-        if scale_err < SCALE_RTOL {
+        if last {
             break;
         }
 
-        // Update alpha_est to the lstsq-recovered value for the next round.
-        if alpha_lstsq < 1e-10 {
-            break;
-        }
-        alpha_est = alpha_lstsq;
+        previous = Some((s_relaxed, alpha_est));
+        alpha_est = alpha_new;
     }
 
-    // ── Step 4: Extract best result ─────────────────────────────────────
+    // ── Extract the reported round ──
     let (s_binary, alpha, baseline, threshold, pve, iterations, converged) = best_result
         .unwrap_or_else(|| {
             // Fallback: no valid result found (shouldn't happen)
@@ -634,9 +958,8 @@ pub(crate) fn solve_trace_stats(
     // Downsample binary spike train to original rate using centered bins
     let s_counts = downsample_binary(&s_binary, upsample_factor);
 
-    // Downsample filtered trace to original rate directly from working_trace
-    // (working_trace is not modified after baseline subtraction).
-    let filtered_trace = Some(downsample_average(&working_trace, upsample_factor));
+    // Downsample the (initial) baseline-subtracted trace to the original rate.
+    let filtered_trace = Some(downsample_average(&prep.working, upsample_factor));
 
     (
         InDecaResult {
@@ -1148,6 +1471,7 @@ mod tests {
         let grid: Vec<f64> = up.iter().step_by(k).map(|&v| v as f64).collect();
         let var = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
         let grid_var = var(&grid);
+        let all_var = var(&up.iter().map(|&v| v as f64).collect::<Vec<_>>());
         // Empirical sum of squared autocorrelations over the lags that matter.
         let rho = |lag: usize| {
             (0..n - lag).map(|i| grid[i] * grid[i + lag]).sum::<f64>()
@@ -1163,6 +1487,12 @@ mod tests {
             est.grid.sigma.powi(2),
             grid_var
         );
+        assert!(
+            rel(est.upsampled_var, all_var) < 0.15,
+            "{} vs {}",
+            est.upsampled_var,
+            all_var
+        );
         assert!(est.grid.corr_sum > 1.5, "LP should correlate grid samples");
         assert!(
             rel(est.grid.corr_sum, corr_emp) < 0.25,
@@ -1175,5 +1505,390 @@ mod tests {
         let plain = estimate_noise_model(&noise, k, None);
         assert!(rel(plain.grid.sigma, high_band_sigma(&noise)) < 1e-6);
         assert!((plain.grid.corr_sum - 1.0).abs() < 1e-6);
+    }
+
+    fn noisy_spiking_trace(n: usize, seed: u64) -> Vec<f32> {
+        let kernel = build_kernel(0.1, 0.6, 30.0);
+        let mut trace = vec![1.0_f32; n];
+        let noise = lcg_noise(n, 0.3, seed);
+        let mut p = 37usize;
+        while p < n {
+            for (j, &kv) in kernel.iter().enumerate() {
+                if p + j < n {
+                    trace[p + j] += 2.0 * kv;
+                }
+            }
+            p += 23 + (p * 7) % 41;
+        }
+        for (t, e) in trace.iter_mut().zip(noise) {
+            *t += e;
+        }
+        trace
+    }
+
+    #[test]
+    fn inner_solves_stop_on_the_fit_rule_not_the_cap() {
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        for noise_constrained in [false, true] {
+            let (r, stats) = solve_trace_cfg(
+                &trace,
+                0.1,
+                0.6,
+                30.0,
+                10,
+                5000,
+                1e-4,
+                None,
+                true,
+                true,
+                0.0,
+                SolveOptions { noise_constrained },
+                ScaleLoop::binary_alpha(),
+            );
+            assert!(!stats.is_empty());
+            for s in &stats {
+                assert!(s.converged, "round hit the cap: {s:?}");
+                assert!(s.iterations < 5000);
+            }
+            assert!(r.s_counts.iter().sum::<f32>() > 0.0);
+        }
+    }
+
+    // ── Scale-loop structure ────────────────────────────────────────────
+
+    /// Short simulated cells from every preset (true taus), at the CaDecon
+    /// upsampling target of 300 Hz: (preset, trace, tau_r, tau_d, fs, k).
+    fn preset_cells(
+        n_cells: usize,
+        n_tp: usize,
+    ) -> Vec<(&'static str, Vec<f32>, f64, f64, f64, usize)> {
+        let mut out = Vec::new();
+        for (name, mut cfg) in crate::simulate::presets::all() {
+            cfg.num_cells = n_cells;
+            cfg.num_timepoints = n_tp;
+            let r = crate::simulate::simulate(&cfg);
+            for c in 0..n_cells {
+                let gt = &r.ground_truth[c];
+                let k = ((300.0 / cfg.fs_hz).round() as usize).max(1);
+                out.push((
+                    name,
+                    r.traces[c * n_tp..(c + 1) * n_tp].to_vec(),
+                    gt.tau_rise_s,
+                    gt.tau_decay_s,
+                    cfg.fs_hz,
+                    k,
+                ));
+            }
+        }
+        out
+    }
+
+    fn relaxed_loop() -> ScaleLoop {
+        ScaleLoop::default()
+    }
+
+    fn run_cfg(
+        trace: &[f32],
+        (tr, td, fs, k): (f64, f64, f64, usize),
+        max_iters: u32,
+        cfg: ScaleLoop,
+    ) -> (InDecaResult, Vec<RoundStats>) {
+        solve_trace_cfg(
+            trace,
+            tr,
+            td,
+            fs,
+            k,
+            max_iters,
+            1e-4,
+            None,
+            true,
+            true,
+            0.0,
+            SolveOptions {
+                noise_constrained: true,
+            },
+            cfg,
+        )
+    }
+
+    #[test]
+    fn peak_to_trough_start_leaves_the_box_inactive_on_presets() {
+        // The starting prescale must not let the box upper bound bind: the
+        // relaxed solution's largest bin, in trace units, stays well below it.
+        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
+            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 300, relaxed_loop());
+            let r0 = &st[0];
+            assert!(!r0.upper_bound_active, "{name}: box binds in round 0");
+            assert!(
+                r0.alpha_sat < 0.5 * r0.alpha_est,
+                "{name}: start {} vs saturation {}",
+                r0.alpha_est,
+                r0.alpha_sat
+            );
+        }
+    }
+
+    #[test]
+    fn relaxed_round_is_invariant_to_the_prescale_above_saturation() {
+        // Above saturation the s-step is the scale-free non-negative fit, so a
+        // round's output does not depend on the prescale: this is why the
+        // relaxed amplitude step is at its fixed point after one round.
+        // (Power-of-two prescales scale every iterate exactly, so the outputs
+        // are bit-identical.)
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let p = (0.1, 0.6, 30.0, 10);
+        let (base, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        assert_eq!(st.len(), 1, "fixed point after one round: {st:?}");
+        for m in [2.0, 8.0] {
+            let cfg = ScaleLoop {
+                alpha_init: AlphaInit::Fixed(st[0].alpha_est * m),
+                ..relaxed_loop()
+            };
+            let (r, st2) = run_cfg(&trace, p, 300, cfg);
+            assert_eq!(r.s_counts, base.s_counts);
+            assert_eq!(r.alpha, base.alpha);
+            assert_eq!(st2[0].iterations, st[0].iterations);
+        }
+    }
+
+    #[test]
+    fn relaxed_round_is_nearly_invariant_to_a_non_power_of_two_prescale() {
+        // A non-power-of-two prescale rounds every iterate differently, and the
+        // ill-posed solve at lambda = 0 amplifies those float differences, so
+        // outputs are close but not identical (events differ by up to ~4% at
+        // x1.5). Assert only that: same scale-free fixed point, counts within
+        // 10% of the base total, alpha within 10%.
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let p = (0.1, 0.6, 30.0, 10);
+        let (base, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let total = base.s_counts.iter().sum::<f32>();
+        for m in [1.5, 3.0] {
+            let cfg = ScaleLoop {
+                alpha_init: AlphaInit::Fixed(st[0].alpha_est * m),
+                ..relaxed_loop()
+            };
+            let (r, st2) = run_cfg(&trace, p, 300, cfg);
+            assert_eq!(st2.len(), 1);
+            let diff: f32 = r
+                .s_counts
+                .iter()
+                .zip(&base.s_counts)
+                .map(|(a, b)| (a - b).abs())
+                .sum();
+            assert!(diff <= 0.10 * total, "x{m}: {diff} vs total {total}");
+            assert!((r.alpha / base.alpha - 1.0).abs() < 0.10, "x{m}");
+        }
+    }
+
+    #[test]
+    fn default_loop_ignores_warm_counts() {
+        // Round 0 of the default loop does not take the caller's warm start, so
+        // the output is a deterministic function of the data.
+        for (name, trace, tr, td, fs, k) in preset_cells(1, 900).into_iter().take(3) {
+            let solve = |warm: Option<&[f32]>| {
+                solve_trace_opts(
+                    &trace,
+                    tr,
+                    td,
+                    fs,
+                    k,
+                    300,
+                    1e-4,
+                    warm,
+                    true,
+                    true,
+                    0.0,
+                    SolveOptions {
+                        noise_constrained: true,
+                    },
+                )
+            };
+            let cold = solve(None);
+            let own = solve(Some(&cold.s_counts));
+            let jittered: Vec<f32> = cold
+                .s_counts
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| {
+                    if i % 7 == 0 {
+                        c + 1.0
+                    } else {
+                        (c - (i % 3) as f32).max(0.0)
+                    }
+                })
+                .collect();
+            let jit = solve(Some(&jittered));
+            for (label, r) in [("own", &own), ("jittered", &jit)] {
+                assert_eq!(r.s_counts, cold.s_counts, "{name} {label}");
+                assert_eq!(r.alpha.to_bits(), cold.alpha.to_bits(), "{name} {label}");
+                assert_eq!(
+                    r.threshold.to_bits(),
+                    cold.threshold.to_bits(),
+                    "{name} {label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn relaxed_loop_descends_the_objective_from_a_binding_start() {
+        // Started well below saturation (box binding), the relaxed loop is
+        // block-coordinate descent on ||y - alpha K s||^2: the objective never
+        // increases, the amplitude rises, and the loop stops on its own once
+        // the box is inactive (or the objective stalls), not at the round cap.
+        let trace = noisy_spiking_trace(900, 0xBEEF);
+        let p = (0.1, 0.6, 30.0, 10);
+        let (_, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let sat = st[0].alpha_sat;
+        let cfg = ScaleLoop {
+            alpha_init: AlphaInit::Fixed(sat / 8.0),
+            warm_rounds: true,
+            ..relaxed_loop()
+        };
+        let (_, st) = run_cfg(&trace, p, 300, cfg);
+        assert!(st[0].upper_bound_active, "start should bind: {st:?}");
+        assert!(st.len() > 1 && st.len() < cfg.max_rounds, "{st:?}");
+        for w in st.windows(2) {
+            assert!(
+                w[1].objective <= w[0].objective * (1.0 + 1e-6),
+                "objective rose: {st:?}"
+            );
+            assert!(w[1].alpha_est > w[0].alpha_est, "{st:?}");
+        }
+    }
+
+    #[test]
+    fn binary_amplitude_map_settles_below_the_relaxed_fixed_point() {
+        // The original update (amplitude from the binarized train) drives the
+        // amplitude down on the presets: run to convergence it ends well below
+        // where the relaxed loop's binarization puts it, with more spikes
+        // (several bins per spike).
+        let (_, trace, tr, td, fs, k) = preset_cells(1, 1500)
+            .into_iter()
+            .find(|c| c.0 == "gcamp6f")
+            .unwrap();
+        let p = (tr, td, fs, k);
+        let (relaxed, _) = run_cfg(&trace, p, 300, relaxed_loop());
+        let cfg = ScaleLoop {
+            stop: ScaleStop::AlphaRtol(0.002),
+            fit_stop: false,
+            warm_rounds: false,
+            take_last: true,
+            max_rounds: 40,
+            ..ScaleLoop::binary_alpha()
+        };
+        let (binary, st) = run_cfg(&trace, p, 300, cfg);
+        assert!(
+            st.len() < cfg.max_rounds,
+            "binary map did not settle: {}",
+            st.len()
+        );
+        assert!(
+            binary.alpha < 0.8 * relaxed.alpha,
+            "{} vs {}",
+            binary.alpha,
+            relaxed.alpha
+        );
+        let count = |r: &InDecaResult| r.s_counts.iter().sum::<f32>();
+        assert!(count(&binary) > count(&relaxed));
+    }
+
+    #[test]
+    fn fit_stop_solves_converge_and_loops_stop_by_themselves_on_presets() {
+        // With the noise-scaled fit-window rule no inner solve reaches its
+        // safety cap, and neither loop structure reaches the round cap.
+        for (name, trace, tr, td, fs, k) in preset_cells(1, 900) {
+            for cfg in [
+                ScaleLoop::binary_alpha(),
+                ScaleLoop {
+                    fit_stop: true,
+                    ..relaxed_loop()
+                },
+            ] {
+                let (_, st) = run_cfg(&trace, (tr, td, fs, k), 5000, cfg);
+                assert!(st.len() < cfg.max_rounds, "{name}: {st:?}");
+                for r in &st {
+                    assert!(r.converged && r.iterations < 5000, "{name}: {r:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rebaselining_brings_the_relaxed_fit_to_the_noise_floor_on_clean() {
+        // The `clean` preset (SNR 200) is many times over the noise budget
+        // with the rolling-quantile baseline, which absorbs calcium during
+        // dense activity. Re-estimating the baseline from the residual each
+        // round brings the relaxed fit down to about the noise level.
+        let (_, trace, tr, td, fs, k) = preset_cells(2, 3000)
+            .into_iter()
+            .filter(|c| c.0 == "clean")
+            .nth(1)
+            .unwrap();
+        let cfg = ScaleLoop {
+            rebaseline: true,
+            ..relaxed_loop()
+        };
+        let (_, st) = run_cfg(&trace, (tr, td, fs, k), 300, cfg);
+        let first = &st[0];
+        let last = st.last().unwrap();
+        assert!(first.objective > 2.0 * first.budget, "{st:?}");
+        assert!(last.objective < 1.2 * last.budget, "{st:?}");
+        assert!(st.len() < cfg.max_rounds);
+    }
+
+    #[test]
+    fn rolling_median_centered_tracks_a_step_without_lag() {
+        let mut x = vec![0.0_f32; 400];
+        for v in &mut x[200..] {
+            *v = 1.0;
+        }
+        let m = rolling_median_centered(&x, 101);
+        assert_eq!(m[150], 0.0);
+        assert_eq!(m[250], 1.0);
+        assert!(m[198] == 0.0 && m[202] == 1.0, "{} {}", m[198], m[202]);
+    }
+
+    #[test]
+    fn default_loop_reaches_its_fixed_point_in_one_round_on_presets() {
+        // The shipped loop: one s-step at the peak-to-trough prescale is
+        // already a fixed point, so no preset cell needs a second round.
+        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
+            let (r, st) = solve_trace_stats(
+                &trace,
+                tr,
+                td,
+                fs,
+                k,
+                300,
+                1e-4,
+                None,
+                true,
+                true,
+                0.0,
+                SolveOptions {
+                    noise_constrained: true,
+                },
+            );
+            assert_eq!(st.len(), 1, "{name}: {st:?}");
+            assert!(!st[0].upper_bound_active);
+            assert!(r.alpha > 0.0 && r.s_counts.iter().sum::<f32>() > 0.0);
+        }
+    }
+
+    #[test]
+    fn noise_budget_decides_the_pick_on_jgcamp8f() {
+        // On the fast-indicator preset the binarized train reaches the noise
+        // floor, so the noise-constrained selection takes the noise path.
+        for (name, trace, tr, td, fs, k) in preset_cells(3, 1500) {
+            if name != "jgcamp8f" {
+                continue;
+            }
+            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 500, relaxed_loop());
+            let last = st.last().unwrap();
+            assert_eq!(last.noise_path, Some(true), "{st:?}");
+            assert!(last.binary_error <= last.budget * 1.0001);
+        }
     }
 }
