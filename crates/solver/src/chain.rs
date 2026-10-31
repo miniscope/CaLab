@@ -29,22 +29,31 @@
 //! the quantile then removes) for `alpha >= 0`. The candidate's amplitude and
 //! offset therefore stay a 2x2 least-squares fit against `C(K n)`.
 use crate::banded::BandedAR2;
-use crate::baseline::{subtract_rolling_baseline, DEFAULT_BASELINE_QUANTILE};
+use crate::baseline::{RollingQuantile, DEFAULT_BASELINE_QUANTILE};
 use crate::filter::BandpassFilter;
 use crate::threshold::lstsq_alpha_baseline;
 
 /// The preprocessing chain `C(z) = F(z) - RQ(F(z))` of `indeca::prepare`.
 ///
+/// Scoring a candidate costs one pass of the chain. The bandpass is the
+/// trace's own `BandpassFilter` (its FFT plans and gain curve are cached, so
+/// a pass is one forward and one inverse FFT), and the rolling quantile is
+/// the O(n) [`RollingQuantile`] with its buffers kept across candidates.
 pub(crate) struct Chain {
     /// The bandpass, when it was applied to the trace.
     filter: Option<BandpassFilter>,
     /// Rolling-quantile window (samples).
     window: usize,
+    quantile: RollingQuantile,
 }
 
 impl Chain {
     pub(crate) fn new(filter: Option<BandpassFilter>, window: usize) -> Self {
-        Self { filter, window }
+        Self {
+            filter,
+            window,
+            quantile: RollingQuantile::new(),
+        }
     }
 
     /// Push `z` through the chain in place.
@@ -52,7 +61,8 @@ impl Chain {
         if let Some(f) = self.filter.as_mut() {
             f.apply(z);
         }
-        subtract_rolling_baseline(z, self.window, DEFAULT_BASELINE_QUANTILE);
+        self.quantile
+            .subtract(z, self.window, DEFAULT_BASELINE_QUANTILE);
     }
 }
 
