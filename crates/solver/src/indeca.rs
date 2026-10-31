@@ -1,14 +1,34 @@
 /// InDeCa (Informed Deconvolution of Calcium imaging data) pipeline.
 ///
-/// Uses a scale iteration loop mirroring the original Python InDeCa:
+/// The scale loop is block-coordinate descent on the relaxed problem
 ///
-/// 1. Estimate initial alpha from trace peak-to-trough
-/// 2. Iterate: prescale by alpha_est → Box[0,1] FISTA → threshold search
-///    → lstsq recovers alpha_lstsq → update alpha_est *= alpha_lstsq
-/// 3. Converges when alpha_lstsq ≈ 1.0 (prescale matches true amplitude)
+/// ```text
+/// min over s in [0,1]^T, alpha >= 0:  || y - alpha K s ||^2
+/// ```
 ///
-/// The iteration prevents the single-pass problem where an inaccurate initial
-/// prescale causes the solver to settle on high alpha with too few spikes.
+/// (`y` the upsampled, filtered, baseline-subtracted trace, `K` the
+/// peak-normalized AR(2) kernel), followed by one terminal binarization (the
+/// threshold search, which also fits the reported amplitude and offset).
+///
+/// - s-step: Box[0,1] FISTA on `y / alpha`.
+/// - alpha-step: least squares of `y` on the relaxed reconvolution `K s`.
+///
+/// The relaxed objective cannot identify the amplitude: any `alpha` at or
+/// above the saturation amplitude (where the box upper bound stops binding)
+/// gives the same fit, and the s-step there is the scale-free non-negative fit,
+/// so its normalized solution, and the binarization, do not depend on
+/// `alpha`. The fixed points are exactly that set. Starting from the trace's
+/// peak-to-trough (which no relaxed bin can exceed, since the kernel is
+/// peak-normalized) the loop is at a fixed point after its first round; from a
+/// binding start it raises `alpha` with a non-increasing objective until the
+/// box is inactive. The amplitude is identified only by the binarization.
+///
+/// The original InDeCa update takes `alpha` from the binarized train instead.
+/// That map is not a descent step on the relaxed objective; on the simulation
+/// presets its fixed point lies at 0.15-0.4x the true spike amplitude, with
+/// several bins per spike (the overfit regime the InDeCa paper describes), and
+/// stopping it at a 5% tolerance stops it at an arbitrary round. It remains
+/// available as [`ScaleLoop::binary_alpha`] for characterization.
 ///
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
@@ -331,25 +351,22 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
-/// Full InDeCa trace processing pipeline with scale iteration.
+/// Full InDeCa trace processing pipeline.
 ///
-/// Mirrors InDeCa's `solve_scale` loop:
 /// 1. Upsample, apply optional bandpass filter, subtract rolling baseline
-/// 2. Estimate initial alpha from trace peak-to-trough
-/// 3. Iterate: prescale → Box[0,1] FISTA → threshold search → update alpha
-///    until alpha_lstsq converges near alpha_est (prescale matches amplitude)
-/// 4. Downsample the spike train of the best round
+/// 2. Prescale by the trace's peak-to-trough
+/// 3. Scale loop (see the module docs): Box[0,1] FISTA, relaxed amplitude
+///    step, until a fixed point (normally after one round)
+/// 4. Binarize the last relaxed solution (threshold search) and downsample
 ///
-/// The iteration loop is the key difference from the single-pass approach:
-/// each round refines the prescale so Box[0,1] maps correctly, preventing
-/// the solver from settling on high alpha with too few spikes.
-///
-/// `tol` sets the inner FISTA stopping rule: a solve stops when its data-fit
-/// term `0.5 * ||K s - y / alpha_est||^2` improved by less than `tol` times the
-/// fit term's expected noise energy over the last 50 iterations, i.e. once
-/// further iterates are indistinguishable given the noise. `max_iters` is a
-/// safety cap. Each round after the first is warm-started from the previous
-/// round's relaxed solution, rescaled to the new prescale.
+/// `max_iters` and `tol` set the inner FISTA solve (relative-step rule). With
+/// `lambda = 0` the relaxed problem is ill-posed at the upsampled rate (sub-bin
+/// rearrangements barely change the fit), so the solve does not reach the
+/// step tolerance in practice and `max_iters` acts as an early-stopping
+/// regularizer: the binarized output depends on it. A data-dependent stop
+/// (the noise-scaled fit-window rule) is available as
+/// [`ScaleLoop::fit_stop`] but makes the output sensitive to tiny input
+/// changes, because it moves the stopping point along that drift.
 ///
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
@@ -499,8 +516,19 @@ impl ScaleLoop {
 }
 
 impl Default for ScaleLoop {
+    /// Block-coordinate descent on the relaxed objective with a fixed inner
+    /// iteration budget (see the module docs).
     fn default() -> Self {
-        Self::binary_alpha()
+        Self {
+            alpha_source: AlphaSource::Relaxed,
+            alpha_init: AlphaInit::PeakToTrough,
+            stop: ScaleStop::FixedPoint,
+            rebaseline: false,
+            fit_stop: false,
+            warm_rounds: true,
+            take_last: true,
+            max_rounds: 10,
+        }
     }
 }
 
@@ -1539,13 +1567,7 @@ mod tests {
     }
 
     fn relaxed_loop() -> ScaleLoop {
-        ScaleLoop {
-            alpha_source: AlphaSource::Relaxed,
-            stop: ScaleStop::FixedPoint,
-            take_last: true,
-            fit_stop: false,
-            ..ScaleLoop::binary_alpha()
-        }
+        ScaleLoop::default()
     }
 
     fn run_cfg(
@@ -1730,5 +1752,47 @@ mod tests {
         assert_eq!(m[150], 0.0);
         assert_eq!(m[250], 1.0);
         assert!(m[198] == 0.0 && m[202] == 1.0, "{} {}", m[198], m[202]);
+    }
+
+    #[test]
+    fn default_loop_reaches_its_fixed_point_in_one_round_on_presets() {
+        // The shipped loop: one s-step at the peak-to-trough prescale is
+        // already a fixed point, so no preset cell needs a second round.
+        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
+            let (r, st) = solve_trace_stats(
+                &trace,
+                tr,
+                td,
+                fs,
+                k,
+                300,
+                1e-4,
+                None,
+                true,
+                true,
+                0.0,
+                SolveOptions {
+                    noise_constrained: true,
+                },
+            );
+            assert_eq!(st.len(), 1, "{name}: {st:?}");
+            assert!(!st[0].upper_bound_active);
+            assert!(r.alpha > 0.0 && r.s_counts.iter().sum::<f32>() > 0.0);
+        }
+    }
+
+    #[test]
+    fn noise_budget_decides_the_pick_on_jgcamp8f() {
+        // On the fast-indicator preset the binarized train reaches the noise
+        // floor, so the noise-constrained selection takes the noise path.
+        for (name, trace, tr, td, fs, k) in preset_cells(3, 1500) {
+            if name != "jgcamp8f" {
+                continue;
+            }
+            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 500, relaxed_loop());
+            let last = st.last().unwrap();
+            assert_eq!(last.noise_path, Some(true), "{st:?}");
+            assert!(last.binary_error <= last.budget * 1.0001);
+        }
     }
 }
