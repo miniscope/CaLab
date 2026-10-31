@@ -30,15 +30,18 @@
 //! `2 * sigma^4 * n_grid * corr_sum` for stationary noise with
 //! `corr_sum = sum_lag rho(lag)^2` (1 for white noise).
 //!
-//! The reconstruction is not passed through the trace's bandpass: the
-//! low-pass sits above the kernel's band (filtering the reconstruction changed
-//! the true train's residual by under 3% on the simulation presets), and the
-//! high-pass's slow-band role is taken over by the rolling baseline and the
-//! fitted offset (filtering with it made the true train fit worse, because the
-//! trace's rolling-baseline step undoes the high-pass sag the reconstruction
-//! would keep). What keeps real traces above the budget is model error the
-//! AR(2) train cannot express (slow drift, the rolling baseline absorbing
-//! calcium during dense activity, frame integration), not the filter.
+//! How the reconstruction is compared with the trace is the [`Scorer`]'s
+//! business. The shipped rule ([`Scorer::Chain`], see the `chain` module)
+//! pushes every candidate reconstruction through the identical preprocessing
+//! chain the trace went through (bandpass, then the rolling-quantile
+//! baseline) before the residual, so what the chain injects into the trace
+//! (the zero-phase high-pass sag and lobes, the circular-wrap step at both
+//! ends, the quantile riding up under activity) is in the candidate too.
+//! [`Scorer::Plain`] scores the bare reconstruction `K s` against the
+//! processed trace; the sag and the quantile are then unmodelled, and even
+//! the true train sits far above the budget. What keeps real traces above
+//! the budget under the chain rule is model error the AR(2) train cannot
+//! express: slow drift the rolling window cannot track, frame integration.
 //!
 //! # Selection rule
 //!

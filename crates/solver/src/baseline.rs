@@ -83,8 +83,12 @@ impl RollingQuantile {
     fn sort_ranks(&mut self, trace: &[f32]) {
         let n = trace.len();
         self.pairs.clear();
-        self.pairs
-            .extend(trace.iter().enumerate().map(|(t, &v)| ((sortable_key(v) as u64) << 32) | t as u64));
+        self.pairs.extend(
+            trace
+                .iter()
+                .enumerate()
+                .map(|(t, &v)| ((sortable_key(v) as u64) << 32) | t as u64),
+        );
         self.scratch.resize(n, 0);
         self.hist.resize(RADIX_BUCKETS, 0);
         let mut shift = 32;
@@ -120,7 +124,11 @@ impl RollingQuantile {
     fn next_set_above(bits: &[u64], c: usize) -> Option<usize> {
         let (mut w, b) = (c / 64, c % 64);
         // Bits strictly above `b` in the cursor's word (none when b == 63).
-        let mut word = if b == 63 { 0 } else { bits[w] & (u64::MAX << (b + 1)) };
+        let mut word = if b == 63 {
+            0
+        } else {
+            bits[w] & (u64::MAX << (b + 1))
+        };
         loop {
             if word != 0 {
                 return Some(w * 64 + word.trailing_zeros() as usize);
@@ -136,7 +144,11 @@ impl RollingQuantile {
     #[inline]
     fn prev_set_below(bits: &[u64], c: usize) -> Option<usize> {
         let (mut w, b) = (c / 64, c % 64);
-        let mut word = if b == 0 { 0 } else { bits[w] & (u64::MAX >> (64 - b)) };
+        let mut word = if b == 0 {
+            0
+        } else {
+            bits[w] & (u64::MAX >> (64 - b))
+        };
         loop {
             if word != 0 {
                 return Some(w * 64 + 63 - word.leading_zeros() as usize);
@@ -186,7 +198,8 @@ impl RollingQuantile {
                     match Self::next_set_above(bits, cursor) {
                         Some(c) => cursor = c,
                         None => {
-                            cursor = Self::prev_set_below(bits, cursor).expect("window is non-empty");
+                            cursor =
+                                Self::prev_set_below(bits, cursor).expect("window is non-empty");
                             below -= 1;
                         }
                     }
@@ -204,7 +217,11 @@ impl RollingQuantile {
                 below -= 1;
             }
             let key = self.sorted_key[cursor];
-            let b = if key & 0x8000_0000 != 0 { key & 0x7FFF_FFFF } else { !key };
+            let b = if key & 0x8000_0000 != 0 {
+                key & 0x7FFF_FFFF
+            } else {
+                !key
+            };
             self.baselines.push(f32::from_bits(b));
         }
         for (v, &b) in trace.iter_mut().zip(self.baselines.iter()) {
@@ -367,7 +384,15 @@ mod tests {
                 ((rng_state >> 33) as f32) / (u32::MAX as f32 / 2.0) - 0.5
             })
             .collect();
-        for (window, quantile) in [(1usize, 0.2), (2, 0.5), (301, 0.2), (1000, 0.9), (64, 0.0), (64, 1.0), (65, 0.2)] {
+        for (window, quantile) in [
+            (1usize, 0.2),
+            (2, 0.5),
+            (301, 0.2),
+            (1000, 0.9),
+            (64, 0.0),
+            (64, 1.0),
+            (65, 0.2),
+        ] {
             let mut fast = trace.clone();
             let mut reference = trace.clone();
             subtract_rolling_baseline(&mut fast, window, quantile);

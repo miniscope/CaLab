@@ -9,6 +9,11 @@
 /// (`y` the upsampled, filtered, baseline-subtracted trace, `K` the
 /// peak-normalized AR(2) kernel), followed by one terminal binarization (the
 /// threshold search, which also fits the reported amplitude and offset).
+/// The binarization scores every candidate train through the trace's own
+/// preprocessing chain ([`Scoring::Chain`], the `chain` module): the
+/// bandpass and the rolling-quantile baseline are applied to `K s` exactly
+/// as they were to the trace, so the candidate and the trace carry the same
+/// filter-injected structure.
 ///
 /// - s-step: Box[0,1] FISTA on `y / alpha`.
 /// - alpha-step: least squares of `y` on the relaxed reconvolution `K s`.
@@ -1974,5 +1979,124 @@ mod tests {
             assert_eq!(last.noise_path, Some(true), "{st:?}");
             assert!(last.binary_error <= last.budget * 1.0001);
         }
+    }
+
+    // ── Chain-consistent scoring ────────────────────────────────────────
+
+    /// Drift-free preset cells: (name, trace, clean calcium, tau_r, tau_d, fs).
+    fn drift_free_cells(n_tp: usize) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64)> {
+        let mut out = Vec::new();
+        for (name, mut cfg) in crate::simulate::presets::all() {
+            cfg.num_cells = 2;
+            cfg.num_timepoints = n_tp;
+            cfg.drift = crate::simulate::DriftModel::RandomWalk(crate::simulate::RandomWalkDrift {
+                step_std_fraction: 0.0,
+                ..Default::default()
+            });
+            let r = crate::simulate::simulate(&cfg);
+            for c in 0..2 {
+                let gt = &r.ground_truth[c];
+                out.push((
+                    name,
+                    r.traces[c * n_tp..(c + 1) * n_tp].to_vec(),
+                    gt.clean_calcium.clone(),
+                    gt.tau_rise_s,
+                    gt.tau_decay_s,
+                    cfg.fs_hz,
+                ));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn chain_scoring_puts_the_clean_signal_at_the_noise_budget() {
+        // Without drift the only unmodelled part of the trace is the noise.
+        // Scored against the preprocessed trace as a bare reconstruction, the
+        // clean calcium sits far above the budget (the rolling baseline rides
+        // up under activity; the high-pass sag): ~10x on `clean`. Passed
+        // through the identical chain on the 300 Hz grid it sits at (about)
+        // the budget: the linear part cancels exactly and only the quantile
+        // nonlinearity is left (1.00-1.10x on these presets; up to ~1.4x on
+        // gcamp6s and clean, where the budget is smallest).
+        for (name, trace, clean, tr, td, fs) in drift_free_cells(3000) {
+            let k = ((300.0 / fs).round() as usize).max(1);
+            let recon = upsample_trace(&clean, k);
+            let (e, b, _) = score_reconstruction_on_trace(
+                &trace,
+                tr,
+                td,
+                fs,
+                k,
+                true,
+                true,
+                Scoring::Chain,
+                &recon,
+            );
+            assert!((0.85..1.5).contains(&(e / b)), "{name} k={k}: {}", e / b);
+            if name == "clean" {
+                let (e, b, _) = score_reconstruction_on_trace(
+                    &trace,
+                    tr,
+                    td,
+                    fs,
+                    k,
+                    true,
+                    true,
+                    Scoring::Plain,
+                    &recon,
+                );
+                assert!(e / b > 5.0, "{}", e / b);
+            }
+        }
+    }
+
+    #[test]
+    fn chain_scoring_is_the_default_and_changes_the_pick() {
+        assert_eq!(ScaleLoop::default().scoring, Scoring::Chain);
+        let plain = ScaleLoop {
+            scoring: Scoring::Plain,
+            ..ScaleLoop::default()
+        };
+        let mut differs = false;
+        for (_, trace, _, tr, td, fs) in drift_free_cells(1500) {
+            let k = ((300.0 / fs).round() as usize).max(1);
+            let (a, st) = run_cfg(&trace, (tr, td, fs, k), 500, ScaleLoop::default());
+            let (b, _) = run_cfg(&trace, (tr, td, fs, k), 500, plain);
+            assert!(a.s_counts.iter().sum::<f32>() > 0.0);
+            assert!(b.s_counts.iter().sum::<f32>() > 0.0);
+            // The chain is amplitude-invariant, so the fitted amplitude stays
+            // a least-squares fit of the chain-transformed reconstruction.
+            assert!(a.alpha > 0.0 && st.last().unwrap().binary_error.is_finite());
+            differs |= a.s_counts != b.s_counts;
+        }
+        assert!(differs, "chain scoring never changed a pick");
+    }
+
+    #[test]
+    fn chain_scoring_without_a_filter_is_the_quantile_alone() {
+        // With the bandpass off the chain is the rolling quantile only; the
+        // scorer must not require a filter.
+        let trace = noisy_spiking_trace(900, 0xC0DE);
+        let (r, st) = solve_trace_cfg(
+            &trace,
+            0.1,
+            0.6,
+            30.0,
+            10,
+            300,
+            1e-4,
+            None,
+            false,
+            false,
+            0.0,
+            SolveOptions {
+                noise_constrained: true,
+            },
+            ScaleLoop::default(),
+        );
+        assert_eq!(st.len(), 1);
+        assert!(r.s_counts.iter().sum::<f32>() > 0.0);
+        assert!(r.alpha > 0.0);
     }
 }

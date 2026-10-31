@@ -5,22 +5,35 @@
 //! rolling-quantile baseline subtraction `RQ` (`indeca::prepare`). Scoring the
 //! bare reconstruction against `C(y)` is inconsistent: the chain injects
 //! structure into the trace that the model `K n` does not carry, so even the
-//! true train scores well above the noise budget. What the chain injects:
+//! true train scores well above the noise budget. Measured on the simulation
+//! presets (drift off, 100 s traces), the chain injects:
 //!
-//! - the zero-phase high-pass sag, an activity-locked undershoot of about two
-//!   spike amplitudes under dense activity, with positive lobes of about 8% of
-//!   the impulse area 20-120 s away from events;
+//! - the zero-phase high-pass sag: an activity-locked undershoot of one to
+//!   several spike amplitudes (about two on gcamp6f) before and after events,
+//!   and positive lobes carrying about 8% of the impulse area 20-120 s away
+//!   from each event (the lobe sits at `~0.5 / f_hp`);
 //! - the circular wrap of the FFT high-pass: a step of half the trace's
-//!   end-to-start range spread over 8-45 s at both ends;
+//!   end-to-start difference, spread over 8-45 s at both ends;
 //! - the rolling quantile riding up under dense activity;
-//! - and, when the trace is shorter than `1 / f_hp`, the high-pass degenerates
-//!   into a DC-only no-op, so the sag disappears and the quantile is all there is.
+//! - and, when the trace is shorter than `1 / f_hp` (gcamp6s and ogb1 at
+//!   100 s), the high-pass degenerates into a DC-only no-op: the sag is a
+//!   constant, and the quantile is all the chain does.
 //!
 //! [`Scorer::Chain`] passes every candidate reconstruction through the
 //! identical chain before computing the residual, so the linear part (`F`:
 //! sag, lobes, wrap) cancels exactly, and only the quantile nonlinearity is
-//! left (the true train then scores within 1.00-1.10x of the budget on
-//! drift-free simulations).
+//! left: the clean calcium then scores at 1.00-1.10x the noise budget on the
+//! drift-free presets (1.3-1.4x where the budget is smallest), against
+//! 1.4-28x bare. What stays above the budget on the default simulations is
+//! the random-walk drift, which the `25 * tau_d * fs` rolling window cannot
+//! track (the true train scores 1.2-7x the budget on gcamp6s and gcamp6m
+//! with drift on; this scorer does not address that).
+//!
+//! Cost: one pass of the chain per distinct candidate (110-200 per trace on
+//! the 300 Hz loop): the trace's own FFT bandpass and the O(n)
+//! [`RollingQuantile`], both producing the same bits the trace got. The
+//! output is therefore identical to filtering and baselining each candidate
+//! from scratch (pick hash checked on the characterization set).
 //!
 //! The chain is invariant to the amplitude and offset of the reconstruction:
 //! `F` is linear and removes the DC (or, high-pass off, passes it unchanged),
