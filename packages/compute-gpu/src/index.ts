@@ -5,7 +5,7 @@ export {
   estimateGpuBytes,
   maxCellsPerGroup,
 } from './gpu-fista.ts';
-export type { GpuFista, GpuSolutions } from './gpu-fista.ts';
+export type { GpuFista, GpuFistaOptions, GpuSolutions } from './gpu-fista.ts';
 export {
   clampTauRise,
   buildKernel,

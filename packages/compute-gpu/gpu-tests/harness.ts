@@ -24,10 +24,15 @@ export interface HarnessResult {
   equivalence?: CaseResult[];
   bench?: unknown[];
   benchTable?: string;
+  grouping?: unknown;
+  full?: unknown;
 }
 
 /** Open the harness in `mode`, wait for it to finish, return its result. */
-export async function runHarness(page: Page, mode: 'equiv' | 'bench'): Promise<HarnessResult> {
+export async function runHarness(
+  page: Page,
+  mode: 'equiv' | 'bench' | 'groups' | 'full',
+): Promise<HarnessResult> {
   page.on('console', (msg) => {
     const text = msg.text();
     if (!text.startsWith('GPU-SPIKE-RESULT {')) console.log(text);

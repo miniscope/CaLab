@@ -125,7 +125,9 @@ That is 8 storage buffers, the WebGPU default per-stage limit.
 `maxBufferSize`. `load()` splits cells into groups of
 `min(⌊min(maxBinding, maxBuffer) / (4T)⌋, maxComputeWorkgroupsPerDimension)`
 cells. Each group has its own buffers and bind group, and groups are encoded
-one after another. Converged flags are read back once per `step(n)` call;
+one after another. `createGpuFista(device, { maxGroupBytes })` caps one group's working set
+(`estimateGpuBytes` of the group) below the device limit; the default is no
+extra cap. Converged flags are read back once per `step(n)` call;
 `solve(checkEvery = 50)` loops `step(checkEvery)` until every cell has
 converged or `maxIters` is reached. Memory is about `20·N·T` bytes
 (`estimateGpuBytes`).
@@ -138,9 +140,9 @@ Run `npm run ensure-wasm` first so `crates/solver/pkg` exists.
 | Script             | What                                                                                                                                                                     |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `npm test`         | Node-only Vitest: scan vs serial Rust recursion, and the CPU model vs the real WASM solver. The WASM loads from bytes, because the `--target web` init() fetches by URL. |
-| `npm run test:gpu` | Playwright equivalence spec (WASM vs GPU, in the browser)                                                                                                                |
-| `npm run bench`    | Playwright benchmark spec (`@bench`)                                                                                                                                     |
-| `npm run harness`  | Serve the harness on :4177 by hand (`?mode=equiv`, `?mode=bench`, `?mode=all`)                                                                                           |
+| `npm run test:gpu` | Playwright specs (WASM vs GPU equivalence, and multi-group vs single-group, in the browser)                                                                              |
+| `npm run bench`    | Playwright benchmark specs (`@bench`): the 200-iteration table and the 1024 x 270 000 converged pass                                                                     |
+| `npm run harness`  | Serve the harness on :4177 by hand (`?mode=equiv`, `groups`, `bench`, `full`, `all`)                                                                                     |
 
 The first time, install the browser with `npx playwright install chromium`.
 
@@ -187,6 +189,12 @@ that the WASM solver is `filtered`, matching CaDecon's `baseline_subtracted`
 path. Without that call, `set_trace` clears `filtered`. The "Unfiltered" case
 covers the baseline-estimating path.
 
+Grouping (`groups.spec.ts`): the CaTune-like case with N = 8 solved once with
+one group and once with `maxGroupBytes = 3 cells` (3 groups of 3, 3, 2 cells).
+The two results are bitwise identical (relative L2 0, same iteration counts),
+and the grouped run matches WASM under the thresholds above (worst rel L2
+6.05e-4, the usual one-iteration-early cell).
+
 Node tests (`npm test`):
 
 - Scan vs serial Rust recursion: rel L2 ≤ 1e-5 for every tau/fs case. The
@@ -203,18 +211,59 @@ scaling over 8 workers and no pool overhead. GPU time is wall clock for
 
 Adapter: apple / metal-3 (Apple M5 Max)
 
-| N    | T      | profile              | groups | GPU ms / 200 it               | WASM 1 cell ms / 200 it | WASM 8-worker ideal ms (estimate) | GPU speedup vs ideal |
-| ---- | ------ | -------------------- | ------ | ----------------------------- | ----------------------- | --------------------------------- | -------------------- |
-| 8    | 27000  | CaTune 30 Hz nonneg  | 1      | 17.9                          | 35.9                    | 36                                | 2.01x                |
-| 64   | 27000  | CaTune 30 Hz nonneg  | 1      | 46.7                          | 35.9                    | 287                               | 6.15x                |
-| 256  | 27000  | CaTune 30 Hz nonneg  | 1      | 210.2                         | 35.9                    | 1149                              | 5.47x                |
-| 1024 | 27000  | CaTune 30 Hz nonneg  | 1      | 924.7                         | 35.9                    | 4595                              | 4.97x                |
-| 8    | 270000 | CaDecon 300 Hz box01 | 1      | 76.9                          | 367.8                   | 368                               | 4.78x                |
-| 64   | 270000 | CaDecon 300 Hz box01 | 1      | 589.6                         | 367.8                   | 2942                              | 4.99x                |
-| 256  | 270000 | CaDecon 300 Hz box01 | 1      | 2348.3                        | 367.8                   | 11770                             | 5.01x                |
-| 1024 | 270000 | CaDecon 300 Hz box01 | -      | skipped: needs 5.16 GB > 2 GB | 367.8                   | 47078                             | -                    |
+| N    | T      | profile              | groups | GPU ms / 200 it | WASM 1 cell ms / 200 it | WASM 8-worker ideal ms (estimate) | GPU speedup vs ideal |
+| ---- | ------ | -------------------- | ------ | --------------- | ----------------------- | --------------------------------- | -------------------- |
+| 8    | 27000  | CaTune 30 Hz nonneg  | 1      | 19.8            | 33.7                    | 34                                | 1.70x                |
+| 64   | 27000  | CaTune 30 Hz nonneg  | 1      | 46.5            | 33.7                    | 270                               | 5.80x                |
+| 256  | 27000  | CaTune 30 Hz nonneg  | 1      | 202.1           | 33.7                    | 1078                              | 5.34x                |
+| 1024 | 27000  | CaTune 30 Hz nonneg  | 1      | 887.4           | 33.7                    | 4314                              | 4.86x                |
+| 8    | 270000 | CaDecon 300 Hz box01 | 1      | 78.5            | 345.6                   | 346                               | 4.40x                |
+| 64   | 270000 | CaDecon 300 Hz box01 | 1      | 562.4           | 345.6                   | 2765                              | 4.92x                |
+| 256  | 270000 | CaDecon 300 Hz box01 | 1      | 2234.1          | 345.6                   | 11059                             | 4.95x                |
+| 1024 | 270000 | CaDecon 300 Hz box01 | 1      | 8929.0          | 345.6                   | 44237                             | 4.95x                |
+
+The N = 1024, T = 270 000 row (the full-coverage CaDecon case, 5.16 GB of
+buffers) has no harness-side memory cap: the harness tries it and reports a
+device out-of-memory or validation error as a failed run. On this Mac it fits
+in one group (each buffer is 1.1 GB, under the 4 GiB binding limit).
+
+**Full-coverage trace pass.** The same 1024 x 270 000 case with convergence on
+(box01, lambda 0, tol 1e-4, maxIters 500, `npm run bench`): one group,
+**23.2 s wall clock** for `load` + `solve(50)` + readback. No cell converged
+within 500 iterations (1024/1024 stopped at the cap), so this is the cost of a
+full 500-iteration pass. WASM, one cell at 345.6 ms / 200 it, would need about
+1.73 s per cell per 500 iterations, or about 221 s for 1024 cells on an ideal
+8 workers (estimate), roughly 9.5x slower.
 
 At large N the GPU runs about 6 G sample-iterations/s, roughly 14 f32
 accesses (about 56 B) per sample per iteration, so it is bandwidth-bound.
 At N = 8, T = 27 000 it is bound by dispatch overhead: 2000 dispatches in
 about 18 ms.
+
+### Bandwidth projection for weaker GPUs
+
+Memory traffic per sample per iteration (filtered path, from the WGSL; scalar
+reads of `pows` and `aux` are negligible): `fwd1` 2 (read y, write s1), `fwd2` 2,
+`adj1` 3 (read c, read trace, write s1), `adj2` 2, `prox` 5 (read a, x, y; write
+x, y). That is 14 f32 accesses, **56 B**. At N = 256, T = 270 000 one iteration
+moves 69.12 M samples x 56 B = 3.87 GB, so 200 iterations move 774 GB in 2.234 s:
+**346 GB/s effective** on this Mac. Projection: time = 774 GB / bandwidth, for
+the N = 256, T = 270 000 benchmark, against the idealized 8-worker WASM estimate
+(11 059 ms).
+
+| Class                  | GB/s | GPU ms / 200 it | Speedup vs 8-worker WASM ideal |
+| ---------------------- | ---- | --------------- | ------------------------------ |
+| Intel Iris Xe          | 60   | 12 900          | 0.86x                          |
+| Apple M1/M2 base       | 100  | 7 740           | 1.43x                          |
+| M-Pro class            | 200  | 3 870           | 2.86x                          |
+| M-Max / discrete class | 400  | 1 940           | 5.7x                           |
+
+Assumptions: the listed GB/s is the bandwidth the kernel actually achieves
+(nominal peaks are higher, and this Mac sustains 346 GB/s, so real numbers will
+likely be 20 to 40 % slower than the table); the kernel stays purely bandwidth
+bound (no compute or dispatch limit, which flatters small-cache iGPUs); and
+WASM per-core speed on those machines equals this Mac's, with a perfect
+8-worker scaling. That last one flatters the WASM side on weaker laptops (fewer
+or slower cores, and an iGPU shares its memory bus with the CPU workers), so
+the real speedup on low-end hardware is probably better than shown. Below
+roughly 100 GB/s the GPU path is not worth it for these sizes.

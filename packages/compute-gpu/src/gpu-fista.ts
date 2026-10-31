@@ -43,12 +43,30 @@ export function estimateGpuBytes(nCells: number, T: number): number {
 }
 
 /** Largest number of cells one group can hold for traces of length T. */
-export function maxCellsPerGroup(device: GPUDevice, T: number): number {
+export function maxCellsPerGroup(
+  device: GPUDevice,
+  T: number,
+  maxGroupBytes: number = Infinity,
+): number {
   const maxBinding = Math.min(
     device.limits.maxStorageBufferBindingSize,
     device.limits.maxBufferSize,
   );
-  return Math.min(Math.floor(maxBinding / (T * 4)), device.limits.maxComputeWorkgroupsPerDimension);
+  const byBytes = Math.floor(maxGroupBytes / estimateGpuBytes(1, T));
+  return Math.min(
+    Math.floor(maxBinding / (T * 4)),
+    device.limits.maxComputeWorkgroupsPerDimension,
+    byBytes,
+  );
+}
+
+export interface GpuFistaOptions {
+  /**
+   * Cap on one group's total working set in bytes (`estimateGpuBytes` of the
+   * group), applied on top of the device limits. Default: no extra cap, so the
+   * device limits alone decide. Mainly for tests that need several groups.
+   */
+  maxGroupBytes?: number;
 }
 
 export interface GpuSolutions {
@@ -99,7 +117,11 @@ const ENTRY_POINTS = [
 ] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
 
-export async function createGpuFista(device: GPUDevice): Promise<GpuFista> {
+export async function createGpuFista(
+  device: GPUDevice,
+  options: GpuFistaOptions = {},
+): Promise<GpuFista> {
+  const maxGroupBytes = options.maxGroupBytes ?? Infinity;
   const module = device.createShaderModule({ code: fistaShaderSource(WG, K) });
   const info = await module.getCompilationInfo();
   const errors = info.messages.filter((m) => m.type === 'error');
@@ -179,8 +201,10 @@ export async function createGpuFista(device: GPUDevice): Promise<GpuFista> {
       pows[BLOCK + 1 + j] = Math.pow(r, j);
     }
 
-    const perGroup = maxCellsPerGroup(device, T);
-    if (perGroup < 1) throw new Error(`trace length ${T} exceeds the device's buffer limits`);
+    const perGroup = maxCellsPerGroup(device, T, maxGroupBytes);
+    if (perGroup < 1) {
+      throw new Error(`trace length ${T} exceeds the device buffer limits or maxGroupBytes`);
+    }
 
     const S = GPUBufferUsage.STORAGE;
     const DST = GPUBufferUsage.COPY_DST;
