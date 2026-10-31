@@ -521,8 +521,8 @@ async function warmCase(gpu: GpuFista, raws: Float32Array[]): Promise<Record<str
   const p = CATUNE;
   const SPLIT = 40;
   const n = raws.length;
-  const prepped = (raw: Float32Array) => {
-    const s = newSolver(p);
+  const prepped = (raw: Float32Array, params: GpuFistaParams = p) => {
+    const s = newSolver(params);
     s.set_trace(raw);
     s.set_filter_enabled(true);
     s.apply_filter();
@@ -611,6 +611,52 @@ async function warmCase(gpu: GpuFista, raws: Float32Array[]): Promise<Record<str
       wasmIters: r.iterations,
     };
   });
+  // Lambda change (CaTune's 'warm' strategy): a state converged at lambda 0.5
+  // continues at lambda 0.05, on both solvers; and both solve cold at 0.05.
+  const p2: GpuFistaParams = { ...p, lambda: 0.05, maxIters: 20000 };
+  const lambdaRef: { solution: Float32Array; iterations: number }[] = [];
+  const coldRef: { solution: Float32Array; iterations: number }[] = [];
+  const convStates: Uint8Array[] = [];
+  for (const raw of raws) {
+    const s = prepped(raw);
+    while (!s.converged() && s.iteration_count() < p.maxIters) s.step_batch(50);
+    convStates.push(s.export_state());
+    s.free();
+    const s2 = prepped(raw, p2);
+    s2.load_state(convStates[convStates.length - 1]);
+    lambdaRef.push(finish(s2));
+    coldRef.push(finish(prepped(raw, p2)));
+  }
+  const cd = convStates.map((b) => decodeSolverState(b)!);
+  const lw = {
+    solution: new Float32Array(n * T),
+    prev: new Float32Array(n * T),
+    momentum: new Uint8Array(n).fill(1),
+    tFista: Float64Array.from(cd, (d) => d.tFista),
+    iterations: Uint32Array.from(cd, (d) => d.iteration),
+  };
+  cd.forEach((d, c) => {
+    lw.solution.set(d.solution, c * T);
+    lw.prev.set(d.solutionPrev, c * T);
+  });
+  const gp2 = { ...p2, filtered: true };
+  await gpu.load(traces, n, T, gp2, lw);
+  const lsol = await gpu.solve(50);
+  gpu.destroy();
+  await gpu.load(traces, n, T, gp2);
+  const csol = await gpu.solve(50);
+  gpu.destroy();
+  const lambdaChange = lambdaRef.map((r, c) => ({
+    relL2: relL2(lsol.solutions.subarray(c * T, (c + 1) * T), r.solution),
+    gpuIters: cd[c].iteration + lsol.iterations[c],
+    wasmIters: r.iterations,
+  }));
+  const coldAtNewLambda = coldRef.map((r, c) => ({
+    relL2: relL2(csol.solutions.subarray(c * T, (c + 1) * T), r.solution),
+    gpuIters: csol.iterations[c],
+    wasmIters: r.iterations,
+  }));
+
   const worst = (xs: { relL2: number }[]) => Math.max(...xs.map((x) => x.relL2));
   log(
     `\n[warm] N=${n} T=${T} split at ${SPLIT}: WASM->GPU worst relL2 ${worst(wasmToGpu).toExponential(2)} ` +
@@ -621,13 +667,15 @@ async function warmCase(gpu: GpuFista, raws: Float32Array[]): Promise<Record<str
     ['WASM->GPU', wasmToGpu],
     ['WASM->GPU reset', wasmToGpuReset],
     ['GPU->WASM', gpuToWasm],
+    ['lambda 0.5 -> 0.05 (warm)', lambdaChange],
+    ['cold at lambda 0.05', coldAtNewLambda],
   ] as const) {
     log(
       `  ${name}: ` +
         xs.map((x) => `${x.relL2.toExponential(1)} it ${x.gpuIters}/${x.wasmIters}`).join(', '),
     );
   }
-  return { split: SPLIT, wasmToGpu, wasmToGpuReset, gpuToWasm };
+  return { split: SPLIT, wasmToGpu, wasmToGpuReset, gpuToWasm, lambdaChange, coldAtNewLambda };
 }
 
 async function main(): Promise<void> {

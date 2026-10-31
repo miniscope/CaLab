@@ -293,9 +293,21 @@ after 40 iterations:
 | WASM `export_state` -> GPU with momentum (x, y, t_fista, iteration count)           | 1.9e-5                        | identical in 4/4 cells (232 to 243)    |
 | WASM `export_state` -> GPU, momentum reset (for contrast)                           | 3.0e-2                        | 162 to 167 vs 232 to 243 (stops early) |
 | GPU `readSolutionsFor(..., { withState })` -> codec -> WASM `load_state`, continues | 1.9e-5                        | identical in 4/4 cells                 |
+| WASM converged at lambda 0.5 -> both continue at lambda 0.05 (CaTune's `'warm'`)    | 1.6e-5                        | identical in 4/4 cells (386 to 407)    |
+| (contrast) both cold at lambda 0.05                                                 | 1.7e-5                        | identical in 4/4 cells                 |
 
 Before this, the GPU loaded only x_k and restarted momentum, so a re-submitted
 tile (every CaTune quantum) drifted from the WASM path by about 3e-2.
+
+The GPU-vs-WASM floor depends on the kernel, not on warm starts. With
+CaTune's demo kernel (tauRise 1 ms, tauDecay 3 s at 30 Hz, lambda 0.06; set
+by hand in the harness, not in a spec) even the cold solve differs by 3.5e-4
+to 4.5e-4 at about 640 iterations with identical iteration counts, the
+40-iteration split continuation by the same 4.4e-4, and a lambda change from
+a converged state by 4e-6 to 9e-6. f32 reductions on an ill-conditioned
+kernel drift within the tol = 1e-4 stopping band, and longer solves drift
+further (the CaTune dev readout shows up to 2e-3 after 1700 to 2200
+iterations, and 1e-6 to 3e-5 for short re-solves).
 
 Node tests (`npm test`):
 
