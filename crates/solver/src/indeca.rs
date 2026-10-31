@@ -33,8 +33,9 @@
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
+use crate::chain::{Chain, Scorer};
 use crate::filter::BandpassFilter;
-use crate::threshold::{threshold_search_opts, NoiseModel, Selection, ThresholdResult};
+use crate::threshold::{threshold_search_scored, NoiseModel, Selection, ThresholdResult};
 use crate::upsample::{
     downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
@@ -482,6 +483,18 @@ pub(crate) enum ScaleStop {
     FixedPoint,
 }
 
+/// What candidate trains are scored against (see the `chain` module).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scoring {
+    /// The bare reconstruction `K s` against the preprocessed trace (the rule
+    /// before chain-consistent scoring; kept for characterization).
+    Plain,
+    /// Every reconstruction passed through the trace's own preprocessing
+    /// chain (bandpass, rolling-quantile baseline) before the residual. The
+    /// shipped rule.
+    Chain,
+}
+
 /// Structure of the scale loop. `Default` is the shipped behavior; the other
 /// settings exist for characterization and are crate-internal.
 #[derive(Clone, Copy, Debug)]
@@ -509,6 +522,8 @@ pub(crate) struct ScaleLoop {
     pub take_last: bool,
     /// Safety net on the number of rounds.
     pub max_rounds: usize,
+    /// How the binarization candidates are scored.
+    pub scoring: Scoring,
 }
 
 impl ScaleLoop {
@@ -525,6 +540,7 @@ impl ScaleLoop {
             warm_rounds: true,
             take_last: false,
             max_rounds: 10,
+            scoring: Scoring::Plain,
         }
     }
 }
@@ -543,6 +559,7 @@ impl Default for ScaleLoop {
             warm_rounds: true,
             take_last: true,
             max_rounds: 10,
+            scoring: Scoring::Chain,
         }
     }
 }
@@ -589,6 +606,17 @@ pub(crate) struct Prepared {
     pub banded: BandedAR2,
     pub noise: NoiseEstimate,
     pub noise_model: Option<NoiseModel>,
+    /// The bandpass applied to the trace (`None` when off or skipped).
+    pub filter: Option<BandpassFilter>,
+}
+
+impl Prepared {
+    /// The preprocessing chain the trace went through (bandpass, then the
+    /// rolling-quantile baseline), for chain-consistent scoring. Takes the
+    /// filter: the chain owns it from here on.
+    pub(crate) fn take_chain(&mut self) -> Box<Chain> {
+        Box::new(Chain::new(self.filter.take(), self.bl_window))
+    }
 }
 
 pub(crate) fn prepare(
@@ -633,6 +661,7 @@ pub(crate) fn prepare(
         banded: BandedAR2::new(tau_r, tau_d, fs_up),
         noise,
         noise_model,
+        filter,
     }
 }
 
@@ -718,7 +747,7 @@ pub(crate) fn solve_trace_cfg(
 ) -> (InDecaResult, Vec<RoundStats>) {
     let k = upsample_factor.max(1);
     let fs_up = fs * upsample_factor as f64;
-    let prep = prepare(
+    let mut prep = prepare(
         trace,
         tau_r,
         tau_d,
@@ -729,6 +758,9 @@ pub(crate) fn solve_trace_cfg(
     );
     let pad = prep.pad;
     let wt_len = prep.working.len();
+    // The chain the candidates are scored through (`Scoring::Chain`); it owns
+    // the trace's filter and is handed to each round's scorer and back.
+    let mut chain = (cfg.scoring == Scoring::Chain).then(|| prep.take_chain());
 
     // Single solver allocation reused across all solve_upsampled calls.
     let mut solver = Solver::new();
@@ -849,17 +881,27 @@ pub(crate) fn solve_trace_cfg(
             pve,
             error,
             noise_path,
-        } = threshold_search_opts(
-            &s_normalized,
-            &y,
-            &prep.banded,
-            tau_d,
-            fs_up,
-            upsample_factor,
-            f64::INFINITY,
-            selection,
-            prep.noise_model,
-        );
+        } = {
+            let mut scorer = match chain.take() {
+                Some(c) => Scorer::Chain { y: &y, chain: c },
+                None => Scorer::Plain { y: &y },
+            };
+            let r = threshold_search_scored(
+                &s_normalized,
+                &mut scorer,
+                &prep.banded,
+                tau_d,
+                fs_up,
+                upsample_factor,
+                f64::INFINITY,
+                selection,
+                prep.noise_model,
+            );
+            if let Scorer::Chain { chain: c, .. } = scorer {
+                chain = Some(c);
+            }
+            r
+        };
 
         let alpha_new = match cfg.alpha_source {
             AlphaSource::Binary => alpha_lstsq,
@@ -974,6 +1016,48 @@ pub(crate) fn solve_trace_cfg(
         },
         stats,
     )
+}
+
+/// Characterization: score a reconstruction `recon` (trace units, before any
+/// preprocessing, at the upsampled rate; e.g. `K n` of the true train, or the
+/// clean calcium) against `trace` exactly as candidates are scored under
+/// `scoring`. Returns `(residual energy, noise budget, amplitude)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn score_reconstruction_on_trace(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    scoring: Scoring,
+    recon: &[f32],
+) -> (f64, f64, f64) {
+    let k = upsample_factor.max(1);
+    let mut prep = prepare(
+        trace,
+        tau_r,
+        tau_d,
+        fs * k as f64,
+        k,
+        hp_enabled,
+        lp_enabled,
+    );
+    let n = prep.working.len();
+    let pad = prep.pad;
+    let n_grid = (pad..n.saturating_sub(pad)).step_by(k).count();
+    let mut conv = recon.to_vec();
+    let chain = prep.take_chain();
+    let mut sc = match scoring {
+        Scoring::Plain => Scorer::Plain { y: &prep.working },
+        Scoring::Chain => Scorer::Chain {
+            y: &prep.working,
+            chain,
+        },
+    };
+    let (e, a, _) = sc.score_reconstruction(&mut conv, pad, k, f64::INFINITY);
+    (e, prep.noise_model.map_or(0.0, |nm| nm.budget(n_grid)), a)
 }
 
 #[cfg(test)]

@@ -57,6 +57,7 @@
 //!   the pick off the noise-driven wiggles of a flat error curve. With no noise
 //!   model (`SE = 0`) it is the plain minimum-error (maximum-PVE) threshold.
 use crate::banded::BandedAR2;
+use crate::chain::Scorer;
 
 /// Number of evenly spaced candidate thresholds. This is the numerical
 /// resolution of the search (a step of ~0.005 in normalized spike height), not
@@ -162,6 +163,33 @@ pub fn threshold_search_opts(
     selection: Selection,
     noise: Option<NoiseModel>,
 ) -> ThresholdResult {
+    threshold_search_scored(
+        s_relaxed,
+        &mut Scorer::Plain { y },
+        banded,
+        tau_decay,
+        fs_up,
+        upsample_factor,
+        max_alpha,
+        selection,
+        noise,
+    )
+}
+
+/// [`threshold_search_opts`] with an explicit candidate [`Scorer`] (the
+/// trace is the scorer's target).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn threshold_search_scored(
+    s_relaxed: &[f32],
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    tau_decay: f64,
+    fs_up: f64,
+    upsample_factor: usize,
+    max_alpha: f64,
+    selection: Selection,
+    noise: Option<NoiseModel>,
+) -> ThresholdResult {
     let n = s_relaxed.len();
     let pad = boundary_padding(tau_decay, fs_up).min(n / 4);
     let stride = upsample_factor.max(1);
@@ -175,7 +203,7 @@ pub fn threshold_search_opts(
             baseline: if n == 0 {
                 0.0
             } else {
-                y.iter().map(|&v| v as f64).sum::<f64>() / n as f64
+                scorer.target().iter().map(|&v| v as f64).sum::<f64>() / n as f64
             },
             threshold: 0.0,
             pve: 0.0,
@@ -198,7 +226,9 @@ pub fn threshold_search_opts(
     for (i, &thr) in levels.iter().enumerate().rev() {
         let count = binarize(s_relaxed, thr, &mut s_bin);
         if count != last_count {
-            last_err = fit_candidate(&s_bin, y, banded, pad, stride, max_alpha, &mut conv_buf).0;
+            last_err = scorer
+                .score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf)
+                .0;
             last_count = count;
         }
         errors[i] = last_err;
@@ -235,8 +265,8 @@ pub fn threshold_search_opts(
     // Final pass: full result at the picked threshold
     let threshold = levels[pick];
     binarize(s_relaxed, threshold, &mut s_bin);
-    let (_, alpha, baseline) =
-        fit_candidate(&s_bin, y, banded, pad, stride, max_alpha, &mut conv_buf);
+    let (_, alpha, baseline) = scorer.score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf);
+    let y = scorer.target();
 
     // PVE (proportion of variance explained) over the full interior
     let mut pve = 0.0;
@@ -293,7 +323,7 @@ fn binarize(s: &[f32], threshold: f64, s_bin: &mut [f32]) -> usize {
 /// Leaves the reconstruction in `conv_buf`.
 /// Returns `(grid_error, alpha, baseline)`.
 #[allow(clippy::too_many_arguments)]
-fn fit_candidate(
+pub(crate) fn fit_candidate(
     s_bin: &[f32],
     y: &[f32],
     banded: &BandedAR2,
