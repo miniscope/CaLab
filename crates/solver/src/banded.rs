@@ -6,6 +6,27 @@ use crate::kernel::clamp_tau_rise;
 /// deconvolution matrix G. The convolution K = G^{-1} is applied via recursion
 /// rather than FFT, reducing per-iteration cost from O(T log T) to O(T).
 ///
+/// The recursion is evaluated as a cascade of two first-order filters,
+/// `u[t] = d*u[t-1] + x[t]; c[t] = r*c[t-1] + u[t]`, with d = exp(-dt/tau_decay)
+/// and r = exp(-dt/tau_rise) the AR(2) roots — algebraically identical to the
+/// direct form since (1 - d z^-1)(1 - r z^-1) = 1 - g1 z^-1 - g2 z^-2. The
+/// direct form is ill-conditioned once g1/g2 are rounded to f32: at high
+/// sampling rates (CaDecon upsamples to 300 Hz) d and r are both close to 1
+/// and to each other, so the roots of the f32-rounded polynomial land several
+/// percent away from the requested time constants (up to ~40% at
+/// tau_rise > tau_decay, and complex roots near tau_rise ≈ tau_decay). Each
+/// cascade stage rounds its own root directly, so it has no such cancellation.
+///
+/// The cascade runs with f64 coefficients and state, rounding only the output
+/// to f32. Measured against an f64 direct-form reference (fs 5–300 Hz,
+/// tau_decay 0.05–5 s, T up to 270k) this is within ~3e-8 relative L2. An
+/// all-f32 cascade is ~1e-6 for typical kernels but up to ~7e-6 at
+/// tau_decay = 5 s / 300 Hz, almost entirely from rounding d to f32 (the DC
+/// gain 1/(1-d) amplifies that rounding by 1/(1-d) ≈ 1500). The recursion is
+/// serial and latency-bound either way (it cannot be SIMD-vectorized), and
+/// f64 mul/add have the same latency as f32 on current CPUs and are native
+/// WASM ops; natively the f64 cascade measured the same speed as the f32 one.
+///
 /// Note the one-sample delay on the source term (`s[t-1]`, not `s[t]`). This
 /// makes the impulse response identical, sample-for-sample, to the FFT-mode
 /// `build_kernel` bi-exponential: zero at the spike sample and rising after
@@ -23,6 +44,8 @@ use crate::kernel::clamp_tau_rise;
 /// leaves the peak *value* unchanged (it is the max over the same geometric
 /// sequence), so the impulse-peak and Lipschitz calculations are unaffected.
 pub(crate) struct BandedAR2 {
+    d: f64,            // decay root exp(-dt/tau_decay)
+    r: f64,            // rise root exp(-dt/tau_rise)
     g1: f64,           // d + r (sum of AR2 roots)
     g2: f64,           // -(d * r) (negative product of AR2 roots)
     impulse_peak: f64, // peak of raw AR2 impulse response (for normalization)
@@ -42,6 +65,8 @@ impl BandedAR2 {
         // Lipschitz of normalized operator: L_raw / peak^2
         let lipschitz = compute_banded_lipschitz(g1, g2) / (impulse_peak * impulse_peak);
         BandedAR2 {
+            d,
+            r,
             g1,
             g2,
             impulse_peak,
@@ -56,62 +81,64 @@ impl BandedAR2 {
 
     /// Forward convolution: s -> normalized AR2 output, O(T).
     ///
-    /// Pre-scales input by 1/peak so the AR2 recursion directly produces
-    /// a peak-normalized output — no second normalization pass needed. The
+    /// Pre-scales input by 1/peak so the recursion directly produces a
+    /// peak-normalized output — no second normalization pass needed. The
     /// source is fed with a one-sample delay (`s[t-1]`) so the impulse response
     /// matches `build_kernel` exactly: output[0] = 0, and a spike at sample k
     /// begins its rise at k+1.
+    ///
+    /// Evaluated as the decay filter `u[t] = d*u[t-1] + s[t-1]/peak` followed
+    /// by the rise filter `c[t] = r*c[t-1] + u[t]` (see the struct docs for
+    /// why this beats the f32 direct form).
     pub(crate) fn convolve_forward(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
             return;
         }
 
-        let g1 = self.g1 as f32;
-        let g2 = self.g2 as f32;
-        let inv_peak = (1.0 / self.impulse_peak) as f32;
+        let (d, r) = (self.d, self.r);
+        let inv_peak = 1.0 / self.impulse_peak;
 
-        // Delayed source: output[0] is always 0 (no s[-1] term); the g2*output[-1]
-        // term at t=1 is likewise absent.
+        // Delayed source: output[0] is always 0 (no s[-1] term), and both
+        // filter states start at 0.
         output[0] = 0.0;
-        if n > 1 {
-            output[1] = g1 * output[0] + source[0] * inv_peak;
-        }
-        for t in 2..n {
-            output[t] = g1 * output[t - 1] + g2 * output[t - 2] + source[t - 1] * inv_peak;
+        let mut u = 0.0_f64;
+        let mut c = 0.0_f64;
+        for t in 1..n {
+            u = d * u + source[t - 1] as f64 * inv_peak;
+            c = r * c + u;
+            output[t] = c as f32;
         }
     }
 
     /// Adjoint convolution: normalized adjoint, O(T).
     ///
-    /// Pre-scales input by 1/peak so the backward AR2 recursion directly
-    /// produces a peak-normalized output — no second normalization pass needed.
+    /// Pre-scales input by 1/peak so the backward recursion directly produces
+    /// a peak-normalized output — no second normalization pass needed.
     ///
-    /// The forward operator carries a one-sample source delay (`z^-1`), so its
-    /// adjoint carries the corresponding advance (`z^+1`): the backward AR(2)
-    /// recursion `a[t] = s[t]/peak + g1*a[t+1] + g2*a[t+2]` is written shifted
-    /// up one index — `output[t-1] = a[t]`, with `output[n-1] = 0`. Computed
-    /// with rolling state so it stays O(T) and allocation-free.
+    /// The forward operator is `R^{-1} D^{-1} z^-1` (decay filter, then rise
+    /// filter, after a one-sample delay), so its adjoint is the reversed
+    /// cascade `z^+1 D^{-T} R^{-T}`: the anti-causal rise filter
+    /// `v[t] = r*v[t+1] + s[t]/peak`, then the anti-causal decay filter
+    /// `a[t] = d*a[t+1] + v[t]`, written shifted up one index —
+    /// `output[t-1] = a[t]`, with `output[n-1] = 0`. Rolling state keeps it
+    /// O(T) and allocation-free.
     pub(crate) fn convolve_adjoint(&self, source: &[f32], output: &mut [f32]) {
         let n = source.len();
         if n == 0 {
             return;
         }
 
-        let g1 = self.g1 as f32;
-        let g2 = self.g2 as f32;
-        let inv_peak = (1.0 / self.impulse_peak) as f32;
+        let (d, r) = (self.d, self.r);
+        let inv_peak = 1.0 / self.impulse_peak;
 
         output[n - 1] = 0.0;
-        let mut a_tp1 = 0.0_f32; // a[t+1]
-        let mut a_tp2 = 0.0_f32; // a[t+2]
-        for t in (0..n).rev() {
-            let a_t = source[t] * inv_peak + g1 * a_tp1 + g2 * a_tp2;
-            if t >= 1 {
-                output[t - 1] = a_t;
-            }
-            a_tp2 = a_tp1;
-            a_tp1 = a_t;
+        let mut v = 0.0_f64;
+        let mut a = 0.0_f64;
+        for t in (1..n).rev() {
+            v = r * v + source[t] as f64 * inv_peak;
+            a = d * a + v;
+            output[t - 1] = a as f32;
         }
     }
 
@@ -306,7 +333,16 @@ mod tests {
         // discrete operator: a unit impulse through convolve_forward must equal
         // build_kernel sample-for-sample. This is the direct regression guard for
         // the one-sample alignment between the two conv modes.
-        for &(tau_r, tau_d, fs) in &[(0.02, 0.4, 30.0), (0.05, 0.25, 100.0), (0.01, 0.15, 300.0)] {
+        // The last three cases are near-equal roots at 300 Hz, where the old
+        // f32 direct-form recursion drifted visibly from build_kernel.
+        for &(tau_r, tau_d, fs) in &[
+            (0.02, 0.4, 30.0),
+            (0.05, 0.25, 100.0),
+            (0.01, 0.15, 300.0),
+            (0.99, 1.0, 300.0),
+            (4.5, 5.0, 300.0),
+            (0.9, 1.0, 300.0),
+        ] {
             let banded = BandedAR2::new(tau_r, tau_d, fs);
             let kernel = build_kernel(tau_r, tau_d, fs);
             let n = kernel.len();
@@ -463,6 +499,164 @@ mod tests {
                     v
                 );
             }
+        }
+    }
+
+    // ── Precision against an f64 reference ──────────────────────────────
+
+    /// Deterministic xorshift PRNG (no external deps in unit tests).
+    struct Rng(u64);
+    impl Rng {
+        fn next_f64(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// Sparse non-negative spike train (forward-operator input in FISTA).
+    fn sparse_spikes(n: usize, seed: u64) -> Vec<f32> {
+        let mut rng = Rng(seed);
+        (0..n)
+            .map(|_| {
+                if rng.next_f64() < 0.02 {
+                    rng.next_f64() as f32
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    /// Dense signed noise (adjoint-operator input in FISTA: the residual).
+    fn signed_noise(n: usize, seed: u64) -> Vec<f32> {
+        let mut rng = Rng(seed);
+        (0..n)
+            .map(|_| (2.0 * rng.next_f64() - 1.0) as f32)
+            .collect()
+    }
+
+    /// f64 direct-form forward: c[t] = g1 c[t-1] + g2 c[t-2] + s[t-1]/peak.
+    fn forward_ref_f64(b: &BandedAR2, src: &[f32]) -> Vec<f64> {
+        let n = src.len();
+        let mut out = vec![0.0_f64; n];
+        for t in 1..n {
+            let c1 = out[t - 1];
+            let c2 = if t >= 2 { out[t - 2] } else { 0.0 };
+            out[t] = b.g1 * c1 + b.g2 * c2 + src[t - 1] as f64 / b.impulse_peak;
+        }
+        out
+    }
+
+    /// f64 direct-form adjoint: a[t] = s[t]/peak + g1 a[t+1] + g2 a[t+2],
+    /// output[t-1] = a[t], output[n-1] = 0.
+    fn adjoint_ref_f64(b: &BandedAR2, src: &[f32]) -> Vec<f64> {
+        let n = src.len();
+        let mut out = vec![0.0_f64; n];
+        let (mut a1, mut a2) = (0.0_f64, 0.0_f64);
+        for t in (1..n).rev() {
+            let a = src[t] as f64 / b.impulse_peak + b.g1 * a1 + b.g2 * a2;
+            out[t - 1] = a;
+            a2 = a1;
+            a1 = a;
+        }
+        out
+    }
+
+    fn rel_l2(x: &[f32], reference: &[f64]) -> f64 {
+        let num: f64 = x
+            .iter()
+            .zip(reference)
+            .map(|(&a, &b)| (a as f64 - b).powi(2))
+            .sum();
+        let den: f64 = reference.iter().map(|&b| b * b).sum();
+        if den == 0.0 {
+            num.sqrt()
+        } else {
+            (num / den).sqrt()
+        }
+    }
+
+    /// (tau_rise, tau_decay, fs) grid from the numerical review: fs up to the
+    /// CaDecon upsampled rate, rise from very fast to within 1% of decay, plus
+    /// the exact-equality case `clamp_tau_rise` rewrites.
+    fn precision_grid() -> Vec<(f64, f64, f64)> {
+        let mut grid = Vec::new();
+        for &fs in &[5.0, 30.0, 100.0, 300.0] {
+            for &td in &[0.05, 0.4, 1.0, 5.0] {
+                for &tr in &[0.005, 0.02, 0.2, 0.99 * td, td] {
+                    grid.push((tr, td, fs));
+                }
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn cascade_matches_f64_reference_across_grid() {
+        let mut worst_fwd = (0.0_f64, (0.0, 0.0, 0.0, 0usize));
+        let mut worst_adj = (0.0_f64, (0.0, 0.0, 0.0, 0usize));
+        for &n in &[100usize, 27_000, 270_000] {
+            let x = sparse_spikes(n, 0x9E37_79B9_7F4A_7C15 ^ n as u64);
+            let y = signed_noise(n, 0xD1B5_4A32_D192_ED03 ^ n as u64);
+            let mut out = vec![0.0_f32; n];
+            for &(tr, td, fs) in &precision_grid() {
+                let b = BandedAR2::new(tr, td, fs);
+
+                b.convolve_forward(&x, &mut out);
+                let e = rel_l2(&out, &forward_ref_f64(&b, &x));
+                if e > worst_fwd.0 {
+                    worst_fwd = (e, (tr, td, fs, n));
+                }
+
+                b.convolve_adjoint(&y, &mut out);
+                let e = rel_l2(&out, &adjoint_ref_f64(&b, &y));
+                if e > worst_adj.0 {
+                    worst_adj = (e, (tr, td, fs, n));
+                }
+            }
+        }
+        // Measured worst case ~3e-8 (f64 cascade state; output rounded to
+        // f32). For comparison, on this grid an all-f32 cascade reaches ~7e-6
+        // and the previous f32 direct form ~6e-2.
+        assert!(
+            worst_fwd.0 <= 1e-7,
+            "forward rel L2 {} at (tau_r, tau_d, fs, T) = {:?}",
+            worst_fwd.0,
+            worst_fwd.1
+        );
+        assert!(
+            worst_adj.0 <= 1e-7,
+            "adjoint rel L2 {} at (tau_r, tau_d, fs, T) = {:?}",
+            worst_adj.0,
+            worst_adj.1
+        );
+    }
+
+    #[test]
+    fn adjointness_across_grid() {
+        // <K x, y> == <x, K^T y> for the f32 operators, on random inputs.
+        let n = 5_000;
+        let x = signed_noise(n, 17);
+        let y = signed_noise(n, 29);
+        let mut kx = vec![0.0_f32; n];
+        let mut kty = vec![0.0_f32; n];
+        for &(tr, td, fs) in &precision_grid() {
+            let b = BandedAR2::new(tr, td, fs);
+            b.convolve_forward(&x, &mut kx);
+            b.convolve_adjoint(&y, &mut kty);
+            let lhs: f64 = kx.iter().zip(&y).map(|(&a, &b)| a as f64 * b as f64).sum();
+            let rhs: f64 = x.iter().zip(&kty).map(|(&a, &b)| a as f64 * b as f64).sum();
+            // Scale by ||Kx|| ||y|| so cancellation in the inner product cannot
+            // make a tiny absolute error look large.
+            let kx_norm: f64 = kx.iter().map(|&a| (a as f64).powi(2)).sum::<f64>().sqrt();
+            let y_norm: f64 = y.iter().map(|&a| (a as f64).powi(2)).sum::<f64>().sqrt();
+            let err = (lhs - rhs).abs() / (kx_norm * y_norm).max(1e-30);
+            assert!(
+                err < 1e-6,
+                "(tau_r, tau_d, fs) = ({tr}, {td}, {fs}): <Kx,y>={lhs} vs <x,K^Ty>={rhs}, err={err}"
+            );
         }
     }
 }
