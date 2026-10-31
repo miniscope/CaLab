@@ -362,15 +362,22 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 /// `max_iters` and `tol` set the inner FISTA solve (relative-step rule). With
 /// `lambda = 0` the relaxed problem is ill-posed at the upsampled rate (sub-bin
 /// rearrangements barely change the fit), so the solve does not reach the
-/// step tolerance in practice and `max_iters` acts as an early-stopping
-/// regularizer: the binarized output depends on it. A data-dependent stop
+/// step tolerance within the usual budget (500 iterations; it fires only
+/// around 3,300-4,100 iterations on the simulation presets), so `max_iters`
+/// acts as an early-stopping regularizer: the binarized output depends on it. A data-dependent stop
 /// (the noise-scaled fit-window rule) is available as
 /// [`ScaleLoop::fit_stop`] but makes the output sensitive to tiny input
 /// changes, because it moves the stopping point along that drift.
 ///
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
-/// used as the first round's FISTA warm-start.
+/// used as the first round's FISTA warm-start **only on the non-default
+/// `binary_alpha` loop**. The default loop ignores it: with a fixed iteration
+/// budget acting as the regularizer, a binary (all 1.0) seed at the
+/// peak-to-trough prescale (relaxed peak ~0.02) is a 40-100x mismatch and
+/// makes the output depend on the seed, with no speed benefit. Every outer
+/// iteration is then a deterministic function of the data. The parameter is
+/// kept for API compatibility.
 #[allow(clippy::too_many_arguments)]
 pub fn solve_trace(
     trace: &[f32],
@@ -444,8 +451,10 @@ pub(crate) enum AlphaSource {
     /// where binarization stops paying for smaller amplitudes, which on the
     /// simulation presets is 0.15-0.4x the true spike amplitude (overfit).
     Binary,
-    /// Least squares on the relaxed solution's reconvolution: the exact
-    /// amplitude block of block-coordinate descent on the relaxed objective.
+    /// Least squares on the relaxed solution's reconvolution, an approximation
+    /// to the amplitude block of block-coordinate descent on the relaxed
+    /// objective: it is fitted with a free offset over all upsampled samples,
+    /// whereas the objective has no offset and is evaluated on the grid.
     Relaxed,
 }
 
@@ -488,6 +497,10 @@ pub(crate) struct ScaleLoop {
     /// energy) instead of the relative-step rule, leaving `max_iters` as a
     /// safety cap.
     pub fit_stop: bool,
+    /// Seed round 0 with the caller's `warm_counts`. Off by default: the
+    /// seed is far from the relaxed solution at the peak-to-trough prescale
+    /// and, with a fixed iteration budget, changes the output.
+    pub use_warm_counts: bool,
     /// Warm-start each round from the previous round's relaxed solution,
     /// rescaled to the new prescale.
     pub warm_rounds: bool,
@@ -500,7 +513,7 @@ pub(crate) struct ScaleLoop {
 
 impl ScaleLoop {
     /// The loop before this module's rework, with the noise-scaled inner stop
-    /// and warm-started rounds (commit 52858da).
+    /// and warm-started rounds (the loop shipped before the scale-loop rework).
     pub(crate) fn binary_alpha() -> Self {
         Self {
             alpha_source: AlphaSource::Binary,
@@ -508,6 +521,7 @@ impl ScaleLoop {
             stop: ScaleStop::AlphaRtol(0.05),
             rebaseline: false,
             fit_stop: true,
+            use_warm_counts: true,
             warm_rounds: true,
             take_last: false,
             max_rounds: 10,
@@ -525,6 +539,7 @@ impl Default for ScaleLoop {
             stop: ScaleStop::FixedPoint,
             rebaseline: false,
             fit_stop: false,
+            use_warm_counts: false,
             warm_rounds: true,
             take_last: true,
             max_rounds: 10,
@@ -743,7 +758,9 @@ pub(crate) fn solve_trace_cfg(
     // Convert original-rate spike counts to upsampled-rate binary for warm-start.
     // upsample_counts_to_binary centers spikes on original sample positions,
     // matching the centered bins used by downsample_binary.
-    let warm_binary = warm_counts.map(|counts| upsample_counts_to_binary(counts, upsample_factor));
+    let warm_binary = warm_counts
+        .filter(|_| cfg.use_warm_counts)
+        .map(|counts| upsample_counts_to_binary(counts, upsample_factor));
 
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_scale_err = f64::INFINITY;
@@ -1632,6 +1649,85 @@ mod tests {
             assert_eq!(r.s_counts, base.s_counts);
             assert_eq!(r.alpha, base.alpha);
             assert_eq!(st2[0].iterations, st[0].iterations);
+        }
+    }
+
+    #[test]
+    fn relaxed_round_is_nearly_invariant_to_a_non_power_of_two_prescale() {
+        // A non-power-of-two prescale rounds every iterate differently, and the
+        // ill-posed solve at lambda = 0 amplifies those float differences, so
+        // outputs are close but not identical (events differ by up to ~4% at
+        // x1.5). Assert only that: same scale-free fixed point, counts within
+        // 10% of the base total, alpha within 10%.
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let p = (0.1, 0.6, 30.0, 10);
+        let (base, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let total = base.s_counts.iter().sum::<f32>();
+        for m in [1.5, 3.0] {
+            let cfg = ScaleLoop {
+                alpha_init: AlphaInit::Fixed(st[0].alpha_est * m),
+                ..relaxed_loop()
+            };
+            let (r, st2) = run_cfg(&trace, p, 300, cfg);
+            assert_eq!(st2.len(), 1);
+            let diff: f32 = r
+                .s_counts
+                .iter()
+                .zip(&base.s_counts)
+                .map(|(a, b)| (a - b).abs())
+                .sum();
+            assert!(diff <= 0.10 * total, "x{m}: {diff} vs total {total}");
+            assert!((r.alpha / base.alpha - 1.0).abs() < 0.10, "x{m}");
+        }
+    }
+
+    #[test]
+    fn default_loop_ignores_warm_counts() {
+        // Round 0 of the default loop does not take the caller's warm start, so
+        // the output is a deterministic function of the data.
+        for (name, trace, tr, td, fs, k) in preset_cells(1, 900).into_iter().take(3) {
+            let solve = |warm: Option<&[f32]>| {
+                solve_trace_opts(
+                    &trace,
+                    tr,
+                    td,
+                    fs,
+                    k,
+                    300,
+                    1e-4,
+                    warm,
+                    true,
+                    true,
+                    0.0,
+                    SolveOptions {
+                        noise_constrained: true,
+                    },
+                )
+            };
+            let cold = solve(None);
+            let own = solve(Some(&cold.s_counts));
+            let jittered: Vec<f32> = cold
+                .s_counts
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| {
+                    if i % 7 == 0 {
+                        c + 1.0
+                    } else {
+                        (c - (i % 3) as f32).max(0.0)
+                    }
+                })
+                .collect();
+            let jit = solve(Some(&jittered));
+            for (label, r) in [("own", &own), ("jittered", &jit)] {
+                assert_eq!(r.s_counts, cold.s_counts, "{name} {label}");
+                assert_eq!(r.alpha.to_bits(), cold.alpha.to_bits(), "{name} {label}");
+                assert_eq!(
+                    r.threshold.to_bits(),
+                    cold.threshold.to_bits(),
+                    "{name} {label}"
+                );
+            }
         }
     }
 
