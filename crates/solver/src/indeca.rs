@@ -85,6 +85,9 @@ fn trace_filter(tau_r: f64, tau_d: f64, fs_up: f64, hp: bool, lp: bool) -> Bandp
 pub(crate) struct NoiseEstimate {
     /// Noise at original-rate grid positions: the threshold-search statistic.
     pub grid: NoiseModel,
+    /// Per-sample noise variance averaged over all upsampled positions: the
+    /// noise energy per sample of the FISTA data-fit term (before prescaling).
+    pub upsampled_var: f64,
 }
 
 /// Estimate the noise of the preprocessed trace from the raw trace.
@@ -97,7 +100,8 @@ pub(crate) struct NoiseEstimate {
 ///
 /// - grid variance `sigma^2 * sum(h_grid^2)`,
 /// - grid autocorrelation `rho = acf(h_grid) / acf(h_grid)(0)`, so
-///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval).
+///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval),
+/// - average variance over all upsampled positions `sigma^2 * sum(h^2) / k`.
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
 /// upsample → filter path (no random probe). (The rolling-baseline subtraction
@@ -115,6 +119,7 @@ pub(crate) fn estimate_noise_model(
             sigma: 0.0,
             corr_sum: 1.0,
         },
+        upsampled_var: 0.0,
     };
     if n == 0 || sigma_raw <= 0.0 {
         return zero;
@@ -126,6 +131,7 @@ pub(crate) fn estimate_noise_model(
     if let Some(f) = filter {
         f.apply(&mut h);
     }
+    let up_gain = h.iter().map(|&v| v as f64 * v as f64).sum::<f64>() / k as f64;
     let mut h_grid: Vec<f32> = h.iter().step_by(k).copied().collect();
 
     // Full-spectrum sums of |H|^2 and |H|^4 from the half spectrum.
@@ -155,6 +161,7 @@ pub(crate) fn estimate_noise_model(
             sigma: sigma_raw * grid_gain.sqrt(),
             corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
         },
+        upsampled_var: sigma_raw * sigma_raw * up_gain,
     }
 }
 
@@ -197,6 +204,7 @@ pub fn solve_bounded(
         fs_up,
         max_iters,
         tol,
+        None,
         warm_start,
         hp_enabled,
         lp_enabled,
@@ -223,6 +231,7 @@ fn solve_upsampled(
     fs_up: f64,
     max_iters: u32,
     tol: f64,
+    fit_stop: Option<f64>,
     warm_start: Option<&[f32]>,
     hp_enabled: bool,
     lp_enabled: bool,
@@ -257,6 +266,7 @@ fn solve_upsampled(
     }
 
     solver.tolerance = tol;
+    solver.set_fit_stop(fit_stop);
 
     // Run FISTA in batches
     let batch_size = 50;
@@ -347,9 +357,16 @@ pub(crate) struct RoundStats {
 /// each round refines the prescale so Box[0,1] maps correctly, preventing
 /// the solver from settling on high alpha with too few spikes.
 ///
+/// `tol` sets the inner FISTA stopping rule: a solve stops when its data-fit
+/// term `0.5 * ||K s - y / alpha_est||^2` improved by less than `tol` times the
+/// fit term's expected noise energy over the last 50 iterations, i.e. once
+/// further iterates are indistinguishable given the noise. `max_iters` is a
+/// safety cap. Each round after the first is warm-started from the previous
+/// round's relaxed solution, rescaled to the new prescale.
+///
 /// `warm_counts`: optional spike counts from a previous iteration at the **original**
 /// sampling rate. These are upsampled to a binary trace at the upsampled rate and
-/// used as FISTA warm-start, which typically reduces iterations by 30-60%.
+/// used as the first round's FISTA warm-start.
 #[allow(clippy::too_many_arguments)]
 pub fn solve_trace(
     trace: &[f32],
@@ -475,7 +492,7 @@ pub(crate) fn solve_trace_stats(
     // Noise of the preprocessed trace, from the raw trace's high band pushed
     // through the same upsample → filter chain. Fully data-derived — no knob.
     // It sets the threshold search's noise budget and standard error (both
-    // selections).
+    // selections) and the inner solves' stopping rule.
     let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
     let selection = if opts.noise_constrained {
         Selection::NoiseFloor
@@ -483,6 +500,8 @@ pub(crate) fn solve_trace_stats(
         Selection::MaxPve
     };
     let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
+    // Expected noise energy of the FISTA data-fit term at unit prescale.
+    let fit_noise_energy = 0.5 * noise.upsampled_var * working_trace.len() as f64;
 
     // ── Step 3: Scale iteration loop ────────────────────────────────────
     // Each round: prescale by alpha_est → Box[0,1] FISTA → threshold search
@@ -500,21 +519,34 @@ pub(crate) fn solve_trace_stats(
     let wt_len = working_trace.len();
     let mut scaled = vec![0.0_f32; wt_len];
     let mut s_normalized = vec![0.0_f32; wt_len];
+    // Previous round's relaxed solution and the prescale it was solved at.
+    let mut previous: Option<(Vec<f32>, f64)> = None;
+    let mut warm_buf = vec![0.0_f32; wt_len];
 
-    for scale_iter in 0..MAX_SCALE_ITERS {
+    for _ in 0..MAX_SCALE_ITERS {
         // Fill scaled buffer in-place (multiply by reciprocal instead of dividing).
         let inv_alpha = 1.0 / alpha_est as f32;
         for i in 0..wt_len {
             scaled[i] = working_trace[i] * inv_alpha;
         }
 
-        // Use warm-start from user on first iteration only;
-        // subsequent iterations start fresh with the refined prescale.
-        let warm_start = if scale_iter == 0 {
-            warm_binary.as_deref()
-        } else {
-            None
+        // Round 0 takes the caller's warm start. Later rounds continue from the
+        // previous round's relaxed solution, rescaled to the new prescale (the
+        // same reconvolution in trace units) and clamped back into the box.
+        let warm_start = match &previous {
+            None => warm_binary.as_deref(),
+            Some((prev, prev_alpha)) => {
+                let r = (*prev_alpha / alpha_est) as f32;
+                for (w, &v) in warm_buf.iter_mut().zip(prev) {
+                    *w = (v * r).clamp(0.0, 1.0);
+                }
+                Some(&warm_buf[..])
+            }
         };
+
+        // Stop once the fit cannot improve by a noise-relevant amount; the
+        // prescale divides the trace, so the noise energy scales by 1/alpha^2.
+        let fit_stop = tol * fit_noise_energy / (alpha_est * alpha_est);
 
         let (s_relaxed, _, iterations, converged) = solve_upsampled(
             &mut solver,
@@ -524,6 +556,7 @@ pub(crate) fn solve_trace_stats(
             fs_up,
             max_iters,
             tol,
+            Some(fit_stop),
             warm_start,
             false,
             false,
@@ -621,6 +654,7 @@ pub(crate) fn solve_trace_stats(
         if alpha_lstsq < 1e-10 {
             break;
         }
+        previous = Some((s_relaxed, alpha_est));
         alpha_est = alpha_lstsq;
     }
 
@@ -1148,6 +1182,7 @@ mod tests {
         let grid: Vec<f64> = up.iter().step_by(k).map(|&v| v as f64).collect();
         let var = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
         let grid_var = var(&grid);
+        let all_var = var(&up.iter().map(|&v| v as f64).collect::<Vec<_>>());
         // Empirical sum of squared autocorrelations over the lags that matter.
         let rho = |lag: usize| {
             (0..n - lag).map(|i| grid[i] * grid[i + lag]).sum::<f64>()
@@ -1163,6 +1198,12 @@ mod tests {
             est.grid.sigma.powi(2),
             grid_var
         );
+        assert!(
+            rel(est.upsampled_var, all_var) < 0.15,
+            "{} vs {}",
+            est.upsampled_var,
+            all_var
+        );
         assert!(est.grid.corr_sum > 1.5, "LP should correlate grid samples");
         assert!(
             rel(est.grid.corr_sum, corr_emp) < 0.25,
@@ -1175,5 +1216,51 @@ mod tests {
         let plain = estimate_noise_model(&noise, k, None);
         assert!(rel(plain.grid.sigma, high_band_sigma(&noise)) < 1e-6);
         assert!((plain.grid.corr_sum - 1.0).abs() < 1e-6);
+    }
+
+    fn noisy_spiking_trace(n: usize, seed: u64) -> Vec<f32> {
+        let kernel = build_kernel(0.1, 0.6, 30.0);
+        let mut trace = vec![1.0_f32; n];
+        let noise = lcg_noise(n, 0.3, seed);
+        let mut p = 37usize;
+        while p < n {
+            for (j, &kv) in kernel.iter().enumerate() {
+                if p + j < n {
+                    trace[p + j] += 2.0 * kv;
+                }
+            }
+            p += 23 + (p * 7) % 41;
+        }
+        for (t, e) in trace.iter_mut().zip(noise) {
+            *t += e;
+        }
+        trace
+    }
+
+    #[test]
+    fn inner_solves_stop_on_the_fit_rule_not_the_cap() {
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        for noise_constrained in [false, true] {
+            let (r, stats) = solve_trace_stats(
+                &trace,
+                0.1,
+                0.6,
+                30.0,
+                10,
+                5000,
+                1e-4,
+                None,
+                true,
+                true,
+                0.0,
+                SolveOptions { noise_constrained },
+            );
+            assert!(!stats.is_empty());
+            for s in &stats {
+                assert!(s.converged, "round hit the cap: {s:?}");
+                assert!(s.iterations < 5000);
+            }
+            assert!(r.s_counts.iter().sum::<f32>() > 0.0);
+        }
     }
 }
