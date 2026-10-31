@@ -26,12 +26,13 @@ export interface HarnessResult {
   benchTable?: string;
   grouping?: unknown;
   full?: unknown;
+  warm?: unknown;
 }
 
 /** Open the harness in `mode`, wait for it to finish, return its result. */
 export async function runHarness(
   page: Page,
-  mode: 'equiv' | 'bench' | 'groups' | 'full',
+  mode: 'equiv' | 'bench' | 'groups' | 'full' | 'warm',
 ): Promise<HarnessResult> {
   page.on('console', (msg) => {
     const text = msg.text();

@@ -7,9 +7,15 @@
  * stored on window.__gpuSpike for Playwright.
  */
 import { initWasm, Solver, simulate_traces } from '@calab/core/wasm';
-import { buildSimulationConfig, DEFAULT_QUALITATIVE_CONFIG } from '@calab/compute';
+import {
+  buildSimulationConfig,
+  decodeSolverState,
+  DEFAULT_QUALITATIVE_CONFIG,
+  encodeSolverState,
+} from '@calab/compute';
 import {
   createGpuFista,
+  estimateBytes,
   estimateGpuBytes,
   maxCellsPerGroup,
   maxAbsDiff,
@@ -178,7 +184,7 @@ async function equivCase(
   runs.forEach((r, c) => traces.set(r.working, c * T));
   const gp = { ...p, filtered: runs[0].filtered };
   const t0 = performance.now();
-  gpu.load(traces, n, T, gp);
+  await gpu.load(traces, n, T, gp);
   const sol = await gpu.solve(50);
   const gpuMs = performance.now() - t0;
   const perCell = runs.map((r, c) => {
@@ -277,7 +283,7 @@ async function bench(
         try {
           const traces = new Float32Array(N * T);
           for (let c = 0; c < N; c++) traces.set(pool[c % pool.length], c * T);
-          gpu.load(traces, N, T, p);
+          await gpu.load(traces, N, T, p);
           await gpu.step(5); // warm-up
           const g0 = performance.now();
           await gpu.step(ITERS);
@@ -347,24 +353,45 @@ async function groupingCase(
   runs.forEach((r, c) => traces.set(r.working, c * T));
   const gp = { ...p, filtered: true };
 
-  single.load(traces, n, T, gp);
+  await single.load(traces, n, T, gp);
   const ref = await single.solve(50);
   const singleGroups = single.groupCount;
   single.destroy();
 
   const grouped = await createGpuFista(device, { maxGroupBytes: 3 * estimateGpuBytes(1, T) });
-  grouped.load(traces, n, T, gp);
+  await grouped.load(traces, n, T, gp);
   const sol = await grouped.solve(50);
   const groupCount = grouped.groupCount;
   grouped.destroy();
 
-  let bitwiseEqual = true;
-  for (let i = 0; i < ref.solutions.length; i++) {
-    if (ref.solutions[i] !== sol.solutions[i]) {
-      bitwiseEqual = false;
-      break;
-    }
+  // Streaming: a total budget of 4 cells (plus tables and a 2-row staging
+  // buffer) for 8 cells, so groups of 2 stream with at most 2 resident.
+  const stagingBytes = 2 * T * 4;
+  const streamed = await createGpuFista(device, {
+    maxTotalBytes: estimateBytes(4, T, stagingBytes),
+    stagingBytes,
+  });
+  await streamed.load(traces, n, T, gp);
+  const streamOut = new Float32Array(n * T);
+  let peakResident = streamed.residentGroups;
+  for (;;) {
+    const r = await streamed.step(50);
+    peakResident = Math.max(peakResident, streamed.residentGroups);
+    if (r.allDone) break;
   }
+  const streamSol = await streamed.readSolutions(streamOut);
+  const streamGroups = streamed.groupCount;
+  streamed.destroy();
+
+  const bitEq = (a: Float32Array, b: Float32Array) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+  const bitwiseEqual = bitEq(ref.solutions, sol.solutions);
+  const streamedBitwiseEqual =
+    streamSol.solutions === streamOut &&
+    bitEq(ref.solutions, streamOut) &&
+    streamSol.iterations.every((it, c) => it === ref.iterations[c]);
   const perCell = runs.map((r, c) => {
     const g = sol.solutions.subarray(c * T, (c + 1) * T);
     const s1 = ref.solutions.subarray(c * T, (c + 1) * T);
@@ -379,16 +406,38 @@ async function groupingCase(
       gpuConverged: sol.converged[c] === 1,
     };
   });
-  const res = { nCells: n, T, groupCount, singleGroups, bitwiseEqual, perCell };
+  const res = {
+    nCells: n,
+    T,
+    groupCount,
+    singleGroups,
+    bitwiseEqual,
+    streamGroups,
+    peakResident,
+    streamedBitwiseEqual,
+    perCell,
+  };
   log(
-    `\n[groups] N=${n} T=${T}: grouped=${groupCount} groups, single=${singleGroups}, bitwise equal=${bitwiseEqual}, ` +
+    `\n[groups] N=${n} T=${T}: grouped=${groupCount} groups, single=${singleGroups}, bitwise equal=${bitwiseEqual}; ` +
+      `streamed ${streamGroups} groups, peak resident ${peakResident}, bitwise equal=${streamedBitwiseEqual}, ` +
       `worst relL2 vs single=${Math.max(...perCell.map((c) => c.relL2VsSingle)).toExponential(2)}, ` +
       `worst relL2 vs wasm=${Math.max(...perCell.map((c) => c.relL2VsWasm)).toExponential(2)}`,
   );
   return res;
 }
 
-/** One full-coverage CaDecon pass: N x 270000, convergence on, up to 500 iterations. */
+/** FNV-1a over the bit patterns: equal hashes = (almost surely) bitwise-equal arrays. */
+function bitHash(a: Float32Array): number {
+  const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 0x01000193) >>> 0;
+  return h;
+}
+
+/**
+ * One full-coverage CaDecon pass: N x 270000, convergence on, up to 500
+ * iterations; once fully resident, once streamed under a 1 GiB total budget.
+ */
 async function fullPass(
   device: GPUDevice,
   gpu: GpuFista,
@@ -403,18 +452,39 @@ async function fullPass(
   const t0 = performance.now();
   const traces = new Float32Array(N * T);
   for (let c = 0; c < N; c++) traces.set(pool[c % pool.length], c * T);
+  const out = new Float32Array(N * T);
   const t1 = performance.now();
-  gpu.load(traces, N, T, p);
-  const sol = await gpu.solve(50);
+  await gpu.load(traces, N, T, p);
+  const sol = await gpu.solve(50, out);
   const t2 = performance.now();
   const groups = gpu.groupCount;
   gpu.destroy();
+  const residentHash = bitHash(out);
+  const iterations = Array.from(sol.iterations);
+
+  const budget = 1024 ** 3;
+  const streamed = await createGpuFista(device, { maxTotalBytes: budget });
+  const t3 = performance.now();
+  await streamed.load(traces, N, T, p);
+  let peakResident = streamed.residentGroups;
+  for (;;) {
+    const r = await streamed.step(50);
+    peakResident = Math.max(peakResident, streamed.residentGroups);
+    if (r.allDone) break;
+  }
+  const ssol = await streamed.readSolutions(out);
+  const t4 = performance.now();
+  const streamGroups = streamed.groupCount;
+  streamed.destroy();
+  const streamedBitwiseEqual =
+    bitHash(out) === residentHash && ssol.iterations.every((it, c) => it === iterations[c]);
+
   const validation = await device.popErrorScope();
   const oom = await device.popErrorScope();
   if (oom) throw new Error(`GPU out of memory for N=${N} T=${T}: ${oom.message}`);
   if (validation) throw new Error(`GPU validation error: ${validation.message}`);
   const conv = sol.converged.reduce((a, b) => a + b, 0);
-  const maxIt = Math.max(...sol.iterations);
+  const maxIt = Math.max(...iterations);
   const res = {
     N,
     T,
@@ -423,12 +493,141 @@ async function fullPass(
     loadSolveReadMs: t2 - t1,
     convergedCells: conv,
     maxIterations: maxIt,
+    streamed: {
+      budgetBytes: budget,
+      groups: streamGroups,
+      peakResident,
+      loadSolveReadMs: t4 - t3,
+      bitwiseEqual: streamedBitwiseEqual,
+    },
   };
   log(
     `[full] N=${N} T=${T} groups=${groups} load+solve+readback=${(t2 - t1).toFixed(0)} ms ` +
-      `converged=${conv}/${N} maxIters=${maxIt}`,
+      `converged=${conv}/${N} maxIters=${maxIt}; streamed (1 GiB budget): ${streamGroups} groups, ` +
+      `peak resident ${peakResident}, ${(t4 - t3).toFixed(0)} ms, bitwise equal=${streamedBitwiseEqual}`,
   );
   return res;
+}
+
+/**
+ * Warm-start continuity in both directions, CaTune-like problem, 4 cells.
+ * WASM -> GPU: WASM runs 40 iterations, export_state; the GPU continues from
+ * that state (with momentum, and with momentum reset for contrast) and is
+ * compared with WASM continuing itself. GPU -> WASM: the GPU runs 40
+ * iterations and exports its state (codec layout); WASM load_state continues
+ * and is compared with the GPU continuing itself.
+ */
+async function warmCase(gpu: GpuFista, raws: Float32Array[]): Promise<Record<string, unknown>> {
+  const p = CATUNE;
+  const SPLIT = 40;
+  const n = raws.length;
+  const prepped = (raw: Float32Array) => {
+    const s = newSolver(p);
+    s.set_trace(raw);
+    s.set_filter_enabled(true);
+    s.apply_filter();
+    s.subtract_baseline();
+    return s;
+  };
+  const finish = (s: Solver) => {
+    while (!s.converged() && s.iteration_count() < p.maxIters) s.step_batch(50);
+    const out = { solution: s.get_solution(), iterations: s.iteration_count() };
+    s.free();
+    return out;
+  };
+  // WASM -> GPU
+  const states: Uint8Array[] = [];
+  const wasmRef: { solution: Float32Array; iterations: number }[] = [];
+  const working: Float32Array[] = [];
+  for (const raw of raws) {
+    const s = prepped(raw);
+    working.push(s.get_trace());
+    s.step_batch(SPLIT);
+    states.push(s.export_state());
+    wasmRef.push(finish(s));
+  }
+  const T = working[0].length;
+  const traces = new Float32Array(n * T);
+  working.forEach((w, c) => traces.set(w, c * T));
+  const decoded = states.map((b) => decodeSolverState(b)!);
+  const warmOf = (momentum: boolean) => {
+    const solution = new Float32Array(n * T);
+    const prev = new Float32Array(n * T);
+    decoded.forEach((d, c) => {
+      solution.set(d.solution, c * T);
+      prev.set(d.solutionPrev, c * T);
+    });
+    return {
+      solution,
+      prev,
+      momentum: new Uint8Array(n).fill(momentum ? 1 : 0),
+      tFista: Float64Array.from(decoded, (d) => d.tFista),
+      iterations: Uint32Array.from(decoded, (d) => d.iteration),
+    };
+  };
+  const gp = { ...p, filtered: true };
+  const runGpu = async (momentum: boolean) => {
+    await gpu.load(traces, n, T, gp, warmOf(momentum));
+    const sol = await gpu.solve(50);
+    gpu.destroy();
+    return sol;
+  };
+  const withMomentum = await runGpu(true);
+  const reset = await runGpu(false);
+  const cmp = (sol: { solutions: Float32Array; iterations: Uint32Array }) =>
+    wasmRef.map((r, c) => ({
+      relL2: relL2(sol.solutions.subarray(c * T, (c + 1) * T), r.solution),
+      gpuIters: SPLIT + sol.iterations[c],
+      wasmIters: r.iterations,
+    }));
+  const wasmToGpu = cmp(withMomentum);
+  const wasmToGpuReset = cmp(reset);
+
+  // GPU -> WASM
+  await gpu.load(traces, n, T, gp);
+  await gpu.step(SPLIT);
+  const mid = await gpu.readSolutionsFor(
+    Array.from({ length: n }, (_, c) => c),
+    { withState: true },
+  );
+  const gpuStates = Array.from({ length: n }, (_, c) =>
+    encodeSolverState({
+      solution: mid.solutions.subarray(c * T, (c + 1) * T),
+      solutionPrev: mid.state!.prev.subarray(c * T, (c + 1) * T),
+      tFista: mid.state!.tFista[c],
+      iteration: mid.iterations[c],
+      baseline: mid.state!.baseline[c],
+    }),
+  );
+  const gpuFinal = await gpu.solve(50);
+  gpu.destroy();
+  const gpuToWasm = raws.map((raw, c) => {
+    const s = prepped(raw);
+    s.load_state(gpuStates[c]);
+    const r = finish(s);
+    return {
+      relL2: relL2(gpuFinal.solutions.subarray(c * T, (c + 1) * T), r.solution),
+      gpuIters: gpuFinal.iterations[c],
+      wasmIters: r.iterations,
+    };
+  });
+  const worst = (xs: { relL2: number }[]) => Math.max(...xs.map((x) => x.relL2));
+  log(
+    `\n[warm] N=${n} T=${T} split at ${SPLIT}: WASM->GPU worst relL2 ${worst(wasmToGpu).toExponential(2)} ` +
+      `(momentum reset instead: ${worst(wasmToGpuReset).toExponential(2)}); GPU->WASM worst relL2 ` +
+      `${worst(gpuToWasm).toExponential(2)}`,
+  );
+  for (const [name, xs] of [
+    ['WASM->GPU', wasmToGpu],
+    ['WASM->GPU reset', wasmToGpuReset],
+    ['GPU->WASM', gpuToWasm],
+  ] as const) {
+    log(
+      `  ${name}: ` +
+        xs.map((x) => `${x.relL2.toExponential(1)} it ${x.gpuIters}/${x.wasmIters}`).join(', '),
+    );
+  }
+  return { split: SPLIT, wasmToGpu, wasmToGpuReset, gpuToWasm };
 }
 
 async function main(): Promise<void> {
@@ -480,6 +679,9 @@ async function main(): Promise<void> {
   }
   if (mode === 'groups' || mode === 'all') {
     result.grouping = await groupingCase(device, gpu, raw30.slice(0, 8));
+  }
+  if (mode === 'warm' || mode === 'all') {
+    result.warm = await warmCase(gpu, raw30.slice(0, 4));
   }
   if (mode === 'full') {
     const pool = raw30.map((r) => catuneWorkingTrace(r, CATUNE));

@@ -27,8 +27,146 @@
  *
  * Restart: `fin` sets the cell's useX flag; the next `sweep` then uses
  * y = x_k (and does not read x_{k-1}), and `carry` picks the x candidate.
- * Initially useX = 1 (y_0 = x_0).
+ * Initially useX = 1 (y_0 = x_0), or useX = 2 for a warm start that continues
+ * momentum: y_0 was uploaded into the x_{k-1} slot (xb) and is used as is,
+ * like Rust's `solution_prev` after `load_state`.
+ *
+ * `iter` counts iterations since load; `iter0` is the count carried in by a
+ * warm start, so the restart (`iteration > 1`) and convergence
+ * (`iteration > 5`) gates see Rust's cumulative count.
  */
+/** The fused iteration entry point; `storedY` adds the useX = 2 case (first iteration only). */
+function sweepEntry(name: string, storedY: boolean): string {
+  const yRule = storedY
+    ? `      if (st.useX == 2u) {
+        y = readX(!odd, base + t);
+      } else if (!useX) {
+        y = constrain(xv + st.m * (xv - readX(!odd, base + t)));
+      }`
+    : `      if (!useX) { y = constrain(xv + st.m * (xv - readX(!odd, base + t))); }`;
+  return SWEEP_TEMPLATE.replace('__NAME__', name).replace('__Y_RULE__', yRule);
+}
+
+const SWEEP_TEMPLATE = /* wgsl */ `
+@compute @workgroup_size(WG)
+fn __NAME__(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let b = wid.x;
+  let cell = wid.y;
+  let tid = lid.x;
+  if (cellDone(cell, tid)) { return; }
+  let base = cell * P.T;
+  let st = cells[cell];
+  let useX = st.useX != 0u;
+  let odd = (st.iter & 1u) != 0u; // x_k in xb; x_{k-1} (and x_{k+1}) in xa
+  let last = b == P.nBlocks - 1u;
+  let o = rec(cell, b);
+  let sIn = vec2<f32>(aux[o + R_SIN], aux[o + R_SIN + 1u]);
+  let qIn = vec2<f32>(aux[o + R_QIN], aux[o + R_QIN + 1u]);
+  var bl = 0.0;
+  if (P.filtered == 0u) { bl = st.baseline; }
+
+  var xk: array<f32, K>;
+  var yv: array<f32, K>;
+  var z: array<f32, K>;
+  let t0 = b * C + tid * K;
+  for (var k = 0u; k < K; k++) {
+    let t = t0 + k;
+    var xv = 0.0;
+    var y = 0.0;
+    if (t < P.T) {
+      xv = readX(odd, base + t);
+      y = xv;
+__Y_RULE__
+    }
+    xk[k] = xv;
+    yv[k] = y;
+  }
+
+  // Forward: thread-local cascade from zero (thread 0 from sIn), scan, rerun.
+  var s = vec2<f32>(0.0);
+  if (tid == 0u) { s = sIn; }
+  for (var k = 0u; k < K; k++) {
+    s.x = P.d * s.x + yv[k] * P.invPeak;
+    s.y = P.r * s.y + s.x;
+  }
+  s = scanFwd(tid, s, sIn);
+  for (var k = 0u; k < K; k++) {
+    let t = t0 + k;
+    var zv = 0.0;
+    if (t < P.T) { zv = ((s.y + bl) - trace[base + t]) * P.invPeak; }
+    z[k] = zv;
+    s.x = P.d * s.x + yv[k] * P.invPeak;
+    s.y = P.r * s.y + s.x;
+  }
+
+  // Reverse: thread-local from zero (last thread from qIn), scan, rerun.
+  var q = vec2<f32>(0.0);
+  if (tid == WG - 1u) { q = qIn; }
+  for (var k = K; k > 0u; k--) {
+    q.x = P.d * q.x + z[k - 1u];
+    q.y = P.r * q.y + q.x;
+  }
+  q = scanRev(tid, q, qIn);
+
+  // Prox (gradient at t is a_{t+1}: the state before consuming z[t]).
+  let tNew = (1.0 + sqrt(1.0 + 4.0 * st.t * st.t)) * 0.5;
+  let m = (st.t - 1.0) / tNew;
+  var part = vec4<f32>(0.0); // diff², x_k², dot, Σδx of x_{k+1}
+  var cX = vec4<f32>(0.0);   // F, Σβx of x_{k+1}
+  var cY = vec4<f32>(0.0);   // F, Σβx of y_{k+1}
+  var cYd = 0.0;             // Σδx of y_{k+1}
+  for (var k = K; k > 0u; k--) {
+    let kk = k - 1u;
+    let g = q.y;
+    q.x = P.d * q.x + z[kk];
+    q.y = P.r * q.y + q.x;
+    let t = t0 + kk;
+    if (t < P.T) {
+      let xo = xk[kk];
+      let xn = constrain((yv[kk] - P.step * g) - P.thresh);
+      let yn = constrain(xn + m * (xn - xo));
+      writeX(!odd, base + t, xn);
+      let dd = xn - xo;
+      let p = tid * K + kk;
+      let w0 = tab[T_POS0 + p];
+      let w1 = tab[T_POS1 + p];
+      let w2 = tab[T_POS2 + p];
+      var beta = w1.xy;
+      var delta = w2.x;
+      if (last) { beta = w1.zw; delta = w2.y; }
+      let sx = xn * P.invPeak;
+      let sy = yn * P.invPeak;
+      part = part + vec4<f32>(dd * dd, xo * xo, (yv[kk] - xn) * dd, delta * sx);
+      cX = cX + vec4<f32>(w0.xy * sx, beta * sx);
+      cY = cY + vec4<f32>(w0.xy * sy, beta * sy);
+      cYd = cYd + delta * sy;
+    }
+  }
+  reduce2(tid, part, cX);
+  let partS = red0[0];
+  let cXS = red1[0];
+  workgroupBarrier();
+  reduce2(tid, cY, vec4<f32>(cYd, 0.0, 0.0, 0.0));
+  if (tid == 0u) {
+    aux[o + R_PART] = partS.x;
+    aux[o + R_PART + 1u] = partS.y;
+    aux[o + R_PART + 2u] = partS.z;
+    aux[o + R_CANDX] = cXS.x;
+    aux[o + R_CANDX + 1u] = cXS.y;
+    aux[o + R_CANDX + 2u] = cXS.z;
+    aux[o + R_CANDX + 3u] = cXS.w;
+    aux[o + R_CANDX + 4u] = partS.w;
+    let cYS = red0[0];
+    aux[o + R_CANDY] = cYS.x;
+    aux[o + R_CANDY + 1u] = cYS.y;
+    aux[o + R_CANDY + 2u] = cYS.z;
+    aux[o + R_CANDY + 3u] = cYS.w;
+    aux[o + R_CANDY + 4u] = red1[0].x;
+  }
+}
+
+`;
+
 export function fistaShaderSource(wg: number, k: number): string {
   const logWg = Math.round(Math.log2(wg));
   const C = wg * k;
@@ -82,10 +220,10 @@ struct Cell {
   t: f32,
   iter: u32,
   converged: u32,
-  useX: u32,
+  useX: u32, // 0 = momentum from x_{k-1}, 1 = y = x_k, 2 = y stored in the x_{k-1} slot
   baseline: f32,
   m: f32, // momentum used to form y from x_k, x_{k-1}
-  pad0: u32,
+  iter0: u32, // iterations carried in by the warm start
   pad1: u32,
 };
 
@@ -193,12 +331,14 @@ fn prep(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   var trAcc = vec4<f32>(0.0);
   var cand = vec4<f32>(0.0);
   var candD = vec4<f32>(0.0);
+  // y_0 is x_0 (xa), or the stored y (xb) for a momentum warm start.
+  let storedY = cells[cell].useX == 2u;
   for (var k = 0u; k < K; k++) {
     let p = tid * K + k;
     let t = b * C + p;
     if (t < P.T) {
       let tv = trace[base + t];
-      let xv = xa[base + t] * P.invPeak;
+      let xv = readX(storedY, base + t) * P.invPeak;
       let w0 = tab[T_POS0 + p];
       let w1 = tab[T_POS1 + p];
       let w2 = tab[T_POS2 + p];
@@ -230,123 +370,11 @@ fn prep(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 
 // ---- the fused iteration ----
 
-@compute @workgroup_size(WG)
-fn sweep(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let b = wid.x;
-  let cell = wid.y;
-  let tid = lid.x;
-  if (cellDone(cell, tid)) { return; }
-  let base = cell * P.T;
-  let st = cells[cell];
-  let useX = st.useX != 0u;
-  let odd = (st.iter & 1u) != 0u; // x_k in xb; x_{k-1} (and x_{k+1}) in xa
-  let last = b == P.nBlocks - 1u;
-  let o = rec(cell, b);
-  let sIn = vec2<f32>(aux[o + R_SIN], aux[o + R_SIN + 1u]);
-  let qIn = vec2<f32>(aux[o + R_QIN], aux[o + R_QIN + 1u]);
-  var bl = 0.0;
-  if (P.filtered == 0u) { bl = st.baseline; }
-
-  var xk: array<f32, K>;
-  var yv: array<f32, K>;
-  var z: array<f32, K>;
-  let t0 = b * C + tid * K;
-  for (var k = 0u; k < K; k++) {
-    let t = t0 + k;
-    var xv = 0.0;
-    var y = 0.0;
-    if (t < P.T) {
-      xv = readX(odd, base + t);
-      y = xv;
-      if (!useX) { y = constrain(xv + st.m * (xv - readX(!odd, base + t))); }
-    }
-    xk[k] = xv;
-    yv[k] = y;
-  }
-
-  // Forward: thread-local cascade from zero (thread 0 from sIn), scan, rerun.
-  var s = vec2<f32>(0.0);
-  if (tid == 0u) { s = sIn; }
-  for (var k = 0u; k < K; k++) {
-    s.x = P.d * s.x + yv[k] * P.invPeak;
-    s.y = P.r * s.y + s.x;
-  }
-  s = scanFwd(tid, s, sIn);
-  for (var k = 0u; k < K; k++) {
-    let t = t0 + k;
-    var zv = 0.0;
-    if (t < P.T) { zv = ((s.y + bl) - trace[base + t]) * P.invPeak; }
-    z[k] = zv;
-    s.x = P.d * s.x + yv[k] * P.invPeak;
-    s.y = P.r * s.y + s.x;
-  }
-
-  // Reverse: thread-local from zero (last thread from qIn), scan, rerun.
-  var q = vec2<f32>(0.0);
-  if (tid == WG - 1u) { q = qIn; }
-  for (var k = K; k > 0u; k--) {
-    q.x = P.d * q.x + z[k - 1u];
-    q.y = P.r * q.y + q.x;
-  }
-  q = scanRev(tid, q, qIn);
-
-  // Prox (gradient at t is a_{t+1}: the state before consuming z[t]).
-  let tNew = (1.0 + sqrt(1.0 + 4.0 * st.t * st.t)) * 0.5;
-  let m = (st.t - 1.0) / tNew;
-  var part = vec4<f32>(0.0); // diff², x_k², dot, Σδx of x_{k+1}
-  var cX = vec4<f32>(0.0);   // F, Σβx of x_{k+1}
-  var cY = vec4<f32>(0.0);   // F, Σβx of y_{k+1}
-  var cYd = 0.0;             // Σδx of y_{k+1}
-  for (var k = K; k > 0u; k--) {
-    let kk = k - 1u;
-    let g = q.y;
-    q.x = P.d * q.x + z[kk];
-    q.y = P.r * q.y + q.x;
-    let t = t0 + kk;
-    if (t < P.T) {
-      let xo = xk[kk];
-      let xn = constrain((yv[kk] - P.step * g) - P.thresh);
-      let yn = constrain(xn + m * (xn - xo));
-      writeX(!odd, base + t, xn);
-      let dd = xn - xo;
-      let p = tid * K + kk;
-      let w0 = tab[T_POS0 + p];
-      let w1 = tab[T_POS1 + p];
-      let w2 = tab[T_POS2 + p];
-      var beta = w1.xy;
-      var delta = w2.x;
-      if (last) { beta = w1.zw; delta = w2.y; }
-      let sx = xn * P.invPeak;
-      let sy = yn * P.invPeak;
-      part = part + vec4<f32>(dd * dd, xo * xo, (yv[kk] - xn) * dd, delta * sx);
-      cX = cX + vec4<f32>(w0.xy * sx, beta * sx);
-      cY = cY + vec4<f32>(w0.xy * sy, beta * sy);
-      cYd = cYd + delta * sy;
-    }
-  }
-  reduce2(tid, part, cX);
-  let partS = red0[0];
-  let cXS = red1[0];
-  workgroupBarrier();
-  reduce2(tid, cY, vec4<f32>(cYd, 0.0, 0.0, 0.0));
-  if (tid == 0u) {
-    aux[o + R_PART] = partS.x;
-    aux[o + R_PART + 1u] = partS.y;
-    aux[o + R_PART + 2u] = partS.z;
-    aux[o + R_CANDX] = cXS.x;
-    aux[o + R_CANDX + 1u] = cXS.y;
-    aux[o + R_CANDX + 2u] = cXS.z;
-    aux[o + R_CANDX + 3u] = cXS.w;
-    aux[o + R_CANDX + 4u] = partS.w;
-    let cYS = red0[0];
-    aux[o + R_CANDY] = cYS.x;
-    aux[o + R_CANDY + 1u] = cYS.y;
-    aux[o + R_CANDY + 2u] = cYS.z;
-    aux[o + R_CANDY + 3u] = cYS.w;
-    aux[o + R_CANDY + 4u] = red1[0].x;
-  }
-}
-
+${sweepEntry('sweep', false)}
+// The first iteration after a load with momentum warm starts: y_0 is read
+// from the x_{k-1} slot (useX = 2). A separate entry point so the per-sample
+// loop of the regular sweep has no extra branch.
+${sweepEntry('sweepFirst', true)}
 // ---- per-cell passes ----
 
 // Carries for the next iteration from the chosen candidate's functionals.
@@ -423,14 +451,15 @@ fn fin(@builtin(global_invocation_id) gid: vec3<u32>) {
   st.iter = st.iter + 1u;
   let tNew = (1.0 + sqrt(1.0 + 4.0 * st.t * st.t)) * 0.5;
   st.m = (st.t - 1.0) / tNew;
-  if (st.iter > 1u && dot > 0.0) {
+  let total = st.iter + st.iter0;
+  if (total > 1u && dot > 0.0) {
     st.t = 1.0;
     st.useX = 1u;
   } else {
     st.t = tNew;
     st.useX = 0u;
   }
-  if (st.iter > 5u && diffSq < P.tolSq * (xkSq + 1e-20)) {
+  if (total > 5u && diffSq < P.tolSq * (xkSq + 1e-20)) {
     st.converged = 1u;
   } else {
     st.baseline = carryCell(cell, st);

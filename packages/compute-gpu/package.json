@@ -12,10 +12,10 @@
     "harness": "vite harness --port 4177"
   },
   "dependencies": {
+    "@calab/compute": "*",
     "@calab/core": "*"
   },
   "devDependencies": {
-    "@calab/compute": "*",
     "@webgpu/types": "^0.1.60"
   }
 }

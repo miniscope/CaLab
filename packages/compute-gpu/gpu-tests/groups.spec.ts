@@ -4,6 +4,9 @@ import { runHarness } from './harness.ts';
 interface GroupingResult {
   groupCount: number;
   bitwiseEqual: boolean;
+  streamGroups: number;
+  peakResident: number;
+  streamedBitwiseEqual: boolean;
   perCell: {
     relL2VsSingle: number;
     itersEqualSingle: boolean;
@@ -21,6 +24,10 @@ test('multi-group GPU FISTA equals single-group and matches WASM', async ({ page
   console.log(`groups=${g.groupCount} bitwiseEqual=${g.bitwiseEqual}`);
   expect(g.groupCount).toBeGreaterThanOrEqual(3);
   expect(g.bitwiseEqual).toBe(true);
+  // Streamed under a 4-cell budget: groups of 2, at most 2 resident, same bits.
+  expect(g.streamGroups).toBeGreaterThanOrEqual(4);
+  expect(g.peakResident).toBeLessThanOrEqual(2);
+  expect(g.streamedBitwiseEqual).toBe(true);
   for (const cell of g.perCell) {
     expect.soft(cell.relL2VsSingle).toBeLessThanOrEqual(1e-6);
     expect.soft(cell.itersEqualSingle).toBe(true);
