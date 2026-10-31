@@ -29,7 +29,9 @@ export interface WasmPoolConsumerOptions<TJob extends BaseJob> {
    * Tiles in flight at once. Default: Infinity, i.e. hand everything to the
    * pool and let its own priority queue order the work (CaTune's behavior).
    * Set a finite value when other consumers share the queue, so the pool does
-   * not hoard tiles they could run.
+   * not hoard tiles they could run (see tile-scheduler.ts: `anyAccepting`
+   * plus a finite maxInFlight is the configuration for running the pool and
+   * the GPU together).
    */
   maxInFlight?: number;
   name?: string;
@@ -94,6 +96,9 @@ export function createWasmPoolConsumer<TJob extends BaseJob>(
 
   return {
     name,
+    attach(context) {
+      ctx = context;
+    },
     accepts: () => null,
     take(offered, context) {
       ctx = context;

@@ -11,7 +11,19 @@
 //   re-queued after the consumer failed) are dropped.
 // - A consumer that reports failure is removed; its unsettled tiles go back
 //   to the queue (unchanged, with their original warm start) for the
-//   remaining consumers.
+//   remaining consumers. A tile whose cancel was requested while a consumer
+//   held it is settled as cancelled instead of being re-queued.
+// - Consumers get their ConsumerContext at registration (`attach`), so one
+//   that fails before its first take() is still removed and reported.
+// - Tile ids must be unique among unsettled tiles; submit() throws otherwise.
+//
+// Running several consumers on one queue (e.g. the WASM pool and the GPU
+// together): use the `anyAccepting` policy, and give the pool consumer a
+// finite `maxInFlight` (createWasmPoolConsumer) so it does not hoard every
+// waiting tile in its own queue. Each consumer then pulls at its own rate:
+// the pool takes up to maxInFlight tiles, the GPU batches whatever else is
+// waiting when it is idle. With the default `preferFirstAccepting` a tile
+// waits for the first consumer that accepts it, even while others are idle.
 
 import type {
   ConsumerContext,
@@ -79,6 +91,8 @@ interface Entry {
   /** Bumped when the tile is re-queued, so callbacks from a previous owner are dropped. */
   generation: number;
   settled: boolean;
+  /** cancel() was forwarded to the owner; if the tile comes back unsettled it settles as cancelled. */
+  cancelRequested: boolean;
 }
 
 export function createTileScheduler(options: TileSchedulerOptions): TileScheduler {
@@ -91,7 +105,13 @@ export function createTileScheduler(options: TileSchedulerOptions): TileSchedule
   let disposed = false;
 
   const contexts = new Map<TileConsumer, ConsumerContext>();
-  for (const c of consumers) contexts.set(c, makeContext(c));
+  for (const c of consumers) register(c);
+
+  function register(consumer: TileConsumer): void {
+    const ctx = makeContext(consumer);
+    contexts.set(consumer, ctx);
+    consumer.attach?.(ctx);
+  }
 
   function makeContext(consumer: TileConsumer): ConsumerContext {
     return {
@@ -198,9 +218,15 @@ export function createTileScheduler(options: TileSchedulerOptions): TileSchedule
     }
   }
 
+  /** Return an unsettled tile to the queue, or settle it as cancelled if a cancel is pending. */
   function requeue(e: Entry): void {
     e.owner = null;
     e.generation++; // drops the previous owner's late callbacks
+    if (e.cancelRequested) {
+      settle(e);
+      e.tile.onCancelled();
+      return;
+    }
     waiting.push(e);
   }
 
@@ -230,7 +256,7 @@ export function createTileScheduler(options: TileSchedulerOptions): TileSchedule
   function addConsumer(consumer: TileConsumer, index = consumers.length): void {
     if (disposed || consumers.includes(consumer)) return;
     consumers.splice(Math.max(0, Math.min(index, consumers.length)), 0, consumer);
-    contexts.set(consumer, makeContext(consumer));
+    register(consumer);
     schedulePump();
   }
 
@@ -243,7 +269,16 @@ export function createTileScheduler(options: TileSchedulerOptions): TileSchedule
       tile.onCancelled();
       return;
     }
-    const entry: Entry = { tile, owner: null, generation: 0, settled: false };
+    if (entries.has(tile.id)) {
+      throw new Error(`tile id ${tile.id} is already submitted and unsettled`);
+    }
+    const entry: Entry = {
+      tile,
+      owner: null,
+      generation: 0,
+      settled: false,
+      cancelRequested: false,
+    };
     entries.set(tile.id, entry);
     waiting.push(entry);
     schedulePump();
@@ -259,6 +294,7 @@ export function createTileScheduler(options: TileSchedulerOptions): TileSchedule
       entry.tile.onCancelled();
       return;
     }
+    entry.cancelRequested = true;
     entry.owner?.cancel(tileId);
   }
 

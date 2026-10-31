@@ -116,6 +116,13 @@ export interface ConsumerContext {
 
 export interface TileConsumer {
   readonly name: string;
+  /**
+   * Called once when the consumer is registered with a scheduler, before any
+   * take(). A consumer that fails before its first take (e.g. its device
+   * could not be created) reports it through this context, so the scheduler
+   * reacts (removes it, re-routes its tiles, notifies onConsumerFailed).
+   */
+  attach?(ctx: ConsumerContext): void;
   /** null when this consumer can solve the tile, else a human-readable reason. */
   accepts(tile: SolveTile): string | null;
   /**

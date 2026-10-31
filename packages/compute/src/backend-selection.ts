@@ -28,6 +28,32 @@ export function getRequestedBackend(
   }
 }
 
+/**
+ * How the calibration gate treats the GPU (dev only, like the backend flag):
+ * 'advisory' (default) only reports when the GPU measures slower than the
+ * WASM pool; 'auto' routes on it: the GPU takes tiles only while its measured
+ * rate beats the pool's by the gate margin. `?gpuGate=auto`, or
+ * localStorage 'calab:gpu-gate' = 'auto'.
+ */
+export type GpuGateMode = 'advisory' | 'auto';
+
+export const GPU_GATE_STORAGE_KEY = 'calab:gpu-gate';
+
+export function getRequestedGpuGate(
+  search: string = typeof window !== 'undefined' ? window.location.search : '',
+  storage: Pick<Storage, 'getItem'> | null = typeof localStorage !== 'undefined'
+    ? localStorage
+    : null,
+): GpuGateMode {
+  const fromUrl = new URLSearchParams(search).get('gpuGate');
+  if (fromUrl === 'auto' || fromUrl === 'advisory') return fromUrl;
+  try {
+    return storage?.getItem(GPU_GATE_STORAGE_KEY) === 'auto' ? 'auto' : 'advisory';
+  } catch {
+    return 'advisory';
+  }
+}
+
 /** Why WebGPU cannot be used here, or null if `navigator.gpu` exists. */
 export function webGpuUnavailableReason(): string | null {
   if (typeof navigator === 'undefined') return 'no navigator';

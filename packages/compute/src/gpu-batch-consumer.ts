@@ -2,30 +2,41 @@
 // (@calab/compute-gpu's createGpuFista, injected as a BatchFistaEngine so this
 // package does not depend on WebGPU and tests can mock it).
 //
-// - Takes, in one batch, the offered tiles with the same window length and
-//   parameters as the most urgent one, up to the memory budget. Per-tile
-//   priority otherwise does not apply: all cells of a batch progress together.
+// - Takes, in one batch, the offered tiles with the same window length,
+//   parameters, baseline mode and constraint as the most urgent one, up to the
+//   memory budget. Per-tile priority otherwise does not apply: all cells of a
+//   batch progress together.
 // - Preprocessing (filter + baseline subtraction) is not done on the GPU; the
 //   injected `prepare` returns each cell's working trace (CaTune does it with
 //   a WASM Solver in a worker and caches it).
-// - Runs quanta sized to a wall-clock target (quantum-sizer.ts). After each
-//   quantum it reads back only the per-cell status (iteration, converged).
-//   Solutions are read only for tiles that finished this quantum and for
-//   tiles whose producer wants intermediate results (on screen).
-// - While other tiles wait, a tile that has used its `maxIterations` budget is
-//   completed unconverged (with a warm-start state) so the producer re-submits
-//   it and the next batch includes the waiting tiles.
+// - Runs quanta sized to a wall-clock target (quantum-sizer.ts, normalised per
+//   active sample-iteration). Each step() returns every cell's status, so
+//   there is one status readback per quantum. Solutions are read only for
+//   tiles that finish this quantum (with their warm-start state) and for tiles
+//   whose producer wants intermediate results (on screen).
+// - Warm starts carry FISTA momentum: a 'warm' state loads x_k, y_k
+//   (`solution_prev`) and t_fista, so a re-submitted tile continues exactly
+//   where it stopped; finished tiles export the same layout.
+// - While other tiles wait, the batch does not drain to its slowest tile: a
+//   tile past its `maxIterations` budget, or every unsettled tile once
+//   `refillFraction` of the batch's rows has settled, is completed unconverged
+//   with its state, so the producer re-submits it and the next batch takes it
+//   together with the waiting tiles.
 // - Memory: batches are limited to `memoryBudgetBytes` (estimated working
 //   set). The budget doubles after a clipped batch loads fine (staying below
 //   any size that already failed) and halves on an out-of-memory load, which
-//   gives the batch back to the queue.
+//   gives the batch back to the queue. A tile that alone does not fit (longer
+//   than the engine's maxTraceLength, or at least as large as a size that ran
+//   out of memory) is declined in accepts(), so the scheduler routes it to
+//   another consumer; out-of-memory never kills the consumer.
 // - All engine calls go through one promise chain, so load()/destroy() never
 //   run while a step() or readback is in flight.
-// - Any other engine error, or `fail()` (e.g. GPU device lost), marks the
-//   consumer dead and reports it to the scheduler, which re-queues the
-//   unsettled tiles for the remaining consumers.
+// - Device loss and any other engine error, or `fail()`, mark the consumer
+//   dead and report it to the scheduler, which re-queues the unsettled tiles
+//   for the remaining consumers.
 
 import type { SolverParams } from '@calab/core';
+import { isGpuDeviceLostError, isGpuOutOfMemoryError } from './gpu-errors.ts';
 import { createQuantumSizer, type QuantumSizerOptions } from './quantum-sizer.ts';
 import { decodeSolverState, encodeSolverState } from './solver-state-codec.ts';
 import type {
@@ -36,6 +47,8 @@ import type {
   TileCellUpdate,
   TileConsumer,
 } from './solve-tiles.ts';
+
+export { GpuOutOfMemoryError, GpuDeviceLostError } from './gpu-errors.ts';
 
 /** Parameters of one batched solve; structurally @calab/compute-gpu's GpuFistaParams. */
 export interface BatchFistaParams {
@@ -49,39 +62,59 @@ export interface BatchFistaParams {
   filtered: boolean;
 }
 
-export interface BatchSolutions {
-  solutions: Float32Array;
+/** Warm start of a batch; structurally @calab/compute-gpu's GpuWarmStart. */
+export interface BatchWarmStart {
+  solution: Float32Array;
+  prev?: Float32Array;
+  momentum?: Uint8Array;
+  tFista?: Float32Array | Float64Array;
+  iterations?: Uint32Array;
+}
+
+export interface BatchStatus {
   iterations: Uint32Array;
   converged: Uint8Array;
 }
 
+export interface BatchStepResult extends BatchStatus {
+  allConverged: boolean;
+  iterationsRun: number;
+}
+
+export interface BatchSolutions {
+  solutions: Float32Array;
+  iterations: Uint32Array;
+  converged: Uint8Array;
+  /** y_k (`solution_prev`), t_fista and baseline per cell, when read with `withState`. */
+  state?: { prev: Float32Array; tFista: Float32Array; baseline: Float32Array };
+}
+
 /** The subset of @calab/compute-gpu's GpuFista this consumer uses. */
 export interface BatchFistaEngine {
-  /** May be async (e.g. to check a WebGPU out-of-memory error scope). */
+  /** May be async; rejects with a GpuOutOfMemoryError (by name) when the batch does not fit. */
   load(
     traces: Float32Array,
     nCells: number,
     T: number,
     params: BatchFistaParams,
-    warmStart?: Float32Array,
+    warmStart?: BatchWarmStart,
+    options?: { requireResident?: boolean },
   ): void | Promise<void>;
-  step(n: number): Promise<{ allConverged: boolean; iterationsRun: number }>;
-  /** Per-cell status only (cheap). */
-  readStatus(): Promise<{ iterations: Uint32Array; converged: Uint8Array }>;
+  /** Run up to n iterations; returns every cell's status (no separate status readback). */
+  step(n: number): Promise<BatchStepResult>;
   /** Solutions for the given load-order cells, cells.length x T. */
-  readSolutionsFor(cells: readonly number[]): Promise<BatchSolutions>;
+  readSolutionsFor(
+    cells: readonly number[],
+    options?: { withState?: boolean },
+  ): Promise<BatchSolutions>;
   readonly groupCount?: number;
   /** Adapter label for calibration records, e.g. "apple / metal-3". */
   readonly adapter?: string;
+  /** Longest window the device can take; longer tiles are declined. */
+  readonly maxTraceLength?: number;
+  /** GPU bytes of a fully resident batch (used for the memory budget). */
+  estimateBytes?(nCells: number, T: number): number;
   destroy(): void;
-}
-
-/** Throw this (or an Error whose name is 'GpuOutOfMemoryError') from load() on OOM. */
-export class GpuOutOfMemoryError extends Error {
-  constructor(message = 'GPU out of memory') {
-    super(message);
-    this.name = 'GpuOutOfMemoryError';
-  }
 }
 
 export interface GpuBatchStats {
@@ -93,19 +126,31 @@ export interface GpuBatchStats {
   groups: number;
   lastQuantumIterations: number;
   lastQuantumMs: number;
-  /** FISTA iterations per second over the last quantum (every cell advances each iteration). */
+  /** FISTA iterations per second over the last quantum. */
   iterationsPerSec: number;
-  /** cells x samples x iterations per second over the last quantum. */
+  /** Active (unconverged) cells x samples x iterations per second over the last quantum. */
   sampleItersPerSec: number;
   /** Current working-set budget for one batch. */
   memoryBudgetBytes: number;
   /** Cells whose solutions were read back after the last quantum. */
   lastReadbackCells: number;
+  /** Tiles handed back early (budget or rolling refill) so waiting tiles could start. */
+  yieldedTiles: number;
   failure?: string;
 }
 
 /** Default batch memory budget: 384 MiB of estimated GPU working set. */
 export const DEFAULT_GPU_MEMORY_BUDGET = 384 * 1024 * 1024;
+
+/** Default fraction of a batch's rows that must settle before the rest yields to waiting work. */
+export const DEFAULT_REFILL_FRACTION = 0.5;
+
+export interface DisplayReconvolution {
+  /** K*s plus the display baseline. */
+  reconvolution: Float32Array;
+  /** The display baseline used, to fold into the next readback's EMA. */
+  displayBaseline: number;
+}
 
 export interface GpuBatchConsumerOptions {
   /** Create the engine; `maxGroupBytes` is the group budget hook (see `groupBudgetBytes`). */
@@ -125,21 +170,43 @@ export interface GpuBatchConsumerOptions {
   memoryBudgetBytes?: number;
   /** Default 2 GiB. */
   maxMemoryBudgetBytes?: number;
-  /** GPU bytes for a batch; default ~24 B per sample (compute-gpu's estimateGpuBytes is ~20). */
+  /** GPU bytes for a batch; default the engine's estimateBytes, else 24 B per sample. */
   estimateBytes?(nCells: number, T: number): number;
+  /**
+   * Whether a tile's working traces have their scalar baseline pinned to 0
+   * (Rust `Solver.filtered`: high-pass filtered or baseline-subtracted). When
+   * false the GPU re-estimates the baseline every iteration. Depends on the
+   * producer's preprocessing (CaTune's always ends with subtract_baseline).
+   */
+  filtered: boolean | ((tile: SolveTile) => boolean);
+  /** Solution constraint. Default 'nonneg' (CaTune); CaDecon uses 'box01'. */
+  constraint?:
+    BatchFistaParams['constraint'] | ((tile: SolveTile) => BatchFistaParams['constraint']);
   /** Working trace per cell of the tile (filter + baseline subtraction done). */
   prepare(tile: SolveTile): Promise<Float32Array[]>;
-  /** Display reconvolution (K*s plus display baseline) for one cell. */
+  /**
+   * Display reconvolution for one cell. `prevDisplayBaseline` is the display
+   * baseline of this cell's previous readback in the same hand-out (null on
+   * the first), so the app can smooth it like the WASM solver's EMA.
+   */
   reconvolve(
     solution: Float32Array,
     workingTrace: Float32Array,
     params: SolverParams,
-  ): Float32Array;
+    prevDisplayBaseline: number | null,
+  ): DisplayReconvolution;
   /**
-   * Participation gate (calibration hook): null = take tiles, otherwise the
-   * reason the GPU should sit out (e.g. slower than the WASM pool).
+   * Participation gate (calibration hook): null = take the tile, otherwise
+   * the reason the GPU should sit it out.
    */
-  participate?(): string | null;
+  participate?(tile: SolveTile): string | null;
+  /**
+   * Once this fraction of a batch's rows has settled (converged, or the tile
+   * cancelled) and other tiles wait, the remaining tiles yield (complete
+   * unconverged with their state) so a few slow cells do not hold the GPU.
+   * Default DEFAULT_REFILL_FRACTION; 1 disables it.
+   */
+  refillFraction?: number;
   quantum?: QuantumSizerOptions;
   /** Convergence tolerance (the WASM solver's default is 1e-4). */
   tol?: number;
@@ -166,16 +233,8 @@ interface LiveTile {
   offset: number;
   working: Float32Array[];
   baseIterations: number[];
-}
-
-function batchKey(tile: SolveTile): string {
-  const p = tile.params;
-  const len = tile.traces[0]?.length ?? 0;
-  return `${len}|${p.tauRise}|${p.tauDecay}|${p.lambda}|${p.fs}|${p.filterEnabled}`;
-}
-
-function isOom(err: unknown): boolean {
-  return err instanceof Error && err.name === 'GpuOutOfMemoryError';
+  /** Display baseline of the previous readback per cell (EMA state). */
+  displayBaseline: (number | null)[];
 }
 
 export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBatchConsumer {
@@ -184,8 +243,16 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
   const tol = options.tol ?? 1e-4;
   const maxIters = options.maxIters ?? 20000;
   const maxBudget = options.maxMemoryBudgetBytes ?? 2 * 1024 * 1024 * 1024;
-  const estimateBytes = options.estimateBytes ?? ((n: number, T: number) => 24 * n * T);
+  const refillFraction = options.refillFraction ?? DEFAULT_REFILL_FRACTION;
+  const filteredOf = (t: SolveTile) =>
+    typeof options.filtered === 'function' ? options.filtered(t) : options.filtered;
+  const constraintOf = (t: SolveTile): BatchFistaParams['constraint'] =>
+    typeof options.constraint === 'function'
+      ? options.constraint(t)
+      : (options.constraint ?? 'nonneg');
   let engine: BatchFistaEngine | null = null;
+  const estimate = (n: number, T: number) =>
+    options.estimateBytes?.(n, T) ?? engine?.estimateBytes?.(n, T) ?? 24 * n * T;
   /** Serializes every engine call: load()/destroy() never overlap a step or readback. */
   let engineChain: Promise<unknown> = Promise.resolve();
   let ctx: ConsumerContext | null = null;
@@ -206,11 +273,27 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
     sampleItersPerSec: 0,
     memoryBudgetBytes: options.memoryBudgetBytes ?? DEFAULT_GPU_MEMORY_BUDGET,
     lastReadbackCells: 0,
+    yieldedTiles: 0,
   };
   const emitStats = () => options.onStats?.({ ...stats });
   // A function, not an inline comparison: `fail()` can run during an await,
   // which TypeScript's narrowing of `stats.state` does not see.
   const isDead = () => stats.state === 'dead';
+
+  function batchKey(tile: SolveTile): string {
+    const p = tile.params;
+    const len = tile.traces[0]?.length ?? 0;
+    return [
+      len,
+      p.tauRise,
+      p.tauDecay,
+      p.lambda,
+      p.fs,
+      p.filterEnabled,
+      filteredOf(tile),
+      constraintOf(tile),
+    ].join('|');
+  }
 
   function withEngine<R>(fn: (e: BatchFistaEngine) => R | Promise<R>): Promise<R> {
     const run = engineChain.then(() => {
@@ -260,6 +343,57 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
     else pendingFailure = reason;
   }
 
+  /** Out of memory: lower the budget (or remember the size), give the batch back. */
+  function onOutOfMemory(live: LiveTile[], N: number, T: number, err: unknown): void {
+    const est = estimate(N, T);
+    oomCeiling = Math.min(oomCeiling, est);
+    if (live.length > 1) {
+      stats.memoryBudgetBytes = Math.max(1, Math.floor(Math.min(stats.memoryBudgetBytes, est) / 2));
+    }
+    console.warn(
+      `[gpu-batch-consumer] out of memory with ${N} cells x ${T} (${String(err)}); budget now ` +
+        `${(stats.memoryBudgetBytes / 2 ** 20).toFixed(0)} MiB` +
+        (live.length > 1 ? ', re-queuing the batch' : '; tiles this large go to other consumers'),
+    );
+    const unsettled = live.filter((lt) => !lt.settled).map((lt) => lt.tile.id);
+    for (const lt of live) lt.settled = true;
+    emitStats();
+    ctx?.giveBack(unsettled);
+  }
+
+  function warmStartFor(live: LiveTile[], N: number, T: number): BatchWarmStart | undefined {
+    let warm: BatchWarmStart | undefined;
+    const ensure = (): BatchWarmStart =>
+      (warm ??= {
+        solution: new Float32Array(N * T),
+        prev: new Float32Array(N * T),
+        momentum: new Uint8Array(N),
+        tFista: new Float64Array(N),
+        iterations: new Uint32Array(N),
+      });
+    for (const lt of live) {
+      const ws = lt.tile.warmStart;
+      for (let k = 0; k < lt.tile.cells.length; k++) {
+        lt.baseIterations[k] = 0;
+        const bytes = ws && ws.strategy !== 'cold' ? ws.states[k] : null;
+        const d = bytes ? decodeSolverState(bytes) : null;
+        if (!d || d.solution.length !== T) continue;
+        const row = lt.offset + k;
+        const w = ensure();
+        w.solution.set(d.solution, row * T);
+        w.iterations![row] = d.iteration;
+        lt.baseIterations[k] = d.iteration;
+        if (ws!.strategy === 'warm') {
+          // Continue momentum like WASM load_state; 'warm-no-momentum' resets it.
+          w.prev!.set(d.solutionPrev, row * T);
+          w.momentum![row] = 1;
+          w.tFista![row] = d.tFista;
+        }
+      }
+    }
+    return warm;
+  }
+
   async function runBatch(tiles: SolveTile[], clipped: boolean): Promise<void> {
     stats.state = 'running';
     const live: LiveTile[] = tiles.map((tile) => ({
@@ -268,76 +402,40 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
       offset: 0,
       working: [],
       baseIterations: [],
+      displayBaseline: tile.cells.map(() => null),
     }));
     batch = live;
+    let N = 0;
+    let T = 0;
     try {
       const prepared = await Promise.all(tiles.map((t) => options.prepare(t)));
       if (isDead() || disposed) return;
-      const T = tiles[0].traces[0].length;
-      let offset = 0;
+      T = tiles[0].traces[0].length;
       live.forEach((lt, i) => {
-        lt.offset = offset;
+        lt.offset = N;
         lt.working = prepared[i];
-        offset += lt.tile.cells.length;
+        N += lt.tile.cells.length;
       });
-      const N = offset;
       const traces = new Float32Array(N * T);
-      let warm: Float32Array | undefined;
       for (const lt of live) {
-        const ws = lt.tile.warmStart;
         for (let k = 0; k < lt.tile.cells.length; k++) {
           traces.set(lt.working[k], (lt.offset + k) * T);
-          const bytes = ws && ws.strategy !== 'cold' ? ws.states[k] : null;
-          const decoded = bytes ? decodeSolverState(bytes) : null;
-          if (decoded && decoded.solution.length === T) {
-            warm ??= new Float32Array(N * T);
-            warm.set(decoded.solution, (lt.offset + k) * T);
-            lt.baseIterations[k] = decoded.iteration;
-          } else {
-            lt.baseIterations[k] = 0;
-          }
         }
       }
-      const p = tiles[0].params;
-      try {
-        await withEngine((e) =>
-          e.load(
-            traces,
-            N,
-            T,
-            {
-              tauRise: p.tauRise,
-              tauDecay: p.tauDecay,
-              fs: p.fs,
-              lambda: p.lambda,
-              constraint: 'nonneg',
-              tol,
-              maxIters,
-              // CaTune's preprocessing always ends with subtract_baseline, which
-              // pins the solver's baseline to 0 (`filtered` in Rust).
-              filtered: true,
-            },
-            warm,
-          ),
-        );
-      } catch (err) {
-        if (!isOom(err) || isDead() || disposed || tiles.length <= 1) throw err;
-        const est = estimateBytes(N, T);
-        oomCeiling = Math.min(oomCeiling, est);
-        stats.memoryBudgetBytes = Math.max(
-          1,
-          Math.floor(Math.min(stats.memoryBudgetBytes, est) / 2),
-        );
-        console.warn(
-          `[gpu-batch-consumer] out of memory loading ${N} cells x ${T}; budget now ` +
-            `${(stats.memoryBudgetBytes / 2 ** 20).toFixed(0)} MiB, re-queuing the batch`,
-        );
-        const unsettled = live.filter((lt) => !lt.settled).map((lt) => lt.tile.id);
-        for (const lt of live) lt.settled = true;
-        emitStats();
-        ctx?.giveBack(unsettled);
-        return;
-      }
+      const warm = warmStartFor(live, N, T);
+      const t0Tile = tiles[0];
+      const p = t0Tile.params;
+      const params: BatchFistaParams = {
+        tauRise: p.tauRise,
+        tauDecay: p.tauDecay,
+        fs: p.fs,
+        lambda: p.lambda,
+        constraint: constraintOf(t0Tile),
+        tol,
+        maxIters,
+        filtered: filteredOf(t0Tile),
+      };
+      await withEngine((e) => e.load(traces, N, T, params, warm, { requireResident: true }));
       if (clipped) {
         const grown = Math.min(
           maxBudget,
@@ -351,55 +449,73 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
       stats.groups = engine?.groupCount ?? 1;
       emitStats();
 
-      const cellSolution = (sol: BatchSolutions, row: number) =>
+      const rowOf = (sol: BatchSolutions, row: number) =>
         new Float32Array(sol.solutions.subarray(row * T, (row + 1) * T));
-
+      /** Rows not yet converged on the GPU (they are the ones doing work). */
+      let activeRows = N;
       let itersThisLoad = 0;
       for (;;) {
         if (live.every((lt) => lt.settled) || isDead() || disposed) break;
-        const n = sizer.next();
+        const work = activeRows * T;
+        const n = sizer.next(work);
         const t0 = performance.now();
-        const { iterationsRun } = await withEngine((e) => e.step(n));
-        const status = await withEngine((e) => e.readStatus());
+        const status = await withEngine((e) => e.step(n));
         if (isDead() || disposed) return;
+        const { iterationsRun } = status;
 
         // Decide per tile, then read solutions only for the tiles that need them.
         const capped = iterationsRun === 0; // engine hit maxIters
         const others = ctx?.hasWaiting() ?? false;
         itersThisLoad += iterationsRun;
         const finishing = new Set<LiveTile>();
+        let settledRows = 0;
+        for (const lt of live) {
+          const rows = lt.tile.cells.length;
+          if (lt.settled) {
+            settledRows += rows;
+            continue;
+          }
+          let allConv = true;
+          for (let k = 0; k < rows; k++) if (!status.converged[lt.offset + k]) allConv = false;
+          if (allConv || capped) {
+            finishing.add(lt);
+            settledRows += rows;
+          }
+        }
+        // Rolling refill: enough of the batch has settled and work is waiting.
+        const refill = others && iterationsRun > 0 && settledRows >= refillFraction * N;
         const readTiles: LiveTile[] = [];
         for (const lt of live) {
           if (lt.settled) continue;
           const t = lt.tile;
-          let allConv = true;
-          for (let k = 0; k < t.cells.length; k++) {
-            if (!status.converged[lt.offset + k]) allConv = false;
-          }
-          const yieldNow = others && itersThisLoad >= (t.maxIterations ?? Infinity);
-          if (allConv || capped || yieldNow) {
+          const overBudget = others && itersThisLoad >= (t.maxIterations ?? Infinity);
+          if (!finishing.has(lt) && (overBudget || refill)) {
             finishing.add(lt);
-            readTiles.push(lt);
-          } else if (t.wantsIntermediate?.() ?? true) {
-            readTiles.push(lt);
+            stats.yieldedTiles++;
           }
+          if (finishing.has(lt) || (t.wantsIntermediate?.() ?? true)) readTiles.push(lt);
         }
-        const rows: number[] = [];
-        const rowOf = new Map<LiveTile, number>();
+        const finalRows: number[] = [];
+        const shownRows: number[] = [];
         for (const lt of readTiles) {
-          rowOf.set(lt, rows.length);
-          for (let k = 0; k < lt.tile.cells.length; k++) rows.push(lt.offset + k);
+          const target = finishing.has(lt) ? finalRows : shownRows;
+          for (let k = 0; k < lt.tile.cells.length; k++) target.push(lt.offset + k);
         }
-        const sol = rows.length > 0 ? await withEngine((e) => e.readSolutionsFor(rows)) : null;
+        const finalSol =
+          finalRows.length > 0
+            ? await withEngine((e) => e.readSolutionsFor(finalRows, { withState: true }))
+            : null;
+        const shownSol =
+          shownRows.length > 0 ? await withEngine((e) => e.readSolutionsFor(shownRows)) : null;
         const ms = performance.now() - t0;
         if (isDead() || disposed) return;
 
-        sizer.record(iterationsRun, ms);
+        sizer.record(iterationsRun, ms, work);
         stats.lastQuantumIterations = iterationsRun;
         stats.lastQuantumMs = ms;
-        stats.lastReadbackCells = rows.length;
+        stats.lastReadbackCells = finalRows.length + shownRows.length;
         stats.iterationsPerSec = ms > 0 ? (iterationsRun / ms) * 1000 : 0;
-        stats.sampleItersPerSec = stats.iterationsPerSec * N * T;
+        stats.sampleItersPerSec = stats.iterationsPerSec * work;
         if (iterationsRun > 0 && stats.sampleItersPerSec > 0) {
           lastCalibration = {
             backend: name,
@@ -411,49 +527,70 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
           options.onCalibration?.(lastCalibration);
         }
         emitStats();
+        activeRows = 0;
+        for (let r = 0; r < N; r++) if (!status.converged[r]) activeRows++;
 
-        if (sol) {
-          for (const lt of readTiles) {
-            if (lt.settled) continue; // cancelled while the readback was awaited
-            const t = lt.tile;
-            const r0 = rowOf.get(lt)!;
-            const iterationOf = (k: number) =>
-              lt.baseIterations[k] + status.iterations[lt.offset + k];
-            if (finishing.has(lt)) {
-              lt.settled = true;
-              const results: TileCellResult[] = t.cells.map((cellIndex, k) => {
-                const solution = cellSolution(sol, r0 + k);
-                const iteration = iterationOf(k);
-                return {
-                  cellIndex,
+        let fi = 0;
+        let si = 0;
+        for (const lt of readTiles) {
+          const t = lt.tile;
+          const final = finishing.has(lt);
+          const r0 = final ? fi : si;
+          if (final) fi += t.cells.length;
+          else si += t.cells.length;
+          if (lt.settled) continue; // cancelled while the readback was awaited
+          const sol = (final ? finalSol : shownSol)!;
+          const iterationOf = (k: number) =>
+            lt.baseIterations[k] + status.iterations[lt.offset + k];
+          const display = (k: number, solution: Float32Array) => {
+            const d = options.reconvolve(solution, lt.working[k], t.params, lt.displayBaseline[k]);
+            lt.displayBaseline[k] = d.displayBaseline;
+            return d.reconvolution;
+          };
+          if (final) {
+            lt.settled = true;
+            const st = sol.state;
+            const results: TileCellResult[] = t.cells.map((cellIndex, k) => {
+              const solution = rowOf(sol, r0 + k);
+              const iteration = iterationOf(k);
+              return {
+                cellIndex,
+                solution,
+                reconvolution: display(k, solution),
+                iteration,
+                converged: status.converged[lt.offset + k] !== 0,
+                state: encodeSolverState({
                   solution,
-                  reconvolution: options.reconvolve(solution, lt.working[k], t.params),
+                  solutionPrev: st ? st.prev.subarray((r0 + k) * T, (r0 + k + 1) * T) : undefined,
+                  tFista: st?.tFista[r0 + k],
                   iteration,
-                  converged: status.converged[lt.offset + k] !== 0,
-                  state: encodeSolverState({ solution, iteration }),
-                  workingTrace: new Float32Array(lt.working[k]),
-                  backend: name,
-                };
-              });
-              t.onComplete(results);
-            } else {
-              const updates: TileCellUpdate[] = t.cells.map((cellIndex, k) => {
-                const solution = cellSolution(sol, r0 + k);
-                return {
-                  cellIndex,
-                  solution,
-                  reconvolution: options.reconvolve(solution, lt.working[k], t.params),
-                  iteration: iterationOf(k),
-                };
-              });
-              t.onIntermediate(updates);
-            }
+                  baseline: st?.baseline[r0 + k],
+                }),
+                workingTrace: new Float32Array(lt.working[k]),
+                backend: name,
+              };
+            });
+            t.onComplete(results);
+          } else {
+            const updates: TileCellUpdate[] = t.cells.map((cellIndex, k) => {
+              const solution = rowOf(sol, r0 + k);
+              return {
+                cellIndex,
+                solution,
+                reconvolution: display(k, solution),
+                iteration: iterationOf(k),
+              };
+            });
+            t.onIntermediate(updates);
           }
         }
         if (capped) break;
       }
     } catch (err) {
-      fail(`GPU solve failed: ${String(err)}`);
+      if (isDead() || disposed) return;
+      if (isGpuOutOfMemoryError(err)) onOutOfMemory(live, N, T, err);
+      else if (isGpuDeviceLostError(err)) fail((err as Error).message);
+      else fail(`GPU solve failed: ${String(err)}`);
       return;
     } finally {
       if (batch === live) batch = [];
@@ -465,23 +602,44 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
     }
   }
 
+  function declineReason(tile: SolveTile): string | null {
+    const T = tile.traces[0]?.length ?? 0;
+    const maxT = engine?.maxTraceLength;
+    if (maxT !== undefined && T > maxT) {
+      return `a ${T}-sample window exceeds this GPU's limit (${maxT} samples)`;
+    }
+    const est = estimate(tile.cells.length, T);
+    if (est >= oomCeiling) {
+      return `tile needs ~${(est / 2 ** 20).toFixed(0)} MiB; the GPU ran out of memory at that size`;
+    }
+    if (est > maxBudget) {
+      return `tile needs ~${(est / 2 ** 20).toFixed(0)} MiB, over the GPU memory budget`;
+    }
+    return null;
+  }
+
+  function attach(context: ConsumerContext): void {
+    ctx = context;
+    if (pendingFailure !== null) {
+      const reason = pendingFailure;
+      pendingFailure = null;
+      // Not synchronously: the scheduler is still registering this consumer.
+      queueMicrotask(() => context.failed(reason));
+    }
+  }
+
   const consumer: GpuBatchConsumer = {
     name,
+    attach,
     accepts(tile) {
       if (isDead()) return `GPU unavailable (${stats.failure ?? 'failed'})`;
       if (tile.params.convMode !== 'banded') {
         return 'GPU solver is banded AR(2) only; FFT conv mode is selected';
       }
-      return options.participate?.() ?? null;
+      return declineReason(tile) ?? options.participate?.(tile) ?? null;
     },
     take(offered, context) {
-      ctx = context;
-      if (pendingFailure !== null) {
-        const reason = pendingFailure;
-        pendingFailure = null;
-        context.failed(reason);
-        return [];
-      }
+      if (ctx !== context) attach(context);
       if (stats.state !== 'idle' || offered.length === 0) return [];
       const key = batchKey(offered[0]);
       const T = offered[0].traces[0]?.length ?? 0;
@@ -491,7 +649,7 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
       for (const t of offered) {
         if (batchKey(t) !== key) continue;
         const next = cells + t.cells.length;
-        if (taken.length > 0 && estimateBytes(next, T) > stats.memoryBudgetBytes) {
+        if (taken.length > 0 && estimate(next, T) > stats.memoryBudgetBytes) {
           clipped = true;
           break;
         }

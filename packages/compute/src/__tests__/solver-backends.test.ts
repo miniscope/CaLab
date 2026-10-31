@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type { SolverParams } from '@calab/core';
-import { createTileScheduler } from '../tile-scheduler.ts';
+import { anyAccepting, createTileScheduler } from '../tile-scheduler.ts';
 import { createGpuBatchConsumer, type BatchFistaEngine } from '../gpu-batch-consumer.ts';
 import { createWasmPoolConsumer } from '../wasm-pool-consumer.ts';
 import { createQuantumSizer } from '../quantum-sizer.ts';
@@ -17,8 +17,9 @@ import {
   gpuParticipationVerdict,
   softwareAdapterReason,
 } from '../calibration.ts';
-import { GpuOutOfMemoryError } from '../gpu-batch-consumer.ts';
+import { GpuOutOfMemoryError } from '../gpu-errors.ts';
 import type { SolveTile, TileCellResult, TileConsumer, TileWarmStart } from '../solve-tiles.ts';
+import type { BatchFistaParams, BatchSolutions, BatchWarmStart } from '../gpu-batch-consumer.ts';
 import type { BaseJob, WorkerPool } from '../worker-pool.ts';
 
 const PARAMS: SolverParams = {
@@ -126,14 +127,21 @@ function manualConsumer(name: string, accepts: (t: SolveTile) => string | null =
 
 /**
  * Mock engine: cell c converges after convergeAt[c] iterations; the solution
- * is the trace scaled by min(1, iteration / convergeAt).
+ * is the trace scaled by min(1, iteration / convergeAt). The exported state's
+ * prev (y) is the solution + 0.5, t_fista is 1 + iterations / 10.
  */
 function mockEngine(convergeAt: (cell: number) => number) {
   const calls = {
-    loads: [] as { nCells: number; T: number; warm?: Float32Array; traces: Float32Array }[],
+    loads: [] as {
+      nCells: number;
+      T: number;
+      warm?: BatchWarmStart;
+      traces: Float32Array;
+      params: BatchFistaParams;
+    }[],
     steps: [] as number[],
-    statusReads: 0,
     solutionReads: [] as number[][],
+    stateReads: [] as number[][],
     destroyed: 0,
   };
   let traces: Float32Array = new Float32Array(0);
@@ -143,8 +151,18 @@ function mockEngine(convergeAt: (cell: number) => number) {
   let failOnStep: Error | null = null;
   let failOnLoad: Error | null = null;
   let stepGate: Promise<void> | null = null;
+  const status = () => {
+    const iterations = new Uint32Array(nCells);
+    const converged = new Uint8Array(nCells);
+    for (let c = 0; c < nCells; c++) {
+      const k = convergeAt(c);
+      iterations[c] = Math.min(done, k);
+      converged[c] = done >= k ? 1 : 0;
+    }
+    return { iterations, converged };
+  };
   const engine: BatchFistaEngine = {
-    load(tr, n, len, _p, warm) {
+    load(tr, n, len, p, warm) {
       if (failOnLoad) {
         const e = failOnLoad;
         failOnLoad = null;
@@ -154,43 +172,45 @@ function mockEngine(convergeAt: (cell: number) => number) {
       nCells = n;
       T = len;
       done = 0;
-      calls.loads.push({ nCells: n, T: len, warm, traces: tr });
+      calls.loads.push({ nCells: n, T: len, warm, traces: tr, params: p });
     },
     async step(n) {
       calls.steps.push(n);
       if (stepGate) await stepGate;
-      if (failOnStep) throw failOnStep;
-      done += n;
-      let all = true;
-      for (let c = 0; c < nCells; c++) if (done < convergeAt(c)) all = false;
-      return { allConverged: all, iterationsRun: n };
-    },
-    async readStatus() {
-      await new Promise((r) => setTimeout(r, 0));
-      calls.statusReads++;
-      const iterations = new Uint32Array(nCells);
-      const converged = new Uint8Array(nCells);
-      for (let c = 0; c < nCells; c++) {
-        const k = convergeAt(c);
-        iterations[c] = Math.min(done, k);
-        converged[c] = done >= k ? 1 : 0;
+      if (failOnStep) {
+        const e = failOnStep;
+        failOnStep = null;
+        throw e;
       }
-      return { iterations, converged };
+      await new Promise((r) => setTimeout(r, 0));
+      done += n;
+      const st = status();
+      return { ...st, allConverged: st.converged.every((c) => c === 1), iterationsRun: n };
     },
-    async readSolutionsFor(cells) {
+    async readSolutionsFor(cells, opts) {
       calls.solutionReads.push([...cells]);
+      if (opts?.withState) calls.stateReads.push([...cells]);
+      const st = status();
       const solutions = new Float32Array(cells.length * T);
       const iterations = new Uint32Array(cells.length);
       const converged = new Uint8Array(cells.length);
       cells.forEach((c, i) => {
         const k = convergeAt(c);
-        iterations[i] = Math.min(done, k);
-        converged[i] = done >= k ? 1 : 0;
+        iterations[i] = st.iterations[c];
+        converged[i] = st.converged[c];
         for (let t = 0; t < T; t++) {
           solutions[i * T + t] = traces[c * T + t] * Math.min(1, done / k);
         }
       });
-      return { solutions, iterations, converged };
+      const out: BatchSolutions = { solutions, iterations, converged };
+      if (opts?.withState) {
+        out.state = {
+          prev: solutions.map((v) => v + 0.5),
+          tFista: Float32Array.from(cells, () => 1 + done / 10),
+          baseline: new Float32Array(cells.length),
+        };
+      }
+      return out;
     },
     groupCount: 1,
     destroy() {
@@ -206,14 +226,20 @@ function mockEngine(convergeAt: (cell: number) => number) {
   };
 }
 
+const identityReconvolve = (s: Float32Array) => ({
+  reconvolution: new Float32Array(s),
+  displayBaseline: 0,
+});
+
 function gpuConsumer(
   engine: BatchFistaEngine | Promise<BatchFistaEngine>,
   extra: Partial<Parameters<typeof createGpuBatchConsumer>[0]> = {},
 ) {
   return createGpuBatchConsumer({
     createEngine: async () => engine,
+    filtered: true,
     prepare: async (tile) => tile.traces.map((t) => new Float32Array(t)),
-    reconvolve: (s) => new Float32Array(s),
+    reconvolve: identityReconvolve,
     quantum: { initialIterations: 10, maxIterations: 10 },
     ...extra,
   });
@@ -404,11 +430,36 @@ describe('GPU batch consumer', () => {
     });
     s.submit(warm.tile);
     await flush(50);
-    expect(Array.from(m.calls.loads[0].warm!)).toEqual(Array.from(prev));
+    const w = m.calls.loads[0].warm!;
+    expect(Array.from(w.solution)).toEqual(Array.from(prev));
+    expect(w.iterations![0]).toBe(200);
     expect(warm.results?.[0].iteration).toBe(210);
     const state = decodeSolverState(warm.results![0].state)!;
     expect(state.iteration).toBe(210);
     expect(Array.from(state.solution)).toEqual(new Array(8).fill(1));
+  });
+
+  it('continues FISTA momentum from a warm state and exports y and t_fista', async () => {
+    const m = mockEngine(() => 10);
+    const gpu = gpuConsumer(m.engine);
+    const s = createTileScheduler({ consumers: [gpu] });
+    const x = new Float32Array(8).fill(0.5);
+    const y = new Float32Array(8).fill(0.75);
+    const bytes = encodeSolverState({ solution: x, solutionPrev: y, tFista: 7.5, iteration: 40 });
+    const momentum = makeTile([0], { warm: { strategy: 'warm', states: [bytes] } });
+    const reset = makeTile([1], { warm: { strategy: 'warm-no-momentum', states: [bytes] } });
+    s.submit(momentum.tile);
+    s.submit(reset.tile);
+    await flush(50);
+    const w = m.calls.loads[0].warm!;
+    expect(Array.from(w.momentum!)).toEqual([1, 0]);
+    expect(Array.from(w.prev!.subarray(0, 8))).toEqual(Array.from(y));
+    expect(w.tFista![0]).toBe(7.5);
+    expect(Array.from(w.iterations!)).toEqual([40, 40]);
+    const st = decodeSolverState(momentum.results![0].state)!;
+    expect(st.tFista).toBe(2); // mock: 1 + 10 / 10
+    expect(Array.from(st.solutionPrev)).toEqual(new Array(8).fill(1.5));
+    expect(m.calls.stateReads).toEqual([[0, 1]]);
   });
 
   it('ignores the warm state on a cold strategy', async () => {
@@ -425,6 +476,8 @@ describe('GPU batch consumer', () => {
     await flush(50);
     expect(m.calls.loads[0].warm).toBeUndefined();
     expect(t.results?.[0].iteration).toBe(10);
+    expect(m.calls.loads[0].params.filtered).toBe(true);
+    expect(m.calls.loads[0].params.constraint).toBe('nonneg');
   });
 
   it('stops the batch once every tile is cancelled, then takes new work', async () => {
@@ -487,8 +540,9 @@ describe('GPU batch consumer', () => {
     createGpuBatchConsumer({
       createEngine,
       groupBudgetBytes: 1 << 20,
+      filtered: true,
       prepare: async () => [],
-      reconvolve: (x) => x,
+      reconvolve: identityReconvolve,
     });
     expect(createEngine).toHaveBeenCalledWith({ maxGroupBytes: 1 << 20 });
   });
@@ -550,8 +604,9 @@ describe('GPU fallback to the WASM pool', () => {
   it('moves tiles to the pool when the engine cannot be created', async () => {
     const gpu = createGpuBatchConsumer({
       createEngine: () => Promise.reject(new Error('no adapter')),
+      filtered: true,
       prepare: async (tile) => [...tile.traces],
-      reconvolve: (x) => x,
+      reconvolve: identityReconvolve,
     });
     const wasm = fakePool();
     const failures: string[] = [];
@@ -614,6 +669,15 @@ describe('helpers', () => {
     expect(q.next()).toBe(5);
   });
 
+  it('quantum sizer normalises by work, so a 1-cell measurement sizes a 1000-cell quantum', () => {
+    const q = createQuantumSizer({ targetMs: 100, smoothing: 1, maxIterations: 1e6 });
+    q.record(100, 10, 1 * 600); // 1 cell x 600 samples: 0.1 ms / iteration
+    expect(q.next(600)).toBe(1000);
+    expect(q.next(1000 * 600)).toBe(1); // 100 ms / iteration predicted
+    q.record(1, 2, 1000 * 600); // measured 2 ms / iteration
+    expect(q.next(1000 * 600)).toBe(50);
+  });
+
   it('solver state codec round-trips the Rust export_state layout', () => {
     const solution = new Float32Array([1, 2, 3]);
     const bytes = encodeSolverState({ solution, iteration: 42, tFista: 3.5 });
@@ -646,9 +710,11 @@ describe('GPU batch consumer: readback, memory, serialization', () => {
     s.submit(shown.tile);
     s.submit(hidden.tile);
     await flush(40);
-    // Quanta at 10 and 20 iterations read only cell 0 (row 0); at 30 both finish.
+    // Quanta at 10 and 20 iterations read only cell 0 (row 0); at 30 both finish,
+    // read once with their state. Status comes from step(): no extra readback.
     expect(m.calls.solutionReads).toEqual([[0], [0], [0, 1]]);
-    expect(m.calls.statusReads).toBe(3);
+    expect(m.calls.stateReads).toEqual([[0, 1]]);
+    expect(m.calls.steps).toHaveLength(3);
     expect(hidden.intermediates).toBe(0);
     expect(hidden.results?.[0].converged).toBe(true);
   });
@@ -683,17 +749,74 @@ describe('GPU batch consumer: readback, memory, serialization', () => {
     expect(gpu.stats.state).toBe('idle');
   });
 
-  it('fails over when a single tile does not fit', async () => {
+  it('declines a single tile that ran out of memory, and stays alive for the rest', async () => {
     const m = mockEngine(() => 10);
-    const gpu = gpuConsumer(m.engine);
+    const gpu = gpuConsumer(m.engine, { estimateBytes: (n, T) => 24 * n * T });
+    const other = manualConsumer('wasm');
+    const skipped: string[] = [];
+    const s = createTileScheduler({
+      consumers: [gpu, other.consumer],
+      onSkipped: (_t, c, r) => skipped.push(`${c.name}: ${r}`),
+    });
+    m.failNextLoad(new GpuOutOfMemoryError());
+    const big = makeTile([0], { T: 64 });
+    s.submit(big.tile);
+    await flush(20);
+    expect(gpu.stats.state).toBe('idle');
+    expect(other.takes).toEqual([[big.tile.id]]);
+    expect(skipped[0]).toMatch(/webgpu: tile needs .* ran out of memory/);
+    // Smaller tiles still run on the GPU.
+    const small = makeTile([1], { T: 8 });
+    s.submit(small.tile);
+    await flush(20);
+    expect(small.results?.[0].converged).toBe(true);
+    expect(m.calls.loads.map((l) => l.T)).toEqual([8]);
+  });
+
+  it('declines a tile longer than the engine’s maxTraceLength without failing', async () => {
+    const m = mockEngine(() => 10);
+    const engine = { ...m.engine, maxTraceLength: 16 };
+    const gpu = gpuConsumer(engine);
     const other = manualConsumer('wasm');
     const s = createTileScheduler({ consumers: [gpu, other.consumer] });
-    m.failNextLoad(new GpuOutOfMemoryError());
-    const t = makeTile([0]);
+    await flush(2); // engine created
+    const long = makeTile([0], { T: 32 });
+    s.submit(long.tile);
+    await flush(10);
+    expect(gpu.accepts(long.tile)).toMatch(/32-sample window exceeds/);
+    expect(other.takes).toEqual([[long.tile.id]]);
+    expect(gpu.stats.state).toBe('idle');
+  });
+
+  it('treats an out-of-memory error from any engine call by name, and fails on device loss', async () => {
+    const m = mockEngine(() => 1000);
+    const gpu = gpuConsumer(m.engine);
+    const other = manualConsumer('wasm');
+    const failures: string[] = [];
+    const s = createTileScheduler({
+      consumers: [gpu, other.consumer],
+      onConsumerFailed: (_c, r) => failures.push(r),
+    });
+    const t = makeTile([0, 1]);
     s.submit(t.tile);
+    await flush(6);
+    const oom = new Error('validation error after an out-of-memory');
+    oom.name = 'GpuOutOfMemoryError';
+    m.failNextStep(oom);
+    await flush(10);
+    expect(gpu.stats.state).not.toBe('dead');
+    expect(failures).toEqual([]);
+    // The 2-cell tile is now too large for the GPU and went to the pool.
+    expect(other.takes).toEqual([[t.tile.id]]);
+    const small = makeTile([2]);
+    s.submit(small.tile);
+    await flush(6);
+    const lost = new Error('GPU device lost (unknown): gone');
+    lost.name = 'GpuDeviceLostError';
+    m.failNextStep(lost);
     await flush(20);
     expect(gpu.stats.state).toBe('dead');
-    expect(other.takes).toEqual([[t.tile.id]]);
+    expect(failures).toEqual(['GPU device lost (unknown): gone']);
   });
 
   it('never destroys the engine while a step is in flight', async () => {
@@ -711,6 +834,208 @@ describe('GPU batch consumer: readback, memory, serialization', () => {
     release();
     await flush(4);
     expect(m.calls.destroyed).toBe(1);
+  });
+});
+
+describe('scheduler: cancel, ids, registration, several consumers', () => {
+  it('settles a tile as cancelled when its consumer fails after the cancel was requested', async () => {
+    const gpu = manualConsumer('gpu');
+    gpu.consumer.cancel = (id) => gpu.cancels.push(id); // acknowledges, never settles
+    const wasm = manualConsumer('wasm');
+    const s = createTileScheduler({ consumers: [gpu.consumer, wasm.consumer] });
+    const t = makeTile([0]);
+    s.submit(t.tile);
+    await flush();
+    s.cancel(t.tile.id);
+    expect(gpu.cancels).toEqual([t.tile.id]);
+    expect(t.cancelled).toBe(false);
+    gpu.ctx().failed('device lost');
+    await flush();
+    expect(t.cancelled).toBe(true);
+    expect(wasm.takes).toEqual([]); // not re-queued
+    expect(t.results).toBeNull();
+    expect(t.error).toBeNull();
+    gpu.held[0].onComplete([]); // late callback from the dead consumer: dropped
+    expect(t.results).toBeNull();
+  });
+
+  it('settles a given-back tile as cancelled when a cancel is pending', async () => {
+    const a = manualConsumer('a');
+    a.consumer.cancel = () => {};
+    const s = createTileScheduler({ consumers: [a.consumer] });
+    const t = makeTile([0]);
+    s.submit(t.tile);
+    await flush();
+    s.cancel(t.tile.id);
+    a.ctx().giveBack([t.tile.id]);
+    await flush();
+    expect(t.cancelled).toBe(true);
+    expect(a.takes).toHaveLength(1);
+  });
+
+  it('rejects a duplicate id among unsettled tiles', async () => {
+    const a = manualConsumer('a');
+    const s = createTileScheduler({ consumers: [a.consumer] });
+    const t = makeTile([0]);
+    s.submit(t.tile);
+    expect(() => s.submit(t.tile)).toThrow(/already submitted/);
+    await flush();
+    a.held[0].onComplete([]);
+    s.submit(t.tile); // settled: the id may be reused
+  });
+
+  it('reacts to a consumer that fails before its first take', async () => {
+    const gpu = createGpuBatchConsumer({
+      createEngine: () => Promise.reject(new Error('no adapter')),
+      filtered: true,
+      prepare: async (tile) => [...tile.traces],
+      reconvolve: identityReconvolve,
+    });
+    const wasm = manualConsumer('wasm');
+    const failures: string[] = [];
+    const s = createTileScheduler({
+      consumers: [gpu, wasm.consumer],
+      onConsumerFailed: (c, r) => failures.push(`${c.name}: ${r}`),
+    });
+    await flush(5); // no tile submitted: take() is never called
+    expect(failures).toEqual(['webgpu: GPU solver init failed: Error: no adapter']);
+    expect(s.consumers.map((c) => c.name)).toEqual(['wasm']);
+  });
+
+  it('reports a failure that happened before registration once registered', async () => {
+    const gpu = createGpuBatchConsumer({
+      createEngine: () => Promise.reject(new Error('no adapter')),
+      filtered: true,
+      prepare: async (tile) => [...tile.traces],
+      reconvolve: identityReconvolve,
+    });
+    await flush(2);
+    const failures: string[] = [];
+    const s = createTileScheduler({
+      consumers: [manualConsumer('wasm').consumer],
+      onConsumerFailed: (c) => failures.push(c.name),
+    });
+    s.addConsumer(gpu, 0);
+    await flush(2);
+    expect(failures).toEqual(['webgpu']);
+  });
+
+  it('runs the GPU and a bounded WASM pool on one queue with anyAccepting', async () => {
+    const m = mockEngine(() => 30);
+    let release!: () => void;
+    const gpu = gpuConsumer(m.engine);
+    const jobs: (BaseJob & { complete(): void })[] = [];
+    const pool: WorkerPool<BaseJob & { complete(): void }> = {
+      size: 2,
+      dispatch: (j) => jobs.push(j),
+      cancel: () => {},
+      cancelAll() {},
+      dispose: vi.fn(),
+    };
+    const wasm = createWasmPoolConsumer({
+      pool,
+      maxInFlight: 2,
+      buildJob: (tile, _k, jobId, cb) => ({
+        jobId,
+        onCancelled: cb.onCancelled,
+        onError: cb.onError,
+        complete: () =>
+          cb.onComplete({
+            solution: new Float32Array(8),
+            reconvolution: new Float32Array(8),
+            iteration: 5,
+            converged: true,
+            state: new Uint8Array(0),
+          }),
+      }),
+    });
+    const s = createTileScheduler({ consumers: [gpu, wasm], assign: anyAccepting });
+    await flush(2); // GPU engine ready
+    m.gate(new Promise<void>((r) => (release = r)));
+    const first = makeTile([0]);
+    s.submit(first.tile); // GPU takes it and parks on the gate
+    await flush(4);
+    const rest = [1, 2, 3, 4].map((c) => makeTile([c]));
+    for (const t of rest) s.submit(t.tile);
+    await flush(4);
+    // The GPU is busy: the pool takes its two, two wait.
+    expect(jobs).toHaveLength(2);
+    expect(s.waiting).toBe(2);
+    m.gate(null);
+    release();
+    await flush(60);
+    // The GPU finished its tile and batched the two waiting ones.
+    expect(first.results?.[0].backend).toBe('webgpu');
+    expect(m.calls.loads.map((l) => l.nCells)).toEqual([1, 2]);
+    for (const j of jobs) j.complete();
+    expect(rest.every((t) => t.results !== null)).toBe(true);
+    expect(rest.filter((t) => t.results![0].backend === 'webgpu')).toHaveLength(2);
+  });
+});
+
+describe('GPU batch consumer: refill, options, display baseline', () => {
+  it('yields slow tiles once enough rows settled and work is waiting', async () => {
+    const m = mockEngine((c) => (c < 3 ? 10 : 1000));
+    const gpu = gpuConsumer(m.engine, { refillFraction: 0.5 });
+    const s = createTileScheduler({ consumers: [gpu] });
+    const tiles = [0, 1, 2, 3].map((c) => makeTile([c]));
+    // Different parameters: waits for the next batch.
+    const late = makeTile([9], { params: { lambda: 2 } });
+    for (const t of tiles) s.submit(t.tile);
+    s.submit(late.tile);
+    await flush(30);
+    // After 10 iterations 3/4 rows converged; tile 3 yields unconverged with its state.
+    expect(tiles.slice(0, 3).every((t) => t.results?.[0].converged)).toBe(true);
+    expect(tiles[3].results?.[0].converged).toBe(false);
+    expect(tiles[3].results?.[0].iteration).toBe(10);
+    expect(decodeSolverState(tiles[3].results![0].state)!.tFista).toBe(2);
+    expect(gpu.stats.yieldedTiles).toBe(1);
+    expect(late.results?.[0].converged).toBe(true);
+  });
+
+  it('keeps solving slow tiles when nothing is waiting', async () => {
+    const m = mockEngine((c) => (c < 3 ? 10 : 40));
+    const gpu = gpuConsumer(m.engine, { refillFraction: 0.5 });
+    const s = createTileScheduler({ consumers: [gpu] });
+    const tiles = [0, 1, 2, 3].map((c) => makeTile([c]));
+    for (const t of tiles) s.submit(t.tile);
+    await flush(40);
+    expect(tiles[3].results?.[0].converged).toBe(true);
+    expect(gpu.stats.yieldedTiles).toBe(0);
+  });
+
+  it('takes the baseline mode and constraint from options, per tile, and batches by them', async () => {
+    const m = mockEngine(() => 10);
+    const gpu = gpuConsumer(m.engine, {
+      filtered: (t) => t.windowStart === 0,
+      constraint: 'box01',
+    });
+    const s = createTileScheduler({ consumers: [gpu] });
+    const a = makeTile([0]);
+    const b = makeTile([1]);
+    (b.tile as { windowStart: number }).windowStart = 5;
+    s.submit(a.tile);
+    s.submit(b.tile);
+    await flush(40);
+    expect(m.calls.loads.map((l) => [l.nCells, l.params.filtered, l.params.constraint])).toEqual([
+      [1, true, 'box01'],
+      [1, false, 'box01'],
+    ]);
+  });
+
+  it('feeds each cell’s previous display baseline back into reconvolve', async () => {
+    const m = mockEngine(() => 30);
+    const seen: (number | null)[] = [];
+    const gpu = gpuConsumer(m.engine, {
+      reconvolve: (sol, _w, _p, prev) => {
+        seen.push(prev);
+        return { reconvolution: new Float32Array(sol), displayBaseline: (prev ?? 0) + 1 };
+      },
+    });
+    const s = createTileScheduler({ consumers: [gpu] });
+    s.submit(makeTile([0]).tile);
+    await flush(40);
+    expect(seen).toEqual([null, 1, 2]);
   });
 });
 

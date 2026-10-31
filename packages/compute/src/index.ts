@@ -54,11 +54,21 @@ export { createWasmPoolConsumer } from './wasm-pool-consumer.ts';
 export type { WasmPoolConsumerOptions, CellJobCallbacks } from './wasm-pool-consumer.ts';
 export {
   createGpuBatchConsumer,
-  GpuOutOfMemoryError,
   DEFAULT_GPU_MEMORY_BUDGET,
+  DEFAULT_REFILL_FRACTION,
 } from './gpu-batch-consumer.ts';
+export {
+  GpuOutOfMemoryError,
+  GpuDeviceLostError,
+  isGpuOutOfMemoryError,
+  isGpuDeviceLostError,
+} from './gpu-errors.ts';
 export type {
   BatchSolutions,
+  BatchWarmStart,
+  BatchStatus,
+  BatchStepResult,
+  DisplayReconvolution,
   GpuBatchConsumer,
   GpuBatchConsumerOptions,
   GpuBatchStats,
@@ -75,10 +85,12 @@ export {
 export type { DecodedSolverState } from './solver-state-codec.ts';
 export {
   getRequestedBackend,
+  getRequestedGpuGate,
   webGpuUnavailableReason,
   BACKEND_STORAGE_KEY,
+  GPU_GATE_STORAGE_KEY,
 } from './backend-selection.ts';
-export type { RequestedBackend } from './backend-selection.ts';
+export type { RequestedBackend, GpuGateMode } from './backend-selection.ts';
 export {
   createCalibrationStore,
   softwareAdapterReason,
