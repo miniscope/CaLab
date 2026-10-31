@@ -20,6 +20,7 @@ import { extractCellTrace } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
 import type { WorkerPool } from '@calab/compute';
 import { createCaTuneWorkerPool, type CaTunePoolJob } from './catune-pool.ts';
+import { createSolverPool } from './solver-backend.ts';
 import type { SolverParams } from '@calab/core';
 import type { NpyResult } from '@calab/core';
 
@@ -169,6 +170,8 @@ function dispatchCellSolve(state: CellSolveState): void {
 
   pool.dispatch({
     jobId,
+    cellIndex: state.cellIndex,
+    windowStart: paddedStart,
     trace: paddedTrace,
     params,
     warmState,
@@ -416,15 +419,19 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 
 export function initCellSolveManager(): void {
   setSolverFatalError(null);
-  pool = createCaTuneWorkerPool(
-    () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
-    undefined,
-    {
-      onFatal(message) {
-        console.error('CaTune solver workers failed:', message);
-        setSolverFatalError(message);
+  // The WASM worker pool, or (dev flag `?backend=gpu`) a facade that solves on
+  // WebGPU and falls back to this same pool. See solver-backend.ts.
+  pool = createSolverPool((size) =>
+    createCaTuneWorkerPool(
+      () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
+      size,
+      {
+        onFatal(message) {
+          console.error('CaTune solver workers failed:', message);
+          setSolverFatalError(message);
+        },
       },
-    },
+    ),
   );
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves

@@ -102,6 +102,16 @@ export interface GpuFista {
   /** step(checkEvery) until all cells converged or maxIters reached. */
   solve(checkEvery?: number): Promise<GpuSolutions>;
   readSolutions(): Promise<GpuSolutions>;
+  /**
+   * Per-cell iteration counts and converged flags only (32 B per cell), for
+   * per-quantum progress checks without reading the solutions back.
+   */
+  readStatus(): Promise<{ iterations: Uint32Array; converged: Uint8Array }>;
+  /**
+   * Solutions for the given cells only (load-order indices), in the order
+   * given: `solutions` is cells.length x T. Status fields are for those cells.
+   */
+  readSolutionsFor(cells: readonly number[]): Promise<GpuSolutions>;
   /** Number of cell groups of the current load. */
   readonly groupCount: number;
   destroy(): void;
@@ -384,6 +394,52 @@ export async function createGpuFista(
     return { solutions, iterations, converged };
   }
 
+  async function readStatus(): Promise<{ iterations: Uint32Array; converged: Uint8Array }> {
+    const iterations = new Uint32Array(totalCells);
+    const converged = new Uint8Array(totalCells);
+    const states = await Promise.all(
+      groups.map((g) => readBuffer(g.cells, g.nCells * CELL_STRUCT_BYTES)),
+    );
+    groups.forEach((g, i) => {
+      const u = new Uint32Array(states[i]);
+      for (let c = 0; c < g.nCells; c++) {
+        iterations[g.cellOffset + c] = u[c * 8 + 1];
+        converged[g.cellOffset + c] = u[c * 8 + 2];
+      }
+    });
+    return { iterations, converged };
+  }
+
+  async function readSolutionsFor(cells: readonly number[]): Promise<GpuSolutions> {
+    const status = await readStatus();
+    const n = cells.length;
+    const rowBytes = T * 4;
+    const solutions = new Float32Array(n * T);
+    const iterations = new Uint32Array(n);
+    const converged = new Uint8Array(n);
+    if (n === 0) return { solutions, iterations, converged };
+    const staging = device.createBuffer({
+      size: n * rowBytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = device.createCommandEncoder();
+    cells.forEach((cell, i) => {
+      const g = groups.find((gr) => cell >= gr.cellOffset && cell < gr.cellOffset + gr.nCells);
+      if (!g) throw new Error(`cell ${cell} is not loaded`);
+      const c = cell - g.cellOffset;
+      iterations[i] = status.iterations[cell];
+      converged[i] = status.converged[cell];
+      const src = iterations[i] % 2 === 0 ? g.xa : g.xb;
+      enc.copyBufferToBuffer(src, c * rowBytes, staging, i * rowBytes, rowBytes);
+    });
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    solutions.set(new Float32Array(staging.getMappedRange()));
+    staging.unmap();
+    staging.destroy();
+    return { solutions, iterations, converged };
+  }
+
   async function solve(checkEvery = 50): Promise<GpuSolutions> {
     if (!params) throw new Error('load() first');
     for (;;) {
@@ -398,6 +454,8 @@ export async function createGpuFista(
     step,
     solve,
     readSolutions,
+    readStatus,
+    readSolutionsFor,
     get groupCount() {
       return groups.length;
     },
