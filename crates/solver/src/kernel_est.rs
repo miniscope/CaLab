@@ -162,51 +162,147 @@ pub fn estimate_free_kernel(
         offset += len;
     }
 
-    // FISTA for kernel estimation: min_h (1/2)||y_adj - S*h||^2  s.t. h >= 0
-    // S*h = sum_t s[t] * h[t-k] (convolution of spikes with kernel)
-    // Gradient: S^T * (S*h - y_adj)
+    // The objective is quadratic in h, so the gradient S^T(S h - y) equals
+    // G h - b with G = S^T S (k x k) and b = S^T y. Both are computed once
+    // (cost O(nnz(s) * k)); every FISTA iteration is then O(k^2), independent
+    // of the data size.
+    let (gram, rhs) = build_gram(spike_trains, &y_adj, trace_lengths, kernel_length);
+    let lipschitz = gram_lipschitz(&gram, kernel_length);
+    fista_kernel(
+        kernel_length,
+        max_iters,
+        tol,
+        warm_start,
+        smooth_lambda,
+        lipschitz,
+        |h, grad| {
+            for (i, g) in grad.iter_mut().enumerate() {
+                let row = &gram[i * kernel_length..(i + 1) * kernel_length];
+                let mut acc = 0.0_f64;
+                for (&gij, &hj) in row.iter().zip(h.iter()) {
+                    acc += gij * hj as f64;
+                }
+                *g = acc - rhs[i];
+            }
+        },
+    )
+}
 
-    // Estimate Lipschitz constant via power iteration on S^T S.
-    // The simple bound L = sum(s^2) underestimates for dense/correlated spikes,
-    // causing FISTA to oscillate. Power iteration gives a tighter estimate.
-    let lipschitz = {
-        // Power iteration: v_{k+1} = S^T S v_k / ||S^T S v_k||
-        let mut v = vec![1.0_f64; kernel_length];
-        let norm: f64 = (kernel_length as f64).sqrt();
-        for val in v.iter_mut() {
-            *val /= norm;
+/// Build y_adj = (y - baseline) / alpha per trace (zero for alpha ~ 0).
+/// Exposed to the reference path in tests.
+#[cfg(test)]
+fn adjust_targets(
+    traces: &[f32],
+    alphas: &[f64],
+    baselines: &[f64],
+    trace_lengths: &[usize],
+) -> Vec<f32> {
+    let mut y_adj = vec![0.0_f32; traces.len()];
+    let mut offset = 0;
+    for (i, &len) in trace_lengths.iter().enumerate() {
+        if alphas[i].abs() >= 1e-20 {
+            for j in 0..len {
+                y_adj[offset + j] = ((traces[offset + j] as f64 - baselines[i]) / alphas[i]) as f32;
+            }
         }
-        let mut sv = vec![0.0_f32; total_len]; // S*v
-        let mut stv = vec![0.0_f64; kernel_length]; // S^T S v
-        let mut eigenvalue = 1.0_f64;
+        offset += len;
+    }
+    y_adj
+}
 
-        let mut v_f32 = vec![0.0_f32; kernel_length];
-
-        for _ in 0..20 {
-            // Cast v to f32 into pre-allocated buffer
-            for (dst, &src) in v_f32.iter_mut().zip(v.iter()) {
-                *dst = src as f32;
+/// Compute G = S^T S (row-major k x k, symmetric) and b = S^T y with f64
+/// accumulation, respecting trace boundaries exactly as
+/// `convolve_spikes_kernel` / `adjoint_spikes_kernel` do (column k of S at row
+/// t is s[t-k] for k <= t, zero otherwise; no wrap across traces).
+///
+/// For one trace of length n: G[k1][k2] = sum_{u=0}^{n-k1-1} s[u] s[u+d],
+/// d = k1-k2 >= 0. Along each diagonal d it satisfies
+/// G[d+j][j] = G[d+j-1][j-1] - s[n-d-j] s[n-j], seeded by the autocorrelation
+/// A[d] = G[d][0]. The autocorrelation and b only visit nonzero spikes.
+fn build_gram(
+    spikes: &[f32],
+    y: &[f32],
+    trace_lengths: &[usize],
+    kernel_length: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let k = kernel_length;
+    let mut gram = vec![0.0_f64; k * k];
+    let mut b = vec![0.0_f64; k];
+    let mut acorr = vec![0.0_f64; k];
+    let mut offset = 0;
+    for &n in trace_lengths {
+        let s = &spikes[offset..offset + n];
+        let yt = &y[offset..offset + n];
+        offset += n;
+        acorr.fill(0.0);
+        for u in 0..n {
+            let su = s[u] as f64;
+            if su == 0.0 {
+                continue;
             }
-            // S*v: convolve spikes with v
-            convolve_spikes_kernel(spike_trains, trace_lengths, &v_f32, &mut sv);
-
-            // S^T (S*v)
-            adjoint_spikes_kernel(&sv, spike_trains, trace_lengths, kernel_length, &mut stv);
-
-            // eigenvalue estimate = ||S^T S v||
-            eigenvalue = stv.iter().map(|&x| x * x).sum::<f64>().sqrt();
-            if eigenvalue < 1e-20 {
-                eigenvalue = 1.0;
-                break;
+            let lag_max = k.min(n - u);
+            for d in 0..lag_max {
+                acorr[d] += su * s[u + d] as f64;
             }
-
-            // Normalize
-            for (vi, &si) in v.iter_mut().zip(stv.iter()) {
-                *vi = si / eigenvalue;
+            // b[kk] += s[u] * y[u + kk]
+            for kk in 0..lag_max {
+                b[kk] += su * yt[u + kk] as f64;
             }
         }
-        eigenvalue.max(1.0)
-    };
+        // Rows k1 >= n have empty sums (S column entirely zero) -> stay 0.
+        for d in 0..k.min(n) {
+            let mut g = acorr[d];
+            gram[d * k] += g;
+            if d > 0 {
+                gram[d] += g; // symmetric entry (0, d)
+            }
+            let j_max = (k - d).min(n - d);
+            for j in 1..j_max {
+                g -= s[n - d - j] as f64 * s[n - j] as f64;
+                gram[(d + j) * k + j] += g;
+                if d > 0 {
+                    gram[j * k + d + j] += g;
+                }
+            }
+        }
+    }
+    (gram, b)
+}
+
+/// Largest eigenvalue of G by 20-step power iteration (same scheme and
+/// floor as the original S-based estimate).
+fn gram_lipschitz(gram: &[f64], k: usize) -> f64 {
+    let mut v = vec![1.0_f64 / (k as f64).sqrt(); k];
+    let mut gv = vec![0.0_f64; k];
+    let mut eigenvalue = 1.0_f64;
+    for _ in 0..20 {
+        for i in 0..k {
+            let row = &gram[i * k..(i + 1) * k];
+            gv[i] = row.iter().zip(v.iter()).map(|(&a, &b)| a * b).sum();
+        }
+        eigenvalue = gv.iter().map(|&x| x * x).sum::<f64>().sqrt();
+        if eigenvalue < 1e-20 {
+            eigenvalue = 1.0;
+            break;
+        }
+        for (vi, &g) in v.iter_mut().zip(gv.iter()) {
+            *vi = g / eigenvalue;
+        }
+    }
+    eigenvalue.max(1.0)
+}
+
+/// Shared FISTA loop (TV prox + non-negativity, momentum, convergence rule).
+/// `grad_fn(h_prev, out)` writes the data-fit gradient at `h_prev`.
+fn fista_kernel<F: FnMut(&[f32], &mut [f64])>(
+    kernel_length: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_start: Option<&[f32]>,
+    smooth_lambda: f64,
+    lipschitz: f64,
+    mut grad_fn: F,
+) -> Vec<f32> {
     let step_size = 1.0 / lipschitz;
 
     let mut h = vec![0.0_f32; kernel_length];
@@ -219,29 +315,10 @@ pub fn estimate_free_kernel(
     }
     let mut gradient = vec![0.0_f64; kernel_length];
     let mut t_fista = 1.0_f64;
-
-    // Working buffer for S*h (convolution result)
-    let mut sh = vec![0.0_f32; total_len];
-
     let mut z = vec![0.0_f64; kernel_length];
 
     for iter in 0..max_iters {
-        // Forward: S*h (convolve each trace's spikes with h)
-        convolve_spikes_kernel(spike_trains, trace_lengths, &h_prev, &mut sh);
-
-        // Residual: r = S*h - y_adj (compute in-place in sh)
-        for i in 0..total_len {
-            sh[i] -= y_adj[i];
-        }
-
-        // Gradient: S^T * r
-        adjoint_spikes_kernel(
-            &sh,
-            spike_trains,
-            trace_lengths,
-            kernel_length,
-            &mut gradient,
-        );
+        grad_fn(&h_prev, &mut gradient);
 
         // Proximal gradient step: gradient descent on data-fidelity, then
         // TV proximal operator, then non-negativity projection.
@@ -286,6 +363,75 @@ pub fn estimate_free_kernel(
     h
 }
 
+/// Original data-space implementation (O(total_len * k) per iteration), kept
+/// as the reference for equivalence tests and benchmarks.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn estimate_free_kernel_reference(
+    traces: &[f32],
+    spike_trains: &[f32],
+    alphas: &[f64],
+    baselines: &[f64],
+    trace_lengths: &[usize],
+    kernel_length: usize,
+    max_iters: u32,
+    tol: f64,
+    warm_start: Option<&[f32]>,
+    smooth_lambda: f64,
+) -> Vec<f32> {
+    let total_len: usize = trace_lengths.iter().sum();
+    if kernel_length == 0 || total_len == 0 {
+        return vec![0.0; kernel_length];
+    }
+    let y_adj = adjust_targets(traces, alphas, baselines, trace_lengths);
+
+    let lipschitz = {
+        let mut v = vec![1.0_f64; kernel_length];
+        let norm: f64 = (kernel_length as f64).sqrt();
+        for val in v.iter_mut() {
+            *val /= norm;
+        }
+        let mut sv = vec![0.0_f32; total_len];
+        let mut stv = vec![0.0_f64; kernel_length];
+        let mut eigenvalue = 1.0_f64;
+        let mut v_f32 = vec![0.0_f32; kernel_length];
+        for _ in 0..20 {
+            for (dst, &src) in v_f32.iter_mut().zip(v.iter()) {
+                *dst = src as f32;
+            }
+            convolve_spikes_kernel(spike_trains, trace_lengths, &v_f32, &mut sv);
+            adjoint_spikes_kernel(&sv, spike_trains, trace_lengths, kernel_length, &mut stv);
+            eigenvalue = stv.iter().map(|&x| x * x).sum::<f64>().sqrt();
+            if eigenvalue < 1e-20 {
+                eigenvalue = 1.0;
+                break;
+            }
+            for (vi, &si) in v.iter_mut().zip(stv.iter()) {
+                *vi = si / eigenvalue;
+            }
+        }
+        eigenvalue.max(1.0)
+    };
+
+    let mut sh = vec![0.0_f32; total_len];
+    fista_kernel(
+        kernel_length,
+        max_iters,
+        tol,
+        warm_start,
+        smooth_lambda,
+        lipschitz,
+        |h, grad| {
+            convolve_spikes_kernel(spike_trains, trace_lengths, h, &mut sh);
+            for i in 0..total_len {
+                sh[i] -= y_adj[i];
+            }
+            adjoint_spikes_kernel(&sh, spike_trains, trace_lengths, kernel_length, grad);
+        },
+    )
+}
+
+#[cfg(test)]
 /// Adjoint of spike convolution: output[k] += sum_t input[t] * s[t-k].
 /// This is S^T * input, the transpose of convolve_spikes_kernel.
 fn adjoint_spikes_kernel(
@@ -309,6 +455,7 @@ fn adjoint_spikes_kernel(
     }
 }
 
+#[cfg(test)]
 /// Convolve spike trains with kernel h: output[t] = sum_k h[k] * s[t-k].
 fn convolve_spikes_kernel(spikes: &[f32], trace_lengths: &[usize], h: &[f32], output: &mut [f32]) {
     let k_len = h.len();
@@ -675,5 +822,247 @@ mod tests {
         // The smoothed kernel should still have a positive peak
         let peak = kernel_smooth.iter().cloned().fold(0.0_f32, f32::max);
         assert!(peak > 0.0, "Smoothed kernel should have positive peak");
+    }
+
+    // ── Gram-path equivalence and performance ────────────────────────
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    fn rel_l2(a: &[f32], b: &[f32]) -> f64 {
+        let num: f64 = a
+            .iter()
+            .zip(b)
+            .map(|(&x, &y)| (x as f64 - y as f64).powi(2))
+            .sum();
+        let den: f64 = b.iter().map(|&y| (y as f64).powi(2)).sum();
+        (num / (den + 1e-30)).sqrt()
+    }
+
+    /// Random sparse (non-binary count) spikes, noisy traces from a bi-exp kernel.
+    fn random_problem(
+        seed: u64,
+        lengths: &[usize],
+        density: f64,
+        k: usize,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f64>, Vec<f64>) {
+        let mut rng = Lcg(seed);
+        let kern = make_exponential_kernel(0.02, 0.4, 30.0, k);
+        let mut traces = Vec::new();
+        let mut spikes = Vec::new();
+        let mut alphas = Vec::new();
+        let mut baselines = Vec::new();
+        for (ci, &n) in lengths.iter().enumerate() {
+            let mut s = vec![0.0_f32; n];
+            for v in s.iter_mut() {
+                if rng.next() < density {
+                    *v = (1.0 + (rng.next() * 3.0).floor()) as f32;
+                }
+            }
+            let alpha = 1.0 + 0.1 * ci as f64;
+            let base = 0.5 * ci as f64;
+            let mut tr = vec![0.0_f32; n];
+            for t in 0..n {
+                let mut acc = 0.0_f64;
+                for kk in 0..k.min(t + 1) {
+                    acc += s[t - kk] as f64 * kern[kk] as f64;
+                }
+                tr[t] = (alpha * acc + base + 0.05 * (rng.next() - 0.5)) as f32;
+            }
+            traces.extend(tr);
+            spikes.extend(s);
+            alphas.push(alpha);
+            baselines.push(base);
+        }
+        (traces, spikes, alphas, baselines)
+    }
+
+    #[test]
+    fn gram_matches_reference_random() {
+        let mut worst = 0.0_f64;
+        // includes traces shorter than the kernel and a length-1 trace
+        for (seed, lengths, density, k) in [
+            (1u64, vec![300usize, 250, 400], 0.05, 30usize),
+            (2, vec![500, 40, 1, 20, 700], 0.2, 50),
+            (3, vec![1000, 1000], 0.01, 80),
+            (4, vec![200; 8], 0.5, 25),
+        ] {
+            let (tr, sp, al, ba) = random_problem(seed, &lengths, density, k);
+            for lambda in [0.0, 0.001] {
+                let new =
+                    estimate_free_kernel(&tr, &sp, &al, &ba, &lengths, k, 200, 1e-6, None, lambda);
+                let old = estimate_free_kernel_reference(
+                    &tr, &sp, &al, &ba, &lengths, k, 200, 1e-6, None, lambda,
+                );
+                let e = rel_l2(&new, &old);
+                worst = worst.max(e);
+                assert!(e < 1e-5, "seed {seed} lambda {lambda}: rel L2 {e}");
+            }
+        }
+        eprintln!("gram vs reference (random) worst rel L2 = {worst:.3e}");
+    }
+
+    #[test]
+    fn gram_matrix_matches_dense_s() {
+        // Direct check of G and b against explicit S^T S, S^T y.
+        let lengths = [30usize, 7, 1, 50];
+        let k = 12;
+        let (tr, sp, _, _) = random_problem(9, &lengths, 0.3, 10);
+        let (g, b) = build_gram(&sp, &tr, &lengths, k);
+        let mut off = 0;
+        let mut gref = vec![0.0_f64; k * k];
+        let mut bref = vec![0.0_f64; k];
+        for &n in &lengths {
+            for t in 0..n {
+                for k1 in 0..k.min(t + 1) {
+                    bref[k1] += sp[off + t - k1] as f64 * tr[off + t] as f64;
+                    for k2 in 0..k.min(t + 1) {
+                        gref[k1 * k + k2] += sp[off + t - k1] as f64 * sp[off + t - k2] as f64;
+                    }
+                }
+            }
+            off += n;
+        }
+        for i in 0..k * k {
+            assert!(
+                (g[i] - gref[i]).abs() < 1e-9,
+                "G[{i}] {} vs {}",
+                g[i],
+                gref[i]
+            );
+        }
+        for i in 0..k {
+            assert!((b[i] - bref[i]).abs() < 1e-9, "b[{i}]");
+        }
+    }
+
+    #[test]
+    fn gram_matches_reference_presets() {
+        let mut worst = 0.0_f64;
+        for (name, mut cfg) in crate::simulate::presets::all() {
+            cfg.num_cells = 6;
+            cfg.num_timepoints = 3000;
+            let sim = crate::simulate::simulate(&cfg);
+            let n = sim.num_timepoints;
+            let lengths = vec![n; sim.num_cells];
+            let mut spikes = Vec::new();
+            let mut alphas = Vec::new();
+            for gt in &sim.ground_truth {
+                spikes.extend_from_slice(&gt.spikes);
+                alphas.push(gt.alpha.max(1e-3));
+            }
+            let baselines = vec![0.0; sim.num_cells];
+            let k = 60;
+            for lambda in [0.0, 0.002] {
+                let new = estimate_free_kernel(
+                    &sim.traces,
+                    &spikes,
+                    &alphas,
+                    &baselines,
+                    &lengths,
+                    k,
+                    200,
+                    1e-6,
+                    None,
+                    lambda,
+                );
+                let old = estimate_free_kernel_reference(
+                    &sim.traces,
+                    &spikes,
+                    &alphas,
+                    &baselines,
+                    &lengths,
+                    k,
+                    200,
+                    1e-6,
+                    None,
+                    lambda,
+                );
+                let e = rel_l2(&new, &old);
+                worst = worst.max(e);
+                assert!(e < 1e-5, "preset {name} lambda {lambda}: rel L2 {e}");
+            }
+        }
+        eprintln!("gram vs reference (presets) worst rel L2 = {worst:.3e}");
+    }
+
+    #[test]
+    fn large_total_len_is_fast() {
+        let lengths = vec![50_000usize; 50];
+        let k = 150;
+        let mut rng = Lcg(77);
+        let total: usize = lengths.iter().sum();
+        let mut sp = vec![0.0_f32; total];
+        for v in sp.iter_mut() {
+            if rng.next() < 0.01 {
+                *v = 1.0;
+            }
+        }
+        let kern = make_exponential_kernel(0.02, 0.4, 30.0, k);
+        let mut tr = vec![0.0_f32; total];
+        for t in 0..total {
+            if sp[t] != 0.0 {
+                for (kk, &hv) in kern.iter().enumerate() {
+                    if t + kk < total {
+                        tr[t + kk] += hv;
+                    }
+                }
+            }
+        }
+        let al = vec![1.0; 50];
+        let ba = vec![0.0; 50];
+        let t0 = std::time::Instant::now();
+        let h = estimate_free_kernel(&tr, &sp, &al, &ba, &lengths, k, 200, 1e-6, None, 0.0);
+        let dt = t0.elapsed().as_secs_f64();
+        eprintln!("large_total_len: {dt:.3}s");
+        assert!(h.iter().any(|&v| v > 0.0));
+        assert!(dt < 60.0, "took {dt}s");
+    }
+
+    /// Benchmark (run with --release --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn bench_gram_vs_reference() {
+        for &total in &[1_000_000usize, 10_000_000] {
+            for &k in &[50usize, 150, 450] {
+                let n_tr = total / 20_000;
+                let lengths = vec![20_000usize; n_tr];
+                let mut rng = Lcg(5);
+                let mut sp = vec![0.0_f32; total];
+                for v in sp.iter_mut() {
+                    if rng.next() < 0.01 {
+                        *v = 1.0;
+                    }
+                }
+                let tr: Vec<f32> = (0..total).map(|_| rng.next() as f32).collect();
+                let al = vec![1.0; n_tr];
+                let ba = vec![0.0; n_tr];
+                let t = std::time::Instant::now();
+                let (g, _) = build_gram(&sp, &tr, &lengths, k);
+                let t_gram = t.elapsed().as_secs_f64();
+                std::hint::black_box(g);
+                let t = std::time::Instant::now();
+                let h1 =
+                    estimate_free_kernel(&tr, &sp, &al, &ba, &lengths, k, 200, 1e-9, None, 0.0);
+                let t_new = t.elapsed().as_secs_f64();
+                let t = std::time::Instant::now();
+                let h0 = estimate_free_kernel_reference(
+                    &tr, &sp, &al, &ba, &lengths, k, 200, 1e-9, None, 0.0,
+                );
+                let t_old = t.elapsed().as_secs_f64();
+                eprintln!(
+                    "BENCH total={total} k={k}: old={t_old:.3}s new={t_new:.3}s (gram {t_gram:.3}s) relL2={:.2e}",
+                    rel_l2(&h1, &h0)
+                );
+            }
+        }
     }
 }
