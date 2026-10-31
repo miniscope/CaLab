@@ -24,8 +24,8 @@
  */
 import type { BandedParams } from './banded-params.ts';
 
-export const WG = 256;
-export const K = 4;
+export const WG = 64;
+export const K = 8;
 export const BLOCK = WG * K;
 
 const f = Math.fround;

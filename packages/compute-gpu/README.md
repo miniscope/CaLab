@@ -10,8 +10,8 @@ The WASM solver is the reference. Nothing in the apps uses this package yet.
 | File                        | What                                                                                                                                      |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/banded-params.ts`      | Pure TS port of `clamp_tau_rise`, `build_kernel` (for the DC gain), `compute_impulse_peak`, `compute_banded_lipschitz`, step / threshold. |
-| `src/scan-reference.ts`     | Plain-TS chunked scan that mirrors the GPU dispatch structure, plus a serial f32 port of the Rust forward/adjoint recursions.             |
-| `src/fista-reference.ts`    | CPU model of one GPU iteration (same scan, same f32 reduction tree). Tested against the real WASM solver in Node.                         |
+| `src/scan-reference.ts`     | Host tables (`buildScanTables`), plain-TS block scans that mirror the WGSL, and a serial f32 port of the Rust forward/adjoint recursions. |
+| `src/fista-reference.ts`    | CPU model of the GPU iteration (same passes, same f32 reduction tree). Tested against the real WASM solver in Node.                       |
 | `src/shaders/fista-wgsl.ts` | The WGSL, as an exported template string (no Vite/Vitest plugins needed).                                                                 |
 | `src/gpu-fista.ts`          | `requestGpuDevice`, `createGpuFista` (load / step / solve / readSolutions), group splitting.                                              |
 | `harness/`                  | Vite page that runs WASM vs GPU equivalence and the benchmark.                                                                            |
@@ -35,58 +35,72 @@ const { solutions, iterations, converged } = await gpu.solve(50); // or: await g
 
 ## Design
 
-### The AR(2) as two first-order scans
+### The AR(2) as one 2-state scan
 
 `c[t] = g1 c[t-1] + g2 c[t-2] + s[t-1]/peak` factors as two cascaded
-first-order IIRs with roots d (decay) and r (rise):
+first-order IIRs with roots d (decay) and r (rise). With `x_j = src[j]/peak`
+the cascade is one 2-state linear system:
 
-- forward: `x[t] = (t ≥ 1 ? s[t-1] : 0) / peak`, `u[t] = d u[t-1] + x[t]`, `c[t] = r c[t-1] + u[t]`.
-- adjoint: `v[t] = d v[t+1] + s[t]/peak` (reverse), `a[t] = r a[t+1] + v[t]`,
-  `out[t-1] = a[t]`, `out[T-1] = 0`.
+- forward: `u_j = d u_{j-1} + x_j`, `w_j = r w_{j-1} + u_j`, i.e.
+  `s_j = A s_{j-1} + e x_j` with `A = [[d, 0], [d, r]]`, `e = (1, 1)`, and
+  `c[t] = w_{t-1}` (`c[0] = 0`).
+- adjoint: the same system run backwards on `z_t = resid[t]/peak`,
+  `q_t = (v_t, a_t) = A q_{t+1} + e z_t`, and `gradient[t] = a_{t+1}`
+  (`a_T = 0`).
 
 Rust casts `g1`, `g2` to f32. The GPU uses the roots of the f32-rounded
 polynomial `z² - g1f z - g2f`, cast to f32. That reproduces the operator Rust
 actually applies more closely than `exp(-dt/tau)`. At fs = 300 Hz with
 tauDecay = 1 s the error drops from 1.1e-5 to 8.9e-6.
 
-A first-order recurrence with constant coefficient `a` is a chunked prefix
-scan. A block is `C = WG·K = 256·4 = 1024` samples and belongs to one
-workgroup:
+A block is `C = WG·K = 64·8 = 512` samples and belongs to one workgroup.
+Inside a block each thread runs the cascade sequentially over its K samples;
+a Hillis-Steele scan over the WG thread states (2-vectors, hop matrices
+`A^(K·2^i)`) gives each thread its entering state, and the thread reruns its
+K samples from it. The block's carry-in seeds thread 0 (thread WG-1 for the
+reverse scan). Across blocks, one thread per cell walks the blocks with
+`A^C` (`A^L` for a short last block). All matrix powers and block sums come
+from `buildScanTables` (scan-reference.ts), computed in f64 and uploaded as
+f32.
 
-1. **Local pass** (one workgroup per (block, cell)). Each thread runs the
-   recursion over its K samples with zero carry-in. A Hillis-Steele scan over
-   the 256 thread end values (hop coefficient `a^(K·o)`) gives each thread its
-   carry. The thread folds it back as `a^(k+1)·carry`. The pass writes
-   block-local values and the block's end value.
-2. **Carry pass** (one thread per cell, sequential over blocks):
-   `carry_in[j] = a^C carry_in[j-1] + end[j-1]`.
-3. **Fix-up**: `value[p] += a^(p+1) carry_in[block]`. This is fused into the
-   next dispatch's load.
+### One pass per iteration
 
-The powers `a^0..a^C` (for d and r) come from a host table computed in f64
-and uploaded as f32. The adjoint uses the same code on the reversed logical
-index `l = T-1-t`.
+The FISTA y is not stored. The two solution buffers ping-pong: x_k is in `xa`
+for even k and in `xb` for odd k, and the pass rebuilds
+`y_k = constrain(x_k + m (x_k - x_{k-1}))` (or `y_k = x_k` after a restart,
+without reading x_{k-1}) and writes x_{k+1} over x_{k-1}. That is exactly the
+y the previous iteration would have stored, so the arithmetic is unchanged.
 
-### Dispatches per iteration
+The reverse scan of the residual needs, per block, the residual's reverse
+aggregate `Q_b = Σ_p A^p e z_p` before the block can run. It is not computed
+from the residual. `z` is linear in the block's forward carry-in `s_in`, its
+inputs `x_p`, the baseline and the trace, so
 
-| #   | Entry    | Grid              | Work                                                                                                             |
-| --- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| 1   | `fwd1`   | (nBlocks, nCells) | local scan of IIR(d) on the delayed, prescaled source (`y`, or `x` after a restart)                              |
-| 2   | `carryD` | ⌈nCells/64⌉       | carry pass                                                                                                       |
-| 3   | `fwd2`   | (nBlocks, nCells) | fix-up IIR(d) and local scan of IIR(r)                                                                           |
-| 4   | `carryR` | ⌈nCells/64⌉       | carry pass                                                                                                       |
-| 4a  | `fwd3`   | (nBlocks, nCells) | _unfiltered only_: fix-up of the reconvolution in place, partial `Σ(trace − c)`                                  |
-| 4b  | `bfin`   | ⌈nCells/64⌉       | _unfiltered only_: `baseline = Σ / T`                                                                            |
-| 5   | `adj1`   | (nBlocks, nCells) | residual `(c + b) − trace` computed on the fly (fixes up c when filtered), reverse local scan of IIR(d)          |
-| 6   | `carryD` |                   |                                                                                                                  |
-| 7   | `adj2`   | (nBlocks, nCells) | fix-up and reverse local scan of IIR(r)                                                                          |
-| 8   | `carryR` |                   |                                                                                                                  |
-| 9   | `prox`   | (nBlocks, nCells) | gradient = fixed-up `a[i+1]` (one-sample advance), prox step, momentum, per-block partials of diff², x_old², dot |
-| 10  | `fin`    | ⌈nCells/64⌉       | sum partials, `iteration++`, t_fista, adaptive restart, convergence                                              |
+`Q_b = (G s_in + Σ_p β_p x_p + baseline·O - Tr_b) / peak`
 
-That is 10 dispatches per iteration when `filtered`, 12 otherwise. All
-iterations of a `step()` go into a single compute pass. Each command buffer
-holds at most 50 iterations.
+with `G = Σ_k A^k e e2ᵀ A^k`, `β_p = Σ_{k>p} A^k e h[k-1-p]`, `O = Σ_k A^k e`
+(host tables, separate ones for the short last block), and the trace term
+`Tr_b = Σ_p A^p e trace[p]`, computed once at load. The same trick gives
+`Σ_t c[t]` over a block (`γ·s_in + Σ δ_p x_p`) for the unfiltered baseline.
+Since restart is decided only after the pass, the pass emits these per-block
+functionals (forward aggregate `F`, `Σβx`, `Σδx`) for both next-iteration
+candidates, x_{k+1} and y_{k+1}; `fin` picks one.
+
+| #   | Entry   | Grid              | Work                                                                                                                                                                                                                 |
+| --- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `sweep` | (nBlocks, nCells) | read x_k, x_{k-1}, trace; y; forward scan from `s_in`; residual in registers; reverse scan from `q_in`; prox; write x_{k+1}; per-block partials of diff², x_k², dot; per-block functionals of x_{k+1} and y_{k+1}    |
+| 2   | `fin`   | ⌈nCells/64⌉       | sum partials, `iteration++`, t_fista, momentum, adaptive restart, convergence; then the next carries: forward `s_in[b]` (walk up with `A^C`), baseline (unfiltered), `Q_b`, reverse `q_in[b]` (walk down with `A^L`) |
+
+That is 2 dispatches per iteration, filtered or not (was 10 / 12). `load()`
+runs `prep` (trace terms and the x_0 candidate) and `carry` once.
+
+Memory traffic per sample per iteration (from the WGSL; per-block records and
+the cache-resident tables are negligible): read x_k, read x_{k-1}, read
+trace, write x_{k+1}. That is **4 f32 accesses, 16 B** (3 after a restart),
+down from 14 accesses (56 B) in the previous split-scan layout (`fwd1` 2,
+`fwd2` 2, `adj1` 3, `adj2` 2, `prox` 5), a 3.5x cut. This is the floor for
+this formulation: every iteration has to see x_k, x_{k-1} (or a stored y) and
+the trace, and write x_{k+1}.
 
 FISTA semantics match `fista.rs` `step_batch`:
 
@@ -94,30 +108,38 @@ FISTA semantics match `fista.rs` `step_batch`:
 - Restart when `iteration > 1 && dot > 0`.
 - Converged when `iteration > 5 && diff² < tol²(x_old² + 1e-20)`.
 - Constraints: NonNegative uses `max(·, 0)`; Box01 uses `clamp(·, 0, 1)`.
-- Initial x = y = 0, or both set to the warm start.
+- Initial x = y = warm start or 0 (`useX = 1` at load, so y_0 = x_0).
 
-**Restart** is handled without a copy. `fin` sets a per-cell `useX` flag, and
-the next iteration reads `x` wherever it would read `y` (the `fwd1` source and
-the `prox` y). WGSL has no float atomics, so every reduction goes through
-per-(cell, block) partials in a storage buffer. Every entry point returns
-early for converged cells. For the workgroup kernels the flag is read with
-`workgroupUniformLoad`, so barriers stay in uniform control flow.
+WGSL has no float atomics, so every reduction goes through per-(cell, block)
+partials. Every entry point returns early for converged cells; `sweep` reads
+the flag with `workgroupUniformLoad`, so barriers stay in uniform control
+flow. Everything is per cell and fixed-order, so results do not depend on how
+cells are grouped.
+
+**Not done: single-pass decoupled look-back.** It would not remove bytes: the
+fused pass is already at the 4-access floor. It could only fold `fin` into
+`sweep`, but the restart decision needs the full-trace `dot` before any block
+knows which candidate the next forward scan starts from, and the reverse scan
+needs every later block's forward state; both are grid-wide dependencies
+inside one iteration. The remaining per-iteration cost besides the pass is one
+small per-cell dispatch.
 
 ### Buffers
 
 All buffers are cell-major, `index = cell·T + t`, f32 everywhere.
 
-| Binding | Buffer  | Contents                                                                                  |
-| ------- | ------- | ----------------------------------------------------------------------------------------- |
-| 0       | uniform | T, nBlocks, nCells, filtered, constraint, d, r, 1/peak, step, thresh, tol², 1/T, d^C, r^C |
-| 1       | trace   | working traces                                                                            |
-| 2, 3    | x, y    | solution and extrapolated point                                                           |
-| 4, 5    | s1, s2  | scan scratch (u then v; c then a)                                                         |
-| 6       | aux     | block ends/carries for d and r, plus 4 partials per (cell, block)                         |
-| 7       | pows    | `d^0..d^C`, `r^0..r^C`                                                                    |
-| 8       | cells   | per cell: t_fista, iteration, converged, useX, baseline                                   |
+| Binding | Buffer  | Contents                                                                                        |
+| ------- | ------- | ----------------------------------------------------------------------------------------------- |
+| 0       | uniform | T, nBlocks, nCells, filtered, constraint, d, r, 1/peak, step, thresh, tol², 1/T                 |
+| 1       | trace   | working traces                                                                                  |
+| 2, 3    | xa, xb  | ping-pong solutions (x_k in `xa` for even k, `xb` for odd k)                                    |
+| 4       | aux     | per (cell, block): partials, candidate functionals ×2, trace terms, carries `s_in`, `q_in` (20) |
+| 5       | tab     | hop matrices, `A^C`, `A^L`, G, γ, O, and per-position `A^(C-1-p) e`, `A^p e`, β, δ              |
+| 6       | cells   | per cell: t_fista, iteration, converged, useX, baseline, momentum                               |
 
-That is 8 storage buffers, the WebGPU default per-stage limit.
+`readSolutions()` reads the cell states, then copies each cell's row from
+`xa` or `xb` by its iteration parity into one staging buffer; it changes no
+state, so stepping can continue afterwards.
 
 ### Limits
 
@@ -127,22 +149,28 @@ That is 8 storage buffers, the WebGPU default per-stage limit.
 cells. Each group has its own buffers and bind group, and groups are encoded
 one after another. `createGpuFista(device, { maxGroupBytes })` caps one group's working set
 (`estimateGpuBytes` of the group) below the device limit; the default is no
-extra cap. Converged flags are read back once per `step(n)` call;
+extra cap. Memory is about `12·N·T` bytes (`estimateGpuBytes`; was `20·N·T`).
+
+Command buffers are sized by wall clock, not by a fixed iteration count:
+`step()` times each submit (`queue.onSubmittedWorkDone`) and sizes the next
+one to `targetSubmitMs` (option, default 75 ms; the first submit of a group
+is 4 iterations, the cap is 1000), so one submission stays far below OS GPU
+watchdogs (Windows TDR is about 2 s) on slow GPUs. Sizing never changes the
+arithmetic. Converged flags are read back once per `step(n)` call;
 `solve(checkEvery = 50)` loops `step(checkEvery)` until every cell has
-converged or `maxIters` is reached. Memory is about `20·N·T` bytes
-(`estimateGpuBytes`).
+converged or `maxIters` is reached.
 
 ## Scripts
 
 Run these from `packages/compute-gpu`, or from the root with `-w @calab/compute-gpu`.
 Run `npm run ensure-wasm` first so `crates/solver/pkg` exists.
 
-| Script             | What                                                                                                                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `npm test`         | Node-only Vitest: scan vs serial Rust recursion, and the CPU model vs the real WASM solver. The WASM loads from bytes, because the `--target web` init() fetches by URL. |
-| `npm run test:gpu` | Playwright specs (WASM vs GPU equivalence, and multi-group vs single-group, in the browser)                                                                              |
-| `npm run bench`    | Playwright benchmark specs (`@bench`): the 200-iteration table and the 1024 x 270 000 converged pass                                                                     |
-| `npm run harness`  | Serve the harness on :4177 by hand (`?mode=equiv`, `groups`, `bench`, `full`, `all`)                                                                                     |
+| Script             | What                                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`         | Node-only Vitest: 2-state tables and block scan vs serial recursion, the analytic `Q_b`, and the CPU model vs the real WASM solver. The WASM loads from bytes, because the `--target web` init() fetches by URL. |
+| `npm run test:gpu` | Playwright specs (WASM vs GPU equivalence, and multi-group vs single-group, in the browser)                                                                                                                      |
+| `npm run bench`    | Playwright benchmark specs (`@bench`): the 200-iteration table and the 1024 x 270 000 converged pass                                                                                                             |
+| `npm run harness`  | Serve the harness on :4177 by hand (`?mode=equiv`, `groups`, `bench`, `full`, `all`)                                                                                                                             |
 
 The first time, install the browser with `npx playwright install chromium`.
 
@@ -173,16 +201,18 @@ trace.
 
 | Case                                                                                  | N   | T       | rel L2 (typical / worst) | max abs (worst) | iterations                                           |
 | ------------------------------------------------------------------------------------- | --- | ------- | ------------------------ | --------------- | ---------------------------------------------------- |
-| CaTune-like: 30 Hz, tauRise 0.02, tauDecay 0.4, λ 0.5, nonneg, tol 1e-4, filtered     | 16  | 27 000  | 1.5e-5 / 6.0e-4          | 8.3e-3          | identical in 15/16 cells; 1 cell GPU 240 vs WASM 241 |
-| CaDecon-like: working trace upsampled 10×, 300 Hz, box01, λ 0, tol 1e-4, maxIters 500 | 8   | 270 000 | 4.3e-5 / 4.8e-5          | 9.0e-4          | 500 / 500 (neither converges)                        |
-| Unfiltered: raw trace, baseline re-estimated every iteration, otherwise as CaTune     | 8   | 27 000  | 1.6e-5 / 5.8e-4          | 8.5e-3          | identical in 7/8 cells; 1 cell GPU 245 vs WASM 246   |
+| CaTune-like: 30 Hz, tauRise 0.02, tauDecay 0.4, λ 0.5, nonneg, tol 1e-4, filtered     | 16  | 27 000  | 1.6e-5 / 6.1e-4          | 8.3e-3          | identical in 15/16 cells; 1 cell GPU 240 vs WASM 241 |
+| CaDecon-like: working trace upsampled 10×, 300 Hz, box01, λ 0, tol 1e-4, maxIters 500 | 8   | 270 000 | 4.4e-5 / 4.7e-5          | 7.3e-4          | 500 / 500 (neither converges)                        |
+| Unfiltered: raw trace, baseline re-estimated every iteration, otherwise as CaTune     | 8   | 27 000  | 1.7e-5 / 2.0e-5          | 4.1e-4          | identical in 8/8 cells                               |
 
-Each worst-case cell is one that stopped one iteration earlier than WASM.
-f32 reductions on the GPU, against f64 accumulators in Rust, move the last
+The worst CaTune cell stopped one iteration earlier than WASM. f32
+reductions on the GPU, against f64 accumulators in Rust, move the last
 `diff² < tol²·‖x‖²` comparison by one iteration. The solution is then one
 FISTA step away (rel L2 about 6e-4). Every cell that stops on the same
-iteration agrees to about 1e-5. The spec asserts rel L2 ≤ 1e-3 and an
-iteration difference ≤ 10 % per cell.
+iteration agrees to about 2e-5. The spec asserts rel L2 ≤ 1e-3 and an
+iteration difference ≤ 10 % per cell. These numbers are essentially those of
+the previous split-scan layout (6.0e-4 / 4.8e-5 / 5.8e-4 worst); the
+unfiltered case lost its one-iteration-early cell.
 
 For the CaDecon case, `subtract_baseline()` is run on the upsampled trace so
 that the WASM solver is `filtered`, matching CaDecon's `baseline_subtracted`
@@ -193,14 +223,18 @@ Grouping (`groups.spec.ts`): the CaTune-like case with N = 8 solved once with
 one group and once with `maxGroupBytes = 3 cells` (3 groups of 3, 3, 2 cells).
 The two results are bitwise identical (relative L2 0, same iteration counts),
 and the grouped run matches WASM under the thresholds above (worst rel L2
-6.05e-4, the usual one-iteration-early cell).
+6.06e-4, the usual one-iteration-early cell).
 
 Node tests (`npm test`):
 
-- Scan vs serial Rust recursion: rel L2 ≤ 1e-5 for every tau/fs case. The
-  worst is 8.9e-6 at fs = 300 with tauDecay = 1.0.
-- CPU model vs WASM: 3e-6 (CaTune-like, same iteration counts) and 5e-5
-  (box01 at 300 Hz, 500/500).
+- 2-state tables: hop matrices, `A^C` and `A^L` equal repeated stepping (1e-6).
+- Block scan with carry-in vs the serial cascade across blocks: rel L2 ≤ 1e-5.
+- Scan-based forward / adjoint vs serial Rust recursion: rel L2 ≤ 1e-5 for
+  every tau/fs case, and `<Kx, y> = <x, Kᵀy>`.
+- Analytic `Q_b` and `Σc` (G, β, O, γ, δ, Tr) vs the direct reverse
+  aggregate of the residual, including a short last block: ≤ 1e-4.
+- CPU model vs WASM: rel L2 < 1e-4 and iterations within 10 % (CaTune-like),
+  identical iterations (box01 at 300 Hz, unfiltered).
 
 ### Benchmark (`npm run bench`, 200 fixed iterations, convergence disabled)
 
@@ -209,61 +243,66 @@ WASM is timed as one cell for 200 iterations on the page's main thread. "WASM
 scaling over 8 workers and no pool overhead. GPU time is wall clock for
 `step(200)`, including the final flag readback.
 
-Adapter: apple / metal-3 (Apple M5 Max)
+Adapter: apple / metal-3 (Apple M5 Max). WG = 64, K = 8 (a sweep of
+WG ∈ {32, 64, 128, 256} × K ∈ {4, 8, 16} at N = 256, T = 270 000 ranged from
+727 to 1271 ms; 64 × 8 was fastest, 256 × 4 ran 905 ms).
 
-| N    | T      | profile              | groups | GPU ms / 200 it | WASM 1 cell ms / 200 it | WASM 8-worker ideal ms (estimate) | GPU speedup vs ideal |
-| ---- | ------ | -------------------- | ------ | --------------- | ----------------------- | --------------------------------- | -------------------- |
-| 8    | 27000  | CaTune 30 Hz nonneg  | 1      | 19.8            | 33.7                    | 34                                | 1.70x                |
-| 64   | 27000  | CaTune 30 Hz nonneg  | 1      | 46.5            | 33.7                    | 270                               | 5.80x                |
-| 256  | 27000  | CaTune 30 Hz nonneg  | 1      | 202.1           | 33.7                    | 1078                              | 5.34x                |
-| 1024 | 27000  | CaTune 30 Hz nonneg  | 1      | 887.4           | 33.7                    | 4314                              | 4.86x                |
-| 8    | 270000 | CaDecon 300 Hz box01 | 1      | 78.5            | 345.6                   | 346                               | 4.40x                |
-| 64   | 270000 | CaDecon 300 Hz box01 | 1      | 562.4           | 345.6                   | 2765                              | 4.92x                |
-| 256  | 270000 | CaDecon 300 Hz box01 | 1      | 2234.1          | 345.6                   | 11059                             | 4.95x                |
-| 1024 | 270000 | CaDecon 300 Hz box01 | 1      | 8929.0          | 345.6                   | 44237                             | 4.95x                |
+| N    | T      | profile              | groups | GPU ms / 200 it | before (split scans) | WASM 1 cell ms / 200 it | WASM 8-worker ideal ms (estimate) | GPU speedup vs ideal |
+| ---- | ------ | -------------------- | ------ | --------------- | -------------------- | ----------------------- | --------------------------------- | -------------------- |
+| 8    | 27000  | CaTune 30 Hz nonneg  | 1      | 19.3            | 19.8                 | 38.3                    | 38                                | 1.98x                |
+| 64   | 27000  | CaTune 30 Hz nonneg  | 1      | 24.6            | 46.5                 | 38.3                    | 306                               | 12.5x                |
+| 256  | 27000  | CaTune 30 Hz nonneg  | 1      | 76.6            | 202.1                | 38.3                    | 1226                              | 16.0x                |
+| 1024 | 27000  | CaTune 30 Hz nonneg  | 1      | 278.7           | 887.4                | 38.3                    | 4902                              | 17.6x                |
+| 8    | 270000 | CaDecon 300 Hz box01 | 1      | 83.6            | 78.5                 | 405.3                   | 405                               | 4.85x                |
+| 64   | 270000 | CaDecon 300 Hz box01 | 1      | 255.8           | 562.4                | 405.3                   | 3242                              | 12.7x                |
+| 256  | 270000 | CaDecon 300 Hz box01 | 1      | 757.5           | 2234.1               | 405.3                   | 12970                             | 17.1x                |
+| 1024 | 270000 | CaDecon 300 Hz box01 | 1      | 2713.5          | 8929.0               | 405.3                   | 51878                             | 19.1x                |
 
-The N = 1024, T = 270 000 row (the full-coverage CaDecon case, 5.16 GB of
+The WASM column was 345.6 ms (T = 270 000) and 33.7 ms (T = 27 000) in the
+previous run; this machine was busier during this one, so the speedup column
+is flattered by about 15 %. The GPU columns are the comparison that matters:
+2.9 to 3.3x faster at N ≥ 256. At N = 8 both layouts are bound by the
+per-cell dispatch and submit overhead.
+
+The N = 1024, T = 270 000 row (the full-coverage CaDecon case, now 3.3 GB of
 buffers) has no harness-side memory cap: the harness tries it and reports a
 device out-of-memory or validation error as a failed run. On this Mac it fits
-in one group (each buffer is 1.1 GB, under the 4 GiB binding limit).
+in one group.
 
 **Full-coverage trace pass.** The same 1024 x 270 000 case with convergence on
 (box01, lambda 0, tol 1e-4, maxIters 500, `npm run bench`): one group,
-**23.2 s wall clock** for `load` + `solve(50)` + readback. No cell converged
-within 500 iterations (1024/1024 stopped at the cap), so this is the cost of a
-full 500-iteration pass. WASM, one cell at 345.6 ms / 200 it, would need about
-1.73 s per cell per 500 iterations, or about 221 s for 1024 cells on an ideal
-8 workers (estimate), roughly 9.5x slower.
-
-At large N the GPU runs about 6 G sample-iterations/s, roughly 14 f32
-accesses (about 56 B) per sample per iteration, so it is bandwidth-bound.
-At N = 8, T = 27 000 it is bound by dispatch overhead: 2000 dispatches in
-about 18 ms.
+**7.3 s wall clock** (was 23.2 s) for `load` + `solve(50)` + readback. No cell
+converged within 500 iterations (1024/1024 stopped at the cap), so this is the
+cost of a full 500-iteration pass. WASM, one cell at 345.6 ms / 200 it (the
+quieter earlier measurement), would need about 1.73 s per cell per 500
+iterations, or about 221 s for 1024 cells on an ideal 8 workers (estimate),
+roughly 30x slower.
 
 ### Bandwidth projection for weaker GPUs
 
-Memory traffic per sample per iteration (filtered path, from the WGSL; scalar
-reads of `pows` and `aux` are negligible): `fwd1` 2 (read y, write s1), `fwd2` 2,
-`adj1` 3 (read c, read trace, write s1), `adj2` 2, `prox` 5 (read a, x, y; write
-x, y). That is 14 f32 accesses, **56 B**. At N = 256, T = 270 000 one iteration
-moves 69.12 M samples x 56 B = 3.87 GB, so 200 iterations move 774 GB in 2.234 s:
-**346 GB/s effective** on this Mac. Projection: time = 774 GB / bandwidth, for
-the N = 256, T = 270 000 benchmark, against the idealized 8-worker WASM estimate
-(11 059 ms).
+At 16 B per sample-iteration, N = 256, T = 270 000 moves 69.12 M samples x
+16 B = 1.106 GB per iteration, 221 GB per 200 iterations, in 0.758 s:
+**292 GB/s effective** on this Mac (the old layout reached 346 GB/s on 774
+GB). Projection: time = 221 GB / bandwidth, against the idealized 8-worker
+WASM estimate from the quieter run (11 059 ms), with the old 56 B layout for
+comparison.
 
-| Class                  | GB/s | GPU ms / 200 it | Speedup vs 8-worker WASM ideal |
-| ---------------------- | ---- | --------------- | ------------------------------ |
-| Intel Iris Xe          | 60   | 12 900          | 0.86x                          |
-| Apple M1/M2 base       | 100  | 7 740           | 1.43x                          |
-| M-Pro class            | 200  | 3 870           | 2.86x                          |
-| M-Max / discrete class | 400  | 1 940           | 5.7x                           |
+| Class                  | GB/s | GPU ms / 200 it              | Speedup vs 8-worker WASM ideal | old layout (56 B) |
+| ---------------------- | ---- | ---------------------------- | ------------------------------ | ----------------- |
+| Intel Iris Xe          | 60   | 3 690                        | 3.0x                           | 0.86x             |
+| Apple M1/M2 base       | 100  | 2 210                        | 5.0x                           | 1.43x             |
+| M-Pro class            | 200  | 1 110                        | 10x                            | 2.86x             |
+| M-Max / discrete class | 400  | 553 (758 measured on M5 Max) | 14.6x (measured)               | 5.7x              |
 
 Assumptions: the listed GB/s is the bandwidth the kernel actually achieves
-(nominal peaks are higher, and this Mac sustains 346 GB/s, so real numbers will
-likely be 20 to 40 % slower than the table); the kernel stays purely bandwidth
-bound (no compute or dispatch limit, which flatters small-cache iGPUs); and
-WASM per-core speed on those machines equals this Mac's, with a perfect
-8-worker scaling. That last one flatters the WASM side on weaker laptops (fewer
-or slower cores, and an iGPU shares its memory bus with the CPU workers), so
-the real speedup on low-end hardware is probably better than shown. Below
-roughly 100 GB/s the GPU path is not worth it for these sizes.
+(nominal peaks are higher); the kernel stays bandwidth bound; and WASM
+per-core speed on those machines equals this Mac's, with perfect 8-worker
+scaling, which flatters WASM on weaker laptops. The fused pass does more
+arithmetic per byte than before (two in-block 2-state scans with 2x2 hop
+matrices, ~50 workgroup barriers per block, and ten table-weighted sums per
+sample for the candidate functionals, roughly 40 to 50 flops per sample per
+iteration). On this Mac it no longer reaches the old 346 GB/s, so it is
+partly latency or compute bound here; on a 60 GB/s iGPU with about 2 TFLOPS
+f32 the compute is ~0.3 s per 200 iterations against 3.7 s of memory time,
+so the bandwidth model should hold there. The 400 GB/s row is capped by that
+limit (measured 758 ms, not 553).
