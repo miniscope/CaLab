@@ -17,6 +17,16 @@ pub const MIN_SPECTRUM_LEN: usize = 8;
 
 /// FFT-based bandpass filter derived from kernel time constants.
 /// Buffers grow but never shrink (matching Solver convention).
+///
+/// The FFT treats the trace as periodic, so any level difference between the
+/// first and last samples is a step at the wrap point, and the high-pass
+/// smears its response to that step over ~1/f_hp at both ends (a linear ramp
+/// of height R produced a 0.5·R edge step; photobleaching is such a ramp
+/// inside every tile). Both `apply` and `compute_spectrum_only` therefore
+/// subtract the straight line through the trace's endpoint levels, each
+/// averaged over one HP period (`endpoint_line`, `endpoint_window`), before
+/// the forward FFT. With HP active the line stays removed; in LP-only mode it
+/// is added back after the inverse FFT.
 pub struct BandpassFilter {
     hp_enabled: bool,
     lp_enabled: bool,
@@ -24,6 +34,9 @@ pub struct BandpassFilter {
     f_lp: f32,
     fs: f32,
     valid: bool,
+    /// Straight line (intercept at sample 0, slope per sample) subtracted from
+    /// the trace before the last forward FFT; added back after LP-only.
+    line: (f64, f64),
 
     // FFT infrastructure
     planner: RealFftPlanner<f32>,
@@ -51,6 +64,7 @@ impl BandpassFilter {
             f_lp: 0.0,
             fs: 30.0,
             valid: false,
+            line: (0.0, 0.0),
             planner: RealFftPlanner::new(),
             planned_len: 0,
             plan_fwd: None,
@@ -216,15 +230,64 @@ impl BandpassFilter {
         }
     }
 
-    /// Perform forward FFT and cache power spectrum. Used by both `apply` and `compute_spectrum_only`.
+    /// Samples averaged at each end of the trace to estimate the detrend
+    /// line's endpoints: one high-pass period, `round(fs / f_hp)` with
+    /// f_hp = 1/(2π·16·τ_decay), capped at half the trace so the two windows
+    /// never overlap (on a trace shorter than 2/f_hp they are its two halves).
+    ///
+    /// The wrap artifact is the HP's response to a *persistent* level
+    /// difference across the wrap point, smoothed at the HP's own scale: a
+    /// transient or noise excursion localised at an edge contributes only
+    /// ~alpha·τ_decay·f_hp to it. The endpoint estimate must therefore
+    /// average at that same scale. A short window (a sample, or one τ_rise)
+    /// would let an edge-cut transient tilt the whole line, converting a
+    /// localised event into exactly the persistent 0.5·bias artifact the
+    /// detrend is meant to remove (measured: 0.13–0.23 of the transient's
+    /// peak with a τ_rise window, 0.02–0.03 with this one). The mean of a
+    /// line over any window equals its value at the window's centre, so the
+    /// window length costs nothing for a linear trend.
+    fn endpoint_window(&self, n: usize) -> usize {
+        let m = (self.fs / self.f_hp).round();
+        let m = if m.is_finite() && m >= 1.0 {
+            m as usize
+        } else {
+            1
+        };
+        m.min(n / 2).max(1)
+    }
+
+    /// Straight line through the robust endpoints of `trace`, as
+    /// `(intercept at sample 0, slope per sample)`. The mean of a line over a
+    /// window equals its value at the window's centre, so the line is anchored
+    /// at the centres of the two endpoint windows and an exactly linear trace
+    /// detrends to zero.
+    fn endpoint_line(&self, trace: &[f32]) -> (f64, f64) {
+        let n = trace.len();
+        let m = self.endpoint_window(n);
+        let mean = |s: &[f32]| s.iter().map(|&v| v as f64).sum::<f64>() / m as f64;
+        let (y0, y1) = (mean(&trace[..m]), mean(&trace[n - m..]));
+        let t0 = (m as f64 - 1.0) / 2.0;
+        // Window centres sit at t0 and n-1-t0, which are n-m apart.
+        let slope = (y1 - y0) / (n - m) as f64;
+        (y0 - slope * t0, slope)
+    }
+
+    /// Detrend the trace, forward-FFT it and cache the power spectrum. Used by
+    /// both `apply` and `compute_spectrum_only`, so the cached spectrum is
+    /// always that of the endpoint-detrended trace (see `get_power_spectrum`).
     /// Returns false (leaving the trace untouched) if the transform fails.
     fn forward_fft_and_cache_power(&mut self, trace: &[f32]) -> bool {
         let n = trace.len();
         self.ensure_buffers(n);
         let spectrum_len = n / 2 + 1;
 
-        // Copy trace into fft_input
-        self.fft_input[..n].copy_from_slice(trace);
+        // Subtract the line through the trace's endpoints so the periodic
+        // extension the FFT assumes has no step at the wrap point.
+        let (c, b) = self.endpoint_line(trace);
+        self.line = (c, b);
+        for (i, (dst, &src)) in self.fft_input[..n].iter_mut().zip(trace).enumerate() {
+            *dst = (src as f64 - (c + b * i as f64)) as f32;
+        }
 
         // Forward FFT
         let Some(fwd) = self.plan_fwd.as_ref() else {
@@ -293,16 +356,29 @@ impl BandpassFilter {
             return false;
         }
 
-        // Normalize (realfft doesn't normalize)
+        // Normalize (realfft doesn't normalize). With HP active the detrend
+        // line stays removed: it is a sub-corner trend of exactly the kind the
+        // HP exists to reject (its slope spans the whole trace, far below
+        // f_hp). LP-only promises to preserve DC and slow trends, so there the
+        // line goes back in.
         let scale = 1.0 / n as f32;
-        for (t, &f) in trace.iter_mut().zip(&self.fft_input[..n]) {
-            *t = f * scale;
+        if self.hp_enabled {
+            for (t, &f) in trace.iter_mut().zip(&self.fft_input[..n]) {
+                *t = f * scale;
+            }
+        } else {
+            let (c, b) = self.line;
+            for (i, (t, &f)) in trace.iter_mut().zip(&self.fft_input[..n]).enumerate() {
+                *t = ((f * scale) as f64 + c + b * i as f64) as f32;
+            }
         }
 
         true
     }
 
     /// Compute power spectrum without filtering (for visualization when filter is off).
+    /// Detrends exactly as `apply` does, so the cached spectrum is the same for
+    /// a given trace whether or not the filter is on.
     pub fn compute_spectrum_only(&mut self, trace: &[f32]) {
         if trace.len() < MIN_SPECTRUM_LEN {
             return;
@@ -310,7 +386,15 @@ impl BandpassFilter {
         self.forward_fft_and_cache_power(trace);
     }
 
-    /// Get power spectrum (N/2+1 bins of |FFT|²).
+    /// Get the power spectrum (N/2+1 bins of |FFT|²) cached by the last
+    /// `apply` or `compute_spectrum_only`.
+    ///
+    /// It is the spectrum of the endpoint-detrended trace, not of the raw
+    /// one: the raw trace's periodic extension has a step at the wrap point
+    /// whose 1/f² leakage would otherwise ride over every bin, and detrending
+    /// in both paths keeps the cached spectrum identical for a given trace
+    /// whether or not the filter is on. Only the DC bin and that leakage
+    /// differ from the raw spectrum.
     pub fn get_power_spectrum(&self, n: usize) -> &[f32] {
         let spectrum_len = n / 2 + 1;
         if self.power_spectrum.len() >= spectrum_len {
@@ -428,12 +512,16 @@ mod tests {
     #[test]
     fn test_round_trip_fft() {
         let mut f = make_filter(0.001, 10.0, 100.0);
-        // With extremely wide band, round-trip should approximately preserve signal
+        // With extremely wide band, round-trip should approximately preserve signal.
+        // The 2.56 s trace is far shorter than 1/f_hp (1000 s), so the endpoint
+        // detrend removes any line through the endpoints that the HP itself
+        // could not resolve; use a whole number of cosine cycles so the
+        // endpoints match and the signal is what the round trip sees.
         let n = 256;
         let fs = 100.0_f32;
-        let freq = 5.0_f32;
+        let freq = 13.0 * fs / n as f32; // ~5.08 Hz, 13 cycles in the window
         let original: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * freq * i as f32 / fs).sin())
+            .map(|i| (2.0 * PI * freq * i as f32 / fs).cos())
             .collect();
         let mut trace = original.clone();
 
@@ -611,5 +699,268 @@ mod tests {
             "LP-only should attenuate high-freq, power ratio: {}",
             filtered_power / original_power
         );
+    }
+
+    // ── Edge-wrap (periodic-extension) artifact ─────────────────────────
+    //
+    // The FFT treats the trace as periodic; a level difference between the
+    // first and last samples is a step at the wrap point. Before endpoint
+    // detrending, HP of a unit ramp carried a 0.5 step at both edges that
+    // decayed over ~1/f_hp (8 s jgcamp8f … 45 s gcamp6s at 300 Hz).
+
+    /// Kernel time constants of every simulator preset, at the production
+    /// upsampled rate.
+    fn preset_taus() -> Vec<(&'static str, f64, f64)> {
+        crate::simulate::presets::all()
+            .into_iter()
+            .map(|(name, cfg)| (name, cfg.kernel.tau_rise_s, cfg.kernel.tau_decay_s))
+            .collect()
+    }
+
+    fn ramp(n: usize) -> Vec<f32> {
+        (0..n).map(|i| i as f32 / (n - 1) as f32).collect()
+    }
+
+    fn max_abs(x: &[f32]) -> f32 {
+        x.iter().fold(0.0_f32, |m, v| m.max(v.abs()))
+    }
+
+    #[test]
+    fn hp_ramp_has_no_edge_step() {
+        let fs = 300.0;
+        let n = (100.0 * fs) as usize;
+        for (name, tr, td) in preset_taus() {
+            for lp in [false, true] {
+                let mut f = BandpassFilter::new();
+                f.update_cutoffs(tr, td, fs);
+                f.set_hp_enabled(true);
+                f.set_lp_enabled(lp);
+                let mut t = ramp(n);
+                assert!(f.apply(&mut t));
+                // Was 0.5·R at both edges; an exactly linear trace now detrends
+                // to zero up to f32 rounding of the ramp itself.
+                assert!(
+                    max_abs(&t) < 1e-4,
+                    "{name} lp={lp}: HP(ramp) edge residual {} of R",
+                    max_abs(&t)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hp_ramp_edge_robust_to_single_outlier() {
+        // One corrupted sample at the edge must not set the detrend line. With
+        // m samples averaged per endpoint an outlier of height R shifts the
+        // line by R/m and the residual wrap step by 0.5·R/m; a single-sample
+        // endpoint would have left the full 0.5·R step, a τ_rise window
+        // (m = 30 here) 0.017·R.
+        let fs = 300.0;
+        let n = (100.0 * fs) as usize;
+        for (name, tr, td) in preset_taus() {
+            let mut f = BandpassFilter::new();
+            f.update_cutoffs(tr, td, fs);
+            f.set_hp_enabled(true);
+            f.set_lp_enabled(false);
+            let m = f.endpoint_window(n);
+            let [f_hp, _] = f.get_cutoffs();
+            assert_eq!(
+                m,
+                ((fs as f32 / f_hp).round() as usize).min(n / 2),
+                "{name}"
+            );
+            let mut t = ramp(n);
+            t[0] += 1.0;
+            assert!(f.apply(&mut t));
+            // Skip the outlier sample itself (HP passes the impulse).
+            let residual = max_abs(&t[1..]);
+            assert!(
+                residual < 1e-3,
+                "{name}: residual {residual} of R with m={m}"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_cut_transient_does_not_leak() {
+        // A tile cut at a transient's onset (or mid-decay) is common. The
+        // detrend must not turn that localised event into a persistent level
+        // error: measure the HP output beyond 5·τ_decay from the transient,
+        // relative to its peak. Without detrending this was 0.02–0.03 (the HP
+        // removing the transient's own 1/f_hp-scale mean); a τ_rise endpoint
+        // window gave 0.13–0.23; the HP-period window gives 0.03–0.07 (the
+        // upper end is gcamp6s, whose window is capped at half this trace).
+        let fs = 300.0;
+        let n = (100.0 * fs) as usize;
+        for (name, tr, td) in preset_taus() {
+            let kernel = crate::kernel::build_kernel(tr, td, fs);
+            let peak = kernel.iter().copied().fold(0.0_f32, f32::max);
+            let far = ((5.0 * td * fs) as usize).min(n / 2);
+            for at_end in [false, true] {
+                let mut y = vec![0.0_f32; n];
+                for (i, &kv) in kernel.iter().enumerate().take(n) {
+                    let j = if at_end { n - 1 - i } else { i };
+                    y[j] = kv;
+                }
+                let mut f = BandpassFilter::new();
+                f.update_cutoffs(tr, td, fs);
+                f.set_hp_enabled(true);
+                f.set_lp_enabled(false);
+                assert!(f.apply(&mut y));
+                let leak = if at_end {
+                    max_abs(&y[..n - far])
+                } else {
+                    max_abs(&y[far..])
+                } / peak;
+                assert!(
+                    leak < 0.1,
+                    "{name} at_end={at_end}: edge transient leak {leak} of peak"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constant_offset_unchanged_behaviour() {
+        let fs = 300.0;
+        let n = (100.0 * fs) as usize;
+        for (name, tr, td) in preset_taus() {
+            // HP (either mode) removes a constant entirely, as before.
+            for lp in [false, true] {
+                let mut f = BandpassFilter::new();
+                f.update_cutoffs(tr, td, fs);
+                f.set_hp_enabled(true);
+                f.set_lp_enabled(lp);
+                let mut t = vec![7.5_f32; n];
+                assert!(f.apply(&mut t));
+                assert!(
+                    max_abs(&t) < 1e-4,
+                    "{name} lp={lp}: HP(const) {}",
+                    max_abs(&t)
+                );
+            }
+            // LP-only preserves it.
+            let mut f = BandpassFilter::new();
+            f.update_cutoffs(tr, td, fs);
+            f.set_hp_enabled(false);
+            f.set_lp_enabled(true);
+            let mut t = vec![7.5_f32; n];
+            assert!(f.apply(&mut t));
+            let err = t.iter().fold(0.0_f32, |m, v| m.max((v - 7.5).abs()));
+            assert!(err < 1e-4, "{name}: LP-only const error {err}");
+        }
+    }
+
+    #[test]
+    fn lp_only_preserves_ramp() {
+        // LP-only promises to keep DC and slow trends; before detrending the
+        // wrap step rang through the LP taper (0.3–0.5·R at the edges).
+        let fs = 300.0;
+        let n = (100.0 * fs) as usize;
+        for (name, tr, td) in preset_taus() {
+            let mut f = BandpassFilter::new();
+            f.update_cutoffs(tr, td, fs);
+            f.set_hp_enabled(false);
+            f.set_lp_enabled(true);
+            let r = ramp(n);
+            let mut t = r.clone();
+            assert!(f.apply(&mut t));
+            let err = t
+                .iter()
+                .zip(&r)
+                .fold(0.0_f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(err < 1e-4, "{name}: LP-only ramp error {err} of R");
+        }
+    }
+
+    /// HP of a bleaching trace against the same filter run on the trace's
+    /// even (mirror) extension, a wrap-free reference. Returns the max
+    /// deviation over the first/last 1/f_hp seconds and over the whole trace.
+    fn bleach_edge_residual(tr: f64, td: f64, fs: f64, with_lp: bool) -> (f32, f32) {
+        let dur = 100.0;
+        let n = (dur * fs) as usize;
+        let kernel = crate::kernel::build_kernel(tr, td, fs);
+        // Baseline 1, transients of amplitude 1 (ΔF/F ≈ 1) in the interior.
+        let mut y = vec![1.0_f32; n];
+        for &t0 in &[0.2, 0.35, 0.5, 0.62, 0.8] {
+            let s = (t0 * n as f64) as usize;
+            for (k, &kv) in kernel.iter().enumerate() {
+                if s + k < n {
+                    y[s + k] += kv;
+                }
+            }
+        }
+        // Photobleaching: exponential with a time constant several times the
+        // trace length, i.e. a slow ramp (~28% drop over the trace).
+        let tau_b = 3.0 * dur;
+        for (i, v) in y.iter_mut().enumerate() {
+            *v *= (-(i as f64 / fs) / tau_b).exp() as f32;
+        }
+        let run = |z: &[f32]| {
+            let mut f = BandpassFilter::new();
+            f.update_cutoffs(tr, td, fs);
+            f.set_hp_enabled(true);
+            f.set_lp_enabled(with_lp);
+            let mut o = z.to_vec();
+            assert!(f.apply(&mut o));
+            o
+        };
+        let direct = run(&y);
+        // Even (mirror) extension: [y, reversed y] is continuous across every
+        // junction of its periodic extension, so filtering it is wrap-free.
+        let mut padded = y.clone();
+        padded.extend(y.iter().rev().copied());
+        let reference = &run(&padded)[..n];
+        let d: Vec<f32> = direct
+            .iter()
+            .zip(reference)
+            .map(|(a, b)| (a - b).abs())
+            .collect();
+        let f_hp = 1.0 / (2.0 * std::f64::consts::PI * td * MARGIN_FACTOR_HP as f64);
+        let w = ((fs / f_hp) as usize).min(n / 2);
+        let edge = max_abs(&d[..w]).max(max_abs(&d[n - w..]));
+        (edge, max_abs(&d))
+    }
+
+    #[test]
+    fn photobleaching_edge_residual_bounded() {
+        // Transient amplitude is 1, so residuals are in units of alpha. Before
+        // detrending the edge residual was 0.3–1.6 alpha (HP-only) across the
+        // presets; it is now a few percent of alpha. The remainder is the
+        // bleach curvature and the transients' own bleach modulation, which a
+        // linear detrend cannot (and should not) remove.
+        let fs = 300.0;
+        for (name, tr, td) in preset_taus() {
+            for lp in [false, true] {
+                let (edge, _) = bleach_edge_residual(tr, td, fs, lp);
+                assert!(
+                    edge < 0.1,
+                    "{name} lp={lp}: bleach edge residual {edge} alpha"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_spectrum_is_of_detrended_trace() {
+        let fs = 300.0;
+        let n = (10.0 * fs) as usize;
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.1, 0.6, fs);
+        // A pure ramp detrends to ~0: no power anywhere, not even at DC.
+        f.compute_spectrum_only(&ramp(n));
+        let ps = f.get_power_spectrum(n).to_vec();
+        assert_eq!(ps.len(), n / 2 + 1);
+        assert!(max_abs(&ps) < 1e-4, "ramp power {}", max_abs(&ps));
+        // apply() and compute_spectrum_only() cache the same spectrum.
+        let trace: Vec<f32> = (0..n)
+            .map(|i| 3.0 + 0.01 * i as f32 + (0.2 * i as f32).sin())
+            .collect();
+        f.compute_spectrum_only(&trace);
+        let from_spectrum_only = f.get_power_spectrum(n).to_vec();
+        f.set_enabled(true);
+        let mut t = trace.clone();
+        assert!(f.apply(&mut t));
+        assert_eq!(f.get_power_spectrum(n), &from_spectrum_only[..]);
     }
 }
