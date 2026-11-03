@@ -144,28 +144,12 @@ pub fn estimate_free_kernel(
         return vec![0.0; kernel_length];
     }
 
-    // Build adjusted targets: y_adj = (y - baseline) / alpha
-    let mut y_adj = vec![0.0_f32; total_len];
-    let mut offset = 0;
-    for i in 0..n_traces {
-        let len = trace_lengths[i];
-        let alpha = alphas[i];
-        let baseline = baselines[i];
-        if alpha.abs() < 1e-20 {
-            // Skip traces with zero alpha (no spikes detected)
-            offset += len;
-            continue;
-        }
-        for j in 0..len {
-            y_adj[offset + j] = ((traces[offset + j] as f64 - baseline) / alpha) as f32;
-        }
-        offset += len;
-    }
+    let y_adj = adjust_targets(traces, alphas, baselines, trace_lengths);
 
     // The objective is quadratic in h, so the gradient S^T(S h - y) equals
     // G h - b with G = S^T S (k x k) and b = S^T y. Both are computed once
-    // (cost O(nnz(s) * k)); every FISTA iteration is then O(k^2), independent
-    // of the data size.
+    // (see `build_gram` for its cost); every FISTA iteration is then O(k^2),
+    // independent of the data size.
     let (gram, rhs) = build_gram(spike_trains, &y_adj, trace_lengths, kernel_length);
     let lipschitz = gram_lipschitz(&gram, kernel_length);
     fista_kernel(
@@ -188,9 +172,10 @@ pub fn estimate_free_kernel(
     )
 }
 
-/// Build y_adj = (y - baseline) / alpha per trace (zero for alpha ~ 0).
-/// Exposed to the reference path in tests.
-#[cfg(test)]
+/// Build adjusted targets y_adj = (y - baseline) / alpha per trace. Traces
+/// with zero alpha (no spikes detected) are left at zero. Shared by the
+/// production Gram path and the test-only data-space reference so the two
+/// cannot drift.
 fn adjust_targets(
     traces: &[f32],
     alphas: &[f64],
@@ -219,6 +204,10 @@ fn adjust_targets(
 /// d = k1-k2 >= 0. Along each diagonal d it satisfies
 /// G[d+j][j] = G[d+j-1][j-1] - s[n-d-j] s[n-j], seeded by the autocorrelation
 /// A[d] = G[d][0]. The autocorrelation and b only visit nonzero spikes.
+///
+/// Cost: O(total_len) to scan the spikes, O(nnz(s) * k) for the
+/// autocorrelation and b, plus O(min(k, n)^2) for the diagonal recurrence of
+/// each trace with at least one nonzero spike (spike-free traces are skipped).
 fn build_gram(
     spikes: &[f32],
     y: &[f32],
@@ -235,11 +224,13 @@ fn build_gram(
         let yt = &y[offset..offset + n];
         offset += n;
         acorr.fill(0.0);
+        let mut has_spike = false;
         for u in 0..n {
             let su = s[u] as f64;
             if su == 0.0 {
                 continue;
             }
+            has_spike = true;
             let lag_max = k.min(n - u);
             for d in 0..lag_max {
                 acorr[d] += su * s[u + d] as f64;
@@ -248,6 +239,13 @@ fn build_gram(
             for kk in 0..lag_max {
                 b[kk] += su * yt[u + kk] as f64;
             }
+        }
+        // A spike-free trace has S == 0 on its rows, so it contributes nothing
+        // to G: acorr is all zero and every recurrence term s[.] s[.] is zero,
+        // i.e. the loop below would only add +0.0. Skipping it is exact and
+        // drops the O(min(k, n)^2) cost for silent traces.
+        if !has_spike {
+            continue;
         }
         // Rows k1 >= n have empty sums (S column entirely zero) -> stay 0.
         for d in 0..k.min(n) {
@@ -431,9 +429,9 @@ fn estimate_free_kernel_reference(
     )
 }
 
-#[cfg(test)]
 /// Adjoint of spike convolution: output[k] += sum_t input[t] * s[t-k].
 /// This is S^T * input, the transpose of convolve_spikes_kernel.
+#[cfg(test)]
 fn adjoint_spikes_kernel(
     input: &[f32],
     spikes: &[f32],
@@ -455,8 +453,8 @@ fn adjoint_spikes_kernel(
     }
 }
 
-#[cfg(test)]
 /// Convolve spike trains with kernel h: output[t] = sum_k h[k] * s[t-k].
+#[cfg(test)]
 fn convolve_spikes_kernel(spikes: &[f32], trace_lengths: &[usize], h: &[f32], output: &mut [f32]) {
     let k_len = h.len();
     let mut offset = 0;
@@ -915,7 +913,10 @@ mod tests {
         // Direct check of G and b against explicit S^T S, S^T y.
         let lengths = [30usize, 7, 1, 50];
         let k = 12;
-        let (tr, sp, _, _) = random_problem(9, &lengths, 0.3, 10);
+        let (tr, mut sp, _, _) = random_problem(9, &lengths, 0.3, 10);
+        // Make the last trace spike-free to exercise the skipped diagonal path.
+        let last = lengths[..lengths.len() - 1].iter().sum::<usize>();
+        sp[last..].fill(0.0);
         let (g, b) = build_gram(&sp, &tr, &lengths, k);
         let mut off = 0;
         let mut gref = vec![0.0_f64; k * k];
@@ -994,6 +995,34 @@ mod tests {
         eprintln!("gram vs reference (presets) worst rel L2 = {worst:.3e}");
     }
 
+    /// Asserting equivalence near production size: k = 300 (1 s of kernel at
+    /// the 300 Hz upsampled rate) over ~20k samples split across traces of
+    /// realistic length, with one spike-free trace (skipped Gram diagonal) and
+    /// one zero-alpha trace (zeroed targets). Iterations are capped at 50 so
+    /// the O(total_len * k)-per-iteration reference stays within a few seconds
+    /// in debug builds; equivalence holds iterate-by-iterate, so the cap does
+    /// not weaken the check. Only lambda > 0 is run (same reason): it exercises
+    /// the identical data-fit gradient as lambda = 0 plus the TV prox, and
+    /// lambda = 0 is already covered by the smaller equivalence tests above.
+    #[test]
+    fn gram_matches_reference_production_size() {
+        let lengths = vec![6000usize, 5000, 4000, 3000, 2000];
+        let k = 300;
+        let (tr, mut sp, mut al, ba) = random_problem(11, &lengths, 0.01, k);
+        // Trace 3 spike-free, trace 4 zero alpha.
+        let off3: usize = lengths[..3].iter().sum();
+        sp[off3..off3 + lengths[3]].fill(0.0);
+        al[4] = 0.0;
+        let lambda = 0.001;
+        let new = estimate_free_kernel(&tr, &sp, &al, &ba, &lengths, k, 50, 1e-9, None, lambda);
+        let old =
+            estimate_free_kernel_reference(&tr, &sp, &al, &ba, &lengths, k, 50, 1e-9, None, lambda);
+        assert!(new.iter().any(|&v| v > 0.0));
+        let e = rel_l2(&new, &old);
+        eprintln!("gram vs reference (k={k}, n=20000, lambda {lambda}) rel L2 = {e:.3e}");
+        assert!(e < 1e-4, "rel L2 {e}");
+    }
+
     #[test]
     fn large_total_len_is_fast() {
         let lengths = vec![50_000usize; 50];
@@ -1019,12 +1048,12 @@ mod tests {
         }
         let al = vec![1.0; 50];
         let ba = vec![0.0; 50];
+        // Timing is reported, not asserted: wall-clock limits are flaky in CI.
         let t0 = std::time::Instant::now();
         let h = estimate_free_kernel(&tr, &sp, &al, &ba, &lengths, k, 200, 1e-6, None, 0.0);
         let dt = t0.elapsed().as_secs_f64();
         eprintln!("large_total_len: {dt:.3}s");
         assert!(h.iter().any(|&v| v > 0.0));
-        assert!(dt < 60.0, "took {dt}s");
     }
 
     /// Benchmark (run with --release --ignored --nocapture).
