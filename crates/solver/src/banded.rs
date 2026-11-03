@@ -115,6 +115,13 @@ impl BandedAR2 {
         }
     }
 
+    /// DC gain of the normalized operator, `1 / (peak (1 - g1 - g2))`: the
+    /// sum of the peak-normalized kernel, which is the `G_dc` the `Solver`
+    /// scales its L1 weight by.
+    pub(crate) fn dc_gain(&self) -> f64 {
+        1.0 / (self.impulse_peak * (1.0 - self.g1 - self.g2))
+    }
+
     /// Return the cached Lipschitz constant (of the normalized operator).
     pub(crate) fn lipschitz(&self) -> f64 {
         self.lipschitz
@@ -124,6 +131,70 @@ impl BandedAR2 {
     #[allow(dead_code)]
     pub(crate) fn impulse_peak(&self) -> f64 {
         self.impulse_peak
+    }
+
+    /// [`Self::convolve_forward`] in f64 (the native-rate solve, which keeps
+    /// its iterate in f64; see the `native_solve` module).
+    pub(crate) fn convolve_forward_f64(&self, source: &[f64], output: &mut [f64]) {
+        let n = source.len();
+        if n == 0 {
+            return;
+        }
+        let inv_peak = 1.0 / self.impulse_peak;
+        output[0] = 0.0;
+        if n > 1 {
+            output[1] = self.g1 * output[0] + source[0] * inv_peak;
+        }
+        for t in 2..n {
+            output[t] =
+                self.g1 * output[t - 1] + self.g2 * output[t - 2] + source[t - 1] * inv_peak;
+        }
+    }
+
+    /// [`Self::convolve_adjoint`] in f64.
+    pub(crate) fn convolve_adjoint_f64(&self, source: &[f64], output: &mut [f64]) {
+        let n = source.len();
+        if n == 0 {
+            return;
+        }
+        let inv_peak = 1.0 / self.impulse_peak;
+        output[n - 1] = 0.0;
+        let mut a_tp1 = 0.0_f64;
+        let mut a_tp2 = 0.0_f64;
+        for t in (0..n).rev() {
+            let a_t = source[t] * inv_peak + self.g1 * a_tp1 + self.g2 * a_tp2;
+            if t >= 1 {
+                output[t - 1] = a_t;
+            }
+            a_tp2 = a_tp1;
+            a_tp1 = a_t;
+        }
+    }
+
+    /// Adjoint of the (pseudo-)inverse of the normalized forward operator:
+    /// `out = (K^+)' m`. The forward operator is `K = (1/peak) A^-1 S` with
+    /// `S` the one-sample source delay and `A(z) = 1 - g1 z^-1 - g2 z^-2`,
+    /// so `K^+ = peak S' A` on its image (the delay makes the last source
+    /// sample unobservable, so `K` has a null vector there) and
+    /// `(K^+)' = peak A' S`: `out[j] = peak (m[j-1] - g1 m[j] - g2 m[j+1])`,
+    /// with `m[-1] = 0` and the unobservable last sample `m[n-1]` ignored.
+    pub(crate) fn inverse_adjoint_f64(&self, m: &[f64], out: &mut [f64]) {
+        let n = m.len();
+        if n == 0 {
+            return;
+        }
+        let (g1, g2, peak) = (self.g1, self.g2, self.impulse_peak);
+        let at = |i: isize| -> f64 {
+            if i < 0 || i as usize >= n.saturating_sub(1) {
+                0.0
+            } else {
+                m[i as usize]
+            }
+        };
+        for j in 0..n {
+            let j = j as isize;
+            out[j as usize] = peak * (at(j - 1) - g1 * at(j) - g2 * at(j + 1));
+        }
     }
 }
 
@@ -326,6 +397,21 @@ mod tests {
                     kernel[i]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn dc_gain_is_the_sum_of_the_normalized_kernel() {
+        // The closed form must match the `Solver`'s G_dc (the sum of
+        // build_kernel), which is what the L1 weight is scaled by.
+        for &(tau_r, tau_d, fs) in &[(0.02, 0.4, 30.0), (0.1, 1.8, 60.0), (0.01, 0.15, 300.0)] {
+            let banded = BandedAR2::new(tau_r, tau_d, fs);
+            let sum: f64 = build_kernel(tau_r, tau_d, fs)
+                .iter()
+                .map(|&k| k as f64)
+                .sum();
+            let rel = (banded.dc_gain() - sum).abs() / sum;
+            assert!(rel < 1e-3, "fs={fs}: {} vs {sum}", banded.dc_gain());
         }
     }
 

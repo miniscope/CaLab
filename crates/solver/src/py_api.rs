@@ -523,7 +523,16 @@ fn seed_kernel_estimate<'py>(
 
 /// Run the full InDeCa pipeline on a single trace.
 ///
-/// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged).
+/// The relaxed solve runs at the recorded rate and stops on a data-derived
+/// convergence certificate (`native_solve`); `tol` (the relative-step rule)
+/// applies only to a trace without a measurable noise floor, and
+/// `max_iters` is a floor on the safety cap, which is derived from the
+/// problem (the default of 500 cannot truncate the solve).
+///
+/// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged):
+/// `iterations` is the recorded-rate FISTA iteration count and `converged`
+/// says the certificate (or, without noise, the step rule) fired before the
+/// cap.
 #[pyfunction]
 #[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
 #[allow(clippy::too_many_arguments)]
