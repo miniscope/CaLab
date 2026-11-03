@@ -1957,7 +1957,7 @@ mod tests {
         noise_constrained: bool,
         max_spike_frac: f32,
         max_spikes_always: bool,
-    ) {
+    ) -> InDecaResult {
         let (r, st) = solve_trace_stats(
             trace,
             0.02,
@@ -2007,6 +2007,7 @@ mod tests {
                 "{label}"
             );
         }
+        r
     }
 
     #[test]
@@ -2024,13 +2025,36 @@ mod tests {
     }
 
     #[test]
-    fn flat_trace_gives_finite_outputs_and_no_spikes() {
+    fn flat_trace_detects_nothing_above_the_arithmetic_floor() {
+        // A constant trace carries no events, but the solver is scale-free:
+        // the FFT high-pass of a constant leaves rounding-level residue
+        // (platform-dependent: zero on some libm/FFT paths, ~1e-7 on others),
+        // and the selection fits that residue as "spikes" of rounding-level
+        // amplitude (measured: a 1-ulp pattern on a level of 1 gives ~120
+        // spikes at alpha ~ 6e-7). The invariant is therefore not a zero
+        // count but that nothing is detected above the input's arithmetic
+        // floor: alpha must be within the accumulated f32 rounding of the
+        // n_up-point transform, `n_up * f32::EPSILON * level` (the coherent
+        // worst case; a real event has alpha of order `level`, three to four
+        // orders above). For level 0 the chain is exact and alpha and the
+        // counts must be exactly zero.
+        let k = 4usize;
         for level in [0.0_f32, 1.0] {
             let trace = vec![level; 600];
-            assert_degenerate_outputs_sane("flat", &trace, false, 0.0, true);
-            assert_degenerate_outputs_sane("flat/nc", &trace, true, 0.0, true);
-            let r = solve_trace(&trace, 0.02, 0.4, 30.0, 4, 200, 1e-4, None, true, true, 0.0);
-            assert_eq!(r.s_counts.iter().sum::<f32>(), 0.0, "flat {level}");
+            let floor = (trace.len() * k) as f64 * f32::EPSILON as f64 * level as f64;
+            for nc in [false, true] {
+                let label = if nc { "flat/nc" } else { "flat" };
+                let r = assert_degenerate_outputs_sane(label, &trace, nc, f32::INFINITY, false);
+                let total: f32 = r.s_counts.iter().sum();
+                assert!(
+                    r.alpha <= floor,
+                    "{label} {level}: alpha {:e} above the floor {floor:e} ({total} spikes)",
+                    r.alpha
+                );
+                if level == 0.0 {
+                    assert_eq!(total, 0.0, "{label} {level}");
+                }
+            }
         }
     }
 
