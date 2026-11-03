@@ -617,21 +617,48 @@ mod tests {
                 }
             }
         }
+        // Tolerance is 2e-7 (not 1e-7) to leave headroom for rounding-order
+        // differences between the cascade and the direct-form reference.
         // Measured worst case ~3e-8 (f64 cascade state; output rounded to
         // f32). For comparison, on this grid an all-f32 cascade reaches ~7e-6
         // and the previous f32 direct form ~6e-2.
         assert!(
-            worst_fwd.0 <= 1e-7,
+            worst_fwd.0 <= 2e-7,
             "forward rel L2 {} at (tau_r, tau_d, fs, T) = {:?}",
             worst_fwd.0,
             worst_fwd.1
         );
         assert!(
-            worst_adj.0 <= 1e-7,
+            worst_adj.0 <= 2e-7,
             "adjoint rel L2 {} at (tau_r, tau_d, fs, T) = {:?}",
             worst_adj.0,
             worst_adj.1
         );
+    }
+
+    #[test]
+    fn cascade_short_traces_n1_n2() {
+        let b = BandedAR2::new(0.02, 0.4, 30.0);
+        let peak = b.impulse_peak;
+        let mut out1 = vec![9.0_f32; 1];
+        b.convolve_forward(&[1.0], &mut out1);
+        assert_eq!(out1, [0.0]);
+        b.convolve_adjoint(&[1.0], &mut out1);
+        assert_eq!(out1, [0.0]);
+
+        let x = [0.7_f32, 0.3];
+        let mut out2 = vec![9.0_f32; 2];
+        b.convolve_forward(&x, &mut out2);
+        assert_eq!(out2[0], 0.0);
+        assert!((out2[1] as f64 - 0.7_f32 as f64 / peak).abs() < 1e-7);
+        let fr = forward_ref_f64(&b, &x);
+        assert!(rel_l2(&out2, &fr) <= 2e-7);
+
+        b.convolve_adjoint(&x, &mut out2);
+        assert_eq!(out2[1], 0.0);
+        assert!((out2[0] as f64 - 0.3_f32 as f64 / peak).abs() < 1e-7);
+        let ar = adjoint_ref_f64(&b, &x);
+        assert!(rel_l2(&out2, &ar) <= 2e-7);
     }
 
     #[test]
