@@ -7,7 +7,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SolverParams } from '@calab/core';
 import { anyAccepting, createTileScheduler } from '../tile-scheduler.ts';
-import { createGpuBatchConsumer, type BatchFistaEngine } from '../gpu-batch-consumer.ts';
+import {
+  createGpuBatchConsumer,
+  GPU_STARTUP_TIMEOUT_MS,
+  type BatchFistaEngine,
+} from '../gpu-batch-consumer.ts';
 import { createWasmPoolConsumer } from '../wasm-pool-consumer.ts';
 import { createQuantumSizer } from '../quantum-sizer.ts';
 import { decodeSolverState, encodeSolverState } from '../solver-state-codec.ts';
@@ -619,6 +623,58 @@ describe('GPU fallback to the WASM pool', () => {
     await flush(20);
     expect(failures[0]).toMatch(/init failed.*no adapter/);
     expect(wasm.jobs).toHaveLength(1);
+  });
+
+  it('fails a consumer whose engine init never settles, moving its tiles to the pool', async () => {
+    vi.useFakeTimers();
+    try {
+      const gpu = createGpuBatchConsumer({
+        createEngine: () => new Promise<BatchFistaEngine>(() => {}), // hangs forever
+        filtered: true,
+        prepare: async (tile) => [...tile.traces],
+        reconvolve: identityReconvolve,
+      });
+      const wasm = fakePool();
+      const failures: string[] = [];
+      const s = createTileScheduler({
+        consumers: [gpu, wasm.consumer],
+        onConsumerFailed: (_c, r) => failures.push(r),
+      });
+      const t = makeTile([1]);
+      s.submit(t.tile);
+      await vi.advanceTimersByTimeAsync(GPU_STARTUP_TIMEOUT_MS - 1);
+      expect(gpu.stats.state).toBe('init');
+      expect(failures).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gpu.stats.state).toBe('dead');
+      expect(failures[0]).toMatch(/init timed out after 10000 ms/);
+      expect(wasm.jobs.map((j) => j.cell)).toEqual([1]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not time out once the engine is up, or after dispose', async () => {
+    vi.useFakeTimers();
+    try {
+      const up = gpuConsumer(mockEngine(() => 1).engine, { initTimeoutMs: 50 });
+      const hung = createGpuBatchConsumer({
+        createEngine: () => new Promise<BatchFistaEngine>(() => {}),
+        filtered: true,
+        prepare: async (tile) => [...tile.traces],
+        reconvolve: identityReconvolve,
+        initTimeoutMs: 50,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(up.stats.state).toBe('idle');
+      hung.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(up.stats.state).toBe('idle');
+      expect(hung.stats.state).toBe('init');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('moves tiles to the pool on fail() (device lost) during a batch', async () => {

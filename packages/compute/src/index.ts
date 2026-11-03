@@ -56,6 +56,7 @@ export {
   createGpuBatchConsumer,
   DEFAULT_GPU_MEMORY_BUDGET,
   DEFAULT_REFILL_FRACTION,
+  GPU_STARTUP_TIMEOUT_MS,
 } from './gpu-batch-consumer.ts';
 export {
   GpuOutOfMemoryError,

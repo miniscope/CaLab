@@ -145,6 +145,23 @@ export const DEFAULT_GPU_MEMORY_BUDGET = 384 * 1024 * 1024;
 /** Default fraction of a batch's rows that must settle before the rest yields to waiting work. */
 export const DEFAULT_REFILL_FRACTION = 0.5;
 
+/**
+ * How long GPU backend startup work may go without progress before it is
+ * treated as hung: the consumer's engine init (`createEngine`: loading the
+ * GPU module chunk, requestAdapter/requestDevice, compiling the WGSL
+ * pipelines) and the GPU prep worker (WASM init, then one serial request at
+ * a time). No calibration or submit constant bounds these: the only timing
+ * constant in the GPU path, the 75 ms target submit in compute-gpu, is a
+ * per-dispatch budget, not a startup one. The longest normal wait here is a
+ * one-off startup, expected around a second (pipeline compile and a cold
+ * chunk fetch dominate; prep is ~11 ms per trace, see gpu-prep-client.ts),
+ * so 10x that leaves room for slow drivers and networks. A false timeout is
+ * cheap (the scheduler re-routes to the WASM pool, as for any GPU init
+ * failure); no timeout means a hung init keeps the WASM pool at its reduced
+ * size forever.
+ */
+export const GPU_STARTUP_TIMEOUT_MS = 10_000;
+
 export interface DisplayReconvolution {
   /** K*s plus the display baseline. */
   reconvolution: Float32Array;
@@ -208,6 +225,11 @@ export interface GpuBatchConsumerOptions {
    */
   refillFraction?: number;
   quantum?: QuantumSizerOptions;
+  /**
+   * Fail the consumer if `createEngine` has not resolved within this many ms
+   * (its tiles then go to other consumers). Default GPU_STARTUP_TIMEOUT_MS.
+   */
+  initTimeoutMs?: number;
   /** Convergence tolerance (the WASM solver's default is 1e-4). */
   tol?: number;
   /** Hard cap on iterations per batch load. */
@@ -317,9 +339,22 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
     });
   }
 
+  const initTimeoutMs = options.initTimeoutMs ?? GPU_STARTUP_TIMEOUT_MS;
+  let initTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    initTimer = null;
+    if (stats.state === 'init' && !disposed) {
+      fail(`GPU solver init timed out after ${initTimeoutMs} ms`);
+    }
+  }, initTimeoutMs);
+  const clearInitTimer = () => {
+    if (initTimer !== null) clearTimeout(initTimer);
+    initTimer = null;
+  };
+
   options
     .createEngine({ maxGroupBytes: options.groupBudgetBytes })
     .then((e) => {
+      clearInitTimer();
       if (disposed || isDead()) {
         e.destroy();
         return;
@@ -329,10 +364,14 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
       emitStats();
       ctx?.ready();
     })
-    .catch((err) => fail(`GPU solver init failed: ${String(err)}`));
+    .catch((err) => {
+      clearInitTimer();
+      fail(`GPU solver init failed: ${String(err)}`);
+    });
 
   function fail(reason: string): void {
     if (isDead()) return;
+    clearInitTimer();
     stats.state = 'dead';
     stats.failure = reason;
     emitStats();
@@ -673,6 +712,7 @@ export function createGpuBatchConsumer(options: GpuBatchConsumerOptions): GpuBat
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearInitTimer();
       batch = [];
       releaseEngine();
     },

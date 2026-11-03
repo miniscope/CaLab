@@ -424,6 +424,8 @@ export function createSolverPool(
           estimateBytes: fista.estimateBytes ? (n, T) => fista.estimateBytes!(n, T) : undefined,
           adapter,
           destroy() {
+            // Drop the handler so a destroyed device cannot fail() the consumer.
+            device.onuncapturederror = null;
             fista.destroy();
             device.destroy();
           },

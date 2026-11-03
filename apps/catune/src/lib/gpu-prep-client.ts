@@ -13,6 +13,7 @@
 // workers once that shows up next to the GPU solve time.
 
 import type { SolverParams, WarmStartStrategy } from '@calab/core';
+import { GPU_STARTUP_TIMEOUT_MS } from '@calab/compute';
 import type { GpuPrepInbound, GpuPrepOutbound } from '../workers/gpu-prep-types.ts';
 
 const CACHE_LIMIT = 256;
@@ -69,14 +70,51 @@ export function workingTraceKey(
   return [cellIndex, windowStart, length, p.filterEnabled, p.tauRise, p.tauDecay, p.fs].join('|');
 }
 
-export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
+/**
+ * `stallTimeoutMs`: while requests are pending, the worker must answer one of
+ * them (or report ready) at least this often; otherwise it is treated as hung,
+ * every pending request rejects and the worker is replaced on the next
+ * request. A stall watchdog rather than a per-request deadline, because the
+ * worker is serial: a request's latency includes the queue ahead of it, and a
+ * long but progressing queue is not a hang. Default GPU_STARTUP_TIMEOUT_MS (the
+ * worker's longest normal silence is its WASM init; see that constant).
+ */
+export function createGpuPrepClient(
+  createWorker: () => Worker,
+  stallTimeoutMs: number = GPU_STARTUP_TIMEOUT_MS,
+): GpuPrepClient {
   let worker: Worker | null = null;
   let ready: Promise<void> | null = null;
   let counter = 0;
   const pending = new Map<number, Pending>();
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
   /** Insertion order = recency (a hit re-inserts), so the first key is least recently used. */
   const cache = new Map<string, Promise<Float32Array>>();
   const stats: PrepStats = { computed: 0, totalMs: 0, cacheHits: 0 };
+
+  function clearWatchdog(): void {
+    if (watchdog !== null) clearTimeout(watchdog);
+    watchdog = null;
+  }
+
+  /** (Re)arm the stall watchdog while anything is pending; `reset` restarts the countdown. */
+  function armWatchdog(reset: boolean): void {
+    if (pending.size === 0) return clearWatchdog();
+    if (watchdog !== null && !reset) return;
+    clearWatchdog();
+    watchdog = setTimeout(onStall, stallTimeoutMs);
+  }
+
+  function onStall(): void {
+    watchdog = null;
+    const err = new Error(`prep worker made no progress in ${stallTimeoutMs} ms`);
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+    // Replace the hung worker on the next request.
+    worker?.terminate();
+    worker = null;
+    ready = null;
+  }
 
   function start(): Promise<void> {
     if (ready) return ready;
@@ -84,30 +122,50 @@ export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
     worker = w;
     ready = new Promise<void>((resolve, reject) => {
       w.onmessage = (e: MessageEvent<GpuPrepOutbound>) => {
+        if (w !== worker) return; // replaced after a stall
         const msg = e.data;
-        if (msg.type === 'ready') return resolve();
+        if (msg.type === 'ready') {
+          armWatchdog(true);
+          return resolve();
+        }
         if (msg.type === 'init-error') return reject(new Error(msg.message));
         const p = pending.get(msg.id);
         if (!p) return;
         pending.delete(msg.id);
+        armWatchdog(true);
         if (msg.type === 'error') p.reject(new Error(msg.message));
         else p.resolve(msg);
       };
       w.onerror = (e) => {
+        if (w !== worker) return;
         const err = new Error(`prep worker error: ${e.message || 'unknown'}`);
         reject(err);
         for (const p of pending.values()) p.reject(err);
         pending.clear();
+        clearWatchdog();
       };
     });
     return ready;
   }
 
-  async function request(msg: GpuPrepInbound, transfer: Transferable[]): Promise<GpuPrepOutbound> {
-    await start();
+  function request(msg: GpuPrepInbound, transfer: Transferable[]): Promise<GpuPrepOutbound> {
+    // Registered before the worker is ready, so a worker that never reports
+    // ready is caught by the same watchdog.
     return new Promise((resolve, reject) => {
       pending.set(msg.id, { resolve, reject });
-      worker!.postMessage(msg, transfer);
+      armWatchdog(false);
+      const w = start();
+      w.then(
+        () => {
+          // Still pending (not rejected by a stall or dispose) and the same worker.
+          if (pending.has(msg.id) && ready === w) worker!.postMessage(msg, transfer);
+        },
+        (err: unknown) => {
+          if (!pending.delete(msg.id)) return;
+          armWatchdog(false);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
     });
   }
 
@@ -170,6 +228,7 @@ export function createGpuPrepClient(createWorker: () => Worker): GpuPrepClient {
     dispose() {
       worker?.terminate();
       worker = null;
+      clearWatchdog();
       for (const p of pending.values()) p.reject(new Error('disposed'));
       pending.clear();
       cache.clear();

@@ -1,6 +1,6 @@
-# @calab/compute-gpu (spike)
+# @calab/compute-gpu
 
-A batched WebGPU (WGSL) implementation of the CaLab solver's banded-AR(2)
+**Experimental.** A batched WebGPU (WGSL) implementation of the CaLab solver's banded-AR(2)
 FISTA (`ConvMode::BandedAR2` in `crates/solver`). It solves every cell at
 once and is meant as a drop-in alternative to the per-cell Rust/WASM path.
 The WASM solver is the reference. CaTune uses it behind the dev-only
