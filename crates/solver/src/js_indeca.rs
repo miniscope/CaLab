@@ -30,11 +30,13 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
-/// `warm_counts`: optional spike counts from a previous iteration at the original
-/// sampling rate. Pass an empty slice for cold-start.
+/// `warm_counts`: accepted for API compatibility and currently has no effect
+/// (the first scale-loop round ignores it). Pass an empty slice.
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
-/// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
+/// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
+///   converged, loop_converged }. `loop_converged` is false when the scale
+/// loop hit its `max_rounds` safety cap instead of reaching its fixed point.
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid
