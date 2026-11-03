@@ -125,7 +125,9 @@ pub(crate) struct NoiseEstimate {
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
 /// upsample → filter path (no random probe). (The rolling-baseline subtraction
-/// that follows is a slow, mild high-pass and is not modelled.)
+/// that follows is a slow high-pass and is not modelled here; making the
+/// candidate scoring chain-consistent, i.e. scored through the rolling
+/// baseline, is done by the follow-up PR #240 (feat/indeca-chain-scoring).)
 pub(crate) fn estimate_noise_model(
     raw_trace: &[f32],
     upsample_factor: usize,
@@ -2030,5 +2032,44 @@ mod tests {
             let r = solve_trace(&trace, 0.02, 0.4, 30.0, 4, 200, 1e-4, None, true, true, 0.0);
             assert_eq!(r.s_counts.iter().sum::<f32>(), 0.0, "flat {level}");
         }
+    }
+
+    // ── Degenerate selection cases with a noise model (PR #237) ──────────
+
+    #[test]
+    fn noise_constrained_degenerate_traces_are_sane() {
+        let opts = SolveOptions {
+            noise_constrained: true,
+        };
+        // Very short traces (tiny or empty threshold grid) and an all-zero trace.
+        for trace in [
+            vec![],
+            vec![1.0_f32],
+            vec![0.0_f32, 1.0, 0.5],
+            vec![0.0_f32; 200],
+        ] {
+            let r = solve_trace_opts(
+                &trace, 0.02, 0.4, 30.0, 1, 50, 1e-4, None, false, false, 0.0, opts,
+            );
+            assert_eq!(r.s_counts.len(), trace.len());
+            assert!(r.s_counts.iter().all(|&v| v.is_finite() && v >= 0.0));
+            assert!(r.alpha.is_finite() && r.baseline.is_finite());
+            assert!(r.threshold.is_finite() && r.pve.is_finite());
+        }
+        let zero = solve_trace_opts(
+            &vec![0.0_f32; 200],
+            0.02,
+            0.4,
+            30.0,
+            1,
+            50,
+            1e-4,
+            None,
+            false,
+            false,
+            0.0,
+            opts,
+        );
+        assert!(zero.s_counts.iter().all(|&v| v == 0.0));
     }
 }
