@@ -534,6 +534,9 @@ pub(crate) struct ScaleLoop {
 impl ScaleLoop {
     /// The loop before this module's rework, with the noise-scaled inner stop
     /// and warm-started rounds (the loop shipped before the scale-loop rework).
+    ///
+    /// Deliberately uses `Scoring::Plain`: it reproduces the shipped loop
+    /// unchanged, as the characterization baseline for chain-consistent scoring.
     pub(crate) fn binary_alpha() -> Self {
         Self {
             alpha_source: AlphaSource::Binary,

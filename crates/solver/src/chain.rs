@@ -13,7 +13,9 @@
 //!   and positive lobes carrying about 8% of the impulse area 20-120 s away
 //!   from each event (the lobe sits at `~0.5 / f_hp`);
 //! - the circular wrap of the FFT high-pass: a step of half the trace's
-//!   end-to-start difference, spread over 8-45 s at both ends;
+//!   end-to-start difference, spread over 8-45 s at both ends (this is the
+//!   pre-#241 behaviour: PR #241, `fix/bandpass-edge-wrap`, endpoint-detrends
+//!   the bandpass input and removes the wrap step);
 //! - the rolling quantile riding up under dense activity;
 //! - and, when the trace is shorter than `1 / f_hp` (gcamp6s and ogb1 at
 //!   100 s), the high-pass degenerates into a DC-only no-op: the sag is a
