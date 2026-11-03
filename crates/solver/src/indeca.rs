@@ -167,7 +167,9 @@ pub(crate) struct NoiseEstimate {
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
 /// upsample → filter path (no random probe). (The rolling-baseline subtraction
-/// that follows is a slow, mild high-pass and is not modelled.)
+/// that follows is a slow high-pass and is not modelled here; making the
+/// candidate scoring chain-consistent, i.e. scored through the rolling
+/// baseline, is done by the follow-up PR #240 (feat/indeca-chain-scoring).)
 pub(crate) fn estimate_noise_model(
     raw_trace: &[f32],
     upsample_factor: usize,
@@ -236,7 +238,13 @@ pub struct InDecaResult {
     pub threshold: f64,
     pub pve: f64,
     pub iterations: u32,
+    /// The inner FISTA solve of the reported round met its stopping rule.
     pub converged: bool,
+    /// The scale loop stopped by its stopping rule (fixed point reached, or
+    /// the amplitude collapsed) rather than by hitting `max_rounds`. `false`
+    /// means the safety cap ended the loop and the result is the last round,
+    /// not a fixed point.
+    pub loop_converged: bool,
 }
 
 /// Run bounded FISTA on a (possibly upsampled) trace.
@@ -627,7 +635,11 @@ pub(crate) struct ScaleLoop {
     /// Report the last round (else the best round: highest PVE under
     /// `MaxPve`, smallest scale error under `NoiseFloor`).
     pub take_last: bool,
-    /// Safety net on the number of rounds.
+    /// Safety net on the number of rounds. Off-path: the default loop stops by
+    /// its fixed-point rule after 1.0 rounds on every simulation preset
+    /// tested, so the cap is not expected to be hit on normal data. 10 has no
+    /// derivation beyond being several times the observed round count; if it
+    /// is hit, [`InDecaResult::loop_converged`] is `false`.
     pub max_rounds: usize,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
@@ -636,6 +648,9 @@ pub(crate) struct ScaleLoop {
 impl ScaleLoop {
     /// The loop before this module's rework, with the noise-scaled inner stop
     /// and warm-started rounds (the loop shipped before the scale-loop rework).
+    ///
+    /// Deliberately uses `Scoring::Plain`: it reproduces the shipped loop
+    /// unchanged, as the characterization baseline for chain-consistent scoring.
     pub(crate) fn binary_alpha() -> Self {
         Self {
             inner: InnerSolve::Upsampled,
@@ -666,6 +681,13 @@ impl ScaleLoop {
 impl Default for ScaleLoop {
     /// The native-rate relaxed solve, spread and binarized at the upsampled
     /// rate with chain scoring (see the module docs).
+    ///
+    /// Known cost carried from the fixed-point scale loop this builds on
+    /// (#239): on the jgcamp8f preset that loop lowered F1 by 0.02-0.04
+    /// (0.492-0.525 vs 0.529-0.545 for the previous binary-alpha loop). It
+    /// is accepted for a deterministic, seed-independent fixed point that
+    /// does not depend on binarization. `fit_stop` is off because it
+    /// measured 1.6% mean / 19% max sensitivity to tiny input perturbations.
     fn default() -> Self {
         Self {
             inner: InnerSolve::Native,
@@ -954,6 +976,7 @@ pub(crate) fn solve_trace_cfg(
     // Previous round's relaxed solution and the prescale it was solved at.
     let mut previous: Option<(Vec<f32>, f64)> = None;
     let mut prev_objective = f64::INFINITY;
+    let mut loop_converged = false;
 
     for _ in 0..cfg.max_rounds.max(1) {
         // ── s-step: Box[0,1] FISTA on y / alpha_est ──
@@ -1133,6 +1156,7 @@ pub(crate) fn solve_trace_cfg(
             ));
         }
         if last {
+            loop_converged = true;
             break;
         }
 
@@ -1163,6 +1187,7 @@ pub(crate) fn solve_trace_cfg(
             pve,
             iterations,
             converged,
+            loop_converged,
         },
         stats,
     )
@@ -1378,6 +1403,10 @@ fn solve_trace_native(
             pve,
             iterations,
             converged,
+            // The native solve is one round (no scale loop, no `max_rounds`),
+            // so there is no loop cap to hit; the inner solve's stop is
+            // reported by `converged`.
+            loop_converged: true,
         },
         stats,
     )
@@ -2816,5 +2845,168 @@ mod tests {
         assert!(native_fit > 0.0);
         let rel = (native_fit - selection_fit).abs() / native_fit;
         assert!(rel < 1e-5, "{native_fit} vs {selection_fit} (rel {rel:e})");
+    }
+
+    // ═══ Loop-convergence flag and degenerate-trace tests (PR #239 review) ═══
+
+    #[test]
+    fn default_loop_converges_below_max_rounds_on_presets() {
+        let cap = ScaleLoop::default().max_rounds;
+        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
+            let (r, st) = solve_trace_stats(
+                &trace,
+                tr,
+                td,
+                fs,
+                k,
+                300,
+                1e-4,
+                None,
+                true,
+                true,
+                0.0,
+                SolveOptions::default(),
+            );
+            assert!(r.loop_converged, "{name}: {st:?}");
+            assert!(st.len() < cap, "{name}: {st:?}");
+        }
+    }
+
+    #[test]
+    fn loop_converged_is_false_when_max_rounds_is_hit() {
+        let (name, trace, tr, td, fs, k) = preset_cells(1, 900).remove(0);
+        // The upsampled fixed-point loop: the native default is a single
+        // round with no `max_rounds` to hit (its `loop_converged` is always
+        // true; the inner stop is reported by `converged`).
+        let cfg = ScaleLoop {
+            stop: ScaleStop::AlphaRtol(0.0),
+            max_rounds: 2,
+            ..ScaleLoop::upsampled()
+        };
+        let (r, st) = run_cfg(&trace, (tr, td, fs, k), 100, cfg);
+        assert_eq!(st.len(), 2, "{name}: {st:?}");
+        assert!(!r.loop_converged, "{name}");
+    }
+
+    fn assert_degenerate_outputs_sane(
+        label: &str,
+        trace: &[f32],
+        noise_constrained: bool,
+        max_spike_frac: f32,
+        max_spikes_always: bool,
+    ) {
+        let (r, st) = solve_trace_stats(
+            trace,
+            0.02,
+            0.4,
+            30.0,
+            4,
+            200,
+            1e-4,
+            None,
+            true,
+            true,
+            0.0,
+            SolveOptions { noise_constrained },
+        );
+        assert_eq!(r.s_counts.len(), trace.len(), "{label}");
+        assert!(r.s_counts.iter().all(|v| v.is_finite()), "{label}");
+        assert!(
+            r.filtered_trace
+                .as_ref()
+                .is_some_and(|f| f.iter().all(|v| v.is_finite())),
+            "{label}"
+        );
+        for v in [r.alpha, r.baseline, r.threshold, r.pve] {
+            assert!(v.is_finite(), "{label}: alpha {} pve {}", r.alpha, r.pve);
+        }
+        // Amplitude is a non-negative scale.
+        assert!(r.alpha >= 0.0, "{label}: alpha {}", r.alpha);
+        // Max-PVE selection fits noise as spikes by design (67 per 600
+        // samples on this trace), so the spike-count bound applies to the
+        // noise-constrained pick, which exists to suppress that (14 per 600
+        // here; bound 5%).
+        let total: f32 = r.s_counts.iter().sum();
+        let bound = if noise_constrained || max_spikes_always {
+            max_spike_frac * trace.len() as f32
+        } else {
+            f32::INFINITY
+        };
+        assert!(
+            total <= bound,
+            "{label}: {total} spikes in {} samples",
+            trace.len()
+        );
+        assert!(r.loop_converged, "{label}: {st:?}");
+        for s in &st {
+            assert!(
+                s.alpha_est.is_finite() && s.objective.is_finite(),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn pure_noise_trace_gives_finite_outputs_and_few_spikes() {
+        let mut state = 0x9E3779B97F4A7C15_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        };
+        let trace: Vec<f32> = (0..600).map(|_| next() * 0.2).collect();
+        assert_degenerate_outputs_sane("noise", &trace, false, 0.02, false);
+        assert_degenerate_outputs_sane("noise/nc", &trace, true, 0.05, false);
+    }
+
+    #[test]
+    fn flat_trace_gives_finite_outputs_and_no_spikes() {
+        for level in [0.0_f32, 1.0] {
+            let trace = vec![level; 600];
+            assert_degenerate_outputs_sane("flat", &trace, false, 0.0, true);
+            assert_degenerate_outputs_sane("flat/nc", &trace, true, 0.0, true);
+            let r = solve_trace(&trace, 0.02, 0.4, 30.0, 4, 200, 1e-4, None, true, true, 0.0);
+            assert_eq!(r.s_counts.iter().sum::<f32>(), 0.0, "flat {level}");
+        }
+    }
+
+    // ── Degenerate selection cases with a noise model (PR #237) ──────────
+
+    #[test]
+    fn noise_constrained_degenerate_traces_are_sane() {
+        let opts = SolveOptions {
+            noise_constrained: true,
+        };
+        // Very short traces (tiny or empty threshold grid) and an all-zero trace.
+        for trace in [
+            vec![],
+            vec![1.0_f32],
+            vec![0.0_f32, 1.0, 0.5],
+            vec![0.0_f32; 200],
+        ] {
+            let r = solve_trace_opts(
+                &trace, 0.02, 0.4, 30.0, 1, 50, 1e-4, None, false, false, 0.0, opts,
+            );
+            assert_eq!(r.s_counts.len(), trace.len());
+            assert!(r.s_counts.iter().all(|&v| v.is_finite() && v >= 0.0));
+            assert!(r.alpha.is_finite() && r.baseline.is_finite());
+            assert!(r.threshold.is_finite() && r.pve.is_finite());
+        }
+        let zero = solve_trace_opts(
+            &vec![0.0_f32; 200],
+            0.02,
+            0.4,
+            30.0,
+            1,
+            50,
+            1e-4,
+            None,
+            false,
+            false,
+            0.0,
+            opts,
+        );
+        assert!(zero.s_counts.iter().all(|&v| v == 0.0));
     }
 }

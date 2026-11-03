@@ -30,9 +30,9 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
-/// `warm_counts`: optional spike counts from a previous iteration at the original
-/// sampling rate. Pass an empty slice for cold-start. (The default pipeline
-/// ignores it; see `indeca::solve_trace`.)
+/// `warm_counts`: accepted for API compatibility and currently has no effect
+/// (the first scale-loop round ignores it; see `indeca::solve_trace`). Pass an
+/// empty slice.
 ///
 /// `max_iters` and `tol` (CaDecon's `traceFistaMaxIters` / `traceFistaTol`)
 /// are effectively no-ops on the default path: the relaxed solve runs at
@@ -45,13 +45,16 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// exceeds the derived cap.
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
-/// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
+/// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
+///   converged, loop_converged }
 /// where `iterations` is the recorded-rate FISTA iteration count (hundreds
 /// to a few thousand at 30 Hz; tens of thousands for slow indicators at
 /// 60 Hz) and `converged` says the certificate (or, without noise, the step
 /// rule) fired. `converged = false` means the certificate could not be met
 /// in f64 arithmetic: in practice the stall detector on the certificate's
 /// bound stopped the solve, since the derived cap is not reached.
+/// `loop_converged` is false when the scale loop hit its `max_rounds` safety
+/// cap instead of reaching its fixed point.
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid

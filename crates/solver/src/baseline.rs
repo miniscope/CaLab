@@ -452,4 +452,53 @@ mod tests {
             );
         }
     }
+
+    // --- Ordering contract (separate block) ---
+
+    /// The rank order is `f32::total_cmp` order (see `sortable_key`): -0.0
+    /// sorts below +0.0 and NaN above +inf, so NaN inputs are supported and
+    /// ordered, not excluded. Checked against a `total_cmp` sort of each window;
+    /// results are compared by bits (NaN by `is_nan`) because `-0.0 - (+0.0)`
+    /// and `-0.0 - (-0.0)` differ in sign, which exposes a wrong zero order.
+    #[test]
+    fn ordering_matches_total_cmp_with_nan_and_signed_zero() {
+        let vals = [
+            0.0_f32,
+            -0.0,
+            1.0,
+            -1.0,
+            f32::NAN,
+            -f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        let n = 400usize;
+        let mut state = 7u64;
+        let trace: Vec<f32> = (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                vals[((state >> 33) % vals.len() as u64) as usize]
+            })
+            .collect();
+        for &(window, quantile) in &[(20usize, 0.2f64), (7, 0.5), (50, 0.0), (13, 1.0)] {
+            let mut fast = trace.clone();
+            subtract_rolling_baseline(&mut fast, window, quantile);
+            for t in 0..n {
+                let start = t.saturating_sub(window - 1);
+                let mut buf = trace[start..=t].to_vec();
+                buf.sort_by(|a, b| a.total_cmp(b));
+                let k = ((buf.len() as f64 - 1.0) * quantile).round() as usize;
+                let expected = trace[t] - buf[k.min(buf.len() - 1)];
+                assert!(
+                    (fast[t].is_nan() && expected.is_nan())
+                        || fast[t].to_bits() == expected.to_bits(),
+                    "window {window} q {quantile} t {t}: fast={} ref={}",
+                    fast[t],
+                    expected
+                );
+            }
+        }
+    }
 }

@@ -63,8 +63,10 @@ use crate::banded::BandedAR2;
 use crate::chain::Scorer;
 
 /// Number of evenly spaced candidate thresholds. This is the numerical
-/// resolution of the search (a step of ~0.005 in normalized spike height), not
-/// a tuning knob: the selection rule, not the grid, decides the pick.
+/// resolution of the search, not a tuning knob: the selection rule, not the
+/// grid, decides the pick. The grid spans `[0.5 / k, 1]` for upsample factor
+/// `k`, so the step is `(1 - 0.5 / k) / (THRESHOLD_GRID_LEVELS - 1)`: about
+/// 0.0025 for `k = 1` and approaching 0.005 for large `k`.
 pub const THRESHOLD_GRID_LEVELS: usize = 200;
 
 pub struct ThresholdResult {
@@ -922,5 +924,51 @@ mod tests {
             )
         };
         assert_eq!(run(&y).s_binary, run(&y2).s_binary);
+    }
+
+    #[test]
+    fn degenerate_inputs_with_noise_model_do_not_panic() {
+        let banded = BandedAR2::new(0.02, 0.4, 30.0);
+        for selection in [Selection::MaxPve, Selection::NoiseFloor] {
+            // (a) Very short traces: the interior grid is tiny (empty for n = 0).
+            for n in [0usize, 1, 2, 3, 5] {
+                let s_relaxed = vec![0.7_f32; n];
+                let y = vec![1.0_f32; n];
+                let r = threshold_search_opts(
+                    &s_relaxed,
+                    &y,
+                    &banded,
+                    0.4,
+                    30.0,
+                    1,
+                    f64::INFINITY,
+                    selection,
+                    noise_model(0.1),
+                );
+                assert_eq!(r.s_binary.len(), n);
+                assert!(r.threshold.is_finite());
+                assert!(r.alpha.is_finite() && r.baseline.is_finite());
+                assert!(r.pve.is_finite());
+            }
+            // (b) All-zero relaxed solution: empty train, zero alpha, baseline = mean(y).
+            let n = 100;
+            let y = vec![2.0_f32; n];
+            let r = threshold_search_opts(
+                &vec![0.0_f32; n],
+                &y,
+                &banded,
+                0.4,
+                30.0,
+                1,
+                f64::INFINITY,
+                selection,
+                noise_model(0.1),
+            );
+            assert!(r.s_binary.iter().all(|&v| v == 0.0));
+            assert_eq!(r.alpha, 0.0);
+            assert!((r.baseline - 2.0).abs() < 1e-9);
+            assert!(!r.noise_path);
+            assert_eq!(r.pve, 0.0);
+        }
     }
 }
