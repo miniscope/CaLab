@@ -171,6 +171,17 @@ impl BandedAR2 {
         }
     }
 
+    /// Operator norm of [`Self::inverse_adjoint_f64`]: `||(K^+)'|| <=
+    /// peak max_w |A(e^{jw})|` (the value for an infinitely long trace; a
+    /// finite section of the banded operator can only be smaller), which
+    /// is also `||K^+|| = 1 / sigma_min(K)`. By the triangle inequality
+    /// `|A| <= 1 + |g1| + |g2|`, with equality at `w = pi` for the AR(2)
+    /// kernels built here (`g1 > 0 > g2`, so `A(-1) = 1 + g1 - g2`): cheap,
+    /// and tight.
+    pub(crate) fn inverse_norm(&self) -> f64 {
+        self.impulse_peak * (1.0 + self.g1.abs() + self.g2.abs())
+    }
+
     /// Adjoint of the (pseudo-)inverse of the normalized forward operator:
     /// `out = (K^+)' m`. The forward operator is `K = (1/peak) A^-1 S` with
     /// `S` the one-sample source delay and `A(z) = 1 - g1 z^-1 - g2 z^-2`,

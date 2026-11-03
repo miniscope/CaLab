@@ -6,6 +6,15 @@ use crate::simulate;
 use crate::validate;
 use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver, SolverError};
 
+/// Iterations per `Solver::step_batch` call in the Python solve loops. The
+/// f32 `Solver` tests its stop rule (the relative-step tolerance) at every
+/// iteration and returns `true` from the batch it converges in, so this only
+/// sets how often control returns to Rust's loop between batches (and how
+/// far `max_iters` is rounded up to whole batches); the solution does not
+/// depend on it. That is not the same thing as `native_solve::BATCH` (50),
+/// the interval between the native InDeCa solve's certificate checks, where
+/// the stop is tested only at batch boundaries and the output does depend
+/// on the granularity (its derivation is there).
 const BATCH_SIZE: u32 = 100;
 const CONTIGUOUS_ERR: &str =
     "array must be C-contiguous; call numpy.ascontiguousarray() before passing";
@@ -524,15 +533,19 @@ fn seed_kernel_estimate<'py>(
 /// Run the full InDeCa pipeline on a single trace.
 ///
 /// The relaxed solve runs at the recorded rate and stops on a data-derived
-/// convergence certificate (`native_solve`); `tol` (the relative-step rule)
-/// applies only to a trace without a measurable noise floor, and
-/// `max_iters` is a floor on the safety cap, which is derived from the
-/// problem (the default of 500 cannot truncate the solve).
+/// convergence certificate (`native_solve`), so `max_iters` and `tol` are
+/// effectively no-ops on the default path: `tol` (the relative-step rule)
+/// applies only to a trace without a measurable noise floor (no
+/// certificate), and `max_iters` is only a floor on the safety cap, which is
+/// derived from the problem and lies in the 1e5-1e9 range (the default of
+/// 500 cannot truncate the solve).
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged):
 /// `iterations` is the recorded-rate FISTA iteration count and `converged`
-/// says the certificate (or, without noise, the step rule) fired before the
-/// cap.
+/// says the certificate (or, without noise, the step rule) fired.
+/// `converged = False` means the certificate could not be met in f64
+/// arithmetic: in practice the stall detector on the certificate's bound
+/// stopped the solve, since the derived cap is not reached.
 #[pyfunction]
 #[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
 #[allow(clippy::too_many_arguments)]

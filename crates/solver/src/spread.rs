@@ -16,6 +16,13 @@
 use crate::upsample::upsample_trace;
 
 /// How a frame's mass is laid over its sub-bins.
+///
+/// One variant today, kept as an enum on purpose: the spread is a modelling
+/// choice at the seam (where sub-frame mass goes is not determined by the
+/// data), the alternatives named under [`Spread::Interp`] were characterized
+/// against it and remain candidates for the characterization harness, and
+/// naming the rule at the call site keeps that choice visible. A
+/// one-variant enum costs nothing at run time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Spread {
     /// Linear interpolation between frame masses: the tent

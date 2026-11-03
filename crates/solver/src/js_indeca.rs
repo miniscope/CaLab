@@ -34,20 +34,24 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// sampling rate. Pass an empty slice for cold-start. (The default pipeline
 /// ignores it; see `indeca::solve_trace`.)
 ///
-/// `max_iters` and `tol`: the relaxed solve runs at the recorded rate and
-/// stops on a data-derived convergence certificate (`native_solve`). `tol`
-/// (the relative-step rule) applies only to a trace without a measurable
-/// noise floor. `max_iters` is a floor on the safety cap, which is derived
-/// from the problem so that a value sized for the old upsampled solve (500)
-/// cannot truncate this one; raising it changes nothing unless it exceeds
-/// the derived cap.
+/// `max_iters` and `tol` (CaDecon's `traceFistaMaxIters` / `traceFistaTol`)
+/// are effectively no-ops on the default path: the relaxed solve runs at
+/// the recorded rate and stops on a data-derived convergence certificate
+/// (`native_solve`). `tol` (the relative-step rule) applies only to a trace
+/// without a measurable noise floor (no certificate). `max_iters` is only a
+/// floor on the safety cap, which is derived from the problem and lies in
+/// the 1e5-1e9 range, so a value sized for the old upsampled solve (500)
+/// cannot truncate the solve and raising it changes nothing unless it
+/// exceeds the derived cap.
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, alpha, baseline, threshold, pve, iterations, converged }
 /// where `iterations` is the recorded-rate FISTA iteration count (hundreds
 /// to a few thousand at 30 Hz; tens of thousands for slow indicators at
 /// 60 Hz) and `converged` says the certificate (or, without noise, the step
-/// rule) fired before the cap.
+/// rule) fired. `converged = false` means the certificate could not be met
+/// in f64 arithmetic: in practice the stall detector on the certificate's
+/// bound stopped the solve, since the derived cap is not reached.
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid

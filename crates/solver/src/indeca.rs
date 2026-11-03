@@ -33,12 +33,15 @@
 /// of the fit, bounded by a dual gap, can no longer change the grid
 /// residual energy by one standard error of the noise energy, the
 /// selection's own resolution). The caller's relative-step tolerance applies
-/// only when the trace has no measurable noise (no certificate), and the
-/// cap is derived from the problem ([`crate::native_solve::iteration_cap`])
-/// with the caller's `max_iters` as a floor on it. The output does not
-/// depend on the cap (measured: zero cap hits at 15, 30 and 60 Hz on the
-/// simulation presets, 400-4,000 iterations at 30 Hz, up to 34,000 for
-/// GCaMP6s at 60 Hz) nor on the tolerance.
+/// only when the trace has no measurable noise (no certificate). If the
+/// certificate cannot be met in f64, a stall detector on the certificate's
+/// own bound stops the solve unconverged (`converged = false`); the
+/// iteration cap is derived from the problem
+/// ([`crate::native_solve::iteration_cap`], 1e5-1e9, with the caller's
+/// `max_iters` as a floor on it) and is an outer guard only. The output
+/// does not depend on the cap (measured: zero cap hits and zero stalls at
+/// 15, 30 and 60 Hz on the simulation presets, 400-4,000 iterations at
+/// 30 Hz, up to 34,000 for GCaMP6s at 60 Hz) nor on the tolerance.
 ///
 /// [`InnerSolve::Upsampled`] is the loop before this change, kept for
 /// comparison: Box[0,1] FISTA at the 300 Hz rate. With `lambda = 0` that
@@ -411,7 +414,10 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 /// one. The reported `iterations` is the native-rate FISTA iteration count
 /// (400-4,000 at 30 Hz on the simulation presets, more on slow kernels at
 /// high frame rates) and `converged` says the certificate (or, without
-/// noise, the step rule) fired before the cap. On the comparison path
+/// noise, the step rule) fired; it is `false` when the certificate's bound
+/// stalled at its f64 floor (the stall detector, which is what stops an
+/// unconvergeable solve in practice) or the cap was reached. On the
+/// comparison path
 /// ([`InnerSolve::Upsampled`]) `max_iters` is the early-stopping regularizer
 /// the output depends on and `tol` the step rule's tolerance (see the module
 /// docs).
@@ -582,6 +588,14 @@ pub(crate) fn native_grid(n_up: usize, pad_up: usize, k: usize) -> (usize, usize
     let count = (pad_up..n_up.saturating_sub(pad_up)).step_by(k).count();
     let lo = pad_up.div_ceil(k).min(n_up / k);
     (lo, (lo + count).min(n_up / k))
+}
+
+/// The samples of an upsampled vector that fall on recorded frames (every
+/// `k`-th, `n_up / k` of them): what the native solve fits, and, over
+/// [`native_grid`], what the selection scores.
+pub(crate) fn recorded_samples(up: &[f32], k: usize) -> Vec<f32> {
+    let k = k.max(1);
+    (0..up.len() / k).map(|i| up[i * k]).collect()
 }
 
 /// Structure of the scale loop. `Default` is the shipped behavior; the other
@@ -1215,7 +1229,7 @@ fn solve_trace_native(
     let (lo, hi) = native_grid(n_up, pad_up, k);
     let n = n_up / k;
     // What the relaxed solve fits: the working trace at the grid samples.
-    let y: Vec<f32> = (0..n).map(|i| up.working[i * k]).collect();
+    let y = recorded_samples(&up.working, k);
     let banded = BandedAR2::new(tau_r, tau_d, fs);
     let cap = max_spikes_per_frame(fs) as f64;
     let selection = if opts.noise_constrained {
@@ -2721,5 +2735,86 @@ mod tests {
         assert_eq!(max_spikes_per_frame(15.0), 20);
         assert_eq!(max_spikes_per_frame(60.0), 5);
         assert_eq!(max_spikes_per_frame(1000.0), 1);
+    }
+
+    // ── Native solve: unconverged stop and the certificate/selection seam ─
+    // (review fixes for the native-solve PR; kept together at the end of
+    // the module so the stack's lower branches merge cleanly.)
+
+    #[test]
+    fn native_solve_reports_an_unconverged_stop_without_panicking() {
+        // Force the outer guard: the step rule alone (no certificate, hence
+        // no stall detector) at `tol = 0` never fires, so the solve runs into
+        // a 10-iteration cap. The pipeline must still binarize and report
+        // `converged = false` rather than panic or claim convergence. (The
+        // stall detector's own unconverged stop is exercised in
+        // `native_solve::tests::stall_detector_stops_an_unattainable_certificate_unconverged`:
+        // on a real trace with a noise model the certificate always fires,
+        // so a certificate-mode stall cannot be forced from here without a
+        // test-only hook.)
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let p = (0.1, 0.6, 30.0, 10);
+        let cfg = ScaleLoop {
+            native_stop: NativeStop::Step,
+            ..ScaleLoop::default()
+        };
+        let (r, st) = run_native(&trace, p, 10, 0.0, cfg);
+        assert!(!st.converged && !r.converged, "{st:?}");
+        assert_eq!(st.iterations, 10);
+        assert_eq!(r.iterations, 10);
+        assert_eq!(r.s_counts.len(), trace.len());
+        assert!(r.s_counts.iter().all(|v| v.is_finite() && *v >= 0.0));
+        assert!(r.alpha.is_finite() && r.pve.is_finite());
+    }
+
+    #[test]
+    fn native_certificate_residual_is_the_selections_grid_residual() {
+        // The seam between the solve and the selection: the certificate's
+        // grid residual (native indices `[lo, hi)` of the recorded samples
+        // of the upsampled working trace) must be the residual the
+        // selection takes over its grid (every `k`-th sample of
+        // `[pad_up, n_up - pad_up)` of the working trace) for the same
+        // reconstruction. The two grids coincide only when `pad_up` is a
+        // multiple of `k`; otherwise the selection's grid falls between
+        // recorded frames and scores interpolated sub-bins (e.g.
+        // `pad_up = 365, k = 10`), and the certificate scores the nearest
+        // recorded samples instead. This configuration (tau_d = 0.6 s at
+        // 300 Hz: `pad_up = 360`, `k = 10`) is one where they coincide, so
+        // the residuals must agree up to the f32 rounding of the
+        // reconstruction.
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
+        let up = prepare(&trace, tr, td, fs * k as f64, k, true, true);
+        let (n_up, pad_up) = (up.working.len(), up.pad);
+        assert_eq!(pad_up % k, 0, "pad_up = {pad_up}: grids do not coincide");
+        let (lo, hi) = native_grid(n_up, pad_up, k);
+        assert_eq!(lo * k, pad_up);
+        let y: Vec<f64> = recorded_samples(&up.working, k)
+            .iter()
+            .map(|&v| v as f64)
+            .collect();
+        let banded = BandedAR2::new(tr, td, fs);
+        // Any iterate will do; a partly converged one keeps the residual
+        // well away from zero.
+        let stop = Stop {
+            se: 0.0,
+            lo,
+            hi,
+            stride: 1,
+        };
+        let r = native_solve::solve_box(&y, &banded, 0.0, 200, 0.0, Some(stop), None);
+        let native_fit = r.certificate.unwrap().grid_fit;
+        // The same reconstruction at the upsampled rate (the tent through
+        // the recorded samples, exact on them), scored on the selection's
+        // grid.
+        let mut recon = vec![0.0_f64; y.len()];
+        banded.convolve_forward_f64(&r.x, &mut recon);
+        let recon32: Vec<f32> = recon.iter().map(|&v| v as f32).collect();
+        let recon_up = upsample_trace(&recon32, k);
+        assert_eq!(recon_up.len(), n_up);
+        let selection_fit = grid_energy(&up.working, &recon_up, 1.0, pad_up, k);
+        assert!(native_fit > 0.0);
+        let rel = (native_fit - selection_fit).abs() / native_fit;
+        assert!(rel < 1e-5, "{native_fit} vs {selection_fit} (rel {rel:e})");
     }
 }

@@ -101,27 +101,118 @@
 //! A bound against the threshold grid's spacing through `||K^+||` was also
 //! tried: it is a worst-case bound and hits the cap on slow kernels.)
 //!
-//! # The cap
+//! # When the certificate cannot be met: the stall detector and the cap
 //!
-//! The certificate is attainable (above) and FISTA converges, so the cap is
-//! a guard against runaway time only. The caller's `max_iters` was sized for
-//! the upsampled solve, whose fixed budget acted as a regularizer; here it
-//! would truncate the solve (400-4,000 iterations at 30 Hz, 30,000 at 60 Hz
-//! on GCaMP6s). [`iteration_cap`] therefore raises it to FISTA's worst-case
-//! count for the true remaining movement to fall under the bound, which is
-//! what the certificate certifies: from `F(x_k) - F* <= 2 L ||x_0 - x*||^2 /
-//! (k + 1)^2` and step 2 above, `||K x_k - K x*|| <= 2 sqrt(L) ||x_0 - x*||
-//! / (k + 1)`, with `||x_0 - x*|| <= sqrt(n)` on the box from `x_0 = 0` and
-//! `tau` taken at the initial residual (where it is smallest, since `tau`
-//! grows as the fit improves). Every quantity is the problem's own; the
-//! bound is loose by the box worst case, so it is three to four orders of
-//! magnitude above the iterations the certificate needs (measured: 1e7-1e8
-//! at 30 Hz).
+//! The certificate is attainable in exact arithmetic (above) and FISTA
+//! converges, but the iterate lives in f64: once `||delta||` reaches the
+//! arithmetic floor of its own evaluation it stops improving, and if the
+//! bound is below that floor (or zero: a resolution `SE` too small to
+//! register against `||r||^2`) the certificate can never fire. The stop for
+//! that case is a stall detector on the certificate itself
+//! ([`StallDetector`]): at every check the bound `||delta||` is recorded,
+//! and the solve stops with `converged = false` ([`StopReason::Stall`]) when
+//! the running best has not improved by more than the arithmetic floor over
+//! `W` consecutive checks.
+//!
+//! *The floor.* `||delta||` is evaluated as `K x` (forward AR(2)
+//! recursion), `r = K x - y`, `g = K' r` (adjoint recursion), the clip, and
+//! `delta = (K^+)' m` (3-tap filter). A recursion `c_t = g1 c_{t-1} + g2
+//! c_{t-2} + s_t` commits a local rounding error of about
+//! `eps (1 + |g1| + |g2|) |c_t|` per step and propagates it through `1/A`,
+//! so the computed `K x` is off by about `||K|| ||K^+|| eps ||K x||`
+//! (`||K|| = sqrt(L)`, `||K^+|| = peak (1 + |g1| + |g2|)`,
+//! [`BandedAR2::inverse_norm`]); that error passes into `delta` through
+//! `(K^+)' K'`, a projection, unamplified. The adjoint recursion likewise
+//! errs by about `eps (1 + |g1| + |g2|)` relative to its raw output, which
+//! `(K^+)'` (`= peak A' S`, the inverse filter) maps back to about
+//! `||K^+|| eps ||g||`, with `||g|| <= sqrt(L) ||r||`. With `||K x|| <=
+//! sqrt(L) ||x||` and `||r|| <= sqrt(L) ||x|| + ||y||`, each is at most
+//! `eps ||K^+|| (L ||x|| + sqrt(L) ||y||)`, and
+//!
+//! ```text
+//! floor = 2 sqrt(n) eps ||K^+|| (L ||x|| + sqrt(L) ||y||)
+//! ```
+//!
+//! (`2`: the forward and the adjoint error; `sqrt(n)`: a worst-case
+//! allowance for the length-`n` recursions and norm sums accumulating their
+//! rounding incoherently). A one-ulp change of the iterate moves `delta` by
+//! at most `||(K^+)' K' K|| eps ||x|| = sqrt(L) eps ||x||`, inside the same
+//! bound. `x` and `y` are in solver units (the trace divided by the
+//! prescale), the units of `||delta||`. Measured on the simulation presets
+//! (30 s cells at 15, 30 and 60 Hz) the floor is 6e-14 to 4e-9 (GCaMP6s at
+//! 60 Hz) against bounds of 2e-4 to 1e-2, at least 8e5 times larger: a
+//! solve that is still converging improves by far more than the floor
+//! within any window, and the floor's constant factors would have to be off
+//! by about six orders of magnitude before it could matter.
+//!
+//! *The window.* FISTA is not monotone: between restarts its momentum can
+//! carry the iterate along a plateau or overshoot, and with the
+//! gradient-mapping restart the period between restarts is about
+//! `e sqrt(kappa)` iterations, `kappa = L ||K^+||^2` (O'Donoghue & Candes
+//! 2015, the optimal fixed restart interval). A plateau shorter than one such
+//! period is a transient, not a stall, so the window spans one period in
+//! checks, `W = ceil(e sqrt(kappa) / BATCH)`, and at least
+//! [`MIN_STALL_WINDOW`] checks ([`stall_window`]). The window is counted from
+//! the running best: a check that does not beat it by more than the floor
+//! does not reset the count, so a creep below the floor per check cannot
+//! keep the solve alive, while a creep that adds up to more than the floor
+//! within the window does. On the simulation presets `W` runs from 3 checks
+//! (jGCaMP8f at 15 Hz) through 12 (GCaMP6f at 30 Hz) to 564 (GCaMP6s at
+//! 60 Hz, 28,000 iterations).
+//!
+//! The detector can only stop a solve before the certificate does, so a
+//! solve the certificate stops is unchanged unless the detector would have
+//! fired first. Measured on every simulation preset at 15, 30 and 60 Hz
+//! (the solves of the `indeca` test
+//! `native_solve_stops_on_the_certificate_at_15_30_and_60_hz`, which asserts
+//! the certificate fired), the longest run of checks without a floor-sized
+//! improvement before the certificate fired was 9 against a window of 564
+//! (GCaMP6s at 60 Hz), at most 4 elsewhere, and 0 wherever the window is
+//! 16 or less: it never comes near firing on a converging solve.
+//!
+//! *The cap* stays as the outer guard against runaway time, derived from the
+//! problem by [`iteration_cap`]: FISTA's worst-case count for the true
+//! remaining movement to fall under the bound, from `F(x_k) - F* <=
+//! 2 L ||x_0 - x*||^2 / (k + 1)^2` and step 2 above, `||K x_k - K x*|| <=
+//! 2 sqrt(L) ||x_0 - x*|| / (k + 1)`, with `||x_0 - x*|| <= sqrt(n)` on the
+//! box from `x_0 = 0` and `tau` taken at the initial residual (where it is
+//! smallest, since `tau` grows as the fit improves). It is loose by the box
+//! worst case and grows as `sqrt(n)`: it is in the 1e5-1e9 range (measured
+//! 3e5-3e8 on 30 s preset cells at 15, 30 and 60 Hz, larger on longer
+//! recordings), two to six orders of magnitude above the iterations the
+//! certificate needs (50-12,400 on those cells), so in practice it is not
+//! reached and `converged = false` comes from the stall detector. (The caller's
+//! `max_iters`, sized for the upsampled solve whose fixed budget acted as a
+//! regularizer, is only a floor on it.)
 use crate::banded::BandedAR2;
 
-/// Batch length between certificate checks (the iteration itself is
-/// batched the same way as [`crate::Solver::step_batch`]).
+/// Iterations between certificate checks.
+///
+/// A check ([`certify`]) costs about one FISTA iteration: a forward and an
+/// adjoint AR(2) pass plus the 3-tap inverse filter, all O(n). Checking
+/// every `B` iterations of a solve that needs `N` costs `N / B` extra
+/// iteration-equivalents plus, on average, `B / 2` iterations of overshoot
+/// past the first iterate that would have passed; `N / B + B / 2` is
+/// smallest at `B = sqrt(2 N)`, about 45 for the typical `N ~ 1,000`
+/// iterations at 30 Hz (400-4,000 measured). The minimum is flat: 50 costs
+/// under 1% of the solve more than 45 there, and at 60 Hz on GCaMP6s
+/// (`N ~ 30,000`, optimum about 245) the checks cost about 2% of the solve.
+/// The certificate is valid at any iterate, so `B` does not change what a
+/// stop guarantees, but it decides *where* the loop stops (the first
+/// multiple of `B` at which the certificate holds), so the output depends
+/// on this granularity: it is a fixed constant, not a knob. (Unlike
+/// `py_api::BATCH_SIZE`, which only sets how often control returns to the
+/// caller between `Solver::step_batch` calls whose stop rule is tested at
+/// every iteration, so the output does not depend on it.) The stall window
+/// ([`stall_window`]) is counted in these checks.
 const BATCH: u32 = 50;
+
+/// Fewest checks the stall window may span ([`stall_window`]): a single
+/// check without a floor-sized improvement can be one momentum transient
+/// straddling a check boundary (the restart period is not aligned with the
+/// check grid), so a stall needs that run to extend over a full check
+/// interval on both sides of the boundary: three checks.
+const MIN_STALL_WINDOW: u32 = 3;
 
 /// The certificate and the grid it is evaluated on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -155,7 +246,11 @@ pub(crate) enum StopReason {
     Certificate,
     /// The relative-step rule at the caller's tolerance fired.
     Step,
-    /// The iteration cap.
+    /// The certificate's bound stopped improving by more than its own
+    /// arithmetic floor over the stall window ([`StallDetector`]): the
+    /// certificate cannot be met in f64. Not converged.
+    Stall,
+    /// The iteration cap. Not converged.
     Cap,
 }
 
@@ -169,7 +264,71 @@ pub(crate) struct NativeResult {
 
 impl NativeResult {
     pub(crate) fn converged(&self) -> bool {
-        self.reason != StopReason::Cap
+        !matches!(self.reason, StopReason::Cap | StopReason::Stall)
+    }
+}
+
+/// Number of consecutive certificate checks without a floor-sized
+/// improvement that make a stall: one momentum/restart period of FISTA,
+/// `e sqrt(kappa)` iterations with `kappa = L ||K^+||^2` (O'Donoghue &
+/// Candes 2015), in checks of [`BATCH`] iterations, and at least
+/// [`MIN_STALL_WINDOW`] (module docs, "The window").
+pub(crate) fn stall_window(banded: &BandedAR2) -> u32 {
+    let kappa = banded.lipschitz() * banded.inverse_norm().powi(2);
+    let checks = (std::f64::consts::E * kappa.sqrt() / BATCH as f64).ceil();
+    if checks.is_nan() {
+        return MIN_STALL_WINDOW;
+    }
+    // (`as` saturates: an infinite period gives u32::MAX, i.e. no stall.)
+    (checks as u32).max(MIN_STALL_WINDOW)
+}
+
+/// Stops a certificate-mode solve whose bound has stalled above the
+/// certificate (module docs, "When the certificate cannot be met").
+pub(crate) struct StallDetector {
+    /// Checks without a floor-sized improvement that make a stall.
+    window: u32,
+    /// `2 sqrt(n) eps ||K^+||`: the part of the floor fixed per solve.
+    floor_scale: f64,
+    lipschitz: f64,
+    /// `sqrt(L) ||y||`, fixed per solve.
+    data_term: f64,
+    best: f64,
+    since_best: u32,
+}
+
+impl StallDetector {
+    pub(crate) fn new(banded: &BandedAR2, y: &[f64]) -> Self {
+        let lipschitz = banded.lipschitz();
+        let y_norm = y.iter().map(|v| v * v).sum::<f64>().sqrt();
+        Self {
+            window: stall_window(banded),
+            floor_scale: 2.0 * (y.len() as f64).sqrt() * f64::EPSILON * banded.inverse_norm(),
+            lipschitz,
+            data_term: lipschitz.sqrt() * y_norm,
+            best: f64::INFINITY,
+            since_best: 0,
+        }
+    }
+
+    /// The arithmetic floor of `||delta||` at an iterate of norm `x_norm`:
+    /// `2 sqrt(n) eps ||K^+|| (L ||x|| + sqrt(L) ||y||)`.
+    pub(crate) fn floor(&self, x_norm: f64) -> f64 {
+        self.floor_scale * (self.lipschitz * x_norm + self.data_term)
+    }
+
+    /// Record one check's bound `remaining` at the iterate `x`; `true` once
+    /// the window has passed without the running best improving by more
+    /// than the floor. (A NaN bound never improves, so it stalls too.)
+    pub(crate) fn observe(&mut self, remaining: f64, x: &[f64]) -> bool {
+        let x_norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if remaining < self.best - self.floor(x_norm) {
+            self.best = remaining;
+            self.since_best = 0;
+        } else {
+            self.since_best += 1;
+        }
+        self.since_best >= self.window
     }
 }
 
@@ -194,7 +353,7 @@ pub(crate) fn iteration_cap(n: usize, lipschitz: f64, tau: f64) -> u32 {
 /// peak-normalized AR(2) operator `banded`, L1 weight `lambda` (the
 /// solver's effective lambda; 0 on the InDeCa path), the relative-step
 /// tolerance `tol` (`0` disables it), the certificate `stop` (`None`
-/// disables it) and the cap `max_iters`. `warm` seeds the iterate.
+/// disables it, and with it the stall detector) and the cap `max_iters`. `warm` seeds the iterate.
 pub(crate) fn solve_box(
     y: &[f64],
     banded: &BandedAR2,
@@ -226,6 +385,7 @@ pub(crate) fn solve_box(
     let mut iteration = 0_u32;
     let mut reason = StopReason::Cap;
     let mut certificate = None;
+    let mut stall = stop.as_ref().map(|_| StallDetector::new(banded, y));
     if n == 0 {
         return NativeResult {
             x,
@@ -281,6 +441,12 @@ pub(crate) fn solve_box(
             if done {
                 reason = StopReason::Certificate;
                 break;
+            }
+            if let Some(sd) = stall.as_mut() {
+                if sd.observe(c.remaining, &x) {
+                    reason = StopReason::Stall;
+                    break;
+                }
             }
         }
     }
@@ -418,6 +584,20 @@ mod tests {
         let mut last = f64::INFINITY;
         for iters in [50, 500, 2000, 8000] {
             let r = solve_box(&y, &banded, 0.0, iters, 0.0, Some(stop(n, 0.0)), None);
+            // `se = 0` never certifies, so each run ends at its cap until the
+            // bound reaches its f64 floor; there the stall detector stops it
+            // unconverged (measured: at 5,250 iterations with the bound at
+            // 3e-12, so the 8,000 run ends on the stall, its iterate already
+            // as close as f64 resolves). Before the stall detector it ran
+            // on to 8,000; the bound, distance and monotonicity
+            // assertions below hold either way.
+            if iters < 5000 {
+                assert_eq!(r.reason, StopReason::Cap, "{iters}");
+                assert_eq!(r.iterations, iters);
+            } else {
+                assert_eq!(r.reason, StopReason::Stall, "{iters}");
+                assert!(!r.converged() && r.iterations < iters, "{iters}");
+            }
             let c = r.certificate.unwrap();
             let mut kx = vec![0.0; n];
             banded.convolve_forward_f64(&r.x, &mut kx);
@@ -492,5 +672,141 @@ mod tests {
         // Empty input.
         let e = solve_box(&[], &banded, 0.0, 10, 1e-4, None, None);
         assert!(e.x.is_empty() && e.converged());
+    }
+
+    // ── Stall detector, active upper bound, operator norm ───────────────
+
+    fn norm(v: &[f64]) -> f64 {
+        v.iter().map(|a| a * a).sum::<f64>().sqrt()
+    }
+
+    #[test]
+    fn stall_detector_stops_an_unattainable_certificate_unconverged() {
+        // `se = 0`: the bound is 0, so the certificate can never fire. The
+        // solve must stop on the stall detector once `||delta||` has reached
+        // its own arithmetic floor, far below the cap, with
+        // `converged = false` (and no panic).
+        let (y, banded) = problem(300, 0xA11CE);
+        let n = y.len();
+        let cap = 5_000_000;
+        let r = solve_box(&y, &banded, 0.0, cap, 0.0, Some(stop(n, 0.0)), None);
+        assert_eq!(r.reason, StopReason::Stall);
+        assert!(!r.converged());
+        assert!(r.iterations < cap / 10, "{}", r.iterations);
+        // It stopped at the floor, not on a momentum transient: the bound it
+        // left is at or below the floor estimate (measured: 1.6e-13 against
+        // a floor of 3.7e-11; the estimate is a conservative upper bound).
+        let c = r.certificate.unwrap();
+        let floor = StallDetector::new(&banded, &y).floor(norm(&r.x));
+        assert!(c.remaining <= floor, "{} vs floor {floor}", c.remaining);
+    }
+
+    #[test]
+    fn stall_window_spans_one_restart_period_and_has_a_minimum() {
+        // W = ceil(e sqrt(kappa) / BATCH), kappa = L ||K^+||^2; slower
+        // kernels (larger kappa) get longer windows, never fewer than the
+        // minimum.
+        let fast = BandedAR2::new(0.01, 0.1, 15.0);
+        let slow = BandedAR2::new(0.1, 1.8, 60.0);
+        assert_eq!(stall_window(&fast), MIN_STALL_WINDOW);
+        let kappa = slow.lipschitz() * slow.inverse_norm().powi(2);
+        let want = (std::f64::consts::E * kappa.sqrt() / BATCH as f64).ceil() as u32;
+        assert_eq!(stall_window(&slow), want);
+        assert!(want > 50, "{want}");
+    }
+
+    #[test]
+    fn inverse_norm_bounds_and_is_attained_by_the_inverse_adjoint() {
+        // ||(K^+)' m|| <= inverse_norm ||m||, with near-equality on the
+        // alternating sequence (w = pi, where |A| peaks).
+        let banded = BandedAR2::new(0.1, 0.6, 30.0);
+        let n = 400;
+        let mut out = vec![0.0; n];
+        for seed in [1, 2, 3] {
+            let m = lcg(n, 1.0, seed);
+            banded.inverse_adjoint_f64(&m, &mut out);
+            assert!(norm(&out) <= banded.inverse_norm() * norm(&m) * (1.0 + 1e-12));
+        }
+        let alt: Vec<f64> = (0..n)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        banded.inverse_adjoint_f64(&alt, &mut out);
+        let ratio = norm(&out) / (banded.inverse_norm() * norm(&alt));
+        assert!(ratio > 0.99 && ratio <= 1.0 + 1e-12, "{ratio}");
+    }
+
+    #[test]
+    fn certificate_accounts_for_an_active_upper_bound() {
+        // Spikes of mass 2 on a Box[0, 1] problem: the optimum pins those
+        // frames at x = 1, where the gradient stays strictly negative (the
+        // fit wants more). The certificate clips the KKT residual to the
+        // admissible sign there (`m_i = min(-g_i, 0) = 0`), so it still
+        // bounds the remaining movement along the run and vanishes at the
+        // optimum, though the unclipped residual does not.
+        let banded = BandedAR2::new(0.1, 0.6, 30.0);
+        let n = 600;
+        let mut s = vec![0.0_f64; n];
+        let pinned = [60usize, 200, 330, 470];
+        for &p in &pinned {
+            s[p] = 2.0;
+        }
+        s[130] = 0.4;
+        s[400] = 0.6;
+        let mut y = vec![0.0_f64; n];
+        banded.convolve_forward_f64(&s, &mut y);
+        for (v, e) in y.iter_mut().zip(lcg(n, 0.01, 0xC0FFEE)) {
+            *v += e;
+        }
+        let far = solve_box(&y, &banded, 0.0, 200_000, 1e-14, None, None);
+        for &p in &pinned {
+            assert_eq!(far.x[p], 1.0, "frame {p} not at the upper bound");
+        }
+        let mut k_far = vec![0.0; n];
+        banded.convolve_forward_f64(&far.x, &mut k_far);
+        // At the far solve's iterate the certificate is tiny, while the
+        // unclipped KKT residual at the pinned frames is not.
+        let (mut conv, mut resid, mut grad) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        let c_far = certify(
+            &far.x,
+            &y,
+            &banded,
+            0.0,
+            &stop(n, 0.0),
+            &mut conv,
+            &mut resid,
+            &mut grad,
+        );
+        let r_far: Vec<f64> = k_far.iter().zip(&y).map(|(a, b)| a - b).collect();
+        let mut g_far = vec![0.0; n];
+        banded.convolve_adjoint_f64(&r_far, &mut g_far);
+        let unclipped_min = pinned
+            .iter()
+            .map(|&p| -g_far[p])
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            unclipped_min > 1e3 * c_far.remaining.max(1e-12),
+            "{unclipped_min} vs {}",
+            c_far.remaining
+        );
+        // Along the run, with the bound active: the certificate bounds the
+        // remaining movement of the reconstruction.
+        for iters in [600, 1000, 2000, 3000] {
+            let r = solve_box(&y, &banded, 0.0, iters, 0.0, Some(stop(n, 0.0)), None);
+            assert!(r.x.contains(&1.0), "{iters}: no active bound");
+            let c = r.certificate.unwrap();
+            let mut kx = vec![0.0; n];
+            banded.convolve_forward_f64(&r.x, &mut kx);
+            let dist = kx
+                .iter()
+                .zip(&k_far)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                dist <= c.remaining * (1.0 + 1e-6) + 1e-9,
+                "{iters}: moved {dist} with certificate {}",
+                c.remaining
+            );
+        }
     }
 }
