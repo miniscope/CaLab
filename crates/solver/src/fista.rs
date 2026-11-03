@@ -1,7 +1,11 @@
 use crate::{Constraint, ConvMode, Solver, SolverError};
 
 /// Window (iterations) of the optional fit-window stopping rule
-/// ([`Solver::set_fit_stop`]).
+/// ([`Solver::set_fit_stop`]). Off-path (the default InDeCa loop does not use
+/// the rule: it measured 1.6% mean / 19% max sensitivity to input
+/// perturbations). 50 has no derivation beyond being long enough that a
+/// plateau of the data-fit term is not a transient between FISTA momentum
+/// restarts; it is a characterization value, not a tuned one.
 pub(crate) const FIT_STOP_WINDOW: usize = 50;
 
 impl Solver {
