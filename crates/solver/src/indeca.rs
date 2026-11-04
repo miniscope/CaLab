@@ -1,46 +1,82 @@
 /// InDeCa (Informed Deconvolution of Calcium imaging data) pipeline.
 ///
-/// The scale loop is block-coordinate descent on the relaxed problem
+/// The relaxed problem is
 ///
 /// ```text
-/// min over s in [0,1]^T, alpha >= 0:  || y - alpha K s ||^2
+/// min over s >= 0 (boxed), alpha >= 0:  || y - alpha K s ||^2
 /// ```
 ///
-/// (`y` the upsampled, filtered, baseline-subtracted trace, `K` the
-/// peak-normalized AR(2) kernel), followed by one terminal binarization (the
-/// threshold search, which also fits the reported amplitude and offset).
-/// The binarization scores every candidate train through the trace's own
-/// preprocessing chain ([`Scoring::Chain`], the `chain` module): the
-/// bandpass and the rolling-quantile baseline are applied to `K s` exactly
-/// as they were to the trace, so the candidate and the trace carry the same
-/// filter-injected structure.
+/// (`y` the filtered, baseline-subtracted trace, `K` the peak-normalized
+/// AR(2) kernel), followed by one terminal binarization at the spike
+/// resolution rate (300 Hz): the threshold search, which also fits the
+/// reported amplitude and offset. The binarization scores every candidate
+/// train through the trace's own preprocessing chain ([`Scoring::Chain`],
+/// the `chain` module): the bandpass and the rolling-quantile baseline are
+/// applied to `K s` exactly as they were to the trace, so the candidate and
+/// the trace carry the same filter-injected structure.
 ///
-/// - s-step: Box[0,1] FISTA on `y / alpha`.
-/// - alpha-step: least squares of `y` on the relaxed reconvolution `K s`.
+/// # Where the relaxed problem is solved ([`InnerSolve`])
 ///
-/// The relaxed objective cannot identify the amplitude: any `alpha` at or
-/// above the saturation amplitude (where the box upper bound stops binding)
-/// gives the same fit, and the s-step there is the scale-free non-negative fit,
-/// so its normalized solution, and the binarization, do not depend on
-/// `alpha`. The fixed points are exactly that set. Starting from the trace's
-/// peak-to-trough (which no relaxed bin can exceed, since the kernel is
-/// peak-normalized) the loop is at a fixed point after its first round; from a
-/// binding start it raises `alpha` with a non-increasing objective until the
-/// box is inactive. The amplitude is identified only by the binarization.
+/// The default ([`InnerSolve::Native`]) solves it at the **recorded** rate:
+/// one Box[0, n_max] FISTA on `y / alpha` with `n_max` the refractory cap
+/// ([`max_spikes_per_frame`]), at the peak-to-trough prescale (where the box
+/// cannot bind, so the fit is the scale-free non-negative one). The frame
+/// masses are then spread over the 300 Hz sub-bins by linear interpolation
+/// ([`crate::spread::Spread::Interp`], the tent the trace upsampler applies)
+/// and binarized exactly as the upsampled solve's relaxed solution was.
+/// One round: the spread is scale-free (its normalized shape does not depend
+/// on the prescale), so the amplitude step cannot change the binarization.
 ///
-/// The original InDeCa update takes `alpha` from the binarized train instead.
-/// That map is not a descent step on the relaxed objective; on the simulation
-/// presets its fixed point lies at 0.15-0.4x the true spike amplitude, with
-/// several bins per spike (the overfit regime the InDeCa paper describes), and
-/// stopping it at a 5% tolerance stops it at an arbitrary round. It remains
-/// available as [`ScaleLoop::binary_alpha`] for characterization.
+/// At the recorded rate the relaxed problem has no sub-frame directions the
+/// data cannot determine, and the solve converges: it stops on a
+/// convergence certificate ([`crate::native_solve`]: the remaining movement
+/// of the fit, bounded by a dual gap, can no longer change the grid
+/// residual energy by one standard error of the noise energy, the
+/// selection's own resolution). The caller's relative-step tolerance applies
+/// only when the trace has no measurable noise (no certificate). If the
+/// certificate cannot be met in f64, a stall detector on the certificate's
+/// own bound stops the solve unconverged (`converged = false`); the
+/// iteration cap is derived from the problem
+/// ([`crate::native_solve::iteration_cap`], 1e5-1e9, with the caller's
+/// `max_iters` as a floor on it) and is an outer guard only. The output
+/// does not depend on the cap (measured: zero cap hits and zero stalls at
+/// 15, 30 and 60 Hz on the simulation presets, 400-4,000 iterations at
+/// 30 Hz, up to 34,000 for GCaMP6s at 60 Hz) nor on the tolerance.
+///
+/// [`InnerSolve::Upsampled`] is the loop before this change, kept for
+/// comparison: Box[0,1] FISTA at the 300 Hz rate. With `lambda = 0` that
+/// problem is ill-posed (sub-bin rearrangements barely change the fit), the
+/// relative-step rule does not fire within the usual budget, and `max_iters`
+/// (500) acts as an early-stopping regularizer the output depends on (counts
+/// move 7-11% between a 500 and a 2000 cap). The native solve removes that
+/// dependence and, on the simulation presets, scores slightly higher
+/// (F1 within two frames .564 vs .552 with drift, .589 vs .570 without).
+///
+/// # Scale loop (upsampled solve)
+///
+/// Block-coordinate descent: s-step Box[0,1] FISTA on `y / alpha`,
+/// alpha-step least squares of `y` on the relaxed reconvolution `K s`. The
+/// relaxed objective cannot identify the amplitude: any `alpha` at or above
+/// the saturation amplitude (where the box upper bound stops binding) gives
+/// the same fit, and the s-step there is the scale-free non-negative fit, so
+/// its normalized solution, and the binarization, do not depend on `alpha`.
+/// Starting from the trace's peak-to-trough (which no relaxed bin can exceed,
+/// since the kernel is peak-normalized) the loop is at a fixed point after
+/// its first round. The amplitude is identified only by the binarization.
+/// The original InDeCa update (amplitude from the binarized train) is not a
+/// descent step on the relaxed objective; it remains available as
+/// [`ScaleLoop::binary_alpha`] for characterization.
 ///
 /// The AR2 forward model is peak-normalized so that a single spike produces
 /// a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
 use crate::chain::{Chain, Scorer};
 use crate::filter::BandpassFilter;
-use crate::threshold::{threshold_search_scored, NoiseModel, Selection, ThresholdResult};
+use crate::native_solve::{self, Stop};
+use crate::spread::{spread, Spread};
+use crate::threshold::{
+    threshold_search_scored, NoiseModel, Selection, SelectionDiag, ThresholdResult,
+};
 use crate::upsample::{
     downsample_average, downsample_binary, upsample_counts_to_binary, upsample_trace,
 };
@@ -367,29 +403,38 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 
 /// Full InDeCa trace processing pipeline.
 ///
-/// 1. Upsample, apply optional bandpass filter, subtract rolling baseline
+/// 1. Apply the optional bandpass filter and subtract the rolling baseline,
+///    at the recorded rate (what the relaxed solve fits) and at the
+///    upsampled rate (what the binarization scores against)
 /// 2. Prescale by the trace's peak-to-trough
-/// 3. Scale loop (see the module docs): Box[0,1] FISTA, relaxed amplitude
-///    step, until a fixed point (normally after one round)
-/// 4. Binarize the last relaxed solution (threshold search) and downsample
+/// 3. Solve the relaxed problem at the recorded rate (one round; see the
+///    module docs and [`InnerSolve`])
+/// 4. Spread the frame masses over the `upsample_factor` sub-bins per frame,
+///    binarize (threshold search at the upsampled rate) and downsample the
+///    binary train to counts per frame
 ///
-/// `max_iters` and `tol` set the inner FISTA solve (relative-step rule). With
-/// `lambda = 0` the relaxed problem is ill-posed at the upsampled rate (sub-bin
-/// rearrangements barely change the fit), so the solve does not reach the
-/// step tolerance within the usual budget (500 iterations; it fires only
-/// around 3,300-4,100 iterations on the simulation presets), so `max_iters`
-/// acts as an early-stopping regularizer: the binarized output depends on it. A data-dependent stop
-/// (the noise-scaled fit-window rule) is available as
-/// [`ScaleLoop::fit_stop`] but makes the output sensitive to tiny input
-/// changes, because it moves the stopping point along that drift.
+/// `max_iters` and `tol`: the relaxed solve stops on the data-derived
+/// convergence certificate ([`crate::native_solve`]); `tol` (the
+/// relative-step rule) is used only when the trace has no measurable noise
+/// floor and so no certificate; `max_iters` is a floor on the safety cap,
+/// which is derived from the problem ([`crate::native_solve::iteration_cap`])
+/// so that a cap sized for the upsampled solve (500) cannot truncate this
+/// one. The reported `iterations` is the native-rate FISTA iteration count
+/// (400-4,000 at 30 Hz on the simulation presets, more on slow kernels at
+/// high frame rates) and `converged` says the certificate (or, without
+/// noise, the step rule) fired; it is `false` when the certificate's bound
+/// stalled at its f64 floor (the stall detector, which is what stops an
+/// unconvergeable solve in practice) or the cap was reached. On the
+/// comparison path
+/// ([`InnerSolve::Upsampled`]) `max_iters` is the early-stopping regularizer
+/// the output depends on and `tol` the step rule's tolerance (see the module
+/// docs).
 ///
-/// `warm_counts`: optional spike counts from a previous iteration at the **original**
-/// sampling rate. These are upsampled to a binary trace at the upsampled rate and
-/// used as the first round's FISTA warm-start **only on the non-default
-/// `binary_alpha` loop**. The default loop ignores it: with a fixed iteration
-/// budget acting as the regularizer, a binary (all 1.0) seed at the
-/// peak-to-trough prescale (relaxed peak ~0.02) is a 40-100x mismatch and
-/// makes the output depend on the seed, with no speed benefit. Every outer
+/// `warm_counts`: optional spike counts from a previous iteration at the
+/// **original** sampling rate, used as the FISTA warm start **only on the
+/// non-default `binary_alpha` loop** (an upsampled-solve loop). The default
+/// ignores it: the native solve converges on the certificate, so a seed
+/// could only move where the certificate is first met, and every outer
 /// iteration is then a deterministic function of the data. The parameter is
 /// kept for API compatibility.
 #[allow(clippy::too_many_arguments)]
@@ -508,10 +553,67 @@ pub(crate) enum Scoring {
     Chain,
 }
 
+/// Where the relaxed problem is solved (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InnerSolve {
+    /// At the recorded rate, one round, frame masses spread over the sub-bins
+    /// for the binarization. The default.
+    Native,
+    /// At the upsampled rate with the fixed iteration budget (the loop before
+    /// the native solve; kept for comparison).
+    Upsampled,
+}
+
+/// When the native-rate relaxed solve stops ([`InnerSolve::Native`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeStop {
+    /// The convergence certificate ([`crate::native_solve`]): the remaining
+    /// movement of the fit is below one standard error of the noise energy.
+    /// The caller's `tol` applies only without a noise model.
+    Certificate,
+    /// The relative-step rule at the caller's `tol` alone (characterization:
+    /// the fixed-tolerance reference the certificate is measured against).
+    Step,
+}
+
+/// Refractory period that bounds the number of spikes in one frame:
+/// `n_max = floor(1 / (REFRACTORY_PERIOD_S * fs))` (10 at 30 Hz, 1 at
+/// 300 Hz). 1/300 s is also the simulator's spike resolution and CaDecon's
+/// upsampling target (at most one spike per 300 Hz bin).
+pub(crate) const REFRACTORY_PERIOD_S: f64 = 1.0 / 300.0;
+
+/// Maximum spikes per frame at sampling rate `fs` (at least 1).
+pub(crate) fn max_spikes_per_frame(fs: f64) -> u32 {
+    ((1.0 / (REFRACTORY_PERIOD_S * fs)) + 1e-9).floor().max(1.0) as u32
+}
+
+/// The selection's grid (`threshold_search_scored` scores every `k`-th
+/// sample of `[pad_up, n_up - pad_up)` at the upsampled rate) as a range
+/// `[lo, hi)` of native indices with the same number of samples, starting
+/// at the first recorded sample at or after `pad_up`.
+pub(crate) fn native_grid(n_up: usize, pad_up: usize, k: usize) -> (usize, usize) {
+    let k = k.max(1);
+    let count = (pad_up..n_up.saturating_sub(pad_up)).step_by(k).count();
+    let lo = pad_up.div_ceil(k).min(n_up / k);
+    (lo, (lo + count).min(n_up / k))
+}
+
+/// The samples of an upsampled vector that fall on recorded frames (every
+/// `k`-th, `n_up / k` of them): what the native solve fits, and, over
+/// [`native_grid`], what the selection scores.
+pub(crate) fn recorded_samples(up: &[f32], k: usize) -> Vec<f32> {
+    let k = k.max(1);
+    (0..up.len() / k).map(|i| up[i * k]).collect()
+}
+
 /// Structure of the scale loop. `Default` is the shipped behavior; the other
 /// settings exist for characterization and are crate-internal.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScaleLoop {
+    /// Where the relaxed problem is solved.
+    pub inner: InnerSolve,
+    /// When the native-rate solve stops.
+    pub native_stop: NativeStop,
     pub alpha_source: AlphaSource,
     pub alpha_init: AlphaInit,
     pub stop: ScaleStop,
@@ -551,6 +653,8 @@ impl ScaleLoop {
     /// unchanged, as the characterization baseline for chain-consistent scoring.
     pub(crate) fn binary_alpha() -> Self {
         Self {
+            inner: InnerSolve::Upsampled,
+            native_stop: NativeStop::Certificate,
             alpha_source: AlphaSource::Binary,
             alpha_init: AlphaInit::PeakToTrough,
             stop: ScaleStop::AlphaRtol(0.05),
@@ -563,19 +667,31 @@ impl ScaleLoop {
             scoring: Scoring::Plain,
         }
     }
+
+    /// The upsampled-rate loop with chain scoring (the shipped loop before
+    /// the native solve; the comparison reference).
+    pub(crate) fn upsampled() -> Self {
+        Self {
+            inner: InnerSolve::Upsampled,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for ScaleLoop {
-    /// Block-coordinate descent on the relaxed objective with a fixed inner
-    /// iteration budget (see the module docs).
+    /// The native-rate relaxed solve, spread and binarized at the upsampled
+    /// rate with chain scoring (see the module docs).
     ///
-    /// Known cost: on the jgcamp8f preset this loop lowers F1 by 0.02-0.04
-    /// (0.492-0.525 vs 0.529-0.545 for the previous binary-alpha loop). It is
-    /// accepted for a deterministic, seed-independent fixed point that does
-    /// not depend on binarization. `fit_stop` is off because it measured
-    /// 1.6% mean / 19% max sensitivity to tiny input perturbations.
+    /// Known cost carried from the fixed-point scale loop this builds on
+    /// (#239): on the jgcamp8f preset that loop lowered F1 by 0.02-0.04
+    /// (0.492-0.525 vs 0.529-0.545 for the previous binary-alpha loop). It
+    /// is accepted for a deterministic, seed-independent fixed point that
+    /// does not depend on binarization. `fit_stop` is off because it
+    /// measured 1.6% mean / 19% max sensitivity to tiny input perturbations.
     fn default() -> Self {
         Self {
+            inner: InnerSolve::Native,
+            native_stop: NativeStop::Certificate,
             alpha_source: AlphaSource::Relaxed,
             alpha_init: AlphaInit::PeakToTrough,
             stop: ScaleStop::FixedPoint,
@@ -619,6 +735,16 @@ pub(crate) struct RoundStats {
     pub binary_error: f64,
     /// Noise budget of the grid residual (0 without a noise model).
     pub budget: f64,
+    /// Native solve: residual energy of the relaxed reconstruction scored
+    /// like a candidate at the recorded rate (amplitude and offset refit,
+    /// through the chain).
+    pub relaxed_error: f64,
+    /// Native solve: the relaxed solution's interior peak in spike units at
+    /// the binarized amplitude (above `n_max`, the refractory box would bind
+    /// at that amplitude).
+    pub spike_unit_peak: f64,
+    /// What the selection rule saw at the pick.
+    pub selection: SelectionDiag,
 }
 
 /// The preprocessed trace and what is derived from it once per solve.
@@ -771,6 +897,23 @@ pub(crate) fn solve_trace_cfg(
     opts: SolveOptions,
     cfg: ScaleLoop,
 ) -> (InDecaResult, Vec<RoundStats>) {
+    if cfg.inner == InnerSolve::Native {
+        return solve_trace_native(
+            trace,
+            tau_r,
+            tau_d,
+            fs,
+            upsample_factor,
+            max_iters,
+            tol,
+            warm_counts,
+            hp_enabled,
+            lp_enabled,
+            lambda,
+            opts,
+            cfg,
+        );
+    }
     let k = upsample_factor.max(1);
     let fs_up = fs * upsample_factor as f64;
     let mut prep = prepare(
@@ -908,6 +1051,7 @@ pub(crate) fn solve_trace_cfg(
             pve,
             error,
             noise_path,
+            diag,
         } = {
             let mut scorer = match chain.take() {
                 Some(c) => Scorer::Chain { y: &y, chain: c },
@@ -949,6 +1093,8 @@ pub(crate) fn solve_trace_cfg(
             objective,
             binary_error: error,
             budget,
+            selection: diag,
+            ..Default::default()
         });
 
         // Scale-loop convergence error: how close the new amplitude is to the
@@ -1042,6 +1188,225 @@ pub(crate) fn solve_trace_cfg(
             iterations,
             converged,
             loop_converged,
+        },
+        stats,
+    )
+}
+
+/// The native-rate inner solve ([`InnerSolve::Native`]; see the module docs).
+/// `upsample_factor` is the number of sub-bins per frame of the binarization
+/// (the spike-resolution rate is `fs * upsample_factor`).
+///
+/// One preprocessing: the trace is upsampled, filtered and baseline-
+/// subtracted exactly as the upsampled solve did it, and the candidates are
+/// scored against that working trace through the same chain, so the
+/// binarization and the reported amplitude, offset and PVE are the same
+/// statistics as before. The relaxed solve fits the **grid samples** of
+/// that working trace (every `k`-th sample, where the upsampled trace is
+/// the recorded one): the solve and the selection then see the same data,
+/// and the certificate's residual is taken over the selection's own grid.
+/// (Preprocessing the recorded trace at its own rate instead gives a
+/// working trace that differs from the grid samples by up to 9% RMS on fast
+/// kernels, where the bandpass cutoffs are near the recorded Nyquist.)
+///
+/// Prescale: the native solve at prescale `alpha_est` gives masses in units
+/// of `alpha_est` per spike with the box `[0, n_max]` in those units, solved
+/// as Box01 on `y / (alpha_est * n_max)`. From the peak-to-trough start the
+/// box cannot bind (a frame mass above one spike at that amplitude would put
+/// a transient above the trace's own range), so the solve is the scale-free
+/// non-negative fit and one round is the whole loop: the spread is scale
+/// free and the binarization fits every candidate its own amplitude, so a
+/// second round at the binarized amplitude would binarize the same
+/// normalized vector. (A round at the binarized amplitude could only differ
+/// if the refractory box bound there, i.e. the pick put more than `n_max`
+/// spikes' worth of mass in one frame; `RoundStats::spike_unit_peak` reports
+/// that case, which the binarization itself caps at `upsample_factor`
+/// spikes per frame.)
+#[allow(clippy::too_many_arguments)]
+fn solve_trace_native(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    upsample_factor: usize,
+    max_iters: u32,
+    tol: f64,
+    // The solve converges on its own; a seed could only move the stopping
+    // point (see `solve_trace`).
+    _warm_counts: Option<&[f32]>,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    opts: SolveOptions,
+    cfg: ScaleLoop,
+) -> (InDecaResult, Vec<RoundStats>) {
+    debug_assert!(
+        !cfg.rebaseline && !cfg.fit_stop && !cfg.use_warm_counts,
+        "the native solve has neither a baseline step, nor the fit-window stop, nor a warm start"
+    );
+    let k = upsample_factor.max(1);
+    let fs_up = fs * k as f64;
+    // Spike-resolution preprocessing: what the candidates are scored against.
+    let mut up = prepare(trace, tau_r, tau_d, fs_up, k, hp_enabled, lp_enabled);
+    let (n_up, pad_up) = (up.working.len(), up.pad);
+    // The grid: the recorded samples the selection scores on, as native
+    // indices `[lo, hi)`.
+    let (lo, hi) = native_grid(n_up, pad_up, k);
+    let n = n_up / k;
+    // What the relaxed solve fits: the working trace at the grid samples.
+    let y = recorded_samples(&up.working, k);
+    let banded = BandedAR2::new(tau_r, tau_d, fs);
+    let cap = max_spikes_per_frame(fs) as f64;
+    let selection = if opts.noise_constrained {
+        Selection::NoiseFloor
+    } else {
+        Selection::MaxPve
+    };
+    let n_grid = hi - lo;
+    let budget = up.noise_model.map_or(0.0, |nm| nm.budget(n_grid));
+    // The selection's resolution: one standard error of the noise energy
+    // over the grid it scores on (trace units).
+    let std_error = up.noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
+    let mut chain_up = (cfg.scoring == Scoring::Chain).then(|| up.take_chain());
+
+    let alpha_est = match cfg.alpha_init {
+        AlphaInit::PeakToTrough => estimate_alpha_interior(&y, lo),
+        AlphaInit::Fixed(a) => a,
+    };
+
+    let mut conv = vec![0.0_f32; n];
+
+    // ── s-step: Box[0, n_max] in units of alpha_est ──
+    let scale = alpha_est * cap;
+    let inv = (1.0 / scale) as f32;
+    let scaled64: Vec<f64> = y.iter().map(|&v| (v * inv) as f64).collect();
+    // The certificate in the solver's units: the trace was divided by
+    // `scale`, so energies are divided by `scale^2`. Without a noise model
+    // there is no certificate and the caller's step tolerance applies.
+    let stop = match cfg.native_stop {
+        NativeStop::Certificate if std_error > 0.0 => Some(Stop {
+            se: std_error / (scale * scale),
+            lo,
+            hi,
+            stride: 1,
+        }),
+        _ => None,
+    };
+    let tol = if stop.is_some() { 0.0 } else { tol };
+    // The cap: the problem's own worst case, never below the caller's.
+    let cap_iters = match stop {
+        Some(st) => {
+            let y2: f64 = scaled64[lo..hi].iter().map(|v| v * v).sum();
+            let tau0 = (y2 + st.se).sqrt() - y2.sqrt();
+            native_solve::iteration_cap(n, banded.lipschitz(), tau0).max(max_iters)
+        }
+        None => max_iters,
+    };
+    let lambda_eff = lambda * banded.dc_gain();
+    let nr = native_solve::solve_box(&scaled64, &banded, lambda_eff, cap_iters, tol, stop, None);
+    let u: Vec<f32> = nr.x.iter().map(|&v| v as f32).collect();
+    let (iterations, converged) = (nr.iterations, nr.converged());
+    // Frame masses in units of alpha_est per spike.
+    let x: Vec<f32> = u.iter().map(|&v| v * cap as f32).collect();
+    banded.convolve_forward(&x, &mut conv);
+    let objective = grid_energy(&y, &conv, alpha_est, lo, 1);
+    let u_peak = interior_peak(&u, lo) as f64;
+    // The relaxed fit's least-squares amplitude and error on the grid
+    // (plain, with a free offset: a diagnostic of the relaxed fit, not a
+    // chain-scored candidate).
+    let (relaxed_error, alpha_relaxed) = {
+        let mut sc = Scorer::Plain { y: &y };
+        let (e, a, _) = sc.score(&x, &banded, lo, 1, f64::INFINITY, &mut conv);
+        (e, a)
+    };
+
+    // ── Spread to the spike-resolution rate; normalize to the interior peak
+    // as the upsampled loop does before its threshold search ──
+    let mut s_normalized = spread(&x, k, Spread::Interp);
+    let s_peak = interior_peak(&s_normalized, pad_up);
+    if s_peak > 1e-10 {
+        let inv_peak = 1.0 / s_peak;
+        for v in s_normalized.iter_mut() {
+            *v *= inv_peak;
+        }
+    }
+
+    // ── Binarization: the threshold search against the upsampled working
+    // trace ──
+    let ThresholdResult {
+        s_binary,
+        alpha: alpha_lstsq,
+        baseline: baseline_lstsq,
+        threshold,
+        pve,
+        error,
+        noise_path,
+        diag,
+    } = {
+        let mut scorer = match chain_up.take() {
+            Some(c) => Scorer::Chain {
+                y: &up.working,
+                chain: c,
+            },
+            None => Scorer::Plain { y: &up.working },
+        };
+        threshold_search_scored(
+            &s_normalized,
+            &mut scorer,
+            &up.banded,
+            tau_d,
+            fs_up,
+            k,
+            f64::INFINITY,
+            selection,
+            up.noise_model,
+        )
+    };
+    let s_counts = downsample_binary(&s_binary, k);
+
+    let alpha_new = match cfg.alpha_source {
+        AlphaSource::Binary => alpha_lstsq,
+        AlphaSource::Relaxed => alpha_relaxed,
+    };
+    let spike_unit_peak = if alpha_lstsq > 0.0 {
+        u_peak * cap * alpha_est / alpha_lstsq
+    } else {
+        0.0
+    };
+    let stats = vec![RoundStats {
+        alpha_est,
+        alpha_next: alpha_new,
+        alpha_relaxed,
+        alpha_binary: alpha_lstsq,
+        alpha_sat: alpha_est * u_peak * cap,
+        iterations,
+        converged,
+        upper_bound_active: u_peak >= 1.0,
+        noise_path: Some(noise_path),
+        count: s_counts.iter().map(|&v| v as f64).sum(),
+        objective,
+        binary_error: error,
+        budget,
+        relaxed_error,
+        spike_unit_peak,
+        selection: diag,
+    }];
+
+    (
+        InDecaResult {
+            s_counts,
+            // The upsampled working trace at the recorded rate, as before.
+            filtered_trace: Some(downsample_average(&up.working, k)),
+            alpha: alpha_lstsq,
+            baseline: baseline_lstsq,
+            threshold,
+            pve,
+            iterations,
+            converged,
+            // The native solve is one round (no scale loop, no `max_rounds`),
+            // so there is no loop cap to hit; the inner solve's stop is
+            // reported by `converged`.
+            loop_converged: true,
         },
         stats,
     )
@@ -1696,8 +2061,11 @@ mod tests {
         out
     }
 
-    fn relaxed_loop() -> ScaleLoop {
-        ScaleLoop::default()
+    /// The upsampled-rate scale loop (the comparison path): the tests of the
+    /// loop's structure (rounds, amplitude steps, rebaselining, fit stop)
+    /// are about that loop; the native solve has one round.
+    fn upsampled_loop() -> ScaleLoop {
+        ScaleLoop::upsampled()
     }
 
     fn run_cfg(
@@ -1730,7 +2098,7 @@ mod tests {
         // The starting prescale must not let the box upper bound bind: the
         // relaxed solution's largest bin, in trace units, stays well below it.
         for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
-            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 300, relaxed_loop());
+            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 300, upsampled_loop());
             let r0 = &st[0];
             assert!(!r0.upper_bound_active, "{name}: box binds in round 0");
             assert!(
@@ -1751,12 +2119,12 @@ mod tests {
         // are bit-identical.)
         let trace = noisy_spiking_trace(900, 0xFEED);
         let p = (0.1, 0.6, 30.0, 10);
-        let (base, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let (base, st) = run_cfg(&trace, p, 300, upsampled_loop());
         assert_eq!(st.len(), 1, "fixed point after one round: {st:?}");
         for m in [2.0, 8.0] {
             let cfg = ScaleLoop {
                 alpha_init: AlphaInit::Fixed(st[0].alpha_est * m),
-                ..relaxed_loop()
+                ..upsampled_loop()
             };
             let (r, st2) = run_cfg(&trace, p, 300, cfg);
             assert_eq!(r.s_counts, base.s_counts);
@@ -1774,12 +2142,12 @@ mod tests {
         // 10% of the base total, alpha within 10%.
         let trace = noisy_spiking_trace(900, 0xFEED);
         let p = (0.1, 0.6, 30.0, 10);
-        let (base, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let (base, st) = run_cfg(&trace, p, 300, upsampled_loop());
         let total = base.s_counts.iter().sum::<f32>();
         for m in [1.5, 3.0] {
             let cfg = ScaleLoop {
                 alpha_init: AlphaInit::Fixed(st[0].alpha_est * m),
-                ..relaxed_loop()
+                ..upsampled_loop()
             };
             let (r, st2) = run_cfg(&trace, p, 300, cfg);
             assert_eq!(st2.len(), 1);
@@ -1852,12 +2220,12 @@ mod tests {
         // the box is inactive (or the objective stalls), not at the round cap.
         let trace = noisy_spiking_trace(900, 0xBEEF);
         let p = (0.1, 0.6, 30.0, 10);
-        let (_, st) = run_cfg(&trace, p, 300, relaxed_loop());
+        let (_, st) = run_cfg(&trace, p, 300, upsampled_loop());
         let sat = st[0].alpha_sat;
         let cfg = ScaleLoop {
             alpha_init: AlphaInit::Fixed(sat / 8.0),
             warm_rounds: true,
-            ..relaxed_loop()
+            ..upsampled_loop()
         };
         let (_, st) = run_cfg(&trace, p, 300, cfg);
         assert!(st[0].upper_bound_active, "start should bind: {st:?}");
@@ -1882,7 +2250,7 @@ mod tests {
             .find(|c| c.0 == "gcamp6f")
             .unwrap();
         let p = (tr, td, fs, k);
-        let (relaxed, _) = run_cfg(&trace, p, 300, relaxed_loop());
+        let (relaxed, _) = run_cfg(&trace, p, 300, upsampled_loop());
         let cfg = ScaleLoop {
             stop: ScaleStop::AlphaRtol(0.002),
             fit_stop: false,
@@ -1916,7 +2284,7 @@ mod tests {
                 ScaleLoop::binary_alpha(),
                 ScaleLoop {
                     fit_stop: true,
-                    ..relaxed_loop()
+                    ..upsampled_loop()
                 },
             ] {
                 let (_, st) = run_cfg(&trace, (tr, td, fs, k), 5000, cfg);
@@ -1941,7 +2309,7 @@ mod tests {
             .unwrap();
         let cfg = ScaleLoop {
             rebaseline: true,
-            ..relaxed_loop()
+            ..upsampled_loop()
         };
         let (_, st) = run_cfg(&trace, (tr, td, fs, k), 300, cfg);
         let first = &st[0];
@@ -1992,13 +2360,15 @@ mod tests {
 
     #[test]
     fn noise_budget_decides_the_pick_on_jgcamp8f() {
-        // On the fast-indicator preset the binarized train reaches the noise
-        // floor, so the noise-constrained selection takes the noise path.
+        // On the fast-indicator preset the upsampled loop's binarized train
+        // reaches the noise floor, so the noise-constrained selection takes
+        // the noise path. (The native solve's candidates on this preset fit
+        // just above the budget, so its pick is the fit-allowance path.)
         for (name, trace, tr, td, fs, k) in preset_cells(3, 1500) {
             if name != "jgcamp8f" {
                 continue;
             }
-            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 500, relaxed_loop());
+            let (_, st) = run_cfg(&trace, (tr, td, fs, k), 500, upsampled_loop());
             let last = st.last().unwrap();
             assert_eq!(last.noise_path, Some(true), "{st:?}");
             assert!(last.binary_error <= last.budget * 1.0001);
@@ -2124,6 +2494,359 @@ mod tests {
         assert!(r.alpha > 0.0);
     }
 
+    // ── Native-rate inner solve ─────────────────────────────────────────
+
+    /// Preset cells recorded at `fs` for `dur_s` seconds (one cell per
+    /// preset): (preset, trace, true counts per frame, tau_r, tau_d, fs, k).
+    #[allow(clippy::type_complexity)]
+    fn preset_cells_at(
+        fs: f64,
+        dur_s: f64,
+    ) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64, usize)> {
+        let mut out = Vec::new();
+        for (name, mut cfg) in crate::simulate::presets::all() {
+            cfg.num_cells = 1;
+            cfg.fs_hz = fs;
+            let n_tp = (dur_s * fs).round() as usize;
+            cfg.num_timepoints = n_tp;
+            let r = crate::simulate::simulate(&cfg);
+            let gt = &r.ground_truth[0];
+            let k = ((300.0 / fs).round() as usize).max(1);
+            out.push((
+                name,
+                r.traces[..n_tp].to_vec(),
+                gt.spikes.clone(),
+                gt.tau_rise_s,
+                gt.tau_decay_s,
+                fs,
+                k,
+            ));
+        }
+        out
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn run_native(
+        trace: &[f32],
+        (tr, td, fs, k): (f64, f64, f64, usize),
+        max_iters: u32,
+        tol: f64,
+        cfg: ScaleLoop,
+    ) -> (InDecaResult, RoundStats) {
+        let (r, st) = solve_trace_cfg(
+            trace,
+            tr,
+            td,
+            fs,
+            k,
+            max_iters,
+            tol,
+            None,
+            true,
+            true,
+            0.0,
+            SolveOptions {
+                noise_constrained: true,
+            },
+            cfg,
+        );
+        assert_eq!(st.len(), 1, "the native solve is one round: {st:?}");
+        (r, st.into_iter().next().unwrap())
+    }
+
+    #[test]
+    fn native_solve_stops_on_the_certificate_at_15_30_and_60_hz() {
+        // The certificate fires on every preset at every rate, far below the
+        // cap, and the output depends on neither the cap nor the tolerance:
+        // the same solve with the cap at exactly the iterations used, and
+        // with the step rule's tolerance at 0 or the UI's 1e-4, is
+        // bit-identical.
+        for fs in [15.0, 30.0, 60.0] {
+            for (name, trace, _, tr, td, fs, k) in preset_cells_at(fs, 30.0) {
+                let p = (tr, td, fs, k);
+                let (a, sa) = run_native(&trace, p, u32::MAX, 1e-4, ScaleLoop::default());
+                assert!(sa.converged, "{name} @ {fs} Hz hit the cap: {sa:?}");
+                assert!(
+                    sa.iterations > 0 && sa.iterations < 100_000,
+                    "{name} @ {fs} Hz: {sa:?}"
+                );
+                assert!(a.s_counts.iter().sum::<f32>() > 0.0, "{name} @ {fs} Hz");
+                let (b, sb) = run_native(&trace, p, sa.iterations, 0.0, ScaleLoop::default());
+                assert_eq!(a.s_counts, b.s_counts, "{name} @ {fs} Hz: cap");
+                assert_eq!(
+                    a.alpha.to_bits(),
+                    b.alpha.to_bits(),
+                    "{name} @ {fs} Hz: cap"
+                );
+                assert_eq!(sa.iterations, sb.iterations);
+                assert!(sb.converged);
+                // The UI's cap of 500 does not truncate the solve either.
+                let (c, sc) = run_native(&trace, p, 500, 1e-4, ScaleLoop::default());
+                assert_eq!(a.s_counts, c.s_counts, "{name} @ {fs} Hz: cap 500");
+                assert_eq!(sa.iterations, sc.iterations);
+            }
+        }
+    }
+
+    #[test]
+    fn native_certificate_is_fit_equivalent_to_a_far_converged_solve() {
+        // What the certificate guarantees: against the step rule run to 1e-7
+        // (2-5x more iterations), the relaxed fit's grid energy differs by
+        // less than one standard error of the noise energy, the selection's
+        // resolution. The binarized trains are not identical cell by cell
+        // (the threshold search is a discrete function of the relaxed
+        // vector, and with `lambda = 0` the relaxed optimum is flat along
+        // adjacent-frame directions on slow kernels), but they agree in the
+        // aggregate: total counts within 10% and timing F1 within 0.03 over
+        // the presets.
+        let mut tot = (0.0_f32, 0.0_f32);
+        let mut f1 = (0.0, 0.0);
+        let cells = preset_cells_at(30.0, 30.0);
+        for (name, trace, truth, tr, td, fs, k) in &cells {
+            let p = (*tr, *td, *fs, *k);
+            let (a, sa) = run_native(trace, p, u32::MAX, 0.0, ScaleLoop::default());
+            let step = ScaleLoop {
+                native_stop: NativeStop::Step,
+                ..ScaleLoop::default()
+            };
+            let (b, sb) = run_native(trace, p, u32::MAX, 1e-7, step);
+            assert!(sa.converged && sb.converged, "{name}: {sa:?} {sb:?}");
+            assert!(sa.iterations <= sb.iterations, "{name}: {sa:?} {sb:?}");
+            let se = sa.selection.std_error;
+            assert!(
+                (sa.objective - sb.objective).abs() <= se,
+                "{name}: relaxed fits {} vs {} differ by more than SE {se}",
+                sa.objective,
+                sb.objective
+            );
+            tot.0 += a.s_counts.iter().sum::<f32>();
+            tot.1 += b.s_counts.iter().sum::<f32>();
+            f1.0 += timing_f1(truth, &a.s_counts, 2);
+            f1.1 += timing_f1(truth, &b.s_counts, 2);
+        }
+        assert!((tot.0 / tot.1 - 1.0).abs() <= 0.10, "{tot:?}");
+        let n = cells.len() as f64;
+        assert!((f1.0 / n - f1.1 / n).abs() <= 0.03, "{f1:?}");
+    }
+
+    /// F1 of count-level matching within `tol` frames.
+    fn timing_f1(truth: &[f32], est: &[f32], tol: i64) -> f64 {
+        let expand = |c: &[f32]| -> Vec<i64> {
+            let mut v = vec![];
+            for (i, &x) in c.iter().enumerate() {
+                for _ in 0..(x.round().max(0.0) as usize) {
+                    v.push(i as i64);
+                }
+            }
+            v
+        };
+        let (a, b) = (expand(truth), expand(est));
+        let (mut i, mut j, mut tp) = (0, 0, 0usize);
+        while i < a.len() && j < b.len() {
+            if (a[i] - b[j]).abs() <= tol {
+                tp += 1;
+                i += 1;
+                j += 1;
+            } else if a[i] < b[j] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        let (p, r) = (tp as f64 / b.len() as f64, tp as f64 / a.len() as f64);
+        if p + r > 0.0 {
+            2.0 * p * r / (p + r)
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    fn native_solve_is_invariant_to_the_prescale() {
+        // The spread is scale-free and the box cannot bind from the
+        // peak-to-trough start, so a power-of-two prescale change (every
+        // iterate scaled exactly) leaves the output bit-identical.
+        for (name, trace, _, tr, td, fs, k) in preset_cells_at(30.0, 30.0) {
+            let p = (tr, td, fs, k);
+            let (base, st) = run_native(&trace, p, u32::MAX, 0.0, ScaleLoop::default());
+            assert!(!st.upper_bound_active, "{name}");
+            for m in [0.25, 4.0] {
+                let cfg = ScaleLoop {
+                    alpha_init: AlphaInit::Fixed(st.alpha_est * m),
+                    ..ScaleLoop::default()
+                };
+                let (r, st2) = run_native(&trace, p, u32::MAX, 0.0, cfg);
+                assert_eq!(r.s_counts, base.s_counts, "{name} x{m}");
+                assert_eq!(r.alpha.to_bits(), base.alpha.to_bits(), "{name} x{m}");
+                assert_eq!(
+                    r.threshold.to_bits(),
+                    base.threshold.to_bits(),
+                    "{name} x{m}"
+                );
+                assert_eq!(st2.iterations, st.iterations, "{name} x{m}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_grid_is_the_selections_grid() {
+        // The seam: the native solve's grid residual (the certificate) and
+        // the selection's scores are taken over the same recorded samples.
+        for (n_up, pad_up, k) in [
+            (3000, 360, 10),
+            (3000, 365, 10),
+            (1500, 120, 20),
+            (900, 0, 1),
+        ] {
+            let (lo, hi) = native_grid(n_up, pad_up, k);
+            let up_grid: Vec<usize> = (pad_up..n_up - pad_up).step_by(k).collect();
+            let nat_grid: Vec<usize> = (lo..hi).map(|i| i * k).collect();
+            // Same number of samples, starting at the first recorded sample
+            // at or after `pad_up`, all inside the upsampled interior.
+            assert_eq!(up_grid.len(), nat_grid.len(), "{n_up} {pad_up} {k}");
+            assert_eq!(up_grid[0].div_ceil(k) * k, nat_grid[0]);
+            assert!(nat_grid.last().unwrap() < &(n_up - pad_up + k));
+            // A recorded-rate preprocessing would not give the same signal:
+            // the native solve fits the grid samples of the upsampled one.
+        }
+        for (name, trace, _, tr, td, fs, k) in preset_cells_at(30.0, 30.0).into_iter().take(1) {
+            let nat = prepare(&trace, tr, td, fs, 1, true, true);
+            let up = prepare(&trace, tr, td, fs * k as f64, k, true, true);
+            let (lo, hi) = native_grid(up.working.len(), up.pad, k);
+            let (mut num, mut den) = (0.0_f64, 0.0_f64);
+            for i in lo..hi {
+                let d = nat.working[i] as f64 - up.working[i * k] as f64;
+                num += d * d;
+                den += (up.working[i * k] as f64).powi(2);
+            }
+            assert!(
+                (num / den).sqrt() > 1e-3,
+                "{name}: the two preprocessings coincide"
+            );
+        }
+    }
+
+    #[test]
+    fn native_solve_recovers_isolated_spikes_exactly_on_a_clean_trace() {
+        // Without noise there is no certificate (the step rule applies) and
+        // the binarization has no allowance: isolated single spikes come
+        // back as exactly one count on their frame.
+        let positions = [40usize, 120, 200, 290, 370];
+        let trace = make_trace(0.1, 0.6, 30.0, 450, &positions);
+        let r = solve_trace(
+            &trace,
+            0.1,
+            0.6,
+            30.0,
+            10,
+            u32::MAX,
+            1e-8,
+            None,
+            false,
+            false,
+            0.0,
+        );
+        let mut want = vec![0.0_f32; 450];
+        for &p in &positions {
+            want[p] = 1.0;
+        }
+        assert_eq!(r.s_counts, want);
+        assert!((r.alpha - 1.0).abs() < 0.05, "{}", r.alpha);
+    }
+
+    #[test]
+    fn max_spikes_per_frame_follows_the_refractory_period() {
+        assert_eq!(max_spikes_per_frame(300.0), 1);
+        assert_eq!(max_spikes_per_frame(30.0), 10);
+        assert_eq!(max_spikes_per_frame(15.0), 20);
+        assert_eq!(max_spikes_per_frame(60.0), 5);
+        assert_eq!(max_spikes_per_frame(1000.0), 1);
+    }
+
+    // ── Native solve: unconverged stop and the certificate/selection seam ─
+    // (review fixes for the native-solve PR; kept together at the end of
+    // the module so the stack's lower branches merge cleanly.)
+
+    #[test]
+    fn native_solve_reports_an_unconverged_stop_without_panicking() {
+        // Force the outer guard: the step rule alone (no certificate, hence
+        // no stall detector) at `tol = 0` never fires, so the solve runs into
+        // a 10-iteration cap. The pipeline must still binarize and report
+        // `converged = false` rather than panic or claim convergence. (The
+        // stall detector's own unconverged stop is exercised in
+        // `native_solve::tests::stall_detector_stops_an_unattainable_certificate_unconverged`:
+        // on a real trace with a noise model the certificate always fires,
+        // so a certificate-mode stall cannot be forced from here without a
+        // test-only hook.)
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let p = (0.1, 0.6, 30.0, 10);
+        let cfg = ScaleLoop {
+            native_stop: NativeStop::Step,
+            ..ScaleLoop::default()
+        };
+        let (r, st) = run_native(&trace, p, 10, 0.0, cfg);
+        assert!(!st.converged && !r.converged, "{st:?}");
+        assert_eq!(st.iterations, 10);
+        assert_eq!(r.iterations, 10);
+        assert_eq!(r.s_counts.len(), trace.len());
+        assert!(r.s_counts.iter().all(|v| v.is_finite() && *v >= 0.0));
+        assert!(r.alpha.is_finite() && r.pve.is_finite());
+    }
+
+    #[test]
+    fn native_certificate_residual_is_the_selections_grid_residual() {
+        // The seam between the solve and the selection: the certificate's
+        // grid residual (native indices `[lo, hi)` of the recorded samples
+        // of the upsampled working trace) must be the residual the
+        // selection takes over its grid (every `k`-th sample of
+        // `[pad_up, n_up - pad_up)` of the working trace) for the same
+        // reconstruction. The two grids coincide only when `pad_up` is a
+        // multiple of `k`; otherwise the selection's grid falls between
+        // recorded frames and scores interpolated sub-bins (e.g.
+        // `pad_up = 365, k = 10`), and the certificate scores the nearest
+        // recorded samples instead. This configuration (tau_d = 0.6 s at
+        // 300 Hz: `pad_up = 360`, `k = 10`) is one where they coincide, so
+        // the residuals must agree up to the f32 rounding of the
+        // reconstruction.
+        let trace = noisy_spiking_trace(900, 0xFEED);
+        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
+        let up = prepare(&trace, tr, td, fs * k as f64, k, true, true);
+        let (n_up, pad_up) = (up.working.len(), up.pad);
+        assert_eq!(pad_up % k, 0, "pad_up = {pad_up}: grids do not coincide");
+        let (lo, hi) = native_grid(n_up, pad_up, k);
+        assert_eq!(lo * k, pad_up);
+        let y: Vec<f64> = recorded_samples(&up.working, k)
+            .iter()
+            .map(|&v| v as f64)
+            .collect();
+        let banded = BandedAR2::new(tr, td, fs);
+        // Any iterate will do; a partly converged one keeps the residual
+        // well away from zero.
+        let stop = Stop {
+            se: 0.0,
+            lo,
+            hi,
+            stride: 1,
+        };
+        let r = native_solve::solve_box(&y, &banded, 0.0, 200, 0.0, Some(stop), None);
+        let native_fit = r.certificate.unwrap().grid_fit;
+        // The same reconstruction at the upsampled rate (the tent through
+        // the recorded samples, exact on them), scored on the selection's
+        // grid.
+        let mut recon = vec![0.0_f64; y.len()];
+        banded.convolve_forward_f64(&r.x, &mut recon);
+        let recon32: Vec<f32> = recon.iter().map(|&v| v as f32).collect();
+        let recon_up = upsample_trace(&recon32, k);
+        assert_eq!(recon_up.len(), n_up);
+        let selection_fit = grid_energy(&up.working, &recon_up, 1.0, pad_up, k);
+        assert!(native_fit > 0.0);
+        let rel = (native_fit - selection_fit).abs() / native_fit;
+        assert!(rel < 1e-5, "{native_fit} vs {selection_fit} (rel {rel:e})");
+    }
+
     // ═══ Loop-convergence flag and degenerate-trace tests (PR #239 review) ═══
 
     #[test]
@@ -2152,10 +2875,13 @@ mod tests {
     #[test]
     fn loop_converged_is_false_when_max_rounds_is_hit() {
         let (name, trace, tr, td, fs, k) = preset_cells(1, 900).remove(0);
+        // The upsampled fixed-point loop: the native default is a single
+        // round with no `max_rounds` to hit (its `loop_converged` is always
+        // true; the inner stop is reported by `converged`).
         let cfg = ScaleLoop {
             stop: ScaleStop::AlphaRtol(0.0),
             max_rounds: 2,
-            ..ScaleLoop::default()
+            ..ScaleLoop::upsampled()
         };
         let (r, st) = run_cfg(&trace, (tr, td, fs, k), 100, cfg);
         assert_eq!(st.len(), 2, "{name}: {st:?}");

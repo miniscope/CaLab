@@ -79,6 +79,8 @@ pub struct ThresholdResult {
     pub error: f64,
     /// True when the noise budget decided the pick (see the module docs).
     pub noise_path: bool,
+    /// What the selection rule saw (diagnostics).
+    pub diag: SelectionDiag,
 }
 
 /// How the binarization threshold is chosen. See the module docs.
@@ -89,6 +91,112 @@ pub enum Selection {
     /// Sparsest threshold whose residual stays within the noise budget, falling
     /// back to the one-SE rule when the budget is out of reach.
     NoiseFloor,
+}
+
+/// What the selection rule saw (diagnostics; trace-unit energies). Lets a
+/// changed pick be traced to its cause: a candidate crossing the ceiling, the
+/// best fit (and with it the ceiling) moving, or the noise path toggling.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SelectionDiag {
+    /// Smallest candidate error, and its grid level.
+    pub e_min: f64,
+    pub level_min: usize,
+    /// Error and grid level of the pick.
+    pub e_pick: f64,
+    pub level_pick: usize,
+    /// Noise budget (0 under `MaxPve` or without a noise model).
+    pub budget: f64,
+    /// Standard error of the noise energy (0 without a noise model).
+    pub std_error: f64,
+    /// `max(budget, e_min + SE)`: the error a candidate may carry and still
+    /// be taken.
+    pub ceiling: f64,
+    /// `ceiling - e_pick`: how much more error the pick could have carried.
+    pub slack: f64,
+    /// Error and count of the next sparser candidate with a different train
+    /// (NaN / 0 when the pick is the sparsest). Its excess over the ceiling
+    /// is the margin by which it was rejected.
+    pub e_next_sparser: f64,
+    pub count_next_sparser: f64,
+    /// Count (upsampled bins) of the pick and of the best fit.
+    pub count_pick: f64,
+    pub count_min: f64,
+    pub alpha_pick: f64,
+}
+
+/// The pick of the selection rule over scored candidates.
+pub(crate) struct Selected {
+    pub index: usize,
+    pub noise_path: bool,
+    pub diag: SelectionDiag,
+}
+
+/// Apply the selection rule (module docs) to candidates scored as
+/// `(error, alpha, count)`, visited sparsest-first in `order`.
+pub(crate) fn select_sparsest(
+    errors: &[f64],
+    alphas: &[f64],
+    counts: &[f64],
+    order: impl Iterator<Item = usize> + Clone,
+    selection: Selection,
+    noise: Option<NoiseModel>,
+    n_grid: usize,
+) -> Selected {
+    let (i_min, e_min) =
+        errors
+            .iter()
+            .copied()
+            .enumerate()
+            .fold(
+                (0, f64::INFINITY),
+                |acc, (i, e)| {
+                    if e < acc.1 {
+                        (i, e)
+                    } else {
+                        acc
+                    }
+                },
+            );
+    let se = noise.map_or(0.0, |nm| nm.std_error(n_grid));
+    let fit_allowance = e_min + se;
+    let budget = match (selection, noise) {
+        (Selection::NoiseFloor, Some(nm)) => nm.budget(n_grid),
+        _ => 0.0,
+    };
+    let noise_path = budget > fit_allowance;
+    let ceiling = budget.max(fit_allowance);
+    let pick = order
+        .clone()
+        .find(|&i| errors[i] <= ceiling)
+        .unwrap_or(i_min);
+    // Next sparser candidate whose train differs from the pick's.
+    let mut e_next = f64::NAN;
+    let mut c_next = 0.0;
+    for i in order.take_while(|&i| i != pick) {
+        if counts[i] != counts[pick] {
+            e_next = errors[i];
+            c_next = counts[i];
+        }
+    }
+    Selected {
+        index: pick,
+        noise_path,
+        diag: SelectionDiag {
+            e_min,
+            level_min: i_min,
+            e_pick: errors[pick],
+            level_pick: pick,
+            budget,
+            std_error: se,
+            ceiling,
+            slack: ceiling - errors[pick],
+            e_next_sparser: e_next,
+            count_next_sparser: c_next,
+            count_pick: counts[pick],
+            count_min: counts[i_min],
+            alpha_pick: alphas[pick],
+        },
+    }
 }
 
 /// Noise statistics of the selection residual (filtered space, original-rate
@@ -214,6 +322,7 @@ pub(crate) fn threshold_search_scored(
             pve: 0.0,
             error: f64::INFINITY,
             noise_path: false,
+            diag: SelectionDiag::default(),
         };
     }
 
@@ -226,46 +335,33 @@ pub(crate) fn threshold_search_scored(
     // binary train: reuse its error instead of refitting.
     let levels = threshold_grid(0.5 / stride as f64);
     let mut errors = vec![f64::INFINITY; levels.len()];
+    let mut alphas = vec![0.0_f64; levels.len()];
+    let mut counts = vec![0.0_f64; levels.len()];
     let mut last_count = usize::MAX;
-    let mut last_err = f64::INFINITY;
+    let mut last = (f64::INFINITY, 0.0_f64);
     for (i, &thr) in levels.iter().enumerate().rev() {
         let count = binarize(s_relaxed, thr, &mut s_bin);
         if count != last_count {
-            last_err = scorer
-                .score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf)
-                .0;
+            let (e, a, _) = scorer.score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf);
+            last = (e, a);
             last_count = count;
         }
-        errors[i] = last_err;
+        errors[i] = last.0;
+        alphas[i] = last.1;
+        counts[i] = count as f64;
     }
 
     let n_grid = (pad..n.saturating_sub(pad)).step_by(stride).count();
-    let (i_min, e_min) =
-        errors
-            .iter()
-            .copied()
-            .enumerate()
-            .fold(
-                (0, f64::INFINITY),
-                |acc, (i, e)| {
-                    if e < acc.1 {
-                        (i, e)
-                    } else {
-                        acc
-                    }
-                },
-            );
-    let fit_allowance = e_min + noise.map_or(0.0, |nm| nm.std_error(n_grid));
-    let budget = match (selection, noise) {
-        (Selection::NoiseFloor, Some(nm)) => nm.budget(n_grid),
-        _ => 0.0,
-    };
-    let noise_path = budget > fit_allowance;
-    let allowance = budget.max(fit_allowance);
-    let pick = (0..levels.len())
-        .rev()
-        .find(|&i| errors[i] <= allowance)
-        .unwrap_or(i_min);
+    let sel = select_sparsest(
+        &errors,
+        &alphas,
+        &counts,
+        (0..levels.len()).rev(),
+        selection,
+        noise,
+        n_grid,
+    );
+    let (pick, noise_path, diag) = (sel.index, sel.noise_path, sel.diag);
 
     // Final pass: full result at the picked threshold
     let threshold = levels[pick];
@@ -308,6 +404,7 @@ pub(crate) fn threshold_search_scored(
         pve,
         error: errors[pick],
         noise_path,
+        diag,
     }
 }
 
