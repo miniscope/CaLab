@@ -1,18 +1,24 @@
 // Max-pooling for the raster heatmap. Each output cell aggregates every source
 // (cell, time) sample that maps into it, so a single active cell or a brief
-// transient is never dropped by down-sampling. Values are normalized bytes
-// (0..255); max is taken after normalization, which is monotonic so the result
-// matches normalizing the max.
+// transient is never dropped by down-sampling.
+//
+// Pooling happens in the raw-value domain. Colour bounds are then derived from
+// the POOLED values (see pooledBounds): the max over many noise samples sits
+// well above the raw mean, so bounds taken from raw samples would saturate the
+// pooled noise. Against pooled bounds the noise becomes a narrow dark floor and
+// transients stand out.
 
 /** Temporal smoothing window, seconds: shorter than a calcium transient's rise plus peak. */
 export const SMOOTH_WINDOW_SECONDS = 0.1;
 /** Nominal plot width (physical px) used to estimate the pooling factor along time. */
 export const NOMINAL_PLOT_COLS = 1600;
+/** Percentiles of the pooled image mapped to the bottom and top of the colormap. */
+export const POOLED_LOW_Q = 0.05;
+export const POOLED_HIGH_Q = 0.995;
 
 /**
  * Moving-average width (frames) applied along time before max-pooling.
- * Max of k white-noise samples sits ~sqrt(2 ln k) sigma above the mean, which
- * washes out event contrast; averaging w frames first cuts sigma by ~sqrt(w).
+ * Averaging w frames cuts white-noise sigma by ~sqrt(w) before the max.
  * w = min(frames per pixel, SMOOTH_WINDOW_SECONDS * fs), so no smoothing happens
  * when there is no pooling, and a transient longer than the window keeps its peak.
  */
@@ -29,16 +35,33 @@ function binMap(n: number, bins: number): Int32Array {
   return m;
 }
 
-/** Normalize one raw value to a byte; non-finite maps to 0. */
-export function normalizeByte(v: number, p1: number, range: number): number {
+/** Normalize one value to a byte; non-finite maps to 0. */
+export function normalizeByte(v: number, lo: number, range: number): number {
   if (!Number.isFinite(v)) return 0;
-  return Math.max(0, Math.min(255, Math.round(((v - p1) / range) * 255)));
+  return Math.max(0, Math.min(255, Math.round(((v - lo) / range) * 255)));
+}
+
+/** Low/high percentile bounds of a pooled image (sampled to <=100k values). */
+export function pooledBounds(
+  pooled: ArrayLike<number>,
+  lowQ = POOLED_LOW_Q,
+  highQ = POOLED_HIGH_Q,
+): { lo: number; hi: number; range: number } {
+  const step = Math.max(1, Math.floor(pooled.length / 100000));
+  const s: number[] = [];
+  for (let i = 0; i < pooled.length; i += step) if (Number.isFinite(pooled[i])) s.push(pooled[i]);
+  if (s.length === 0) return { lo: 0, hi: 1, range: 1 };
+  s.sort((a, b) => a - b);
+  const lo = s[Math.min(s.length - 1, Math.floor(s.length * lowQ))];
+  const hi = s[Math.min(s.length - 1, Math.floor(s.length * highQ))];
+  return { lo, hi, range: hi - lo || 1 };
 }
 
 /**
- * Pool the raw trace matrix (N cells x T frames) into outRows x outCols bytes
- * in a single pass (optionally smoothing along time first; see
- * smoothWidthFrames). `rawCols` is the stored row length; when `swapped` the raw
+ * Pool the raw trace matrix (N cells x T frames) into outRows x outCols raw
+ * values in a single pass, optionally moving-averaging along time first (running
+ * sum, window truncated at the edges). Non-finite samples are ignored (a bin
+ * with none is NaN). `rawCols` is the stored row length; when `swapped` the raw
  * layout is frames-major (index = t * rawCols + cell). outRows/outCols are
  * clamped to [1, N] / [1, T] (never upsamples).
  */
@@ -50,16 +73,17 @@ export function poolRawMax(
   T: number,
   outRows: number,
   outCols: number,
-  p1: number,
-  range: number,
   smoothWidth = 1,
-): { out: Uint8Array; rows: number; cols: number } {
+): { out: Float32Array; rows: number; cols: number } {
   const w = Math.max(1, Math.floor(smoothWidth));
   const rows = Math.max(1, Math.min(N, Math.floor(outRows)));
   const cols = Math.max(1, Math.min(T, Math.floor(outCols)));
-  const out = new Uint8Array(rows * cols);
+  const out = new Float32Array(rows * cols).fill(-Infinity);
   const rowOf = binMap(N, rows);
   const colOf = binMap(T, cols);
+  // Non-finite samples read as 0 inside the moving average and are skipped by max.
+  const val = (x: number) => (Number.isFinite(x) ? x : 0);
+
   if (w === 1) {
     if (swapped) {
       // frames-major: iterate t outer, cell inner for contiguous reads
@@ -67,9 +91,9 @@ export function poolRawMax(
         const base = t * rawCols;
         const c = colOf[t];
         for (let n = 0; n < N; n++) {
-          const b = normalizeByte(data[base + n], p1, range);
+          const v = data[base + n];
           const o = rowOf[n] * cols + c;
-          if (b > out[o]) out[o] = b;
+          if (v > out[o]) out[o] = v;
         }
       }
     } else {
@@ -77,72 +101,69 @@ export function poolRawMax(
         const base = n * rawCols;
         const rowBase = rowOf[n] * cols;
         for (let t = 0; t < T; t++) {
-          const b = normalizeByte(data[base + t], p1, range);
+          const v = data[base + t];
           const o = rowBase + colOf[t];
-          if (b > out[o]) out[o] = b;
+          if (v > out[o]) out[o] = v;
         }
       }
     }
-    return { out, rows, cols };
-  }
-
-  // Running-sum moving average along time (window [c-lo, c+hi], truncated at
-  // the edges), then max over cells and frames within each output pixel.
-  const lo = Math.floor(w / 2);
-  const hi = w - 1 - lo;
-  const val = (x: number) => (Number.isFinite(x) ? x : p1);
-  if (swapped) {
-    const sum = new Float64Array(N);
-    for (let t = 0; t <= Math.min(hi, T - 1); t++) {
-      const base = t * rawCols;
-      for (let n = 0; n < N; n++) sum[n] += val(data[base + n]);
-    }
-    for (let c = 0; c < T; c++) {
-      const count = Math.min(T - 1, c + hi) - Math.max(0, c - lo) + 1;
-      const col = colOf[c];
-      const addT = c + hi + 1;
-      const subT = c - lo;
-      const addBase = addT * rawCols;
-      const subBase = subT * rawCols;
-      for (let n = 0; n < N; n++) {
-        const b = normalizeByte(sum[n] / count, p1, range);
-        const o = rowOf[n] * cols + col;
-        if (b > out[o]) out[o] = b;
-        if (addT < T) sum[n] += val(data[addBase + n]);
-        if (subT >= 0) sum[n] -= val(data[subBase + n]);
-      }
-    }
   } else {
-    for (let n = 0; n < N; n++) {
-      const base = n * rawCols;
-      const rowBase = rowOf[n] * cols;
-      let sum = 0;
-      for (let t = 0; t <= Math.min(hi, T - 1); t++) sum += val(data[base + t]);
+    const lo = Math.floor(w / 2);
+    const hi = w - 1 - lo;
+    if (swapped) {
+      const sum = new Float64Array(N);
+      for (let t = 0; t <= Math.min(hi, T - 1); t++) {
+        const base = t * rawCols;
+        for (let n = 0; n < N; n++) sum[n] += val(data[base + n]);
+      }
       for (let c = 0; c < T; c++) {
         const count = Math.min(T - 1, c + hi) - Math.max(0, c - lo) + 1;
-        const b = normalizeByte(sum / count, p1, range);
-        const o = rowBase + colOf[c];
-        if (b > out[o]) out[o] = b;
-        if (c + hi + 1 < T) sum += val(data[base + c + hi + 1]);
-        if (c - lo >= 0) sum -= val(data[base + c - lo]);
+        const col = colOf[c];
+        const addT = c + hi + 1;
+        const subT = c - lo;
+        const addBase = addT * rawCols;
+        const subBase = subT * rawCols;
+        for (let n = 0; n < N; n++) {
+          const v = sum[n] / count;
+          const o = rowOf[n] * cols + col;
+          if (v > out[o]) out[o] = v;
+          if (addT < T) sum[n] += val(data[addBase + n]);
+          if (subT >= 0) sum[n] -= val(data[subBase + n]);
+        }
+      }
+    } else {
+      for (let n = 0; n < N; n++) {
+        const base = n * rawCols;
+        const rowBase = rowOf[n] * cols;
+        let sum = 0;
+        for (let t = 0; t <= Math.min(hi, T - 1); t++) sum += val(data[base + t]);
+        for (let c = 0; c < T; c++) {
+          const count = Math.min(T - 1, c + hi) - Math.max(0, c - lo) + 1;
+          const v = sum / count;
+          const o = rowBase + colOf[c];
+          if (v > out[o]) out[o] = v;
+          if (c + hi + 1 < T) sum += val(data[base + c + hi + 1]);
+          if (c - lo >= 0) sum -= val(data[base + c - lo]);
+        }
       }
     }
   }
+  for (let i = 0; i < out.length; i++) if (out[i] === -Infinity) out[i] = NaN;
   return { out, rows, cols };
 }
 
-/** Max-pool an already-normalized byte matrix to a smaller (or equal) size. */
-export function poolBytesMax(
-  src: Uint8Array,
+/** Max-pool an already pooled matrix to a smaller (or equal) size. */
+export function poolMatrixMax(
+  src: Float32Array,
   rows: number,
   cols: number,
   outRows: number,
   outCols: number,
-): { out: Uint8Array; rows: number; cols: number } {
+): { out: Float32Array; rows: number; cols: number } {
   const r = Math.max(1, Math.min(rows, Math.floor(outRows)));
   const c = Math.max(1, Math.min(cols, Math.floor(outCols)));
   if (r === rows && c === cols) return { out: src, rows, cols };
-  const out = new Uint8Array(r * c);
+  const out = new Float32Array(r * c).fill(-Infinity);
   const rowOf = binMap(rows, r);
   const colOf = binMap(cols, c);
   for (let y = 0; y < rows; y++) {
@@ -154,5 +175,6 @@ export function poolBytesMax(
       if (v > out[o]) out[o] = v;
     }
   }
+  for (let i = 0; i < out.length; i++) if (out[i] === -Infinity) out[i] = NaN;
   return { out, rows: r, cols: c };
 }

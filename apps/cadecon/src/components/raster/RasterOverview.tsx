@@ -6,7 +6,13 @@ import {
   setSelectedSubsetIdx,
 } from '../../lib/subset-store.ts';
 import { VIRIDIS_LUT, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
-import { poolRawMax, poolBytesMax, smoothWidthFrames } from '../../lib/raster-pool.ts';
+import {
+  poolRawMax,
+  poolMatrixMax,
+  pooledBounds,
+  normalizeByte,
+  smoothWidthFrames,
+} from '../../lib/raster-pool.ts';
 import '../../styles/raster.css';
 
 // Plot margins (CSS px) reserved for the cell axis (left) and time axis
@@ -90,10 +96,10 @@ export function RasterOverview(): JSX.Element {
     const shape = effectiveShape();
     if (!data || !shape) return null;
     const [N, T] = shape;
-    const { p1, range } = percentileBounds();
     const dur = durationSeconds();
     const fsHz = dur && dur > 0 ? T / dur : null;
-    return poolRawMax(
+    const w = smoothWidthFrames(T, fsHz);
+    const pooled = poolRawMax(
       data.data,
       data.shape[1],
       swapped(),
@@ -101,16 +107,17 @@ export function RasterOverview(): JSX.Element {
       T,
       BASE_MAX_ROWS,
       BASE_MAX_COLS,
-      p1,
-      range,
-      smoothWidthFrames(T, fsHz),
+      w,
     );
+    return { ...pooled, smoothed: w > 1 };
   });
   let sizedCache: {
     src: object;
     w: number;
     h: number;
-    pool: ReturnType<typeof poolBytesMax>;
+    pool: ReturnType<typeof poolMatrixMax>;
+    lo: number;
+    range: number;
   } | null = null;
 
   const drawRaster = () => {
@@ -158,20 +165,36 @@ export function RasterOverview(): JSX.Element {
     const base = basePool();
     if (!base) return;
     if (!sizedCache || sizedCache.src !== base || sizedCache.w !== ppW || sizedCache.h !== ppH) {
+      const pool = poolMatrixMax(base.out, base.rows, base.cols, ppH, ppW);
+      // Pooling raises the noise floor, so colour bounds come from the pooled
+      // values; with no pooling at all keep the legacy global raw percentiles.
+      const pooledAny = base.smoothed || N * T > pool.rows * pool.cols;
+      const bounds = pooledAny
+        ? (() => {
+            const b = pooledBounds(pool.out);
+            return { lo: b.lo, range: b.range };
+          })()
+        : { lo: percentileBounds().p1, range: percentileBounds().range };
       sizedCache = {
         src: base,
         w: ppW,
         h: ppH,
-        pool: poolBytesMax(base.out, base.rows, base.cols, ppH, ppW),
+        pool,
+        ...bounds,
       };
     }
     const { out: pooled, rows: pRows, cols: pCols } = sizedCache.pool;
+    const { lo, range } = sizedCache;
 
     for (let py = 0; py < ppH; py++) {
       const pr = Math.min(pRows - 1, Math.floor((py / ppH) * pRows));
       const rowPixelBase = py * ppW;
       for (let px = 0; px < ppW; px++) {
-        const normalized = pooled[pr * pCols + Math.min(pCols - 1, Math.floor((px / ppW) * pCols))];
+        const normalized = normalizeByte(
+          pooled[pr * pCols + Math.min(pCols - 1, Math.floor((px / ppW) * pCols))],
+          lo,
+          range,
+        );
         const offset = (rowPixelBase + px) * 4;
         pixels[offset] = VIRIDIS_LUT[normalized * 3];
         pixels[offset + 1] = VIRIDIS_LUT[normalized * 3 + 1];
