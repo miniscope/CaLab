@@ -1392,13 +1392,25 @@ fn solve_trace_native(
         selection: diag,
     }];
 
+    // The amplitude and offset handed downstream. The kernel estimator models
+    // the working trace as `alpha * (s * h) + baseline` with the bare train,
+    // but the chain scorer fits its pair after the reconstruction went through
+    // the chain, so its offset carries the level the rolling quantile removed
+    // and the kernel fit subtracts that level a second time (slow indicators
+    // under dense firing: tau_r pinned at the fit's cap, tau_d halved). Refit
+    // the pair on the bare reconvolution; scoring keeps its own.
+    let (alpha_out, baseline_out) = {
+        let mut cv = vec![0.0_f32; n_up];
+        up.banded.convolve_forward(&s_binary, &mut cv);
+        crate::threshold::lstsq_alpha_baseline(&cv, &up.working, pad_up, f64::INFINITY)
+    };
     (
         InDecaResult {
             s_counts,
             // The upsampled working trace at the recorded rate, as before.
             filtered_trace: Some(downsample_average(&up.working, k)),
-            alpha: alpha_lstsq,
-            baseline: baseline_lstsq,
+            alpha: alpha_out,
+            baseline: baseline_out,
             threshold,
             pve,
             iterations,
