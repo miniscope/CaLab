@@ -422,7 +422,8 @@ def solve_trace(
     hp_enabled, lp_enabled : bool
         Enable high-pass / low-pass filtering.
     warm_counts : np.ndarray, optional
-        Spike counts from a previous iteration (at original rate) for warm-start.
+        Accepted for API compatibility; currently has no effect (the first
+        scale-loop round ignores it).
     lambda_ : float
         L1 sparsity penalty.
     noise_constrained : bool
