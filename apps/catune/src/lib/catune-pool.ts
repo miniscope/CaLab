@@ -13,6 +13,9 @@ import {
 import type { PoolWorkerOutbound } from '../workers/catune-types.ts';
 
 export interface CaTunePoolJob extends BaseJob {
+  /** Cell and window start of `trace`; the worker ignores them, the GPU backend keys its preprocessing cache on them. */
+  cellIndex?: number;
+  windowStart?: number;
   trace: Float32Array;
   params: SolverParams;
   warmState: Uint8Array | null;

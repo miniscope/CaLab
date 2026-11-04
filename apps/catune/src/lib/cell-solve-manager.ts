@@ -2,7 +2,7 @@
 // Watches selectedCells + global params, dispatches per-cell jobs through the worker pool.
 // Replaces multi-cell-solver.ts, tuning-orchestrator.ts, and job-scheduler.ts.
 
-import { createEffect, createSignal, on, onCleanup } from 'solid-js';
+import { createEffect, createSignal, on, onCleanup, untrack } from 'solid-js';
 import { currentTau, lambda, selectedCell, filterEnabled } from './viz-store.ts';
 import { parsedData, effectiveShape, swapped, samplingRate } from './data-store.ts';
 import {
@@ -20,6 +20,7 @@ import { extractCellTrace } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
 import type { WorkerPool } from '@calab/compute';
 import { createCaTuneWorkerPool, type CaTunePoolJob } from './catune-pool.ts';
+import { backendStatus, createSolverPool } from './solver-backend.ts';
 import type { SolverParams } from '@calab/core';
 import type { NpyResult } from '@calab/core';
 
@@ -59,6 +60,49 @@ const [solverFatalError, setSolverFatalError] = createSignal<string | null>(null
 export { solverFatalError };
 let jobCounter = 0;
 const cellStates = new Map<number, CellSolveState>();
+
+// GPU backend only (dev flag `?backend=gpu`): one shared debounce for every
+// cell. Per-cell timers fire in separate tasks, and the tile scheduler pumps
+// per task (microtask), so after a parameter change the GPU got a 1-cell batch
+// followed by the rest. With one timer, every pending cell is dispatched in the
+// same task and reaches the scheduler together. The default WASM path keeps the
+// per-cell `debounceTimer` (unchanged from before the GPU backend existed).
+// Set once per `initCellSolveManager`, right after the pool is created.
+let sharedDebounce = false;
+// Pending cell -> whether to also invalidate its cached padded result.
+const pendingDispatch = new Map<number, boolean>();
+let dispatchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleDispatch(state: CellSolveState, invalidate: boolean): void {
+  pendingDispatch.set(
+    state.cellIndex,
+    (pendingDispatch.get(state.cellIndex) ?? false) || invalidate,
+  );
+  if (dispatchTimer !== null) clearTimeout(dispatchTimer);
+  dispatchTimer = setTimeout(flushPendingDispatches, DEBOUNCE_MS);
+}
+
+function flushPendingDispatches(): void {
+  dispatchTimer = null;
+  const due = [...pendingDispatch];
+  pendingDispatch.clear();
+  for (const [cellIndex, invalidate] of due) {
+    const state = cellStates.get(cellIndex);
+    if (!state) continue;
+    if (invalidate) {
+      state.fullPaddedSolution = null;
+      state.fullPaddedReconvolution = null;
+      state.fullPaddedFilteredTrace = null;
+    }
+    dispatchCellSolve(state);
+  }
+}
+
+function clearPendingDispatches(): void {
+  if (dispatchTimer !== null) clearTimeout(dispatchTimer);
+  dispatchTimer = null;
+  pendingDispatch.clear();
+}
 
 function nextJobId(): number {
   return ++jobCounter;
@@ -169,6 +213,8 @@ function dispatchCellSolve(state: CellSolveState): void {
 
   pool.dispatch({
     jobId,
+    cellIndex: state.cellIndex,
+    windowStart: paddedStart,
     trace: paddedTrace,
     params,
     warmState,
@@ -273,6 +319,10 @@ function reEnqueueCell(state: CellSolveState): void {
 }
 
 function debouncedDispatch(state: CellSolveState): void {
+  if (sharedDebounce) {
+    scheduleDispatch(state, false);
+    return;
+  }
   if (state.debounceTimer !== null) {
     clearTimeout(state.debounceTimer);
   }
@@ -286,6 +336,10 @@ function debouncedDispatch(state: CellSolveState): void {
 // for stale tau/lambda) before dispatching. Separate from `debouncedDispatch`
 // which is reused by zoom-cache misses where the cache is still valid.
 function debouncedParamTransition(state: CellSolveState): void {
+  if (sharedDebounce) {
+    scheduleDispatch(state, true);
+    return;
+  }
   if (state.debounceTimer !== null) {
     clearTimeout(state.debounceTimer);
   }
@@ -351,6 +405,7 @@ function removeCellState(cellIndex: number): void {
   const state = cellStates.get(cellIndex);
   if (state) {
     if (state.debounceTimer !== null) clearTimeout(state.debounceTimer);
+    pendingDispatch.delete(cellIndex);
     if (state.activeJobId !== null && pool) pool.cancel(state.activeJobId);
     cellStates.delete(cellIndex);
   }
@@ -416,16 +471,22 @@ export function reportCellZoom(cellIndex: number, startS: number, endS: number):
 
 export function initCellSolveManager(): void {
   setSolverFatalError(null);
-  pool = createCaTuneWorkerPool(
-    () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
-    undefined,
-    {
-      onFatal(message) {
-        console.error('CaTune solver workers failed:', message);
-        setSolverFatalError(message);
+  // The WASM worker pool, or (dev flag `?backend=gpu`) a facade that solves on
+  // WebGPU and falls back to this same pool. See solver-backend.ts.
+  pool = createSolverPool((size) =>
+    createCaTuneWorkerPool(
+      () => new Worker(new URL('../workers/pool-worker.ts', import.meta.url), { type: 'module' }),
+      size,
+      {
+        onFatal(message) {
+          console.error('CaTune solver workers failed:', message);
+          setSolverFatalError(message);
+        },
       },
-    },
+    ),
   );
+  // createSolverPool has just published which backend was requested.
+  sharedDebounce = untrack(backendStatus).requested === 'gpu';
 
   // Effect 1: Watch selectedCells — add/remove cell states and dispatch initial solves
   createEffect(
@@ -495,10 +556,11 @@ export function initCellSolveManager(): void {
 }
 
 export function disposeCellSolveManager(): void {
-  // Clear all debounce timers
+  // Clear all debounce timers (per-cell on WASM, shared on GPU)
   for (const state of cellStates.values()) {
     if (state.debounceTimer !== null) clearTimeout(state.debounceTimer);
   }
+  clearPendingDispatches();
   cellStates.clear();
 
   if (pool) {

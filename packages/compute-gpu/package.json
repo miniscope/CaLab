@@ -1,0 +1,21 @@
+{
+  "name": "@calab/compute-gpu",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:gpu": "playwright test --grep-invert @bench",
+    "bench": "playwright test --grep @bench",
+    "harness": "vite harness --port 4177"
+  },
+  "dependencies": {
+    "@calab/compute": "*",
+    "@calab/core": "*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.60"
+  }
+}
