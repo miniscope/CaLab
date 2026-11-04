@@ -342,6 +342,16 @@ class SolveTraceResult(NamedTuple):
         Number of FISTA iterations run.
     converged : bool
         Whether the solver converged.
+    noise_var_processed : float
+        Per-sample noise variance of the processed (bandpassed,
+        baseline-subtracted) working trace: the raw trace's high-band noise
+        variance through the bandpass, times ``chain_noise_gain``. 0 when no
+        noise floor is measurable. ``1 - noise_var_processed / var(working
+        trace)`` is the PVE ceiling a fit reaches before it fits noise.
+    chain_noise_gain : float
+        Gain of the rolling-quantile baseline stage on the noise energy
+        (measured on the trace; 1 when not measured). The selection's noise
+        budget carries this factor.
     """
 
     s_counts: np.ndarray
@@ -351,6 +361,8 @@ class SolveTraceResult(NamedTuple):
     pve: float
     iterations: int
     converged: bool
+    noise_var_processed: float = 0.0
+    chain_noise_gain: float = 1.0
 
 
 class BiexpFitResult(NamedTuple):
@@ -442,7 +454,10 @@ def solve_trace(
     if warm_counts is not None:
         warm = np.ascontiguousarray(warm_counts, dtype=np.float64)
 
-    s_counts, alpha, baseline, threshold, pve, iterations, converged = _indeca_solve_trace(
+    (
+        s_counts, alpha, baseline, threshold, pve, iterations, converged,
+        noise_var_processed, chain_noise_gain,
+    ) = _indeca_solve_trace(
         trace_1d, tau_rise, tau_decay, fs,
         upsample_factor, max_iters, tol,
         hp_enabled, lp_enabled, warm, lambda_,
@@ -456,6 +471,8 @@ def solve_trace(
         pve=float(pve),
         iterations=int(iterations),
         converged=bool(converged),
+        noise_var_processed=float(noise_var_processed),
+        chain_noise_gain=float(chain_noise_gain),
     )
 
 
