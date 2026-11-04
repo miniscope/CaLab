@@ -78,30 +78,30 @@ minimize  (1/2)||y - K·s - b||² + λ·G_dc·||s||₁   subject to  s ≥ 0
 
 ### `Solver` methods (wasm-bindgen)
 
-| Method                                                    | Description                                                                     |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `new()`                                                   | Create solver with default parameters (τ_rise=0.02, τ_decay=0.4, λ=0.01, fs=30) |
-| `set_params(tau_rise, tau_decay, lambda, fs)`             | Update parameters and rebuild kernel                                            |
-| `set_trace(trace)`                                        | Load a trace, grow buffers if needed, reset iteration state                     |
-| `set_conv_mode(mode)`                                     | Select the forward-model engine (`Fft` or `BandedAR2`)                          |
-| `set_constraint(c)`                                       | Select the proximal constraint (`NonNegative` L1 or `Box01`)                    |
-| `get_kernel()`                                            | Get the current double-exponential kernel                                       |
-| `set_hp_filter_enabled(on)` / `set_lp_filter_enabled(on)` | Toggle the high-/low-pass halves of the bandpass filter individually            |
-| `step_batch(n_steps)`                                     | Run N FISTA iterations, return true if converged                                |
-| `get_solution()`                                          | Get deconvolved activity (owned copy)                                           |
-| `get_reconvolution()`                                     | Get K·s (lazy-computed, owned copy)                                             |
-| `get_reconvolution_with_baseline()`                       | Get K·s + b (owned copy)                                                        |
-| `get_baseline()`                                          | Get estimated scalar baseline                                                   |
-| `get_trace()`                                             | Get current trace (may be filtered)                                             |
-| `converged()`                                             | Check convergence flag                                                          |
-| `iteration_count()`                                       | Get iteration count                                                             |
-| `reset_momentum()`                                        | Reset FISTA momentum for warm-start after kernel change                         |
-| `export_state()` / `load_state(state)`                    | Serialize/restore solver state for warm-start cache                             |
-| `set_filter_enabled(enabled)` / `filter_enabled()`        | Toggle bandpass filter                                                          |
-| `apply_filter()`                                          | Apply bandpass filter to loaded trace                                           |
-| `get_power_spectrum()`                                    | Get \|FFT\|² of current trace                                                   |
-| `get_spectrum_frequencies()`                              | Get frequency axis in Hz                                                        |
-| `get_filter_cutoffs()`                                    | Get [f_hp, f_lp] cutoff frequencies                                             |
+| Method                                                    | Description                                                                       |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `new()`                                                   | Create solver with default parameters (τ_rise=0.02, τ_decay=0.4, λ=0.01, fs=30)   |
+| `set_params(tau_rise, tau_decay, lambda, fs)`             | Update parameters and rebuild kernel                                              |
+| `set_trace(trace)`                                        | Load a trace, grow buffers if needed, reset iteration state                       |
+| `set_conv_mode(mode)`                                     | Select the forward-model engine (`Fft` or `BandedAR2`)                            |
+| `set_constraint(c)`                                       | Select the proximal constraint (`NonNegative` L1 or `Box01`)                      |
+| `get_kernel()`                                            | Get the current double-exponential kernel                                         |
+| `set_hp_filter_enabled(on)` / `set_lp_filter_enabled(on)` | Toggle the high-/low-pass halves of the bandpass filter individually              |
+| `step_batch(n_steps)`                                     | Run N FISTA iterations, return true if converged                                  |
+| `get_solution()`                                          | Get deconvolved activity (owned copy)                                             |
+| `get_reconvolution()`                                     | Get K·s (lazy-computed, owned copy)                                               |
+| `get_reconvolution_with_baseline()`                       | Get K·s + b (owned copy)                                                          |
+| `get_baseline()`                                          | Get estimated scalar baseline                                                     |
+| `get_trace()`                                             | Get current trace (may be filtered)                                               |
+| `converged()`                                             | Check convergence flag                                                            |
+| `iteration_count()`                                       | Get iteration count                                                               |
+| `reset_momentum()`                                        | Reset FISTA momentum for warm-start after kernel change                           |
+| `export_state()` / `load_state(state)`                    | Serialize/restore solver state for warm-start cache                               |
+| `set_filter_enabled(enabled)` / `filter_enabled()`        | Toggle bandpass filter                                                            |
+| `apply_filter()`                                          | Apply bandpass filter to loaded trace                                             |
+| `get_power_spectrum()`                                    | Get \|FFT\|² of the endpoint-detrended current trace (same with filter on or off) |
+| `get_spectrum_frequencies()`                              | Get frequency axis in Hz                                                          |
+| `get_filter_cutoffs()`                                    | Get [f_hp, f_lp] cutoff frequencies                                               |
 
 ### InDeCa pipeline functions (wasm-bindgen)
 
