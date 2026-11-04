@@ -2,6 +2,7 @@ mod banded;
 pub(crate) mod baseline;
 #[allow(dead_code)]
 pub(crate) mod biexp_fit;
+pub(crate) mod chain;
 mod fft;
 mod filter;
 mod fista;
@@ -10,8 +11,10 @@ pub(crate) mod indeca;
 mod kernel;
 #[allow(dead_code)]
 pub(crate) mod kernel_est;
+pub(crate) mod native_solve;
 pub(crate) mod peak_seed;
 pub(crate) mod simulate;
+pub(crate) mod spread;
 #[allow(dead_code)]
 pub(crate) mod threshold;
 #[allow(dead_code)]
@@ -187,6 +190,12 @@ pub struct Solver {
     // Convergence tracking
     pub(crate) prev_objective: f64,
     pub(crate) tolerance: f64,
+    /// Optional fit-window stopping rule (see `set_fit_stop`). `None` (the
+    /// default) keeps the relative-step test driven by `tolerance`.
+    pub(crate) fit_stop: Option<f64>,
+    /// Data-fit term per iteration of the current solve; only recorded while
+    /// `fit_stop` is set. Not part of the exported state.
+    fit_history: Vec<f64>,
     pub(crate) lipschitz_constant: f64,
 
     // Baseline and kernel scaling
@@ -246,6 +255,8 @@ impl Solver {
             active_len: 0,
             prev_objective: f64::INFINITY,
             tolerance: 1e-4,
+            fit_stop: None,
+            fit_history: Vec::new(),
             lipschitz_constant: 1.0,
             baseline: 0.0,
             baseline_ema: 0.0,
@@ -577,6 +588,7 @@ impl Solver {
         self.baseline = if self.filtered { 0.0 } else { saved_baseline };
         self.converged = false;
         self.prev_objective = f64::INFINITY;
+        self.fit_history.clear();
 
         for i in 0..saved_len {
             self.solution[i] = read_f32_le(&mut cur);
@@ -613,6 +625,17 @@ impl Solver {
         validate::validate_finite_f32("trace", trace)?;
         self.load_trace(trace);
         Ok(())
+    }
+
+    /// Select the FISTA stopping rule. `None` (the default, used by CaTune):
+    /// stop when the relative step `||x_{k+1} - x_k|| / ||x_k||` falls below
+    /// `tolerance`. `Some(min_gain)`: stop once the data-fit term
+    /// `0.5 * ||K y_k + b - trace||^2` improved by no more than `min_gain` over
+    /// the last [`fista::FIT_STOP_WINDOW`] iterations (the InDeCa path sets
+    /// `min_gain` from the noise energy). Takes effect from the next iteration.
+    pub(crate) fn set_fit_stop(&mut self, min_gain: Option<f64>) {
+        self.fit_stop = min_gain;
+        self.fit_history.clear();
     }
 
     /// Apply parameters without validation. Callers must have validated them
@@ -677,6 +700,7 @@ impl Solver {
         self.t_fista = 1.0;
         self.converged = false;
         self.prev_objective = f64::INFINITY;
+        self.fit_history.clear();
         self.baseline = 0.0;
         self.baseline_ema = 0.0;
         self.baseline_ema_init = false;
