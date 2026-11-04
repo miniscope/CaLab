@@ -107,7 +107,7 @@ pub(crate) enum Gate {
 }
 
 /// How the amplitude is handled while atoms are added.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Amplitude {
     /// Least-squares refit of amplitude and offset on every candidate (the
     /// scorer's rule). The residual-only decision cannot tell "one spike at
@@ -121,6 +121,253 @@ pub(crate) enum Amplitude {
     /// events); only the offset is refit per candidate. The reported fit
     /// refits both at the end.
     FixedFromFirstPass,
+    /// The amplitude is pinned to the given value (units of the scorer's
+    /// target) from the first atom on; only the offset is refit per
+    /// candidate. The reported fit refits both at the end. (Characterization
+    /// oracle with the simulated per-spike amplitude; the quantal pin
+    /// supplies it from the data.)
+    Fixed(f64),
+    /// The quantal pin: the amplitude estimated from the data before the
+    /// walk as the most common isolated reliable event mass of the
+    /// free-coefficient pursuit ([`free_pursuit`], [`quantal_pin`]); falls
+    /// back to `Refit` when no estimate exists.
+    Quantal,
+}
+
+/// Lag (samples) after the kernel's peak at which its impulse response has
+/// fallen to `e^-2` of the peak: the decay support that separates events.
+pub(crate) fn decay_support(banded: &BandedAR2, n: usize) -> usize {
+    let mut imp = vec![0.0_f32; n];
+    if n == 0 {
+        return 0;
+    }
+    imp[0] = 1.0;
+    let mut h = vec![0.0_f32; n];
+    banded.convolve_forward(&imp, &mut h);
+    let (pk, hp) = h
+        .iter()
+        .enumerate()
+        .fold((0usize, f32::NEG_INFINITY), |b, (i, &v)| {
+            if v > b.1 {
+                (i, v)
+            } else {
+                b
+            }
+        });
+    let lim = hp * (-2.0_f32).exp();
+    (pk..n).find(|&i| h[i] < lim).unwrap_or(n)
+}
+
+/// The quantal pin from the free pursuit's atoms: events are atoms in
+/// adjacent frames merged (mass = coefficient sum); reliable events exceed
+/// the detection floor (`sqrt(2 ln n_grid)` coefficient SEs); isolated
+/// events have no larger event within the decay support `sep` (sub-bins)
+/// on either side. The pin is the mode of the isolated reliable masses: the
+/// most common isolated event is the single spike (the background spikes
+/// between bursts, or the single spikes of a sparse cell), while bursts are
+/// spread over many masses. The mode is the largest Gaussian kernel density
+/// in log mass evaluated at the events themselves, bandwidth by Silverman's
+/// rule (`0.9 min(sd, IQR / 1.34) n^-1/5`): a data-derived width, no
+/// constant of this module's own. `None` with fewer than two events.
+pub(crate) fn quantal_pin(ca: &CorrAmps, stride: usize, sep: usize) -> Option<f64> {
+    let stride = stride.max(1);
+    let floor = ca.se * (2.0 * (ca.n_grid.max(2) as f64).ln()).sqrt();
+    let mut atoms = ca.atoms.clone();
+    atoms.sort_by_key(|&(j, _)| j);
+    // (first frame, last frame, mass)
+    let mut ev: Vec<(usize, usize, f64)> = Vec::new();
+    for &(j, a) in &atoms {
+        let f = j / stride;
+        match ev.last_mut() {
+            Some(e) if f <= e.1 + 1 => {
+                e.1 = f;
+                e.2 += a;
+            }
+            _ => ev.push((f, f, a)),
+        }
+    }
+    let rel: Vec<(usize, usize, f64)> = ev.into_iter().filter(|e| e.2 > floor).collect();
+    let sep_f = sep.div_ceil(stride);
+    let mut iso: Vec<f64> = Vec::new();
+    for (i, e) in rel.iter().enumerate() {
+        let near_larger = rel.iter().enumerate().any(|(q, o)| {
+            q != i && o.2 > e.2 && (o.0.abs_diff(e.1) <= sep_f || e.0.abs_diff(o.1) <= sep_f)
+        });
+        if !near_larger {
+            iso.push(e.2);
+        }
+    }
+    let n = iso.len();
+    if n < 2 {
+        return None;
+    }
+    let mut lx: Vec<f64> = iso.iter().map(|m| m.ln()).collect();
+    lx.sort_by(|a, b| a.total_cmp(b));
+    let mean = lx.iter().sum::<f64>() / n as f64;
+    let sd = (lx.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (n - 1) as f64).sqrt();
+    let iqr = lx[(3 * n) / 4] - lx[n / 4];
+    let spread = if iqr > 0.0 { sd.min(iqr / 1.34) } else { sd };
+    if spread.is_nan() || spread <= 0.0 {
+        return Some(iso[0]);
+    }
+    let h = 0.9 * spread * (n as f64).powf(-0.2);
+    let mut best = (f64::NEG_INFINITY, 0.0);
+    for &x in &lx {
+        let d: f64 = lx
+            .iter()
+            .map(|&v| (-(v - x) * (v - x) / (2.0 * h * h)).exp())
+            .sum();
+        if d > best.0 {
+            best = (d, x);
+        }
+    }
+    Some(best.1.exp())
+}
+
+/// The data's single-atom amplitudes at the positive local maxima of its
+/// template correlation (no train): what one spike at that sub-bin would
+/// be fitted at by the residual alone. The basis of the quantal pin.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CorrAmps {
+    /// `(sub-bin, amplitude)` of every positive local maximum over the
+    /// empty interior sub-bins, in correlation order (descending).
+    pub atoms: Vec<(usize, f64)>,
+    /// Standard error of one such amplitude under the noise model
+    /// (`sigma sqrt(corr_sum) / sqrt(E_phi)`): the resolution of a single
+    /// measurement. Zero without a noise model.
+    pub se: f64,
+    /// Number of grid samples (the extreme-value scale of noise maxima,
+    /// `sqrt(2 ln n_grid)` standard errors, derives from it).
+    pub n_grid: usize,
+}
+
+/// Free-coefficient matching pursuit against the chain template (the
+/// linear part of the chain only, on the grid residual): a greedy
+/// chain-consistent deconvolution of the target. Sequential and exact: one
+/// atom per step, chosen as the largest exact energy decrease among the
+/// positive local maxima of the residual's correlation (a new coefficient
+/// `c_j / E_phi(j)`) and the negative local minima on occupied sub-bins (a
+/// correction, bounded by the coefficient), the correlation recomputed after
+/// every step. A burst frame is one atom with a several-spike coefficient
+/// (sub-bins are not identifiable from the grid). Stops when the residual
+/// energy is at or below the budget, when the best new atom is below the
+/// detection floor (`sqrt(2 ln n_grid)` standard errors of one coefficient:
+/// the expected largest noise correlation over the grid) and no correction
+/// helps, or when nothing decreases the energy. Returns `(sub-bin,
+/// coefficient)` of every atom with a positive coefficient plus the
+/// coefficient SE.
+pub(crate) fn free_pursuit(
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    pad: usize,
+    stride: usize,
+    noise: Option<NoiseModel>,
+) -> CorrAmps {
+    let n = scorer.target().len();
+    let stride = stride.max(1);
+    let lo = pad;
+    let hi = n.saturating_sub(pad);
+    let n_grid = (lo..hi).step_by(stride).count();
+    if n_grid == 0 || n < 8 {
+        return CorrAmps::default();
+    }
+    let mut corr = Corr::new(scorer, banded, n, stride);
+    let y: Vec<f32> = scorer.target().to_vec();
+    let budget = noise.map_or(0.0, |nm| nm.budget(n_grid));
+    let se = noise.map_or(0.0, |nm| {
+        nm.sigma * nm.corr_sum.max(1.0).sqrt() / corr.phi_grid_energy.max(1e-30).sqrt()
+    });
+    let floor = se * (2.0 * (n_grid as f64).ln()).sqrt();
+    let centre = n / 2;
+    let mut imp = vec![0.0_f32; n];
+    imp[centre] = 1.0;
+    let mut phi = vec![0.0_f32; n];
+    banded.convolve_forward(&imp, &mut phi);
+    scorer.apply_linear(&mut phi);
+    let zero = vec![0.0_f32; n];
+    let (_, b) = fixed_fit(&y, &zero, 0.0, pad, stride);
+    let mut r = vec![0.0_f32; n];
+    residual_on_grid(&y, &zero, 0.0, b, pad, stride, &mut r);
+    let mut coef = vec![0.0_f64; n];
+    let mut c = vec![0.0_f32; n];
+    let mut e: f64 = r.iter().map(|&v| v as f64 * v as f64).sum();
+    let mut steps = 0usize;
+    while steps < 4 * n_grid && !(budget > 0.0 && e <= budget) {
+        steps += 1;
+        corr.correlate(&r, &mut c);
+        // Best exact decrease: new atoms at positive maxima above the floor,
+        // corrections at negative minima of occupied sub-bins.
+        let mut best: Option<(f64, f64, usize)> = None;
+        for j in lo.max(1)..hi.min(n - 1) {
+            let cj = c[j] as f64;
+            let ej = corr.energy_at(j, pad).max(1e-30);
+            let a = if cj > 0.0 && c[j] >= c[j - 1] && c[j] > c[j + 1] {
+                let a = cj / ej;
+                if a <= floor {
+                    continue;
+                }
+                a
+            } else if cj < 0.0 && coef[j] > 0.0 && c[j] <= c[j - 1] && c[j] < c[j + 1] {
+                (cj / ej).max(-coef[j])
+            } else {
+                continue;
+            };
+            let de = a * a * ej - 2.0 * a * cj;
+            if de < 0.0 && best.is_none_or(|bst| de < bst.0) {
+                best = Some((de, a, j));
+            }
+        }
+        let Some((de, a, j)) = best else { break };
+        for i in (lo..hi).step_by(stride) {
+            let m = (i as isize - j as isize + centre as isize) as usize;
+            if m < n {
+                r[i] -= (a * phi[m] as f64) as f32;
+            }
+        }
+        coef[j] += a;
+        e += de;
+    }
+    let mut atoms: Vec<(usize, f64)> = (lo..hi)
+        .filter(|&j| coef[j] > 0.0)
+        .map(|j| (j, coef[j]))
+        .collect();
+    atoms.sort_by(|a, b| b.1.total_cmp(&a.1));
+    CorrAmps { atoms, se, n_grid }
+}
+
+/// Compute [`CorrAmps`] for the scorer's target.
+pub(crate) fn correlation_amplitudes(
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    pad: usize,
+    stride: usize,
+    noise: Option<NoiseModel>,
+) -> CorrAmps {
+    let n = scorer.target().len();
+    let stride = stride.max(1);
+    let lo = pad;
+    let hi = n.saturating_sub(pad);
+    let n_grid = (lo..hi).step_by(stride).count();
+    if n_grid == 0 || n < 8 {
+        return CorrAmps::default();
+    }
+    let mut corr = Corr::new(scorer, banded, n, stride);
+    let y: Vec<f32> = scorer.target().to_vec();
+    let zero = vec![0.0_f32; n];
+    let (_, b) = fixed_fit(&y, &zero, 0.0, pad, stride);
+    let mut r = vec![0.0_f32; n];
+    residual_on_grid(&y, &zero, 0.0, b, pad, stride, &mut r);
+    let mut c = vec![0.0_f32; n];
+    corr.correlate(&r, &mut c);
+    let mut atoms: Vec<(usize, f64)> = (lo.max(1)..hi.min(n - 1))
+        .filter(|&j| c[j] > 0.0 && c[j] >= c[j - 1] && c[j] > c[j + 1])
+        .map(|j| (j, c[j] as f64 / corr.energy_at(j, pad).max(1e-30)))
+        .collect();
+    atoms.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let se = noise.map_or(0.0, |nm| {
+        nm.sigma * nm.corr_sum.max(1.0).sqrt() / corr.phi_grid_energy.max(1e-30).sqrt()
+    });
+    CorrAmps { atoms, se, n_grid }
 }
 
 /// What the pursuit did (diagnostics).
@@ -188,8 +435,12 @@ struct Corr {
     /// `conj(FFT(phi0))`, `phi0[m] = phi[(centre + m) mod n]`.
     phi_conj: Vec<Complex<f32>>,
     /// Sum of `phi^2` over grid offsets: the energy one spike adds on the
-    /// grid at unit amplitude.
+    /// grid at unit amplitude (a spike on a grid sample).
     phi_grid_energy: f64,
+    /// The same per sub-bin phase: `phi_phase_energy[p]` is the grid energy
+    /// of a spike `p` sub-bins after a grid sample (`p = 0` is
+    /// `phi_grid_energy`).
+    phi_phase_energy: Vec<f64>,
     spec: Vec<Complex<f32>>,
     work: Vec<f32>,
 }
@@ -203,12 +454,15 @@ impl Corr {
         banded.convolve_forward(&imp, &mut phi);
         scorer.apply_linear(&mut phi);
         let mut phi0: Vec<f32> = (0..n).map(|m| phi[(centre + m) % n]).collect();
-        let phi_grid_energy: f64 = phi
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| (*i as isize - centre as isize).rem_euclid(stride as isize) == 0)
-            .map(|(_, &v)| v as f64 * v as f64)
-            .sum();
+        // Grid energy per phase: a spike `p` sub-bins after a grid sample
+        // sees the grid at offsets `m = -p (mod stride)` from itself.
+        let mut phi_phase_energy = vec![0.0_f64; stride];
+        for (i, &v) in phi.iter().enumerate() {
+            let m = i as isize - centre as isize;
+            let p = (-m).rem_euclid(stride as isize) as usize;
+            phi_phase_energy[p] += v as f64 * v as f64;
+        }
+        let phi_grid_energy = phi_phase_energy[0];
         let mut planner = RealFftPlanner::<f32>::new();
         let r2c = planner.plan_fft_forward(n);
         let c2r = planner.plan_fft_inverse(n);
@@ -222,9 +476,17 @@ impl Corr {
             c2r,
             phi_conj,
             phi_grid_energy,
+            phi_phase_energy,
             spec,
             work: vec![0.0; n],
         }
+    }
+
+    /// Grid energy of a unit spike at sub-bin `j` (the grid starts at `pad`).
+    fn energy_at(&self, j: usize, pad: usize) -> f64 {
+        let stride = self.phi_phase_energy.len();
+        let p = (j as isize - pad as isize).rem_euclid(stride as isize) as usize;
+        self.phi_phase_energy[p]
     }
 
     /// `c[j] = sum_i r[i] phi[i - j]` for every `j`, into `out` (circular).
@@ -281,6 +543,7 @@ pub(crate) fn pursue(
     amplitude: Amplitude,
     gate: Gate,
     moves: bool,
+    init_free: bool,
 ) -> (ThresholdResult, PursuitStats) {
     let n = scorer.target().len();
     let stride = stride.max(1);
@@ -334,10 +597,85 @@ pub(crate) fn pursue(
                 }
             }
         };
-    let mut pin: Option<f64> = None;
+    // The free pursuit's atoms, when the pin or the start needs them.
+    let mut free: Option<CorrAmps> = None;
+    let mut pin: Option<f64> = match amplitude {
+        Amplitude::Fixed(a) if a > 0.0 && a.is_finite() => Some(a),
+        Amplitude::Quantal => {
+            let ca = free_pursuit(scorer, banded, pad, stride, noise);
+            let sep = decay_support(banded, n);
+            let p = quantal_pin(&ca, stride, sep).filter(|a| *a > 0.0 && a.is_finite());
+            free = Some(ca);
+            p
+        }
+        _ => None,
+    };
+    let mut count = 0usize;
+    if init_free {
+        if let Some(a) = pin {
+            // Start from the free pursuit's frame masses rounded at the pin:
+            // `round(m_f / a)` spikes per frame (at most `stride`), placed at
+            // the frame's atom sub-bins first, then outward from the largest
+            // atom. The walk from the empty train at a fixed amplitude stops in
+            // a local minimum with 40-60% of a bursting cell's spikes missing
+            // (the first atoms of a burst overfill its peak frame and the
+            // dipole residual improves under no single addition or move); the
+            // rounded relaxation starts it near the right basin.
+            let ca = match free.take() {
+                Some(ca) => ca,
+                None => free_pursuit(scorer, banded, pad, stride, noise),
+            };
+            let (lo, hi) = (pad, n.saturating_sub(pad));
+            let n_frames = n_grid;
+            let mut per_frame: Vec<Vec<(f64, usize)>> = vec![Vec::new(); n_frames];
+            for &(j, c) in &ca.atoms {
+                if j >= lo && j < hi {
+                    per_frame[(j - lo) / stride].push((c, j));
+                }
+            }
+            for (f, atoms) in per_frame.iter_mut().enumerate() {
+                if atoms.is_empty() {
+                    continue;
+                }
+                let mass: f64 = atoms.iter().map(|(c, _)| c).sum();
+                let want = ((mass / a).round() as usize).min(stride);
+                if want == 0 {
+                    continue;
+                }
+                atoms.sort_by(|x, y| y.0.total_cmp(&x.0));
+                let f_lo = lo + f * stride;
+                let f_hi = (f_lo + stride).min(hi);
+                let mut placed = 0usize;
+                for &(_, j) in atoms.iter() {
+                    if placed < want && s[j] == 0.0 {
+                        s[j] = 1.0;
+                        placed += 1;
+                    }
+                }
+                let centre = atoms[0].1 as isize;
+                let mut d = 1isize;
+                while placed < want && d < stride as isize {
+                    for t in [centre - d, centre + d] {
+                        if placed < want
+                            && t >= f_lo as isize
+                            && t < f_hi as isize
+                            && s[t as usize] == 0.0
+                        {
+                            s[t as usize] = 1.0;
+                            placed += 1;
+                        }
+                    }
+                    d += 1;
+                }
+                count += placed;
+            }
+        }
+    }
     let (mut err, mut alpha, mut b) = score(scorer, &s, &mut conv, &mut stats.evals, pin);
     conv_acc.copy_from_slice(&conv);
-    let mut count = 0usize;
+    if count > 0 {
+        stats.trajectory.push((count, alpha, err));
+    }
     let mut r = vec![0.0_f32; n];
     let mut c = vec![0.0_f32; n];
     let lo = pad;
@@ -355,10 +693,27 @@ pub(crate) fn pursue(
         stats.passes += 1;
         residual_on_grid(&y, &conv_acc, alpha, b, pad, stride, &mut r);
         corr.correlate(&r, &mut c);
-        // Positive local maxima on empty interior sub-bins, descending.
+        // Positive local maxima of the correlation, descending. A maximum
+        // on an occupied sub-bin (a frame that already holds a spike and
+        // asks for more: the residual's peak does not move when a spike is
+        // added at it) is proposed at the nearest empty sub-bin of the same
+        // frame: the sub-bin inside a frame is not identifiable from the
+        // grid, and the one-spike-per-sub-bin pin is what limits a frame to
+        // `stride` spikes. (Restricting the maxima to empty sub-bins, the
+        // first design, stopped every burst frame at one spike: measured
+        // with the true amplitude pinned, 8-29% of the spikes, NoGain.)
         let mut cands: Vec<(f32, usize)> = (lo.max(1)..hi.min(n - 1))
-            .filter(|&j| s[j] == 0.0 && c[j] > 0.0 && c[j] >= c[j - 1] && c[j] > c[j + 1])
-            .map(|j| (c[j], j))
+            .filter(|&j| c[j] > 0.0 && c[j] >= c[j - 1] && c[j] > c[j + 1])
+            .filter_map(|j| {
+                if s[j] == 0.0 {
+                    return Some((c[j], j));
+                }
+                let half = (stride / 2) as isize;
+                (1..=half)
+                    .flat_map(|d| [j as isize - d, j as isize + d])
+                    .find(|&t| t >= lo as isize && t < hi as isize && s[t as usize] == 0.0)
+                    .map(|t| (c[j], t as usize))
+            })
             .collect();
         if cands.is_empty() {
             stop = Some(PursuitStop::Exhausted);
@@ -596,6 +951,7 @@ mod tests {
             Amplitude::Refit,
             Gate::Decrease,
             true,
+            false,
         );
         let counts = crate::upsample::downsample_binary(&r.s_binary, 10);
         assert_eq!(
@@ -651,6 +1007,7 @@ mod tests {
             Amplitude::Refit,
             Gate::Decrease,
             true,
+            false,
         );
         let ceiling = nm.budget(n_grid).max(st.e_full + nm.std_error(n_grid));
         assert!(r.error <= ceiling, "{} vs {}", r.error, ceiling);
@@ -694,6 +1051,7 @@ mod tests {
                 Amplitude::FixedFromFirstPass,
                 Gate::OneSe,
                 true,
+                false,
             );
             assert_eq!(r.s_binary.len(), n);
             assert!(r.alpha.is_finite() && r.baseline.is_finite());

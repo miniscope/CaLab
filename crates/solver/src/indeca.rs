@@ -551,6 +551,11 @@ pub(crate) enum Scoring {
     /// chain (bandpass, rolling-quantile baseline) before the residual. The
     /// shipped rule.
     Chain,
+    /// The linear part of the chain only (the bandpass; the rolling-quantile
+    /// stage left out). Characterization of the quantile stage's effect on
+    /// the per-atom gate of the pursuit (native solve only; the upsampled
+    /// loop treats it as `Plain`).
+    LinearChain,
 }
 
 /// Where the relaxed problem is solved (see the module docs).
@@ -567,7 +572,7 @@ pub(crate) enum InnerSolve {
 /// How the native-rate relaxed solution is turned into the 0/1 train at the
 /// spike-resolution rate ([`InnerSolve::Native`] only; the upsampled loop
 /// always thresholds).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Binarize {
     /// The threshold search on the tent-spread solution (the default; see
     /// the `threshold` and `spread` modules).
@@ -580,6 +585,9 @@ pub(crate) enum Binarize {
         amplitude: crate::pursuit::Amplitude,
         gate: crate::pursuit::Gate,
         moves: bool,
+        /// Start from the free pursuit's frame masses rounded at the pinned
+        /// amplitude instead of the empty train (`Fixed`/`Quantal` only).
+        init_free: bool,
     },
     /// Per-event counts from the relaxed solution's event masses, placed at
     /// the events' centroids (experimental; see the `event_mass` module).
@@ -1297,7 +1305,11 @@ fn solve_trace_native(
     // The selection's resolution: one standard error of the noise energy
     // over the grid it scores on (trace units).
     let std_error = up.noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
-    let mut chain_up = (cfg.scoring == Scoring::Chain).then(|| up.take_chain());
+    let mut chain_up = match cfg.scoring {
+        Scoring::Chain => Some(up.take_chain()),
+        Scoring::LinearChain => Some(Box::new(Chain::new(up.filter.take(), 0))),
+        Scoring::Plain => None,
+    };
 
     let alpha_est = match cfg.alpha_init {
         AlphaInit::PeakToTrough => estimate_alpha_interior(&y, lo),
@@ -1397,6 +1409,7 @@ fn solve_trace_native(
             amplitude,
             gate,
             moves,
+            init_free,
         } => {
             let (r, st) = crate::pursuit::pursue(
                 &mut scorer,
@@ -1408,6 +1421,7 @@ fn solve_trace_native(
                 amplitude,
                 gate,
                 moves,
+                init_free,
             );
             binarize_passes = st.evals;
             pursuit_stats = Some(st);
@@ -1513,7 +1527,7 @@ pub(crate) fn score_reconstruction_on_trace(
     let mut conv = recon.to_vec();
     let chain = prep.take_chain();
     let mut sc = match scoring {
-        Scoring::Plain => Scorer::Plain { y: &prep.working },
+        Scoring::Plain | Scoring::LinearChain => Scorer::Plain { y: &prep.working },
         Scoring::Chain => Scorer::Chain {
             y: &prep.working,
             chain,
