@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { poolRawMax, poolBytesMax, normalizeByte } from '../raster-pool.ts';
+import { poolRawMax, poolBytesMax, normalizeByte, smoothWidthFrames } from '../raster-pool.ts';
 
 describe('raster pooling', () => {
   it('equals the normalized input when sizes match', () => {
@@ -65,5 +65,44 @@ describe('raster pooling', () => {
     expect(poolBytesMax(src, 8, 8, 8, 8).out).toBe(src);
     const p = poolBytesMax(src, 8, 8, 2, 2);
     expect(Math.max(...p.out)).toBe(200);
+  });
+
+  it('smoothing lowers pooled white-noise brightness but keeps a realistic transient', () => {
+    // seeded gaussian noise
+    let seed = 12345;
+    const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+    const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
+    const N = 20,
+      T = 6000;
+    const noise = new Float32Array(N * T).map(() => gauss());
+    // normalize so noise sits mid-range: p1=-4, range=8 -> mean ~ 128
+    const mean = (a: Uint8Array) => a.reduce((s, v) => s + v, 0) / a.length;
+    const raw = poolRawMax(noise, T, false, N, T, 20, 100, -4, 8, 1);
+    const sm = poolRawMax(noise, T, false, N, T, 20, 100, -4, 8, 3);
+    expect(mean(sm.out)).toBeLessThan(mean(raw.out) - 20);
+
+    // 30 Hz GCaMP-like transient: ~2 frame rise, ~0.4 s decay; peak height 1
+    const tr = new Float32Array(T);
+    tr[3000] = 0.5;
+    for (let k = 0; k < 60; k++) tr[3001 + k] = Math.exp(-k / 12);
+    const p = poolRawMax(tr, T, false, 1, T, 1, 100, 0, 1, 3);
+    expect(Math.max(...p.out)).toBeGreaterThanOrEqual(0.9 * 255);
+  });
+
+  it('smoothing width: none without pooling, ~0.1 s with it', () => {
+    expect(smoothWidthFrames(1200, 30)).toBe(1);
+    expect(smoothWidthFrames(54000, 30)).toBe(3);
+    expect(smoothWidthFrames(54000, null)).toBe(1);
+  });
+
+  it('smoothed pooling agrees across layouts', () => {
+    const N = 6,
+      T = 40;
+    const a = new Float32Array(N * T).map((_, i) => (i * 7) % 5);
+    const b = new Float32Array(N * T);
+    for (let n = 0; n < N; n++) for (let t = 0; t < T; t++) b[t * N + n] = a[n * T + t];
+    const x = poolRawMax(a, T, false, N, T, 3, 8, 0, 5, 4);
+    const y = poolRawMax(b, N, true, N, T, 3, 8, 0, 5, 4);
+    expect(Array.from(x.out)).toEqual(Array.from(y.out));
   });
 });

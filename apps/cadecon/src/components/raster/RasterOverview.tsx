@@ -6,7 +6,7 @@ import {
   setSelectedSubsetIdx,
 } from '../../lib/subset-store.ts';
 import { VIRIDIS_LUT, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
-import { poolRawMax, poolBytesMax } from '../../lib/raster-pool.ts';
+import { poolRawMax, poolBytesMax, smoothWidthFrames } from '../../lib/raster-pool.ts';
 import '../../styles/raster.css';
 
 // Plot margins (CSS px) reserved for the cell axis (left) and time axis
@@ -91,6 +91,8 @@ export function RasterOverview(): JSX.Element {
     if (!data || !shape) return null;
     const [N, T] = shape;
     const { p1, range } = percentileBounds();
+    const dur = durationSeconds();
+    const fsHz = dur && dur > 0 ? T / dur : null;
     return poolRawMax(
       data.data,
       data.shape[1],
@@ -101,6 +103,7 @@ export function RasterOverview(): JSX.Element {
       BASE_MAX_COLS,
       p1,
       range,
+      smoothWidthFrames(T, fsHz),
     );
   });
   let sizedCache: {
