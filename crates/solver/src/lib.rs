@@ -2,6 +2,7 @@ mod banded;
 pub(crate) mod baseline;
 #[allow(dead_code)]
 pub(crate) mod biexp_fit;
+pub(crate) mod chain;
 mod fft;
 mod filter;
 mod fista;
