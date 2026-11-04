@@ -69,21 +69,52 @@ export type SpikeActivityLevel = (typeof SPIKE_ACTIVITY_LEVELS)[number]['id'];
 
 // ── Noise ───────────────────────────────────────────────────────
 
+// `snr` is the measured SNR each simulated trace will have (the real-data
+// metric: mean of the top 1 % of samples minus the median, over the
+// MAD-of-differences noise σ; see crates/solver/src/snr.rs). It is
+// burst-based, so the same level measures the same on every indicator, while
+// the noise per spike it implies depends on the firing. The ν values are the
+// CASCADE noise levels (%·Hz^-½) these SNRs correspond to for GCaMP6f under
+// moderate firing at 30 Hz (ν ≈ 1–2 high quality, ≈ 4 typical, ≈ 8
+// population imaging; Rupprecht et al. 2021).
 export const NOISE_LEVELS = [
-  { id: 'clean', label: 'Clean', snr: 200, shot_noise_enabled: false, shot_noise_fraction: 0 },
-  { id: 'low', label: 'Low', snr: 40, shot_noise_enabled: false, shot_noise_fraction: 0 },
+  {
+    id: 'clean',
+    label: 'Clean',
+    hint: 'Measured SNR 200 (near noise-free)',
+    snr: 200,
+    shot_noise_enabled: false,
+    shot_noise_fraction: 0,
+  },
+  {
+    id: 'low',
+    label: 'Low',
+    hint: 'Measured SNR 60 (high-quality recording, ν ≈ 2 for GCaMP6f)',
+    snr: 60,
+    shot_noise_enabled: false,
+    shot_noise_fraction: 0,
+  },
   {
     id: 'moderate',
     label: 'Moderate',
-    snr: 15,
+    hint: 'Measured SNR 30 (typical recording, ν ≈ 4 for GCaMP6f)',
+    snr: 30,
     shot_noise_enabled: false,
     shot_noise_fraction: 0.3,
   },
-  { id: 'high', label: 'High', snr: 8, shot_noise_enabled: true, shot_noise_fraction: 0.3 },
+  {
+    id: 'high',
+    label: 'High',
+    hint: 'Measured SNR 15 (large-scale population imaging, ν ≈ 8 for GCaMP6f)',
+    snr: 15,
+    shot_noise_enabled: true,
+    shot_noise_fraction: 0.3,
+  },
   {
     id: 'very_high',
     label: 'Very High',
-    snr: 5,
+    hint: 'Measured SNR 8 (beyond typical population imaging, ν ≈ 15 for GCaMP6f)',
+    snr: 8,
     shot_noise_enabled: true,
     shot_noise_fraction: 0.5,
   },
@@ -266,6 +297,7 @@ export function buildSimulationConfig(
   const noiseHi = NOISE_LEVELS[clampIdx(NOISE_LEVELS, q.noise[1])];
   const noiseConfig: NoiseConfig = {
     snr: snrMid,
+    reference: 'measured_snr',
     shot_noise_enabled: noiseLo.shot_noise_enabled || noiseHi.shot_noise_enabled,
     shot_noise_fraction: Math.max(noiseLo.shot_noise_fraction, noiseHi.shot_noise_fraction),
     snr_spread: rangeCv(NOISE_LEVELS, q.noise, 'snr'),

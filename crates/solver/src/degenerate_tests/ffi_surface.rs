@@ -27,6 +27,7 @@
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
 //! | — / `py_compute_lipschitz`                                   | `validate_kernel`              | `kernel::compute_lipschitz`            |
 //! | `simulate_traces` / `py_simulate_traces`                     | `validate_simulation_config`   | `simulate::simulate`                   |
+//! | `snr_*` / `py_snr_*` (four metrics)                          | none (JS) / finite trace (Py)  | `snr::*`                               |
 
 use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
@@ -840,5 +841,29 @@ fn simulate_bounds_extreme_per_cell_tau_draws() {
             gt.tau_decay_s
         );
         assert!(gt.clean_calcium.iter().all(|&c| c.is_finite() && c >= 0.0));
+    }
+}
+
+/// The SNR metrics run no validation in WASM (they drop non-finite samples)
+/// and must return finite, non-negative numbers on every degenerate trace.
+#[test]
+fn snr_metrics_are_finite_on_degenerate_traces() {
+    let mut traces = degenerate_traces();
+    traces.push((
+        "with NaN and inf",
+        vec![0.0, f32::NAN, 1.0, f32::INFINITY, 0.5],
+    ));
+    for (name, t) in traces {
+        for v in [
+            crate::snr::noise_sigma_mad_diff(&t),
+            crate::snr::noise_level_nu(&t, FS),
+            crate::snr::noise_level_nu(&t, 0.0),
+            crate::snr::noise_level_nu(&t, NAN),
+            crate::snr::peak_snr(&t, 1.0, 0.01),
+            crate::snr::peak_snr(&t, 0.0, NAN),
+            crate::snr::measured_snr(&t),
+        ] {
+            assert!(v >= 0.0 && (v.is_finite() || v == INF), "{name}: {v}");
+        }
     }
 }

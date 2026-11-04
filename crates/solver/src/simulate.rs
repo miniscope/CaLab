@@ -124,6 +124,15 @@ fn vary_lognormal(nominal: f64, cv: f64, rng: &mut Xorshift32) -> f64 {
 
 /// Two-state HMM spike generator (silent/active) with bursty firing.
 /// Attribution: CaLab web simulator Markov spike model.
+///
+/// All cells of one simulation share these parameters, so they share one
+/// burst-size distribution (set by `p_active_to_silent` and
+/// `p_spike_when_active`). The only per-cell variation is
+/// `p_silent_to_active_cv`, which changes how often a cell bursts, not how big
+/// its bursts are. That is the assumption under which the measured SNR
+/// ([`NoiseReference::MeasuredSnr`]) compares cells. Note the transition
+/// probabilities are per imaging frame, so the mean burst lasts
+/// 1/`p_active_to_silent` frames: bursts are half as long at 60 Hz as at 30 Hz.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -212,15 +221,60 @@ impl Default for KernelConfig {
     }
 }
 
-/// Noise model: Gaussian + optional Poisson (shot) noise.
+/// What the `NoiseConfig::snr` knob is measured against.
+///
+/// The default, [`NoiseReference::MeasuredSnr`], makes the simulator speak the
+/// same SNR as the real-data metric: every simulated trace measures at the
+/// requested SNR with [`crate::snr::measured_snr`], the tool a user runs on
+/// their own recording. That metric is burst-based (signal = mean of the top
+/// 1 % of samples minus the median, noise = MAD of first differences), so it
+/// compares cells that share a firing statistic: cells of one simulated
+/// dataset share the burst-size distribution (one spike model per dataset),
+/// and at a fixed per-spike noise a burstier spike model measures higher.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NoiseReference {
+    /// σ is chosen per cell so that the measured SNR of the final noisy trace
+    /// (`snr::measured_snr`: robust peak signal / MAD-diff σ) equals `snr`.
+    /// Solved by bisection on the drawn noise realisation, so the match is
+    /// exact up to the reachable range: pure noise measures ≈ 2.67, so lower
+    /// targets clamp to that floor, and a trace whose own frame-to-frame
+    /// changes dominate the MAD-diff estimate has a finite ceiling; outside the
+    /// range σ falls back to `robust_signal(clean) / snr`.
+    #[default]
+    MeasuredSnr,
+    /// Legacy: σ = max(clean signal) / snr. Kept to reproduce results made
+    /// before the measured-SNR convention. The max of a bursting cell is a
+    /// burst of many spikes, so the same knob gives 20–30x more noise per
+    /// spike under Markov firing than under sparse Poisson firing.
+    Peak,
+    /// σ = A₁ / snr, where A₁ is the cell's single-spike response (kernel peak
+    /// after frame integration, averaged over the spike's sub-frame phase,
+    /// times alpha, through saturation if enabled). Regime-independent per
+    /// spike, but not measurable on real data, where single spikes usually
+    /// sit inside the noise.
+    SingleSpike,
+}
+
+/// Noise model: Gaussian + optional shot noise.
 /// Attribution: Gaussian from CaLab web simulator; shot noise from CASCADE (Rupprecht et al., 2021).
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct NoiseConfig {
-    /// Signal-to-noise ratio (peak_signal / noise_std). Default: 8.0.
+    /// Target SNR, measured against `reference`. Default: 8.0.
+    ///
+    /// With the default [`NoiseReference::MeasuredSnr`] this is the robust peak
+    /// SNR the noisy trace measures at (`snr::measured_snr`).
     pub snr: f64,
-    /// Enable Poisson (shot) noise. Default: false.
+    /// What `snr` is measured against. Default: [`NoiseReference::MeasuredSnr`].
+    pub reference: NoiseReference,
+    /// Enable shot noise (signal-dependent variance). Default: false.
+    ///
+    /// Under `Peak` and `SingleSpike` it is Poisson (Knuth); under
+    /// `MeasuredSnr` it is its Gaussian approximation (variance ∝ |signal|), so
+    /// the total noise scales with σ and the target can be solved exactly.
     pub shot_noise_enabled: bool,
     /// Fraction of total noise variance from shot noise (0..1). Default: 0.3.
     pub shot_noise_fraction: f64,
@@ -232,6 +286,7 @@ impl Default for NoiseConfig {
     fn default() -> Self {
         Self {
             snr: 8.0,
+            reference: NoiseReference::default(),
             shot_noise_enabled: false,
             shot_noise_fraction: 0.3,
             snr_spread: 0.0,
@@ -427,9 +482,17 @@ pub struct CellGroundTruth {
     pub spikes: Vec<f32>,
     pub clean_calcium: Vec<f32>,
     pub alpha: f64,
+    /// The cell's target SNR (after `snr_spread`), in the units of
+    /// `NoiseConfig::reference`.
     pub snr: f64,
     pub tau_rise_s: f64,
     pub tau_decay_s: f64,
+    /// Standard deviation of the noise actually added (total, Gaussian + shot).
+    pub noise_sigma: f64,
+    /// Ground-truth diagnostic: single-spike response amplitude A₁ (see
+    /// [`NoiseReference::SingleSpike`]) over `noise_sigma`. Only knowable in
+    /// simulation; there is no real-data counterpart.
+    pub snr_1ap: f64,
 }
 
 /// Complete simulation result with observed traces and per-cell ground truth.
@@ -553,8 +616,9 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         }
 
         // 8. Per-cell saturation Kd
+        let mut cell_kd = config.saturation.k_d;
         if config.saturation.enabled {
-            let cell_kd = vary_lognormal(config.saturation.k_d, config.saturation.k_d_cv, &mut rng);
+            cell_kd = vary_lognormal(config.saturation.k_d, config.saturation.k_d_cv, &mut rng);
             apply_saturation(
                 &mut clean_calcium,
                 config.saturation.hill_coefficient,
@@ -563,6 +627,16 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         }
 
         let signal_max = clean_calcium.iter().cloned().fold(0.0_f32, f32::max) as f64;
+        let single_spike_amp = {
+            let a1 = alpha * kernel_frame_peak(kernel_ref, bins_per_frame);
+            if config.saturation.enabled {
+                let mut v = [a1 as f32];
+                apply_saturation(&mut v, config.saturation.hill_coefficient, cell_kd);
+                v[0] as f64
+            } else {
+                a1
+            }
+        };
 
         // Reuse trace buffer across cells
         trace_buf.clear();
@@ -603,11 +677,12 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         }
 
         // 11. Add noise
-        add_noise(
+        let noise_sigma = add_noise(
             &mut trace_buf,
             &config.noise,
             cell_snr,
             signal_max,
+            single_spike_amp,
             &mut rng,
         );
 
@@ -619,6 +694,12 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
             snr: cell_snr,
             tau_rise_s: cell_tau_rise,
             tau_decay_s: cell_tau_decay,
+            noise_sigma,
+            snr_1ap: if noise_sigma > 0.0 {
+                single_spike_amp / noise_sigma
+            } else {
+                f64::INFINITY
+            },
         });
     }
 
@@ -794,25 +875,92 @@ fn apply_photobleaching(trace: &mut [f64], cfg: &PhotobleachingConfig, fs_hz: f6
 
 // ── Noise ────────────────────────────────────────────────────────
 
+/// Peak of the frame-averaged response to one spike, for a kernel sampled at
+/// the high-resolution rate, averaged over the spike's phase within the frame
+/// (a spike late in a frame is split across two frames and peaks lower).
+pub fn kernel_frame_peak(kernel: &[f32], bins_per_frame: usize) -> f64 {
+    let bpf = bins_per_frame.max(1);
+    let mut acc = 0.0_f64;
+    for phase in 0..bpf {
+        // Frame f averages high-res bins [f·bpf, (f+1)·bpf); the spike sits at
+        // bin `phase`, so kernel index = bin − phase.
+        let n_frames = (kernel.len() + phase).div_ceil(bpf);
+        let mut best = 0.0_f64;
+        for f in 0..n_frames {
+            let lo = (f * bpf).max(phase) - phase;
+            let hi = ((f + 1) * bpf - phase).min(kernel.len());
+            if hi <= lo {
+                continue;
+            }
+            let sum: f64 = kernel[lo..hi].iter().map(|&v| v as f64).sum();
+            best = best.max(sum / bpf as f64);
+        }
+        acc += best;
+    }
+    acc / bpf as f64
+}
+
+/// Single-spike response amplitude (unit alpha, no saturation) of a kernel at
+/// imaging rate `fs_hz` when spikes are simulated at `spike_sim_hz`:
+/// [`kernel_frame_peak`] of the peak-normalised kernel.
+pub fn single_spike_amplitude(
+    tau_rise_s: f64,
+    tau_decay_s: f64,
+    fs_hz: f64,
+    spike_sim_hz: f64,
+) -> f64 {
+    let bpf = ((spike_sim_hz / fs_hz).round() as usize).max(1);
+    kernel_frame_peak(&build_kernel(tau_rise_s, tau_decay_s, spike_sim_hz), bpf)
+}
+
+/// Add noise to `trace` and return the total noise σ used.
 fn add_noise(
     trace: &mut [f64],
     cfg: &NoiseConfig,
     cell_snr: f64,
     signal_max: f64,
+    single_spike_amp: f64,
     rng: &mut Xorshift32,
-) {
-    if cell_snr <= 0.0 || signal_max <= 0.0 {
-        return;
+) -> f64 {
+    if cell_snr <= 0.0 {
+        return 0.0;
     }
-    let noise_std = signal_max / cell_snr;
+    match cfg.reference {
+        NoiseReference::Peak => {
+            add_noise_legacy(trace, cfg, signal_max / cell_snr, signal_max, rng)
+        }
+        NoiseReference::SingleSpike => add_noise_legacy(
+            trace,
+            cfg,
+            single_spike_amp / cell_snr,
+            single_spike_amp,
+            rng,
+        ),
+        NoiseReference::MeasuredSnr => {
+            add_noise_measured(trace, cfg, cell_snr, single_spike_amp, rng)
+        }
+    }
+}
 
+/// Noise at a fixed σ. `scale` sets the shot-noise variance: a sample at
+/// |v| = scale gets shot variance `shot_noise_fraction · σ²`.
+fn add_noise_legacy(
+    trace: &mut [f64],
+    cfg: &NoiseConfig,
+    noise_std: f64,
+    scale: f64,
+    rng: &mut Xorshift32,
+) -> f64 {
+    if noise_std.is_nan() || scale.is_nan() || noise_std <= 0.0 || scale <= 0.0 {
+        return 0.0;
+    }
     if cfg.shot_noise_enabled && cfg.shot_noise_fraction > 0.0 {
         let total_var = noise_std * noise_std;
         let gauss_std = (total_var * (1.0 - cfg.shot_noise_fraction)).sqrt();
         let shot_var = total_var * cfg.shot_noise_fraction;
         for v in trace.iter_mut() {
             let gauss = gauss_std * rng.gaussian();
-            let lambda = (*v).abs() * shot_var / signal_max;
+            let lambda = (*v).abs() * shot_var / scale;
             let shot = poisson_sample_knuth(lambda, rng) - lambda;
             *v += gauss + shot;
         }
@@ -821,6 +969,105 @@ fn add_noise(
             *v += noise_std * rng.gaussian();
         }
     }
+    noise_std
+}
+
+/// [`NoiseReference::MeasuredSnr`]: draw one noise realisation in units of σ,
+/// then solve for the σ at which the noisy trace measures at `target`.
+fn add_noise_measured(
+    trace: &mut [f64],
+    cfg: &NoiseConfig,
+    target: f64,
+    single_spike_amp: f64,
+    rng: &mut Xorshift32,
+) -> f64 {
+    use crate::snr::{measured_snr_f64, robust_signal_f64, DEFAULT_TOP_FRACTION};
+    let n = trace.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let shot = cfg.shot_noise_enabled && cfg.shot_noise_fraction > 0.0;
+    let frac = if shot {
+        cfg.shot_noise_fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let signal = robust_signal_f64(trace, DEFAULT_TOP_FRACTION);
+    // Shot-noise scale: the trace's robust signal (falls back to A₁).
+    let scale = if signal > 0.0 {
+        signal
+    } else {
+        single_spike_amp
+    };
+    // Unit-σ noise shape: Gaussian part + Gaussian-approximated shot part.
+    let g_std = (1.0 - frac).sqrt();
+    let unit: Vec<f64> = trace
+        .iter()
+        .map(|&v| {
+            let g = g_std * rng.gaussian();
+            if shot && scale > 0.0 {
+                g + (frac * v.abs() / scale).sqrt() * rng.gaussian()
+            } else {
+                g
+            }
+        })
+        .collect();
+
+    // No measurable activity: reference the single-spike amplitude instead.
+    let sigma0 = if signal > 0.0 {
+        signal / target
+    } else {
+        single_spike_amp / target
+    };
+    if !sigma0.is_finite() || sigma0 <= 0.0 {
+        return 0.0;
+    }
+    let mut buf = vec![0.0_f64; n];
+    let measure = |sigma: f64, buf: &mut Vec<f64>| -> f64 {
+        for ((b, &t), &u) in buf.iter_mut().zip(trace.iter()).zip(unit.iter()) {
+            *b = t + sigma * u;
+        }
+        measured_snr_f64(buf, DEFAULT_TOP_FRACTION)
+    };
+    let sigma = if signal > 0.0 {
+        // Measured SNR falls from a ceiling (signal-dominated MAD) to the
+        // pure-noise floor as σ grows. Bisect in log σ over a wide bracket.
+        let (mut lo, mut hi) = (sigma0 / 1e3, sigma0 * 1e3);
+        let (f_lo, f_hi) = (measure(lo, &mut buf), measure(hi, &mut buf));
+        if f_lo < target || f_hi > target {
+            // Target outside the reachable range: keep the clean-trace estimate.
+            sigma0
+        } else {
+            for _ in 0..60 {
+                let mid = (lo * hi).sqrt();
+                let f = measure(mid, &mut buf);
+                if (f / target - 1.0).abs() < 1e-5 {
+                    lo = mid;
+                    hi = mid;
+                    break;
+                }
+                if f > target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            (lo * hi).sqrt()
+        }
+    } else {
+        sigma0
+    };
+    // Total σ (RMS over the trace): Gaussian part plus the mean shot variance.
+    let total_sigma = if shot && scale > 0.0 {
+        let mean_abs = trace.iter().map(|v| v.abs()).sum::<f64>() / n as f64;
+        sigma * ((1.0 - frac) + frac * mean_abs / scale).sqrt()
+    } else {
+        sigma
+    };
+    for (v, &u) in trace.iter_mut().zip(unit.iter()) {
+        *v += sigma * u;
+    }
+    total_sigma
 }
 
 fn poisson_sample_knuth(lambda: f64, rng: &mut Xorshift32) -> f64 {
@@ -844,8 +1091,53 @@ fn poisson_sample_knuth(lambda: f64, rng: &mut Xorshift32) -> f64 {
 
 // ── Presets ──────────────────────────────────────────────────────
 
+/// Indicator presets.
+///
+/// Noise is set as a measured SNR ([`NoiseReference::MeasuredSnr`]) typical of
+/// real recordings: the value each preset measures at, under the default
+/// Markov firing at 30 Hz, when the noise is CASCADE's typical level
+/// ν ≈ 4 %·Hz^-½ (Rupprecht et al. 2021: ν ≈ 1–2 high quality, ≈ 4 typical,
+/// ≈ 8 large-scale population imaging). The kernel peak (alpha = 1) is taken
+/// to be the indicator's published single-AP ΔF/F, so per-frame
+/// σ = ν·√fs / (0.6745·√2) in ΔF/F:
+///
+/// | preset   | 1-AP ΔF/F | source                                             | snr (ν≈4) |
+/// |----------|-----------|----------------------------------------------------|-----------|
+/// | gcamp6f  | 19 %      | Chen et al. 2013, in vivo V1 (as tabulated in reviews) | 30    |
+/// | gcamp6m  | 13 %      | Chen et al. 2013                                   | 22        |
+/// | gcamp6s  | 23 %      | Chen et al. 2013                                   | 50        |
+/// | jgcamp8f | 41 %      | Zhang et al. 2023 (Janelia in vivo cell-attached)  | 45        |
+/// | ogb1     | ~8 %      | proposal: in vivo OGB-1 reports span ~5–10 %       | 14        |
+///
+/// These are judgement calls for the PI to confirm; the measured SNR scales as
+/// 1/ν (≈ 2× at ν = 2, ≈ ½ at ν = 8) and depends on the firing statistics (the
+/// default Markov bursts are large; sparse Poisson cells at the same ν measure
+/// 3–10). [`legacy_peak_all`] returns the pre-change presets.
 pub mod presets {
     use super::*;
+
+    /// The presets as they were before the measured-SNR convention: legacy
+    /// [`NoiseReference::Peak`] noise at the old SNR values. For reproducing
+    /// earlier results and for tests characterised against them.
+    pub fn legacy_peak_all() -> Vec<(&'static str, SimulationConfig)> {
+        let old = [
+            ("gcamp6f", 20.0),
+            ("gcamp6s", 25.0),
+            ("gcamp6m", 22.0),
+            ("jgcamp8f", 12.0),
+            ("ogb1", 15.0),
+            ("clean", 200.0),
+        ];
+        all()
+            .into_iter()
+            .map(|(name, mut cfg)| {
+                let snr = old.iter().find(|o| o.0 == name).map(|o| o.1).unwrap();
+                cfg.noise.snr = snr;
+                cfg.noise.reference = NoiseReference::Peak;
+                (name, cfg)
+            })
+            .collect()
+    }
 
     pub fn gcamp6f() -> SimulationConfig {
         SimulationConfig {
@@ -855,7 +1147,7 @@ pub mod presets {
                 ..Default::default()
             },
             noise: NoiseConfig {
-                snr: 20.0,
+                snr: 30.0,
                 ..Default::default()
             },
             ..Default::default()
@@ -870,7 +1162,7 @@ pub mod presets {
                 ..Default::default()
             },
             noise: NoiseConfig {
-                snr: 25.0,
+                snr: 50.0,
                 ..Default::default()
             },
             ..Default::default()
@@ -900,7 +1192,7 @@ pub mod presets {
                 ..Default::default()
             },
             noise: NoiseConfig {
-                snr: 12.0,
+                snr: 45.0,
                 ..Default::default()
             },
             ..Default::default()
@@ -915,7 +1207,7 @@ pub mod presets {
                 ..Default::default()
             },
             noise: NoiseConfig {
-                snr: 15.0,
+                snr: 14.0,
                 ..Default::default()
             },
             ..Default::default()

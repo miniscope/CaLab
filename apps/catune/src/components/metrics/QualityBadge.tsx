@@ -49,7 +49,11 @@ export function QualityBadge(props: QualityBadgeProps) {
       case 'stale':
         return 'Stale — awaiting solver';
       default:
-        return props.snr != null ? `Peak SNR: ${props.snr.toFixed(1)} dB` : undefined;
+        return props.snr != null
+          ? `Peak SNR ${props.snr.toFixed(1)}: 95th percentile above the bottom-quartile baseline, ` +
+              `in units of that baseline's spread (a quick quality score; not the measured SNR ` +
+              `the simulator targets)`
+          : undefined;
     }
   };
 

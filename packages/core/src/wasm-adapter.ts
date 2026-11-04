@@ -15,6 +15,11 @@ import init, {
   seed_trace,
   simulate_traces,
   get_simulation_presets,
+  snr_noise_sigma_mad_diff,
+  snr_noise_level_nu,
+  snr_peak,
+  snr_measured,
+  snr_default_top_fraction,
   solver_version,
 } from '../../../crates/solver/pkg/calab_solver';
 export {
@@ -26,6 +31,13 @@ export {
   seed_trace,
   simulate_traces,
   get_simulation_presets,
+  // Real-data SNR metrics (crates/solver/src/snr.rs). `snr_measured` is the
+  // burst-based SNR the simulator's default noise convention targets.
+  snr_noise_sigma_mad_diff,
+  snr_noise_level_nu,
+  snr_peak,
+  snr_measured,
+  snr_default_top_fraction,
   // Solver version (crates/solver Cargo.toml `version`); requires initWasm().
   // An app that adds it to its bridge results as `solver_version` gets it
   // checked against `calab._solver.protocol_version()` by the Python bridge.

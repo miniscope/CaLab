@@ -14,6 +14,7 @@ const DEFAULT_MARKOV = {
 
 const DEFAULT_NOISE = {
   snr: 8.0,
+  reference: 'measured_snr' as const,
   shot_noise_enabled: false,
   shot_noise_fraction: 0.3,
   snr_spread: 0,
@@ -65,7 +66,7 @@ export const PRESET_GCAMP6F: SimulationPreset = {
   description: 'Fast genetically encoded indicator (default)',
   config: makeConfig({
     kernel: { tau_rise_s: 0.1, tau_decay_s: 0.6, tau_rise_cv: 0, tau_decay_cv: 0 },
-    noise: { ...DEFAULT_NOISE, snr: 20.0 },
+    noise: { ...DEFAULT_NOISE, snr: 30.0 },
   }),
 };
 
@@ -76,7 +77,7 @@ export const PRESET_GCAMP6S: SimulationPreset = {
   description: 'Slow genetically encoded indicator, high SNR',
   config: makeConfig({
     kernel: { tau_rise_s: 0.4, tau_decay_s: 1.8, tau_rise_cv: 0, tau_decay_cv: 0 },
-    noise: { ...DEFAULT_NOISE, snr: 25.0 },
+    noise: { ...DEFAULT_NOISE, snr: 50.0 },
   }),
 };
 
@@ -98,7 +99,7 @@ export const PRESET_JGCAMP8F: SimulationPreset = {
   description: 'Fast next-gen indicator, noisier',
   config: makeConfig({
     kernel: { tau_rise_s: 0.05, tau_decay_s: 0.3, tau_rise_cv: 0, tau_decay_cv: 0 },
-    noise: { ...DEFAULT_NOISE, snr: 12.0 },
+    noise: { ...DEFAULT_NOISE, snr: 45.0 },
   }),
 };
 
@@ -109,7 +110,7 @@ export const PRESET_OGB1: SimulationPreset = {
   description: 'Synthetic calcium dye, fast rise',
   config: makeConfig({
     kernel: { tau_rise_s: 0.05, tau_decay_s: 1.5, tau_rise_cv: 0, tau_decay_cv: 0 },
-    noise: { ...DEFAULT_NOISE, snr: 15.0 },
+    noise: { ...DEFAULT_NOISE, snr: 14.0 },
   }),
 };
 

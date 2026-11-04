@@ -755,7 +755,8 @@ fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> PyResult<usize>
 /// Generate synthetic calcium traces from a JSON config string.
 ///
 /// Returns flat numpy arrays for efficient Python consumption:
-///   (traces, spikes, clean_calcium, alphas, snrs, tau_rises, tau_decays, num_cells, num_timepoints)
+///   (traces, spikes, clean_calcium, alphas, snrs, tau_rises, tau_decays,
+///    noise_sigmas, snr_1aps, num_cells, num_timepoints)
 #[pyfunction]
 fn py_simulate_traces<'py>(
     py: Python<'py>,
@@ -768,6 +769,8 @@ fn py_simulate_traces<'py>(
     Bound<'py, PyArray1<f64>>, // snrs (per-cell)
     Bound<'py, PyArray1<f64>>, // tau_rises (per-cell)
     Bound<'py, PyArray1<f64>>, // tau_decays (per-cell)
+    Bound<'py, PyArray1<f64>>, // noise_sigmas (per-cell)
+    Bound<'py, PyArray1<f64>>, // snr_1aps (per-cell, ground-truth diagnostic)
     usize,                     // num_cells
     usize,                     // num_timepoints
 )> {
@@ -788,6 +791,8 @@ fn py_simulate_traces<'py>(
     let mut snrs = Vec::with_capacity(n_cells);
     let mut tau_rises = Vec::with_capacity(n_cells);
     let mut tau_decays = Vec::with_capacity(n_cells);
+    let mut noise_sigmas = Vec::with_capacity(n_cells);
+    let mut snr_1aps = Vec::with_capacity(n_cells);
 
     for gt in &result.ground_truth {
         spikes_flat.extend_from_slice(&gt.spikes);
@@ -796,6 +801,8 @@ fn py_simulate_traces<'py>(
         snrs.push(gt.snr);
         tau_rises.push(gt.tau_rise_s);
         tau_decays.push(gt.tau_decay_s);
+        noise_sigmas.push(gt.noise_sigma);
+        snr_1aps.push(gt.snr_1ap);
     }
 
     Ok((
@@ -806,9 +813,39 @@ fn py_simulate_traces<'py>(
         PyArray1::from_vec(py, snrs),
         PyArray1::from_vec(py, tau_rises),
         PyArray1::from_vec(py, tau_decays),
+        PyArray1::from_vec(py, noise_sigmas),
+        PyArray1::from_vec(py, snr_1aps),
         n_cells,
         n_tp,
     ))
+}
+
+/// Noise σ from the MAD of first differences (see `crate::snr`).
+#[pyfunction]
+fn py_snr_noise_sigma_mad_diff(trace: PyReadonlyArray1<f64>) -> PyResult<f64> {
+    Ok(crate::snr::noise_sigma_mad_diff(&to_f32_vec(&trace)?))
+}
+
+/// CASCADE noise level ν (see `crate::snr`).
+#[pyfunction]
+fn py_snr_noise_level_nu(trace_dff: PyReadonlyArray1<f64>, fs: f64) -> PyResult<f64> {
+    Ok(crate::snr::noise_level_nu(&to_f32_vec(&trace_dff)?, fs))
+}
+
+/// Descriptive peak SNR (see `crate::snr`).
+#[pyfunction]
+fn py_snr_peak(trace: PyReadonlyArray1<f64>, sigma: f64, top_fraction: f64) -> PyResult<f64> {
+    Ok(crate::snr::peak_snr(
+        &to_f32_vec(&trace)?,
+        sigma,
+        top_fraction,
+    ))
+}
+
+/// Measured SNR with the default top fraction (see `crate::snr`).
+#[pyfunction]
+fn py_snr_measured(trace: PyReadonlyArray1<f64>) -> PyResult<f64> {
+    Ok(crate::snr::measured_snr(&to_f32_vec(&trace)?))
 }
 
 /// The solver version (see `crate::SOLVER_VERSION`), used by the Python
@@ -837,6 +874,11 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Simulation
     m.add_function(wrap_pyfunction!(py_simulate_traces, m)?)?;
     m.add_function(wrap_pyfunction!(protocol_version, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_noise_sigma_mad_diff, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_noise_level_nu, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_peak, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_measured, m)?)?;
+    m.add("SNR_DEFAULT_TOP_FRACTION", crate::snr::DEFAULT_TOP_FRACTION)?;
     m.add("__version__", crate::SOLVER_VERSION)?;
     Ok(())
 }

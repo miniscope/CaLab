@@ -24,6 +24,11 @@ import {
   initWasm,
   seed_trace,
   simulate_traces,
+  snr_default_top_fraction,
+  snr_measured,
+  snr_noise_level_nu,
+  snr_noise_sigma_mad_diff,
+  snr_peak,
 } from '../wasm-adapter.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -419,6 +424,31 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       expectRejected(() => simulate_traces(cfg), text);
       // Still usable.
       expect((simulate_traces(preset()) as { traces: number[] }).traces.length).toBe(200);
+    });
+  });
+
+  describe('snr metrics', () => {
+    it('return finite, non-negative numbers on empty, tiny, constant and NaN traces', () => {
+      const traces = [
+        new Float32Array(0),
+        new Float32Array([1]),
+        new Float32Array([0, 1]),
+        new Float32Array(200).fill(2.5),
+        new Float32Array([0, NaN, 1, 2, Infinity, 0.5]),
+      ];
+      for (const t of traces) {
+        for (const v of [
+          snr_noise_sigma_mad_diff(t),
+          snr_noise_level_nu(t, FS),
+          snr_peak(t, 1, 0.01),
+          snr_measured(t),
+        ]) {
+          expect(Number.isFinite(v) && v >= 0, String(v)).toBe(true);
+        }
+      }
+      expect(snr_noise_level_nu(spiky(), 0)).toBe(0);
+      expect(snr_noise_level_nu(spiky(), NaN)).toBe(0);
+      expect(snr_default_top_fraction()).toBe(0.01);
     });
   });
 });

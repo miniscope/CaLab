@@ -37,8 +37,22 @@ export interface KernelConfig {
 
 // ── Noise ───────────────────────────────────────────────────────
 
+/**
+ * What `NoiseConfig.snr` is measured against (mirrors Rust `NoiseReference`).
+ * - `measured_snr` (default): each noisy trace measures at `snr` with the
+ *   real-data metric (`snr_measured`: mean of the top 1 % of samples minus the
+ *   median, over the MAD-of-differences noise σ). Burst-based, so it compares
+ *   cells that share a burst-size distribution.
+ * - `peak`: legacy `noise σ = max(clean) / snr`.
+ * - `single_spike`: `noise σ = single-spike response / snr` (simulation only).
+ */
+export type NoiseReference = 'measured_snr' | 'peak' | 'single_spike';
+
 export interface NoiseConfig {
+  /** Target SNR, measured against `reference`. */
   snr: number;
+  /** Optional: Rust defaults a missing value to `measured_snr`. */
+  reference?: NoiseReference;
   shot_noise_enabled: boolean;
   shot_noise_fraction: number;
   /** Per-cell additive SNR spread (+/- this value). Default: 0. */
@@ -112,9 +126,14 @@ export interface CellGroundTruth {
   spikes: number[];
   clean_calcium: number[];
   alpha: number;
+  /** The cell's target SNR, in the units of `NoiseConfig.reference`. */
   snr: number;
   tau_rise_s: number;
   tau_decay_s: number;
+  /** Std of the noise actually added. */
+  noise_sigma: number;
+  /** Simulation-only diagnostic: single-spike response / noise_sigma. */
+  snr_1ap: number;
 }
 
 export interface SimulationResult {
