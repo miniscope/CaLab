@@ -54,3 +54,46 @@ def test_legacy_peak_reference():
     result = simulate(cfg)
     for gt in result.ground_truth:
         assert gt.noise_sigma == pytest.approx(float(gt.clean_calcium.max()) / 20.0, rel=1e-6)
+
+
+def _trace_with_events(at, amp=10.0, n=9000, seed=0, tau=10.0):
+    x = np.random.default_rng(seed).normal(size=n)
+    k = np.arange(n)
+    for t in at:
+        x[t:] += amp * np.exp(-(k[t:] - t) / tau)
+    return x
+
+
+def test_detect_events_recovers_known_events():
+    at = [500, 1400, 2300, 3100, 4000, 5200, 6100, 7300]
+    events = calab.detect_events(_trace_with_events(at), min_separation_samples=12)
+    assert len(events) == len(at)
+    for e, t in zip(events, at, strict=True):
+        assert abs(e.time_index - t) <= 3
+        assert 6.0 < e.height < 11.0
+
+
+def test_detect_events_pure_noise_is_silent_and_snr_is_at_the_floor():
+    silent = 0
+    for seed in range(20):
+        x = np.random.default_rng(100 + seed).normal(size=9000)
+        r = calab.measured_snr_report(x, min_separation_samples=12)
+        silent += r.is_silent
+        assert 2.4 < r.snr < 3.0
+    assert silent >= 18
+
+
+def test_measured_snr_report_active_trace():
+    x = _trace_with_events([900, 3000, 5200, 7400], amp=8.0, seed=1)
+    r = calab.measured_snr_report(x, min_separation_samples=12)
+    assert not r.is_silent and r.n_events == 4
+    assert r.snr == pytest.approx(calab.measured_snr(x))
+    assert r.sigma == pytest.approx(1.0, rel=0.05)
+
+
+def test_detect_events_rejects_bad_arguments():
+    with pytest.raises(ValueError):
+        calab.detect_events(np.zeros((2, 10)), 12)
+    with pytest.raises(ValueError):
+        calab.detect_events(np.zeros(10), -1)
+    assert calab.detect_events(np.zeros(100), 12, sigma=0.0) == []

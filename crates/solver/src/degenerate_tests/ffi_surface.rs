@@ -27,7 +27,7 @@
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
 //! | — / `py_compute_lipschitz`                                   | `validate_kernel`              | `kernel::compute_lipschitz`            |
 //! | `simulate_traces` / `py_simulate_traces`                     | `validate_simulation_config`   | `simulate::simulate`                   |
-//! | `snr_*` / `py_snr_*` (four metrics)                          | none (JS) / finite trace (Py)  | `snr::*`                               |
+//! | `snr_*` / `py_snr_*` (metrics, events, silent report)        | none (JS) / finite trace (Py)  | `snr::*`                               |
 
 use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
@@ -864,6 +864,15 @@ fn snr_metrics_are_finite_on_degenerate_traces() {
             crate::snr::measured_snr(&t),
         ] {
             assert!(v >= 0.0 && (v.is_finite() || v == INF), "{name}: {v}");
+        }
+        for sep in [0usize, 1, 12, 1_000_000] {
+            let sigma = crate::snr::noise_sigma_mad_diff(&t);
+            for e in crate::snr::detect_events(&t, sigma, sep) {
+                assert!(e.time_index < t.len().max(1), "{name}: event {e:?}");
+                assert!(e.height.is_finite() && e.baseline.is_finite(), "{name}");
+            }
+            let r = crate::snr::measured_snr_report(&t, sep);
+            assert!(r.sigma.is_finite() && r.snr >= 0.0, "{name}: {r:?}");
         }
     }
 }

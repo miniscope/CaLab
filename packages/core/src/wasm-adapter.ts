@@ -19,6 +19,8 @@ import init, {
   snr_noise_level_nu,
   snr_peak,
   snr_measured,
+  snr_detect_events,
+  snr_measured_report,
   snr_default_top_fraction,
   solver_version,
 } from '../../../crates/solver/pkg/calab_solver';
@@ -37,6 +39,8 @@ export {
   snr_noise_level_nu,
   snr_peak,
   snr_measured,
+  snr_detect_events,
+  snr_measured_report,
   snr_default_top_fraction,
   // Solver version (crates/solver Cargo.toml `version`); requires initWasm().
   // An app that adds it to its bridge results as `solver_version` gets it

@@ -300,7 +300,9 @@ impl Default for NoiseConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct SinusoidalDrift {
-    /// Drift amplitude as fraction of peak signal. Default: 0.1.
+    /// Drift amplitude as a fraction of the robust signal (mean of the top 1 % of
+    /// clean-trace samples minus the median; max(clean) under
+    /// `NoiseReference::Peak`). Default: 0.1.
     pub amplitude_fraction: f64,
     /// Minimum drift cycles over the trace duration. Default: 2.0.
     pub cycles_min: f64,
@@ -327,7 +329,9 @@ impl Default for SinusoidalDrift {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct RandomWalkDrift {
-    /// Step std as fraction of peak signal per frame. Default: 0.002.
+    /// Step std per frame as a fraction of the robust signal (mean of the top
+    /// 1 % of clean-trace samples minus the median; max(clean) under
+    /// `NoiseReference::Peak`). Default: 0.002.
     pub step_std_fraction: f64,
     /// Mean-reversion rate (0=pure walk, 1=reset). Default: 0.001.
     pub mean_reversion: f64,
@@ -659,7 +663,14 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
                 })
             }
         };
-        add_drift(&mut trace_buf, &cell_drift, signal_max, n_tp, &mut rng);
+        // Drift is scaled by the same robust signal the measured SNR uses
+        // (top-slice of the clean trace) so that drift/σ = fraction × SNR in
+        // every firing regime. The legacy `Peak` convention keeps max(clean).
+        let drift_scale = match config.noise.reference {
+            NoiseReference::Peak => signal_max,
+            _ => crate::snr::robust_signal_f64(&trace_buf, crate::snr::DEFAULT_TOP_FRACTION),
+        };
+        add_drift(&mut trace_buf, &cell_drift, drift_scale, n_tp, &mut rng);
 
         // 10. Per-cell photobleaching amplitude
         if config.photobleaching.enabled {
@@ -829,28 +840,28 @@ fn apply_saturation(signal: &mut [f32], hill_n: f64, k_d: f64) {
 fn add_drift(
     trace: &mut [f64],
     model: &DriftModel,
-    signal_max: f64,
+    drift_scale: f64,
     n: usize,
     rng: &mut Xorshift32,
 ) {
     match model {
         DriftModel::Sinusoidal(cfg) => {
-            if cfg.amplitude_fraction <= 0.0 || signal_max <= 0.0 {
+            if cfg.amplitude_fraction <= 0.0 || drift_scale <= 0.0 {
                 return;
             }
             let cycles = cfg.cycles_min + rng.next_f64() * (cfg.cycles_max - cfg.cycles_min);
             let period = n as f64 / cycles;
-            let amp = cfg.amplitude_fraction * signal_max;
+            let amp = cfg.amplitude_fraction * drift_scale;
             let two_pi = 2.0 * std::f64::consts::PI;
             for i in 0..n {
                 trace[i] += amp * (two_pi * i as f64 / period).sin();
             }
         }
         DriftModel::RandomWalk(cfg) => {
-            if cfg.step_std_fraction <= 0.0 || signal_max <= 0.0 {
+            if cfg.step_std_fraction <= 0.0 || drift_scale <= 0.0 {
                 return;
             }
-            let step_std = cfg.step_std_fraction * signal_max;
+            let step_std = cfg.step_std_fraction * drift_scale;
             let mr = cfg.mean_reversion;
             let mut drift = 0.0_f64;
             for i in 0..n {

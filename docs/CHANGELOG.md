@@ -21,6 +21,16 @@ measured_snr`): the same burst-based metric users run on real data. The old
   `calab.measured_snr`, `noise_sigma_mad_diff`, `noise_level_nu`, `peak_snr`),
   after Krisha Aghi's derivation. Simulated cells report `noise_sigma` and the
   ground-truth diagnostic `snr_1ap`.
+- **Event detection and the silent flag** (`snr::detect_events`,
+  `snr::measured_snr_report`; WASM `snr_detect_events`, `snr_measured_report`;
+  Python `calab.detect_events`, `calab.measured_snr_report`). Events clear a
+  noise-derived floor (about 0.1 false events per pure-noise trace);
+  `is_silent` is true when none does. The SNR stays the top-slice number, whose
+  pure-noise value is about 2.7.
+- **Simulated drift scale.** Drift amplitudes are fractions of the robust
+  signal (top-slice of the clean trace) instead of max(clean), so drift
+  relative to the noise no longer depends on the firing regime.
+  `reference = "peak"` keeps the old scaling.
 
 ## [2.10.0] - 2026-10-23
 

@@ -11,8 +11,9 @@ usually sits inside the noise. It therefore compares cells that share a
 burst-size distribution (cells of one type in one dataset). It shifts when
 firing statistics differ: at the same per-spike noise, a burstier cell measures
 higher and a sparser cell lower. It is not a per-spike SNR. Pure noise
-measures about 2.7 (about 3 on a 5-minute trace), so values near 3 mean no
-detectable activity.
+measures about 2.7 (2.5-2.9 over 1-30 minute traces), so values near that mean
+"indistinguishable from noise"; :func:`measured_snr_report` and
+:func:`detect_events` give the explicit answer (``is_silent``).
 
 ``calab.simulate`` uses the same definition by default
 (``NoiseConfig(reference="measured_snr")``): a trace simulated at SNR X
@@ -20,6 +21,8 @@ measures X with :func:`measured_snr`.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -71,3 +74,75 @@ def measured_snr(trace: ArrayLike) -> float:
     whose burst-size distributions are similar.
     """
     return float(_solver.py_snr_measured(_as_f64(trace)))
+
+
+@dataclass(frozen=True)
+class Event:
+    """A calcium event found by :func:`detect_events`."""
+
+    #: Sample index of the event's peak in the lightly smoothed trace.
+    time_index: int
+    #: Peak height above the local pre-event baseline, in trace units.
+    height: float
+    #: The local pre-event baseline (the minimum of the smoothed trace over the
+    #: preceding separation window, so slightly below the typical baseline).
+    baseline: float
+
+
+@dataclass(frozen=True)
+class SnrReport:
+    """:func:`measured_snr` with the silent flag."""
+
+    #: Top-slice measured SNR. Pure noise measures ~2.7: values near it mean
+    #: "indistinguishable from noise".
+    snr: float
+    #: Noise std (:func:`noise_sigma_mad_diff`).
+    sigma: float
+    #: Number of events that clear the noise floor.
+    n_events: int
+    #: True when no event clears the floor (no activity a pure-noise trace of
+    #: this length would not show). The SNR is still reported.
+    is_silent: bool
+
+
+def detect_events(
+    trace: ArrayLike, min_separation_samples: int, sigma: float | None = None
+) -> list[Event]:
+    """Detect calcium events: transients clearly above the noise.
+
+    The trace is lightly smoothed (about a quarter of ``min_separation_samples``
+    wide); events are local maxima over +/- ``min_separation_samples``, with
+    height measured above the local pre-event baseline, and kept only if the
+    height exceeds a floor derived from ``sigma`` so a pure-noise trace of the
+    same length gives about 0.1 false events in expectation.
+
+    Args:
+        trace: 1-D trace.
+        min_separation_samples: Minimum spacing between events; use about the
+            indicator's decay time in samples (e.g. ``round(tau_decay * fs)``).
+        sigma: Noise std. Defaults to :func:`noise_sigma_mad_diff`.
+    """
+    x = _as_f64(trace)
+    if min_separation_samples < 0:
+        raise ValueError("min_separation_samples must be >= 0")
+    s = noise_sigma_mad_diff(x) if sigma is None else float(sigma)
+    idx, heights, baselines = _solver.py_snr_detect_events(x, s, int(min_separation_samples))
+    return [
+        Event(int(i), float(h), float(b))
+        for i, h, b in zip(idx.tolist(), heights.tolist(), baselines.tolist(), strict=True)
+    ]
+
+
+def measured_snr_report(trace: ArrayLike, min_separation_samples: int) -> SnrReport:
+    """:func:`measured_snr` plus ``is_silent`` (no event clears the noise floor).
+
+    The SNR stays the top-slice number. A silent trace measures near the
+    metric's pure-noise floor (~2.7); use ``is_silent`` rather than a threshold
+    on the SNR to decide whether anything is there.
+    """
+    if min_separation_samples < 0:
+        raise ValueError("min_separation_samples must be >= 0")
+    snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(
+        _as_f64(trace), int(min_separation_samples)
+    )
+    return SnrReport(float(snr), float(sigma), int(n_events), bool(is_silent))

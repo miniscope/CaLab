@@ -33,11 +33,30 @@
 //! sparsely firing cell measures lower; that shift is real and appears on real
 //! data exactly as in the simulator. Nothing here estimates per-spike SNR.
 //!
-//! Range: pure noise measures ≈ φ(z₀.₉₉)/0.01 ≈ 2.67 (≈ 3 on a 5-minute trace),
-//! so values near 3 mean "no detectable activity" and SNRs below ≈ 2.7 do not
-//! exist under this metric. At the top, a very clean trace whose own
-//! frame-to-frame changes dominate the MAD-diff σ has a finite ceiling (e.g.
-//! jGCaMP8f firing at 1.9 Hz at 30 Hz tops out near 25–30).
+//! ## The noise floor of the metric, and the silent flag
+//!
+//! Pure white noise does not measure 0: the top 1 % of N(0, 1) averages
+//! φ(z₀.₉₉)/0.01 ≈ 2.67 above the median. Measured on pure Gaussian noise
+//! (40 traces per length, median and 5–95 % range):
+//!
+//! | trace | samples | pure-noise measured SNR |
+//! |---|---|---|
+//! | 1 min at 30 Hz | 1 800 | 2.73 (2.52–2.89) |
+//! | 5 min at 30 Hz | 9 000 | 2.66 (2.59–2.76) |
+//! | 10 min at 30 Hz | 18 000 | 2.66 (2.60–2.74) |
+//! | 30 min at 30 Hz | 54 000 | 2.66 (2.64–2.70) |
+//! | 30 min at 60 Hz | 108 000 | 2.67 (2.64–2.68) |
+//!
+//! So values near 2.7 mean "indistinguishable from noise" and no trace
+//! measures below about 2.5 (real, correlated noise can read a little higher).
+//! The SNR value itself stays the top-slice number everywhere; the explicit
+//! answer to "is anything there?" is [`SnrReport::is_silent`] from
+//! [`measured_snr_report`], true when [`detect_events`] finds no event above
+//! its noise-derived floor. Use it rather than a threshold on the SNR.
+//!
+//! At the top, a very clean trace whose own frame-to-frame changes dominate
+//! the MAD-diff σ has a finite ceiling (e.g. jGCaMP8f firing at 1.9 Hz at
+//! 30 Hz tops out near 25–30).
 //!
 //! The simulator's default noise convention
 //! (`simulate::NoiseReference::MeasuredSnr`) targets [`measured_snr`], so a
@@ -171,6 +190,256 @@ pub fn measured_snr(trace: &[f32]) -> f64 {
 pub(crate) fn measured_snr_f64(x: &[f64], top_fraction: f64) -> f64 {
     let sigma = median_abs_diff(x) / (MAD_GAUSSIAN * std::f64::consts::SQRT_2);
     ratio(robust_signal_f64(x, top_fraction), sigma)
+}
+
+// ── Event detection and the silent flag ──────────────────────────
+
+/// Default expected number of false (pure-noise) events per trace allowed by
+/// the height floor of [`detect_events`].
+pub const DEFAULT_FALSE_EVENTS: f64 = 0.1;
+
+/// A detected calcium event.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Event {
+    /// Sample index of the event's peak in the (lightly smoothed) trace.
+    pub time_index: usize,
+    /// Peak height above the local pre-event baseline, in trace units.
+    pub height: f64,
+    /// The local pre-event baseline the height is measured from: the minimum
+    /// of the smoothed trace over the preceding separation window, so on a
+    /// noisy trace it sits a little (about 1–2 σ/√w) below the typical baseline.
+    pub baseline: f64,
+}
+
+/// What [`measured_snr_report`] returns: the SNR plus whether the trace is
+/// silent.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SnrReport {
+    /// [`measured_snr`] (top-slice SNR). Near its pure-noise floor (see the
+    /// module docs) it means "indistinguishable from noise".
+    pub snr: f64,
+    /// Noise σ ([`noise_sigma_mad_diff`]).
+    pub sigma: f64,
+    /// Number of events that clear the noise floor.
+    pub n_events: usize,
+    /// True when no event clears the floor: the trace shows no activity a
+    /// pure-noise trace of this length would not. The SNR is still reported.
+    pub is_silent: bool,
+}
+
+/// Upper-tail standard normal probability Q(z) = P(Z > z), via erfc
+/// (Numerical Recipes Chebyshev fit, relative error < 1.2e-7).
+fn normal_sf(z: f64) -> f64 {
+    let x = z / std::f64::consts::SQRT_2;
+    let ax = x.abs();
+    let t = 1.0 / (1.0 + 0.5 * ax);
+    let poly = -ax * ax - 1.265_512_23
+        + t * (1.000_023_68
+            + t * (0.374_091_96
+                + t * (0.096_784_18
+                    + t * (-0.186_288_06
+                        + t * (0.278_868_07
+                            + t * (-1.135_203_98
+                                + t * (1.488_515_87 + t * (-0.822_152_23 + t * 0.170_872_77))))))));
+    let erfc = t * poly.exp();
+    0.5 * if x >= 0.0 { erfc } else { 2.0 - erfc }
+}
+
+/// z such that Q(z) = p, for 0 < p < 0.5 (bisection on [0, 40]).
+fn normal_isf(p: f64) -> f64 {
+    if p.is_nan() || p <= 0.0 {
+        return 40.0;
+    }
+    if p >= 0.5 {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = (0.0_f64, 40.0_f64);
+    for _ in 0..100 {
+        let mid = 0.5 * (lo + hi);
+        if normal_sf(mid) > p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Centered moving average of odd width `w` (the window shrinks at the edges).
+fn moving_average(x: &[f64], w: usize) -> Vec<f64> {
+    let n = x.len();
+    let h = w / 2;
+    let mut prefix = Vec::with_capacity(n + 1);
+    prefix.push(0.0);
+    for &v in x {
+        prefix.push(prefix.last().copied().unwrap_or(0.0) + v);
+    }
+    (0..n)
+        .map(|i| {
+            let lo = i.saturating_sub(h);
+            let hi = (i + h + 1).min(n);
+            (prefix[hi] - prefix[lo]) / (hi - lo) as f64
+        })
+        .collect()
+}
+
+/// Sliding-window extreme over `[i - left, i + right]` (monotonic deque).
+fn sliding_extreme(x: &[f64], left: usize, right: usize, is_max: bool) -> Vec<f64> {
+    use std::collections::VecDeque;
+    let n = x.len();
+    let better = |a: f64, b: f64| if is_max { a >= b } else { a <= b };
+    let mut out = vec![0.0; n];
+    let mut dq: VecDeque<usize> = VecDeque::new();
+    let mut next = 0usize;
+    for (i, o) in out.iter_mut().enumerate() {
+        let hi = (i + right).min(n - 1);
+        while next <= hi {
+            while let Some(&b) = dq.back() {
+                if better(x[next], x[b]) {
+                    dq.pop_back();
+                } else {
+                    break;
+                }
+            }
+            dq.push_back(next);
+            next += 1;
+        }
+        let lo = i.saturating_sub(left);
+        while let Some(&f) = dq.front() {
+            if f < lo {
+                dq.pop_front();
+            } else {
+                break;
+            }
+        }
+        *o = x[dq.front().copied().unwrap_or(i)];
+    }
+    out
+}
+
+/// Height floor θ (trace units) below which a candidate is not an event.
+///
+/// Under pure white noise of std σ, a moving average of width `w` has std
+/// σ_s = σ/√w and about one independent sample per `w` frames. A candidate's
+/// height is (max over its 2·sep+1 window) − (min over the `sep` frames before
+/// it), which exceeds θ only if the max exceeds θ/2 or the min falls below
+/// −θ/2. A union bound over m = ⌈(3·sep+1)/w⌉ independent samples per
+/// candidate and at most M = n/(sep+1) candidates gives
+/// E[false events] ≤ M·m·Q(θ/(2σ_s)); setting that to `false_events` solves
+/// for θ = 2σ_s·Q⁻¹(false_events/(M·m)). The bound is conservative (the
+/// measured false-event rate is below it), so θ errs toward silence.
+pub(crate) fn event_floor(n: usize, sigma: f64, sep: usize, w: usize, false_events: f64) -> f64 {
+    let sigma_s = sigma / (w as f64).sqrt();
+    let m = (3 * sep + 1).div_ceil(w) as f64;
+    let big_m = n as f64 / (sep + 1) as f64;
+    2.0 * sigma_s * normal_isf(false_events / (big_m * m))
+}
+
+/// Smoothing width used by [`detect_events`] for a given separation: about a
+/// quarter of the separation, odd, at least 1. The separation is meant to be
+/// the indicator's decay time, and GCaMP rise times are roughly an eighth to a
+/// quarter of that, so this is a light smooth that suppresses single-sample
+/// noise maxima without blurring the rise.
+fn default_smooth_width(min_separation: usize) -> usize {
+    ((min_separation / 4).max(1)) | 1
+}
+
+pub(crate) fn detect_events_f64(
+    x: &[f64],
+    sigma: f64,
+    min_separation: usize,
+    false_events: f64,
+) -> Vec<Event> {
+    let n = x.len();
+    if n < 3 || !sigma.is_finite() || sigma <= 0.0 {
+        return Vec::new();
+    }
+    let sep = min_separation.clamp(1, n);
+    let w = default_smooth_width(sep).min(n | 1);
+    let y = moving_average(x, w);
+    let local_max = sliding_extreme(&y, sep, sep, true);
+    let pre_min = sliding_extreme(&y, sep, 0, false);
+    let theta = event_floor(n, sigma, sep, w, false_events);
+
+    let mut events = Vec::new();
+    let mut last_peak: Option<usize> = None;
+    for p in 1..n {
+        if y[p] < local_max[p] {
+            continue;
+        }
+        if let Some(lp) = last_peak {
+            if p - lp <= sep {
+                continue; // plateau or tie: count the event once
+            }
+        }
+        last_peak = Some(p);
+        let h = y[p] - pre_min[p];
+        if h > theta {
+            events.push(Event {
+                time_index: p,
+                height: h,
+                baseline: pre_min[p],
+            });
+        }
+    }
+    events
+}
+
+/// Finite copy of `trace` with non-finite samples replaced by the median, so
+/// sample indices still refer to the input.
+fn finite_filled_f64(trace: &[f32]) -> Vec<f64> {
+    let mut fin = finite_f64(trace);
+    let med = median_in_place(&mut fin);
+    trace
+        .iter()
+        .map(|&v| if v.is_finite() { v as f64 } else { med })
+        .collect()
+}
+
+/// Detect calcium events: the transients that rise clearly above the noise.
+///
+/// 1. Smooth lightly (centered moving average about a quarter of
+///    `min_separation_samples` wide) so single-sample noise maxima do not
+///    count.
+/// 2. Candidates are local maxima of the smoothed trace over
+///    ±`min_separation_samples`, so a transient counts once however many
+///    samples it spans and two events are never closer than that.
+/// 3. An event's `height` is measured above its own local pre-event baseline
+///    (the minimum of the smoothed trace over the `min_separation_samples`
+///    before the peak), so drift and the tail of an earlier transient do not
+///    inflate it.
+/// 4. A candidate is kept only if its height exceeds a floor derived from
+///    `sigma` so that a pure-noise trace of the same length yields about
+///    [`DEFAULT_FALSE_EVENTS`] (0.1) false events in expectation (derivation
+///    on `event_floor`). The floor is a few σ/√w, so it is set by the trace
+///    length and the smoothing, not by a tuned constant.
+///
+/// `sigma` is the noise std (pass [`noise_sigma_mad_diff`]);
+/// `min_separation_samples` should be about the indicator's decay time in
+/// samples. Non-finite samples are replaced by the median so `time_index`
+/// still indexes the input. Returns no events for `sigma <= 0` or fewer than
+/// three samples.
+pub fn detect_events(trace: &[f32], sigma: f64, min_separation_samples: usize) -> Vec<Event> {
+    let x = finite_filled_f64(trace);
+    detect_events_f64(&x, sigma, min_separation_samples, DEFAULT_FALSE_EVENTS)
+}
+
+/// [`measured_snr`] together with the silent flag: `is_silent` is true when
+/// [`detect_events`] (with σ from [`noise_sigma_mad_diff`]) finds no event.
+///
+/// The SNR is still the top-slice number; a silent trace measures near the
+/// metric's pure-noise floor (see the module docs).
+pub fn measured_snr_report(trace: &[f32], min_separation_samples: usize) -> SnrReport {
+    let sigma = noise_sigma_mad_diff(trace);
+    let events = detect_events(trace, sigma, min_separation_samples);
+    SnrReport {
+        snr: measured_snr(trace),
+        sigma,
+        n_events: events.len(),
+        is_silent: events.is_empty(),
+    }
 }
 
 fn ratio(signal: f64, sigma: f64) -> f64 {
@@ -432,6 +701,173 @@ mod tests {
             assert!(r.ground_truth[c].noise_sigma > 0.0);
             let m = measured_snr(&r.traces[c * n..(c + 1) * n]);
             assert!((2.5..4.0).contains(&m), "measured {m}");
+        }
+    }
+
+    /// Synthetic trace: white noise plus unit-amplitude-times-`amp` transients
+    /// (instant rise, exponential decay) at known sample indices.
+    fn trace_with_events(
+        n: usize,
+        sigma: f64,
+        amp: f64,
+        at: &[usize],
+        tau: f64,
+        seed: u64,
+    ) -> Vec<f32> {
+        let mut x = white(n, sigma, seed);
+        for &t in at {
+            for (k, v) in x.iter_mut().enumerate().skip(t) {
+                *v += (amp * (-((k - t) as f64) / tau).exp()) as f32;
+            }
+        }
+        x
+    }
+
+    #[test]
+    fn detect_events_recovers_known_events() {
+        let sigma = 1.0;
+        let at = [500usize, 1400, 2300, 3100, 4000, 5200, 6100, 7300];
+        let x = trace_with_events(9000, sigma, 10.0 * sigma, &at, 10.0, 21);
+        let sig = noise_sigma_mad_diff(&x);
+        let ev = detect_events(&x, sig, 12);
+        assert_eq!(ev.len(), at.len(), "events {ev:?}");
+        for (e, &t) in ev.iter().zip(at.iter()) {
+            assert!(
+                e.time_index.abs_diff(t) <= 3,
+                "event at {} expected near {t}",
+                e.time_index
+            );
+            assert!((6.0..11.0).contains(&e.height), "height {}", e.height);
+            // The baseline is a minimum of smoothed noise, so it sits ~1-2 σ low.
+            assert!((-2.5..0.5).contains(&e.baseline), "baseline {}", e.baseline);
+        }
+        // Events are separated by at least the minimum separation.
+        assert!(ev
+            .windows(2)
+            .all(|w| w[1].time_index - w[0].time_index > 12));
+    }
+
+    #[test]
+    fn detect_events_measures_height_above_the_local_baseline() {
+        // Same events on a +50 offset and a slow ramp: heights must not change.
+        let at = [800usize, 2500, 4200, 6000];
+        let base = trace_with_events(9000, 1.0, 10.0, &at, 10.0, 22);
+        let shifted: Vec<f32> = base
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v + 50.0 + 4.0 * (i as f32 / 9000.0))
+            .collect();
+        let sig = noise_sigma_mad_diff(&shifted);
+        let ev = detect_events(&shifted, sig, 12);
+        assert_eq!(ev.len(), at.len(), "events {ev:?}");
+        assert!(ev.iter().all(|e| (5.0..11.0).contains(&e.height)));
+    }
+
+    /// Pure white noise: the floor is derived for ≤ 0.1 expected false events
+    /// per trace, and the union bound is conservative.
+    #[test]
+    fn pure_noise_yields_about_the_expected_false_event_count() {
+        let (mut total, mut silent, trials) = (0usize, 0usize, 60usize);
+        for seed in 0..trials as u64 {
+            let x = white(9000, 3.0, 100 + seed);
+            let r = measured_snr_report(&x, 12);
+            total += r.n_events;
+            silent += r.is_silent as usize;
+        }
+        let per_trace = total as f64 / trials as f64;
+        assert!(per_trace <= 0.1 + 0.1, "false events per trace {per_trace}");
+        assert!(silent >= trials - 6, "silent {silent}/{trials}");
+    }
+
+    #[test]
+    fn report_flags_silent_and_active_traces() {
+        let noise = white(9000, 1.0, 31);
+        assert!(measured_snr_report(&noise, 12).is_silent);
+        let active = trace_with_events(9000, 1.0, 8.0, &[900, 3000, 5200, 7400], 10.0, 32);
+        let r = measured_snr_report(&active, 12);
+        assert!(!r.is_silent && r.n_events == 4, "{r:?}");
+        assert_eq!(r.snr, measured_snr(&active));
+        assert!((r.sigma - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn detect_events_degenerate_inputs() {
+        assert!(detect_events(&[], 1.0, 10).is_empty());
+        assert!(detect_events(&[1.0, 2.0], 1.0, 10).is_empty());
+        assert!(detect_events(&[0.0, 5.0, 0.0, 5.0, 0.0], 0.0, 10).is_empty());
+        assert!(detect_events(&[0.0; 100], f64::NAN, 0).is_empty());
+        // NaNs keep indices stable and never panic.
+        let mut x = white(2000, 1.0, 5);
+        x[10] = f32::NAN;
+        x[11] = f32::INFINITY;
+        let _ = detect_events(&x, 1.0, 0);
+        assert!(measured_snr_report(&[f32::NAN; 50], 5).is_silent);
+    }
+
+    /// Prints the pure-noise floor of the top-slice SNR by trace length
+    /// (run with `--ignored --nocapture`); the numbers feed the module docs.
+    #[test]
+    #[ignore]
+    fn print_pure_noise_floor_by_length() {
+        for (label, n) in [
+            ("1 min  30 Hz", 1800usize),
+            ("5 min  30 Hz", 9000),
+            ("10 min 30 Hz", 18_000),
+            ("30 min 30 Hz", 54_000),
+            ("30 min 60 Hz", 108_000),
+        ] {
+            let mut v: Vec<f64> = (0..40)
+                .map(|s| measured_snr(&white(n, 1.0, 900 + s)))
+                .collect();
+            v.sort_by(|a, b| a.total_cmp(b));
+            println!(
+                "{label} n={n}: median {:.3} p5 {:.3} p95 {:.3}",
+                v[20], v[2], v[37]
+            );
+        }
+    }
+
+    /// Drift is scaled by the robust signal: its amplitude relative to the
+    /// metric's own signal is the configured fraction in every firing regime
+    /// (scaling by max(clean) made it 13-21x smaller per spike under bursts).
+    #[test]
+    fn drift_amplitude_scales_with_the_robust_signal() {
+        use crate::simulate::SinusoidalDrift;
+        for spikes in [
+            SpikeModel::Poisson(PoissonConfig { rate_hz: 0.3 }),
+            SpikeModel::Poisson(PoissonConfig { rate_hz: 1.9 }),
+            SpikeModel::default(),
+        ] {
+            let cfg = SimulationConfig {
+                num_timepoints: 9000,
+                num_cells: 3,
+                spike_model: spikes,
+                noise: NoiseConfig {
+                    snr: 0.0, // no noise: trace - clean_calcium is the drift
+                    ..Default::default()
+                },
+                drift: DriftModel::Sinusoidal(SinusoidalDrift {
+                    amplitude_fraction: 0.2,
+                    ..Default::default()
+                }),
+                seed: 5,
+                ..Default::default()
+            };
+            let r = simulate(&cfg);
+            let n = r.num_timepoints;
+            for c in 0..r.num_cells {
+                let gt = &r.ground_truth[c];
+                let robust = robust_signal(&gt.clean_calcium, DEFAULT_TOP_FRACTION);
+                let drift_peak = r.traces[c * n..(c + 1) * n]
+                    .iter()
+                    .zip(&gt.clean_calcium)
+                    .map(|(&t, &cl)| (t - cl).abs() as f64)
+                    .fold(0.0, f64::max);
+                assert!(
+                    (drift_peak / (0.2 * robust) - 1.0).abs() < 0.02,
+                    "drift {drift_peak} vs 0.2 x robust {robust}"
+                );
+            }
         }
     }
 }

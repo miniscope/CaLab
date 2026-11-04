@@ -50,7 +50,9 @@ def test_surface_inventory_is_covered():
         "protocol_version",
         "seed_kernel_estimate",
         "SNR_DEFAULT_TOP_FRACTION",
+        "py_snr_detect_events",
         "py_snr_measured",
+        "py_snr_measured_report",
         "py_snr_noise_level_nu",
         "py_snr_noise_sigma_mad_diff",
         "py_snr_peak",
@@ -67,6 +69,10 @@ def test_snr_metrics_on_empty_and_tiny_traces(n):
         _solver.py_snr_measured(x),
     ):
         assert np.isfinite(v) and v >= 0
+    idx, heights, baselines = _solver.py_snr_detect_events(x, 1.0, 12)
+    assert len(idx) == len(heights) == len(baselines) == 0
+    snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(x, 12)
+    assert np.isfinite(snr) and np.isfinite(sigma) and n_events == 0 and is_silent
 
 
 def test_snr_metrics_reject_nonfinite_and_strided_input():

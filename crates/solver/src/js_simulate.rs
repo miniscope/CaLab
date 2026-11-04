@@ -68,3 +68,26 @@ pub fn snr_measured(trace: &[f32]) -> f64 {
 pub fn snr_default_top_fraction() -> f64 {
     crate::snr::DEFAULT_TOP_FRACTION
 }
+
+/// Detect calcium events (see `crate::snr::detect_events`).
+///
+/// `sigma` is the noise std (pass `snr_noise_sigma_mad_diff(trace)`);
+/// `min_separation_samples` is about the indicator decay time in samples.
+/// Returns `{ time_index, height, baseline }[]`.
+#[wasm_bindgen]
+pub fn snr_detect_events(
+    trace: &[f32],
+    sigma: f64,
+    min_separation_samples: u32,
+) -> Result<JsValue, JsError> {
+    let events = crate::snr::detect_events(trace, sigma, min_separation_samples as usize);
+    to_js("snr_detect_events", &events)
+}
+
+/// Measured SNR with the silent flag (see `crate::snr::measured_snr_report`).
+/// Returns `{ snr, sigma, n_events, is_silent }`.
+#[wasm_bindgen]
+pub fn snr_measured_report(trace: &[f32], min_separation_samples: u32) -> Result<JsValue, JsError> {
+    let report = crate::snr::measured_snr_report(trace, min_separation_samples as usize);
+    to_js("snr_measured_report", &report)
+}

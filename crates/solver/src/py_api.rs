@@ -848,6 +848,41 @@ fn py_snr_measured(trace: PyReadonlyArray1<f64>) -> PyResult<f64> {
     Ok(crate::snr::measured_snr(&to_f32_vec(&trace)?))
 }
 
+/// Detect calcium events (see `crate::snr::detect_events`).
+/// Returns (time_indices, heights, baselines) as parallel arrays.
+#[pyfunction]
+fn py_snr_detect_events<'py>(
+    py: Python<'py>,
+    trace: PyReadonlyArray1<f64>,
+    sigma: f64,
+    min_separation_samples: usize,
+) -> PyResult<(
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+)> {
+    let events = crate::snr::detect_events(&to_f32_vec(&trace)?, sigma, min_separation_samples);
+    let idx: Vec<u64> = events.iter().map(|e| e.time_index as u64).collect();
+    let heights: Vec<f64> = events.iter().map(|e| e.height).collect();
+    let baselines: Vec<f64> = events.iter().map(|e| e.baseline).collect();
+    Ok((
+        PyArray1::from_vec(py, idx),
+        PyArray1::from_vec(py, heights),
+        PyArray1::from_vec(py, baselines),
+    ))
+}
+
+/// Measured SNR with the silent flag (see `crate::snr::measured_snr_report`).
+/// Returns (snr, sigma, n_events, is_silent).
+#[pyfunction]
+fn py_snr_measured_report(
+    trace: PyReadonlyArray1<f64>,
+    min_separation_samples: usize,
+) -> PyResult<(f64, f64, usize, bool)> {
+    let r = crate::snr::measured_snr_report(&to_f32_vec(&trace)?, min_separation_samples);
+    Ok((r.snr, r.sigma, r.n_events, r.is_silent))
+}
+
 /// The solver version (see `crate::SOLVER_VERSION`), used by the Python
 /// bridge's version handshake. Same value as `calab._solver.__version__`.
 #[pyfunction]
@@ -878,6 +913,8 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_snr_noise_level_nu, m)?)?;
     m.add_function(wrap_pyfunction!(py_snr_peak, m)?)?;
     m.add_function(wrap_pyfunction!(py_snr_measured, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_detect_events, m)?)?;
+    m.add_function(wrap_pyfunction!(py_snr_measured_report, m)?)?;
     m.add("SNR_DEFAULT_TOP_FRACTION", crate::snr::DEFAULT_TOP_FRACTION)?;
     m.add("__version__", crate::SOLVER_VERSION)?;
     Ok(())

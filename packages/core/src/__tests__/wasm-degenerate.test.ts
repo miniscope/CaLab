@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { SnrReport } from '../metrics/snr-events.ts';
 import {
   Solver,
   get_simulation_presets,
@@ -25,7 +26,9 @@ import {
   seed_trace,
   simulate_traces,
   snr_default_top_fraction,
+  snr_detect_events,
   snr_measured,
+  snr_measured_report,
   snr_noise_level_nu,
   snr_noise_sigma_mad_diff,
   snr_peak,
@@ -444,6 +447,14 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
           snr_measured(t),
         ]) {
           expect(Number.isFinite(v) && v >= 0, String(v)).toBe(true);
+        }
+      }
+      for (const t of traces) {
+        for (const sep of [0, 1, 12]) {
+          expect(Array.isArray(snr_detect_events(t, snr_noise_sigma_mad_diff(t), sep))).toBe(true);
+          const r = snr_measured_report(t, sep) as SnrReport;
+          expect(Number.isFinite(r.sigma) && r.sigma >= 0).toBe(true);
+          expect(typeof r.is_silent).toBe('boolean');
         }
       }
       expect(snr_noise_level_nu(spiky(), 0)).toBe(0);
