@@ -3,7 +3,7 @@
 // from the Cloudflare edge headers (no outbound IP lookup, IP never stored),
 // inserts session, returns session_id.
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from 'npm:@supabase/supabase-js@2.103.3';
 
 /**
  * Origins allowed to call this function. Additional origins (e.g. preview
