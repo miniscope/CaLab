@@ -47,6 +47,8 @@ import {
 import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
 import { initCellSolveManager, solverFatalError } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/community/index.ts';
+import { backendStatus } from './lib/solver-backend.ts';
+import { BackendDevReadout } from './components/dev/BackendDevReadout.tsx';
 import { isTutorialActive, startTutorial } from '@calab/tutorials';
 import { getTutorialById } from './lib/tutorial/content/index.ts';
 
@@ -197,6 +199,11 @@ const App: Component = () => {
             </p>
           </div>
         </div>
+      </Show>
+
+      {/* Dev-only solver backend readout (?backend=gpu) */}
+      <Show when={importStep() === 'ready' && backendStatus().requested === 'gpu'}>
+        <BackendDevReadout />
       </Show>
 
       {/* Import flow (full-page) OR Dashboard */}
