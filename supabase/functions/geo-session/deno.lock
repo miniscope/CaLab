@@ -1,9 +1,80 @@
 {
   "version": "5",
-  "redirects": {
-    "https://esm.sh/@supabase/phoenix@^0.4.0?target=denonext": "https://esm.sh/@supabase/phoenix@0.4.0?target=denonext",
-    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.103.3",
-    "https://esm.sh/iceberg-js@^0.8.1?target=denonext": "https://esm.sh/iceberg-js@0.8.1?target=denonext"
+  "specifiers": {
+    "npm:@supabase/supabase-js@2.103.3": "2.103.3"
+  },
+  "npm": {
+    "@supabase/auth-js@2.103.3": {
+      "integrity": "sha512-SMDJ4vg5jLXNEHdhN4J4ujSb203WangbDw1n3VaARH0ZqM51E6lJnoUAHlpQU9N7SzP0hfgghA9IvT8c7tGRfg==",
+      "dependencies": [
+        "tslib"
+      ]
+    },
+    "@supabase/functions-js@2.103.3": {
+      "integrity": "sha512-A2ZHi95GIRRlN9LGOSa/zGEIPg9taR1giDI9Gkfkgrcz0YmKV8ShiAplIrKsHQFdkzKxtsO3maJF0efL+i31mg==",
+      "dependencies": [
+        "tslib"
+      ]
+    },
+    "@supabase/phoenix@0.4.5": {
+      "integrity": "sha512-aAn9H9ovVyeApKy11OWOrrOGq8DV68yWeH4ud2lN9fzn4aO8Zb5GLL9m1pUg9nLqIcT+ZDfAcsZe0E/nqdv2lw=="
+    },
+    "@supabase/postgrest-js@2.103.3": {
+      "integrity": "sha512-S0k/9FJVXDeejNfQLCJwRlm4IH8Wet/HEEdBTBpX6/G2o1eU/6CjQop/hJPZIwlQkI6D/zbHH8KymuCsBgy6jA==",
+      "dependencies": [
+        "tslib"
+      ]
+    },
+    "@supabase/realtime-js@2.103.3": {
+      "integrity": "sha512-fUvKtSXMUk1BkApVwAurWtHF4Vzbb0UB9aC/fQXrRBek7Ta3Kaora+wHf/fGwFNQs7uRz+mvjIVpzLfpR32VXA==",
+      "dependencies": [
+        "@supabase/phoenix",
+        "@types/ws",
+        "tslib",
+        "ws"
+      ]
+    },
+    "@supabase/storage-js@2.103.3": {
+      "integrity": "sha512-5bAIEubrw5keHcdKR2RTois0O1M2Ilx4UYuzOzc07G6mLGCPS/8t1nbC6Vq451pnxR3sK+rmtFHWb9CY/OPjAw==",
+      "dependencies": [
+        "iceberg-js",
+        "tslib"
+      ]
+    },
+    "@supabase/supabase-js@2.103.3": {
+      "integrity": "sha512-DuPiAz5pIJsTAQCt7B6bDZrnLzlq9+/5bta/GWTsgpLn6AkuZQcmYsQHYplv4skQ8U2raKY5HASQOu4KtYq9Qw==",
+      "dependencies": [
+        "@supabase/auth-js",
+        "@supabase/functions-js",
+        "@supabase/postgrest-js",
+        "@supabase/realtime-js",
+        "@supabase/storage-js"
+      ]
+    },
+    "@types/node@26.6.6": {
+      "integrity": "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==",
+      "dependencies": [
+        "undici-types"
+      ]
+    },
+    "@types/ws@8.18.2": {
+      "integrity": "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==",
+      "dependencies": [
+        "@types/node"
+      ]
+    },
+    "iceberg-js@0.8.1": {
+      "integrity": "sha512-1dhVQZXhcHje7798IVM+xoo/1ZdVfzOMIc8/rgVSijRK38EDqOJoGula9N/8ZI5RD8QTxNQtK/Gozpr+qUqRRA=="
+    },
+    "tslib@2.8.1": {
+      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="
+    },
+    "undici-types@8.9.0": {
+      "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="
+    },
+    "ws@8.22.1": {
+      "integrity": "sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g=="
+    }
   },
   "remote": {
     "https://deno.land/std@0.224.0/assert/_constants.ts": "a271e8ef5a573f1df8e822a6eb9d09df064ad66a4390f21b3e31f820a38e0975",
@@ -38,153 +109,6 @@
     "https://deno.land/std@0.224.0/fmt/colors.ts": "508563c0659dd7198ba4bbf87e97f654af3c34eb56ba790260f252ad8012e1c5",
     "https://deno.land/std@0.224.0/internal/diff.ts": "6234a4b493ebe65dc67a18a0eb97ef683626a1166a1906232ce186ae9f65f4e6",
     "https://deno.land/std@0.224.0/internal/format.ts": "0a98ee226fd3d43450245b1844b47003419d34d210fa989900861c79820d21c2",
-    "https://deno.land/std@0.224.0/internal/mod.ts": "534125398c8e7426183e12dc255bb635d94e06d0f93c60a297723abe69d3b22e",
-    "https://esm.sh/@supabase/auth-js@2.103.3/denonext/auth-js.mjs": "36f2e569c37f9d7daa0326c731f30e567575180517acb56b352fde64738b987e",
-    "https://esm.sh/@supabase/functions-js@2.103.3/denonext/functions-js.mjs": "e60163a997b70c62dcfed1c1a33d2663a15177f4726b1c42a394f434f1d95f9e",
-    "https://esm.sh/@supabase/phoenix@0.4.0/denonext/phoenix.mjs": "d9187057b2e3276d1110b9d814f737d4f8eff7f8b2765c4aa6bf7c7c30d070c9",
-    "https://esm.sh/@supabase/phoenix@0.4.0?target=denonext": "c1df3cfcdcf13e9cfddf86181efbdd8d4099b9a2682188b74106596277a69d16",
-    "https://esm.sh/@supabase/postgrest-js@2.103.3/denonext/postgrest-js.mjs": "521950bb98145b09aef1ae7d35df945f7e17448d386af27d2e5c229ae140144c",
-    "https://esm.sh/@supabase/realtime-js@2.103.3/denonext/realtime-js.mjs": "11042afb894b6eda6f2213b7d4d261445ddc28607ada9925c3a705259a537075",
-    "https://esm.sh/@supabase/storage-js@2.103.3/denonext/storage-js.mjs": "593705d072aacb29d8b328cf1eaadf0639e0b7000564a571142b16b3b7344345",
-    "https://esm.sh/@supabase/supabase-js@2.103.3": "f6efbe62d34ae9d50f3cf7eb51496246ec9378f422c38ff2b637a38157d4fc6b",
-    "https://esm.sh/@supabase/supabase-js@2.103.3/denonext/supabase-js.mjs": "845c8b56bcda848f8a84aaba8dff7e5115d3c81342821474701704c39f8b7ead",
-    "https://esm.sh/iceberg-js@0.8.1/denonext/iceberg-js.mjs": "d839d81a2e3966500ca2cdd0c1cb458e9608bacfc91f7bb67a69b2e878dcdb4f",
-    "https://esm.sh/iceberg-js@0.8.1?target=denonext": "58c849d7fe2bf4eca4a84eb501e83c161a7d8c34ca1bec15a962b3bec3062633",
-    "https://esm.sh/tslib@2.8.1/denonext/tslib.mjs": "c38da5dd6da6281964435002ce204cd586634fe3bdfb24a0ee116f48cf3292e9"
-  },
-  "workspace": {
-    "packageJson": {
-      "dependencies": [
-        "npm:@eslint/js@^9.39.2",
-        "npm:eslint-plugin-solid@~0.14.5",
-        "npm:eslint@^9.39.2",
-        "npm:globals@^17.3.0",
-        "npm:jsdom@28",
-        "npm:prettier@^3.8.1",
-        "npm:typescript-eslint@^8.56.0",
-        "npm:typescript@^5.7.0",
-        "npm:vite-plugin-solid@^2.11.10",
-        "npm:vite-plugin-wasm@^3.5.0",
-        "npm:vite@^7.3.0",
-        "npm:vitest@4"
-      ]
-    },
-    "members": {
-      "apps/_template": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/core@*",
-            "npm:@calab/io@*",
-            "npm:@calab/tutorials@*",
-            "npm:@calab/ui@*",
-            "npm:solid-js@^1.9.11"
-          ]
-        }
-      },
-      "apps/admin": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community@*",
-            "npm:@calab/ui@*",
-            "npm:solid-js@^1.9.11"
-          ]
-        }
-      },
-      "apps/cabana": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community-ui@*",
-            "npm:@calab/community@*",
-            "npm:@calab/compute@*",
-            "npm:@calab/core@*",
-            "npm:@calab/io@*",
-            "npm:@calab/tutorials@*",
-            "npm:@calab/ui@*",
-            "npm:solid-js@^1.9.15"
-          ]
-        }
-      },
-      "apps/cadecon": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community@*",
-            "npm:@calab/compute@*",
-            "npm:@calab/core@*",
-            "npm:@calab/io@*",
-            "npm:@calab/tutorials@*",
-            "npm:@calab/ui@*",
-            "npm:@dschz/solid-uplot@~0.5.2",
-            "npm:solid-js@^1.9.11",
-            "npm:uplot@^1.6.32"
-          ]
-        }
-      },
-      "apps/catune": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community@*",
-            "npm:@calab/compute@*",
-            "npm:@calab/core@*",
-            "npm:@calab/io@*",
-            "npm:@calab/tutorials@*",
-            "npm:@calab/ui@*",
-            "npm:@dschz/solid-uplot@~0.5.2",
-            "npm:solid-js@^1.9.11",
-            "npm:uplot@^1.6.32"
-          ]
-        }
-      },
-      "packages/community": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@supabase/supabase-js@^2.95.3"
-          ]
-        }
-      },
-      "packages/compute": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/core@*"
-          ]
-        }
-      },
-      "packages/core": {
-        "packageJson": {
-          "dependencies": [
-            "npm:valibot@^1.2.0"
-          ]
-        }
-      },
-      "packages/io": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/compute@*",
-            "npm:@calab/core@*",
-            "npm:fflate@0.8",
-            "npm:valibot@^1.2.0"
-          ]
-        }
-      },
-      "packages/tutorials": {
-        "packageJson": {
-          "dependencies": [
-            "npm:driver.js@^1.4.0",
-            "npm:solid-js@^1.9.11"
-          ]
-        }
-      },
-      "packages/ui": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@calab/community@*",
-            "npm:@calab/compute@*",
-            "npm:@calab/tutorials@*",
-            "npm:@dschz/solid-uplot@*",
-            "npm:solid-js@^1.9.11",
-            "npm:uplot@*"
-          ]
-        }
-      }
-    }
+    "https://deno.land/std@0.224.0/internal/mod.ts": "534125398c8e7426183e12dc255bb635d94e06d0f93c60a297723abe69d3b22e"
   }
 }

@@ -28,16 +28,18 @@
     "@calab/community": "*",
     "@calab/community-ui": "*",
     "@calab/compute": "*",
+    "@calab/compute-gpu": "*",
     "@calab/core": "*",
     "@calab/io": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",
     "@dschz/solid-uplot": "^0.5.2",
-    "solid-js": "^1.9.15",
+    "solid-js": "^1.9.18",
     "uplot": "^1.6.32",
     "valibot": "^1.5.0"
   },
   "devDependencies": {
-    "@calab/vite-config": "*"
+    "@calab/vite-config": "*",
+    "@webgpu/types": "^0.1.60"
   }
 }

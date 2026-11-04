@@ -1,10 +1,11 @@
-// @vitest-environment node
+// Runs under the default jsdom environment so solid-js resolves to its browser
+// build: vite-plugin-solid 2.11.15 stopped adding the `browser` condition to the
+// node (ssr) test environment, where solid-js would resolve to the server stubs
+// and the iteration store would read back empty.
 //
-// Node, not jsdom: fflate checks `instanceof Uint8Array`, and jsdom's
-// TextEncoder returns arrays from another realm, so results.json would silently
-// zip as a directory tree of byte-indexed entries. vitest.config.ts asks for
-// node here via environmentMatchGlobs, but that option is gone in Vitest 4 and
-// vite-plugin-solid forces jsdom, so the docblock is what actually applies it.
+// TextEncoder is stubbed with Node's: fflate checks `instanceof Uint8Array`, and
+// jsdom's TextEncoder returns arrays from another realm, so results.json would
+// silently zip as a directory tree of byte-indexed entries.
 
 /**
  * Tests for the standalone results download.
@@ -20,6 +21,7 @@
  * and per-cell scalars come from the same memo the app uses.
  */
 
+import { TextEncoder as NodeTextEncoder } from 'node:util';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import { unzipSync } from 'fflate';
@@ -118,6 +120,7 @@ beforeEach(() => {
     },
   });
   vi.stubGlobal('Blob', FakeBlob);
+  vi.stubGlobal('TextEncoder', NodeTextEncoder);
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
     blobs.push(blob as unknown as FakeBlob);
     return `blob:mock-${blobs.length}`;

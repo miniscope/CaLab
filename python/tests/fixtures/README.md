@@ -20,6 +20,10 @@ Each file holds the parameters, the input `trace`, and the solver's `kernel`,
 baseline subtraction. Traces are noiseless sums of the kernel at fixed spike
 indices.
 
+`with_filter` was regenerated after the bandpass input gained an endpoint detrend
+(PR #241, removes the FFT edge-wrap artifact), so its `filtered_trace` and
+downstream outputs reflect the detrended filter.
+
 | File                      | tau_rise | tau_decay | lambda | fs (Hz) | Samples | Filter | Notes                                 |
 | ------------------------- | -------- | --------- | ------ | ------- | ------- | ------ | ------------------------------------- |
 | `standard_clean.json`     | 0.04     | 0.4       | 0.01   | 30      | 300     | off    | GCaMP6f-like                          |
