@@ -507,12 +507,12 @@ def test_indeca_solve_trace_rejects_non_finite(trace, idx):
     ids=["plain", "upsampled", "filtered", "noise-constrained"],
 )
 def test_indeca_solve_trace_degenerate_traces(trace, opts):
-    counts, alpha, baseline, threshold, pve, iters, _conv = _solver.py_indeca_solve_trace(
+    counts, alpha, baseline, threshold, pve, iters, _conv, noise_var, gain = _solver.py_indeca_solve_trace(
         trace, TAU_R, TAU_D, FS, max_iters=50, **opts
     )
     assert counts.shape == trace.shape
-    assert finite(counts, alpha, baseline, threshold, pve)
-    assert iters >= 0
+    assert finite(counts, alpha, baseline, threshold, pve, noise_var, gain)
+    assert iters >= 0 and noise_var >= 0 and gain > 0
 
 
 @pytest.mark.parametrize("warm_len", [0, 3, 100, 1000])

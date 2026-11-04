@@ -10,6 +10,14 @@ export interface TraceResult {
   pve: number;
   iterations: number;
   converged: boolean;
+  /** Per-sample noise variance of the processed working trace (the trace
+   *  `filteredTrace` reports): raw high-band noise variance through the
+   *  bandpass times `chainNoiseGain`; 0 without a measurable noise floor.
+   *  PVE ceiling = 1 - noiseVarProcessed / var(filteredTrace). */
+  noiseVarProcessed?: number;
+  /** Gain of the rolling-quantile baseline stage on the noise energy
+   *  (the factor the selection's noise budget carries; 1 when not measured). */
+  chainNoiseGain?: number;
   /** Spike counts from the OPPOSITE noise-constrained setting, for the comparison
    *  overlay. Present only when the trace job requested `computeComparison`. */
   comparisonSCounts?: Float32Array;

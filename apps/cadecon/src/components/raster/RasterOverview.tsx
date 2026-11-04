@@ -6,6 +6,13 @@ import {
   setSelectedSubsetIdx,
 } from '../../lib/subset-store.ts';
 import { VIRIDIS_LUT, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
+import {
+  poolRawMax,
+  poolMatrixMax,
+  pooledBounds,
+  normalizeByte,
+  smoothWidthFrames,
+} from '../../lib/raster-pool.ts';
 import '../../styles/raster.css';
 
 // Plot margins (CSS px) reserved for the cell axis (left) and time axis
@@ -79,6 +86,40 @@ export function RasterOverview(): JSX.Element {
     return { p1, p99, range };
   });
 
+  // Intermediate max-pooled image (normalized bytes), computed once per
+  // dataset in a single pass; resizes re-pool from this small image instead of
+  // rescanning the full N x T matrix.
+  const BASE_MAX_ROWS = 2048;
+  const BASE_MAX_COLS = 4096;
+  const basePool = createMemo(() => {
+    const data = parsedData();
+    const shape = effectiveShape();
+    if (!data || !shape) return null;
+    const [N, T] = shape;
+    const dur = durationSeconds();
+    const fsHz = dur && dur > 0 ? T / dur : null;
+    const w = smoothWidthFrames(T, fsHz);
+    const pooled = poolRawMax(
+      data.data,
+      data.shape[1],
+      swapped(),
+      N,
+      T,
+      BASE_MAX_ROWS,
+      BASE_MAX_COLS,
+      w,
+    );
+    return { ...pooled, smoothed: w > 1 };
+  });
+  let sizedCache: {
+    src: object;
+    w: number;
+    h: number;
+    pool: ReturnType<typeof poolMatrixMax>;
+    lo: number;
+    range: number;
+  } | null = null;
+
   const drawRaster = () => {
     const canvas = canvasRef;
     if (!canvas) return;
@@ -90,10 +131,6 @@ export function RasterOverview(): JSX.Element {
     if (!data || !shape) return;
 
     const [N, T] = shape;
-    const typedData = data.data;
-    const isSwapped = swapped();
-    const rawCols = data.shape[1];
-
     const rect = containerRef?.getBoundingClientRect();
     const displayWidth = rect?.width ?? 800;
     const displayHeight = rect?.height ?? Math.min(Math.max(200, N * 3), 500);
@@ -113,8 +150,6 @@ export function RasterOverview(): JSX.Element {
     plotW = Math.max(1, displayWidth - MARGIN_LEFT - MARGIN_RIGHT);
     plotH = Math.max(1, displayHeight - MARGIN_TOP - MARGIN_BOTTOM);
 
-    const { p1, range } = percentileBounds();
-
     // Draw heatmap into the plot rect at physical resolution (putImageData
     // ignores canvas transforms, so position/size in physical pixels).
     const ppX = Math.round(plotX * dpr);
@@ -124,17 +159,42 @@ export function RasterOverview(): JSX.Element {
     const imageData = ctx.createImageData(ppW, ppH);
     const pixels = imageData.data;
 
+    // Max-pool so every cell/frame mapping into a pixel contributes. With fewer
+    // cells (frames) than pixels, pooling is the identity and each cell (frame)
+    // spans >=1 pixel row (column), as before.
+    const base = basePool();
+    if (!base) return;
+    if (!sizedCache || sizedCache.src !== base || sizedCache.w !== ppW || sizedCache.h !== ppH) {
+      const pool = poolMatrixMax(base.out, base.rows, base.cols, ppH, ppW);
+      // Pooling raises the noise floor, so colour bounds come from the pooled
+      // values; with no pooling at all keep the legacy global raw percentiles.
+      const pooledAny = base.smoothed || N * T > pool.rows * pool.cols;
+      const bounds = pooledAny
+        ? (() => {
+            const b = pooledBounds(pool.out);
+            return { lo: b.lo, range: b.range };
+          })()
+        : { lo: percentileBounds().p1, range: percentileBounds().range };
+      sizedCache = {
+        src: base,
+        w: ppW,
+        h: ppH,
+        pool,
+        ...bounds,
+      };
+    }
+    const { out: pooled, rows: pRows, cols: pCols } = sizedCache.pool;
+    const { lo, range } = sizedCache;
+
     for (let py = 0; py < ppH; py++) {
-      const cell = Math.floor((py / ppH) * N);
-      const rowBase = isSwapped ? cell : cell * rawCols;
+      const pr = Math.min(pRows - 1, Math.floor((py / ppH) * pRows));
       const rowPixelBase = py * ppW;
       for (let px = 0; px < ppW; px++) {
-        const t = Math.floor((px / ppW) * T);
-        const v = typedData[isSwapped ? t * rawCols + rowBase : rowBase + t];
-        const normalized = Number.isFinite(v)
-          ? Math.max(0, Math.min(255, Math.round(((v - p1) / range) * 255)))
-          : 0;
-
+        const normalized = normalizeByte(
+          pooled[pr * pCols + Math.min(pCols - 1, Math.floor((px / ppW) * pCols))],
+          lo,
+          range,
+        );
         const offset = (rowPixelBase + px) * 4;
         pixels[offset] = VIRIDIS_LUT[normalized * 3];
         pixels[offset + 1] = VIRIDIS_LUT[normalized * 3 + 1];

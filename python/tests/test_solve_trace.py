@@ -79,12 +79,13 @@ class TestSolveTrace:
 
     def test_tuple_unpacking(self):
         trace = _make_trace(0.02, 0.4, 30.0, 200, [20, 80])
-        s_counts, alpha, baseline, threshold, pve, iterations, converged = solve_trace(
+        s_counts, alpha, baseline, threshold, pve, iterations, converged, noise_var, gain = solve_trace(
             trace, 0.02, 0.4, 30.0,
         )
         assert s_counts.shape == (200,)
         assert isinstance(alpha, float)
         assert isinstance(converged, bool)
+        assert noise_var >= 0.0 and gain > 0.0
 
     def test_noise_constrained_accepted(self):
         # The noise_constrained knob is exposed through the binding and produces
