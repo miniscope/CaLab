@@ -3,6 +3,7 @@ pub(crate) mod baseline;
 #[allow(dead_code)]
 pub(crate) mod biexp_fit;
 pub(crate) mod chain;
+pub(crate) mod event_mass;
 mod fft;
 mod filter;
 mod fista;
@@ -13,6 +14,7 @@ mod kernel;
 pub(crate) mod kernel_est;
 pub(crate) mod native_solve;
 pub(crate) mod peak_seed;
+pub(crate) mod pursuit;
 pub(crate) mod simulate;
 pub(crate) mod spread;
 #[allow(dead_code)]

@@ -71,6 +71,17 @@ impl Chain {
         }
     }
 
+    /// Push `z` through the linear part of the chain only (the bandpass,
+    /// when there is one): the shift-invariant response the pursuit
+    /// (`pursuit` module) correlates the residual with. The rolling quantile
+    /// is left out on purpose: it is the nonlinear stage, handled by the
+    /// exact pass of [`Chain::apply`] on every candidate.
+    pub(crate) fn apply_linear(&mut self, z: &mut [f32]) {
+        if let Some(f) = self.filter.as_mut() {
+            f.apply(z);
+        }
+    }
+
     /// Push `z` through the chain in place.
     pub(crate) fn apply(&mut self, z: &mut [f32]) {
         if let Some(f) = self.filter.as_mut() {
@@ -94,6 +105,14 @@ impl Scorer<'_> {
     pub(crate) fn target(&self) -> &[f32] {
         match self {
             Scorer::Plain { y } | Scorer::Chain { y, .. } => y,
+        }
+    }
+
+    /// The linear part of the scorer's transform applied in place (`Plain`:
+    /// the identity).
+    pub(crate) fn apply_linear(&mut self, z: &mut [f32]) {
+        if let Scorer::Chain { chain, .. } = self {
+            chain.apply_linear(z);
         }
     }
 

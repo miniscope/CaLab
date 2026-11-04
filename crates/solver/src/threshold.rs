@@ -369,32 +369,7 @@ pub(crate) fn threshold_search_scored(
     let (_, alpha, baseline) = scorer.score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf);
     let y = scorer.target();
 
-    // PVE (proportion of variance explained) over the full interior
-    let mut pve = 0.0;
-    let inner_range = pad..n.saturating_sub(pad);
-    let inner_len = inner_range.len();
-    if inner_len > 0 {
-        let mut y_sum = 0.0_f64;
-        for i in inner_range.clone() {
-            y_sum += y[i] as f64;
-        }
-        let y_mean = y_sum / inner_len as f64;
-
-        let mut ss_tot = 0.0_f64;
-        let mut ss_res = 0.0_f64;
-        for i in inner_range {
-            let yi = y[i] as f64;
-            let d = yi - y_mean;
-            ss_tot += d * d;
-            let pred = alpha * conv_buf[i] as f64 + baseline;
-            let r = yi - pred;
-            ss_res += r * r;
-        }
-
-        if ss_tot > 1e-20 {
-            pve = 1.0 - ss_res / ss_tot;
-        }
-    }
+    let pve = interior_pve(y, &conv_buf, alpha, baseline, pad);
 
     ThresholdResult {
         s_binary: s_bin,
@@ -405,6 +380,36 @@ pub(crate) fn threshold_search_scored(
         error: errors[pick],
         noise_path,
         diag,
+    }
+}
+
+/// Proportion of variance explained by `alpha * conv + baseline` over the
+/// interior `[pad, n - pad)` of `y` (0 when the interior is empty or flat).
+pub(crate) fn interior_pve(y: &[f32], conv: &[f32], alpha: f64, baseline: f64, pad: usize) -> f64 {
+    let n = y.len();
+    let inner_range = pad..n.saturating_sub(pad);
+    let inner_len = inner_range.len();
+    if inner_len == 0 {
+        return 0.0;
+    }
+    let mut y_sum = 0.0_f64;
+    for i in inner_range.clone() {
+        y_sum += y[i] as f64;
+    }
+    let y_mean = y_sum / inner_len as f64;
+    let mut ss_tot = 0.0_f64;
+    let mut ss_res = 0.0_f64;
+    for i in inner_range {
+        let yi = y[i] as f64;
+        let d = yi - y_mean;
+        ss_tot += d * d;
+        let r = yi - (alpha * conv[i] as f64 + baseline);
+        ss_res += r * r;
+    }
+    if ss_tot > 1e-20 {
+        1.0 - ss_res / ss_tot
+    } else {
+        0.0
     }
 }
 

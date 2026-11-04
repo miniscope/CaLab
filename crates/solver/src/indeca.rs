@@ -564,6 +564,28 @@ pub(crate) enum InnerSolve {
     Upsampled,
 }
 
+/// How the native-rate relaxed solution is turned into the 0/1 train at the
+/// spike-resolution rate ([`InnerSolve::Native`] only; the upsampled loop
+/// always thresholds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Binarize {
+    /// The threshold search on the tent-spread solution (the default; see
+    /// the `threshold` and `spread` modules).
+    Threshold,
+    /// Chain-consistent matching pursuit at the spike-resolution rate with
+    /// the noise budget as the stop (experimental; see the `pursuit`
+    /// module).
+    Pursuit {
+        prune: bool,
+        amplitude: crate::pursuit::Amplitude,
+        gate: crate::pursuit::Gate,
+        moves: bool,
+    },
+    /// Per-event counts from the relaxed solution's event masses, placed at
+    /// the events' centroids (experimental; see the `event_mass` module).
+    EventMass,
+}
+
 /// When the native-rate relaxed solve stops ([`InnerSolve::Native`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeStop {
@@ -643,6 +665,8 @@ pub(crate) struct ScaleLoop {
     pub max_rounds: usize,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
+    /// Which candidate family the native solve binarizes with.
+    pub binarize: Binarize,
 }
 
 impl ScaleLoop {
@@ -665,6 +689,7 @@ impl ScaleLoop {
             take_last: false,
             max_rounds: 10,
             scoring: Scoring::Plain,
+            binarize: Binarize::Threshold,
         }
     }
 
@@ -702,6 +727,7 @@ impl Default for ScaleLoop {
             take_last: true,
             max_rounds: 10,
             scoring: Scoring::Chain,
+            binarize: Binarize::Threshold,
         }
     }
 }
@@ -745,6 +771,10 @@ pub(crate) struct RoundStats {
     pub spike_unit_peak: f64,
     /// What the selection rule saw at the pick.
     pub selection: SelectionDiag,
+    /// Exact chain passes the binarization spent (its cost unit).
+    pub binarize_passes: usize,
+    /// Pursuit diagnostics (`None` for the other families).
+    pub pursuit: Option<crate::pursuit::PursuitStats>,
 }
 
 /// The preprocessed trace and what is derived from it once per solve.
@@ -1331,8 +1361,16 @@ fn solve_trace_native(
         }
     }
 
-    // ── Binarization: the threshold search against the upsampled working
-    // trace ──
+    // ── Binarization against the upsampled working trace ──
+    let mut scorer = match chain_up.take() {
+        Some(c) => Scorer::Chain {
+            y: &up.working,
+            chain: c,
+        },
+        None => Scorer::Plain { y: &up.working },
+    };
+    let mut binarize_passes = 0usize;
+    let mut pursuit_stats = None;
     let ThresholdResult {
         s_binary,
         alpha: alpha_lstsq,
@@ -1342,15 +1380,8 @@ fn solve_trace_native(
         error,
         noise_path,
         diag,
-    } = {
-        let mut scorer = match chain_up.take() {
-            Some(c) => Scorer::Chain {
-                y: &up.working,
-                chain: c,
-            },
-            None => Scorer::Plain { y: &up.working },
-        };
-        threshold_search_scored(
+    } = match cfg.binarize {
+        Binarize::Threshold => threshold_search_scored(
             &s_normalized,
             &mut scorer,
             &up.banded,
@@ -1360,7 +1391,43 @@ fn solve_trace_native(
             f64::INFINITY,
             selection,
             up.noise_model,
-        )
+        ),
+        Binarize::Pursuit {
+            prune,
+            amplitude,
+            gate,
+            moves,
+        } => {
+            let (r, st) = crate::pursuit::pursue(
+                &mut scorer,
+                &up.banded,
+                pad_up,
+                k,
+                up.noise_model,
+                prune,
+                amplitude,
+                gate,
+                moves,
+            );
+            binarize_passes = st.evals;
+            pursuit_stats = Some(st);
+            r
+        }
+        Binarize::EventMass => {
+            let (r, passes) = crate::event_mass::event_mass_search(
+                &x,
+                k,
+                lo,
+                hi,
+                &mut scorer,
+                &up.banded,
+                pad_up,
+                selection,
+                up.noise_model,
+            );
+            binarize_passes = passes;
+            r
+        }
     };
     let s_counts = downsample_binary(&s_binary, k);
 
@@ -1390,6 +1457,8 @@ fn solve_trace_native(
         relaxed_error,
         spike_unit_peak,
         selection: diag,
+        binarize_passes,
+        pursuit: pursuit_stats,
     }];
 
     (
