@@ -1336,7 +1336,7 @@ fn solve_trace_native(
     let ThresholdResult {
         s_binary,
         alpha: alpha_lstsq,
-        baseline: baseline_lstsq,
+        baseline: _,
         threshold,
         pve,
         error,
