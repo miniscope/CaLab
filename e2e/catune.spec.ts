@@ -18,7 +18,8 @@ test('CaTune: demo data loads, the WASM solver pool solves, and traces render', 
 
   // Each visible cell card goes stale -> solving -> fresh. Only a fresh
   // card's badge label reads "SNR x.x" (an errored card's label is empty,
-  // though its tooltip still says "Peak SNR"), so the label proves a solve.
+  // though its tooltip still describes the measured SNR), so the label
+  // proves a solve.
   const cards = page.locator('[data-cell-index]');
   await expect(cards.first()).toBeVisible();
   const cardCount = await cards.count();

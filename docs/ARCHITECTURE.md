@@ -118,9 +118,9 @@ graph TD
 
 | Package / app         | `@calab/*` dependencies                                     | Notable external deps                      |
 | --------------------- | ----------------------------------------------------------- | ------------------------------------------ |
-| `@calab/core`         | none                                                        | `valibot`                                  |
+| `@calab/core`         | none                                                        | none                                       |
 | `@calab/compute`      | core                                                        | none                                       |
-| `@calab/io`           | core, compute                                               | `fflate`, `solid-js`, `valibot`            |
+| `@calab/io`           | core, compute                                               | `fflate`, `solid-js`                       |
 | `@calab/tutorials`    | none                                                        | `driver.js`, `solid-js`                    |
 | `@calab/community`    | none                                                        | `@supabase/supabase-js`, `solid-js` (peer) |
 | `@calab/ui`           | core, compute, io (only from `@calab/ui/import`), tutorials | `solid-js`, `uplot`, `@dschz/solid-uplot`  |
