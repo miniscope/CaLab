@@ -11,12 +11,6 @@
   color: var(--text-secondary);
 }
 
-.btn-active {
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-  background: var(--accent-muted) !important;
-}
-
 /* ========================
    Stats Grid
    ======================== */

@@ -75,6 +75,7 @@ export function CaTuneHeader(props: CaTuneHeaderProps): JSX.Element {
           <button
             class={`btn-secondary btn-small${props.sidebarOpen ? ' btn-active' : ''}`}
             data-tutorial="sidebar-toggle"
+            aria-pressed={props.sidebarOpen ?? false}
             onClick={() => props.onToggleSidebar?.()}
           >
             Sidebar

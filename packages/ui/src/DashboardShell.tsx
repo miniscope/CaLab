@@ -6,7 +6,7 @@ export interface DashboardShellProps {
   children: JSX.Element;
   /** Whether the sidebar is open. Defaults to `false`. */
   sidebarOpen?: boolean;
-  /** Callback invoked when the user requests toggling the sidebar. */
+  /** Callback invoked when the user requests toggling the sidebar (also drives the in-sidebar collapse button, shown only when provided). */
   onToggleSidebar?: () => void;
   /**
    * Initial sidebar width as a CSS length (default: the stylesheet's 380px).
@@ -78,6 +78,27 @@ export function DashboardShell(props: DashboardShellProps): JSX.Element {
             onPointerDown={startResize}
             onDblClick={() => setDragWidth(null)}
           />
+        </Show>
+        <Show when={isOpen() && props.onToggleSidebar}>
+          <button
+            type="button"
+            class="dashboard-shell__sidebar-collapse"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (reopen with the Sidebar button in the header)"
+            data-testid="sidebar-collapse"
+            onClick={() => props.onToggleSidebar?.()}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M3 3l5 5-5 5M9 3l5 5-5 5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
         </Show>
         <div class="dashboard-shell__sidebar-body">{props.sidebar}</div>
       </div>
