@@ -16,8 +16,6 @@ import { ResultsPanel } from '../distributions/ResultsPanel.tsx';
 import { runState } from '../../lib/iteration-store.ts';
 import { nextTabForRunState, type AnalysisTab } from '../../lib/analysis-tab.ts';
 
-export type { AnalysisTab };
-
 interface TabEntry {
   id: AnalysisTab;
   label: string;
@@ -30,8 +28,8 @@ const TABS: TabEntry[] = [
   { id: 'results', label: 'Results', content: () => <ResultsPanel /> },
 ];
 
+// Module-level so the selected tab survives the panel remounting.
 const [activeTab, setActiveTab] = createSignal<AnalysisTab>('asymptote');
-export { activeTab, setActiveTab };
 
 export function AnalysisPanel(): JSX.Element {
   // A fresh run shows its convergence; a finished run shows its results.

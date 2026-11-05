@@ -102,29 +102,7 @@
   gap: 4px;
 }
 
-/* ========================
-   Dual Range Slider
-   ======================== */
-.dual-range {
-  margin-bottom: 4px;
-}
-
-.dual-range__header {
-  margin-bottom: 6px;
-}
-
-.dual-range__header .param-slider__label {
-  text-transform: none;
-}
-
-.dual-range__values {
-  display: flex;
-  gap: var(--space-sm);
-  margin-bottom: 4px;
-}
-
 /* --- Disabled state --- */
-.dual-range--disabled,
 .param-slider--disabled,
 .param-panel__toggle-group--disabled {
   opacity: 0.5;

@@ -37,7 +37,6 @@ import {
   setRunError,
   setFailedJobs,
   addConvergenceSnapshot,
-  addDebugTraceSnapshot,
   updateTraceResult,
   bulkUpdateTraceResults,
   resetIterationState,
@@ -72,7 +71,6 @@ import {
 import { subsetRectangles, type SubsetRectangle } from './subset-store.ts';
 import { dataIndex } from '@calab/io';
 import { median } from './math-utils.ts';
-import { reconvolveAR2 } from './reconvolve.ts';
 
 // Per-trace and per-kernel FISTA solver parameters are configurable via
 // algorithm-store (traceFistaMaxIters/Tol, kernelFistaMaxIters/Tol,
@@ -891,40 +889,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
       bulkUpdateTraceResults(batchEntries);
       snapshotIteration(iter + 1, tauR, tauD);
     });
-
-    // Capture debug trace snapshot: cell 0 from first subset that has it
-    if (rects.length > 0 && traceResults[0].size > 0) {
-      const debugCell = rects[0].cellStart;
-      const debugResult = traceResults[0].get(debugCell);
-      if (debugResult) {
-        const debugTrace = extractCellTrace(
-          debugCell,
-          rects[0].tStart,
-          rects[0].tEnd,
-          data,
-          isSwap,
-        );
-        const reconvolved = reconvolveAR2(
-          debugResult.sCounts,
-          tauR,
-          tauD,
-          fs,
-          debugResult.alpha,
-          debugResult.baseline,
-        );
-        addDebugTraceSnapshot({
-          iteration: iter + 1,
-          cellIndex: debugCell,
-          rawTrace: debugTrace,
-          sCounts: new Float32Array(debugResult.sCounts),
-          reconvolved,
-          alpha: debugResult.alpha,
-          baseline: debugResult.baseline,
-          threshold: debugResult.threshold,
-          pve: debugResult.pve,
-        });
-      }
-    }
 
     // Step 2: Per-subset kernel estimation (warm-started from previous iteration's kernels)
     setRunPhase('kernel-update');

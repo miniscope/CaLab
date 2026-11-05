@@ -95,19 +95,6 @@ function cellSubsetKey(cellIndex: number, subsetIdx: number): string {
   return `${cellIndex}:${subsetIdx}`;
 }
 
-/** Snapshot of one cell's raw trace + deconvolved activity at a given iteration (for debug plotting). */
-export interface DebugTraceSnapshot {
-  iteration: number;
-  cellIndex: number;
-  rawTrace: Float32Array;
-  sCounts: Float32Array;
-  reconvolved: Float32Array;
-  alpha: number;
-  baseline: number;
-  threshold: number;
-  pve: number;
-}
-
 // --- Iteration History ---
 
 export interface IterationHistoryEntry {
@@ -130,7 +117,6 @@ const [convergenceHistory, setConvergenceHistory] = createSignal<KernelSnapshot[
 const [currentTauRise, setCurrentTauRise] = createSignal<number | null>(null);
 const [currentTauDecay, setCurrentTauDecay] = createSignal<number | null>(null);
 const [perTraceResults, setPerTraceResults] = createSignal<Record<string, TraceResultEntry>>({});
-const [debugTraceSnapshots, setDebugTraceSnapshots] = createSignal<DebugTraceSnapshot[]>([]);
 const [runPhase, setRunPhase] = createSignal<RunPhase>('idle');
 const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | null>(null);
 /** User-facing reason the last run failed (worker pool died, too many job failures, or a thrown error). null while healthy. */
@@ -169,17 +155,6 @@ const alphaValues = createMemo(() => [...cellResultLookup().values()].map((r) =>
 
 const pveValues = createMemo(() => [...cellResultLookup().values()].map((r) => r.pve));
 
-const subsetVarianceData = createMemo(() => {
-  const history = convergenceHistory();
-  if (history.length === 0) return [];
-  const latest = history[history.length - 1];
-  return latest.subsets.map((s) => ({
-    subsetIdx: s.subsetIdx,
-    tauRise: s.tauRise * 1000,
-    tauDecay: s.tauDecay * 1000,
-  }));
-});
-
 // --- Actions ---
 
 function resetIterationState(): void {
@@ -192,7 +167,6 @@ function resetIterationState(): void {
   setCurrentTauRise(null);
   setCurrentTauDecay(null);
   setPerTraceResults({});
-  setDebugTraceSnapshots([]);
   setConvergedAtIteration(null);
   setIterationHistory([]);
   setRunError(null);
@@ -212,10 +186,6 @@ function snapshotIteration(iteration: number, tauRise: number, tauDecay: number)
 
 function addConvergenceSnapshot(snapshot: KernelSnapshot): void {
   setConvergenceHistory((prev) => [...prev, snapshot]);
-}
-
-function addDebugTraceSnapshot(snapshot: DebugTraceSnapshot): void {
-  setDebugTraceSnapshots((prev) => [...prev, snapshot]);
 }
 
 function updateTraceResult(key: string, result: TraceResultEntry): void {
@@ -241,7 +211,6 @@ export {
   setCurrentTauRise,
   currentTauDecay,
   setCurrentTauDecay,
-  debugTraceSnapshots,
   runPhase,
   setRunPhase,
   convergedAtIteration,
@@ -253,13 +222,11 @@ export {
   alphaValues,
   pveValues,
   cellResultLookup,
-  subsetVarianceData,
   isRunLocked,
   progress,
   iterationHistory,
   resetIterationState,
   addConvergenceSnapshot,
-  addDebugTraceSnapshot,
   updateTraceResult,
   bulkUpdateTraceResults,
   snapshotIteration,
