@@ -443,8 +443,11 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
         for (const v of [
           snr_noise_sigma_mad_diff(t),
           snr_noise_level_nu(t, FS),
-          snr_peak(t, 1, 0.01),
-          snr_measured(t),
+          snr_peak(t, 1, 0.01, FS),
+          snr_measured(t, FS),
+          // An invalid frame rate skips the drift removal instead of failing.
+          snr_measured(t, 0),
+          snr_measured(t, NaN),
         ]) {
           expect(Number.isFinite(v) && v >= 0, String(v)).toBe(true);
         }
@@ -452,7 +455,7 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       for (const t of traces) {
         for (const sep of [0, 1, 12]) {
           expect(Array.isArray(snr_detect_events(t, snr_noise_sigma_mad_diff(t), sep))).toBe(true);
-          const r = snr_measured_report(t, sep) as SnrReport;
+          const r = snr_measured_report(t, FS, sep) as SnrReport;
           expect(Number.isFinite(r.sigma) && r.sigma >= 0).toBe(true);
           expect(typeof r.is_silent).toBe('boolean');
         }
