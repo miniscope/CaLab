@@ -91,7 +91,7 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ToggleSwitch
-          label="Noise-floor guard (low SNR)"
+          label="Noise-floor guard"
           description="On noisy cells, picks the sparsest spike train whose fit stays within the measured noise floor instead of the best-fitting one. On cells where no candidate reaches the noise floor (typically SNR above ~8), it has no effect and the result is the best fit."
           checked={noiseConstrained()}
           onChange={setNoiseConstrained}

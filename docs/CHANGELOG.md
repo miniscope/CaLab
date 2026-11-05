@@ -7,7 +7,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
-- **CaDecon: "Noise-Constrained Sparsity" is now "Noise-floor guard (low SNR)".**
+- **CaDecon: "Noise-Constrained Sparsity" is now "Noise-floor guard".**
   Same setting and default (on); only the text changed, to say what it does:
   it acts only when the best-fitting spike train overfits the measured noise
   floor by more than 1 SE (measured SNR below about 8, +.02-.08 F1 there) and
