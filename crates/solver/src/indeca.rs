@@ -388,6 +388,12 @@ pub struct InDecaResult {
     /// energy relative to the bandpass alone (`chain_noise_gain`); 1 when not
     /// measured.
     pub chain_noise_gain: f64,
+    /// The reported threshold pick came from the noise-constrained path: the
+    /// best candidate overfit the noise floor by more than one SE, so the
+    /// sparsest candidate within the budget was chosen instead of the max-PVE
+    /// one. `false` means the selection equals max-PVE (always `false` when
+    /// `noise_constrained` is off or the trace has no measurable noise floor).
+    pub noise_path: bool,
 }
 
 /// Run bounded FISTA on a (possibly upsampled) trace.
@@ -1146,7 +1152,7 @@ pub(crate) fn solve_trace_cfg(
 
     let mut best_pve = f64::NEG_INFINITY;
     let mut best_scale_err = f64::INFINITY;
-    let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool)> = None;
+    let mut best_result: Option<(Vec<f32>, f64, f64, f64, f64, u32, bool, bool)> = None;
     let mut stats: Vec<RoundStats> = Vec::new();
 
     // Scratch buffers reused across rounds.
@@ -1335,6 +1341,7 @@ pub(crate) fn solve_trace_cfg(
                 pve,
                 iterations,
                 converged,
+                noise_path,
             ));
         }
         if last {
@@ -1347,10 +1354,10 @@ pub(crate) fn solve_trace_cfg(
     }
 
     // ── Extract the reported round ──
-    let (s_binary, alpha, baseline, threshold, pve, iterations, converged) = best_result
-        .unwrap_or_else(|| {
+    let (s_binary, alpha, baseline, threshold, pve, iterations, converged, noise_path) =
+        best_result.unwrap_or_else(|| {
             // Fallback: no valid result found (shouldn't happen)
-            (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false)
+            (vec![0.0; wt_len], 0.0, 0.0, 0.0, 0.0, 0, false, false)
         });
 
     // Downsample binary spike train to original rate using centered bins
@@ -1372,6 +1379,7 @@ pub(crate) fn solve_trace_cfg(
             loop_converged,
             noise_var_processed: prep.noise.processed_var(),
             chain_noise_gain: prep.noise.chain_gain,
+            noise_path,
         },
         stats,
     )
@@ -1607,6 +1615,7 @@ fn solve_trace_native(
             loop_converged: true,
             noise_var_processed: up.noise.processed_var(),
             chain_noise_gain: up.noise.chain_gain,
+            noise_path,
         },
         stats,
     )
@@ -2637,6 +2646,39 @@ mod tests {
             let last = st.last().unwrap();
             assert_eq!(last.noise_path, Some(true), "{st:?}");
             assert!(last.binary_error <= last.budget * 1.0001);
+        }
+    }
+
+    #[test]
+    fn result_noise_path_reports_the_reported_rounds_pick() {
+        // The per-trace `noise_path` flag on InDecaResult must equal the
+        // reported round's flag, and must be false when the noise-constrained
+        // option is off (selection is then plain max-PVE).
+        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
+            let run = |noise_constrained| {
+                solve_trace_stats(
+                    &trace,
+                    tr,
+                    td,
+                    fs,
+                    k,
+                    300,
+                    1e-4,
+                    None,
+                    true,
+                    true,
+                    0.0,
+                    SolveOptions { noise_constrained },
+                )
+            };
+            let (on, st_on) = run(true);
+            assert_eq!(
+                Some(on.noise_path),
+                st_on.last().unwrap().noise_path,
+                "{name}"
+            );
+            let (off, _) = run(false);
+            assert!(!off.noise_path, "{name}: flag set with the option off");
         }
     }
 

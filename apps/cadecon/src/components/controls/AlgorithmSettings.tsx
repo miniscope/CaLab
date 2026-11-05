@@ -91,8 +91,8 @@ export function AlgorithmSettings(): JSX.Element {
         />
 
         <ToggleSwitch
-          label="Noise-Constrained Sparsity"
-          description="Stops adding spikes once the fit reaches the noise floor (suppresses spurious low-SNR spikes; below SNR≈1 it may trim real signal — toggle off)"
+          label="Noise-floor guard (low SNR)"
+          description="On noisy cells, picks the sparsest spike train whose fit stays within the measured noise floor instead of the best-fitting one. On cells where no candidate reaches the noise floor (typically SNR above ~8), it has no effect and the result is the best fit."
           checked={noiseConstrained()}
           onChange={setNoiseConstrained}
           disabled={isRunLocked()}

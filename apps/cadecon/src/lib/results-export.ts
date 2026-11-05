@@ -36,6 +36,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
   baselines:
     'Per-cell fluorescence baseline offset subtracted before deconvolution (length n_cells).',
   pves: 'Per-cell proportion of variance explained by the fit, 0-1; a per-cell fit-quality measure (length n_cells).',
+  noise_guard_active:
+    'Per-cell flag (length n_cells): true when the noise-floor guard overrode the best-fitting spike train ' +
+    '(the best candidate overfit the measured noise floor, so the sparsest train within the noise budget was chosen); ' +
+    'false when it had no effect (result equals the best fit, typically SNR above ~8); null if unreported.',
   tau_rise:
     'Rise time constant (seconds) of the slow calcium kernel component T_s(t) = exp(-t/tau_decay) - exp(-t/tau_rise).',
   tau_decay: 'Decay time constant (seconds) of the slow calcium kernel component.',

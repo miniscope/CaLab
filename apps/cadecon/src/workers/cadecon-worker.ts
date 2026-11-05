@@ -60,6 +60,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       converged: boolean;
       noise_var_processed: number;
       chain_noise_gain: number;
+      noise_path?: boolean;
     };
 
     if (cancelled) {
@@ -111,6 +112,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           converged: jsResult.converged,
           noiseVarProcessed: jsResult.noise_var_processed,
           chainNoiseGain: jsResult.chain_noise_gain,
+          noisePath: jsResult.noise_path,
           comparisonSCounts,
         },
       },

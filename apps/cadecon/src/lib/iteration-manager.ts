@@ -795,6 +795,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: number;
         pve: number;
         pveCeiling: number | null;
+        noisePath: boolean | undefined;
       }
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
@@ -837,6 +838,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
+          noisePath: result.noisePath,
         });
 
         // Accumulate per cell×subset result for alpha/threshold trends tracking
@@ -850,6 +852,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
+          noisePath: result.noisePath,
           comparisonSCounts: result.comparisonSCounts,
         };
       }
@@ -870,6 +873,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: scalars.threshold,
         pve: scalars.pve,
         pveCeiling: scalars.pveCeiling,
+        noisePath: scalars.noisePath,
         comparisonSCounts: cellComparison.get(cell),
       };
     }
@@ -1154,6 +1158,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
               threshold: result.threshold,
               pve: result.pve,
               pveCeiling: processedCeiling(result.filteredTrace, result.noiseVarProcessed),
+              noisePath: result.noisePath,
               comparisonSCounts: result.comparisonSCounts,
             });
             settle();

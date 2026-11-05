@@ -7,6 +7,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- **CaDecon: "Noise-Constrained Sparsity" is now "Noise-floor guard (low SNR)".**
+  Same setting and default (on); only the text changed, to say what it does:
+  it acts only when the best-fitting spike train overfits the measured noise
+  floor by more than 1 SE (measured SNR below about 8, +.02-.08 F1 there) and
+  leaves the best fit untouched above that. The solver now returns a per-cell
+  `noise_path` flag (WASM `indeca_solve_trace`), shown in the Trace Inspector
+  readout, the Results scatter tooltip and footer, and the results export as
+  `noise_guard_active`. The Python `solve_trace` tuple is unchanged.
+
+### Changed
+
 - **Simulator noise convention (default changed).** `NoiseConfig.snr` now
   means the measured SNR of each noisy trace (`NoiseConfig.reference =
 measured_snr`): the same burst-based metric users run on real data. The old
