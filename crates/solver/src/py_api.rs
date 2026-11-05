@@ -540,8 +540,12 @@ fn seed_kernel_estimate<'py>(
 /// derived from the problem and lies in the 1e5-1e9 range (the default of
 /// 500 cannot truncate the solve).
 ///
-/// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged):
-/// `iterations` is the recorded-rate FISTA iteration count and `converged`
+/// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged,
+/// noise_var_processed, chain_noise_gain): `noise_var_processed` is the
+/// per-sample noise variance of the processed (working) trace, `sigma_raw^2`
+/// through the bandpass times `chain_noise_gain`, the rolling-quantile
+/// stage's measured gain on the noise (0 and 1 when no noise floor is
+/// measurable); `iterations` is the recorded-rate FISTA iteration count and `converged`
 /// says the certificate (or, without noise, the step rule) fired.
 /// `converged = False` means the certificate could not be met in f64
 /// arithmetic: in practice the stall detector on the certificate's bound
@@ -571,6 +575,8 @@ fn py_indeca_solve_trace<'py>(
     f64,                       // pve
     u32,                       // iterations
     bool,                      // converged
+    f64,                       // noise_var_processed
+    f64,                       // chain_noise_gain
 )> {
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
@@ -611,6 +617,8 @@ fn py_indeca_solve_trace<'py>(
         result.pve,
         result.iterations,
         result.converged,
+        result.noise_var_processed,
+        result.chain_noise_gain,
     ))
 }
 

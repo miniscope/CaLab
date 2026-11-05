@@ -150,6 +150,13 @@ pub(crate) struct NoiseEstimate {
     /// Per-sample noise variance averaged over all upsampled positions: the
     /// noise energy per sample of the FISTA data-fit term (before prescaling).
     pub upsampled_var: f64,
+    /// `grid` with the rolling-quantile stage's gain on the noise energy
+    /// folded in ([`chain_noise_gain`]): `sigma` scaled by `sqrt(chain_gain)`.
+    /// `grid` itself describes the linear part of the chain only.
+    pub grid_chain: NoiseModel,
+    /// Residual noise energy through the full chain relative to its linear
+    /// part (1 when not measured).
+    pub chain_gain: f64,
 }
 
 /// Estimate the noise of the preprocessed trace from the raw trace.
@@ -166,10 +173,10 @@ pub(crate) struct NoiseEstimate {
 /// - average variance over all upsampled positions `sigma^2 * sum(h^2) / k`.
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
-/// upsample → filter path (no random probe). (The rolling-baseline subtraction
-/// that follows is a slow high-pass and is not modelled here; making the
-/// candidate scoring chain-consistent, i.e. scored through the rolling
-/// baseline, is done by the follow-up PR #240 (feat/indeca-chain-scoring).)
+/// upsample → filter path (no random probe). The rolling-quantile baseline
+/// that follows is nonlinear and is not part of `h`; its gain on the noise
+/// energy is measured separately on the trace by [`chain_noise_gain`] and
+/// folded into `grid_chain`.
 pub(crate) fn estimate_noise_model(
     raw_trace: &[f32],
     upsample_factor: usize,
@@ -184,6 +191,11 @@ pub(crate) fn estimate_noise_model(
             corr_sum: 1.0,
         },
         upsampled_var: 0.0,
+        grid_chain: NoiseModel {
+            sigma: 0.0,
+            corr_sum: 1.0,
+        },
+        chain_gain: 1.0,
     };
     if n == 0 || sigma_raw <= 0.0 {
         return zero;
@@ -220,12 +232,132 @@ pub(crate) fn estimate_noise_model(
         return zero;
     }
     let grid_gain = s2 / n as f64;
+    let grid = NoiseModel {
+        sigma: sigma_raw * grid_gain.sqrt(),
+        corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
+    };
     NoiseEstimate {
-        grid: NoiseModel {
-            sigma: sigma_raw * grid_gain.sqrt(),
-            corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
-        },
+        grid,
         upsampled_var: sigma_raw * sigma_raw * up_gain,
+        grid_chain: grid,
+        chain_gain: 1.0,
+    }
+}
+
+impl NoiseEstimate {
+    /// Fold the measured chain gain into `grid_chain`.
+    fn with_chain_gain(mut self, gain: f64) -> Self {
+        self.chain_gain = gain;
+        self.grid_chain = NoiseModel {
+            sigma: self.grid.sigma * gain.sqrt(),
+            corr_sum: self.grid.corr_sum,
+        };
+        self
+    }
+
+    /// Per-sample noise variance of the preprocessed (working) trace at the
+    /// recorded-rate grid positions: the linear chain's grid variance times
+    /// the rolling-quantile stage's measured gain. 0 without a noise model.
+    pub(crate) fn processed_var(&self) -> f64 {
+        self.grid_chain.sigma * self.grid_chain.sigma
+    }
+}
+
+/// Deterministic white Gaussian probe (LCG + Box-Muller) of `n` samples with
+/// std `sigma`: the synthetic noise [`chain_noise_gain`] pushes through the
+/// chain. The seed is fixed so a trace always gets the same budget; the
+/// probe's length and std come from the trace.
+fn gaussian_probe(n: usize, sigma: f64) -> Vec<f32> {
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 11) as f64) / (1u64 << 53) as f64
+    };
+    (0..n)
+        .map(|_| {
+            let u1 = next().max(1e-300);
+            let u2 = next();
+            let r = (-2.0 * u1.ln()).sqrt();
+            (sigma * r * (2.0 * std::f64::consts::PI * u2).cos()) as f32
+        })
+        .collect()
+}
+
+/// `||d - mean(d)||^2` over the interior grid positions (every `stride`-th
+/// sample of `[pad, n - pad)`): the residual energy a vector carries once
+/// the fit's offset has absorbed its mean.
+fn centered_grid_energy(d: &[f32], pad: usize, stride: usize) -> f64 {
+    let n = d.len();
+    let idx = (pad..n.saturating_sub(pad)).step_by(stride.max(1));
+    let count = idx.clone().count();
+    if count == 0 {
+        return 0.0;
+    }
+    let mean = idx.clone().map(|i| d[i] as f64).sum::<f64>() / count as f64;
+    idx.map(|i| (d[i] as f64 - mean).powi(2)).sum()
+}
+
+/// The rolling-quantile stage's gain on the noise energy, measured on the
+/// trace itself.
+///
+/// The chain `C(z) = F(z) - RQ(F(z))` is linear up to the rolling quantile.
+/// For a trace `y = s + e` (signal plus white noise) and a candidate scored
+/// through the chain, the residual noise is `F(e) - [RQ(F(s) + F(e)) -
+/// RQ(F(s))]`: the filtered noise minus the shift the noise gives the rolling
+/// quantile. Over a window where the signal is flat the shift is the noise's
+/// own sample quantile, `z_0.2 * sigma_F` plus a sampling fluctuation of
+/// variance `p (1 - p) / (n_eff phi(z_p)^2) * sigma_F^2 ~ 2 sigma_F^2 / n_eff`,
+/// negligible for the `25 tau_d fs` window; where the signal varies within
+/// the window the shift depends on the window's signal distribution and
+/// ranges between 0 and `z_0.2 * sigma_F`, a slowly varying term whose
+/// variance is a few percent of `sigma_F^2` on the simulation presets. The
+/// shift cannot be computed without the signal, so it is measured: white
+/// Gaussian noise `e'` at the trace's own `sigma_raw` is added to the trace
+/// and the energy of `C(y + e') - C(y)` on the selection grid is compared
+/// with the energy of `F(e')`, the same realization through the linear part
+/// alone (sharing the realization cancels its sampling error). The ratio is
+/// the gain; the budget is the linear model's times the gain.
+///
+/// `working` is `C(y)` on the upsampled grid (`n * k` samples) and `filter`
+/// the trace's bandpass (`None` when it was not applied).
+fn chain_noise_gain(
+    trace: &[f32],
+    working: &[f32],
+    filter: Option<&mut BandpassFilter>,
+    upsample_factor: usize,
+    bl_window: usize,
+    pad: usize,
+    sigma_raw: f64,
+) -> f64 {
+    let k = upsample_factor.max(1);
+    let n = trace.len();
+    if n == 0 || sigma_raw <= 0.0 || working.len() != n * k {
+        return 1.0;
+    }
+    let probe = gaussian_probe(n, sigma_raw);
+    let mut lin = upsample_trace(&probe, k);
+    let added: Vec<f32> = trace.iter().zip(&probe).map(|(&t, &v)| t + v).collect();
+    let mut full = upsample_trace(&added, k);
+    if let Some(f) = filter {
+        f.apply(&mut lin);
+        f.apply(&mut full);
+    }
+    crate::baseline::subtract_rolling_baseline(
+        &mut full,
+        bl_window,
+        crate::baseline::DEFAULT_BASELINE_QUANTILE,
+    );
+    for (v, &w) in full.iter_mut().zip(working) {
+        *v -= w;
+    }
+    let e_lin = centered_grid_energy(&lin, pad, k);
+    let e_full = centered_grid_energy(&full, pad, k);
+    if e_lin > 0.0 && e_full.is_finite() && e_full > 0.0 {
+        e_full / e_lin
+    } else {
+        1.0
     }
 }
 
@@ -245,6 +377,17 @@ pub struct InDecaResult {
     /// means the safety cap ended the loop and the result is the last round,
     /// not a fixed point.
     pub loop_converged: bool,
+    /// Noise variance of the processed (working) trace per sample at the
+    /// recorded-rate grid positions: `sigma_raw^2` through the linear chain
+    /// (bandpass) times `chain_noise_gain`. The working trace is the
+    /// baseline-subtracted trace `filtered_trace` reports, so
+    /// `1 - noise_var_processed / var(filtered_trace)` bounds the PVE a fit
+    /// can reach without fitting noise. 0 when no noise floor is measurable.
+    pub noise_var_processed: f64,
+    /// Gain of the full chain (bandpass and rolling quantile) on the noise
+    /// energy relative to the bandpass alone (`chain_noise_gain`); 1 when not
+    /// measured.
+    pub chain_noise_gain: f64,
 }
 
 /// Run bounded FISTA on a (possibly upsampled) trace.
@@ -553,6 +696,17 @@ pub(crate) enum Scoring {
     Chain,
 }
 
+/// Which noise budget the selection uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Budget {
+    /// White raw noise through the linear part of the chain (upsample →
+    /// bandpass) only: the rolling-quantile stage is not modelled.
+    Linear,
+    /// The linear model times the rolling-quantile stage's gain measured on
+    /// the trace ([`chain_noise_gain`]). The shipped rule.
+    Chain,
+}
+
 /// Where the relaxed problem is solved (see the module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InnerSolve {
@@ -643,6 +797,8 @@ pub(crate) struct ScaleLoop {
     pub max_rounds: usize,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
+    /// The selection's noise budget.
+    pub budget: Budget,
 }
 
 impl ScaleLoop {
@@ -665,6 +821,7 @@ impl ScaleLoop {
             take_last: false,
             max_rounds: 10,
             scoring: Scoring::Plain,
+            budget: Budget::Linear,
         }
     }
 
@@ -702,6 +859,7 @@ impl Default for ScaleLoop {
             take_last: true,
             max_rounds: 10,
             scoring: Scoring::Chain,
+            budget: Budget::Chain,
         }
     }
 }
@@ -735,6 +893,8 @@ pub(crate) struct RoundStats {
     pub binary_error: f64,
     /// Noise budget of the grid residual (0 without a noise model).
     pub budget: f64,
+    /// The chain's measured noise gain (`NoiseEstimate::chain_gain`).
+    pub chain_gain: f64,
     /// Native solve: residual energy of the relaxed reconstruction scored
     /// like a candidate at the recorded rate (amplitude and offset refit,
     /// through the chain).
@@ -763,6 +923,14 @@ pub(crate) struct Prepared {
 }
 
 impl Prepared {
+    /// The selection's noise model under `budget` (`None` without noise).
+    pub(crate) fn noise_model_for(&self, budget: Budget) -> Option<NoiseModel> {
+        match budget {
+            Budget::Linear => self.noise_model,
+            Budget::Chain => self.noise_model.map(|_| self.noise.grid_chain),
+        }
+    }
+
     /// The preprocessing chain the trace went through (bandpass, then the
     /// rolling-quantile baseline), for chain-consistent scoring. Takes the
     /// filter: the chain owns it from here on.
@@ -804,6 +972,18 @@ pub(crate) fn prepare(
     // It sets the threshold search's noise budget and standard error, the
     // scale loop's objective tolerance, and the optional fit-window stop.
     let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
+    // The rolling-quantile stage's gain on that noise, measured on the trace
+    // ([`Budget::Chain`]).
+    let gain = chain_noise_gain(
+        trace,
+        &working,
+        filter.as_mut(),
+        upsample_factor,
+        bl_window,
+        pad,
+        high_band_sigma(trace),
+    );
+    let noise = noise.with_chain_gain(gain);
     let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
     Prepared {
         filtered,
@@ -940,10 +1120,11 @@ pub(crate) fn solve_trace_cfg(
         Selection::MaxPve
     };
     let n_grid = (pad..wt_len.saturating_sub(pad)).step_by(k).count();
-    let budget = prep.noise_model.map_or(0.0, |nm| nm.budget(n_grid));
+    let noise_model = prep.noise_model_for(cfg.budget);
+    let budget = noise_model.map_or(0.0, |nm| nm.budget(n_grid));
     // Objective changes below the sampling error of the noise energy are not
     // resolvable from the data.
-    let objective_tol = prep.noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
+    let objective_tol = noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
     // Expected noise energy of the FISTA data-fit term at unit prescale.
     let fit_noise_energy = 0.5 * prep.noise.upsampled_var * wt_len as f64;
 
@@ -1066,7 +1247,7 @@ pub(crate) fn solve_trace_cfg(
                 upsample_factor,
                 f64::INFINITY,
                 selection,
-                prep.noise_model,
+                noise_model,
             );
             if let Scorer::Chain { chain: c, .. } = scorer {
                 chain = Some(c);
@@ -1093,6 +1274,7 @@ pub(crate) fn solve_trace_cfg(
             objective,
             binary_error: error,
             budget,
+            chain_gain: prep.noise.chain_gain,
             selection: diag,
             ..Default::default()
         });
@@ -1188,6 +1370,8 @@ pub(crate) fn solve_trace_cfg(
             iterations,
             converged,
             loop_converged,
+            noise_var_processed: prep.noise.processed_var(),
+            chain_noise_gain: prep.noise.chain_gain,
         },
         stats,
     )
@@ -1263,10 +1447,11 @@ fn solve_trace_native(
         Selection::MaxPve
     };
     let n_grid = hi - lo;
-    let budget = up.noise_model.map_or(0.0, |nm| nm.budget(n_grid));
+    let noise_model = up.noise_model_for(cfg.budget);
+    let budget = noise_model.map_or(0.0, |nm| nm.budget(n_grid));
     // The selection's resolution: one standard error of the noise energy
     // over the grid it scores on (trace units).
-    let std_error = up.noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
+    let std_error = noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
     let mut chain_up = (cfg.scoring == Scoring::Chain).then(|| up.take_chain());
 
     let alpha_est = match cfg.alpha_init {
@@ -1359,7 +1544,7 @@ fn solve_trace_native(
             k,
             f64::INFINITY,
             selection,
-            up.noise_model,
+            noise_model,
         )
     };
     let s_counts = downsample_binary(&s_binary, k);
@@ -1387,6 +1572,7 @@ fn solve_trace_native(
         objective,
         binary_error: error,
         budget,
+        chain_gain: up.noise.chain_gain,
         relaxed_error,
         spike_unit_peak,
         selection: diag,
@@ -1419,6 +1605,8 @@ fn solve_trace_native(
             // so there is no loop cap to hit; the inner solve's stop is
             // reported by `converged`.
             loop_converged: true,
+            noise_var_processed: up.noise.processed_var(),
+            chain_noise_gain: up.noise.chain_gain,
         },
         stats,
     )
@@ -1995,6 +2183,71 @@ mod tests {
         let plain = estimate_noise_model(&noise, k, None);
         assert!(rel(plain.grid.sigma, high_band_sigma(&noise)) < 1e-6);
         assert!((plain.grid.corr_sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chain_noise_gain_is_near_unity_on_white_noise_and_modest_on_a_trace() {
+        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
+        let fs_up = fs * k as f64;
+        // Pure noise: the rolling quantile subtracts a constant (absorbed by
+        // the fit's offset) plus a negligible sampling fluctuation; the probe
+        // adds its own quantile sampling fluctuation on top of F(e').
+        let noise = lcg_noise(6000, 1.0, 0x5EED);
+        let p = prepare(&noise, tr, td, fs_up, k, true, true);
+        let g0 = p.noise.chain_gain;
+        assert!(g0.is_finite() && (0.95..1.1).contains(&g0), "{g0}");
+        // A spiking trace: the quantile's shift under noise varies with the
+        // window's signal; a few percent of the linear budget.
+        let trace = noisy_spiking_trace(6000, 0x1234);
+        let p = prepare(&trace, tr, td, fs_up, k, true, true);
+        let g = p.noise.chain_gain;
+        assert!(g.is_finite() && (0.98..1.5).contains(&g), "{g}");
+        assert!((p.noise.grid_chain.sigma / p.noise.grid.sigma - g.sqrt()).abs() < 1e-6);
+        assert_eq!(p.noise.grid_chain.corr_sum, p.noise.grid.corr_sum);
+        // The processed-space noise variance is the linear grid variance
+        // times the gain.
+        assert!((p.noise.processed_var() / (p.noise.grid.sigma.powi(2)) - g).abs() < 1e-9);
+        // Deterministic (fixed probe seed).
+        let p2 = prepare(&trace, tr, td, fs_up, k, true, true);
+        assert_eq!(p2.noise.chain_gain, g);
+        // The default selection budget carries the gain, and the result
+        // exposes it.
+        let n_up = p.working.len();
+        let (lo, hi) = native_grid(n_up, p.pad, k);
+        let opts = SolveOptions {
+            noise_constrained: true,
+        };
+        let (r, st) = solve_trace_stats(
+            &trace, tr, td, fs, k, 100_000, 0.0, None, true, true, 0.0, opts,
+        );
+        let linear = p.noise.grid.budget(hi - lo);
+        assert!(
+            (st[0].budget / linear - g).abs() < 1e-6,
+            "{} {}",
+            st[0].budget / linear,
+            g
+        );
+        assert_eq!(st[0].chain_gain, g);
+        assert_eq!(r.chain_noise_gain, g);
+        assert!((r.noise_var_processed - p.noise.processed_var()).abs() < 1e-12);
+        // The linear budget (characterization switch) does not carry it.
+        let lin_cfg = ScaleLoop {
+            budget: Budget::Linear,
+            ..ScaleLoop::default()
+        };
+        let (_, st_lin) = solve_trace_cfg(
+            &trace, tr, td, fs, k, 100_000, 0.0, None, true, true, 0.0, opts, lin_cfg,
+        );
+        assert!((st_lin[0].budget - linear).abs() < 1e-9 * linear.max(1.0));
+    }
+
+    #[test]
+    fn chain_noise_gain_is_one_without_noise_or_data() {
+        assert_eq!(chain_noise_gain(&[], &[], None, 4, 10, 0, 1.0), 1.0);
+        let flat = vec![1.0_f32; 200];
+        let p = prepare(&flat, 0.1, 0.6, 300.0, 10, true, true);
+        assert_eq!(p.noise.chain_gain, 1.0);
+        assert_eq!(p.noise.processed_var(), 0.0);
     }
 
     fn noisy_spiking_trace(n: usize, seed: u64) -> Vec<f32> {
