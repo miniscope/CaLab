@@ -233,18 +233,12 @@
   stroke-dasharray: 4 3;
 }
 
-.ov-ref__label {
-  font-size: 9px;
-  fill: var(--text-secondary);
-}
-
 .ov-curve-label {
   font-size: 9px;
   fill: var(--text-primary);
 }
 
 /* On-plot labels stay readable over data: a background-coloured halo. */
-.ov-ref__label,
 .ov-curve-label,
 .ov-marker__label,
 .ov-shade__label,

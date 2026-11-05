@@ -1,7 +1,7 @@
 /**
  * Frame for the dataset-overview cards: title, optional plain-language
- * subtitle, optional "?" help popover, optional header extras and legend, a body that fills the remaining height, and a
- * footer line for stats. Also exports the shared sizing and brush helpers.
+ * subtitle, optional "?" help popover and legend, a body that fills the
+ * remaining height, and a footer line for stats. Also exports the shared sizing and brush helpers.
  */
 
 import { createSignal, onCleanup, onMount, Show, type Accessor, type JSX } from 'solid-js';
@@ -14,7 +14,6 @@ export interface OverviewCardProps {
   legend?: JSX.Element;
   /** Help text shown in a popover from the "?" button. */
   help?: JSX.Element;
-  headerExtra?: JSX.Element;
   footer?: JSX.Element;
   class?: string;
   children: JSX.Element;
@@ -31,7 +30,6 @@ export function OverviewCard(props: OverviewCardProps): JSX.Element {
     >
       <header class="ov-card__header">
         <h3 class="ov-card__title">{props.title}</h3>
-        {props.headerExtra}
         <Show when={props.help}>
           <button
             type="button"

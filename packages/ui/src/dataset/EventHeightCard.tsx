@@ -30,9 +30,6 @@ export interface EventHeightCardProps {
   /** Median event count of the cells with a curve; below
    *  `OVERVIEW_PARAMS.heightVerdictMinEvents` the takeaway gives no verdict. */
   medianEvents?: () => number;
-  /** Band spread (see `heightBandSpread`) at or below which cells read as
-   *  consistent. Defaults to `OVERVIEW_PARAMS.heightBandConsistentRatio`. */
-  consistentRatio?: number;
 }
 
 export type HeightVerdict = 'consistent' | 'varies' | 'few-events';
@@ -118,9 +115,7 @@ export function EventHeightCard(props: EventHeightCardProps): JSX.Element {
   });
 
   const spread = createMemo(() => heightBandSpread(props.probs, props.pooled()));
-  const verdict = createMemo(() =>
-    heightVerdict(spread(), props.medianEvents?.(), props.consistentRatio),
-  );
+  const verdict = createMemo(() => heightVerdict(spread(), props.medianEvents?.()));
   const takeaway = () => {
     const sp = spread().toFixed(1);
     switch (verdict()) {
@@ -194,7 +189,7 @@ export function EventHeightCard(props: EventHeightCardProps): JSX.Element {
           <p>
             The line under the plot reads the band's width at the 90th-percentile event
             (90th-percentile cell ÷ 10th-percentile cell): consistent at or below{' '}
-            {props.consistentRatio ?? OVERVIEW_PARAMS.heightBandConsistentRatio}×. With fewer than{' '}
+            {OVERVIEW_PARAMS.heightBandConsistentRatio}×. With fewer than{' '}
             {OVERVIEW_PARAMS.heightVerdictMinEvents} events in the median cell, the band is mostly
             sampling noise and no verdict is given.
           </p>

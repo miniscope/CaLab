@@ -388,22 +388,6 @@
   border-color: var(--accent);
 }
 
-.demo-data-row__select {
-  width: 280px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-}
-
-.demo-data-row__select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 .demo-data-row__checkbox {
   display: flex;
   align-items: center;
@@ -424,10 +408,6 @@
    ======================== */
 .text-secondary {
   color: var(--text-secondary);
-}
-
-.text-accent {
-  color: var(--accent);
 }
 
 .text-warning {
