@@ -65,13 +65,13 @@ def test_snr_metrics_on_empty_and_tiny_traces(n):
     for v in (
         _solver.py_snr_noise_sigma_mad_diff(x),
         _solver.py_snr_noise_level_nu(x, 30.0),
-        _solver.py_snr_peak(x, 1.0, 0.01),
-        _solver.py_snr_measured(x),
+        _solver.py_snr_peak(x, 1.0, 0.01, 30.0),
+        _solver.py_snr_measured(x, 30.0),
     ):
         assert np.isfinite(v) and v >= 0
     idx, heights, baselines = _solver.py_snr_detect_events(x, 1.0, 12)
     assert len(idx) == len(heights) == len(baselines) == 0
-    snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(x, 12)
+    snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(x, 30.0, 12)
     assert np.isfinite(snr) and np.isfinite(sigma) and n_events == 0 and is_silent
 
 
@@ -82,15 +82,18 @@ def test_snr_metrics_reject_nonfinite_and_strided_input():
         with pytest.raises(ValueError):
             _solver.py_snr_noise_sigma_mad_diff(arr)
         with pytest.raises(ValueError):
-            _solver.py_snr_measured(arr)
+            _solver.py_snr_measured(arr, 30.0)
 
 
 def test_snr_metrics_degenerate_scalars():
     x = np.random.default_rng(0).normal(size=300)
     assert _solver.py_snr_noise_level_nu(x, 0.0) == 0.0
     assert _solver.py_snr_noise_level_nu(x, float("nan")) == 0.0
-    assert np.isfinite(_solver.py_snr_peak(x, 1.0, float("nan")))
-    assert _solver.py_snr_peak(np.zeros(10), 0.0, 0.01) == 0.0
+    assert np.isfinite(_solver.py_snr_peak(x, 1.0, float("nan"), 30.0))
+    assert _solver.py_snr_peak(np.zeros(10), 0.0, 0.01, 30.0) == 0.0
+    # An invalid frame rate skips the detrending instead of failing.
+    for fs in (0.0, -1.0, float("nan"), float("inf")):
+        assert np.isfinite(_solver.py_snr_measured(x, fs))
 
 
 def test_protocol_version_is_semver():

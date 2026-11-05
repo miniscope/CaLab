@@ -52,15 +52,15 @@ pub fn snr_noise_level_nu(trace_dff: &[f32], fs: f64) -> f64 {
 
 /// Descriptive peak SNR: (mean of the top `top_fraction` of samples − median) / σ.
 #[wasm_bindgen]
-pub fn snr_peak(trace: &[f32], sigma: f64, top_fraction: f64) -> f64 {
-    crate::snr::peak_snr(trace, sigma, top_fraction)
+pub fn snr_peak(trace: &[f32], sigma: f64, top_fraction: f64, fs: f64) -> f64 {
+    crate::snr::peak_snr(trace, sigma, top_fraction, fs)
 }
 
 /// Measured SNR: `snr_peak` with the MAD-diff σ and the default 1 % top
 /// fraction. Burst-based: compares cells that share a burst-size distribution.
 #[wasm_bindgen]
-pub fn snr_measured(trace: &[f32]) -> f64 {
-    crate::snr::measured_snr(trace)
+pub fn snr_measured(trace: &[f32], fs: f64) -> f64 {
+    crate::snr::measured_snr(trace, fs)
 }
 
 /// The default top fraction used by `snr_measured`.
@@ -87,7 +87,11 @@ pub fn snr_detect_events(
 /// Measured SNR with the silent flag (see `crate::snr::measured_snr_report`).
 /// Returns `{ snr, sigma, n_events, is_silent }`.
 #[wasm_bindgen]
-pub fn snr_measured_report(trace: &[f32], min_separation_samples: u32) -> Result<JsValue, JsError> {
-    let report = crate::snr::measured_snr_report(trace, min_separation_samples as usize);
+pub fn snr_measured_report(
+    trace: &[f32],
+    fs: f64,
+    min_separation_samples: u32,
+) -> Result<JsValue, JsError> {
+    let report = crate::snr::measured_snr_report(trace, fs, min_separation_samples as usize);
     to_js("snr_measured_report", &report)
 }

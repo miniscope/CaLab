@@ -668,7 +668,11 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
         // every firing regime. The legacy `Peak` convention keeps max(clean).
         let drift_scale = match config.noise.reference {
             NoiseReference::Peak => signal_max,
-            _ => crate::snr::robust_signal_f64(&trace_buf, crate::snr::DEFAULT_TOP_FRACTION),
+            _ => crate::snr::robust_signal_f64(
+                &trace_buf,
+                crate::snr::DEFAULT_TOP_FRACTION,
+                config.fs_hz,
+            ),
         };
         add_drift(&mut trace_buf, &cell_drift, drift_scale, n_tp, &mut rng);
 
@@ -694,6 +698,7 @@ pub fn simulate(config: &SimulationConfig) -> SimulationResult {
             cell_snr,
             signal_max,
             single_spike_amp,
+            config.fs_hz,
             &mut rng,
         );
 
@@ -931,6 +936,7 @@ fn add_noise(
     cell_snr: f64,
     signal_max: f64,
     single_spike_amp: f64,
+    fs_hz: f64,
     rng: &mut Xorshift32,
 ) -> f64 {
     if cell_snr <= 0.0 {
@@ -948,7 +954,7 @@ fn add_noise(
             rng,
         ),
         NoiseReference::MeasuredSnr => {
-            add_noise_measured(trace, cfg, cell_snr, single_spike_amp, rng)
+            add_noise_measured(trace, cfg, cell_snr, single_spike_amp, fs_hz, rng)
         }
     }
 }
@@ -990,6 +996,7 @@ fn add_noise_measured(
     cfg: &NoiseConfig,
     target: f64,
     single_spike_amp: f64,
+    fs_hz: f64,
     rng: &mut Xorshift32,
 ) -> f64 {
     use crate::snr::{measured_snr_f64, robust_signal_f64, DEFAULT_TOP_FRACTION};
@@ -1003,7 +1010,7 @@ fn add_noise_measured(
     } else {
         0.0
     };
-    let signal = robust_signal_f64(trace, DEFAULT_TOP_FRACTION);
+    let signal = robust_signal_f64(trace, DEFAULT_TOP_FRACTION, fs_hz);
     // Shot-noise scale: the trace's robust signal (falls back to A₁).
     let scale = if signal > 0.0 {
         signal
@@ -1038,7 +1045,7 @@ fn add_noise_measured(
         for ((b, &t), &u) in buf.iter_mut().zip(trace.iter()).zip(unit.iter()) {
             *b = t + sigma * u;
         }
-        measured_snr_f64(buf, DEFAULT_TOP_FRACTION)
+        measured_snr_f64(buf, DEFAULT_TOP_FRACTION, fs_hz)
     };
     let sigma = if signal > 0.0 {
         // Measured SNR falls from a ceiling (signal-dominated MAD) to the

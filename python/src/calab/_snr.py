@@ -11,7 +11,8 @@ usually sits inside the noise. It therefore compares cells that share a
 burst-size distribution (cells of one type in one dataset). It shifts when
 firing statistics differ: at the same per-spike noise, a burstier cell measures
 higher and a sparser cell lower. It is not a per-spike SNR. Pure noise
-measures about 2.7 (2.5-2.9 over 1-30 minute traces), so values near that mean
+measures about 2.7 (2.5-2.9 over 1-30 minute traces, with or without slow drift
+such as photobleaching, which is removed before the signal is read), so values near that mean
 "indistinguishable from noise"; :func:`measured_snr_report` and
 :func:`detect_events` give the explicit answer (``is_silent``).
 
@@ -58,22 +59,31 @@ def noise_level_nu(trace_dff: ArrayLike, fs: float) -> float:
     return float(_solver.py_snr_noise_level_nu(_as_f64(trace_dff), float(fs)))
 
 
-def peak_snr(trace: ArrayLike, sigma: float, top_fraction: float = DEFAULT_TOP_FRACTION) -> float:
+def peak_snr(
+    trace: ArrayLike,
+    sigma: float,
+    fs: float,
+    top_fraction: float = DEFAULT_TOP_FRACTION,
+) -> float:
     """Descriptive peak SNR: ``(mean of the top `top_fraction` of samples - median) / sigma``.
 
     Depends on firing regime (see the module docstring); compare it only across
-    cells with similar burst statistics.
+    cells with similar burst statistics. ``fs`` is the frame rate in Hz: the
+    top slice and median are read after subtracting a slow baseline (a rolling
+    20th percentile over 60 s), so photobleaching and other slow drift do not
+    inflate the SNR. An invalid ``fs`` (not positive and finite) skips that step.
     """
-    return float(_solver.py_snr_peak(_as_f64(trace), float(sigma), float(top_fraction)))
+    return float(_solver.py_snr_peak(_as_f64(trace), float(sigma), float(top_fraction), float(fs)))
 
 
-def measured_snr(trace: ArrayLike) -> float:
+def measured_snr(trace: ArrayLike, fs: float) -> float:
     """:func:`peak_snr` with :func:`noise_sigma_mad_diff` and the default top fraction.
 
     The SNR the simulator's default convention targets. Comparable across cells
-    whose burst-size distributions are similar.
+    whose burst-size distributions are similar. ``fs`` is the frame rate in Hz
+    (it sets the 60 s drift-removal window; see :func:`peak_snr`).
     """
-    return float(_solver.py_snr_measured(_as_f64(trace)))
+    return float(_solver.py_snr_measured(_as_f64(trace), float(fs)))
 
 
 @dataclass(frozen=True)
@@ -133,7 +143,7 @@ def detect_events(
     ]
 
 
-def measured_snr_report(trace: ArrayLike, min_separation_samples: int) -> SnrReport:
+def measured_snr_report(trace: ArrayLike, fs: float, min_separation_samples: int) -> SnrReport:
     """:func:`measured_snr` plus ``is_silent`` (no event clears the noise floor).
 
     The SNR stays the top-slice number. A silent trace measures near the
@@ -143,6 +153,6 @@ def measured_snr_report(trace: ArrayLike, min_separation_samples: int) -> SnrRep
     if min_separation_samples < 0:
         raise ValueError("min_separation_samples must be >= 0")
     snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(
-        _as_f64(trace), int(min_separation_samples)
+        _as_f64(trace), float(fs), int(min_separation_samples)
     )
     return SnrReport(float(snr), float(sigma), int(n_events), bool(is_silent))
