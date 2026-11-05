@@ -21,7 +21,7 @@ export interface CalibrationStore {
 }
 
 /** Default max age of a calibration entry: 10 minutes. */
-export const CALIBRATION_MAX_AGE_MS = 10 * 60 * 1000;
+const CALIBRATION_MAX_AGE_MS = 10 * 60 * 1000;
 
 export function createCalibrationStore(maxAgeMs = CALIBRATION_MAX_AGE_MS): CalibrationStore {
   const entries = new Map<string, BackendCalibration>();

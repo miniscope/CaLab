@@ -14,7 +14,7 @@ export const KERNEL_RMSE_MIN_SAMPLES = 24;
  * onto `n` points at spacing `dt`, normalized to its sampled peak of 1. The
  * shared sampling primitive behind both computeKernel and kernelShapeRmse.
  */
-export function sampleBiexp(tauRise: number, tauDecay: number, n: number, dt: number): number[] {
+function sampleBiexp(tauRise: number, tauDecay: number, n: number, dt: number): number[] {
   const y = new Array<number>(n);
   let peak = 0;
   for (let i = 0; i < n; i++) {
