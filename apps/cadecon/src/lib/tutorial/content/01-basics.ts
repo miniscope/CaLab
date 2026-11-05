@@ -59,7 +59,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="raster"]',
       title: 'The Raster & Subset Placement',
       description:
-        'This is your data as a cells \u00D7 time image ( Brighter means higher activity). The outlined rectangles are the <b>subsets</b> CaDecon constructs the kernel from. Click a rectangle to select that subset; its constructed kernel and stats appear in the other panels.',
+        'This is your data as a cells \u00D7 time image ( Brighter means higher activity). The outlined rectangles are the <b>subsets</b> CaDecon constructs the kernel from. Click a rectangle to select that subset: its kernel estimate is emphasised in the kernel view and its cells are highlighted in the trace inspector\u2019s cell selector.',
       side: 'bottom',
     },
     // Step 7: Analysis panel

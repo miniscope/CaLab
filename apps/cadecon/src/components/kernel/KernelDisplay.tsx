@@ -28,7 +28,6 @@ import {
   createKernelFitSlowSeries,
   createKernelFitFastSeries,
   createKernelFitFullSeries,
-  createGroundTruthKernelSeries,
   peakNormalize,
 } from '../../lib/chart/series-config.ts';
 import {
@@ -41,6 +40,7 @@ import {
   labeledAxis,
   syncCursor,
   kernelAnnotationsPlugin,
+  createGroundTruthKernelSeries,
   type KernelAnnotations,
 } from '@calab/ui/chart';
 import { tauToShape, computeKernelAnnotations } from '@calab/compute';

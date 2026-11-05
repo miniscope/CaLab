@@ -2,7 +2,7 @@
 // Colors come from the shared colorblind-safe Okabe-Ito palette (@calab/ui/chart).
 
 import type uPlot from 'uplot';
-import { GROUND_TRUTH_COLORS, KERNEL_FIT_COLORS, withOpacity } from '@calab/ui/chart';
+import { KERNEL_FIT_COLORS } from '@calab/ui/chart';
 
 /** Divide every element by the array's peak value so the max becomes 1.0. */
 export function peakNormalize(arr: number[] | Float32Array): void {
@@ -27,26 +27,4 @@ export function createKernelFitFastSeries(): uPlot.Series {
 
 export function createKernelFitFullSeries(): uPlot.Series {
   return { label: 'Slow+Fast', stroke: KERNEL_FIT_COLORS.full, width: 2 };
-}
-
-export function createGroundTruthSpikesSeries(): uPlot.Series {
-  return { label: 'True Spikes', stroke: withOpacity(GROUND_TRUTH_COLORS.spikes, 0.7), width: 1.5 };
-}
-
-export function createGroundTruthCalciumSeries(): uPlot.Series {
-  return {
-    label: 'True Calcium',
-    stroke: withOpacity(GROUND_TRUTH_COLORS.calcium, 0.75),
-    width: 1.5,
-    dash: [6, 3],
-  };
-}
-
-export function createGroundTruthKernelSeries(): uPlot.Series {
-  return {
-    label: 'True Kernel',
-    stroke: withOpacity(GROUND_TRUTH_COLORS.kernel, 0.8),
-    width: 1.5,
-    dash: [6, 3],
-  };
 }

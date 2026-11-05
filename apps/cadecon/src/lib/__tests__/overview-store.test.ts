@@ -1,6 +1,8 @@
 /**
- * Overview store: chunking, trace extraction, the worker round trip (mocked
- * pool), caching by dataset identity, and failure reporting.
+ * CaDecon overview store wiring: overview jobs go to the CaDecon pool tagged
+ * `kind: 'overview'`, plus the shared store's round trip (mocked pool),
+ * caching by dataset identity, and failure reporting. The chunking and
+ * extraction helpers are tested in packages/ui.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -46,14 +48,7 @@ vi.mock('../cadecon-pool.ts', () => ({
   }),
 }));
 
-import {
-  computeOverview,
-  overview,
-  overviewStatus,
-  overviewError,
-  overviewChunkSize,
-  extractCells,
-} from '../overview-store.ts';
+import { computeOverview, overview, overviewStatus, overviewError } from '../overview-store.ts';
 import {
   setParsedData,
   setDimensionsConfirmed,
@@ -69,23 +64,6 @@ function seed(nCells: number, nT: number) {
   setSwapped(false);
   setSamplingRate(30);
 }
-
-describe('overview helpers', () => {
-  it('chunks to about four jobs per worker, capped at 64 cells', () => {
-    expect(overviewChunkSize(1000, 8)).toBe(32);
-    expect(overviewChunkSize(10, 8)).toBe(1);
-    expect(overviewChunkSize(100000, 8)).toBe(64);
-    expect(overviewChunkSize(5, 0)).toBe(5);
-  });
-
-  it('extracts cell-major traces in either orientation', () => {
-    const data = { data: [0, 1, 2, 10, 11, 12], shape: [2, 3] };
-    expect(Array.from(extractCells(data, false, 1, 2, 3))).toEqual([10, 11, 12]);
-    // swapped: stored frames-major, 3 frames x 2 cells
-    const sw = { data: [0, 10, 1, 11, 2, 12], shape: [3, 2] };
-    expect(Array.from(extractCells(sw, true, 0, 2, 3))).toEqual([0, 1, 2, 10, 11, 12]);
-  });
-});
 
 describe('computeOverview', () => {
   beforeEach(() => {

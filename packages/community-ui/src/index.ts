@@ -44,6 +44,10 @@ export type { GroundTruthState, GroundTruthProps } from './GroundTruthControls.t
 export { CommunityScatterPlot, scatterRampColor } from './CommunityScatterPlot.tsx';
 export type { CommunityScatterPlotProps, ScatterSubmission } from './CommunityScatterPlot.tsx';
 
+// Tutorial panel with analytics
+export { TrackedTutorialPanel } from './TrackedTutorialPanel.tsx';
+export type { TrackedTutorialPanelProps } from './TrackedTutorialPanel.tsx';
+
 // Feedback links (GitHub issues)
 export { FeedbackMenu, ImportFeedbackLinks } from './FeedbackMenu.tsx';
 export type { FeedbackMenuProps, ImportFeedbackLinksProps } from './FeedbackMenu.tsx';

@@ -18,7 +18,7 @@ import type { GpuPrepInbound, GpuPrepOutbound } from '../workers/gpu-prep-types.
 
 const CACHE_LIMIT = 256;
 
-export interface ReferenceSolve {
+interface ReferenceSolve {
   working: Float32Array;
   solution: Float32Array;
   /** Cumulative (including iterations carried in by the warm start). */
@@ -61,7 +61,7 @@ export interface GpuPrepClient {
   dispose(): void;
 }
 
-export function workingTraceKey(
+function workingTraceKey(
   cellIndex: number,
   windowStart: number,
   length: number,

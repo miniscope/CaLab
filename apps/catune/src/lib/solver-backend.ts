@@ -48,7 +48,7 @@ import {
 import type { CaTunePoolJob } from './catune-pool.ts';
 import { createGpuPrepClient, type GpuPrepClient, type PrepStats } from './gpu-prep-client.ts';
 
-export interface BackendStatus {
+interface BackendStatus {
   requested: 'wasm' | 'gpu';
   /** Backend currently solving banded tiles. */
   active: 'wasm-pool' | 'webgpu' | 'webgpu (starting)';
@@ -163,7 +163,7 @@ export async function compareWithWasm(cellIndex: number): Promise<BackendCompari
   };
 }
 
-export function relL2(a: ArrayLike<number>, b: ArrayLike<number>): number {
+function relL2(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let num = 0;
   let den = 0;
   for (let i = 0; i < a.length; i++) {
@@ -188,7 +188,7 @@ type BandedParamsFn = (
 ) => { g1F32: number; g2F32: number; invPeakF32: number };
 
 /** Weight of the newest raw baseline in the display EMA (BASELINE_EMA_WEIGHT in crates/solver). */
-export const DISPLAY_BASELINE_EMA_WEIGHT = 0.3;
+const DISPLAY_BASELINE_EMA_WEIGHT = 0.3;
 
 /**
  * Display reconvolution for GPU results: the banded AR(2) forward recursion

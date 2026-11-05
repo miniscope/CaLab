@@ -59,7 +59,7 @@ export function computeRawStats(raw: Float64Array): RawTraceStats {
 }
 
 /** [min, max] over a typed array. Empty input yields [0, 0]. */
-export function computeArrayMinMax(arr: ArrayLike<number>): [number, number] {
+function computeArrayMinMax(arr: ArrayLike<number>): [number, number] {
   if (arr.length === 0) return [0, 0];
   let lo = Infinity;
   let hi = -Infinity;

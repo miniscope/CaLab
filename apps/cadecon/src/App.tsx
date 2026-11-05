@@ -1,14 +1,19 @@
 import type { Component, JSX } from 'solid-js';
 import { createEffect, createSignal, Show } from 'solid-js';
 import { DashboardShell, DashboardPanel, VizLayout, createDashboardSidebar } from '@calab/ui';
-import { isAuthCallback, AuthCallback, SidebarTabs } from '@calab/community-ui';
+import {
+  isAuthCallback,
+  AuthCallback,
+  SidebarTabs,
+  TrackedTutorialPanel,
+} from '@calab/community-ui';
 import type { SidebarTabConfig } from '@calab/community-ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
 import { initBridgeConfig, setupBridgeEffects } from './lib/bridge-effects.ts';
 import { trackEvent } from '@calab/community';
 import { supabaseEnabled, user, authLoading } from './lib/community/index.ts';
 import { CaDeconHeader } from './components/layout/CaDeconHeader.tsx';
-import { TutorialPanel } from './components/layout/TutorialPanel.tsx';
+import { tutorials } from './lib/tutorial/content/index.ts';
 import { ResizableGrid } from './components/layout/ResizableGrid.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { RasterOverview } from './components/raster/RasterOverview.tsx';
@@ -131,7 +136,11 @@ const App: Component = () => {
         {/* Tutorial panel — shown when toggled. Mounted at top so it reads as a
             banner strip above the dashboard, matching CaTune. */}
         <Show when={tutorialOpen()}>
-          <TutorialPanel onClose={() => setTutorialOpen(false)} />
+          <TrackedTutorialPanel
+            tutorials={tutorials}
+            isDataReady={() => importStep() === 'ready'}
+            onClose={() => setTutorialOpen(false)}
+          />
         </Show>
 
         <DashboardShell

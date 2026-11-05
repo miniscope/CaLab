@@ -11,6 +11,7 @@ import type { IndicatorId } from '@calab/compute';
 import { trackEvent } from '@calab/community';
 import { buildBaseSubmissionPayload, hashSubmissionDataset } from '@calab/community-ui';
 import type { FormFields } from '@calab/community-ui';
+import { median } from '../math-utils.ts';
 import { submitParameters } from './cadecon-service.ts';
 import type { CadeconSubmissionPayload, CadeconSubmission } from './types.ts';
 
@@ -43,12 +44,9 @@ export interface CadeconSubmissionContext {
   demoIndicator: IndicatorId | undefined;
 }
 
-/** Compute the median of a numeric array, or null if empty. */
+/** Median of a numeric array, or null if empty. */
 function medianOrNull(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return values.length === 0 ? null : median(values);
 }
 
 /** Compute mean event rate: sum(sCounts > 0) / (numCells * durationSeconds). */

@@ -10,8 +10,8 @@ import type {
   KernelResult,
   SeedTraceResult,
   WarmBiexp,
-  CellOverview,
 } from '../workers/cadecon-types.ts';
+import type { OverviewJob } from '@calab/ui/dataset';
 
 // --- Pool Job Types ---
 
@@ -59,17 +59,7 @@ interface SeedTraceJobFields {
   onComplete(result: SeedTraceResult): void;
 }
 
-interface OverviewJobFields {
-  kind: 'overview';
-  tracesFlat: Float32Array;
-  nCells: number;
-  nTimepoints: number;
-  fs: number;
-  minSeparationSamples: number;
-  isDff: boolean;
-  baselineBins: number;
-  onComplete(cells: CellOverview[]): void;
-}
+type OverviewJobFields = Omit<OverviewJob, keyof BaseJob> & { kind: 'overview' };
 
 export type CaDeconPoolJob = BaseJob &
   (TraceJobFields | KernelJobFields | SeedTraceJobFields | OverviewJobFields);

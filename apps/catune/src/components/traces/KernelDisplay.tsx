@@ -8,8 +8,11 @@ import { createMemo } from 'solid-js';
 import { computeKernel, computeKernelAnnotations } from '@calab/compute';
 import { currentTau } from '../../lib/viz-store.ts';
 import { samplingRate, isDemo, demoConfig, groundTruthVisible } from '../../lib/data-store.ts';
-import { createGroundTruthKernelSeries } from '../../lib/chart/series-config.ts';
-import { kernelAnnotationsPlugin, TracePanel } from '@calab/ui/chart';
+import {
+  kernelAnnotationsPlugin,
+  TracePanel,
+  createGroundTruthKernelSeries,
+} from '@calab/ui/chart';
 import type uPlot from 'uplot';
 
 const KERNEL_SYNC_KEY = 'catune-kernel';

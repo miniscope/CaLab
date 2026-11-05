@@ -3,7 +3,7 @@
 import { createSignal } from 'solid-js';
 // user/authLoading come from the shared community store, so the admin app runs
 // a single auth subscription (started by initCommunityStore() in index.tsx).
-import { user, authLoading, supabaseEnabled } from '@calab/community';
+import { user, authLoading } from '@calab/community';
 import type { AdminView, DateRange } from './types.ts';
 
 const [activeView, setActiveView] = createSignal<AdminView>('overview');
@@ -22,13 +22,4 @@ function isAdmin(): boolean {
   return metadata?.role === 'admin';
 }
 
-export {
-  user,
-  authLoading,
-  isAdmin,
-  supabaseEnabled,
-  activeView,
-  setActiveView,
-  dateRange,
-  setDateRange,
-};
+export { user, authLoading, isAdmin, activeView, setActiveView, dateRange, setDateRange };

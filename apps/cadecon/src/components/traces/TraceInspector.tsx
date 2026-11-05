@@ -24,7 +24,12 @@ import {
   withOpacity,
 } from '@calab/ui/chart';
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
-import { transientZonePlugin, solverInputLabel } from '@calab/ui/chart';
+import {
+  transientZonePlugin,
+  solverInputLabel,
+  createGroundTruthCalciumSeries,
+  createGroundTruthSpikesSeries,
+} from '@calab/ui/chart';
 import {
   runState,
   cellResultLookup,
@@ -76,10 +81,6 @@ import {
   lpFilterEnabled,
 } from '../../lib/algorithm-store.ts';
 import { subsetRectangles, selectedSubsetIdx } from '../../lib/subset-store.ts';
-import {
-  createGroundTruthCalciumSeries,
-  createGroundTruthSpikesSeries,
-} from '../../lib/chart/series-config.ts';
 import { dataIndex, nonFiniteSkipMessage } from '@calab/io';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
