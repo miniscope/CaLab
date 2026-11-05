@@ -161,12 +161,6 @@ impl BandedAR2 {
         self.lipschitz
     }
 
-    /// Return the raw AR2 impulse response peak (for diagnostics).
-    #[allow(dead_code)]
-    pub(crate) fn impulse_peak(&self) -> f64 {
-        self.impulse_peak
-    }
-
     /// [`Self::convolve_forward`] in f64 (the native-rate solve, which keeps
     /// its iterate in f64; see the `native_solve` module).
     pub(crate) fn convolve_forward_f64(&self, source: &[f64], output: &mut [f64]) {

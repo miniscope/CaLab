@@ -1,6 +1,6 @@
 //! Spreading a native-rate frame mass over its spike-resolution sub-bins
 //! (the seam between the native-rate relaxed solve and the 300 Hz
-//! binarization; see `indeca::InnerSolve::Native`).
+//! binarization; see the `indeca` module docs).
 //!
 //! The relaxed native-rate solve gives each recorded frame `i` a mass `m_i`
 //! (in spike units at the solve's prescale). The threshold binarization runs
@@ -26,18 +26,16 @@ use crate::upsample::upsample_trace;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Spread {
     /// Linear interpolation between frame masses: the tent
-    /// [`upsample_trace`] applies to the trace itself, so the binarization
-    /// sees the same kind of vector it saw from the upsampled solve (whose
-    /// relaxed solution spreads a spike over neighbouring sub-bins at about
+    /// [`upsample_trace`] applies to the trace itself (a 300 Hz relaxed
+    /// solution likewise spreads a spike over neighbouring sub-bins at about
     /// `1 / k` each). An isolated mass `m` clears a threshold `t` (relative
     /// to the peak mass `M`) with `2 floor(k (1 - t M / m)) + 1` sub-bins
     /// (at most `k`, the frame's own): the count is the width of the tent
     /// above the threshold, not the mass in spike units, and the per-spike
-    /// amplitude absorbs the difference (the same tent overcount the
-    /// upsampled solve has, see the `indeca` module docs; a frame's count
-    /// is capped at `k` by the sub-bins it owns). Other spreads were tried on the experiment
-    /// branch (run-length, fraction merging, harmonic); the tent scored best
-    /// on timing F1 and is scale-free: scaling the masses scales the vector,
+    /// amplitude absorbs the difference (a frame's count is capped at `k` by
+    /// the sub-bins it owns). Of the spreads characterized (run-length,
+    /// fraction merging, harmonic), the tent scored best on timing F1 and is
+    /// scale-free: scaling the masses scales the vector,
     /// which the peak normalization before the threshold search undoes, so
     /// the binarization does not depend on the solve's prescale.
     Interp,
@@ -45,7 +43,7 @@ pub(crate) enum Spread {
 
 /// Lay the frame masses `x` (one per recorded frame) over `k` sub-bins per
 /// frame. Output length `x.len() * k`; the caller normalizes the vector to
-/// its interior peak before the threshold search, as the upsampled loop does.
+/// its interior peak before the threshold search.
 pub(crate) fn spread(x: &[f32], k: usize, rule: Spread) -> Vec<f32> {
     match rule {
         Spread::Interp => upsample_trace(x, k.max(1)),
