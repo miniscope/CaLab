@@ -8,10 +8,6 @@
   padding: var(--space-md);
 }
 
-.param-panel__header {
-  margin-bottom: var(--space-md);
-}
-
 /* ========================
    Parameter Slider
    ======================== */
@@ -94,10 +90,6 @@
 @media (max-width: 600px) {
   .param-panel {
     padding: var(--space-md);
-  }
-
-  .param-slider__controls {
-    flex-wrap: wrap;
   }
 
   .param-slider__range {
