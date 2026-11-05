@@ -6,7 +6,7 @@
  *   import { defineCalabApp } from '@calab/vite-config';
  *   export default defineCalabApp(import.meta.dirname, { wasm: true });
  *
- * Everything an app used to repeat lives here: the GitHub Pages `base`, the
+ * Shared app build settings live here: the GitHub Pages `base`, the
  * Solid plugin, the WASM/worker plugins, the test environment, `envDir`, and
  * the `__APP_ID__` define. App identity comes from the app's package.json
  * `calab` block, so adding an app means creating the folder and setting

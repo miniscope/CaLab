@@ -64,7 +64,7 @@ export function computeKernel(
  *
  * Measuring the whole waveform (rather than a relative (t_peak, FWHM) delta)
  * weights each parameter's change by how much it actually moves the kernel, so a
- * jittery t_peak on the poorly-constrained rising edge no longer delays
+ * jittery t_peak on the poorly-constrained rising edge does not delay
  * convergence over a change that barely alters the shape.
  */
 export function kernelShapeRmse(
