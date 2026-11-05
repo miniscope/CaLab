@@ -26,18 +26,16 @@ use crate::upsample::upsample_trace;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Spread {
     /// Linear interpolation between frame masses: the tent
-    /// [`upsample_trace`] applies to the trace itself, so the binarization
-    /// sees the same kind of vector it saw from the upsampled solve (whose
-    /// relaxed solution spreads a spike over neighbouring sub-bins at about
+    /// [`upsample_trace`] applies to the trace itself (a 300 Hz relaxed
+    /// solution likewise spreads a spike over neighbouring sub-bins at about
     /// `1 / k` each). An isolated mass `m` clears a threshold `t` (relative
     /// to the peak mass `M`) with `2 floor(k (1 - t M / m)) + 1` sub-bins
     /// (at most `k`, the frame's own): the count is the width of the tent
     /// above the threshold, not the mass in spike units, and the per-spike
-    /// amplitude absorbs the difference (the same tent overcount the
-    /// upsampled solve has, see the `indeca` module docs; a frame's count
-    /// is capped at `k` by the sub-bins it owns). Other spreads were tried on the experiment
-    /// branch (run-length, fraction merging, harmonic); the tent scored best
-    /// on timing F1 and is scale-free: scaling the masses scales the vector,
+    /// amplitude absorbs the difference (a frame's count is capped at `k` by
+    /// the sub-bins it owns). Of the spreads characterized (run-length,
+    /// fraction merging, harmonic), the tent scored best on timing F1 and is
+    /// scale-free: scaling the masses scales the vector,
     /// which the peak normalization before the threshold search undoes, so
     /// the binarization does not depend on the solve's prescale.
     Interp,
