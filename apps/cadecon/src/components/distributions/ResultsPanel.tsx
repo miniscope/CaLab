@@ -64,7 +64,7 @@ export function ResultsPanel(): JSX.Element {
     const f = fit();
     const lines = [`Cell ${id}`, `SNR ${p.snr.toFixed(1)} · PVE ${pct(p.pve)}`];
     if (f) {
-      lines.push(`ceiling ${pct(ceilingAt(f.c, p.snr))}`);
+      lines.push(`dataset ceiling at this SNR ${pct(ceilingAt(f.c, p.snr))}`);
       lines.push(VERDICT_TEXT[ceilingVerdict(f, p.snr, p.pve)]);
     }
     const ng = noiseGuardText(p.noisePath);
