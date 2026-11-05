@@ -32,11 +32,11 @@ CaTune includes 6 synthetic demo presets with known ground truth, useful for und
 - **Trace overlays** — raw, filtered, fit (reconvolution + baseline), deconvolved, residual, and ground truth (demo data)
 - **Zoom windows** — windowed computation with overlap-and-discard for efficient zooming into long traces
 - **Spectrum panel** — power spectral density with filter cutoff visualization
-- **Quality metrics** — peak SNR, R², sparsity ratio
+- **Quality metrics** — measured SNR (shared with CaDecon), R², sparsity ratio
 - **Pin/compare snapshots** — pin the current parameters as a dimmed overlay, then adjust to compare before/after
 - **Bandpass filter** — FFT-based filter derived from kernel time constants, with cosine-tapered transitions
 - **Community sharing** — submit and browse deconvolution parameters shared by other users (optional, Supabase-backed)
-- **Tutorials** — 5 interactive tutorials powered by driver.js with localStorage progress persistence
+- **Tutorials** — 6 interactive tutorials powered by driver.js with localStorage progress persistence
 - **JSON export** — export tuned parameters for use with the `calab` Python package
 
 ## Solver Overview
