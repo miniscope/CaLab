@@ -44,7 +44,6 @@ import {
   SubmissionSummary,
   createSubmitFormFields,
 } from '@calab/community-ui';
-import '../../styles/community.css';
 
 const APP_VERSION: string = import.meta.env.VITE_APP_VERSION || 'dev';
 

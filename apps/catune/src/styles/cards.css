@@ -2,17 +2,6 @@
 /* Grid container styles (.card-grid-container, .card-grid, .card-grid__empty) in @calab/ui */
 
 /* ========================
-   Card Grid Progress (CaTune-specific)
-   ======================== */
-.card-grid__progress {
-  text-align: center;
-  font-size: 0.85rem;
-  color: var(--accent);
-  padding: var(--space-sm);
-  animation: convergence-pulse 1s ease-in-out infinite;
-}
-
-/* ========================
    Cell Card — status variants + domain-specific children
    Base card styles (.calab-card) provided by @calab/ui
    ======================== */

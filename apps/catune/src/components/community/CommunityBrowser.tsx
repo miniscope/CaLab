@@ -9,7 +9,6 @@ import { fetchSubmissions } from '../../lib/community/index.ts';
 import type { CatuneFilterState } from '../../lib/community/index.ts';
 import { tPeak, fwhm, lambda } from '../../lib/viz-store.ts';
 import { isDemo, dataSource as appDataSource } from '../../lib/data-store.ts';
-import '../../styles/community.css';
 
 /** Fixed lambda colour range, so colours mean the same thing across filters. */
 const LAMBDA_RANGE_MIN = 0;
