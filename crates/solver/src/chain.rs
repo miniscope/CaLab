@@ -53,8 +53,8 @@ use crate::banded::BandedAR2;
 use crate::baseline::{RollingQuantile, DEFAULT_BASELINE_QUANTILE};
 use crate::filter::BandpassFilter;
 use crate::threshold::lstsq_alpha_baseline;
+use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
 /// The preprocessing chain `C(z) = F(z) - RQ(F(z))` of `indeca::prepare`.

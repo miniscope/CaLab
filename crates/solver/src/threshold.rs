@@ -240,6 +240,7 @@ pub fn threshold_grid(min_threshold: f64) -> Vec<f64> {
 
 /// Minimum-error (maximum-PVE) threshold search with an unknown noise level.
 /// See [`threshold_search_opts`].
+#[cfg(test)]
 pub fn threshold_search(
     s_relaxed: &[f32],
     y: &[f32],
@@ -263,7 +264,10 @@ pub fn threshold_search(
 }
 
 /// Threshold search with a selectable criterion. `noise` (`None`: unknown)
-/// sets the budget and the standard error. See the module docs.
+/// sets the budget and the standard error. See the module docs. Scores the
+/// bare reconstruction ([`Scorer::Plain`]); the pipeline uses
+/// [`threshold_search_scored`] with the chain scorer.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn threshold_search_opts(
     s_relaxed: &[f32],
@@ -527,8 +531,7 @@ pub(crate) fn fit_candidate(
 /// Least-squares fit for alpha and baseline: y ≈ alpha * conv + baseline.
 /// Solves the 2x2 normal equations over the inner region [pad..n-pad].
 /// Alpha is constrained to [0, max_alpha]. When max_alpha is f64::INFINITY
-/// (the default from solve_trace), alpha is effectively uncapped — the
-/// free-solve phase calibrates the prescale so alpha_lstsq lands near 1.0.
+/// (what the pipeline passes), alpha is uncapped.
 pub(crate) fn lstsq_alpha_baseline(
     conv: &[f32],
     y: &[f32],

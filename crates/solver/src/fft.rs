@@ -1,5 +1,5 @@
+use realfft::num_complex::Complex;
 use realfft::RealFftPlanner;
-use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
 use crate::validate::SolverError;
