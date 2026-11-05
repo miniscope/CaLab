@@ -7,6 +7,7 @@
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import { labeledTicks, makeScale, tickTarget } from './chart-scales.ts';
 import { OverviewCard, createBrush, createElementSize } from './OverviewCard.tsx';
+import { ChartLegend, type LegendItem } from './ChartLegend.tsx';
 
 export type PointStyle = 'default' | 'strong' | 'dim' | 'accent' | 'flag';
 
@@ -14,11 +15,25 @@ export interface ScatterCurve {
   fn: (x: number) => number;
   lo?: (x: number) => number;
   hi?: (x: number) => number;
+  /** Text drawn on the plot near the curve's right end. */
   label?: string;
+  /** Legend entry for the curve and its band. */
+  legendLabel?: string;
 }
+
+/** CSS colour of each point style; the canvas reads the same variables. */
+const POINT_VARS: Record<PointStyle, [string, string]> = {
+  default: ['--ov-point', 'rgba(97,97,97,0.55)'],
+  strong: ['--ov-point-strong', 'rgba(26,26,26,0.85)'],
+  dim: ['--ov-point-dim', 'rgba(158,158,158,0.25)'],
+  accent: ['--accent', '#2171b5'],
+  flag: ['--error', '#d32f2f'],
+};
+const LEGEND_ORDER: PointStyle[] = ['strong', 'default', 'accent', 'dim', 'flag'];
 
 export interface ScatterCardProps {
   title: string;
+  subtitle?: string;
   help?: JSX.Element;
   footer?: JSX.Element;
   x: () => readonly number[];
@@ -32,8 +47,11 @@ export interface ScatterCardProps {
   /** Format y ticks (e.g. as percent). */
   yTickFormat?: (v: number) => string;
   curve?: () => ScatterCurve | null;
-  shade?: { lo: number; hi: number; label?: string };
+  /** Shaded x-interval: `label` is drawn on the plot, `legendLabel` in the key. */
+  shade?: { lo: number; hi: number; label?: string; legendLabel?: string };
   styleOf?: (id: number) => PointStyle;
+  /** Legend text per point style; a style is listed only while some point uses it. */
+  pointLabels?: Partial<Record<PointStyle, string>>;
   selected?: () => number | null;
   onPick?: (id: number) => void;
   onBrush?: (ids: number[] | null) => void;
@@ -42,7 +60,7 @@ export interface ScatterCardProps {
   'data-testid'?: string;
 }
 
-const M = { l: 36, r: 10, t: 10, b: 28 };
+const M = { l: 42, r: 10, t: 10, b: 28 };
 const HIT_PX = 8;
 
 function cssVar(el: Element, name: string, fallback: string): string {
@@ -100,13 +118,12 @@ export function ScatterCard(props: ScatterCardProps): JSX.Element {
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    const colors: Record<PointStyle, string> = {
-      default: cssVar(c, '--ov-point', 'rgba(97,97,97,0.55)'),
-      strong: cssVar(c, '--ov-point-strong', 'rgba(26,26,26,0.85)'),
-      dim: cssVar(c, '--ov-point-dim', 'rgba(158,158,158,0.25)'),
-      accent: cssVar(c, '--accent', '#2171b5'),
-      flag: cssVar(c, '--error', '#d32f2f'),
-    };
+    const colors = Object.fromEntries(
+      (Object.keys(POINT_VARS) as PointStyle[]).map((s) => [
+        s,
+        cssVar(c, POINT_VARS[s][0], POINT_VARS[s][1]),
+      ]),
+    ) as Record<PointStyle, string>;
     const pts = points();
     // Draw in layers so emphasised points sit on top.
     const order: PointStyle[] = ['dim', 'default', 'strong', 'flag', 'accent'];
@@ -165,6 +182,49 @@ export function ScatterCard(props: ScatterCardProps): JSX.Element {
     },
   });
 
+  const legend = createMemo((): LegendItem[] => {
+    const items: LegendItem[] = [];
+    const labels = props.pointLabels;
+    if (labels) {
+      const present = new Set<PointStyle>();
+      for (const p of points()) present.add(props.styleOf?.(p.id) ?? 'default');
+      for (const s of LEGEND_ORDER) {
+        const label = labels[s];
+        if (!label || !present.has(s)) continue;
+        const color = `var(${POINT_VARS[s][0]}, ${POINT_VARS[s][1]})`;
+        items.push({ mark: s === 'flag' ? 'ring' : 'dot', color, label });
+      }
+    }
+    const c = props.curve?.();
+    if (c?.legendLabel)
+      items.push({ mark: 'line', className: 'ov-curve-main', label: c.legendLabel });
+    if (props.shade?.legendLabel)
+      items.push({ mark: 'area', className: 'ov-shade', label: props.shade.legendLabel });
+    return items;
+  });
+
+  /**
+   * Where the curve's on-plot label sits: just left of the curve where it
+   * crosses 70 % of the y range. For a ceiling that is the region above the
+   * curve, which points rarely reach, so the label stays clear of the data.
+   */
+  const curveLabelPos = (c: ScatterCurve) => {
+    const [a, b] = props.xRange();
+    const [y0, y1] = props.yRange();
+    const target = y0 + 0.7 * (y1 - y0);
+    const n = 80;
+    for (let i = 0; i <= n; i++) {
+      const v = props.logX ? a * Math.pow(b / a, i / n) : a + ((b - a) * i) / n;
+      const yy = c.fn(v);
+      if (Number.isFinite(yy) && yy >= target) {
+        const px = x()(v);
+        if (px - M.l < 60) return null;
+        return { px: px - 5, py: y()(yy) };
+      }
+    }
+    return null;
+  };
+
   const selectedPoint = () => {
     const s = props.selected?.();
     if (s == null) return null;
@@ -174,6 +234,12 @@ export function ScatterCard(props: ScatterCardProps): JSX.Element {
   return (
     <OverviewCard
       title={props.title}
+      subtitle={props.subtitle}
+      legend={
+        <Show when={legend().length > 0}>
+          <ChartLegend items={legend()} />
+        </Show>
+      }
       help={props.help}
       footer={props.footer}
       data-testid={props['data-testid']}
@@ -232,6 +298,13 @@ export function ScatterCard(props: ScatterCardProps): JSX.Element {
               <>
                 <path class="ov-curve-band" d={bandPath(c())} />
                 <path class="ov-curve-main" d={curvePath(c().fn)} />
+                <Show when={c().label ? curveLabelPos(c()) : null}>
+                  {(pos) => (
+                    <text class="ov-curve-label" x={pos().px} y={pos().py} text-anchor="end">
+                      {c().label}
+                    </text>
+                  )}
+                </Show>
               </>
             )}
           </Show>

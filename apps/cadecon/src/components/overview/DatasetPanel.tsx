@@ -40,6 +40,13 @@ import {
 } from '../../lib/viz-store.ts';
 
 const MAX_FLAG_CURVES = 24;
+
+function medianOf(values: number[]): number {
+  if (values.length === 0) return NaN;
+  const v = [...values].sort((a, b) => a - b);
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
 const MAX_HIGHLIGHT_CURVES = 16;
 
 function DatasetCards(props: { ov: DatasetOverview }): JSX.Element {
@@ -49,6 +56,10 @@ function DatasetCards(props: { ov: DatasetOverview }): JSX.Element {
     const vals = ov().cells.map((c) => c.nu);
     return vals.some((v) => v != null) ? vals : null;
   });
+
+  const withShape = createMemo(() =>
+    ov().cells.filter((c) => c.heightQuantiles.length === HEIGHT_PROBS.length),
+  );
 
   const heightCurves = createMemo((): HeightCurve[] => {
     const out: HeightCurve[] = [];
@@ -98,9 +109,8 @@ function DatasetCards(props: { ov: DatasetOverview }): JSX.Element {
         pooled={() => ov().pooledHeights}
         curves={heightCurves}
         onPick={setInspectedCellIndex}
-        nWithShape={() =>
-          ov().cells.filter((c) => c.heightQuantiles.length === HEIGHT_PROBS.length).length
-        }
+        nWithShape={() => withShape().length}
+        medianEvents={() => medianOf(withShape().map((c) => c.nEvents))}
         eventSeparationS={OVERVIEW_PARAMS.eventSeparationS}
       />
       <BaselineCard
