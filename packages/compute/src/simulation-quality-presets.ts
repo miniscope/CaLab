@@ -77,6 +77,15 @@ export type SpikeActivityLevel = (typeof SPIKE_ACTIVITY_LEVELS)[number]['id'];
 // CASCADE noise levels (%·Hz^-½) these SNRs correspond to for GCaMP6f under
 // moderate firing at 30 Hz (ν ≈ 1–2 high quality, ≈ 4 typical, ≈ 8
 // population imaging; Rupprecht et al. 2021).
+//
+// `snr_spread_fraction` is the per-cell spread of a recording: real cells of
+// one recording differ in expression, depth and optical access, so their SNRs
+// are not equal. The simulator draws each cell's target uniformly in
+// snr ± snr_spread, so a fraction of 0.5 gives cells from half to one and a
+// half times the level (a 3x range, the order seen across cells of one
+// field of view) around the unchanged central value. Without it every cell
+// of a demo dataset measures the identical SNR and the SNR histogram is a
+// single bar. The clean level stays exact (it is for algorithm debugging).
 export const NOISE_LEVELS = [
   {
     id: 'clean',
@@ -85,6 +94,7 @@ export const NOISE_LEVELS = [
     snr: 200,
     shot_noise_enabled: false,
     shot_noise_fraction: 0,
+    snr_spread_fraction: 0,
   },
   {
     id: 'low',
@@ -93,6 +103,7 @@ export const NOISE_LEVELS = [
     snr: 60,
     shot_noise_enabled: false,
     shot_noise_fraction: 0,
+    snr_spread_fraction: 0.5,
   },
   {
     id: 'moderate',
@@ -101,6 +112,7 @@ export const NOISE_LEVELS = [
     snr: 30,
     shot_noise_enabled: false,
     shot_noise_fraction: 0.3,
+    snr_spread_fraction: 0.5,
   },
   {
     id: 'high',
@@ -109,6 +121,7 @@ export const NOISE_LEVELS = [
     snr: 15,
     shot_noise_enabled: true,
     shot_noise_fraction: 0.3,
+    snr_spread_fraction: 0.5,
   },
   {
     id: 'very_high',
@@ -117,6 +130,7 @@ export const NOISE_LEVELS = [
     snr: 8,
     shot_noise_enabled: true,
     shot_noise_fraction: 0.5,
+    snr_spread_fraction: 0.5,
   },
 ] as const;
 
@@ -300,7 +314,12 @@ export function buildSimulationConfig(
     reference: 'measured_snr',
     shot_noise_enabled: noiseLo.shot_noise_enabled || noiseHi.shot_noise_enabled,
     shot_noise_fraction: Math.max(noiseLo.shot_noise_fraction, noiseHi.shot_noise_fraction),
-    snr_spread: rangeCv(NOISE_LEVELS, q.noise, 'snr'),
+    // The spread a chosen range of levels implies, or the per-cell spread of
+    // a single level, whichever is larger (see `snr_spread_fraction`).
+    snr_spread: Math.max(
+      rangeCv(NOISE_LEVELS, q.noise, 'snr'),
+      lerp(noiseLo.snr_spread_fraction, noiseHi.snr_spread_fraction, 0.5) * snrMid,
+    ),
   };
 
   // Drift

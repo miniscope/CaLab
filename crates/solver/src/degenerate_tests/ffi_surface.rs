@@ -859,9 +859,12 @@ fn snr_metrics_are_finite_on_degenerate_traces() {
             crate::snr::noise_level_nu(&t, FS),
             crate::snr::noise_level_nu(&t, 0.0),
             crate::snr::noise_level_nu(&t, NAN),
-            crate::snr::peak_snr(&t, 1.0, 0.01),
-            crate::snr::peak_snr(&t, 0.0, NAN),
-            crate::snr::measured_snr(&t),
+            crate::snr::peak_snr(&t, 1.0, 0.01, FS),
+            crate::snr::peak_snr(&t, 1.0, 0.01, 0.0),
+            crate::snr::peak_snr(&t, 1.0, 0.01, NAN),
+            crate::snr::peak_snr(&t, 0.0, NAN, FS),
+            crate::snr::measured_snr(&t, FS),
+            crate::snr::measured_snr(&t, 1e-9),
         ] {
             assert!(v >= 0.0 && (v.is_finite() || v == INF), "{name}: {v}");
         }
@@ -871,7 +874,7 @@ fn snr_metrics_are_finite_on_degenerate_traces() {
                 assert!(e.time_index < t.len().max(1), "{name}: event {e:?}");
                 assert!(e.height.is_finite() && e.baseline.is_finite(), "{name}");
             }
-            let r = crate::snr::measured_snr_report(&t, sep);
+            let r = crate::snr::measured_snr_report(&t, FS, sep);
             assert!(r.sigma.is_finite() && r.snr >= 0.0, "{name}: {r:?}");
         }
     }

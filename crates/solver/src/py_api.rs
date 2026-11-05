@@ -842,18 +842,24 @@ fn py_snr_noise_level_nu(trace_dff: PyReadonlyArray1<f64>, fs: f64) -> PyResult<
 
 /// Descriptive peak SNR (see `crate::snr`).
 #[pyfunction]
-fn py_snr_peak(trace: PyReadonlyArray1<f64>, sigma: f64, top_fraction: f64) -> PyResult<f64> {
+fn py_snr_peak(
+    trace: PyReadonlyArray1<f64>,
+    sigma: f64,
+    top_fraction: f64,
+    fs: f64,
+) -> PyResult<f64> {
     Ok(crate::snr::peak_snr(
         &to_f32_vec(&trace)?,
         sigma,
         top_fraction,
+        fs,
     ))
 }
 
 /// Measured SNR with the default top fraction (see `crate::snr`).
 #[pyfunction]
-fn py_snr_measured(trace: PyReadonlyArray1<f64>) -> PyResult<f64> {
-    Ok(crate::snr::measured_snr(&to_f32_vec(&trace)?))
+fn py_snr_measured(trace: PyReadonlyArray1<f64>, fs: f64) -> PyResult<f64> {
+    Ok(crate::snr::measured_snr(&to_f32_vec(&trace)?, fs))
 }
 
 /// Detect calcium events (see `crate::snr::detect_events`).
@@ -885,9 +891,10 @@ fn py_snr_detect_events<'py>(
 #[pyfunction]
 fn py_snr_measured_report(
     trace: PyReadonlyArray1<f64>,
+    fs: f64,
     min_separation_samples: usize,
 ) -> PyResult<(f64, f64, usize, bool)> {
-    let r = crate::snr::measured_snr_report(&to_f32_vec(&trace)?, min_separation_samples);
+    let r = crate::snr::measured_snr_report(&to_f32_vec(&trace)?, fs, min_separation_samples);
     Ok((r.snr, r.sigma, r.n_events, r.is_silent))
 }
 

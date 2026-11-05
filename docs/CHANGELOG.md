@@ -21,6 +21,16 @@ measured_snr`): the same burst-based metric users run on real data. The old
   `calab.measured_snr`, `noise_sigma_mad_diff`, `noise_level_nu`, `peak_snr`),
   after Krisha Aghi's derivation. Simulated cells report `noise_sigma` and the
   ground-truth diagnostic `snr_1ap`.
+- **Drift-robust SNR.** The measured SNR reads its top slice and median on the
+  trace minus a slow baseline (centred rolling 20th percentile over 60 s), so
+  photobleaching no longer inflates it: pure noise with 5 % of F0 drift over
+  30 minutes reads 2.67 (4.18 linear / 3.33 exponential before). The metric
+  functions take the frame rate (`measured_snr(trace, fs)`, `peak_snr(trace,
+sigma, fs, ...)`, `measured_snr_report(trace, fs, ...)`; WASM and Python
+  likewise); the simulator's calibration uses the same detrending.
+- **Demo SNR spread.** Web-simulator noise levels now give each cell its own
+  SNR (uniform ±50 % around the level, the clean level exact), so the demo
+  datasets show a spread instead of one SNR for every cell.
 - **Event detection and the silent flag** (`snr::detect_events`,
   `snr::measured_snr_report`; WASM `snr_detect_events`, `snr_measured_report`;
   Python `calab.detect_events`, `calab.measured_snr_report`). Events clear a

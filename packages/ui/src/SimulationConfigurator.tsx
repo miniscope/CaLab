@@ -154,7 +154,7 @@ export function SimulationConfigurator(props: SimulationConfiguratorProps) {
       />
       <RangeSliderRow
         label="Noise"
-        hint="Measured SNR of each simulated trace: mean of its top 1 % of samples minus the median, over the noise σ (MAD of frame differences). Burst-based: it compares cells with similar firing, not a per-spike SNR. Pure noise measures about 2.7, so values near 3 mean indistinguishable from noise. Hover a level for its value."
+        hint="Measured SNR of each simulated trace: mean of its top 1 % of samples minus the median (after removing slow drift), over the noise σ (MAD of frame differences). Cells vary about ±50 % around the level. Burst-based: it compares cells with similar firing, not a per-spike SNR. Pure noise measures about 2.7, so values near 3 mean indistinguishable from noise. Hover a level for its value."
         ticks={NOISE_LEVELS}
         range={props.config.noise}
         onChange={(v) => update('noise', v)}

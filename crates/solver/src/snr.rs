@@ -22,6 +22,21 @@
 //!   30-minute 60 Hz trace, and in simulation the N = 10 version rose 35–90 %
 //!   from 5 to 30 minutes of the same cell, while the 1 % version moved < 7 %.
 //!
+//! ## Slow drift is removed before the signal is read
+//!
+//! The signal side (top slice minus median) is computed on the trace minus a
+//! slow baseline, a centred rolling 20th percentile over [`DETREND_WINDOW_S`]
+//! (60 s; rationale on the constant). Without it, photobleaching of a few
+//! percent of F0 moves the top 1 % away from the median and a silent cell
+//! measures well above the noise floor: pure noise (σ = 0.01 F0, 30 minutes
+//! at 30 Hz) with a 5 % F0 linear drift read 4.18 and with an exponential
+//! bleach 3.33, against 2.67 without drift; detrended, both read 2.67
+//! (2.63-2.71 over 30 seeds). The noise σ is a median of frame-to-frame
+//! differences and needs no such correction. The functions therefore take the
+//! frame rate `fs`; an invalid `fs` (not positive and finite) skips the
+//! detrending. The simulator's measured-SNR calibration applies the same
+//! detrending, so simulated and measured SNR keep one definition.
+//!
 //! ## What the measured SNR means, and the assumption behind it
 //!
 //! The signal side is burst-based: it reads the strongest transients, as a
@@ -37,15 +52,18 @@
 //!
 //! Pure white noise does not measure 0: the top 1 % of N(0, 1) averages
 //! φ(z₀.₉₉)/0.01 ≈ 2.67 above the median. Measured on pure Gaussian noise
-//! (40 traces per length, median and 5–95 % range):
+//! (40 traces per length, median and 5–95 % range), without drift and with a
+//! 5 % of F0 linear or exponential drift (noise σ = 1 % of F0) over the trace:
 //!
-//! | trace | samples | pure-noise measured SNR |
-//! |---|---|---|
-//! | 1 min at 30 Hz | 1 800 | 2.73 (2.52–2.89) |
-//! | 5 min at 30 Hz | 9 000 | 2.66 (2.59–2.76) |
-//! | 10 min at 30 Hz | 18 000 | 2.66 (2.60–2.74) |
-//! | 30 min at 30 Hz | 54 000 | 2.66 (2.64–2.70) |
-//! | 30 min at 60 Hz | 108 000 | 2.67 (2.64–2.68) |
+//! | trace | samples | no drift | linear drift | exponential drift |
+//! |---|---|---|---|---|
+//! | 1 min at 30 Hz | 1 800 | 2.73 (2.52–2.89) | not detrended (shorter than the window) | not detrended |
+//! | 5 min at 30 Hz | 9 000 | 2.66 (2.59–2.76) | 2.68 (2.60–2.78) | 2.68 (2.61–2.78) |
+//! | 10 min at 30 Hz | 18 000 | 2.66 (2.61–2.74) | 2.67 (2.61–2.74) | 2.67 (2.61–2.74) |
+//! | 30 min at 30 Hz | 54 000 | 2.66 (2.64–2.70) | 2.66 (2.64–2.70) | 2.66 (2.64–2.70) |
+//! | 30 min at 60 Hz | 108 000 | 2.67 (2.64–2.68) | 2.67 (2.64–2.68) | 2.67 (2.64–2.68) |
+//!
+//! (Without the detrending the same 30-minute drifts read 4.18 and 3.33.)
 //!
 //! So values near 2.7 mean "indistinguishable from noise" and no trace
 //! measures below about 2.5 (real, correlated noise can read a little higher).
@@ -76,6 +94,40 @@ pub const MAD_GAUSSIAN: f64 = 0.674_489_750_196_081_7;
 /// noise on them, small enough to stay on the transients of a cell that is
 /// active a few percent of the time.
 pub const DEFAULT_TOP_FRACTION: f64 = 0.01;
+
+/// Quantile of the slow-baseline estimate subtracted before the top slice is
+/// read (see [`DETREND_WINDOW_S`]). 20 %, the same floor quantile the solver's
+/// own rolling baseline uses (`baseline::DEFAULT_BASELINE_QUANTILE`): low
+/// enough to track the floor under sparse transients, high enough to be a
+/// stable order statistic of the noise.
+pub const DETREND_QUANTILE: f64 = 0.2;
+
+/// Window (seconds) of the rolling low quantile that removes slow drift
+/// (photobleaching, focus and illumination wander) from the trace before the
+/// top slice is read.
+///
+/// 60 s is chosen against two scales, using no kernel or indicator model:
+///
+/// - **Long against transients.** A low quantile (20 %) only follows the floor
+///   if the trace is at its floor for more than 20 % of the window. The slowest
+///   indicators decay in 1–2 s (GCaMP6s, OGB-1), so a window of 30–60 decay
+///   times keeps the quantile on the floor even in a burst-dense stretch.
+///   Measured on simulated 30-minute traces (all presets, Poisson 0.3 and
+///   1.9 Hz and bursting firing, 5 % of F0 drift removed by the detrend): the
+///   detrended signal is within 2 % of the undetrended one at 60 s, but loses
+///   up to 6 % at 30 s and 13 % at 15 s on the slowest indicators at 1.9 Hz,
+///   where the tails of one transient lift the floor under the next. 120 s is no
+///   better than 60 s. It also matches the solver's own rolling baseline
+///   (`baseline::baseline_window`, 25 decay times = 25–50 s for these kernels).
+/// - **Short against drift.** Photobleaching and focus/illumination wander
+///   change over minutes to the whole recording (a 5 % drop over 30 minutes is
+///   0.17 % per minute), and the centred window follows a linear or
+///   exponential trend with no measurable residual (tested to 5 % of F0 over
+///   30 minutes).
+///
+/// Traces shorter than the window are not detrended: a one-minute trace has
+/// no drift worth removing, and a global quantile is just a constant.
+pub const DETREND_WINDOW_S: f64 = 60.0;
 
 pub(crate) fn finite_f64(trace: &[f32]) -> Vec<f64> {
     trace
@@ -140,13 +192,48 @@ pub fn noise_level_nu(trace_dff: &[f32], fs: f64) -> f64 {
 }
 
 /// Robust signal amplitude: mean of the top `top_fraction` of samples minus the
-/// median. The top slice holds `max(1, round(top_fraction·n))` samples.
-pub fn robust_signal(trace: &[f32], top_fraction: f64) -> f64 {
+/// median, read on the trace minus its slow baseline (see
+/// [`DETREND_WINDOW_S`]; `fs` is the frame rate in Hz, and an invalid `fs`
+/// skips the detrending). The top slice holds `max(1, round(top_fraction·n))`
+/// samples.
+pub fn robust_signal(trace: &[f32], top_fraction: f64, fs: f64) -> f64 {
     let x = finite_f64(trace);
-    robust_signal_f64(&x, top_fraction)
+    robust_signal_f64(&x, top_fraction, fs)
 }
 
-pub(crate) fn robust_signal_f64(x: &[f64], top_fraction: f64) -> f64 {
+/// The trace minus its slow baseline: a centred rolling [`DETREND_QUANTILE`]
+/// over [`DETREND_WINDOW_S`] seconds. `None` (use the trace as is) when `fs`
+/// is not a positive finite rate or the window covers the whole trace (a
+/// global quantile is a constant, which the median subtraction removes anyway).
+fn detrend_f64(x: &[f64], fs: f64) -> Option<Vec<f64>> {
+    detrend_with(x, fs, DETREND_WINDOW_S, DETREND_QUANTILE)
+}
+
+pub(crate) fn detrend_with(x: &[f64], fs: f64, window_s: f64, quantile: f64) -> Option<Vec<f64>> {
+    if !fs.is_finite() || fs <= 0.0 || !window_s.is_finite() || window_s <= 0.0 {
+        return None;
+    }
+    let n = x.len();
+    let w = (window_s * fs).round() as usize;
+    if w < 2 || w >= n {
+        return None;
+    }
+    let x32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+    let mut rq = crate::baseline::RollingQuantile::new();
+    let causal = rq.baselines(&x32, w, quantile);
+    // Centre the causal window: baseline at t is the window ending at t + w/2.
+    let half = w / 2;
+    Some(
+        x.iter()
+            .enumerate()
+            .map(|(t, &v)| v - causal[(t + half).min(n - 1)] as f64)
+            .collect(),
+    )
+}
+
+pub(crate) fn robust_signal_f64(x: &[f64], top_fraction: f64, fs: f64) -> f64 {
+    let detrended = detrend_f64(x, fs);
+    let x = detrended.as_deref().unwrap_or(x);
     let n = x.len();
     if n == 0 {
         return 0.0;
@@ -174,22 +261,22 @@ pub(crate) fn robust_signal_f64(x: &[f64], top_fraction: f64) -> f64 {
 /// a *peak* SNR: it depends on the firing regime (see the module docs) and
 /// must not be read as a per-spike SNR. Returns `f64::INFINITY` when
 /// `sigma <= 0` and the signal is positive, and 0 for an empty trace.
-pub fn peak_snr(trace: &[f32], sigma: f64, top_fraction: f64) -> f64 {
-    let s = robust_signal(trace, top_fraction);
+pub fn peak_snr(trace: &[f32], sigma: f64, top_fraction: f64, fs: f64) -> f64 {
+    let s = robust_signal(trace, top_fraction, fs);
     ratio(s, sigma)
 }
 
 /// [`peak_snr`] with the MAD-diff noise σ and the default top fraction: the
 /// measured SNR a user gets on their own recording, and the quantity the
 /// simulator's default noise convention targets.
-pub fn measured_snr(trace: &[f32]) -> f64 {
+pub fn measured_snr(trace: &[f32], fs: f64) -> f64 {
     let x = finite_f64(trace);
-    measured_snr_f64(&x, DEFAULT_TOP_FRACTION)
+    measured_snr_f64(&x, DEFAULT_TOP_FRACTION, fs)
 }
 
-pub(crate) fn measured_snr_f64(x: &[f64], top_fraction: f64) -> f64 {
+pub(crate) fn measured_snr_f64(x: &[f64], top_fraction: f64, fs: f64) -> f64 {
     let sigma = median_abs_diff(x) / (MAD_GAUSSIAN * std::f64::consts::SQRT_2);
-    ratio(robust_signal_f64(x, top_fraction), sigma)
+    ratio(robust_signal_f64(x, top_fraction, fs), sigma)
 }
 
 // ── Event detection and the silent flag ──────────────────────────
@@ -431,11 +518,11 @@ pub fn detect_events(trace: &[f32], sigma: f64, min_separation_samples: usize) -
 ///
 /// The SNR is still the top-slice number; a silent trace measures near the
 /// metric's pure-noise floor (see the module docs).
-pub fn measured_snr_report(trace: &[f32], min_separation_samples: usize) -> SnrReport {
+pub fn measured_snr_report(trace: &[f32], fs: f64, min_separation_samples: usize) -> SnrReport {
     let sigma = noise_sigma_mad_diff(trace);
     let events = detect_events(trace, sigma, min_separation_samples);
     SnrReport {
-        snr: measured_snr(trace),
+        snr: measured_snr(trace, fs),
         sigma,
         n_events: events.len(),
         is_silent: events.is_empty(),
@@ -518,7 +605,7 @@ mod tests {
     fn pure_noise_peak_snr_sits_at_the_gaussian_floor() {
         // Mean of the top 1 % of N(0,1) is φ(z_0.99)/0.01 ≈ 2.665.
         let x = white(100_000, 1.0, 5);
-        let snr = measured_snr(&x);
+        let snr = measured_snr(&x, 30.0);
         assert!((snr - 2.665).abs() < 0.08, "floor {snr}");
     }
 
@@ -526,12 +613,12 @@ mod tests {
     fn degenerate_inputs() {
         assert_eq!(noise_sigma_mad_diff(&[]), 0.0);
         assert_eq!(noise_sigma_mad_diff(&[1.0]), 0.0);
-        assert_eq!(robust_signal(&[], 0.01), 0.0);
-        assert_eq!(peak_snr(&[1.0, 1.0, 1.0], 0.0, 0.01), 0.0);
-        assert_eq!(peak_snr(&[0.0, 0.0, 5.0], 0.0, 0.01), f64::INFINITY);
+        assert_eq!(robust_signal(&[], 0.01, 30.0), 0.0);
+        assert_eq!(peak_snr(&[1.0, 1.0, 1.0], 0.0, 0.01, 30.0), 0.0);
+        assert_eq!(peak_snr(&[0.0, 0.0, 5.0], 0.0, 0.01, 30.0), f64::INFINITY);
         // NaNs are dropped, not propagated.
         assert!(noise_sigma_mad_diff(&[1.0, f32::NAN, 2.0, 1.5, 0.5]).is_finite());
-        assert!(robust_signal(&[1.0, 2.0], f64::NAN).is_finite());
+        assert!(robust_signal(&[1.0, 2.0], f64::NAN, 30.0).is_finite());
     }
 
     #[test]
@@ -540,8 +627,8 @@ mod tests {
         for v in x.iter_mut().take(10) {
             *v = 10.0;
         }
-        assert!((robust_signal(&x, 0.01) - 10.0).abs() < 1e-9);
-        assert!((robust_signal(&x, 0.02) - 5.0).abs() < 1e-9);
+        assert!((robust_signal(&x, 0.01, 30.0) - 10.0).abs() < 1e-9);
+        assert!((robust_signal(&x, 0.02, 30.0) - 5.0).abs() < 1e-9);
     }
 
     fn noisy_sim(
@@ -608,7 +695,7 @@ mod tests {
                 let r = simulate(&cfg);
                 let n = r.num_timepoints;
                 for c in 0..r.num_cells {
-                    let m = measured_snr(&r.traces[c * n..(c + 1) * n]);
+                    let m = measured_snr(&r.traces[c * n..(c + 1) * n], 30.0);
                     assert!(
                         (m / target - 1.0).abs() < 0.01,
                         "target {target}: measured {m}"
@@ -653,7 +740,7 @@ mod tests {
                     .zip(white(n, sigma, 1000 + c as u64))
                     .map(|(&b, w)| b + w)
                     .collect();
-                let m = measured_snr(&fresh) / target;
+                let m = measured_snr(&fresh, 30.0) / target;
                 assert!(
                     (0.88..1.12).contains(&m),
                     "target {target} cell {c}: ratio {m}"
@@ -699,7 +786,7 @@ mod tests {
         let n = r.num_timepoints;
         for c in 0..r.num_cells {
             assert!(r.ground_truth[c].noise_sigma > 0.0);
-            let m = measured_snr(&r.traces[c * n..(c + 1) * n]);
+            let m = measured_snr(&r.traces[c * n..(c + 1) * n], 30.0);
             assert!((2.5..4.0).contains(&m), "measured {m}");
         }
     }
@@ -770,7 +857,7 @@ mod tests {
         let (mut total, mut silent, trials) = (0usize, 0usize, 60usize);
         for seed in 0..trials as u64 {
             let x = white(9000, 3.0, 100 + seed);
-            let r = measured_snr_report(&x, 12);
+            let r = measured_snr_report(&x, 30.0, 12);
             total += r.n_events;
             silent += r.is_silent as usize;
         }
@@ -782,11 +869,11 @@ mod tests {
     #[test]
     fn report_flags_silent_and_active_traces() {
         let noise = white(9000, 1.0, 31);
-        assert!(measured_snr_report(&noise, 12).is_silent);
+        assert!(measured_snr_report(&noise, 30.0, 12).is_silent);
         let active = trace_with_events(9000, 1.0, 8.0, &[900, 3000, 5200, 7400], 10.0, 32);
-        let r = measured_snr_report(&active, 12);
+        let r = measured_snr_report(&active, 30.0, 12);
         assert!(!r.is_silent && r.n_events == 4, "{r:?}");
-        assert_eq!(r.snr, measured_snr(&active));
+        assert_eq!(r.snr, measured_snr(&active, 30.0));
         assert!((r.sigma - 1.0).abs() < 0.05);
     }
 
@@ -801,29 +888,40 @@ mod tests {
         x[10] = f32::NAN;
         x[11] = f32::INFINITY;
         let _ = detect_events(&x, 1.0, 0);
-        assert!(measured_snr_report(&[f32::NAN; 50], 5).is_silent);
+        assert!(measured_snr_report(&[f32::NAN; 50], 30.0, 5).is_silent);
     }
 
-    /// Prints the pure-noise floor of the top-slice SNR by trace length
-    /// (run with `--ignored --nocapture`); the numbers feed the module docs.
+    /// Prints the pure-noise floor of the top-slice SNR by trace length, with
+    /// and without 5 % of F0 drift (run with `--ignored --nocapture`); the
+    /// numbers feed the module docs.
     #[test]
     #[ignore]
     fn print_pure_noise_floor_by_length() {
-        for (label, n) in [
-            ("1 min  30 Hz", 1800usize),
-            ("5 min  30 Hz", 9000),
-            ("10 min 30 Hz", 18_000),
-            ("30 min 30 Hz", 54_000),
-            ("30 min 60 Hz", 108_000),
+        for (label, n, fs) in [
+            ("1 min  30 Hz", 1800usize, 30.0),
+            ("5 min  30 Hz", 9000, 30.0),
+            ("10 min 30 Hz", 18_000, 30.0),
+            ("30 min 30 Hz", 54_000, 30.0),
+            ("30 min 60 Hz", 108_000, 60.0),
         ] {
-            let mut v: Vec<f64> = (0..40)
-                .map(|s| measured_snr(&white(n, 1.0, 900 + s)))
-                .collect();
-            v.sort_by(|a, b| a.total_cmp(b));
-            println!(
-                "{label} n={n}: median {:.3} p5 {:.3} p95 {:.3}",
-                v[20], v[2], v[37]
-            );
+            for (drift, exponential) in
+                [("none", None), ("linear", Some(false)), ("exp", Some(true))]
+            {
+                let mut v: Vec<f64> = (0..40)
+                    .map(|s| {
+                        let x = white(n, 1.0, 900 + s);
+                        match exponential {
+                            None => measured_snr(&x, fs),
+                            Some(e) => measured_snr(&add_drift(&x, 100.0, 0.05, e), fs),
+                        }
+                    })
+                    .collect();
+                v.sort_by(|a, b| a.total_cmp(b));
+                println!(
+                    "FLOOR {label} n={n} drift {drift}: median {:.3} p5 {:.3} p95 {:.3}",
+                    v[20], v[2], v[37]
+                );
+            }
         }
     }
 
@@ -857,7 +955,7 @@ mod tests {
             let n = r.num_timepoints;
             for c in 0..r.num_cells {
                 let gt = &r.ground_truth[c];
-                let robust = robust_signal(&gt.clean_calcium, DEFAULT_TOP_FRACTION);
+                let robust = robust_signal(&gt.clean_calcium, DEFAULT_TOP_FRACTION, 30.0);
                 let drift_peak = r.traces[c * n..(c + 1) * n]
                     .iter()
                     .zip(&gt.clean_calcium)
@@ -867,6 +965,112 @@ mod tests {
                     (drift_peak / (0.2 * robust) - 1.0).abs() < 0.02,
                     "drift {drift_peak} vs 0.2 x robust {robust}"
                 );
+            }
+        }
+    }
+
+    /// Slow drift on a trace: `frac` of F0 over the whole trace, linear or an
+    /// exponential bleach (time constant a third of the trace).
+    fn add_drift(x: &[f32], f0: f64, frac: f64, exponential: bool) -> Vec<f32> {
+        let n = x.len() as f64;
+        x.iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let t = i as f64 / n;
+                let shape = if exponential {
+                    (1.0 - (-3.0 * t).exp()) / (1.0 - (-3.0f64).exp())
+                } else {
+                    t
+                };
+                v + (f0 * frac * shape) as f32
+            })
+            .collect()
+    }
+
+    /// A silent trace with photobleaching-scale drift must read at the
+    /// pure-noise floor, as it does without drift (30 min at 30 Hz, noise
+    /// σ = 1 % of F0 so the 5 % drift is 5σ). Without the detrend it read 4.2
+    /// (linear) and 3.3 (exponential).
+    #[test]
+    fn drift_does_not_inflate_a_silent_trace() {
+        let (fs, n, f0, sigma) = (30.0, 54_000, 100.0, 1.0);
+        for seed in 0..5u64 {
+            let x = white(n, sigma, 700 + seed);
+            for (label, d) in [
+                ("none", x.clone()),
+                ("linear", add_drift(&x, f0, 0.05, false)),
+                ("exp", add_drift(&x, f0, 0.05, true)),
+                ("linear 2%", add_drift(&x, f0, 0.02, false)),
+            ] {
+                let snr = measured_snr(&d, fs);
+                assert!((2.58..2.78).contains(&snr), "{label} seed {seed}: {snr}");
+                assert!(measured_snr_report(&d, fs, 12).is_silent, "{label}");
+            }
+            // The undetrended metric is what drift inflates.
+            let raw = measured_snr(&add_drift(&x, f0, 0.05, false), 0.0);
+            assert!(raw > 3.5, "undetrended linear drift read {raw}");
+        }
+    }
+
+    /// An active trace's SNR moves by < 3 % when the same drift is added.
+    #[test]
+    fn drift_barely_moves_an_active_trace() {
+        let (fs, n, sigma) = (30.0, 54_000, 1.0);
+        // 90 events spread over the trace at three amplitudes; F0 =
+        // 40σ makes the 5 % drift 2σ.
+        let at: Vec<usize> = (0..90).map(|k| 300 + k * 590 + (k * 37) % 90).collect();
+        for amp in [6.0, 12.0, 25.0] {
+            let x = trace_with_events(n, sigma, amp, &at, 40.0, 41);
+            let base = measured_snr(&x, fs);
+            for (label, exponential) in [("linear", false), ("exp", true)] {
+                let d = add_drift(&x, 40.0 * sigma, 0.05, exponential);
+                let m = measured_snr(&d, fs);
+                assert!(
+                    (m / base - 1.0).abs() < 0.03,
+                    "amp {amp} {label}: {m} vs {base}"
+                );
+            }
+        }
+    }
+
+    /// Simulated active cells (slowest and fastest indicator, sparse and dense
+    /// firing): the same 5 % F0 drift (F0 = 2 × the robust signal) moves the
+    /// measured SNR by < 3 %.
+    #[test]
+    fn drift_barely_moves_simulated_cells() {
+        use crate::simulate::presets;
+        for name in ["gcamp6s", "jgcamp8f"] {
+            let p = presets::all()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .unwrap()
+                .1;
+            for rate in [0.3, 1.9] {
+                let mut cfg = p.clone();
+                cfg.fs_hz = 30.0;
+                cfg.num_timepoints = 18_000;
+                cfg.num_cells = 3;
+                cfg.noise.snr = 8.0;
+                cfg.noise.reference = NoiseReference::MeasuredSnr;
+                cfg.drift = DriftModel::RandomWalk(RandomWalkDrift {
+                    step_std_fraction: 0.0,
+                    ..Default::default()
+                });
+                cfg.spike_model = SpikeModel::Poisson(PoissonConfig { rate_hz: rate });
+                let r = simulate(&cfg);
+                let n = r.num_timepoints;
+                for c in 0..r.num_cells {
+                    let x = &r.traces[c * n..(c + 1) * n];
+                    let f0 = 2.0 * robust_signal(x, DEFAULT_TOP_FRACTION, 30.0);
+                    let base = measured_snr(x, 30.0);
+                    for exponential in [false, true] {
+                        let m = measured_snr(&add_drift(x, f0, 0.05, exponential), 30.0);
+                        assert!(
+                            (m / base - 1.0).abs() < 0.03,
+                            "{name} {rate} Hz cell {c}: {m} vs {base}"
+                        );
+                    }
+                }
             }
         }
     }
