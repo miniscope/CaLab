@@ -12,8 +12,5 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest"
-  },
-  "dependencies": {
-    "valibot": "^1.5.0"
   }
 }

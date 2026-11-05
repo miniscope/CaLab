@@ -2,7 +2,7 @@
 
 Shared types, pure utilities, domain math, and the WASM adapter for the CaLab monorepo.
 
-This is a **leaf package** with no local dependencies (`valibot` is the only external dependency). All other `@calab/*` packages and both apps depend on `@calab/core`.
+This is a **leaf package** with no dependencies. All other `@calab/*` packages and both apps depend on `@calab/core`.
 
 ```
 @calab/core  ← leaf (no local deps)
