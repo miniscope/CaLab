@@ -10,6 +10,7 @@ import type uPlot from 'uplot';
 import {
   computeBandLayout as computeSharedBandLayout,
   downsampleMinMax,
+  computeDisplayOffset,
   residualBandSeries,
   scaleToBand,
   type BandLayout,
@@ -208,6 +209,13 @@ export function TraceInspector(): JSX.Element {
   const filteredTrace = createMemo(
     (): Float32Array | null => effectiveResult()?.filteredTrace ?? null,
   );
+  // The working trace and fit live near 0 (baseline-subtracted); draw them on the
+  // Raw scale by adding back a constant display offset. Display only.
+  const displayOffset = createMemo(() => {
+    const raw = fullRawTrace();
+    const filt = filteredTrace();
+    return raw && filt ? computeDisplayOffset(raw, filt) : 0;
+  });
   // "Filtered" only when a filter actually ran; "Baseline-corrected" otherwise.
   const filteredLabel = () => solverInputLabel(hpFilterEnabled() || lpFilterEnabled());
 
@@ -318,6 +326,7 @@ export function TraceInspector(): JSX.Element {
 
     // Raw trace — plot raw fluorescence values, no normalization
     const rawSlice = raw.subarray(startSample, endSample);
+    const offset = displayOffset();
     const [dsX, dsRaw] = downsampleMinMax(x, rawSlice, DOWNSAMPLE_BUCKETS);
 
     // Filtered trace — raw values from solver (HP/LP already applied)
@@ -327,7 +336,7 @@ export function TraceInspector(): JSX.Element {
     if (isFiltered) {
       const filtSlice = filt.subarray(startSample, endSample);
       const [, dsFilt] = downsampleMinMax(x, filtSlice, DOWNSAMPLE_BUCKETS);
-      dsFiltered = dsFilt;
+      dsFiltered = dsFilt.map((v) => (v == null ? v : v + offset));
     } else {
       dsFiltered = new Array<null>(dsX.length).fill(null);
     }
@@ -339,6 +348,7 @@ export function TraceInspector(): JSX.Element {
     let dsFit: (number | null)[];
     if (reconSlice) {
       [, dsFit] = downsampleMinMax(x, reconSlice, DOWNSAMPLE_BUCKETS);
+      dsFit = dsFit.map((v) => (v == null ? v : v + offset));
     } else {
       dsFit = new Array<null>(dsX.length).fill(null);
     }
