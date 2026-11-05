@@ -434,8 +434,8 @@ def solve_trace(
     hp_enabled, lp_enabled : bool
         Enable high-pass / low-pass filtering.
     warm_counts : np.ndarray, optional
-        Accepted for API compatibility; currently has no effect (the first
-        scale-loop round ignores it).
+        Accepted for API compatibility; has no effect (the solve converges
+        on its own, so the output does not depend on a seed).
     lambda_ : float
         L1 sparsity penalty.
     noise_constrained : bool

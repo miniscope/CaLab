@@ -1,5 +1,5 @@
+use realfft::num_complex::Complex;
 use realfft::RealFftPlanner;
-use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
 use crate::validate::SolverError;
@@ -31,7 +31,7 @@ fn plans_missing() -> SolverError {
 /// Owns all FFT plans, scratch buffers, and the pre-computed kernel spectrum.
 /// Because it is a separate struct from `Solver`, callers can borrow it mutably
 /// while simultaneously borrowing other `Solver` fields (split borrows),
-/// eliminating the per-iteration `to_vec()` copies that were previously needed.
+/// so the iteration needs no per-step `to_vec()` copies.
 ///
 /// Buffers grow but never shrink to prevent WASM memory fragmentation.
 pub(crate) struct FftConvolver {

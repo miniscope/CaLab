@@ -121,9 +121,7 @@ pub(crate) fn median_and_mad(data: &[f32]) -> (f32, f32) {
 
 /// Tunable parameters for peak-seeded spike detection.
 ///
-/// `Default` reproduces the values that were previously hardcoded in
-/// `find_seed_spikes`, so behaviour is unchanged unless a caller overrides a
-/// field. Every field shifts which onsets get seeded, so per the no-magic-number
+/// `Default` holds the values every binding uses. Every field shifts which onsets get seeded, so per the no-magic-number
 /// rule none of them appears as a bare literal in the detection logic.
 #[derive(Clone, Copy, Debug)]
 pub struct SeedConfig {

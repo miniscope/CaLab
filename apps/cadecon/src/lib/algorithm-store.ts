@@ -37,8 +37,7 @@ const [finalSelectionWindow, setFinalSelectionWindow] = createSignal<number>(
 );
 
 // Inner-loop solver parameters. These directly affect deconvolution output, so
-// they are configurable (not hardcoded) and travel with the run; defaults match
-// the previously hardcoded values. Per-trace FISTA:
+// they are configurable (not hardcoded) and travel with the run. Per-trace FISTA:
 const [traceFistaMaxIters, setTraceFistaMaxIters] = createSignal(500);
 const [traceFistaTol, setTraceFistaTol] = createSignal(1e-4);
 // Per-subset free-form kernel estimation FISTA:
