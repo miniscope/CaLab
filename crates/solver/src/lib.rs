@@ -14,6 +14,7 @@ pub(crate) mod kernel_est;
 pub(crate) mod native_solve;
 pub(crate) mod peak_seed;
 pub(crate) mod simulate;
+pub(crate) mod snr;
 pub(crate) mod spread;
 #[allow(dead_code)]
 pub(crate) mod threshold;

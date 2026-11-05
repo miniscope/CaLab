@@ -2306,7 +2306,7 @@ mod tests {
         n_tp: usize,
     ) -> Vec<(&'static str, Vec<f32>, f64, f64, f64, usize)> {
         let mut out = Vec::new();
-        for (name, mut cfg) in crate::simulate::presets::all() {
+        for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = n_cells;
             cfg.num_timepoints = n_tp;
             let r = crate::simulate::simulate(&cfg);
@@ -2645,7 +2645,7 @@ mod tests {
     /// Drift-free preset cells: (name, trace, clean calcium, tau_r, tau_d, fs).
     fn drift_free_cells(n_tp: usize) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64)> {
         let mut out = Vec::new();
-        for (name, mut cfg) in crate::simulate::presets::all() {
+        for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = 2;
             cfg.num_timepoints = n_tp;
             cfg.drift = crate::simulate::DriftModel::RandomWalk(crate::simulate::RandomWalkDrift {
@@ -2769,7 +2769,7 @@ mod tests {
         dur_s: f64,
     ) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64, usize)> {
         let mut out = Vec::new();
-        for (name, mut cfg) in crate::simulate::presets::all() {
+        for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = 1;
             cfg.fs_hz = fs;
             let n_tp = (dur_s * fs).round() as usize;

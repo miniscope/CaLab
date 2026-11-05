@@ -34,6 +34,8 @@ function fakeSimulate(cfg: SimulationConfig): Promise<SimulationResult> {
       snr: 5,
       tau_rise_s: cfg.kernel.tau_rise_s,
       tau_decay_s: cfg.kernel.tau_decay_s,
+      noise_sigma: 0.1,
+      snr_1ap: 1,
     })),
   });
 }

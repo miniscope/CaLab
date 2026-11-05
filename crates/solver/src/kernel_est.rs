@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn gram_matches_reference_presets() {
         let mut worst = 0.0_f64;
-        for (name, mut cfg) in crate::simulate::presets::all() {
+        for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = 6;
             cfg.num_timepoints = 3000;
             let sim = crate::simulate::simulate(&cfg);

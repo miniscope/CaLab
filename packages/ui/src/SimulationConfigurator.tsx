@@ -28,7 +28,9 @@ export interface SimulationConfiguratorProps {
 
 function RangeSliderRow(props: {
   label: string;
-  ticks: readonly { id: string; label: string }[];
+  /** Tooltip on the row label. */
+  hint?: string;
+  ticks: readonly { id: string; label: string; hint?: string }[];
   range: [number, number];
   onChange: (range: [number, number]) => void;
 }) {
@@ -78,7 +80,9 @@ function RangeSliderRow(props: {
 
   return (
     <div class="sim-configurator__row">
-      <label class="sim-configurator__label">{props.label}</label>
+      <label class="sim-configurator__label" title={props.hint}>
+        {props.label}
+      </label>
       <div class="range-slider" onClick={handleTrackClick}>
         <div class="range-slider__track" />
         <div
@@ -104,6 +108,7 @@ function RangeSliderRow(props: {
               <span
                 class={`range-slider__tick-label${i() >= props.range[0] && i() <= props.range[1] ? ' range-slider__tick-label--active' : ''}`}
                 style={{ left: `${(i() / maxIdx()) * 100}%` }}
+                title={tick.hint}
               >
                 {tick.label}
               </span>
@@ -149,6 +154,7 @@ export function SimulationConfigurator(props: SimulationConfiguratorProps) {
       />
       <RangeSliderRow
         label="Noise"
+        hint="Measured SNR of each simulated trace: mean of its top 1 % of samples minus the median (after removing slow drift), over the noise σ (MAD of frame differences). Cells vary about ±50 % around the level (narrower at the two lowest levels, so none falls below 3). Burst-based: it compares cells with similar firing, not a per-spike SNR. Pure noise measures about 2.7, so values near 3 mean indistinguishable from noise. Hover a level for its value."
         ticks={NOISE_LEVELS}
         range={props.config.noise}
         onChange={(v) => update('noise', v)}

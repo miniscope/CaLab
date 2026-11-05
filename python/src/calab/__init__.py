@@ -43,6 +43,16 @@ from ._simulate import (
     presets,
     simulate,
 )
+from ._snr import (
+    Event,
+    SnrReport,
+    detect_events,
+    measured_snr,
+    measured_snr_report,
+    noise_level_nu,
+    noise_sigma_mad_diff,
+    peak_snr,
+)
 
 from importlib.metadata import version as _pkg_version
 
@@ -94,4 +104,13 @@ __all__ = [
     "SpikeModel",
     "presets",
     "simulate",
+    # SNR metrics
+    "Event",
+    "SnrReport",
+    "detect_events",
+    "measured_snr",
+    "measured_snr_report",
+    "noise_level_nu",
+    "noise_sigma_mad_diff",
+    "peak_snr",
 ]

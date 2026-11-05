@@ -164,10 +164,29 @@ impl RollingQuantile {
     /// Subtract the causal rolling `quantile` over `window` samples from
     /// `trace` in place (see [`subtract_rolling_baseline`]).
     pub(crate) fn subtract(&mut self, trace: &mut [f32], window: usize, quantile: f64) {
-        let n = trace.len();
-        if n == 0 || window == 0 {
+        if trace.is_empty() || window == 0 {
             return;
         }
+        self.compute(trace, window, quantile);
+        for (v, &b) in trace.iter_mut().zip(self.baselines.iter()) {
+            *v -= b;
+        }
+    }
+
+    /// The causal rolling `quantile` over `window` samples at every position
+    /// (empty for an empty trace or `window == 0`). The slice is valid until
+    /// the next call.
+    pub(crate) fn baselines(&mut self, trace: &[f32], window: usize, quantile: f64) -> &[f32] {
+        if trace.is_empty() || window == 0 {
+            self.baselines.clear();
+        } else {
+            self.compute(trace, window, quantile);
+        }
+        &self.baselines
+    }
+
+    fn compute(&mut self, trace: &[f32], window: usize, quantile: f64) {
+        let n = trace.len();
         self.sort_ranks(trace);
         let words = n.div_ceil(64);
         self.bits.clear();
@@ -223,9 +242,6 @@ impl RollingQuantile {
                 !key
             };
             self.baselines.push(f32::from_bits(b));
-        }
-        for (v, &b) in trace.iter_mut().zip(self.baselines.iter()) {
-            *v -= b;
         }
     }
 }

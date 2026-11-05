@@ -35,3 +35,63 @@ pub fn get_simulation_presets() -> Result<JsValue, JsError> {
     let presets = simulate::presets::all();
     to_js("get_simulation_presets", &presets)
 }
+
+// ── Real-data SNR metrics (see `crate::snr`) ─────────────────────
+
+/// Noise σ from the MAD of first differences (Krisha Aghi's estimator).
+#[wasm_bindgen]
+pub fn snr_noise_sigma_mad_diff(trace: &[f32]) -> f64 {
+    crate::snr::noise_sigma_mad_diff(trace)
+}
+
+/// CASCADE noise level ν = median|Δ(ΔF/F)| / √fs (pass ΔF/F in percent).
+#[wasm_bindgen]
+pub fn snr_noise_level_nu(trace_dff: &[f32], fs: f64) -> f64 {
+    crate::snr::noise_level_nu(trace_dff, fs)
+}
+
+/// Descriptive peak SNR: (mean of the top `top_fraction` of samples − median) / σ.
+#[wasm_bindgen]
+pub fn snr_peak(trace: &[f32], sigma: f64, top_fraction: f64, fs: f64) -> f64 {
+    crate::snr::peak_snr(trace, sigma, top_fraction, fs)
+}
+
+/// Measured SNR: `snr_peak` with the MAD-diff σ and the default 1 % top
+/// fraction. Burst-based: compares cells that share a burst-size distribution.
+#[wasm_bindgen]
+pub fn snr_measured(trace: &[f32], fs: f64) -> f64 {
+    crate::snr::measured_snr(trace, fs)
+}
+
+/// The default top fraction used by `snr_measured`.
+#[wasm_bindgen]
+pub fn snr_default_top_fraction() -> f64 {
+    crate::snr::DEFAULT_TOP_FRACTION
+}
+
+/// Detect calcium events (see `crate::snr::detect_events`).
+///
+/// `sigma` is the noise std (pass `snr_noise_sigma_mad_diff(trace)`);
+/// `min_separation_samples` is about the indicator decay time in samples.
+/// Returns `{ time_index, height, baseline }[]`.
+#[wasm_bindgen]
+pub fn snr_detect_events(
+    trace: &[f32],
+    sigma: f64,
+    min_separation_samples: u32,
+) -> Result<JsValue, JsError> {
+    let events = crate::snr::detect_events(trace, sigma, min_separation_samples as usize);
+    to_js("snr_detect_events", &events)
+}
+
+/// Measured SNR with the silent flag (see `crate::snr::measured_snr_report`).
+/// Returns `{ snr, sigma, n_events, is_silent }`.
+#[wasm_bindgen]
+pub fn snr_measured_report(
+    trace: &[f32],
+    fs: f64,
+    min_separation_samples: u32,
+) -> Result<JsValue, JsError> {
+    let report = crate::snr::measured_snr_report(trace, fs, min_separation_samples as usize);
+    to_js("snr_measured_report", &report)
+}
