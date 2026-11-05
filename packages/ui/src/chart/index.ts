@@ -26,6 +26,11 @@ export {
   withOpacity,
   solverInputLabel,
 } from './series-utils.ts';
+export {
+  createGroundTruthSpikesSeries,
+  createGroundTruthCalciumSeries,
+  createGroundTruthKernelSeries,
+} from './ground-truth-series.ts';
 export { TracePanel } from './TracePanel.tsx';
 export type { TracePanelProps } from './TracePanel.tsx';
 export { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from './TraceOverview.tsx';

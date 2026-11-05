@@ -7,7 +7,12 @@
 
 import { createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js';
 import type uPlot from 'uplot';
-import { ZoomWindow, transientZonePlugin } from '@calab/ui/chart';
+import {
+  ZoomWindow,
+  transientZonePlugin,
+  createGroundTruthSpikesSeries,
+  createGroundTruthCalciumSeries,
+} from '@calab/ui/chart';
 import {
   computeBandLayout,
   downsampleMinMax,
@@ -22,8 +27,6 @@ import {
   createDeconvolvedSeries,
   createResidualSeries,
   createPinnedOverlaySeries,
-  createGroundTruthSpikesSeries,
-  createGroundTruthCalciumSeries,
 } from '../../lib/chart/series-config.ts';
 import {
   showRaw,
