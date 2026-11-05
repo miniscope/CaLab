@@ -457,3 +457,21 @@
 .ov-flags__more {
   color: var(--text-tertiary);
 }
+
+/* Sidebar layout: one card per row at full width, each tall enough for its
+   plot (~180-200 px) plus title, subtitle, legend and footer. The flag list
+   sizes to its rows. The sidebar itself scrolls. */
+.ov-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.ov-stack > .ov-card {
+  flex: none;
+  height: 270px;
+}
+
+.ov-stack > .ov-card[data-testid='overview-flags'] {
+  height: auto;
+}

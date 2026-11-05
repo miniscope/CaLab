@@ -23,7 +23,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="header-bar"]',
       title: 'The Dashboard',
       description:
-        'The header shows your dataset: filename, cell count, timepoints, sampling rate, and duration. The worker indicator (a light-grey “w” with a number) shows how many parallel workers are available — CaDecon deconvolves many traces at once, and the worker count is optimized automatically based on available memory. Action buttons on the right open the tutorials, the community sidebar, and feedback, and let you switch datasets.',
+        'The header shows your dataset: filename, cell count, timepoints, sampling rate, and duration. The worker indicator (a light-grey “w” with a number) shows how many parallel workers are available — CaDecon deconvolves many traces at once, and the worker count is optimized automatically based on available memory. Action buttons on the right open the tutorials, the sidebar (dataset overview and community), and feedback, and let you switch datasets.',
       side: 'bottom',
     },
     // Step 3: The control sidebar overview
@@ -67,7 +67,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="kernel-convergence"]',
       title: 'Watching It Converge',
       description:
-        'Before a run, the <b>Dataset</b> tab summarises the imported traces without any model: SNR per cell, event-height shapes, baseline drift and quality flags (click a flag or drag across a chart to highlight those cells in the raster). As the run iterates, the other tabs track the learning process. <b>Asymptote</b> (shown when you press Start) is the at-a-glance health check \u2014 small charts of the signals that should settle as the run converges: the kernel-change RMSE and activity change (both decaying toward 0 / the tolerance band), plus kernel-fit quality (R\u00b2) and reconstruction quality (PVE). <b>Kernel</b> shows the kernel shape evolving over iterations with the per-subset spread; <b>Results</b> plots each cell\u2019s PVE against its SNR with the dataset\u2019s noise ceiling, beside the alpha and event-rate histograms. A good run shows the Asymptote curves leveling off \u2014 don\u2019t judge a fit until the run has converged.',
+        'These tabs track the learning process as the run iterates (the model-free <b>Dataset</b> overview of the imported traces, with SNR, event heights, baseline drift and quality flags, lives in the right sidebar). <b>Asymptote</b> (shown when you press Start) is the at-a-glance health check \u2014 small charts of the signals that should settle as the run converges: the kernel-change RMSE and activity change (both decaying toward 0 / the tolerance band), plus kernel-fit quality (R\u00b2) and reconstruction quality (PVE). <b>Kernel</b> shows the kernel shape evolving over iterations with the per-subset spread; <b>Results</b> plots each cell\u2019s PVE against its SNR with the dataset\u2019s noise ceiling, beside the alpha and event-rate histograms. A good run shows the Asymptote curves leveling off \u2014 don\u2019t judge a fit until the run has converged.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
