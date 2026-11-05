@@ -63,7 +63,9 @@ export function pooledBounds(
  * sum, window truncated at the edges). Non-finite samples are ignored (a bin
  * with none is NaN). `rawCols` is the stored row length; when `swapped` the raw
  * layout is frames-major (index = t * rawCols + cell). outRows/outCols are
- * clamped to [1, N] / [1, T] (never upsamples).
+ * clamped to [1, N] / [1, T] (never upsamples). `displayRowOf` (optional,
+ * length N) is the display row of each cell, for a sorted raster; by default
+ * cell n is row n.
  */
 export function poolRawMax(
   data: ArrayLike<number>,
@@ -74,12 +76,16 @@ export function poolRawMax(
   outRows: number,
   outCols: number,
   smoothWidth = 1,
+  displayRowOf?: ArrayLike<number>,
 ): { out: Float32Array; rows: number; cols: number } {
   const w = Math.max(1, Math.floor(smoothWidth));
   const rows = Math.max(1, Math.min(N, Math.floor(outRows)));
   const cols = Math.max(1, Math.min(T, Math.floor(outCols)));
   const out = new Float32Array(rows * cols).fill(-Infinity);
-  const rowOf = binMap(N, rows);
+  const binOfRow = binMap(N, rows);
+  const rowOf = displayRowOf
+    ? Array.from({ length: N }, (_, n) => binOfRow[displayRowOf[n]])
+    : binOfRow;
   const colOf = binMap(T, cols);
   // Non-finite samples read as 0 inside the moving average and are skipped by max.
   const val = (x: number) => (Number.isFinite(x) ? x : 0);

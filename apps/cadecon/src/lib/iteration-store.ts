@@ -78,6 +78,13 @@ export interface TraceResultEntry {
   baseline: number;
   threshold: number;
   pve: number;
+  /**
+   * Processed-space PVE ceiling of this solve: 1 − noiseVarProcessed /
+   * Var(filteredTrace), the PVE a fit can reach before it fits noise. Solver
+   * output (feeds the Results ceiling curve), never derived from the overview.
+   * null when the solver measured no noise floor.
+   */
+  pveCeiling?: number | null;
   /** Spike counts from the opposite noise-constrained setting (comparison overlay). */
   comparisonSCounts?: Float32Array;
 }

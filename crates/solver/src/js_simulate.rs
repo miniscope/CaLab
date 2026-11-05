@@ -95,3 +95,26 @@ pub fn snr_measured_report(
     let report = crate::snr::measured_snr_report(trace, fs, min_separation_samples as usize);
     to_js("snr_measured_report", &report)
 }
+
+/// Model-free per-cell dataset-overview metrics (see `crate::overview`).
+///
+/// Returns a plain object with snake_case fields (see `CellOverview`).
+/// `nu: None` arrives as `undefined`; NaN in `baseline_bins` /
+/// `baseline_start` / `baseline_end` arrives as a JS `NaN` number.
+#[wasm_bindgen]
+pub fn overview_cell(
+    trace: &[f32],
+    fs: f64,
+    min_separation_samples: u32,
+    is_dff: bool,
+    n_baseline_bins: u32,
+) -> Result<JsValue, JsError> {
+    let o = crate::overview::cell_overview(
+        trace,
+        fs,
+        min_separation_samples as usize,
+        is_dff,
+        n_baseline_bins as usize,
+    );
+    to_js("overview_cell", &o)
+}

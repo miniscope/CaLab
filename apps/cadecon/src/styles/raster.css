@@ -24,3 +24,59 @@
   height: 100%;
   cursor: pointer;
 }
+
+.raster-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.raster-header .panel-label {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.raster-header__sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.raster-header__sort select {
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.raster-container {
+  position: relative;
+}
+
+.raster-tooltip {
+  position: absolute;
+  z-index: 3;
+  padding: 2px 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-elevated);
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.raster-sorted-note {
+  position: absolute;
+  right: 16px;
+  top: 0;
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}

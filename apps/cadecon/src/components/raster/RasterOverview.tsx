@@ -1,11 +1,29 @@
-import { onMount, onCleanup, createEffect, createMemo, on, type JSX } from 'solid-js';
+import {
+  onMount,
+  onCleanup,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  Show,
+  type JSX,
+} from 'solid-js';
+import { sortCells, rowOfCell, isNearNoiseFloor, FLAG_LABELS, type CellSortKey } from '@calab/core';
 import { parsedData, effectiveShape, swapped, durationSeconds } from '../../lib/data-store.ts';
 import {
   subsetRectangles,
   selectedSubsetIdx,
   setSelectedSubsetIdx,
 } from '../../lib/subset-store.ts';
-import { VIRIDIS_LUT, niceTicks, AXIS_TEXT } from '@calab/ui/chart';
+import { VIRIDIS_LUT, niceTicks, AXIS_TEXT, viridisCss, getThemeColors } from '@calab/ui/chart';
+import { overview } from '../../lib/overview-store.ts';
+import {
+  highlightedCells,
+  inspectedCellIndex,
+  setInspectedCellIndex,
+  rasterSort,
+  setRasterSort,
+} from '../../lib/viz-store.ts';
 import {
   poolRawMax,
   poolMatrixMax,
@@ -19,7 +37,13 @@ import '../../styles/raster.css';
 // (bottom); the heatmap fills the inner plot rect. No intensity colorbar —
 // viridis runs low→high activity and the absolute values aren't meaningful.
 // Right margin is just enough to keep the last time-axis label from clipping.
-const MARGIN_LEFT = 42;
+// Left of the heatmap: cell axis, then the annotation strip (SNR quantile
+// colour + flag column). Right: the highlight marks.
+const STRIP_SNR_W = 6;
+const STRIP_FLAG_W = 4;
+const STRIP_GAP = 2;
+const STRIP_W = STRIP_SNR_W + STRIP_FLAG_W + 2 * STRIP_GAP;
+const MARGIN_LEFT = 42 + STRIP_W;
 const MARGIN_RIGHT = 14;
 const MARGIN_TOP = 10;
 const MARGIN_BOTTOM = 30;
@@ -55,10 +79,37 @@ function formatTick(v: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
+const SORT_OPTIONS: { key: CellSortKey; label: string }[] = [
+  { key: 'index', label: 'Index' },
+  { key: 'snr', label: 'SNR' },
+  { key: 'eventRate', label: 'Event rate' },
+  { key: 'flags', label: 'Flags' },
+];
+
 export function RasterOverview(): JSX.Element {
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
   let resizeObserver: ResizeObserver | undefined;
+
+  const [hoverInfo, setHoverInfo] = createSignal<{ x: number; y: number; text: string } | null>(
+    null,
+  );
+
+  // Display order of cells (row -> cell) and its inverse; index order until
+  // the overview exists. Sorting is display only.
+  const order = createMemo((): number[] | null => {
+    const ov = overview();
+    const key = rasterSort();
+    if (!ov || key === 'index') return null;
+    return sortCells(ov, key);
+  });
+  const displayRowOf = createMemo(() => {
+    const o = order();
+    return o ? rowOfCell(o) : null;
+  });
+  const cellAtRow = (row: number) => order()?.[row] ?? row;
+  const rowOfCellIdx = (cell: number) => displayRowOf()?.[cell] ?? cell;
+  const isSorted = () => order() != null;
 
   // Cached inner plot rect (CSS px) for click hit-testing against subset boxes.
   let plotX = MARGIN_LEFT;
@@ -108,6 +159,7 @@ export function RasterOverview(): JSX.Element {
       BASE_MAX_ROWS,
       BASE_MAX_COLS,
       w,
+      displayRowOf() ?? undefined,
     );
     return { ...pooled, smoothed: w > 1 };
   });
@@ -209,7 +261,102 @@ export function RasterOverview(): JSX.Element {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     drawAxes(ctx, N, T);
-    drawSubsets(ctx, N, T);
+    drawAnnotations(ctx, N);
+    if (!isSorted()) drawSubsets(ctx, N, T);
+  };
+
+  /**
+   * Row annotations: SNR quantile colour and flag marks left of the heatmap,
+   * highlight marks right of it, and an outline on the inspected row. Rows
+   * thinner than a pixel are pooled: a pixel row shows its best SNR rank and
+   * any flag/highlight among its cells.
+   */
+  const drawAnnotations = (ctx: CanvasRenderingContext2D, N: number) => {
+    const ov = overview();
+    const theme = getThemeColors();
+    const stripX = plotX - STRIP_W;
+    const rowsPx = Math.max(1, Math.round(plotH));
+    const rowH = plotH / rowsPx;
+    const hl = highlightedCells();
+    if (ov) {
+      for (let py = 0; py < rowsPx; py++) {
+        const r0 = Math.floor((py / rowsPx) * N);
+        const r1 = Math.max(r0 + 1, Math.floor(((py + 1) / rowsPx) * N));
+        let best = -1;
+        let flagged = false;
+        let lit = false;
+        for (let r = r0; r < r1 && r < N; r++) {
+          const c = cellAtRow(r);
+          const rank = ov.snrRank[c];
+          if (Number.isFinite(rank) && rank > best) best = rank;
+          if (ov.flags[c].length > 0) flagged = true;
+          if (hl?.has(c)) lit = true;
+        }
+        const y = plotY + py * rowH;
+        if (best >= 0) {
+          ctx.fillStyle = viridisCss(best);
+          ctx.fillRect(stripX + STRIP_GAP, y, STRIP_SNR_W, Math.ceil(rowH));
+        }
+        if (flagged) {
+          ctx.fillStyle = '#d32f2f';
+          ctx.fillRect(stripX + STRIP_GAP + STRIP_SNR_W + 1, y, STRIP_FLAG_W - 1, Math.ceil(rowH));
+        }
+        if (lit) {
+          ctx.fillStyle = theme.accent;
+          ctx.fillRect(plotX + plotW + 2, y, 5, Math.ceil(rowH));
+        }
+      }
+    }
+    // Inspected cell: outline its row across the heatmap.
+    const sel = inspectedCellIndex();
+    if (sel != null && sel < N) {
+      const r = rowOfCellIdx(sel);
+      const y0 = plotY + (r / N) * plotH;
+      const h = Math.max(2, plotH / N);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(plotX - 0.5, y0 - 0.5, plotW + 1, h + 1);
+      ctx.fillStyle = theme.accent;
+      ctx.beginPath();
+      ctx.moveTo(plotX + plotW + 2, y0 + h / 2);
+      ctx.lineTo(plotX + plotW + 9, y0 + h / 2 - 4);
+      ctx.lineTo(plotX + plotW + 9, y0 + h / 2 + 4);
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+
+  /** Cell under a canvas-relative point (null outside the rows). */
+  const cellAtPoint = (my: number): number | null => {
+    const shape = effectiveShape();
+    if (!shape || plotH <= 0) return null;
+    const row = Math.floor(((my - plotY) / plotH) * shape[0]);
+    if (row < 0 || row >= shape[0]) return null;
+    return cellAtRow(row);
+  };
+
+  const handleMove = (e: MouseEvent) => {
+    const canvas = canvasRef;
+    if (!canvas) return;
+    const b = canvas.getBoundingClientRect();
+    const mx = e.clientX - b.left;
+    const my = e.clientY - b.top;
+    const cell = mx >= plotX - STRIP_W && mx <= plotX + plotW ? cellAtPoint(my) : null;
+    if (cell == null) {
+      setHoverInfo(null);
+      return;
+    }
+    const ov = overview();
+    const parts = [`Cell ${cell}`];
+    if (ov) {
+      const c = ov.cells[cell];
+      parts.push(
+        `SNR ${Number.isFinite(c.snr) ? c.snr.toFixed(1) : '--'}${isNearNoiseFloor(c.snr) ? ' (≈ noise floor)' : ''}`,
+      );
+      const f = ov.flags[cell];
+      if (f.length) parts.push(f.map((k) => FLAG_LABELS[k]).join(', '));
+    }
+    setHoverInfo({ x: mx, y: my, text: parts.join(' · ') });
   };
 
   /** Time axis (bottom) + cell axis (left). */
@@ -242,11 +389,13 @@ export function RasterOverview(): JSX.Element {
     for (const cv of niceTicks(0, N, 6)) {
       if (cv > N) continue;
       const yPx = plotY + (cv / N) * plotH;
+      // The cell axis sits left of the annotation strip.
+      const axisX = plotX - STRIP_W;
       ctx.beginPath();
-      ctx.moveTo(plotX - 4, yPx);
-      ctx.lineTo(plotX, yPx);
+      ctx.moveTo(axisX - 4, yPx);
+      ctx.lineTo(axisX, yPx);
       ctx.stroke();
-      ctx.fillText(String(cv), plotX - 6, yPx);
+      ctx.fillText(String(cv), axisX - 6, yPx);
     }
     ctx.save();
     ctx.translate(11, plotY + plotH / 2);
@@ -307,6 +456,12 @@ export function RasterOverview(): JSX.Element {
     const mx = e.clientX - bRect.left;
     const my = e.clientY - bRect.top;
 
+    // Every click on a row inspects that cell in the Trace Inspector.
+    const cell = mx >= plotX - STRIP_W && mx <= plotX + plotW ? cellAtPoint(my) : null;
+    if (cell != null) setInspectedCellIndex(cell);
+    // Subset boxes are drawn (and clickable) only in index order.
+    if (isSorted()) return;
+
     const rects = subsetRectangles();
 
     // Check if click is inside any rectangle (reverse order for z-order).
@@ -342,14 +497,71 @@ export function RasterOverview(): JSX.Element {
   // Redraw when data, shape, timebase, subsets, or selection changes.
   createEffect(
     on(
-      [parsedData, effectiveShape, swapped, durationSeconds, subsetRectangles, selectedSubsetIdx],
+      [
+        parsedData,
+        effectiveShape,
+        swapped,
+        durationSeconds,
+        subsetRectangles,
+        selectedSubsetIdx,
+        overview,
+        order,
+        highlightedCells,
+        inspectedCellIndex,
+      ],
       drawRaster,
     ),
   );
 
   return (
-    <div class="raster-container" ref={containerRef}>
-      <canvas ref={canvasRef} class="raster-canvas" onClick={handleClick} />
-    </div>
+    <>
+      <div class="raster-header">
+        <p class="panel-label">Raster Overview</p>
+        <label class="raster-header__sort">
+          Sort
+          <select
+            aria-label="Sort raster rows"
+            value={rasterSort()}
+            disabled={!overview()}
+            onChange={(e) => setRasterSort(e.currentTarget.value as CellSortKey)}
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option value={o.key}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div class="raster-container" ref={containerRef}>
+        <canvas
+          ref={canvasRef}
+          class="raster-canvas"
+          onClick={handleClick}
+          onMouseMove={handleMove}
+          onMouseLeave={() => setHoverInfo(null)}
+        />
+        <Show when={hoverInfo()}>
+          {(h) => (
+            <div
+              class="raster-tooltip"
+              style={
+                h().x > plotX + plotW * 0.55
+                  ? {
+                      right: `${plotX + plotW - h().x + MARGIN_RIGHT + 12}px`,
+                      top: `${Math.max(0, h().y - 26)}px`,
+                    }
+                  : { left: `${h().x + 12}px`, top: `${Math.max(0, h().y - 26)}px` }
+              }
+            >
+              {h().text}
+            </div>
+          )}
+        </Show>
+        <Show when={isSorted()}>
+          <div class="raster-sorted-note" title="Subset boxes are drawn in index order only">
+            Sorted by {SORT_OPTIONS.find((o) => o.key === rasterSort())?.label}; subset boxes hidden
+          </div>
+        </Show>
+      </div>
+    </>
   );
 }

@@ -16,6 +16,7 @@ import {
   type WorkerPool,
 } from '@calab/compute';
 import { createCaDeconWorkerPool, type CaDeconPoolJob } from './cadecon-pool.ts';
+import { processedCeiling } from '@calab/core';
 import type {
   TraceResult,
   KernelResult,
@@ -788,7 +789,13 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
     // Map cell → latest scalar results from whichever subset last processed it
     const cellScalars = new Map<
       number,
-      { alpha: number; baseline: number; threshold: number; pve: number }
+      {
+        alpha: number;
+        baseline: number;
+        threshold: number;
+        pve: number;
+        pveCeiling: number | null;
+      }
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
     const cellFiltered = new Map<number, Float32Array>();
@@ -823,11 +830,13 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           }
           fullCmp.set(result.comparisonSCounts, rect.tStart);
         }
+        const pveCeiling = processedCeiling(result.filteredTrace, result.noiseVarProcessed);
         cellScalars.set(cell, {
           alpha: result.alpha,
           baseline: result.baseline,
           threshold: result.threshold,
           pve: result.pve,
+          pveCeiling,
         });
 
         // Accumulate per cell×subset result for alpha/threshold trends tracking
@@ -840,6 +849,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           baseline: result.baseline,
           threshold: result.threshold,
           pve: result.pve,
+          pveCeiling,
           comparisonSCounts: result.comparisonSCounts,
         };
       }
@@ -859,6 +869,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         baseline: scalars.baseline,
         threshold: scalars.threshold,
         pve: scalars.pve,
+        pveCeiling: scalars.pveCeiling,
         comparisonSCounts: cellComparison.get(cell),
       };
     }
@@ -1142,6 +1153,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
               baseline: result.baseline,
               threshold: result.threshold,
               pve: result.pve,
+              pveCeiling: processedCeiling(result.filteredTrace, result.noiseVarProcessed),
               comparisonSCounts: result.comparisonSCounts,
             });
             settle();

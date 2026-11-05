@@ -1,0 +1,477 @@
+/* Dataset-overview cards (shared by CaDecon and, later, CaTune).
+   Colours come from the design tokens so a future dark theme applies. */
+
+.ov-card {
+  --ov-point: color-mix(in srgb, var(--text-secondary) 60%, transparent);
+  --ov-point-strong: var(--text-primary);
+  --ov-point-dim: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.ov-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 18px;
+}
+
+.ov-card__title {
+  flex: 1;
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-card__subtitle {
+  margin: 0 0 1px;
+  font-size: 0.66rem;
+  line-height: 1.25;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Inline key: one small line that wraps when the card is narrow. */
+.ov-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-sm);
+  margin: 0 0 2px;
+  padding: 0;
+  list-style: none;
+  font-size: 0.62rem;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+
+.ov-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.ov-legend__swatch {
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.ov-legend__swatch * {
+  cursor: inherit;
+}
+
+/* Thin plot strokes are hard to read at swatch size; keep their colour. */
+.ov-legend__swatch line {
+  stroke-width: 2px;
+}
+
+/* One-line, data-driven reading of a chart (sits in the footer row). */
+.ov-takeaway {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-takeaway--warn {
+  padding-left: 4px;
+  border-left: 2px solid var(--warning);
+  color: var(--text-primary);
+}
+
+.ov-card__help-btn {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  line-height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ov-card__help-btn:hover,
+.ov-card__help-btn[aria-expanded='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ov-card__help {
+  position: absolute;
+  z-index: 5;
+  top: 24px;
+  left: var(--space-sm);
+  right: var(--space-sm);
+  max-height: calc(100% - 28px);
+  overflow: auto;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ov-card__help p {
+  margin: 0 0 4px;
+}
+
+.ov-card__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ov-card__footer {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  font-size: 0.64rem;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.ov-hist {
+  position: relative;
+  flex: 1;
+  min-height: 60px;
+  overflow: hidden;
+}
+
+.ov-svg,
+.ov-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.ov-svg {
+  overflow: visible;
+  user-select: none;
+  touch-action: none;
+}
+
+.ov-svg[role='img'] {
+  cursor: crosshair;
+}
+
+.ov-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: var(--space-xs);
+}
+
+.ov-split__main,
+.ov-split__side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ov-tick {
+  font-size: 9px;
+  fill: var(--text-secondary);
+}
+
+.ov-axis-label {
+  font-size: 9px;
+  fill: var(--text-tertiary);
+}
+
+.ov-axis {
+  stroke: var(--border-default);
+}
+
+.ov-grid {
+  stroke: var(--border-subtle);
+}
+
+.ov-shade {
+  fill: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+}
+
+.ov-shade__label {
+  font-size: 9px;
+  fill: var(--text-tertiary);
+}
+
+/* Reference line at the "typical" value (e.g. baseline ratio 1). */
+.ov-ref {
+  stroke: var(--text-tertiary);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.ov-ref__label {
+  font-size: 9px;
+  fill: var(--text-secondary);
+}
+
+.ov-curve-label {
+  font-size: 9px;
+  fill: var(--text-primary);
+}
+
+/* On-plot labels stay readable over data: a background-coloured halo. */
+.ov-ref__label,
+.ov-curve-label,
+.ov-marker__label,
+.ov-shade__label,
+.ov-halo-text {
+  paint-order: stroke;
+  stroke: var(--bg-primary);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.ov-bar {
+  stroke: none;
+}
+
+.ov-bar--dim {
+  opacity: 0.35;
+}
+
+.ov-bar--hl {
+  fill: var(--accent);
+}
+
+.ov-marker {
+  stroke: var(--text-secondary);
+  stroke-width: 1;
+}
+
+.ov-marker--dashed {
+  stroke-dasharray: 3 2;
+}
+
+.ov-marker__label {
+  font-size: 9px;
+  fill: var(--text-secondary);
+}
+
+.ov-band {
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
+  stroke: none;
+}
+
+.ov-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+}
+
+.ov-curve {
+  fill: none;
+  stroke-width: 1;
+  cursor: pointer;
+}
+
+.ov-curve--flag {
+  stroke: var(--error);
+  opacity: 0.75;
+}
+
+.ov-curve--highlight {
+  stroke: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.ov-curve--selected {
+  stroke: var(--text-primary);
+  stroke-width: 2;
+}
+
+.ov-curve-main {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+}
+
+.ov-curve-band {
+  fill: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  stroke: none;
+}
+
+.ov-halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.ov-brush {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  stroke: var(--accent);
+  stroke-dasharray: 3 2;
+}
+
+.ov-tooltip {
+  position: absolute;
+  z-index: 4;
+  max-width: 180px;
+  padding: 3px 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-elevated);
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre-line;
+  pointer-events: none;
+}
+
+.ov-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 100%;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.ov-empty--overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ov-flags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.ov-flags__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0;
+  line-height: 1.25;
+}
+
+.ov-flags__row--active {
+  background: var(--accent-muted);
+}
+
+.ov-flags__row--zero {
+  opacity: 0.55;
+}
+
+.ov-flags__main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: var(--text-primary);
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.ov-flags__main:disabled {
+  cursor: default;
+}
+
+.ov-flags__row--active .ov-flags__main {
+  color: var(--accent);
+}
+
+.ov-flags__count {
+  min-width: 2.2em;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-semibold);
+}
+
+.ov-flags__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-flags__ids {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+
+.ov-flags__id {
+  padding: 0 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ov-flags__id:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ov-flags__more {
+  color: var(--text-tertiary);
+}
+
+/* Sidebar layout: one card per row at full width, each tall enough for its
+   plot (~180-200 px) plus title, subtitle, legend and footer. The flag list
+   sizes to its rows. The sidebar itself scrolls. */
+.ov-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.ov-stack > .ov-card {
+  flex: none;
+  height: 270px;
+}
+
+.ov-stack > .ov-card[data-testid='overview-flags'] {
+  height: auto;
+}

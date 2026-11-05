@@ -129,7 +129,7 @@ pub const DETREND_QUANTILE: f64 = 0.2;
 /// no drift worth removing, and a global quantile is just a constant.
 pub const DETREND_WINDOW_S: f64 = 60.0;
 
-fn finite_f64(trace: &[f32]) -> Vec<f64> {
+pub(crate) fn finite_f64(trace: &[f32]) -> Vec<f64> {
     trace
         .iter()
         .filter(|v| v.is_finite())
@@ -138,7 +138,7 @@ fn finite_f64(trace: &[f32]) -> Vec<f64> {
 }
 
 /// Median of a slice (reorders it). Empty input returns 0.
-fn median_in_place(v: &mut [f64]) -> f64 {
+pub(crate) fn median_in_place(v: &mut [f64]) -> f64 {
     let n = v.len();
     if n == 0 {
         return 0.0;
@@ -155,7 +155,7 @@ fn median_in_place(v: &mut [f64]) -> f64 {
 }
 
 /// Median of |x[t+1] − x[t]| over consecutive samples.
-fn median_abs_diff(x: &[f64]) -> f64 {
+pub(crate) fn median_abs_diff(x: &[f64]) -> f64 {
     if x.len() < 2 {
         return 0.0;
     }
@@ -529,7 +529,7 @@ pub fn measured_snr_report(trace: &[f32], fs: f64, min_separation_samples: usize
     }
 }
 
-fn ratio(signal: f64, sigma: f64) -> f64 {
+pub(crate) fn ratio(signal: f64, sigma: f64) -> f64 {
     if sigma > 0.0 {
         signal / sigma
     } else if signal > 0.0 {

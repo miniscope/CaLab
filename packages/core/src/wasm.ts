@@ -11,6 +11,7 @@ export {
   indeca_fit_biexponential,
   indeca_compute_upsample_factor,
   seed_trace,
+  overview_cell,
   simulate_traces,
   get_simulation_presets,
   solver_version,

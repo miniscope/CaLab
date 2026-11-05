@@ -49,6 +49,9 @@ export interface KernelResult {
 /** Previous biexponential result for warm-starting the next fit (fit_mode not needed). */
 export type WarmBiexp = Omit<KernelResult, 'hFree' | 'fitMode'>;
 
+/** Model-free per-cell overview metrics (display only; never fed to the solver). */
+export type { CellOverview } from '@calab/core';
+
 /** Messages sent TO a CaDecon worker. */
 export type CaDeconWorkerInbound =
   | {
@@ -102,6 +105,19 @@ export type CaDeconWorkerInbound =
       trace: Float32Array;
       fs: number;
     }
+  | {
+      /** Dataset overview pass: model-free metrics for a chunk of cells. */
+      type: 'overview-job';
+      jobId: number;
+      /** nCells traces of nTimepoints samples each, cell-major. */
+      tracesFlat: Float32Array;
+      nCells: number;
+      nTimepoints: number;
+      fs: number;
+      minSeparationSamples: number;
+      isDff: boolean;
+      baselineBins: number;
+    }
   | { type: 'cancel' };
 
 /** Messages sent FROM a CaDecon worker. */
@@ -110,5 +126,6 @@ export type CaDeconWorkerOutbound =
   | { type: 'trace-complete'; jobId: number; result: TraceResult }
   | { type: 'kernel-complete'; jobId: number; result: KernelResult }
   | { type: 'seed-trace-complete'; jobId: number; result: SeedTraceResult }
+  | { type: 'overview-complete'; jobId: number; cells: import('@calab/core').CellOverview[] }
   | { type: 'cancelled'; jobId: number }
   | { type: 'error'; jobId: number; message: string };

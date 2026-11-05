@@ -30,6 +30,40 @@ export { computePeakSNR, snrToQuality } from './metrics/snr.ts';
 export type { QualityTier } from './metrics/snr.ts';
 export type { SnrEvent, SnrReport } from './metrics/snr-events.ts';
 export {
+  OVERVIEW_PARAMS,
+  HEIGHT_PROBS,
+  FLAG_LABELS,
+  FLAG_DESCRIPTIONS,
+  FLAG_ORDER,
+  MIN_CEILING_CELLS,
+  quantileSorted,
+  medianOf,
+  quantileRanks,
+  robustZ,
+  cellOverviewFromJson,
+  heightShapeDistance,
+  populationBaseline,
+  buildDatasetOverview,
+  isNearNoiseFloor,
+  cellsWithFlag,
+  flagCounts,
+  sortCells,
+  rowOfCell,
+  processedCeiling,
+  ceilingAt,
+  fitCeilingC,
+} from './metrics/dataset-overview.ts';
+export type {
+  CellOverview,
+  CellOverviewJson,
+  QualityFlag,
+  BaselineMode,
+  PopulationBaseline,
+  DatasetOverview,
+  CellSortKey,
+  CeilingFit,
+} from './metrics/dataset-overview.ts';
+export {
   computeSparsityRatio,
   computeResidualRMS,
   computeRSquared,

@@ -4,6 +4,9 @@
  * A tab's content is only mounted the first time it becomes active.
  * Once mounted, it stays in the DOM (hidden via display:none) to preserve
  * component state and avoid re-initialization.
+ *
+ * Uncontrolled by default (`defaultTab`). Pass `activeTab` + `onTabChange` to
+ * control it from the app, e.g. to open the sidebar on a specific tab.
  */
 
 import { createSignal, createEffect, For, Show, type JSX } from 'solid-js';
@@ -20,12 +23,17 @@ export interface SidebarTabConfig {
 export interface SidebarTabsProps {
   tabs: SidebarTabConfig[];
   defaultTab?: string;
+  /** Controlled active tab id. When set, clicks call `onTabChange` instead of switching internally. */
+  activeTab?: string;
+  /** Called with the clicked tab id (both controlled and uncontrolled). */
+  onTabChange?: (id: string) => void;
 }
 
 export function SidebarTabs(props: SidebarTabsProps) {
   const defaultId = () => props.defaultTab ?? props.tabs[0]?.id ?? '';
-  const [activeTab, setActiveTab] = createSignal(defaultId());
-  const [mountedTabs, setMountedTabs] = createSignal<Set<string>>(new Set([defaultId()]));
+  const [internalTab, setInternalTab] = createSignal(defaultId());
+  const activeTab = () => props.activeTab ?? internalTab();
+  const [mountedTabs, setMountedTabs] = createSignal<Set<string>>(new Set([activeTab()]));
 
   // Cache for lazily-resolved tab content (factory → JSX.Element).
   const resolvedContent = new Map<string, JSX.Element>();
@@ -53,16 +61,20 @@ export function SidebarTabs(props: SidebarTabsProps) {
   });
 
   function handleTabClick(tab: SidebarTabConfig) {
-    setActiveTab(tab.id);
+    setInternalTab(tab.id);
+    props.onTabChange?.(tab.id);
     tab.onActivate?.();
   }
 
   return (
     <div class="sidebar-tabs">
-      <div class="sidebar-tabs__bar">
+      <div class="sidebar-tabs__bar" role="tablist">
         <For each={props.tabs}>
           {(tab) => (
             <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab() === tab.id}
               class={`sidebar-tabs__tab${activeTab() === tab.id ? ' sidebar-tabs__tab--active' : ''}`}
               data-tutorial={`sidebar-tab-${tab.id}`}
               onClick={() => handleTabClick(tab)}

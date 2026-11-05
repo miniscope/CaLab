@@ -7,7 +7,7 @@ export interface CellSelectorProps {
   selectedIndex: () => number | null;
   onSelect: (idx: number) => void;
   /** When set, cells outside this set are greyed out in the dropdown. */
-  highlightedIndices?: () => Set<number> | null;
+  highlightedIndices?: () => ReadonlySet<number> | null;
 }
 
 export function CellSelector(props: CellSelectorProps): JSX.Element {

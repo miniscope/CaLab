@@ -22,6 +22,7 @@ import init, {
   snr_detect_events,
   snr_measured_report,
   snr_default_top_fraction,
+  overview_cell,
   solver_version,
 } from '../../../crates/solver/pkg/calab_solver';
 export {
@@ -42,6 +43,8 @@ export {
   snr_detect_events,
   snr_measured_report,
   snr_default_top_fraction,
+  // Model-free per-cell dataset-overview metrics (crates/solver/src/overview.rs).
+  overview_cell,
   // Solver version (crates/solver Cargo.toml `version`); requires initWasm().
   // An app that adds it to its bridge results as `solver_version` gets it
   // checked against `calab._solver.protocol_version()` by the Python bridge.

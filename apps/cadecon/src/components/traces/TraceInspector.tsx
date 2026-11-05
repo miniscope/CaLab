@@ -63,7 +63,10 @@ import {
   showSparsityCompare,
   setShowSparsityCompare,
   viewedIteration,
+  highlightedCells,
 } from '../../lib/viz-store.ts';
+import { overview } from '../../lib/overview-store.ts';
+import { isNearNoiseFloor } from '@calab/core';
 import {
   upsampleFactor,
   noiseConstrained,
@@ -104,9 +107,10 @@ export function TraceInspector(): JSX.Element {
   const isFinalized = () => runState() === 'complete';
   const gtVisible = createMemo(() => groundTruthVisible() && isDemo());
 
-  // Available cell indices
+  // Available cell indices: every cell before a run (raw traces) and after it;
+  // during a run only the cells in subsets have results.
   const cellIndices = createMemo((): number[] => {
-    if (isFinalized()) {
+    if (isFinalized() || runState() === 'idle') {
       const n = numCells();
       return Array.from({ length: n }, (_, i) => i);
     }
@@ -168,23 +172,13 @@ export function TraceInspector(): JSX.Element {
   const effectiveTauRise = createMemo(() => viewedHistoryEntry()?.tauRise ?? currentTauRise());
   const effectiveTauDecay = createMemo(() => viewedHistoryEntry()?.tauDecay ?? currentTauDecay());
 
-  // Whether we have any result for the selected cell (used as a gate, but
-  // kept separate so the expensive trace extraction below doesn't re-run
-  // every time cellResultLookup updates with new iteration data).
-  const hasResult = createMemo(() => {
-    const cellIdx = effectiveCellIndex();
-    if (cellIdx == null) return false;
-    if (isFinalized()) return true;
-    return effectiveResult() != null;
-  });
-
   // Extract raw trace for the selected cell from the full data matrix.
   // Only depends on cell index + data shape — NOT on effectiveResult — so
   // it won't produce a new Float64Array when an iteration updates.
+  // Shown before a run too (raw only), so the inspector is useful pre-run.
   const fullRawTrace = createMemo((): Float64Array | null => {
     const cellIdx = effectiveCellIndex();
     if (cellIdx == null) return null;
-    if (!hasResult()) return null;
 
     const data = parsedData();
     const nTp = numTimepoints();
@@ -532,6 +526,21 @@ export function TraceInspector(): JSX.Element {
     const v = effectiveResult()?.pve;
     return v != null ? (v * 100).toFixed(1) + '%' : '--';
   };
+  const pveCeiling = () => {
+    const c = effectiveResult()?.pveCeiling;
+    return c != null && Number.isFinite(c) ? ` (ceil ${(c * 100).toFixed(1)}%)` : '';
+  };
+  // Model-free overview SNR of the inspected cell (display only).
+  const cellOverview = createMemo(() => {
+    const idx = effectiveCellIndex();
+    const ov = overview();
+    return idx != null && ov ? (ov.cells[idx] ?? null) : null;
+  });
+  const snrText = () => {
+    const c = cellOverview();
+    if (!c || !Number.isFinite(c.snr)) return '--';
+    return c.snr.toFixed(1) + (isNearNoiseFloor(c.snr) ? ' ≈ noise' : '');
+  };
   const spikeCount = () => {
     const r = effectiveResult();
     return r ? r.sCounts.reduce((s, v) => s + v, 0).toFixed(0) : '--';
@@ -577,31 +586,50 @@ export function TraceInspector(): JSX.Element {
           cellIndices={cellIndices}
           selectedIndex={effectiveCellIndex}
           onSelect={setInspectedCellIndex}
-          highlightedIndices={selectedSubsetCells}
+          highlightedIndices={() => highlightedCells() ?? selectedSubsetCells()}
         />
         <TraceLegend items={legendItems()} />
         <div class="trace-inspector__stats">
-          <span>alpha: {alpha()}</span>
-          <span>PVE: {pve()}</span>
           <Show
-            when={hasComparison() && comparisonSpikeCount() != null}
-            fallback={<span>spikes: {spikeCount()}</span>}
+            when={effectiveResult()}
+            fallback={
+              <span>
+                SNR: {snrText()}
+                <Show when={cellOverview()}>
+                  {(c) => (
+                    <>
+                      {' '}
+                      · events: {c().nEvents}
+                      {c().isSilent ? ' (silent)' : ''}
+                    </>
+                  )}
+                </Show>
+              </span>
+            }
           >
+            <span>alpha: {alpha()}</span>
             <span>
-              spikes: {spikeCount()} ({settingShort(noiseConstrained())}) · {comparisonSpikeCount()}{' '}
-              ({settingShort(!noiseConstrained())})
+              PVE: {pve()}
+              {pveCeiling()} · SNR {snrText()}
             </span>
+          </Show>
+          <Show when={effectiveResult()}>
+            <Show
+              when={hasComparison() && comparisonSpikeCount() != null}
+              fallback={<span>spikes: {spikeCount()}</span>}
+            >
+              <span>
+                spikes: {spikeCount()} ({settingShort(noiseConstrained())}) ·{' '}
+                {comparisonSpikeCount()} ({settingShort(!noiseConstrained())})
+              </span>
+            </Show>
           </Show>
         </div>
       </div>
 
       <Show
         when={fullRawTrace() != null}
-        fallback={
-          <div class="trace-inspector__empty">
-            No trace data available. Start a run to see traces.
-          </div>
-        }
+        fallback={<div class="trace-inspector__empty">No trace data available.</div>}
       >
         <div class="trace-inspector__overview">
           <TraceOverview
