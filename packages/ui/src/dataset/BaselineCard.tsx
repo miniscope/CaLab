@@ -100,6 +100,7 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
             items={[
               { mark: 'line', className: 'ov-line', label: 'median cell' },
               { mark: 'area', className: 'ov-band', label: 'middle 50 % of cells' },
+              { mark: 'line', className: 'ov-ref', label: 'typical baseline' },
             ]}
           />
         </Show>
@@ -143,9 +144,6 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
               <path class="ov-band" d={band()} />
               <line class="ov-ref" x1={M.l} x2={W() - M.r} y1={y()(ref())} y2={y()(ref())} />
               <path class="ov-line" d={path(props.data()!.median)} />
-              <text class="ov-ref__label" x={W() - M.r - 2} y={y()(ref()) - 3} text-anchor="end">
-                typical baseline
-              </text>
               <line class="ov-axis" x1={M.l} x2={W() - M.r} y1={H() - M.b} y2={H() - M.b} />
               <For each={labeledTicks(x(), tickTarget(W() - M.l - M.r))}>
                 {(t) => (

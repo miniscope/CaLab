@@ -50,6 +50,45 @@ export interface BrushHistogramProps {
 const M0 = { l: 28, r: 8, t: 8, b: 26 };
 /** Extra left margin that makes room for a rotated y label. */
 const Y_LABEL_PX = 8;
+/** Height of one row of marker/shade labels above the bars. */
+const LABEL_ROW_PX = 11;
+/** Rough advance of a 9 px label glyph, for collision checks. */
+const LABEL_CHAR_PX = 5.4;
+
+export interface LabelSlot {
+  anchor: 'start' | 'end';
+  /** 0 = top row; later rows sit below so close labels never overprint. */
+  row: number;
+}
+
+/**
+ * Place marker labels beside their lines (flipping to the left near the right
+ * edge) and push a label to the next row when it would overlap one already
+ * placed. `reserved` spans (e.g. the shade label) occupy row 0.
+ */
+export function layoutMarkerLabels(
+  items: readonly { px: number; label: string }[],
+  plotRight: number,
+  reserved: readonly [number, number][] = [],
+): LabelSlot[] {
+  const rows: [number, number][][] = [[...reserved]];
+  const order = items.map((_, i) => i).sort((a, b) => items[a].px - items[b].px);
+  const out: LabelSlot[] = new Array(items.length);
+  for (const i of order) {
+    const { px, label } = items[i];
+    const w = label.length * LABEL_CHAR_PX;
+    const anchor = px + 3 + w > plotRight ? 'end' : 'start';
+    const span: [number, number] = anchor === 'end' ? [px - 3 - w, px - 3] : [px + 3, px + 3 + w];
+    let row = rows.findIndex((r) => r.every(([a, b]) => span[1] + 4 < a || span[0] > b + 4));
+    if (row < 0) {
+      row = rows.length;
+      rows.push([]);
+    }
+    rows[row].push(span);
+    out[i] = { anchor, row };
+  }
+  return out;
+}
 
 export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
   let host: HTMLDivElement | undefined;
@@ -72,7 +111,35 @@ export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
   );
   const maxCount = createMemo(() => bins().reduce((m, b) => Math.max(m, b.ids.length), 0) || 1);
   const x = createMemo(() => makeScale(domain(), M.l, W() - M.r, !!props.log));
-  const y = createMemo(() => makeScale([0, maxCount()], H() - M.b, M.t));
+  const visibleMarkers = createMemo(() =>
+    (props.markers?.() ?? []).filter((m) => m.x >= domain()[0] && m.x <= domain()[1]),
+  );
+  const labelSlots = createMemo(() => {
+    const shadeLabel = props.shade?.label;
+    const reserved: [number, number][] = shadeLabel
+      ? [
+          [
+            x()(Math.max(props.shade!.lo, domain()[0])),
+            x()(Math.max(props.shade!.lo, domain()[0])) + 3 + shadeLabel.length * LABEL_CHAR_PX,
+          ],
+        ]
+      : [];
+    return layoutMarkerLabels(
+      visibleMarkers().map((m) => ({ px: x()(m.x), label: m.label ?? '' })),
+      W() - M.r,
+      reserved,
+    );
+  });
+  // Marker and shade labels sit in rows above the tallest bar, never on it.
+  const labelRows = () => {
+    const labeled = visibleMarkers()
+      .map((m, i) => (m.label ? labelSlots()[i].row + 1 : 0))
+      .reduce((a, b) => Math.max(a, b), 0);
+    return Math.max(labeled, props.shade?.label ? 1 : 0);
+  };
+  const y = createMemo(() =>
+    makeScale([0, maxCount()], H() - M.b, M.t + labelRows() * LABEL_ROW_PX + 1),
+  );
   const yTicks = createMemo(() => scaleTicks(y(), 2).filter((v) => Number.isInteger(v)));
 
   const brush = createBrush({
@@ -173,9 +240,9 @@ export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
             );
           }}
         </For>
-        <For each={props.markers?.() ?? []}>
-          {(m) => (
-            <Show when={m.x >= domain()[0] && m.x <= domain()[1]}>
+        <For each={visibleMarkers()}>
+          {(m, i) => (
+            <>
               <line
                 class="ov-marker"
                 classList={{ 'ov-marker--dashed': !!m.dashed }}
@@ -188,15 +255,15 @@ export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
               <Show when={m.label}>
                 <text
                   class="ov-marker__label"
-                  x={x()(m.x) + (x()(m.x) > W() - M.r - 44 ? -3 : 3)}
-                  text-anchor={x()(m.x) > W() - M.r - 44 ? 'end' : 'start'}
-                  y={M.t + 9}
+                  x={x()(m.x) + (labelSlots()[i()]?.anchor === 'end' ? -3 : 3)}
+                  text-anchor={labelSlots()[i()]?.anchor ?? 'start'}
+                  y={M.t + 9 + (labelSlots()[i()]?.row ?? 0) * LABEL_ROW_PX}
                   style={m.color ? { fill: m.color } : undefined}
                 >
                   {m.label}
                 </text>
               </Show>
-            </Show>
+            </>
           )}
         </For>
         <line class="ov-axis" x1={M.l} x2={W() - M.r} y1={H() - M.b} y2={H() - M.b} />

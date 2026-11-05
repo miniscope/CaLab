@@ -1,21 +1,22 @@
 /**
  * Tabbed analysis panel (top right of the dashboard):
- *  - Dataset: the model-free overview of the imported data (default before a run).
  *  - Asymptote: small-multiples of the four signals that should stabilize.
  *  - Kernel: detailed kernel convergence (raw taus, per-subset scatter, GT overlay).
  *  - Results: PVE vs SNR with the dataset-level ceiling, alpha and event rate.
  * Every tab stays mounted (display toggled) to preserve chart state across switches.
- * Starting a run moves the panel from Dataset to Asymptote.
+ * Asymptote is the default (it is what a fresh run shows); a run that finishes
+ * moves the panel to Results. The model-free dataset overview lives in the
+ * right sidebar's Dataset tab (components/overview/DatasetPanel.tsx).
  */
 
 import { createEffect, createSignal, For, on, type JSX } from 'solid-js';
 import { AsymptoteTrends } from './AsymptoteTrends.tsx';
 import { KernelConvergence } from './KernelConvergence.tsx';
 import { ResultsPanel } from '../distributions/ResultsPanel.tsx';
-import { DatasetPanel } from '../overview/DatasetPanel.tsx';
 import { runState } from '../../lib/iteration-store.ts';
+import { nextTabForRunState, type AnalysisTab } from '../../lib/analysis-tab.ts';
 
-export type AnalysisTab = 'dataset' | 'asymptote' | 'kernel' | 'results';
+export type { AnalysisTab };
 
 interface TabEntry {
   id: AnalysisTab;
@@ -24,22 +25,20 @@ interface TabEntry {
 }
 
 const TABS: TabEntry[] = [
-  { id: 'dataset', label: 'Dataset', content: () => <DatasetPanel /> },
   { id: 'asymptote', label: 'Asymptote', content: () => <AsymptoteTrends /> },
   { id: 'kernel', label: 'Kernel', content: () => <KernelConvergence /> },
   { id: 'results', label: 'Results', content: () => <ResultsPanel /> },
 ];
 
-const [activeTab, setActiveTab] = createSignal<AnalysisTab>('dataset');
+const [activeTab, setActiveTab] = createSignal<AnalysisTab>('asymptote');
 export { activeTab, setActiveTab };
 
 export function AnalysisPanel(): JSX.Element {
-  // Pressing Start moves the panel off the pre-run Dataset view.
+  // A fresh run shows its convergence; a finished run shows its results.
   createEffect(
     on(runState, (state, prev) => {
-      if (state === 'running' && prev !== 'paused' && activeTab() === 'dataset') {
-        setActiveTab('asymptote');
-      }
+      const next = nextTabForRunState(state, prev, activeTab());
+      if (next !== activeTab()) setActiveTab(next);
     }),
   );
 

@@ -19,32 +19,33 @@ test('CaDecon: synthetic data generates, a run converges, and the raster renders
   await expect(header.getByText(/10 cells/)).toBeVisible();
   await expect(header.getByTitle(/^[1-9]\d* solver workers allocated$/)).toBeVisible();
 
-  // Before a run the analysis panel shows the model-free Dataset overview,
-  // computed in the workers right after import: all four cards, every cell.
-  await expect(page.getByRole('tab', { name: 'Dataset' })).toHaveAttribute('aria-selected', 'true');
+  // Once the model-free overview is computed (in the workers, right after
+  // import), the right sidebar opens on its Dataset tab: all four cards, every cell.
+  const datasetTab = page.getByRole('tab', { name: 'Dataset' });
+  await expect(datasetTab).toHaveAttribute('aria-selected', 'true', { timeout: 30_000 });
   const snrCard = page.getByTestId('overview-snr');
   await expect(snrCard.getByText('N 10', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId('overview-heights')).toBeVisible();
   await expect(page.getByTestId('overview-baseline')).toBeVisible();
   await expect(page.getByTestId('overview-flags').getByText(/of 10 cells flagged/)).toBeVisible();
-  // The Trace Inspector shows the raw trace and its SNR before any run.
-  await expect(page.getByText(/SNR: \d+(\.\d+)?/)).toBeVisible();
-
-  await page.getByRole('button', { name: 'Start', exact: true }).click();
-  // Starting a run moves the panel to the Asymptote trends.
+  // The analysis panel no longer carries the overview.
   await expect(page.getByRole('tab', { name: 'Asymptote' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
+  // The Trace Inspector shows the raw trace and its SNR before any run.
+  await expect(page.getByText(/SNR: \d+(\.\d+)?/)).toBeVisible();
 
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   // The run ends either by converging or by hitting Max Iterations; both show
   // "Complete". The kernel panel and trace inspector then have results.
   await expect(page.getByText('Complete', { exact: true })).toBeVisible({ timeout: 150_000 });
   await expect(page.getByText('No kernel data yet.')).toHaveCount(0);
   await expect(page.getByText(/PVE: \d+(\.\d+)?%/)).toBeVisible();
 
-  // Results: PVE against the overview SNR, one point per cell.
-  await page.getByRole('tab', { name: 'Results' }).click();
+  // A finished run moves the panel to Results: PVE against the overview SNR,
+  // one point per cell.
+  await expect(page.getByRole('tab', { name: 'Results' })).toHaveAttribute('aria-selected', 'true');
   await expect(
     page.getByTestId('results-pve-snr').getByText('N 10', { exact: true }),
   ).toBeVisible();

@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js';
-import { createSignal, Show } from 'solid-js';
-import { DashboardShell, DashboardPanel, VizLayout } from '@calab/ui';
+import { createEffect, createSignal, Show } from 'solid-js';
+import { DashboardShell, DashboardPanel, VizLayout, createDashboardSidebar } from '@calab/ui';
 import { isAuthCallback, AuthCallback, SidebarTabs } from '@calab/community-ui';
 import type { SidebarTabConfig } from '@calab/community-ui';
 import { getBridgeUrl, startBridgeHeartbeat } from '@calab/io';
@@ -23,6 +23,7 @@ import { TraceInspector } from './components/traces/TraceInspector.tsx';
 import { IterationScrubber } from './components/traces/IterationScrubber.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
+import { DatasetPanel } from './components/overview/DatasetPanel.tsx';
 import {
   importStep,
   rawFile,
@@ -30,10 +31,11 @@ import {
   loadDemoData,
   loadFromBridge,
   bridgeUrl,
+  parsedData,
 } from './lib/data-store.ts';
 import { setSeed } from './lib/subset-store.ts';
 import { isRunLocked } from './lib/iteration-store.ts';
-import { setupOverviewEffects } from './lib/overview-store.ts';
+import { setupOverviewEffects, overview } from './lib/overview-store.ts';
 
 import '@calab/ui/styles/app-controls.css';
 import './styles/controls.css';
@@ -84,16 +86,29 @@ const App: Component = () => {
   setupBridgeEffects();
   setupOverviewEffects();
 
-  // Right sidebar state for community panel
-  const [sidebarOpen, setSidebarOpen] = createSignal(false);
-  const toggleSidebar = () => setSidebarOpen((prev) => !prev);
+  // Right sidebar: Dataset overview (always) + Community (when configured).
+  const sidebar = createDashboardSidebar('dataset');
+  const sidebarOpen = sidebar.open;
+  const toggleSidebar = sidebar.toggle;
+
+  // Surface the dataset overview once per loaded dataset, unless the user has
+  // closed the sidebar this session.
+  let revealedFor: unknown = null;
+  createEffect(() => {
+    const data = parsedData();
+    if (!overview() || !data || data === revealedFor) return;
+    revealedFor = data;
+    sidebar.reveal('dataset');
+  });
 
   // Tutorial selection panel open state (owned here, mirrors CaTune).
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
   const toggleTutorial = () => setTutorialOpen((prev) => !prev);
 
-  const communitySidebarTabs = (): SidebarTabConfig[] => {
-    const list: SidebarTabConfig[] = [];
+  const sidebarTabs = (): SidebarTabConfig[] => {
+    const list: SidebarTabConfig[] = [
+      { id: 'dataset', label: 'Dataset', content: () => <DatasetPanel /> },
+    ];
     if (supabaseEnabled) {
       list.push({
         id: 'community',
@@ -130,10 +145,14 @@ const App: Component = () => {
               onTutorialToggle={toggleTutorial}
             />
           }
+          sidebarWidth="clamp(400px, 30vw, 560px)"
+          sidebarResizable
           sidebar={
-            supabaseEnabled ? (
-              <SidebarTabs tabs={communitySidebarTabs()} defaultTab="community" />
-            ) : undefined
+            <SidebarTabs
+              tabs={sidebarTabs()}
+              activeTab={sidebar.tab()}
+              onTabChange={sidebar.setTab}
+            />
           }
         >
           <VizLayout

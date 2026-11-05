@@ -1,5 +1,5 @@
 /**
- * Dataset tab: the model-free overview of the imported data (SNR, event-height
+ * Dataset sidebar tab: the model-free overview of the imported data (SNR, event-height
  * shape, baseline over time, quality flags). Display only: nothing here feeds
  * the solver. Brushing a card or clicking a flag highlights rows in the raster;
  * clicking a cell id or a curve inspects that cell.
@@ -87,7 +87,7 @@ function DatasetCards(props: { ov: DatasetOverview }): JSX.Element {
   const counts = createMemo(() => flagCounts(ov()));
 
   return (
-    <div class="dataset-grid">
+    <div class="ov-stack" data-testid="dataset-panel">
       <SnrHistogramCard
         snr={snr}
         nu={nu}
@@ -139,14 +139,12 @@ export function DatasetPanel(): JSX.Element {
     <Switch>
       <Match when={overview()}>{(ov) => <DatasetCards ov={ov()} />}</Match>
       <Match when={overviewStatus() === 'computing'}>
-        <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
+        <div class="dataset-panel__empty">
           Computing dataset overview… {Math.round(overviewProgress() * 100)}%
         </div>
       </Match>
       <Match when={overviewStatus() === 'error'}>
-        <div class="kernel-chart-wrapper kernel-chart-wrapper--empty">
-          Dataset overview failed: {overviewError()}
-        </div>
+        <div class="dataset-panel__empty">Dataset overview failed: {overviewError()}</div>
       </Match>
     </Switch>
   );
