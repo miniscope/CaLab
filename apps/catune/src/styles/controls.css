@@ -32,35 +32,6 @@
   align-items: center;
 }
 
-/* ========================
-   Dual Range Slider
-   ======================== */
-.dual-range {
-  margin-bottom: var(--space-md);
-}
-
-.dual-range:last-child {
-  margin-bottom: 0;
-}
-
-.dual-range__header {
-  margin-bottom: var(--space-xs);
-}
-
-.dual-range__values {
-  display: flex;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-xs);
-}
-
-.dual-range__input:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--accent-muted);
-}
-
-.dual-range__input:focus-visible::-moz-range-thumb {
-  box-shadow: 0 0 0 3px var(--accent-muted);
-}
-
 /* --- Filter Toggle --- */
 .param-panel__toggle-group {
   padding-top: var(--space-md);
