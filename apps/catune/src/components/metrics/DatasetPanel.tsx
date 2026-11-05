@@ -68,6 +68,10 @@ function DatasetCards(props: { ov: DatasetOverview }) {
     return sel.length > 0 ? new Set(sel) : null;
   });
 
+  const withShape = createMemo(() =>
+    ov().cells.filter((c) => c.heightQuantiles.length === HEIGHT_PROBS.length),
+  );
+
   const heightCurves = createMemo((): HeightCurve[] => {
     const out: HeightCurve[] = [];
     const seen = new Set<number>();
@@ -127,9 +131,8 @@ function DatasetCards(props: { ov: DatasetOverview }) {
         pooled={() => ov().pooledHeights}
         curves={heightCurves}
         onPick={setSelectedCell}
-        nWithShape={() =>
-          ov().cells.filter((c) => c.heightQuantiles.length === HEIGHT_PROBS.length).length
-        }
+        nWithShape={() => withShape().length}
+        medianEvents={() => medianOf(withShape().map((c) => c.nEvents))}
         eventSeparationS={OVERVIEW_PARAMS.eventSeparationS}
       />
       <p class="dataset-drawer__flags" data-testid="flag-summary">
