@@ -11,6 +11,7 @@ import 'uplot/dist/uPlot.min.css';
 import '@calab/ui/chart/chart-theme.css';
 import uPlot from 'uplot';
 import { getThemeColors } from '@calab/ui/chart';
+import { medianOf } from '@calab/core';
 
 /** The submission fields the plot reads (seconds). */
 export interface ScatterSubmission {
@@ -47,14 +48,6 @@ export function scatterRampColor(t: number, alpha = 0.7): string {
   return `hsla(${h}, 80%, 55%, ${alpha})`;
 }
 
-/** Median of a numeric array; 0 for an empty one. */
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
 /** Axis padding: 15% of the span, or 10% of the value (1 ms at zero) when every point coincides. */
 function axisPad(min: number, max: number): number {
   return (max - min) * 0.15 || Math.abs(min) * 0.1 || 1;
@@ -72,8 +65,8 @@ export function CommunityScatterPlot<T extends ScatterSubmission>(
     const subs = props.submissions;
     if (subs.length === 0) return null;
     return {
-      x: median(subs.map((s) => s.t_peak * 1000)),
-      y: median(subs.map((s) => s.fwhm * 1000)),
+      x: medianOf(subs.map((s) => s.t_peak * 1000)),
+      y: medianOf(subs.map((s) => s.fwhm * 1000)),
     };
   });
 
