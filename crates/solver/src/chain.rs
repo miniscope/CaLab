@@ -82,6 +82,26 @@ impl Chain {
         }
     }
 
+    /// The bandpass, when there is one.
+    pub(crate) fn filter_mut(&mut self) -> Option<&mut BandpassFilter> {
+        self.filter.as_mut()
+    }
+
+    /// The sample index of the rolling quantile at every position of `z`
+    /// (already through [`Chain::apply_linear`]): the selection that makes the
+    /// quantile stage locally linear, `RQ(z)[t] = z[idx[t]]`.
+    pub(crate) fn quantile_indices(&mut self, z: &[f32]) -> Vec<u32> {
+        self.quantile
+            .arg_quantile(z, self.window, DEFAULT_BASELINE_QUANTILE)
+    }
+
+    /// Subtract the rolling-quantile baseline from `z` in place (the
+    /// nonlinear stage alone; `z` is already through [`Chain::apply_linear`]).
+    pub(crate) fn subtract_quantile(&mut self, z: &mut [f32]) {
+        self.quantile
+            .subtract(z, self.window, DEFAULT_BASELINE_QUANTILE);
+    }
+
     /// Push `z` through the chain in place.
     pub(crate) fn apply(&mut self, z: &mut [f32]) {
         if let Some(f) = self.filter.as_mut() {

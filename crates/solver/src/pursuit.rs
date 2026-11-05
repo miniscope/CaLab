@@ -544,6 +544,7 @@ pub(crate) fn pursue(
     gate: Gate,
     moves: bool,
     init_free: bool,
+    start: Option<&[f32]>,
 ) -> (ThresholdResult, PursuitStats) {
     let n = scorer.target().len();
     let stride = stride.max(1);
@@ -611,7 +612,16 @@ pub(crate) fn pursue(
         _ => None,
     };
     let mut count = 0usize;
-    if init_free {
+    if let Some(st) = start.filter(|st| st.len() == n) {
+        // A given 0/1 start (e.g. the chain-consistent relaxation rounded at
+        // the pin, `chain_relax`): the walk adds, prunes and moves from it.
+        for (sj, &v) in s.iter_mut().zip(st) {
+            if v > 0.5 {
+                *sj = 1.0;
+                count += 1;
+            }
+        }
+    } else if init_free {
         if let Some(a) = pin {
             // Start from the free pursuit's frame masses rounded at the pin:
             // `round(m_f / a)` spikes per frame (at most `stride`), placed at
@@ -952,6 +962,7 @@ mod tests {
             Gate::Decrease,
             true,
             false,
+            None,
         );
         let counts = crate::upsample::downsample_binary(&r.s_binary, 10);
         assert_eq!(
@@ -1008,6 +1019,7 @@ mod tests {
             Gate::Decrease,
             true,
             false,
+            None,
         );
         let ceiling = nm.budget(n_grid).max(st.e_full + nm.std_error(n_grid));
         assert!(r.error <= ceiling, "{} vs {}", r.error, ceiling);
@@ -1052,6 +1064,7 @@ mod tests {
                 Gate::OneSe,
                 true,
                 false,
+                None,
             );
             assert_eq!(r.s_binary.len(), n);
             assert!(r.alpha.is_finite() && r.baseline.is_finite());

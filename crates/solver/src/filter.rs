@@ -314,6 +314,64 @@ impl BandpassFilter {
         true
     }
 
+    /// The gain curve alone (no endpoint detrend), in place: the circulant
+    /// part `G` of [`BandpassFilter::apply`], which is `G (z - line(z))`
+    /// (plus `line(z)` when the high-pass is off). Same validity checks;
+    /// returns false (trace untouched) when `apply` would skip. Used to
+    /// build the filter's exact linear operator (`chain_relax`).
+    pub(crate) fn apply_gain(&mut self, trace: &mut [f32]) -> bool {
+        if !self.is_enabled() || !self.valid || trace.len() < MIN_SPECTRUM_LEN {
+            return false;
+        }
+        if self.hp_enabled && self.lp_enabled && self.f_hp >= self.f_lp {
+            return false;
+        }
+        let n = trace.len();
+        self.ensure_buffers(n);
+        let spectrum_len = n / 2 + 1;
+        self.fft_input[..n].copy_from_slice(trace);
+        let (Some(fwd), Some(inv)) = (self.plan_fwd.clone(), self.plan_inv.clone()) else {
+            return false;
+        };
+        if fwd
+            .process_with_scratch(
+                &mut self.fft_input[..n],
+                &mut self.spectrum[..spectrum_len],
+                &mut self.scratch_fwd,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        for (s, &g) in self.spectrum[..spectrum_len]
+            .iter_mut()
+            .zip(&self.gain_curve[..spectrum_len])
+        {
+            *s *= g;
+        }
+        if inv
+            .process_with_scratch(
+                &mut self.spectrum[..spectrum_len],
+                &mut self.fft_input[..n],
+                &mut self.scratch_inv,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let scale = 1.0 / n as f32;
+        for (t, &f) in trace.iter_mut().zip(&self.fft_input[..n]) {
+            *t = f * scale;
+        }
+        true
+    }
+
+    /// Samples averaged at each end for the detrend line (see
+    /// `endpoint_window`), for a trace of `n` samples.
+    pub(crate) fn endpoint_window_len(&self, n: usize) -> usize {
+        self.endpoint_window(n)
+    }
+
     /// Apply bandpass filter in-place. Caches power spectrum. Returns false if skipped.
     pub fn apply(&mut self, trace: &mut [f32]) -> bool {
         if !self.is_enabled() || !self.valid || trace.len() < MIN_SPECTRUM_LEN {

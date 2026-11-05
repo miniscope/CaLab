@@ -594,6 +594,18 @@ pub(crate) enum Binarize {
     EventMass,
 }
 
+/// Which relaxed problem the native s-step solves ([`InnerSolve::Native`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Relax {
+    /// `min ||K x - C(y)||^2` on the box (the default; `native_solve`).
+    Bare,
+    /// Experimental: the chain-consistent fit `F K U x ~ F(y)` with the
+    /// least mass that reaches the noise budget (`chain_relax`). With
+    /// `Binarize::Pursuit` and a fixed amplitude, the pursuit starts from
+    /// this solution rounded at that amplitude.
+    ChainLeastMass,
+}
+
 /// When the native-rate relaxed solve stops ([`InnerSolve::Native`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeStop {
@@ -675,6 +687,8 @@ pub(crate) struct ScaleLoop {
     pub scoring: Scoring,
     /// Which candidate family the native solve binarizes with.
     pub binarize: Binarize,
+    /// Which relaxed problem the native s-step solves.
+    pub relax: Relax,
 }
 
 impl ScaleLoop {
@@ -698,6 +712,7 @@ impl ScaleLoop {
             max_rounds: 10,
             scoring: Scoring::Plain,
             binarize: Binarize::Threshold,
+            relax: Relax::Bare,
         }
     }
 
@@ -736,6 +751,7 @@ impl Default for ScaleLoop {
             max_rounds: 10,
             scoring: Scoring::Chain,
             binarize: Binarize::Threshold,
+            relax: Relax::Bare,
         }
     }
 }
@@ -1345,9 +1361,40 @@ fn solve_trace_native(
         None => max_iters,
     };
     let lambda_eff = lambda * banded.dc_gain();
-    let nr = native_solve::solve_box(&scaled64, &banded, lambda_eff, cap_iters, tol, stop, None);
-    let u: Vec<f32> = nr.x.iter().map(|&v| v as f32).collect();
-    let (iterations, converged) = (nr.iterations, nr.converged());
+    // The chain-consistent relaxation (experimental), in trace units.
+    let x_chain = match (cfg.relax, chain_up.as_mut()) {
+        (Relax::ChainLeastMass, Some(ch)) => Some(crate::chain_relax::chain_relax(
+            &up.working,
+            &up.filtered,
+            ch,
+            &up.banded,
+            pad_up,
+            k,
+            up.noise_model,
+            scale,
+            crate::chain_relax::QuantileModel::DataBaseline,
+            true,
+            u32::MAX,
+        )),
+        _ => None,
+    };
+    let (u, iterations, converged): (Vec<f32>, u32, bool) = match &x_chain {
+        Some(r) => (
+            r.x.iter().map(|&v| (v / scale) as f32).collect(),
+            r.iterations,
+            r.inner_converged && r.outer_converged,
+        ),
+        None => {
+            let nr =
+                native_solve::solve_box(&scaled64, &banded, lambda_eff, cap_iters, tol, stop, None);
+            let conv = nr.converged();
+            (
+                nr.x.iter().map(|&v| v as f32).collect(),
+                nr.iterations,
+                conv,
+            )
+        }
+    };
     // Frame masses in units of alpha_est per spike.
     let x: Vec<f32> = u.iter().map(|&v| v * cap as f32).collect();
     banded.convolve_forward(&x, &mut conv);
@@ -1411,6 +1458,13 @@ fn solve_trace_native(
             moves,
             init_free,
         } => {
+            // From the chain relaxation rounded at a fixed amplitude.
+            let start = match (&x_chain, amplitude) {
+                (Some(r), crate::pursuit::Amplitude::Fixed(a)) => Some(
+                    crate::chain_relax::round_place(&r.x, a, k, n_up, r.lo, r.hi),
+                ),
+                _ => None,
+            };
             let (r, st) = crate::pursuit::pursue(
                 &mut scorer,
                 &up.banded,
@@ -1422,6 +1476,7 @@ fn solve_trace_native(
                 gate,
                 moves,
                 init_free,
+                start.as_deref(),
             );
             binarize_passes = st.evals;
             pursuit_stats = Some(st);

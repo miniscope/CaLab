@@ -72,6 +72,10 @@ pub(crate) struct RollingQuantile {
     bits: Vec<u64>,
     hist: Vec<u32>,
     baselines: Vec<f32>,
+    /// When set, `subtract` records in `arg` the sample index each
+    /// baseline value was taken from (the window's order statistic).
+    record_arg: bool,
+    arg: Vec<u32>,
 }
 
 impl RollingQuantile {
@@ -182,6 +186,10 @@ impl RollingQuantile {
         let mut below = 0usize;
         bits[cursor / 64] |= 1 << (cursor % 64);
         self.baselines.push(trace[0]);
+        self.arg.clear();
+        if self.record_arg {
+            self.arg.push(0);
+        }
         for t in 1..n {
             let r = rank[t] as usize;
             bits[r / 64] |= 1 << (r % 64);
@@ -223,10 +231,25 @@ impl RollingQuantile {
                 !key
             };
             self.baselines.push(f32::from_bits(b));
+            if self.record_arg {
+                self.arg.push((self.pairs[cursor] & 0xFFFF_FFFF) as u32);
+            }
         }
         for (v, &b) in trace.iter_mut().zip(self.baselines.iter()) {
             *v -= b;
         }
+    }
+}
+
+impl RollingQuantile {
+    /// The sample index the rolling `quantile` of `trace` takes at every
+    /// position (`trace[idx[t]]` is the baseline `subtract` removes at `t`).
+    pub(crate) fn arg_quantile(&mut self, trace: &[f32], window: usize, quantile: f64) -> Vec<u32> {
+        let mut z = trace.to_vec();
+        self.record_arg = true;
+        self.subtract(&mut z, window, quantile);
+        self.record_arg = false;
+        std::mem::take(&mut self.arg)
     }
 }
 
