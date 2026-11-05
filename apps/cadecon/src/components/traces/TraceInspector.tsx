@@ -66,6 +66,7 @@ import {
   highlightedCells,
 } from '../../lib/viz-store.ts';
 import { overview } from '../../lib/overview-store.ts';
+import { noiseGuardText } from '../../lib/results-ceiling.ts';
 import { isNearNoiseFloor } from '@calab/core';
 import {
   upsampleFactor,
@@ -228,7 +229,7 @@ export function TraceInspector(): JSX.Element {
   const hasComparison = createMemo(() => comparisonDeconv() != null);
 
   // Labels for the two deconv traces, by their actual setting.
-  const settingShort = (nc: boolean) => (nc ? 'noise-constr.' : 'standard');
+  const settingShort = (nc: boolean) => (nc ? 'noise guard' : 'standard');
   const deconvLabel = () => `Deconv (${settingShort(noiseConstrained())})`;
   const compareLabel = () => `Deconv (${settingShort(!noiseConstrained())})`;
 
@@ -612,6 +613,9 @@ export function TraceInspector(): JSX.Element {
               PVE: {pve()}
               {pveCeiling()} · SNR {snrText()}
             </span>
+            <Show when={noiseGuardText(effectiveResult()?.noisePath)}>
+              {(txt) => <span data-testid="noise-guard-readout">{txt()}</span>}
+            </Show>
           </Show>
           <Show when={effectiveResult()}>
             <Show

@@ -85,6 +85,8 @@ export interface TraceResultEntry {
    * null when the solver measured no noise floor.
    */
   pveCeiling?: number | null;
+  /** Noise-floor guard fired for this cell (selection overrode max-PVE). undefined = unknown. */
+  noisePath?: boolean;
   /** Spike counts from the opposite noise-constrained setting (comparison overlay). */
   comparisonSCounts?: Float32Array;
 }

@@ -46,12 +46,14 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
   const alphas: number[] = [];
   const baselines: number[] = [];
   const pves: number[] = [];
+  const noiseGuardActive: (boolean | null)[] = [];
 
   for (const cellIdx of sortedCells) {
     const entry = lookup.get(cellIdx)!;
     alphas.push(entry.alpha);
     baselines.push(entry.baseline);
     pves.push(entry.pve);
+    noiseGuardActive.push(entry.noisePath ?? null);
   }
 
   // Kernel params from the last convergence snapshot.
@@ -85,6 +87,7 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
     alphas,
     baselines,
     pves,
+    noise_guard_active: noiseGuardActive,
     fs,
     tau_rise: tauRise,
     tau_decay: tauDecay,

@@ -10,6 +10,7 @@ export interface PveSnrPoint {
   snr: number;
   pve: number;
   ceiling: number | null;
+  noisePath?: boolean;
 }
 
 /** Join solver results with overview SNR (cells without either are skipped). */
@@ -22,7 +23,7 @@ export function pveSnrPoints(
   for (const [cell, r] of results) {
     const s = snr[cell];
     if (!Number.isFinite(s) || !Number.isFinite(r.pve)) continue;
-    out.push({ cell, snr: s, pve: r.pve, ceiling: r.pveCeiling ?? null });
+    out.push({ cell, snr: s, pve: r.pve, ceiling: r.pveCeiling ?? null, noisePath: r.noisePath });
   }
   return out.sort((a, b) => a.cell - b.cell);
 }
@@ -64,3 +65,24 @@ export const VERDICT_TEXT: Record<CeilingVerdict, string> = {
   below: 'well below the ceiling: fallback or misfit?',
   above: 'above the ceiling: fitting noise?',
 };
+
+/** Short per-cell readout of the noise-floor guard; null when the solver did not report it. */
+export function noiseGuardText(noisePath: boolean | undefined): string | null {
+  if (noisePath === undefined) return null;
+  return noisePath ? 'noise guard: active' : 'noise guard: no effect';
+}
+
+/** Cells where the guard fired / cells that report the flag. */
+export function noiseGuardCounts(points: readonly PveSnrPoint[]): {
+  active: number;
+  total: number;
+} {
+  let active = 0;
+  let total = 0;
+  for (const p of points) {
+    if (p.noisePath === undefined) continue;
+    total++;
+    if (p.noisePath) active++;
+  }
+  return { active, total };
+}

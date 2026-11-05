@@ -46,7 +46,8 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
-///   converged, loop_converged, noise_var_processed, chain_noise_gain }
+///   converged, loop_converged, noise_var_processed, chain_noise_gain,
+///   noise_path }
 /// where `iterations` is the recorded-rate FISTA iteration count (hundreds
 /// to a few thousand at 30 Hz; tens of thousands for slow indicators at
 /// 60 Hz) and `converged` says the certificate (or, without noise, the step
@@ -62,6 +63,9 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// factor the selection's noise budget carries); 0 when the trace has no
 /// measurable noise floor. `1 - noise_var_processed / var(filtered_trace)`
 /// is the PVE a fit can reach before it starts fitting noise.
+/// `noise_path` is true when the noise-constrained selection actually
+/// overrode max-PVE for this trace (the best candidate overfit the noise
+/// floor by more than 1 SE); false means the result equals max-PVE.
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid

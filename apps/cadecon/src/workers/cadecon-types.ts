@@ -18,6 +18,10 @@ export interface TraceResult {
   /** Gain of the rolling-quantile baseline stage on the noise energy
    *  (the factor the selection's noise budget carries; 1 when not measured). */
   chainNoiseGain?: number;
+  /** The noise-floor guard overrode max-PVE for this trace (the best candidate
+   *  overfit the noise floor by more than 1 SE). false = result equals max-PVE.
+   *  Absent from solvers that predate the flag. */
+  noisePath?: boolean;
   /** Spike counts from the OPPOSITE noise-constrained setting, for the comparison
    *  overlay. Present only when the trace job requested `computeComparison`. */
   comparisonSCounts?: Float32Array;

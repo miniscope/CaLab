@@ -56,7 +56,7 @@ export const interpretingTutorial: Tutorial = {
       element: '[data-tutorial="display-options"]',
       title: 'Seeing the Sparsity’s Impact',
       description:
-        'CaDecon runs <b>noise-constrained sparsity</b> by default: it keeps only the spikes needed to explain the trace down to its noise floor, which cleans up spurious activity — the effect is largest on low-SNR cells. To <i>see</i> how much it is doing, enable <b>Sparsity Comparison Overlay</b> here <b>before</b> a run. The Trace Inspector then overlays the deconvolution computed both with and without the sparsity, and shows both spike counts, so you can judge the impact per cell.<br><br>' +
+        'CaDecon runs a <b>noise-floor guard</b> by default: on noisy cells it picks the sparsest spike train whose fit stays within the measured noise floor instead of the best-fitting one. It only acts at low SNR (roughly below 8); on cleaner cells no candidate reaches the noise floor and it has no effect. The Trace Inspector says per cell whether it was active. To <i>see</i> how much it changes, enable <b>Sparsity Comparison Overlay</b> here <b>before</b> a run. The Trace Inspector then overlays the deconvolution computed both with and without the guard, and shows both spike counts, so you can judge the impact per cell.<br><br>' +
         'This is a <b>visual-inspection aid only</b> — it does not change the result. Because it solves every trace twice, it roughly <b>doubles run time</b>, so it is off by default. Leave it off for normal runs.',
       side: 'right',
       popoverClass: 'driver-popover--wide',
