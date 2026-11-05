@@ -9,6 +9,8 @@
     ".": "./src/index.ts",
     "./chart": "./src/chart/index.ts",
     "./import": "./src/import/index.ts",
+    "./dataset": "./src/dataset/index.ts",
+    "./dataset/dataset.css": "./src/dataset/dataset.css",
     "./chart/chart-theme.css": "./src/chart/chart-theme.css",
     "./styles/*": "./src/styles/*"
   },

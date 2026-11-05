@@ -10,6 +10,7 @@ import type {
   KernelResult,
   SeedTraceResult,
   WarmBiexp,
+  CellOverview,
 } from '../workers/cadecon-types.ts';
 
 // --- Pool Job Types ---
@@ -58,7 +59,20 @@ interface SeedTraceJobFields {
   onComplete(result: SeedTraceResult): void;
 }
 
-export type CaDeconPoolJob = BaseJob & (TraceJobFields | KernelJobFields | SeedTraceJobFields);
+interface OverviewJobFields {
+  kind: 'overview';
+  tracesFlat: Float32Array;
+  nCells: number;
+  nTimepoints: number;
+  fs: number;
+  minSeparationSamples: number;
+  isDff: boolean;
+  baselineBins: number;
+  onComplete(cells: CellOverview[]): void;
+}
+
+export type CaDeconPoolJob = BaseJob &
+  (TraceJobFields | KernelJobFields | SeedTraceJobFields | OverviewJobFields);
 
 // --- Message Router ---
 
@@ -86,6 +100,10 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
         finish();
         if (job.kind === 'seed-trace') job.onComplete(msg.result);
         break;
+      case 'overview-complete':
+        finish();
+        if (job.kind === 'overview') job.onComplete(msg.cells);
+        break;
       case 'cancelled':
         finish();
         job.onCancelled();
@@ -98,6 +116,22 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
   },
 
   buildDispatch(job) {
+    if (job.kind === 'overview') {
+      return [
+        {
+          type: 'overview-job',
+          jobId: job.jobId,
+          tracesFlat: job.tracesFlat,
+          nCells: job.nCells,
+          nTimepoints: job.nTimepoints,
+          fs: job.fs,
+          minSeparationSamples: job.minSeparationSamples,
+          isDff: job.isDff,
+          baselineBins: job.baselineBins,
+        },
+        [job.tracesFlat.buffer],
+      ];
+    }
     if (job.kind === 'seed-trace') {
       return [
         { type: 'seed-trace-job', jobId: job.jobId, trace: job.trace, fs: job.fs },

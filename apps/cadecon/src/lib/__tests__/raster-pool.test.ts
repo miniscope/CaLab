@@ -16,6 +16,15 @@ function makeRng(seed: number) {
 }
 
 describe('raster pooling', () => {
+  it('places cells on their display rows when sorted', () => {
+    const N = 3,
+      T = 2;
+    const data = new Float32Array([0, 0, 1, 1, 2, 2]);
+    // cell 0 -> row 2, cell 1 -> row 0, cell 2 -> row 1
+    const { out } = poolRawMax(data, T, false, N, T, N, T, 1, [2, 0, 1]);
+    expect(Array.from(out)).toEqual([1, 1, 2, 2, 0, 0]);
+  });
+
   it('equals the input when sizes match', () => {
     const N = 3,
       T = 4;

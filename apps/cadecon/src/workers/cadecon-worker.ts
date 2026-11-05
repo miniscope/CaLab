@@ -16,7 +16,9 @@ import {
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   seed_trace,
+  overview_cell,
 } from '@calab/core/wasm';
+import { cellOverviewFromJson, type CellOverviewJson } from '@calab/core';
 import type { CaDeconWorkerInbound, CaDeconWorkerOutbound, FitMode } from './cadecon-types.ts';
 
 let cancelled = false;
@@ -222,6 +224,27 @@ function handleSeedTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'seed-tra
   }
 }
 
+/** Overview pass: one model-free `overview_cell` call per cell of the chunk. */
+function handleOverviewJob(req: Extract<CaDeconWorkerInbound, { type: 'overview-job' }>): void {
+  try {
+    const cells = [];
+    for (let c = 0; c < req.nCells; c++) {
+      const trace = req.tracesFlat.subarray(c * req.nTimepoints, (c + 1) * req.nTimepoints);
+      const json = overview_cell(
+        trace,
+        req.fs,
+        req.minSeparationSamples,
+        req.isDff,
+        req.baselineBins,
+      ) as CellOverviewJson;
+      cells.push(cellOverviewFromJson(json));
+    }
+    post({ type: 'overview-complete', jobId: req.jobId, cells });
+  } catch (err) {
+    post({ type: 'error', jobId: req.jobId, message: String(err) });
+  }
+}
+
 // Each handler catches its own errors; the outer try/catch is a backstop so a
 // job always gets a terminal message instead of leaving the pool waiting.
 onmessage = (e: MessageEvent<CaDeconWorkerInbound>) => {
@@ -239,6 +262,9 @@ onmessage = (e: MessageEvent<CaDeconWorkerInbound>) => {
         break;
       case 'seed-trace-job':
         handleSeedTraceJob(msg);
+        break;
+      case 'overview-job':
+        handleOverviewJob(msg);
         break;
     }
   } catch (err) {

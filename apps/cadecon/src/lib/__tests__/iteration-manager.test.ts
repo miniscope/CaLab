@@ -149,8 +149,7 @@ function completeJob(job: DispatchedJob): void {
       fitMode: 'TwoComponent',
       ...override,
     });
-  } else {
-    // seed-trace
+  } else if (job.kind === 'seed-trace') {
     const n = job.trace.length;
     const sCounts = new Float32Array(n);
     sCounts[1] = 1;
