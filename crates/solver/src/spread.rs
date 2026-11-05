@@ -1,6 +1,6 @@
 //! Spreading a native-rate frame mass over its spike-resolution sub-bins
 //! (the seam between the native-rate relaxed solve and the 300 Hz
-//! binarization; see `indeca::InnerSolve::Native`).
+//! binarization; see the `indeca` module docs).
 //!
 //! The relaxed native-rate solve gives each recorded frame `i` a mass `m_i`
 //! (in spike units at the solve's prescale). The threshold binarization runs
@@ -45,7 +45,7 @@ pub(crate) enum Spread {
 
 /// Lay the frame masses `x` (one per recorded frame) over `k` sub-bins per
 /// frame. Output length `x.len() * k`; the caller normalizes the vector to
-/// its interior peak before the threshold search, as the upsampled loop does.
+/// its interior peak before the threshold search.
 pub(crate) fn spread(x: &[f32], k: usize, rule: Spread) -> Vec<f32> {
     match rule {
         Spread::Interp => upsample_trace(x, k.max(1)),
