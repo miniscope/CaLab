@@ -22,7 +22,7 @@ function computeFilterCutoffs(
   };
 }
 
-export interface SpectrumData {
+interface SpectrumData {
   freqs: Float64Array;
   psd: Float64Array;
   allPsd: Float64Array;

@@ -566,7 +566,7 @@ export function initCellSolveManager(): void {
   onCleanup(disposeCellSolveManager);
 }
 
-export function disposeCellSolveManager(): void {
+function disposeCellSolveManager(): void {
   // Clear all debounce timers (per-cell on WASM, shared on GPU)
   for (const state of cellStates.values()) {
     if (state.debounceTimer !== null) clearTimeout(state.debounceTimer);
