@@ -843,3 +843,6 @@ mod finite_guard_tests {
         assert_eq!(first_nonfinite(&[1.0, 2.0, f32::NEG_INFINITY]), Some(2));
     }
 }
+
+#[cfg(test)]
+mod nested_scoring_tests;

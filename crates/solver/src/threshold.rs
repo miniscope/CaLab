@@ -339,17 +339,52 @@ pub(crate) fn threshold_search_scored(
     let mut counts = vec![0.0_f64; levels.len()];
     let mut last_count = usize::MAX;
     let mut last = (f64::INFINITY, 0.0_f64);
-    for (i, &thr) in levels.iter().enumerate().rev() {
-        let count = binarize(s_relaxed, thr, &mut s_bin);
-        if count != last_count {
-            let (e, a, _) = scorer.score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf);
-            last = (e, a);
-            last_count = count;
+    if use_nested() && scorer.begin_nested(banded, n) {
+        // The same trains, built incrementally: the bins any level keeps,
+        // largest value first, so the train at threshold `thr` is the prefix
+        // with `s >= thr` (the comparison `binarize` makes) and each level adds
+        // the next few bins (see `chain::Superposition`).
+        let lowest = levels[0] as f32;
+        let mut order: Vec<usize> = (0..n).filter(|&i| s_relaxed[i] >= lowest).collect();
+        order.sort_unstable_by(|&a, &b| s_relaxed[b].total_cmp(&s_relaxed[a]));
+        let mut taken = 0;
+        for (i, &thr) in levels.iter().enumerate().rev() {
+            let th = thr as f32;
+            let mut count = taken;
+            while count < order.len() && s_relaxed[order[count]] >= th {
+                count += 1;
+            }
+            if count != last_count {
+                let (e, a, _) =
+                    scorer.score_added(&order[taken..count], pad, stride, max_alpha, &mut conv_buf);
+                last = (e, a);
+                last_count = count;
+                taken = count;
+            }
+            errors[i] = last.0;
+            alphas[i] = last.1;
+            counts[i] = count as f64;
         }
-        errors[i] = last.0;
-        alphas[i] = last.1;
-        counts[i] = count as f64;
+    } else {
+        for (i, &thr) in levels.iter().enumerate().rev() {
+            let count = binarize(s_relaxed, thr, &mut s_bin);
+            if count != last_count {
+                let (e, a, _) = scorer.score(&s_bin, banded, pad, stride, max_alpha, &mut conv_buf);
+                last = (e, a);
+                last_count = count;
+            }
+            errors[i] = last.0;
+            alphas[i] = last.1;
+            counts[i] = count as f64;
+        }
     }
+
+    #[cfg(test)]
+    test_hooks::ERRORS.with(|e| {
+        if let Some(v) = e.borrow_mut().as_mut() {
+            v.push(errors.clone());
+        }
+    });
 
     let n_grid = (pad..n.saturating_sub(pad)).step_by(stride).count();
     let sel = select_sparsest(
@@ -405,6 +440,48 @@ pub(crate) fn threshold_search_scored(
         error: errors[pick],
         noise_path,
         diag,
+    }
+}
+
+/// Equivalence-test hooks: which scoring path the threshold search takes,
+/// and a record of every search's candidate errors.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Path {
+        /// Nested superposition (the shipped path).
+        Nested,
+        /// Every candidate from scratch through `Chain::apply` (f32 FFT).
+        Reference,
+        /// Nested, but every batch of added spikes through the f64 FFT
+        /// operator instead of column by column.
+        NestedFft,
+    }
+
+    thread_local! {
+        pub(crate) static PATH: Cell<Path> = const { Cell::new(Path::Nested) };
+        /// When `Some`, each search pushes its per-level errors.
+        pub(crate) static ERRORS: RefCell<Option<Vec<Vec<f64>>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn path() -> Path {
+        PATH.with(|p| p.get())
+    }
+}
+
+/// Whether the threshold search may score nested trains by superposition
+/// (always, outside the equivalence tests).
+#[inline]
+fn use_nested() -> bool {
+    #[cfg(test)]
+    {
+        test_hooks::path() != test_hooks::Path::Reference
+    }
+    #[cfg(not(test))]
+    {
+        true
     }
 }
 
