@@ -26,11 +26,22 @@ describe('buildSimulationConfig noise spread', () => {
     expect(cfg.noise.snr_spread).toBeGreaterThanOrEqual(22.5);
   });
 
-  it('every non-clean level has a positive spread that keeps cells above SNR 1', () => {
+  it('every non-clean level has a positive spread that keeps cells at or above SNR 3', () => {
+    // The measured-SNR round trip holds for targets >= 3 (pure noise reads ~2.7).
     for (const level of NOISE_LEVELS) {
       if (level.id === 'clean') continue;
       expect(level.snr_spread_fraction).toBeGreaterThan(0);
-      expect(level.snr_spread_fraction).toBeLessThan(1);
+      expect(level.snr * (1 - level.snr_spread_fraction)).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it('reaches down to SNR 4 with a single low level', () => {
+    const lowest = NOISE_LEVELS.length - 1;
+    const cfg = buildSimulationConfig({
+      ...DEFAULT_QUALITATIVE_CONFIG,
+      noise: [lowest, lowest],
+    });
+    expect(cfg.noise.snr).toBe(4);
+    expect(cfg.noise.snr - cfg.noise.snr_spread).toBeGreaterThanOrEqual(3);
   });
 });
