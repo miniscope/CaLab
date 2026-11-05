@@ -101,6 +101,7 @@ pip install calab[headless]      # + headless browser for CaDecon
 ├── packages/
 │   ├── core/                    # @calab/core — shared types, pure math, WASM adapter
 │   ├── compute/                 # @calab/compute — worker pool, warm-start cache
+│   ├── compute-gpu/             # @calab/compute-gpu — WebGPU batched FISTA solver (dev-only)
 │   ├── io/                      # @calab/io — file parsers, validation, export
 │   ├── community/               # @calab/community — Supabase DAL, submission logic
 │   ├── community-ui/            # @calab/community-ui — community sharing widgets
@@ -122,6 +123,7 @@ pip install calab[headless]      # + headless browser for CaDecon
 | ----------------------------------------------- | -------------------------------------------------------------------- |
 | [`@calab/core`](packages/core/)                 | Shared types, pure utilities, domain math, WASM adapter              |
 | [`@calab/compute`](packages/compute/)           | Generic worker pool, warm-start caching, kernel math, downsampling   |
+| [`@calab/compute-gpu`](packages/compute-gpu/)   | WebGPU batched FISTA solver (dev-only CaTune backend)                |
 | [`@calab/io`](packages/io/)                     | File parsers (.npy/.npz), data validation, cell ranking, JSON export |
 | [`@calab/community`](packages/community/)       | Supabase data access layer for community parameter sharing           |
 | [`@calab/community-ui`](packages/community-ui/) | SolidJS widgets for community sharing (browser, submit form)         |
