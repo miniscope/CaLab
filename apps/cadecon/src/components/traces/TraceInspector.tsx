@@ -529,7 +529,7 @@ export function TraceInspector(): JSX.Element {
   };
   const pveCeiling = () => {
     const c = effectiveResult()?.pveCeiling;
-    return c != null && Number.isFinite(c) ? ` (ceil ${(c * 100).toFixed(1)}%)` : '';
+    return c != null && Number.isFinite(c) ? ` (cell ceiling ${(c * 100).toFixed(1)}%)` : '';
   };
   // Model-free overview SNR of the inspected cell (display only).
   const cellOverview = createMemo(() => {
