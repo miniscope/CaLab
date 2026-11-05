@@ -14,6 +14,7 @@ import {
   FLAG_DESCRIPTIONS,
   cellsWithFlag,
   flagCounts,
+  medianOf,
   type DatasetOverview,
 } from '@calab/core';
 import {
@@ -40,13 +41,6 @@ import {
 } from '../../lib/viz-store.ts';
 
 const MAX_FLAG_CURVES = 24;
-
-function medianOf(values: number[]): number {
-  if (values.length === 0) return NaN;
-  const v = [...values].sort((a, b) => a - b);
-  const m = v.length >> 1;
-  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
-}
 const MAX_HIGHLIGHT_CURVES = 16;
 
 function DatasetCards(props: { ov: DatasetOverview }): JSX.Element {
