@@ -39,12 +39,12 @@ The data-import screen shared by the apps. Every component takes the app's `Impo
 
 Shared uPlot primitives so every app charts consistently:
 
-| Export                                                                                                                                                                      | Source            | Description                                                           |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------- |
-| `OKABE_ITO`, `OKABE_ITO_CYCLE`, `NEUTRAL`, `TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`, `METRIC_COLORS`, `DISTRIBUTION_COLORS`, `subsetColor`, `withOpacity` | `series-utils.ts` | Colorblind-safe Okabe-Ito palette and semantic color roles for series |
-| `VIRIDIS_LUT`, `viridisRGB`, `viridisCss`                                                                                                                                   | `colormap.ts`     | 256-entry viridis lookup table + RGB/CSS accessors (raster heatmaps)  |
-| `niceTicks`                                                                                                                                                                 | `chart-math.ts`   | Human-friendly axis tick values (1/2/5×10ⁿ)                           |
-| `chartAxis`, `labeledAxis`, `syncCursor`, `staticCursor`, `safeRange`, `integerTickValues`, `hiddenTickValues`                                                              | `axis-helpers.ts` | uPlot axis/cursor/range builders with shared theming                  |
+| Export                                                                                                                                                   | Source            | Description                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------- |
+| `OKABE_ITO`, `NEUTRAL`, `TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`, `METRIC_COLORS`, `DISTRIBUTION_COLORS`, `subsetColor`, `withOpacity` | `series-utils.ts` | Colorblind-safe Okabe-Ito palette and semantic color roles for series |
+| `VIRIDIS_LUT`, `viridisRGB`, `viridisCss`                                                                                                                | `colormap.ts`     | 256-entry viridis lookup table + RGB/CSS accessors (raster heatmaps)  |
+| `niceTicks`                                                                                                                                              | `chart-math.ts`   | Human-friendly axis tick values (1/2/5×10ⁿ)                           |
+| `chartAxis`, `labeledAxis`, `syncCursor`, `staticCursor`, `safeRange`, `integerTickValues`                                                               | `axis-helpers.ts` | uPlot axis/cursor/range builders with shared theming                  |
 
 ## CSS
 

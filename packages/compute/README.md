@@ -14,14 +14,14 @@ apps/catune, apps/cadecon
 
 ## Exports
 
-| Export                                                                  | Source                | Description                                                                                                                    |
-| ----------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `createWorkerPool`, `WorkerPool`                                        | `worker-pool.ts`      | Generic worker pool with priority queue, cooperative cancellation via MessageChannel yields, and intermediate result callbacks |
-| `computePaddedWindow`, `computeSafeMargin`                              | `warm-start-cache.ts` | Windowed computation helpers — compute padded solve region with safety margins for overlap-and-discard                         |
-| `WarmStartCache`                                                        | `warm-start-cache.ts` | 3-tier warm-start cache (lambda-only change, kernel change with momentum reset, cold start)                                    |
-| `computeKernel`, `computeKernelAnnotations`                             | `kernel-math.ts`      | Double-exponential kernel computation and annotation helpers for chart display                                                 |
-| `downsampleMinMax`                                                      | `downsample.ts`       | Min-max downsampling for efficient chart rendering of large traces                                                             |
-| `makeTimeAxis`                                                          | `time-axis.ts`        | Time axis generation from sample count and sampling rate                                                                       |
+| Export                                      | Source                | Description                                                                                                                    |
+| ------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `createWorkerPool`, `WorkerPool`            | `worker-pool.ts`      | Generic worker pool with priority queue, cooperative cancellation via MessageChannel yields, and intermediate result callbacks |
+| `computePaddedWindow`, `computeSafeMargin`  | `warm-start-cache.ts` | Windowed computation helpers — compute padded solve region with safety margins for overlap-and-discard                         |
+| `WarmStartCache`                            | `warm-start-cache.ts` | 3-tier warm-start cache (lambda-only change, kernel change with momentum reset, cold start)                                    |
+| `computeKernel`, `computeKernelAnnotations` | `kernel-math.ts`      | Double-exponential kernel computation and annotation helpers for chart display                                                 |
+| `downsampleMinMax`                          | `downsample.ts`       | Min-max downsampling for efficient chart rendering of large traces                                                             |
+| `makeTimeAxis`                              | `time-axis.ts`        | Time axis generation from sample count and sampling rate                                                                       |
 | `generateSyntheticTrace`                    | `mock-traces.ts`      | Synthetic calcium trace generation for demo data                                                                               |
 
 ## Design Notes

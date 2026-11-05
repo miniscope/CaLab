@@ -48,7 +48,7 @@ interface CalabPackageJson {
 }
 
 /** The scaffold value in apps/_template/package.json before `new-app` fills it in. */
-export const APP_ID_PLACEHOLDER = '__APP_ID__';
+const APP_ID_PLACEHOLDER = '__APP_ID__';
 
 /**
  * The `calab` identity of the app in `appDir`, validated.

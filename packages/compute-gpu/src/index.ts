@@ -19,15 +19,6 @@ export type {
   GpuReadOptions,
 } from './gpu-fista.ts';
 export { GpuOutOfMemoryError, GpuDeviceLostError } from '@calab/compute';
-export {
-  clampTauRise,
-  buildKernel,
-  kernelDcGain,
-  computeImpulsePeak,
-  computeBandedLipschitz,
-  computeBandedParams,
-} from './banded-params.ts';
+export { computeBandedParams } from './banded-params.ts';
 export type { BandedParams } from './banded-params.ts';
-export { referenceFista } from './fista-reference.ts';
-export { relL2, maxAbsDiff, BLOCK, WG, K } from './scan-reference.ts';
-export { fistaShaderSource } from './shaders/fista-wgsl.ts';
+export { relL2, maxAbsDiff, K } from './scan-reference.ts';

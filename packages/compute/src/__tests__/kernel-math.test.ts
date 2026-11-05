@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKernel, kernelShapeRmse, KERNEL_RMSE_MIN_SAMPLES } from '@calab/compute';
+import { computeKernel, kernelShapeRmse, KERNEL_RMSE_MIN_SAMPLES } from '../kernel-math.ts';
 
 describe('computeKernel', () => {
   const tauRise = 0.02;

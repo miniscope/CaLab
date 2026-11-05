@@ -5,10 +5,8 @@ export { computePaddedWindow, computeSafeMargin, WarmStartCache } from './warm-s
 export {
   computeKernel,
   computeKernelAnnotations,
-  sampleBiexp,
   kernelShapeRmse,
   KERNEL_DURATION_MULTIPLE,
-  KERNEL_RMSE_MIN_SAMPLES,
 } from './kernel-math.ts';
 export { tauToShape, shapeToTau } from './kernel-shape.ts';
 export { downsampleMinMax } from './downsample.ts';
@@ -49,22 +47,16 @@ export type {
   TileAssignPolicy,
   BackendCalibration,
 } from './solve-tiles.ts';
-export { createTileScheduler, preferFirstAccepting, anyAccepting } from './tile-scheduler.ts';
+export { createTileScheduler } from './tile-scheduler.ts';
 export type { TileScheduler, TileSchedulerOptions } from './tile-scheduler.ts';
 export { createWasmPoolConsumer } from './wasm-pool-consumer.ts';
 export type { WasmPoolConsumerOptions, CellJobCallbacks } from './wasm-pool-consumer.ts';
 export {
   createGpuBatchConsumer,
   DEFAULT_GPU_MEMORY_BUDGET,
-  DEFAULT_REFILL_FRACTION,
   GPU_STARTUP_TIMEOUT_MS,
 } from './gpu-batch-consumer.ts';
-export {
-  GpuOutOfMemoryError,
-  GpuDeviceLostError,
-  isGpuOutOfMemoryError,
-  isGpuDeviceLostError,
-} from './gpu-errors.ts';
+export { GpuOutOfMemoryError, GpuDeviceLostError } from './gpu-errors.ts';
 export type {
   BatchSolutions,
   BatchWarmStart,
@@ -77,26 +69,17 @@ export type {
   BatchFistaEngine,
   BatchFistaParams,
 } from './gpu-batch-consumer.ts';
-export { createQuantumSizer } from './quantum-sizer.ts';
-export type { QuantumSizer, QuantumSizerOptions } from './quantum-sizer.ts';
-export {
-  encodeSolverState,
-  decodeSolverState,
-  solverStateByteLength,
-} from './solver-state-codec.ts';
+export { encodeSolverState, decodeSolverState } from './solver-state-codec.ts';
 export type { DecodedSolverState } from './solver-state-codec.ts';
 export {
   getRequestedBackend,
   getRequestedGpuGate,
   webGpuUnavailableReason,
-  BACKEND_STORAGE_KEY,
-  GPU_GATE_STORAGE_KEY,
 } from './backend-selection.ts';
 export type { RequestedBackend, GpuGateMode } from './backend-selection.ts';
 export {
   createCalibrationStore,
   softwareAdapterReason,
   gpuParticipationVerdict,
-  CALIBRATION_MAX_AGE_MS,
 } from './calibration.ts';
 export type { CalibrationStore, AdapterLike } from './calibration.ts';

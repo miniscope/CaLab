@@ -48,8 +48,6 @@ import type {
   TileConsumer,
 } from './solve-tiles.ts';
 
-export { GpuOutOfMemoryError, GpuDeviceLostError } from './gpu-errors.ts';
-
 /** Parameters of one batched solve; structurally @calab/compute-gpu's GpuFistaParams. */
 export interface BatchFistaParams {
   tauRise: number;
