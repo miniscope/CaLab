@@ -25,7 +25,7 @@ apps/catune, apps/cabana
 | `TutorialLauncher` | `TutorialLauncher.tsx` | Tutorial launch button component                                      |
 | `Card`             | `Card.tsx`             | Generic card wrapper component                                        |
 
-The table above covers the layout components; the barrel (`src/index.ts`) also re-exports the chart utilities below. Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
+The table above covers the layout components. Chart utilities, the import flow and the dataset-overview cards have their own entry points (below). Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
 
 ## Import flow (`@calab/ui/import`)
 
@@ -37,14 +37,14 @@ The data-import screen shared by the apps. Every component takes the app's `Impo
 
 ## Chart utilities (`@calab/ui/chart`)
 
-Shared uPlot primitives so every app charts consistently (also re-exported from the top-level barrel):
+Shared uPlot primitives so every app charts consistently:
 
-| Export                                                                                                                                                                      | Source            | Description                                                           |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------- |
-| `OKABE_ITO`, `OKABE_ITO_CYCLE`, `NEUTRAL`, `TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`, `METRIC_COLORS`, `DISTRIBUTION_COLORS`, `subsetColor`, `withOpacity` | `series-utils.ts` | Colorblind-safe Okabe-Ito palette and semantic color roles for series |
-| `VIRIDIS_LUT`, `viridisRGB`, `viridisCss`                                                                                                                                   | `colormap.ts`     | 256-entry viridis lookup table + RGB/CSS accessors (raster heatmaps)  |
-| `niceTicks`                                                                                                                                                                 | `chart-math.ts`   | Human-friendly axis tick values (1/2/5×10ⁿ)                           |
-| `chartAxis`, `labeledAxis`, `syncCursor`, `staticCursor`, `safeRange`, `integerTickValues`, `hiddenTickValues`                                                              | `axis-helpers.ts` | uPlot axis/cursor/range builders with shared theming                  |
+| Export                                                                                                                                                   | Source            | Description                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------- |
+| `OKABE_ITO`, `NEUTRAL`, `TRACE_COLORS`, `GROUND_TRUTH_COLORS`, `KERNEL_FIT_COLORS`, `METRIC_COLORS`, `DISTRIBUTION_COLORS`, `subsetColor`, `withOpacity` | `series-utils.ts` | Colorblind-safe Okabe-Ito palette and semantic color roles for series |
+| `VIRIDIS_LUT`, `viridisRGB`, `viridisCss`                                                                                                                | `colormap.ts`     | 256-entry viridis lookup table + RGB/CSS accessors (raster heatmaps)  |
+| `niceTicks`                                                                                                                                              | `chart-math.ts`   | Human-friendly axis tick values (1/2/5×10ⁿ)                           |
+| `chartAxis`, `labeledAxis`, `syncCursor`, `staticCursor`, `safeRange`, `integerTickValues`                                                               | `axis-helpers.ts` | uPlot axis/cursor/range builders with shared theming                  |
 
 ## CSS
 

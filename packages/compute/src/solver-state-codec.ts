@@ -16,7 +16,7 @@ export interface DecodedSolverState {
   solutionPrev: Float32Array;
 }
 
-export function solverStateByteLength(n: number): number {
+function solverStateByteLength(n: number): number {
   return HEADER_BYTES + 8 * n;
 }
 

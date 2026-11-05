@@ -19,7 +19,7 @@ export interface DashboardShellProps {
 
 /** Bounds for a dragged sidebar width, in px. */
 export const SIDEBAR_MIN_PX = 320;
-export const SIDEBAR_MAX_FRACTION = 0.6;
+const SIDEBAR_MAX_FRACTION = 0.6;
 
 export function clampSidebarWidth(px: number, viewportWidth: number): number {
   const max = Math.max(SIDEBAR_MIN_PX, viewportWidth * SIDEBAR_MAX_FRACTION);

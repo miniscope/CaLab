@@ -5,6 +5,7 @@
  */
 
 import { createMemo, Show, type JSX } from 'solid-js';
+import { medianOf } from '@calab/core';
 import { viridisCss } from '../chart/colormap.ts';
 import { BrushHistogram, type HistogramMarker } from './BrushHistogram.tsx';
 import { OverviewCard } from './OverviewCard.tsx';
@@ -35,15 +36,6 @@ export function snrDomain(values: readonly number[], floor: number): [number, nu
   return [Math.min(floor * 0.8, 2), Math.max(hi * 1.15, floor * 4)];
 }
 
-function medianFinite(values: readonly (number | null)[]): number {
-  const v = values
-    .filter((x): x is number => x != null && Number.isFinite(x))
-    .sort((a, b) => a - b);
-  if (v.length === 0) return NaN;
-  const m = v.length >> 1;
-  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
-}
-
 export function SnrHistogramCard(props: SnrHistogramCardProps): JSX.Element {
   const domain = createMemo(() => snrDomain(props.snr(), props.noiseFloor.value));
   const sorted = createMemo(() =>
@@ -53,10 +45,10 @@ export function SnrHistogramCard(props: SnrHistogramCardProps): JSX.Element {
       .slice()
       .sort((a, b) => a - b),
   );
-  const median = createMemo(() => medianFinite(props.snr()));
+  const median = createMemo(() => medianOf(props.snr()));
   const nuMedian = createMemo(() => {
     const nu = props.nu?.();
-    return nu ? medianFinite(nu) : NaN;
+    return nu ? medianOf(nu.map((v) => v ?? NaN)) : NaN;
   });
 
   /** Bar colour = viridis at the fraction of cells below the bin centre. */

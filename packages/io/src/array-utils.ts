@@ -37,7 +37,7 @@ export function extractCellTrace(
  * Uses the typed array's own constructor to preserve the element type,
  * avoiding `as any` casts via bracket-notation indexing on the base type.
  */
-export function transposeFortranToC(
+function transposeFortranToC(
   data: NumericTypedArray,
   rows: number,
   cols: number,

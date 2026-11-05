@@ -5,7 +5,7 @@
 
 export type RequestedBackend = 'wasm' | 'gpu';
 
-export const BACKEND_STORAGE_KEY = 'calab:backend';
+const BACKEND_STORAGE_KEY = 'calab:backend';
 
 function parse(raw: string | null | undefined): RequestedBackend | null {
   if (raw === 'gpu' || raw === 'webgpu') return 'gpu';
@@ -37,7 +37,7 @@ export function getRequestedBackend(
  */
 export type GpuGateMode = 'advisory' | 'auto';
 
-export const GPU_GATE_STORAGE_KEY = 'calab:gpu-gate';
+const GPU_GATE_STORAGE_KEY = 'calab:gpu-gate';
 
 export function getRequestedGpuGate(
   search: string = typeof window !== 'undefined' ? window.location.search : '',

@@ -59,7 +59,7 @@ export function resolveSizeLimit(options: ArchiveParseOptions | undefined): numb
 }
 
 /** Human-readable byte count, e.g. `1.00 GiB`. */
-export function formatBytes(n: number): string {
+function formatBytes(n: number): string {
   if (!Number.isFinite(n)) return String(n);
   const units = ['bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
   let v = n;

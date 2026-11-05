@@ -172,9 +172,3 @@ export function shapeToTau(
 export function computeFWHM(tauRise: number, tauDecay: number): number | null {
   return tauToShape(tauRise, tauDecay)?.fwhm ?? null;
 }
-
-/** Check whether a (tPeak, fwhm) pair maps to valid tau parameters. */
-export function isValidShapePair(tPeak: number, fwhm: number): boolean {
-  if (tPeak <= 0 || fwhm <= 0 || fwhm <= tPeak) return false;
-  return shapeToTau(tPeak, fwhm) != null;
-}

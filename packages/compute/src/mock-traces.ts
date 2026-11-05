@@ -6,7 +6,20 @@
  */
 
 import { computeKernel } from './kernel-math.ts';
-import type { MarkovParams, NoiseParams } from './demo-presets.ts';
+
+interface MarkovParams {
+  pSilentToActive: number;
+  pActiveToSilent: number;
+  pSpikeWhenActive: number;
+  pSpikeWhenSilent: number;
+}
+
+interface NoiseParams {
+  amplitudeSigma: number;
+  driftAmplitude: number;
+  driftCyclesMin: number;
+  driftCyclesMax: number;
+}
 
 /** Neuronal spike simulation rate — 3.3ms refractory period. */
 const SPIKE_SIM_HZ = 300;
