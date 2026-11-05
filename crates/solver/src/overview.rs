@@ -315,7 +315,7 @@ mod tests {
         let (a, _) = twenty_events();
         for x in [white(5000, 1.0, 1), white(20000, 0.3, 2), a] {
             let o = cell_overview(&x, 30.0, 15, false, 20);
-            let r = measured_snr_report(&x, 15);
+            let r = measured_snr_report(&x, 30.0, 15);
             assert_eq!(o.snr, r.snr);
             assert_eq!(o.sigma, r.sigma);
             assert_eq!(o.n_events, r.n_events);
@@ -325,7 +325,7 @@ mod tests {
         let mut x = with_events(6000, 8.0, &[1000, 3000, 4500], 10.0, 9);
         x[2000..2050].fill(f32::NAN);
         let o = cell_overview(&x, 30.0, 15, false, 20);
-        let r = measured_snr_report(&x, 15);
+        let r = measured_snr_report(&x, 30.0, 15);
         assert_eq!((o.snr, o.sigma, o.n_events), (r.snr, r.sigma, r.n_events));
     }
 
@@ -358,7 +358,13 @@ mod tests {
     fn snr_equals_measured_snr_on_drifting_trace() {
         use crate::snr::measured_snr;
         let fs = 30.0;
-        let mut x = with_events(12_000, 8.0, &[500, 2500, 4500, 6500, 8500, 10_500], 20.0, 21);
+        let mut x = with_events(
+            12_000,
+            8.0,
+            &[500, 2500, 4500, 6500, 8500, 10_500],
+            20.0,
+            21,
+        );
         for (k, v) in x.iter_mut().enumerate() {
             *v += (20.0 * (-(k as f64) / 6000.0).exp()) as f32;
         }
