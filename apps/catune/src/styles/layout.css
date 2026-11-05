@@ -66,13 +66,7 @@
    Metrics Panel
    ======================== */
 .metrics-panel {
-  padding: var(--space-sm) 0;
-}
-
-.metrics-panel__title {
-  font-size: 1.1rem;
-  margin: 0 0 var(--space-md);
-  color: var(--text-primary);
+  padding: 0;
 }
 
 .metrics-panel__empty {
@@ -207,16 +201,9 @@
   white-space: nowrap;
 }
 
-/* Dataset drawer tab */
+/* Dataset sidebar tab: cards stack via the shared .ov-stack (dataset.css). */
 .dataset-drawer__cards {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
   margin-bottom: var(--space-md);
-}
-
-.dataset-drawer__cards .ov-card {
-  height: 190px;
 }
 
 .dataset-drawer__brush {

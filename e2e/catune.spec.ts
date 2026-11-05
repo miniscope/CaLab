@@ -26,14 +26,18 @@ test('CaTune: demo data loads, the WASM solver pool solves, and traces render', 
   await expect(page.getByText(/^SNR \d+\.\d$/)).toHaveCount(cardCount);
   await expect(page.getByTitle(/^(Stale|Solving)/)).toHaveCount(0);
 
-  // The Dataset drawer tab renders the shared SNR cards from the dataset overview
-  // (all 20 cells, not only the solved ones) above the per-cell table.
-  await page.getByRole('button', { name: 'Sidebar', exact: true }).click();
-  await page.locator('[data-tutorial="sidebar-tab-dataset"]').click();
+  // Once the dataset overview is ready the right sidebar opens on its Dataset
+  // tab: the shared SNR cards (all 20 cells, not only the solved ones) above
+  // the per-cell table.
+  await expect(page.getByRole('tab', { name: 'Dataset' })).toHaveAttribute('aria-selected', 'true');
   const panel = page.getByTestId('dataset-panel');
-  await expect(panel.getByTestId('overview-snr')).toBeVisible();
-  await expect(panel.getByText('N 20', { exact: true })).toBeVisible();
+  const snrCard = panel.getByTestId('overview-snr');
+  await expect(snrCard).toBeVisible();
+  await expect(snrCard.getByText('N 20', { exact: true })).toBeVisible();
   await expect(panel.getByTestId('flag-summary')).toBeVisible();
+  // The header button closes it.
+  await page.getByRole('button', { name: 'Sidebar', exact: true }).click();
+  await expect(page.locator('.dashboard-shell--sidebar-open')).toHaveCount(0);
 
   // "By SNR" selection spreads the displayed cards across the SNR quantiles.
   await page.locator('.cell-selector__mode').selectOption('by-snr');

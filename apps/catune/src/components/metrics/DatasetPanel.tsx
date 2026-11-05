@@ -1,5 +1,5 @@
 /**
- * Dataset drawer tab: how the whole dataset looks (shared measured-SNR histogram,
+ * Dataset sidebar tab (first in the right sidebar): how the whole dataset looks (shared measured-SNR histogram,
  * event-height shape, flags) above a per-cell table of the cells being tuned.
  *
  * Everything model-free comes from the dataset overview (computed once for ALL
@@ -106,7 +106,7 @@ function DatasetCards(props: { ov: DatasetOverview }) {
   };
 
   return (
-    <div class="dataset-drawer__cards">
+    <div class="ov-stack dataset-drawer__cards">
       <SnrHistogramCard
         snr={snr}
         noiseFloor={{ value: OVERVIEW_PARAMS.noiseFloorSnr, hi: OVERVIEW_PARAMS.noiseFloorBandHi }}
@@ -181,8 +181,6 @@ export function DatasetPanel() {
 
   return (
     <div class="metrics-panel" data-tutorial="metrics-panel" data-testid="dataset-panel">
-      <h3 class="metrics-panel__title">Dataset</h3>
-
       <Switch>
         <Match when={overview()}>{(ov) => <DatasetCards ov={ov()} />}</Match>
         <Match when={overviewStatus() === 'computing'}>

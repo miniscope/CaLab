@@ -131,7 +131,8 @@ describe('DatasetPanel', () => {
     setActiveSidebarTab('dataset');
     const root = mount(() => <DatasetPanel />);
 
-    expect(root.querySelector('h3')!.textContent).toBe('Dataset');
+    // The sidebar tab names the panel; it carries no duplicate heading.
+    expect(root.querySelector('.metrics-panel__title')).toBeNull();
     expect(root.querySelector('[data-testid="overview-snr"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="flag-summary"]')!.textContent).toMatch(
       /flagged|No cells flagged/,
