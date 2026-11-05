@@ -586,6 +586,7 @@ pub(crate) fn lstsq_alpha_baseline(
 mod tests {
     use super::*;
     use crate::banded::BandedAR2;
+    use crate::test_util::lcg_noise;
 
     /// Test-only reference for the candidate set used before the fixed grid:
     /// a strided list (at most 256) of the relaxed solution's sorted distinct
@@ -767,19 +768,6 @@ mod tests {
 
     /// Deterministic white-ish noise in [-amp, amp) via an LCG (tests must not
     /// use real RNG). Zero-mean in expectation; variance ≈ amp²/3.
-    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
-        let mut state = seed;
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                let u = ((state >> 32) as f64) / ((1u64 << 31) as f64) - 1.0;
-                (u as f32) * amp
-            })
-            .collect()
-    }
-
     /// Build a graded relaxed solution + noisy observed trace with three true
     /// spikes whose relaxed values differ (1.0 / 0.85 / 0.7) plus weaker spurious
     /// bumps (0.55), so the budget genuinely controls how many survive.
@@ -1028,6 +1016,10 @@ mod tests {
                 assert_eq!(r.s_binary.len(), n);
                 assert!(r.threshold.is_finite());
                 assert!(r.alpha.is_finite() && r.baseline.is_finite());
+                if n == 0 {
+                    // The empty trace's mean would be 0/0.
+                    assert_eq!(r.baseline, 0.0);
+                }
                 assert!(r.pve.is_finite());
             }
             // (b) All-zero relaxed solution: empty train, zero alpha, baseline = mean(y).

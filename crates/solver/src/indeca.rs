@@ -896,6 +896,7 @@ pub(crate) fn solve_trace_cfg(
 mod tests {
     use super::*;
     use crate::kernel::build_kernel;
+    use crate::test_util::lcg_noise;
 
     /// [`solve_trace_opts`] with the default options.
     #[allow(clippy::too_many_arguments)]
@@ -1356,19 +1357,6 @@ mod tests {
     }
 
     /// Deterministic white-ish noise in [-amp, amp) (variance ≈ amp²/3).
-    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
-        let mut state = seed;
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                let u = ((state >> 32) as f64) / ((1u64 << 31) as f64) - 1.0;
-                (u as f32) * amp
-            })
-            .collect()
-    }
-
     #[test]
     fn high_band_sigma_recovers_white_noise_std() {
         // On pure white noise the high-band periodogram mean estimates the noise

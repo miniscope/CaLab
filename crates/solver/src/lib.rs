@@ -820,3 +820,6 @@ mod finite_guard_tests {
 
 #[cfg(test)]
 mod nested_scoring_tests;
+
+#[cfg(test)]
+mod test_util;

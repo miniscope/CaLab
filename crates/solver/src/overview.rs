@@ -252,23 +252,7 @@ pub fn cell_overview(
 mod tests {
     use super::*;
     use crate::snr::{measured_snr_report, noise_level_nu};
-
-    fn white(n: usize, sigma: f64, seed: u64) -> Vec<f32> {
-        let mut s = seed.max(1);
-        let mut next = || {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            (s >> 11) as f64 / (1u64 << 53) as f64
-        };
-        (0..n)
-            .map(|_| {
-                let u1 = next().max(1e-12);
-                let u2 = next();
-                (sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
-            })
-            .collect()
-    }
+    use crate::test_util::white;
 
     fn with_events(n: usize, amp: f64, at: &[usize], tau: f64, seed: u64) -> Vec<f32> {
         let mut x = white(n, 1.0, seed);
