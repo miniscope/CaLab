@@ -4,7 +4,7 @@
 import type { Component } from 'solid-js';
 import { Show, createEffect, createSignal, on } from 'solid-js';
 
-import { DashboardPanel, VizLayout, DashboardShell } from '@calab/ui';
+import { DashboardPanel, VizLayout, DashboardShell, createDashboardSidebar } from '@calab/ui';
 import { isAuthCallback } from '@calab/community-ui';
 import { AuthCallback } from './components/auth/AuthCallback.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
@@ -16,8 +16,9 @@ import { CaTuneHeader } from './components/layout/CompactHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { CardGrid } from './components/cards/CardGrid.tsx';
-import { SidebarTabs } from './components/layout/SidebarTabs.tsx';
-import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
+import { SidebarTabs, type SidebarTab } from './components/layout/SidebarTabs.tsx';
+import { DatasetPanel } from './components/metrics/DatasetPanel.tsx';
+import { computeOverview, overview } from './lib/overview-store.ts';
 import { SpectrumPanel } from './components/spectrum/SpectrumPanel.tsx';
 import { initSpectrumStore } from './lib/spectrum/spectrum-store.ts';
 
@@ -44,7 +45,11 @@ import {
   pinCurrentSnapshot,
   unpinSnapshot,
 } from './lib/viz-store.ts';
-import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
+import {
+  computeAndCacheRanking,
+  updateCellSelection,
+  selectionMode,
+} from './lib/multi-cell-store.ts';
 import { initCellSolveManager, solverFatalError } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/community/index.ts';
 import { backendStatus } from './lib/solver-backend.ts';
@@ -85,9 +90,20 @@ const App: Component = () => {
 
   const hasFile = () => !!rawFile();
 
-  // Sidebar state — owned by the app, passed to DashboardShell & CaTuneHeader
-  const [sidebarOpen, setSidebarOpen] = createSignal(false);
-  const toggleSidebar = () => setSidebarOpen((prev) => !prev);
+  // Sidebar state — owned by the app, passed to DashboardShell & CaTuneHeader.
+  const sidebar = createDashboardSidebar('dataset');
+  const sidebarOpen = sidebar.open;
+  const toggleSidebar = sidebar.toggle;
+
+  // Surface the dataset overview once per loaded dataset, unless the user has
+  // closed the sidebar this session.
+  let revealedFor: unknown = null;
+  createEffect(() => {
+    const data = parsedData();
+    if (!overview() || !data || data === revealedFor) return;
+    revealedFor = data;
+    sidebar.reveal('dataset');
+  });
 
   // Tutorial panel state
   const [tutorialOpen, setTutorialOpen] = createSignal(false);
@@ -141,6 +157,10 @@ const App: Component = () => {
           updateCellSelection();
           initCellSolveManager();
           initSpectrumStore();
+          // Shared SNR + flags for every cell (off-thread, cached). "By SNR" selection waits for it.
+          void computeOverview().then(() => {
+            if (selectionMode() === 'by-snr') updateCellSelection();
+          });
         }
       }
     }),
@@ -228,11 +248,15 @@ const App: Component = () => {
               onToggleSidebar={toggleSidebar}
             />
           }
+          sidebarWidth="clamp(400px, 30vw, 560px)"
+          sidebarResizable
           sidebar={
             <SidebarTabs
               communityContent={supabaseEnabled ? () => <CommunityBrowser /> : undefined}
               spectrumContent={<SpectrumPanel />}
-              metricsContent={<MetricsPanel />}
+              datasetContent={<DatasetPanel />}
+              activeTab={sidebar.tab() as SidebarTab}
+              onTabChange={sidebar.setTab}
             />
           }
         >

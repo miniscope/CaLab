@@ -60,20 +60,20 @@ export const advancedTutorial: Tutorial = {
         'Some variation in fit quality across cells is normal \u2014 cells differ in baseline noise, activity rate, and expression level. Aim for parameters that work well for the majority. If a few cells look terrible, they may have issues unrelated to parameter choice (dead cells, out-of-focus, artifacts).',
       side: 'top',
     },
-    // Step 7: Open Metrics Analysis (merged: open sidebar + select metrics tab)
+    // Step 7: Open the Dataset tab (merged: open sidebar + select dataset tab)
     {
       element: '[data-tutorial="sidebar-toggle"]',
-      title: 'Open Metrics Analysis',
+      title: 'Open the Dataset Tab',
       description:
-        'Open the <b>Sidebar</b> and select the <b>Metrics tab</b> for quantitative fit assessment.',
+        'Open the <b>Sidebar</b> and select the <b>Dataset tab</b> for the SNR distribution and quantitative fit assessment.',
       side: 'bottom',
     },
-    // Step 8: Metrics dashboard
+    // Step 8: Dataset panel
     {
       element: '[data-tutorial="metrics-panel"]',
-      title: 'Metrics Dashboard',
+      title: 'Dataset Panel',
       description:
-        'The Metrics panel shows per-cell SNR, R\u00B2, and sparsity percentage. Sort by SNR to identify problem cells. <b>Consistent SNR across cells suggests your parameters generalize well.</b> Outlier cells may have issues unrelated to parameter choice.',
+        'The Dataset panel shows the SNR histogram of all cells, and per-cell SNR, R\u00B2, and sparsity for the cells you are tuning. The table is sorted by SNR. <b>Consistent fit quality across cells with different SNR suggests your parameters generalize well.</b> Outlier cells may have issues unrelated to parameter choice.',
       side: 'left',
     },
     // Step 9: Sampling rate matters

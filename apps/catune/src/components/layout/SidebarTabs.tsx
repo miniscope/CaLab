@@ -1,64 +1,54 @@
 /**
  * CaTune SidebarTabs — wraps the shared SidebarTabs component.
- * Preserves the module-level activeSidebarTab signal for MetricsPanel gating.
+ * Dataset comes first and is the default; the active tab is owned by the app
+ * (createDashboardSidebar) so it can open the sidebar on Dataset when a new
+ * dataset's overview is ready. The module-level activeSidebarTab mirrors it so
+ * DatasetPanel can skip its table computation while hidden.
  */
 
-import { createSignal, type JSX } from 'solid-js';
+import { createEffect, createSignal, type JSX } from 'solid-js';
 import { SidebarTabs as SharedSidebarTabs } from '@calab/community-ui';
 import type { SidebarTabConfig } from '@calab/community-ui';
 import { trackEvent } from '@calab/community';
 
-export type SidebarTab = 'community' | 'spectrum' | 'metrics';
+export type SidebarTab = 'dataset' | 'spectrum' | 'community';
 
-// Module-level signal so MetricsPanel can skip computation when not visible.
-const [activeSidebarTab, setActiveSidebarTab] = createSignal<SidebarTab>('community');
-export { activeSidebarTab };
+// Module-level signal so DatasetPanel can skip computation when not visible.
+const [activeSidebarTab, setActiveSidebarTab] = createSignal<SidebarTab>('dataset');
+export { activeSidebarTab, setActiveSidebarTab };
 
 export interface SidebarTabsProps {
   communityContent?: JSX.Element | (() => JSX.Element);
-  metricsContent: JSX.Element;
+  datasetContent: JSX.Element;
   spectrumContent?: JSX.Element;
+  activeTab: SidebarTab;
+  onTabChange: (tab: SidebarTab) => void;
 }
 
 export function SidebarTabs(props: SidebarTabsProps) {
   const tabs = (): SidebarTabConfig[] => {
-    const list: SidebarTabConfig[] = [];
+    const list: SidebarTabConfig[] = [
+      { id: 'dataset', label: 'Dataset', content: props.datasetContent },
+    ];
+    if (props.spectrumContent)
+      list.push({ id: 'spectrum', label: 'Spectrum', content: props.spectrumContent });
     if (props.communityContent)
       list.push({
         id: 'community',
         label: 'Community',
         content: props.communityContent,
-        onActivate: () => {
-          setActiveSidebarTab('community');
-          void trackEvent('community_browser_opened');
-        },
+        onActivate: () => void trackEvent('community_browser_opened'),
       });
-    if (props.spectrumContent)
-      list.push({
-        id: 'spectrum',
-        label: 'Spectrum',
-        content: props.spectrumContent,
-        onActivate: () => setActiveSidebarTab('spectrum'),
-      });
-    list.push({
-      id: 'metrics',
-      label: 'Metrics',
-      content: props.metricsContent,
-      onActivate: () => setActiveSidebarTab('metrics'),
-    });
     return list;
   };
 
-  // Default tab is intentionally computed once at mount from the initial
-  // props; callers never swap communityContent / spectrumContent after first
-  // render. Disable the reactivity rule for these one-shot reads.
-  // eslint-disable-next-line solid/reactivity
-  const hasCommunity = !!props.communityContent;
-  // eslint-disable-next-line solid/reactivity
-  const hasSpectrum = !!props.spectrumContent;
-  const defaultTab: SidebarTab = hasCommunity ? 'community' : hasSpectrum ? 'spectrum' : 'metrics';
+  createEffect(() => setActiveSidebarTab(props.activeTab));
 
-  setActiveSidebarTab(defaultTab);
-
-  return <SharedSidebarTabs tabs={tabs()} defaultTab={defaultTab} />;
+  return (
+    <SharedSidebarTabs
+      tabs={tabs()}
+      activeTab={props.activeTab}
+      onTabChange={(id) => props.onTabChange(id as SidebarTab)}
+    />
+  );
 }

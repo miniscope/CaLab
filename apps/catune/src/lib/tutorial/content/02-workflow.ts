@@ -113,7 +113,7 @@ export const workflowTutorial: Tutorial = {
       element: '[data-tutorial="cell-selector"]',
       title: 'Step 6: Validate Across Cells',
       description:
-        'Good parameters should work across diverse cells, not just one. Switch between \u201CTop Active\u201D, \u201CRandom\u201D, and \u201CManual\u201D selection to test on cells with different activity levels. Check traces with overlapping events, large amplitudes, and different cell types. Parameters that only work on high-SNR cells may need adjustment.',
+        'Good parameters should work across diverse cells, not just one. Switch between \u201CTop Active\u201D, \u201CBy SNR\u201D (cells spread across the SNR quantiles), \u201CRandom\u201D, and \u201CManual\u201D selection to test on cells with different activity and SNR levels. Check traces with overlapping events, large amplitudes, and different cell types. Parameters that only work on high-SNR cells may need adjustment.',
       side: 'top',
     },
     // Step 13: Compare iterations

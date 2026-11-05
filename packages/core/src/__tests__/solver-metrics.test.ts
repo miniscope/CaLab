@@ -3,6 +3,7 @@ import {
   computeSparsityRatio,
   computeResidualRMS,
   computeRSquared,
+  computeFitMetrics,
 } from '../metrics/solver-metrics.ts';
 
 describe('computeSparsityRatio', () => {
@@ -35,7 +36,7 @@ describe('computeResidualRMS', () => {
   });
 
   it('returns 0 for length mismatch', () => {
-    expect(computeResidualRMS(new Float64Array([1, 2]), new Float64Array([1]))).toBe(0);
+    expect(computeResidualRMS(new Float64Array([1, 2]), new Float64Array([1]))).toBeNaN();
   });
 
   it('returns approximately 0 for perfect reconstruction', () => {
@@ -64,7 +65,7 @@ describe('computeRSquared', () => {
   });
 
   it('returns 0 for length mismatch', () => {
-    expect(computeRSquared(new Float64Array([1, 2]), new Float64Array([1]))).toBe(0);
+    expect(computeRSquared(new Float64Array([1, 2]), new Float64Array([1]))).toBeNaN();
   });
 
   it('returns 1 when raw signal is constant (SS_total=0)', () => {
@@ -78,5 +79,32 @@ describe('computeRSquared', () => {
     // Reconstruct with wildly wrong values — far from mean (3)
     const recon = new Float64Array([10, 10, 10, 10, 10]);
     expect(computeRSquared(raw, recon)).toBeLessThan(0);
+  });
+});
+
+describe('computeFitMetrics', () => {
+  it('compares like with like', () => {
+    const ref = new Float32Array([0, 1, 2, 3]);
+    const r = computeFitMetrics(ref, new Float32Array([0, 1, 2, 3]));
+    expect(r).toEqual({ ok: true, residualRms: 0, rSquared: 1 });
+  });
+
+  it('surfaces a length mismatch (a windowed fit against the full raw trace) instead of 0', () => {
+    const raw = new Float64Array(100).map((_, i) => Math.sin(i / 5));
+    const windowedFit = new Float32Array(40);
+    const r = computeFitMetrics(raw, windowedFit);
+    expect(r).toEqual({
+      ok: false,
+      reason: 'length-mismatch',
+      referenceLength: 100,
+      fitLength: 40,
+    });
+  });
+
+  it('reports a missing reference', () => {
+    expect(computeFitMetrics(undefined, new Float32Array(5))).toMatchObject({
+      ok: false,
+      reason: 'no-reference',
+    });
   });
 });

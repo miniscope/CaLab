@@ -327,3 +327,14 @@ describe('multi-cell-store: clearMultiCellState', () => {
     });
   });
 });
+
+describe('by-snr selection', () => {
+  it('is a no-op until the SNR overview exists, and keeps the current selection', async () => {
+    const { updateCellSelection } = await import('../multi-cell-store.ts');
+    setSelectedCells([7, 8]);
+    setSelectionMode('by-snr');
+    updateCellSelection();
+    expect(selectedCells()).toEqual([7, 8]);
+    setSelectionMode('top-active');
+  });
+});

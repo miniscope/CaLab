@@ -43,7 +43,7 @@ export const basicsTutorial: Tutorial = {
       title: 'Traces & Solver Status',
       description:
         'Four trace bands are overlaid in the zoom window: raw fluorescence (blue) with the model\u2019s fit (orange) on top, inferred deconvolved activity (green) in the middle, and residuals (red) at the bottom. When the fit is good, orange tracks blue peaks and residuals look like random noise.<br><br>' +
-        'The badge in each card header shows solver state. The colored dot indicates: <b>green</b> = solver finished, <b>yellow</b> = solver running, <b>red</b> = solver needs to run. When finished it displays the SNR value. Wait for the solver to complete before judging the fit.',
+        'The badge in each card header shows solver state. The label shows <b>Stale</b> (solver needs to run), <b>Iter N</b> (solver running) and, when finished, the cell\u2019s measured <b>SNR</b>. The dot colour is that SNR\u2019s quantile within this dataset (dark purple = weakest cells, yellow = strongest); a small <b>\u2248 noise</b> tag marks cells close to pure noise. Wait for the solver to complete before judging the fit.',
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },

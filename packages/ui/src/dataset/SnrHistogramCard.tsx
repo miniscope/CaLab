@@ -24,6 +24,8 @@ export interface SnrHistogramCardProps {
   highlighted?: () => ReadonlySet<number> | null;
   selected?: () => number | null;
   onBrush?: (ids: number[] | null) => void;
+  /** Replaces the closing sentence of the help text (default: the raster highlight hint). */
+  brushHint?: string;
 }
 
 /** Shared SNR axis domain (log): from just below the noise floor to above the max. */
@@ -106,7 +108,7 @@ export function SnrHistogramCard(props: SnrHistogramCardProps): JSX.Element {
             {props.eventSeparationS != null
               ? ` (events at least ${props.eventSeparationS} s apart)`
               : ''}
-            . Drag across the bars to highlight those cells in the raster.
+            . {props.brushHint ?? 'Drag across the bars to highlight those cells in the raster.'}
           </p>
         </>
       }
