@@ -3299,3 +3299,7 @@ mod tests {
         assert!(zero.s_counts.iter().all(|&v| v == 0.0));
     }
 }
+
+#[cfg(test)]
+#[path = "indeca_gpu_profile.rs"]
+mod gpu_profile;
