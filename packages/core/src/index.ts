@@ -28,6 +28,7 @@ export { formatDuration } from './format-utils.ts';
 // Metrics
 export { computePeakSNR, snrToQuality } from './metrics/snr.ts';
 export type { QualityTier } from './metrics/snr.ts';
+export type { SnrEvent, SnrReport } from './metrics/snr-events.ts';
 export {
   computeSparsityRatio,
   computeResidualRMS,

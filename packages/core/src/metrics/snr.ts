@@ -11,8 +11,13 @@
 const snrCache = new WeakMap<Float64Array, number>();
 
 /**
- * Compute peak SNR for a calcium trace.
- * SNR = (max - baseline_mean) / baseline_std
+ * Compute peak SNR for a calcium trace (CaTune's quick quality score).
+ * SNR = (95th percentile - baseline_mean) / baseline_std
+ *
+ * Not the same quantity as the robust measured SNR (`snr_measured` in the
+ * WASM module, `crates/solver/src/snr.rs`) that the simulator's noise
+ * convention targets: the bottom-quartile spread underestimates the noise σ,
+ * so this score reads higher.
  *
  * Baseline is estimated from the lower 25th percentile of the trace.
  * This is appropriate for calcium traces where most of the trace

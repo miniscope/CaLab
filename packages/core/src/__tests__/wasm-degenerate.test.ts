@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { SnrReport } from '../metrics/snr-events.ts';
 import {
   Solver,
   get_simulation_presets,
@@ -24,6 +25,13 @@ import {
   initWasm,
   seed_trace,
   simulate_traces,
+  snr_default_top_fraction,
+  snr_detect_events,
+  snr_measured,
+  snr_measured_report,
+  snr_noise_level_nu,
+  snr_noise_sigma_mad_diff,
+  snr_peak,
 } from '../wasm-adapter.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -419,6 +427,42 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       expectRejected(() => simulate_traces(cfg), text);
       // Still usable.
       expect((simulate_traces(preset()) as { traces: number[] }).traces.length).toBe(200);
+    });
+  });
+
+  describe('snr metrics', () => {
+    it('return finite, non-negative numbers on empty, tiny, constant and NaN traces', () => {
+      const traces = [
+        new Float32Array(0),
+        new Float32Array([1]),
+        new Float32Array([0, 1]),
+        new Float32Array(200).fill(2.5),
+        new Float32Array([0, NaN, 1, 2, Infinity, 0.5]),
+      ];
+      for (const t of traces) {
+        for (const v of [
+          snr_noise_sigma_mad_diff(t),
+          snr_noise_level_nu(t, FS),
+          snr_peak(t, 1, 0.01, FS),
+          snr_measured(t, FS),
+          // An invalid frame rate skips the drift removal instead of failing.
+          snr_measured(t, 0),
+          snr_measured(t, NaN),
+        ]) {
+          expect(Number.isFinite(v) && v >= 0, String(v)).toBe(true);
+        }
+      }
+      for (const t of traces) {
+        for (const sep of [0, 1, 12]) {
+          expect(Array.isArray(snr_detect_events(t, snr_noise_sigma_mad_diff(t), sep))).toBe(true);
+          const r = snr_measured_report(t, FS, sep) as SnrReport;
+          expect(Number.isFinite(r.sigma) && r.sigma >= 0).toBe(true);
+          expect(typeof r.is_silent).toBe('boolean');
+        }
+      }
+      expect(snr_noise_level_nu(spiky(), 0)).toBe(0);
+      expect(snr_noise_level_nu(spiky(), NaN)).toBe(0);
+      expect(snr_default_top_fraction()).toBe(0.01);
     });
   });
 });

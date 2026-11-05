@@ -49,7 +49,51 @@ def test_surface_inventory_is_covered():
         "py_simulate_traces",
         "protocol_version",
         "seed_kernel_estimate",
+        "SNR_DEFAULT_TOP_FRACTION",
+        "py_snr_detect_events",
+        "py_snr_measured",
+        "py_snr_measured_report",
+        "py_snr_noise_level_nu",
+        "py_snr_noise_sigma_mad_diff",
+        "py_snr_peak",
     }
+
+
+@pytest.mark.parametrize("n", [0, 1, 2])
+def test_snr_metrics_on_empty_and_tiny_traces(n):
+    x = np.ones(n)
+    for v in (
+        _solver.py_snr_noise_sigma_mad_diff(x),
+        _solver.py_snr_noise_level_nu(x, 30.0),
+        _solver.py_snr_peak(x, 1.0, 0.01, 30.0),
+        _solver.py_snr_measured(x, 30.0),
+    ):
+        assert np.isfinite(v) and v >= 0
+    idx, heights, baselines = _solver.py_snr_detect_events(x, 1.0, 12)
+    assert len(idx) == len(heights) == len(baselines) == 0
+    snr, sigma, n_events, is_silent = _solver.py_snr_measured_report(x, 30.0, 12)
+    assert np.isfinite(snr) and np.isfinite(sigma) and n_events == 0 and is_silent
+
+
+def test_snr_metrics_reject_nonfinite_and_strided_input():
+    bad = np.array([0.0, np.nan, 1.0, 2.0])
+    strided = np.arange(20.0)[::2]
+    for arr in (bad, strided):
+        with pytest.raises(ValueError):
+            _solver.py_snr_noise_sigma_mad_diff(arr)
+        with pytest.raises(ValueError):
+            _solver.py_snr_measured(arr, 30.0)
+
+
+def test_snr_metrics_degenerate_scalars():
+    x = np.random.default_rng(0).normal(size=300)
+    assert _solver.py_snr_noise_level_nu(x, 0.0) == 0.0
+    assert _solver.py_snr_noise_level_nu(x, float("nan")) == 0.0
+    assert np.isfinite(_solver.py_snr_peak(x, 1.0, float("nan"), 30.0))
+    assert _solver.py_snr_peak(np.zeros(10), 0.0, 0.01, 30.0) == 0.0
+    # An invalid frame rate skips the detrending instead of failing.
+    for fs in (0.0, -1.0, float("nan"), float("inf")):
+        assert np.isfinite(_solver.py_snr_measured(x, fs))
 
 
 def test_protocol_version_is_semver():
@@ -718,10 +762,11 @@ def test_simulate_zero_and_one_sized(cells, timepoints):
     out = _solver.py_simulate_traces(
         json.dumps(sim_config(num_cells=cells, num_timepoints=timepoints))
     )
-    traces, spikes, clean, alphas, snrs, taus_r, taus_d, n_cells, n_tp = out
+    traces, spikes, clean, alphas, snrs, taus_r, taus_d, sigmas, snr1s, n_cells, n_tp = out
     assert (n_cells, n_tp) == (cells, timepoints)
     assert traces.size == spikes.size == clean.size == cells * timepoints
     assert alphas.size == snrs.size == taus_r.size == taus_d.size == cells
+    assert sigmas.size == snr1s.size == cells
     assert finite(traces, spikes, clean)
 
 
@@ -775,7 +820,7 @@ def test_simulate_extreme_per_cell_tau_variation_is_bounded():
     # Valid nominal taus with the maximum CV: per-cell draws are clamped so no
     # cell's kernel exceeds the length cap or has rise >= decay.
     cfg = sim_config(**{"kernel.tau_rise_cv": 10.0, "kernel.tau_decay_cv": 10.0, "num_cells": 6})
-    traces, _spikes, clean, _a, _s, taus_r, taus_d, _n, _t = _solver.py_simulate_traces(
+    traces, _spikes, clean, _a, _s, taus_r, taus_d, _sg, _s1, _n, _t = _solver.py_simulate_traces(
         json.dumps(cfg)
     )
     assert finite(traces, clean) and np.all(clean >= 0)

@@ -94,13 +94,27 @@ class KernelConfig(BaseModel):
 
 
 class NoiseConfig(BaseModel):
-    """Noise model: Gaussian + optional Poisson (shot) noise.
+    """Noise model: Gaussian + optional shot noise.
+
+    ``snr`` is measured against ``reference``:
+
+    - ``"measured_snr"`` (default): each noisy trace measures at ``snr`` with
+      :func:`calab.measured_snr`, the metric you run on your own recordings.
+      It is burst-based, so it compares cells that share a burst-size
+      distribution; at the same per-spike noise a burstier cell measures higher.
+    - ``"peak"``: legacy ``noise_std = max(clean) / snr`` (results made before
+      the measured-SNR convention).
+    - ``"single_spike"``: ``noise_std = single-spike response / snr`` (a
+      simulation-only, per-spike SNR).
 
     Attribution: Gaussian from CaLab web simulator.
     Shot noise from CASCADE (Rupprecht et al., 2021).
     """
 
-    snr: float = Field(8.0, gt=0, description="Signal-to-noise ratio (peak / noise_std)")
+    snr: float = Field(8.0, gt=0, description="Target SNR, measured against `reference`")
+    reference: Literal["measured_snr", "peak", "single_spike"] = Field(
+        "measured_snr", description="What `snr` is measured against"
+    )
     shot_noise_enabled: bool = Field(False, description="Add Poisson shot noise")
     shot_noise_fraction: float = Field(
         0.3, ge=0, le=1, description="Fraction of total noise variance from shot noise"
@@ -218,9 +232,11 @@ class CellGroundTruth(BaseModel):
     spikes: np.ndarray  # (num_timepoints,) spike counts at imaging rate
     clean_calcium: np.ndarray  # (num_timepoints,) kernel * spikes, no noise
     alpha: float  # amplitude scaling factor
-    snr: float  # actual SNR for this cell
+    snr: float  # this cell's target SNR, in the units of NoiseConfig.reference
     tau_rise_s: float  # actual rise time constant (seconds)
     tau_decay_s: float  # actual decay time constant (seconds)
+    noise_sigma: float  # std of the noise actually added
+    snr_1ap: float  # simulation-only diagnostic: single-spike response / noise_sigma
 
 
 class SimulationResult(BaseModel):
@@ -265,6 +281,8 @@ def simulate(config: SimulationConfig | None = None, **kwargs: object) -> Simula
         snrs,
         tau_rises,
         tau_decays,
+        noise_sigmas,
+        snr_1aps,
         n_cells,
         n_tp,
     ) = _simulate_traces(config_json)
@@ -282,6 +300,8 @@ def simulate(config: SimulationConfig | None = None, **kwargs: object) -> Simula
             snr=float(snrs[i]),
             tau_rise_s=float(tau_rises[i]),
             tau_decay_s=float(tau_decays[i]),
+            noise_sigma=float(noise_sigmas[i]),
+            snr_1ap=float(snr_1aps[i]),
         )
         for i in range(n_cells)
     ]
@@ -297,14 +317,22 @@ def simulate(config: SimulationConfig | None = None, **kwargs: object) -> Simula
 
 
 class presets:
-    """Built-in indicator presets. Each method returns a SimulationConfig."""
+    """Built-in indicator presets. Each method returns a SimulationConfig.
+
+    ``snr`` is the measured SNR each preset reaches under the default Markov
+    firing at 30 Hz when the noise is CASCADE's typical level
+    nu ~ 4 %/sqrt(Hz), taking the kernel peak as the indicator's published
+    single-AP dF/F (6f 19 %, 6m 13 %, 6s 23 %, 8f 41 %, OGB-1 ~8 %). See
+    ``crates/solver/src/simulate.rs`` (``presets``) for sources. These values
+    are a judgement call pending PI confirmation.
+    """
 
     @staticmethod
     def gcamp6f(**overrides: object) -> SimulationConfig:
         """GCaMP6f. Time constants from Chen et al., 2013, Nature."""
         return SimulationConfig(
             kernel=KernelConfig(tau_rise_s=0.1, tau_decay_s=0.6),
-            noise=NoiseConfig(snr=20.0),
+            noise=NoiseConfig(snr=30.0),
             **overrides,
         )
 
@@ -313,7 +341,7 @@ class presets:
         """GCaMP6s. Slow kinetics, high SNR. Chen et al., 2013."""
         return SimulationConfig(
             kernel=KernelConfig(tau_rise_s=0.4, tau_decay_s=1.8),
-            noise=NoiseConfig(snr=25.0),
+            noise=NoiseConfig(snr=50.0),
             **overrides,
         )
 
@@ -331,7 +359,7 @@ class presets:
         """jGCaMP8f. Fast indicator, noisier. Zhang et al., 2023."""
         return SimulationConfig(
             kernel=KernelConfig(tau_rise_s=0.05, tau_decay_s=0.3),
-            noise=NoiseConfig(snr=12.0),
+            noise=NoiseConfig(snr=45.0),
             **overrides,
         )
 
@@ -340,7 +368,7 @@ class presets:
         """OGB-1 synthetic dye. Stosiek et al., 2003."""
         return SimulationConfig(
             kernel=KernelConfig(tau_rise_s=0.05, tau_decay_s=1.5),
-            noise=NoiseConfig(snr=15.0),
+            noise=NoiseConfig(snr=14.0),
             **overrides,
         )
 

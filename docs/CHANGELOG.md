@@ -5,6 +5,43 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- **Simulator noise convention (default changed).** `NoiseConfig.snr` now
+  means the measured SNR of each noisy trace (`NoiseConfig.reference =
+measured_snr`): the same burst-based metric users run on real data. The old
+  `max(clean)/snr` convention gave 13–21x more noise per spike to bursting
+  cells than to sparse ones; it stays available as `reference = "peak"`.
+  Preset SNRs were re-derived as typical real-data values (6f 30, 6m 22, 6s 50,
+  8f 45, OGB-1 14) and the web simulator's noise levels became 200/60/30/15/8.
+
+### Added
+
+- **Robust SNR metrics** (`snr` module; WASM `snr_*`, Python
+  `calab.measured_snr`, `noise_sigma_mad_diff`, `noise_level_nu`, `peak_snr`),
+  after Krisha Aghi's derivation. Simulated cells report `noise_sigma` and the
+  ground-truth diagnostic `snr_1ap`.
+- **Drift-robust SNR.** The measured SNR reads its top slice and median on the
+  trace minus a slow baseline (centred rolling 20th percentile over 60 s), so
+  photobleaching no longer inflates it: pure noise with 5 % of F0 drift over
+  30 minutes reads 2.67 (4.18 linear / 3.33 exponential before). The metric
+  functions take the frame rate (`measured_snr(trace, fs)`, `peak_snr(trace,
+sigma, fs, ...)`, `measured_snr_report(trace, fs, ...)`; WASM and Python
+  likewise); the simulator's calibration uses the same detrending.
+- **Demo SNR spread.** Web-simulator noise levels now give each cell its own
+  SNR (uniform ±50 % around the level, the clean level exact), so the demo
+  datasets show a spread instead of one SNR for every cell.
+- **Event detection and the silent flag** (`snr::detect_events`,
+  `snr::measured_snr_report`; WASM `snr_detect_events`, `snr_measured_report`;
+  Python `calab.detect_events`, `calab.measured_snr_report`). Events clear a
+  noise-derived floor (about 0.1 false events per pure-noise trace);
+  `is_silent` is true when none does. The SNR stays the top-slice number, whose
+  pure-noise value is about 2.7.
+- **Simulated drift scale.** Drift amplitudes are fractions of the robust
+  signal (top-slice of the clean trace) instead of max(clean), so drift
+  relative to the noise no longer depends on the firing regime.
+  `reference = "peak"` keeps the old scaling.
+
 ## [2.10.0] - 2026-10-23
 
 Web apps `v2.10.0`; Python package `calab` unchanged (`py/v0.3.0`). Retires
