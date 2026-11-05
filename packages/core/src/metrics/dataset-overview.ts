@@ -110,7 +110,7 @@ export const FLAG_LABELS: Record<QualityFlag, string> = {
 export const FLAG_DESCRIPTIONS: Record<QualityFlag, string> = {
   silent: 'No event clears the noise-derived floor: indistinguishable from a pure-noise trace.',
   clipped: `At least ${OVERVIEW_PARAMS.clipMinSamples} samples sit exactly at the trace maximum (saturation).`,
-  gap: 'The trace has non-finite samples (NaN or Inf).',
+  gap: 'The trace has non-finite samples (NaN or Inf). The solver skips these cells: they get no fit or results.',
   'outlier-noise': `Noise σ far from the other cells (|modified z| > ${OVERVIEW_PARAMS.outlierZ} on log σ).`,
   'outlier-height': `Event-height distribution shaped unlike the pooled one: max log-quantile distance × √events has modified z > ${OVERVIEW_PARAMS.outlierZ}.`,
   'outlier-drift': `Start-to-end baseline change far from the other cells (|modified z| > ${OVERVIEW_PARAMS.outlierZ}) and at least one noise σ.`,

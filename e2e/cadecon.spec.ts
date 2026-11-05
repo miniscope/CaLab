@@ -65,3 +65,58 @@ test('CaDecon: synthetic data generates, a run converges, and the raster renders
   });
   expect(painted, 'fraction of raster pixels drawn').toBeGreaterThan(0.1);
 });
+
+/** A C-order float32 .npy file (format 1.0) for `setInputFiles`. */
+function npyFloat32(data: Float32Array, shape: [number, number]): Buffer {
+  let header = `{'descr': '<f4', 'fortran_order': False, 'shape': (${shape[0]}, ${shape[1]}), }`;
+  // Magic (6) + version (2) + header length (2) + header, padded to 64 bytes and ending in \n.
+  const unpadded = 10 + header.length + 1;
+  header += ' '.repeat((64 - (unpadded % 64)) % 64) + '\n';
+  const prefix = Buffer.alloc(10);
+  prefix.write('\x93NUMPY', 0, 'latin1');
+  prefix[6] = 1;
+  prefix[7] = 0;
+  prefix.writeUInt16LE(header.length, 8);
+  return Buffer.concat([prefix, Buffer.from(header, 'latin1'), Buffer.from(data.buffer)]);
+}
+
+test('CaDecon: a cell with NaN samples is flagged and marked as skipped', async ({ page }) => {
+  // Four cells, one minute at 30 Hz; cell 2 has three dropped frames. No run:
+  // the per-cell scan happens at import, so the note shows before solving.
+  const nCells = 4;
+  const nT = 1800;
+  const data = new Float32Array(nCells * nT);
+  for (let c = 0; c < nCells; c++) {
+    for (let t = 0; t < nT; t++) {
+      const sinceEvent = t % 150;
+      data[c * nT + t] = Math.exp(-sinceEvent / 20) + 0.05 * Math.sin(t * (1.3 + c));
+    }
+  }
+  for (const t of [100, 101, 900]) data[2 * nT + t] = NaN;
+
+  await page.goto('CaDecon/');
+  await page
+    .locator('input[type=file]')
+    .first()
+    .setInputFiles({
+      name: 'nan-cell.npy',
+      mimeType: 'application/octet-stream',
+      buffer: npyFloat32(data, [nCells, nT]),
+    });
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await page.getByText('30 Hz (miniscope / 2-photon)').click();
+  await page.getByRole('button', { name: 'Confirm' }).click();
+
+  const header = page.getByRole('banner');
+  await expect(header.getByText(/4 cells/)).toBeVisible();
+  // The overview flags the gap and says the solver skips it.
+  await expect(page.getByTestId('overview-flags').getByText('Gaps (NaN/Inf)')).toBeVisible({
+    timeout: 30_000,
+  });
+
+  // A clean cell has no note; the NaN cell says why it will not be solved.
+  const note = page.getByTestId('skipped-cell-note');
+  await expect(note).toHaveCount(0);
+  await page.locator('select:has(option[value="2"])').first().selectOption('2');
+  await expect(note).toHaveText('Skipped: trace contains 3 missing (NaN/Inf) samples');
+});

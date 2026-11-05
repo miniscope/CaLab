@@ -31,6 +31,7 @@ import { parseNpz } from './npz-parser.ts';
 import { parseMat } from './mat-parser.ts';
 import { processNpyResult } from './array-utils.ts';
 import { validateTraceData } from './validation.ts';
+import { countNonFinitePerCell } from './non-finite.ts';
 import { fetchBridgeData as defaultFetchBridgeData } from './bridge.ts';
 import { soleTraceCandidate, traceCandidates } from './trace-candidates.ts';
 
@@ -106,6 +107,16 @@ export function createImportStore(options: ImportStoreOptions) {
     if (!data || data.shape.length < 2) return null;
     const [rows, cols] = data.shape;
     return swapped() ? [cols, rows] : [rows, cols];
+  });
+
+  /**
+   * Non-finite (NaN/Inf) samples per cell, scanned once per dataset and
+   * orientation. The solver rejects such traces, so the apps skip these cells.
+   */
+  const nonFiniteCounts = createMemo<Uint32Array | null>(() => {
+    const data = parsedData();
+    if (!data || data.shape.length < 2) return null;
+    return countNonFinitePerCell(data, swapped());
   });
 
   const numCells = createMemo(() => effectiveShape()?.[0] ?? 0);
@@ -338,6 +349,7 @@ export function createImportStore(options: ImportStoreOptions) {
     setImportError,
     // Derived
     effectiveShape,
+    nonFiniteCounts,
     numCells,
     numTimepoints,
     durationSeconds,

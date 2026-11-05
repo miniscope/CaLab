@@ -28,6 +28,7 @@ export const {
   setSamplingRate,
   // Derived
   effectiveShape,
+  nonFiniteCounts,
   numCells,
   numTimepoints,
   durationSeconds,

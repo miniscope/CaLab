@@ -42,6 +42,7 @@ import {
   groundTruthVisible,
   isDemo,
   getGroundTruthForCell,
+  nonFiniteCounts,
 } from '../../lib/data-store.ts';
 import {
   inspectedCellIndex,
@@ -79,7 +80,7 @@ import {
   createGroundTruthCalciumSeries,
   createGroundTruthSpikesSeries,
 } from '../../lib/chart/series-config.ts';
-import { dataIndex } from '@calab/io';
+import { dataIndex, nonFiniteSkipMessage } from '@calab/io';
 import { reconvolveAR2 } from '../../lib/reconvolve.ts';
 import { CellSelector } from './CellSelector.tsx';
 import '../../styles/trace-inspector.css';
@@ -537,6 +538,12 @@ export function TraceInspector(): JSX.Element {
     const ov = overview();
     return idx != null && ov ? (ov.cells[idx] ?? null) : null;
   });
+  // Non-finite samples in the inspected cell: the solver skips such cells.
+  const skippedSamples = () => {
+    const idx = effectiveCellIndex();
+    const counts = nonFiniteCounts();
+    return idx != null && counts ? (counts[idx] ?? 0) : 0;
+  };
   const snrText = () => {
     const c = cellOverview();
     if (!c || !Number.isFinite(c.snr)) return '--';
@@ -604,6 +611,13 @@ export function TraceInspector(): JSX.Element {
                       {c().isSilent ? ' (silent)' : ''}
                     </>
                   )}
+                </Show>
+                <Show when={skippedSamples() > 0}>
+                  {' '}
+                  ·{' '}
+                  <span class="text-warning" data-testid="skipped-cell-note">
+                    {nonFiniteSkipMessage(skippedSamples())}
+                  </span>
                 </Show>
               </span>
             }

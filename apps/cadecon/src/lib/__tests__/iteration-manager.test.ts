@@ -18,7 +18,15 @@ vi.mock('../cadecon-pool.ts', () => {
 
 import type { CaDeconPoolJob } from '../cadecon-pool.ts';
 import type { KernelResult } from '../../workers/cadecon-types.ts';
-import { pauseRun, resumeRun, stopRun, resetRun, startRun } from '../iteration-manager.ts';
+import {
+  pauseRun,
+  resumeRun,
+  stopRun,
+  resetRun,
+  startRun,
+  subsetCellJobs,
+  finalizationCells,
+} from '../iteration-manager.ts';
 import {
   runState,
   setRunState,
@@ -33,6 +41,7 @@ import {
   resetIterationState,
   runError,
   failedJobs,
+  cellResultLookup,
 } from '../iteration-store.ts';
 import {
   setParsedData,
@@ -97,10 +106,16 @@ function createFakePool(): FakePool {
         pool.held.push(job);
         return;
       }
+      // Like the Rust solver, reject a trace with any non-finite sample.
+      const nonFinite =
+        (job.kind === 'trace' || job.kind === 'seed-trace') &&
+        job.trace.some((v) => !Number.isFinite(v));
       // Resolve on a microtask so the iteration manager can continue its async
       // loop naturally (no synchronous re-entry from inside dispatch).
       queueMicrotask(() =>
-        behavior === 'error' ? job.onError(`job ${job.jobId} failed`) : completeJob(job),
+        behavior === 'error' || nonFinite
+          ? job.onError(`job ${job.jobId} failed`)
+          : completeJob(job),
       );
     },
     cancelAll() {
@@ -621,5 +636,72 @@ describe('iteration-manager: startRun is failure-safe', () => {
     await startRun();
     expect(runState()).toBe('complete');
     expect(fakePool!.jobs.some((j) => j.kind === 'kernel')).toBe(false);
+  });
+});
+
+// ── Cells with non-finite samples are skipped, not failed ──────────────────
+
+describe('iteration-manager: cells with NaN/Inf samples', () => {
+  const rect = { tStart: 0, tEnd: 10, cellStart: 0, cellEnd: 4, idx: 0 };
+
+  it('subsetCellJobs drops the rows of skipped cells from a rectangle', () => {
+    const counts = new Uint32Array([0, 5, 0, 1]);
+    const jobs = subsetCellJobs([rect, { ...rect, cellStart: 2, cellEnd: 4, idx: 1 }], counts);
+    expect(jobs.map((j) => [j.cell, j.subsetIdx])).toEqual([
+      [0, 0],
+      [2, 0],
+      [2, 1],
+    ]);
+    expect(subsetCellJobs([rect], null).map((j) => j.cell)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('finalizationCells keeps every cell without non-finite samples', () => {
+    expect(finalizationCells(4, new Uint32Array([1, 0, 0, 2]))).toEqual([1, 2]);
+    expect(finalizationCells(3, null)).toEqual([0, 1, 2]);
+  });
+
+  describe('a full run', () => {
+    beforeEach(() => {
+      resetIterationState();
+      resetImport();
+    });
+
+    afterEach(() => {
+      resetRun();
+      resetImport();
+      fakePool = null;
+    });
+
+    it('never dispatches a skipped cell, completes, and gives it no result', async () => {
+      const numCells = 3;
+      const numTimepoints = 60;
+      const data = new Float64Array(numCells * numTimepoints);
+      for (let i = 0; i < data.length; i++) data[i] = Math.sin(i * 0.1);
+      data[1 * numTimepoints + 7] = NaN; // cell 1 has a dropped frame
+      setParsedData({ data, shape: [numCells, numTimepoints], dtype: '<f8', fortranOrder: false });
+      setDimensionsConfirmed(true);
+      setSwapped(false);
+      setSamplingRate(30);
+      setNumSubsets(1);
+      setMaxIterations(2);
+      setConvergenceTol(0.01);
+
+      await startRun();
+
+      expect(runState()).toBe('complete');
+      expect(runError()).toBeNull();
+      expect(failedJobs()).toBe(0);
+      const traces = fakePool!.jobs.filter((j) => j.kind === 'trace' || j.kind === 'seed-trace');
+      expect(traces.length).toBeGreaterThan(0);
+      for (const j of traces) {
+        if (j.kind === 'trace' || j.kind === 'seed-trace') {
+          expect(j.trace.every((v) => Number.isFinite(v))).toBe(true);
+        }
+      }
+      const lookup = cellResultLookup();
+      expect(lookup.has(1)).toBe(false);
+      expect(lookup.get(0)?.subsetIdx).toBe(-1);
+      expect(lookup.get(2)?.subsetIdx).toBe(-1);
+    });
   });
 });

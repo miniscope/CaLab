@@ -4,6 +4,7 @@
  *   - fresh: dot + "SNR X.X" (+ "≈ noise" / "silent" tag) or "Done (N)"
  *   - solving: dot + "Iter N" with pulse
  *   - stale: dot + "Stale"
+ *   - skipped: dot + "Skipped" (NaN/Inf in the trace; the card says how many)
  *
  * SNR is the shared measured SNR (same number as CaDecon). The dot colour is the
  * cell's quantile within this dataset (viridis, the same scale as the Dataset
@@ -40,6 +41,8 @@ export function QualityBadge(props: QualityBadgeProps) {
     switch (status()) {
       case 'stale':
         return 'Stale';
+      case 'skipped':
+        return 'Skipped';
       case 'solving':
         return `Iter ${iter()}`;
       case 'fresh':
@@ -61,6 +64,8 @@ export function QualityBadge(props: QualityBadgeProps) {
         return `Solving — iteration ${iter()}`;
       case 'stale':
         return 'Stale — awaiting solver';
+      case 'skipped':
+        return 'The trace contains NaN/Inf samples, which the solver rejects, so this cell is not solved.';
       default:
         return props.snr != null
           ? describeSnr({

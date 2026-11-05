@@ -13,6 +13,8 @@ import { setHoveredCell, type RawTraceStats } from '../../lib/multi-cell-store.t
 import { cellSnrInfo } from '../../lib/overview-store.ts';
 import { cardHeight, setCardHeight, currentTau } from '../../lib/viz-store.ts';
 import { CELL_CARD_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
+import { nonFiniteCounts } from '../../lib/data-store.ts';
+import { nonFiniteSkipMessage } from '@calab/io';
 
 export interface CellCardProps {
   cellIndex: number;
@@ -120,6 +122,11 @@ export function CellCard(props: CellCardProps) {
           </span>{' '}
           Cell {props.cellIndex + 1}
         </span>
+        <Show when={props.solverStatus === 'skipped'}>
+          <span class="cell-card__skipped" data-testid="cell-card-skipped">
+            {nonFiniteSkipMessage(nonFiniteCounts()?.[props.cellIndex] ?? 0)}
+          </span>
+        </Show>
       </div>
 
       <Show when={props.rawTrace.length > 0}>

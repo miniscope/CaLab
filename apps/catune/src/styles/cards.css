@@ -26,6 +26,17 @@
   box-shadow: 0 0 4px rgba(46, 125, 50, 0.15);
 }
 
+/* Skipped: NaN/Inf samples, never solved (raw trace only) */
+.calab-card.cell-card--skipped {
+  border-color: var(--warning);
+  border-style: dashed;
+}
+
+.cell-card__skipped {
+  font-size: 0.7rem;
+  color: var(--warning);
+}
+
 /* Active card always takes precedence */
 .calab-card.cell-card--active {
   border-color: var(--accent);

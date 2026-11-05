@@ -4,7 +4,13 @@
 
 import { createEffect, createSignal, on, onCleanup, untrack } from 'solid-js';
 import { currentTau, lambda, selectedCell, filterEnabled } from './viz-store.ts';
-import { parsedData, effectiveShape, swapped, samplingRate } from './data-store.ts';
+import {
+  parsedData,
+  effectiveShape,
+  swapped,
+  samplingRate,
+  nonFiniteCounts,
+} from './data-store.ts';
 import {
   selectedCells,
   multiCellResults,
@@ -16,7 +22,7 @@ import {
   hoveredCell,
   computeRawStats,
 } from './multi-cell-store.ts';
-import { extractCellTrace } from '@calab/io';
+import { extractCellTrace, isNonFiniteCell } from '@calab/io';
 import { computePaddedWindow, computeSafeMargin, WarmStartCache } from '@calab/compute';
 import type { WorkerPool } from '@calab/compute';
 import { createCaTuneWorkerPool, type CaTunePoolJob } from './catune-pool.ts';
@@ -173,6 +179,11 @@ function cachePaddedAndUpdateTraces(
 
 function dispatchCellSolve(state: CellSolveState): void {
   if (!pool) return;
+  // The solver rejects NaN/Inf samples: show the cell as skipped, never as an error.
+  if (isNonFiniteCell(untrack(nonFiniteCounts), state.cellIndex)) {
+    updateOneCellStatus(state.cellIndex, 'skipped');
+    return;
+  }
 
   const params = getCurrentParams();
   const fs = params.fs;

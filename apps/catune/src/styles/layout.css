@@ -176,6 +176,10 @@
   color: var(--error);
 }
 
+.quality-badge--skipped .quality-badge__label {
+  color: var(--warning);
+}
+
 .quality-badge--fresh .quality-badge__label {
   color: var(--text-secondary);
 }
