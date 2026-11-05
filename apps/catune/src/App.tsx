@@ -5,13 +5,12 @@ import type { Component } from 'solid-js';
 import { Show, createEffect, createSignal, on } from 'solid-js';
 
 import { DashboardPanel, VizLayout, DashboardShell, createDashboardSidebar } from '@calab/ui';
-import { isAuthCallback } from '@calab/community-ui';
+import { isAuthCallback, TrackedTutorialPanel } from '@calab/community-ui';
 import { AuthCallback } from './components/auth/AuthCallback.tsx';
 import { ParameterPanel } from './components/controls/ParameterPanel.tsx';
 import { CellSelector } from './components/controls/CellSelector.tsx';
 import { SubmitPanel } from './components/community/SubmitPanel.tsx';
 import { CommunityBrowser } from './components/community/CommunityBrowser.tsx';
-import { TutorialPanel } from './components/tutorial/TutorialPanel.tsx';
 import { CaTuneHeader } from './components/layout/CompactHeader.tsx';
 import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
@@ -55,7 +54,7 @@ import { supabaseEnabled } from './lib/community/index.ts';
 import { backendStatus } from './lib/solver-backend.ts';
 import { BackendDevReadout } from './components/dev/BackendDevReadout.tsx';
 import { isTutorialActive, startTutorial } from '@calab/tutorials';
-import { getTutorialById } from './lib/tutorial/content/index.ts';
+import { getTutorialById, tutorials } from './lib/tutorial/content/index.ts';
 
 import './styles/multi-trace.css';
 import './styles/cards.css';
@@ -169,7 +168,11 @@ const App: Component = () => {
     <>
       {/* Tutorial panel -- shown when toggled */}
       <Show when={tutorialOpen()}>
-        <TutorialPanel onClose={() => setTutorialOpen(false)} />
+        <TrackedTutorialPanel
+          tutorials={tutorials}
+          isDataReady={() => importStep() === 'ready'}
+          onClose={() => setTutorialOpen(false)}
+        />
       </Show>
 
       {/* First-time banner */}

@@ -17,6 +17,7 @@
     "@calab/community": "*",
     "@calab/compute": "*",
     "@calab/core": "*",
+    "@calab/tutorials": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.18",
     "uplot": "^1.6.32"
