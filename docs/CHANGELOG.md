@@ -14,20 +14,47 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   leaves the best fit untouched above that. The solver now returns a per-cell
   `noise_path` flag (WASM `indeca_solve_trace`), shown in the Trace Inspector
   readout, the Results scatter tooltip and footer, and the results export as
-  `noise_guard_active`. The Python `solve_trace` tuple is unchanged.
-
-### Changed
-
+  `noise_guard_active`. The Python `solve_trace` tuple is unchanged (#253).
+- **CaDecon** names which PVE ceiling is shown: the Trace Inspector reads the
+  cell's own processed-space ceiling, the PVE-vs-SNR scatter tooltip reads the
+  dataset-level ceiling curve at that cell's SNR (#254).
 - **Simulator noise convention (default changed).** `NoiseConfig.snr` now
   means the measured SNR of each noisy trace (`NoiseConfig.reference =
 measured_snr`): the same burst-based metric users run on real data. The old
   `max(clean)/snr` convention gave 13–21x more noise per spike to bursting
   cells than to sparse ones; it stays available as `reference = "peak"`.
   Preset SNRs were re-derived as typical real-data values (6f 30, 6m 22, 6s 50,
-  8f 45, OGB-1 14) and the web simulator's noise levels became 200/60/30/15/8.
+  8f 45, OGB-1 14) and the web simulator's noise levels became 200/60/30/15/8 (#247).
+- **InDeCa solver** (CaDecon and Python `solve_trace`), all in the Rust core:
+  - free-kernel estimation uses a Gram-matrix formulation, so each FISTA
+    iteration no longer scales with trace length (#235);
+  - the banded AR(2) kernel is evaluated as a first-order cascade in f64,
+    removing time-constant drift at 300 Hz (#236);
+  - the binarization threshold is picked from a fixed 200-level grid with a
+    one-standard-error allowance, instead of the relaxed solution's own values
+    (#237);
+  - the scale loop is a fixed-point iteration (block-coordinate descent on the
+    relaxed fit with a single terminal binarization) (#239);
+  - candidate spike trains are scored through the same filter and
+    rolling-quantile chain the trace went through, with an O(n) rolling
+    quantile (#240); nested candidates are scored by exact superposition,
+    avoiding a full FFT per candidate (#255);
+  - the inner solve runs at the native rate with a dual-gap convergence
+    certificate (#242);
+  - the noise budget includes the rolling-quantile stage (#249); the result
+    gains `noise_var_processed` and `chain_noise_gain`;
+  - the kernel fit gets an amplitude and offset that match its own model
+    (#243);
+  - the trace is detrended before the bandpass to remove the FFT edge-wrap
+    artifact (#241).
 
 ### Added
 
+- **CaDecon** Dataset overview tab and a PVE-vs-SNR results plot (#250).
+- **CaTune** shares the SNR metric with CaDecon, with a Dataset tab and a
+  "By SNR" cell selection (#252).
+- **WebGPU batched FISTA solver** (`packages/compute-gpu`) and a dev-only
+  CaTune GPU backend (#238).
 - **Robust SNR metrics** (`snr` module; WASM `snr_*`, Python
   `calab.measured_snr`, `noise_sigma_mad_diff`, `noise_level_nu`, `peak_snr`),
   after Krisha Aghi's derivation. Simulated cells report `noise_sigma` and the
@@ -52,6 +79,21 @@ sigma, fs, ...)`, `measured_snr_report(trace, fs, ...)`; WASM and Python
   signal (top-slice of the clean trace) instead of max(clean), so drift
   relative to the noise no longer depends on the firing regime.
   `reference = "peak"` keeps the old scaling.
+
+### Fixed
+
+- **CaDecon** raster heatmap max-pools (after smoothing along time) instead of
+  sampling rows and columns, so cells and brief transients are no longer hidden
+  when they outnumber pixels (#248).
+- **CaDecon** Trace Inspector draws Filtered and Fit on the Raw scale, so they
+  no longer fall off-screen for raw-F input (#251).
+
+### Internal
+
+- CaDecon results-export test runs under jsdom with Node's TextEncoder (#245).
+- Supabase edge functions import supabase-js via an npm specifier so the Deno
+  lock is stable (#246).
+- Dependency bumps for npm, Cargo and GitHub Actions (#244, #234, #230).
 
 ## [2.10.0] - 2026-10-23
 

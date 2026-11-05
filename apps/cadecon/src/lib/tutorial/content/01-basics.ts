@@ -62,7 +62,7 @@ export const basicsTutorial: Tutorial = {
         'This is your data as a cells \u00D7 time image ( Brighter means higher activity). The outlined rectangles are the <b>subsets</b> CaDecon constructs the kernel from. Click a rectangle to select that subset; its constructed kernel and stats appear in the other panels.',
       side: 'bottom',
     },
-    // Step 7: Convergence panel
+    // Step 7: Analysis panel
     {
       element: '[data-tutorial="kernel-convergence"]',
       title: 'Watching It Converge',
