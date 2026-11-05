@@ -54,12 +54,6 @@
   font-family: var(--font-mono);
 }
 
-.demo-data-row__hint {
-  color: var(--text-tertiary);
-  font-size: 0.8rem;
-  margin: 0;
-}
-
 /* ========================
    Ready Card
    ======================== */

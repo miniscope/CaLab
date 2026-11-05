@@ -1,33 +1,5 @@
 /* Multi-trace view styles - Scientific Instrument light theme */
 
-.multi-trace-header {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-md);
-  margin-bottom: var(--space-md);
-}
-
-.multi-trace-header__title {
-  font-size: 1.1rem;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.multi-trace-header__count {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-}
-
-/* ========================
-   Mini-Panel Grid
-   ======================== */
-.multi-trace-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: var(--space-sm);
-}
-
 /* ========================
    Cell Selector
    ======================== */
@@ -192,31 +164,10 @@
   gap: var(--space-md);
 }
 
-.export-panel__summary {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-}
-
-/* ========================
-   Solving Progress
-   ======================== */
-.solving-progress {
-  text-align: center;
-  font-size: 0.85rem;
-  color: var(--accent);
-  margin-bottom: var(--space-sm);
-  animation: convergence-pulse 1s ease-in-out infinite;
-}
-
 /* ========================
    Responsive
    ======================== */
 @media (max-width: 600px) {
-  .multi-trace-grid {
-    grid-template-columns: 1fr;
-  }
-
   .cell-selector {
     flex-direction: column;
     align-items: stretch;

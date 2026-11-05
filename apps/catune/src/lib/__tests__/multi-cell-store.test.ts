@@ -17,14 +17,6 @@ import {
   setDisplayCount,
   multiCellResults,
   setMultiCellResults,
-  multiCellSolving,
-  setMultiCellSolving,
-  multiCellProgress,
-  setMultiCellProgress,
-  solvingCells,
-  setSolvingCells,
-  activelySolvingCell,
-  setActivelySolvingCell,
   activityRanking,
   setActivityRanking,
   gridColumns,
@@ -83,8 +75,6 @@ function resetStoreState(): void {
   clearMultiCellState();
   unpinMultiCellResults();
   setDisplayCount(5);
-  setMultiCellSolving(false);
-  setMultiCellProgress(null);
   setGridColumns(2);
   setVisibleCellIndices(new Set<number>());
   setHoveredCell(null);
@@ -116,19 +106,6 @@ describe('multi-cell-store: signals', () => {
       expect(selectedCells()).toEqual([1, 2, 3]);
       expect(displayCount()).toBe(8);
       expect(gridColumns()).toBe(4);
-    });
-  });
-
-  it('solving signals track progress state', () => {
-    withRoot(() => {
-      setMultiCellSolving(true);
-      setMultiCellProgress({ current: 3, total: 10 });
-      setActivelySolvingCell(7);
-      setSolvingCells(new Set([7, 8, 9]));
-      expect(multiCellSolving()).toBe(true);
-      expect(multiCellProgress()).toEqual({ current: 3, total: 10 });
-      expect(activelySolvingCell()).toBe(7);
-      expect([...solvingCells()].sort()).toEqual([7, 8, 9]);
     });
   });
 
@@ -310,8 +287,6 @@ describe('multi-cell-store: clearMultiCellState', () => {
       updateOneCellIteration(0, 50);
       setSelectionMode('random');
       setSelectedCells([5, 6]);
-      setSolvingCells(new Set([1, 2]));
-      setActivelySolvingCell(1);
       setActivityRanking([0, 1]);
 
       clearMultiCellState();
@@ -320,8 +295,6 @@ describe('multi-cell-store: clearMultiCellState', () => {
       expect(Object.keys(cellSolverStatuses)).toEqual([]);
       expect(Object.keys(cellIterationCounts)).toEqual([]);
       expect(selectedCells()).toEqual([]);
-      expect([...solvingCells()]).toEqual([]);
-      expect(activelySolvingCell()).toBeNull();
       expect(activityRanking()).toBeNull();
       expect(selectionMode()).toBe('top-active');
     });
