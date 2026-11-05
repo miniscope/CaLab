@@ -52,3 +52,25 @@ export type PoolWorkerOutbound =
     }
   | { type: 'cancelled'; jobId: number }
   | { type: 'error'; jobId: number; message: string };
+
+// --- Overview worker protocol (model-free dataset overview, see lib/overview-store.ts) ---
+
+/** Messages sent TO an overview worker. */
+export type OverviewWorkerInbound = {
+  type: 'overview-job';
+  jobId: number;
+  /** nCells traces of nTimepoints samples each, cell-major. */
+  tracesFlat: Float32Array;
+  nCells: number;
+  nTimepoints: number;
+  fs: number;
+  minSeparationSamples: number;
+  isDff: boolean;
+  baselineBins: number;
+};
+
+/** Messages sent FROM an overview worker. */
+export type OverviewWorkerOutbound =
+  | { type: 'ready' }
+  | { type: 'overview-complete'; jobId: number; cells: import('@calab/core').CellOverview[] }
+  | { type: 'error'; jobId: number; message: string };

@@ -26,6 +26,19 @@ test('CaTune: demo data loads, the WASM solver pool solves, and traces render', 
   await expect(page.getByText(/^SNR \d+\.\d$/)).toHaveCount(cardCount);
   await expect(page.getByTitle(/^(Stale|Solving)/)).toHaveCount(0);
 
+  // The Dataset drawer tab renders the shared SNR cards from the dataset overview
+  // (all 20 cells, not only the solved ones) above the per-cell table.
+  await page.getByRole('button', { name: 'Sidebar', exact: true }).click();
+  await page.locator('[data-tutorial="sidebar-tab-dataset"]').click();
+  const panel = page.getByTestId('dataset-panel');
+  await expect(panel.getByTestId('overview-snr')).toBeVisible();
+  await expect(panel.getByText('N 20', { exact: true })).toBeVisible();
+  await expect(panel.getByTestId('flag-summary')).toBeVisible();
+
+  // "By SNR" selection spreads the displayed cards across the SNR quantiles.
+  await page.locator('.cell-selector__mode').selectOption('by-snr');
+  await expect(page.getByTestId('by-snr-hint')).toHaveText(/SNR quantiles/);
+
   // The trace charts drew, and the pool did not report a fatal failure.
   await expect(cards.first().locator('canvas').first()).toBeVisible();
   await expect(page.getByText(/solver workers failed/)).toHaveCount(0);

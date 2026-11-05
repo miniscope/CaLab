@@ -158,7 +158,7 @@ own SolidJS signals.
 (`NpyResult`, `ValidationResult`, `ImportStep`, and the app-side `DataSource`,
 one of `'file'`, `'demo'`, `'bridge'`), solver input types (`SolverParams`, `ConvMode`,
 `WarmStartStrategy`), `computeAR2`, `PARAM_RANGES` / `CONVERGENCE_RANGES`,
-`computePeakSNR`, the solver metrics and `computePeriodogram`. `@calab/core/wasm`
+the dataset-overview metrics (`buildDatasetOverview`), the solver metrics and `computePeriodogram`. `@calab/core/wasm`
 (`src/wasm.ts` → `src/wasm-adapter.ts`) is the only route to the solver: `initWasm`,
 `Solver`, the `indeca_*` functions, `seed_trace`, `simulate_traces`,
 `get_simulation_presets`, `solver_version` and `getSolverVersion()` (inits WASM,

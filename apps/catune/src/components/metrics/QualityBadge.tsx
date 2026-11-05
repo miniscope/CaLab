@@ -1,32 +1,40 @@
 /**
- * Per-card quality indicator badge.
- * SNR-colored dot + solver status text:
- *   - fresh: SNR dot + "SNR X.X" or "Done (N)"
- *   - solving: SNR dot + "Iter N" with pulse
- *   - stale: SNR dot + "Stale"
+ * Per-card SNR badge.
+ * Quantile-coloured dot + solver status text:
+ *   - fresh: dot + "SNR X.X" (+ "≈ noise" / "silent" tag) or "Done (N)"
+ *   - solving: dot + "Iter N" with pulse
+ *   - stale: dot + "Stale"
+ *
+ * SNR is the shared measured SNR (same number as CaDecon). The dot colour is the
+ * cell's quantile within this dataset (viridis, the same scale as the Dataset
+ * histogram), not an absolute good/fair/poor grade.
  */
 
-import type { QualityTier } from '@calab/core';
+import { Show } from 'solid-js';
+import { viridisCss } from '@calab/ui/chart';
 import type { CellSolverStatus } from '../../workers/catune-types.ts';
+import { describeSnr, snrTag } from '../../lib/snr-display.ts';
 
 export interface QualityBadgeProps {
-  quality: QualityTier;
   snr?: number;
+  /** Mid-rank of the SNR within the dataset, in [0, 1]. */
+  rank?: number;
+  /** The cell has no event above the noise-derived floor. */
+  silent?: boolean;
+  /** Number of cells in the dataset, for the tooltip. */
+  nCells?: number;
   solverStatus?: CellSolverStatus;
   iterationCount?: number;
 }
-
-const COLORS: Record<QualityTier, string> = {
-  good: 'var(--success)',
-  fair: 'var(--warning)',
-  poor: 'var(--error)',
-};
 
 export function QualityBadge(props: QualityBadgeProps) {
   const status = () => props.solverStatus ?? 'fresh';
   const iter = () => props.iterationCount ?? 0;
 
-  const dotColor = () => COLORS[props.quality];
+  const dotColor = () =>
+    props.rank != null && Number.isFinite(props.rank)
+      ? viridisCss(props.rank)
+      : 'var(--border-default)';
 
   const label = () => {
     switch (status()) {
@@ -42,6 +50,11 @@ export function QualityBadge(props: QualityBadgeProps) {
     }
   };
 
+  const tag = () =>
+    status() === 'fresh' && props.snr != null
+      ? snrTag({ snr: props.snr, silent: props.silent })
+      : '';
+
   const title = () => {
     switch (status()) {
       case 'solving':
@@ -50,9 +63,12 @@ export function QualityBadge(props: QualityBadgeProps) {
         return 'Stale — awaiting solver';
       default:
         return props.snr != null
-          ? `Peak SNR ${props.snr.toFixed(1)}: 95th percentile above the bottom-quartile baseline, ` +
-              `in units of that baseline's spread (a quick quality score; not the measured SNR ` +
-              `the simulator targets)`
+          ? describeSnr({
+              snr: props.snr,
+              rank: props.rank,
+              silent: props.silent,
+              nCells: props.nCells,
+            })
           : undefined;
     }
   };
@@ -61,6 +77,9 @@ export function QualityBadge(props: QualityBadgeProps) {
     <span class={`quality-badge quality-badge--${status()}`} title={title()}>
       <span class="quality-badge__dot" style={{ background: dotColor() }} />
       <span class="quality-badge__label">{label()}</span>
+      <Show when={tag()}>
+        <span class="quality-badge__tag">{tag()}</span>
+      </Show>
     </span>
   );
 }

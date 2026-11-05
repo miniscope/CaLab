@@ -17,7 +17,8 @@ import { ImportOverlay } from './components/layout/ImportOverlay.tsx';
 import { KernelDisplay } from './components/traces/KernelDisplay.tsx';
 import { CardGrid } from './components/cards/CardGrid.tsx';
 import { SidebarTabs } from './components/layout/SidebarTabs.tsx';
-import { MetricsPanel } from './components/metrics/MetricsPanel.tsx';
+import { DatasetPanel } from './components/metrics/DatasetPanel.tsx';
+import { computeOverview } from './lib/overview-store.ts';
 import { SpectrumPanel } from './components/spectrum/SpectrumPanel.tsx';
 import { initSpectrumStore } from './lib/spectrum/spectrum-store.ts';
 
@@ -44,7 +45,11 @@ import {
   pinCurrentSnapshot,
   unpinSnapshot,
 } from './lib/viz-store.ts';
-import { computeAndCacheRanking, updateCellSelection } from './lib/multi-cell-store.ts';
+import {
+  computeAndCacheRanking,
+  updateCellSelection,
+  selectionMode,
+} from './lib/multi-cell-store.ts';
 import { initCellSolveManager, solverFatalError } from './lib/cell-solve-manager.ts';
 import { supabaseEnabled } from './lib/community/index.ts';
 import { backendStatus } from './lib/solver-backend.ts';
@@ -141,6 +146,10 @@ const App: Component = () => {
           updateCellSelection();
           initCellSolveManager();
           initSpectrumStore();
+          // Shared SNR + flags for every cell (off-thread, cached). "By SNR" selection waits for it.
+          void computeOverview().then(() => {
+            if (selectionMode() === 'by-snr') updateCellSelection();
+          });
         }
       }
     }),
@@ -232,7 +241,7 @@ const App: Component = () => {
             <SidebarTabs
               communityContent={supabaseEnabled ? () => <CommunityBrowser /> : undefined}
               spectrumContent={<SpectrumPanel />}
-              metricsContent={<MetricsPanel />}
+              datasetContent={<DatasetPanel />}
             />
           }
         >

@@ -1,6 +1,6 @@
 /**
  * CaTune SidebarTabs — wraps the shared SidebarTabs component.
- * Preserves the module-level activeSidebarTab signal for MetricsPanel gating.
+ * Preserves the module-level activeSidebarTab signal for DatasetPanel gating.
  */
 
 import { createSignal, type JSX } from 'solid-js';
@@ -8,15 +8,15 @@ import { SidebarTabs as SharedSidebarTabs } from '@calab/community-ui';
 import type { SidebarTabConfig } from '@calab/community-ui';
 import { trackEvent } from '@calab/community';
 
-export type SidebarTab = 'community' | 'spectrum' | 'metrics';
+export type SidebarTab = 'community' | 'spectrum' | 'dataset';
 
-// Module-level signal so MetricsPanel can skip computation when not visible.
+// Module-level signal so DatasetPanel can skip computation when not visible.
 const [activeSidebarTab, setActiveSidebarTab] = createSignal<SidebarTab>('community');
-export { activeSidebarTab };
+export { activeSidebarTab, setActiveSidebarTab };
 
 export interface SidebarTabsProps {
   communityContent?: JSX.Element | (() => JSX.Element);
-  metricsContent: JSX.Element;
+  datasetContent: JSX.Element;
   spectrumContent?: JSX.Element;
 }
 
@@ -41,10 +41,10 @@ export function SidebarTabs(props: SidebarTabsProps) {
         onActivate: () => setActiveSidebarTab('spectrum'),
       });
     list.push({
-      id: 'metrics',
-      label: 'Metrics',
-      content: props.metricsContent,
-      onActivate: () => setActiveSidebarTab('metrics'),
+      id: 'dataset',
+      label: 'Dataset',
+      content: props.datasetContent,
+      onActivate: () => setActiveSidebarTab('dataset'),
     });
     return list;
   };
@@ -56,7 +56,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
   const hasCommunity = !!props.communityContent;
   // eslint-disable-next-line solid/reactivity
   const hasSpectrum = !!props.spectrumContent;
-  const defaultTab: SidebarTab = hasCommunity ? 'community' : hasSpectrum ? 'spectrum' : 'metrics';
+  const defaultTab: SidebarTab = hasCommunity ? 'community' : hasSpectrum ? 'spectrum' : 'dataset';
 
   setActiveSidebarTab(defaultTab);
 

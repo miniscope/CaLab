@@ -61,12 +61,12 @@ export const featuresTutorial: Tutorial = {
       side: 'bottom',
       popoverClass: 'driver-popover--wide',
     },
-    // Step 7: Fit Quality Metrics (merged: select metrics tab + metrics panel)
+    // Step 7: Dataset overview and fit metrics (select dataset tab + dataset panel)
     {
-      element: '[data-tutorial="sidebar-tab-metrics"]',
-      title: 'Fit Quality Metrics',
+      element: '[data-tutorial="sidebar-tab-dataset"]',
+      title: 'Dataset and Fit Metrics',
       description:
-        'Select the <b>Metrics tab</b> to see per-cell SNR, R\u00B2, and sparsity. Use this to identify cells with poor fits and assess overall parameter quality.',
+        'Select the <b>Dataset tab</b> to see the SNR histogram of every cell in the recording (the same measured SNR CaDecon uses), the event-height shape, and a table of per-cell SNR, R\u00B2, and sparsity. Use it to check that the cells you tune on span the SNR range, and to spot poor fits.',
       side: 'bottom',
     },
     // Step 8: Community Parameters (merged: select community tab + community browser)

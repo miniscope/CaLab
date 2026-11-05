@@ -196,3 +196,50 @@
     opacity: 0.3;
   }
 }
+
+.quality-badge__tag {
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* Dataset drawer tab */
+.dataset-drawer__cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.dataset-drawer__cards .ov-card {
+  height: 190px;
+}
+
+.dataset-drawer__brush {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.dataset-drawer__flags {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.metrics-panel__noise {
+  color: var(--text-tertiary);
+}
+
+.metrics-panel__note {
+  margin: var(--space-sm) 0 0;
+  font-size: 0.75rem;
+  color: var(--warning);
+}

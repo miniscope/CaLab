@@ -1,6 +1,6 @@
 /**
  * Cell selection mode controls for multi-trace viewing.
- * Supports three modes: top-active, random, and manual cell selection.
+ * Supports four modes: top-active, by-snr, random, and manual cell selection.
  */
 
 import { createMemo, Show } from 'solid-js';
@@ -16,6 +16,7 @@ import {
   gridColumns,
   setGridColumns,
 } from '../../lib/multi-cell-store.ts';
+import { overviewStatus } from '../../lib/overview-store.ts';
 import { numCells, groundTruthVisible } from '../../lib/data-store.ts';
 import {
   filterEnabled,
@@ -37,6 +38,12 @@ import {
 import { TraceLegend, type LegendItemConfig } from '@calab/ui';
 import { solverInputLabel } from '@calab/ui/chart';
 import '../../styles/multi-trace.css';
+
+const BY_SNR_HELP =
+  'Picks cells at evenly spaced quantiles of the measured SNR (for 5 cells: the 10th, 30th, 50th, ' +
+  '70th and 90th percentile), strongest first, so you tune on weak, typical and strong cells ' +
+  'instead of only the most active ones. Drag across the SNR histogram in Sidebar > Dataset and ' +
+  'press "Tune on these cells" to spread the picks within a brushed range.';
 
 export function CellSelector() {
   const handleModeChange = (e: Event) => {
@@ -157,6 +164,7 @@ export function CellSelector() {
         <label class="cell-selector__label">Selection Mode</label>
         <select class="cell-selector__mode" value={selectionMode()} onChange={handleModeChange}>
           <option value="top-active">Top Active</option>
+          <option value="by-snr">By SNR</option>
           <option value="random">Random</option>
           <option value="manual">Manual</option>
         </select>
@@ -194,6 +202,14 @@ export function CellSelector() {
           </button>
         </div>
       </div>
+
+      <Show when={selectionMode() === 'by-snr'}>
+        <span class="cell-selector__hint" data-testid="by-snr-hint" title={BY_SNR_HELP}>
+          {overviewStatus() === 'ready'
+            ? 'spread across the SNR quantiles'
+            : 'waiting for the SNR pass…'}
+        </span>
+      </Show>
 
       <Show when={selectionMode() === 'random'}>
         <button class="btn-secondary btn-small" onClick={updateCellSelection}>

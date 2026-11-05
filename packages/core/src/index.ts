@@ -26,8 +26,6 @@ export { PARAM_RANGES, CONVERGENCE_RANGES } from './param-config.ts';
 export { formatDuration } from './format-utils.ts';
 
 // Metrics
-export { computePeakSNR, snrToQuality } from './metrics/snr.ts';
-export type { QualityTier } from './metrics/snr.ts';
 export type { SnrEvent, SnrReport } from './metrics/snr-events.ts';
 export {
   OVERVIEW_PARAMS,
@@ -67,7 +65,9 @@ export {
   computeSparsityRatio,
   computeResidualRMS,
   computeRSquared,
+  computeFitMetrics,
 } from './metrics/solver-metrics.ts';
+export type { FitMetricsResult } from './metrics/solver-metrics.ts';
 
 // Spectrum
 export { computePeriodogram } from './spectrum/fft.ts';

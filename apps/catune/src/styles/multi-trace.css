@@ -231,3 +231,11 @@
     align-items: flex-start;
   }
 }
+
+.cell-selector__hint {
+  align-self: flex-end;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  padding-bottom: 6px;
+  cursor: help;
+}

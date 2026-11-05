@@ -8,9 +8,9 @@ import { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from '@calab/ui/chart';
 import { CaTuneZoomWindow } from './CaTuneZoomWindow.tsx';
 import { QualityBadge } from '../metrics/QualityBadge.tsx';
 import type { CellSolverStatus } from '../../workers/catune-types.ts';
-import { computePeakSNR, snrToQuality } from '@calab/core';
 import { Card } from '@calab/ui';
 import { setHoveredCell, type RawTraceStats } from '../../lib/multi-cell-store.ts';
+import { cellSnrInfo } from '../../lib/overview-store.ts';
 import { cardHeight, setCardHeight, currentTau } from '../../lib/viz-store.ts';
 import { CELL_CARD_ZOOM_WINDOW_S } from '../../lib/cell-solve-manager.ts';
 
@@ -47,9 +47,8 @@ export function CellCard(props: CellCardProps) {
   const numRows = createMemo(() => Math.max(1, Math.ceil(totalDuration() / ROW_DURATION_S)));
   const effectiveHeight = createMemo(() => cardHeight() + (numRows() - 1) * ROW_HEIGHT);
 
-  // Quality badge
-  const snr = createMemo(() => computePeakSNR(props.rawTrace));
-  const quality = createMemo(() => snrToQuality(snr()));
+  // Quality badge: shared measured SNR from the dataset overview (undefined until it is ready)
+  const snrInfo = createMemo(() => cellSnrInfo(props.cellIndex));
 
   // Per-card independent zoom window — skip past the convolution transient at t=0
   const transientEnd = createMemo(() => {
@@ -111,8 +110,10 @@ export function CellCard(props: CellCardProps) {
         <span class="cell-card__title">
           <span data-tutorial={props.isActive ? 'convergence-indicator' : undefined}>
             <QualityBadge
-              quality={quality()}
-              snr={snr()}
+              snr={snrInfo()?.snr}
+              rank={snrInfo()?.rank}
+              silent={snrInfo()?.silent}
+              nCells={snrInfo()?.nCells}
               solverStatus={props.solverStatus}
               iterationCount={props.iterationCount}
             />

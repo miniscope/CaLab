@@ -79,3 +79,34 @@ export function sampleRandomCells(totalCells: number, n: number): number[] {
 
   return indices.slice(0, count);
 }
+
+/**
+ * Pick `count` cells spread across the SNR distribution, so tuning sees weak,
+ * typical and strong cells instead of only the most active ones.
+ *
+ * Cells are ranked by SNR and taken at the quantiles (i + 0.5) / count (for
+ * count = 5: the 10th, 30th, 50th, 70th and 90th percentiles). Non-finite
+ * SNRs are ignored. Returns strongest first. Never returns duplicates; fewer
+ * than `count` finite cells yields all of them.
+ *
+ * @param snr - SNR per cell, indexed by cell id
+ * @param count - Number of cells wanted
+ * @param among - Optional candidate ids (e.g. a histogram brush); default all cells
+ */
+export function pickSnrSpread(
+  snr: ArrayLike<number>,
+  count: number,
+  among?: readonly number[],
+): number[] {
+  const ids: number[] = [];
+  const candidates = among ?? Array.from({ length: snr.length }, (_, i) => i);
+  for (const id of candidates) if (Number.isFinite(snr[id])) ids.push(id);
+  if (ids.length === 0 || count <= 0) return [];
+  ids.sort((a, b) => snr[a] - snr[b] || a - b);
+  if (count >= ids.length) return ids.reverse();
+  const picked: number[] = [];
+  for (let i = 0; i < count; i++) {
+    picked.push(ids[Math.round(((i + 0.5) / count) * (ids.length - 1))]);
+  }
+  return [...new Set(picked)].reverse();
+}

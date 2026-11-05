@@ -20,14 +20,19 @@ export function computeSparsityRatio(
 }
 
 /**
- * Compute the RMS of the residual (raw - reconvolution).
- * Lower = better fit.
+ * Compute the RMS of the residual (reference - reconvolution).
+ * Lower = better fit. `reference` must be the trace the fit was made to (the
+ * solver's working trace over the same window), not the raw trace.
+ *
+ * Returns NaN for a length mismatch (never a number that looks like a result);
+ * 0 for empty input. Use `computeFitMetrics` to learn why a value is missing.
  */
 export function computeResidualRMS(
-  raw: Float64Array,
-  reconvolution: Float64Array | Float32Array,
+  raw: ArrayLike<number>,
+  reconvolution: ArrayLike<number>,
 ): number {
-  if (raw.length === 0 || raw.length !== reconvolution.length) return 0;
+  if (raw.length === 0) return 0;
+  if (raw.length !== reconvolution.length) return NaN;
   let sumSq = 0;
   for (let i = 0; i < raw.length; i++) {
     const d = raw[i] - reconvolution[i];
@@ -39,12 +44,11 @@ export function computeResidualRMS(
 /**
  * Compute R-squared (coefficient of determination).
  * 1.0 = perfect fit, 0 = no better than mean, negative = worse than mean.
+ * NaN for a length mismatch, 0 for empty input (see `computeResidualRMS`).
  */
-export function computeRSquared(
-  raw: Float64Array,
-  reconvolution: Float64Array | Float32Array,
-): number {
-  if (raw.length === 0 || raw.length !== reconvolution.length) return 0;
+export function computeRSquared(raw: ArrayLike<number>, reconvolution: ArrayLike<number>): number {
+  if (raw.length === 0) return 0;
+  if (raw.length !== reconvolution.length) return NaN;
 
   let sum = 0;
   for (let i = 0; i < raw.length; i++) sum += raw[i];
@@ -61,4 +65,48 @@ export function computeRSquared(
 
   if (ssTot === 0) return 1;
   return 1 - ssRes / ssTot;
+}
+
+export type FitMetricsResult =
+  | { ok: true; residualRms: number; rSquared: number }
+  | {
+      ok: false;
+      reason: 'no-reference' | 'length-mismatch';
+      referenceLength: number;
+      fitLength: number;
+    };
+
+/**
+ * Fit quality of a reconvolution against the trace it was fitted to.
+ *
+ * Compare like with like: the solver fits its working trace (baseline-subtracted,
+ * optionally bandpass-filtered) over a window, so the reference must be that
+ * working trace over the same window, not the full raw trace. A missing
+ * reference or a length mismatch is reported explicitly instead of as a 0.
+ */
+export function computeFitMetrics(
+  reference: ArrayLike<number> | null | undefined,
+  reconvolution: ArrayLike<number>,
+): FitMetricsResult {
+  if (!reference || reference.length === 0) {
+    return {
+      ok: false,
+      reason: 'no-reference',
+      referenceLength: 0,
+      fitLength: reconvolution.length,
+    };
+  }
+  if (reference.length !== reconvolution.length) {
+    return {
+      ok: false,
+      reason: 'length-mismatch',
+      referenceLength: reference.length,
+      fitLength: reconvolution.length,
+    };
+  }
+  return {
+    ok: true,
+    residualRms: computeResidualRMS(reference, reconvolution),
+    rSquared: computeRSquared(reference, reconvolution),
+  };
 }

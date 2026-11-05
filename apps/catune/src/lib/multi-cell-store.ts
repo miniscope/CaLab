@@ -6,12 +6,13 @@
 import { createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import type { CellSolverStatus } from '../workers/catune-types.ts';
-import { rankCellsByActivity, sampleRandomCells } from '@calab/io';
+import { rankCellsByActivity, sampleRandomCells, pickSnrSpread } from '@calab/io';
 import { parsedData, effectiveShape, swapped } from './data-store.ts';
+import { snrByCell } from './overview-store.ts';
 
 // --- Types ---
 
-export type SelectionMode = 'top-active' | 'random' | 'manual';
+export type SelectionMode = 'top-active' | 'by-snr' | 'random' | 'manual';
 
 /** Z-score parameters derived from a raw trace. Computed once at ingest. */
 export interface RawTraceStats {
@@ -163,6 +164,8 @@ function computeAndCacheRanking(): void {
 /**
  * Update the selected cells based on the current selection mode and display count.
  * - 'top-active': take first displayCount entries from cached activity ranking
+ * - 'by-snr': cells spread across the SNR distribution (10th/30th/... percentiles);
+ *   waits for the dataset overview, so it is a no-op until the SNRs exist
  * - 'random': sample displayCount random cells
  * - 'manual': leave selectedCells unchanged (user controls directly)
  */
@@ -176,6 +179,13 @@ function updateCellSelection(): void {
     const ranking = activityRanking();
     if (!ranking) return;
     setSelectedCells(ranking.slice(0, count));
+    return;
+  }
+
+  if (mode === 'by-snr') {
+    const snr = snrByCell();
+    if (!snr) return;
+    setSelectedCells(pickSnrSpread(snr, count));
     return;
   }
 
