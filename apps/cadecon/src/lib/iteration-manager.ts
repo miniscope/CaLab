@@ -68,9 +68,10 @@ import {
   numTimepoints,
   swapped,
   effectiveShape,
+  nonFiniteCounts,
 } from './data-store.ts';
 import { subsetRectangles, type SubsetRectangle } from './subset-store.ts';
-import { dataIndex } from '@calab/io';
+import { dataIndex, isNonFiniteCell } from '@calab/io';
 import { median } from './math-utils.ts';
 import { reconvolveAR2 } from './reconvolve.ts';
 
@@ -294,18 +295,42 @@ function extractCellTrace(
 
 type TraceInput = { data: ArrayLike<number>; shape: number[] };
 
-/** Flatten subset rectangles into one (cell, rect, subsetIdx) entry per cell×subset. */
-function subsetCellJobs(
+/** Per-cell non-finite sample counts; a cell with any is skipped by every solve. */
+type SkipCounts = ArrayLike<number> | null | undefined;
+
+/**
+ * Flatten subset rectangles into one (cell, rect, subsetIdx) entry per
+ * cell×subset, dropping cells with non-finite samples (the solver rejects
+ * them, so a rectangle covering one simply loses that row).
+ */
+export function subsetCellJobs(
   rects: SubsetRectangle[],
+  skip?: SkipCounts,
 ): { cell: number; rect: SubsetRectangle; subsetIdx: number }[] {
   const jobs: { cell: number; rect: SubsetRectangle; subsetIdx: number }[] = [];
   for (let si = 0; si < rects.length; si++) {
     const rect = rects[si];
     for (let c = rect.cellStart; c < rect.cellEnd; c++) {
+      if (isNonFiniteCell(skip, c)) continue;
       jobs.push({ cell: c, rect, subsetIdx: si });
     }
   }
   return jobs;
+}
+
+/** Wrap a per-cell job builder so cells with non-finite samples dispatch no job. */
+function unlessSkipped<T>(
+  skip: SkipCounts,
+  makeJob: (cell: number, settle: () => void) => T,
+): (cell: number, settle: () => void) => T | null {
+  return (cell, settle) => (isNonFiniteCell(skip, cell) ? null : makeJob(cell, settle));
+}
+
+/** Cells the finalization pass solves: every cell without non-finite samples. */
+export function finalizationCells(nCells: number, skip?: SkipCounts): number[] {
+  const cells: number[] = [];
+  for (let c = 0; c < nCells; c++) if (!isNonFiniteCell(skip, c)) cells.push(c);
+  return cells;
 }
 
 /**
@@ -315,6 +340,7 @@ function subsetCellJobs(
 async function dispatchTraceJobs(
   runPool: Pool,
   rects: SubsetRectangle[],
+  skip: SkipCounts,
   data: TraceInput,
   isSwapped: boolean,
   tauR: number,
@@ -330,7 +356,7 @@ async function dispatchTraceJobs(
   computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
-  const jobs = subsetCellJobs(rects);
+  const jobs = subsetCellJobs(rects, skip);
   setTotalSubsetTraceJobs(jobs.length);
   setCompletedSubsetTraceJobs(0);
 
@@ -479,11 +505,12 @@ async function dispatchKernelJobs(
 async function dispatchSeedTraceJobs(
   runPool: Pool,
   rects: SubsetRectangle[],
+  skip: SkipCounts,
   data: TraceInput,
   isSwapped: boolean,
   fs: number,
 ): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
-  const jobs = subsetCellJobs(rects);
+  const jobs = subsetCellJobs(rects, skip);
   setTotalSubsetTraceJobs(jobs.length);
   setCompletedSubsetTraceJobs(0);
 
@@ -593,6 +620,8 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   const tauRiseFloor = Math.max(1 / fs, RISE_CLAMP_FLOOR_S);
   const rects = subsetRectangles();
   const isSwap = swapped();
+  // Cells with NaN/Inf samples are skipped by every solve (scanned once at load).
+  const skip = nonFiniteCounts();
   const nCells = numCells();
   const nTp = numTimepoints();
   const hpOn = hpFilterEnabled();
@@ -614,7 +643,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   // Uses the same subset rectangles and dispatchKernelJobs as the iterative loop,
   // but replaces FISTA trace inference with Rust peak detection (no kernel needed).
   setRunPhase('inference');
-  const seedTraces = await dispatchSeedTraceJobs(runPool, rects, data, isSwap, fs);
+  const seedTraces = await dispatchSeedTraceJobs(runPool, rects, skip, data, isSwap, fs);
   assertCurrent(runId);
   checkPhase('seed-trace', seedTraces.outcome);
   const seedTraceResults = seedTraces.results;
@@ -726,6 +755,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
       for (let c = rect.cellStart; c < rect.cellEnd; c++) {
+        if (isNonFiniteCell(skip, c)) continue;
         initEntries[cellSubsetKey(c, si)] = {
           cellIndex: c,
           subsetIdx: si,
@@ -759,6 +789,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
     const traceJobs = await dispatchTraceJobs(
       runPool,
       rects,
+      skip,
       data,
       isSwap,
       tauR,
@@ -1123,13 +1154,13 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   // Finalization: re-run trace inference on ALL cells with converged kernel
   if (runState() !== 'stopping') {
     setRunPhase('finalization');
-    setTotalSubsetTraceJobs(nCells);
+    setTotalSubsetTraceJobs(finalizationCells(nCells, skip).length);
     setCompletedSubsetTraceJobs(0);
 
     const finOutcome = await runJobs(
       runPool,
       nCells,
-      (c, settle) => ({
+      unlessSkipped(skip, (c, settle) => ({
         kind: 'trace',
         trace: extractCellTrace(c, 0, nTp, data, isSwap),
         tauRise: tauR,
@@ -1164,7 +1195,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
             settle();
           });
         },
-      }),
+      })),
       setCompletedSubsetTraceJobs,
     );
     assertCurrent(runId);

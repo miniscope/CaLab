@@ -20,7 +20,8 @@ import {
   isNearNoiseFloor,
   type DatasetOverview,
 } from '@calab/core';
-import { pickSnrSpread } from '@calab/io';
+import { pickSnrSpread, withoutNonFinite } from '@calab/io';
+import { nonFiniteCounts } from '../../lib/data-store.ts';
 import { viridisCss } from '@calab/ui/chart';
 import { SnrHistogramCard, EventHeightCard, type HeightCurve } from '@calab/ui/dataset';
 import '@calab/ui/dataset/dataset.css';
@@ -102,7 +103,8 @@ function DatasetCards(props: { ov: DatasetOverview }) {
     if (!ids) return;
     const n = Math.min(MAX_TUNE_CELLS, Math.max(1, displayCount()));
     setSelectionMode('manual');
-    setSelectedCells(pickSnrSpread(snr(), n, ids));
+    // Never tune on a cell the solver skips (NaN/Inf samples).
+    setSelectedCells(pickSnrSpread(snr(), n, withoutNonFinite(ids, nonFiniteCounts())));
   };
 
   return (

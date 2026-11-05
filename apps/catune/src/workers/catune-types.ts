@@ -13,7 +13,8 @@ import type { SolverParams, WarmStartStrategy } from '@calab/core';
  *   fresh   -> results are current for the active parameters
  *   error   -> solver failed for this cell
  */
-export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error';
+/** 'skipped': the trace has NaN/Inf samples, which the solver rejects, so it is never solved. */
+export type CellSolverStatus = 'stale' | 'solving' | 'fresh' | 'error' | 'skipped';
 
 // --- Pool worker message protocol ---
 

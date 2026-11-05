@@ -13,6 +13,8 @@ import { EventRateDistribution } from './EventRateDistribution.tsx';
 import { cellResultLookup } from '../../lib/iteration-store.ts';
 import { overview } from '../../lib/overview-store.ts';
 import { subsetRectangles } from '../../lib/subset-store.ts';
+import { nonFiniteCounts } from '../../lib/data-store.ts';
+import { cellsWithNonFinite } from '@calab/io';
 import {
   highlightedCells,
   setHighlightedCells,
@@ -35,6 +37,8 @@ export function ResultsPanel(): JSX.Element {
   const snr = createMemo(() => overview()?.cells.map((c) => c.snr) ?? null);
   const points = createMemo(() => pveSnrPoints(cellResultLookup(), snr()));
   const fit = createMemo(() => fitFromPoints(points()));
+  // Cells with NaN/Inf samples are never solved, so they have no point here.
+  const skippedCount = createMemo(() => cellsWithNonFinite(nonFiniteCounts()).length);
 
   const subsetCells = createMemo(() => {
     const set = new Set<number>();
@@ -139,6 +143,11 @@ export function ResultsPanel(): JSX.Element {
         footer={
           <>
             <span>N {points().length}</span>
+            {skippedCount() > 0 && (
+              <span class="text-warning" data-testid="results-skipped-count">
+                {skippedCount()} cell{skippedCount() === 1 ? '' : 's'} skipped (missing samples)
+              </span>
+            )}
             {noiseGuardCounts(points()).total > 0 && (
               <span>
                 noise guard active on {noiseGuardCounts(points()).active} of{' '}

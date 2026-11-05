@@ -65,6 +65,11 @@ class CaDeconResult(NamedTuple):
         the run stopped before completing an iteration, so no fit was ever made.
         Check them before using them: a ``residual`` of 0 would otherwise be
         read as a perfect fit. ``num_iterations`` is 0 in that case too.
+
+        ``skipped_reason`` (per cell) is ``"non_finite_samples"`` for a cell
+        whose trace contains NaN or Inf samples; the solver skips such cells,
+        so their ``activity`` row and ``alphas``/``baselines``/``pves`` entries
+        are NaN. It is ``None`` for every solved cell.
     """
 
     activity: np.ndarray

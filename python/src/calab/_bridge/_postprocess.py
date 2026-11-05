@@ -113,7 +113,7 @@ def _build_cadecon_result(
     for key in (
         "residual", "h_free", "num_iterations", "converged",
         "converged_at_iteration", "schema_version", "calab_version",
-        "solver_version", "export_date",
+        "solver_version", "export_date", "skipped_reason",
     ):
         if key in results:
             value = results[key]

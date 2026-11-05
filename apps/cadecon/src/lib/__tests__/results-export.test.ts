@@ -41,12 +41,14 @@ const store = vi.hoisted(() => ({
   file: null as File | null,
   timepoints: 0,
   fs: 30,
+  nonFinite: null as Uint32Array | null,
 }));
 
 vi.mock('../data-store.ts', () => ({
   rawFile: () => store.file,
   numTimepoints: () => store.timepoints,
   samplingRate: () => store.fs,
+  nonFiniteCounts: () => store.nonFinite,
 }));
 
 /** Register one finalized cell result (subsetIdx -1) with a recognizable trace. */
@@ -94,6 +96,7 @@ beforeEach(() => {
   store.file = null;
   store.timepoints = 0;
   store.fs = 30;
+  store.nonFinite = null;
 
   blobs = [];
   created = [];
@@ -285,6 +288,40 @@ describe('downloadResults', () => {
       expect(removed).toEqual([anchor]);
       expect(anchor.href).toBe('blob:mock-1');
       expect(revokedUrl).toBe('blob:mock-1');
+    });
+  });
+
+  describe('cells skipped for NaN/Inf samples', () => {
+    it('exports a NaN activity row, null scalars and a skipped_reason for each', () => {
+      store.file = new File([], 'traces.npy');
+      store.timepoints = 2;
+      store.nonFinite = new Uint32Array([0, 3, 0]);
+      addCell(0, [1, 2], 1);
+      addCell(2, [5, 6], 3);
+
+      const entries = unzipSync(download().bytes);
+      const activity = parseNpy(new Uint8Array(entries['activity.npy']).buffer as ArrayBuffer);
+      const results = JSON.parse(new TextDecoder().decode(entries['results.json']));
+
+      expect(activity.shape).toEqual([3, 2]);
+      const rows = Array.from(activity.data);
+      expect(rows.slice(0, 2)).toEqual([1, 2]);
+      expect(rows.slice(2, 4).every(Number.isNaN)).toBe(true);
+      expect(rows.slice(4)).toEqual([5, 6]);
+      expect(results.alphas).toEqual([1, null, 3]);
+      expect(results.baselines).toEqual([0, null, 0]);
+      expect(results.pves).toEqual([0.5, null, 0.5]);
+      expect(results.noise_guard_active).toEqual([null, null, null]);
+      expect(results.skipped_reason).toEqual([null, 'non_finite_samples', null]);
+      expect(results.field_descriptions.skipped_reason).toMatch(/NaN or Inf/);
+    });
+
+    it('still refuses to export when nothing was solved', () => {
+      store.file = new File([], 'traces.npy');
+      store.timepoints = 2;
+      store.nonFinite = new Uint32Array([4]);
+
+      expect(runDownload).toThrow('No results to export');
     });
   });
 

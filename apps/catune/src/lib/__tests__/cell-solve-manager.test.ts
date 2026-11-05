@@ -46,7 +46,7 @@ vi.mock('../catune-pool.ts', () => {
 
 import { initCellSolveManager, reportCellZoom } from '../cell-solve-manager.ts';
 import { setParsedData, setSamplingRate, resetImport } from '../data-store.ts';
-import { setSelectedCells, clearMultiCellState } from '../multi-cell-store.ts';
+import { setSelectedCells, clearMultiCellState, cellSolverStatuses } from '../multi-cell-store.ts';
 import { setLambda } from '../viz-store.ts';
 
 const NUM_CELLS = 3;
@@ -187,5 +187,52 @@ describe('cell-solve-manager: GPU backend debounce', () => {
     vi.advanceTimersToNextTimer();
     // All cells reached the pool in the same task, so a batch consumer sees them together.
     expect(fake.dispatched).toHaveLength(2 * NUM_CELLS);
+  });
+});
+
+describe('cell-solve-manager: a cell with NaN/Inf samples', () => {
+  let disposeRoot: (() => void) | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake.requested = 'wasm';
+    fake.dispatched.length = 0;
+    fake.cancelled.length = 0;
+    resetImport();
+    clearMultiCellState();
+    setLambda(0);
+    seedDataset();
+  });
+
+  afterEach(() => {
+    disposeRoot?.();
+    disposeRoot = null;
+    setSelectedCells([]);
+    vi.useRealTimers();
+  });
+
+  it('is never dispatched and shows as skipped, not as an error', () => {
+    const data = new Float64Array(NUM_CELLS * NUM_TIMEPOINTS).map((_, i) => Math.sin(i / 10));
+    data[1 * NUM_TIMEPOINTS + 5] = NaN;
+    setParsedData({
+      data,
+      shape: [NUM_CELLS, NUM_TIMEPOINTS],
+      dtype: '<f8',
+      fortranOrder: false,
+    });
+    setSelectedCells([0, 1, 2]);
+    createRoot((dispose) => {
+      disposeRoot = dispose;
+      initCellSolveManager();
+    });
+
+    expect(fake.dispatched.map((j) => j.cellIndex).sort()).toEqual([0, 2]);
+    expect(cellSolverStatuses[1]).toBe('skipped');
+
+    // A parameter change re-solves the others and still skips it.
+    setLambda(0.5);
+    vi.advanceTimersByTime(500);
+    expect(fake.dispatched.filter((j) => j.cellIndex === 1)).toHaveLength(0);
+    expect(cellSolverStatuses[1]).toBe('skipped');
   });
 });

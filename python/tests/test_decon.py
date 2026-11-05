@@ -177,6 +177,26 @@ def test_build_cadecon_result_treats_absent_keys_like_nulls() -> None:
     assert result.metadata["tau_decay"] is None
 
 
+def test_build_cadecon_result_skipped_cells_become_nan() -> None:
+    """Cells the browser skipped for NaN/Inf samples arrive as null scalars."""
+    from calab._bridge._apps import _build_cadecon_result
+
+    payload = _results(
+        alphas=[1.0, None],
+        baselines=[0.0, None],
+        pves=[0.9, None],
+        skipped_reason=[None, "non_finite_samples"],
+    )
+    activity = np.zeros((2, 60), dtype=np.float32)
+    activity[1] = np.nan
+    result = _build_cadecon_result(payload, activity, 30.0)
+
+    assert result.alphas[0] == 1.0
+    assert np.isnan(result.alphas[1])
+    assert np.isnan(result.pves[1])
+    assert result.metadata["skipped_reason"] == [None, "non_finite_samples"]
+
+
 def test_build_biexp_waveform_returns_empty_for_non_positive_taus() -> None:
     """A non-positive time constant yields an empty array, not a NaN kernel.
 

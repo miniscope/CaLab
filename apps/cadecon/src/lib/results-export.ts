@@ -29,13 +29,18 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
   activity:
     'Deconvolved per-cell activity (event counts), shape [n_cells, n_timepoints], float32. ' +
     'Stored in the sibling activity.<ext> file. Rows are ordered by ascending cell index and ' +
-    'their orientation matches the imported traces; row i corresponds to alphas[i]/baselines[i]/pves[i].',
+    'their orientation matches the imported traces; row i corresponds to alphas[i]/baselines[i]/pves[i]. ' +
+    'Rows of cells skipped for NaN/Inf samples are all NaN (see skipped_reason).',
   fs: 'Sampling rate of the traces, in Hz.',
   alphas:
     'Per-cell amplitude scale relating deconvolved event counts to fluorescence units (length n_cells).',
   baselines:
     'Per-cell fluorescence baseline offset subtracted before deconvolution (length n_cells).',
   pves: 'Per-cell proportion of variance explained by the fit, 0-1; a per-cell fit-quality measure (length n_cells).',
+  skipped_reason:
+    'Per-cell reason the cell was not solved (length n_cells): "non_finite_samples" when its trace ' +
+    'contains NaN or Inf samples, which the solver rejects; null for a solved cell. A skipped cell ' +
+    'has a NaN activity row and null alphas/baselines/pves/noise_guard_active entries.',
   noise_guard_active:
     'Per-cell flag (length n_cells): true when the noise-floor guard overrode the best-fitting spike train ' +
     '(the best candidate overfit the measured noise floor, so the sparsest train within the noise budget was chosen); ' +

@@ -6,8 +6,8 @@
 import { createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import type { CellSolverStatus } from '../workers/catune-types.ts';
-import { rankCellsByActivity, sampleRandomCells, pickSnrSpread } from '@calab/io';
-import { parsedData, effectiveShape, swapped } from './data-store.ts';
+import { rankCellsByActivity, sampleRandomCells, pickSnrSpread, withoutNonFinite } from '@calab/io';
+import { parsedData, effectiveShape, swapped, nonFiniteCounts } from './data-store.ts';
 import { snrByCell } from './overview-store.ts';
 
 // --- Types ---
@@ -42,14 +42,17 @@ export function computeRawStats(raw: Float64Array): RawTraceStats {
   let sumSq = 0;
   let min = Infinity;
   let max = -Infinity;
+  let n = 0;
   for (let i = 0; i < raw.length; i++) {
     const v = raw[i];
+    if (v - v !== 0) continue; // NaN/Inf gap: a skipped cell still draws its raw trace
+    n++;
     sum += v;
     sumSq += v * v;
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  const n = raw.length;
+  if (n === 0) return { mean: 0, std: 1, zMin: 0, zMax: 0 };
   const mean = sum / n;
   const std = Math.sqrt(sumSq / n - mean * mean) || 1;
   return { mean, std, zMin: (min - mean) / std, zMax: (max - mean) / std };
@@ -168,32 +171,41 @@ function computeAndCacheRanking(): void {
  *   waits for the dataset overview, so it is a no-op until the SNRs exist
  * - 'random': sample displayCount random cells
  * - 'manual': leave selectedCells unchanged (user controls directly)
+ * The automatic modes never pick a cell with NaN/Inf samples: the solver skips those.
  */
 function updateCellSelection(): void {
   const mode = selectionMode();
   const count = displayCount();
+  const skip = nonFiniteCounts();
 
   if (mode === 'manual') return;
 
   if (mode === 'top-active') {
     const ranking = activityRanking();
     if (!ranking) return;
-    setSelectedCells(ranking.slice(0, count));
+    setSelectedCells(withoutNonFinite(ranking, skip).slice(0, count));
     return;
   }
 
   if (mode === 'by-snr') {
     const snr = snrByCell();
     if (!snr) return;
-    setSelectedCells(pickSnrSpread(snr, count));
+    const ids = withoutNonFinite(
+      Array.from({ length: snr.length }, (_, i) => i),
+      skip,
+    );
+    setSelectedCells(pickSnrSpread(snr, count, ids));
     return;
   }
 
   if (mode === 'random') {
     const shape = effectiveShape();
     if (!shape) return;
-    const [numCells] = shape;
-    setSelectedCells(sampleRandomCells(numCells, count));
+    const eligible = withoutNonFinite(
+      Array.from({ length: shape[0] }, (_, i) => i),
+      skip,
+    );
+    setSelectedCells(sampleRandomCells(eligible.length, count).map((i) => eligible[i]));
   }
 }
 

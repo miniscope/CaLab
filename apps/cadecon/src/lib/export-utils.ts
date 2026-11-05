@@ -3,11 +3,20 @@
  */
 
 import { cellResultLookup, convergenceHistory, convergedAtIteration } from './iteration-store.ts';
-import { samplingRate, numTimepoints } from './data-store.ts';
+import { samplingRate, numTimepoints, nonFiniteCounts } from './data-store.ts';
+import { cellsWithNonFinite, NON_FINITE_SKIP_REASON } from '@calab/io';
 
-/** Sorted cell indices for deterministic row order across both export functions. */
+/**
+ * Sorted cell indices for deterministic row order across both export functions:
+ * every solved cell plus every cell skipped for non-finite samples (exported
+ * as a NaN activity row with null scalars and a `skipped_reason`).
+ */
 function sortedCellIndices(): number[] {
-  return [...cellResultLookup().keys()].sort((a, b) => a - b);
+  const cells = new Set(cellResultLookup().keys());
+  // Nothing solved yet means nothing to export, skipped cells included.
+  if (cells.size === 0) return [];
+  for (const c of cellsWithNonFinite(nonFiniteCounts())) cells.add(c);
+  return [...cells].sort((a, b) => a - b);
 }
 
 /**
@@ -25,8 +34,13 @@ export function buildCaDeconActivityMatrix(): {
   const data = new Float32Array(sortedCells.length * nTime);
 
   for (let row = 0; row < sortedCells.length; row++) {
-    const entry = lookup.get(sortedCells[row])!;
+    const entry = lookup.get(sortedCells[row]);
     const offset = row * nTime;
+    if (!entry) {
+      // Skipped cell: no activity was inferred.
+      data.fill(NaN, offset, offset + nTime);
+      continue;
+    }
     const len = Math.min(entry.sCounts.length, nTime);
     data.set(entry.sCounts.subarray(0, len), offset);
   }
@@ -43,17 +57,19 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
   const fs = samplingRate() ?? 30;
 
   const sortedCells = sortedCellIndices();
-  const alphas: number[] = [];
-  const baselines: number[] = [];
-  const pves: number[] = [];
+  const alphas: (number | null)[] = [];
+  const baselines: (number | null)[] = [];
+  const pves: (number | null)[] = [];
   const noiseGuardActive: (boolean | null)[] = [];
+  const skippedReason: (string | null)[] = [];
 
   for (const cellIdx of sortedCells) {
-    const entry = lookup.get(cellIdx)!;
-    alphas.push(entry.alpha);
-    baselines.push(entry.baseline);
-    pves.push(entry.pve);
-    noiseGuardActive.push(entry.noisePath ?? null);
+    const entry = lookup.get(cellIdx);
+    alphas.push(entry ? entry.alpha : null);
+    baselines.push(entry ? entry.baseline : null);
+    pves.push(entry ? entry.pve : null);
+    noiseGuardActive.push(entry?.noisePath ?? null);
+    skippedReason.push(entry ? null : NON_FINITE_SKIP_REASON);
   }
 
   // Kernel params from the last convergence snapshot.
@@ -88,6 +104,7 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
     baselines,
     pves,
     noise_guard_active: noiseGuardActive,
+    skipped_reason: skippedReason,
     fs,
     tau_rise: tauRise,
     tau_decay: tauDecay,

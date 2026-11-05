@@ -40,6 +40,7 @@ export const {
   setImportError,
   // Derived
   effectiveShape,
+  nonFiniteCounts,
   numCells,
   numTimepoints,
   durationSeconds,
