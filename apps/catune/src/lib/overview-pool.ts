@@ -2,27 +2,11 @@
 // workers/catune-types.ts). Separate from the solver pool so the overview never
 // touches solver state or the GPU backend.
 
-import {
-  createWorkerPool,
-  type BaseJob,
-  type MessageRouter,
-  type WorkerPool,
-} from '@calab/compute';
-import type { CellOverview } from '@calab/core';
+import { createWorkerPool, type MessageRouter, type WorkerPool } from '@calab/compute';
+import type { OverviewJob } from '@calab/ui/dataset';
 import type { OverviewWorkerOutbound } from '../workers/catune-types.ts';
 
-export interface OverviewPoolJob extends BaseJob {
-  tracesFlat: Float32Array;
-  nCells: number;
-  nTimepoints: number;
-  fs: number;
-  minSeparationSamples: number;
-  isDff: boolean;
-  baselineBins: number;
-  onComplete(cells: CellOverview[]): void;
-}
-
-const overviewRouter: MessageRouter<OverviewPoolJob, OverviewWorkerOutbound> = {
+const overviewRouter: MessageRouter<OverviewJob, OverviewWorkerOutbound> = {
   isReady: (msg) => msg.type === 'ready',
   getJobId: (msg) => ('jobId' in msg ? msg.jobId : undefined),
   routeMessage(job, msg, finish) {
@@ -55,8 +39,8 @@ const overviewRouter: MessageRouter<OverviewPoolJob, OverviewWorkerOutbound> = {
 export function createOverviewWorkerPool(
   poolSize?: number,
   options?: { onFatal?(message: string): void },
-): WorkerPool<OverviewPoolJob> {
-  return createWorkerPool<OverviewPoolJob, OverviewWorkerOutbound>(
+): WorkerPool<OverviewJob> {
+  return createWorkerPool<OverviewJob, OverviewWorkerOutbound>(
     () => new Worker(new URL('../workers/overview-worker.ts', import.meta.url), { type: 'module' }),
     overviewRouter,
     poolSize,

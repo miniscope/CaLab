@@ -16,13 +16,13 @@ vi.hoisted(() => {
   })) as unknown as typeof matchMedia;
 });
 import { render } from 'solid-js/web';
-import type { OverviewPoolJob } from '../../lib/overview-pool.ts';
+import type { OverviewJob } from '@calab/ui/dataset';
 import type { CellOverview } from '@calab/core';
 
 vi.mock('../../lib/overview-pool.ts', () => ({
   createOverviewWorkerPool: () => ({
     size: 1,
-    dispatch(job: OverviewPoolJob) {
+    dispatch(job: OverviewJob) {
       queueMicrotask(() => {
         const cells: CellOverview[] = Array.from({ length: job.nCells }, (_, k) => ({
           snr: 2.5 + job.tracesFlat[k * job.nTimepoints],
