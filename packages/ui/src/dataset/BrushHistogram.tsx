@@ -40,18 +40,28 @@ export interface BrushHistogramProps {
   highlighted?: () => ReadonlySet<number> | null;
   onBrush?: (ids: number[] | null) => void;
   xLabel?: string;
+  /** Rotated y-axis label (e.g. "cells"). */
+  yLabel?: string;
   /** Minimum height for the plot (px). */
   minHeight?: number;
   ariaLabel?: string;
 }
 
-const M = { l: 28, r: 8, t: 8, b: 26 };
+const M0 = { l: 28, r: 8, t: 8, b: 26 };
+/** Extra left margin that makes room for a rotated y label. */
+const Y_LABEL_PX = 8;
 
 export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
   let host: HTMLDivElement | undefined;
   const size = createElementSize(() => host);
   const W = () => size().width;
   const H = () => Math.max(props.minHeight ?? 60, size().height);
+  const M = {
+    ...M0,
+    get l() {
+      return M0.l + (props.yLabel ? Y_LABEL_PX : 0);
+    },
+  };
 
   const domain = createMemo<[number, number]>(() => {
     if (props.domain) return props.domain;
@@ -200,6 +210,15 @@ export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
         <Show when={props.xLabel}>
           <text class="ov-axis-label" x={(M.l + W() - M.r) / 2} y={H() - 2} text-anchor="middle">
             {props.xLabel}
+          </text>
+        </Show>
+        <Show when={props.yLabel}>
+          <text
+            class="ov-axis-label"
+            transform={`translate(8 ${(M.t + H() - M.b) / 2}) rotate(-90)`}
+            text-anchor="middle"
+          >
+            {props.yLabel}
           </text>
         </Show>
         <Show when={brush.active()}>

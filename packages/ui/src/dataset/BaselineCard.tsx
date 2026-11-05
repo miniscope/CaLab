@@ -8,6 +8,7 @@ import { createMemo, For, Show, type JSX } from 'solid-js';
 import { BrushHistogram } from './BrushHistogram.tsx';
 import { labeledTicks, makeScale, tickTarget } from './chart-scales.ts';
 import { OverviewCard, createElementSize } from './OverviewCard.tsx';
+import { ChartLegend } from './ChartLegend.tsx';
 
 export interface BaselineCardProps {
   data: () => {
@@ -22,7 +23,7 @@ export interface BaselineCardProps {
   onBrush?: (ids: number[] | null) => void;
 }
 
-const M = { l: 34, r: 6, t: 8, b: 26 };
+const M = { l: 42, r: 6, t: 8, b: 26 };
 
 export function BaselineCard(props: BaselineCardProps): JSX.Element {
   let host: HTMLDivElement | undefined;
@@ -84,12 +85,25 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
   };
 
   const yLabel = () => (ratio() ? 'F₀ ÷ cell median' : 'Δ baseline (σ)');
-  const driftLabel = () => (ratio() ? 'end ÷ start' : 'end − start (σ)');
+  const driftLabel = () => (ratio() ? 'change: end ÷ start' : 'change: end − start (σ)');
+  /** Value of a cell sitting at its own typical baseline. */
+  const ref = () => (ratio() ? 1 : 0);
 
   return (
     <OverviewCard
-      title="Baseline over time"
+      title="Baseline stability"
+      subtitle="Bleaching or drift across the recording"
       data-testid="overview-baseline"
+      legend={
+        <Show when={props.data()}>
+          <ChartLegend
+            items={[
+              { mark: 'line', className: 'ov-line', label: 'median cell' },
+              { mark: 'area', className: 'ov-band', label: 'middle 50 % of cells' },
+            ]}
+          />
+        </Show>
+      }
       help={
         <p>
           Each cell's baseline is the 10th percentile of its trace in 200 time bins.
@@ -102,9 +116,7 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
       }
       footer={
         <Show when={props.data()}>
-          <span>
-            {props.data()!.drift.length} cells · y: {yLabel()}
-          </span>
+          <span>{props.data()!.drift.length} cells</span>
         </Show>
       }
     >
@@ -129,7 +141,11 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
                 )}
               </For>
               <path class="ov-band" d={band()} />
+              <line class="ov-ref" x1={M.l} x2={W() - M.r} y1={y()(ref())} y2={y()(ref())} />
               <path class="ov-line" d={path(props.data()!.median)} />
+              <text class="ov-ref__label" x={W() - M.r - 2} y={y()(ref()) - 3} text-anchor="end">
+                typical baseline
+              </text>
               <line class="ov-axis" x1={M.l} x2={W() - M.r} y1={H() - M.b} y2={H() - M.b} />
               <For each={labeledTicks(x(), tickTarget(W() - M.l - M.r))}>
                 {(t) => (
@@ -146,16 +162,24 @@ export function BaselineCard(props: BaselineCardProps): JSX.Element {
               >
                 time (s)
               </text>
+              <text
+                class="ov-axis-label"
+                transform={`translate(8 ${(M.t + H() - M.b) / 2}) rotate(-90)`}
+                text-anchor="middle"
+              >
+                {yLabel()}
+              </text>
             </svg>
           </div>
           <div class="ov-split__side">
             <BrushHistogram
               values={() => props.data()!.drift}
               binCount={14}
-              markers={() => [{ x: ratio() ? 1 : 0, dashed: true }]}
+              markers={() => [{ x: ref(), dashed: true, label: 'no change' }]}
               highlighted={props.highlighted}
               onBrush={props.onBrush}
               xLabel={driftLabel()}
+              yLabel="cells"
               ariaLabel="baseline change histogram"
             />
           </div>

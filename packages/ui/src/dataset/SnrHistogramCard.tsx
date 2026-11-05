@@ -8,6 +8,7 @@ import { createMemo, Show, type JSX } from 'solid-js';
 import { viridisCss } from '../chart/colormap.ts';
 import { BrushHistogram, type HistogramMarker } from './BrushHistogram.tsx';
 import { OverviewCard } from './OverviewCard.tsx';
+import { ChartLegend } from './ChartLegend.tsx';
 import { formatTick } from './chart-scales.ts';
 
 export interface SnrHistogramCardProps {
@@ -85,8 +86,14 @@ export function SnrHistogramCard(props: SnrHistogramCardProps): JSX.Element {
 
   return (
     <OverviewCard
-      title="SNR per cell"
+      title="Signal strength (SNR)"
+      subtitle="How far each cell's strongest activity stands above its noise"
       data-testid="overview-snr"
+      legend={
+        <ChartLegend
+          items={[{ mark: 'gradient', label: 'bar colour: rank in this dataset (low → high)' }]}
+        />
+      }
       help={
         <>
           <p>
@@ -124,11 +131,12 @@ export function SnrHistogramCard(props: SnrHistogramCardProps): JSX.Element {
         log
         binCount={28}
         binColor={(bin) => viridisCss(rankOf(Math.sqrt(bin.x0 * bin.x1)))}
-        shade={{ lo: 0, hi: props.noiseFloor.hi, label: '≈ noise' }}
+        shade={{ lo: 0, hi: props.noiseFloor.hi, label: 'pure noise' }}
         markers={markers}
         highlighted={props.highlighted}
         onBrush={props.onBrush}
-        xLabel="measured SNR (log)"
+        xLabel="SNR (log scale)"
+        yLabel="cells"
         ariaLabel="SNR histogram"
       />
     </OverviewCard>

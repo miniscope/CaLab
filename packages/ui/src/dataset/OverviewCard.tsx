@@ -1,6 +1,6 @@
 /**
- * Frame for the dataset-overview cards: title, optional "?" help popover,
- * optional header extras, a body that fills the remaining height, and a
+ * Frame for the dataset-overview cards: title, optional plain-language
+ * subtitle, optional "?" help popover, optional header extras and legend, a body that fills the remaining height, and a
  * footer line for stats. Also exports the shared sizing and brush helpers.
  */
 
@@ -8,6 +8,10 @@ import { createSignal, onCleanup, onMount, Show, type Accessor, type JSX } from 
 
 export interface OverviewCardProps {
   title: string;
+  /** One plain-language line under the title: what question the card answers. */
+  subtitle?: string;
+  /** Inline key for the marks, shown between the header and the plot. */
+  legend?: JSX.Element;
   /** Help text shown in a popover from the "?" button. */
   help?: JSX.Element;
   headerExtra?: JSX.Element;
@@ -40,6 +44,12 @@ export function OverviewCard(props: OverviewCardProps): JSX.Element {
           </button>
         </Show>
       </header>
+      <Show when={props.subtitle}>
+        <p class="ov-card__subtitle" title={props.subtitle}>
+          {props.subtitle}
+        </p>
+      </Show>
+      <Show when={props.legend}>{props.legend}</Show>
       <Show when={helpOpen()}>
         <div class="ov-card__help" role="note" onClick={() => setHelpOpen(false)}>
           {props.help}

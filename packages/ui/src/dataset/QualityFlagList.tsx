@@ -33,6 +33,7 @@ export function QualityFlagList(props: QualityFlagListProps): JSX.Element {
   return (
     <OverviewCard
       title="Quality flags"
+      subtitle="Cells that may need a look"
       data-testid="overview-flags"
       help={props.help}
       footer={

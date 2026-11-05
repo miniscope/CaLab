@@ -73,7 +73,8 @@ export function ResultsPanel(): JSX.Element {
   return (
     <div class="results-grid">
       <ScatterCard
-        title="PVE vs SNR"
+        title="Fit quality vs SNR"
+        subtitle="How much of each trace the fit explains, against the best expected at that SNR"
         data-testid="results-pve-snr"
         x={() => points().map((p) => p.snr)}
         y={() => points().map((p) => p.pve)}
@@ -81,19 +82,33 @@ export function ResultsPanel(): JSX.Element {
         xRange={xRange}
         yRange={() => [0, 1]}
         logX
-        xLabel="measured SNR (log)"
-        yLabel="PVE"
+        xLabel="SNR (log scale)"
+        yLabel="fraction of variance explained (PVE)"
         yTickFormat={pct}
-        shade={{ lo: 0, hi: OVERVIEW_PARAMS.noiseFloorBandHi, label: 'no detectable activity' }}
+        shade={{
+          lo: 0,
+          hi: OVERVIEW_PARAMS.noiseFloorBandHi,
+          label: 'pure noise',
+          legendLabel: 'noise floor',
+        }}
         curve={() => {
           if (!fit()) return null;
           return {
             fn: (s: number) => ceilingBand(fit()!, s).mid,
             lo: (s: number) => ceilingBand(fit()!, s).lo,
             hi: (s: number) => ceilingBand(fit()!, s).hi,
+            label: 'best expected',
+            legendLabel: 'ceiling (±1 SE)',
           };
         }}
         styleOf={styleOf}
+        pointLabels={{
+          strong: 'used for kernel fit',
+          default: 'other cells',
+          flag: 'flagged',
+          accent: 'highlighted',
+          dim: 'not highlighted',
+        }}
         selected={inspectedCellIndex}
         onPick={setInspectedCellIndex}
         onBrush={(ids) => setHighlightedCells(ids, 'pve-snr')}

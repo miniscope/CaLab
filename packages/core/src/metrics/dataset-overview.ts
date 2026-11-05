@@ -78,6 +78,18 @@ export const OVERVIEW_PARAMS = {
   clipMinSamples: 3,
   /** Event heights need at least this many events for the shape comparison. */
   minEventsForShape: 3,
+  /** Display-only reading of the event-height card. At the 90th-percentile
+   *  event (height ÷ the cell's median), the 90th-percentile cell over the
+   *  10th-percentile cell at or below this ratio reads as "cells look
+   *  consistent". 2× is where the spread starts to matter for SNR: SNR reads
+   *  the top 1 % of samples, so a cell whose large events run twice as far
+   *  above its median can read up to ~2× the SNR at the same noise. */
+  heightBandConsistentRatio: 2,
+  /** No consistency verdict below this median event count per cell: the band
+   *  is then mostly sampling noise. On homogeneous simulated cells (one burst
+   *  distribution) the band measured 4.2× at ~6 events, 2.1× at ~19 and 1.5×
+   *  at ~60, shrinking as 1/√n; 30 events keeps that noise-only band under 2×. */
+  heightVerdictMinEvents: 30,
 } as const;
 
 /** Probabilities of `heightQuantiles`. */

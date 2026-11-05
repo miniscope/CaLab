@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import { createSignal, type JSX } from 'solid-js';
 import { SnrHistogramCard } from '../dataset/SnrHistogramCard.tsx';
-import { EventHeightCard } from '../dataset/EventHeightCard.tsx';
+import { EventHeightCard, heightBandSpread, heightVerdict } from '../dataset/EventHeightCard.tsx';
+import { ChartLegend } from '../dataset/ChartLegend.tsx';
 import { BaselineCard } from '../dataset/BaselineCard.tsx';
 import { QualityFlagList } from '../dataset/QualityFlagList.tsx';
 import { ScatterCard } from '../dataset/ScatterCard.tsx';
@@ -53,6 +54,12 @@ describe('SnrHistogramCard', () => {
     expect(root.querySelectorAll('rect.ov-bar').length).toBeGreaterThan(3);
     expect(root.querySelector('rect.ov-shade')).not.toBeNull();
     const text = root.textContent ?? '';
+    expect(text).toContain('Signal strength (SNR)');
+    expect(text).toContain('stands above its noise');
+    expect(text).toContain('pure noise');
+    expect(text).toContain('SNR (log scale)');
+    expect(text).toContain('cells');
+    expect(root.querySelector('.ov-legend [data-mark="gradient"]')).not.toBeNull();
     expect(text).toContain('median 7.0');
     expect(text).toContain('silent 1');
     expect(text).toContain('ν median 4');
@@ -116,7 +123,55 @@ describe('EventHeightCard', () => {
     expect(root.querySelector('path.ov-band')!.getAttribute('d')).toMatch(/^M.*Z$/);
     expect(root.querySelectorAll('path.ov-curve').length).toBe(2);
     expect(root.querySelector('path.ov-curve--flag')!.getAttribute('data-cell')).toBe('7');
-    expect(root.textContent).toContain('N 40 cells');
+    const text = root.textContent ?? '';
+    expect(text).toContain('N 40');
+    expect(text).toContain('Event-size consistency');
+    expect(text).toContain("event height ÷ cell's median event");
+    expect(text).toContain('fraction of events below');
+    // Legend lists only the marks present: no "highlighted" curve here.
+    const legend = root.querySelector('.ov-legend')!.textContent ?? '';
+    expect(legend).toContain('median cell');
+    expect(legend).toContain('10–90 % of cells');
+    expect(legend).toContain('flagged cell');
+    expect(legend).toContain('inspected');
+    expect(legend).not.toContain('highlighted');
+  });
+
+  it('reads the band width at the 90th-percentile event', () => {
+    // p = .9 is index 17: p10 = 0.4 + .9·0.8 = 1.12, p90 = 0.6 + .9·1.4 = 1.86.
+    expect(heightBandSpread(PROBS, pooled)).toBeCloseTo(1.86 / 1.12, 6);
+    expect(heightBandSpread(PROBS, null)).toBeNaN();
+    expect(heightVerdict(1.5, 60)).toBe('consistent');
+    expect(heightVerdict(2.5, 60)).toBe('varies');
+    expect(heightVerdict(2.5, 10)).toBe('few-events');
+    expect(heightVerdict(NaN, 60)).toBeNull();
+  });
+
+  it('states the takeaway under the plot', () => {
+    const wide = { ...pooled, p90: PROBS.map((p) => 0.6 + p * 4) };
+    const root = mount(() => (
+      <EventHeightCard
+        probs={PROBS}
+        pooled={() => wide}
+        curves={() => []}
+        medianEvents={() => 80}
+      />
+    ));
+    const t = root.querySelector('[data-testid="overview-heights-takeaway"]')!;
+    expect(t.textContent).toContain('compare SNR with care');
+    expect(t.classList.contains('ov-takeaway--warn')).toBe(true);
+  });
+
+  it('gives no verdict with few events per cell', () => {
+    const root = mount(() => (
+      <EventHeightCard
+        probs={PROBS}
+        pooled={() => pooled}
+        curves={() => []}
+        medianEvents={() => 8}
+      />
+    ));
+    expect(root.textContent).toContain('Too few events per cell (median 8)');
   });
   it('shows a placeholder without enough events', () => {
     const root = mount(() => (
@@ -138,8 +193,15 @@ describe('BaselineCard', () => {
   it('labels ratio mode and draws the median and drift histogram', () => {
     const onBrush = vi.fn();
     const root = mount(() => <BaselineCard data={() => data('ratio')} onBrush={onBrush} />);
-    expect(root.textContent).toContain('F₀ ÷ cell median');
-    expect(root.textContent).toContain('end ÷ start');
+    const text = root.textContent ?? '';
+    expect(text).toContain('Baseline stability');
+    expect(text).toContain('F₀ ÷ cell median');
+    expect(text).toContain('end ÷ start');
+    expect(text).toContain('typical baseline');
+    expect(text).toContain('middle 50 % of cells');
+    // Reference line at the typical value (1 in ratio mode).
+    const ref = root.querySelector('line.ov-ref')!;
+    expect(ref.getAttribute('y1')).toBe(ref.getAttribute('y2'));
     expect(root.querySelector('path.ov-line')!.getAttribute('d')).toMatch(/^M/);
     const svgs = root.querySelectorAll('svg.ov-svg');
     drag(svgs[svgs.length - 1], 0, 1000);
@@ -178,6 +240,7 @@ describe('QualityFlagList', () => {
       />
     ));
     expect(root.textContent).toContain('9 of 100 cells flagged');
+    expect(root.textContent).toContain('Cells that may need a look');
     expect(root.textContent).toContain('+3');
     const [silent, gap] = root.querySelectorAll<HTMLButtonElement>('.ov-flags__main');
     expect(gap.disabled).toBe(true);
@@ -207,8 +270,21 @@ describe('ScatterCard', () => {
         xLabel="SNR"
         yLabel="PVE"
         yTickFormat={(v) => `${Math.round(v * 100)}%`}
-        shade={{ lo: 0, hi: 3, label: 'noise' }}
-        curve={() => ({ fn: (s) => s / (s + 5), lo: (s) => s / (s + 6), hi: (s) => s / (s + 4) })}
+        shade={{ lo: 0, hi: 3, label: 'noise', legendLabel: 'noise floor' }}
+        curve={() => ({
+          fn: (s) => s / (s + 5),
+          lo: (s) => s / (s + 6),
+          hi: (s) => s / (s + 4),
+          label: 'best expected',
+          legendLabel: 'ceiling',
+        })}
+        styleOf={(id) => (id === 0 ? 'strong' : id === 2 ? 'flag' : 'default')}
+        pointLabels={{
+          strong: 'used for kernel fit',
+          default: 'other',
+          flag: 'flagged',
+          accent: 'highlighted',
+        }}
         selected={() => 1}
         onPick={onPick}
         onBrush={onBrush}
@@ -219,6 +295,14 @@ describe('ScatterCard', () => {
     expect(root.querySelector('path.ov-curve-band')!.getAttribute('d')).toMatch(/Z$/);
     expect(root.querySelector('circle.ov-halo')).not.toBeNull();
     expect(root.textContent).toContain('100%');
+    expect(root.querySelector('text.ov-curve-label')?.textContent).toBe('best expected');
+    const legend = root.querySelector('.ov-legend')!.textContent ?? '';
+    for (const l of ['used for kernel fit', 'other', 'flagged', 'ceiling', 'noise floor']) {
+      expect(legend).toContain(l);
+    }
+    // No point is accent-styled, so "highlighted" is not listed.
+    expect(legend).not.toContain('highlighted');
+    expect(root.querySelector('.ov-legend [data-mark="ring"]')).not.toBeNull();
     const fg = root.querySelector('svg.ov-svg--fg')!;
     drag(fg, 0, 1000, 0, 1000);
     expect(onBrush.mock.calls[0][0].sort()).toEqual([0, 1, 2]);
@@ -248,5 +332,25 @@ describe('ScatterCard', () => {
       />
     ));
     expect(root.textContent).toContain('Nothing yet');
+  });
+});
+
+describe('ChartLegend', () => {
+  it("draws each swatch with the plot element's class or colour", () => {
+    const root = mount(() => (
+      <ChartLegend
+        items={[
+          { mark: 'line', className: 'ov-line', label: 'median' },
+          { mark: 'area', className: 'ov-band', label: 'band' },
+          { mark: 'dot', color: 'var(--ov-point)', label: 'dot' },
+        ]}
+      />
+    ));
+    expect(root.querySelector('.ov-legend line.ov-line')).not.toBeNull();
+    expect(root.querySelector('.ov-legend rect.ov-band')).not.toBeNull();
+    expect(root.querySelector<SVGCircleElement>('.ov-legend circle')!.style.fill).toBe(
+      'var(--ov-point)',
+    );
+    expect(root.querySelectorAll('.ov-legend__item').length).toBe(3);
   });
 });
