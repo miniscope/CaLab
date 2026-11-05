@@ -7,8 +7,6 @@ import { createImportStore } from '@calab/io';
 import { initWasm, simulate_traces } from '@calab/core/wasm';
 import type { SimulationResult } from '@calab/compute';
 
-export type { DataSource } from '@calab/io';
-
 export const importStore = createImportStore({
   appName: 'CaDecon',
   simulate: async (config) => {
@@ -21,22 +19,13 @@ export const {
   // Getters (signals)
   rawFile,
   parsedData,
-  dimensionsConfirmed,
   swapped,
   samplingRate,
-  validationResult,
-  npzArrays,
-  importError,
   // Setters
-  setRawFile,
   setParsedData,
   setDimensionsConfirmed,
   setSwapped,
   setSamplingRate,
-  setValidationResult,
-  setNpzArrays,
-  setSelectedNpzArray,
-  setImportError,
   // Derived
   effectiveShape,
   nonFiniteCounts,
@@ -57,18 +46,11 @@ export const {
   setBridgeExportError,
   // Data source tracking
   dataSource,
-  setDataSource,
   // Ground truth & advanced features
-  selectedNpzArray,
-  demoConfig,
   demoIndicator,
-  groundTruthSpikes,
-  groundTruthCalcium,
   groundTruthVisible,
   groundTruthLocked,
   groundTruthTauRise,
   groundTruthTauDecay,
-  revealGroundTruth,
-  toggleGroundTruthVisibility,
   getGroundTruthForCell,
 } = importStore;

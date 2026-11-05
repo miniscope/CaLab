@@ -195,6 +195,50 @@
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* Header toggle buttons (Sidebar) in their "on" state; shared by both apps. */
+.btn-active {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: var(--accent-muted) !important;
+}
+
+/* Collapse chevron pinned to the right end of the sidebar's tab row. */
+.dashboard-shell__sidebar-collapse {
+  position: absolute;
+  z-index: 3;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.dashboard-shell__sidebar-collapse:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.dashboard-shell__sidebar-collapse:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Leave room for the collapse button at the end of the tab row. */
+.dashboard-shell--sidebar-open .sidebar-tabs__bar {
+  padding-right: 36px;
+}
+
 .dashboard-shell--resizing {
   transition: none;
   cursor: col-resize;

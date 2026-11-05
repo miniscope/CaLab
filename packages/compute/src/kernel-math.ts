@@ -14,7 +14,7 @@ export const KERNEL_RMSE_MIN_SAMPLES = 24;
  * onto `n` points at spacing `dt`, normalized to its sampled peak of 1. The
  * shared sampling primitive behind both computeKernel and kernelShapeRmse.
  */
-export function sampleBiexp(tauRise: number, tauDecay: number, n: number, dt: number): number[] {
+function sampleBiexp(tauRise: number, tauDecay: number, n: number, dt: number): number[] {
   const y = new Array<number>(n);
   let peak = 0;
   for (let i = 0; i < n; i++) {
@@ -64,7 +64,7 @@ export function computeKernel(
  *
  * Measuring the whole waveform (rather than a relative (t_peak, FWHM) delta)
  * weights each parameter's change by how much it actually moves the kernel, so a
- * jittery t_peak on the poorly-constrained rising edge no longer delays
+ * jittery t_peak on the poorly-constrained rising edge does not delay
  * convergence over a change that barely alters the shape.
  */
 export function kernelShapeRmse(

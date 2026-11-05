@@ -25,7 +25,7 @@ export function clampTauRise(tauRise: number, tauDecay: number): number {
 }
 
 /** Port of `build_kernel`: f64 bi-exponential normalized to peak 1, cast to f32. */
-export function buildKernel(tauRise: number, tauDecay: number, fs: number): Float32Array {
+function buildKernel(tauRise: number, tauDecay: number, fs: number): Float32Array {
   const tr = clampTauRise(tauRise, tauDecay);
   const dt = 1 / fs;
   const len = Math.max(Math.ceil((-Math.log(1e-6) * tauDecay) / dt), 2);
@@ -43,7 +43,7 @@ export function buildKernel(tauRise: number, tauDecay: number, fs: number): Floa
 }
 
 /** `kernel_dc_gain`: sum of the f32 kernel taps, accumulated in f64. */
-export function kernelDcGain(tauRise: number, tauDecay: number, fs: number): number {
+function kernelDcGain(tauRise: number, tauDecay: number, fs: number): number {
   const k = buildKernel(tauRise, tauDecay, fs);
   let s = 0;
   for (let i = 0; i < k.length; i++) s += k[i];
@@ -51,7 +51,7 @@ export function kernelDcGain(tauRise: number, tauDecay: number, fs: number): num
 }
 
 /** Port of `compute_impulse_peak`. */
-export function computeImpulsePeak(g1: number, g2: number, tauDecay: number, fs: number): number {
+function computeImpulsePeak(g1: number, g2: number, tauDecay: number, fs: number): number {
   const maxSteps = Math.ceil(5 * tauDecay * fs) + 10;
   let cPrev2 = 0;
   let cPrev1 = 1;
@@ -67,7 +67,7 @@ export function computeImpulsePeak(g1: number, g2: number, tauDecay: number, fs:
 }
 
 /** Port of `compute_banded_lipschitz` (4096-point frequency grid). */
-export function computeBandedLipschitz(g1: number, g2: number): number {
+function computeBandedLipschitz(g1: number, g2: number): number {
   const nFreqs = 4096;
   let maxPower = 0;
   for (let k = 0; k <= nFreqs; k++) {

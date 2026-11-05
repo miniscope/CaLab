@@ -11,12 +11,6 @@
   color: var(--text-secondary);
 }
 
-.btn-active {
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-  background: var(--accent-muted) !important;
-}
-
 /* ========================
    Stats Grid
    ======================== */
@@ -52,12 +46,6 @@
   text-transform: uppercase;
   letter-spacing: 0.1em;
   font-family: var(--font-mono);
-}
-
-.demo-data-row__hint {
-  color: var(--text-tertiary);
-  font-size: 0.8rem;
-  margin: 0;
 }
 
 /* ========================

@@ -30,9 +30,8 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
-/// `warm_counts`: accepted for API compatibility and currently has no effect
-/// (the first scale-loop round ignores it; see `indeca::solve_trace`). Pass an
-/// empty slice.
+/// `warm_counts`: accepted for API compatibility and has no effect (see
+/// `indeca::solve_trace_opts`). Pass an empty slice.
 ///
 /// `max_iters` and `tol` (CaDecon's `traceFistaMaxIters` / `traceFistaTol`)
 /// are effectively no-ops on the default path: the relaxed solve runs at
@@ -40,8 +39,7 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// (`native_solve`). `tol` (the relative-step rule) applies only to a trace
 /// without a measurable noise floor (no certificate). `max_iters` is only a
 /// floor on the safety cap, which is derived from the problem and lies in
-/// the 1e5-1e9 range, so a value sized for the old upsampled solve (500)
-/// cannot truncate the solve and raising it changes nothing unless it
+/// the 1e5-1e9 range, so the apps' value (500) cannot truncate the solve and raising it changes nothing unless it
 /// exceeds the derived cap.
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
@@ -54,8 +52,8 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// rule) fired. `converged = false` means the certificate could not be met
 /// in f64 arithmetic: in practice the stall detector on the certificate's
 /// bound stopped the solve, since the derived cap is not reached.
-/// `loop_converged` is false when the scale loop hit its `max_rounds` safety
-/// cap instead of reaching its fixed point.
+/// `loop_converged` is always true (the solve is one round; kept so the
+/// object's shape is unchanged).
 /// `noise_var_processed` is the per-sample noise variance of the working
 /// trace (`filtered_trace` before downsampling; baseline-subtracted,
 /// bandpassed), `sigma_raw^2` times the bandpass's grid gain times

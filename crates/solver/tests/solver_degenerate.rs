@@ -11,7 +11,8 @@
 //! `set_trace`, getters before any solve, repeated getters).
 //!
 //! Complements `src/degenerate_tests.rs` (in-crate regressions for specific
-//! fixed panics); this file only touches the public API.
+//! call sequences that used to panic); this file only touches the public
+//! API.
 
 use calab_solver::{Constraint, ConvMode, Solver, SolverError};
 
@@ -269,6 +270,10 @@ fn empty_and_tiny_traces_in_every_mode_constraint_and_preprocessing() {
                         }
                         _ => {}
                     }
+                    if n == 0 {
+                        // Nothing to solve: the first batch reports convergence.
+                        assert!(s.step_batch(10).unwrap(), "{ctx}");
+                    }
                     run(&mut s);
                     let snap = snapshot(&mut s);
                     assert_eq!(snap.solution.len(), n, "{ctx}");
@@ -277,6 +282,9 @@ fn empty_and_tiny_traces_in_every_mode_constraint_and_preprocessing() {
                     assert!(all_finite(&snap.reconvolution_with_baseline), "{ctx}");
                     assert!(all_finite(&snap.trace), "{ctx}");
                     assert!(snap.baseline.is_finite(), "{ctx}");
+                    if n == 0 {
+                        assert_eq!(snap.baseline, 0.0, "{ctx}");
+                    }
                     let ps = s.get_power_spectrum();
                     assert!(all_finite(&ps), "{ctx}");
                     assert_eq!(ps.is_empty(), n < 8, "{ctx}: spectrum needs >= 8 samples");
@@ -296,6 +304,14 @@ fn constant_and_zero_traces_give_zero_activity() {
             let ctx = format!("{} value={value}", mode_name(mode));
             assert!(s.get_solution().iter().all(|&v| v.abs() < 1e-3), "{ctx}");
             assert!((s.get_baseline() - value as f64).abs() < 1e-2, "{ctx}");
+            // With the rolling baseline subtracted first, the trace is flat
+            // at zero: still no activity, and a finite baseline.
+            let mut s = solver(mode);
+            s.set_trace(&[value; 64]).unwrap();
+            s.subtract_baseline();
+            run(&mut s);
+            assert!(s.get_solution().iter().all(|&v| v.abs() < 1e-3), "{ctx}");
+            assert!(s.get_baseline().is_finite(), "{ctx}");
         }
     }
 }
@@ -438,6 +454,7 @@ const BAD_PARAMS: &[(&str, f64, f64, f64, f64)] = &[
         30_000.0,
     ),
     ("kernel product overflows", TAU_R, 1e300, LAMBDA, 1e300),
+    ("kernel would abort on allocation", TAU_R, 1e12, LAMBDA, FS),
 ];
 
 #[test]

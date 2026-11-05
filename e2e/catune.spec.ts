@@ -35,7 +35,11 @@ test('CaTune: demo data loads, the WASM solver pool solves, and traces render', 
   await expect(snrCard).toBeVisible();
   await expect(snrCard.getByText('N 20', { exact: true })).toBeVisible();
   await expect(panel.getByTestId('flag-summary')).toBeVisible();
-  // The header button closes it.
+  // The in-sidebar chevron closes it; the header button reopens it.
+  await page.getByTestId('sidebar-collapse').click();
+  await expect(page.locator('.dashboard-shell--sidebar-open')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Sidebar', exact: true }).click();
+  await expect(page.locator('.dashboard-shell--sidebar-open')).toHaveCount(1);
   await page.getByRole('button', { name: 'Sidebar', exact: true }).click();
   await expect(page.locator('.dashboard-shell--sidebar-open')).toHaveCount(0);
 

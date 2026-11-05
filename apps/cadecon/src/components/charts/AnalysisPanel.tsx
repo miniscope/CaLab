@@ -16,8 +16,6 @@ import { ResultsPanel } from '../distributions/ResultsPanel.tsx';
 import { runState } from '../../lib/iteration-store.ts';
 import { nextTabForRunState, type AnalysisTab } from '../../lib/analysis-tab.ts';
 
-export type { AnalysisTab };
-
 interface TabEntry {
   id: AnalysisTab;
   label: string;
@@ -30,8 +28,8 @@ const TABS: TabEntry[] = [
   { id: 'results', label: 'Results', content: () => <ResultsPanel /> },
 ];
 
+// Module-level so the selected tab survives the panel remounting.
 const [activeTab, setActiveTab] = createSignal<AnalysisTab>('asymptote');
-export { activeTab, setActiveTab };
 
 export function AnalysisPanel(): JSX.Element {
   // A fresh run shows its convergence; a finished run shows its results.
@@ -43,13 +41,13 @@ export function AnalysisPanel(): JSX.Element {
   );
 
   return (
-    <div class="convergence-panel" data-tutorial="kernel-convergence">
-      <div class="convergence-panel__tabs" role="tablist">
+    <div class="analysis-panel" data-tutorial="kernel-convergence">
+      <div class="analysis-panel__tabs" role="tablist">
         <For each={TABS}>
           {(tab) => (
             <button
-              class="convergence-panel__tab"
-              classList={{ 'convergence-panel__tab--active': activeTab() === tab.id }}
+              class="analysis-panel__tab"
+              classList={{ 'analysis-panel__tab--active': activeTab() === tab.id }}
               role="tab"
               aria-selected={activeTab() === tab.id}
               onClick={() => setActiveTab(tab.id)}
@@ -62,7 +60,7 @@ export function AnalysisPanel(): JSX.Element {
       <For each={TABS}>
         {(tab) => (
           <div
-            class="convergence-panel__content"
+            class="analysis-panel__content"
             role="tabpanel"
             aria-label={tab.label}
             style={{ display: activeTab() === tab.id ? 'contents' : 'none' }}

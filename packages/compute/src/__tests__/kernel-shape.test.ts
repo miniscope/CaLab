@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tauToShape, shapeToTau, computeFWHM, isValidShapePair } from '../kernel-shape.ts';
+import { tauToShape, shapeToTau, computeFWHM } from '../kernel-shape.ts';
 import { SIMULATION_PRESETS } from '../simulation-presets.ts';
 
 describe('tauToShape', () => {
@@ -108,25 +108,6 @@ describe('computeFWHM', () => {
     const shape = tauToShape(0.1, 0.6)!;
     const fwhm = computeFWHM(0.1, 0.6)!;
     expect(fwhm).toBeCloseTo(shape.fwhm, 10);
-  });
-});
-
-describe('isValidShapePair', () => {
-  it('returns true for valid pairs from demo presets', () => {
-    for (const preset of SIMULATION_PRESETS) {
-      const shape = tauToShape(preset.config.kernel.tau_rise_s, preset.config.kernel.tau_decay_s)!;
-      expect(isValidShapePair(shape.tPeak, shape.fwhm)).toBe(true);
-    }
-  });
-
-  it('returns false when fwhm <= tPeak', () => {
-    expect(isValidShapePair(0.5, 0.2)).toBe(false);
-    expect(isValidShapePair(0.5, 0.5)).toBe(false);
-  });
-
-  it('returns false for non-positive values', () => {
-    expect(isValidShapePair(0, 0.5)).toBe(false);
-    expect(isValidShapePair(0.1, 0)).toBe(false);
   });
 });
 

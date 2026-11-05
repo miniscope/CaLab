@@ -36,7 +36,7 @@ import { fetchBridgeData as defaultFetchBridgeData } from './bridge.ts';
 import { soleTraceCandidate, traceCandidates } from './trace-candidates.ts';
 
 /** File extensions the import pipeline accepts (lower case, no dot). */
-export const IMPORT_FILE_EXTENSIONS = ['npy', 'npz', 'mat'] as const;
+const IMPORT_FILE_EXTENSIONS = ['npy', 'npz', 'mat'] as const;
 
 /** Options for {@link ImportStore.loadDemoData}. Every field has a default. */
 export interface DemoDataOptions {

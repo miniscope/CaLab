@@ -83,11 +83,6 @@ export interface ScanTables {
   POS2: number;
 }
 
-/** Header vec4 slots before the per-position tables. */
-export function tableHeaderSlots(wg: number): number {
-  return Math.log2(wg) + 6;
-}
-
 export function buildScanTables(
   d: number,
   r: number,

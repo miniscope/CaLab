@@ -1,4 +1,4 @@
-//! The native-rate relaxed solve of InDeCa (`indeca::InnerSolve::Native`):
+//! The native-rate relaxed solve of InDeCa (see the `indeca` module docs):
 //! Box[0,1] FISTA on a trace at its recorded rate, in f64, stopped by a
 //! convergence certificate derived from the binarization's resolution.
 //!

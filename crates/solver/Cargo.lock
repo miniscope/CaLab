@@ -29,7 +29,6 @@ dependencies = [
  "proptest",
  "pyo3",
  "realfft",
- "rustfft",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

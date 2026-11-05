@@ -63,7 +63,7 @@ export interface TileScheduler {
  * waits for that consumer even while later consumers are idle. Consumers
  * before it that declined are reported as skipped.
  */
-export const preferFirstAccepting: TileAssignPolicy = (tile, consumers) => {
+const preferFirstAccepting: TileAssignPolicy = (tile, consumers) => {
   const skipped: { consumer: TileConsumer; reason: string }[] = [];
   for (const c of consumers) {
     const reason = c.accepts(tile);

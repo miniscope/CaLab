@@ -916,19 +916,6 @@ pub fn kernel_frame_peak(kernel: &[f32], bins_per_frame: usize) -> f64 {
     acc / bpf as f64
 }
 
-/// Single-spike response amplitude (unit alpha, no saturation) of a kernel at
-/// imaging rate `fs_hz` when spikes are simulated at `spike_sim_hz`:
-/// [`kernel_frame_peak`] of the peak-normalised kernel.
-pub fn single_spike_amplitude(
-    tau_rise_s: f64,
-    tau_decay_s: f64,
-    fs_hz: f64,
-    spike_sim_hz: f64,
-) -> f64 {
-    let bpf = ((spike_sim_hz / fs_hz).round() as usize).max(1);
-    kernel_frame_peak(&build_kernel(tau_rise_s, tau_decay_s, spike_sim_hz), bpf)
-}
-
 /// Add noise to `trace` and return the total noise σ used.
 fn add_noise(
     trace: &mut [f64],

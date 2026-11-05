@@ -58,7 +58,6 @@ import { isTutorialActive, startTutorial } from '@calab/tutorials';
 import { getTutorialById } from './lib/tutorial/content/index.ts';
 
 import './styles/multi-trace.css';
-import './styles/community.css';
 import './styles/cards.css';
 
 const BANNER_DISMISSED_KEY = 'catune-tutorial-dismissed';

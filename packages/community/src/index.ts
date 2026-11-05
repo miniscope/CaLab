@@ -10,13 +10,7 @@ export { createSubmissionService } from './submission-service.ts';
 export type { SubmissionService } from './submission-service.ts';
 
 // Field options
-export {
-  INDICATOR_OPTIONS,
-  SPECIES_OPTIONS,
-  MICROSCOPE_TYPE_OPTIONS,
-  CELL_TYPE_OPTIONS,
-  BRAIN_REGION_OPTIONS,
-} from './field-options.ts';
+export { INDICATOR_OPTIONS } from './field-options.ts';
 
 // Analytics
 export { initSession, trackEvent } from './analytics.ts';

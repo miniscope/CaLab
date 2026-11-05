@@ -83,13 +83,6 @@ type CellIterationStore = Record<number, number>;
 const [selectionMode, setSelectionMode] = createSignal<SelectionMode>('top-active');
 const [selectedCells, setSelectedCells] = createSignal<number[]>([]);
 const [displayCount, setDisplayCount] = createSignal<number>(5);
-const [multiCellSolving, setMultiCellSolving] = createSignal<boolean>(false);
-const [multiCellProgress, setMultiCellProgress] = createSignal<{
-  current: number;
-  total: number;
-} | null>(null);
-const [solvingCells, setSolvingCells] = createSignal<ReadonlySet<number>>(new Set());
-const [activelySolvingCell, setActivelySolvingCell] = createSignal<number | null>(null);
 const [activityRanking, setActivityRanking] = createSignal<number[] | null>(null);
 const [gridColumns, setGridColumns] = createSignal<number>(2);
 
@@ -238,8 +231,6 @@ function clearMultiCellState(): void {
   setCellSolverStatuses(reconcile({}));
   setCellIterationCounts(reconcile({}));
   setSelectedCells([]);
-  setSolvingCells(new Set<number>());
-  setActivelySolvingCell(null);
   setActivityRanking(null);
   setSelectionMode('top-active');
 }
@@ -252,10 +243,6 @@ export {
   selectedCells,
   displayCount,
   multiCellResults,
-  multiCellSolving,
-  multiCellProgress,
-  solvingCells,
-  activelySolvingCell,
   activityRanking,
   gridColumns,
   cellSolverStatuses,
@@ -268,10 +255,6 @@ export {
   setSelectedCells,
   setDisplayCount,
   setMultiCellResults,
-  setMultiCellSolving,
-  setMultiCellProgress,
-  setSolvingCells,
-  setActivelySolvingCell,
   setActivityRanking,
   setGridColumns,
   setCellSolverStatuses,

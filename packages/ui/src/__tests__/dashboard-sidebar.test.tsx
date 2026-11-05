@@ -97,6 +97,58 @@ describe('DashboardShell sidebar', () => {
   });
 });
 
+describe('DashboardShell collapse button', () => {
+  it('calls the toggle, and closing through it suppresses auto-open', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const s = createRoot((d) => {
+      dispose = d;
+      return createDashboardSidebar('dataset');
+    });
+    s.reveal('dataset');
+    const disposeRender = render(
+      () => (
+        <DashboardShell
+          header={<span />}
+          sidebar={<p>side</p>}
+          sidebarOpen={s.open()}
+          onToggleSidebar={s.toggle}
+        >
+          <span />
+        </DashboardShell>
+      ),
+      root,
+    );
+    const prev = dispose;
+    dispose = () => {
+      disposeRender();
+      prev?.();
+    };
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="sidebar-collapse"]')!;
+    expect(btn.getAttribute('aria-label')).toBe('Collapse sidebar');
+    btn.click();
+    expect(s.open()).toBe(false);
+    expect(s.dismissed()).toBe(true);
+    expect(s.reveal('dataset')).toBe(false);
+    expect(s.open()).toBe(false);
+    expect(root.querySelector('[data-testid="sidebar-collapse"]')).toBeNull();
+  });
+
+  it('shows no collapse button without a toggle handler', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    dispose = render(
+      () => (
+        <DashboardShell header={<span />} sidebar={<p>side</p>} sidebarOpen>
+          <span />
+        </DashboardShell>
+      ),
+      root,
+    );
+    expect(root.querySelector('[data-testid="sidebar-collapse"]')).toBeNull();
+  });
+});
+
 describe('layoutMarkerLabels', () => {
   it('keeps far-apart labels on one row and stacks close ones', () => {
     const slots = layoutMarkerLabels(

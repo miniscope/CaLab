@@ -34,8 +34,8 @@ export const PARAM_RANGES = {
  * iterations' bi-exponential kernels (a fraction of peak, → 0 at convergence),
  * rather than a relative change of (tau_rise, tau_decay) or (peak time, FWHM):
  * the waveform RMSE weights each parameter's change by how much it actually moves
- * the kernel, so a jittery t_peak on the poorly-constrained rising edge no longer
- * delays convergence over a change that barely alters the shape.
+ * the kernel, so a jittery t_peak on the poorly-constrained rising edge does not
+ * delay convergence over a change that barely alters the shape.
  */
 export const CONVERGENCE_RANGES = {
   /**

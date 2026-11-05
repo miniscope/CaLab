@@ -9,16 +9,15 @@ export { writeMat } from './mat-writer.ts';
 export { zipFiles } from './zip.ts';
 export { validateTraceData, validateParsedData } from './validation.ts';
 export { extractCellTrace, processNpyResult, dataIndex } from './array-utils.ts';
-export { traceCandidates, soleTraceCandidate } from './trace-candidates.ts';
+export { traceCandidates } from './trace-candidates.ts';
 export {
   NON_FINITE_SKIP_REASON,
-  countNonFinitePerCell,
   cellsWithNonFinite,
   isNonFiniteCell,
   withoutNonFinite,
   nonFiniteSkipMessage,
 } from './non-finite.ts';
-export { createImportStore, IMPORT_FILE_EXTENSIONS } from './import-store.ts';
+export { createImportStore } from './import-store.ts';
 export type { ImportStore, ImportStoreOptions, DemoDataOptions } from './import-store.ts';
 export { rankCellsByActivity, sampleRandomCells, pickSnrSpread } from './cell-ranking.ts';
 export {

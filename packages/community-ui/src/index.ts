@@ -14,21 +14,14 @@ export { isAuthCallback } from './auth-utils.ts';
 // Community browser and submission widgets
 export { CommunityBrowserShell } from './CommunityBrowserShell.tsx';
 export type { CommunityBrowserShellProps } from './CommunityBrowserShell.tsx';
-export { SearchableSelect } from './SearchableSelect.tsx';
-export type { SearchableSelectProps } from './SearchableSelect.tsx';
-export { PrivacyNotice } from './PrivacyNotice.tsx';
-export type { PrivacyNoticeProps } from './PrivacyNotice.tsx';
 export { FilterBar } from './FilterBar.tsx';
 export type { FilterBarProps, ExtraFilter } from './FilterBar.tsx';
-export { DEMO_PRESET_FILTER } from './filter-state.ts';
 export { SubmissionSummary } from './SubmissionSummary.tsx';
 export type { SubmissionSummaryProps } from './SubmissionSummary.tsx';
 export { SidebarTabs } from './SidebarTabs.tsx';
 export type { SidebarTabsProps, SidebarTabConfig } from './SidebarTabs.tsx';
 export { SubmitFormModal } from './SubmitFormModal.tsx';
 export type { SubmitFormModalProps } from './SubmitFormModal.tsx';
-export { SearchableField } from './SearchableField.tsx';
-export type { SearchableFieldProps, FieldSignal } from './SearchableField.tsx';
 
 // Submission form, payload helpers, and demo ground-truth controls
 export { SubmitForm } from './SubmitForm.tsx';

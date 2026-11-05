@@ -117,22 +117,6 @@ export function binValues(
   return bins;
 }
 
-/** Ids whose value lies in [lo, hi] (inclusive, order-free bounds). */
-export function idsInRange(
-  values: readonly number[],
-  a: number,
-  b: number,
-  ids?: readonly number[],
-): number[] {
-  const lo = Math.min(a, b);
-  const hi = Math.max(a, b);
-  const out: number[] = [];
-  values.forEach((v, i) => {
-    if (v >= lo && v <= hi) out.push(ids ? ids[i] : i);
-  });
-  return out;
-}
-
 /** Ticks with labels that share one precision. */
 export function labeledTicks(scale: Scale, target = 5): { v: number; label: string }[] {
   const ticks = scaleTicks(scale, target);
