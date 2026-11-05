@@ -149,6 +149,13 @@ impl BandedAR2 {
         1.0 / (self.impulse_peak * (1.0 - self.g1 - self.g2))
     }
 
+    /// Cascade roots and normalization: `(d, r, impulse_peak)`, with the
+    /// normalized impulse response `k[m] = (d^m - r^m) / ((d - r) peak)`
+    /// (see [`Self::convolve_forward`]).
+    pub(crate) fn cascade(&self) -> (f64, f64, f64) {
+        (self.d, self.r, self.impulse_peak)
+    }
+
     /// Return the cached Lipschitz constant (of the normalized operator).
     pub(crate) fn lipschitz(&self) -> f64 {
         self.lipschitz

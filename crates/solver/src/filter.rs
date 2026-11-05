@@ -376,6 +376,32 @@ impl BandpassFilter {
         true
     }
 
+    /// The linear operator [`Self::apply`] performs on an `n`-sample trace,
+    /// for callers that apply it by superposition (the chain-consistent
+    /// threshold search): the gain curve over the `n / 2 + 1` real-FFT bins,
+    /// the endpoint-window length of the detrend line, and whether the HP is
+    /// on (with HP off the line is added back after filtering). `None` when
+    /// `apply` would leave an `n`-sample trace untouched.
+    ///
+    /// `apply(z)` is, in exact arithmetic, `H(z - line(z)) + [HP off] line(z)`
+    /// with `H` the circular filter `IFFT(gain * FFT(.))` and `line(z)` the
+    /// straight line through the means of `z` over the first and last window
+    /// samples (`endpoint_line`): linear in `z`.
+    pub(crate) fn linear_operator(&mut self, n: usize) -> Option<(Vec<f64>, usize, bool)> {
+        if !self.is_enabled() || !self.valid || n < MIN_SPECTRUM_LEN {
+            return None;
+        }
+        if self.hp_enabled && self.lp_enabled && self.f_hp >= self.f_lp {
+            return None;
+        }
+        self.ensure_buffers(n);
+        let gain = self.gain_curve[..n / 2 + 1]
+            .iter()
+            .map(|&g| g as f64)
+            .collect();
+        Some((gain, self.endpoint_window(n), self.hp_enabled))
+    }
+
     /// Compute power spectrum without filtering (for visualization when filter is off).
     /// Detrends exactly as `apply` does, so the cached spectrum is the same for
     /// a given trace whether or not the filter is on.
