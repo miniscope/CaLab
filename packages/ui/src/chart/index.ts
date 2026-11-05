@@ -24,7 +24,6 @@ export {
   KERNEL_FIT_COLORS,
   METRIC_COLORS,
   DISTRIBUTION_COLORS,
-  D3_CATEGORY10,
   subsetColor,
   withOpacity,
   solverInputLabel,

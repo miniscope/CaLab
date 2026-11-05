@@ -107,24 +107,6 @@ export const DISTRIBUTION_COLORS = {
   eventRate: OKABE_ITO.orange,
 } as const;
 
-/**
- * D3 category10 — retained as a named general-purpose palette. NOT used for
- * CaLab chart series (it contains a red/green pair that is unsafe for
- * colorblind viewers); prefer OKABE_ITO_CYCLE / subsetColor.
- */
-export const D3_CATEGORY10 = [
-  '#1f77b4',
-  '#ff7f0e',
-  '#2ca02c',
-  '#d62728',
-  '#9467bd',
-  '#8c564b',
-  '#e377c2',
-  '#7f7f7f',
-  '#bcbd22',
-  '#17becf',
-];
-
 /** Return the colorblind-safe subset color for a given index (wraps around). */
 export function subsetColor(idx: number): string {
   return OKABE_ITO_CYCLE[idx % OKABE_ITO_CYCLE.length];

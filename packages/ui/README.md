@@ -25,7 +25,7 @@ apps/catune, apps/cabana
 | `TutorialLauncher` | `TutorialLauncher.tsx` | Tutorial launch button component                                      |
 | `Card`             | `Card.tsx`             | Generic card wrapper component                                        |
 
-The table above covers the layout components; the barrel (`src/index.ts`) also re-exports the chart utilities below. Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
+The table above covers the layout components. Chart utilities, the import flow and the dataset-overview cards have their own entry points (below). Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
 
 ## Import flow (`@calab/ui/import`)
 
@@ -37,7 +37,7 @@ The data-import screen shared by the apps. Every component takes the app's `Impo
 
 ## Chart utilities (`@calab/ui/chart`)
 
-Shared uPlot primitives so every app charts consistently (also re-exported from the top-level barrel):
+Shared uPlot primitives so every app charts consistently:
 
 | Export                                                                                                                                                                      | Source            | Description                                                           |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------- |

@@ -10,7 +10,7 @@ export {
   KERNEL_DURATION_MULTIPLE,
   KERNEL_RMSE_MIN_SAMPLES,
 } from './kernel-math.ts';
-export { tauToShape, shapeToTau, isValidShapePair } from './kernel-shape.ts';
+export { tauToShape, shapeToTau } from './kernel-shape.ts';
 export { downsampleMinMax } from './downsample.ts';
 export { computeBandLayout, scaleToBand, residualBandSeries } from './residual.ts';
 export { computeDisplayOffset } from './display-offset.ts';

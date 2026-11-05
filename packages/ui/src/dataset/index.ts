@@ -22,6 +22,5 @@ export {
   formatTick,
   extent,
   binValues,
-  idsInRange,
 } from './chart-scales.ts';
 export type { Scale, Bin } from './chart-scales.ts';
