@@ -2,7 +2,7 @@
  * Reactivity tests for iteration-store.
  *
  * Every derived memo (progress, isRunLocked, cellResultLookup, alphaValues,
- * pveValues, subsetVarianceData) is verified to track its source signals.
+ * pveValues) is verified to track its source signals.
  * Writes go through the exported actions (setRunState, setCurrentIteration,
  * updateTraceResult, addConvergenceSnapshot, snapshotIteration, ...) and
  * reads happen inside createRoot scopes so the memos are subscribed and do
@@ -25,8 +25,6 @@ import {
   isRunLocked,
   convergenceHistory,
   addConvergenceSnapshot,
-  debugTraceSnapshots,
-  addDebugTraceSnapshot,
   currentTauRise,
   setCurrentTauRise,
   currentTauDecay,
@@ -36,7 +34,6 @@ import {
   cellResultLookup,
   alphaValues,
   pveValues,
-  subsetVarianceData,
   iterationHistory,
   snapshotIteration,
   updateTraceResult,
@@ -170,72 +167,12 @@ describe('iteration-store: derived memos', () => {
       expect(pveValues().sort()).toEqual([0.1, 0.2]);
     });
   });
-
-  it('subsetVarianceData tracks the latest convergence snapshot and exposes ms units', () => {
-    withRoot(() => {
-      expect(subsetVarianceData()).toEqual([]);
-      addConvergenceSnapshot({
-        iteration: 1,
-        tauRise: 0.05,
-        tauDecay: 0.4,
-        beta: 1,
-        residual: 0.01,
-        tauRiseFast: 0.05,
-        tauDecayFast: 0.4,
-        betaFast: 1,
-        fs: 30,
-        tPeak: 0.05,
-        fwhm: 0.2,
-        kernelRmse: null,
-        riseUnresolved: false,
-        kernelFitR2: null,
-        medianPve: null,
-        traceStability: null,
-        degenerateSubsets: 0,
-        totalSubsetFits: 3,
-        // subsetIdx deliberately does not match array position — kernel results
-        // arrive in worker-completion order, so subsetVarianceData must read the
-        // subsetIdx field, not the array index.
-        subsets: [
-          {
-            subsetIdx: 2,
-            tauRise: 0.05,
-            tauDecay: 0.4,
-            beta: 1,
-            residual: 0.01,
-            tauRiseFast: 0.05,
-            tauDecayFast: 0.4,
-            betaFast: 1,
-            hFree: new Float32Array(),
-          },
-          {
-            subsetIdx: 0,
-            tauRise: 0.06,
-            tauDecay: 0.5,
-            beta: 1,
-            residual: 0.01,
-            tauRiseFast: 0.06,
-            tauDecayFast: 0.5,
-            betaFast: 1,
-            hFree: new Float32Array(),
-          },
-        ],
-      });
-      const variance = subsetVarianceData();
-      expect(variance).toHaveLength(2);
-      expect(variance[0].subsetIdx).toBe(2);
-      expect(variance[1].subsetIdx).toBe(0);
-      expect(variance[0].tauRise).toBeCloseTo(50); // ms
-      expect(variance[0].tauDecay).toBeCloseTo(400);
-      expect(variance[1].tauRise).toBeCloseTo(60);
-    });
-  });
 });
 
 describe('iteration-store: history actions', () => {
   beforeEach(() => resetIterationState());
 
-  it('addConvergenceSnapshot / addDebugTraceSnapshot append', () => {
+  it('addConvergenceSnapshot appends', () => {
     withRoot(() => {
       expect(convergenceHistory()).toHaveLength(0);
       addConvergenceSnapshot({
@@ -260,20 +197,6 @@ describe('iteration-store: history actions', () => {
         subsets: [],
       });
       expect(convergenceHistory()).toHaveLength(1);
-
-      expect(debugTraceSnapshots()).toHaveLength(0);
-      addDebugTraceSnapshot({
-        iteration: 1,
-        cellIndex: 0,
-        rawTrace: new Float32Array(),
-        sCounts: new Float32Array(),
-        reconvolved: new Float32Array(),
-        alpha: 1,
-        baseline: 0,
-        threshold: 0,
-        pve: 0,
-      });
-      expect(debugTraceSnapshots()).toHaveLength(1);
     });
   });
 
@@ -375,7 +298,6 @@ describe('iteration-store: resetIterationState', () => {
       expect(totalSubsetTraceJobs()).toBe(0);
       expect(progress()).toBe(0);
       expect(convergenceHistory()).toEqual([]);
-      expect(debugTraceSnapshots()).toEqual([]);
       expect(currentTauRise()).toBeNull();
       expect(currentTauDecay()).toBeNull();
       expect(convergedAtIteration()).toBeNull();
