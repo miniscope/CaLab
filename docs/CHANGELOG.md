@@ -5,7 +5,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-05
+
+Web apps `v2.11.0`; Python package `calab` `py/v0.4.0`. Rebuilds the InDeCa
+pipeline in CaDecon (native-rate solve with a convergence certificate,
+chain-consistent scoring and noise budget, about 2x faster threshold search),
+adds a robust burst-based SNR shared by the simulator, CaTune and CaDecon, a
+Dataset overview in both apps, and skips cells with missing samples instead of
+failing their solves.
+
 ### Changed
+
+- **Python API:** `calab.solve_trace` returns a `SolveTraceResult` with two
+  more fields, `noise_var_processed` and `chain_noise_gain`. Attribute access
+  is unchanged; code that unpacks it positionally into 7 names must be updated
+  (#249).
 
 - **CaDecon: "Noise-Constrained Sparsity" is now "Noise-floor guard".**
   Same setting and default (on); only the text changed, to say what it does:
@@ -24,7 +38,8 @@ measured_snr`): the same burst-based metric users run on real data. The old
   `max(clean)/snr` convention gave 13–21x more noise per spike to bursting
   cells than to sparse ones; it stays available as `reference = "peak"`.
   Preset SNRs were re-derived as typical real-data values (6f 30, 6m 22, 6s 50,
-  8f 45, OGB-1 14) and the web simulator's noise levels became 200/60/30/15/8 (#247).
+  8f 45, OGB-1 14) and the web simulator's noise levels became 200/60/30/15/8, plus Severe (5) and
+  Extreme (4) (#247).
 - **InDeCa solver** (CaDecon and Python `solve_trace`), all in the Rust core:
   - free-kernel estimation uses a Gram-matrix formulation, so each FISTA
     iteration no longer scales with trace length (#235);
@@ -80,8 +95,21 @@ sigma, fs, ...)`, `measured_snr_report(trace, fs, ...)`; WASM and Python
   relative to the noise no longer depends on the firing regime.
   `reference = "peak"` keeps the old scaling.
 
+- **Right sidebar collapse button** in CaDecon and CaTune; the header
+  "Sidebar" button shows when the sidebar is open (#261).
+
 ### Fixed
 
+- **Cells with missing samples (NaN/Inf) are skipped** instead of failing
+  every solve that touches them. CaDecon leaves them out of kernel estimation,
+  the per-cell solves and the PVE fits, shows "Skipped: N missing samples" in
+  the Trace Inspector and a skipped count in Results, and marks them
+  `skipped_reason: "non_finite_samples"` in the export (the Python bridge
+  passes it through). CaTune never auto-selects them and shows a skipped state
+  if one is picked by hand. Previously each affected cell failed in every
+  iteration and kept a placeholder fit at PVE 0 % (#262).
+- **CaDecon** dataset overview ignores a stale in-flight run after a cache hit
+  or reset (#263).
 - **CaDecon** raster heatmap max-pools (after smoothing along time) instead of
   sampling rows and columns, so cells and brief transients are no longer hidden
   when they outnumber pixels (#248).
@@ -94,6 +122,12 @@ sigma, fs, ...)`, `measured_snr_report(trace, fs, ...)`; WASM and Python
 - Supabase edge functions import supabase-js via an npm specifier so the Deno
   lock is stable (#246).
 - Dependency bumps for npm, Cargo and GitHub Actions (#244, #234, #230).
+- Pre-release cleanup: the superseded upsampled InDeCa scale loop and duplicate
+  solver tests removed (output bit-identical), CaDecon's unused drill-down
+  panel and per-iteration debug snapshots removed, dead CSS, exports and
+  dependencies removed, and the dataset-overview store, ground-truth chart
+  series and tutorial panel shared between CaTune and CaDecon (#256-#260,
+  #263).
 
 ## [2.10.0] - 2026-10-23
 
