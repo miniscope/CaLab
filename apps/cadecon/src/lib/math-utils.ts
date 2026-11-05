@@ -1,6 +1,10 @@
 // Small pure-math utilities used across CaDecon components and managers.
 
-/** Compute the median of a numeric array. Returns 0 for empty arrays. */
+/**
+ * Median of a numeric array; 0 for an empty array. Unlike `medianOf` in
+ * @calab/core this keeps non-finite values and returns 0 rather than NaN when
+ * empty, so the two are not interchangeable.
+ */
 export function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const sorted = [...arr].sort((a, b) => a - b);
