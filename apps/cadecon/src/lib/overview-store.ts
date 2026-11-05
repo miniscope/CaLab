@@ -18,8 +18,6 @@ const [overview, setOverview] = createSignal<DatasetOverview | null>(null);
 const [overviewStatus, setOverviewStatus] = createSignal<OverviewStatus>('idle');
 const [overviewProgress, setOverviewProgress] = createSignal(0);
 const [overviewError, setOverviewError] = createSignal<string | null>(null);
-/** Wall time of the last overview pass (ms), for the perf readout. */
-const [overviewElapsedMs, setOverviewElapsedMs] = createSignal<number | null>(null);
 
 /** Cache keyed by the parsed matrix object, then by orientation + sampling rate. */
 const cache = new WeakMap<object, Map<string, DatasetOverview>>();
@@ -130,7 +128,6 @@ export async function computeOverview(): Promise<void> {
   }
   const result = buildDatasetOverview(cells, fs, nT);
   const elapsed = performance.now() - t0;
-  setOverviewElapsedMs(elapsed);
   console.info(
     `[CaDecon] dataset overview: ${nCells} cells × ${nT} frames in ${elapsed.toFixed(0)} ms`,
   );
@@ -158,4 +155,4 @@ export function setupOverviewEffects(): void {
   });
 }
 
-export { overview, overviewStatus, overviewProgress, overviewError, overviewElapsedMs };
+export { overview, overviewStatus, overviewProgress, overviewError };

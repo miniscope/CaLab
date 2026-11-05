@@ -48,8 +48,6 @@ import type {
   TileConsumer,
 } from './solve-tiles.ts';
 
-export { GpuOutOfMemoryError, GpuDeviceLostError } from './gpu-errors.ts';
-
 /** Parameters of one batched solve; structurally @calab/compute-gpu's GpuFistaParams. */
 export interface BatchFistaParams {
   tauRise: number;
@@ -143,7 +141,7 @@ export interface GpuBatchStats {
 export const DEFAULT_GPU_MEMORY_BUDGET = 384 * 1024 * 1024;
 
 /** Default fraction of a batch's rows that must settle before the rest yields to waiting work. */
-export const DEFAULT_REFILL_FRACTION = 0.5;
+const DEFAULT_REFILL_FRACTION = 0.5;
 
 /**
  * How long GPU backend startup work may go without progress before it is

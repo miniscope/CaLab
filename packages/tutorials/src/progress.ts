@@ -33,7 +33,7 @@ export function getProgress(tutorialId: string): TutorialProgress | null {
 }
 
 /** Get all saved tutorial progress. Returns empty object on parse error. */
-export function getAllProgress(): Record<string, TutorialProgress> {
+function getAllProgress(): Record<string, TutorialProgress> {
   try {
     const raw = localStorage.getItem(storageKey);
     return raw ? (JSON.parse(raw) as Record<string, TutorialProgress>) : {};

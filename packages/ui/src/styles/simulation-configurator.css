@@ -40,49 +40,6 @@
   border-color: var(--accent);
 }
 
-.segmented-control {
-  display: flex;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  flex: 1;
-}
-
-.segmented-control__btn {
-  flex: 1;
-  padding: 3px 6px;
-  border: none;
-  border-right: 1px solid var(--border-subtle);
-  background: var(--bg-primary);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
-  white-space: nowrap;
-}
-
-.segmented-control__btn:last-child {
-  border-right: none;
-}
-
-.segmented-control__btn:hover {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-}
-
-.segmented-control__btn--active {
-  background: var(--accent);
-  color: #fff;
-}
-
-.segmented-control__btn--active:hover {
-  background: var(--accent);
-  color: #fff;
-}
-
 /* ── Range Slider (dual-thumb) ─────────────────────────────────── */
 
 .range-slider {

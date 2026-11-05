@@ -213,13 +213,13 @@ export function RasterOverview(): JSX.Element {
 
     // Max-pool so every cell/frame mapping into a pixel contributes. With fewer
     // cells (frames) than pixels, pooling is the identity and each cell (frame)
-    // spans >=1 pixel row (column), as before.
+    // spans >=1 pixel row (column).
     const base = basePool();
     if (!base) return;
     if (!sizedCache || sizedCache.src !== base || sizedCache.w !== ppW || sizedCache.h !== ppH) {
       const pool = poolMatrixMax(base.out, base.rows, base.cols, ppH, ppW);
       // Pooling raises the noise floor, so colour bounds come from the pooled
-      // values; with no pooling at all keep the legacy global raw percentiles.
+      // values; with no pooling at all use the global raw percentiles.
       const pooledAny = base.smoothed || N * T > pool.rows * pool.cols;
       const bounds = pooledAny
         ? (() => {

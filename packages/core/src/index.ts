@@ -34,13 +34,8 @@ export {
   FLAG_DESCRIPTIONS,
   FLAG_ORDER,
   MIN_CEILING_CELLS,
-  quantileSorted,
   medianOf,
-  quantileRanks,
-  robustZ,
   cellOverviewFromJson,
-  heightShapeDistance,
-  populationBaseline,
   buildDatasetOverview,
   isNearNoiseFloor,
   cellsWithFlag,
@@ -61,12 +56,7 @@ export type {
   CellSortKey,
   CeilingFit,
 } from './metrics/dataset-overview.ts';
-export {
-  computeSparsityRatio,
-  computeResidualRMS,
-  computeRSquared,
-  computeFitMetrics,
-} from './metrics/solver-metrics.ts';
+export { computeSparsityRatio, computeFitMetrics } from './metrics/solver-metrics.ts';
 export type { FitMetricsResult } from './metrics/solver-metrics.ts';
 
 // Spectrum

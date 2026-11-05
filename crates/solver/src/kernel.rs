@@ -51,8 +51,9 @@ pub fn build_kernel(tau_rise: f64, tau_decay: f64, fs: f64) -> Vec<f32> {
 /// roots d = exp(-dt/tau_decay) and r = exp(-dt/tau_rise).
 /// g1 = d + r (sum of roots), g2 = -(d * r) (negative product of roots).
 ///
-/// Used by BandedAR2 tests and the TypeScript port in src/lib/ar2.ts.
-#[allow(dead_code)]
+/// Test reference for `BandedAR2`; mirrored by `packages/core/src/ar2.ts`
+/// and the Python package's `tau_to_ar2`.
+#[cfg(test)]
 pub fn tau_to_ar2(tau_rise: f64, tau_decay: f64, fs: f64) -> (f64, f64) {
     let tau_rise = clamp_tau_rise(tau_rise, tau_decay);
 

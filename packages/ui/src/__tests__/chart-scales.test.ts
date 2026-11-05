@@ -8,7 +8,6 @@ import {
   tickTarget,
   extent,
   binValues,
-  idsInRange,
 } from '../dataset/chart-scales.ts';
 
 describe('makeScale', () => {
@@ -75,9 +74,5 @@ describe('extent and binning', () => {
     const bins = binValues([1, 10, 100, 0], [1, 100], 2, true);
     expect(bins[0].x1).toBeCloseTo(10);
     expect(bins.map((b) => b.ids)).toEqual([[0], [1, 2]]);
-  });
-  it('idsInRange is inclusive and order-free', () => {
-    expect(idsInRange([1, 2, 3, 4], 3, 2)).toEqual([1, 2]);
-    expect(idsInRange([1, 2], 0, 5, [7, 8])).toEqual([7, 8]);
   });
 });

@@ -1,7 +1,6 @@
-// Shared uPlot axis / cursor / scale-range helpers. The theme axis chrome
-// (stroke + grid + ticks) and the degenerate-span guard were previously
-// copy-pasted into every chart component across the apps; these collapse that
-// duplication into one place.
+// Shared uPlot axis / cursor / scale-range helpers: the theme axis chrome
+// (stroke + grid + ticks) and the degenerate-span guard, in one place for
+// every chart.
 
 import type uPlot from 'uplot';
 import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from './theme-colors.ts';

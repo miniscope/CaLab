@@ -9,7 +9,6 @@ export {
   chartAxis,
   labeledAxis,
   integerTickValues,
-  hiddenTickValues,
   syncCursor,
   staticCursor,
   logSplits,
@@ -17,14 +16,12 @@ export {
 } from './axis-helpers.ts';
 export {
   OKABE_ITO,
-  OKABE_ITO_CYCLE,
   NEUTRAL,
   TRACE_COLORS,
   GROUND_TRUTH_COLORS,
   KERNEL_FIT_COLORS,
   METRIC_COLORS,
   DISTRIBUTION_COLORS,
-  D3_CATEGORY10,
   subsetColor,
   withOpacity,
   solverInputLabel,

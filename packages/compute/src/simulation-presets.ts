@@ -60,7 +60,7 @@ export interface SimulationPreset {
 }
 
 /** GCaMP6f at 30 Hz. Chen et al., 2013, Nature. */
-export const PRESET_GCAMP6F: SimulationPreset = {
+const PRESET_GCAMP6F: SimulationPreset = {
   id: 'gcamp6f',
   label: 'GCaMP6f',
   description: 'Fast genetically encoded indicator (default)',
@@ -71,7 +71,7 @@ export const PRESET_GCAMP6F: SimulationPreset = {
 };
 
 /** GCaMP6s at 30 Hz. Chen et al., 2013. */
-export const PRESET_GCAMP6S: SimulationPreset = {
+const PRESET_GCAMP6S: SimulationPreset = {
   id: 'gcamp6s',
   label: 'GCaMP6s',
   description: 'Slow genetically encoded indicator, high SNR',
@@ -82,7 +82,7 @@ export const PRESET_GCAMP6S: SimulationPreset = {
 };
 
 /** GCaMP6m at 30 Hz. Chen et al., 2013. */
-export const PRESET_GCAMP6M: SimulationPreset = {
+const PRESET_GCAMP6M: SimulationPreset = {
   id: 'gcamp6m',
   label: 'GCaMP6m',
   description: 'Moderate kinetics genetically encoded indicator',
@@ -93,7 +93,7 @@ export const PRESET_GCAMP6M: SimulationPreset = {
 };
 
 /** jGCaMP8f at 30 Hz. Zhang et al., 2023. */
-export const PRESET_JGCAMP8F: SimulationPreset = {
+const PRESET_JGCAMP8F: SimulationPreset = {
   id: 'jgcamp8f',
   label: 'jGCaMP8f',
   description: 'Fast next-gen indicator, noisier',
@@ -104,7 +104,7 @@ export const PRESET_JGCAMP8F: SimulationPreset = {
 };
 
 /** OGB-1 at 30 Hz. Stosiek et al., 2003. */
-export const PRESET_OGB1: SimulationPreset = {
+const PRESET_OGB1: SimulationPreset = {
   id: 'ogb1',
   label: 'OGB-1',
   description: 'Synthetic calcium dye, fast rise',
@@ -115,7 +115,7 @@ export const PRESET_OGB1: SimulationPreset = {
 };
 
 /** Near-ideal traces for algorithm debugging. */
-export const PRESET_CLEAN: SimulationPreset = {
+const PRESET_CLEAN: SimulationPreset = {
   id: 'clean',
   label: 'Clean (Debug)',
   description: 'Minimal noise, no drift — for algorithm debugging',
@@ -140,8 +140,6 @@ export const SIMULATION_PRESETS: SimulationPreset[] = [
   PRESET_OGB1,
   PRESET_CLEAN,
 ];
-
-export const DEFAULT_SIMULATION_PRESET_ID = 'gcamp6f';
 
 export function getSimulationPresetById(id: string): SimulationPreset | undefined {
   return SIMULATION_PRESETS.find((p) => p.id === id);

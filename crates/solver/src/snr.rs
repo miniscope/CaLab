@@ -546,25 +546,9 @@ mod tests {
         simulate, DriftModel, NoiseConfig, NoiseReference, PoissonConfig, RandomWalkDrift,
         SimulationConfig, SpikeModel,
     };
+    use crate::test_util::white;
 
     /// Deterministic standard normals (xorshift + Box–Muller).
-    fn white(n: usize, sigma: f64, seed: u64) -> Vec<f32> {
-        let mut s = seed.max(1);
-        let mut next = || {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            (s >> 11) as f64 / (1u64 << 53) as f64
-        };
-        (0..n)
-            .map(|_| {
-                let u1 = next().max(1e-12);
-                let u2 = next();
-                (sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
-            })
-            .collect()
-    }
-
     #[test]
     fn mad_diff_recovers_white_noise_sigma() {
         for (sigma, seed) in [(1.0, 1u64), (0.05, 2), (37.0, 3)] {

@@ -21,28 +21,3 @@ export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
 
 export { TraceLegend } from './TraceLegend.tsx';
 export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
-
-// Chart utilities (also available via @calab/ui/chart sub-path)
-export {
-  wheelZoomPlugin,
-  transientZonePlugin,
-  AXIS_TEXT,
-  AXIS_GRID,
-  AXIS_TICK,
-  getThemeColors,
-  VIRIDIS_LUT,
-  viridisRGB,
-  viridisCss,
-  niceTicks,
-  OKABE_ITO,
-  OKABE_ITO_CYCLE,
-  NEUTRAL,
-  TRACE_COLORS,
-  GROUND_TRUTH_COLORS,
-  KERNEL_FIT_COLORS,
-  METRIC_COLORS,
-  DISTRIBUTION_COLORS,
-  D3_CATEGORY10,
-  subsetColor,
-  withOpacity,
-} from './chart/index.ts';
