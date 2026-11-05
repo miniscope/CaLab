@@ -15,7 +15,7 @@ export interface SnrEvent {
 }
 
 /**
- * Result of `snr_measured_report(trace, minSeparationSamples)`.
+ * Result of `snr_measured_report(trace, fs, minSeparationSamples)`.
  *
  * `snr` is the top-slice measured SNR (mean of the top 1 % of samples minus
  * the median, over the MAD-of-differences noise σ). Pure noise measures about

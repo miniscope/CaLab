@@ -126,19 +126,19 @@ config = SimulationConfig(
 
 ### What `snr` means
 
-By default (`reference="measured_snr"`) each simulated trace measures at `snr` with `calab.measured_snr`, the same function you run on your own recordings: the mean of the trace's top 1 % of samples minus its median, over the noise σ from the MAD of frame-to-frame differences (Krisha Aghi's estimator). The metric is burst-based, because on real data a single action potential usually sits inside the noise. It compares cells that share a burst-size distribution, as cells of one simulated dataset do; at the same per-spike noise a burstier cell measures higher and a sparser cell lower. Pure noise measures about 2.7 (2.5–2.9 for 1–30 minute traces), so targets below that are unreachable and clamp to it, and values near it mean "indistinguishable from noise".
+By default (`reference="measured_snr"`) each simulated trace measures at `snr` with `calab.measured_snr`, the same function you run on your own recordings: the mean of the trace's top 1 % of samples minus its median (both read after subtracting a slow baseline, a rolling 20th percentile over 60 s, so photobleaching and other slow drift do not inflate it), over the noise σ from the MAD of frame-to-frame differences (Krisha Aghi's estimator). The metric is burst-based, because on real data a single action potential usually sits inside the noise. It compares cells that share a burst-size distribution, as cells of one simulated dataset do; at the same per-spike noise a burstier cell measures higher and a sparser cell lower. Pure noise measures about 2.7 (2.5–2.9 for 1–30 minute traces), with or without slow drift, so targets below that are unreachable and clamp to it, and values near it mean "indistinguishable from noise".
 
 `reference="peak"` reproduces the pre-change convention (`noise σ = max(clean) / snr`), and `reference="single_spike"` sets the noise against one spike's response. Every cell also reports `noise_sigma` and the simulation-only diagnostic `snr_1ap` (single-spike response over `noise_sigma`).
 
 ```python
 trace = result.traces[0]
-calab.measured_snr(trace)            # ~= config.noise.snr
+calab.measured_snr(trace, fs=30.0)   # ~= config.noise.snr (fs sets the 60 s drift window)
 calab.noise_sigma_mad_diff(trace)    # robust noise std
 calab.noise_level_nu(trace_dff_percent, fs=30.0)  # CASCADE noise level
 
 # Is there anything there? Events and the silent flag (separation ~ decay time in samples)
 sep = round(0.4 * 30.0)
-report = calab.measured_snr_report(trace, min_separation_samples=sep)
+report = calab.measured_snr_report(trace, fs=30.0, min_separation_samples=sep)
 report.snr, report.is_silent         # top-slice SNR; True if no event clears the noise floor
 events = calab.detect_events(trace, min_separation_samples=sep)  # [Event(time_index, height, baseline)]
 ```

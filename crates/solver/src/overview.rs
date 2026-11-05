@@ -136,7 +136,7 @@ pub fn cell_overview(
     let fin = finite_f64(trace);
     let mad = median_abs_diff(&fin);
     let sigma = mad / (MAD_GAUSSIAN * std::f64::consts::SQRT_2);
-    let snr = ratio(robust_signal_f64(&fin, DEFAULT_TOP_FRACTION), sigma);
+    let snr = ratio(robust_signal_f64(&fin, DEFAULT_TOP_FRACTION, fs), sigma);
     let nu = if is_dff {
         Some(if fs.is_finite() && fs > 0.0 {
             mad / fs.sqrt()
@@ -352,6 +352,19 @@ mod tests {
         assert!(o.snr.is_finite() && o.sigma.is_finite());
         assert!(o.baseline_start.is_finite() && o.baseline_end.is_finite());
         assert!(o.baseline_bins.iter().all(|b| b.is_finite()));
+    }
+
+    #[test]
+    fn snr_equals_measured_snr_on_drifting_trace() {
+        use crate::snr::measured_snr;
+        let fs = 30.0;
+        let mut x = with_events(12_000, 8.0, &[500, 2500, 4500, 6500, 8500, 10_500], 20.0, 21);
+        for (k, v) in x.iter_mut().enumerate() {
+            *v += (20.0 * (-(k as f64) / 6000.0).exp()) as f32;
+        }
+        let o = cell_overview(&x, fs, 15, false, 30);
+        assert_eq!(o.snr, measured_snr(&x, fs));
+        assert!(o.snr > 1.0);
     }
 
     #[test]
