@@ -684,7 +684,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   // between successive iterations' bi-exponential kernels (kernelShapeRmse): an
   // iteration is "stable" when that whole-waveform change is < convTol, and we
   // declare convergence after `patience` consecutive stable iterations. RMSE on
-  // the waveform avoids the old (tPeak, FWHM) relative delta's over-sensitivity to
+  // the waveform avoids a (tPeak, FWHM) relative delta's over-sensitivity to
   // t_peak jitter on the poorly-constrained rising edge. (tPeak/FWHM are still
   // tracked for the Kernel-tab diagnostics and the final-selection step.) The
   // final kernel is the median of the last `selWindow` iterates' shapes — not the

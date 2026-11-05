@@ -150,19 +150,19 @@
 /* ========================
    Convergence Panel (tabbed)
    ======================== */
-.convergence-panel {
+.analysis-panel {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-.convergence-panel__tabs {
+.analysis-panel__tabs {
   display: flex;
   flex-shrink: 0;
 }
 
-.convergence-panel__tab {
+.analysis-panel__tab {
   flex: 1;
   background: transparent;
   border: none;
@@ -179,16 +179,16 @@
     border-color var(--transition-fast);
 }
 
-.convergence-panel__tab:hover {
+.analysis-panel__tab:hover {
   color: var(--text-primary);
 }
 
-.convergence-panel__tab--active {
+.analysis-panel__tab--active {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
 
-.convergence-panel__content {
+.analysis-panel__content {
   flex: 1;
   min-height: 0;
 }

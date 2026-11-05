@@ -41,13 +41,13 @@ export function AnalysisPanel(): JSX.Element {
   );
 
   return (
-    <div class="convergence-panel" data-tutorial="kernel-convergence">
-      <div class="convergence-panel__tabs" role="tablist">
+    <div class="analysis-panel" data-tutorial="kernel-convergence">
+      <div class="analysis-panel__tabs" role="tablist">
         <For each={TABS}>
           {(tab) => (
             <button
-              class="convergence-panel__tab"
-              classList={{ 'convergence-panel__tab--active': activeTab() === tab.id }}
+              class="analysis-panel__tab"
+              classList={{ 'analysis-panel__tab--active': activeTab() === tab.id }}
               role="tab"
               aria-selected={activeTab() === tab.id}
               onClick={() => setActiveTab(tab.id)}
@@ -60,7 +60,7 @@ export function AnalysisPanel(): JSX.Element {
       <For each={TABS}>
         {(tab) => (
           <div
-            class="convergence-panel__content"
+            class="analysis-panel__content"
             role="tabpanel"
             aria-label={tab.label}
             style={{ display: activeTab() === tab.id ? 'contents' : 'none' }}

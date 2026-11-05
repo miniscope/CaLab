@@ -64,11 +64,9 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
   // iteration 0 is recorded) or only the iteration-0 snapshot, which holds the
   // seed kernel and a null residual.
   //
-  // The previous fallbacks made that case indistinguishable from a good
-  // result. `residual ?? 0` was the worst of them, because `field_descriptions`
-  // in this same export tells the reader that lower is a better fit and that a
-  // failed fit shows up as very large or infinite — so a run that fit nothing
-  // reported the best possible value, inverting the rule the file documents.
+  // A placeholder number would make that case look like a real result; a 0
+  // residual in particular reads as a perfect fit, since `field_descriptions`
+  // in this export says lower residual is better.
   const latest = history.length > 0 ? history[history.length - 1] : null;
   const tauRise = latest?.tauRise ?? null;
   const tauDecay = latest?.tauDecay ?? null;
