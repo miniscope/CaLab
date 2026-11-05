@@ -132,6 +132,27 @@ export const NOISE_LEVELS = [
     shot_noise_fraction: 0.5,
     snr_spread_fraction: 0.5,
   },
+  // The two lowest levels approach the metric's pure-noise floor (≈ 2.7; the
+  // simulator round-trips targets ≥ 3). Their spread is narrowed so no cell's
+  // target falls below 3: 5 ± 1 and 4 ± 0.6.
+  {
+    id: 'severe',
+    label: 'Severe',
+    hint: 'Measured SNR 5 (events barely above the noise, ν ≈ 24 for GCaMP6f)',
+    snr: 5,
+    shot_noise_enabled: true,
+    shot_noise_fraction: 0.5,
+    snr_spread_fraction: 0.2,
+  },
+  {
+    id: 'extreme',
+    label: 'Extreme',
+    hint: 'Measured SNR 4 (just above the noise floor of ≈ 2.7, ν ≈ 30 for GCaMP6f)',
+    snr: 4,
+    shot_noise_enabled: true,
+    shot_noise_fraction: 0.5,
+    snr_spread_fraction: 0.15,
+  },
 ] as const;
 
 export type NoiseLevel = (typeof NOISE_LEVELS)[number]['id'];
