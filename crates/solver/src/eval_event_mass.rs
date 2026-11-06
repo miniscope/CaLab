@@ -5,7 +5,7 @@
 //! (one-to-one matching of spike times, counts expanded), fraction of cells
 //! whose pick is the floor, and seconds per cell. Env: EV_REGIME (markov |
 //! poisson), EV_PRESETS, EV_SNRS, EV_CELLS, EV_DUR (s).
-use crate::indeca::{solve_trace_cfg, SolveConfig, SolveOptions};
+use crate::indeca::{solve_trace_cfg, SolveConfig};
 use crate::simulate::{presets, simulate, MarkovConfig, PoissonConfig, SpikeModel};
 
 fn env(name: &str, default: &str) -> String {
@@ -100,9 +100,6 @@ fn eval_event_mass() {
                                 true,
                                 true,
                                 0.0,
-                                SolveOptions {
-                                    noise_constrained: true,
-                                },
                                 SolveConfig::default(),
                             );
                             let secs = t0.elapsed().as_secs_f64();

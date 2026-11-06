@@ -118,9 +118,6 @@ pub(crate) struct EventMassResult {
     pub pve: f64,
     /// Chain-scored error of the picked train.
     pub error: f64,
-    /// Informational: the best candidate beats the noise floor by more than
-    /// one standard error (`noise_constrained` only; see `indeca`).
-    pub noise_path: bool,
     pub diag: EventMassDiag,
 }
 
@@ -249,8 +246,7 @@ fn relaxed_profile(x: &[f32], lo: usize, hi: usize, out: &mut [f32]) {
 /// native-rate solve; candidates are scored through `scorer` with `banded`
 /// over the interior `[pad, n - pad)`. `cap` is the most spikes one frame
 /// holds. `noise` (the interior's noise model) enables the one-SE pick;
-/// without it the pick is the floor. `noise_constrained` only controls the
-/// informational `noise_path` flag.
+/// without it the pick is the floor.
 pub(crate) fn event_mass_search(
     x: &[f32],
     scorer: &mut Scorer,
@@ -258,7 +254,6 @@ pub(crate) fn event_mass_search(
     pad: usize,
     cap: usize,
     noise: Option<NoiseModel>,
-    noise_constrained: bool,
 ) -> EventMassResult {
     let n = scorer.target().len();
     let cap = cap.max(1);
@@ -279,7 +274,6 @@ pub(crate) fn event_mass_search(
             baseline,
             pve: 0.0,
             error: f64::INFINITY,
-            noise_path: false,
             diag: EventMassDiag::default(),
         };
     }
@@ -344,13 +338,6 @@ pub(crate) fn event_mass_search(
     diag.cap_limited = pick == 0;
     diag.a_pick = levels[pick] * a_max;
     diag.e_pick = errors[pick];
-    let noise_path = match noise {
-        Some(nm) if noise_constrained => {
-            let e_min = errors.iter().copied().fold(f64::INFINITY, f64::min);
-            nm.budget(n_grid) > e_min + nm.std_error(n_grid)
-        }
-        _ => false,
-    };
     counts_at(&events, diag.a_pick, &mut per_event);
     let requested: usize = per_event.iter().sum();
     let placed = place_all(&events, x, &per_event, cap, &mut s);
@@ -364,7 +351,6 @@ pub(crate) fn event_mass_search(
         baseline,
         pve,
         error: errors[pick],
-        noise_path,
         diag,
     }
 }
@@ -543,7 +529,7 @@ mod tests {
         let (x, truth) = smeared(n, &[(80, 1), (200, 2), (320, 1)]);
         let y = clean_trace(&banded, &truth);
         let mut sc = Scorer::Plain { y: &y };
-        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, None, false);
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, None);
         // The floor is frame_max / cap: the busiest frame (mass 1.0) holds
         // cap spikes, so a unit of 0.1 and ten spikes per mass unit.
         assert!(r.diag.cap_limited && !r.diag.no_size_fit);
@@ -565,7 +551,7 @@ mod tests {
             sigma: 0.05,
             corr_sum: 1.0,
         };
-        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm), true);
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm));
         // The pick is one spike per unit of mass: 1, 2 and 1 spikes.
         assert_eq!(
             (r.counts[80], r.counts[200], r.counts[320]),
@@ -601,7 +587,7 @@ mod tests {
             sigma: 1e-4,
             corr_sum: 1.0,
         };
-        let r = event_mass_search(&x, &mut sc, &banded, 24, 3, Some(nm), false);
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 3, Some(nm));
         assert!(r.diag.no_size_fit && r.diag.cap_limited);
         assert!((r.diag.a_pick - r.diag.a_floor).abs() < 1e-9);
     }
@@ -612,7 +598,7 @@ mod tests {
         let y = vec![1.0_f32; 100];
         let mut sc = Scorer::Plain { y: &y };
         let x = vec![0.0_f32; 100];
-        let r = event_mass_search(&x, &mut sc, &banded, 5, 10, None, false);
+        let r = event_mass_search(&x, &mut sc, &banded, 5, 10, None);
         assert!(r.counts.iter().all(|&v| v == 0.0));
         assert_eq!(r.diag.peak_outlier_ratio, 0.0);
         assert!(!r.diag.cap_limited);
@@ -655,7 +641,7 @@ mod tests {
                 // candidate from scratch.
                 return event_mass_search_scratch(&x, &mut sc, &banded, 24, 10, Some(nm));
             }
-            event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm), false)
+            event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm))
         };
         let (a, b) = (run(true), run(false));
         assert_eq!(a.counts, b.counts, "same pick");
@@ -703,7 +689,6 @@ mod tests {
             baseline: 0.0,
             pve: 0.0,
             error: errors[pick],
-            noise_path: false,
             diag: EventMassDiag::default(),
         }
     }

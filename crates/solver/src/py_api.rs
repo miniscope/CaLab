@@ -563,7 +563,7 @@ fn seed_kernel_estimate<'py>(
 /// largest) and `dropped_spikes` (spikes no frame of their event had room
 /// for).
 #[pyfunction]
-#[pyo3(signature = (trace, tau_rise, tau_decay, fs, max_firing_rate=300.0, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, max_firing_rate=300.0, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0))]
 #[allow(clippy::too_many_arguments)]
 fn py_indeca_solve_trace<'py>(
     py: Python<'py>,
@@ -578,7 +578,6 @@ fn py_indeca_solve_trace<'py>(
     lp_enabled: bool,
     warm_counts: Option<PyReadonlyArray1<f64>>,
     lambda_: f64,
-    noise_constrained: bool,
 ) -> PyResult<(
     Bound<'py, PyArray1<f32>>, // s_counts
     f64,                       // alpha
@@ -618,7 +617,6 @@ fn py_indeca_solve_trace<'py>(
             hp_enabled,
             lp_enabled,
             lambda_,
-            indeca::SolveOptions { noise_constrained },
         )
     });
 

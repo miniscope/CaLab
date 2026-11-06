@@ -29,7 +29,7 @@
 //! | `snr_*` / `py_snr_*` (metrics, events, silent report)        | none (JS) / finite trace (Py)  | `snr::*`                               |
 
 use crate::biexp_fit::{self, FitMode};
-use crate::indeca::{self, SolveOptions};
+use crate::indeca;
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::validate::{self, SolverError, MAX_KERNEL_LEN};
 use crate::{kernel_est, peak_seed, simulate};
@@ -151,20 +151,7 @@ fn indeca_solve_trace_core_handles_every_accepted_degenerate_trace() {
                 validate::validate_indeca_params(trace.len(), TAU_R, TAU_D, FS, mfr, 0.0, 1e-4)
                     .unwrap();
                 let r = indeca::solve_trace_opts(
-                    &trace,
-                    TAU_R,
-                    TAU_D,
-                    FS,
-                    mfr,
-                    50,
-                    1e-4,
-                    None,
-                    hp,
-                    lp,
-                    0.0,
-                    SolveOptions {
-                        noise_constrained: noise,
-                    },
+                    &trace, TAU_R, TAU_D, FS, mfr, 50, 1e-4, None, hp, lp, 0.0,
                 );
                 assert_eq!(r.s_counts.len(), trace.len(), "{ctx}");
                 assert!(finite32(&r.s_counts), "{ctx}");
@@ -198,7 +185,6 @@ fn indeca_solve_trace_core_tolerates_mismatched_warm_counts_and_zero_iters() {
                 false,
                 false,
                 0.0,
-                SolveOptions::default(),
             );
             let ctx = format!("warm len {} max_iters {max_iters}", warm.len());
             assert_eq!(r.s_counts.len(), trace.len(), "{ctx}");

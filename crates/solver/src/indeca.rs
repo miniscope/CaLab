@@ -64,17 +64,6 @@ use crate::native_solve::{self, Stop};
 use crate::threshold::NoiseModel;
 use realfft::RealFftPlanner;
 
-/// Optional spike-inference behaviors. The library default is off; the
-/// CaDecon app enables `noise_constrained` by default.
-///
-/// `noise_constrained` only controls the informational `noise_path` flag of
-/// the result: the size pick of the binarization uses the noise model
-/// whenever the trace has a measurable noise floor.
-#[derive(Clone, Copy, Default)]
-pub struct SolveOptions {
-    pub noise_constrained: bool,
-}
-
 /// Raw measurement-noise std from the high-frequency band of the periodogram
 /// (standard OASIS / CaImAn approach). Calcium signal energy sits at low
 /// frequencies; averaging power in the top half of the spectrum (≈[0.25,0.5]·fs)
@@ -353,11 +342,6 @@ pub struct InDecaResult {
     /// energy relative to the bandpass alone (`chain_noise_gain`); 1 when not
     /// measured.
     pub chain_noise_gain: f64,
-    /// Informational: with `noise_constrained` on, the best candidate train
-    /// beat the noise floor by more than one standard error. Always `false`
-    /// when `noise_constrained` is off or the trace has no measurable noise
-    /// floor. It does not change the result.
-    pub noise_path: bool,
     /// The pick ended at the floor spike size `frame_max / cap`: the densest
     /// train the cap allows, so the cap (not the data) set the spike size.
     /// Always true for a trace with no measurable noise floor.
@@ -457,7 +441,6 @@ pub fn solve_trace_opts(
     hp_enabled: bool,
     lp_enabled: bool,
     lambda: f64,
-    opts: SolveOptions,
 ) -> InDecaResult {
     solve_trace_cfg(
         trace,
@@ -470,7 +453,6 @@ pub fn solve_trace_opts(
         hp_enabled,
         lp_enabled,
         lambda,
-        opts,
         SolveConfig::default(),
     )
     .0
@@ -558,8 +540,6 @@ pub(crate) struct SolveStats {
     pub converged: bool,
     /// Some interior bin of the relaxed solution sits at the box upper bound.
     pub upper_bound_active: bool,
-    /// The informational noise-path flag.
-    pub noise_path: bool,
     /// Joint objective `||y - alpha_est K s||^2` on the interior,
     /// after the s-step (trace units).
     pub objective: f64,
@@ -702,7 +682,6 @@ pub(crate) fn solve_trace_cfg(
     hp_enabled: bool,
     lp_enabled: bool,
     lambda: f64,
-    opts: SolveOptions,
     cfg: SolveConfig,
 ) -> (InDecaResult, SolveStats) {
     let mut prep = prepare(trace, tau_r, tau_d, fs, hp_enabled, lp_enabled);
@@ -789,7 +768,6 @@ pub(crate) fn solve_trace_cfg(
             pad,
             cap_spikes as usize,
             noise_model,
-            opts.noise_constrained,
         )
     };
 
@@ -799,7 +777,6 @@ pub(crate) fn solve_trace_cfg(
         iterations,
         converged,
         upper_bound_active: u_peak >= 1.0,
-        noise_path: em.noise_path,
         objective,
         binary_error: em.error,
         budget,
@@ -839,7 +816,6 @@ pub(crate) fn solve_trace_cfg(
             loop_converged: true,
             noise_var_processed: prep.noise.processed_var(),
             chain_noise_gain: prep.noise.chain_gain,
-            noise_path: em.noise_path,
             cap_limited: em.diag.cap_limited,
             no_size_fit: em.diag.no_size_fit,
             peak_outlier_ratio: em.diag.peak_outlier_ratio,
@@ -882,7 +858,6 @@ mod tests {
             hp_enabled,
             lp_enabled,
             lambda,
-            SolveOptions::default(),
         )
     }
 
@@ -899,7 +874,6 @@ mod tests {
         hp_enabled: bool,
         lp_enabled: bool,
         lambda: f64,
-        opts: SolveOptions,
     ) -> (InDecaResult, SolveStats) {
         solve_trace_cfg(
             trace,
@@ -912,7 +886,6 @@ mod tests {
             hp_enabled,
             lp_enabled,
             lambda,
-            opts,
             SolveConfig::default(),
         )
     }
@@ -1182,20 +1155,9 @@ mod tests {
         let window = &full[13..420];
         let pad = crate::threshold::boundary_padding(tau_d, fs);
         assert_eq!(pad, 24);
-        for noise_constrained in [false, true] {
+        {
             let r = solve_trace_opts(
-                window,
-                tau_r,
-                tau_d,
-                fs,
-                300.0,
-                500,
-                1e-4,
-                None,
-                false,
-                false,
-                0.0,
-                SolveOptions { noise_constrained },
+                window, tau_r, tau_d, fs, 300.0, 500, 1e-4, None, false, false, 0.0,
             );
             let n = window.len();
             assert!(
@@ -1379,10 +1341,8 @@ mod tests {
     }
 
     #[test]
-    fn noise_constrained_recovers_events_on_noisy_trace() {
-        // Exercise the noise-floor selection path end-to-end (solve_trace_opts →
-        // estimate_noise_model → Selection::NoiseFloor) on a genuinely noisy
-        // trace. It should recover the real events with a reasonable fit and not
+    fn recovers_events_on_noisy_trace() {
+        // Exercise the one-SE size pick end-to-end on a genuinely noisy trace. It should recover the real events with a reasonable fit and not
         // wildly overcount. The per-trace count is NOT guaranteed to be below the
         // max-PVE default — the two criteria use different search strategies — so
         // the sparsity ordering is asserted deterministically in the threshold
@@ -1406,20 +1366,7 @@ mod tests {
         }
 
         let constrained = solve_trace_opts(
-            &trace,
-            0.02,
-            0.4,
-            30.0,
-            300.0,
-            500,
-            1e-4,
-            None,
-            false,
-            false,
-            0.0,
-            SolveOptions {
-                noise_constrained: true,
-            },
+            &trace, 0.02, 0.4, 30.0, 300.0, 500, 1e-4, None, false, false, 0.0,
         );
 
         assert_eq!(constrained.s_counts.len(), n);
@@ -1508,12 +1455,7 @@ mod tests {
         // The default budget carries the gain, and the result exposes it.
         let n = p.working.len();
         let n_grid = n - 2 * p.pad;
-        let opts = SolveOptions {
-            noise_constrained: true,
-        };
-        let (r, st) = solve_trace_stats(
-            &trace, tr, td, fs, 300.0, 100_000, 0.0, true, true, 0.0, opts,
-        );
+        let (r, st) = solve_trace_stats(&trace, tr, td, fs, 300.0, 100_000, 0.0, true, true, 0.0);
         let linear = p.noise.grid.budget(n_grid);
         assert!(
             (st.budget / linear - g).abs() < 1e-6,
@@ -1588,22 +1530,7 @@ mod tests {
         max_iters: u32,
         cfg: SolveConfig,
     ) -> (InDecaResult, SolveStats) {
-        solve_trace_cfg(
-            trace,
-            tr,
-            td,
-            fs,
-            k,
-            max_iters,
-            1e-4,
-            true,
-            true,
-            0.0,
-            SolveOptions {
-                noise_constrained: true,
-            },
-            cfg,
-        )
+        solve_trace_cfg(trace, tr, td, fs, k, max_iters, 1e-4, true, true, 0.0, cfg)
     }
 
     #[test]
@@ -1612,22 +1539,7 @@ mod tests {
         // deterministic function of the data.
         for (name, trace, tr, td, fs, k) in preset_cells(1, 900).into_iter().take(3) {
             let solve = |warm: Option<&[f32]>| {
-                solve_trace_opts(
-                    &trace,
-                    tr,
-                    td,
-                    fs,
-                    k,
-                    300,
-                    1e-4,
-                    warm,
-                    true,
-                    true,
-                    0.0,
-                    SolveOptions {
-                        noise_constrained: true,
-                    },
-                )
+                solve_trace_opts(&trace, tr, td, fs, k, 300, 1e-4, warm, true, true, 0.0)
             };
             let cold = solve(None);
             let own = solve(Some(&cold.s_counts));
@@ -1661,51 +1573,9 @@ mod tests {
         // One s-step at the peak-to-trough prescale is already a fixed point:
         // the box upper bound does not bind on any preset cell.
         for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
-            let (r, st) = solve_trace_stats(
-                &trace,
-                tr,
-                td,
-                fs,
-                k,
-                300,
-                1e-4,
-                true,
-                true,
-                0.0,
-                SolveOptions {
-                    noise_constrained: true,
-                },
-            );
+            let (r, st) = solve_trace_stats(&trace, tr, td, fs, k, 300, 1e-4, true, true, 0.0);
             assert!(!st.upper_bound_active, "{name}: {st:?}");
             assert!(r.alpha > 0.0 && r.s_counts.iter().sum::<f32>() > 0.0);
-        }
-    }
-
-    #[test]
-    fn result_noise_path_reports_the_reported_rounds_pick() {
-        // The per-trace `noise_path` flag on InDecaResult must equal the
-        // reported round's flag, and must be false when the noise-constrained
-        // option is off (selection is then plain max-PVE).
-        for (name, trace, tr, td, fs, k) in preset_cells(2, 900) {
-            let run = |noise_constrained| {
-                solve_trace_stats(
-                    &trace,
-                    tr,
-                    td,
-                    fs,
-                    k,
-                    300,
-                    1e-4,
-                    true,
-                    true,
-                    0.0,
-                    SolveOptions { noise_constrained },
-                )
-            };
-            let (on, st_on) = run(true);
-            assert_eq!(on.noise_path, st_on.noise_path, "{name}");
-            let (off, _) = run(false);
-            assert!(!off.noise_path, "{name}: flag set with the option off");
         }
     }
 
@@ -1813,9 +1683,6 @@ mod tests {
             false,
             false,
             0.0,
-            SolveOptions {
-                noise_constrained: true,
-            },
             SolveConfig::default(),
         );
         assert!(r.s_counts.iter().sum::<f32>() > 0.0);
@@ -1861,22 +1728,7 @@ mod tests {
         tol: f64,
         cfg: SolveConfig,
     ) -> (InDecaResult, SolveStats) {
-        let (r, st) = solve_trace_cfg(
-            trace,
-            tr,
-            td,
-            fs,
-            k,
-            max_iters,
-            tol,
-            true,
-            true,
-            0.0,
-            SolveOptions {
-                noise_constrained: true,
-            },
-            cfg,
-        );
+        let (r, st) = solve_trace_cfg(trace, tr, td, fs, k, max_iters, tol, true, true, 0.0, cfg);
         (r, st)
     }
 
@@ -2122,23 +1974,9 @@ mod tests {
     fn assert_degenerate_outputs_sane(
         label: &str,
         trace: &[f32],
-        noise_constrained: bool,
         max_spike_frac: f32,
-        max_spikes_always: bool,
     ) -> InDecaResult {
-        let (r, st) = solve_trace_stats(
-            trace,
-            0.02,
-            0.4,
-            30.0,
-            300.0,
-            200,
-            1e-4,
-            true,
-            true,
-            0.0,
-            SolveOptions { noise_constrained },
-        );
+        let (r, st) = solve_trace_stats(trace, 0.02, 0.4, 30.0, 300.0, 200, 1e-4, true, true, 0.0);
         assert_eq!(r.s_counts.len(), trace.len(), "{label}");
         assert!(r.s_counts.iter().all(|v| v.is_finite()), "{label}");
         assert!(
@@ -2158,11 +1996,7 @@ mod tests {
         // `event_mass` docs), so the bound is loose (8%) and applies to the
         // noise-constrained run.
         let total: f32 = r.s_counts.iter().sum();
-        let bound = if noise_constrained || max_spikes_always {
-            max_spike_frac * trace.len() as f32
-        } else {
-            f32::INFINITY
-        };
+        let bound = max_spike_frac * trace.len() as f32;
         assert!(
             total <= bound,
             "{label}: {total} spikes in {} samples",
@@ -2186,8 +2020,7 @@ mod tests {
             ((state >> 40) as f32 / (1u64 << 24) as f32) - 0.5
         };
         let trace: Vec<f32> = (0..600).map(|_| next() * 0.2).collect();
-        assert_degenerate_outputs_sane("noise", &trace, false, 0.02, false);
-        assert_degenerate_outputs_sane("noise/nc", &trace, true, 0.08, false);
+        assert_degenerate_outputs_sane("noise", &trace, 0.08);
     }
 
     #[test]
@@ -2208,9 +2041,9 @@ mod tests {
         for level in [0.0_f32, 1.0] {
             let trace = vec![level; 600];
             let floor = (trace.len() * k) as f64 * f32::EPSILON as f64 * level as f64;
-            for nc in [false, true] {
-                let label = if nc { "flat/nc" } else { "flat" };
-                let r = assert_degenerate_outputs_sane(label, &trace, nc, f32::INFINITY, false);
+            {
+                let label = "flat";
+                let r = assert_degenerate_outputs_sane(label, &trace, f32::INFINITY);
                 let total: f32 = r.s_counts.iter().sum();
                 assert!(
                     r.alpha <= floor,
@@ -2227,10 +2060,7 @@ mod tests {
     // ── Degenerate selection cases with a noise model ───────────────────
 
     #[test]
-    fn noise_constrained_degenerate_traces_are_sane() {
-        let opts = SolveOptions {
-            noise_constrained: true,
-        };
+    fn degenerate_traces_with_a_noise_model_are_sane() {
         // Very short traces (tiny or empty threshold grid) and an all-zero trace.
         for trace in [
             vec![],
@@ -2239,7 +2069,7 @@ mod tests {
             vec![0.0_f32; 200],
         ] {
             let r = solve_trace_opts(
-                &trace, 0.02, 0.4, 30.0, 300.0, 50, 1e-4, None, false, false, 0.0, opts,
+                &trace, 0.02, 0.4, 30.0, 300.0, 50, 1e-4, None, false, false, 0.0,
             );
             assert_eq!(r.s_counts.len(), trace.len());
             assert!(r.s_counts.iter().all(|&v| v.is_finite() && v >= 0.0));
@@ -2258,7 +2088,6 @@ mod tests {
             false,
             false,
             0.0,
-            opts,
         );
         assert!(zero.s_counts.iter().all(|&v| v == 0.0));
     }

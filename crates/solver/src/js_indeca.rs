@@ -51,7 +51,7 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
 ///   converged, loop_converged, noise_var_processed, chain_noise_gain,
-///   noise_path, cap_limited, no_size_fit, peak_outlier_ratio,
+///   cap_limited, no_size_fit, peak_outlier_ratio,
 ///   dropped_spikes }
 /// where `iterations` is the FISTA iteration count (hundreds to a few
 /// thousand at 30 Hz; tens of thousands for slow indicators at 60 Hz) and
@@ -68,9 +68,6 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// stage's measured gain); 0 when the trace has no measurable noise floor.
 /// `1 - noise_var_processed / var(filtered_trace)` is the PVE a fit can
 /// reach before it starts fitting noise.
-/// `noise_path` is informational (with `noise_constrained`, the best
-/// candidate beat the noise floor by more than 1 SE) and does not change
-/// the result.
 ///
 /// Per-cell diagnostics (none changes the result): `cap_limited` (the pick
 /// ended at the floor spike size `frame_max / cap`, so the cap set the spike
@@ -96,7 +93,6 @@ pub fn indeca_solve_trace(
     lp_enabled: bool,
     warm_counts: &[f32],
     lambda: f64,
-    noise_constrained: bool,
 ) -> Result<JsValue, JsError> {
     const F: &str = "indeca_solve_trace";
     validate::validate_finite_f32("trace", trace).map_err(|e| js_err(F, e))?;
@@ -120,7 +116,6 @@ pub fn indeca_solve_trace(
         hp_enabled,
         lp_enabled,
         lambda,
-        indeca::SolveOptions { noise_constrained },
     );
     to_js(F, &result)
 }
