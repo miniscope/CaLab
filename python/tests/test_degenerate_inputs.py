@@ -41,7 +41,6 @@ def test_surface_inventory_is_covered():
         "deconvolve_single",
         "py_build_kernel",
         "py_compute_lipschitz",
-        "py_indeca_compute_upsample_factor",
         "py_indeca_estimate_kernel",
         "py_indeca_fit_biexponential",
         "py_indeca_solve_trace",
@@ -478,11 +477,13 @@ def test_indeca_solve_trace_rejects_bad_params(tr, td, lam, fs):
 @pytest.mark.parametrize(
     "kwargs, needle",
     [
-        ({"upsample_factor": 0}, "upsample_factor"),
+        ({"max_firing_rate": 0.0}, "max_firing_rate"),
+        ({"max_firing_rate": -5.0}, "max_firing_rate"),
+        ({"max_firing_rate": NAN}, "max_firing_rate"),
+        ({"max_firing_rate": INF}, "max_firing_rate"),
+        ({"max_firing_rate": 10_001.0}, "max_firing_rate"),
         ({"tol": -1.0}, "tol"),
         ({"tol": NAN}, "tol"),
-        # The kernel is built at fs * upsample, so the cap applies there.
-        ({"upsample_factor": 100_000}, "kernel"),
     ],
 )
 def test_indeca_solve_trace_rejects_bad_options(kwargs, needle):
@@ -503,19 +504,22 @@ def test_indeca_solve_trace_rejects_non_finite(trace, idx):
     "opts",
     [
         {},
-        {"upsample_factor": 4},
+        {"max_firing_rate": 1000.0},
         {"hp_enabled": True, "lp_enabled": True},
         {"noise_constrained": True},
     ],
-    ids=["plain", "upsampled", "filtered", "noise-constrained"],
+    ids=["plain", "high-rate-cap", "filtered", "noise-constrained"],
 )
 def test_indeca_solve_trace_degenerate_traces(trace, opts):
-    counts, alpha, baseline, threshold, pve, iters, _conv, noise_var, gain = _solver.py_indeca_solve_trace(
+    counts, alpha, baseline, threshold, pve, iters, _conv, noise_var, gain, diag = _solver.py_indeca_solve_trace(
         trace, TAU_R, TAU_D, FS, max_iters=50, **opts
     )
     assert counts.shape == trace.shape
     assert finite(counts, alpha, baseline, threshold, pve, noise_var, gain)
     assert iters >= 0 and noise_var >= 0 and gain > 0
+    cap_limited, no_size_fit, peak_ratio, dropped = diag
+    assert isinstance(cap_limited, bool) and isinstance(no_size_fit, bool)
+    assert math.isfinite(peak_ratio) and peak_ratio >= 0 and dropped >= 0
 
 
 @pytest.mark.parametrize("warm_len", [0, 3, 100, 1000])
@@ -698,38 +702,6 @@ def test_fit_biexponential_degenerate_kernels(h, skip):
     assert finite(tau_r, tau_d, beta, tau_rf, tau_df, beta_f)
     assert tau_r > 0 and tau_d > 0
     assert math.isfinite(residual) or mode == "Empty"
-
-
-# ---------------------------------------------------------------------------
-# py_indeca_compute_upsample_factor
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "fs, target",
-    [
-        (0.0, 300.0),
-        (-30.0, 300.0),
-        (NAN, 300.0),
-        (INF, 300.0),
-        (FS, 0.0),
-        (FS, -1.0),
-        (FS, NAN),
-        (FS, INF),
-        (1e-300, 1e300),
-        (1.0, 1e12),
-    ],
-)
-def test_upsample_factor_rejects_bad_rates(fs, target):
-    with pytest.raises(ValueError, match="invalid parameter"):
-        _solver.py_indeca_compute_upsample_factor(fs, target)
-
-
-@pytest.mark.parametrize(
-    "fs, target, expected", [(FS, FS, 1), (FS, 1e-300, 1), (FS, 300.0, 10), (FS, 44.0, 1)]
-)
-def test_upsample_factor_is_at_least_one(fs, target, expected):
-    assert _solver.py_indeca_compute_upsample_factor(fs, target) == expected
 
 
 # ---------------------------------------------------------------------------

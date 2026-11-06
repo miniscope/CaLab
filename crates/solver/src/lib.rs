@@ -820,3 +820,6 @@ mod finite_guard_tests {
 
 #[cfg(test)]
 mod test_util;
+
+#[cfg(test)]
+mod eval_event_mass;

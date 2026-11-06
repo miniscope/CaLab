@@ -20,7 +20,6 @@ _compute_lipschitz = _solver.py_compute_lipschitz
 _indeca_solve_trace = _solver.py_indeca_solve_trace
 _indeca_estimate_kernel = _solver.py_indeca_estimate_kernel
 _indeca_fit_biexponential = _solver.py_indeca_fit_biexponential
-_indeca_compute_upsample_factor = _solver.py_indeca_compute_upsample_factor
 
 
 def _as_traces_2d(traces: np.ndarray, name: str = "traces") -> tuple[np.ndarray, bool]:
@@ -334,7 +333,8 @@ class SolveTraceResult(NamedTuple):
     Attributes
     ----------
     s_counts : np.ndarray
-        Spike counts at the original sampling rate, shape ``(n_timepoints,)``, float32.
+        Integer spike count per native frame (0..cap), shape ``(n_timepoints,)``,
+        float32, same length as the trace.
     alpha : float
         Amplitude scaling factor.
     baseline : float
@@ -357,6 +357,20 @@ class SolveTraceResult(NamedTuple):
         Gain of the rolling-quantile baseline stage on the noise energy
         (measured on the trace; 1 when not measured). The selection's noise
         budget carries this factor.
+    cap_limited : bool
+        The pick ended at the floor spike size ``frame_max / cap``: the cap,
+        not the data, set the spike size. Always True when the trace has no
+        measurable noise floor.
+    no_size_fit : bool
+        A noise floor was measurable and no spike size passed the
+        one-standard-error test.
+    peak_outlier_ratio : float
+        Largest event-peak frame mass over the second largest (1 with fewer
+        than two events, 0 with none).
+    dropped_spikes : int
+        Spikes that no frame of their event had room for.
+
+    The four diagnostics never change the result.
     """
 
     s_counts: np.ndarray
@@ -368,6 +382,10 @@ class SolveTraceResult(NamedTuple):
     converged: bool
     noise_var_processed: float = 0.0
     chain_noise_gain: float = 1.0
+    cap_limited: bool = False
+    no_size_fit: bool = False
+    peak_outlier_ratio: float = 1.0
+    dropped_spikes: int = 0
 
 
 class BiexpFitResult(NamedTuple):
@@ -411,7 +429,7 @@ def solve_trace(
     tau_decay: float,
     fs: float,
     *,
-    upsample_factor: int = 1,
+    max_firing_rate: float = 300.0,
     max_iters: int = 500,
     tol: float = 1e-4,
     hp_enabled: bool = False,
@@ -430,8 +448,11 @@ def solve_trace(
         Time constants in seconds.
     fs : float
         Sampling rate in Hz.
-    upsample_factor : int
-        Upsampling multiplier (1 = no upsampling).
+    max_firing_rate : float
+        Maximum plausible firing rate in spikes/s (default 300.0, valid range
+        ``(0, 10000]``). The solve runs at the recorded frame rate and the
+        per-frame spike count is capped at
+        ``max(1, round(max_firing_rate / fs))``.
     max_iters : int
         Maximum FISTA iterations.
     tol : float
@@ -461,13 +482,14 @@ def solve_trace(
 
     (
         s_counts, alpha, baseline, threshold, pve, iterations, converged,
-        noise_var_processed, chain_noise_gain,
+        noise_var_processed, chain_noise_gain, diagnostics,
     ) = _indeca_solve_trace(
         trace_1d, tau_rise, tau_decay, fs,
-        upsample_factor, max_iters, tol,
+        max_firing_rate, max_iters, tol,
         hp_enabled, lp_enabled, warm, lambda_,
         noise_constrained,
     )
+    cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes = diagnostics
     return SolveTraceResult(
         s_counts=np.asarray(s_counts),
         alpha=float(alpha),
@@ -478,6 +500,10 @@ def solve_trace(
         converged=bool(converged),
         noise_var_processed=float(noise_var_processed),
         chain_noise_gain=float(chain_noise_gain),
+        cap_limited=bool(cap_limited),
+        no_size_fit=bool(no_size_fit),
+        peak_outlier_ratio=float(peak_outlier_ratio),
+        dropped_spikes=int(dropped_spikes),
     )
 
 
@@ -586,20 +612,3 @@ def fit_biexponential(
     )
     return BiexpFitResult(*result)
 
-
-def compute_upsample_factor(fs: float, target_fs: float) -> int:
-    """Compute the upsample factor for a given sampling rate and target. Delegates to Rust.
-
-    Parameters
-    ----------
-    fs : float
-        Original sampling rate in Hz.
-    target_fs : float
-        Target sampling rate in Hz.
-
-    Returns
-    -------
-    int
-        Upsampling multiplier (>= 1).
-    """
-    return int(_indeca_compute_upsample_factor(fs, target_fs))

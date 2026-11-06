@@ -1,6 +1,6 @@
 {
   "autorun": true,
-  "upsample_target": 300,
+  "max_firing_rate": 300,
   "hp_filter_enabled": true,
   "lp_filter_enabled": false,
   "max_iterations": 20,

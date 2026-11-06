@@ -15,7 +15,7 @@ export interface CadeconSubmission extends BaseSubmission {
   ar2_g2: number;
 
   // Run config
-  upsample_factor: number;
+  max_firing_rate: number;
   sampling_rate: number;
   num_subsets: number;
   target_coverage: number;

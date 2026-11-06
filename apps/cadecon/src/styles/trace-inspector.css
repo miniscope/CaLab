@@ -24,6 +24,21 @@
   margin-left: auto;
 }
 
+/* Muted per-trace solver notes (cap hit, no size fit, outlier peak, dropped spikes) */
+.trace-inspector__diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm, 8px);
+  flex-basis: 100%;
+  justify-content: flex-end;
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+}
+
+.trace-inspector__diagnostics:empty {
+  display: none;
+}
+
 .trace-inspector__overview {
   flex-shrink: 0;
   margin-bottom: var(--space-xs, 4px);

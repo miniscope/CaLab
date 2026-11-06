@@ -87,6 +87,11 @@ export interface TraceResultEntry {
   pveCeiling?: number | null;
   /** Noise-floor guard fired for this cell (selection overrode max-PVE). undefined = unknown. */
   noisePath?: boolean;
+  /** Solver diagnostics (display only): see TraceResult in cadecon-types.ts. */
+  capLimited?: boolean;
+  noSizeFit?: boolean;
+  peakOutlierRatio?: number;
+  droppedSpikes?: number;
   /** Spike counts from the opposite noise-constrained setting (comparison overlay). */
   comparisonSCounts?: Float32Array;
 }

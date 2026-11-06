@@ -24,7 +24,7 @@ export interface BridgeMetadata {
 /** Configuration from Python's DeconConfig, sent via GET /api/v1/config. */
 export interface BridgeConfig {
   autorun: boolean;
-  upsample_target?: number;
+  max_firing_rate?: number;
   hp_filter_enabled?: boolean;
   lp_filter_enabled?: boolean;
   max_iterations?: number;
@@ -38,7 +38,7 @@ export interface BridgeConfig {
 /** All known keys of BridgeConfig (for cross-language schema tests). */
 export const BRIDGE_CONFIG_KEYS: readonly string[] = [
   'autorun',
-  'upsample_target',
+  'max_firing_rate',
   'hp_filter_enabled',
   'lp_filter_enabled',
   'max_iterations',

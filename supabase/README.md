@@ -21,6 +21,8 @@ All tables share a common set of base columns defined in `000_base_template.sql`
 | `012_block_anonymous_submissions.sql`  | Submission INSERT requires a real (non-anonymous) sign-in.                                                                |
 | `013_lock_analytics_writes.sql`        | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap. |
 | `014_validate_submission_payloads.sql` | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                        |
+| `015_app_name_slug_check.sql`          | Validates `analytics_sessions.app_name` by slug shape instead of a fixed app list.                                        |
+| `016_cadecon_max_firing_rate.sql`      | CaDecon `max_firing_rate` column (replaces `upsample_factor`, now nullable; one of the two is required); exposed in the public view. |
 
 ## Applying migrations
 

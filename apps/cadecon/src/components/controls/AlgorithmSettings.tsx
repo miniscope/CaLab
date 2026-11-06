@@ -3,8 +3,8 @@ import { CONVERGENCE_RANGES } from '@calab/core';
 import { ParameterSlider } from './ParameterSlider.tsx';
 import { ToggleSwitch } from './ToggleSwitch.tsx';
 import {
-  upsampleTarget,
-  setUpsampleTarget,
+  maxFiringRate,
+  setMaxFiringRate,
   hpFilterEnabled,
   setHpFilterEnabled,
   lpFilterEnabled,
@@ -18,6 +18,7 @@ import {
   convergencePatience,
   setConvergencePatience,
 } from '../../lib/algorithm-store.ts';
+import { MAX_FIRING_RATE_HELP, MAX_FIRING_RATE_LIMIT } from '../../lib/max-firing-rate.ts';
 import { isRunLocked } from '../../lib/iteration-store.ts';
 
 export function AlgorithmSettings(): JSX.Element {
@@ -25,14 +26,14 @@ export function AlgorithmSettings(): JSX.Element {
     <div class="param-panel">
       <div class="param-panel__sliders">
         <ParameterSlider
-          label="Upsample Target"
-          value={upsampleTarget}
-          setValue={(v) => setUpsampleTarget(Math.round(v))}
-          min={100}
-          max={1000}
+          label="Max firing rate (spikes/s)"
+          value={maxFiringRate}
+          setValue={setMaxFiringRate}
+          min={1}
+          max={MAX_FIRING_RATE_LIMIT}
           step={10}
-          format={(v) => String(Math.round(v))}
-          unit="Hz"
+          format={(v) => String(v)}
+          help={MAX_FIRING_RATE_HELP}
           disabled={isRunLocked()}
           noSlider
         />

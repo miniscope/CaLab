@@ -1,13 +1,13 @@
 // CADECON-TUTR-03: Understanding How CaDecon Works.
 
 import type { Tutorial } from '@calab/tutorials';
-import { renderKernelShape, renderRelaxToSpikes } from '../theory-figures.ts';
+import { renderKernelShape } from '../theory-figures.ts';
 
 export const theoryTutorial: Tutorial = {
   id: 'theory',
   title: 'Understanding How CaDecon Works',
   description:
-    'How CaDecon infers spikes: the calcium model, deconvolution, upsampling, identifying a biologically interpretable kernel, and the alternating loop that ties everything together.',
+    'How CaDecon infers spikes: the calcium model, deconvolution, counting spikes by event mass, identifying a biologically interpretable kernel, and the alternating loop that ties everything together.',
   level: 'theory',
   prerequisites: [],
   estimatedMinutes: 8,
@@ -45,30 +45,29 @@ export const theoryTutorial: Tutorial = {
       title: 'The Hard Part: All-or-Nothing Spikes',
       description:
         'As mentioned, the math underlying CaDecon comes from the field of <b>convex optimization</b>. Requiring spikes to be strictly 0 or 1 makes the problem hard, because there is an enormous number of spike / no-spike combinations to consider.<br><br>' +
-        'CaDecon\u2019s trick is to <b>relax the all-or-nothing rule</b>: instead of forcing each spike to be 0 or 1, it lets it take any value in between. This relaxed problem is a convex one that can be solved efficiently with a method called <b>FISTA</b>. The result is a <b>graded spike estimate</b> at each time point \u2014 higher where a spike almost certainly happened, lower where it didn\u2019t. The next step covers how CaDecon returns to the clean spike / no-spike train we ultimately want.',
+        'CaDecon\u2019s trick is to <b>relax the all-or-nothing rule</b>: instead of forcing each spike to be 0 or 1, it lets it take any value in between. This relaxed problem is a convex one that can be solved efficiently with a method called <b>FISTA</b>. The result is a <b>graded spike estimate</b> at each time point \u2014 higher where a spike almost certainly happened, lower where it didn\u2019t. The next step covers how CaDecon turns that graded estimate into the whole-number spike counts we ultimately want.',
     },
-    // Step 5: Binarization step
+    // Step 5: Counting spikes by event mass
     {
       title: 'Getting Back to Real Spikes',
       description:
-        'To get back to real spikes, CaDecon picks a <b>cutoff</b>: anything above it counts as a spike, anything below is dropped (the plot shows the graded estimate cut at the cutoff, with the surviving values becoming spikes). But it doesn\u2019t guess the cutoff \u2014 it <b>tries many</b>, and for each one rebuilds the predicted trace and checks how well it matches the recording.<br><br>' +
-        'The cutoff whose spikes <b>best reconstruct your data</b> wins. The amplitude is handled differently: at each step it is fit to best match the trace, then re-estimated from one step to the next until it stops changing. The logic throughout is the same: the best answer is the one that explains the trace you actually saw.',
-      onPopoverRender: renderRelaxToSpikes,
+        'The relaxed solve gives each recorded frame a graded <b>mass</b>: roughly, how many spikes’ worth of calcium that frame needs. CaDecon groups consecutive frames with positive mass into <b>events</b>, then turns each event’s total mass into a whole number of spikes: <b>round(mass / a)</b>, where <b>a</b> is the size of one spike. The spikes are placed along the event’s mass profile, so a front-loaded event gets its spikes early. Result: an <b>integer spike count per frame</b>.<br><br>' +
+        'It doesn’t guess <b>a</b>. It tries sizes and rebuilds the predicted trace for each, scoring it through the <b>same filter and baseline processing as your data</b>. The largest size whose fit stays within one noise standard error of the unrounded relaxed solution wins. There is no sparsity penalty. The amplitude is handled separately: fit at each step, then re-estimated until it stops changing. The logic throughout is the same: the best answer is the one that explains the trace you actually saw.',
     },
-    // Step 6: Integer spikes via upsampling
+    // Step 6: Max firing rate
     {
-      title: 'Upsampling & the Refractory Period',
+      title: 'The Max Firing Rate',
       description:
-        'If your frame rate is low, a neuron can fire several times within a single frame, and a plain spike / no-spike train can only say \u201Csomething happened here,\u201D not \u201Cthree things happened here.\u201D<br><br>' +
-        'CaDecon works around this by solving on a <b>finer, upsampled timeline</b>. Each recorded frame is split into <b>k smaller bins</b>, so closely-spaced spikes fall into separate bins. Each bin still only recognizes spikes as 0 or 1, so <b>summing the k bins</b> within a frame gives a whole number from 0 to k: the <b>integer spike count</b> for that frame.<br><br>' +
-        'The bin width isn\u2019t arbitrary \u2014 it\u2019s what makes the one-spike-or-none rule <b>biologically valid</b>. By default CaDecon upsamples to <b>300&nbsp;Hz</b>, so each bin spans about <b>3.3&nbsp;ms</b> \u2014 roughly a neuron\u2019s <b>refractory period</b>, the minimum time between two action potentials. A real neuron physically can\u2019t fire twice that fast, so at most one spike belongs in a bin, and binarizing each bin to 0 or 1 mirrors biology. In effect, the bin width sets the <b>minimum inter-spike interval (ISI)</b> CaDecon can resolve.<br><br>' +
-        'Without it, forcing binary spikes onto the raw frame grid would distort the count either way: <b>too few</b> spikes when real events are merged into one frame, or <b>too many</b> when spikes are packed closer than a neuron could actually fire. You can change the target under <b>Upsample Target</b> in Algorithm Settings.',
+        'CaDecon works at your <b>recorded frame rate</b>; it does not resample the trace. At low frame rates a neuron can fire several times within one frame, which is why each frame can hold a count above 1, not just 0 or 1.<br><br>' +
+        'The one setting that shapes the counts is <b>Max Firing Rate</b> (default 300&nbsp;spikes/s). It is the highest rate your cell reaches in its <b>strongest bursts</b>, not its average rate. It acts as a <b>per-frame ceiling</b>: at 300&nbsp;spikes/s and 30&nbsp;Hz imaging, up to 10 spikes fit in one frame. It also sets the smallest spike size considered (the busiest frame’s mass divided by that ceiling), so in practice it sets the <b>scale of the counts</b>.<br><br>' +
+        '<b>Too high</b>: the smallest spike size shrinks, so events get split into extra spikes and counts inflate. <b>Too low</b>: the ceiling cuts off big frames and small events are missed.<br><br>' +
+        'One honest limit: at moderate SNR, a lone single spike sits near the noise, so it is not individually trustworthy. <b>Burst counts and timing are the reliable output.</b>',
     },
     // Step 7: How fit quality is measured (PVE)
     {
       title: 'Measuring How Well the Fit Explains the Trace',
       description:
-        'Every choice CaDecon makes \u2014 the spikes, the cutoff, the amplitude, the kernel \u2014 is judged by a single standard: how closely the <b>reconstruction</b> (spikes convolved with the kernel, plus baseline and amplitude) matches the recording you actually collected. The winning answer is always the one that reconstructs your trace most faithfully.<br><br>' +
+        'Every choice CaDecon makes \u2014 the spikes, the spike size, the amplitude, the kernel \u2014 is judged by a single standard: how closely the <b>reconstruction</b> (spikes convolved with the kernel, plus baseline and amplitude) matches the recording you actually collected. The winning answer is always the one that reconstructs your trace most faithfully.<br><br>' +
         'Overall fit quality is summarized by <b>PVE</b> (proportion of variance explained): the fraction of the trace\u2019s variation the model accounts for. This is the same number you watch climb in the convergence panel.',
     },
     // Step 8: Learning the kernel

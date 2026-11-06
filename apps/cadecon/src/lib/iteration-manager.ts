@@ -44,7 +44,7 @@ import {
   cellSubsetKey,
 } from './iteration-store.ts';
 import {
-  upsampleFactor,
+  maxFiringRate,
   maxIterations,
   convergenceTol,
   convergencePatience,
@@ -109,6 +109,21 @@ function isTrustworthyFit(r: { fitMode: FitMode }): boolean {
   return r.fitMode !== 'Degenerate' && r.fitMode !== 'Empty';
 }
 
+/** Per-cell solver diagnostics carried into the stored results (display only). */
+type SolveDiagnostics = Pick<
+  TraceResult,
+  'capLimited' | 'noSizeFit' | 'peakOutlierRatio' | 'droppedSpikes'
+>;
+
+function solveDiagnostics(r: TraceResult): SolveDiagnostics {
+  return {
+    capLimited: r.capLimited,
+    noSizeFit: r.noSizeFit,
+    peakOutlierRatio: r.peakOutlierRatio,
+    droppedSpikes: r.droppedSpikes,
+  };
+}
+
 /** Absolute floor of the Rust tau_rise clamp (mirrors biexp_fit.rs tau_r_lo). */
 const RISE_CLAMP_FLOOR_S = 0.005;
 /** tau_rise within this factor of the clamp floor is flagged "rise unresolved". */
@@ -134,7 +149,7 @@ function sumSq(a: ArrayLike<number>): number {
  * The symmetric max(...) denominator keeps the ratio bounded to [0, sqrt(2)] and
  * stops it from exploding when a cell's activity collapses toward zero between
  * iterations (which a ||s_new||-only denominator would). s_counts are native-rate
- * bin counts (the solver downsamples the upsampled train before returning), so
+ * per-frame spike counts (the solver runs at the recorded frame rate), so
  * this measures change at the resolution the data actually constrains.
  */
 function computeTraceStability(
@@ -344,7 +359,7 @@ async function dispatchTraceJobs(
   tauR: number,
   tauD: number,
   fs: number,
-  upFactor: number,
+  maxFiringRate: number,
   maxIters: number,
   tol: number,
   hpEnabled: boolean,
@@ -380,7 +395,7 @@ async function dispatchTraceJobs(
         tauRise: tauR,
         tauDecay: tauD,
         fs,
-        upsampleFactor: upFactor,
+        maxFiringRate,
         maxIters,
         tol,
         hpEnabled,
@@ -605,7 +620,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   const TAU_DECAY_FALLBACK = 1.0;
   let tauR = TAU_RISE_FALLBACK;
   let tauD = TAU_DECAY_FALLBACK;
-  const upFactor = upsampleFactor();
+  const maxFiringRateHz = maxFiringRate();
   const maxIter = maxIterations();
   // Convergence controls (see algorithm-store / CONVERGENCE_RANGES). convTol is
   // the kernel-RMSE threshold; selWindow is still a shape-space (median) control.
@@ -793,7 +808,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
       tauR,
       tauD,
       fs,
-      upFactor,
+      maxFiringRateHz,
       solver.traceMaxIters,
       solver.traceTol,
       hpOn,
@@ -825,6 +840,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         pve: number;
         pveCeiling: number | null;
         noisePath: boolean | undefined;
+        diagnostics: SolveDiagnostics;
       }
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
@@ -868,6 +884,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           pve: result.pve,
           pveCeiling,
           noisePath: result.noisePath,
+          diagnostics: solveDiagnostics(result),
         });
 
         // Accumulate per cell×subset result for alpha/threshold trends tracking
@@ -882,6 +899,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           pve: result.pve,
           pveCeiling,
           noisePath: result.noisePath,
+          ...solveDiagnostics(result),
           comparisonSCounts: result.comparisonSCounts,
         };
       }
@@ -903,6 +921,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         pve: scalars.pve,
         pveCeiling: scalars.pveCeiling,
         noisePath: scalars.noisePath,
+        ...scalars.diagnostics,
         comparisonSCounts: cellComparison.get(cell),
       };
     }
@@ -1130,7 +1149,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         tauRise: tauR,
         tauDecay: tauD,
         fs,
-        upsampleFactor: upFactor,
+        maxFiringRate: maxFiringRateHz,
         maxIters: solver.traceMaxIters,
         tol: solver.traceTol,
         hpEnabled: hpOn,
@@ -1154,6 +1173,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
               pve: result.pve,
               pveCeiling: processedCeiling(result.filteredTrace, result.noiseVarProcessed),
               noisePath: result.noisePath,
+              ...solveDiagnostics(result),
               comparisonSCounts: result.comparisonSCounts,
             });
             settle();

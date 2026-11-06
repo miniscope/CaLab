@@ -41,7 +41,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.tauRise,
       req.tauDecay,
       req.fs,
-      req.upsampleFactor,
+      req.maxFiringRate,
       req.maxIters,
       req.tol,
       req.hpEnabled,
@@ -61,6 +61,10 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       noise_var_processed: number;
       chain_noise_gain: number;
       noise_path?: boolean;
+      cap_limited?: boolean;
+      no_size_fit?: boolean;
+      peak_outlier_ratio?: number;
+      dropped_spikes?: number;
     };
 
     if (cancelled) {
@@ -84,7 +88,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
         req.tauRise,
         req.tauDecay,
         req.fs,
-        req.upsampleFactor,
+        req.maxFiringRate,
         req.maxIters,
         req.tol,
         req.hpEnabled,
@@ -113,6 +117,10 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           noiseVarProcessed: jsResult.noise_var_processed,
           chainNoiseGain: jsResult.chain_noise_gain,
           noisePath: jsResult.noise_path,
+          capLimited: jsResult.cap_limited,
+          noSizeFit: jsResult.no_size_fit,
+          peakOutlierRatio: jsResult.peak_outlier_ratio,
+          droppedSpikes: jsResult.dropped_spikes,
           comparisonSCounts,
         },
       },

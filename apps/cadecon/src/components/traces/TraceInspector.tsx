@@ -5,7 +5,7 @@
  * Supports iteration history scrubbing.
  */
 
-import { createMemo, createSignal, createEffect, on, Show, type JSX } from 'solid-js';
+import { createMemo, createSignal, createEffect, on, For, Show, type JSX } from 'solid-js';
 import type uPlot from 'uplot';
 import {
   computeBandLayout as computeSharedBandLayout,
@@ -73,9 +73,10 @@ import {
 } from '../../lib/viz-store.ts';
 import { overview } from '../../lib/overview-store.ts';
 import { noiseGuardText } from '../../lib/results-ceiling.ts';
+import { solveDiagnosticNotes } from '../../lib/solve-diagnostics.ts';
 import { isNearNoiseFloor } from '@calab/core';
 import {
-  upsampleFactor,
+  maxFiringRate,
   noiseConstrained,
   hpFilterEnabled,
   lpFilterEnabled,
@@ -297,13 +298,21 @@ export function TraceInspector(): JSX.Element {
     return [residBottom, rawMax + (rawMax - rawMin) * 0.02];
   });
 
+  // Spike counts are per native frame: the plot band spans 0..cap, the most the
+  // solver can place in one frame at the current max firing rate.
+  const spikeCap = () => {
+    const fs = samplingRate();
+    if (!fs || fs <= 0) return 1;
+    return Math.max(1, Math.round(maxFiringRate() / fs));
+  };
+
   const scaleToDeconvBand = (
     values: (number | null)[],
     yMin: number,
     yMax: number,
   ): (number | null)[] => {
     const { deconvBottom, deconvHeight } = computeBandLayout(yMin, yMax);
-    return scaleToBand(values, 0, upsampleFactor(), deconvBottom, deconvHeight, {
+    return scaleToBand(values, 0, spikeCap(), deconvBottom, deconvHeight, {
       clampTop: true,
     });
   };
@@ -644,6 +653,13 @@ export function TraceInspector(): JSX.Element {
             </Show>
           </Show>
         </div>
+        <Show when={effectiveResult()}>
+          <div class="trace-inspector__diagnostics" data-testid="solve-diagnostics">
+            <For each={solveDiagnosticNotes(effectiveResult() ?? undefined)}>
+              {(note) => <span title={note.title}>{note.text}</span>}
+            </For>
+          </div>
+        </Show>
       </div>
 
       <Show

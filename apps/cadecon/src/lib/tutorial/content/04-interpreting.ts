@@ -72,7 +72,7 @@ export const interpretingTutorial: Tutorial = {
         '<li>Leave <b>Max Iterations</b> at its default. It is only a safety cap that halts a run which never settles — not a tuning knob. If runs regularly hit the cap, the fix is better data coverage (more subsets or coverage), not a higher cap.</li>' +
         '<li>Enable the <b>High-Pass Filter</b> if baseline drift is contaminating the fit.</li>' +
         '<li>Enable the <b>Low-Pass Filter</b> for very noisy recordings.</li>' +
-        '<li>Raise the <b>Upsample Target</b> only if your sampling rate is low relative to event kinetics.</li>' +
+        '<li>Set <b>Max Firing Rate</b> to the highest rate your cell reaches in its strongest bursts (not its average rate). Too high splits events into extra spikes; too low misses small events.</li>' +
         '</ul>',
       side: 'right',
     },

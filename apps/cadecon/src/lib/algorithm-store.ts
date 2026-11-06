@@ -1,10 +1,15 @@
-import { createSignal, createMemo } from 'solid-js';
+import { createSignal } from 'solid-js';
 import { CONVERGENCE_RANGES } from '@calab/core';
-import { samplingRate } from './data-store.ts';
+import { DEFAULT_MAX_FIRING_RATE, isValidMaxFiringRate } from './max-firing-rate.ts';
 
 // --- Algorithm parameter signals ---
 
-const [upsampleTarget, setUpsampleTarget] = createSignal(300);
+// Highest burst rate (spikes/s): caps spikes per frame at max(1, round(rate / fs)).
+const [maxFiringRate, setMaxFiringRateRaw] = createSignal<number>(DEFAULT_MAX_FIRING_RATE);
+/** Set the max firing rate; values the solver would reject (not in (0, 10000]) are ignored. */
+function setMaxFiringRate(v: number): void {
+  if (isValidMaxFiringRate(v)) setMaxFiringRateRaw(v);
+}
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
 // Noise-constrained sparsity: pick the sparsest spike support whose residual
@@ -46,17 +51,9 @@ const [kernelFistaTol, setKernelFistaTol] = createSignal(1e-4);
 // TV-L1 smoothness penalty for kernel estimation (0 = no smoothness):
 const [kernelSmoothLambda, setKernelSmoothLambda] = createSignal(0);
 
-// --- Derived ---
-
-const upsampleFactor = createMemo(() => {
-  const fs = samplingRate();
-  if (!fs || fs <= 0) return 1;
-  return Math.max(1, Math.round(upsampleTarget() / fs));
-});
-
 export {
-  upsampleTarget,
-  setUpsampleTarget,
+  maxFiringRate,
+  setMaxFiringRate,
   hpFilterEnabled,
   setHpFilterEnabled,
   lpFilterEnabled,
@@ -85,5 +82,4 @@ export {
   setKernelFistaTol,
   kernelSmoothLambda,
   setKernelSmoothLambda,
-  upsampleFactor,
 };

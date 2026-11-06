@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from calab import (
     BiexpFitResult,
     SolveTraceResult,
     build_kernel,
-    compute_upsample_factor,
     estimate_kernel,
     fit_biexponential,
     solve_trace,
@@ -60,11 +60,34 @@ class TestSolveTrace:
         result = solve_trace(trace, 0.02, 0.4, 30.0)
         assert result.s_counts.sum() < 1e-6
 
-    def test_with_upsample(self):
+    def test_counts_per_native_frame(self):
         trace = _make_trace(0.02, 0.4, 30.0, 100, [20, 50])
-        result = solve_trace(trace, 0.02, 0.4, 30.0, upsample_factor=4)
-        # Output is downsampled back to original rate
+        result = solve_trace(trace, 0.02, 0.4, 30.0, max_firing_rate=300.0)
+        # Integer counts per native frame, capped at round(300 / 30) = 10
         assert result.s_counts.shape == (100,)
+        np.testing.assert_array_equal(result.s_counts, np.round(result.s_counts))
+        assert result.s_counts.min() >= 0
+        assert result.s_counts.max() <= 10
+
+    def test_max_firing_rate_caps_counts(self):
+        trace = _make_trace(0.02, 0.4, 30.0, 100, [20, 50])
+        result = solve_trace(trace, 0.02, 0.4, 30.0, max_firing_rate=30.0)
+        assert result.s_counts.max() <= 1
+
+    def test_diagnostics_fields(self):
+        trace = _make_trace(0.02, 0.4, 30.0, 200, [20, 80, 150])
+        result = solve_trace(trace, 0.02, 0.4, 30.0)
+        assert isinstance(result.cap_limited, bool)
+        assert isinstance(result.no_size_fit, bool)
+        assert isinstance(result.peak_outlier_ratio, float)
+        assert isinstance(result.dropped_spikes, int)
+        assert result.dropped_spikes >= 0
+
+    def test_rejects_bad_max_firing_rate(self):
+        trace = _make_trace(0.02, 0.4, 30.0, 100, [20, 50])
+        for bad in (0.0, -1.0, float("nan"), float("inf"), 10001.0):
+            with pytest.raises(ValueError, match="max_firing_rate"):
+                solve_trace(trace, 0.02, 0.4, 30.0, max_firing_rate=bad)
 
     def test_with_filters(self):
         trace = _make_trace(0.02, 0.4, 30.0, 300, [30, 100, 200], alpha=10.0, baseline=2.0)
@@ -79,13 +102,14 @@ class TestSolveTrace:
 
     def test_tuple_unpacking(self):
         trace = _make_trace(0.02, 0.4, 30.0, 200, [20, 80])
-        s_counts, alpha, baseline, threshold, pve, iterations, converged, noise_var, gain = solve_trace(
+        s_counts, alpha, baseline, threshold, pve, iterations, converged, noise_var, gain, *diag = solve_trace(
             trace, 0.02, 0.4, 30.0,
         )
         assert s_counts.shape == (200,)
         assert isinstance(alpha, float)
         assert isinstance(converged, bool)
         assert noise_var >= 0.0 and gain > 0.0
+        assert len(diag) == 4
 
     def test_noise_constrained_accepted(self):
         # The noise_constrained knob is exposed through the binding and produces
@@ -212,19 +236,3 @@ class TestFitBiexponential:
         assert isinstance(tau_r, float)
         assert isinstance(residual, float)
         assert isinstance(fit_mode, str)
-
-
-# ---------------------------------------------------------------------------
-# compute_upsample_factor
-# ---------------------------------------------------------------------------
-
-
-class TestComputeUpsampleFactor:
-    def test_identity(self):
-        assert compute_upsample_factor(30.0, 30.0) == 1
-
-    def test_10x(self):
-        assert compute_upsample_factor(30.0, 300.0) == 10
-
-    def test_minimum_1(self):
-        assert compute_upsample_factor(100.0, 30.0) == 1

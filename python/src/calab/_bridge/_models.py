@@ -14,8 +14,11 @@ class DeconConfig(BaseModel):
     """
 
     autorun: bool = Field(False, description="Auto-start solver after loading traces")
-    upsample_target: int | None = Field(
-        None, gt=0, description="Target sampling rate (Hz) for upsampling"
+    max_firing_rate: float | None = Field(
+        None,
+        gt=0,
+        le=10000,
+        description="Maximum firing rate (spikes/s); caps spikes per frame",
     )
     hp_filter_enabled: bool | None = Field(None, description="Enable high-pass filter")
     lp_filter_enabled: bool | None = Field(None, description="Enable low-pass filter")

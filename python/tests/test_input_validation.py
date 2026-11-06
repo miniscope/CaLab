@@ -131,20 +131,14 @@ def test_filter_toggle_after_apply_takes_effect():
     np.testing.assert_array_equal(filtered(True), filtered(False))
 
 
-def test_indeca_solve_trace_rejects_upsample_zero_and_bad_params():
+def test_indeca_solve_trace_rejects_bad_max_firing_rate_and_bad_params():
     trace = np.zeros(100)
-    with pytest.raises(ValueError, match="upsample_factor"):
-        _solver.py_indeca_solve_trace(trace, 0.02, 0.4, 30.0, upsample_factor=0)
+    with pytest.raises(ValueError, match="max_firing_rate"):
+        _solver.py_indeca_solve_trace(trace, 0.02, 0.4, 30.0, max_firing_rate=0.0)
     with pytest.raises(ValueError, match="fs"):
         _solver.py_indeca_solve_trace(trace, 0.02, 0.4, 0.0)
     with pytest.raises(ValueError, match="tau_rise"):
         _solver.py_indeca_solve_trace(trace, 0.4, 0.02, 30.0)
-
-
-def test_compute_upsample_factor_rejects_zero_fs():
-    with pytest.raises(ValueError, match="fs"):
-        _solver.py_indeca_compute_upsample_factor(0.0, 300.0)
-    assert _solver.py_indeca_compute_upsample_factor(30.0, 300.0) == 10
 
 
 def _kernel_inputs(lengths=(50, 50)):

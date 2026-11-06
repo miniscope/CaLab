@@ -204,9 +204,8 @@ For full API documentation with parameter details, see [calab.readthedocs.io](ht
 | `solve_trace(trace, tau_rise, tau_decay, fs, ...)` | Single-trace InDeCa pipeline                                                     |
 | `estimate_kernel(traces_flat, spikes_flat, ...)`   | Free-form kernel estimation                                                      |
 | `fit_biexponential(h_free, fs, ...)`               | Bi-exponential kernel fit                                                        |
-| `compute_upsample_factor(fs, target_fs)`           | Upsample factor for target rate                                                  |
 | `CaDeconResult`                                    | Namedtuple: activity, alphas, baselines, pves, kernels, fs, metadata             |
-| `SolveTraceResult`                                 | Namedtuple: s_counts, alpha, baseline, threshold, pve, iterations, converged     |
+| `SolveTraceResult`                                 | Namedtuple: s_counts, alpha, baseline, threshold, pve, iterations, converged, ... |
 | `BiexpFitResult`                                   | Namedtuple: tau_rise, tau_decay, beta, residual, fast-component fields, fit_mode |
 
 > **Non-finite input:** the deconvolution/fit entry points (`run_deconvolution*`, `solve_trace`, `estimate_kernel`, `fit_biexponential`, and the batch paths) raise `ValueError` if an input trace/array contains `NaN` or `Inf`, rather than returning garbage. `fit_biexponential`'s `fit_mode` reports the outcome (`"TwoComponent"` / `"SlowOnly"` / `"Degenerate"` / `"Empty"`).
