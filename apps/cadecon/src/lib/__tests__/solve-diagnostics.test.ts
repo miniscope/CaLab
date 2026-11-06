@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { solveDiagnosticNotes, PEAK_OUTLIER_RATIO_NOTE_THRESHOLD } from '../solve-diagnostics.ts';
-import { DEFAULT_MAX_FIRING_RATE, isValidMaxFiringRate } from '../max-firing-rate.ts';
+import {
+  DEFAULT_MAX_FIRING_RATE,
+  isValidMaxFiringRate,
+  spikesPerFrameCap,
+} from '../max-firing-rate.ts';
 
 describe('solveDiagnosticNotes', () => {
   it('is empty with no flags', () => {
@@ -37,5 +41,11 @@ describe('max firing rate', () => {
     expect(isValidMaxFiringRate(300)).toBe(true);
     expect(isValidMaxFiringRate(10000)).toBe(true);
     for (const v of [0, -1, 10001, NaN, Infinity]) expect(isValidMaxFiringRate(v)).toBe(false);
+  });
+
+  it('derives the per-frame spike cap from the rate and frame rate', () => {
+    expect(spikesPerFrameCap(300, 30)).toBe(10);
+    expect(spikesPerFrameCap(300, 1000)).toBe(1);
+    expect(spikesPerFrameCap(300, 0)).toBe(1);
   });
 });

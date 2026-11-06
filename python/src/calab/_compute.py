@@ -436,7 +436,6 @@ def solve_trace(
     lp_enabled: bool = False,
     warm_counts: np.ndarray | None = None,
     lambda_: float = 0.0,
-    noise_constrained: bool = False,
 ) -> SolveTraceResult:
     """Run the InDeCa pipeline on a single trace. Delegates to Rust.
 
@@ -464,12 +463,6 @@ def solve_trace(
         on its own, so the output does not depend on a seed).
     lambda_ : float
         L1 sparsity penalty.
-    noise_constrained : bool
-        Choose the binarization threshold as the sparsest spike support whose
-        residual still reaches the data-derived noise floor, instead of the one
-        that maximizes fit. Suppresses noise fit as spurious spikes; the effect
-        concentrates at low SNR. Knob-free (the noise floor is measured from the
-        trace). Default False.
 
     Returns
     -------
@@ -487,7 +480,6 @@ def solve_trace(
         trace_1d, tau_rise, tau_decay, fs,
         max_firing_rate, max_iters, tol,
         hp_enabled, lp_enabled, warm, lambda_,
-        noise_constrained,
     )
     cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes = diagnostics
     return SolveTraceResult(

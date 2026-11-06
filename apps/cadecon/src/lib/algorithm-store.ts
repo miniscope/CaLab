@@ -12,14 +12,6 @@ function setMaxFiringRate(v: number): void {
 }
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
-// Noise-constrained sparsity: pick the sparsest spike support whose residual
-// still reaches the data-derived noise floor (no tuning knob). Suppresses noise
-// fit as spurious spikes; benefit concentrates at low SNR. Off = current max-PVE.
-const [noiseConstrained, setNoiseConstrained] = createSignal(true);
-// Opt-in: during each iteration, also solve every trace with the OPPOSITE
-// noise-constrained setting and store it, so the Trace Inspector can overlay the
-// two instantly (no live solve). Doubles inference cost — off by default.
-const [sparsityCompareEnabled, setSparsityCompareEnabled] = createSignal(false);
 const [maxIterations, setMaxIterations] = createSignal(20);
 
 // Convergence is tested with the peak-normalized RMSE between successive
@@ -58,10 +50,6 @@ export {
   setHpFilterEnabled,
   lpFilterEnabled,
   setLpFilterEnabled,
-  noiseConstrained,
-  setNoiseConstrained,
-  sparsityCompareEnabled,
-  setSparsityCompareEnabled,
   maxIterations,
   setMaxIterations,
   convergenceTol,

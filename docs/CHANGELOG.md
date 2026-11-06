@@ -35,8 +35,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `max_firing_rate`.
 - **WASM:** `indeca_solve_trace` takes `max_firing_rate` instead of
   `upsample_factor`; `indeca_compute_upsample_factor` is removed.
-- **Community submissions:** new column `cadecon_submissions.max_firing_rate`
-  (migration 016); `upsample_factor` is nullable and kept for old rows.
+- **Removed:** the CaDecon "Noise-floor guard" setting, the Sparsity
+  Comparison Overlay and the `noise_path` result field. The `noise_constrained`
+  argument is gone from WASM `indeca_solve_trace`, Python `solve_trace` and
+  the bridge; the noise model now always sets the one-standard-error size
+  pick. The results export drops `noise_guard_active`.
+- **Community submissions:** migration 016 replaces
+  `cadecon_submissions.upsample_factor` with `max_firing_rate` (NOT NULL,
+  in (0, 10000]); existing rows are backfilled as `upsample_factor` times the
+  sampling rate.
 
 ## [2.11.0] - 2026-11-05
 

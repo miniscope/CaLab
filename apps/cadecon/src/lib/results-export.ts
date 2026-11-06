@@ -40,11 +40,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
   skipped_reason:
     'Per-cell reason the cell was not solved (length n_cells): "non_finite_samples" when its trace ' +
     'contains NaN or Inf samples, which the solver rejects; null for a solved cell. A skipped cell ' +
-    'has a NaN activity row and null alphas/baselines/pves/noise_guard_active entries.',
-  noise_guard_active:
-    'Per-cell flag (length n_cells): true when the noise-floor guard overrode the best-fitting spike train ' +
-    '(the best candidate overfit the measured noise floor, so the sparsest train within the noise budget was chosen); ' +
-    'false when it had no effect (result equals the best fit, typically SNR above ~8); null if unreported.',
+    'has a NaN activity row and null alphas/baselines/pves entries.',
   tau_rise:
     'Rise time constant (seconds) of the slow calcium kernel component T_s(t) = exp(-t/tau_decay) - exp(-t/tau_rise).',
   tau_decay: 'Decay time constant (seconds) of the slow calcium kernel component.',

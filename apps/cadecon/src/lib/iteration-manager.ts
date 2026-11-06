@@ -40,6 +40,7 @@ import {
   updateTraceResult,
   bulkUpdateTraceResults,
   resetIterationState,
+  setRunMaxFiringRate,
   snapshotIteration,
   cellSubsetKey,
 } from './iteration-store.ts';
@@ -52,8 +53,6 @@ import {
   finalSelectionWindow,
   hpFilterEnabled,
   lpFilterEnabled,
-  noiseConstrained,
-  sparsityCompareEnabled,
   traceFistaMaxIters,
   traceFistaTol,
   kernelFistaMaxIters,
@@ -365,8 +364,6 @@ async function dispatchTraceJobs(
   hpEnabled: boolean,
   lpEnabled: boolean,
   lambda: number,
-  noiseConstrained: boolean,
-  computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
   const jobs = subsetCellJobs(rects, skip);
@@ -401,8 +398,6 @@ async function dispatchTraceJobs(
         hpEnabled,
         lpEnabled,
         lambda,
-        noiseConstrained,
-        computeComparison,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -621,6 +616,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   let tauR = TAU_RISE_FALLBACK;
   let tauD = TAU_DECAY_FALLBACK;
   const maxFiringRateHz = maxFiringRate();
+  setRunMaxFiringRate(maxFiringRateHz);
   const maxIter = maxIterations();
   // Convergence controls (see algorithm-store / CONVERGENCE_RANGES). convTol is
   // the kernel-RMSE threshold; selWindow is still a shape-space (median) control.
@@ -640,8 +636,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   const hpOn = hpFilterEnabled();
   const lpOn = lpFilterEnabled();
   const sparsityLambda = 0.0;
-  const noiseConstrainedOn = noiseConstrained();
-  const computeComparison = sparsityCompareEnabled();
   const solver: SolverSettings = {
     traceMaxIters: traceFistaMaxIters(),
     traceTol: traceFistaTol(),
@@ -814,8 +808,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
       hpOn,
       lpOn,
       sparsityLambda,
-      noiseConstrainedOn,
-      computeComparison,
       prevTraceCounts,
     );
     assertCurrent(runId);
@@ -839,14 +831,11 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: number;
         pve: number;
         pveCeiling: number | null;
-        noisePath: boolean | undefined;
         diagnostics: SolveDiagnostics;
       }
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
     const cellFiltered = new Map<number, Float32Array>();
-    // Map cell → full-length opposite-setting counts (comparison overlay)
-    const cellComparison = new Map<number, Float32Array>();
     const batchEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -867,15 +856,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           }
           fullFilt.set(result.filteredTrace, rect.tStart);
         }
-        // Stitch comparison counts subset windows into full-length arrays
-        if (result.comparisonSCounts) {
-          let fullCmp = cellComparison.get(cell);
-          if (!fullCmp) {
-            fullCmp = new Float32Array(nTp);
-            cellComparison.set(cell, fullCmp);
-          }
-          fullCmp.set(result.comparisonSCounts, rect.tStart);
-        }
         const pveCeiling = processedCeiling(result.filteredTrace, result.noiseVarProcessed);
         cellScalars.set(cell, {
           alpha: result.alpha,
@@ -883,7 +863,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
-          noisePath: result.noisePath,
           diagnostics: solveDiagnostics(result),
         });
 
@@ -898,9 +877,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
-          noisePath: result.noisePath,
           ...solveDiagnostics(result),
-          comparisonSCounts: result.comparisonSCounts,
         };
       }
     }
@@ -920,9 +897,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: scalars.threshold,
         pve: scalars.pve,
         pveCeiling: scalars.pveCeiling,
-        noisePath: scalars.noisePath,
         ...scalars.diagnostics,
-        comparisonSCounts: cellComparison.get(cell),
       };
     }
 
@@ -1155,8 +1130,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         hpEnabled: hpOn,
         lpEnabled: lpOn,
         lambda: sparsityLambda,
-        noiseConstrained: noiseConstrainedOn,
-        computeComparison,
         // Warm-start finalization from subset iteration results where available.
         // prevTraceCounts has full-length s_counts for cells that appeared in subsets.
         warmCounts: prevTraceCounts?.get(c),
@@ -1172,9 +1145,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
               threshold: result.threshold,
               pve: result.pve,
               pveCeiling: processedCeiling(result.filteredTrace, result.noiseVarProcessed),
-              noisePath: result.noisePath,
               ...solveDiagnostics(result),
-              comparisonSCounts: result.comparisonSCounts,
             });
             settle();
           });

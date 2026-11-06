@@ -1994,7 +1994,7 @@ mod tests {
         // events, and the one-SE size pick keeps each as one spike (33 per
         // 600 samples on this trace, no penalty on the count; see the
         // `event_mass` docs), so the bound is loose (8%) and applies to the
-        // noise-constrained run.
+        // run.
         let total: f32 = r.s_counts.iter().sum();
         let bound = max_spike_frac * trace.len() as f32;
         assert!(

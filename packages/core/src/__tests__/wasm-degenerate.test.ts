@@ -238,7 +238,7 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
         warm = new Float32Array(0),
         lam = 0,
       } = {},
-    ) => indeca_solve_trace(trace, tr, td, fs, mfr, 50, tol, false, false, warm, lam, false);
+    ) => indeca_solve_trace(trace, tr, td, fs, mfr, 50, tol, false, false, warm, lam);
 
     it.each(BAD_PARAMS)('rejects %s', (_l, tr, td, lam, fs) => {
       expectRejected(

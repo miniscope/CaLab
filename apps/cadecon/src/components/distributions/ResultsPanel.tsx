@@ -26,8 +26,6 @@ import {
   fitFromPoints,
   ceilingBand,
   ceilingVerdict,
-  noiseGuardText,
-  noiseGuardCounts,
   VERDICT_TEXT,
 } from '../../lib/results-ceiling.ts';
 
@@ -71,8 +69,6 @@ export function ResultsPanel(): JSX.Element {
       lines.push(`dataset ceiling at this SNR ${pct(ceilingAt(f.c, p.snr))}`);
       lines.push(VERDICT_TEXT[ceilingVerdict(f, p.snr, p.pve)]);
     }
-    const ng = noiseGuardText(p.noisePath);
-    if (ng) lines.push(ng);
     const fl = overview()?.flags[id];
     if (fl && fl.length) lines.push(`flags: ${fl.join(', ')}`);
     return lines.join('\n');
@@ -146,12 +142,6 @@ export function ResultsPanel(): JSX.Element {
             {skippedCount() > 0 && (
               <span class="text-warning" data-testid="results-skipped-count">
                 {skippedCount()} cell{skippedCount() === 1 ? '' : 's'} skipped (missing samples)
-              </span>
-            )}
-            {noiseGuardCounts(points()).total > 0 && (
-              <span>
-                noise guard active on {noiseGuardCounts(points()).active} of{' '}
-                {noiseGuardCounts(points()).total} cells
               </span>
             )}
             <span>

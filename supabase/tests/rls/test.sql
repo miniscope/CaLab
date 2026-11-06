@@ -887,9 +887,8 @@ SELECT assert_denied(
 ROLLBACK;
 
 -- ── cadecon max_firing_rate replaces upsample_factor (016) ────────────────
--- Decision: a row must carry max_firing_rate OR upsample_factor (valid_rate_param).
--- Old clients that still send only upsample_factor are accepted; a row with
--- neither is rejected; max_firing_rate must be finite, > 0 and <= 10000.
+-- Decision: max_firing_rate is required (NOT NULL), finite, > 0 and <= 10000;
+-- upsample_factor no longer exists.
 BEGIN;
 SET LOCAL ROLE authenticated;
 SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
@@ -914,16 +913,14 @@ SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate', '10000'),
   'cadecon max_firing_rate at upper bound');
 SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate', '0.5'),
   'cadecon fractional max_firing_rate allowed (double precision)');
-SELECT assert_allowed(pg_temp.cadecon_rate_insert('upsample_factor', '10'),
-  'cadecon old-style row with only upsample_factor still accepted');
-SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate, upsample_factor', '300, 10'),
-  'cadecon row with both rate params accepted');
--- Neither rate parameter present.
--- (beta is a harmless stand-in column so the INSERT stays well-formed.)
+-- Missing max_firing_rate (beta is a harmless stand-in column so the INSERT
+-- stays well-formed): NOT NULL violation.
 SELECT assert_denied(pg_temp.cadecon_rate_insert('beta', 'NULL'),
-  'cadecon missing max_firing_rate and upsample_factor denied', '23514');
+  'cadecon missing max_firing_rate denied', '23502');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('upsample_factor', '10'),
+  'cadecon old-style upsample_factor column no longer exists', '42703');
 SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', 'NULL'),
-  'cadecon NULL max_firing_rate with no upsample_factor denied', '23514');
+  'cadecon NULL max_firing_rate denied', '23502');
 SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', '0'),
   'cadecon max_firing_rate 0 denied', '23514');
 SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', '-5'),
@@ -936,22 +933,18 @@ SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', $v$'Infinity
   'cadecon max_firing_rate Infinity denied', '23514');
 SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', $v$'-Infinity'$v$),
   'cadecon max_firing_rate -Infinity denied', '23514');
--- The legacy bound on upsample_factor still applies when it is sent.
-SELECT assert_denied(pg_temp.cadecon_rate_insert('upsample_factor', '0'),
-  'cadecon upsample_factor 0 still denied', '23514');
 ROLLBACK;
 
--- The public view exposes max_firing_rate and still exposes upsample_factor.
+-- The public view exposes max_firing_rate and no upsample_factor column.
 BEGIN;
 SET LOCAL ROLE anon;
 SELECT assert_row_count(
   $sql$SELECT COUNT(*)::int FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice' AND max_firing_rate = 300$sql$,
   1,
   'cadecon public view: max_firing_rate readable by anon');
-SELECT assert_row_count(
-  $sql$SELECT COUNT(*)::int FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice' AND upsample_factor IS NULL$sql$,
-  1,
-  'cadecon public view: upsample_factor column still present (NULL on new rows)');
+SELECT assert_denied(
+  $sql$SELECT upsample_factor FROM cadecon_submissions_public LIMIT 1$sql$,
+  'cadecon public view no longer has upsample_factor', '42703');
 SELECT assert_denied(
   $sql$SELECT orcid FROM cadecon_submissions_public LIMIT 1$sql$,
   'cadecon public view still omits orcid', '42703');

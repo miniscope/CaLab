@@ -9,8 +9,6 @@ import {
   setHpFilterEnabled,
   lpFilterEnabled,
   setLpFilterEnabled,
-  noiseConstrained,
-  setNoiseConstrained,
   maxIterations,
   setMaxIterations,
   convergenceTol,
@@ -88,14 +86,6 @@ export function AlgorithmSettings(): JSX.Element {
           description="Remove high-frequency noise before deconvolution"
           checked={lpFilterEnabled()}
           onChange={setLpFilterEnabled}
-          disabled={isRunLocked()}
-        />
-
-        <ToggleSwitch
-          label="Noise-floor guard"
-          description="On noisy cells, picks the sparsest spike train whose fit stays within the measured noise floor instead of the best-fitting one. On cells where no candidate reaches the noise floor (typically SNR above ~8), it has no effect and the result is the best fit."
-          checked={noiseConstrained()}
-          onChange={setNoiseConstrained}
           disabled={isRunLocked()}
         />
       </div>

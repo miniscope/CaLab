@@ -506,9 +506,8 @@ def test_indeca_solve_trace_rejects_non_finite(trace, idx):
         {},
         {"max_firing_rate": 1000.0},
         {"hp_enabled": True, "lp_enabled": True},
-        {"noise_constrained": True},
     ],
-    ids=["plain", "high-rate-cap", "filtered", "noise-constrained"],
+    ids=["plain", "high-rate-cap", "filtered"],
 )
 def test_indeca_solve_trace_degenerate_traces(trace, opts):
     counts, alpha, baseline, threshold, pve, iters, _conv, noise_var, gain, diag = _solver.py_indeca_solve_trace(
