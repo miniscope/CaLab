@@ -1,76 +1,132 @@
-//! Event-mass quantisation of the native-rate relaxed solution
-//! (`indeca::Binarize::EventMass`, the default binarization).
+//! Event-mass binarization of the native-rate relaxed solution: the spike
+//! counts per frame the InDeCa pipeline reports.
 //!
-//! Builds on the `event_mass` module of the `exp/indeca-binarization`
-//! branch (a9775df); the noise-based pick is new here.
+//! Everything here runs at the recorded frame rate; nothing is upsampled.
+//! The relaxed solve (`native_solve`) gives each frame `j` a mass `x_j` (in
+//! units of the solve's prescale), boxed to `[0, cap]` spikes' worth with
+//! `cap = max(1, round(max_firing_rate / fs))`, the most spikes a frame can
+//! hold. This module turns the masses into integer spike counts per frame
+//! (0..=cap).
 //!
-//! The threshold search reads the relaxed solution's tent: an event's count
-//! is the width of its lobe above the threshold. This family reads the
-//! event's MASS instead: the relaxed frame masses `x` (spike units at the
-//! solve's prescale) are segmented into events, each with a mass `m_e` and
-//! a mass-weighted centroid `t_e` (sub-frame, in spike-resolution sub-bins),
-//! and a candidate train places `n_e(a) = round(m_e / a)` spikes in
-//! consecutive sub-bins centred on `t_e` (never more than one per sub-bin:
-//! the refractory pin). The family is indexed by the per-spike amplitude
-//! `a`, on [`THRESHOLD_GRID_LEVELS`] levels over `[a_max / k, a_max]` with
-//! `a_max` the largest event mass (above it every event vanishes) and `k`
-//! the upsample factor (the refractory cap on spikes per frame: below
-//! `a_max / k` the largest single-frame event would need more spikes than a
-//! frame can hold). Each candidate is scored exactly through the chain.
+//! # Events and counts
 //!
-//! # The pick: a noise-based penalty per spike
+//! The interior frames (the edge zone of `2 tau_decay` at each end is
+//! excluded) are cut into **events**: maximal runs of positive mass. A run
+//! is not split at local minima, so a long burst is one event whatever the
+//! noise does to its profile. A spike size `a` turns each event's mass `m_e`
+//! into `n_e(a) = round(m_e / a)` spikes.
 //!
-//! With a noise model, the pick minimises `error + 2 sigma^2 ln(n_grid) *
-//! count`. `2 sigma^2 ln(n_grid)` is the largest energy one free-amplitude
-//! atom can remove from pure noise on the grid (the per-atom gate bound of
-//! the pursuit on `exp/indeca-binarization`; the universal threshold / risk
-//! inflation criterion), so a
-//! spike is kept only if it explains more than the largest noise bump.
-//! `sigma` and `n_grid` are the trace's own noise model and grid: no tuning
-//! constant. The threshold search's rule (sparsest within `max(budget, e_min
-//! + SE)`) is an absolute test: when the right train sits above the budget
-//! for reasons unrelated to the count (rounding, sub-frame timing, the
-//! chain), it slides to dense trains that fit noise. The penalty compares
-//! candidates with each other instead. Without a noise model the pick is
-//! the threshold search's rule (`select_sparsest`).
+//! # Placement
 //!
-//! The grid floor `a_max / k` also guards the penalty: below it, sizes that
-//! fit systematic misfit (not noise) can pay for themselves (measured: a
-//! smallest-event floor fixed under-counted bursty cells but over-counted
-//! 2-8x elsewhere on ground truth).
+//! The `n` spikes of an event go where its cumulative mass crosses
+//! `(i - 1/2) / n`, `i = 1..=n` (the quantiles of the mass profile, so a
+//! burst keeps its shape and extent); a single spike goes to the centroid
+//! frame. A frame holds an integer count up to `cap`; a spike whose frame is
+//! full moves to the nearest frame of the event's span with room. If the
+//! whole span is full, the spike cannot be placed and is recorded in
+//! [`EventMassDiag::dropped_spikes`] (the count never exceeds what the span
+//! can hold).
 //!
-//! # Segmentation
+//! # The size search and the pick
 //!
-//! Events are maximal runs of positive frame mass inside the interior,
-//! split at interior local minima (a frame whose mass is below both its
-//! neighbours starts a new event). The relaxed solve spreads one spike over
-//! about three frames (measured 0.24 / 0.50 / 0.20 at f-1 / f / f+1 on the
-//! simulation presets), so a run is one event unless the masses dip; two
-//! spikes closer than the dip resolution merge into one event of mass 2 and
-//! are placed together at the centroid (a timing error of up to one frame).
+//! `a` is swept over [`THRESHOLD_GRID_LEVELS`] levels on `[frame_max / cap,
+//! a_max]`, with `frame_max` the largest single-frame interior mass and
+//! `a_max` the largest event mass (above it every event vanishes). The
+//! floor `frame_max / cap` is the densest allowed train: at that size the
+//! busiest frame holds exactly `cap` spikes, so no frame is asked for more
+//! than it can hold. Each candidate train is scored exactly through the
+//! trace's own preprocessing chain ([`Scorer`]), with the amplitude and
+//! offset fit freely, and compared with `E_relaxed`, the score of the
+//! continuous relaxed solution `x` itself through the same scorer: how much
+//! error does quantizing the relaxed solution into whole spikes of size `a`
+//! cost?
 //!
-//! What this family cannot fix: the relaxed solve loses mass on dense cells
-//! (measured 0.17-0.49 of a spike within +-2 frames of an isolated event at
-//! 1.9 Hz), and a mass-based count inherits that loss as an undercount.
+//! The pick is the **largest** `a` whose cost `E_q(a) - E_relaxed` is at most
+//! one standard error of the noise energy ([`NoiseModel::std_error`] over the
+//! interior): the sparsest quantization the data cannot tell from the
+//! relaxed fit. If none qualifies, or the trace has no noise model, the pick
+//! is the floor. There is no penalty on the spike count: sparsity comes from
+//! the quantization (a size a, an integer count) and from the fit ceiling
+//! alone.
+//!
+//! # Diagnostics
+//!
+//! [`EventMassDiag`] reports, per cell and without acting on them:
+//! `cap_limited` (the pick ended at the floor, so the cap set the spike
+//! size), `no_size_fit` (no size passed the one-SE test), `peak_outlier_ratio`
+//! (one frame dominating the floor) and `dropped_spikes` (spikes that could
+//! not be placed).
 use crate::banded::BandedAR2;
 use crate::chain::Scorer;
-use crate::threshold::{
-    interior_pve, select_sparsest, threshold_grid, NoiseModel, Selection, ThresholdResult,
-};
+use crate::threshold::{interior_pve, threshold_grid, NoiseModel};
 
 /// One event of the relaxed solution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Event {
-    /// Mass (spike units at the solve's prescale).
+    /// Mass (units of the solve's prescale; `mass / a` is a spike count).
     pub mass: f64,
-    /// Mass-weighted centre in sub-bins of the spike-resolution grid
-    /// (frame `i` sits at `i * k`).
+    /// Mass-weighted centre, in frames.
     pub centre: f64,
+    /// Frames `[start, end)` the event spans.
+    pub start: usize,
+    pub end: usize,
+    /// Largest single-frame mass inside the event.
+    pub peak: f64,
 }
 
-/// Segment the frame masses `x` over the interior `[lo, hi)` into events.
-pub(crate) fn segment(x: &[f32], k: usize, lo: usize, hi: usize) -> Vec<Event> {
-    let k = k.max(1);
+/// Per-cell diagnostics of the binarization. None of them changes the result.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EventMassDiag {
+    /// Chain-scored error of the continuous relaxed solution (0 without a
+    /// noise model, where it is not computed).
+    pub e_relaxed: f64,
+    /// One standard error of the noise energy over the interior (0 without a
+    /// noise model).
+    pub std_error: f64,
+    /// Chain-scored error of the picked train.
+    pub e_pick: f64,
+    /// Picked spike size, the floor and the largest event mass (units of the
+    /// solve's prescale).
+    pub a_pick: f64,
+    pub a_floor: f64,
+    pub a_max: f64,
+    /// Spikes placed at the pick.
+    pub count_pick: f64,
+    /// The pick ended at the floor size `frame_max / cap` (the densest train
+    /// the cap allows): the cap, not the data, set the spike size. Always
+    /// true without a noise model, where the floor is the rule.
+    pub cap_limited: bool,
+    /// A noise model was available and no spike size passed the one-SE test
+    /// against the relaxed solution, so the floor was taken.
+    pub no_size_fit: bool,
+    /// Largest event-peak frame mass over the second largest (each event's
+    /// peak being its largest single-frame mass): how much one event
+    /// dominates the floor `frame_max / cap`. 1 with fewer than two events
+    /// (0 with none).
+    pub peak_outlier_ratio: f64,
+    /// Spikes the picked size asked for that no frame of their event's span
+    /// had room for.
+    pub dropped_spikes: u32,
+}
+
+/// The result of [`event_mass_search`].
+pub(crate) struct EventMassResult {
+    /// Integer spike count per frame (`0..=cap`), native length.
+    pub counts: Vec<f32>,
+    pub alpha: f64,
+    pub baseline: f64,
+    pub pve: f64,
+    /// Chain-scored error of the picked train.
+    pub error: f64,
+    /// Informational: the best candidate beats the noise floor by more than
+    /// one standard error (`noise_constrained` only; see `indeca`).
+    pub noise_path: bool,
+    pub diag: EventMassDiag,
+}
+
+/// Cut the frame masses `x` over the interior `[lo, hi)` into events:
+/// maximal runs of positive mass.
+pub(crate) fn segment(x: &[f32], lo: usize, hi: usize) -> Vec<Event> {
     let hi = hi.min(x.len());
     let mut out = Vec::new();
     let mut i = lo;
@@ -79,78 +135,73 @@ pub(crate) fn segment(x: &[f32], k: usize, lo: usize, hi: usize) -> Vec<Event> {
             i += 1;
             continue;
         }
-        // Run start: extend while positive and not past an interior local
-        // minimum.
         let start = i;
         let mut end = i + 1;
         while end < hi && x[end] > 0.0 {
-            let is_min = end + 1 < hi && x[end] < x[end - 1] && x[end] < x[end + 1];
-            if is_min && end > start {
-                break;
-            }
             end += 1;
         }
-        let mut mass = 0.0_f64;
-        let mut moment = 0.0_f64;
+        let (mut mass, mut moment, mut peak) = (0.0_f64, 0.0_f64, 0.0_f64);
         for (j, &v) in x.iter().enumerate().take(end).skip(start) {
             mass += v as f64;
-            moment += (j * k) as f64 * v as f64;
+            moment += j as f64 * v as f64;
+            peak = peak.max(v as f64);
         }
-        if mass > 0.0 {
-            out.push(Event {
-                mass,
-                centre: moment / mass,
-            });
-        }
+        out.push(Event {
+            mass,
+            centre: moment / mass,
+            start,
+            end,
+            peak,
+        });
         i = end;
     }
     out
 }
 
-/// Place `n` spikes per event (`counts[e]`) around the events' centres into
-/// `s` (0/1 per sub-bin), inside `[pad, n_up - pad)`. Returns the number
-/// placed.
-fn place(events: &[Event], counts: &[usize], pad: usize, s: &mut [f32]) -> usize {
-    s.iter_mut().for_each(|v| *v = 0.0);
-    let n = s.len();
-    let hi = n.saturating_sub(pad);
-    if hi <= pad {
+/// Place `n` spikes of event `e` into `s` (an integer count per frame, each
+/// at most `cap`). Spike `i` of `n` goes to the frame where the event's
+/// cumulative mass reaches `(i + 1/2) / n` of its total (the centroid frame
+/// for `n = 1`); a full frame sends the spike to the nearest frame of the
+/// event's span with room. Returns the number placed (less than `n` only
+/// when the span is full).
+fn place_event(e: &Event, x: &[f32], n: usize, cap: f32, s: &mut [f32]) -> usize {
+    let len = e.end - e.start;
+    if n == 0 || len == 0 {
         return 0;
     }
-    let mut total = 0usize;
-    for (e, &c) in events.iter().zip(counts) {
-        if c == 0 {
-            continue;
-        }
-        let centre = e.centre.round() as isize;
-        let mut first = centre - (c as isize) / 2;
-        first = first.clamp(pad as isize, (hi as isize - c as isize).max(pad as isize));
-        let mut placed = 0usize;
-        let mut j = first as usize;
-        while placed < c && j < hi {
-            if s[j] == 0.0 {
-                s[j] = 1.0;
+    // cum[m] = event mass in frames [start, start + m).
+    let mut cum = Vec::with_capacity(len + 1);
+    cum.push(0.0_f64);
+    for j in e.start..e.end {
+        cum.push(cum[j - e.start] + x[j].max(0.0) as f64);
+    }
+    let total = cum[len];
+    let mut placed = 0usize;
+    for i in 0..n {
+        let target = if n == 1 {
+            (e.centre.round() as isize - e.start as isize).clamp(0, len as isize - 1) as usize
+        } else {
+            let t = (i as f64 + 0.5) / n as f64 * total;
+            // First frame whose cumulative mass reaches t.
+            cum.partition_point(|&c| c < t)
+                .saturating_sub(1)
+                .min(len - 1)
+        };
+        for d in 0..len {
+            let below = target.checked_sub(d);
+            let above = (target + d < len).then_some(target + d);
+            let slot = [below, above]
+                .into_iter()
+                .flatten()
+                .find(|&b| s[e.start + b] < cap);
+            if let Some(b) = slot {
+                s[e.start + b] += 1.0;
                 placed += 1;
+                break;
             }
-            j += 1;
-        }
-        total += placed;
-    }
-    total
-}
-
-/// The sub-bins where `next` gains (`added`) or loses (`removed`) a spike
-/// relative to `prev` (both 0/1).
-fn diff(prev: &[f32], next: &[f32], added: &mut Vec<usize>, removed: &mut Vec<usize>) {
-    added.clear();
-    removed.clear();
-    for (j, (&p, &q)) in prev.iter().zip(next).enumerate() {
-        if q > p {
-            added.push(j);
-        } else if q < p {
-            removed.push(j);
         }
     }
+    placed
 }
 
 /// Per-event counts `round(m_e / a)` at spike size `a`.
@@ -160,26 +211,59 @@ fn counts_at(events: &[Event], a: f64, out: &mut [usize]) {
     }
 }
 
-/// Run the event-mass search. `x` are the native-rate frame masses, the
-/// candidates are scored on the spike-resolution grid (`scorer`, `banded`
-/// at the upsampled rate, every `k`-th sample of `[pad, n_up - pad)`).
-/// Returns the pick as a [`ThresholdResult`] (`threshold` is the picked
-/// per-spike amplitude relative to `a_max`) and the number of chain passes.
-#[allow(clippy::too_many_arguments)]
+/// Place every event's `counts[e]` spikes into `s` (cleared first). Returns
+/// the number placed.
+fn place_all(events: &[Event], x: &[f32], counts: &[usize], cap: usize, s: &mut [f32]) -> usize {
+    s.iter_mut().for_each(|v| *v = 0.0);
+    events
+        .iter()
+        .zip(counts)
+        .map(|(e, &c)| place_event(e, x, c, cap as f32, s))
+        .sum()
+}
+
+/// The frames where `next` gains (`added`) or loses (`removed`) spikes
+/// relative to `prev`: one entry per spike gained or lost.
+fn diff(prev: &[f32], next: &[f32], added: &mut Vec<usize>, removed: &mut Vec<usize>) {
+    added.clear();
+    removed.clear();
+    for (j, (&p, &q)) in prev.iter().zip(next).enumerate() {
+        if q > p {
+            added.extend(std::iter::repeat_n(j, (q - p).round() as usize));
+        } else if q < p {
+            removed.extend(std::iter::repeat_n(j, (p - q).round() as usize));
+        }
+    }
+}
+
+/// The relaxed solution restricted to the interior (the edge zone carries no
+/// spikes in any candidate, so it carries none here).
+fn relaxed_profile(x: &[f32], lo: usize, hi: usize, out: &mut [f32]) {
+    out.iter_mut().for_each(|v| *v = 0.0);
+    for j in lo..hi.min(x.len()) {
+        out[j] = x[j].max(0.0);
+    }
+}
+
+/// Run the event-mass search. `x` are the frame masses of the relaxed
+/// native-rate solve; candidates are scored through `scorer` with `banded`
+/// over the interior `[pad, n - pad)`. `cap` is the most spikes one frame
+/// holds. `noise` (the interior's noise model) enables the one-SE pick;
+/// without it the pick is the floor. `noise_constrained` only controls the
+/// informational `noise_path` flag.
 pub(crate) fn event_mass_search(
     x: &[f32],
-    k: usize,
-    lo: usize,
-    hi: usize,
     scorer: &mut Scorer,
     banded: &BandedAR2,
     pad: usize,
-    selection: Selection,
+    cap: usize,
     noise: Option<NoiseModel>,
-) -> (ThresholdResult, usize) {
-    let k = k.max(1);
+    noise_constrained: bool,
+) -> EventMassResult {
     let n = scorer.target().len();
-    let events = segment(x, k, lo, hi);
+    let cap = cap.max(1);
+    let (lo, hi) = (pad.min(n), n.saturating_sub(pad));
+    let events = if lo < hi { segment(x, lo, hi) } else { vec![] };
     let a_max = events.iter().map(|e| e.mass).fold(0.0_f64, f64::max);
     let mut s = vec![0.0_f32; n];
     let mut conv = vec![0.0_f32; n];
@@ -189,237 +273,438 @@ pub(crate) fn event_mass_search(
         } else {
             scorer.target().iter().map(|&v| v as f64).sum::<f64>() / n as f64
         };
-        return (
-            ThresholdResult {
-                s_binary: s,
-                alpha: 0.0,
-                baseline,
-                threshold: 0.0,
-                pve: 0.0,
-                error: f64::INFINITY,
-                noise_path: false,
-                diag: Default::default(),
-            },
-            0,
-        );
+        return EventMassResult {
+            counts: s,
+            alpha: 0.0,
+            baseline,
+            pve: 0.0,
+            error: f64::INFINITY,
+            noise_path: false,
+            diag: EventMassDiag::default(),
+        };
     }
+    let frame_max = x[lo..hi].iter().fold(0.0_f64, |m, &v| m.max(v as f64));
+    let a_floor = frame_max / cap as f64;
+    let floor_rel = (a_floor / a_max).clamp(1e-6, 1.0);
     // Levels ascending in `a` (relative to a_max): the last is the sparsest.
-    let levels = threshold_grid(1.0 / k as f64);
+    let levels = threshold_grid(floor_rel);
     let mut errors = vec![f64::INFINITY; levels.len()];
-    let mut alphas = vec![0.0_f64; levels.len()];
-    let mut counts = vec![0.0_f64; levels.len()];
     let mut per_event = vec![0usize; events.len()];
-    let mut last_count = usize::MAX;
-    let mut last = (f64::INFINITY, 0.0_f64);
-    let mut passes = 0usize;
-    // Sparsest first. Consecutive candidates differ by a few spikes (counts
-    // only grow; a re-centred event block also moves a little), so where the
-    // chain allows it each candidate is scored from the previous one by
-    // superposition, with the spikes it gains added and the ones it loses
-    // removed (`Scorer::score_changed`).
+    let mut last_requested = usize::MAX;
+    let mut last_error = f64::INFINITY;
+    // Sparsest first. Consecutive candidates differ by a few spikes, so
+    // where the chain allows it each candidate is scored from the previous
+    // one by superposition, adding the spikes it gains and removing the ones
+    // it loses (`Scorer::score_changed`).
     let nested = scorer.begin_nested(banded, n);
     let mut prev = vec![0.0_f32; n];
     let (mut added, mut removed) = (Vec::new(), Vec::new());
     for (i, &rel) in levels.iter().enumerate().rev() {
         counts_at(&events, rel * a_max, &mut per_event);
-        let count = place(&events, &per_event, pad, &mut s);
-        if count != last_count {
-            passes += 1;
-            let (e, al, _) = if nested {
+        let requested: usize = per_event.iter().sum();
+        // Counts only grow as `a` falls, so an unchanged total is an
+        // unchanged train: reuse its error instead of rescoring.
+        if requested != last_requested {
+            place_all(&events, x, &per_event, cap, &mut s);
+            last_error = if nested {
                 diff(&prev, &s, &mut added, &mut removed);
                 prev.copy_from_slice(&s);
-                scorer.score_changed(&added, &removed, pad, k, f64::INFINITY, &mut conv)
+                scorer
+                    .score_changed(&added, &removed, pad, f64::INFINITY, &mut conv)
+                    .0
             } else {
-                scorer.score(&s, banded, pad, k, f64::INFINITY, &mut conv)
+                scorer.score(&s, banded, pad, f64::INFINITY, &mut conv).0
             };
-            last = (e, al);
-            last_count = count;
+            last_requested = requested;
         }
-        errors[i] = last.0;
-        alphas[i] = last.1;
-        counts[i] = count as f64;
+        errors[i] = last_error;
     }
-    let n_grid = (pad..n.saturating_sub(pad)).step_by(k).count();
-    let sel = select_sparsest(
-        &errors,
-        &alphas,
-        &counts,
-        (0..levels.len()).rev(),
-        selection,
-        noise,
-        n_grid,
-    );
-    // With a noise model, the pick minimises error + 2 sigma^2 ln(n_grid) per
-    // spike (module docs); without one, the threshold search's rule.
-    let mut diag = sel.diag;
+    let n_grid = hi - lo;
+    let mut diag = EventMassDiag {
+        a_floor,
+        a_max,
+        peak_outlier_ratio: peak_outlier_ratio(&events),
+        ..Default::default()
+    };
     let pick = match noise {
         Some(nm) => {
-            let lam = noise_penalty(nm, n_grid);
-            let score = |i: usize| errors[i] + lam * counts[i];
-            let p = (0..levels.len())
-                .min_by(|&i, &j| score(i).total_cmp(&score(j)))
-                .unwrap_or(sel.index);
-            diag.e_pick = errors[p];
-            diag.level_pick = p;
-            diag.slack = diag.ceiling - errors[p];
-            diag.count_pick = counts[p];
-            diag.alpha_pick = alphas[p];
-            p
+            let mut prof = vec![0.0_f32; n];
+            relaxed_profile(x, lo, hi, &mut prof);
+            let (e_rel, _, _) = scorer.score(&prof, banded, pad, f64::INFINITY, &mut conv);
+            let se = nm.std_error(n_grid);
+            diag.e_relaxed = e_rel;
+            diag.std_error = se;
+            // Largest size whose quantization cost is within one SE.
+            let fit = (0..levels.len()).rev().find(|&i| errors[i] - e_rel <= se);
+            diag.no_size_fit = fit.is_none();
+            fit.unwrap_or(0)
         }
-        None => sel.index,
+        None => 0,
     };
-    counts_at(&events, levels[pick] * a_max, &mut per_event);
-    place(&events, &per_event, pad, &mut s);
-    passes += 1;
-    let (_, alpha, baseline) = scorer.score(&s, banded, pad, k, f64::INFINITY, &mut conv);
+    diag.cap_limited = pick == 0;
+    diag.a_pick = levels[pick] * a_max;
+    diag.e_pick = errors[pick];
+    let noise_path = match noise {
+        Some(nm) if noise_constrained => {
+            let e_min = errors.iter().copied().fold(f64::INFINITY, f64::min);
+            nm.budget(n_grid) > e_min + nm.std_error(n_grid)
+        }
+        _ => false,
+    };
+    counts_at(&events, diag.a_pick, &mut per_event);
+    let requested: usize = per_event.iter().sum();
+    let placed = place_all(&events, x, &per_event, cap, &mut s);
+    diag.dropped_spikes = (requested - placed) as u32;
+    diag.count_pick = placed as f64;
+    let (_, alpha, baseline) = scorer.score(&s, banded, pad, f64::INFINITY, &mut conv);
     let pve = interior_pve(scorer.target(), &conv, alpha, baseline, pad);
-    (
-        ThresholdResult {
-            s_binary: s,
-            alpha,
-            baseline,
-            threshold: levels[pick],
-            pve,
-            error: errors[pick],
-            noise_path: sel.noise_path,
-            diag,
-        },
-        passes,
-    )
+    EventMassResult {
+        counts: s,
+        alpha,
+        baseline,
+        pve,
+        error: errors[pick],
+        noise_path,
+        diag,
+    }
 }
 
-/// The per-spike penalty `2 sigma^2 ln(n_grid)`: the largest energy one
-/// free-amplitude atom can remove from pure noise on the grid (the pursuit's
-/// per-atom gate bound on `exp/indeca-binarization`: the largest noise correlation is about
-/// `sigma sqrt(E_phi) sqrt(2 ln n_grid)`, and an atom removes `c^2 / E_phi`).
-fn noise_penalty(nm: NoiseModel, n_grid: usize) -> f64 {
-    2.0 * nm.sigma * nm.sigma * (n_grid.max(2) as f64).ln()
+/// Largest event peak over the second largest (see
+/// [`EventMassDiag::peak_outlier_ratio`]).
+fn peak_outlier_ratio(events: &[Event]) -> f64 {
+    let (mut first, mut second) = (0.0_f64, 0.0_f64);
+    for e in events {
+        if e.peak > first {
+            second = first;
+            first = e.peak;
+        } else if e.peak > second {
+            second = e.peak;
+        }
+    }
+    match events.len() {
+        0 => 0.0,
+        1 => 1.0,
+        _ if second > 0.0 => first / second,
+        _ => 1.0,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::Chain;
+    use crate::filter::BandpassFilter;
 
-    #[test]
-    fn segmentation_splits_at_local_minima_and_keeps_mass() {
-        // Two humps separated by a dip, and an isolated frame.
-        let x = [0.0, 0.2, 0.6, 0.2, 0.1, 0.3, 0.5, 0.0, 0.0, 1.0, 0.0];
-        let ev = segment(&x, 10, 0, x.len());
-        assert_eq!(ev.len(), 3, "{ev:?}");
-        assert!((ev[0].mass - 1.0).abs() < 1e-6);
-        assert!((ev[0].centre - 20.0).abs() < 1e-6);
-        assert!((ev[1].mass - 0.9).abs() < 1e-6);
-        assert!((ev[2].mass - 1.0).abs() < 1e-6 && (ev[2].centre - 90.0).abs() < 1e-6);
-        let total: f64 = ev.iter().map(|e| e.mass).sum();
-        assert!((total - x.iter().map(|&v| v as f64).sum::<f64>()).abs() < 1e-6);
+    /// Counts per frame of a placed event set.
+    fn place(
+        events: &[Event],
+        x: &[f32],
+        counts: &[usize],
+        cap: usize,
+        n: usize,
+    ) -> (Vec<f32>, usize) {
+        let mut s = vec![0.0_f32; n];
+        let placed = place_all(events, x, counts, cap, &mut s);
+        (s, placed)
+    }
+
+    /// A smooth burst over frames 40..60 of total mass 12.
+    fn burst() -> Vec<f32> {
+        let mut x = vec![0.0_f32; 100];
+        for (j, v) in x.iter_mut().enumerate().take(60).skip(40) {
+            let u = (j as f32 - 49.5) / 6.0;
+            *v = (-u * u).exp();
+        }
+        let total: f32 = x.iter().sum();
+        x.iter_mut().for_each(|v| *v *= 12.0 / total);
+        x
     }
 
     #[test]
-    fn recovers_counts_of_clean_events_including_a_doublet() {
-        // Frame masses of three events (1, 2, 1 spikes) spread over three
-        // frames each; the clean trace is the 300 Hz truth. The sparsest
-        // within the (zero) allowance is the exact count per event.
-        let k = 10;
-        let n_nat = 400;
-        let banded = BandedAR2::new(0.1, 0.6, 300.0);
-        let mut x = vec![0.0_f32; n_nat];
-        let mut truth = vec![0.0_f32; n_nat * k];
-        for (f, c) in [(80usize, 1usize), (200, 2), (320, 1)] {
-            x[f - 1] = 0.25 * c as f32;
-            x[f] = 0.5 * c as f32;
-            x[f + 1] = 0.25 * c as f32;
-            for j in 0..c {
-                truth[f * k + j] = 1.0;
-            }
+    fn events_are_maximal_runs_and_are_not_split_at_local_minima() {
+        let mut x = vec![0.0_f32; 30];
+        // A run with a dip in the middle, then a separate singleton.
+        for (j, v) in [(5, 1.0), (6, 0.5), (7, 0.1), (8, 0.6), (9, 1.2), (20, 0.4)] {
+            x[j] = v;
         }
-        let mut y = vec![0.0_f32; n_nat * k];
-        banded.convolve_forward(&truth, &mut y);
-        let y: Vec<f32> = y.iter().map(|&v| 3.0 * v + 0.5).collect();
+        let ev = segment(&x, 0, 30);
+        assert_eq!(ev.len(), 2);
+        assert_eq!((ev[0].start, ev[0].end), (5, 10));
+        assert_eq!((ev[1].start, ev[1].end), (20, 21));
+        assert!((ev[0].mass - 3.4).abs() < 1e-6);
+        assert!((ev[0].peak - 1.2).abs() < 1e-6);
+        assert!((ev[1].centre - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn events_outside_the_interior_are_excluded() {
+        let mut x = vec![0.0_f32; 30];
+        x[2] = 1.0;
+        x[27] = 1.0;
+        x[15] = 1.0;
+        let ev = segment(&x, 5, 25);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].start, 15);
+    }
+
+    #[test]
+    fn a_single_spike_goes_to_the_centroid_frame() {
+        let mut x = vec![0.0_f32; 40];
+        x[19] = 0.25;
+        x[20] = 0.5;
+        x[21] = 0.25;
+        let ev = segment(&x, 0, 40);
+        let (s, placed) = place(&ev, &x, &[1], 10, 40);
+        assert_eq!(placed, 1);
+        assert_eq!(s[20], 1.0);
+    }
+
+    #[test]
+    fn spikes_follow_the_mass_quantiles_of_the_event() {
+        let x = burst();
+        let ev = segment(&x, 0, 100);
+        let (s, placed) = place(&ev, &x, &[12], 10, 100);
+        assert_eq!(placed, 12);
+        assert_eq!(s.iter().sum::<f32>(), 12.0);
+        // The train spreads over the burst and keeps its centroid.
+        let first = s.iter().position(|&v| v > 0.0).unwrap();
+        let last = s.iter().rposition(|&v| v > 0.0).unwrap();
+        assert!(last - first >= 6, "spread {first}..{last}");
+        let centroid: f64 = s
+            .iter()
+            .enumerate()
+            .map(|(j, &v)| j as f64 * v as f64)
+            .sum::<f64>()
+            / 12.0;
+        assert!((centroid - ev[0].centre).abs() < 0.6, "{centroid}");
+        // Frame counts are integers within the cap.
+        assert!(s.iter().all(|&v| v == v.round() && v <= 10.0));
+    }
+
+    #[test]
+    fn overflow_moves_to_the_nearest_frame_with_room_and_drops_when_full() {
+        // A 3-frame event with all its mass on the middle frame.
+        let mut x = vec![0.0_f32; 20];
+        x[9] = 0.01;
+        x[10] = 5.0;
+        x[11] = 0.01;
+        let ev = segment(&x, 0, 20);
+        // cap 4: 6 spikes -> 4 in the middle, the rest in the neighbours.
+        let (s, placed) = place(&ev, &x, &[6], 4, 20);
+        assert_eq!(placed, 6);
+        assert_eq!(s[10], 4.0);
+        assert_eq!(s[9] + s[11], 2.0);
+        // 13 spikes cannot fit in 3 frames of capacity 4: 12 placed.
+        let (s, placed) = place(&ev, &x, &[13], 4, 20);
+        assert_eq!(placed, 12);
+        assert_eq!(s.iter().sum::<f32>(), 12.0);
+        assert!(s.iter().all(|&v| v <= 4.0));
+    }
+
+    #[test]
+    fn peak_outlier_ratio_is_largest_over_second_largest_event_peak() {
+        let mk = |peak: f64| Event {
+            mass: peak,
+            centre: 0.0,
+            start: 0,
+            end: 1,
+            peak,
+        };
+        assert_eq!(peak_outlier_ratio(&[]), 0.0);
+        assert_eq!(peak_outlier_ratio(&[mk(3.0)]), 1.0);
+        assert_eq!(peak_outlier_ratio(&[mk(1.0), mk(6.0), mk(2.0)]), 3.0);
+        assert_eq!(peak_outlier_ratio(&[mk(2.0), mk(2.0)]), 1.0);
+    }
+
+    /// Frame masses for isolated events of `c` spikes, each smeared over
+    /// three frames as the relaxed solve does (0.25 / 0.5 / 0.25).
+    fn smeared(n: usize, events: &[(usize, usize)]) -> (Vec<f32>, Vec<f32>) {
+        let mut x = vec![0.0_f32; n];
+        let mut truth = vec![0.0_f32; n];
+        for &(f, c) in events {
+            x[f - 1] += 0.25 * c as f32;
+            x[f] += 0.5 * c as f32;
+            x[f + 1] += 0.25 * c as f32;
+            truth[f] = c as f32;
+        }
+        (x, truth)
+    }
+
+    fn clean_trace(banded: &BandedAR2, truth: &[f32]) -> Vec<f32> {
+        let mut y = vec![0.0_f32; truth.len()];
+        banded.convolve_forward(truth, &mut y);
+        y.iter().map(|&v| 3.0 * v + 0.5).collect()
+    }
+
+    #[test]
+    fn without_a_noise_model_the_pick_is_the_floor() {
+        let n = 400;
+        let banded = BandedAR2::new(0.05, 0.4, 30.0);
+        let (x, truth) = smeared(n, &[(80, 1), (200, 2), (320, 1)]);
+        let y = clean_trace(&banded, &truth);
         let mut sc = Scorer::Plain { y: &y };
-        let (r, passes) = event_mass_search(
-            &x,
-            k,
-            20,
-            n_nat - 20,
-            &mut sc,
-            &banded,
-            200,
-            Selection::MaxPve,
-            None,
-        );
-        let counts = crate::upsample::downsample_binary(&r.s_binary, k);
-        assert_eq!(counts[80], 1.0);
-        assert_eq!(counts[200], 2.0);
-        assert_eq!(counts[320], 1.0);
-        assert_eq!(counts.iter().sum::<f32>(), 4.0);
-        assert!((r.alpha - 3.0).abs() < 0.05, "{}", r.alpha);
-        assert!(passes <= crate::threshold::THRESHOLD_GRID_LEVELS + 1);
-        for (j, &v) in r.s_binary.iter().enumerate() {
-            assert!(v == 0.0 || (j >= 200 && j < n_nat * k - 200));
-        }
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, None, false);
+        // The floor is frame_max / cap: the busiest frame (mass 1.0) holds
+        // cap spikes, so a unit of 0.1 and ten spikes per mass unit.
+        assert!(r.diag.cap_limited && !r.diag.no_size_fit);
+        assert!((r.diag.a_pick - r.diag.a_floor).abs() < 1e-9);
+        assert_eq!(r.counts.iter().sum::<f32>(), 40.0);
+        assert!(r.counts.iter().all(|&v| v <= 10.0));
     }
 
     #[test]
-    fn noise_penalty_picks_the_exact_counts() {
-        // The same clean events (1, 2, 1 spikes) with a noise model: the
-        // penalised pick is the exact train, not a denser one.
-        let k = 10;
-        let n_nat = 400;
-        let banded = BandedAR2::new(0.1, 0.6, 300.0);
-        let mut x = vec![0.0_f32; n_nat];
-        let mut truth = vec![0.0_f32; n_nat * k];
-        for (f, c) in [(80usize, 1usize), (200, 2), (320, 1)] {
-            x[f - 1] = 0.25 * c as f32;
-            x[f] = 0.5 * c as f32;
-            x[f + 1] = 0.25 * c as f32;
-            for j in 0..c {
-                truth[f * k + j] = 1.0;
-            }
-        }
-        let mut y = vec![0.0_f32; n_nat * k];
-        banded.convolve_forward(&truth, &mut y);
-        let y: Vec<f32> = y.iter().map(|&v| 3.0 * v + 0.5).collect();
+    fn the_quantal_pick_finds_the_exact_counts_on_clean_events() {
+        let n = 400;
+        let banded = BandedAR2::new(0.05, 0.4, 30.0);
+        // Clean relaxed masses (the events are exact: 1, 2 and 1 spikes).
+        let (_, truth) = smeared(n, &[(80, 1), (200, 2), (320, 1)]);
+        let x = truth.clone();
+        let y = clean_trace(&banded, &truth);
         let mut sc = Scorer::Plain { y: &y };
         let nm = NoiseModel {
             sigma: 0.05,
             corr_sum: 1.0,
         };
-        let (r, _) = event_mass_search(
-            &x,
-            k,
-            20,
-            n_nat - 20,
-            &mut sc,
-            &banded,
-            200,
-            Selection::NoiseFloor,
-            Some(nm),
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm), true);
+        // The pick is one spike per unit of mass: 1, 2 and 1 spikes.
+        assert_eq!(
+            (r.counts[80], r.counts[200], r.counts[320]),
+            (1.0, 2.0, 1.0)
         );
-        let counts = crate::upsample::downsample_binary(&r.s_binary, k);
-        assert_eq!((counts[80], counts[200], counts[320]), (1.0, 2.0, 1.0));
-        assert_eq!(counts.iter().sum::<f32>(), 4.0);
-        assert_eq!(r.diag.count_pick, 4.0);
-        assert!((noise_penalty(nm, 3600) - 2.0 * 0.0025 * (3600.0_f64).ln()).abs() < 1e-12);
+        assert_eq!(r.counts.iter().sum::<f32>(), 4.0);
+        assert!(!r.diag.cap_limited && !r.diag.no_size_fit);
+        assert_eq!(r.diag.dropped_spikes, 0);
+        assert!((r.alpha - 3.0).abs() < 0.1, "{}", r.alpha);
+        assert!(r.diag.peak_outlier_ratio >= 1.0);
+        assert!(r.diag.e_pick - r.diag.e_relaxed <= r.diag.std_error);
+        // Nothing in the edge zone.
+        assert!(r.counts[..24]
+            .iter()
+            .chain(&r.counts[n - 24..])
+            .all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn a_trace_the_sizes_cannot_fit_reports_no_size_fit() {
+        // Masses that no whole-spike size reproduces within one SE of a tiny
+        // noise level: two events whose masses are not commensurate.
+        let n = 400;
+        let banded = BandedAR2::new(0.05, 0.4, 30.0);
+        let mut x = vec![0.0_f32; n];
+        x[100] = 0.37;
+        x[200] = 1.0;
+        let mut y = vec![0.0_f32; n];
+        banded.convolve_forward(&x, &mut y);
+        let y: Vec<f32> = y.iter().map(|&v| 5.0 * v).collect();
+        let mut sc = Scorer::Plain { y: &y };
+        let nm = NoiseModel {
+            sigma: 1e-4,
+            corr_sum: 1.0,
+        };
+        let r = event_mass_search(&x, &mut sc, &banded, 24, 3, Some(nm), false);
+        assert!(r.diag.no_size_fit && r.diag.cap_limited);
+        assert!((r.diag.a_pick - r.diag.a_floor).abs() < 1e-9);
     }
 
     #[test]
     fn empty_mass_is_handled() {
-        let banded = BandedAR2::new(0.1, 0.6, 300.0);
+        let banded = BandedAR2::new(0.1, 0.6, 30.0);
         let y = vec![1.0_f32; 100];
         let mut sc = Scorer::Plain { y: &y };
-        let x = vec![0.0_f32; 10];
-        let (r, p) = event_mass_search(
-            &x,
-            10,
-            0,
-            10,
-            &mut sc,
-            &banded,
-            5,
-            Selection::NoiseFloor,
-            None,
-        );
-        assert_eq!(p, 0);
-        assert!(r.s_binary.iter().all(|&v| v == 0.0));
+        let x = vec![0.0_f32; 100];
+        let r = event_mass_search(&x, &mut sc, &banded, 5, 10, None, false);
+        assert!(r.counts.iter().all(|&v| v == 0.0));
+        assert_eq!(r.diag.peak_outlier_ratio, 0.0);
+        assert!(!r.diag.cap_limited);
+    }
+
+    /// The nested (superposition) scoring of the integer trains equals
+    /// scoring each from scratch through the chain, on a trace with repeated
+    /// spikes per frame and a bandpass filter.
+    #[test]
+    fn nested_scoring_matches_from_scratch_chain_scoring() {
+        let (fs, n) = (30.0, 3000);
+        let banded = BandedAR2::new(0.05, 0.4, fs);
+        let window = crate::baseline::baseline_window(0.4, fs);
+        let mk_filter = || {
+            let mut f = BandpassFilter::new();
+            f.update_cutoffs(0.05, 0.4, fs);
+            f.set_hp_enabled(true);
+            f.set_lp_enabled(true);
+            f
+        };
+        // Smeared events of 1..4 spikes through the trace.
+        let events: Vec<(usize, usize)> = (0..25).map(|i| (60 + 110 * i, 1 + i % 4)).collect();
+        let (x, truth) = smeared(n, &events);
+        let mut y = vec![0.0_f32; n];
+        banded.convolve_forward(&truth, &mut y);
+        let noise = crate::test_util::white(n, 0.02, 3);
+        y.iter_mut()
+            .zip(&noise)
+            .for_each(|(v, &e)| *v = 2.0 * *v + e);
+        Chain::new(Some(mk_filter()), window).apply(&mut y);
+        let nm = NoiseModel {
+            sigma: 0.02,
+            corr_sum: 1.0,
+        };
+        let run = |nested: bool| {
+            let chain = Box::new(Chain::new(Some(mk_filter()), window));
+            let mut sc = Scorer::Chain { y: &y, chain };
+            if !nested {
+                // A scorer that declines superposition: score every
+                // candidate from scratch.
+                return event_mass_search_scratch(&x, &mut sc, &banded, 24, 10, Some(nm));
+            }
+            event_mass_search(&x, &mut sc, &banded, 24, 10, Some(nm), false)
+        };
+        let (a, b) = (run(true), run(false));
+        assert_eq!(a.counts, b.counts, "same pick");
+        assert!((a.error - b.error).abs() < 1e-5 * b.error.max(1e-12));
+    }
+
+    /// The search with every candidate scored from scratch (the reference).
+    fn event_mass_search_scratch(
+        x: &[f32],
+        scorer: &mut Scorer,
+        banded: &BandedAR2,
+        pad: usize,
+        cap: usize,
+        noise: Option<NoiseModel>,
+    ) -> EventMassResult {
+        let n = scorer.target().len();
+        let (lo, hi) = (pad, n - pad);
+        let events = segment(x, lo, hi);
+        let a_max = events.iter().map(|e| e.mass).fold(0.0_f64, f64::max);
+        let frame_max = x[lo..hi].iter().fold(0.0_f64, |m, &v| m.max(v as f64));
+        let floor_rel = (frame_max / cap as f64 / a_max).clamp(1e-6, 1.0);
+        let levels = threshold_grid(floor_rel);
+        let mut s = vec![0.0_f32; n];
+        let mut conv = vec![0.0_f32; n];
+        let mut per_event = vec![0usize; events.len()];
+        let mut errors = Vec::new();
+        for &rel in &levels {
+            counts_at(&events, rel * a_max, &mut per_event);
+            place_all(&events, x, &per_event, cap, &mut s);
+            errors.push(scorer.score(&s, banded, pad, f64::INFINITY, &mut conv).0);
+        }
+        let mut prof = vec![0.0_f32; n];
+        relaxed_profile(x, lo, hi, &mut prof);
+        let e_rel = scorer.score(&prof, banded, pad, f64::INFINITY, &mut conv).0;
+        let se = noise.unwrap().std_error(hi - lo);
+        let pick = (0..levels.len())
+            .rev()
+            .find(|&i| errors[i] - e_rel <= se)
+            .unwrap_or(0);
+        counts_at(&events, levels[pick] * a_max, &mut per_event);
+        place_all(&events, x, &per_event, cap, &mut s);
+        EventMassResult {
+            counts: s,
+            alpha: 0.0,
+            baseline: 0.0,
+            pve: 0.0,
+            error: errors[pick],
+            noise_path: false,
+            diag: EventMassDiag::default(),
+        }
     }
 }

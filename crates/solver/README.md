@@ -59,11 +59,12 @@ minimize  (1/2)||y - K·s - b||² + λ·G_dc·||s||₁   subject to  s ≥ 0
 
 | Module          | Description                                                                                            |
 | --------------- | ------------------------------------------------------------------------------------------------------ |
-| `indeca.rs`     | InDeCa driver — alternating single-trace spike solve and kernel re-estimation                          |
+| `indeca.rs`     | InDeCa pipeline at the recorded rate — preprocessing, relaxed solve, event-mass binarization (`max_firing_rate`) |
+| `event_mass.rs` | Event-mass binarization — integer spike counts per frame, size search, per-cell diagnostics            |
 | `kernel_est.rs` | `estimate_free_kernel` — free-form kernel estimation from traces + spike trains (TV-L1 smoothing)      |
 | `biexp_fit.rs`  | `fit_biexponential` — two-component bi-exponential fit to a free-form kernel; `BiexpResult`, `FitMode` |
 | `peak_seed.rs`  | Peak-seeded bootstrap — `SeedConfig`, `find_seed_spikes`, `seed_trace`, `seed_kernel_estimate`         |
-| `upsample.rs`   | Up/down-sampling and `compute_upsample_factor`                                                         |
+| `downsample.rs` | Bin-average downsampling (simulator)                                                                   |
 | `simulate.rs`   | Synthetic trace simulation (Markov/Poisson spiking, kernel, noise, photobleaching, saturation)         |
 
 ### FFI bindings
@@ -109,10 +110,9 @@ Free functions in `js_indeca.rs`, exposed alongside `Solver`:
 
 | Function                                        | Description                                                              |
 | ----------------------------------------------- | ------------------------------------------------------------------------ |
-| `indeca_solve_trace(...)`                       | Solve a single trace (spikes + alpha + baseline + PVE + convergence)     |
+| `indeca_solve_trace(...)`                       | Solve a single trace at the frame rate (integer spike counts per frame, `max_firing_rate`, alpha, baseline, PVE, diagnostics) |
 | `indeca_estimate_kernel(...)`                   | Estimate a free-form kernel from traces and their spike trains           |
 | `indeca_fit_biexponential(...)`                 | Fit a two-component bi-exponential to a free-form kernel → `BiexpResult` |
-| `indeca_compute_upsample_factor(fs, target_fs)` | Integer up-sampling factor                                               |
 | `seed_trace(trace, fs)`                         | Peak-seeded bootstrap for a single trace                                 |
 
 **Non-finite input guard:** the FFI entry points (both wasm-bindgen and PyO3) reject input traces containing `NaN`/`±Inf` — WASM throws a JS error, PyO3 raises `ValueError` — rather than letting a non-finite value propagate into garbage results.

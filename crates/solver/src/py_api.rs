@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::simulate;
 use crate::validate;
-use crate::{biexp_fit, indeca, kernel_est, upsample, Constraint, ConvMode, Solver, SolverError};
+use crate::{biexp_fit, indeca, kernel_est, Constraint, ConvMode, Solver, SolverError};
 
 /// Iterations per `Solver::step_batch` call in the Python solve loops. The
 /// f32 `Solver` tests its stop rule (the relative-step tolerance) at every
@@ -532,7 +532,12 @@ fn seed_kernel_estimate<'py>(
 
 /// Run the full InDeCa pipeline on a single trace.
 ///
-/// The relaxed solve runs at the recorded rate and stops on a data-derived
+/// `max_firing_rate` (spikes/s, default 300) is the highest rate the cell can
+/// reach in its strongest bursts; it fixes the per-frame ceiling `cap =
+/// max(1, round(max_firing_rate / fs))` spikes. Everything runs at the
+/// recorded frame rate and `s_counts` holds an integer count per frame.
+///
+/// The relaxed solve stops on a data-derived
 /// convergence certificate (`native_solve`), so `max_iters` and `tol` are
 /// effectively no-ops on the default path: `tol` (the relative-step rule)
 /// applies only to a trace without a measurable noise floor (no
@@ -541,17 +546,24 @@ fn seed_kernel_estimate<'py>(
 /// 500 cannot truncate the solve).
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged,
-/// noise_var_processed, chain_noise_gain): `noise_var_processed` is the
+/// noise_var_processed, chain_noise_gain, (cap_limited, no_size_fit,
+/// peak_outlier_ratio, dropped_spikes)): `noise_var_processed` is the
 /// per-sample noise variance of the processed (working) trace, `sigma_raw^2`
 /// through the bandpass times `chain_noise_gain`, the rolling-quantile
 /// stage's measured gain on the noise (0 and 1 when no noise floor is
-/// measurable); `iterations` is the recorded-rate FISTA iteration count and `converged`
+/// measurable); `iterations` is the FISTA iteration count and `converged`
 /// says the certificate (or, without noise, the step rule) fired.
 /// `converged = False` means the certificate could not be met in f64
 /// arithmetic: in practice the stall detector on the certificate's bound
-/// stopped the solve, since the derived cap is not reached.
+/// stopped the solve, since the derived cap is not reached. The last four are
+/// per-cell diagnostics that never change the result: `cap_limited` (the pick
+/// ended at the floor spike size, so the cap set the spike size),
+/// `no_size_fit` (no spike size passed the one-standard-error test),
+/// `peak_outlier_ratio` (largest event-peak frame mass over the second
+/// largest) and `dropped_spikes` (spikes no frame of their event had room
+/// for).
 #[pyfunction]
-#[pyo3(signature = (trace, tau_rise, tau_decay, fs, upsample_factor=1, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
+#[pyo3(signature = (trace, tau_rise, tau_decay, fs, max_firing_rate=300.0, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0, noise_constrained=false))]
 #[allow(clippy::too_many_arguments)]
 fn py_indeca_solve_trace<'py>(
     py: Python<'py>,
@@ -559,7 +571,7 @@ fn py_indeca_solve_trace<'py>(
     tau_rise: f64,
     tau_decay: f64,
     fs: f64,
-    upsample_factor: usize,
+    max_firing_rate: f64,
     max_iters: u32,
     tol: f64,
     hp_enabled: bool,
@@ -577,6 +589,7 @@ fn py_indeca_solve_trace<'py>(
     bool,                      // converged
     f64,                       // noise_var_processed
     f64,                       // chain_noise_gain
+    (bool, bool, f64, u32),    // (cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes)
 )> {
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
@@ -585,7 +598,7 @@ fn py_indeca_solve_trace<'py>(
         tau_rise,
         tau_decay,
         fs,
-        upsample_factor,
+        max_firing_rate,
         lambda_,
         tol,
     )
@@ -598,7 +611,7 @@ fn py_indeca_solve_trace<'py>(
             tau_rise,
             tau_decay,
             fs,
-            upsample_factor,
+            max_firing_rate,
             max_iters,
             tol,
             warm.as_deref(),
@@ -619,6 +632,12 @@ fn py_indeca_solve_trace<'py>(
         result.converged,
         result.noise_var_processed,
         result.chain_noise_gain,
+        (
+            result.cap_limited,
+            result.no_size_fit,
+            result.peak_outlier_ratio,
+            result.dropped_spikes,
+        ),
     ))
 }
 
@@ -751,13 +770,6 @@ fn py_indeca_fit_biexponential(
         result.beta_fast,
         result.fit_mode.as_str().to_string(),
     ))
-}
-
-/// Compute the upsample factor for a given sampling rate and target rate.
-#[pyfunction]
-fn py_indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> PyResult<usize> {
-    validate::validate_upsample_rates(fs, target_fs).map_err(py_err)?;
-    Ok(upsample::compute_upsample_factor(fs, target_fs))
 }
 
 /// Generate synthetic calcium traces from a JSON config string.
@@ -920,7 +932,6 @@ fn _solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_indeca_solve_trace, m)?)?;
     m.add_function(wrap_pyfunction!(py_indeca_estimate_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(py_indeca_fit_biexponential, m)?)?;
-    m.add_function(wrap_pyfunction!(py_indeca_compute_upsample_factor, m)?)?;
     // Simulation
     m.add_function(wrap_pyfunction!(py_simulate_traces, m)?)?;
     m.add_function(wrap_pyfunction!(protocol_version, m)?)?;

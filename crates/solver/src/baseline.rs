@@ -45,7 +45,7 @@ const RADIX_BUCKETS: usize = 1 << RADIX_BITS;
 /// Workspace for the sliding-window order statistic behind
 /// [`subtract_rolling_baseline`]. Buffers grow but never shrink, so a caller
 /// that scores many candidate traces of one length (the chain-consistent
-/// threshold search) allocates once.
+/// event-mass search) allocates once.
 ///
 /// Algorithm: every sample gets a dense rank (its position in the stable
 /// radix sort of all `n` values, ties broken by index, so the rank order is a

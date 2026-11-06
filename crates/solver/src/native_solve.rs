@@ -87,7 +87,7 @@
 //!
 //! Why this and not the relative-step test: with `lambda = 0` the relaxed
 //! problem has directions the data barely constrains (sub-bin rearrangements
-//! at the upsampled rate; at the recorded rate, adjacent frames under a slow
+//! at a high sampling rate; at the recorded rate, adjacent frames under a slow
 //! kernel at high frame rates). The iterate keeps moving along them long
 //! after the reconstruction has settled, so a test on `x` either never
 //! fires or fires at an arbitrary point of that drift (measured: the step
@@ -182,7 +182,7 @@
 //! recordings), two to six orders of magnitude above the iterations the
 //! certificate needs (50-12,400 on those cells), so in practice it is not
 //! reached and `converged = false` comes from the stall detector. (The caller's
-//! `max_iters`, sized for the upsampled solve whose fixed budget acted as a
+//! `max_iters`, a legacy fixed budget that acted as a
 //! regularizer, is only a floor on it.)
 use crate::banded::BandedAR2;
 
@@ -222,10 +222,9 @@ pub(crate) struct Stop {
     /// resolution the remaining movement of the reconstruction is compared
     /// with.
     pub se: f64,
-    /// Grid samples `[lo, hi)`, every `stride`-th.
+    /// Grid samples `[lo, hi)`.
     pub lo: usize,
     pub hi: usize,
-    pub stride: usize,
 }
 
 /// What the certificate measured on the final iterate.
@@ -485,7 +484,7 @@ fn certify(
     for i in 0..n {
         resid[i] = conv[i] - y[i];
     }
-    for i in (stop.lo..stop.hi.min(n)).step_by(stop.stride.max(1)) {
+    for i in stop.lo..stop.hi.min(n) {
         grid_fit += resid[i] * resid[i];
     }
     // g = K' e + lambda; the KKT residual m = -g on the support, clipped to
@@ -546,12 +545,7 @@ mod tests {
     }
 
     fn stop(n: usize, se: f64) -> Stop {
-        Stop {
-            se,
-            lo: 0,
-            hi: n,
-            stride: 1,
-        }
+        Stop { se, lo: 0, hi: n }
     }
 
     #[test]

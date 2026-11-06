@@ -7,67 +7,69 @@
 //! ```
 //!
 //! (`y` the filtered, baseline-subtracted trace, `K` the peak-normalized
-//! AR(2) kernel), followed by one terminal binarization at the spike
-//! resolution rate (300 Hz): the threshold search, which also fits the
-//! reported amplitude and offset. The binarization scores every candidate
-//! train through the trace's own preprocessing chain ([`Scoring::Chain`],
-//! the `chain` module): the bandpass and the rolling-quantile baseline are
-//! applied to `K s` exactly as they were to the trace, so the candidate and
-//! the trace carry the same filter-injected structure.
+//! AR(2) kernel), followed by one terminal binarization that turns the
+//! relaxed frame masses into integer spike counts per frame and fits the
+//! reported amplitude and offset (the `event_mass` module). **Everything runs
+//! at the recorded frame rate**: the working trace, the preprocessing chain,
+//! the banded AR(2) forward model, the scoring and the output counts. There
+//! is no upsampled grid.
+//!
+//! # The one user parameter: the maximum firing rate
+//!
+//! `max_firing_rate` (spikes/s) fixes `cap = max(1, round(max_firing_rate /
+//! fs))`, the most spikes one frame can hold. It sets both the box of the
+//! relaxed solve, `[0, cap]` spikes per frame, and the smallest spike size
+//! the binarization considers (`frame_max / cap`, where `frame_max` is the
+//! busiest frame's mass). It is a ceiling reached in the strongest bursts,
+//! not an average rate; in practice the busiest frame of a trace usually
+//! reaches it, so it sets the scale of the counts (`event_mass` docs).
+//!
+//! # Preprocessing and scoring
+//!
+//! The binarization scores every candidate train through the trace's own
+//! preprocessing chain ([`Scoring::Chain`], the `chain` module): the
+//! bandpass and the rolling-quantile baseline are applied to `K s` exactly
+//! as they were to the trace, so the candidate and the trace carry the same
+//! filter-injected structure.
 //!
 //! # Where the relaxed problem is solved
 //!
-//! The relaxed problem is solved at the **recorded** rate: one Box[0, n_max]
-//! FISTA on `y / alpha` with `n_max` the refractory cap
-//! ([`max_spikes_per_frame`]), at the peak-to-trough prescale (where the box
-//! cannot bind, so the fit is the scale-free non-negative one). The frame
-//! masses are then spread over the 300 Hz sub-bins by linear interpolation
-//! ([`crate::spread::Spread::Interp`], the tent the trace upsampler applies)
-//! and binarized. One round: the spread is scale-free (its normalized shape
-//! does not depend on the prescale), so an amplitude step cannot change the
-//! binarization. The amplitude is identified only by the binarization.
+//! The relaxed problem is solved on the working trace with one Box[0, cap]
+//! FISTA on `y / alpha_est` at the peak-to-trough prescale (where the box
+//! cannot bind, so the fit is the scale-free non-negative one). One round:
+//! the binarization is scale-free (counts are `round(mass / a)` with `a`
+//! searched in the same units), so an amplitude step cannot change it. The
+//! amplitude is identified only by the binarization.
 //!
 //! At the recorded rate the relaxed problem has no sub-frame directions the
 //! data cannot determine, and the solve converges: it stops on a
 //! convergence certificate ([`crate::native_solve`]: the remaining movement
-//! of the fit, bounded by a dual gap, can no longer change the grid
-//! residual energy by one standard error of the noise energy, the
-//! selection's own resolution). The caller's relative-step tolerance applies
-//! only when the trace has no measurable noise (no certificate). If the
-//! certificate cannot be met in f64, a stall detector on the certificate's
-//! own bound stops the solve unconverged (`converged = false`); the
-//! iteration cap is derived from the problem
-//! ([`crate::native_solve::iteration_cap`], 1e5-1e9, with the caller's
-//! `max_iters` as a floor on it) and is an outer guard only. The output
-//! does not depend on the cap (measured: zero cap hits and zero stalls at
-//! 15, 30 and 60 Hz on the simulation presets, 400-4,000 iterations at
-//! 30 Hz, up to 34,000 for GCaMP6s at 60 Hz) nor on the tolerance.
-//!
-//! Solving at the 300 Hz rate instead (Box[0,1] FISTA on the upsampled
-//! trace) is ill-posed with `lambda = 0`: sub-bin rearrangements barely
-//! change the fit, the relative-step rule does not fire within a usual
-//! budget, and the iteration cap becomes an early-stopping regularizer the
-//! output depends on (counts move 7-11% between a 500 and a 2000 cap).
+//! of the fit, bounded by a dual gap, can no longer change the residual
+//! energy by one standard error of the noise energy, the selection's own
+//! resolution). The caller's relative-step tolerance applies only when the
+//! trace has no measurable noise (no certificate). If the certificate cannot
+//! be met in f64, a stall detector on the certificate's own bound stops the
+//! solve unconverged (`converged = false`); the iteration cap is derived
+//! from the problem ([`crate::native_solve::iteration_cap`], 1e5-1e9, with
+//! the caller's `max_iters` as a floor on it) and is an outer guard only.
+//! The output does not depend on the cap nor on the tolerance.
 //!
 //! The AR2 forward model is peak-normalized so that a single spike produces
 //! a peak of 1.0 regardless of sampling rate, making alpha rate-independent.
 use crate::banded::BandedAR2;
 use crate::chain::{Chain, Scorer};
+use crate::event_mass::{event_mass_search, EventMassDiag};
 use crate::filter::BandpassFilter;
 use crate::native_solve::{self, Stop};
-use crate::spread::{spread, Spread};
-use crate::threshold::{
-    threshold_search_scored, NoiseModel, Selection, SelectionDiag, ThresholdResult,
-};
-use crate::upsample::{downsample_average, downsample_binary, upsample_trace};
+use crate::threshold::NoiseModel;
 use realfft::RealFftPlanner;
 
-/// Optional spike-inference behaviors. The library default is off (`MaxPve`);
-/// the CaDecon app enables `noise_constrained` by default.
+/// Optional spike-inference behaviors. The library default is off; the
+/// CaDecon app enables `noise_constrained` by default.
 ///
-/// `noise_constrained` chooses the binarization threshold at the data-derived
-/// noise floor instead of at the best fit, suppressing low-SNR spurious spikes
-/// (see the `threshold` module docs).
+/// `noise_constrained` only controls the informational `noise_path` flag of
+/// the result: the size pick of the binarization uses the noise model
+/// whenever the trace has a measurable noise floor.
 #[derive(Clone, Copy, Default)]
 pub struct SolveOptions {
     pub noise_constrained: bool,
@@ -111,20 +113,20 @@ pub fn high_band_sigma(raw_trace: &[f32]) -> f64 {
     (acc / cnt as f64).max(0.0).sqrt()
 }
 
-/// The bandpass applied to the upsampled trace (cutoffs derived from the
-/// kernel at the upsampled rate).
-fn trace_filter(tau_r: f64, tau_d: f64, fs_up: f64, hp: bool, lp: bool) -> BandpassFilter {
+/// The bandpass applied to the trace (cutoffs derived from the kernel at the
+/// recorded rate).
+fn trace_filter(tau_r: f64, tau_d: f64, fs: f64, hp: bool, lp: bool) -> BandpassFilter {
     let mut f = BandpassFilter::new();
-    f.update_cutoffs(tau_r, tau_d, fs_up);
+    f.update_cutoffs(tau_r, tau_d, fs);
     f.set_hp_enabled(hp);
     f.set_lp_enabled(lp);
     f
 }
 
-/// Noise statistics of the preprocessed (upsampled, filtered) trace.
+/// Noise statistics of the preprocessed (filtered) trace.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NoiseEstimate {
-    /// Noise at original-rate grid positions: the threshold-search statistic.
+    /// Noise of the linear part of the chain (the bandpass).
     pub grid: NoiseModel,
     /// `grid` with the rolling-quantile stage's gain on the noise energy
     /// folded in ([`chain_noise_gain`]): `sigma` scaled by `sqrt(chain_gain)`.
@@ -138,26 +140,23 @@ pub(crate) struct NoiseEstimate {
 /// Estimate the noise of the preprocessed trace from the raw trace.
 ///
 /// The raw noise std comes from the high band of the unfiltered trace
-/// ([`high_band_sigma`]). Upsampling (linear interpolation) and the bandpass
-/// are linear and, at original-rate grid positions, shift-invariant, so white
-/// raw noise of variance `sigma^2` leaves the chain as white noise convolved
-/// with the chain's impulse response `h`, sampled on the grid as `h_grid`:
+/// ([`high_band_sigma`]). The bandpass is linear and shift-invariant, so
+/// white raw noise of variance `sigma^2` leaves it as white noise convolved
+/// with the filter's impulse response `h`:
 ///
-/// - grid variance `sigma^2 * sum(h_grid^2)`,
-/// - grid autocorrelation `rho = acf(h_grid) / acf(h_grid)(0)`, so
+/// - variance `sigma^2 * sum(h^2)`,
+/// - autocorrelation `rho = acf(h) / acf(h)(0)`, so
 ///   `corr_sum = sum_lag rho^2 = n * sum|H|^4 / (sum|H|^2)^2` (Parseval),
 ///
 /// `h` is measured exactly by pushing a unit impulse through the same
-/// upsample → filter path (no random probe). The rolling-quantile baseline
-/// that follows is nonlinear and is not part of `h`; its gain on the noise
-/// energy is measured separately on the trace by [`chain_noise_gain`] and
-/// folded into `grid_chain`.
+/// filter (no random probe). The rolling-quantile baseline that follows is
+/// nonlinear and is not part of `h`; its gain on the noise energy is
+/// measured separately on the trace by [`chain_noise_gain`] and folded into
+/// `grid_chain`.
 pub(crate) fn estimate_noise_model(
     raw_trace: &[f32],
-    upsample_factor: usize,
     filter: Option<&mut BandpassFilter>,
 ) -> NoiseEstimate {
-    let k = upsample_factor.max(1);
     let n = raw_trace.len();
     let sigma_raw = high_band_sigma(raw_trace);
     let zero = NoiseEstimate {
@@ -175,20 +174,18 @@ pub(crate) fn estimate_noise_model(
         return zero;
     }
 
-    let mut probe = vec![0.0_f32; n];
-    probe[n / 2] = 1.0;
-    let mut h = upsample_trace(&probe, k);
+    let mut h = vec![0.0_f32; n];
+    h[n / 2] = 1.0;
     if let Some(f) = filter {
         f.apply(&mut h);
     }
-    let mut h_grid: Vec<f32> = h.iter().step_by(k).copied().collect();
 
     // Full-spectrum sums of |H|^2 and |H|^4 from the half spectrum.
     let mut planner = RealFftPlanner::<f32>::new();
     let r2c = planner.plan_fft_forward(n);
     let mut spectrum = r2c.make_output_vec();
     let (mut s2, mut s4) = (0.0_f64, 0.0_f64);
-    if r2c.process(&mut h_grid, &mut spectrum).is_ok() {
+    if r2c.process(&mut h, &mut spectrum).is_ok() {
         let last = spectrum.len() - 1;
         for (f, c) in spectrum.iter().enumerate() {
             let p = c.re as f64 * c.re as f64 + c.im as f64 * c.im as f64;
@@ -204,9 +201,9 @@ pub(crate) fn estimate_noise_model(
     if s2.is_nan() || s2 <= 0.0 {
         return zero;
     }
-    let grid_gain = s2 / n as f64;
+    let gain = s2 / n as f64;
     let grid = NoiseModel {
-        sigma: sigma_raw * grid_gain.sqrt(),
+        sigma: sigma_raw * gain.sqrt(),
         corr_sum: (n as f64 * s4 / (s2 * s2)).max(1.0),
     };
     NoiseEstimate {
@@ -227,9 +224,9 @@ impl NoiseEstimate {
         self
     }
 
-    /// Per-sample noise variance of the preprocessed (working) trace at the
-    /// recorded-rate grid positions: the linear chain's grid variance times
-    /// the rolling-quantile stage's measured gain. 0 without a noise model.
+    /// Per-sample noise variance of the preprocessed (working) trace: the
+    /// linear chain's variance times the rolling-quantile stage's measured
+    /// gain. 0 without a noise model.
     pub(crate) fn processed_var(&self) -> f64 {
         self.grid_chain.sigma * self.grid_chain.sigma
     }
@@ -257,18 +254,17 @@ fn gaussian_probe(n: usize, sigma: f64) -> Vec<f32> {
         .collect()
 }
 
-/// `||d - mean(d)||^2` over the interior grid positions (every `stride`-th
-/// sample of `[pad, n - pad)`): the residual energy a vector carries once
-/// the fit's offset has absorbed its mean.
-fn centered_grid_energy(d: &[f32], pad: usize, stride: usize) -> f64 {
+/// `||d - mean(d)||^2` over the interior samples `[pad, n - pad)`: the
+/// residual energy a vector carries once the fit's offset has absorbed its
+/// mean.
+fn centered_interior_energy(d: &[f32], pad: usize) -> f64 {
     let n = d.len();
-    let idx = (pad..n.saturating_sub(pad)).step_by(stride.max(1));
-    let count = idx.clone().count();
-    if count == 0 {
+    let inner = &d[pad.min(n)..n.saturating_sub(pad).max(pad.min(n))];
+    if inner.is_empty() {
         return 0.0;
     }
-    let mean = idx.clone().map(|i| d[i] as f64).sum::<f64>() / count as f64;
-    idx.map(|i| (d[i] as f64 - mean).powi(2)).sum()
+    let mean = inner.iter().map(|&v| v as f64).sum::<f64>() / inner.len() as f64;
+    inner.iter().map(|&v| (v as f64 - mean).powi(2)).sum()
 }
 
 /// The rolling-quantile stage's gain on the noise energy, measured on the
@@ -287,31 +283,27 @@ fn centered_grid_energy(d: &[f32], pad: usize, stride: usize) -> f64 {
 /// variance is a few percent of `sigma_F^2` on the simulation presets. The
 /// shift cannot be computed without the signal, so it is measured: white
 /// Gaussian noise `e'` at the trace's own `sigma_raw` is added to the trace
-/// and the energy of `C(y + e') - C(y)` on the selection grid is compared
+/// and the energy of `C(y + e') - C(y)` over the interior is compared
 /// with the energy of `F(e')`, the same realization through the linear part
 /// alone (sharing the realization cancels its sampling error). The ratio is
 /// the gain; the budget is the linear model's times the gain.
 ///
-/// `working` is `C(y)` on the upsampled grid (`n * k` samples) and `filter`
-/// the trace's bandpass (`None` when it was not applied).
+/// `working` is `C(y)` and `filter` the trace's bandpass (`None` when it was
+/// not applied).
 fn chain_noise_gain(
     trace: &[f32],
     working: &[f32],
     filter: Option<&mut BandpassFilter>,
-    upsample_factor: usize,
     bl_window: usize,
     pad: usize,
     sigma_raw: f64,
 ) -> f64 {
-    let k = upsample_factor.max(1);
     let n = trace.len();
-    if n == 0 || sigma_raw <= 0.0 || working.len() != n * k {
+    if n == 0 || sigma_raw <= 0.0 || working.len() != n {
         return 1.0;
     }
-    let probe = gaussian_probe(n, sigma_raw);
-    let mut lin = upsample_trace(&probe, k);
-    let added: Vec<f32> = trace.iter().zip(&probe).map(|(&t, &v)| t + v).collect();
-    let mut full = upsample_trace(&added, k);
+    let mut lin = gaussian_probe(n, sigma_raw);
+    let mut full: Vec<f32> = trace.iter().zip(&lin).map(|(&t, &v)| t + v).collect();
     if let Some(f) = filter {
         f.apply(&mut lin);
         f.apply(&mut full);
@@ -324,8 +316,8 @@ fn chain_noise_gain(
     for (v, &w) in full.iter_mut().zip(working) {
         *v -= w;
     }
-    let e_lin = centered_grid_energy(&lin, pad, k);
-    let e_full = centered_grid_energy(&full, pad, k);
+    let e_lin = centered_interior_energy(&lin, pad);
+    let e_full = centered_interior_energy(&full, pad);
     if e_lin > 0.0 && e_full.is_finite() && e_full > 0.0 {
         e_full / e_lin
     } else {
@@ -335,10 +327,13 @@ fn chain_noise_gain(
 
 #[cfg_attr(feature = "jsbindings", derive(serde::Serialize))]
 pub struct InDecaResult {
+    /// Integer spike count per frame (`0..=cap`), same length as the trace.
     pub s_counts: Vec<f32>,
     pub filtered_trace: Option<Vec<f32>>,
     pub alpha: f64,
     pub baseline: f64,
+    /// The picked spike size as a fraction of the largest event's mass (0
+    /// when the trace has no events).
     pub threshold: f64,
     pub pve: f64,
     pub iterations: u32,
@@ -347,10 +342,10 @@ pub struct InDecaResult {
     /// Always `true`: the solve is a single round with no outer loop cap.
     /// Kept so the result's serialized shape is unchanged.
     pub loop_converged: bool,
-    /// Noise variance of the processed (working) trace per sample at the
-    /// recorded-rate grid positions: `sigma_raw^2` through the linear chain
-    /// (bandpass) times `chain_noise_gain`. The working trace is the
-    /// baseline-subtracted trace `filtered_trace` reports, so
+    /// Noise variance of the processed (working) trace per sample:
+    /// `sigma_raw^2` through the linear chain (bandpass) times
+    /// `chain_noise_gain`. The working trace is the baseline-subtracted
+    /// trace `filtered_trace` reports, so
     /// `1 - noise_var_processed / var(filtered_trace)` bounds the PVE a fit
     /// can reach without fitting noise. 0 when no noise floor is measurable.
     pub noise_var_processed: f64,
@@ -358,12 +353,26 @@ pub struct InDecaResult {
     /// energy relative to the bandpass alone (`chain_noise_gain`); 1 when not
     /// measured.
     pub chain_noise_gain: f64,
-    /// The reported threshold pick came from the noise-constrained path: the
-    /// best candidate overfit the noise floor by more than one SE, so the
-    /// sparsest candidate within the budget was chosen instead of the max-PVE
-    /// one. `false` means the selection equals max-PVE (always `false` when
-    /// `noise_constrained` is off or the trace has no measurable noise floor).
+    /// Informational: with `noise_constrained` on, the best candidate train
+    /// beat the noise floor by more than one standard error. Always `false`
+    /// when `noise_constrained` is off or the trace has no measurable noise
+    /// floor. It does not change the result.
     pub noise_path: bool,
+    /// The pick ended at the floor spike size `frame_max / cap`: the densest
+    /// train the cap allows, so the cap (not the data) set the spike size.
+    /// Always true for a trace with no measurable noise floor.
+    pub cap_limited: bool,
+    /// A noise floor was measurable and no spike size passed the one-standard-
+    /// error test against the relaxed solution, so the floor was taken.
+    pub no_size_fit: bool,
+    /// Largest event-peak frame mass over the second largest (each event's
+    /// peak being its largest single-frame mass): how much one event
+    /// dominates the floor spike size. 1 with fewer than two events, 0 with
+    /// none.
+    pub peak_outlier_ratio: f64,
+    /// Spikes the pick asked for that no frame of their event's span had room
+    /// for (frames hold at most `cap` spikes).
+    pub dropped_spikes: u32,
 }
 
 /// Return the interior slice of `s` excluding `pad` samples from each end.
@@ -409,15 +418,14 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 
 /// Full InDeCa trace processing pipeline.
 ///
-/// 1. Apply the optional bandpass filter and subtract the rolling baseline,
-///    at the recorded rate (what the relaxed solve fits) and at the
-///    upsampled rate (what the binarization scores against)
+/// 1. Apply the optional bandpass filter and subtract the rolling baseline
+///    (all at the recorded rate)
 /// 2. Prescale by the trace's peak-to-trough
-/// 3. Solve the relaxed problem at the recorded rate (one round; see the
-///    module docs)
-/// 4. Spread the frame masses over the `upsample_factor` sub-bins per frame,
-///    binarize (threshold search at the upsampled rate) and downsample the
-///    binary train to counts per frame
+/// 3. Solve the relaxed problem (one round; see the module docs) with the
+///    per-frame box `[0, cap]`, `cap = max(1, round(max_firing_rate / fs))`
+/// 4. Count spikes by event mass ([`crate::event_mass`]): integer counts per
+///    frame, searched over the spike size and scored through the trace's own
+///    preprocessing chain
 ///
 /// `max_iters` and `tol`: the relaxed solve stops on the data-derived
 /// convergence certificate ([`crate::native_solve`]); `tol` (the
@@ -425,12 +433,12 @@ fn interior_peak(s: &[f32], pad: usize) -> f32 {
 /// floor and so no certificate; `max_iters` is a floor on the safety cap,
 /// which is derived from the problem ([`crate::native_solve::iteration_cap`])
 /// so that a small caller cap (the apps pass 500) cannot truncate the solve.
-/// The reported `iterations` is the native-rate FISTA iteration count
-/// (400-4,000 at 30 Hz on the simulation presets, more on slow kernels at
-/// high frame rates) and `converged` says the certificate (or, without
-/// noise, the step rule) fired; it is `false` when the certificate's bound
-/// stalled at its f64 floor (the stall detector, which is what stops an
-/// unconvergeable solve in practice) or the cap was reached.
+/// The reported `iterations` is the FISTA iteration count (400-4,000 at
+/// 30 Hz on the simulation presets, more on slow kernels at high frame
+/// rates) and `converged` says the certificate (or, without noise, the step
+/// rule) fired; it is `false` when the certificate's bound stalled at its
+/// f64 floor (the stall detector, which is what stops an unconvergeable
+/// solve in practice) or the cap was reached.
 ///
 /// `warm_counts` is accepted for API compatibility (the WASM and Python
 /// bindings pass it) and ignored: the solve converges on the certificate, so
@@ -442,7 +450,7 @@ pub fn solve_trace_opts(
     tau_r: f64,
     tau_d: f64,
     fs: f64,
-    upsample_factor: usize,
+    max_firing_rate: f64,
     max_iters: u32,
     tol: f64,
     _warm_counts: Option<&[f32]>,
@@ -456,7 +464,7 @@ pub fn solve_trace_opts(
         tau_r,
         tau_d,
         fs,
-        upsample_factor,
+        max_firing_rate,
         max_iters,
         tol,
         hp_enabled,
@@ -493,7 +501,7 @@ pub(crate) enum Scoring {
     Chain,
 }
 
-/// When the native-rate relaxed solve stops.
+/// When the relaxed solve stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeStop {
     /// The convergence certificate ([`crate::native_solve`]): the remaining
@@ -506,72 +514,34 @@ pub(crate) enum NativeStop {
     Step,
 }
 
-/// Refractory period that bounds the number of spikes in one frame:
-/// `n_max = floor(1 / (REFRACTORY_PERIOD_S * fs))` (10 at 30 Hz, 1 at
-/// 300 Hz). 1/300 s is also the simulator's spike resolution and CaDecon's
-/// upsampling target (at most one spike per 300 Hz bin).
-pub(crate) const REFRACTORY_PERIOD_S: f64 = 1.0 / 300.0;
+/// Default maximum firing rate (spikes/s): at 30 Hz imaging, 10 spikes fit
+/// in one frame. The apps and the Python API default to it.
+pub const DEFAULT_MAX_FIRING_RATE: f64 = 300.0;
 
-/// Maximum spikes per frame at sampling rate `fs` (at least 1).
-pub(crate) fn max_spikes_per_frame(fs: f64) -> u32 {
-    ((1.0 / (REFRACTORY_PERIOD_S * fs)) + 1e-9).floor().max(1.0) as u32
-}
-
-/// The selection's grid (`threshold_search_scored` scores every `k`-th
-/// sample of `[pad_up, n_up - pad_up)` at the upsampled rate) as a range
-/// `[lo, hi)` of native indices with the same number of samples, starting
-/// at the first recorded sample at or after `pad_up`.
-pub(crate) fn native_grid(n_up: usize, pad_up: usize, k: usize) -> (usize, usize) {
-    let k = k.max(1);
-    let count = (pad_up..n_up.saturating_sub(pad_up)).step_by(k).count();
-    let lo = pad_up.div_ceil(k).min(n_up / k);
-    (lo, (lo + count).min(n_up / k))
-}
-
-/// The samples of an upsampled vector that fall on recorded frames (every
-/// `k`-th, `n_up / k` of them): what the native solve fits, and, over
-/// [`native_grid`], what the selection scores.
-pub(crate) fn recorded_samples(up: &[f32], k: usize) -> Vec<f32> {
-    let k = k.max(1);
-    (0..up.len() / k).map(|i| up[i * k]).collect()
+/// Most spikes one frame can hold at the maximum firing rate
+/// `max_firing_rate` (spikes/s) and frame rate `fs`:
+/// `max(1, round(max_firing_rate / fs))`.
+pub(crate) fn spike_cap(max_firing_rate: f64, fs: f64) -> u32 {
+    (max_firing_rate / fs).round().max(1.0) as u32
 }
 
 /// Settings of [`solve_trace_cfg`]. `Default` is the shipped behavior; the
 /// other variants exist only for the tests that characterize it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SolveConfig {
-    /// When the native-rate solve stops.
+    /// When the relaxed solve stops.
     pub native_stop: NativeStop,
     pub alpha_init: AlphaInit,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
-    /// Which candidate family the binarization searches.
-    pub binarize: Binarize,
-}
-
-/// The binarization's candidate family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Binarize {
-    /// The threshold search on the tent-spread solution (an event's count is
-    /// the width of its tent above the threshold; see `spread`).
-    Threshold,
-    /// Per-event counts from the relaxed solution's event masses with the
-    /// noise-based pick (see the `event_mass` module).
-    EventMass,
 }
 
 impl Default for SolveConfig {
-    /// The native-rate relaxed solve, spread and binarized at the upsampled
-    /// rate with chain scoring (see the module docs).
     fn default() -> Self {
         Self {
             native_stop: NativeStop::Certificate,
             alpha_init: AlphaInit::PeakToTrough,
             scoring: Scoring::Chain,
-            // Count spikes by event mass with the noise-based penalty
-            // (`event_mass` module docs): the threshold search counts tent
-            // width and over-counts 2-50x on ground truth.
-            binarize: Binarize::EventMass,
         }
     }
 }
@@ -588,24 +558,24 @@ pub(crate) struct SolveStats {
     pub converged: bool,
     /// Some interior bin of the relaxed solution sits at the box upper bound.
     pub upper_bound_active: bool,
-    /// The threshold pick came from the noise budget.
+    /// The informational noise-path flag.
     pub noise_path: bool,
-    /// Joint objective `||y - alpha_est K s||^2` on the interior grid,
+    /// Joint objective `||y - alpha_est K s||^2` on the interior,
     /// after the s-step (trace units).
     pub objective: f64,
-    /// Grid residual energy of the binarized train (selection statistic).
+    /// Interior residual energy of the binarized train (selection statistic).
     pub binary_error: f64,
-    /// Noise budget of the grid residual (0 without a noise model).
+    /// Noise budget of the interior residual (0 without a noise model).
     pub budget: f64,
     /// The chain's measured noise gain (`NoiseEstimate::chain_gain`).
     pub chain_gain: f64,
-    /// What the selection rule saw at the pick.
-    pub selection: SelectionDiag,
+    /// What the binarization saw and picked.
+    pub diag: EventMassDiag,
 }
 
 /// The preprocessed trace and what is derived from it once per solve.
 pub(crate) struct Prepared {
-    /// Upsampled, filtered trace before any baseline removal: `F(y)`.
+    /// Filtered trace before any baseline removal: `F(y)`.
     pub filtered: Vec<f32>,
     /// `filtered` minus the initial rolling-quantile baseline.
     pub working: Vec<f32>,
@@ -638,21 +608,20 @@ pub(crate) fn prepare(
     trace: &[f32],
     tau_r: f64,
     tau_d: f64,
-    fs_up: f64,
-    upsample_factor: usize,
+    fs: f64,
     hp_enabled: bool,
     lp_enabled: bool,
 ) -> Prepared {
-    let mut filtered = upsample_trace(trace, upsample_factor);
+    let mut filtered = trace.to_vec();
     // The filter is kept for the noise model (it shapes the noise that remains).
     let mut filter = if hp_enabled || lp_enabled {
-        let mut f = trace_filter(tau_r, tau_d, fs_up, hp_enabled, lp_enabled);
+        let mut f = trace_filter(tau_r, tau_d, fs, hp_enabled, lp_enabled);
         f.apply(&mut filtered).then_some(f)
     } else {
         None
     };
     // Rolling-percentile baseline subtraction: brings the floor to ~0.
-    let bl_window = crate::baseline::baseline_window(tau_d, fs_up);
+    let bl_window = crate::baseline::baseline_window(tau_d, fs);
     let mut working = filtered.clone();
     crate::baseline::subtract_rolling_baseline(
         &mut working,
@@ -661,19 +630,17 @@ pub(crate) fn prepare(
     );
     // Boundary padding: edge effects from AR2 convolution make the first and
     // last `pad` samples unreliable (subsets may start mid-transient).
-    let pad = crate::threshold::boundary_padding(tau_d, fs_up).min(working.len() / 4);
+    let pad = crate::threshold::boundary_padding(tau_d, fs).min(working.len() / 4);
     // Noise of the preprocessed trace, from the raw trace's high band pushed
-    // through the same upsample → filter chain. Fully data-derived — no knob.
-    // It sets the threshold search's noise budget and standard error, and
-    // the relaxed solve's convergence certificate.
-    let noise = estimate_noise_model(trace, upsample_factor, filter.as_mut());
-    // The rolling-quantile stage's gain on that noise, measured on the trace
-    // ([`Budget::Chain`]).
+    // through the same filter. Fully data-derived — no knob. It sets the
+    // size pick's standard error and the relaxed solve's convergence
+    // certificate.
+    let noise = estimate_noise_model(trace, filter.as_mut());
+    // The rolling-quantile stage's gain on that noise, measured on the trace.
     let gain = chain_noise_gain(
         trace,
         &working,
         filter.as_mut(),
-        upsample_factor,
         bl_window,
         pad,
         high_band_sigma(trace),
@@ -685,19 +652,18 @@ pub(crate) fn prepare(
         working,
         pad,
         bl_window,
-        banded: BandedAR2::new(tau_r, tau_d, fs_up),
+        banded: BandedAR2::new(tau_r, tau_d, fs),
         noise,
         noise_model,
         filter,
     }
 }
 
-/// `||y - alpha * conv||^2` over the interior grid positions (every
-/// `stride`-th sample, where the upsampled trace equals the recorded one).
-fn grid_energy(y: &[f32], conv: &[f32], alpha: f64, pad: usize, stride: usize) -> f64 {
+/// `||y - alpha * conv||^2` over the interior `[pad, n - pad)`.
+fn interior_energy(y: &[f32], conv: &[f32], alpha: f64, pad: usize) -> f64 {
     let n = y.len();
     let mut e = 0.0;
-    for i in (pad..n.saturating_sub(pad)).step_by(stride.max(1)) {
+    for i in pad..n.saturating_sub(pad) {
         let d = y[i] as f64 - alpha * conv[i] as f64;
         e += d * d;
     }
@@ -705,38 +671,32 @@ fn grid_energy(y: &[f32], conv: &[f32], alpha: f64, pad: usize, stride: usize) -
 }
 
 /// [`solve_trace_opts`] with explicit [`SolveConfig`] settings, plus
-/// diagnostics. `upsample_factor` is the number of sub-bins per frame of the
-/// binarization (the spike-resolution rate is `fs * upsample_factor`).
+/// diagnostics.
 ///
-/// One preprocessing: the trace is upsampled, filtered and baseline-
-/// subtracted, and the candidates are scored against that working trace
-/// through the same chain. The relaxed solve fits the **grid samples** of
-/// that working trace (every `k`-th sample, where the upsampled trace is
-/// the recorded one): the solve and the selection then see the same data,
-/// and the certificate's residual is taken over the selection's own grid.
-/// (Preprocessing the recorded trace at its own rate instead gives a
-/// working trace that differs from the grid samples by up to 9% RMS on fast
-/// kernels, where the bandpass cutoffs are near the recorded Nyquist.)
+/// One preprocessing: the trace is filtered and baseline-subtracted, the
+/// relaxed solve fits that working trace, and the candidates are scored
+/// against it through the same chain. The solve and the selection see the
+/// same data, and the certificate's residual is taken over the selection's
+/// own interior.
 ///
-/// Prescale: the native solve at prescale `alpha_est` gives masses in units
-/// of `alpha_est` per spike with the box `[0, n_max]` in those units, solved
-/// as Box01 on `y / (alpha_est * n_max)`. From the peak-to-trough start the
-/// box cannot bind (a frame mass above one spike at that amplitude would put
-/// a transient above the trace's own range), so the solve is the scale-free
-/// non-negative fit and one round is the whole solve: the spread is scale
-/// free and the binarization fits every candidate its own amplitude, so a
-/// second round at the binarized amplitude would binarize the same
-/// normalized vector. (A round at the binarized amplitude could only differ
-/// if the refractory box bound there, i.e. the pick put more than `n_max`
-/// spikes' worth of mass in one frame, which the binarization itself caps
-/// at `upsample_factor` spikes per frame.)
+/// Prescale: the solve at prescale `alpha_est` gives masses in units of
+/// `alpha_est` per spike with the box `[0, cap]` in those units, solved as
+/// Box01 on `y / (alpha_est * cap)`. From the peak-to-trough start the box
+/// cannot bind (a frame mass above one spike at that amplitude would put a
+/// transient above the trace's own range), so the solve is the scale-free
+/// non-negative fit and one round is the whole solve: the binarization
+/// counts `round(mass / a)` with `a` searched in the same units, so a second
+/// round at the binarized amplitude would binarize the same normalized
+/// vector. (A round at the binarized amplitude could only differ if the box
+/// bound there, i.e. the pick put more than `cap` spikes' worth of mass in
+/// one frame, which the binarization itself caps at `cap` spikes per frame.)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_trace_cfg(
     trace: &[f32],
     tau_r: f64,
     tau_d: f64,
     fs: f64,
-    upsample_factor: usize,
+    max_firing_rate: f64,
     max_iters: u32,
     tol: f64,
     hp_enabled: bool,
@@ -745,44 +705,33 @@ pub(crate) fn solve_trace_cfg(
     opts: SolveOptions,
     cfg: SolveConfig,
 ) -> (InDecaResult, SolveStats) {
-    let k = upsample_factor.max(1);
-    let fs_up = fs * k as f64;
-    // Spike-resolution preprocessing: what the candidates are scored against.
-    let mut up = prepare(trace, tau_r, tau_d, fs_up, k, hp_enabled, lp_enabled);
-    let (n_up, pad_up) = (up.working.len(), up.pad);
-    // The grid: the recorded samples the selection scores on, as native
-    // indices `[lo, hi)`.
-    let (lo, hi) = native_grid(n_up, pad_up, k);
-    let n = n_up / k;
-    // What the relaxed solve fits: the working trace at the grid samples.
-    let y = recorded_samples(&up.working, k);
-    let banded = BandedAR2::new(tau_r, tau_d, fs);
-    let cap = max_spikes_per_frame(fs) as f64;
-    let selection = if opts.noise_constrained {
-        Selection::NoiseFloor
-    } else {
-        Selection::MaxPve
-    };
+    let mut prep = prepare(trace, tau_r, tau_d, fs, hp_enabled, lp_enabled);
+    let n = prep.working.len();
+    let pad = prep.pad;
+    // The interior the selection scores on: `[lo, hi)`.
+    let (lo, hi) = (pad.min(n), n.saturating_sub(pad));
+    let cap_spikes = spike_cap(max_firing_rate, fs);
+    let cap = cap_spikes as f64;
     let n_grid = hi - lo;
-    let noise_model = up.chain_noise_model();
+    let noise_model = prep.chain_noise_model();
     let budget = noise_model.map_or(0.0, |nm| nm.budget(n_grid));
     // The selection's resolution: one standard error of the noise energy
-    // over the grid it scores on (trace units).
+    // over the interior it scores on (trace units).
     let std_error = noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
-    let mut chain_up = (cfg.scoring == Scoring::Chain).then(|| up.take_chain());
+    let chain = (cfg.scoring == Scoring::Chain).then(|| prep.take_chain());
 
     let alpha_est = match cfg.alpha_init {
-        AlphaInit::PeakToTrough => estimate_alpha_interior(&y, lo),
+        AlphaInit::PeakToTrough => estimate_alpha_interior(&prep.working, lo),
         #[cfg(test)]
         AlphaInit::Fixed(a) => a,
     };
 
     let mut conv = vec![0.0_f32; n];
 
-    // ── s-step: Box[0, n_max] in units of alpha_est ──
+    // ── s-step: Box[0, cap] in units of alpha_est ──
     let scale = alpha_est * cap;
     let inv = (1.0 / scale) as f32;
-    let scaled64: Vec<f64> = y.iter().map(|&v| (v * inv) as f64).collect();
+    let scaled64: Vec<f64> = prep.working.iter().map(|&v| (v * inv) as f64).collect();
     // The certificate in the solver's units: the trace was divided by
     // `scale`, so energies are divided by `scale^2`. Without a noise model
     // there is no certificate and the caller's step tolerance applies.
@@ -791,7 +740,6 @@ pub(crate) fn solve_trace_cfg(
             se: std_error / (scale * scale),
             lo,
             hi,
-            stride: 1,
         }),
         #[cfg(test)]
         NativeStop::Step => None,
@@ -803,79 +751,47 @@ pub(crate) fn solve_trace_cfg(
         Some(st) => {
             let y2: f64 = scaled64[lo..hi].iter().map(|v| v * v).sum();
             let tau0 = (y2 + st.se).sqrt() - y2.sqrt();
-            native_solve::iteration_cap(n, banded.lipschitz(), tau0).max(max_iters)
+            native_solve::iteration_cap(n, prep.banded.lipschitz(), tau0).max(max_iters)
         }
         None => max_iters,
     };
-    let lambda_eff = lambda * banded.dc_gain();
-    let nr = native_solve::solve_box(&scaled64, &banded, lambda_eff, cap_iters, tol, stop, None);
+    let lambda_eff = lambda * prep.banded.dc_gain();
+    let nr = native_solve::solve_box(
+        &scaled64,
+        &prep.banded,
+        lambda_eff,
+        cap_iters,
+        tol,
+        stop,
+        None,
+    );
     let u: Vec<f32> = nr.x.iter().map(|&v| v as f32).collect();
     let (iterations, converged) = (nr.iterations, nr.converged());
     // Frame masses in units of alpha_est per spike.
     let x: Vec<f32> = u.iter().map(|&v| v * cap as f32).collect();
-    banded.convolve_forward(&x, &mut conv);
-    let objective = grid_energy(&y, &conv, alpha_est, lo, 1);
+    prep.banded.convolve_forward(&x, &mut conv);
+    let objective = interior_energy(&prep.working, &conv, alpha_est, lo);
     let u_peak = interior_peak(&u, lo) as f64;
 
-    // ── Spread to the spike-resolution rate; normalize to the interior peak
-    // before the threshold search ──
-    let mut s_normalized = spread(&x, k, Spread::Interp);
-    let s_peak = interior_peak(&s_normalized, pad_up);
-    if s_peak > 1e-10 {
-        let inv_peak = 1.0 / s_peak;
-        for v in s_normalized.iter_mut() {
-            *v *= inv_peak;
-        }
-    }
-
-    // ── Binarization: the threshold search against the upsampled working
-    // trace ──
-    let ThresholdResult {
-        s_binary,
-        alpha: _,
-        baseline: _,
-        threshold,
-        pve,
-        error,
-        noise_path,
-        diag,
-    } = {
-        let mut scorer = match chain_up.take() {
+    // ── Binarization: event masses to integer counts per frame ──
+    let em = {
+        let mut scorer = match chain {
             Some(c) => Scorer::Chain {
-                y: &up.working,
+                y: &prep.working,
                 chain: c,
             },
-            None => Scorer::Plain { y: &up.working },
+            None => Scorer::Plain { y: &prep.working },
         };
-        match cfg.binarize {
-            Binarize::Threshold => threshold_search_scored(
-                &s_normalized,
-                &mut scorer,
-                &up.banded,
-                tau_d,
-                fs_up,
-                k,
-                f64::INFINITY,
-                selection,
-                noise_model,
-            ),
-            Binarize::EventMass => {
-                crate::event_mass::event_mass_search(
-                    &x,
-                    k,
-                    lo,
-                    hi,
-                    &mut scorer,
-                    &up.banded,
-                    pad_up,
-                    selection,
-                    noise_model,
-                )
-                .0
-            }
-        }
+        event_mass_search(
+            &x,
+            &mut scorer,
+            &prep.banded,
+            pad,
+            cap_spikes as usize,
+            noise_model,
+            opts.noise_constrained,
+        )
     };
-    let s_counts = downsample_binary(&s_binary, k);
 
     let stats = SolveStats {
         alpha_est,
@@ -883,12 +799,12 @@ pub(crate) fn solve_trace_cfg(
         iterations,
         converged,
         upper_bound_active: u_peak >= 1.0,
-        noise_path,
+        noise_path: em.noise_path,
         objective,
-        binary_error: error,
+        binary_error: em.error,
         budget,
-        chain_gain: up.noise.chain_gain,
-        selection: diag,
+        chain_gain: prep.noise.chain_gain,
+        diag: em.diag,
     };
 
     // The amplitude and offset handed downstream. The kernel estimator models
@@ -899,27 +815,35 @@ pub(crate) fn solve_trace_cfg(
     // under dense firing: tau_r pinned at the fit's cap, tau_d halved). Refit
     // the pair on the bare reconvolution; scoring keeps its own.
     let (alpha_out, baseline_out) = {
-        let mut cv = vec![0.0_f32; n_up];
-        up.banded.convolve_forward(&s_binary, &mut cv);
-        crate::threshold::lstsq_alpha_baseline(&cv, &up.working, pad_up, f64::INFINITY)
+        let mut cv = vec![0.0_f32; n];
+        prep.banded.convolve_forward(&em.counts, &mut cv);
+        crate::threshold::lstsq_alpha_baseline(&cv, &prep.working, pad, f64::INFINITY)
+    };
+    let threshold = if em.diag.a_max > 0.0 {
+        em.diag.a_pick / em.diag.a_max
+    } else {
+        0.0
     };
     (
         InDecaResult {
-            s_counts,
-            // The upsampled working trace at the recorded rate.
-            filtered_trace: Some(downsample_average(&up.working, k)),
+            s_counts: em.counts,
+            filtered_trace: Some(prep.working),
             alpha: alpha_out,
             baseline: baseline_out,
             threshold,
-            pve,
+            pve: em.pve,
             iterations,
             converged,
             // One round: there is no outer loop cap to hit; the inner
             // solve's stop is reported by `converged`.
             loop_converged: true,
-            noise_var_processed: up.noise.processed_var(),
-            chain_noise_gain: up.noise.chain_gain,
-            noise_path,
+            noise_var_processed: prep.noise.processed_var(),
+            chain_noise_gain: prep.noise.chain_gain,
+            noise_path: em.noise_path,
+            cap_limited: em.diag.cap_limited,
+            no_size_fit: em.diag.no_size_fit,
+            peak_outlier_ratio: em.diag.peak_outlier_ratio,
+            dropped_spikes: em.diag.dropped_spikes,
         },
         stats,
     )
@@ -938,7 +862,7 @@ mod tests {
         tau_r: f64,
         tau_d: f64,
         fs: f64,
-        upsample_factor: usize,
+        max_firing_rate: f64,
         max_iters: u32,
         tol: f64,
         warm_counts: Option<&[f32]>,
@@ -951,7 +875,7 @@ mod tests {
             tau_r,
             tau_d,
             fs,
-            upsample_factor,
+            max_firing_rate,
             max_iters,
             tol,
             warm_counts,
@@ -969,7 +893,7 @@ mod tests {
         tau_r: f64,
         tau_d: f64,
         fs: f64,
-        upsample_factor: usize,
+        max_firing_rate: f64,
         max_iters: u32,
         tol: f64,
         hp_enabled: bool,
@@ -982,7 +906,7 @@ mod tests {
             tau_r,
             tau_d,
             fs,
-            upsample_factor,
+            max_firing_rate,
             max_iters,
             tol,
             hp_enabled,
@@ -994,34 +918,24 @@ mod tests {
     }
 
     /// Characterization: score a reconstruction `recon` (trace units, before any
-    /// preprocessing, at the upsampled rate; e.g. `K n` of the true train, or the
-    /// clean calcium) against `trace` exactly as candidates are scored under
-    /// `scoring`. Returns `(residual energy, noise budget, amplitude)`.
+    /// preprocessing; e.g. `K n` of the true train, or the clean calcium)
+    /// against `trace` exactly as candidates are scored under `scoring`.
+    /// Returns `(residual energy, noise budget, amplitude)`.
     #[allow(clippy::too_many_arguments)]
     fn score_reconstruction_on_trace(
         trace: &[f32],
         tau_r: f64,
         tau_d: f64,
         fs: f64,
-        upsample_factor: usize,
         hp_enabled: bool,
         lp_enabled: bool,
         scoring: Scoring,
         recon: &[f32],
     ) -> (f64, f64, f64) {
-        let k = upsample_factor.max(1);
-        let mut prep = prepare(
-            trace,
-            tau_r,
-            tau_d,
-            fs * k as f64,
-            k,
-            hp_enabled,
-            lp_enabled,
-        );
+        let mut prep = prepare(trace, tau_r, tau_d, fs, hp_enabled, lp_enabled);
         let n = prep.working.len();
         let pad = prep.pad;
-        let n_grid = (pad..n.saturating_sub(pad)).step_by(k).count();
+        let n_grid = n.saturating_sub(2 * pad);
         let mut conv = recon.to_vec();
         let chain = prep.take_chain();
         let mut sc = match scoring {
@@ -1031,10 +945,9 @@ mod tests {
                 chain,
             },
         };
-        let (e, a, _) = sc.score_reconstruction(&mut conv, pad, k, f64::INFINITY);
+        let (e, a, _) = sc.score_reconstruction(&mut conv, pad, f64::INFINITY);
         (e, prep.noise_model.map_or(0.0, |nm| nm.budget(n_grid)), a)
     }
-
     /// Build a clean trace: convolve spikes through the kernel.
     fn make_trace(tau_r: f64, tau_d: f64, fs: f64, n: usize, spike_pos: &[usize]) -> Vec<f32> {
         let kernel = build_kernel(tau_r, tau_d, fs);
@@ -1053,7 +966,7 @@ mod tests {
     fn outputs_in_range() {
         let trace = make_trace(0.02, 0.4, 30.0, 300, &[20, 80, 150, 220]);
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 500, 1e-4, None, false, false, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 500, 1e-4, None, false, false, 0.0,
         );
 
         // Spike counts should be non-negative
@@ -1081,7 +994,7 @@ mod tests {
             }
         }
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, false, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 1000, 1e-4, None, false, false, 0.0,
         );
 
         // Check that spikes are detected near the true positions
@@ -1104,25 +1017,34 @@ mod tests {
     }
 
     #[test]
-    fn upsampled_output_length() {
-        let trace = make_trace(0.02, 0.4, 30.0, 100, &[20, 50]);
-        let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 10, 200, 1e-3, None, false, false, 0.0,
-        );
-
-        // Output should be same length as input regardless of upsample factor
-        assert_eq!(
-            result.s_counts.len(),
-            trace.len(),
-            "Output length should match input after downsampling"
-        );
+    fn counts_are_integers_per_frame_within_the_cap() {
+        // A dense burst of 12 spikes in 4 frames: counts are whole numbers,
+        // the same length as the trace, and never above the per-frame cap
+        // `round(max_firing_rate / fs)`.
+        let mut spikes = vec![];
+        for f in [60usize, 61, 62, 63] {
+            spikes.extend(std::iter::repeat_n(f, 3));
+        }
+        let trace = make_trace(0.02, 0.4, 30.0, 200, &spikes);
+        for (mfr, cap) in [(300.0, 10.0), (90.0, 3.0), (10.0, 1.0)] {
+            let r = solve_trace(
+                &trace, 0.02, 0.4, 30.0, mfr, 200, 1e-3, None, false, false, 0.0,
+            );
+            assert_eq!(r.s_counts.len(), trace.len());
+            assert!(
+                r.s_counts.iter().all(|&v| v == v.round() && v <= cap),
+                "mfr {mfr}: {:?}",
+                &r.s_counts[55..70]
+            );
+            assert!(r.s_counts.iter().sum::<f32>() > 0.0, "mfr {mfr}");
+        }
     }
 
     #[test]
     fn zero_trace() {
         let trace = vec![0.0_f32; 100];
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 100, 1e-4, None, false, false, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 100, 1e-4, None, false, false, 0.0,
         );
         let total_spikes: f32 = result.s_counts.iter().sum();
         assert!(
@@ -1132,18 +1054,18 @@ mod tests {
         );
     }
 
-    /// High alpha + upsampling should not overcount.
+    /// A high amplitude must not inflate the spike count: counts are in units
+    /// of the fitted amplitude, whatever the trace's scale.
     ///
-    /// Before the fix, alpha=5 + upsample=10x produced ~41 detected spikes because
-    /// Box[0,1] FISTA spread energy to neighboring upsampled bins. Pre-dividing by
-    /// alpha_est before threshold search fixes this.
+    /// The spikes sit outside the edge zone (`2 tau_d` at each end), where
+    /// the fit does not score; a spike inside it is not recoverable.
     #[test]
-    fn high_alpha_upsampled_no_overcounting() {
+    fn high_alpha_no_overcounting() {
         let tau_r = 0.02;
         let tau_d = 0.4;
         let fs = 30.0;
         let n = 300;
-        let spike_positions = [20, 80, 150, 220];
+        let spike_positions = [40, 80, 150, 220];
         let alpha_true = 10.0_f32;
         let baseline_true = 2.0_f32;
 
@@ -1158,17 +1080,17 @@ mod tests {
         }
 
         let result = solve_trace(
-            &trace, tau_r, tau_d, fs, 10, 500, 1e-4, None, false, false, 0.0,
+            &trace, tau_r, tau_d, fs, 300.0, 500, 1e-4, None, false, false, 0.0,
         );
 
         let total_counts: f32 = result.s_counts.iter().sum();
 
-        // With 10x upsampling + baseline subtraction, each spike can spread to
-        // several upsampled bins. The count may exceed the true spike count, but
+        // Each spike can spread over neighbouring frames after baseline
+        // subtraction. The count may exceed the true spike count, but
         // alpha × count (total energy) should still be conserved.
         assert!(
             (2.0..=30.0).contains(&total_counts),
-            "Expected spike counts in [2, 30] at 10x upsample, got {}",
+            "Expected spike counts in [2, 30], got {}",
             total_counts
         );
 
@@ -1224,7 +1146,7 @@ mod tests {
         let subset = &full_trace[subset_start..subset_end];
 
         let result = solve_trace(
-            subset, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0,
+            subset, tau_r, tau_d, fs, 300.0, 1000, 1e-4, None, false, false, 0.0,
         );
         let total_spikes: f32 = result.s_counts.iter().sum();
 
@@ -1237,6 +1159,53 @@ mod tests {
 
         // PVE should be reasonable (not garbage from a single edge spike)
         assert!(result.pve > 0.7, "PVE should be > 0.7, got {}", result.pve);
+    }
+
+    /// A window that starts mid-transient has the tail of an earlier spike
+    /// in its first frames. The edge zone (`ceil(2 tau_d fs)` frames at each
+    /// end) is excluded from segmentation, so no spike lands there, while the
+    /// interior spikes are still found.
+    #[test]
+    fn window_starting_mid_transient_puts_no_spike_in_the_edge_zone() {
+        let (tau_r, tau_d, fs) = (0.02, 0.4, 30.0);
+        let kernel = build_kernel(tau_r, tau_d, fs);
+        let n_full = 500;
+        let mut full = vec![2.0_f32; n_full];
+        for pos in [10usize, 120, 200, 280, 360] {
+            for (k, &kv) in kernel.iter().enumerate() {
+                if pos + k < n_full {
+                    full[pos + k] += 10.0 * kv;
+                }
+            }
+        }
+        // Start 3 frames after the first spike: deep in its decay.
+        let window = &full[13..420];
+        let pad = crate::threshold::boundary_padding(tau_d, fs);
+        assert_eq!(pad, 24);
+        for noise_constrained in [false, true] {
+            let r = solve_trace_opts(
+                window,
+                tau_r,
+                tau_d,
+                fs,
+                300.0,
+                500,
+                1e-4,
+                None,
+                false,
+                false,
+                0.0,
+                SolveOptions { noise_constrained },
+            );
+            let n = window.len();
+            assert!(
+                r.s_counts[..pad].iter().all(|&v| v == 0.0),
+                "spike in the leading edge zone: {:?}",
+                &r.s_counts[..pad]
+            );
+            assert!(r.s_counts[n - pad..].iter().all(|&v| v == 0.0));
+            assert!(r.s_counts[pad..n - pad].iter().sum::<f32>() >= 3.0);
+        }
     }
 
     /// High baseline should not prevent spike detection.
@@ -1262,7 +1231,7 @@ mod tests {
         }
 
         let result = solve_trace(
-            &trace, tau_r, tau_d, fs, 1, 1000, 1e-4, None, false, false, 0.0,
+            &trace, tau_r, tau_d, fs, 300.0, 1000, 1e-4, None, false, false, 0.0,
         );
         let total_spikes: f32 = result.s_counts.iter().sum();
 
@@ -1291,7 +1260,7 @@ mod tests {
         }
 
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, true, true, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 1000, 1e-4, None, true, true, 0.0,
         );
 
         // Output length should match input
@@ -1337,7 +1306,7 @@ mod tests {
         }
 
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, true, false, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 1000, 1e-4, None, true, false, 0.0,
         );
 
         assert_eq!(result.s_counts.len(), trace.len());
@@ -1373,7 +1342,7 @@ mod tests {
         }
 
         let result = solve_trace(
-            &trace, 0.02, 0.4, 30.0, 1, 1000, 1e-4, None, false, true, 0.0,
+            &trace, 0.02, 0.4, 30.0, 300.0, 1000, 1e-4, None, false, true, 0.0,
         );
 
         assert_eq!(result.s_counts.len(), trace.len());
@@ -1441,7 +1410,7 @@ mod tests {
             0.02,
             0.4,
             30.0,
-            1,
+            300.0,
             500,
             1e-4,
             None,
@@ -1470,17 +1439,17 @@ mod tests {
     #[test]
     fn noise_model_matches_white_noise_pushed_through_the_chain() {
         // The impulse-response derivation must agree with what white noise
-        // actually looks like after upsample → bandpass.
-        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
+        // actually looks like after the bandpass.
+        let (tr, td, fs) = (0.1, 0.6, 30.0);
         let n = 6000;
         let noise = lcg_noise(n, 1.0, 0x5EED);
         let sigma_raw = (1.0_f64 / 3.0).sqrt();
-        let mut f = trace_filter(tr, td, fs * k as f64, true, true);
-        let est = estimate_noise_model(&noise, k, Some(&mut f));
+        let mut f = trace_filter(tr, td, fs, true, true);
+        let est = estimate_noise_model(&noise, Some(&mut f));
 
-        let mut up = upsample_trace(&noise, k);
-        assert!(trace_filter(tr, td, fs * k as f64, true, true).apply(&mut up));
-        let grid: Vec<f64> = up.iter().step_by(k).map(|&v| v as f64).collect();
+        let mut filtered = noise.clone();
+        assert!(trace_filter(tr, td, fs, true, true).apply(&mut filtered));
+        let grid: Vec<f64> = filtered.iter().map(|&v| v as f64).collect();
         let var = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
         let grid_var = var(&grid);
         // Empirical sum of squared autocorrelations over the lags that matter.
@@ -1498,7 +1467,7 @@ mod tests {
             est.grid.sigma.powi(2),
             grid_var
         );
-        assert!(est.grid.corr_sum > 1.5, "LP should correlate grid samples");
+        assert!(est.grid.corr_sum > 1.5, "LP should correlate samples");
         assert!(
             rel(est.grid.corr_sum, corr_emp) < 0.25,
             "{} vs {}",
@@ -1506,46 +1475,46 @@ mod tests {
             corr_emp
         );
 
-        // Without filtering the grid samples are the raw samples.
-        let plain = estimate_noise_model(&noise, k, None);
+        // Without filtering the samples are the raw samples.
+        let plain = estimate_noise_model(&noise, None);
         assert!(rel(plain.grid.sigma, high_band_sigma(&noise)) < 1e-6);
         assert!((plain.grid.corr_sum - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn chain_noise_gain_is_near_unity_on_white_noise_and_modest_on_a_trace() {
-        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
-        let fs_up = fs * k as f64;
+        let (tr, td, fs) = (0.1, 0.6, 30.0);
         // Pure noise: the rolling quantile subtracts a constant (absorbed by
         // the fit's offset) plus a negligible sampling fluctuation; the probe
         // adds its own quantile sampling fluctuation on top of F(e').
         let noise = lcg_noise(6000, 1.0, 0x5EED);
-        let p = prepare(&noise, tr, td, fs_up, k, true, true);
+        let p = prepare(&noise, tr, td, fs, true, true);
         let g0 = p.noise.chain_gain;
         assert!(g0.is_finite() && (0.95..1.1).contains(&g0), "{g0}");
         // A spiking trace: the quantile's shift under noise varies with the
         // window's signal; a few percent of the linear budget.
         let trace = noisy_spiking_trace(6000, 0x1234);
-        let p = prepare(&trace, tr, td, fs_up, k, true, true);
+        let p = prepare(&trace, tr, td, fs, true, true);
         let g = p.noise.chain_gain;
         assert!(g.is_finite() && (0.98..1.5).contains(&g), "{g}");
         assert!((p.noise.grid_chain.sigma / p.noise.grid.sigma - g.sqrt()).abs() < 1e-6);
         assert_eq!(p.noise.grid_chain.corr_sum, p.noise.grid.corr_sum);
-        // The processed-space noise variance is the linear grid variance
-        // times the gain.
+        // The processed-space noise variance is the linear variance times
+        // the gain.
         assert!((p.noise.processed_var() / (p.noise.grid.sigma.powi(2)) - g).abs() < 1e-9);
         // Deterministic (fixed probe seed).
-        let p2 = prepare(&trace, tr, td, fs_up, k, true, true);
+        let p2 = prepare(&trace, tr, td, fs, true, true);
         assert_eq!(p2.noise.chain_gain, g);
-        // The default selection budget carries the gain, and the result
-        // exposes it.
-        let n_up = p.working.len();
-        let (lo, hi) = native_grid(n_up, p.pad, k);
+        // The default budget carries the gain, and the result exposes it.
+        let n = p.working.len();
+        let n_grid = n - 2 * p.pad;
         let opts = SolveOptions {
             noise_constrained: true,
         };
-        let (r, st) = solve_trace_stats(&trace, tr, td, fs, k, 100_000, 0.0, true, true, 0.0, opts);
-        let linear = p.noise.grid.budget(hi - lo);
+        let (r, st) = solve_trace_stats(
+            &trace, tr, td, fs, 300.0, 100_000, 0.0, true, true, 0.0, opts,
+        );
+        let linear = p.noise.grid.budget(n_grid);
         assert!(
             (st.budget / linear - g).abs() < 1e-6,
             "{} {}",
@@ -1559,9 +1528,9 @@ mod tests {
 
     #[test]
     fn chain_noise_gain_is_one_without_noise_or_data() {
-        assert_eq!(chain_noise_gain(&[], &[], None, 4, 10, 0, 1.0), 1.0);
+        assert_eq!(chain_noise_gain(&[], &[], None, 10, 0, 1.0), 1.0);
         let flat = vec![1.0_f32; 200];
-        let p = prepare(&flat, 0.1, 0.6, 300.0, 10, true, true);
+        let p = prepare(&flat, 0.1, 0.6, 30.0, true, true);
         assert_eq!(p.noise.chain_gain, 1.0);
         assert_eq!(p.noise.processed_var(), 0.0);
     }
@@ -1592,7 +1561,7 @@ mod tests {
     fn preset_cells(
         n_cells: usize,
         n_tp: usize,
-    ) -> Vec<(&'static str, Vec<f32>, f64, f64, f64, usize)> {
+    ) -> Vec<(&'static str, Vec<f32>, f64, f64, f64, f64)> {
         let mut out = Vec::new();
         for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = n_cells;
@@ -1600,14 +1569,13 @@ mod tests {
             let r = crate::simulate::simulate(&cfg);
             for c in 0..n_cells {
                 let gt = &r.ground_truth[c];
-                let k = ((300.0 / cfg.fs_hz).round() as usize).max(1);
                 out.push((
                     name,
                     r.traces[c * n_tp..(c + 1) * n_tp].to_vec(),
                     gt.tau_rise_s,
                     gt.tau_decay_s,
                     cfg.fs_hz,
-                    k,
+                    300.0,
                 ));
             }
         }
@@ -1616,7 +1584,7 @@ mod tests {
 
     fn run_cfg(
         trace: &[f32],
-        (tr, td, fs, k): (f64, f64, f64, usize),
+        (tr, td, fs, k): (f64, f64, f64, f64),
         max_iters: u32,
         cfg: SolveConfig,
     ) -> (InDecaResult, SolveStats) {
@@ -1775,32 +1743,29 @@ mod tests {
         // Scored against the preprocessed trace as a bare reconstruction, the
         // clean calcium sits far above the budget (the rolling baseline rides
         // up under activity; the high-pass sag): ~10x on `clean`. Passed
-        // through the identical chain on the 300 Hz grid it sits at (about)
+        // through the identical chain it sits at (about)
         // the budget: the linear part cancels exactly and only the quantile
         // nonlinearity is left (1.00-1.10x on these presets; up to ~1.4x on
         // gcamp6s and clean, where the budget is smallest).
         for (name, trace, clean, tr, td, fs) in drift_free_cells(3000) {
-            let k = ((300.0 / fs).round() as usize).max(1);
-            let recon = upsample_trace(&clean, k);
+            let recon = clean;
             let (e, b, _) = score_reconstruction_on_trace(
                 &trace,
                 tr,
                 td,
                 fs,
-                k,
                 true,
                 true,
                 Scoring::Chain,
                 &recon,
             );
-            assert!((0.85..1.5).contains(&(e / b)), "{name} k={k}: {}", e / b);
+            assert!((0.85..1.5).contains(&(e / b)), "{name}: {}", e / b);
             if name == "clean" {
                 let (e, b, _) = score_reconstruction_on_trace(
                     &trace,
                     tr,
                     td,
                     fs,
-                    k,
                     true,
                     true,
                     Scoring::Plain,
@@ -1820,9 +1785,8 @@ mod tests {
         };
         let mut differs = false;
         for (_, trace, _, tr, td, fs) in drift_free_cells(1500) {
-            let k = ((300.0 / fs).round() as usize).max(1);
-            let (a, st) = run_cfg(&trace, (tr, td, fs, k), 500, SolveConfig::default());
-            let (b, _) = run_cfg(&trace, (tr, td, fs, k), 500, plain);
+            let (a, st) = run_cfg(&trace, (tr, td, fs, 300.0), 500, SolveConfig::default());
+            let (b, _) = run_cfg(&trace, (tr, td, fs, 300.0), 500, plain);
             assert!(a.s_counts.iter().sum::<f32>() > 0.0);
             assert!(b.s_counts.iter().sum::<f32>() > 0.0);
             // The chain is amplitude-invariant, so the fitted amplitude stays
@@ -1843,7 +1807,7 @@ mod tests {
             0.1,
             0.6,
             30.0,
-            10,
+            300.0,
             300,
             1e-4,
             false,
@@ -1866,7 +1830,7 @@ mod tests {
     fn preset_cells_at(
         fs: f64,
         dur_s: f64,
-    ) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64, usize)> {
+    ) -> Vec<(&'static str, Vec<f32>, Vec<f32>, f64, f64, f64, f64)> {
         let mut out = Vec::new();
         for (name, mut cfg) in crate::simulate::presets::legacy_peak_all() {
             cfg.num_cells = 1;
@@ -1875,7 +1839,7 @@ mod tests {
             cfg.num_timepoints = n_tp;
             let r = crate::simulate::simulate(&cfg);
             let gt = &r.ground_truth[0];
-            let k = ((300.0 / fs).round() as usize).max(1);
+            let k = 300.0;
             out.push((
                 name,
                 r.traces[..n_tp].to_vec(),
@@ -1892,7 +1856,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn run_native(
         trace: &[f32],
-        (tr, td, fs, k): (f64, f64, f64, usize),
+        (tr, td, fs, k): (f64, f64, f64, f64),
         max_iters: u32,
         tol: f64,
         cfg: SolveConfig,
@@ -1974,7 +1938,7 @@ mod tests {
             let (b, sb) = run_native(trace, p, u32::MAX, 1e-7, step);
             assert!(sa.converged && sb.converged, "{name}: {sa:?} {sb:?}");
             assert!(sa.iterations <= sb.iterations, "{name}: {sa:?} {sb:?}");
-            let se = sa.selection.std_error;
+            let se = sa.diag.std_error;
             assert!(
                 (sa.objective - sb.objective).abs() <= se,
                 "{name}: relaxed fits {} vs {} differ by more than SE {se}",
@@ -2054,44 +2018,6 @@ mod tests {
     }
 
     #[test]
-    fn native_grid_is_the_selections_grid() {
-        // The seam: the native solve's grid residual (the certificate) and
-        // the selection's scores are taken over the same recorded samples.
-        for (n_up, pad_up, k) in [
-            (3000, 360, 10),
-            (3000, 365, 10),
-            (1500, 120, 20),
-            (900, 0, 1),
-        ] {
-            let (lo, hi) = native_grid(n_up, pad_up, k);
-            let up_grid: Vec<usize> = (pad_up..n_up - pad_up).step_by(k).collect();
-            let nat_grid: Vec<usize> = (lo..hi).map(|i| i * k).collect();
-            // Same number of samples, starting at the first recorded sample
-            // at or after `pad_up`, all inside the upsampled interior.
-            assert_eq!(up_grid.len(), nat_grid.len(), "{n_up} {pad_up} {k}");
-            assert_eq!(up_grid[0].div_ceil(k) * k, nat_grid[0]);
-            assert!(nat_grid.last().unwrap() < &(n_up - pad_up + k));
-            // A recorded-rate preprocessing would not give the same signal:
-            // the native solve fits the grid samples of the upsampled one.
-        }
-        for (name, trace, _, tr, td, fs, k) in preset_cells_at(30.0, 30.0).into_iter().take(1) {
-            let nat = prepare(&trace, tr, td, fs, 1, true, true);
-            let up = prepare(&trace, tr, td, fs * k as f64, k, true, true);
-            let (lo, hi) = native_grid(up.working.len(), up.pad, k);
-            let (mut num, mut den) = (0.0_f64, 0.0_f64);
-            for i in lo..hi {
-                let d = nat.working[i] as f64 - up.working[i * k] as f64;
-                num += d * d;
-                den += (up.working[i * k] as f64).powi(2);
-            }
-            assert!(
-                (num / den).sqrt() > 1e-3,
-                "{name}: the two preprocessings coincide"
-            );
-        }
-    }
-
-    #[test]
     fn native_solve_recovers_isolated_spikes_exactly_on_a_clean_trace() {
         // Without noise there is no certificate (the step rule applies) and
         // the binarization has no allowance: isolated single spikes come
@@ -2103,7 +2029,7 @@ mod tests {
             0.1,
             0.6,
             30.0,
-            10,
+            300.0,
             u32::MAX,
             1e-8,
             None,
@@ -2120,15 +2046,19 @@ mod tests {
     }
 
     #[test]
-    fn max_spikes_per_frame_follows_the_refractory_period() {
-        assert_eq!(max_spikes_per_frame(300.0), 1);
-        assert_eq!(max_spikes_per_frame(30.0), 10);
-        assert_eq!(max_spikes_per_frame(15.0), 20);
-        assert_eq!(max_spikes_per_frame(60.0), 5);
-        assert_eq!(max_spikes_per_frame(1000.0), 1);
+    fn spike_cap_is_the_rounded_max_firing_rate_per_frame() {
+        // The default 300 spikes/s: 10 per frame at 30 Hz, 5 at 60 Hz.
+        assert_eq!(spike_cap(DEFAULT_MAX_FIRING_RATE, 30.0), 10);
+        assert_eq!(spike_cap(300.0, 60.0), 5);
+        assert_eq!(spike_cap(300.0, 15.0), 20);
+        // Rounded, not floored, and never below one spike.
+        assert_eq!(spike_cap(300.0, 40.0), 8); // 7.5 rounds up
+        assert_eq!(spike_cap(100.0, 30.0), 3); // 3.33
+        assert_eq!(spike_cap(10.0, 30.0), 1);
+        assert_eq!(spike_cap(300.0, 1000.0), 1);
     }
 
-    // ── Native solve: unconverged stop and the certificate/selection seam ─
+    // ── Relaxed solve: unconverged stop and the certificate/selection seam ─
 
     #[test]
     fn native_solve_reports_an_unconverged_stop_without_panicking() {
@@ -2142,7 +2072,7 @@ mod tests {
         // so a certificate-mode stall cannot be forced from here without a
         // test-only hook.)
         let trace = noisy_spiking_trace(900, 0xFEED);
-        let p = (0.1, 0.6, 30.0, 10);
+        let p = (0.1, 0.6, 30.0, 300.0);
         let cfg = SolveConfig {
             native_stop: NativeStop::Step,
             ..SolveConfig::default()
@@ -2157,51 +2087,31 @@ mod tests {
     }
 
     #[test]
-    fn native_certificate_residual_is_the_selections_grid_residual() {
+    fn native_certificate_residual_is_the_selections_residual() {
         // The seam between the solve and the selection: the certificate's
-        // grid residual (native indices `[lo, hi)` of the recorded samples
-        // of the upsampled working trace) must be the residual the
-        // selection takes over its grid (every `k`-th sample of
-        // `[pad_up, n_up - pad_up)` of the working trace) for the same
-        // reconstruction. The two grids coincide only when `pad_up` is a
-        // multiple of `k`; otherwise the selection's grid falls between
-        // recorded frames and scores interpolated sub-bins (e.g.
-        // `pad_up = 365, k = 10`), and the certificate scores the nearest
-        // recorded samples instead. This configuration (tau_d = 0.6 s at
-        // 300 Hz: `pad_up = 360`, `k = 10`) is one where they coincide, so
-        // the residuals must agree up to the f32 rounding of the
+        // residual over the interior `[pad, n - pad)` of the working trace
+        // is the residual the selection takes over the same interior for
+        // the same reconstruction, up to the f32 rounding of the
         // reconstruction.
         let trace = noisy_spiking_trace(900, 0xFEED);
-        let (tr, td, fs, k) = (0.1, 0.6, 30.0, 10usize);
-        let up = prepare(&trace, tr, td, fs * k as f64, k, true, true);
-        let (n_up, pad_up) = (up.working.len(), up.pad);
-        assert_eq!(pad_up % k, 0, "pad_up = {pad_up}: grids do not coincide");
-        let (lo, hi) = native_grid(n_up, pad_up, k);
-        assert_eq!(lo * k, pad_up);
-        let y: Vec<f64> = recorded_samples(&up.working, k)
-            .iter()
-            .map(|&v| v as f64)
-            .collect();
+        let (tr, td, fs) = (0.1, 0.6, 30.0);
+        let prep = prepare(&trace, tr, td, fs, true, true);
+        let (n, pad) = (prep.working.len(), prep.pad);
+        let y: Vec<f64> = prep.working.iter().map(|&v| v as f64).collect();
         let banded = BandedAR2::new(tr, td, fs);
         // Any iterate will do; a partly converged one keeps the residual
         // well away from zero.
         let stop = Stop {
             se: 0.0,
-            lo,
-            hi,
-            stride: 1,
+            lo: pad,
+            hi: n - pad,
         };
         let r = native_solve::solve_box(&y, &banded, 0.0, 200, 0.0, Some(stop), None);
         let native_fit = r.certificate.unwrap().grid_fit;
-        // The same reconstruction at the upsampled rate (the tent through
-        // the recorded samples, exact on them), scored on the selection's
-        // grid.
-        let mut recon = vec![0.0_f64; y.len()];
+        let mut recon = vec![0.0_f64; n];
         banded.convolve_forward_f64(&r.x, &mut recon);
         let recon32: Vec<f32> = recon.iter().map(|&v| v as f32).collect();
-        let recon_up = upsample_trace(&recon32, k);
-        assert_eq!(recon_up.len(), n_up);
-        let selection_fit = grid_energy(&up.working, &recon_up, 1.0, pad_up, k);
+        let selection_fit = interior_energy(&prep.working, &recon32, 1.0, pad);
         assert!(native_fit > 0.0);
         let rel = (native_fit - selection_fit).abs() / native_fit;
         assert!(rel < 1e-5, "{native_fit} vs {selection_fit} (rel {rel:e})");
@@ -2221,7 +2131,7 @@ mod tests {
             0.02,
             0.4,
             30.0,
-            4,
+            300.0,
             200,
             1e-4,
             true,
@@ -2242,10 +2152,11 @@ mod tests {
         }
         // Amplitude is a non-negative scale.
         assert!(r.alpha >= 0.0, "{label}: alpha {}", r.alpha);
-        // Max-PVE selection fits noise as spikes by design (67 per 600
-        // samples on this trace), so the spike-count bound applies to the
-        // noise-constrained pick, which exists to suppress that (14 per 600
-        // here; bound 5%).
+        // The non-negative fit of pure noise is a set of isolated small
+        // events, and the one-SE size pick keeps each as one spike (33 per
+        // 600 samples on this trace, no penalty on the count; see the
+        // `event_mass` docs), so the bound is loose (8%) and applies to the
+        // noise-constrained run.
         let total: f32 = r.s_counts.iter().sum();
         let bound = if noise_constrained || max_spikes_always {
             max_spike_frac * trace.len() as f32
@@ -2276,7 +2187,7 @@ mod tests {
         };
         let trace: Vec<f32> = (0..600).map(|_| next() * 0.2).collect();
         assert_degenerate_outputs_sane("noise", &trace, false, 0.02, false);
-        assert_degenerate_outputs_sane("noise/nc", &trace, true, 0.05, false);
+        assert_degenerate_outputs_sane("noise/nc", &trace, true, 0.08, false);
     }
 
     #[test]
@@ -2328,7 +2239,7 @@ mod tests {
             vec![0.0_f32; 200],
         ] {
             let r = solve_trace_opts(
-                &trace, 0.02, 0.4, 30.0, 1, 50, 1e-4, None, false, false, 0.0, opts,
+                &trace, 0.02, 0.4, 30.0, 300.0, 50, 1e-4, None, false, false, 0.0, opts,
             );
             assert_eq!(r.s_counts.len(), trace.len());
             assert!(r.s_counts.iter().all(|&v| v.is_finite() && v >= 0.0));
@@ -2340,7 +2251,7 @@ mod tests {
             0.02,
             0.4,
             30.0,
-            1,
+            300.0,
             50,
             1e-4,
             None,

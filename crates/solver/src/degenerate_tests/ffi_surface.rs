@@ -21,7 +21,6 @@
 //! | `indeca_solve_trace` / `py_indeca_solve_trace`               | finite trace+warm, indeca params | `indeca::solve_trace_opts`           |
 //! | `indeca_estimate_kernel` / `py_indeca_estimate_kernel`       | `validate_kernel_estimate_inputs` | `kernel_est::estimate_free_kernel`  |
 //! | `indeca_fit_biexponential` / `py_indeca_fit_biexponential`   | `biexp_fit_inputs`             | `biexp_fit::fit_biexponential`         |
-//! | `indeca_compute_upsample_factor` / `py_..._upsample_factor`  | `validate_upsample_rates`      | `upsample::compute_upsample_factor`    |
 //! | `seed_trace` / `py_seed_trace`                               | finite trace, `validate_fs`    | `peak_seed::seed_trace`                |
 //! | — / `seed_kernel_estimate`                                   | finite traces, `validate_fs`   | `peak_seed::seed_kernel_estimate`      |
 //! | — / `py_build_kernel`                                        | `validate_params`              | `kernel::build_kernel`                 |
@@ -33,7 +32,7 @@ use crate::biexp_fit::{self, FitMode};
 use crate::indeca::{self, SolveOptions};
 use crate::kernel::{build_kernel, compute_lipschitz};
 use crate::validate::{self, SolverError, MAX_KERNEL_LEN};
-use crate::{kernel_est, peak_seed, simulate, upsample};
+use crate::{kernel_est, peak_seed, simulate};
 
 const TAU_R: f64 = 0.02;
 const TAU_D: f64 = 0.4;
@@ -90,69 +89,73 @@ fn every_trace_export_rejects_nan_and_infinity() {
 
 #[test]
 fn indeca_solve_trace_rejects_degenerate_params() {
-    // (label, tau_r, tau_d, fs, upsample, lambda, tol)
-    let cases: &[(&str, f64, f64, f64, usize, f64, f64)] = &[
-        ("upsample = 0", TAU_R, TAU_D, FS, 0, 0.0, 1e-4),
-        ("reversed taus", TAU_D, TAU_R, FS, 1, 0.0, 1e-4),
-        ("equal taus", TAU_D, TAU_D, FS, 1, 0.0, 1e-4),
-        ("tau_r = 0", 0.0, TAU_D, FS, 1, 0.0, 1e-4),
-        ("tau_r < 0", -TAU_R, TAU_D, FS, 1, 0.0, 1e-4),
-        ("tau_d < 0", TAU_R, -TAU_D, FS, 1, 0.0, 1e-4),
-        ("fs = 0", TAU_R, TAU_D, 0.0, 1, 0.0, 1e-4),
-        ("fs < 0", TAU_R, TAU_D, -FS, 1, 0.0, 1e-4),
-        ("fs NaN", TAU_R, TAU_D, NAN, 1, 0.0, 1e-4),
-        ("fs inf", TAU_R, TAU_D, INF, 1, 0.0, 1e-4),
-        ("lambda < 0", TAU_R, TAU_D, FS, 1, -1.0, 1e-4),
-        ("lambda NaN", TAU_R, TAU_D, FS, 1, NAN, 1e-4),
-        ("tol < 0", TAU_R, TAU_D, FS, 1, 0.0, -1.0),
-        ("tol NaN", TAU_R, TAU_D, FS, 1, 0.0, NAN),
-        ("tau NaN", NAN, TAU_D, FS, 1, 0.0, 1e-4),
-        // The kernel is built at fs * upsample, so the cap applies there.
+    // (label, tau_r, tau_d, fs, max_firing_rate, lambda, tol)
+    let cases: &[(&str, f64, f64, f64, f64, f64, f64)] = &[
+        ("max_firing_rate = 0", TAU_R, TAU_D, FS, 0.0, 0.0, 1e-4),
+        ("max_firing_rate < 0", TAU_R, TAU_D, FS, -300.0, 0.0, 1e-4),
+        ("max_firing_rate NaN", TAU_R, TAU_D, FS, NAN, 0.0, 1e-4),
+        ("max_firing_rate inf", TAU_R, TAU_D, FS, INF, 0.0, 1e-4),
         (
-            "kernel over cap at upsampled rate",
+            "max_firing_rate over bound",
             TAU_R,
-            100.0,
-            1000.0,
-            1000,
+            TAU_D,
+            FS,
+            1e5,
             0.0,
             1e-4,
         ),
+        ("reversed taus", TAU_D, TAU_R, FS, 300.0, 0.0, 1e-4),
+        ("equal taus", TAU_D, TAU_D, FS, 300.0, 0.0, 1e-4),
+        ("tau_r = 0", 0.0, TAU_D, FS, 300.0, 0.0, 1e-4),
+        ("tau_r < 0", -TAU_R, TAU_D, FS, 300.0, 0.0, 1e-4),
+        ("tau_d < 0", TAU_R, -TAU_D, FS, 300.0, 0.0, 1e-4),
+        ("fs = 0", TAU_R, TAU_D, 0.0, 300.0, 0.0, 1e-4),
+        ("fs < 0", TAU_R, TAU_D, -FS, 300.0, 0.0, 1e-4),
+        ("fs NaN", TAU_R, TAU_D, NAN, 300.0, 0.0, 1e-4),
+        ("fs inf", TAU_R, TAU_D, INF, 300.0, 0.0, 1e-4),
+        ("lambda < 0", TAU_R, TAU_D, FS, 300.0, -1.0, 1e-4),
+        ("lambda NaN", TAU_R, TAU_D, FS, 300.0, NAN, 1e-4),
+        ("tol < 0", TAU_R, TAU_D, FS, 300.0, 0.0, -1.0),
+        ("tol NaN", TAU_R, TAU_D, FS, 300.0, 0.0, NAN),
+        ("tau NaN", NAN, TAU_D, FS, 300.0, 0.0, 1e-4),
+        // The kernel is built at fs, so the cap applies there.
+        ("kernel over cap", TAU_R, 1e8, 1000.0, 300.0, 0.0, 1e-4),
     ];
     for &(label, tr, td, fs, up, lam, tol) in cases {
         let r = validate::validate_indeca_params(100, tr, td, fs, up, lam, tol);
         assert!(is_param_err(r.clone()), "{label}: {r:?}");
     }
-    // Trace length x upsample over the 2^26 cap.
+    // Trace length over the 2^26 cap.
     assert!(is_param_err(validate::validate_indeca_params(
-        1 << 20,
+        (1 << 26) + 1,
         TAU_R,
         TAU_D,
         FS,
-        1 << 7,
+        300.0,
         0.0,
         1e-4
     )));
-    assert!(validate::validate_indeca_params(1 << 19, TAU_R, TAU_D, FS, 1 << 7, 0.0, 1e-4).is_ok());
+    assert!(validate::validate_indeca_params(1 << 19, TAU_R, TAU_D, FS, 300.0, 0.0, 1e-4).is_ok());
 }
 
 #[test]
 fn indeca_solve_trace_core_handles_every_accepted_degenerate_trace() {
     for (label, trace) in degenerate_traces() {
-        for up in [1_usize, 4] {
+        for mfr in [30.0_f64, 300.0] {
             for (hp, lp, noise) in [
                 (false, false, false),
                 (true, true, false),
                 (false, false, true),
             ] {
-                let ctx = format!("{label} up={up} hp={hp} lp={lp} noise={noise}");
-                validate::validate_indeca_params(trace.len(), TAU_R, TAU_D, FS, up, 0.0, 1e-4)
+                let ctx = format!("{label} mfr={mfr} hp={hp} lp={lp} noise={noise}");
+                validate::validate_indeca_params(trace.len(), TAU_R, TAU_D, FS, mfr, 0.0, 1e-4)
                     .unwrap();
                 let r = indeca::solve_trace_opts(
                     &trace,
                     TAU_R,
                     TAU_D,
                     FS,
-                    up,
+                    mfr,
                     50,
                     1e-4,
                     None,
@@ -188,7 +191,7 @@ fn indeca_solve_trace_core_tolerates_mismatched_warm_counts_and_zero_iters() {
                 TAU_R,
                 TAU_D,
                 FS,
-                2,
+                300.0,
                 max_iters,
                 1e-4,
                 if warm.is_empty() { None } else { Some(&warm) },
@@ -556,37 +559,6 @@ fn fit_biexponential_never_returns_non_physical_warm_taus() {
                 r.tau_decay
             );
         }
-    }
-}
-
-// --- indeca_compute_upsample_factor -------------------------------------------
-
-#[test]
-fn upsample_factor_rejects_degenerate_rates_and_is_at_least_one() {
-    for (fs, target) in [
-        (0.0, 300.0),
-        (-30.0, 300.0),
-        (NAN, 300.0),
-        (INF, 300.0),
-        (FS, 0.0),
-        (FS, -1.0),
-        (FS, NAN),
-        (FS, INF),
-        (1e-300, 1e300), // ratio overflows to inf
-        (1.0, 1e12),     // finite ratio, absurd factor
-    ] {
-        assert!(
-            is_param_err(validate::validate_upsample_rates(fs, target)),
-            "({fs}, {target})"
-        );
-    }
-    for (fs, target, expect) in [(FS, FS, 1), (FS, 1e-300, 1), (FS, 300.0, 10), (FS, 44.0, 1)] {
-        validate::validate_upsample_rates(fs, target).unwrap();
-        assert_eq!(
-            upsample::compute_upsample_factor(fs, target),
-            expect,
-            "({fs}, {target})"
-        );
     }
 }
 

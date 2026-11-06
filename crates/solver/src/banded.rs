@@ -11,7 +11,7 @@ use crate::kernel::clamp_tau_rise;
 /// and r = exp(-dt/tau_rise) the AR(2) roots — algebraically identical to the
 /// direct form since (1 - d z^-1)(1 - r z^-1) = 1 - g1 z^-1 - g2 z^-2. The
 /// direct form is ill-conditioned once g1/g2 are rounded to f32: at high
-/// sampling rates (CaDecon upsamples to 300 Hz) d and r are both close to 1
+/// sampling rates (300 Hz and above) d and r are both close to 1
 /// and to each other, so the roots of the f32-rounded polynomial land several
 /// percent away from the requested time constants (up to ~40% at
 /// tau_rise > tau_decay, and complex roots near tau_rise ≈ tau_decay). Each

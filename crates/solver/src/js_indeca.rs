@@ -13,7 +13,6 @@ use crate::biexp_fit;
 use crate::indeca;
 use crate::kernel_est;
 use crate::peak_seed;
-use crate::upsample;
 use crate::validate::{self, SolverError};
 
 /// Prefix a validation error with the function name, as a JS error.
@@ -30,51 +29,67 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 
 /// Solve a single trace using the InDeCa pipeline.
 ///
+/// `max_firing_rate` (spikes/s, the app default is 300) is the highest rate
+/// the cell can reach in its strongest bursts. It fixes the per-frame
+/// ceiling `cap = max(1, round(max_firing_rate / fs))` spikes: the box of
+/// the relaxed solve and the smallest spike size the binarization considers.
+/// Everything runs at the recorded frame rate; `s_counts` is an integer
+/// count per frame (`0..=cap`), the same length as `trace`.
+///
 /// `warm_counts`: accepted for API compatibility and has no effect (see
 /// `indeca::solve_trace_opts`). Pass an empty slice.
 ///
 /// `max_iters` and `tol` (CaDecon's `traceFistaMaxIters` / `traceFistaTol`)
-/// are effectively no-ops on the default path: the relaxed solve runs at
-/// the recorded rate and stops on a data-derived convergence certificate
-/// (`native_solve`). `tol` (the relative-step rule) applies only to a trace
-/// without a measurable noise floor (no certificate). `max_iters` is only a
-/// floor on the safety cap, which is derived from the problem and lies in
-/// the 1e5-1e9 range, so the apps' value (500) cannot truncate the solve and raising it changes nothing unless it
-/// exceeds the derived cap.
+/// are effectively no-ops on the default path: the relaxed solve stops on a
+/// data-derived convergence certificate (`native_solve`). `tol` (the
+/// relative-step rule) applies only to a trace without a measurable noise
+/// floor (no certificate). `max_iters` is only a floor on the safety cap,
+/// which is derived from the problem and lies in the 1e5-1e9 range, so the
+/// apps' value (500) cannot truncate the solve and raising it changes
+/// nothing unless it exceeds the derived cap.
 ///
 /// Returns a JsValue containing the serialized InDecaResult:
 /// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
 ///   converged, loop_converged, noise_var_processed, chain_noise_gain,
-///   noise_path }
-/// where `iterations` is the recorded-rate FISTA iteration count (hundreds
-/// to a few thousand at 30 Hz; tens of thousands for slow indicators at
-/// 60 Hz) and `converged` says the certificate (or, without noise, the step
-/// rule) fired. `converged = false` means the certificate could not be met
-/// in f64 arithmetic: in practice the stall detector on the certificate's
-/// bound stopped the solve, since the derived cap is not reached.
+///   noise_path, cap_limited, no_size_fit, peak_outlier_ratio,
+///   dropped_spikes }
+/// where `iterations` is the FISTA iteration count (hundreds to a few
+/// thousand at 30 Hz; tens of thousands for slow indicators at 60 Hz) and
+/// `converged` says the certificate (or, without noise, the step rule)
+/// fired. `converged = false` means the certificate could not be met in f64
+/// arithmetic: in practice the stall detector on the certificate's bound
+/// stopped the solve, since the derived cap is not reached.
 /// `loop_converged` is always true (the solve is one round; kept so the
-/// object's shape is unchanged).
+/// object's shape is unchanged). `threshold` is the picked spike size as a
+/// fraction of the largest event's mass.
 /// `noise_var_processed` is the per-sample noise variance of the working
-/// trace (`filtered_trace` before downsampling; baseline-subtracted,
-/// bandpassed), `sigma_raw^2` times the bandpass's grid gain times
-/// `chain_noise_gain` (the rolling-quantile stage's measured gain, also the
-/// factor the selection's noise budget carries); 0 when the trace has no
-/// measurable noise floor. `1 - noise_var_processed / var(filtered_trace)`
-/// is the PVE a fit can reach before it starts fitting noise.
-/// `noise_path` is true when the noise-constrained selection actually
-/// overrode max-PVE for this trace (the best candidate overfit the noise
-/// floor by more than 1 SE); false means the result equals max-PVE.
+/// trace (`filtered_trace`; baseline-subtracted, bandpassed), `sigma_raw^2`
+/// times the bandpass's gain times `chain_noise_gain` (the rolling-quantile
+/// stage's measured gain); 0 when the trace has no measurable noise floor.
+/// `1 - noise_var_processed / var(filtered_trace)` is the PVE a fit can
+/// reach before it starts fitting noise.
+/// `noise_path` is informational (with `noise_constrained`, the best
+/// candidate beat the noise floor by more than 1 SE) and does not change
+/// the result.
+///
+/// Per-cell diagnostics (none changes the result): `cap_limited` (the pick
+/// ended at the floor spike size `frame_max / cap`, so the cap set the spike
+/// size), `no_size_fit` (no spike size passed the one-standard-error test),
+/// `peak_outlier_ratio` (largest event-peak frame mass over the second
+/// largest) and `dropped_spikes` (spikes no frame of their event had room
+/// for).
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid
-/// (`fs <= 0`, `tau_r >= tau_d`, `upsample_factor == 0`, negative `lambda`, ...).
+/// (`fs <= 0`, `tau_r >= tau_d`, `max_firing_rate` outside (0, 10000],
+/// negative `lambda`, ...).
 #[wasm_bindgen]
 pub fn indeca_solve_trace(
     trace: &[f32],
     tau_r: f64,
     tau_d: f64,
     fs: f64,
-    upsample_factor: usize,
+    max_firing_rate: f64,
     max_iters: u32,
     tol: f64,
     hp_enabled: bool,
@@ -86,7 +101,7 @@ pub fn indeca_solve_trace(
     const F: &str = "indeca_solve_trace";
     validate::validate_finite_f32("trace", trace).map_err(|e| js_err(F, e))?;
     validate::validate_finite_f32("warm_counts", warm_counts).map_err(|e| js_err(F, e))?;
-    validate::validate_indeca_params(trace.len(), tau_r, tau_d, fs, upsample_factor, lambda, tol)
+    validate::validate_indeca_params(trace.len(), tau_r, tau_d, fs, max_firing_rate, lambda, tol)
         .map_err(|e| js_err(F, e))?;
     let warm = if warm_counts.is_empty() {
         None
@@ -98,7 +113,7 @@ pub fn indeca_solve_trace(
         tau_r,
         tau_d,
         fs,
-        upsample_factor,
+        max_firing_rate,
         max_iters,
         tol,
         warm,
@@ -212,17 +227,6 @@ pub fn indeca_fit_biexponential(
     .map_err(|e| js_err(F, e))?;
     let result = biexp_fit::fit_biexponential(h_free, fs, refine, skip, warm_start.as_ref());
     to_js(F, &result)
-}
-
-/// Compute the upsample factor for a given sampling rate and target rate.
-///
-/// Throws if either rate is non-finite or <= 0 (a zero `fs` used to produce a
-/// saturated, effectively infinite factor).
-#[wasm_bindgen]
-pub fn indeca_compute_upsample_factor(fs: f64, target_fs: f64) -> Result<usize, JsError> {
-    validate::validate_upsample_rates(fs, target_fs)
-        .map_err(|e| js_err("indeca_compute_upsample_factor", e))?;
-    Ok(upsample::compute_upsample_factor(fs, target_fs))
 }
 
 /// Run peak-seeded spike detection on a single trace.
