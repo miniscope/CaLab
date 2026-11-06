@@ -187,13 +187,29 @@ impl Scorer<'_> {
         max_alpha: f64,
         conv: &mut [f32],
     ) -> (f64, f64, f64) {
+        self.score_changed(added, &[], pad, stride, max_alpha, conv)
+    }
+
+    /// [`Self::score_added`] for a train that also loses the spikes at
+    /// `removed` (each a spike of the running train): the next candidate need
+    /// not contain the previous one, only differ from it by a few spikes.
+    pub(crate) fn score_changed(
+        &mut self,
+        added: &[usize],
+        removed: &[usize],
+        pad: usize,
+        stride: usize,
+        max_alpha: f64,
+        conv: &mut [f32],
+    ) -> (f64, f64, f64) {
         let Scorer::Chain { y, chain } = self else {
-            unreachable!("score_added without begin_nested");
+            unreachable!("score_changed without begin_nested");
         };
         let sp = chain
             .superposition
             .as_mut()
-            .expect("score_added without begin_nested");
+            .expect("score_changed without begin_nested");
+        sp.remove(removed);
         sp.add(added);
         sp.write(conv);
         chain
@@ -462,25 +478,27 @@ impl Superposition {
         self.line_b = 0.0;
     }
 
-    /// The scalar corrections of one spike's column (see the struct docs).
-    fn add_column_scalars(&mut self, t: usize) {
+    /// The scalar corrections of one spike's column (see the struct docs),
+    /// added with `sign` (+1 adds the spike, -1 removes it).
+    fn add_column_scalars(&mut self, t: usize, sign: f64) {
         let (n, m) = (self.n, self.m);
         // C_t = k[n-1-t], U_t = d^(n-1-t) / peak.
-        self.wrap_c += self.k[n - 1 - t];
-        self.wrap_u += self.inv_peak * self.d.powi((n - 1 - t) as i32);
+        self.wrap_c += sign * self.k[n - 1 - t];
+        self.wrap_u += sign * (self.inv_peak * self.d.powi((n - 1 - t) as i32));
         // Window sums of the cut column k[i - t], i in [t, n).
         let w0 = if t < m { self.kc[m - t] } else { 0.0 };
         let w1 = self.kc[n - t] - self.kc[(n - m).max(t) - t];
         let (c, b) = line_through(w0 / m as f64, w1 / m as f64, n, m);
-        self.line_c += c;
-        self.line_b += b;
+        self.line_c += sign * c;
+        self.line_b += sign * b;
     }
 
-    /// Add the columns of the spikes at `ts`. The shifted templates are
-    /// contiguous slices of the doubled template (`shift(H k, t)[i] =
-    /// g2[n - t + i]`), summed four at a time so the accumulator is read and
-    /// written once per four columns (the pass is memory-bound).
-    fn add_columns(&mut self, ts: &[usize]) {
+    /// Add (`sign` +1) or remove (-1) the columns of the spikes at `ts`. The
+    /// shifted templates are contiguous slices of the doubled template
+    /// (`shift(H k, t)[i] = g2[n - t + i]`), summed four at a time so the
+    /// accumulator is read and written once per four columns (the pass is
+    /// memory-bound). Multiplying by +1 is exact, so adding is unchanged.
+    fn add_columns(&mut self, ts: &[usize], sign: f64) {
         let n = self.n;
         let g2 = &self.g2;
         let g = |t: usize| &g2[n - t..2 * n - t];
@@ -488,21 +506,34 @@ impl Superposition {
         for &[t0, t1, t2, t3] in quads {
             let quad = g(t0).iter().zip(g(t1)).zip(g(t2)).zip(g(t3));
             for (x, (((&a, &b), &d), &e)) in self.acc.iter_mut().zip(quad) {
-                *x += (a + b) + (d + e);
+                *x += sign * ((a + b) + (d + e));
             }
         }
         for &t in rest {
             for (x, &v) in self.acc.iter_mut().zip(g(t)) {
-                *x += v;
+                *x += sign * v;
             }
         }
         for &t in ts {
-            self.add_column_scalars(t);
+            self.add_column_scalars(t, sign);
         }
     }
 
     /// Add the spikes at `added` to the running train.
     fn add(&mut self, added: &[usize]) {
+        self.add_signed(added, 1.0);
+    }
+
+    /// Remove the spikes at `removed` from the running train (the train is
+    /// linear in its spikes, so a removal is the same column subtracted).
+    fn remove(&mut self, removed: &[usize]) {
+        self.add_signed(removed, -1.0);
+    }
+
+    fn add_signed(&mut self, added: &[usize], sign: f64) {
+        if added.is_empty() {
+            return;
+        }
         #[cfg(test)]
         let columns = added.len() <= SUPERPOSE_MAX_COLUMNS
             && crate::threshold::test_hooks::path()
@@ -510,7 +541,7 @@ impl Superposition {
         #[cfg(not(test))]
         let columns = added.len() <= SUPERPOSE_MAX_COLUMNS;
         if columns {
-            self.add_columns(added);
+            self.add_columns(added, sign);
             return;
         }
         // Large batch: L(K delta) through the f64 operator directly, with
@@ -518,7 +549,7 @@ impl Superposition {
         self.batch_spikes.clear();
         self.batch_spikes.extend_from_slice(added);
         self.batch_spikes.sort_unstable();
-        let (d, r, inv_peak) = (self.d, self.r, self.inv_peak);
+        let (d, r, inv_peak) = (self.d, self.r, sign * self.inv_peak);
         let (mut u, mut c, mut next) = (0.0_f64, 0.0_f64, 0);
         self.batch_conv[0] = 0.0;
         for t in 1..self.n {
@@ -641,6 +672,53 @@ mod tests {
                     "hp {hp} lp {lp}, {taken} spikes: rel L2 {rel:e}"
                 );
             }
+        }
+    }
+
+    /// Removing spikes from the running train (columns and the FFT batch)
+    /// matches the filtered reconstruction of what is left.
+    #[test]
+    fn superposition_removal_matches_filtered_reconstruction() {
+        let (fs, n) = (300.0, 30_000);
+        let banded = BandedAR2::new(0.1, 0.6, fs);
+        let mut f = BandpassFilter::new();
+        f.update_cutoffs(0.1, 0.6, fs);
+        f.set_hp_enabled(true);
+        f.set_lp_enabled(true);
+        let mut sp = Superposition::new(&mut f, &banded, n).expect("superposition");
+        let mut spikes = vec![0, 1, n - 2, n - 1];
+        let mut st = 11u64;
+        while spikes.len() < 4 + 3 * SUPERPOSE_MAX_COLUMNS {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let t = (st >> 33) as usize % n;
+            if !spikes.contains(&t) {
+                spikes.push(t);
+            }
+        }
+        sp.reset();
+        sp.add(&spikes);
+        let mut s = vec![0.0_f32; n];
+        spikes.iter().for_each(|&t| s[t] = 1.0);
+        let mut got = vec![0.0_f32; n];
+        let mut gone = 0;
+        // Small removals (columns), then one large removal (FFT batch).
+        for len in [1, 3, 4, 9, SUPERPOSE_MAX_COLUMNS + 1] {
+            let group = &spikes[gone..gone + len];
+            sp.remove(group);
+            group.iter().for_each(|&t| s[t] = 0.0);
+            gone += len;
+            sp.write(&mut got);
+            let mut want = vec![0.0_f32; n];
+            banded.convolve_forward(&s, &mut want);
+            f.apply(&mut want);
+            let num: f64 = got
+                .iter()
+                .zip(&want)
+                .map(|(&a, &b)| (a as f64 - b as f64).powi(2))
+                .sum();
+            let den: f64 = want.iter().map(|&b| (b as f64).powi(2)).sum();
+            let rel = (num / den).sqrt();
+            assert!(rel < 2e-6, "{gone} removed: rel L2 {rel:e}");
         }
     }
 

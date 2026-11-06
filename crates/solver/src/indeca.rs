@@ -545,6 +545,19 @@ pub(crate) struct SolveConfig {
     pub alpha_init: AlphaInit,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
+    /// Which candidate family the binarization searches.
+    pub binarize: Binarize,
+}
+
+/// The binarization's candidate family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Binarize {
+    /// The threshold search on the tent-spread solution (an event's count is
+    /// the width of its tent above the threshold; see `spread`).
+    Threshold,
+    /// Per-event counts from the relaxed solution's event masses with the
+    /// noise-based pick (see the `event_mass` module).
+    EventMass,
 }
 
 impl Default for SolveConfig {
@@ -555,6 +568,10 @@ impl Default for SolveConfig {
             native_stop: NativeStop::Certificate,
             alpha_init: AlphaInit::PeakToTrough,
             scoring: Scoring::Chain,
+            // Count spikes by event mass with the noise-based penalty
+            // (`event_mass` module docs): the threshold search counts tent
+            // width and over-counts 2-50x on ground truth.
+            binarize: Binarize::EventMass,
         }
     }
 }
@@ -830,17 +847,33 @@ pub(crate) fn solve_trace_cfg(
             },
             None => Scorer::Plain { y: &up.working },
         };
-        threshold_search_scored(
-            &s_normalized,
-            &mut scorer,
-            &up.banded,
-            tau_d,
-            fs_up,
-            k,
-            f64::INFINITY,
-            selection,
-            noise_model,
-        )
+        match cfg.binarize {
+            Binarize::Threshold => threshold_search_scored(
+                &s_normalized,
+                &mut scorer,
+                &up.banded,
+                tau_d,
+                fs_up,
+                k,
+                f64::INFINITY,
+                selection,
+                noise_model,
+            ),
+            Binarize::EventMass => {
+                crate::event_mass::event_mass_search(
+                    &x,
+                    k,
+                    lo,
+                    hi,
+                    &mut scorer,
+                    &up.banded,
+                    pad_up,
+                    selection,
+                    noise_model,
+                )
+                .0
+            }
+        }
     };
     let s_counts = downsample_binary(&s_binary, k);
 

@@ -2,6 +2,7 @@ mod banded;
 pub(crate) mod baseline;
 pub(crate) mod biexp_fit;
 pub(crate) mod chain;
+pub(crate) mod event_mass;
 mod fft;
 mod filter;
 mod fista;
