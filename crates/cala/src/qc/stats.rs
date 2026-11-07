@@ -22,7 +22,8 @@ pub struct TraceStats {
     pub baseline: f32,
     /// (mean of the top 1 % − median) / σ.
     pub peak_snr: f32,
-    /// Number of events (excursions above `event_z` σ).
+    /// Number of events (excursions of the running mean above `event_z`
+    /// times its noise).
     pub events: u32,
     /// Median frames from half height to 80 % of the peak, over events.
     pub rise_frames: f32,
@@ -91,6 +92,7 @@ pub fn trace_stats(
     x: &[f32],
     event_z: f32,
     slow_frames: usize,
+    smooth_frames: usize,
     zero_tol: f32,
     fallback_sigma: f32,
     scratch: &mut Vec<f32>,
@@ -174,20 +176,34 @@ pub fn trace_stats(
         };
     }
 
-    // Events: maximal runs of the 3-frame running mean above med + 2σ whose
-    // raw peak reaches med + event_z σ. Per event, the half-height crossings
-    // of the running mean around the peak give rise, decay and width
-    // (bounded by the run, so overlapping transients split there). The
-    // running mean keeps single noisy samples from cutting a slow event.
+    // Events, on a centred running mean `smooth_frames` wide (σ_s = σ / √w
+    // is its noise): maximal runs above med + 2 σ_s whose peak reaches
+    // med + event_z σ_s. Smoothing first keeps a slow transient on a noisy
+    // trace from breaking into many one-frame "events". Per event, the
+    // half-height crossings of the running mean around its peak give rise,
+    // decay and width (bounded by the run, so overlapping transients split
+    // there).
     if sigma > 0.0 {
+        let ws = (smooth_frames.max(1) | 1).min(n);
+        let h = ws / 2;
         let mut sm = Vec::with_capacity(n);
-        sm.push(x[0]);
-        for k in 1..n - 1 {
-            sm.push((x[k - 1] + x[k] + x[k + 1]) / 3.0);
+        let mut acc: f64 = 0.0;
+        let (mut a0, mut a1) = (0usize, 0usize);
+        for k in 0..n {
+            let (lo_k, hi_k) = (k.saturating_sub(h), (k + h + 1).min(n));
+            while a1 < hi_k {
+                acc += f64::from(x[a1]);
+                a1 += 1;
+            }
+            while a0 < lo_k {
+                acc -= f64::from(x[a0]);
+                a0 += 1;
+            }
+            sm.push((acc / (a1 - a0) as f64) as f32);
         }
-        sm.push(x[n - 1]);
-        let lo = med + 2.0 * sigma;
-        let on = med + event_z * sigma;
+        let ss = sigma / (ws as f32).sqrt();
+        let lo = med + 2.0 * ss;
+        let on = med + event_z * ss;
         let (mut rises, mut decays, mut asyms, mut widths) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut k = 0;
@@ -202,7 +218,7 @@ pub fn trace_stats(
                 k += 1;
             }
             let end = k; // exclusive
-            let peak = x[start..end].iter().copied().fold(f32::MIN, f32::max);
+            let peak = sm[start..end].iter().copied().fold(f32::MIN, f32::max);
             if peak <= on {
                 continue;
             }
@@ -246,27 +262,4 @@ pub fn trace_stats(
         out.width_frames = median_inplace(&mut widths);
     }
     out
-}
-
-/// Pearson correlation; NaN when either side is constant.
-pub(crate) fn pearson(a: &[f32], b: &[f32]) -> f32 {
-    let n = a.len().min(b.len());
-    if n < 3 {
-        return f32::NAN;
-    }
-    let (a, b) = (&a[..n], &b[..n]);
-    let ma = a.iter().map(|&v| f64::from(v)).sum::<f64>() / n as f64;
-    let mb = b.iter().map(|&v| f64::from(v)).sum::<f64>() / n as f64;
-    let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
-    for (&x, &y) in a.iter().zip(b) {
-        let (dx, dy) = (f64::from(x) - ma, f64::from(y) - mb);
-        sab += dx * dy;
-        saa += dx * dx;
-        sbb += dy * dy;
-    }
-    if saa <= 0.0 || sbb <= 0.0 {
-        f32::NAN
-    } else {
-        (sab / (saa * sbb).sqrt()) as f32
-    }
 }

@@ -52,7 +52,7 @@ fn calcium_transients_read_as_calcium() {
         .map(|&c| c + rng.normal())
         .collect();
     let mut sc = Vec::new();
-    let st = trace_stats(&x, 4.0, 100, f32::NEG_INFINITY, 1.0, &mut sc);
+    let st = trace_stats(&x, 4.0, 100, 5, f32::NEG_INFINITY, 1.0, &mut sc);
     assert!((st.sigma - 1.0).abs() < 0.15, "{st:?}");
     // 12 transients of amplitude 10; the top 1 % (12 samples) are the peaks.
     assert!(st.peak_snr > 8.0 && st.peak_snr < 12.0, "{st:?}");
@@ -74,7 +74,7 @@ fn slow_humps_read_as_slow_and_symmetric() {
         })
         .collect();
     let mut sc = Vec::new();
-    let st = trace_stats(&x, 4.0, 100, f32::NEG_INFINITY, 1.0, &mut sc);
+    let st = trace_stats(&x, 4.0, 100, 5, f32::NEG_INFINITY, 1.0, &mut sc);
     assert!(st.asymmetry < 1.6 && st.asymmetry > 0.6, "{st:?}");
     assert!(st.slow_frac > 0.7, "{st:?}");
     assert!(st.diff_skew.abs() < 0.3, "{st:?}");
@@ -221,7 +221,8 @@ fn monitor_measures_a_clean_scene() {
         assert!(c.trace.asymmetry > 2.0, "{c:?}");
         // Correct footprints: residual is noise, active or not.
         assert!(c.residual_rest < 1.3 && c.residual_active < 1.5, "{c:?}");
-        assert!(c.pass, "{c:?}");
+        assert!(c.pass && c.flags == 0, "{c:?}");
+        assert!(c.proj_r > 0.8 && c.fp_error < 0.05, "{c:?}");
     }
     // The overlapping pair: neighbours, inflated variance, low trace r.
     assert_eq!(cells[0].n_neighbours, 1);
@@ -278,7 +279,14 @@ fn split_cell_and_missing_cell_are_flagged() {
     let cells: Vec<CellQc> = qc.cells().copied().collect();
     // The halves follow each other.
     assert!(cells[0].max_neighbour_r > 0.8, "{:?}", cells[0]);
-    assert!(!cells[0].pass && !cells[1].pass);
+    for c in &cells[..2] {
+        assert!(c.flags & FLAG_CORRELATED_PAIR != 0, "{c:?}");
+    }
+    // Exactly one half is called the extra cell and fails.
+    let dup = |c: &CellQc| c.flags & FLAG_LIKELY_DUPLICATE != 0;
+    assert!(dup(&cells[0]) != dup(&cells[1]), "{cells:?}");
+    assert!(cells[0].pass != cells[1].pass);
+    assert_eq!(cells[2].flags, 0, "{:?}", cells[2]);
     // The missing cell's light is unexplained: the residual map is hot there
     // (block of pixel (28, 36)) and cold far from every cell.
     let (bw, _, map) = qc.residual_map();

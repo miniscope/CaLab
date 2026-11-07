@@ -10,36 +10,42 @@
 //! residual; and it refreshes the window statistics of `n / refresh_frames`
 //! cells, round-robin, so the cost is flat in the recording length.
 //!
-//! # What each metric is for
+//! # What each metric is worth
 //!
-//! Every metric below was checked against ground truth on calibrated minisim
-//! recordings (`examples/qc_eval.rs`); see that file's header for the
-//! numbers. In short:
+//! Every metric was checked against ground truth (`examples/qc_eval.rs`):
+//! minisim recordings run through the merged fast and slow loops (1759
+//! cells, 1540 true positives, three recordings), the GT footprints with a
+//! share deliberately wrong (shifted, merged, split, a neighbour deleted),
+//! and 10 min of real CA1 data against Minian. Numbers are AUC for "detected
+//! cell is real" and Spearman ρ with the true trace r.
 //!
-//! * **Trace quality** ([`CellQc::peak_snr`], `events`, `event_rate`): the
-//!   CaLab robust peak SNR of the cell's trace over the window, in noise
-//!   units. It predicts whether a detected cell is real and how well its
-//!   trace matches the truth.
-//! * **Calcium-likeness** (`asymmetry`, `diff_skew`, `width_frames`,
-//!   `slow_frac`, `zero_frac`): transients rise fast and decay slowly; a
-//!   slow symmetric hump (neuropil or background absorbed into a trace) does
-//!   not.
-//! * **Footprint** (`fp_radius_px`, `fp_elongation`, `fp_edge_frac`,
-//!   `fp_last_r`, `fp_changes`): shape of the unfiltered footprint and its
-//!   correlation with the cell's previous version (stability).
-//! * **Demixing** (`max_overlap`, `vif`, `max_neighbour_r`, `ctrl_r`): how
-//!   much the cell's filtered footprint overlaps its neighbours', the noise
-//!   inflation of its coefficient that the overlap causes (variance inflation
-//!   factor from the local Gram matrix), and the correlation of its trace
-//!   with overlapping neighbours' traces, next to nearby non-overlapping
-//!   cells' (`ctrl_r`, the correlation independent cells show here).
-//! * **Residual** (`residual_rest`, `residual_active`): mean whitened
-//!   residual energy on the cell's support while it is silent and while it
-//!   is active (a wrong footprint leaves residual when the cell fires).
-//! * **Global** ([`GlobalQc`]): fraction of signal variance explained,
-//!   residual excess (where signal is left unexplained: missing cells),
-//!   library churn, and summaries of the per-cell metrics. These converge to
-//!   an asymptote as the run settles.
+//! * **Trace quality, validated.** [`TraceStats::peak_snr`] (CaLab robust
+//!   peak SNR): AUC 0.80, ρ 0.78 on sims, 0.95 with oracle footprints; on
+//!   real data AUC 0.75 for "also found by Minian", ρ 0.39 with the trace r
+//!   against Minian. `proj_r` (trace vs the cell's own footprint
+//!   projection): AUC 0.71, ρ 0.57 (oracle); real AUC 0.64, ρ 0.37.
+//! * **Demixing, validated.** `vif` (noise inflation from the local Gram
+//!   matrix) and `max_overlap` rank true crosstalk (ρ 0.44-0.47 with the
+//!   neighbours' share of the trace variance). `max_neighbour_r` finds split
+//!   cells (AUC 1.00 against unperturbed cells; r > 0.8 flags 87 % of split
+//!   halves and no unperturbed cell) and duplicates: in a pair above 0.8 the
+//!   lower-SNR member is the extra cell in 22 of 45 pairs, the other in 3.
+//!   `fp_error` (residual a cell leaves when it fires, relative to its SNR)
+//!   ranks wrong footprints (AUC 0.68-0.73 for shifted, merged, missing
+//!   neighbour; inverted AUC 0.71 for real cells) but no threshold separates
+//!   them, so it is a colour scale, not a flag.
+//! * **Regime-dependent, descriptive only.** `diff_skew` and `asymmetry`
+//!   (fast rise, slow decay) predict real cells on sims (AUC 0.82 / 0.66) but
+//!   not on the real recording (0.52 / 0.60), whose transients rise over
+//!   several frames. `slow_frac` is not a failure: on the real recording the
+//!   slow "humps" are long calcium events that Minian finds too (low-pass r
+//!   0.89), and slow share correlates *positively* with agreement with
+//!   Minian (ρ 0.63). `events`, widths, `zero_frac` (non-negativity clamp),
+//!   footprint shape and stability are descriptive.
+//! * **Global, validated.** `explained` and `residual_excess` track true
+//!   recall over a run (ρ 0.93-1.00 and −0.87 to −1.00), and `adds_per_min`
+//!   falls as recall rises (ρ −0.64 to −0.92); these are the convergence
+//!   curves. `pass_frac` and the median SNR do not track recall consistently.
 
 // Index loops over pixels and cells read more clearly here; `!(x > 0.0)`
 // deliberately treats NaN as "not positive".
@@ -72,6 +78,8 @@ pub struct QcConfig {
     pub event_z: f32,
     /// Width of the slow moving average for `slow_frac`, seconds.
     pub slow_window_s: f32,
+    /// Width of the running mean events are detected on, seconds.
+    pub smooth_s: f32,
     /// The model is rendered for the residual every this many frames.
     pub residual_every: u32,
     /// Time constant of the residual averages, frames.
@@ -89,14 +97,25 @@ pub struct QcConfig {
     pub pass: PassRule,
 }
 
-/// Thresholds of the per-cell pass/fail call.
+/// Thresholds of the per-cell pass/fail call (validated in
+/// `examples/qc_eval.rs`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PassRule {
+    /// Smallest peak SNR (noise units).
     pub min_snr: f32,
-    pub min_events: u32,
-    pub max_neighbour_r: f32,
-    pub max_slow_frac: f32,
+    /// Trace correlation with an overlapping neighbour above which the two
+    /// are a correlated pair (split, duplicate or crosstalk).
+    pub pair_r: f32,
 }
+
+/// Peak SNR below `min_snr`.
+pub const FLAG_LOW_SNR: u32 = 1;
+/// Trace follows an overlapping neighbour's (r > `pair_r`).
+pub const FLAG_CORRELATED_PAIR: u32 = 2;
+/// The lower-SNR member of a correlated pair (the likely extra cell).
+pub const FLAG_LIKELY_DUPLICATE: u32 = 4;
+/// Not enough history yet.
+pub const FLAG_UNMEASURED: u32 = 8;
 
 impl Default for QcConfig {
     fn default() -> QcConfig {
@@ -107,6 +126,7 @@ impl Default for QcConfig {
             min_frames: 100,
             event_z: 4.0,
             slow_window_s: 5.0,
+            smooth_s: 0.25,
             residual_every: 8,
             residual_tau_frames: 600.0,
             block_px: 8,
@@ -114,10 +134,8 @@ impl Default for QcConfig {
             min_overlap: 0.02,
             churn_window_frames: 1200,
             pass: PassRule {
-                min_snr: 6.0,
-                min_events: 1,
-                max_neighbour_r: 0.6,
-                max_slow_frac: 0.6,
+                min_snr: 5.0,
+                pair_r: 0.8,
             },
         }
     }
@@ -134,6 +152,8 @@ impl QcConfig {
             && self.event_z.is_finite()
             && self.slow_window_s.is_finite()
             && self.slow_window_s >= 0.0
+            && self.smooth_s.is_finite()
+            && self.smooth_s >= 0.0
             && self.residual_every >= 1
             && self.residual_tau_frames.is_finite()
             && self.residual_tau_frames >= 1.0
@@ -182,12 +202,21 @@ pub struct CellQc {
     pub max_neighbour_r: f32,
     /// Id of that neighbour (`u64::MAX` when none).
     pub max_neighbour_id: u64,
-    /// Mean trace correlation with nearby non-overlapping cells.
-    pub ctrl_r: f32,
     /// Mean whitened residual energy per support pixel while silent / active.
     pub residual_rest: f32,
     pub residual_active: f32,
-    /// Passes [`PassRule`].
+    /// Correlation of the trace with the cell's own footprint projection
+    /// ã_iᵀ(y − b_i)/‖ã_i‖² (what the cell would read with no neighbours),
+    /// over the residual frames: low when neighbours or the background model
+    /// take the cell's light.
+    pub proj_r: f32,
+    /// Footprint mismatch: √(residual_active − residual_rest) / peak SNR,
+    /// the residual a cell leaves when it fires relative to its signal.
+    pub fp_error: f32,
+    /// `FLAG_*` bits.
+    pub flags: u32,
+    /// Measured, SNR ≥ `min_snr`, and not the weaker member of a correlated
+    /// pair ([`PassRule`]).
     pub pass: bool,
 }
 
@@ -210,15 +239,17 @@ impl CellQc {
             vif: 1.0,
             max_neighbour_r: f32::NAN,
             max_neighbour_id: u64::MAX,
-            ctrl_r: f32::NAN,
+            fp_error: f32::NAN,
+            flags: FLAG_UNMEASURED,
             residual_rest: f32::NAN,
             residual_active: f32::NAN,
+            proj_r: f32::NAN,
             pass: false,
         }
     }
 
     /// Field names of [`CellQc::to_row`], in order.
-    pub const FIELDS: [&'static str; 30] = [
+    pub const FIELDS: [&'static str; 32] = [
         "id",
         "age_frames",
         "frames",
@@ -245,15 +276,17 @@ impl CellQc {
         "vif",
         "max_neighbour_r",
         "max_neighbour_id",
-        "ctrl_r",
         "residual_rest",
         "residual_active",
+        "proj_r",
+        "fp_error",
+        "flags",
         "pass",
     ];
 
     /// The metrics as numbers, in [`CellQc::FIELDS`] order (ids as f64 are
     /// exact below 2⁵³; no neighbour = -1).
-    pub fn to_row(&self) -> [f64; 30] {
+    pub fn to_row(&self) -> [f64; 32] {
         let t = &self.trace;
         let f = |v: f32| f64::from(v);
         [
@@ -287,9 +320,11 @@ impl CellQc {
             } else {
                 self.max_neighbour_id as f64
             },
-            f(self.ctrl_r),
             f(self.residual_rest),
             f(self.residual_active),
+            f(self.proj_r),
+            f(self.fp_error),
+            f64::from(self.flags),
             if self.pass { 1.0 } else { 0.0 },
         ]
     }
@@ -331,10 +366,11 @@ pub struct GlobalQc {
     pub pass_frac: f32,
     pub median_fp_last_r: f32,
     pub median_neighbour_r: f32,
-    pub median_ctrl_r: f32,
+    pub median_proj_r: f32,
     pub median_vif: f32,
     pub median_asymmetry: f32,
-    pub slow_frac_high: f32,
+    /// Measured cells in a correlated pair.
+    pub pair_frac: f32,
 }
 
 impl GlobalQc {
@@ -356,10 +392,10 @@ impl GlobalQc {
         "pass_frac",
         "median_fp_last_r",
         "median_neighbour_r",
-        "median_ctrl_r",
+        "median_proj_r",
         "median_vif",
         "median_asymmetry",
-        "slow_frac_high",
+        "pair_frac",
         "residual_blocks",
     ];
 }
@@ -379,9 +415,9 @@ struct CellState {
     /// Overlapping neighbours: (slot, overlap) in the current library.
     nb: Vec<(u32, f32)>,
     nb_r: Vec<f32>,
-    /// Nearby non-overlapping cells (slots) as correlation controls.
-    ctrl: Vec<u32>,
     res: [ResAvg; 2],
+    /// Running means of (p, c, p², c², pc) for `proj_r`.
+    pc: [ResAvg; 5],
 }
 
 /// Running average with a time constant (cumulative while young).
@@ -540,7 +576,7 @@ impl QcMonitor {
             .cells
             .iter()
             .map(|c| {
-                4 * (c.hist.len() + c.fp_pix.len() + c.fp_val.len() + c.ctrl.len())
+                4 * (c.hist.len() + c.fp_pix.len() + c.fp_val.len())
                     + 8 * c.nb.len()
                     + 4 * c.nb_r.len()
                     + std::mem::size_of::<CellState>()
@@ -617,8 +653,8 @@ impl QcMonitor {
                     fp_val: Vec::new(),
                     nb: Vec::new(),
                     nb_r: Vec::new(),
-                    ctrl: Vec::new(),
                     res: [ResAvg::default(); 2],
+                    pc: [ResAvg::default(); 5],
                 }
             });
             let (pix, val) = lib.unfiltered(s);
@@ -628,6 +664,7 @@ impl QcMonitor {
                 changes += 1;
                 // The residual averages describe the old footprint.
                 c.res = [ResAvg::default(); 2];
+                c.pc = [ResAvg::default(); 5];
             }
             if c.fp_pix != pix || c.fp_val != val {
                 c.fp_pix.clear();
@@ -674,26 +711,23 @@ impl QcMonitor {
         for i in 0..n {
             let ((yi, xi), ri) = centers[i];
             let mut nb: Vec<(f32, u32, f32)> = Vec::new();
-            let mut ctrl: Vec<(f32, u32)> = Vec::new();
             for (j, &((yj, xj), rj)) in centers.iter().enumerate() {
                 if j == i {
                     continue;
                 }
                 let d2 = (yi - yj).powi(2) + (xi - xj).powi(2);
-                let reach = 3.0 * (ri + rj);
-                if d2 > reach * reach {
+                if d2 > (ri + rj + 2.0).powi(2)
+                    && lib.gram.row(i).0.binary_search(&(j as u32)).is_err()
+                {
                     continue;
                 }
                 let r = rho(i, j);
                 if d2 < (ri + rj).powi(2) || r.abs() >= self.cfg.min_overlap {
                     nb.push((d2, j as u32, r));
-                } else {
-                    ctrl.push((d2, j as u32));
                 }
             }
             nb.sort_by(|a, b| a.0.total_cmp(&b.0));
             nb.truncate(self.cfg.max_neighbours);
-            ctrl.sort_by(|a, b| a.0.total_cmp(&b.0));
             // Local Gram over {i} ∪ neighbours (normalised).
             let k = nb.len() + 1;
             let mut members = Vec::with_capacity(k);
@@ -715,7 +749,6 @@ impl QcMonitor {
             c.qc.vif = vif as f32;
             c.nb_r = vec![f32::NAN; nb.len()];
             c.nb = nb.iter().map(|e| (e.1, e.2)).collect();
-            c.ctrl = ctrl.iter().take(4).map(|e| e.1).collect();
         }
     }
 
@@ -734,6 +767,42 @@ impl QcMonitor {
         }
     }
 
+    /// Pearson correlation of slots `a` and `b` over the last `len` frames.
+    fn ring_pearson(&self, a: usize, b: usize, len: usize) -> f32 {
+        if len < 3 {
+            return f32::NAN;
+        }
+        let w = self.cfg.window_frames;
+        let (ha, hb) = (&self.cells[a].hist, &self.cells[b].hist);
+        let end = (self.frames % w as u64) as usize;
+        let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut acc = |r: std::ops::Range<usize>| {
+            for (&x, &y) in ha[r.clone()].iter().zip(&hb[r]) {
+                let (x, y) = (f64::from(x), f64::from(y));
+                sa += x;
+                sb += y;
+                saa += x * x;
+                sbb += y * y;
+                sab += x * y;
+            }
+        };
+        if len <= end {
+            acc(end - len..end);
+        } else {
+            acc(w - (len - end)..w);
+            acc(0..end);
+        }
+        let n = len as f64;
+        let cov = sab / n - sa / n * (sb / n);
+        let va = saa / n - (sa / n).powi(2);
+        let vb = sbb / n - (sb / n).powi(2);
+        if va <= 0.0 || vb <= 0.0 {
+            f32::NAN
+        } else {
+            (cov / (va * vb).sqrt()) as f32
+        }
+    }
+
     /// Recompute the window statistics and correlations of slot `s`.
     fn refresh(&mut self, s: usize, lib: &Library) {
         let len = self.cells[s].valid;
@@ -747,52 +816,75 @@ impl QcMonitor {
         self.window(s, len, &mut x);
         let ms = lib.trace_noise()[s];
         let slow = (self.cfg.slow_window_s * self.cfg.fps).round() as usize;
-        let st = trace_stats(&x, self.cfg.event_z, slow, 0.01 * ms, ms, &mut self.scratch);
-        let mut other = Vec::with_capacity(len);
-        // Neighbour and control correlations over the shared window.
+        let smooth = (self.cfg.smooth_s * self.cfg.fps).round() as usize;
+        let st = trace_stats(
+            &x,
+            self.cfg.event_z,
+            slow,
+            smooth,
+            0.01 * ms,
+            ms,
+            &mut self.scratch,
+        );
+        // Neighbour and control correlations over the shared window, on the
+        // rings directly (both cells' samples of a frame share a ring slot).
         let nb: Vec<u32> = self.cells[s].nb.iter().map(|e| e.0).collect();
         let mut best = (f32::NAN, u64::MAX);
+        let mut best_slot = None;
         let mut rs = Vec::with_capacity(nb.len());
         for &j in &nb {
             let l = len.min(self.cells[j as usize].valid);
-            self.window(j as usize, l, &mut other);
-            let r = stats::pearson(&x[len - l..], &other);
+            let r = self.ring_pearson(s, j as usize, l);
             rs.push(r);
             if r > best.0 || (best.0.is_nan() && !r.is_nan()) {
                 best = (r, self.cells[j as usize].qc.id);
-            }
-        }
-        let ctrl = self.cells[s].ctrl.clone();
-        let (mut cs, mut cn) = (0.0f32, 0u32);
-        for &j in &ctrl {
-            let l = len.min(self.cells[j as usize].valid);
-            if l < self.cfg.min_frames {
-                continue;
-            }
-            self.window(j as usize, l, &mut other);
-            let r = stats::pearson(&x[len - l..], &other);
-            if r.is_finite() {
-                cs += r;
-                cn += 1;
+                best_slot = Some(j as usize);
             }
         }
         self.scratch2 = x;
         let fps = self.cfg.fps;
         let pass = self.cfg.pass;
+        // SNR of the most correlated neighbour (as of its last refresh).
+        let nb_snr = best_slot.map_or(f32::NAN, |j| self.cells[j].qc.trace.peak_snr);
         let c = &mut self.cells[s];
         c.nb_r = rs;
         c.qc.trace = st;
         c.qc.event_rate = st.events as f32 / (len as f32 / fps / 60.0);
         c.qc.max_neighbour_r = best.0;
         c.qc.max_neighbour_id = best.1;
-        c.qc.ctrl_r = if cn > 0 { cs / cn as f32 } else { f32::NAN };
         c.qc.residual_rest = c.res[0].get();
         c.qc.residual_active = c.res[1].get();
+        c.qc.proj_r = {
+            let m = |i: usize| f64::from(c.pc[i].get());
+            let vp = m(2) - m(0) * m(0);
+            let vc = m(3) - m(1) * m(1);
+            if c.pc[0].n >= 8.0 && vp > 0.0 && vc > 0.0 {
+                ((m(4) - m(0) * m(1)) / (vp * vc).sqrt()) as f32
+            } else {
+                f32::NAN
+            }
+        };
+        c.qc.fp_error = if c.qc.trace.peak_snr > 0.0 {
+            (c.qc.residual_active - c.qc.residual_rest).max(0.0).sqrt() / c.qc.trace.peak_snr
+        } else {
+            f32::NAN
+        };
         let q = &c.qc;
-        c.qc.pass = q.trace.peak_snr >= pass.min_snr
-            && q.trace.events >= pass.min_events
-            && !(q.max_neighbour_r > pass.max_neighbour_r)
-            && !(q.trace.slow_frac > pass.max_slow_frac);
+        let mut flags = 0u32;
+        if !(q.trace.peak_snr >= pass.min_snr) {
+            flags |= FLAG_LOW_SNR;
+        }
+        if q.max_neighbour_r > pass.pair_r {
+            flags |= FLAG_CORRELATED_PAIR;
+            // The weaker member of the pair is the likely extra cell.
+            let id = q.id;
+            if q.trace.peak_snr < nb_snr || (q.trace.peak_snr == nb_snr && id > q.max_neighbour_id)
+            {
+                flags |= FLAG_LIKELY_DUPLICATE;
+            }
+        }
+        c.qc.flags = flags;
+        c.qc.pass = flags & (FLAG_LOW_SNR | FLAG_LIKELY_DUPLICATE) == 0;
     }
 
     /// Residual of the model on this frame: per-cell support energy and the
@@ -824,22 +916,33 @@ impl QcMonitor {
         let tau = self.cfg.residual_tau_frames / self.cfg.residual_every as f32;
         for s in 0..n {
             let b = if ring { tr.background[s] } else { 0.0 };
-            let (p, _) = lib.filtered(s);
+            let (p, v) = lib.filtered(s);
             let mut e = 0.0f32;
             let mut k = 0u32;
-            for &q in p {
+            let mut proj = 0.0f32;
+            for (&q, &a) in p.iter().zip(v) {
                 let q = q as usize;
+                let yb = y[q] - b;
+                proj += a * yb;
                 let iv = self.inv_noise[q];
                 if iv > 0.0 {
-                    let r = (y[q] - self.model[q] - b) * iv;
+                    let r = (yb - self.model[q]) * iv;
                     e += r * r;
                     k += 1;
                 }
             }
+            let proj = proj / lib.gram_diag[s];
+            let ct = tr.traces[s];
+            let c = &mut self.cells[s];
+            for (acc, x) in
+                c.pc.iter_mut()
+                    .zip([proj, ct, proj * proj, ct * ct, proj * ct])
+            {
+                acc.push(x, tau);
+            }
             if k == 0 {
                 continue;
             }
-            let c = &mut self.cells[s];
             let base = if c.qc.trace.baseline.is_finite() {
                 c.qc.trace.baseline
             } else {
@@ -953,10 +1056,10 @@ impl QcMonitor {
             pass_frac: f32::NAN,
             median_fp_last_r: f32::NAN,
             median_neighbour_r: f32::NAN,
-            median_ctrl_r: f32::NAN,
+            median_proj_r: f32::NAN,
             median_vif: f32::NAN,
             median_asymmetry: f32::NAN,
-            slow_frac_high: f32::NAN,
+            pair_frac: f32::NAN,
         };
         if self.res_updates >= 2.0 {
             let (mut num, mut den, mut ex, mut nb) = (0.0f64, 0.0f64, 0.0f64, 0u32);
@@ -1017,12 +1120,12 @@ impl QcMonitor {
             };
             g.median_fp_last_r = med(&|q| q.fp_last_r);
             g.median_neighbour_r = med(&|q| q.max_neighbour_r);
-            g.median_ctrl_r = med(&|q| q.ctrl_r);
+            g.median_proj_r = med(&|q| q.proj_r);
             g.median_vif = med(&|q| q.vif);
             g.median_asymmetry = med(&|q| q.trace.asymmetry);
-            g.slow_frac_high = measured
+            g.pair_frac = measured
                 .iter()
-                .filter(|q| q.trace.slow_frac > self.cfg.pass.max_slow_frac)
+                .filter(|q| q.flags & FLAG_CORRELATED_PAIR != 0)
                 .count() as f32
                 / measured.len() as f32;
         }
@@ -1053,10 +1156,10 @@ impl GlobalQc {
             f(self.pass_frac),
             f(self.median_fp_last_r),
             f(self.median_neighbour_r),
-            f(self.median_ctrl_r),
+            f(self.median_proj_r),
             f(self.median_vif),
             f(self.median_asymmetry),
-            f(self.slow_frac_high),
+            f(self.pair_frac),
             blocks as f64,
         ]
     }
