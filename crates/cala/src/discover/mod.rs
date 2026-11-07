@@ -73,6 +73,50 @@
 //! are published at most every `commit_interval_frames`. Rejected spots are
 //! suppressed for a cooldown that doubles with each rejection.
 //!
+//! # Trimming with accumulating evidence
+//!
+//! An accepted cell is a hypothesis that keeps being tested; the library
+//! should tend toward the right answer as frames come in, not be right at
+//! once. Every published cell has an evidence ledger (`ledger.rs`), fed
+//! every frame from the fast loop's result. That result comes from a library
+//! fitted only on earlier frames, so every frame after a cell's birth is a
+//! held-out test of it.
+//!
+//! * **Transients.** The ledger counts the cell's calcium-like transients
+//!   after birth (a run of at least `event_frames` frames above 2 σ that
+//!   peaks beyond `event_z` σ of a running baseline and noise scale).
+//! * **Keep test (the add test in reverse).** The first held-out frame of
+//!   each transient is stored as a *probe* in the cell's tile. On the next
+//!   visit, the tile's model is solved on it with and without the cell, both
+//!   with the add test's free local bump. The probe *passes* when the cell
+//!   lowers χ² by `keep_z` σ of the noise-column null. It *fails* when the
+//!   bump explains the signal as well (diffuse light, neuropil, a halo).
+//!   It counts as *redundant* when a neighbouring cell takes the signal over.
+//! * **Decisions** (`SlowLoop::prune`, every step). Established: at least
+//!   `establish_events` transients and no more failed than passed probes.
+//!   Deleted as unsupported: `delete_fails` failed probes, outnumbering the
+//!   passed ones `fail_ratio` to one. Deleted as silent: not a single
+//!   transient within `probation_frames` of birth. A cell that is mostly
+//!   redundant with one neighbour gets a merge test with it.
+//! * **Merging established cells.** A pair whose merge test was rejected no
+//!   longer blocks the tile's other pairs. Pairs whose filtered footprints
+//!   largely coincide (cosine ≥ 0.5) are tested even when their traces do
+//!   not correlate (an exact fit gives a duplicate no signal). Such a pair
+//!   is merged when its held-out traces move together, or when one of the
+//!   two carries under a quarter of the pair's signal.
+//! * **No oscillation.** A deleted spot keeps a tombstone. Nothing is added
+//!   there for 4^k cooldowns after the k-th deletion, and a new cell there
+//!   needs held-out events from after the deletion. A re-added cell gets a
+//!   probation window that is longer by the number of earlier deletions.
+//!
+//! [`SlowLoop::cell_infos`] reports each cell's status and evidence,
+//! [`SlowLoop::take_edit_counts`] gives per-interval counts of adds, merges,
+//! deletes and refines, and [`SlowLoop::take_deleted`] lists the cells
+//! deleted, with the evidence each one was deleted on. Proposals are first
+//! checked by a cheap held-out pre-test before the expensive fit. Published
+//! libraries filter again only the footprints that changed
+//! ([`LibraryBuilder::reuse`]).
+//!
 //! # Threading
 //!
 //! The slow loop is a plain struct with no clock: `step(budget)` spends a
@@ -210,7 +254,7 @@ impl Default for SlowLoopConfig {
             visit_after_slots: 6,
             event_frames: 3,
             establish_events: 3,
-            probation_frames: 2400,
+            probation_frames: 4800,
             keep_z: 2.0,
             delete_fails: 4,
             fail_ratio: 4.0,
