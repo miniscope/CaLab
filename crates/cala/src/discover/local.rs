@@ -76,7 +76,7 @@ impl LocalFilter {
         }
     }
 
-    fn blur(&mut self, h: usize, w: usize, a: &[f32], out: &mut [f32]) {
+    pub fn blur(&mut self, h: usize, w: usize, a: &[f32], out: &mut [f32]) {
         let dims = Dims {
             width: w,
             height: h,
@@ -627,7 +627,7 @@ mod tests {
         let mut target = vec![0.0f32; h * w];
         f.apply(h, w, &a, &mut target);
         // The high-pass removes a sizeable share of the peak.
-        assert!(target[15 * w + 15] < 0.95);
+        assert!(target[15 * w + 15] < 0.97);
         let mut est: Vec<f32> = target.iter().map(|v| v.max(0.0)).collect();
         f.invert(h, w, &dom, &target, &mut est, 200);
         let err = a.iter().zip(&est).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);

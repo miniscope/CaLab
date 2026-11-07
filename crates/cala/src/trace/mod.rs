@@ -115,7 +115,7 @@ impl From<PreprocessError> for TraceError {
     }
 }
 
-fn check_len(what: &'static str, expected: usize, got: usize) -> Result<(), TraceError> {
+pub(crate) fn check_len(what: &'static str, expected: usize, got: usize) -> Result<(), TraceError> {
     if expected == got {
         Ok(())
     } else {

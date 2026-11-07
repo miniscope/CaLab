@@ -16,6 +16,7 @@
 //! panic is a trap that leaves the WASM module unusable in its worker.
 
 pub mod avi;
+pub mod discover;
 pub mod motion;
 pub mod preprocess;
 pub mod trace;
