@@ -40,6 +40,8 @@ file.
 │   │                              # cadecon-pool, bridge-effects; workers/
 │   │                              # has cadecon-worker.ts + cadecon-types.ts
 │   ├── cabana/                    # CaBaNA: coming-soon placeholder (no solver)
+│   ├── cala/                      # Cala: streaming Miniscope pipeline (hidden, WIP);
+│   │                              # lib/frame-source.ts + workers/frame-worker.ts
 │   ├── admin/                     # Admin: analytics + moderation (hidden app)
 │   └── _template/                 # Minimal app scaffold (placeholder calab.id)
 ├── packages/
@@ -55,6 +57,8 @@ file.
 │   ├── src/                       # lib.rs, validate.rs, fista.rs, indeca.rs, ...
 │   ├── tests/                     # solver_degenerate.rs, solver_proptest.rs
 │   └── pkg/                       # wasm-pack output (build-only, gitignored)
+├── crates/cala/                   # Rust core of Cala (wasm-bindgen; PyO3 stub)
+│   └── src/                       # avi.rs: plain-RIFF AVI header + frame offsets
 ├── python/                        # `calab` package (maturin), tests, docs
 │   └── src/calab/_bridge/         # registry, manifest, handshake, HTTP server
 ├── supabase/                      # migrations/, functions/geo-session/,
@@ -67,7 +71,7 @@ file.
 │   ├── combine-dist.mjs           # Landing page + apps.json + app dists
 │   ├── check-apps-manifest.mjs    # Verify dist/<repo>/apps.json
 │   ├── check-app-tests.mjs        # Every app has a test script
-│   ├── ensure-wasm.mjs            # Build crates/solver/pkg if missing/stale
+│   ├── ensure-wasm.mjs            # Build crates/*/pkg (solver, cala) if missing/stale
 │   ├── typecheck.mjs              # tsc over every app and package
 │   └── test-rls.sh                # Supabase RLS policy matrix
 ├── docs/                          # ARCHITECTURE, CHANGELOG, CONTRIBUTING, NEW_APP
@@ -293,6 +297,25 @@ non-component code (the tutorial engine, the solve managers) read the same state
   import; `initCommunityStore()` (idempotent, also triggered by the first
   `user()` / `authLoading()` read) starts one auth subscription per app. Tutorial
   state lives in `@calab/tutorials`.
+
+## Cala Frame Source
+
+`crates/cala` (`calab-cala`) mirrors the solver's layout (`jsbindings` default,
+`pybindings` stub, typed `AviError`, no panics on bad input) and is built by
+`npm run build:wasm` into `crates/cala/pkg/`. Its `avi` module parses an
+uncompressed grayscale RIFF AVI from a byte prefix plus the `idx1` payload and
+returns per-frame byte ranges; `AviHeader.decodeFrame` validates a chunk and
+strips row padding. Orientation is reported (`bottomUp`) but frames are returned
+as stored, matching OpenCV, unless flipping is requested. The declared AVI frame
+rate is exposed for diagnostics only.
+
+The TypeScript side lives in `apps/cala/src/lib/` (not a package: only cala uses
+it, and `@calab/core` must stay wasm-free). `frame-source.ts` sorts `N.avi` files
+naturally, reads each file's prefix and `idx1` region with `File.slice`, exposes
+`readFrame(globalIndex)` and takes the frame rate from `timeStamps.csv` or
+`metaData.json`. A worker (`workers/frame-worker.ts`) owns the `FrameSource` and
+transfers decoded frames to the main thread. `src/lib/cala-wasm.ts` is the only
+file allowed to import `crates/cala/pkg/` (ESLint boundary).
 
 ## Solver Pipeline
 
