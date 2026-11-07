@@ -5,6 +5,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-11-06
+
+Web apps `v2.12.0`; Python package `calab` `py/v0.5.0`. CaDecon counts spikes
+by event mass at the recorded frame rate with one biological parameter, the
+max firing rate (#269, building on #268), and solves the relaxed problem
+exactly with an interior-point method that is about 12x cheaper overall and
+up to 27x on slow indicators (#270). Breaking changes to the Python, WASM and
+bridge APIs and to the community-submissions schema (migration 016).
+
 ### Changed
 
 - **CaDecon: spikes are counted by event mass at the frame rate, with one
@@ -66,6 +75,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `cadecon_submissions.upsample_factor` with `max_firing_rate` (NOT NULL,
   in (0, 10000]); existing rows are backfilled as `upsample_factor` times the
   sampling rate.
+
+### Known limitations
+
+- The spike-size floor `busiest frame / cap` ties a cell's scale to one
+  extreme relaxed frame (artifact-sensitive, and bursting slow-indicator
+  cells undercount with the exact solve). Better floor options are an open
+  question for a later release.
+- The count scale follows the max firing rate: sparse cells overcount at the
+  default 300 spikes/s; a cell-type-appropriate rate fixes this.
 
 ## [2.11.0] - 2026-11-05
 
