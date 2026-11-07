@@ -602,6 +602,24 @@ fn main() {
     if let Some(v) = arg_value(&args, "--keep-z") {
         scfg.keep_z = v.parse().unwrap();
     }
+    if args.iter().any(|a| a == "--no-compare") {
+        scfg.compare = false;
+    }
+    if args.iter().any(|a| a == "--no-stats") {
+        scfg.stats_half_life_frames = 0.0;
+    }
+    if let Some(v) = arg_value(&args, "--split-every") {
+        scfg.split_every_visits = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--refine-z") {
+        scfg.refine_z = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--stats-snr") {
+        scfg.stats_min_snr = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--weak-share") {
+        scfg.merge_weak_share = v.parse().unwrap();
+    }
 
     let avi_dir = if sim {
         input.join("daq/Miniscope")
@@ -658,10 +676,12 @@ fn main() {
     let mut curve = File::create(out_dir.join("curve.tsv")).unwrap();
     writeln!(
         curve,
-        "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb\tdeletes\tpretest_rejects\testablished"
+        "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb\tdeletes\tpretest_rejects\testablished\tabsorbs\tsplits"
     )
     .unwrap();
     let mut deleted_log: Vec<DeletedCell> = Vec::new();
+    let mut edits = std::io::BufWriter::new(File::create(out_dir.join("edits.tsv")).unwrap());
+    writeln!(edits, "frame\tkind\tid\tother\tcy\tcx\tmargin").unwrap();
     let mut ldump = args
         .iter()
         .any(|a| a == "--dump-ledger")
@@ -727,9 +747,23 @@ fn main() {
                     for d in sl.take_deleted() {
                         deleted_log.push(d);
                     }
+                    for e in sl.take_edit_log() {
+                        writeln!(
+                            edits,
+                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.2}",
+                            e.frame,
+                            e.kind.as_str(),
+                            e.id,
+                            e.other,
+                            e.center.0,
+                            e.center.1,
+                            e.margin
+                        )
+                        .unwrap();
+                    }
                     writeln!(
                         curve,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{est}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{est}\t{}\t{}",
                         t + 1,
                         sl.len(),
                         engine.library().len(),
@@ -741,7 +775,9 @@ fn main() {
                         st.commits,
                         sl.reservoir_bytes() as f64 / 1048576.0,
                         st.deletes,
-                        st.pretest_rejects
+                        st.pretest_rejects,
+                        st.absorbs,
+                        st.splits
                     )
                     .unwrap();
                 }
