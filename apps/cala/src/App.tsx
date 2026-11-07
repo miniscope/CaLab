@@ -5,6 +5,8 @@ import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@
 import { authLoading, user } from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore } from './lib/viewer-store.ts';
+import { createPipelineStore } from './lib/pipeline-store.ts';
+import { PipelinePanel } from './components/PipelinePanel.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { FrameViewer } from './components/FrameViewer.tsx';
 import { InfoPanel } from './components/InfoPanel.tsx';
@@ -18,7 +20,16 @@ const App: Component = () => {
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   // The worker (and the files it holds) lives as long as the app.
-  const store = createViewerStore(createFrameClient());
+  const client = createFrameClient();
+  const store = createViewerStore(client);
+  const pipeline = createPipelineStore(client);
+
+  // Opening a folder starts preprocessing and motion correction right away.
+  async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
+    pipeline.stop();
+    await store.openFiles(files, label);
+    if (store.info()) void pipeline.start();
+  }
 
   return (
     <Show
@@ -27,7 +38,7 @@ const App: Component = () => {
         <OpenFolder
           loading={store.loading()}
           error={store.error()}
-          onOpen={(files, label) => void store.openFiles(files, label)}
+          onOpen={(files, label) => void open(files, label)}
         />
       }
     >
@@ -50,7 +61,13 @@ const App: Component = () => {
               }
               actions={
                 <>
-                  <button class="btn-secondary btn-small" onClick={() => store.close()}>
+                  <button
+                    class="btn-secondary btn-small"
+                    onClick={() => {
+                      pipeline.stop();
+                      store.close();
+                    }}
+                  >
                     Open another folder
                   </button>
                   <FeedbackMenu appId={__APP_ID__} />
@@ -68,6 +85,7 @@ const App: Component = () => {
                 </div>
               )}
             </Show>
+            <PipelinePanel store={pipeline} />
             <FrameViewer store={store} />
             <InfoPanel info={info()} />
           </VizLayout>

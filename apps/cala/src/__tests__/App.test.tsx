@@ -1,7 +1,9 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { FrameClient } from '../lib/frame-client.ts';
+import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import { makeFile } from './synth-avi.ts';
 
 // uPlot needs a real browser (matchMedia); the shared barrels pull it in but
@@ -37,6 +39,9 @@ const fake = vi.hoisted(() => ({
   readFrame: vi.fn(),
   readFrames: vi.fn(),
   dispose: vi.fn(),
+  startPipeline: vi.fn(),
+  stepPipeline: vi.fn(),
+  stopPipeline: vi.fn(),
 }));
 vi.mock('../lib/frame-client.ts', () => ({ createFrameClient: (): FrameClient => fake }));
 
@@ -45,7 +50,55 @@ import App from '../App.tsx';
 HTMLCanvasElement.prototype.getContext = (() =>
   null) as typeof HTMLCanvasElement.prototype.getContext;
 
+const PLAN: PipelinePlan = {
+  frameCount: 50,
+  batchSize: 8,
+  calibrationFrames: 50,
+  motionWarmupFrames: 50,
+  previewMaxSide: 320,
+};
+
+const image = () => ({ width: 4, height: 3, data: new Float32Array(12) });
+
+/** A pipeline that runs one setup step, then batches of 25 frames, then is done. */
+function fakePipeline(): void {
+  let next = 0;
+  fake.startPipeline.mockImplementation(async () => {
+    next = 0;
+    return PLAN;
+  });
+  fake.stopPipeline.mockResolvedValue(undefined);
+  fake.stepPipeline.mockImplementation(async (): Promise<PipelineStepResult> => {
+    const timings = { readMs: 1, preprocessMs: 2, motionMs: 3, otherMs: 0 };
+    if (next === 0) {
+      next = 1;
+      return { kind: 'setup', phase: 'calibrate', done: 50, total: 50, timings };
+    }
+    if (next > 50) return { kind: 'done' };
+    const start = next - 1;
+    next += 25;
+    return {
+      kind: 'batch',
+      start,
+      count: 25,
+      dy: new Float32Array(25).fill(0.5),
+      dx: new Float32Array(25).fill(-1),
+      quality: new Float32Array(25),
+      flags: new Uint32Array(25),
+      previews: {
+        frame: start + 24,
+        raw: image(),
+        preprocessed: image(),
+        corrected: image(),
+        output: image(),
+      },
+      timings,
+    };
+  });
+}
+
 let dispose: (() => void) | undefined;
+beforeEach(fakePipeline);
 afterEach(() => {
   dispose?.();
   dispose = undefined;
@@ -113,6 +166,29 @@ describe('App', () => {
     slider.dispatchEvent(new Event('input', { bubbles: true }));
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(25));
     expect(root.querySelector('[data-testid="frame-readout"]')?.textContent).toContain('26 / 50');
+  });
+
+  it('runs the pipeline on open and shows progress and the motion trace', async () => {
+    fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(1));
+    const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
+    await vi.waitFor(() => expect(status()).toBe('Done'));
+    expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
+      'frame 50 / 50',
+    );
+    // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
+    expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
+      'motion 0.1',
+    );
+    expect(root.querySelector('[data-testid="motion-trace"]')).not.toBeNull();
+    expect(root.querySelectorAll('.cala-preview')).toHaveLength(2);
+
+    // Opening another folder stops the worker-side pipeline.
+    root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
+    expect(fake.stopPipeline).toHaveBeenCalled();
   });
 
   it('toggles play and pause', async () => {

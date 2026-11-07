@@ -1,5 +1,5 @@
 import { createEffect, type JSX } from 'solid-js';
-import { displayRange, toGray8 } from '../lib/frame-display.ts';
+import { displayRange, grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import type { CurrentFrame } from '../lib/viewer-store.ts';
 
 interface FrameCanvasProps {
@@ -26,16 +26,7 @@ export function FrameCanvas(props: FrameCanvasProps): JSX.Element {
       displayRange(f.pixels, props.bitDepth, props.autoContrast),
     );
     if (gray.length !== w * h) return;
-    const rgba = new ImageData(w, h);
-    for (let i = 0; i < gray.length; i++) {
-      const v = gray[i];
-      const o = 4 * i;
-      rgba.data[o] = v;
-      rgba.data[o + 1] = v;
-      rgba.data[o + 2] = v;
-      rgba.data[o + 3] = 255;
-    }
-    ctx.putImageData(rgba, 0, 0);
+    ctx.putImageData(grayToImageData(gray, w, h), 0, 0);
   });
 
   return (

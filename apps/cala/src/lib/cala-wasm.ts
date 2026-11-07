@@ -13,9 +13,24 @@ import init, {
   aviIdx1PayloadLen,
   aviIsAvixContinuation,
   cala_version,
+  MotionCorrector,
+  MotionOptions,
+  PreprocessConfig,
+  Preprocessor,
+  PreprocessWarmup,
 } from '../../../../crates/cala/pkg/calab_cala.js';
 
-export { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation, cala_version };
+export {
+  AviHeader,
+  aviIdx1PayloadLen,
+  aviIsAvixContinuation,
+  cala_version,
+  MotionCorrector,
+  MotionOptions,
+  PreprocessConfig,
+  Preprocessor,
+  PreprocessWarmup,
+};
 
 let ready: Promise<void> | null = null;
 
