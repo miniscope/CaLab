@@ -42,4 +42,19 @@ describe('folder grouping across the worker boundary', () => {
       'session/My_WebCam/1.avi',
     ]);
   });
+
+  it('does not depend on the clone keeping File.name (Node 22 returns a Blob)', async () => {
+    const avi = buildAvi({ width: 6, height: 4, frames: 3 });
+    // A stand-in for a runtime that drops the name: a bare Blob.
+    const entries = [
+      {
+        file: new Blob([avi as BlobPart]) as unknown as File,
+        relPath: 'session/My_V4_Miniscope/0.avi',
+      },
+    ];
+    const src = await FrameSource.open(entries);
+    expect(src.frameCount).toBe(3);
+    expect(src.info.files[0].name).toBe('0.avi');
+    expect((await src.readFrame(2)).length).toBe(24);
+  });
 });

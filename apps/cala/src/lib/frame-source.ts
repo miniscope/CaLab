@@ -51,6 +51,19 @@ export interface FolderEntry {
   relPath: string;
 }
 
+/**
+ * Entries whose File objects carry the name from `relPath`. Browsers keep a
+ * File intact through postMessage, but some runtimes (Node 22's
+ * structuredClone) hand back a nameless Blob; the name in the entry is the
+ * authority, and wrapping the Blob in a File is lazy (no bytes are copied).
+ */
+function withNames(entries: FolderEntry[]): FolderEntry[] {
+  return entries.map(({ file, relPath }) => {
+    const name = relPath.slice(relPath.lastIndexOf('/') + 1);
+    return { file: file.name === name ? file : new File([file], name), relPath };
+  });
+}
+
 /** Entries for a `webkitdirectory` input or a plain file list, read on the main thread. */
 export function entriesFromFiles(files: File[]): FolderEntry[] {
   return files.map((file) => ({
@@ -285,7 +298,7 @@ export class FrameSource {
 
   /** Open a Miniscope folder given as the flat list of its files (see `entriesFromFiles`). */
   static async open(entries: FolderEntry[]): Promise<FrameSource> {
-    const { group, metaData, timeStamps, ignored } = groupFiles(entries);
+    const { group, metaData, timeStamps, ignored } = groupFiles(withNames(entries));
     const warnings: string[] = [...group.numberingWarnings];
 
     const all = await Promise.all(
