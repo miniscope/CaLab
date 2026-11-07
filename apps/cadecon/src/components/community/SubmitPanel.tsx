@@ -25,9 +25,10 @@ import {
   cellResultLookup,
   currentIteration,
   convergedAtIteration,
+  runMaxFiringRate,
 } from '../../lib/iteration-store.ts';
 import {
-  upsampleFactor,
+  maxFiringRate,
   hpFilterEnabled,
   lpFilterEnabled,
   maxIterations,
@@ -110,7 +111,7 @@ export function SubmitPanel() {
           tauDecay,
           beta,
           samplingRate: fs,
-          upsampleFactor: upsampleFactor(),
+          maxFiringRate: runMaxFiringRate() ?? maxFiringRate(),
           numSubsets: numSubsets(),
           targetCoverage: targetCoverage(),
           maxIterations: maxIterations(),

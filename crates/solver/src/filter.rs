@@ -378,7 +378,7 @@ impl BandpassFilter {
 
     /// The linear operator [`Self::apply`] performs on an `n`-sample trace,
     /// for callers that apply it by superposition (the chain-consistent
-    /// threshold search): the gain curve over the `n / 2 + 1` real-FFT bins,
+    /// event-mass search): the gain curve over the `n / 2 + 1` real-FFT bins,
     /// the endpoint-window length of the detrend line, and whether the HP is
     /// on (with HP off the line is added back after filtering). `None` when
     /// `apply` would leave an `n`-sample trace untouched.

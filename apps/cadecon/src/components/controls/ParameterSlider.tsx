@@ -1,4 +1,4 @@
-import { Show, type JSX } from 'solid-js';
+import { Show, createSignal, type JSX } from 'solid-js';
 import type { Accessor } from 'solid-js';
 
 export interface ParameterSliderProps {
@@ -16,6 +16,8 @@ export interface ParameterSliderProps {
   trueValue?: number;
   disabled?: boolean;
   noSlider?: boolean;
+  /** Help text; shows a "?" button that toggles it under the header. */
+  help?: string;
 }
 
 function parseInputValue(e: Event): number | null {
@@ -24,6 +26,7 @@ function parseInputValue(e: Event): number | null {
 }
 
 export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
+  const [helpOpen, setHelpOpen] = createSignal(false);
   const sliderValue = () => (props.toSlider ? props.toSlider(props.value()) : props.value());
 
   const displayValue = () =>
@@ -78,6 +81,17 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
     <div class="param-slider" classList={{ 'param-slider--disabled': !!props.disabled }}>
       <div class="param-slider__header">
         <label class="param-slider__label">{props.label}</label>
+        <Show when={props.help}>
+          <button
+            type="button"
+            class="param-slider__help-btn"
+            aria-label={`About ${props.label}`}
+            aria-expanded={helpOpen()}
+            onClick={() => setHelpOpen((v) => !v)}
+          >
+            ?
+          </button>
+        </Show>
         <span class="param-slider__inline-value">
           <input
             type="number"
@@ -93,6 +107,11 @@ export function ParameterSlider(props: ParameterSliderProps): JSX.Element {
           <span class="param-slider__unit">{props.unit ?? ''}</span>
         </span>
       </div>
+      <Show when={props.help && helpOpen()}>
+        <div class="param-slider__help" role="note">
+          {props.help}
+        </div>
+      </Show>
       <Show when={!props.noSlider}>
         <div class="param-slider__track-container">
           <input

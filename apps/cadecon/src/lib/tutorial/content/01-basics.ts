@@ -41,7 +41,7 @@ export const basicsTutorial: Tutorial = {
       element: '[data-tutorial="algorithm-settings"]',
       title: 'Algorithm Settings',
       description:
-        'These control <b>how</b> the algorithm runs: the upsample target, the maximum number of iterations, the convergence tolerance, and optional high-pass / low-pass filters applied before deconvolution. The defaults work well for most datasets, so leave them as they are for now. The <b>Reading Convergence &amp; Results</b> tutorial explains when and how to adjust them.',
+        'These control <b>how</b> the algorithm runs: the max firing rate (the busiest burst rate you expect, which sets the scale of the spike counts), the maximum number of iterations, the convergence tolerance, and optional high-pass / low-pass filters applied before deconvolution. The defaults work well for most datasets, so leave them as they are for now. The <b>Reading Convergence &amp; Results</b> tutorial explains when and how to adjust them.',
       side: 'right',
     },
     // Step 5: Start the run

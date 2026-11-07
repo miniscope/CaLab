@@ -6,8 +6,6 @@ import {
   ceilingBand,
   ceilingVerdict,
   BELOW_GAP,
-  noiseGuardText,
-  noiseGuardCounts,
 } from '../results-ceiling.ts';
 import type { TraceResultEntry } from '../iteration-store.ts';
 
@@ -61,24 +59,5 @@ describe('PVE vs SNR helpers', () => {
     expect(ceilingVerdict(fit, 10, b.mid)).toBe('near');
     expect(ceilingVerdict(fit, 10, b.lo - BELOW_GAP - 0.01)).toBe('below');
     expect(ceilingVerdict(fit, 10, b.hi + 0.05)).toBe('above');
-  });
-});
-
-describe('noise guard flag', () => {
-  it('formats the per-cell readout and stays silent when unreported', () => {
-    expect(noiseGuardText(true)).toBe('noise guard: active');
-    expect(noiseGuardText(false)).toBe('noise guard: no effect');
-    expect(noiseGuardText(undefined)).toBeNull();
-  });
-
-  it('carries the flag through the PVE-vs-SNR points and counts it', () => {
-    const results = new Map<number, TraceResultEntry>([
-      [0, { ...entry(0, 0.4, 0.5), noisePath: true }],
-      [1, { ...entry(1, 0.8, 0.9), noisePath: false }],
-      [2, entry(2, 0.7, 0.9)],
-    ]);
-    const pts = pveSnrPoints(results, [3, 20, 12]);
-    expect(pts.map((p) => p.noisePath)).toEqual([true, false, undefined]);
-    expect(noiseGuardCounts(pts)).toEqual({ active: 1, total: 2 });
   });
 });

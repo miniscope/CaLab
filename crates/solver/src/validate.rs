@@ -20,12 +20,12 @@ use crate::biexp_fit::{BiexpResult, FitMode};
 /// process / trap the WASM module rather than fail cleanly.
 pub const MAX_KERNEL_LEN: usize = 1 << 20;
 
-/// Upper bound on `trace_len · upsample_factor` for the InDeCa pipeline.
+/// Upper bound on the trace length of the InDeCa pipeline, and on the
+/// simulator's high-resolution length.
 ///
 /// 2^26 samples (~67 M) keeps the solver's ~10 working buffers under ~3 GiB,
-/// i.e. inside wasm32's 4 GiB address space, while allowing e.g. a 1 h
-/// recording at 1 kHz upsampled ×16.
-pub const MAX_UPSAMPLED_LEN: usize = 1 << 26;
+/// i.e. inside wasm32's 4 GiB address space.
+pub const MAX_SERIES_LEN: usize = 1 << 26;
 
 /// `-ln(1e-6)`: the kernel is truncated where the decay envelope drops below 1e-6.
 const KERNEL_TAIL_FACTOR: f64 = 13.815_510_557_964_274;
@@ -111,46 +111,40 @@ pub fn validate_params(
     Ok(())
 }
 
-/// Validate InDeCa pipeline parameters. The kernel is built at the upsampled
-/// rate `fs · upsample_factor`, so the kernel-length bound applies there.
+/// Largest accepted `max_firing_rate` (spikes/s): far above any neuron's
+/// sustained rate, so a larger value is a units mistake. The same bound is
+/// enforced by the `cadecon_submissions` table.
+pub const MAX_FIRING_RATE_HZ: f64 = 10_000.0;
+
+/// Validate InDeCa pipeline parameters. `max_firing_rate` (spikes/s) must be
+/// finite and in `(0, MAX_FIRING_RATE_HZ]`. The pipeline runs at the
+/// recorded rate `fs`, so the kernel-length bound applies there.
 pub fn validate_indeca_params(
     trace_len: usize,
     tau_rise: f64,
     tau_decay: f64,
     fs: f64,
-    upsample_factor: usize,
+    max_firing_rate: f64,
     lambda: f64,
     tol: f64,
 ) -> Result<(), SolverError> {
-    if upsample_factor == 0 {
-        return Err(param_err("upsample_factor must be >= 1, got 0".into()));
+    if !(max_firing_rate.is_finite()
+        && max_firing_rate > 0.0
+        && max_firing_rate <= MAX_FIRING_RATE_HZ)
+    {
+        return Err(param_err(format!(
+            "max_firing_rate must be finite and in (0, {MAX_FIRING_RATE_HZ}] spikes/s, \
+             got {max_firing_rate}"
+        )));
     }
     validate_fs(fs)?;
-    validate_params(tau_rise, tau_decay, lambda, fs * upsample_factor as f64)?;
+    validate_params(tau_rise, tau_decay, lambda, fs)?;
     if !(tol.is_finite() && tol >= 0.0) {
         return Err(param_err(format!("tol must be finite and >= 0, got {tol}")));
     }
-    match trace_len.checked_mul(upsample_factor) {
-        Some(n) if n <= MAX_UPSAMPLED_LEN => Ok(()),
-        _ => Err(param_err(format!(
-            "trace length {trace_len} x upsample_factor {upsample_factor} exceeds the \
-             {MAX_UPSAMPLED_LEN}-sample limit"
-        ))),
-    }
-}
-
-/// Validate the target rate passed to `compute_upsample_factor`.
-pub fn validate_upsample_rates(fs: f64, target_fs: f64) -> Result<(), SolverError> {
-    validate_fs(fs)?;
-    if !(target_fs.is_finite() && target_fs > 0.0) {
+    if trace_len > MAX_SERIES_LEN {
         return Err(param_err(format!(
-            "target_fs must be finite and > 0 Hz, got {target_fs}"
-        )));
-    }
-    if (target_fs / fs).round() > MAX_UPSAMPLED_LEN as f64 {
-        return Err(param_err(format!(
-            "target_fs / fs = {} is not a usable upsample factor",
-            target_fs / fs
+            "trace length {trace_len} exceeds the {MAX_SERIES_LEN}-sample limit"
         )));
     }
     Ok(())
@@ -358,7 +352,7 @@ pub const MAX_SIM_CV: f64 = 10.0;
 /// (panic) or exhaust memory (abort -- which kills the Python interpreter or
 /// traps the WASM module), and bad kernel taus silently produced NaN traces
 /// or negative calcium. The same caps as the solver apply: kernel length
-/// <= [`MAX_KERNEL_LEN`], high-resolution length <= [`MAX_UPSAMPLED_LEN`].
+/// <= [`MAX_KERNEL_LEN`], high-resolution length <= [`MAX_SERIES_LEN`].
 pub fn validate_simulation_config(
     c: &crate::simulate::SimulationConfig,
 ) -> Result<(), SolverError> {
@@ -395,10 +389,10 @@ pub fn validate_simulation_config(
     }
     // Mirrors `bins_per_frame` in simulate().
     let bins_per_frame = (c.spike_sim_hz / c.fs_hz).round().max(1.0);
-    if bins_per_frame * c.num_timepoints as f64 > MAX_UPSAMPLED_LEN as f64 {
+    if bins_per_frame * c.num_timepoints as f64 > MAX_SERIES_LEN as f64 {
         return Err(param_err(format!(
             "num_timepoints ({}) x spike_sim_hz / fs_hz ({bins_per_frame}) exceeds the \
-             {MAX_UPSAMPLED_LEN}-sample limit",
+             {MAX_SERIES_LEN}-sample limit",
             c.num_timepoints
         )));
     }
@@ -527,11 +521,17 @@ mod tests {
     }
 
     #[test]
-    fn indeca_rejects_zero_upsample_and_huge_products() {
-        assert!(validate_indeca_params(100, 0.02, 0.4, 30.0, 0, 0.0, 1e-4).is_err());
-        assert!(validate_indeca_params(100, 0.02, 0.4, 30.0, 1, 0.0, 1e-4).is_ok());
-        assert!(validate_indeca_params(usize::MAX, 0.02, 0.4, 30.0, 2, 0.0, 1e-4).is_err());
-        assert!(validate_indeca_params(100, 0.02, 0.4, 30.0, 1, 0.0, f64::NAN).is_err());
+    fn indeca_rejects_bad_max_firing_rate_and_huge_traces() {
+        let ok = |trace_len, mfr, tol| {
+            validate_indeca_params(trace_len, 0.02, 0.4, 30.0, mfr, 0.0, tol).is_ok()
+        };
+        assert!(ok(100, 300.0, 1e-4));
+        assert!(!ok(100, 0.0, 1e-4));
+        assert!(!ok(100, -5.0, 1e-4));
+        assert!(!ok(100, f64::NAN, 1e-4));
+        assert!(!ok(100, 1e9, 1e-4));
+        assert!(!ok(MAX_SERIES_LEN + 1, 300.0, 1e-4));
+        assert!(!ok(100, 300.0, f64::NAN));
     }
 
     #[test]

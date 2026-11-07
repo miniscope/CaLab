@@ -21,14 +21,12 @@ interface TraceJobFields {
   tauRise: number;
   tauDecay: number;
   fs: number;
-  upsampleFactor: number;
+  maxFiringRate: number;
   maxIters: number;
   tol: number;
   hpEnabled: boolean;
   lpEnabled: boolean;
   lambda: number;
-  noiseConstrained: boolean;
-  computeComparison: boolean;
   warmCounts?: Float32Array;
   onComplete(result: TraceResult): void;
 }
@@ -140,14 +138,12 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           tauRise: job.tauRise,
           tauDecay: job.tauDecay,
           fs: job.fs,
-          upsampleFactor: job.upsampleFactor,
+          maxFiringRate: job.maxFiringRate,
           maxIters: job.maxIters,
           tol: job.tol,
           hpEnabled: job.hpEnabled,
           lpEnabled: job.lpEnabled,
           lambda: job.lambda,
-          noiseConstrained: job.noiseConstrained,
-          computeComparison: job.computeComparison,
           warmCounts: warmCopy,
         },
         transfers,

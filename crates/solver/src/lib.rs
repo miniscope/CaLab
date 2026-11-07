@@ -2,6 +2,8 @@ mod banded;
 pub(crate) mod baseline;
 pub(crate) mod biexp_fit;
 pub(crate) mod chain;
+pub(crate) mod downsample;
+pub(crate) mod event_mass;
 mod fft;
 mod filter;
 mod fista;
@@ -13,9 +15,7 @@ pub(crate) mod overview;
 pub(crate) mod peak_seed;
 pub(crate) mod simulate;
 pub(crate) mod snr;
-pub(crate) mod spread;
 pub(crate) mod threshold;
-pub(crate) mod upsample;
 pub(crate) mod validate;
 
 pub use validate::SolverError;
@@ -819,7 +819,7 @@ mod finite_guard_tests {
 }
 
 #[cfg(test)]
-mod nested_scoring_tests;
+mod test_util;
 
 #[cfg(test)]
-mod test_util;
+mod eval_event_mass;

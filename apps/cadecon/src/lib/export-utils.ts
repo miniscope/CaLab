@@ -60,7 +60,6 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
   const alphas: (number | null)[] = [];
   const baselines: (number | null)[] = [];
   const pves: (number | null)[] = [];
-  const noiseGuardActive: (boolean | null)[] = [];
   const skippedReason: (string | null)[] = [];
 
   for (const cellIdx of sortedCells) {
@@ -68,7 +67,6 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
     alphas.push(entry ? entry.alpha : null);
     baselines.push(entry ? entry.baseline : null);
     pves.push(entry ? entry.pve : null);
-    noiseGuardActive.push(entry?.noisePath ?? null);
     skippedReason.push(entry ? null : NON_FINITE_SKIP_REASON);
   }
 
@@ -101,7 +99,6 @@ export function buildCaDeconResultsPayload(solverVersion?: string): Record<strin
     alphas,
     baselines,
     pves,
-    noise_guard_active: noiseGuardActive,
     skipped_reason: skippedReason,
     fs,
     tau_rise: tauRise,

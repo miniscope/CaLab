@@ -5,6 +5,50 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- **CaDecon: spikes are counted by event mass at the frame rate, with one
+  parameter, the max firing rate.** No upsampling anywhere in the InDeCa
+  path: the relaxed solve, chain, scoring and binarization run at the
+  recorded rate and the output is an integer spike count per frame. Events
+  are maximal runs of positive mass; an event's count is `round(mass / a)`,
+  placed along its mass profile; `a` is the largest spike size whose
+  chain-scored error is within one noise standard error of the continuous
+  relaxed solution (the floor `busiest frame / cap` otherwise). No sparsity
+  penalty. The tent threshold search, the 300 Hz grid and the upsample
+  factor are removed. Builds on #268 (Krisha Aghi).
+- **CaDecon setting:** "Max firing rate (spikes/s)", default 300, replaces
+  the upsample target. It is a ceiling on spikes per frame
+  (`max(1, round(rate / fs))`) and sets the scale of the counts.
+- **Per-cell diagnostics** in WASM and Python results: `cap_limited`,
+  `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes` (none changes the
+  result); the Trace Inspector shows a short note when they apply.
+- **CaDecon: default Max Iterations raised from 20 to 30.** With event-mass
+  counting the kernel drifts smoothly to its fixed point and then converges
+  sharply; on real data that took ~18 iterations, close to the old cap, and
+  runs are now fast enough to afford the headroom.
+- **Fixed:** the FFT batch route of the superposition scorer dropped repeated
+  spikes in one bin.
+
+### Breaking
+
+- **Python:** `solve_trace(upsample_factor=...)` is now
+  `solve_trace(max_firing_rate=300.0)`; `compute_upsample_factor` is removed;
+  `SolveTraceResult` gains the four diagnostics; `s_counts` are per-frame
+  integer counts. The bridge CaDecon config field `upsample_target` is now
+  `max_firing_rate`.
+- **WASM:** `indeca_solve_trace` takes `max_firing_rate` instead of
+  `upsample_factor`; `indeca_compute_upsample_factor` is removed.
+- **Removed:** the CaDecon "Noise-floor guard" setting, the Sparsity
+  Comparison Overlay and the `noise_path` result field. The `noise_constrained`
+  argument is gone from WASM `indeca_solve_trace`, Python `solve_trace` and
+  the bridge; the noise model now always sets the one-standard-error size
+  pick. The results export drops `noise_guard_active`.
+- **Community submissions:** migration 016 replaces
+  `cadecon_submissions.upsample_factor` with `max_firing_rate` (NOT NULL,
+  in (0, 10000]); existing rows are backfilled as `upsample_factor` times the
+  sampling rate.
+
 ## [2.11.0] - 2026-11-05
 
 Web apps `v2.11.0`; Python package `calab` `py/v0.4.0`. Rebuilds the InDeCa

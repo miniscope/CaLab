@@ -385,7 +385,7 @@ def test_decon_config_serialization() -> None:
     config = DeconConfig(autorun=True, max_iterations=10)
     dumped = config.model_dump(exclude_none=True)
     assert dumped == {"autorun": True, "max_iterations": 10}
-    assert "upsample_target" not in dumped
+    assert "max_firing_rate" not in dumped
     assert "seed" not in dumped
 
 

@@ -34,8 +34,8 @@
 //! CV>0 draws per-cell values from a log-normal distribution centered on the
 //! nominal: `cell_value = nominal * exp(N(0, cv))`.
 
+use crate::downsample::downsample_average;
 use crate::kernel::build_kernel;
-use crate::upsample::downsample_average;
 
 // ── PRNG ─────────────────────────────────────────────────────────
 

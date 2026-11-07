@@ -280,7 +280,7 @@ def decon(
     headless: HeadlessBrowser | bool | None = None,
     *,
     autorun: bool = False,
-    upsample_target: int | None = None,
+    max_firing_rate: float | None = None,
     hp_filter_enabled: bool | None = None,
     lp_filter_enabled: bool | None = None,
     max_iterations: int | None = None,
@@ -316,8 +316,9 @@ def decon(
         ``HeadlessBrowser``: reuse an existing browser instance (for batch).
     autorun : bool
         If True, the solver starts automatically after loading. Default: False.
-    upsample_target : int, optional
-        Target sampling rate for upsampling. Must be > 0.
+    max_firing_rate : float, optional
+        Maximum firing rate in spikes/s (default 300 in the app). Caps the
+        spike count per frame at round(max_firing_rate / fs). Range (0, 10000].
     hp_filter_enabled : bool, optional
         Enable high-pass filter.
     lp_filter_enabled : bool, optional
@@ -348,7 +349,7 @@ def decon(
     # Build and validate config via pydantic
     config = DeconConfig(
         autorun=autorun,
-        upsample_target=upsample_target,
+        max_firing_rate=max_firing_rate,
         hp_filter_enabled=hp_filter_enabled,
         lp_filter_enabled=lp_filter_enabled,
         max_iterations=max_iterations,

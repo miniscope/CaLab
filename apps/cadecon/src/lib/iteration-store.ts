@@ -85,10 +85,11 @@ export interface TraceResultEntry {
    * null when the solver measured no noise floor.
    */
   pveCeiling?: number | null;
-  /** Noise-floor guard fired for this cell (selection overrode max-PVE). undefined = unknown. */
-  noisePath?: boolean;
-  /** Spike counts from the opposite noise-constrained setting (comparison overlay). */
-  comparisonSCounts?: Float32Array;
+  /** Solver diagnostics (display only): see TraceResult in cadecon-types.ts. */
+  capLimited?: boolean;
+  noSizeFit?: boolean;
+  peakOutlierRatio?: number;
+  droppedSpikes?: number;
 }
 
 function cellSubsetKey(cellIndex: number, subsetIdx: number): string {
@@ -123,6 +124,12 @@ const [convergedAtIteration, setConvergedAtIteration] = createSignal<number | nu
 const [runError, setRunError] = createSignal<string | null>(null);
 /** Solver jobs that failed in the current run (below the abort threshold the run continues without them). */
 const [failedJobs, setFailedJobs] = createSignal(0);
+/**
+ * Max firing rate (spikes/s) the displayed run was solved with, snapshotted when
+ * the run starts. Null before any run. The Trace Inspector reads this so its
+ * spike band keeps the cap the results actually used when the setting is edited.
+ */
+const [runMaxFiringRate, setRunMaxFiringRate] = createSignal<number | null>(null);
 
 // --- Derived ---
 
@@ -171,6 +178,7 @@ function resetIterationState(): void {
   setIterationHistory([]);
   setRunError(null);
   setFailedJobs(0);
+  setRunMaxFiringRate(null);
 }
 
 /** Snapshot current perTraceResults into the iteration history.
@@ -219,6 +227,8 @@ export {
   setRunError,
   failedJobs,
   setFailedJobs,
+  runMaxFiringRate,
+  setRunMaxFiringRate,
   alphaValues,
   pveValues,
   cellResultLookup,

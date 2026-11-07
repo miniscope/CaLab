@@ -18,7 +18,6 @@ import type { SnrReport } from '../metrics/snr-events.ts';
 import {
   Solver,
   get_simulation_presets,
-  indeca_compute_upsample_factor,
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   indeca_solve_trace,
@@ -234,12 +233,12 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
         tr = TAU_R,
         td = TAU_D,
         fs = FS,
-        up = 1,
+        mfr = FS,
         tol = 1e-4,
         warm = new Float32Array(0),
         lam = 0,
       } = {},
-    ) => indeca_solve_trace(trace, tr, td, fs, up, 50, tol, false, false, warm, lam, false);
+    ) => indeca_solve_trace(trace, tr, td, fs, mfr, 50, tol, false, false, warm, lam);
 
     it.each(BAD_PARAMS)('rejects %s', (_l, tr, td, lam, fs) => {
       expectRejected(
@@ -249,9 +248,10 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
     });
 
     it.each([
-      ['upsample 0', { up: 0 }, 'upsample_factor'],
-      ['upsample NaN (coerced to 0)', { up: NaN }, 'upsample_factor'],
-      ['upsample -1 (coerced to 2^32-1)', { up: -1 }, /exceeds|kernel/],
+      ['max_firing_rate 0', { mfr: 0 }, 'max_firing_rate'],
+      ['max_firing_rate NaN', { mfr: NaN }, 'max_firing_rate'],
+      ['max_firing_rate -1', { mfr: -1 }, 'max_firing_rate'],
+      ['max_firing_rate over 10000', { mfr: 10001 }, 'max_firing_rate'],
       ['tol < 0', { tol: -1 }, 'tol'],
     ])('rejects %s', (_l, opts, text) => {
       expectRejected(() => call(spiky(), opts), text);
@@ -351,24 +351,7 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
     });
   });
 
-  describe('indeca_compute_upsample_factor / seed_trace', () => {
-    it.each([
-      [0, 300],
-      [-30, 300],
-      [NaN, 300],
-      [30, 0],
-      [30, Infinity],
-      [1e-300, 1e300],
-    ])('upsample factor rejects (%d, %d)', (fs, target) => {
-      expectRejected(() => indeca_compute_upsample_factor(fs, target), 'invalid parameter');
-    });
-
-    it('upsample factor is at least 1', () => {
-      expect(indeca_compute_upsample_factor(30, 30)).toBe(1);
-      expect(indeca_compute_upsample_factor(30, 1e-300)).toBe(1);
-      expect(indeca_compute_upsample_factor(30, 300)).toBe(10);
-    });
-
+  describe('seed_trace', () => {
     it('seed_trace rejects bad fs / non-finite traces and accepts tiny traces', () => {
       expectRejected(() => seed_trace(spiky(), 0), 'fs');
       expectRejected(() => seed_trace(Float32Array.of(NaN), FS), 'non-finite');

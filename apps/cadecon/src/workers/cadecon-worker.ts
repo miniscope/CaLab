@@ -41,14 +41,13 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       req.tauRise,
       req.tauDecay,
       req.fs,
-      req.upsampleFactor,
+      req.maxFiringRate,
       req.maxIters,
       req.tol,
       req.hpEnabled,
       req.lpEnabled,
       req.warmCounts ?? EMPTY_F32,
       req.lambda,
-      req.noiseConstrained,
     ) as {
       s_counts: number[];
       filtered_trace: number[] | null;
@@ -60,7 +59,10 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       converged: boolean;
       noise_var_processed: number;
       chain_noise_gain: number;
-      noise_path?: boolean;
+      cap_limited?: boolean;
+      no_size_fit?: boolean;
+      peak_outlier_ratio?: number;
+      dropped_spikes?: number;
     };
 
     if (cancelled) {
@@ -74,28 +76,6 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       : undefined;
     const transfers: ArrayBuffer[] = [sCounts.buffer];
     if (filteredTrace) transfers.push(filteredTrace.buffer);
-
-    // Teaching/impact overlay: also solve with the OPPOSITE sparsity setting.
-    // Same trace + kernel; only the threshold-selection stage differs.
-    let comparisonSCounts: Float32Array | undefined;
-    if (req.computeComparison) {
-      const cmp = indeca_solve_trace(
-        req.trace,
-        req.tauRise,
-        req.tauDecay,
-        req.fs,
-        req.upsampleFactor,
-        req.maxIters,
-        req.tol,
-        req.hpEnabled,
-        req.lpEnabled,
-        req.warmCounts ?? EMPTY_F32,
-        req.lambda,
-        !req.noiseConstrained,
-      ) as { s_counts: number[] };
-      comparisonSCounts = new Float32Array(cmp.s_counts);
-      transfers.push(comparisonSCounts.buffer as ArrayBuffer);
-    }
 
     post(
       {
@@ -112,8 +92,10 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           converged: jsResult.converged,
           noiseVarProcessed: jsResult.noise_var_processed,
           chainNoiseGain: jsResult.chain_noise_gain,
-          noisePath: jsResult.noise_path,
-          comparisonSCounts,
+          capLimited: jsResult.cap_limited,
+          noSizeFit: jsResult.no_size_fit,
+          peakOutlierRatio: jsResult.peak_outlier_ratio,
+          droppedSpikes: jsResult.dropped_spikes,
         },
       },
       transfers,

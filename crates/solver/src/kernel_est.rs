@@ -99,8 +99,8 @@ fn prox_tv_1d(x: &mut [f64], lambda: f64) {
 /// Arguments:
 /// - `traces`: flat array of concatenated traces (each of length trace_lengths[i])
 /// - `spike_trains`: flat array of concatenated binary spike trains
-/// - `alphas`: per-trace scaling factors from threshold search
-/// - `baselines`: per-trace baselines from threshold search
+/// - `alphas`: per-trace scaling factors from the binarization
+/// - `baselines`: per-trace baselines from the binarization
 /// - `trace_lengths`: length of each individual trace
 /// - `kernel_length`: desired length of the output kernel
 /// - `max_iters`: maximum FISTA iterations

@@ -42,15 +42,15 @@ INSERT INTO catune_submissions (
 
 INSERT INTO cadecon_submissions (
   user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
-  upsample_factor, sampling_rate, num_subsets, target_coverage,
+  max_firing_rate, sampling_rate, num_subsets, target_coverage,
   max_iterations, convergence_tol, num_iterations, converged,
   indicator, species, brain_region, dataset_hash, app_version
 ) VALUES
   ('11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
-   10, 30, 4, 0.25, 20, 0.01, 10, true,
+   300, 30, 4, 0.25, 20, 0.01, 10, true,
    'GCaMP6f', 'mouse', 'V1', 'hash-alice', 'test'),
   ('22222222-2222-2222-2222-222222222222', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
-   10, 30, 4, 0.25, 20, 0.01, 10, true,
+   300, 30, 4, 0.25, 20, 0.01, 10, true,
    'GCaMP6f', 'mouse', 'V1', 'hash-bob', 'test');
 
 -- One session per real user so the event-insert test has something to query
@@ -178,12 +178,12 @@ SELECT assert_denied(
   $sql$
   INSERT INTO cadecon_submissions (
     user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
-    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_firing_rate, sampling_rate, num_subsets, target_coverage,
     max_iterations, convergence_tol, num_iterations, converged,
     indicator, species, brain_region, dataset_hash, app_version
   ) VALUES (
     '44444444-4444-4444-4444-444444444444', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
-    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    300, 30, 4, 0.25, 20, 0.01, 10, true,
     'GCaMP6f', 'mouse', 'V1', 'hash-anon', 'test'
   )
   $sql$,
@@ -212,12 +212,12 @@ SELECT assert_allowed(
   $sql$
   INSERT INTO cadecon_submissions (
     user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
-    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_firing_rate, sampling_rate, num_subsets, target_coverage,
     max_iterations, convergence_tol, num_iterations, converged,
     indicator, species, brain_region, dataset_hash, app_version
   ) VALUES (
     '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
-    10, 30, 4, 0.25, 20, 0.01, 10, true,
+    300, 30, 4, 0.25, 20, 0.01, 10, true,
     'GCaMP6f', 'mouse', 'V1', 'hash-alice-real', 'test'
   )
   $sql$,
@@ -410,12 +410,12 @@ BEGIN
     PERFORM assert_denied(
       $sql$
       INSERT INTO cadecon_submissions_public (
-        user_id, tau_rise, tau_decay, t_peak, fwhm, upsample_factor, sampling_rate,
+        user_id, tau_rise, tau_decay, t_peak, fwhm, max_firing_rate, sampling_rate,
         num_subsets, target_coverage, max_iterations, convergence_tol,
         num_iterations, converged, indicator, species, brain_region,
         dataset_hash, app_version
       ) VALUES (
-        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 10, 30,
+        '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 300, 30,
         4, 0.25, 20, 0.01, 10, true, 'GCaMP6f', 'mouse', 'V1',
         'hash-via-view', 'test'
       )
@@ -803,13 +803,13 @@ SELECT assert_allowed(
   $sql$
   INSERT INTO cadecon_submissions (
     user_id, tau_rise, tau_decay, t_peak, fwhm, beta, ar2_g1, ar2_g2,
-    upsample_factor, sampling_rate, num_subsets, target_coverage,
+    max_firing_rate, sampling_rate, num_subsets, target_coverage,
     max_iterations, convergence_tol, median_alpha, median_pve, mean_event_rate,
     num_iterations, converged, indicator, species, brain_region,
     dataset_hash, app_version, orcid
   ) VALUES (
     '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 1.2, 0.9, -0.1,
-    10, 30, 4, 0.25, 20, 0.005, 3.5, -0.2, 0.8, 12, true,
+    300, 30, 4, 0.25, 20, 0.005, 3.5, -0.2, 0.8, 12, true,
     'GCaMP6f', 'mouse', 'V1', 'hash-valid', 'test',
     'https://orcid.org/0000-0002-1825-0097'
   )
@@ -885,5 +885,85 @@ SELECT assert_denied(
   $sql$UPDATE cadecon_submissions SET lab_name = repeat('x', 257) WHERE dataset_hash = 'hash-alice'$sql$,
   'cadecon lab_name > 256 chars denied', '23514');
 ROLLBACK;
+
+-- ── cadecon max_firing_rate replaces upsample_factor (016) ────────────────
+-- Decision: max_firing_rate is required (NOT NULL), finite, > 0 and <= 10000;
+-- upsample_factor no longer exists.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+-- rate_cols / rate_vals: the column list and value list for the rate params.
+CREATE FUNCTION pg_temp.cadecon_rate_insert(rate_cols TEXT, rate_vals TEXT) RETURNS TEXT
+LANGUAGE sql AS $fn$
+  SELECT format(
+    $q$INSERT INTO cadecon_submissions (
+      user_id, tau_rise, tau_decay, t_peak, fwhm, ar2_g1, ar2_g2,
+      %s, sampling_rate, num_subsets, target_coverage,
+      max_iterations, convergence_tol, num_iterations, converged,
+      indicator, species, brain_region, dataset_hash, app_version
+    ) VALUES (
+      '11111111-1111-1111-1111-111111111111', 0.05, 0.4, 0.1, 0.3, 0.9, -0.1,
+      %s, 30, 4, 0.25, 20, 0.01, 10, true,
+      'GCaMP6f', 'mouse', 'V1', 'hash-rate', 'test'
+    )$q$, rate_cols, rate_vals)
+$fn$;
+SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate', '300'),
+  'cadecon valid max_firing_rate row (new client)');
+SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate', '10000'),
+  'cadecon max_firing_rate at upper bound');
+SELECT assert_allowed(pg_temp.cadecon_rate_insert('max_firing_rate', '0.5'),
+  'cadecon fractional max_firing_rate allowed (double precision)');
+-- Missing max_firing_rate (beta is a harmless stand-in column so the INSERT
+-- stays well-formed): NOT NULL violation.
+SELECT assert_denied(pg_temp.cadecon_rate_insert('beta', 'NULL'),
+  'cadecon missing max_firing_rate denied', '23502');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('upsample_factor', '10'),
+  'cadecon old-style upsample_factor column no longer exists', '42703');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', 'NULL'),
+  'cadecon NULL max_firing_rate denied', '23502');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', '0'),
+  'cadecon max_firing_rate 0 denied', '23514');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', '-5'),
+  'cadecon negative max_firing_rate denied', '23514');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', '10000.5'),
+  'cadecon max_firing_rate > 10000 denied', '23514');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', $v$'NaN'$v$),
+  'cadecon max_firing_rate NaN denied', '23514');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', $v$'Infinity'$v$),
+  'cadecon max_firing_rate Infinity denied', '23514');
+SELECT assert_denied(pg_temp.cadecon_rate_insert('max_firing_rate', $v$'-Infinity'$v$),
+  'cadecon max_firing_rate -Infinity denied', '23514');
+ROLLBACK;
+
+-- The public view exposes max_firing_rate and no upsample_factor column.
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cadecon_submissions_public WHERE dataset_hash = 'hash-alice' AND max_firing_rate = 300$sql$,
+  1,
+  'cadecon public view: max_firing_rate readable by anon');
+SELECT assert_denied(
+  $sql$SELECT upsample_factor FROM cadecon_submissions_public LIMIT 1$sql$,
+  'cadecon public view no longer has upsample_factor', '42703');
+SELECT assert_denied(
+  $sql$SELECT orcid FROM cadecon_submissions_public LIMIT 1$sql$,
+  'cadecon public view still omits orcid', '42703');
+ROLLBACK;
+
+-- Public views remain SELECT-only after the 016 view replacement.
+DO $$
+DECLARE
+  extra INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO extra
+  FROM information_schema.role_table_grants
+  WHERE table_name = 'cadecon_submissions_public'
+    AND grantee IN ('anon', 'authenticated', 'PUBLIC')
+    AND privilege_type <> 'SELECT';
+  IF extra <> 0 THEN
+    RAISE EXCEPTION 'cadecon_submissions_public has % non-SELECT grants after 016', extra;
+  END IF;
+END
+$$;
 
 DO $$ BEGIN RAISE NOTICE 'ALL RLS ASSERTIONS PASSED'; END $$;

@@ -23,7 +23,7 @@ export interface CadeconSubmissionContext {
   tauDecay: number;
   beta: number | null;
   samplingRate: number;
-  upsampleFactor: number;
+  maxFiringRate: number;
   numSubsets: number;
   targetCoverage: number;
   maxIterations: number;
@@ -49,7 +49,7 @@ function medianOrNull(values: number[]): number | null {
   return values.length === 0 ? null : median(values);
 }
 
-/** Compute mean event rate: sum(sCounts > 0) / (numCells * durationSeconds). */
+/** Compute mean spike rate: sum(sCounts) / (numCells * durationSeconds); counts are per native frame. */
 function computeMeanEventRate(
   perTraceResults: Record<string, { sCounts: Float32Array }>,
   durationSeconds: number | null,
@@ -61,7 +61,7 @@ function computeMeanEventRate(
   let totalEvents = 0;
   for (const entry of entries) {
     for (let i = 0; i < entry.sCounts.length; i++) {
-      if (entry.sCounts[i] > 0) totalEvents++;
+      totalEvents += entry.sCounts[i];
     }
   }
   return totalEvents / (entries.length * durationSeconds);
@@ -110,7 +110,7 @@ export async function submitToSupabase(
     ar2_g2: ar2.g2,
 
     // Run config
-    upsample_factor: ctx.upsampleFactor,
+    max_firing_rate: ctx.maxFiringRate,
     sampling_rate: ctx.samplingRate,
     num_subsets: ctx.numSubsets,
     target_coverage: ctx.targetCoverage,

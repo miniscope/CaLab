@@ -20,12 +20,6 @@ const [showResidual, setShowResidual] = createSignal(false);
 const [showGTCalcium, setShowGTCalcium] = createSignal(true);
 const [showGTSpikes, setShowGTSpikes] = createSignal(true);
 
-// Sparsity comparison overlay (display toggle): when on, TraceInspector overlays
-// the opposite-noise-constrained deconvolution that was precomputed during the
-// run (requires `sparsityCompareEnabled`), so the impact of noise-constrained
-// sparsity is visible. Read-only on the browse path — no live solve here.
-const [showSparsityCompare, setShowSparsityCompare] = createSignal(true);
-
 // Linked cell highlight shared by the overview cards, the raster, the PVE-vs-SNR
 // scatter and the CellSelector. `highlightSource` names what set it (e.g. a
 // flag key or 'snr-brush') so the source can show itself as active.
@@ -70,6 +64,4 @@ export {
   setShowGTCalcium,
   showGTSpikes,
   setShowGTSpikes,
-  showSparsityCompare,
-  setShowSparsityCompare,
 };

@@ -40,11 +40,12 @@ import {
   updateTraceResult,
   bulkUpdateTraceResults,
   resetIterationState,
+  setRunMaxFiringRate,
   snapshotIteration,
   cellSubsetKey,
 } from './iteration-store.ts';
 import {
-  upsampleFactor,
+  maxFiringRate,
   maxIterations,
   convergenceTol,
   convergencePatience,
@@ -52,8 +53,6 @@ import {
   finalSelectionWindow,
   hpFilterEnabled,
   lpFilterEnabled,
-  noiseConstrained,
-  sparsityCompareEnabled,
   traceFistaMaxIters,
   traceFistaTol,
   kernelFistaMaxIters,
@@ -109,6 +108,21 @@ function isTrustworthyFit(r: { fitMode: FitMode }): boolean {
   return r.fitMode !== 'Degenerate' && r.fitMode !== 'Empty';
 }
 
+/** Per-cell solver diagnostics carried into the stored results (display only). */
+type SolveDiagnostics = Pick<
+  TraceResult,
+  'capLimited' | 'noSizeFit' | 'peakOutlierRatio' | 'droppedSpikes'
+>;
+
+function solveDiagnostics(r: TraceResult): SolveDiagnostics {
+  return {
+    capLimited: r.capLimited,
+    noSizeFit: r.noSizeFit,
+    peakOutlierRatio: r.peakOutlierRatio,
+    droppedSpikes: r.droppedSpikes,
+  };
+}
+
 /** Absolute floor of the Rust tau_rise clamp (mirrors biexp_fit.rs tau_r_lo). */
 const RISE_CLAMP_FLOOR_S = 0.005;
 /** tau_rise within this factor of the clamp floor is flagged "rise unresolved". */
@@ -134,7 +148,7 @@ function sumSq(a: ArrayLike<number>): number {
  * The symmetric max(...) denominator keeps the ratio bounded to [0, sqrt(2)] and
  * stops it from exploding when a cell's activity collapses toward zero between
  * iterations (which a ||s_new||-only denominator would). s_counts are native-rate
- * bin counts (the solver downsamples the upsampled train before returning), so
+ * per-frame spike counts (the solver runs at the recorded frame rate), so
  * this measures change at the resolution the data actually constrains.
  */
 function computeTraceStability(
@@ -344,14 +358,12 @@ async function dispatchTraceJobs(
   tauR: number,
   tauD: number,
   fs: number,
-  upFactor: number,
+  maxFiringRate: number,
   maxIters: number,
   tol: number,
   hpEnabled: boolean,
   lpEnabled: boolean,
   lambda: number,
-  noiseConstrained: boolean,
-  computeComparison: boolean,
   prevResults?: Map<number, Float32Array>,
 ): Promise<{ results: Array<Map<number, TraceResult>>; outcome: PhaseOutcome }> {
   const jobs = subsetCellJobs(rects, skip);
@@ -380,14 +392,12 @@ async function dispatchTraceJobs(
         tauRise: tauR,
         tauDecay: tauD,
         fs,
-        upsampleFactor: upFactor,
+        maxFiringRate,
         maxIters,
         tol,
         hpEnabled,
         lpEnabled,
         lambda,
-        noiseConstrained,
-        computeComparison,
         warmCounts,
         onComplete(result: TraceResult) {
           results[subsetIdx].set(cell, result);
@@ -605,7 +615,8 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   const TAU_DECAY_FALLBACK = 1.0;
   let tauR = TAU_RISE_FALLBACK;
   let tauD = TAU_DECAY_FALLBACK;
-  const upFactor = upsampleFactor();
+  const maxFiringRateHz = maxFiringRate();
+  setRunMaxFiringRate(maxFiringRateHz);
   const maxIter = maxIterations();
   // Convergence controls (see algorithm-store / CONVERGENCE_RANGES). convTol is
   // the kernel-RMSE threshold; selWindow is still a shape-space (median) control.
@@ -625,8 +636,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   const hpOn = hpFilterEnabled();
   const lpOn = lpFilterEnabled();
   const sparsityLambda = 0.0;
-  const noiseConstrainedOn = noiseConstrained();
-  const computeComparison = sparsityCompareEnabled();
   const solver: SolverSettings = {
     traceMaxIters: traceFistaMaxIters(),
     traceTol: traceFistaTol(),
@@ -793,14 +802,12 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
       tauR,
       tauD,
       fs,
-      upFactor,
+      maxFiringRateHz,
       solver.traceMaxIters,
       solver.traceTol,
       hpOn,
       lpOn,
       sparsityLambda,
-      noiseConstrainedOn,
-      computeComparison,
       prevTraceCounts,
     );
     assertCurrent(runId);
@@ -824,13 +831,11 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: number;
         pve: number;
         pveCeiling: number | null;
-        noisePath: boolean | undefined;
+        diagnostics: SolveDiagnostics;
       }
     >();
     // Map cell → full-length filtered trace (stitched from subset windows)
     const cellFiltered = new Map<number, Float32Array>();
-    // Map cell → full-length opposite-setting counts (comparison overlay)
-    const cellComparison = new Map<number, Float32Array>();
     const batchEntries: Record<string, import('./iteration-store.ts').TraceResultEntry> = {};
     for (let si = 0; si < rects.length; si++) {
       const rect = rects[si];
@@ -851,15 +856,6 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           }
           fullFilt.set(result.filteredTrace, rect.tStart);
         }
-        // Stitch comparison counts subset windows into full-length arrays
-        if (result.comparisonSCounts) {
-          let fullCmp = cellComparison.get(cell);
-          if (!fullCmp) {
-            fullCmp = new Float32Array(nTp);
-            cellComparison.set(cell, fullCmp);
-          }
-          fullCmp.set(result.comparisonSCounts, rect.tStart);
-        }
         const pveCeiling = processedCeiling(result.filteredTrace, result.noiseVarProcessed);
         cellScalars.set(cell, {
           alpha: result.alpha,
@@ -867,7 +863,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
-          noisePath: result.noisePath,
+          diagnostics: solveDiagnostics(result),
         });
 
         // Accumulate per cell×subset result for alpha/threshold trends tracking
@@ -881,8 +877,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
           threshold: result.threshold,
           pve: result.pve,
           pveCeiling,
-          noisePath: result.noisePath,
-          comparisonSCounts: result.comparisonSCounts,
+          ...solveDiagnostics(result),
         };
       }
     }
@@ -902,8 +897,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         threshold: scalars.threshold,
         pve: scalars.pve,
         pveCeiling: scalars.pveCeiling,
-        noisePath: scalars.noisePath,
-        comparisonSCounts: cellComparison.get(cell),
+        ...scalars.diagnostics,
       };
     }
 
@@ -1130,14 +1124,12 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         tauRise: tauR,
         tauDecay: tauD,
         fs,
-        upsampleFactor: upFactor,
+        maxFiringRate: maxFiringRateHz,
         maxIters: solver.traceMaxIters,
         tol: solver.traceTol,
         hpEnabled: hpOn,
         lpEnabled: lpOn,
         lambda: sparsityLambda,
-        noiseConstrained: noiseConstrainedOn,
-        computeComparison,
         // Warm-start finalization from subset iteration results where available.
         // prevTraceCounts has full-length s_counts for cells that appeared in subsets.
         warmCounts: prevTraceCounts?.get(c),
@@ -1153,8 +1145,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
               threshold: result.threshold,
               pve: result.pve,
               pveCeiling: processedCeiling(result.filteredTrace, result.noiseVarProcessed),
-              noisePath: result.noisePath,
-              comparisonSCounts: result.comparisonSCounts,
+              ...solveDiagnostics(result),
             });
             settle();
           });

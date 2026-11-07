@@ -16,7 +16,7 @@ import {
 } from '@calab/io';
 import type { BridgeConfig } from '@calab/io';
 import {
-  setUpsampleTarget,
+  setMaxFiringRate,
   setHpFilterEnabled,
   setLpFilterEnabled,
   setMaxIterations,
@@ -51,7 +51,7 @@ export function isBridgeAutorun(): boolean {
 
 /** Apply config values from BridgeConfig to the appropriate store signals. */
 function applyConfig(config: BridgeConfig): void {
-  if (config.upsample_target != null) setUpsampleTarget(config.upsample_target);
+  if (config.max_firing_rate != null) setMaxFiringRate(config.max_firing_rate);
   if (config.hp_filter_enabled != null) setHpFilterEnabled(config.hp_filter_enabled);
   if (config.lp_filter_enabled != null) setLpFilterEnabled(config.lp_filter_enabled);
   if (config.max_iterations != null) setMaxIterations(config.max_iterations);

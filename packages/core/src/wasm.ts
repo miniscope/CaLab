@@ -9,7 +9,6 @@ export {
   indeca_solve_trace,
   indeca_estimate_kernel,
   indeca_fit_biexponential,
-  indeca_compute_upsample_factor,
   seed_trace,
   overview_cell,
   simulate_traces,

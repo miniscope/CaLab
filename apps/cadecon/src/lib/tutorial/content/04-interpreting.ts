@@ -51,16 +51,6 @@ export const interpretingTutorial: Tutorial = {
       side: 'top',
       popoverClass: 'driver-popover--wide',
     },
-    // Step 6: Sparsity comparison overlay (display-only diagnostic)
-    {
-      element: '[data-tutorial="display-options"]',
-      title: 'Seeing the Sparsity’s Impact',
-      description:
-        'CaDecon runs a <b>noise-floor guard</b> by default: on noisy cells it picks the sparsest spike train whose fit stays within the measured noise floor instead of the best-fitting one. It only acts at low SNR (roughly below 8); on cleaner cells no candidate reaches the noise floor and it has no effect. The Trace Inspector says per cell whether it was active. To <i>see</i> how much it changes, enable <b>Sparsity Comparison Overlay</b> here <b>before</b> a run. The Trace Inspector then overlays the deconvolution computed both with and without the guard, and shows both spike counts, so you can judge the impact per cell.<br><br>' +
-        'This is a <b>visual-inspection aid only</b> — it does not change the result. Because it solves every trace twice, it roughly <b>doubles run time</b>, so it is off by default. Leave it off for normal runs.',
-      side: 'right',
-      popoverClass: 'driver-popover--wide',
-    },
     // Step 7: When to change algorithm settings
     {
       element: '[data-tutorial="algorithm-settings"]',
@@ -72,7 +62,7 @@ export const interpretingTutorial: Tutorial = {
         '<li>Leave <b>Max Iterations</b> at its default. It is only a safety cap that halts a run which never settles — not a tuning knob. If runs regularly hit the cap, the fix is better data coverage (more subsets or coverage), not a higher cap.</li>' +
         '<li>Enable the <b>High-Pass Filter</b> if baseline drift is contaminating the fit.</li>' +
         '<li>Enable the <b>Low-Pass Filter</b> for very noisy recordings.</li>' +
-        '<li>Raise the <b>Upsample Target</b> only if your sampling rate is low relative to event kinetics.</li>' +
+        '<li>Set <b>Max Firing Rate</b> to the highest rate your cell reaches in its strongest bursts (not its average rate). Too high splits events into extra spikes; too low misses small events.</li>' +
         '</ul>',
       side: 'right',
     },

@@ -311,7 +311,6 @@ describe('downloadResults', () => {
       expect(results.alphas).toEqual([1, null, 3]);
       expect(results.baselines).toEqual([0, null, 0]);
       expect(results.pves).toEqual([0.5, null, 0.5]);
-      expect(results.noise_guard_active).toEqual([null, null, null]);
       expect(results.skipped_reason).toEqual([null, 'non_finite_samples', null]);
       expect(results.field_descriptions.skipped_reason).toMatch(/NaN or Inf/);
     });

@@ -76,6 +76,17 @@ describe('raster pooling', () => {
     expect(Math.max(...poolMatrixMax(src, 8, 8, 2, 2).out)).toBe(200);
   });
 
+  it('max-pools per-frame integer spike counts without losing the tallest count', () => {
+    const N = 2,
+      T = 8;
+    const counts = new Float32Array(N * T);
+    counts[0 * T + 1] = 1;
+    counts[0 * T + 2] = 3; // a 3-spike frame next to a 1-spike frame
+    counts[1 * T + 6] = 2;
+    const { out } = poolRawMax(counts, T, false, N, T, 2, 2);
+    expect(Array.from(out)).toEqual([3, 0, 0, 2]);
+  });
+
   it('smoothed pooling agrees across layouts', () => {
     const N = 6,
       T = 40;

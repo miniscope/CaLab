@@ -35,6 +35,43 @@
   margin-bottom: 0;
 }
 
+/* Optional "?" help on a parameter (ParameterSlider `help` prop) */
+.param-slider__header .param-slider__label {
+  white-space: normal;
+}
+
+.param-slider__help-btn {
+  width: 16px;
+  height: 16px;
+  margin-right: auto;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.param-slider__help-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.param-slider__help {
+  margin: var(--space-xs) 0;
+  padding: var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
 /* ========================
    True Value Marker
    ======================== */

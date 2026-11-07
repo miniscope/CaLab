@@ -18,13 +18,16 @@ export interface TraceResult {
   /** Gain of the rolling-quantile baseline stage on the noise energy
    *  (the factor the selection's noise budget carries; 1 when not measured). */
   chainNoiseGain?: number;
-  /** The noise-floor guard overrode max-PVE for this trace (the best candidate
-   *  overfit the noise floor by more than 1 SE). false = result equals max-PVE.
-   *  Absent from solvers that predate the flag. */
-  noisePath?: boolean;
-  /** Spike counts from the OPPOSITE noise-constrained setting, for the comparison
-   *  overlay. Present only when the trace job requested `computeComparison`. */
-  comparisonSCounts?: Float32Array;
+  /** Diagnostics (display only, never change results). The binarization hit the
+   *  per-frame cap (max firing rate) so the busiest frames are clipped. */
+  capLimited?: boolean;
+  /** No spike size passed the one-standard-error test (the floor size was used). */
+  noSizeFit?: boolean;
+  /** Tallest event peak relative to the typical event peak; large = one outlier
+   *  event sets the spike size for the whole trace. */
+  peakOutlierRatio?: number;
+  /** Spikes that could not be placed (no frame with room) and were dropped. */
+  droppedSpikes?: number;
 }
 
 /** Results from peak-seeded spike detection on a single trace. */
@@ -65,20 +68,15 @@ export type CaDeconWorkerInbound =
       tauRise: number;
       tauDecay: number;
       fs: number;
-      upsampleFactor: number;
+      /** Highest burst rate (spikes/s): caps spikes per frame at max(1, round(rate / fs)). */
+      maxFiringRate: number;
       maxIters: number;
       tol: number;
       hpEnabled: boolean;
       lpEnabled: boolean;
       /** L1 sparsity penalty on spike solution. */
       lambda: number;
-      /** Noise-constrained threshold selection: choose the sparsest spike support
-       *  whose residual meets the data-derived noise floor (no tuning knob). */
-      noiseConstrained: boolean;
-      /** Also solve with the OPPOSITE noise-constrained setting and return it as
-       *  comparisonSCounts (for the teaching/impact overlay). */
-      computeComparison: boolean;
-      /** Previous iteration's s_counts at original rate for warm-start. */
+      /** Previous iteration s_counts (per native frame) for warm-start. */
       warmCounts?: Float32Array;
     }
   | {
