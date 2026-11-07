@@ -388,3 +388,63 @@ fn degenerate_inputs_never_panic() {
     );
     assert!(r2.flags & calab_cala::motion::FLAG_TEMPLATE_UPDATED == 0);
 }
+
+/// The streaming warm-up (any batching) builds exactly the template that
+/// `initialize` builds from the same frames when a FOV mask fixes the region,
+/// and the corrected output afterwards is identical.
+#[test]
+fn streaming_warmup_matches_initialize() {
+    let fx = load();
+    let px = fx.h * fx.w;
+    let warm = fx.n.min(60);
+    let frames = &fx.movie[..warm * px];
+    let mask = vec![1u8; px];
+    let mk = || {
+        let mut mc = MotionCorrector::new(fx.h, fx.w, MotionConfig::default()).unwrap();
+        mc.set_fov_mask(&mask).unwrap();
+        mc
+    };
+    let mut a = mk();
+    a.initialize(Frames::U8(frames)).unwrap();
+    let mut b = mk();
+    b.warmup_begin();
+    for chunk in frames.chunks(7 * px) {
+        b.warmup_push(Frames::U8(chunk)).unwrap();
+    }
+    assert_eq!(b.warmup_count(), warm);
+    b.warmup_finish().unwrap();
+    assert!(!b.warmup_active());
+    assert_eq!(a.template().unwrap(), b.template().unwrap());
+    let (mut oa, mut ob) = (vec![0.0; px], vec![0.0; px]);
+    for i in warm..fx.n.min(warm + 10) {
+        let f = Frame::U8(&fx.movie[i * px..(i + 1) * px]);
+        let ra = a.process(f, &mut oa).unwrap();
+        let rb = b.process(f, &mut ob).unwrap();
+        assert_eq!((ra.dy, ra.dx), (rb.dy, rb.dx));
+        assert_eq!(oa, ob);
+    }
+    // Without a mask the region comes from the first batch's mean image.
+    let mut c = MotionCorrector::new(fx.h, fx.w, MotionConfig::default()).unwrap();
+    c.warmup_begin();
+    c.warmup_push(Frames::U8(frames)).unwrap();
+    c.warmup_finish().unwrap();
+    assert!(c.is_initialized());
+}
+
+#[test]
+fn streaming_warmup_misuse_is_an_error() {
+    let fx = load();
+    let px = fx.h * fx.w;
+    let mut mc = MotionCorrector::new(fx.h, fx.w, MotionConfig::default()).unwrap();
+    assert!(mc.warmup_push(Frames::U8(&fx.movie[..px])).is_err());
+    assert!(mc.warmup_finish().is_err());
+    mc.warmup_begin();
+    assert!(mc.warmup_finish().is_err(), "no frames pushed");
+    mc.warmup_begin();
+    assert!(mc.warmup_push(Frames::U8(&fx.movie[..px - 1])).is_err());
+    mc.warmup_begin();
+    mc.warmup_push(Frames::U8(&fx.movie[..10 * px])).unwrap();
+    assert!(mc.set_fov_mask(&vec![1u8; px]).is_err());
+    mc.warmup_finish().unwrap();
+    assert!(mc.is_initialized());
+}

@@ -2,6 +2,7 @@ import { createSignal, For, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
+import { FlickerTrace } from './FlickerTrace.tsx';
 import { MotionTrace } from './MotionTrace.tsx';
 import { PreviewCanvas } from './PreviewCanvas.tsx';
 
@@ -9,7 +10,7 @@ type View = keyof Omit<BatchPreviews, 'frame'>;
 
 const VIEW_LABEL: Record<View, string> = {
   raw: 'Raw',
-  preprocessed: 'Preprocessed (hot pixels, glow, lines)',
+  preprocessed: 'Preprocessed (hot pixels, flicker, glow, lines)',
   corrected: 'Motion-corrected',
   output: 'Motion-corrected, background removed',
 };
@@ -123,6 +124,7 @@ export function PipelinePanel(props: { store: PipelineStore }): JSX.Element {
       </Show>
 
       <MotionTrace store={s()} />
+      <FlickerTrace store={s()} />
     </DashboardPanel>
   );
 }

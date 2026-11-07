@@ -167,6 +167,44 @@ impl JsMotionCorrector {
             .map_err(|e| js_err("initializeF32", e))
     }
 
+    /// Open a streaming warm-up. Push batches with `warmupPushU8` /
+    /// `warmupPushF32`, then `warmupFinish`. Builds the same template as
+    /// `initializeU8` / `initializeF32` without a JS-side frame stack.
+    #[wasm_bindgen(js_name = warmupBegin)]
+    pub fn warmup_begin(&mut self) {
+        self.inner.warmup_begin();
+    }
+
+    /// Frames pushed to the open warm-up so far.
+    #[wasm_bindgen(getter, js_name = warmupCount)]
+    pub fn warmup_count(&self) -> u32 {
+        self.inner.warmup_count() as u32
+    }
+
+    /// Add a batch of 8-bit frames to the open warm-up.
+    #[wasm_bindgen(js_name = warmupPushU8)]
+    pub fn warmup_push_u8(&mut self, frames: &[u8]) -> Result<(), JsError> {
+        self.inner
+            .warmup_push(Frames::U8(frames))
+            .map_err(|e| js_err("warmupPushU8", e))
+    }
+
+    /// Add a batch of float frames to the open warm-up.
+    #[wasm_bindgen(js_name = warmupPushF32)]
+    pub fn warmup_push_f32(&mut self, frames: &[f32]) -> Result<(), JsError> {
+        self.inner
+            .warmup_push(Frames::F32(frames))
+            .map_err(|e| js_err("warmupPushF32", e))
+    }
+
+    /// Build the template from every pushed frame and start streaming.
+    #[wasm_bindgen(js_name = warmupFinish)]
+    pub fn warmup_finish(&mut self) -> Result<(), JsError> {
+        self.inner
+            .warmup_finish()
+            .map_err(|e| js_err("warmupFinish", e))
+    }
+
     /// Correct a batch of 8-bit frames into `out`, records into `records`.
     #[wasm_bindgen(js_name = processU8)]
     pub fn process_u8(

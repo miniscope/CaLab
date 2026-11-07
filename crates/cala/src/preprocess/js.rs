@@ -12,6 +12,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use super::flicker::FlickerMode;
 use super::lines::LineMode;
 use super::warmup::WarmupAccumulator;
 use super::{
@@ -19,8 +20,10 @@ use super::{
 };
 
 /// Fields per frame in the record array of `processFrames`.
-pub const RECORD_STRIDE: usize = 8;
-/// Fields per frame from `frontFrames` / `backFrames`.
+pub const RECORD_STRIDE: usize = 10;
+/// Fields per frame from `frontFrames`.
+pub const FRONT_RECORD_STRIDE: usize = 6;
+/// Fields per frame from `backFrames`.
 pub const HALF_RECORD_STRIDE: usize = 4;
 
 fn js_err(func: &str, e: PreprocessError) -> JsError {
@@ -87,6 +90,29 @@ impl JsPreprocessConfig {
     #[wasm_bindgen(setter, js_name = lineMode)]
     pub fn set_line_mode(&mut self, v: u8) {
         self.inner.lines = LineMode::from_code(v).unwrap_or(LineMode::Off);
+    }
+
+    /// Global flicker correction: 0 off, 1 additive (sensor offset), 2
+    /// multiplicative (LED gain), 3 both (default).
+    #[wasm_bindgen(setter, js_name = flickerMode)]
+    pub fn set_flicker_mode(&mut self, v: u8) {
+        self.inner.flicker.mode = FlickerMode::from_code(v).unwrap_or(FlickerMode::Off);
+    }
+
+    #[wasm_bindgen(getter, js_name = flickerMode)]
+    pub fn flicker_mode(&self) -> u8 {
+        self.inner.flicker.mode.code()
+    }
+
+    /// Time constant of the flicker reference image, frames.
+    #[wasm_bindgen(setter, js_name = flickerTauFrames)]
+    pub fn set_flicker_tau_frames(&mut self, v: f32) {
+        self.inner.flicker.tau_frames = v;
+    }
+
+    #[wasm_bindgen(getter, js_name = flickerTauFrames)]
+    pub fn flicker_tau_frames(&self) -> f32 {
+        self.inner.flicker.tau_frames
     }
 
     #[wasm_bindgen(setter, js_name = hotPixelKSigma)]
@@ -212,6 +238,8 @@ impl JsPreprocessor {
                 f64::from(r.back.floor_mean),
                 f64::from(r.back.floor_lowered_fraction),
                 f64::from(u8::from(r.back.snapshot)),
+                f64::from(r.front.flicker.offset),
+                f64::from(r.front.flicker.gain),
             ]);
         }
         Ok(rec)
@@ -226,7 +254,7 @@ impl JsPreprocessor {
         let n = self.inner.dims().pixels();
         let count = check_batch("frontFrames", input.len(), count, n)?;
         check_batch("frontFrames (output)", out.len(), count as u32, n)?;
-        let mut rec = Vec::with_capacity(count * HALF_RECORD_STRIDE);
+        let mut rec = Vec::with_capacity(count * FRONT_RECORD_STRIDE);
         for (raw, o) in input.chunks_exact(n).zip(out.chunks_exact_mut(n)) {
             let r = self
                 .inner
@@ -237,6 +265,8 @@ impl JsPreprocessor {
                 f64::from(r.lowpass_mean),
                 f64::from(r.row_rms),
                 f64::from(r.col_rms),
+                f64::from(r.flicker.offset),
+                f64::from(r.flicker.gain),
             ]);
         }
         Ok(rec)
@@ -250,7 +280,8 @@ impl JsPreprocessor {
     /// [`RECORD_STRIDE`] numbers per frame: frame index, input mean in the
     /// FOV, subtracted glow mean, row and column offset RMS, subtracted
     /// background mean, fraction of pixels whose background snapped down,
-    /// snapshot taken (0/1).
+    /// snapshot taken (0/1), flicker offset `a_t` (grey levels), flicker gain
+    /// `m_t` (relative).
     #[wasm_bindgen(js_name = processFrames)]
     pub fn process_frames(
         &mut self,
@@ -272,10 +303,10 @@ impl JsPreprocessor {
         self.process(input, count, out)
     }
 
-    /// The sensor-coordinate half (hot pixels, flattening, lines). Stateless:
-    /// replaying a past frame gives the same result. Returns
-    /// [`HALF_RECORD_STRIDE`] numbers per frame: input mean, glow mean, row
-    /// RMS, column RMS.
+    /// The sensor-coordinate half (hot pixels, flicker, flattening, lines).
+    /// Advances the flicker reference; everything else is stateless. Returns
+    /// [`FRONT_RECORD_STRIDE`] numbers per frame: input mean, glow mean, row
+    /// RMS, column RMS, flicker offset `a_t`, flicker gain `m_t`.
     #[wasm_bindgen(js_name = frontFrames)]
     pub fn front_frames(
         &mut self,

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use calab_cala::preprocess::background::{BackgroundConfig, RunningMinBackground};
 use calab_cala::preprocess::flatten::{FlattenConfig, GlowFlattener};
+use calab_cala::preprocess::flicker::{FlickerConfig, FlickerMode};
 use calab_cala::preprocess::gaussian::RecursiveGaussian;
 use calab_cala::preprocess::hot_pixels::{FLAG_HOT, FLAG_OK, FLAG_STUCK};
 use calab_cala::preprocess::lines::LineMode;
@@ -503,10 +504,19 @@ fn noise_map_matches_simulator_noise() {
         ("median tracker", NoiseConfig::default().estimator),
         ("mean abs", NoiseEstimator::MeanAbs),
     ] {
+        // The noise map is checked against the sensor model with the flicker
+        // stage off: this fixture has no flicker, and its dense, synchronous
+        // cells and neuropil give it a common mode that the flicker stage
+        // partly removes, which changes the frame-to-frame fluctuations (see
+        // `flicker_stage_on_a_flicker_free_scene`).
         let cfg = PreprocessConfig {
             noise: NoiseConfig {
                 estimator: est,
                 ..NoiseConfig::default()
+            },
+            flicker: FlickerConfig {
+                mode: FlickerMode::Off,
+                ..FlickerConfig::default()
             },
             ..PreprocessConfig::default()
         };
@@ -556,15 +566,21 @@ fn replay_from_serialized_state_is_bit_exact() {
     let n = fx.dims.pixels();
     let mut p = Preprocessor::new(cal, &cfg).unwrap();
     let mut outs = Vec::new();
+    let mut fronts = Vec::new();
+    let mut flicker = Vec::new();
     let mut states = Vec::new();
     for (t, f) in fx.frames.iter().enumerate() {
         if t == 80 {
             states.push(p.state().to_bytes());
         }
         let mut out = vec![0.0f32; n];
-        p.process_frame(f, &mut out).unwrap();
+        let rec = p.process_frame(f, &mut out).unwrap();
         outs.push(out);
+        fronts.push(rec.front);
+        flicker.push(rec.front.flicker);
     }
+    // The fixture has no flicker, but the stage does estimate something.
+    assert!(flicker[1..].iter().any(|r| r.gain != 0.0));
     let final_sigma = p.noise().sigma();
 
     // Resume from the serialized state at frame 80.
@@ -580,25 +596,40 @@ fn replay_from_serialized_state_is_bit_exact() {
     }
     assert_eq!(q.noise().sigma(), final_sigma);
 
-    // Resume from an in-memory background snapshot (frame 100) as well.
+    // Resume from an in-memory background snapshot (frame 100) as well: the
+    // flicker reference is not in the snapshot, so the front half replays
+    // the recorded flicker.
     let snap = p.background().snapshot_before(110).unwrap().state.clone();
     assert_eq!(snap.frames(), 100);
     let mut r = Preprocessor::from_state(&st).unwrap();
     r.background_mut().restore(&snap).unwrap();
     for t in 100..fx.frames.len() {
         let mut out = vec![0.0f32; n];
-        r.front(&fx.frames[t], &mut out).unwrap();
+        let fr = r
+            .front_replay(&fx.frames[t], &mut out, &flicker[t])
+            .unwrap();
+        assert_eq!(fr, fronts[t]);
         r.background_mut().process(&mut out).unwrap();
         assert_eq!(out, outs[t], "snapshot replay frame {t}");
     }
 
-    // The front half is stateless: any frame, any order.
+    // With its flicker record, the front half is stateless: any frame, any
+    // order, and the same as the online pass.
     let mut front_a = vec![0.0f32; n];
     let mut front_b = vec![0.0f32; n];
-    q.front(&fx.frames[3], &mut front_a).unwrap();
-    q.front(&fx.frames[150], &mut front_b).unwrap();
-    q.front(&fx.frames[3], &mut front_b).unwrap();
+    let mut online = Preprocessor::new(p.calibration().clone(), &cfg).unwrap();
+    let mut front_3 = vec![0.0f32; n];
+    for f in &fx.frames[..4] {
+        online.front(f, &mut front_3).unwrap();
+    }
+    q.front_replay(&fx.frames[3], &mut front_a, &flicker[3])
+        .unwrap();
+    q.front_replay(&fx.frames[150], &mut front_b, &flicker[150])
+        .unwrap();
+    q.front_replay(&fx.frames[3], &mut front_b, &flicker[3])
+        .unwrap();
     assert_eq!(front_a, front_b);
+    assert_eq!(front_a, front_3);
 }
 
 /// Column fixed-pattern noise survives flattening (it is one pixel wide) and
@@ -682,4 +713,81 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
     let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
     cov / (va * vb).sqrt()
+}
+
+/// The lens-disk check of the FOV mask must not touch a recording that has a
+/// disk: the strongly vignetted fixture keeps exactly the mask the plain
+/// relative threshold gave before the check existed (area and FNV-1a hash of
+/// the mask bytes, recorded from that version).
+#[test]
+fn vignetted_fixture_keeps_its_fov_mask() {
+    let fx = fixture();
+    let cal = calibrate(&fx, &PreprocessConfig::default());
+    let mask = cal.fov().mask();
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in mask {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+    }
+    let area = cal.fov().area();
+    eprintln!("FOV mask: area {area} of {}, hash {h:#x}", mask.len());
+    assert_eq!((area, h), (EXPECTED_AREA, EXPECTED_HASH));
+}
+
+const EXPECTED_AREA: usize = 12468;
+const EXPECTED_HASH: u64 = 0x9e65794d8c789191;
+
+/// The flicker stage on a scene without flicker: what it reads from the
+/// scene itself, and what that does to the per-pixel noise. This fixture is
+/// a worst case (128 px, 30 % of the FOV covered by cells, strong neuropil, so
+/// the scene has a large common mode of its own).
+#[test]
+fn flicker_stage_on_a_flicker_free_scene() {
+    let fx = fixture();
+    let truth = Npy::load("noise_sigma.npy").f32();
+    let mut res = Vec::new();
+    for mode in [
+        FlickerMode::Off,
+        FlickerMode::Additive,
+        FlickerMode::Multiplicative,
+        FlickerMode::Both,
+    ] {
+        let cfg = PreprocessConfig {
+            flicker: FlickerConfig {
+                mode,
+                ..FlickerConfig::default()
+            },
+            ..PreprocessConfig::default()
+        };
+        let cal = calibrate(&fx, &cfg);
+        let mut p = Preprocessor::new(cal.clone(), &cfg).unwrap();
+        let mut out = vec![0.0f32; fx.dims.pixels()];
+        let (mut sa, mut sm) = (0.0f64, 0.0f64);
+        for f in &fx.frames {
+            let r = p.process_frame(f, &mut out).unwrap().front.flicker;
+            sa += f64::from(r.offset).powi(2);
+            sm += f64::from(r.gain).powi(2);
+        }
+        let n = fx.frames.len() as f64;
+        let (a_rms, m_rms) = ((sa / n).sqrt(), (sm / n).sqrt());
+        let est = p.noise().sigma();
+        let ratio = median(
+            (0..truth.len())
+                .filter(|&i| cal.fov().contains(i) && cal.hot_pixels().flags()[i] == FLAG_OK)
+                .map(|i| est[i] / truth[i])
+                .collect(),
+        );
+        eprintln!(
+            "flicker {mode:?}: grid {} px, reads a rms {a_rms:.3}, m rms {m_rms:.4}; noise estimate / truth {ratio:.3}",
+            p.flicker().grid_len()
+        );
+        res.push((a_rms, m_rms, ratio));
+    }
+    assert_eq!((res[0].0, res[0].1), (0.0, 0.0));
+    assert!((res[0].2 - 1.0).abs() < 0.04);
+    // The scene's own common mode raises the noise estimate by a few percent
+    // at most (the 600 px calibrated simulation shows no loss in trace
+    // accuracy, see examples/flicker_eval.rs).
+    for &(_, _, ratio) in &res[1..] {
+        assert!(ratio < 1.07, "{ratio}");
+    }
 }

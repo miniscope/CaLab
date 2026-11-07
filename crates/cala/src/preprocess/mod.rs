@@ -7,6 +7,7 @@
 //! | warm-up statistics | [`warmup`] | accumulates, then frozen | (estimates the two maps below) |
 //! | FOV mask | [`fov`] | frozen | the unlit sensor outside the lens |
 //! | hot / stuck pixels | [`hot_pixels`] | frozen | sensor defects that do not move with tissue |
+//! | global flicker | [`flicker`] | running reference, snapshot-able | per-frame LED gain and sensor offset shared by every pixel |
 //! | glow flattening | [`flatten`] | stateless | broad illumination, vignette, leakage |
 //! | line artifacts | [`lines`] | stateless | per-frame row / column offsets (default on) |
 //! | *motion correction* | external, [`FrameRegistrar`] | the registrar's | brain motion |
@@ -16,7 +17,9 @@
 //! [`Preprocessor`] chains them. The order follows where each artifact lives:
 //! hot pixels, the glow and line offsets are fixed to the *sensor*, so they are
 //! removed before registration (a hot pixel registered with the tissue would
-//! smear into a streak); the background floor and the noise belong to the
+//! smear into a streak). So is the global flicker, which also has to go
+//! before flattening, since flattening would turn a gain change into a change
+//! of the high-passed texture. The background floor and the noise belong to the
 //! *tissue* pixel, so they are estimated after registration.
 //!
 //! # Replayable by construction
@@ -25,7 +28,9 @@
 //! (pass 2 re-reads past frames). So every stage is either stateless given its
 //! frozen calibration ([`Calibration`]: the FOV mask, the hot-pixel map and the
 //! flattening normaliser), or driven by explicit state that can be captured
-//! and restored ([`background::BackgroundState`], [`noise::NoiseState`]). Any
+//! and restored ([`background::BackgroundState`], [`noise::NoiseState`],
+//! [`flicker::FlickerState`]); the flicker stage also records each frame's
+//! estimate, so a past frame's front half replays without its state. Any
 //! past frame is reprocessed bit-for-bit by restoring the state recorded at or
 //! before it and stepping forward (see [`Preprocessor::state`] and
 //! [`PreprocessState`]); pass 2 normally uses the final background instead
@@ -44,6 +49,7 @@
 pub mod background;
 mod codec;
 pub mod flatten;
+pub mod flicker;
 pub mod fov;
 pub mod gaussian;
 pub mod hot_pixels;

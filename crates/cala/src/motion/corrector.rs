@@ -913,6 +913,74 @@ enum Out {
     Reference,
 }
 
+/// State of a streaming warm-up (see [`MotionCorrector::warmup_begin`]).
+#[derive(Default)]
+struct Warm {
+    /// Built on the first pushed batch.
+    eng: Option<Engine>,
+    /// Filtered extended region of every pushed frame, back to back.
+    stored: Vec<f32>,
+    /// Running sum of the zero-shift crops (pass 0).
+    acc: Vec<f32>,
+    brightness: Vec<f32>,
+    n: usize,
+}
+
+/// The warm-up passes after the plain mean: `acc` is the sum of the `n`
+/// zero-shift crops; `load(eng, i)` must put frame `i`'s filtered extended
+/// region into `eng.filtered`. Leaves `eng` ready to stream.
+fn refine_template(
+    cfg: &MotionConfig,
+    eng: &mut Engine,
+    n: usize,
+    mut acc: Vec<f32>,
+    brightness: Vec<f32>,
+    mut load: impl FnMut(&mut Engine, usize) -> Result<(), MotionError>,
+) -> Result<(), MotionError> {
+    let rpx = eng.roi.height * eng.roi.width;
+    eng.template
+        .iter_mut()
+        .zip(&acc)
+        .for_each(|(t, &a)| *t = a / n as f32);
+    let mut quality = Vec::with_capacity(n);
+    let mut acc2 = vec![0.0f32; rpx];
+    for _ in 0..cfg.warmup_iterations {
+        eng.refresh_spectra()?;
+        acc.fill(0.0);
+        acc2.fill(0.0);
+        quality.clear();
+        for i in 0..n {
+            load(eng, i)?;
+            let reg = eng.register((0.0, 0.0), eng.max_shift, cfg.upsample)?;
+            quality.push(reg.ncc);
+            eng.roi_warper
+                .warp(&eng.crop, reg.rel, &[], &mut eng.warped_roi, None)?;
+            for ((a, a2), &v) in acc.iter_mut().zip(acc2.iter_mut()).zip(&eng.warped_roi) {
+                *a += v;
+                *a2 += v * v;
+            }
+        }
+        eng.template
+            .iter_mut()
+            .zip(&acc)
+            .for_each(|(t, &a)| *t = a / n as f32);
+    }
+    if cfg.variance_weighting && cfg.warmup_iterations > 0 {
+        eng.m1 = eng.template.clone();
+        eng.m2 = acc2.iter().map(|&v| v / n as f32).collect();
+        eng.weight = vec![1.0; rpx];
+    }
+    eng.t0 = eng.template.clone();
+    eng.cum = eng.template.clone();
+    eng.cum_n = n as f64;
+    eng.drift = (0.0, 0.0);
+    eng.refresh_spectra()?;
+    let bscale = brightness.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+    eng.brightness = Tracker::from_samples(&brightness, 1e-3 * bscale + 1e-6);
+    eng.quality = Tracker::from_samples(&quality, 0.01);
+    Ok(())
+}
+
 /// Streaming motion corrector for `height x width` frames.
 pub struct MotionCorrector {
     h: usize,
@@ -923,6 +991,7 @@ pub struct MotionCorrector {
     warper: Warper,
     geometry: Option<MotionGeometry>,
     frame: Vec<f32>,
+    warm: Option<Warm>,
 }
 
 impl MotionCorrector {
@@ -954,6 +1023,7 @@ impl MotionCorrector {
             engine: None,
             geometry: None,
             frame: vec![0.0; height * width],
+            warm: None,
         })
     }
 
@@ -980,7 +1050,7 @@ impl MotionCorrector {
                 self.h * self.w
             )));
         }
-        if self.engine.is_some() {
+        if self.engine.is_some() || self.warm.is_some() {
             return Err(MotionError::InvalidConfig(
                 "set the FOV mask before initialising".into(),
             ));
@@ -1047,7 +1117,6 @@ impl MotionCorrector {
         let rpx = roi.height * roi.width;
         let mut acc = vec![0.0f32; rpx];
         let mut brightness = Vec::with_capacity(n);
-        let mut quality = Vec::with_capacity(n);
 
         // Pass 0: plain mean of the band-passed regions.
         for i in 0..n {
@@ -1059,47 +1128,136 @@ impl MotionCorrector {
                 *a += v;
             }
         }
-        eng.template
-            .iter_mut()
-            .zip(&acc)
-            .for_each(|(t, &a)| *t = a / n as f32);
+        let (w, scratch) = (self.w, &mut self.frame);
+        refine_template(&self.cfg, &mut eng, n, acc, brightness, |eng, i| {
+            frames.frame(i, px).to_f32(scratch)?;
+            eng.pre.run(scratch, w, &mut eng.filtered);
+            Ok(())
+        })?;
+        self.install(eng);
+        Ok(())
+    }
 
-        let mut acc2 = vec![0.0f32; rpx];
-        for _ in 0..self.cfg.warmup_iterations {
-            eng.refresh_spectra()?;
-            acc.fill(0.0);
-            acc2.fill(0.0);
-            quality.clear();
-            for i in 0..n {
-                frames.frame(i, px).to_f32(&mut self.frame)?;
-                eng.pre.run(&self.frame, self.w, &mut eng.filtered);
-                let reg = eng.register((0.0, 0.0), eng.max_shift, self.cfg.upsample)?;
-                quality.push(reg.ncc);
-                eng.roi_warper
-                    .warp(&eng.crop, reg.rel, &[], &mut eng.warped_roi, None)?;
-                for ((a, a2), &v) in acc.iter_mut().zip(acc2.iter_mut()).zip(&eng.warped_roi) {
-                    *a += v;
-                    *a2 += v * v;
+    /// Start a streaming warm-up: the same template as [`initialize`], built
+    /// from frames pushed batch by batch with [`warmup_push`], then closed
+    /// with [`warmup_finish`].
+    ///
+    /// The template needs `warmup_iterations + 1` passes over the frames, so
+    /// they cannot be dropped after one look. What is kept is only what the
+    /// passes read: each frame's band-passed registration region plus its
+    /// filtering margin (about half a 600x600 frame at the default region
+    /// cap), as `f32`. The raw or preprocessed frame is never held, and
+    /// the band-pass runs once per frame instead of once per pass. Memory
+    /// is `n * ext_px * 4` bytes; the first pass (plain mean and brightness)
+    /// is folded into the push.
+    ///
+    /// With neither a configured region nor a FOV mask the region is
+    /// chosen from the first pushed batch's mean image.
+    ///
+    /// [`initialize`]: MotionCorrector::initialize
+    /// [`warmup_push`]: MotionCorrector::warmup_push
+    /// [`warmup_finish`]: MotionCorrector::warmup_finish
+    pub fn warmup_begin(&mut self) {
+        self.warm = Some(Warm::default());
+    }
+
+    /// Whether a streaming warm-up is open.
+    pub fn warmup_active(&self) -> bool {
+        self.warm.is_some()
+    }
+
+    /// Frames pushed so far in the open warm-up.
+    pub fn warmup_count(&self) -> usize {
+        self.warm.as_ref().map_or(0, |w| w.n)
+    }
+
+    /// Add a batch of whole frames to the open warm-up.
+    pub fn warmup_push(&mut self, frames: Frames<'_>) -> Result<(), MotionError> {
+        let px = self.h * self.w;
+        if frames.len() == 0 || !frames.len().is_multiple_of(px) {
+            return Err(MotionError::SizeMismatch(format!(
+                "warm-up buffer of {} values is not a positive multiple of the {px}-pixel frame",
+                frames.len()
+            )));
+        }
+        let Some(mut warm) = self.warm.take() else {
+            return Err(MotionError::InvalidConfig(
+                "warmup_push without warmup_begin".into(),
+            ));
+        };
+        let r = self.push_into(&mut warm, frames, px);
+        // A failed push leaves the warm-up unusable; drop it.
+        if r.is_ok() {
+            self.warm = Some(warm);
+        }
+        r
+    }
+
+    fn push_into(
+        &mut self,
+        warm: &mut Warm,
+        frames: Frames<'_>,
+        px: usize,
+    ) -> Result<(), MotionError> {
+        let k = frames.len() / px;
+        if warm.eng.is_none() {
+            let roi = match self.cfg.roi {
+                Some(r) => r,
+                None => {
+                    let mut mean = vec![0.0f32; px];
+                    for i in 0..k {
+                        frames.frame(i, px).to_f32(&mut self.frame)?;
+                        for (m, &v) in mean.iter_mut().zip(&self.frame) {
+                            *m += v / k as f32;
+                        }
+                    }
+                    self.auto_roi(&mean)
                 }
+            };
+            let eng = self.build_engine(roi)?;
+            warm.acc = vec![0.0; roi.height * roi.width];
+            warm.eng = Some(eng);
+        }
+        let eng = warm.eng.as_mut().expect("engine built above");
+        for i in 0..k {
+            frames.frame(i, px).to_f32(&mut self.frame)?;
+            let b = eng.pre.run(&self.frame, self.w, &mut eng.filtered);
+            warm.brightness.push(b);
+            warm.stored.extend_from_slice(&eng.filtered);
+            eng.cut((0, 0));
+            for (a, &v) in warm.acc.iter_mut().zip(&eng.crop) {
+                *a += v;
             }
-            eng.template
-                .iter_mut()
-                .zip(&acc)
-                .for_each(|(t, &a)| *t = a / n as f32);
         }
-        if self.cfg.variance_weighting && self.cfg.warmup_iterations > 0 {
-            eng.m1 = eng.template.clone();
-            eng.m2 = acc2.iter().map(|&v| v / n as f32).collect();
-            eng.weight = vec![1.0; rpx];
-        }
-        eng.t0 = eng.template.clone();
-        eng.cum = eng.template.clone();
-        eng.cum_n = n as f64;
-        eng.drift = (0.0, 0.0);
-        eng.refresh_spectra()?;
-        let bscale = brightness.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        eng.brightness = Tracker::from_samples(&brightness, 1e-3 * bscale + 1e-6);
-        eng.quality = Tracker::from_samples(&quality, 0.01);
+        warm.n += k;
+        Ok(())
+    }
+
+    /// Close the warm-up: build the template from every pushed frame and
+    /// start streaming. Errors if no frame was pushed. The stored frames are
+    /// freed either way.
+    pub fn warmup_finish(&mut self) -> Result<(), MotionError> {
+        let Some(warm) = self.warm.take() else {
+            return Err(MotionError::InvalidConfig(
+                "warmup_finish without warmup_begin".into(),
+            ));
+        };
+        let Warm {
+            eng,
+            stored,
+            acc,
+            brightness,
+            n,
+        } = warm;
+        let Some(mut eng) = eng else {
+            return Err(MotionError::SizeMismatch("no warm-up frames pushed".into()));
+        };
+        let epx = eng.ext.height * eng.ext.width;
+        refine_template(&self.cfg, &mut eng, n, acc, brightness, |eng, i| {
+            eng.filtered
+                .copy_from_slice(&stored[i * epx..(i + 1) * epx]);
+            Ok(())
+        })?;
         self.install(eng);
         Ok(())
     }

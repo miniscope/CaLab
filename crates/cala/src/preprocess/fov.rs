@@ -33,11 +33,33 @@
 //! A flat image (`hi ≈ lo`, e.g. already flat-fielded) has no edge to find and
 //! yields the full frame.
 //!
+//! # Lens-disk check
+//!
+//! A recording without a lit lens disk (a simulated movie, a widefield
+//! camera) has nothing for the threshold to find, and the steps above would
+//! keep a small bright blob of tissue. After step 4 the mask must look like a
+//! lens, else the result is the full frame:
+//!
+//! - it covers at least [`MIN_LENS_FRACTION`] (20%) of the frame, and
+//! - the median of the mean image inside exceeds the median outside by at
+//!   least [`MIN_LENS_CONTRAST`] (10) times the pixel noise of the mean image
+//!   (robust, from first differences along rows), so the edge is a real step,
+//!   not a bright patch picked out of noise and texture.
+//!
+//! A real lens disk fails neither by a wide margin (CA1 data: ~60% of the
+//! frame, a contrast of hundreds of noise sigmas).
+//!
 //! The mask is frozen after warm-up: it is a property of the optics, not the
 //! tissue, and changing it mid-recording would change every downstream stage.
 
-use super::stats::quantile;
+use super::stats::{quantile, quantile_in_place};
 use super::{Dims, PreprocessError};
+
+/// Smallest fraction of the frame a lens disk may cover.
+pub const MIN_LENS_FRACTION: f32 = 0.2;
+/// Smallest inside-minus-outside median step, in noise sigmas of the mean
+/// image, for the mask to count as a lens disk.
+pub const MIN_LENS_CONTRAST: f32 = 10.0;
 
 /// Settings for [`FovMask::from_mean`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,6 +156,9 @@ impl FovMask {
             return Ok(FovMask::full(dims));
         }
         fill_holes(&mut m, dims);
+        if !looks_like_lens(&m, mean, dims) {
+            return Ok(FovMask::full(dims));
+        }
         let mut disk = None;
         if cfg.fit_disk {
             if let Some((cy, cx, r)) = fit_disk(&m, dims) {
@@ -200,6 +225,44 @@ impl FovMask {
     pub fn contains(&self, i: usize) -> bool {
         self.mask.get(i).is_some_and(|&m| m != 0)
     }
+}
+
+/// Whether `m` (on `mean`) is plausibly a lit lens disk: large enough, and a
+/// clear step in brightness across its edge (see the module docs).
+fn looks_like_lens(m: &[u8], mean: &[f32], dims: Dims) -> bool {
+    let n = m.len();
+    let inside = m.iter().filter(|&&v| v != 0).count();
+    if (inside as f32) < MIN_LENS_FRACTION * n as f32 {
+        return false;
+    }
+    if inside == n {
+        return true;
+    }
+    let (mut vin, mut vout) = (Vec::with_capacity(inside), Vec::with_capacity(n - inside));
+    for (&v, &x) in m.iter().zip(mean) {
+        if v != 0 {
+            vin.push(x);
+        } else {
+            vout.push(x);
+        }
+    }
+    let (Some(min), Some(mout)) = (quantile(&vin, 0.5), quantile(&vout, 0.5)) else {
+        return false;
+    };
+    // Pixel noise from |first differences| along rows: the median absolute
+    // difference of iid noise is 0.6745 * sqrt(2) * sigma.
+    let w = dims.width;
+    let mut d: Vec<f32> = mean
+        .chunks_exact(w)
+        .flat_map(|row| row.windows(2).map(|p| (p[1] - p[0]).abs()))
+        .filter(|v| v.is_finite())
+        .collect();
+    let Some(med) = quantile_in_place(&mut d, 0.5) else {
+        return true;
+    };
+    let sigma = med / (0.6745 * std::f32::consts::SQRT_2);
+    let floor = 1e-6 * min.abs().max(mout.abs()).max(1.0);
+    (min - mout) >= MIN_LENS_CONTRAST * sigma.max(floor)
 }
 
 /// Square (Chebyshev) erosion; out-of-frame counts as outside.
@@ -478,6 +541,57 @@ mod tests {
             ..FovConfig::default()
         };
         assert!(FovMask::from_mean(dims, &[1.0; 80], &bad).is_err());
+    }
+
+    /// Deterministic pseudo-noise in [-1, 1).
+    fn noise(i: usize) -> f32 {
+        let mut x = (i as u32).wrapping_mul(2_654_435_761).wrapping_add(12_345);
+        x ^= x >> 15;
+        x = x.wrapping_mul(2_246_822_519);
+        x ^= x >> 13;
+        (x as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn diskless_frames_give_full_frame() {
+        let w = 120;
+        let dims = Dims::new(w, w).unwrap();
+        // Uniform tissue with noise and a few bright "cells": the threshold
+        // keeps a small blob, which is not a lens.
+        let mut img: Vec<f32> = (0..w * w).map(|i| 50.0 + 2.0 * noise(i)).collect();
+        for (cy, cx) in [(30usize, 40usize), (80, 85)] {
+            for y in cy - 8..cy + 8 {
+                for x in cx - 8..cx + 8 {
+                    img[y * w + x] += 60.0;
+                }
+            }
+        }
+        let fov = FovMask::from_mean(dims, &img, &FovConfig::default()).unwrap();
+        assert_eq!(fov.area(), w * w, "kept a blob of a disk-less frame");
+        // Pure noise, no structure at all.
+        let img: Vec<f32> = (0..w * w).map(|i| 50.0 + 2.0 * noise(i)).collect();
+        let fov = FovMask::from_mean(dims, &img, &FovConfig::default()).unwrap();
+        assert_eq!(fov.area(), w * w);
+        // A small lit disk (under 20% of the frame) is not a lens either.
+        let fov = FovMask::from_mean(dims, &lens_image(w, 25.0), &FovConfig::default()).unwrap();
+        assert_eq!(fov.area(), w * w);
+        // The same lit disk with the lens at a usual size is kept.
+        let fov = FovMask::from_mean(dims, &lens_image(w, 50.0), &FovConfig::default()).unwrap();
+        assert!(fov.area() < w * w * 3 / 4);
+    }
+
+    #[test]
+    fn noisy_lens_disk_is_still_found() {
+        let w = 120;
+        let dims = Dims::new(w, w).unwrap();
+        let img: Vec<f32> = lens_image(w, 50.0)
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v + 1.5 * noise(i))
+            .collect();
+        let fov = FovMask::from_mean(dims, &img, &FovConfig::default()).unwrap();
+        let disk = std::f32::consts::PI * 50.0 * 50.0;
+        assert!((fov.area() as f32) < 1.05 * disk && fov.area() as f32 > 0.8 * disk);
     }
 
     #[test]
