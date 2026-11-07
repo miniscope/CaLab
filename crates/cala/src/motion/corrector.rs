@@ -29,6 +29,8 @@ const BAND_GAIN_FLOOR: f64 = 1e-2;
 const MIN_ROI_SIDE: usize = 16;
 /// Rate of the running brightness / quality statistics (per frame).
 const STATS_RATE: f32 = 0.02;
+/// Largest drift of the running template searched against the warm-up one.
+const DRIFT_SEARCH_PX: f32 = 4.0;
 /// Rate of the running per-patch noise and power estimates (per frame).
 const SHRINK_RATE: f32 = 0.05;
 
@@ -661,6 +663,12 @@ struct Engine {
     brightness: Tracker,
     quality: Tracker,
     accepted_since_refresh: usize,
+    /// Spectrum and energy of the warm-up template (the position reference).
+    t0_spec: Vec<Complex32>,
+    t0_energy: f64,
+    /// Shift registering the running template onto the warm-up template.
+    drift: (f32, f32),
+    upsample: u32,
 }
 
 /// Outcome of registering one frame's crop against the template.
@@ -747,6 +755,22 @@ impl Engine {
             p.refresh(&self.template, self.roi.width)?;
         }
         self.accepted_since_refresh = 0;
+        // Pin the running template's position to the warm-up template: a
+        // frame registered onto the running template with shift `s` is
+        // registered onto the warm-up one with `s + drift`.
+        if !self.t0_spec.is_empty() {
+            let d = self.corr.register(
+                &self.t0_spec,
+                self.t0_energy,
+                &self.t_spec,
+                self.t_energy,
+                DRIFT_SEARCH_PX,
+                self.upsample,
+            )?;
+            if d.ncc > 0.0 {
+                self.drift = (d.dy, d.dx);
+            }
+        }
         Ok(())
     }
 }
@@ -923,6 +947,9 @@ impl MotionCorrector {
                 .for_each(|(t, &a)| *t = a / n as f32);
         }
         eng.refresh_spectra()?;
+        eng.t0_spec = eng.t_spec.clone();
+        eng.t0_energy = eng.t_energy;
+        eng.drift = (0.0, 0.0);
         let bscale = brightness.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
         eng.brightness = Tracker::from_samples(&brightness, 1e-3 * bscale + 1e-6);
         eng.quality = Tracker::from_samples(&quality, 0.01);
@@ -1173,6 +1200,10 @@ impl MotionCorrector {
             brightness: Tracker::from_samples(&[], 1e-6),
             quality: Tracker::from_samples(&[], 0.01),
             accepted_since_refresh: 0,
+            t0_spec: Vec::new(),
+            t0_energy: 0.0,
+            drift: (0.0, 0.0),
+            upsample: self.cfg.upsample,
         })
     }
 
@@ -1284,8 +1315,8 @@ impl MotionCorrector {
                 _ => vec![0.0; residual_len],
             };
             return Ok(MotionRecord {
-                dy: predicted.0,
-                dx: predicted.1,
+                dy: predicted.0 + eng.drift.0,
+                dx: predicted.1 + eng.drift.1,
                 quality: 0.0,
                 flags: flags | FLAG_HELD | FLAG_ANOMALOUS,
                 residual,
@@ -1365,8 +1396,8 @@ impl MotionCorrector {
         }
 
         Ok(MotionRecord {
-            dy: shift.0,
-            dx: shift.1,
+            dy: shift.0 + eng.drift.0,
+            dx: shift.1 + eng.drift.1,
             quality: reg.ncc,
             flags,
             residual,
