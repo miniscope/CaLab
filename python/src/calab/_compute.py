@@ -344,7 +344,8 @@ class SolveTraceResult(NamedTuple):
     pve : float
         Proportion of variance explained (0–1).
     iterations : int
-        Number of FISTA iterations run.
+        Iterations of the relaxed solve (tens of interior-point Newton steps;
+        FISTA iterations only on the fallback paths).
     converged : bool
         Whether the solver converged.
     noise_var_processed : float
@@ -363,7 +364,8 @@ class SolveTraceResult(NamedTuple):
         measurable noise floor.
     no_size_fit : bool
         A noise floor was measurable and no spike size passed the
-        one-standard-error test.
+        one-standard-error test, so the size that fits the data best was
+        taken (usually the floor).
     peak_outlier_ratio : float
         Largest event-peak frame mass over the second largest (1 with fewer
         than two events, 0 with none).

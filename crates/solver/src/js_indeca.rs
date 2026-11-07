@@ -32,7 +32,8 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// `max_firing_rate` (spikes/s, the app default is 300) is the highest rate
 /// the cell can reach in its strongest bursts. It fixes the per-frame
 /// ceiling `cap = max(1, round(max_firing_rate / fs))` spikes: the box of
-/// the relaxed solve and the smallest spike size the binarization considers.
+/// the relaxed solve and the smallest spike size the binarization considers
+/// (`frame_max / cap`, the densest train no frame of which exceeds the cap).
 /// Everything runs at the recorded frame rate; `s_counts` is an integer
 /// count per frame (`0..=cap`), the same length as `trace`.
 ///
@@ -53,8 +54,10 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 ///   converged, loop_converged, noise_var_processed, chain_noise_gain,
 ///   cap_limited, no_size_fit, peak_outlier_ratio,
 ///   dropped_spikes }
-/// where `iterations` is the FISTA iteration count (hundreds to a few
-/// thousand at 30 Hz; tens of thousands for slow indicators at 60 Hz) and
+/// where `iterations` is the iteration count of the relaxed solve (tens of
+/// Newton steps of the exact interior-point solve at any frame rate and
+/// indicator speed; FISTA iterations only when the problem has a penalty or
+/// no noise model, or if the interior point had to hand over to FISTA) and
 /// `converged` says the certificate (or, without noise, the step rule)
 /// fired. `converged = false` means the certificate could not be met in f64
 /// arithmetic: in practice the stall detector on the certificate's bound
@@ -71,7 +74,8 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 ///
 /// Per-cell diagnostics (none changes the result): `cap_limited` (the pick
 /// ended at the floor spike size `frame_max / cap`, so the cap set the spike
-/// size), `no_size_fit` (no spike size passed the one-standard-error test),
+/// size), `no_size_fit` (no spike size passed the one-standard-error test, so
+/// the size that fits the data best was taken, usually the floor),
 /// `peak_outlier_ratio` (largest event-peak frame mass over the second
 /// largest) and `dropped_spikes` (spikes no frame of their event had room
 /// for).

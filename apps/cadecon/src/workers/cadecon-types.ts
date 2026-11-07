@@ -21,7 +21,7 @@ export interface TraceResult {
   /** Diagnostics (display only, never change results). The binarization hit the
    *  per-frame cap (max firing rate) so the busiest frames are clipped. */
   capLimited?: boolean;
-  /** No spike size passed the one-standard-error test (the floor size was used). */
+  /** No spike size passed the one-standard-error test (the best-fitting size was used, usually the floor). */
   noSizeFit?: boolean;
   /** Tallest event peak relative to the typical event peak; large = one outlier
    *  event sets the spike size for the whole trace. */
