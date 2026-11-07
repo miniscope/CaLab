@@ -27,6 +27,12 @@ struct Synth {
     usec: u32,
     /// Value written into the `movi` LIST size field (None = correct).
     movi_size_override: Option<u32>,
+    /// A JUNK chunk before the first frame inside movi.
+    junk_in_movi: bool,
+    /// `dwTotalFrames` written to avih (None = the real count).
+    avih_frames: Option<u32>,
+    /// A zero-size video entry appended to idx1 (a frame the writer dropped).
+    empty_entry: bool,
 }
 
 impl Synth {
@@ -42,6 +48,9 @@ impl Synth {
             indx: false,
             usec: 16_666,
             movi_size_override: None,
+            junk_in_movi: false,
+            avih_frames: None,
+            empty_entry: false,
         }
     }
 
@@ -88,7 +97,7 @@ impl Synth {
 
         let mut avih = vec![0u8; 56];
         avih[0..4].copy_from_slice(&self.usec.to_le_bytes());
-        avih[16..20].copy_from_slice(&self.frames.to_le_bytes());
+        avih[16..20].copy_from_slice(&self.avih_frames.unwrap_or(self.frames).to_le_bytes());
         avih[32..36].copy_from_slice(&self.width.to_le_bytes());
         avih[36..40].copy_from_slice(&(self.height.unsigned_abs()).to_le_bytes());
 
@@ -126,6 +135,9 @@ impl Synth {
         let movi_fourcc = movi_start + 8;
         let mut movi_body = Vec::new();
         let mut entries = Vec::new();
+        if self.junk_in_movi {
+            movi_body.extend(chunk(b"JUNK", &[0u8; 10]));
+        }
         for f in 0..self.frames {
             let abs = movi_fourcc + 4 + movi_body.len();
             entries.push(abs);
@@ -149,6 +161,12 @@ impl Synth {
                 };
                 idx.extend((off as u32).to_le_bytes());
                 idx.extend((self.frame_bytes() as u32).to_le_bytes());
+            }
+            if self.empty_entry {
+                idx.extend(b"00dc");
+                idx.extend(0u32.to_le_bytes());
+                idx.extend(0u32.to_le_bytes());
+                idx.extend(0u32.to_le_bytes());
             }
             file.extend(chunk(b"idx1", &idx));
         }
@@ -410,11 +428,10 @@ fn idx1_inconsistencies_are_errors() {
         AviHeader::parse(&file, Some(&bad)),
         Err(AviError::InvalidIndex(_))
     ));
-    // No video entries.
-    assert!(matches!(
-        AviHeader::parse(&file, Some(&[])),
-        Err(AviError::InvalidIndex(_))
-    ));
+    // No video entries: idx1 is unusable, the stride takes over.
+    let h = AviHeader::parse(&file, Some(&[])).unwrap();
+    assert!(!h.info().has_idx1);
+    assert_eq!(h.frame_count(), 3);
     // Non-video entries (audio chunk ids) are skipped, not fatal.
     let mut mixed = good.clone();
     mixed.extend(b"01wb\0\0\0\0\x04\0\0\0\x10\0\0\0");
@@ -491,11 +508,146 @@ fn truncated_file_drops_incomplete_frames() {
     let mut s = Synth::grey(8, 4, 5);
     s.idx = Idx::None;
     let file = s.build();
-    let mut h = AviHeader::parse(&file, None).unwrap();
-    let (_, end3) = h.frame_range(2).unwrap();
-    h.limit_to_file_size(end3 + 5); // frames 0..=2 complete, 3 cut
+    let probe = AviHeader::parse(&file, None).unwrap();
+    let (_, end3) = probe.frame_range(2).unwrap();
+    // Frames 0..=2 complete, 3 cut.
+    let h = AviHeader::parse_with_size(&file, None, end3 + 5).unwrap();
     assert_eq!(h.frame_count(), 3);
     assert!(h.frame_range(3).is_err());
+}
+
+#[test]
+fn crash_truncated_file_counts_frames_from_its_size() {
+    // The writer died before close: avih frames 0, movi size 0, no idx1.
+    let mut s = Synth::grey(8, 4, 5);
+    s.idx = Idx::None;
+    s.avih_frames = Some(0);
+    s.movi_size_override = Some(0);
+    let file = s.build();
+    // Nothing bounds the count without a file size.
+    assert!(matches!(
+        AviHeader::parse(&file, None),
+        Err(AviError::InvalidIndex(_))
+    ));
+    let full = AviHeader::parse_with_size(&file, None, file.len() as u64).unwrap();
+    assert_eq!(full.frame_count(), 5);
+    let (_, end3) = full.frame_range(2).unwrap();
+    let cut = &file[..end3 as usize + 7];
+    let h = AviHeader::parse_with_size(cut, None, cut.len() as u64).unwrap();
+    assert_eq!(h.frame_count(), 3);
+    let s3 = Synth {
+        frames: 3,
+        ..s.clone()
+    };
+    expect_frames(&s3, cut, &h, false);
+    // Not even one complete frame: zero frames, not an error.
+    let tiny = &file[..h.info().first_chunk_offset as usize + 20];
+    let h0 = AviHeader::parse_with_size(tiny, None, tiny.len() as u64).unwrap();
+    assert_eq!(h0.frame_count(), 0);
+}
+
+#[test]
+fn idx1_wins_over_a_stride_that_would_fail() {
+    for idx in [Idx::Relative, Idx::Absolute] {
+        let mut s = Synth::grey(8, 4, 4);
+        s.junk_in_movi = true; // first movi chunk is JUNK: no fixed stride
+        s.avih_frames = Some(0);
+        s.idx = idx;
+        let file = s.build();
+        // Without idx1 the stride path rejects the layout...
+        assert!(matches!(
+            AviHeader::parse(&file, None),
+            Err(AviError::InvalidIndex(_))
+        ));
+        // ...but with it the file opens, as the TS source now does.
+        let layout = AviHeader::parse_header(&file).unwrap();
+        let at = layout.info.movi_end as usize;
+        let len = idx1_payload_len(&file[at..at + 8]).unwrap() as usize;
+        let h =
+            AviHeader::parse_with_size(&file, Some(&file[at + 8..at + 8 + len]), file.len() as u64)
+                .unwrap();
+        assert!(h.info().has_idx1);
+        assert_eq!(h.frame_count(), 4);
+        expect_frames(&s, &file, &h, false);
+    }
+}
+
+#[test]
+fn huge_declared_frame_count_does_not_allocate() {
+    let mut s = Synth::grey(8, 4, 3);
+    s.idx = Idx::None;
+    s.avih_frames = Some(u32::MAX);
+    s.movi_size_override = Some(0);
+    let file = s.build();
+    // Unknown file size: the count is the declared one, held as a stride.
+    let h = AviHeader::parse(&file, None).unwrap();
+    assert_eq!(h.frame_count(), u32::MAX);
+    assert!(h.frame_range(u32::MAX - 1).is_ok());
+    // A known size bounds it to what is actually there.
+    let h = AviHeader::parse_with_size(&file, None, file.len() as u64).unwrap();
+    assert_eq!(h.frame_count(), 3);
+}
+
+#[test]
+fn zero_size_idx1_entries_are_skipped_and_counted() {
+    let mut s = Synth::grey(8, 4, 3);
+    s.empty_entry = true;
+    let file = s.build();
+    let h = parse_full(&s, &file).unwrap();
+    assert_eq!(h.frame_count(), 3);
+    assert_eq!(h.skipped_empty_frames(), 1);
+    expect_frames(&s, &file, &h, false);
+}
+
+#[test]
+fn spans_decode_like_single_frames() {
+    for idx in [Idx::None, Idx::Relative] {
+        let mut s = Synth::grey(6, 3, 6);
+        s.idx = idx;
+        let file = s.build();
+        let h = parse_full(&s, &file).unwrap();
+        assert_eq!(h.contiguous_run(1, 100), 5);
+        assert_eq!(h.contiguous_run(6, 1), 0);
+        let (a, b) = h.span_range(2, 3).unwrap();
+        let (a, b) = (a as usize, b as usize);
+        let px = h.pixel_bytes();
+        let mut out = vec![0u8; 3 * px];
+        h.decode_span_into(&file[a..b], 3, &mut out).unwrap();
+        for i in 0..3u32 {
+            let (fa, fb) = h.frame_range(2 + i).unwrap();
+            let one = h.decode_frame(&file[fa as usize..fb as usize]).unwrap();
+            assert_eq!(&out[i as usize * px..(i as usize + 1) * px], &one[..]);
+        }
+        // Wrong output size and truncated spans are errors.
+        assert!(h.decode_span_into(&file[a..b], 3, &mut out[1..]).is_err());
+        assert!(h.decode_span_into(&file[a..b - 9], 3, &mut out).is_err());
+        assert!(h.span_range(4, 5).is_err());
+    }
+}
+
+#[test]
+fn idx1_gaps_break_contiguity() {
+    let s = Synth::grey(8, 4, 4);
+    let file = s.build();
+    let probe = AviHeader::parse(&file, None).unwrap();
+    let mut idx = s.idx1_of(&file, &probe).unwrap().to_vec();
+    // Push frame 2's offset 16 bytes later: a gap before it.
+    let off = u32::from_le_bytes(idx[40..44].try_into().unwrap()) + 16;
+    idx[40..44].copy_from_slice(&off.to_le_bytes());
+    let h = AviHeader::parse_with_size(&file, Some(&idx), 0).unwrap();
+    assert_eq!(h.contiguous_run(0, 4), 2);
+    // Frame 3 no longer follows the shifted frame 2.
+    assert_eq!(h.contiguous_run(2, 4), 1);
+    assert!(h.span_range(0, 3).is_err());
+}
+
+#[test]
+fn short_strf_is_rejected() {
+    let s = Synth::grey(8, 4, 1);
+    let mut file = s.build();
+    let at = file.windows(4).position(|w| w == b"strf").unwrap();
+    file[at + 4..at + 8].copy_from_slice(&18u32.to_le_bytes());
+    assert!(AviHeader::parse(&file, None).is_err());
 }
 
 #[test]

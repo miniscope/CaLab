@@ -22,20 +22,78 @@ impl JsAviHeader {
     /// Parse a file prefix and, optionally, the `idx1` payload. Throws with a
     /// message starting `need more data` when the prefix is too short (see
     /// `neededBytes`).
-    pub fn parse(prefix: &[u8], idx1: Option<Vec<u8>>) -> Result<JsAviHeader, JsError> {
+    ///
+    /// `file_size` (0 = unknown) bounds the frame count of an index-less file,
+    /// so a recording cut short by a crash yields exactly its complete frames.
+    pub fn parse(
+        prefix: &[u8],
+        idx1: Option<Vec<u8>>,
+        file_size: f64,
+    ) -> Result<JsAviHeader, JsError> {
         console_error_panic_hook::set_once();
-        avi::AviHeader::parse(prefix, idx1.as_deref())
+        let size = if file_size.is_finite() && file_size > 0.0 {
+            file_size as u64
+        } else {
+            0
+        };
+        avi::AviHeader::parse_with_size(prefix, idx1.as_deref(), size)
             .map(|inner| JsAviHeader { inner })
             .map_err(|e| js_err("AviHeader.parse", e))
+    }
+
+    /// `[riffEnd, moviEnd]` from the header alone (moviEnd is 0 when the movi
+    /// size is unknown), to locate the `idx1` chunk before choosing offsets.
+    pub fn layout(prefix: &[u8]) -> Result<Vec<f64>, JsError> {
+        console_error_panic_hook::set_once();
+        avi::AviHeader::parse_header(prefix)
+            .map(|l| vec![l.info.riff_end as f64, l.info.movi_end as f64])
+            .map_err(|e| js_err("AviHeader.layout", e))
     }
 
     /// Bytes a retry needs when `parse` threw "need more data"; 0 otherwise.
     #[wasm_bindgen(js_name = neededBytes)]
     pub fn needed_bytes(prefix: &[u8]) -> f64 {
-        match avi::AviHeader::parse(prefix, None) {
+        match avi::AviHeader::parse_header(prefix) {
             Err(AviError::NeedMoreData { needed }) => needed as f64,
             _ => 0.0,
         }
+    }
+
+    /// Frames skipped because their idx1 entry had size 0 (dropped by the writer).
+    #[wasm_bindgen(getter, js_name = skippedEmptyFrames)]
+    pub fn skipped_empty_frames(&self) -> u32 {
+        self.inner.skipped_empty_frames()
+    }
+
+    /// Bytes of one decoded frame.
+    #[wasm_bindgen(getter, js_name = pixelBytes)]
+    pub fn pixel_bytes(&self) -> u32 {
+        self.inner.pixel_bytes() as u32
+    }
+
+    /// How many frames from `start` (at most `max`) are stored back to back.
+    #[wasm_bindgen(js_name = contiguousRun)]
+    pub fn contiguous_run(&self, start: u32, max: u32) -> u32 {
+        self.inner.contiguous_run(start, max)
+    }
+
+    /// `[start, end)` file byte range of `count` contiguous frames.
+    #[wasm_bindgen(js_name = spanByteRange)]
+    pub fn span_byte_range(&self, start: u32, count: u32) -> Result<Vec<f64>, JsError> {
+        self.inner
+            .span_range(start, count)
+            .map(|(s, e)| vec![s as f64, e as f64])
+            .map_err(|e| js_err("AviHeader.spanByteRange", e))
+    }
+
+    /// Decode a span read from `spanByteRange` into `out`
+    /// (`count * pixelBytes` bytes), one validated chunk after another, with
+    /// no allocation per frame.
+    #[wasm_bindgen(js_name = decodeSpanInto)]
+    pub fn decode_span_into(&self, span: &[u8], count: u32, out: &mut [u8]) -> Result<(), JsError> {
+        self.inner
+            .decode_span_into(span, count, out)
+            .map_err(|e| js_err("AviHeader.decodeSpanInto", e))
     }
 
     #[wasm_bindgen(getter)]
@@ -110,14 +168,6 @@ impl JsAviHeader {
     #[wasm_bindgen(getter, js_name = flipBottomUp)]
     pub fn flip_bottom_up(&self) -> bool {
         self.inner.flip_bottom_up()
-    }
-
-    /// Drop frames that do not fit in a file of `file_size` bytes.
-    #[wasm_bindgen(js_name = limitToFileSize)]
-    pub fn limit_to_file_size(&mut self, file_size: f64) {
-        if file_size.is_finite() && file_size >= 0.0 {
-            self.inner.limit_to_file_size(file_size as u64);
-        }
     }
 
     /// `[start, end)` file byte range of frame `index`'s chunk (header included).
