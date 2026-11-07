@@ -1,0 +1,852 @@
+//! The footprint library: immutable, versioned, with every per-frame-constant
+//! term of the trace solve precomputed.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::background::BackgroundModel;
+use super::{check_len, TraceError};
+use crate::preprocess::flatten::GlowFlattener;
+use crate::preprocess::{Dims, PreprocessError};
+
+/// Source of library version numbers when the caller gives none.
+static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+
+/// One cell's footprint in the **unfiltered** image: a non-negative patch
+/// whose top-left corner sits at `(y0, x0)` of the frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Footprint {
+    /// Caller's stable cell id; warm starts follow it across library swaps.
+    pub id: u64,
+    pub y0: usize,
+    pub x0: usize,
+    pub height: usize,
+    pub width: usize,
+    /// `height * width` values, row-major, all finite and `>= 0`.
+    pub values: Vec<f32>,
+}
+
+/// The preprocessing high-pass, applied to footprints so the model sees the
+/// same filter as the data. It must be linear (no clipping, no per-frame
+/// statistics) and act on a full `dims` frame in place.
+pub trait LinearFilter {
+    fn dims(&self) -> Dims;
+    /// Distance in pixels beyond which one pixel's response is negligible
+    /// (used to filter many far-apart footprints in one pass).
+    fn reach_px(&self) -> f32;
+    fn apply(&mut self, frame: &mut [f32]) -> Result<(), PreprocessError>;
+}
+
+impl LinearFilter for GlowFlattener {
+    fn dims(&self) -> Dims {
+        GlowFlattener::dims(self)
+    }
+
+    /// 6 σ: the Gaussian weight there is 1.5e-8 of its peak.
+    fn reach_px(&self) -> f32 {
+        6.0 * self.sigma()
+    }
+
+    fn apply(&mut self, frame: &mut [f32]) -> Result<(), PreprocessError> {
+        GlowFlattener::apply(self, frame).map(|_| ())
+    }
+}
+
+/// No filtering (for unfiltered data and tests).
+#[derive(Debug, Clone, Copy)]
+pub struct IdentityFilter(pub Dims);
+
+impl LinearFilter for IdentityFilter {
+    fn dims(&self) -> Dims {
+        self.0
+    }
+    fn reach_px(&self) -> f32 {
+        0.0
+    }
+    fn apply(&mut self, _: &mut [f32]) -> Result<(), PreprocessError> {
+        Ok(())
+    }
+}
+
+/// How each footprint's support is chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LibraryConfig {
+    /// Support radius as a multiple of the footprint's half-width at half
+    /// maximum (from the area above half the peak). 2.5 keeps the core and
+    /// drops most of the scatter halo.
+    pub support_per_hwhm: f32,
+    /// Bounds on the support radius, px.
+    pub min_support_px: f32,
+    pub max_support_px: f32,
+}
+
+impl Default for LibraryConfig {
+    fn default() -> LibraryConfig {
+        LibraryConfig {
+            support_per_hwhm: 2.5,
+            min_support_px: 6.0,
+            max_support_px: 20.0,
+        }
+    }
+}
+
+impl LibraryConfig {
+    pub fn validate(&self) -> Result<(), TraceError> {
+        let ok = self.support_per_hwhm.is_finite()
+            && self.support_per_hwhm > 0.0
+            && self.min_support_px.is_finite()
+            && self.min_support_px >= 1.0
+            && self.max_support_px.is_finite()
+            && self.max_support_px >= self.min_support_px;
+        if ok {
+            Ok(())
+        } else {
+            Err(TraceError::InvalidConfig(format!("{self:?}")))
+        }
+    }
+}
+
+/// Collects footprints and settings, then builds a [`Library`].
+#[derive(Debug, Clone)]
+pub struct LibraryBuilder {
+    dims: Dims,
+    cfg: LibraryConfig,
+    footprints: Vec<Footprint>,
+    fov: Option<Vec<u8>>,
+    noise: Option<Vec<f32>>,
+    background: BackgroundModel,
+    version: Option<u64>,
+}
+
+impl LibraryBuilder {
+    pub fn new(dims: Dims) -> LibraryBuilder {
+        LibraryBuilder {
+            dims,
+            cfg: LibraryConfig::default(),
+            footprints: Vec::new(),
+            fov: None,
+            noise: None,
+            background: BackgroundModel::None,
+            version: None,
+        }
+    }
+
+    pub fn config(mut self, cfg: LibraryConfig) -> LibraryBuilder {
+        self.cfg = cfg;
+        self
+    }
+
+    /// The lit field of view (non-zero = inside); ring pixels outside it are
+    /// not used. Default: the whole frame.
+    pub fn fov(mut self, mask: Vec<u8>) -> LibraryBuilder {
+        self.fov = Some(mask);
+        self
+    }
+
+    /// Per-pixel noise σ of the preprocessed frames (the preprocessing noise
+    /// map); sets each trace's noise unit. Default: σ = 1 everywhere.
+    pub fn noise(mut self, sigma: Vec<f32>) -> LibraryBuilder {
+        self.noise = Some(sigma);
+        self
+    }
+
+    pub fn background(mut self, model: BackgroundModel) -> LibraryBuilder {
+        self.background = model;
+        self
+    }
+
+    /// Explicit version number (default: a process-wide counter).
+    pub fn version(mut self, v: u64) -> LibraryBuilder {
+        self.version = Some(v);
+        self
+    }
+
+    pub fn push(&mut self, fp: Footprint) {
+        self.footprints.push(fp);
+    }
+
+    pub fn footprint(mut self, fp: Footprint) -> LibraryBuilder {
+        self.footprints.push(fp);
+        self
+    }
+
+    /// Filter every footprint with `filter` and precompute the solve terms.
+    pub fn build(self, filter: &mut dyn LinearFilter) -> Result<Library, TraceError> {
+        self.cfg.validate()?;
+        let dims = self.dims;
+        let n_px = dims.pixels();
+        if filter.dims() != dims {
+            return Err(TraceError::Incompatible(format!(
+                "filter is {:?}, library {:?}",
+                filter.dims(),
+                dims
+            )));
+        }
+        let fov = match self.fov {
+            Some(m) => {
+                check_len("fov mask", n_px, m.len())?;
+                m
+            }
+            None => vec![1; n_px],
+        };
+        let noise = match self.noise {
+            Some(s) => {
+                check_len("noise map", n_px, s.len())?;
+                if s.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                    return Err(TraceError::InvalidConfig(
+                        "noise map must be finite and >= 0".into(),
+                    ));
+                }
+                s
+            }
+            None => vec![1.0; n_px],
+        };
+        let mut ids = Vec::with_capacity(self.footprints.len());
+        let mut index_of = HashMap::with_capacity(self.footprints.len());
+        let mut centers = Vec::new();
+        let mut radii = Vec::new();
+        let mut col_start = vec![0usize];
+        let mut pix = Vec::new();
+        let mut raw = Vec::new();
+        for fp in &self.footprints {
+            if index_of.insert(fp.id, ids.len()).is_some() {
+                return Err(TraceError::InvalidFootprint(format!(
+                    "duplicate id {}",
+                    fp.id
+                )));
+            }
+            ids.push(fp.id);
+            let (cy, cx, r) = support_disk(fp, dims, &self.cfg)?;
+            centers.push((cy, cx));
+            radii.push(r);
+            let r2 = r * r;
+            for y in 0..fp.height {
+                for x in 0..fp.width {
+                    let (gy, gx) = (fp.y0 + y, fp.x0 + x);
+                    let dy = gy as f32 - cy;
+                    let dx = gx as f32 - cx;
+                    if dy * dy + dx * dx <= r2 {
+                        pix.push((gy * dims.width + gx) as u32);
+                        raw.push(fp.values[y * fp.width + x]);
+                    }
+                }
+            }
+            col_start.push(pix.len());
+        }
+        let n = ids.len();
+        // Filter the support-limited footprints, many per pass when they are
+        // further apart than the filter's reach.
+        let reach = filter.reach_px();
+        let mut canvases: Vec<Vec<usize>> = Vec::new();
+        for i in 0..n {
+            let fits = |members: &Vec<usize>| {
+                members.iter().all(|&j| {
+                    let (dy, dx) = (centers[i].0 - centers[j].0, centers[i].1 - centers[j].1);
+                    let need = reach + radii[i] + radii[j] + 2.0;
+                    dy * dy + dx * dx >= need * need
+                })
+            };
+            match canvases.iter_mut().find(|m| fits(m)) {
+                Some(m) => m.push(i),
+                None => canvases.push(vec![i]),
+            }
+        }
+        let mut val = vec![0.0f32; pix.len()];
+        let mut img = vec![0.0f32; n_px];
+        for members in &canvases {
+            for &i in members {
+                for k in col_start[i]..col_start[i + 1] {
+                    img[pix[k] as usize] = raw[k];
+                }
+            }
+            filter.apply(&mut img)?;
+            for &i in members {
+                for k in col_start[i]..col_start[i + 1] {
+                    val[k] = img[pix[k] as usize];
+                }
+            }
+            img.iter_mut().for_each(|v| *v = 0.0);
+        }
+        let core = Core {
+            dims,
+            ids,
+            index_of,
+            centers,
+            radii,
+            col_start,
+            pix,
+            val,
+            raw,
+            fov,
+            noise,
+        };
+        let version = self
+            .version
+            .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
+        Library::assemble(core, self.background, version)
+    }
+}
+
+/// Centre (intensity-weighted over the half-max area) and support radius.
+fn support_disk(
+    fp: &Footprint,
+    dims: Dims,
+    cfg: &LibraryConfig,
+) -> Result<(f32, f32, f32), TraceError> {
+    let bad = |m: &str| TraceError::InvalidFootprint(format!("id {}: {m}", fp.id));
+    if fp.height == 0 || fp.width == 0 {
+        return Err(bad("empty patch"));
+    }
+    if fp.y0 + fp.height > dims.height || fp.x0 + fp.width > dims.width {
+        return Err(bad("patch extends outside the frame"));
+    }
+    check_len("footprint values", fp.height * fp.width, fp.values.len())?;
+    if fp.values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Err(bad("values must be finite and >= 0"));
+    }
+    let peak = fp.values.iter().copied().fold(0.0f32, f32::max);
+    if peak <= 0.0 {
+        return Err(bad("all zero"));
+    }
+    let half = 0.5 * peak;
+    let (mut sw, mut sy, mut sx, mut count) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            let v = fp.values[y * fp.width + x];
+            if v >= half {
+                let w = f64::from(v);
+                sw += w;
+                sy += w * (fp.y0 + y) as f64;
+                sx += w * (fp.x0 + x) as f64;
+                count += 1;
+            }
+        }
+    }
+    let hwhm = (count as f32 / std::f32::consts::PI).sqrt();
+    let r = (cfg.support_per_hwhm * hwhm).clamp(cfg.min_support_px, cfg.max_support_px);
+    Ok(((sy / sw) as f32, (sx / sw) as f32, r))
+}
+
+/// The footprint part of a library (independent of the background model).
+#[derive(Debug, Clone)]
+struct Core {
+    dims: Dims,
+    ids: Vec<u64>,
+    index_of: HashMap<u64, usize>,
+    centers: Vec<(f32, f32)>,
+    radii: Vec<f32>,
+    /// Support of cell `i`: `pix[col_start[i]..col_start[i + 1]]`.
+    col_start: Vec<usize>,
+    pix: Vec<u32>,
+    /// Filtered footprint values on the support.
+    val: Vec<f32>,
+    /// Unfiltered footprint values on the support.
+    raw: Vec<f32>,
+    fov: Vec<u8>,
+    noise: Vec<f32>,
+}
+
+/// A compressed sparse row matrix over cells.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Csr {
+    pub start: Vec<usize>,
+    pub col: Vec<u32>,
+    pub val: Vec<f32>,
+}
+
+impl Csr {
+    fn from_rows(rows: Vec<Vec<(u32, f32)>>) -> Csr {
+        let mut start = vec![0];
+        let mut col = Vec::new();
+        let mut val = Vec::new();
+        for mut r in rows {
+            r.sort_by_key(|e| e.0);
+            for (c, v) in r {
+                col.push(c);
+                val.push(v);
+            }
+            start.push(col.len());
+        }
+        Csr { start, col, val }
+    }
+
+    #[inline]
+    pub fn row(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.start[i], self.start[i + 1]);
+        (&self.col[a..b], &self.val[a..b])
+    }
+}
+
+/// Background terms precomputed for the solver.
+#[derive(Debug, Clone)]
+pub(crate) enum BgTerms {
+    None,
+    /// `k` spatial maps; `x[i*k..]` = `ã_iᵀ g`, `w[i*k..]` = `P x_i` with
+    /// `P = (GᵀG)⁻¹`.
+    Basis {
+        k: usize,
+        maps: Vec<f32>,
+        p: Vec<f64>,
+        x: Vec<f32>,
+        w: Vec<f32>,
+    },
+    /// Ring of cell `i`: `ring_pix[ring_start[i]..ring_start[i+1]]`;
+    /// `s[i] = Σ ã_i`; `q` row `i` = ring mean of every overlapping `ã_j`.
+    Ring {
+        ring_start: Vec<usize>,
+        ring_pix: Vec<u32>,
+        s: Vec<f32>,
+        q: Csr,
+    },
+}
+
+/// An immutable, versioned footprint library with the solver's precomputed
+/// terms. Share it as `Arc<Library>`; build a new one to change it.
+#[derive(Debug, Clone)]
+pub struct Library {
+    version: u64,
+    core: Core,
+    model: BackgroundModel,
+    /// Off-diagonal Gram `ã_iᵀ ã_j` (supports that overlap).
+    pub(crate) gram: Csr,
+    /// `ã_iᵀ ã_i`.
+    pub(crate) gram_diag: Vec<f32>,
+    /// Effective coordinate curvature (Gram diagonal with the background
+    /// eliminated).
+    pub(crate) mdiag: Vec<f32>,
+    /// Noise σ of each trace's coordinate estimate.
+    pub(crate) trace_noise: Vec<f32>,
+    pub(crate) groups: Vec<Vec<u32>>,
+    pub(crate) group_of: Vec<u32>,
+    pub(crate) bg: BgTerms,
+}
+
+impl Library {
+    fn assemble(core: Core, model: BackgroundModel, version: u64) -> Result<Library, TraceError> {
+        let n = core.ids.len();
+        let dims = core.dims;
+        let n_px = dims.pixels();
+        // Candidate neighbours from a coarse spatial grid.
+        let rmax = core.radii.iter().copied().fold(0.0f32, f32::max);
+        let ring_outer = match &model {
+            BackgroundModel::Ring { outer_px, .. } => *outer_px,
+            _ => 0.0,
+        };
+        let reach = 2.0 * rmax + ring_outer + 2.0;
+        let cell = reach.max(8.0);
+        let gw = (dims.width as f32 / cell).ceil() as usize + 1;
+        let gh = (dims.height as f32 / cell).ceil() as usize + 1;
+        let mut grid: Vec<Vec<u32>> = vec![Vec::new(); gw * gh];
+        let gpos = |c: (f32, f32)| {
+            let gy = ((c.0.max(0.0) / cell) as usize).min(gh - 1);
+            let gx = ((c.1.max(0.0) / cell) as usize).min(gw - 1);
+            (gy, gx)
+        };
+        for (i, &c) in core.centers.iter().enumerate() {
+            let (gy, gx) = gpos(c);
+            grid[gy * gw + gx].push(i as u32);
+        }
+        let near = |i: usize, dist: f32| -> Vec<usize> {
+            let (gy, gx) = gpos(core.centers[i]);
+            let mut out = Vec::new();
+            for yy in gy.saturating_sub(1)..(gy + 2).min(gh) {
+                for xx in gx.saturating_sub(1)..(gx + 2).min(gw) {
+                    for &j in &grid[yy * gw + xx] {
+                        let j = j as usize;
+                        let (a, b) = (core.centers[i], core.centers[j]);
+                        let (dy, dx) = (a.0 - b.0, a.1 - b.1);
+                        if j != i && dy * dy + dx * dx <= dist * dist {
+                            out.push(j);
+                        }
+                    }
+                }
+            }
+            out
+        };
+
+        // Gram.
+        let mut img = vec![0.0f32; n_px];
+        let mut rows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+        let mut gram_diag = vec![0.0f32; n];
+        let mut noise_num = vec![0.0f32; n];
+        for i in 0..n {
+            let (p, v) = core.column(i);
+            let mut d = 0.0f64;
+            let mut s2 = 0.0f64;
+            for (&q, &a) in p.iter().zip(v) {
+                img[q as usize] = a;
+                d += f64::from(a) * f64::from(a);
+                let sg = f64::from(core.noise[q as usize]);
+                s2 += f64::from(a) * f64::from(a) * sg * sg;
+            }
+            gram_diag[i] = d as f32;
+            noise_num[i] = s2.sqrt() as f32;
+            for j in near(i, core.radii[i] + rmax + 1.0) {
+                if j < i {
+                    continue;
+                }
+                let (pj, vj) = core.column(j);
+                let mut g = 0.0f64;
+                for (&q, &a) in pj.iter().zip(vj) {
+                    g += f64::from(a) * f64::from(img[q as usize]);
+                }
+                if g != 0.0 {
+                    rows[i].push((j as u32, g as f32));
+                    rows[j].push((i as u32, g as f32));
+                }
+            }
+            for &q in p {
+                img[q as usize] = 0.0;
+            }
+        }
+        if let Some(i) = gram_diag.iter().position(|&d| d.is_nan() || d <= 0.0) {
+            return Err(TraceError::InvalidFootprint(format!(
+                "id {}: filtered footprint is zero on its support (outside the field of view?)",
+                core.ids[i]
+            )));
+        }
+        // Overlap groups (connected components of the coupling graph).
+        let mut uf: Vec<usize> = (0..n).collect();
+        fn find(uf: &mut [usize], mut a: usize) -> usize {
+            while uf[a] != a {
+                uf[a] = uf[uf[a]];
+                a = uf[a];
+            }
+            a
+        }
+        let union = |uf: &mut Vec<usize>, a: usize, b: usize| {
+            let (ra, rb) = (find(uf, a), find(uf, b));
+            if ra != rb {
+                uf[ra.max(rb)] = ra.min(rb);
+            }
+        };
+        for (i, r) in rows.iter().enumerate() {
+            for &(j, _) in r {
+                union(&mut uf, i, j as usize);
+            }
+        }
+        let gram = Csr::from_rows(rows);
+
+        // Background terms.
+        let bg = match &model {
+            BackgroundModel::None => BgTerms::None,
+            BackgroundModel::Basis(maps) => {
+                let k = maps.len();
+                if k == 0 {
+                    BgTerms::None
+                } else {
+                    let mut flat = Vec::with_capacity(k * n_px);
+                    for m in maps {
+                        check_len("background map", n_px, m.len())?;
+                        if m.iter().any(|v| !v.is_finite()) {
+                            return Err(TraceError::InvalidConfig(
+                                "background map must be finite".into(),
+                            ));
+                        }
+                        flat.extend_from_slice(m);
+                    }
+                    let mut gtg = vec![0.0f64; k * k];
+                    for a in 0..k {
+                        for b in a..k {
+                            let s: f64 = flat[a * n_px..(a + 1) * n_px]
+                                .iter()
+                                .zip(&flat[b * n_px..(b + 1) * n_px])
+                                .map(|(&u, &v)| f64::from(u) * f64::from(v))
+                                .sum();
+                            gtg[a * k + b] = s;
+                            gtg[b * k + a] = s;
+                        }
+                    }
+                    let p = invert_spd(&gtg, k).ok_or_else(|| {
+                        TraceError::InvalidConfig("background maps are linearly dependent".into())
+                    })?;
+                    let mut x = vec![0.0f32; n * k];
+                    for i in 0..n {
+                        let (pp, v) = core.column(i);
+                        for b in 0..k {
+                            let m = &flat[b * n_px..(b + 1) * n_px];
+                            let s: f64 = pp
+                                .iter()
+                                .zip(v)
+                                .map(|(&q, &a)| f64::from(a) * f64::from(m[q as usize]))
+                                .sum();
+                            x[i * k + b] = s as f32;
+                        }
+                    }
+                    let mut w = vec![0.0f32; n * k];
+                    for i in 0..n {
+                        for a in 0..k {
+                            let s: f64 =
+                                (0..k).map(|b| p[a * k + b] * f64::from(x[i * k + b])).sum();
+                            w[i * k + a] = s as f32;
+                        }
+                    }
+                    BgTerms::Basis {
+                        k,
+                        maps: flat,
+                        p,
+                        x,
+                        w,
+                    }
+                }
+            }
+            BackgroundModel::Ring { inner_px, outer_px } => {
+                if !(inner_px.is_finite() && outer_px.is_finite() && *outer_px > *inner_px) {
+                    return Err(TraceError::InvalidConfig(format!(
+                        "ring needs outer > inner (got {inner_px}, {outer_px})"
+                    )));
+                }
+                let mut ring_start = vec![0usize];
+                let mut ring_pix = Vec::new();
+                let mut s = vec![0.0f32; n];
+                let mut qrows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+                for i in 0..n {
+                    s[i] = core.column(i).1.iter().sum();
+                    let (cy, cx) = core.centers[i];
+                    let inner = inner_px.max(core.radii[i] + 1.0);
+                    let outer = outer_px.max(inner + 2.0);
+                    let y0 = (cy - outer).floor().max(0.0) as usize;
+                    let y1 = ((cy + outer).ceil() as usize).min(dims.height - 1);
+                    let x0 = (cx - outer).floor().max(0.0) as usize;
+                    let x1 = ((cx + outer).ceil() as usize).min(dims.width - 1);
+                    let start = ring_pix.len();
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            let (dy, dx) = (y as f32 - cy, x as f32 - cx);
+                            let d2 = dy * dy + dx * dx;
+                            let q = y * dims.width + x;
+                            if d2 >= inner * inner && d2 <= outer * outer && core.fov[q] != 0 {
+                                ring_pix.push(q as u32);
+                            }
+                        }
+                    }
+                    let len = ring_pix.len() - start;
+                    ring_start.push(ring_pix.len());
+                    if len == 0 {
+                        continue;
+                    }
+                    let inv = 1.0 / len as f32;
+                    for &q in &ring_pix[start..] {
+                        img[q as usize] = inv;
+                    }
+                    for j in near(i, outer + rmax + 1.0) {
+                        let (pj, vj) = core.column(j);
+                        let mut g = 0.0f32;
+                        for (&q, &a) in pj.iter().zip(vj) {
+                            g += a * img[q as usize];
+                        }
+                        if g != 0.0 {
+                            qrows[i].push((j as u32, g));
+                        }
+                    }
+                    for &q in &ring_pix[start..] {
+                        img[q as usize] = 0.0;
+                    }
+                }
+                for (i, r) in qrows.iter().enumerate() {
+                    for &(j, _) in r {
+                        union(&mut uf, i, j as usize);
+                    }
+                }
+                BgTerms::Ring {
+                    ring_start,
+                    ring_pix,
+                    s,
+                    q: Csr::from_rows(qrows),
+                }
+            }
+        };
+        let mut mdiag = gram_diag.clone();
+        if let BgTerms::Basis { k, x, w, .. } = &bg {
+            for i in 0..n {
+                let xw: f32 = (0..*k).map(|b| x[i * k + b] * w[i * k + b]).sum();
+                // Guard: a footprint almost inside the background span.
+                mdiag[i] = (gram_diag[i] - xw).max(1e-3 * gram_diag[i]);
+            }
+        }
+        let trace_noise = (0..n).map(|i| noise_num[i] / mdiag[i]).collect();
+        let mut root_group: HashMap<usize, u32> = HashMap::new();
+        let mut groups: Vec<Vec<u32>> = Vec::new();
+        let mut group_of = vec![0u32; n];
+        for (i, g) in group_of.iter_mut().enumerate() {
+            let r = find(&mut uf, i);
+            let gi = *root_group.entry(r).or_insert_with(|| {
+                groups.push(Vec::new());
+                (groups.len() - 1) as u32
+            });
+            groups[gi as usize].push(i as u32);
+            *g = gi;
+        }
+        Ok(Library {
+            version,
+            core,
+            model,
+            gram,
+            gram_diag,
+            mdiag,
+            trace_noise,
+            groups,
+            group_of,
+            bg,
+        })
+    }
+
+    /// The same footprints with another background model (a new version).
+    pub fn with_background(&self, model: BackgroundModel) -> Result<Library, TraceError> {
+        Library::assemble(
+            self.core.clone(),
+            model,
+            NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
+        )
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn dims(&self) -> Dims {
+        self.core.dims
+    }
+
+    /// Number of cells.
+    pub fn len(&self) -> usize {
+        self.core.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.core.ids.is_empty()
+    }
+
+    /// Cell ids in slot order (traces are reported in this order).
+    pub fn ids(&self) -> &[u64] {
+        &self.core.ids
+    }
+
+    /// Slot of cell `id`.
+    pub fn slot(&self, id: u64) -> Option<usize> {
+        self.core.index_of.get(&id).copied()
+    }
+
+    /// Support centre `(y, x)` and radius of the cell in `slot`.
+    pub fn support(&self, slot: usize) -> ((f32, f32), f32) {
+        (self.core.centers[slot], self.core.radii[slot])
+    }
+
+    /// Pixel indices and filtered values of the cell in `slot`.
+    pub fn filtered(&self, slot: usize) -> (&[u32], &[f32]) {
+        self.core.column(slot)
+    }
+
+    /// Pixel indices and unfiltered values of the cell in `slot`.
+    pub fn unfiltered(&self, slot: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.core.col_start[slot], self.core.col_start[slot + 1]);
+        (&self.core.pix[a..b], &self.core.raw[a..b])
+    }
+
+    /// Noise σ of each trace (its unit for thresholds), slot order.
+    pub fn trace_noise(&self) -> &[f32] {
+        &self.trace_noise
+    }
+
+    /// Overlap groups: slots of cells that share pixels (directly or through
+    /// a chain of neighbours, or a ring).
+    pub fn groups(&self) -> &[Vec<u32>] {
+        &self.groups
+    }
+
+    pub fn background_model(&self) -> &BackgroundModel {
+        &self.model
+    }
+
+    /// Number of per-frame background coefficients.
+    pub fn background_len(&self) -> usize {
+        match &self.bg {
+            BgTerms::Basis { k, .. } => *k,
+            BgTerms::Ring { ring_start, .. } => ring_start.len() - 1,
+            BgTerms::None => 0,
+        }
+    }
+
+    /// Model image `Σ ã_i c_i` (+ background `Σ g_k β_k` when `background` is
+    /// given for a basis model) into `out`, which is overwritten.
+    pub fn render(
+        &self,
+        traces: &[f32],
+        background: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<(), TraceError> {
+        let n_px = self.core.dims.pixels();
+        check_len("traces", self.len(), traces.len())?;
+        check_len("output frame", n_px, out.len())?;
+        out.iter_mut().for_each(|v| *v = 0.0);
+        if let (Some(beta), BgTerms::Basis { k, maps, .. }) = (background, &self.bg) {
+            check_len("background coefficients", *k, beta.len())?;
+            for (b, &bk) in beta.iter().enumerate() {
+                for (o, &g) in out.iter_mut().zip(&maps[b * n_px..(b + 1) * n_px]) {
+                    *o += g * bk;
+                }
+            }
+        }
+        for (i, &c) in traces.iter().enumerate() {
+            let (p, v) = self.core.column(i);
+            for (&q, &a) in p.iter().zip(v) {
+                out[q as usize] += a * c;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn fov(&self) -> &[u8] {
+        &self.core.fov
+    }
+}
+
+impl Core {
+    #[inline]
+    fn column(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.col_start[i], self.col_start[i + 1]);
+        (&self.pix[a..b], &self.val[a..b])
+    }
+}
+
+/// Inverse of a small symmetric positive-definite matrix (Gauss-Jordan with
+/// partial pivoting), `None` when it is singular to working precision.
+pub(crate) fn invert_spd(a: &[f64], k: usize) -> Option<Vec<f64>> {
+    let mut m = a.to_vec();
+    let mut inv = vec![0.0f64; k * k];
+    for i in 0..k {
+        inv[i * k + i] = 1.0;
+    }
+    let scale = (0..k).map(|i| a[i * k + i].abs()).fold(0.0f64, f64::max);
+    for col in 0..k {
+        let piv =
+            (col..k).max_by(|&r, &s| m[r * k + col].abs().total_cmp(&m[s * k + col].abs()))?;
+        let pv = m[piv * k + col].abs();
+        if pv.is_nan() || pv <= 1e-12 * scale {
+            return None;
+        }
+        if piv != col {
+            for c in 0..k {
+                m.swap(piv * k + c, col * k + c);
+                inv.swap(piv * k + c, col * k + c);
+            }
+        }
+        let d = m[col * k + col];
+        for c in 0..k {
+            m[col * k + c] /= d;
+            inv[col * k + c] /= d;
+        }
+        for r in 0..k {
+            if r != col {
+                let f = m[r * k + col];
+                if f != 0.0 {
+                    for c in 0..k {
+                        m[r * k + c] -= f * m[col * k + c];
+                        inv[r * k + c] -= f * inv[col * k + c];
+                    }
+                }
+            }
+        }
+    }
+    Some(inv)
+}
