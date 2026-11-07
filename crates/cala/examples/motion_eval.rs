@@ -16,11 +16,16 @@
 //!   `<ref_dir>`: `shifts.npy` (or `shifts_it2.npy`), `(frame, 2)` registering
 //!   shifts, and `patch_shifts.npy` / `patch_idx.npy`, `(k, 3, 3, 2)` shifts of
 //!   93 px patches at rows/cols 160 + {0, 93, 187} for the frames `patch_idx`.
+//! * `drift <daq_dir> <gt_dir> [frames]`: every template strategy
+//!   (`MOTION_STRATEGIES`, default all) on a long minisim recording, with
+//!   overall and slow-band (< 0.01 Hz) error, linear trend and error growth.
+//! * `realdrift <avi_dir> <out_dir>`: every strategy on a real recording,
+//!   saving the mean corrected frame of the first and last 2 min.
 //! * `synthetic`: warps the mean of the first frames with known rigid +
 //!   non-rigid motion and checks the recovered records.
 //!
 //! Set `MOTION_UPSAMPLE`, `MOTION_ANCHOR`, `MOTION_ALPHA` (temporal), `MOTION_GRID`
-//! (e.g. `5x5`), `MOTION_SAVE=<dir>` (write rigid shifts as .npy), `MOTION_BILINEAR=1`, `MOTION_NOSHRINK=1`, `MOTION_TAU`, `MOTION_SIGMA2` to vary the
+//! (e.g. `5x5`), `MOTION_SAVE=<dir>` (write rigid shifts as .npy), `MOTION_STRATEGY`, `MOTION_VARW=1`, `MOTION_BILINEAR=1`, `MOTION_NOSHRINK=1`, `MOTION_TAU`, `MOTION_SIGMA2` to vary the
 //! configuration.
 
 #[path = "../tests/common/metrics.rs"]
@@ -34,7 +39,7 @@ use std::time::Instant;
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, MotionGeometry, MotionRecord,
-    NonRigidConfig, Warper,
+    NonRigidConfig, TemplateStrategy, Warper,
 };
 use metrics::{patch_rmse_aligned, shift_rmse_aligned, Truth};
 use npy::Npy;
@@ -127,6 +132,18 @@ impl AviFrames {
         Ok(k)
     }
 
+    /// Total number of frames (reads only the headers of the files).
+    fn count(&self) -> Res<usize> {
+        if let Some(m) = &self.movie {
+            return Ok(m.len() / (self.width * self.height));
+        }
+        let mut n = 0;
+        for path in &self.files {
+            n += Self::load(path)?.0.frame_count() as usize;
+        }
+        Ok(n)
+    }
+
     fn first(&self, n: usize) -> Res<Vec<u8>> {
         let mut out = Vec::with_capacity(n * self.width * self.height);
         self.for_each(n, |_, px| {
@@ -148,6 +165,14 @@ fn config(nonrigid: bool) -> MotionConfig {
     }
     if let Some(v) = env_f32("MOTION_ANCHOR") {
         c.anchor_weight = v;
+    }
+    if std::env::var("MOTION_VARW").is_ok_and(|v| v == "1") {
+        c.variance_weighting = true;
+    }
+    if let Ok(v) = std::env::var("MOTION_STRATEGY") {
+        if let Some(st) = strategy_named(&v) {
+            c.template_strategy = st;
+        }
     }
     if let Some(v) = env_f32("MOTION_TAU") {
         c.template_tau = v;
@@ -686,6 +711,218 @@ fn npy_movie(dir: &Path) -> Res<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------ drift
+
+fn strategy_named(name: &str) -> Option<TemplateStrategy> {
+    Some(match name {
+        "frozen" => TemplateStrategy::Frozen,
+        "running" => TemplateStrategy::Running,
+        "pinned" => TemplateStrategy::PinnedToWarmup,
+        "cumulative" => TemplateStrategy::PinnedToCumulative,
+        "dual" => TemplateStrategy::DualAnchor,
+        _ => return None,
+    })
+}
+
+/// Strategies to compare: `MOTION_STRATEGIES` (comma list) or all five.
+fn strategies() -> Vec<String> {
+    std::env::var("MOTION_STRATEGIES")
+        .unwrap_or_else(|_| "frozen,running,pinned,cumulative,dual".into())
+        .split(',')
+        .map(str::to_string)
+        .collect()
+}
+
+/// Rigid-only run of one strategy, keeping per-frame records and optionally
+/// the mean corrected frame of the first and last `edge` frames.
+struct DriftRun {
+    shifts: Vec<(f64, f64)>,
+    quality: Vec<f32>,
+    fps: f64,
+    first_mean: Vec<f64>,
+    last_mean: Vec<f64>,
+}
+
+fn drift_run(src: &AviFrames, name: &str, max: usize, edge: usize) -> Res<DriftRun> {
+    let (h, w) = (src.height, src.width);
+    let mut cfg = config(false);
+    cfg.template_strategy = strategy_named(name).ok_or("unknown strategy")?;
+    let mut mc = MotionCorrector::new(h, w, cfg)?;
+    mc.initialize(Frames::U8(&src.first(200.min(max))?))?;
+    let total = if max == usize::MAX { src.count()? } else { max };
+    let mut out = vec![0.0f32; h * w];
+    let (mut first_mean, mut last_mean) = (Vec::new(), Vec::new());
+    if edge > 0 {
+        first_mean = vec![0.0f64; h * w];
+        last_mean = vec![0.0f64; h * w];
+    }
+    let (mut shifts, mut quality, mut busy) = (Vec::new(), Vec::new(), 0.0f64);
+    src.for_each(max, |i, px| {
+        let t = Instant::now();
+        let r = mc.process(Frame::U8(px), &mut out)?;
+        busy += t.elapsed().as_secs_f64();
+        shifts.push((r.dy as f64, r.dx as f64));
+        quality.push(r.quality);
+        if edge > 0 && (i < edge || i >= total.saturating_sub(edge)) {
+            let m = if i < edge {
+                &mut first_mean
+            } else {
+                &mut last_mean
+            };
+            for (a, &v) in m.iter_mut().zip(&out) {
+                *a += v as f64 / edge as f64;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(DriftRun {
+        fps: shifts.len() as f64 / busy,
+        shifts,
+        quality,
+        first_mean,
+        last_mean,
+    })
+}
+
+/// Centred moving average of `v` over `win` samples (shrinking at the ends).
+fn moving_average(v: &[f64], win: usize) -> Vec<f64> {
+    let n = v.len();
+    let mut cs = vec![0.0; n + 1];
+    for i in 0..n {
+        cs[i + 1] = cs[i] + v[i];
+    }
+    let h = win / 2;
+    (0..n)
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(h), (i + h + 1).min(n));
+            (cs[b] - cs[a]) / (b - a) as f64
+        })
+        .collect()
+}
+
+/// Drift metrics of registering shifts `est` against content motion `truth`
+/// (`fps` frames per second): overall RMSE, slow-band (< 0.01 Hz, centred
+/// 100 s moving average) RMSE, linear trend (px/h per axis), std of the slow
+/// error in the first and last quarter, and median quality per quarter.
+fn drift_metrics(est: &[(f64, f64)], truth: &[(f64, f64)], q: &[f32], fps: f64) -> String {
+    let n = est.len();
+    let mut e = [vec![0.0; n], vec![0.0; n]];
+    for i in 0..n {
+        e[0][i] = -est[i].0 - truth[i].0;
+        e[1][i] = -est[i].1 - truth[i].1;
+    }
+    for ax in &mut e {
+        let m = ax.iter().sum::<f64>() / n as f64;
+        ax.iter_mut().for_each(|v| *v -= m);
+    }
+    let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
+    let win = (100.0 * fps) as usize;
+    let slow = [moving_average(&e[0], win), moving_average(&e[1], win)];
+    let overall = ((rms(&e[0]).powi(2) + rms(&e[1]).powi(2)) / 2.0).sqrt();
+    let slow_rms = ((rms(&slow[0]).powi(2) + rms(&slow[1]).powi(2)) / 2.0).sqrt();
+    let t: Vec<f64> = (0..n).map(|i| i as f64 / fps / 3600.0).collect();
+    let tm = t.iter().sum::<f64>() / n as f64;
+    let stt: f64 = t.iter().map(|x| (x - tm).powi(2)).sum();
+    let trend: Vec<f64> = e
+        .iter()
+        .map(|ax| ax.iter().zip(&t).map(|(v, x)| v * (x - tm)).sum::<f64>() / stt)
+        .collect();
+    let quarter = n / 4;
+    let qstd = |a: usize| {
+        let s: Vec<f64> = (a..a + quarter)
+            .map(|i| ((slow[0][i].powi(2) + slow[1][i].powi(2)) / 2.0).sqrt())
+            .collect();
+        rms(&s)
+    };
+    let qmed = |a: usize| {
+        let mut s: Vec<f32> = q[a..a + quarter].to_vec();
+        s.sort_by(f32::total_cmp);
+        s[s.len() / 2]
+    };
+    format!(
+        "RMSE {overall:.3}  slow {slow_rms:.3}  trend ({:+.3}, {:+.3}) px/h  slow RMS Q1 {:.3} Q4 {:.3}  quality Q1 {:.3} Q4 {:.3}",
+        trend[0],
+        trend[1],
+        qstd(0),
+        qstd(n - quarter),
+        qmed(0),
+        qmed(n - quarter)
+    )
+}
+
+/// Long minisim recordings: every template strategy against the truth.
+fn drift_minisim(dir: &Path, gt: &Path, max: usize) -> Res<()> {
+    let src = AviFrames::open(&dir.join("Miniscope"))?;
+    let truth = pairs(Npy::read(gt.join("shifts.npy"))?.into_f64());
+    let n = max.min(truth.len());
+    println!("  {} frames, {:.2} h", n, n as f64 / 20.0 / 3600.0);
+    for name in strategies() {
+        let r = drift_run(&src, &name, n, 0)?;
+        println!(
+            "  {name:>10}: {}  {:.0} frames/s",
+            drift_metrics(&r.shifts, &truth[..r.shifts.len()], &r.quality, 20.0),
+            r.fps
+        );
+    }
+    Ok(())
+}
+
+/// Real data: mean corrected frame of the first and last `edge` frames for
+/// each strategy, saved for an independent registration.
+fn drift_real(dir: &Path, outdir: &Path, edge: usize) -> Res<()> {
+    let src = AviFrames::open(dir)?;
+    for name in strategies() {
+        let r = drift_run(&src, &name, usize::MAX, edge)?;
+        let mut q = r.quality.clone();
+        q.sort_by(f32::total_cmp);
+        let quarter = r.quality.len() / 4;
+        let med = |a: usize| {
+            let mut s: Vec<f32> = r.quality[a..a + quarter].to_vec();
+            s.sort_by(f32::total_cmp);
+            s[s.len() / 2]
+        };
+        println!(
+            "  {name:>10}: {} frames, {:.0} frames/s, quality Q1 {:.3} Q4 {:.3}",
+            r.shifts.len(),
+            r.fps,
+            med(0),
+            med(r.quality.len() - quarter)
+        );
+        save_image(
+            &outdir.join(format!("first_{name}.npy")),
+            &r.first_mean,
+            src.height,
+            src.width,
+        )?;
+        save_image(
+            &outdir.join(format!("last_{name}.npy")),
+            &r.last_mean,
+            src.height,
+            src.width,
+        )?;
+        save_shifts(&outdir.join(format!("shifts_{name}.npy")), &r.shifts)?;
+    }
+    Ok(())
+}
+
+/// Write an `h x w` float64 image as `.npy`.
+fn save_image(path: &Path, img: &[f64], h: usize, w: usize) -> Res<()> {
+    let header = format!("{{'descr': '<f8', 'fortran_order': False, 'shape': ({h}, {w}), }}");
+    let mut hd = header.into_bytes();
+    while (10 + hd.len() + 1) % 64 != 0 {
+        hd.push(b' ');
+    }
+    hd.push(b'\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    out.extend_from_slice(&(hd.len() as u16).to_le_bytes());
+    out.extend_from_slice(&hd);
+    for &v in img {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
     let usage = "usage: motion_eval minisim <daq_dir> <gt_dir> [frames] | real <avi_dir> <ref_dir> [frames] | synthetic <avi_dir>";
@@ -708,6 +945,16 @@ fn main() -> Res<()> {
         ),
         "synthetic" => synthetic(Path::new(args.get(2).ok_or(usage)?)),
         "npy" => npy_movie(Path::new(args.get(2).ok_or(usage)?)),
+        "drift" => drift_minisim(
+            Path::new(args.get(2).ok_or(usage)?),
+            Path::new(args.get(3).ok_or(usage)?),
+            max(4),
+        ),
+        "realdrift" => drift_real(
+            Path::new(args.get(2).ok_or(usage)?),
+            Path::new(args.get(3).ok_or(usage)?),
+            2400,
+        ),
         _ => Err(usage.into()),
     }
 }
