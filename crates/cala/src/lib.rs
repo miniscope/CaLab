@@ -13,6 +13,8 @@
 //!   refine footprints) that publishes new library versions to the fast loop.
 //! * [`trace`]: the fast loop, per-frame cell traces from a (swappable)
 //!   footprint library, and re-extraction of past frames.
+//! * [`qc`]: online quality control of traces, footprints and demixing,
+//!   computed alongside the fast loop from the data alone.
 //!
 //! Errors are typed ([`AviError`]); nothing on a public path panics, because a
 //! panic is a trap that leaves the WASM module unusable in its worker.
@@ -21,6 +23,7 @@ pub mod avi;
 pub mod discover;
 pub mod motion;
 pub mod preprocess;
+pub mod qc;
 pub mod trace;
 
 pub use avi::{AviError, AviHeader, AviInfo, PixelFormat};

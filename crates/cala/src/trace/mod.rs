@@ -58,13 +58,13 @@ mod library;
 mod solver;
 
 #[cfg(feature = "jsbindings")]
-mod js;
+pub(crate) mod js;
 
 use std::fmt;
 
 pub use background::{BackgroundFit, BackgroundLearner, BackgroundModel};
 pub use extract::{extract_preprocessed, extract_span, ReplayRegistrar};
-pub(crate) use library::support_disk;
+pub(crate) use library::{support_disk, BgTerms};
 pub use library::{
     Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };
