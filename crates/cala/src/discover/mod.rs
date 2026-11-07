@@ -88,11 +88,16 @@
     clippy::type_complexity
 )]
 
+mod ledger;
 mod local;
 mod reservoir;
 
+pub use ledger::{CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts};
+
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use ledger::Evidence;
 use local::{rank1, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
 use reservoir::{mix, Slot, Tile};
 
@@ -146,6 +151,35 @@ pub struct SlowLoopConfig {
     pub min_test_frames: usize,
     /// New slots that make a tile due for a visit.
     pub visit_after_slots: u32,
+    /// Evidence ledger: a run of the trace above (below) its baseline counts
+    /// as a transient (dip) when it peaks beyond `event_z` σ and lasts at
+    /// least this many frames.
+    pub event_frames: u32,
+    /// Transients after birth that move a cell from probation to
+    /// established (with dips below `dip_ratio` of them).
+    pub establish_events: u32,
+    /// A cell without a single transient this many frames after its birth
+    /// is deleted: no evidence since its birth.
+    pub probation_frames: u64,
+    /// Keep test on probe frames (held-out frames after a cell's birth on
+    /// which its fast-loop trace peaks beyond `event_z` σ): a probe passes
+    /// when dropping the cell raises that frame's χ² by more than a noise
+    /// column would by `keep_z` standard deviations (a smooth local bump is
+    /// free in both arms, as in the add test).
+    pub keep_z: f32,
+    /// A cell is deleted once its failed probes reach `delete_fails` and
+    /// outnumber its passes `fail_ratio` to one.
+    pub delete_fails: u32,
+    pub fail_ratio: f32,
+    /// Probe frames stored per tile, and the minimum frames between two
+    /// probes of one cell.
+    pub probes_per_tile: usize,
+    pub probe_gap_frames: u64,
+    /// Delete cells that lose support (the ledger is kept either way).
+    pub prune: bool,
+    /// Reject a proposal before fitting it when the held-out residual at
+    /// its peak shows fewer than `min_events` excursions above 2 σ.
+    pub pretest: bool,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -174,6 +208,16 @@ impl Default for SlowLoopConfig {
             min_fit_frames: 16,
             min_test_frames: 8,
             visit_after_slots: 6,
+            event_frames: 3,
+            establish_events: 3,
+            probation_frames: 2400,
+            keep_z: 2.0,
+            delete_fails: 4,
+            fail_ratio: 4.0,
+            probes_per_tile: 8,
+            probe_gap_frames: 100,
+            prune: true,
+            pretest: true,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
                 inner_px: 12.0,
@@ -199,7 +243,11 @@ impl SlowLoopConfig {
             && self.event_z.is_finite()
             && self.merge_corr.is_finite()
             && self.min_fit_frames >= 2
-            && self.min_test_frames >= 2;
+            && self.min_test_frames >= 2
+            && self.event_frames >= 1
+            && self.keep_z.is_finite()
+            && self.fail_ratio.is_finite()
+            && self.delete_fails >= 1;
         if ok {
             Ok(())
         } else {
@@ -219,11 +267,21 @@ pub struct SlowStats {
     pub merge_tests: u64,
     pub refines: u64,
     pub commits: u64,
+    /// Cells deleted for lack of support.
+    pub deletes: u64,
+    /// Proposals rejected by the held-out pre-test (before any fit).
+    pub pretest_rejects: u64,
+    /// Merge tests that kept the two cells apart.
+    pub merge_rejects: u64,
     /// Work spent loading frames, refining, merging and adding.
     pub work_load: u64,
     pub work_refine: u64,
     pub work_merge: u64,
     pub work_add: u64,
+    pub work_keep: u64,
+    /// Probe frames tested, and how many of those tests failed.
+    pub keep_tests: u64,
+    pub keep_fails: u64,
 }
 
 /// The slow loop. See the module docs.
@@ -253,6 +311,21 @@ pub struct SlowLoop {
     rng: u64,
     published: Option<Arc<Library>>,
     stats: SlowStats,
+    edits: EditCounts,
+    /// Evidence per published cell, by id.
+    ledger: HashMap<u64, Evidence>,
+    /// Earlier deletions at the spot a cell was added on, by id.
+    lives: HashMap<u64, u32>,
+    /// Projection of the residual onto each slot of the library the ledger
+    /// last read (rebuilt when the version changes).
+    lproj: LedgerProj,
+    lproj_ids: Vec<u64>,
+    deleted: Vec<DeletedCell>,
+    /// Pairs whose merge was rejected: `(id, id, until_frame)`.
+    merge_rejected: Vec<(u64, u64, u64)>,
+    /// Pairs the keep tests found redundant, to be merge-tested regardless
+    /// of their trace correlation.
+    forced: Vec<(u64, u64)>,
     // observe() buffers
     model: Vec<f32>,
     z: Vec<f32>,
@@ -262,6 +335,22 @@ pub struct SlowLoop {
     coarse_dims: Dims,
     coarse_gauss: RecursiveGaussian,
     sample: Vec<f32>,
+}
+
+/// Per library slot: the residual weights `h / σ²` on the support, the
+/// coordinate normaliser `1 / Σ h² / σ²`, `Σ h / σ²` (for the ring level)
+/// and the coordinate's noise σ.
+#[derive(Default)]
+struct LedgerProj {
+    version: u64,
+    start: Vec<usize>,
+    pix: Vec<u32>,
+    w: Vec<f32>,
+    inv_n: Vec<f32>,
+    wsum: Vec<f32>,
+    floor: Vec<f32>,
+    /// Tile whose core holds the slot's centre (`usize::MAX`: none).
+    tile: Vec<usize>,
 }
 
 /// A tile's model solved on its fitting frames.
@@ -275,6 +364,8 @@ struct Solved {
 struct Frames {
     y: Vec<Vec<f32>>,
     proj: Vec<(Vec<f64>, f64)>,
+    /// Frame index of each.
+    idx: Vec<u64>,
 }
 
 impl Frames {
@@ -392,6 +483,17 @@ impl SlowLoop {
             rng: mix(cfg.seed ^ 0x5eed),
             published: None,
             stats: SlowStats::default(),
+            edits: EditCounts::default(),
+            ledger: HashMap::new(),
+            lives: HashMap::new(),
+            lproj: LedgerProj {
+                version: u64::MAX,
+                ..LedgerProj::default()
+            },
+            lproj_ids: Vec::new(),
+            deleted: Vec::new(),
+            merge_rejected: Vec::new(),
+            forced: Vec::new(),
             model: vec![0.0; n_px],
             z: vec![0.0; n_px],
             coarse: vec![0.0; coarse_dims.pixels()],
@@ -457,6 +559,68 @@ impl SlowLoop {
 
     pub fn slots_per_tile(&self) -> (usize, usize) {
         (self.cap_events, self.cap_random)
+    }
+
+    /// `(id, frame it entered the working set)` of every working-set cell.
+    pub fn births(&self) -> Vec<(u64, u64)> {
+        self.cells.iter().map(|c| (c.id, c.born)).collect()
+    }
+
+    /// Evidence on every working-set cell (cells not yet published have
+    /// `frames == 0`).
+    pub fn cell_infos(&self) -> Vec<CellInfo> {
+        self.cells.iter().map(|c| self.info(c)).collect()
+    }
+
+    /// Evidence on one cell, if it is in the working set.
+    pub fn cell_info(&self, id: u64) -> Option<CellInfo> {
+        self.cells.iter().find(|c| c.id == id).map(|c| self.info(c))
+    }
+
+    /// Ledger state per published cell: `(id, last coordinate, baseline,
+    /// scale)`. For diagnostics.
+    #[doc(hidden)]
+    pub fn debug_ledger(&self) -> Vec<(u64, f32, f32, f32)> {
+        let mut v: Vec<_> = self
+            .ledger
+            .iter()
+            .map(|(&id, e)| (id, e.last_u, e.base, e.scale))
+            .collect();
+        v.sort_by_key(|e| e.0);
+        v
+    }
+
+    /// Edits since the last call (adds, merges, deletes, refines, commits),
+    /// for a per-interval display.
+    pub fn take_edit_counts(&mut self) -> EditCounts {
+        std::mem::take(&mut self.edits)
+    }
+
+    /// Cells deleted since the last call, with the evidence they were
+    /// deleted on.
+    pub fn take_deleted(&mut self) -> Vec<DeletedCell> {
+        std::mem::take(&mut self.deleted)
+    }
+
+    fn info(&self, c: &Cell) -> CellInfo {
+        let ev = self.ledger.get(&c.id);
+        CellInfo {
+            id: c.id,
+            born: c.born,
+            status: if ev.is_some_and(|e| e.established) {
+                CellStatus::Established
+            } else {
+                CellStatus::Probation
+            },
+            frames: ev.map_or(0, |e| e.frames),
+            transients: ev.map_or(0, |e| e.transients),
+            dips: ev.map_or(0, |e| e.dips),
+            peak_z: ev.map_or(0.0, |e| e.peak_z),
+            passes: ev.map_or(0, |e| e.passes),
+            fails: ev.map_or(0, |e| e.fails),
+            redundant: ev.map_or(0, |e| e.redundant),
+            center: c.center,
+        }
     }
 
     /// The last published library.
@@ -563,6 +727,7 @@ impl SlowLoop {
             (1.4826 * *m).max(1e-6)
         };
         self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
+        self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
         for ti in 0..self.tiles.len() {
@@ -584,8 +749,229 @@ impl SlowLoop {
             tile.offer(&self.z, w, frame_idx, score, test, ce, cr, decay, rand);
             let _ = before;
         }
+        if test {
+            self.take_probes(lib, frame_idx);
+        }
         self.frames += 1;
         Ok(())
+    }
+
+    /// Ledger update for one frame: each published cell's unconstrained
+    /// coordinate `u = c + hᵀ Σ⁻¹ (y − model − level) / hᵀ Σ⁻¹ h`.
+    fn update_ledger(&mut self, frame: &[f32], lib: &Library, traces: &FrameTraces) {
+        if self.lproj.version != lib.version() {
+            self.build_lproj(lib);
+        }
+        let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
+            && traces.background.len() == lib.len();
+        let (ez, ef) = (self.cfg.event_z, self.cfg.event_frames);
+        let lp = &self.lproj;
+        let mut work = 0u64;
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            let (a, b) = (lp.start[slot], lp.start[slot + 1]);
+            let mut g = 0.0f32;
+            for k in a..b {
+                let p = lp.pix[k] as usize;
+                let y = frame[p];
+                if y.is_finite() {
+                    g += lp.w[k] * (y - self.model[p]);
+                }
+            }
+            work += (b - a) as u64 * 2;
+            let level = if ring { traces.background[slot] } else { 0.0 };
+            let u = traces.traces[slot] + (g - level * lp.wsum[slot]) * lp.inv_n[slot];
+            self.ledger
+                .entry(id)
+                .or_insert_with(Evidence::new)
+                .update(u, lp.floor[slot], ez, ef);
+        }
+        self.work += work;
+    }
+
+    /// Held-out frame `frame`: store it as a probe in the tile of each cell
+    /// that is in a confirmed transient of its ledger trace (the first
+    /// held-out frame of that transient; at most once per
+    /// `probe_gap_frames` per cell).
+    fn take_probes(&mut self, lib: &Library, frame: u64) {
+        let gap = self.cfg.probe_gap_frames;
+        let mut per_tile: Vec<(usize, u64)> = Vec::new();
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            let Some(ev) = self.ledger.get_mut(&id) else {
+                continue;
+            };
+            if !ev.probe_ready || ev.last_probe.is_some_and(|f| f + gap > frame) {
+                continue;
+            }
+            ev.probe_ready = false;
+            ev.run_probed = true;
+            let ti = self.lproj.tile[slot];
+            if ti == usize::MAX {
+                continue;
+            }
+            ev.last_probe = Some(frame);
+            per_tile.push((ti, id));
+        }
+        per_tile.sort_unstable();
+        let w = self.dims.width;
+        let cap = self.cfg.probes_per_tile;
+        let mut i = 0;
+        while i < per_tile.len() {
+            let ti = per_tile[i].0;
+            let mut cells = Vec::new();
+            while i < per_tile.len() && per_tile[i].0 == ti {
+                cells.push(per_tile[i].1);
+                i += 1;
+            }
+            self.tiles[ti].probe(&self.z, w, frame, cells, cap);
+            self.work += self.tiles[ti].rect.len() as u64;
+        }
+    }
+
+    fn build_lproj(&mut self, lib: &Library) {
+        let mut lp = LedgerProj {
+            version: lib.version(),
+            start: vec![0],
+            ..LedgerProj::default()
+        };
+        for slot in 0..lib.len() {
+            let (pix, h) = lib.filtered(slot);
+            let (mut n, mut ws) = (0.0f64, 0.0f64);
+            for (&p, &v) in pix.iter().zip(h) {
+                let is = self.inv_sigma[p as usize];
+                let w = v * is * is;
+                lp.pix.push(p);
+                lp.w.push(w);
+                n += f64::from(v * w);
+                ws += f64::from(w);
+            }
+            lp.start.push(lp.pix.len());
+            let inv_n = if n > 0.0 { (1.0 / n) as f32 } else { 0.0 };
+            lp.inv_n.push(inv_n);
+            lp.wsum.push(ws as f32);
+            lp.floor.push(inv_n.sqrt());
+            let (c, _) = lib.support(slot);
+            lp.tile.push(self.tile_of(c.0, c.1).unwrap_or(usize::MAX));
+        }
+        // Ledger entries of cells no longer published (deleted, merged);
+        // cells whose column changed (a new coordinate scale) warm up again.
+        let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
+        self.ledger.retain(|id, _| ids.contains(id));
+        let old: HashMap<u64, f32> = self
+            .lproj_ids
+            .iter()
+            .copied()
+            .zip(self.lproj.inv_n.iter().copied())
+            .collect();
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            if let (Some(&o), Some(ev)) = (old.get(&id), self.ledger.get_mut(&id)) {
+                let n = lp.inv_n[slot];
+                if (n - o).abs() > 1e-3 * o.abs().max(1e-12) {
+                    ev.rewarm();
+                }
+            }
+        }
+        self.lproj_ids = lib.ids().to_vec();
+        self.lproj = lp;
+    }
+
+    /// Keep / delete decisions from the ledger (cheap; runs every step).
+    ///
+    /// * established: `establish_events` transients after birth, and
+    ///   probes passed at least as often as failed;
+    /// * deleted as unsupported (any status: a cell is never beyond
+    ///   re-testing): failed probes reach `delete_fails` and outnumber the
+    ///   passed ones `fail_ratio` to one;
+    /// * deleted as silent: no transient at all within `probation_frames`
+    ///   of its birth (times one plus the number of earlier deletions at
+    ///   its spot);
+    /// * mostly redundant with one neighbour: the pair is merge-tested.
+    fn prune(&mut self) {
+        let cfg = &self.cfg;
+        let mut doomed = Vec::new();
+        for c in &self.cells {
+            let Some(ev) = self.ledger.get_mut(&c.id) else {
+                continue;
+            };
+            let unsupported = ev.fails >= cfg.delete_fails
+                && ev.fails as f32 >= cfg.fail_ratio * ev.passes as f32;
+            ev.established =
+                ev.transients >= cfg.establish_events && ev.passes >= ev.fails && !unsupported;
+            if ev.redundant >= 2 && ev.redundant > ev.passes {
+                if let Some(p) = ev.partner {
+                    let pair = (c.id.min(p), c.id.max(p));
+                    if !self.forced.contains(&pair) {
+                        self.forced.push(pair);
+                    }
+                }
+            }
+            if !cfg.prune {
+                continue;
+            }
+            let lives = u64::from(self.lives.get(&c.id).copied().unwrap_or(0));
+            if unsupported {
+                doomed.push((c.id, DeleteReason::Unsupported));
+            } else if ev.transients == 0 && ev.frames >= cfg.probation_frames * (1 + lives) {
+                doomed.push((c.id, DeleteReason::Silent));
+            }
+        }
+        for (id, reason) in doomed {
+            self.delete(id, reason);
+        }
+        let live: std::collections::HashSet<u64> = self.cells.iter().map(|c| c.id).collect();
+        self.forced
+            .retain(|p| live.contains(&p.0) && live.contains(&p.1));
+    }
+
+    fn delete(&mut self, id: u64, reason: DeleteReason) {
+        let Some(i) = self.cells.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let info = self.info(&self.cells[i]);
+        let cell = self.cells.remove(i);
+        self.ledger.remove(&id);
+        self.lives.remove(&id);
+        self.deleted.push(DeletedCell {
+            info,
+            frame: self.frames,
+            reason,
+        });
+        self.stats.deletes += 1;
+        self.edits.deletes += 1;
+        let (cy, cx) = cell.center;
+        let now = self.frames;
+        let d = self.cfg.cell_diameter_px;
+        if let Some(ti) = self.tile_of(cy, cx) {
+            let t = &mut self.tiles[ti];
+            match t
+                .tombs
+                .iter_mut()
+                .find(|r| (r.0 - cy).powi(2) + (r.1 - cx).powi(2) <= (0.5 * d).powi(2))
+            {
+                Some(r) => {
+                    *r = (cy, cx, now, r.3 + 1);
+                }
+                None => t.tombs.push((cy, cx, now, 1)),
+            }
+            self.reject(ti, cy, cx);
+        }
+        self.pending = true;
+        self.touch(cell.bbox);
+    }
+
+    /// The tile whose core holds `(y, x)`.
+    fn tile_of(&self, y: f32, x: f32) -> Option<usize> {
+        let (y, x) = (y.max(0.0) as usize, x.max(0.0) as usize);
+        self.tiles.iter().position(|t| t.core.local(y, x).is_some())
+    }
+
+    /// The deletion record near `(y, x)`: `(frame, deletions)`.
+    fn tomb(&self, ti: usize, y: f32, x: f32) -> Option<(u64, u32)> {
+        let d = self.cfg.cell_diameter_px;
+        self.tiles[ti]
+            .tombs
+            .iter()
+            .find(|r| (r.0 - y).powi(2) + (r.1 - x).powi(2) <= (0.5 * d).powi(2))
+            .map(|r| (r.2, r.3))
     }
 
     fn is_test(&self, frame: u64) -> bool {
@@ -596,6 +982,7 @@ impl SlowLoop {
     /// tile visits, carrying any overrun into the next call. Returns a new
     /// library when edits were published; swap it into the fast loop.
     pub fn step(&mut self, budget: u64) -> Result<Option<Arc<Library>>, TraceError> {
+        self.prune();
         self.credit = self.credit.saturating_add(budget as i64);
         while self.credit > 0 {
             let Some(ti) = self.next_tile() else {
@@ -640,6 +1027,20 @@ impl SlowLoop {
             .fov(self.fov.clone())
             .noise(self.noise.clone())
             .background(self.cfg.background.clone());
+        // Only edited cells are filtered again.
+        let mut changed = self.cells.len();
+        if let Some(prev) = &self.published {
+            b = b.reuse(prev.clone());
+            changed = self
+                .cells
+                .iter()
+                .filter(|c| {
+                    prev.slot(c.id)
+                        .is_none_or(|s| prev.unfiltered(s).1 != c.raw.as_slice())
+                })
+                .count();
+        }
+        let support: usize = self.cells.iter().map(|c| c.pix.len()).sum();
         for c in &self.cells {
             b.push(c.footprint(self.dims));
         }
@@ -647,6 +1048,8 @@ impl SlowLoop {
         // The working set takes the exact filtered columns.
         let w = self.dims.width;
         let mut cells = Vec::with_capacity(lib.len());
+        let born: std::collections::HashMap<u64, u64> =
+            self.cells.iter().map(|c| (c.id, c.born)).collect();
         for slot in 0..lib.len() {
             let (center, radius) = lib.support(slot);
             let (pix, raw) = lib.unfiltered(slot);
@@ -663,15 +1066,20 @@ impl SlowLoop {
                 pix: pix.to_vec(),
                 raw: raw.to_vec(),
                 filt: filt.to_vec(),
+                born: born.get(&lib.ids()[slot]).copied().unwrap_or(0),
             });
         }
-        self.work += (self.dims.pixels() * 40) as u64 * (1 + lib.len() as u64 / 50);
+        // Filtering the edited cells (full-frame passes, many cells per
+        // pass) and assembling the solve terms.
+        self.work +=
+            (self.dims.pixels() * 40) as u64 * (1 + changed as u64 / 50) + support as u64 * 40;
         self.cells = cells;
         let lib = Arc::new(lib);
         self.published = Some(lib.clone());
         self.pending = false;
         self.last_commit = self.frames;
         self.stats.commits += 1;
+        self.edits.commits += 1;
         Ok(lib)
     }
 
@@ -686,8 +1094,10 @@ impl SlowLoop {
         let bg = self.bgs[ti].as_ref().expect("basis");
         let mut y = Vec::with_capacity(ids.len());
         let mut proj = Vec::with_capacity(ids.len());
+        let mut idx = Vec::with_capacity(ids.len());
         for s in ids {
             let slot: &mut Slot = self.tiles[ti].slot_mut(s);
+            idx.push(slot.frame);
             let mut v = Vec::new();
             slot.values(&mut v);
             if slot.proj.is_none() {
@@ -697,7 +1107,7 @@ impl SlowLoop {
             proj.push(slot.proj.clone().expect("set"));
             y.push(v);
         }
-        Frames { y, proj }
+        Frames { y, proj, idx }
     }
 
     fn columns(&self, rect: Rect, skip: &[u64], extra: &[&Cell]) -> Vec<Column> {
@@ -772,6 +1182,9 @@ impl SlowLoop {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
         let w0 = self.work;
+        self.keep_tests(ti);
+        self.stats.work_keep += self.work - w0;
+        let w0 = self.work;
         let fit_fr = self.load(ti, false);
         let test_fr = self.load(ti, true);
         self.stats.work_load += self.work - w0;
@@ -823,6 +1236,7 @@ impl SlowLoop {
         // cell's signal is subtracted from them in place.
         let mut maps: Option<(Vec<Vec<f32>>, Vec<Vec<f32>>, f32, Vec<f32>)> = None;
         let mut resid = Some(resid);
+        let mut test_maps: Option<(Vec<Vec<f32>>, f32)> = None;
         while adds < self.cfg.max_adds_per_visit && rejects < self.cfg.max_rejects_per_visit {
             if maps.is_none() {
                 let resid = resid.take().expect("first pass");
@@ -868,8 +1282,15 @@ impl SlowLoop {
                     if best.is_some_and(|b| s <= b.2) {
                         continue;
                     }
+                    let quiet = self.cfg.reject_cooldown_frames;
                     let suppressed = self.tiles[ti].rejected.iter().any(|r| {
                         r.2 > now && (r.0 - fy).powi(2) + (r.1 - fx).powi(2) <= (0.5 * d).powi(2)
+                    }) || self.tiles[ti].tombs.iter().any(|r| {
+                        // After the k-th deletion at a spot, nothing is
+                        // added there for 4^k cooldowns (no add / delete
+                        // oscillation).
+                        r.2 + quiet * (1u64 << (2 * r.3.min(6))) > now
+                            && (r.0 - fy).powi(2) + (r.1 - fx).powi(2) <= (0.5 * d).powi(2)
                     }) || self.cells.iter().any(|c| {
                         (c.center.0 - fy).powi(2) + (c.center.1 - fx).powi(2) <= (0.5 * d).powi(2)
                     });
@@ -885,18 +1306,38 @@ impl SlowLoop {
             }
             self.stats.proposals += 1;
             let l = rect.local(py, px).expect("inside");
+            if self.cfg.pretest && !self.pretest(ti, test_fr, &mut test_maps, l) {
+                self.stats.pretest_rejects += 1;
+                self.stats.rejects += 1;
+                self.reject(ti, py as f32, px as f32);
+                rejects += 1;
+                continue;
+            }
             let mut c0: Vec<f32> = blurred
                 .iter()
                 .map(|b| (b[l] / scale - 2.0).max(0.0))
                 .collect();
             let id = self.next_id;
             let cand = self.fit_new(id, rect, resid, &mut c0, (py as f32, px as f32));
+            let mut lives = 0;
             let accepted = match cand {
-                Some(cell) => self.test_add(ti, test_fr, &cell).then_some(cell),
+                Some(cell) => {
+                    let tomb = self
+                        .tile_of(cell.center.0, cell.center.1)
+                        .and_then(|t| self.tomb(t, cell.center.0, cell.center.1));
+                    lives = tomb.map_or(0, |t| t.1);
+                    self.test_add(ti, test_fr, &cell, tomb.map(|t| t.0))
+                        .then_some(cell)
+                }
                 None => None,
             };
             match accepted {
-                Some(cell) => {
+                Some(mut cell) => {
+                    cell.born = self.frames;
+                    self.edits.adds += 1;
+                    if lives > 0 {
+                        self.lives.insert(cell.id, lives);
+                    }
                     self.next_id += 1;
                     self.stats.adds += 1;
                     let bbox = cell.bbox;
@@ -949,6 +1390,55 @@ impl SlowLoop {
                 }
             }
         }
+    }
+
+    /// Cheap held-out pre-test of a proposal at patch pixel `l`: the
+    /// current model's residual on the held-out frames, blurred to cell
+    /// scale, must rise 2 σ above its robust level on at least `min_events`
+    /// frames (the add test needs `min_events` held-out transients). The
+    /// held-out maps are made once per visit; cells accepted later in the
+    /// visit leave them stale, which only makes the pre-test more lenient.
+    fn pretest(
+        &mut self,
+        ti: usize,
+        test_fr: &Frames,
+        maps: &mut Option<(Vec<Vec<f32>>, f32)>,
+        l: usize,
+    ) -> bool {
+        if maps.is_none() {
+            let rect = self.tiles[ti].rect;
+            let core = self.tiles[ti].core;
+            let cols = self.columns(rect, &[], &[]);
+            let base = self.problem(ti, cols);
+            let fits = self.solve_all(&base, test_fr);
+            let resid = self.residuals(&base, test_fr, &fits, ti);
+            let mut blurred = Vec::with_capacity(resid.len());
+            for r in &resid {
+                let mut b = vec![0.0f32; r.len()];
+                self.blur_window(rect, core, r, &mut b);
+                blurred.push(b);
+            }
+            let mut sample: Vec<f32> = blurred
+                .iter()
+                .flat_map(|b| {
+                    (0..core.h).step_by(3).flat_map(move |y| {
+                        let row = (core.y0 - rect.y0 + y) * rect.w + core.x0 - rect.x0;
+                        b[row..row + core.w].iter().step_by(3).map(|v| v.abs())
+                    })
+                })
+                .collect();
+            let mid = sample.len() / 2;
+            let scale = if sample.is_empty() {
+                1.0
+            } else {
+                1.4826 * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
+            }
+            .max(1e-6);
+            *maps = Some((blurred, scale));
+        }
+        let (blurred, scale) = maps.as_ref().expect("computed");
+        let hits = blurred.iter().filter(|b| b[l] / scale > 2.0).count();
+        hits >= self.cfg.min_events as usize
     }
 
     fn detect_sigma(&self) -> f32 {
@@ -1169,6 +1659,159 @@ impl SlowLoop {
         self.make_cell(id, rect, &dom, &h, None)
     }
 
+    /// The tile's background basis plus a free Gaussian bump (σ = one cell
+    /// diameter) at `center`, and the frames' projections extended by it.
+    fn with_bump(
+        &self,
+        ti: usize,
+        center: (f32, f32),
+        ys: &[Vec<f32>],
+        proj: &[(Vec<f64>, f64)],
+    ) -> (BgBasis, Vec<(Vec<f64>, f64)>) {
+        let rect = self.tiles[ti].rect;
+        let s = self.cfg.cell_diameter_px;
+        let mut bump = vec![0.0f32; rect.len()];
+        for y in 0..rect.h {
+            for x in 0..rect.w {
+                let dy = (rect.y0 + y) as f32 - center.0;
+                let dx = (rect.x0 + x) as f32 - center.1;
+                bump[y * rect.w + x] = (-(dy * dy + dx * dx) / (2.0 * s * s)).exp();
+            }
+        }
+        let bg = self.bgs[ti].as_ref().expect("basis").with_extra(&bump);
+        let proj = ys
+            .iter()
+            .zip(proj)
+            .map(|(y, (q, yy))| {
+                let mut q = q.clone();
+                q.push(bump.iter().zip(y).map(|(&a, &b)| f64::from(a * b)).sum());
+                (q, *yy)
+            })
+            .collect();
+        (bg, proj)
+    }
+
+    /// Keep tests on the tile's probe frames: for each cell a probe was
+    /// taken for, does dropping the cell raise that held-out frame's χ²
+    /// (in units of the variance the full model leaves, at least the noise)
+    /// by more than a noise column would, by `keep_z` standard deviations?
+    /// Both arms have the free local bump, so diffuse light (neuropil, a
+    /// neighbour's halo) does not count. Each probe is used once.
+    fn keep_tests(&mut self, ti: usize) {
+        let probes = std::mem::take(&mut self.tiles[ti].probes);
+        if probes.is_empty() {
+            return;
+        }
+        if self.bgs[ti].is_none() {
+            self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
+        }
+        let rect = self.tiles[ti].rect;
+        let mut ids: Vec<u64> = probes
+            .iter()
+            .flat_map(|p| p.cells.iter().copied())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let n_px = self.fov_px(rect) as f64;
+        let (m, sd) = self.null(1);
+        let pass_at = m + f64::from(self.cfg.keep_z) * sd;
+        for id in ids {
+            let Some(cell) = self.cells.iter().find(|c| c.id == id) else {
+                continue;
+            };
+            let center = cell.center;
+            let mut ys = Vec::new();
+            let mut proj = Vec::new();
+            {
+                let bg = self.bgs[ti].as_ref().expect("basis");
+                for p in probes.iter().filter(|p| p.cells.contains(&id)) {
+                    let mut v = Vec::new();
+                    p.slot.values(&mut v);
+                    proj.push(bg.project(&v));
+                    ys.push(v);
+                }
+                self.work += (ys.len() * rect.len() * (bg.k + 1)) as u64;
+            }
+            let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
+            let mut work = 0;
+            let full = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+            let red = Problem::new(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
+            self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
+            let f = self.solve_with(&full, &ys, &proj);
+            let r = self.solve_with(&red, &ys, &proj);
+            let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
+            // Overlap of every other column with this cell's, normalised
+            // by the cell's own energy: how much of the cell's signal an
+            // increase of that neighbour's coefficient reproduces.
+            let Some(ki) = full.cols.iter().position(|c| c.id == id) else {
+                continue;
+            };
+            let mut dense = vec![0.0f32; rect.len()];
+            for (&p, &v) in full.cols[ki].pix.iter().zip(&full.cols[ki].val) {
+                dense[p as usize] = v;
+            }
+            let ee: f32 = full.cols[ki]
+                .val
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .max(1e-12);
+            let share: Vec<f32> = red
+                .cols
+                .iter()
+                .map(|c| {
+                    c.pix
+                        .iter()
+                        .zip(&c.val)
+                        .map(|(&p, &v)| v * dense[p as usize])
+                        .sum::<f32>()
+                        / ee
+                })
+                .collect();
+            let (mut pass, mut fail, mut redundant) = (0, 0, 0);
+            let mut partner: Option<(u64, f32)> = None;
+            for (ff, rr) in f.iter().zip(&r) {
+                let s2 = (ff.chi2 / dof).max(1.0);
+                if (rr.chi2 - ff.chi2) / s2 > pass_at {
+                    pass += 1;
+                    continue;
+                }
+                // Not needed: did a neighbour take over at least half of
+                // the cell's fitted signal?
+                let ci = ff.c[ki];
+                let mut best: Option<(u64, f32)> = None;
+                for (j, c) in red.cols.iter().enumerate() {
+                    let jf = full
+                        .cols
+                        .iter()
+                        .position(|x| x.id == c.id)
+                        .expect("same cells");
+                    let took = (rr.c[j] - ff.c[jf]) * share[j];
+                    if took > 0.5 * ci && best.is_none_or(|b| took > b.1) {
+                        best = Some((c.id, took));
+                    }
+                }
+                match best {
+                    Some(b) if ci > 0.0 => {
+                        redundant += 1;
+                        partner = Some(b);
+                    }
+                    _ => fail += 1,
+                }
+            }
+            self.stats.keep_tests += (pass + fail + redundant) as u64;
+            self.stats.keep_fails += fail as u64;
+            if let Some(ev) = self.ledger.get_mut(&id) {
+                ev.passes += pass;
+                ev.fails += fail;
+                ev.redundant += redundant;
+                if let Some(p) = partner {
+                    ev.partner = Some(p.0);
+                }
+            }
+        }
+    }
+
     /// Held-out test of adding `cell` to the tile's problem.
     ///
     /// Both arms get one extra free background term, a Gaussian of σ = one
@@ -1176,7 +1819,11 @@ impl SlowLoop {
     /// halo of the neighbours, neuropil, out-of-focus light) is explained
     /// without the candidate, so the candidate must explain *compact*
     /// signal (the patch's 3 x 3 bumps are too smooth to do this alone).
-    fn test_add(&mut self, ti: usize, test_fr: &Frames, cell: &Cell) -> bool {
+    ///
+    /// Near a spot where a cell was deleted (`after` = the frame of the
+    /// deletion), only held-out frames after the deletion count as events:
+    /// a deleted cell comes back only on new evidence.
+    fn test_add(&mut self, ti: usize, test_fr: &Frames, cell: &Cell, after: Option<u64>) -> bool {
         let rect = self.tiles[ti].rect;
         let s = self.cfg.cell_diameter_px;
         let mut bump = vec![0.0f32; rect.len()];
@@ -1221,7 +1868,10 @@ impl SlowLoop {
         let base_level = sorted[sorted.len() / 2];
         let events = e
             .iter()
-            .filter(|f| f.c[k] - base_level >= self.cfg.event_z * sig)
+            .zip(&test_fr.idx)
+            .filter(|(f, &fi)| {
+                after.is_none_or(|a| fi > a) && f.c[k] - base_level >= self.cfg.event_z * sig
+            })
             .count() as u32;
         let gain = (Self::total_chi2(&b) - Self::total_chi2(&e)) / s2;
         let (m, s) = self.null(test_fr.len());
@@ -1263,6 +1913,8 @@ impl SlowLoop {
     fn merge(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
         let rect = self.tiles[ti].rect;
         let core = self.tiles[ti].core;
+        let now = self.frames;
+        self.merge_rejected.retain(|r| r.2 > now);
         for _ in 0..4 {
             let cols = self.columns(rect, &[], &[]);
             if cols.len() < 2 {
@@ -1293,9 +1945,26 @@ impl SlowLoop {
                     if dist >= ci.radius + cj.radius {
                         continue;
                     }
+                    // A pair kept apart recently is not re-tested until its
+                    // cooldown ends (otherwise it would block every other
+                    // pair of the tile).
+                    let (lo, hi) = (ids[i].min(ids[j]), ids[i].max(ids[j]));
+                    if self.merge_rejected.iter().any(|r| r.0 == lo && r.1 == hi) {
+                        continue;
+                    }
                     let a: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
                     let b: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
-                    let r = corr(&a, &b);
+                    // Pairs the keep tests found redundant go first, then
+                    // pairs whose footprints largely coincide (a duplicate
+                    // takes no signal in an exact fit, so its trace does
+                    // not correlate), then correlated pairs.
+                    let r = if self.forced.contains(&(lo, hi)) {
+                        2.0
+                    } else if overlap(&base.cols[i], &base.cols[j], rect.len()) >= 0.5 {
+                        1.5
+                    } else {
+                        corr(&a, &b)
+                    };
                     if r >= self.cfg.merge_corr && best.is_none_or(|bb| r > bb.2) {
                         best = Some((i, j, r));
                     }
@@ -1328,9 +1997,14 @@ impl SlowLoop {
             let h = rank1(&refs, &dom, &mut c, 10, false);
             self.work += (dom.len() * data.len() * 40) as u64;
             let keep = self.cells[ci].id.min(self.cells[cj].id);
+            let pair = (ids[i].min(ids[j]), ids[i].max(ids[j]));
+            let cooldown = now + 4 * self.cfg.reject_cooldown_frames;
+            let was_forced = self.forced.contains(&pair);
+            self.forced.retain(|&p| p != pair);
             let Some(m) = self.make_cell(keep, rect, &dom, &h, None) else {
-                self.reject(ti, self.cells[ci].center.0, self.cells[ci].center.1);
-                return;
+                self.merge_rejected.push((pair.0, pair.1, cooldown));
+                self.stats.merge_rejects += 1;
+                continue;
             };
             let sep = self.solve_all(&base, test_fr);
             let cols = self.columns(rect, &[ids[i], ids[j]], &[&m]);
@@ -1338,8 +2012,24 @@ impl SlowLoop {
             let mf = self.solve_all(&mp, test_fr);
             let loss = Self::total_chi2(&mf) - Self::total_chi2(&sep);
             let (mu, s) = self.null(test_fr.len());
-            if loss < mu + f64::from(self.cfg.accept_z) * s {
+            // Footprints that largely coincide and whose held-out traces
+            // move together act as one cell even when the second column
+            // buys a little χ² (it absorbs footprint mismatch).
+            // So does a coinciding column that carries little of the pair's
+            // signal (under a quarter of the other's energy).
+            let one = overlap(&base.cols[i], &base.cols[j], rect.len()) >= 0.5 && {
+                let a: Vec<f32> = sep.iter().map(|f| f.c[i]).collect();
+                let b: Vec<f32> = sep.iter().map(|f| f.c[j]).collect();
+                let energy = |c: &[f32], k: usize| {
+                    let e: f32 = base.cols[k].val.iter().map(|v| v * v).sum();
+                    c.iter().map(|x| x * x).sum::<f32>() * e
+                };
+                let (ea, eb) = (energy(&a, i), energy(&b, j));
+                corr(&a, &b) >= self.cfg.merge_corr || ea.min(eb) < 0.25 * ea.max(eb)
+            };
+            if one || loss < mu + f64::from(self.cfg.accept_z) * s {
                 self.stats.merges += 1;
+                self.edits.merges += 1;
                 let (drop, keep_idx) = if self.cells[ci].id == keep {
                     (cj, ci)
                 } else {
@@ -1347,6 +2037,17 @@ impl SlowLoop {
                 };
                 let bbox = m.bbox;
                 let center = m.center;
+                let mut m = m;
+                m.born = self.cells[ci].born.min(self.cells[cj].born);
+                // The merged cell keeps the stronger evidence record.
+                let gone = self.cells[drop].id;
+                if let Some(ev) = self.ledger.remove(&gone) {
+                    self.ledger
+                        .entry(keep)
+                        .or_insert_with(Evidence::new)
+                        .absorb(&ev);
+                }
+                self.lives.remove(&gone);
                 self.cells[keep_idx] = m;
                 self.cells.remove(drop);
                 self.pending = true;
@@ -1355,7 +2056,18 @@ impl SlowLoop {
                 // The merged cell's surroundings are not re-proposed at once.
                 self.reject(ti, center.0, center.1);
             } else {
-                return;
+                self.merge_rejected.push((pair.0, pair.1, cooldown));
+                self.stats.merge_rejects += 1;
+                // Kept apart: they are two cells after all, so the probes
+                // that found them redundant no longer count.
+                if was_forced {
+                    for id in [pair.0, pair.1] {
+                        if let Some(ev) = self.ledger.get_mut(&id) {
+                            ev.redundant = 0;
+                            ev.partner = None;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1415,9 +2127,10 @@ impl SlowLoop {
             let mut c: Vec<f32> = active.iter().map(|&t| fits[t].c[i]).collect();
             let h = rank1(&refs, &dom, &mut c, 1, true);
             self.work += (dom.len() * data.len()) as u64;
-            let Some(new) = self.make_cell(id, rect, &dom, &h, Some(&cell)) else {
+            let Some(mut new) = self.make_cell(id, rect, &dom, &h, Some(&cell)) else {
                 continue;
             };
+            new.born = cell.born;
             let cols = self.columns(rect, &[id], &[&new]);
             let pr = self.problem(ti, cols);
             let f = self.solve_all(&pr, test_fr);
@@ -1428,6 +2141,7 @@ impl SlowLoop {
         for (id, new) in updates {
             if let Some(ci) = self.cells.iter().position(|c| c.id == id) {
                 self.stats.refines += 1;
+                self.edits.refines += 1;
                 let bbox = new.bbox;
                 self.cells[ci] = new;
                 self.pending = true;
@@ -1449,6 +2163,27 @@ fn clip(a: Rect, b: Rect) -> Rect {
         x0,
         h: y1 - y0,
         w: x1 - x0,
+    }
+}
+
+/// Cosine similarity of two patch columns.
+fn overlap(a: &Column, b: &Column, n: usize) -> f32 {
+    let mut dense = vec![0.0f32; n];
+    for (&p, &v) in a.pix.iter().zip(&a.val) {
+        dense[p as usize] = v;
+    }
+    let ab: f32 = b
+        .pix
+        .iter()
+        .zip(&b.val)
+        .map(|(&p, &v)| v * dense[p as usize])
+        .sum();
+    let aa: f32 = a.val.iter().map(|v| v * v).sum();
+    let bb: f32 = b.val.iter().map(|v| v * v).sum();
+    if aa <= 0.0 || bb <= 0.0 {
+        0.0
+    } else {
+        ab / (aa * bb).sqrt()
     }
 }
 

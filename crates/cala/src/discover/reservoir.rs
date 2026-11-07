@@ -37,6 +37,14 @@ pub(crate) fn mix(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// A held-out frame on which some of the tile's cells fired (by the fast
+/// loop's trace), kept until the next visit tests those cells on it.
+#[derive(Debug, Clone)]
+pub(crate) struct Probe {
+    pub slot: Slot,
+    pub cells: Vec<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Tile {
     /// The pixels this tile is responsible for (candidates are centred here).
@@ -51,6 +59,10 @@ pub(crate) struct Tile {
     pub fresh: u32,
     /// Spots recently rejected: `(y, x, until_frame, rejections)`.
     pub rejected: Vec<(f32, f32, u64, u32)>,
+    /// Spots where a cell was deleted: `(y, x, frame, deletions)`. A new
+    /// cell there needs held-out events from after the deletion.
+    pub tombs: Vec<(f32, f32, u64, u32)>,
+    pub probes: Vec<Probe>,
     pub last_visit: u64,
 }
 
@@ -64,6 +76,8 @@ impl Tile {
             seen: 0,
             fresh: 0,
             rejected: Vec::new(),
+            tombs: Vec::new(),
+            probes: Vec::new(),
             last_visit: 0,
         }
     }
@@ -144,6 +158,20 @@ impl Tile {
         }
     }
 
+    /// Store frame `frame` as a probe for `cells` (the oldest probe goes
+    /// when `cap` are held).
+    pub fn probe(&mut self, z: &[f32], width: usize, frame: u64, cells: Vec<u64>, cap: usize) {
+        if cap == 0 || cells.is_empty() {
+            return;
+        }
+        if self.probes.len() >= cap {
+            self.probes.remove(0);
+        }
+        let slot = self.copy(z, width, frame, 0.0, true);
+        self.probes.push(Probe { slot, cells });
+        self.fresh += 1;
+    }
+
     /// Indices of the distinct stored frames: `(is_event, index)`.
     pub fn slots(&self) -> Vec<(bool, usize)> {
         let mut out: Vec<(bool, usize)> = (0..self.events.len()).map(|i| (true, i)).collect();
@@ -172,6 +200,6 @@ impl Tile {
     }
 
     pub fn bytes(&self) -> usize {
-        (self.events.len() + self.randoms.len()) * self.rect.len() * 2
+        (self.events.len() + self.randoms.len() + self.probes.len()) * self.rect.len() * 2
     }
 }

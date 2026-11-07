@@ -234,3 +234,155 @@ fn library_from_seed_matches_builder() {
         .fold(0.0f32, f32::max);
     assert!(err < 1e-5);
 }
+
+// ---- v2: evidence ledger, pruning, merging of established cells ----------
+
+fn v2_config() -> SlowLoopConfig {
+    SlowLoopConfig {
+        probation_frames: 300,
+        probe_gap_frames: 20,
+        ..config()
+    }
+}
+
+/// Fast + slow loop over frames `range` of the movie, continuing `slow`
+/// and `eng`; collects deletions.
+fn drive(
+    movie: &[f32],
+    range: std::ops::Range<usize>,
+    slow: &mut SlowLoop,
+    eng: &mut TraceEngine,
+    deleted: &mut Vec<DeletedCell>,
+) {
+    let n_px = N * N;
+    for k in range {
+        let f = &movie[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        slow.observe(f, &lib, &tr).unwrap();
+        if let Some(l) = slow.step(5_000_000).unwrap() {
+            eng.set_library(l).unwrap();
+        }
+        deleted.extend(slow.take_deleted());
+    }
+}
+
+fn start(cfg: SlowLoopConfig, seed: &[Footprint]) -> (SlowLoop, TraceEngine) {
+    let n_px = N * N;
+    let mut slow = SlowLoop::new(dims(), vec![1; n_px], vec![1.0; n_px], flattener(), cfg).unwrap();
+    slow.seed(seed).unwrap();
+    let lib0 = slow.finalize().unwrap();
+    let eng = TraceEngine::new(lib0, SolverConfig::default()).unwrap();
+    (slow, eng)
+}
+
+fn near(c: (f32, f32), y: f32, x: f32) -> bool {
+    (c.0 - y).abs() < 2.0 && (c.1 - x).abs() < 2.0
+}
+
+#[test]
+fn a_spurious_cell_on_noise_is_deleted_and_not_re_added() {
+    let t = 1500;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 60.0, 60.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 23);
+    // A true cell plus a cell where there is only noise.
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 60.0, 60.0), blob(2, 28.0, 30.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(
+        lib.ids(),
+        &[1],
+        "deleted {deleted:?}, stats {:?}",
+        slow.stats()
+    );
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].info.id, 2);
+    assert_eq!(deleted[0].reason, DeleteReason::Silent);
+    // No add / delete cycle at the spot.
+    assert!(!centres(&lib).iter().any(|&c| near(c, 28.0, 30.0)));
+    assert_eq!(slow.stats().deletes, 1);
+}
+
+#[test]
+fn a_true_cell_is_never_deleted_over_a_long_run() {
+    let t = 3000;
+    let mut rng = Lcg(31);
+    // One sparse cell (an event every ~200 frames) and one busier, dimmer.
+    let cells = vec![
+        (blob(0, 40.0, 44.0), trace(&mut rng, t, 0.005, 6.0)),
+        (blob(1, 56.0, 60.0), trace(&mut rng, t, 0.02, 4.0)),
+    ];
+    let m = movie(&cells, t, 37);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 40.0, 44.0), blob(2, 56.0, 60.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert!(deleted.is_empty(), "deleted {deleted:?}");
+    let infos = slow.cell_infos();
+    for id in [1, 2] {
+        let c = infos.iter().find(|c| c.id == id).expect("kept");
+        assert_eq!(c.status, CellStatus::Established, "{c:?}");
+        assert!(c.transients >= 3 && c.passes > 0, "{c:?}");
+    }
+}
+
+#[test]
+fn a_duplicate_of_an_established_cell_is_merged() {
+    let t = 1200;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(
+        slow.cell_info(1).map(|c| c.status),
+        Some(CellStatus::Established)
+    );
+    // A second copy, 2 px off, appears later (as a late add would).
+    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
+    assert_eq!(slow.finalize().unwrap().len(), 2);
+    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
+    assert!(slow.stats().merges >= 1);
+    assert!(deleted.is_empty(), "merged, not deleted: {deleted:?}");
+}
+
+#[test]
+fn a_deleted_spot_comes_back_only_on_new_evidence() {
+    // Quiet for the first half, then a real cell starts firing at the spot
+    // of a deleted (silent) one: it is added again, once.
+    let t = 2400;
+    let mut rng = Lcg(51);
+    let mut c = trace(&mut rng, t, 0.03, 6.0);
+    c[..1200].iter_mut().for_each(|v| *v = 0.0);
+    let m = movie(&[(blob(0, 47.0, 47.0), c)], t, 53);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(deleted.len(), 1, "{deleted:?}");
+    assert_eq!(deleted[0].reason, DeleteReason::Silent);
+    let c = centres(&lib);
+    assert_eq!(c.len(), 1, "{c:?}, stats {:?}", slow.stats());
+    assert!(near(c[0], 47.0, 47.0), "{c:?}");
+    assert_ne!(lib.ids()[0], 1, "a new cell, not the deleted one");
+    assert_eq!(slow.stats().deletes, 1);
+}
+
+#[test]
+fn edit_counts_are_per_interval() {
+    let t = 500;
+    let mut rng = Lcg(3);
+    let cells = vec![(blob(0, 47.0, 51.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 11);
+    let (mut slow, mut eng) = start(v2_config(), &[]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let e = slow.take_edit_counts();
+    assert_eq!(e.adds, slow.stats().adds);
+    assert!(e.adds >= 1 && e.commits >= 1, "{e:?}");
+    assert_eq!(slow.take_edit_counts(), EditCounts::default());
+}
