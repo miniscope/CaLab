@@ -683,3 +683,24 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
     cov / (va * vb).sqrt()
 }
+
+/// The lens-disk check of the FOV mask must not touch a recording that has a
+/// disk: the strongly vignetted fixture keeps exactly the mask the plain
+/// relative threshold gave before the check existed (area and FNV-1a hash of
+/// the mask bytes, recorded from that version).
+#[test]
+fn vignetted_fixture_keeps_its_fov_mask() {
+    let fx = fixture();
+    let cal = calibrate(&fx, &PreprocessConfig::default());
+    let mask = cal.fov().mask();
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in mask {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+    }
+    let area = cal.fov().area();
+    eprintln!("FOV mask: area {area} of {}, hash {h:#x}", mask.len());
+    assert_eq!((area, h), (EXPECTED_AREA, EXPECTED_HASH));
+}
+
+const EXPECTED_AREA: usize = 12468;
+const EXPECTED_HASH: u64 = 0x9e65794d8c789191;

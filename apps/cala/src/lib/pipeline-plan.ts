@@ -8,8 +8,9 @@
  * 1. `calibrate`: the first `calibrationFrames` raw frames feed the
  *    preprocessing warm-up (FOV mask, hot pixels).
  * 2. `motion-warmup`: the first `motionWarmupFrames` frames, through the
- *    sensor-coordinate preprocessing, build the motion template (in the same
- *    intensity domain the corrector will later see).
+ *    sensor-coordinate preprocessing, are pushed batch by batch into the motion
+ *    corrector's streaming warm-up (in the same intensity domain it will later
+ *    see); the last batch builds the template.
  * 3. `process`: every frame from 0, in batches of `batchSize`: preprocessing
  *    front half, motion correction, back half.
  */
@@ -29,9 +30,9 @@ export interface PipelineOptions {
 export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
   batchSize: 8,
   calibrationFrames: 200,
-  // 100 preprocessed f32 frames are 144 MB at 600x600, held only until the
-  // template is built; the Rust default of ~200 would double that.
-  motionWarmupFrames: 100,
+  // The Rust default (~200). The corrector keeps these frames band-passed and
+  // cropped inside WASM until the template is built, never as full f32 frames.
+  motionWarmupFrames: 200,
   previewMaxSide: 320,
 };
 
@@ -80,7 +81,7 @@ export function phaseSpan(plan: PipelinePlan, phase: PipelinePhase): [number, nu
     case 'calibrate':
       return [plan.calibrationFrames, MAX_FRAMES_PER_READ];
     case 'motion-warmup':
-      return [plan.motionWarmupFrames, MAX_FRAMES_PER_READ];
+      return [plan.motionWarmupFrames, plan.batchSize];
     case 'process':
       return [plan.frameCount, plan.batchSize];
   }

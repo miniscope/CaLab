@@ -87,7 +87,14 @@ describe('PipelineEngine (wasm)', () => {
     engine.dispose();
 
     const setup = results.filter((r) => r.kind === 'setup');
-    expect(setup.map((r) => r.kind === 'setup' && r.phase)).toEqual(['calibrate', 'motion-warmup']);
+    // The calibration is one read; the motion warm-up streams in batches of 8
+    // (20 frames: 8 + 8 + 4) into the corrector.
+    expect(setup.map((r) => r.kind === 'setup' && r.phase)).toEqual([
+      'calibrate',
+      'motion-warmup',
+      'motion-warmup',
+      'motion-warmup',
+    ]);
     // Reads stay batch-sized: the whole movie is never requested at once.
     expect(Math.max(...movie.reads.map(([, n]) => n))).toBeLessThanOrEqual(20);
 

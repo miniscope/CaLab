@@ -27,7 +27,7 @@ What is here:
 - `src/lib/pipeline-plan.ts`, `src/lib/pipeline-engine.ts`: the streaming
   preprocess + motion pipeline. Three walks over the recording in small
   batches: preprocessing calibration (200 raw frames), motion warm-up template
-  (100 preprocessed frames), then every frame through the front half of the
+  (200 preprocessed frames, pushed batch by batch into the corrector), then every frame through the front half of the
   preprocessing (hot pixels, glow flattening, line removal), the rigid motion
   corrector (warm-up template, pinned running template) and the back half
   (background floor, noise map). Each batch yields per-frame shifts and
