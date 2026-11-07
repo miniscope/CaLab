@@ -828,3 +828,5 @@ mod eval_event_mass;
 #[cfg(test)]
 mod fast_relaxed_eval;
 
+#[cfg(test)]
+mod eval_exact_vs_fista;

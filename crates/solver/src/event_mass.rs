@@ -44,21 +44,68 @@
 //! The pick is the **largest** `a` whose cost `E_q(a) - E_relaxed` is at most
 //! one standard error of the noise energy ([`NoiseModel::std_error`] over the
 //! interior): the sparsest quantization the data cannot tell from the
-//! relaxed fit. If none qualifies, or the trace has no noise model, the pick
-//! is the floor. There is no penalty on the spike count: sparsity comes from
-//! the quantization (a size a, an integer count) and from the fit ceiling
-//! alone.
+//! relaxed fit. If none qualifies (the relaxed fit is out of reach of every
+//! whole-spike train, which is the usual case once the cap binds), the pick
+//! is the size on the grid that fits the data best, `argmin E_q(a)`;
+//! without a noise model it is the floor. There is
+//! no penalty on the spike count: sparsity comes from the quantization (a
+//! size a, an integer count) and from the fit ceiling alone.
+//!
+//! The relaxed solution these masses come from is the exact optimum of the
+//! relaxed problem (interior point; `ipm`), so the floor `frame_max / cap`
+//! is a property of the data and not of where an iteration happened to stop.
 //!
 //! # Diagnostics
 //!
 //! [`EventMassDiag`] reports, per cell and without acting on them:
 //! `cap_limited` (the pick ended at the floor, so the cap set the spike
-//! size), `no_size_fit` (no size passed the one-SE test), `peak_outlier_ratio`
+//! size), `no_size_fit` (no size passed the one-SE test, so the best-fitting
+//! size was used), `peak_outlier_ratio`
 //! (one frame dominating the floor) and `dropped_spikes` (spikes that could
 //! not be placed).
 use crate::banded::BandedAR2;
 use crate::chain::Scorer;
 use crate::threshold::{interior_pve, threshold_grid, NoiseModel};
+
+/// The size-pick rule in effect. Production always uses [`DEFAULT_MODE`]; the
+/// evaluation harnesses (`eval_exact_vs_fista`) switch it to compare the
+/// alternatives:
+///
+/// | mode | spike-size floor | when no size is within one SE |
+/// |---|---|---|
+/// | 0 | busiest frame / cap | the floor |
+/// | 1 | event span | the floor |
+/// | 2 | event span | the best-fitting size |
+/// | 3 | busiest frame / cap | the best-fitting size (default) |
+/// | 4 | busiest frame / cap | (one-SE rule against the best-fitting size) |
+/// | 5 | event span | (one-SE rule against the best-fitting size) |
+///
+/// The event-span floor is `max_e m_e / (cap * len_e)`: the smallest size at
+/// which every event fits its own span at `cap` spikes per frame.
+pub(crate) const DEFAULT_MODE: u8 = 3;
+
+#[cfg(test)]
+thread_local! {
+    /// Per-thread override of the pick rule (255 = use [`GLOBAL_MODE`]).
+    pub(crate) static FLOOR_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(255) };
+}
+/// Process-wide pick rule for tests that solve on worker threads.
+#[cfg(test)]
+pub(crate) static GLOBAL_MODE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(DEFAULT_MODE);
+
+fn mode() -> u8 {
+    #[cfg(test)]
+    {
+        let local = FLOOR_MODE.with(|m| m.get());
+        if local != 255 {
+            return local;
+        }
+        GLOBAL_MODE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(test))]
+    DEFAULT_MODE
+}
 
 /// One event of the relaxed solution.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,11 +140,15 @@ pub(crate) struct EventMassDiag {
     /// Spikes placed at the pick.
     pub count_pick: f64,
     /// The pick ended at the floor size `frame_max / cap` (the densest train
-    /// the cap allows): the cap, not the data, set the spike size. Always
+    /// the cap allows): the cap, not the data, set the spike size. With no
+    /// size inside one SE, the best-fitting size is picked and it ends at the
+    /// floor when no coarser size fits better. Always
     /// true without a noise model, where the floor is the rule.
     pub cap_limited: bool,
     /// A noise model was available and no spike size passed the one-SE test
-    /// against the relaxed solution, so the floor was taken.
+    /// against the relaxed solution, so the best-fitting size on the grid
+    /// was taken (which is the floor when finer quantization only fits
+    /// better, the usual case).
     pub no_size_fit: bool,
     /// Largest event-peak frame mass over the second largest (each event's
     /// peak being its largest single-frame mass): how much one event
@@ -278,7 +329,15 @@ pub(crate) fn event_mass_search(
         };
     }
     let frame_max = x[lo..hi].iter().fold(0.0_f64, |m, &v| m.max(v as f64));
-    let a_floor = frame_max / cap as f64;
+    let a_floor = if matches!(mode(), 1 | 2 | 5) {
+        // Every event fits its own span at `cap` spikes per frame.
+        events
+            .iter()
+            .map(|e| e.mass / (cap as f64 * (e.end - e.start) as f64))
+            .fold(0.0_f64, f64::max)
+    } else {
+        frame_max / cap as f64
+    };
     let floor_rel = (a_floor / a_max).clamp(1e-6, 1.0);
     // Levels ascending in `a` (relative to a_max): the last is the sparsest.
     let levels = threshold_grid(floor_rel);
@@ -328,10 +387,26 @@ pub(crate) fn event_mass_search(
             let se = nm.std_error(n_grid);
             diag.e_relaxed = e_rel;
             diag.std_error = se;
-            // Largest size whose quantization cost is within one SE.
-            let fit = (0..levels.len()).rev().find(|&i| errors[i] - e_rel <= se);
+            // Largest size whose quantization cost is within one SE of the
+            // relaxed fit (of the best-fitting size in modes 4 and 5).
+            let reference = if matches!(mode(), 4 | 5) {
+                errors.iter().cloned().fold(f64::INFINITY, f64::min)
+            } else {
+                e_rel
+            };
+            let fit = (0..levels.len())
+                .rev()
+                .find(|&i| errors[i] - reference <= se);
             diag.no_size_fit = fit.is_none();
-            fit.unwrap_or(0)
+            // With none, the size that fits the data best (modes 0 and 1: the floor).
+            let fallback = if matches!(mode(), 2 | 3) {
+                (0..levels.len())
+                    .min_by(|&p, &q| errors[p].total_cmp(&errors[q]))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            fit.unwrap_or(fallback)
         }
         None => 0,
     };
@@ -571,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trace_the_sizes_cannot_fit_reports_no_size_fit() {
+    fn a_trace_the_sizes_cannot_fit_reports_no_size_fit_and_takes_the_best_fit() {
         // Masses that no whole-spike size reproduces within one SE of a tiny
         // noise level: two events whose masses are not commensurate.
         let n = 400;
@@ -588,8 +663,20 @@ mod tests {
             corr_sum: 1.0,
         };
         let r = event_mass_search(&x, &mut sc, &banded, 24, 3, Some(nm));
-        assert!(r.diag.no_size_fit && r.diag.cap_limited);
-        assert!((r.diag.a_pick - r.diag.a_floor).abs() < 1e-9);
+        assert!(r.diag.no_size_fit);
+        // The pick is the grid's best-fitting size: it fits at least as well
+        // as the floor the earlier rule fell back to (mode 0).
+        FLOOR_MODE.with(|m| m.set(0));
+        let at_floor = event_mass_search(&x, &mut sc, &banded, 24, 3, Some(nm));
+        FLOOR_MODE.with(|m| m.set(255));
+        assert!((at_floor.diag.a_pick - at_floor.diag.a_floor).abs() < 1e-9);
+        assert!(
+            r.error <= at_floor.error,
+            "{} vs {}",
+            r.error,
+            at_floor.error
+        );
+        assert_eq!(r.diag.cap_limited, r.diag.a_pick == r.diag.a_floor);
     }
 
     #[test]
