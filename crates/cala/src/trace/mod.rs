@@ -64,6 +64,7 @@ use std::fmt;
 
 pub use background::{BackgroundFit, BackgroundLearner, BackgroundModel};
 pub use extract::{extract_preprocessed, extract_span, ReplayRegistrar};
+pub(crate) use library::support_disk;
 pub use library::{
     Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };
@@ -114,7 +115,7 @@ impl From<PreprocessError> for TraceError {
     }
 }
 
-fn check_len(what: &'static str, expected: usize, got: usize) -> Result<(), TraceError> {
+pub(crate) fn check_len(what: &'static str, expected: usize, got: usize) -> Result<(), TraceError> {
     if expected == got {
         Ok(())
     } else {
