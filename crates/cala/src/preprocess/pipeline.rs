@@ -1,9 +1,9 @@
 //! The composed preprocessing chain, its per-frame record and its state.
 //!
 //! ```text
-//!  raw ─► hot pixels ─► flatten ─► lines ─►│ FrameRegistrar │─┬─► background ─► out
-//!                                                               └─► noise map (σ per pixel)
-//!        └──────── front (sensor coords, stateless) ┘          └── back (tissue coords, stateful) ┘
+//!  raw ─► hot pixels ─► flicker ─► flatten ─► lines ─►│ FrameRegistrar │─┬─► background ─► out
+//!                                                                          └─► noise map (σ per pixel)
+//!        └──────────── front (sensor coords) ─────────┘                    └── back (tissue coords, stateful) ┘
 //! ```
 //!
 //! Use it in one of two ways:
@@ -25,8 +25,11 @@
 //!
 //! # Replay
 //!
-//! The front half is a pure function of the raw frame and the calibration, so
-//! [`Preprocessor::front`] on a past frame reproduces it exactly. The back half
+//! The front half is a pure function of the raw frame, the calibration and the
+//! frame's flicker estimate (`FrontRecord::flicker`): the flicker stage keeps
+//! a running reference image, so [`Preprocessor::front`] estimates and advances
+//! it, while [`Preprocessor::front_replay`] applies a recorded estimate and
+//! reproduces a past frame's front half exactly, in any order. The back half
 //! depends on the background and noise state: [`Preprocessor::state`] captures
 //! it (with the calibration and config) as a [`PreprocessState`], which
 //! serializes to bytes ([`PreprocessState::to_bytes`]); restoring it with
@@ -40,6 +43,7 @@ use std::fmt;
 use super::background::{BackgroundConfig, BackgroundState, RunningMinBackground};
 use super::codec::{Reader, Writer};
 use super::flatten::{FlattenConfig, GlowFlattener};
+use super::flicker::{FlickerConfig, FlickerCorrector, FlickerMode, FlickerRecord, FlickerState};
 use super::fov::{FovConfig, FovMask};
 use super::hot_pixels::{HotPixelConfig, HotPixelMap};
 use super::lines::{LineCorrector, LineMode};
@@ -106,6 +110,7 @@ pub struct PreprocessConfig {
     pub warmup_frames: usize,
     pub fov: FovConfig,
     pub hot: HotPixelConfig,
+    pub flicker: FlickerConfig,
     pub flatten: FlattenConfig,
     pub lines: LineMode,
     pub background: BackgroundConfig,
@@ -118,6 +123,7 @@ impl Default for PreprocessConfig {
             warmup_frames: DEFAULT_WARMUP_FRAMES,
             fov: FovConfig::default(),
             hot: HotPixelConfig::default(),
+            flicker: FlickerConfig::default(),
             flatten: FlattenConfig::default(),
             lines: LineMode::default(),
             background: BackgroundConfig::default(),
@@ -131,6 +137,7 @@ impl PreprocessConfig {
     pub fn for_fps(fps: f32) -> PreprocessConfig {
         PreprocessConfig {
             background: BackgroundConfig::for_fps(fps),
+            flicker: FlickerConfig::for_fps(fps),
             ..PreprocessConfig::default()
         }
     }
@@ -143,6 +150,7 @@ impl PreprocessConfig {
         }
         self.fov.validate()?;
         self.hot.validate()?;
+        self.flicker.validate()?;
         self.flatten.validate()?;
         self.background.validate()?;
         self.noise.validate()
@@ -212,6 +220,9 @@ pub struct FrontRecord {
     /// RMS of the subtracted row / column offsets (0 when off).
     pub row_rms: f32,
     pub col_rms: f32,
+    /// The global flicker removed from this frame (replay it with
+    /// [`Preprocessor::front_replay`]).
+    pub flicker: FlickerRecord,
 }
 
 /// Per-frame record of the stateful (tissue-coordinate) stages.
@@ -240,6 +251,7 @@ pub struct PreprocessRecord<R = ()> {
 pub struct Preprocessor {
     cfg: PreprocessConfig,
     calib: Calibration,
+    flicker: FlickerCorrector,
     flatten: GlowFlattener,
     lines: LineCorrector,
     background: RunningMinBackground,
@@ -256,6 +268,7 @@ impl Preprocessor {
         let dims = calib.dims();
         Ok(Preprocessor {
             cfg: *cfg,
+            flicker: FlickerCorrector::new(calib.fov(), &cfg.flicker)?,
             flatten: GlowFlattener::new(calib.fov(), &cfg.flatten)?,
             lines: LineCorrector::new(calib.fov(), cfg.lines),
             background: RunningMinBackground::new(dims, &cfg.background)?,
@@ -277,13 +290,40 @@ impl Preprocessor {
         &self.calib
     }
 
-    /// Hot pixels → flattening → lines, from `raw` into `out`. Stateless:
-    /// calling it on a past frame reproduces that frame's front half exactly.
+    /// Hot pixels → flicker → flattening → lines, from `raw` into `out`.
+    ///
+    /// Estimates this frame's flicker against the running reference and
+    /// advances it; everything else is stateless. To reproduce a past frame,
+    /// use [`Self::front_replay`] with its record.
     pub fn front<T: RawPixel>(
         &mut self,
         raw: &[T],
         out: &mut [f32],
     ) -> Result<FrontRecord, PreprocessError> {
+        self.load_repaired(raw, out)?;
+        let fk = self.flicker.apply(out)?;
+        self.front_rest(out, fk)
+    }
+
+    /// [`Self::front`] with the flicker correction of `flicker` (a past
+    /// frame's `PreprocessRecord::front.flicker`) instead of a new estimate. Stateless:
+    /// any frame, any order, bit for bit.
+    pub fn front_replay<T: RawPixel>(
+        &mut self,
+        raw: &[T],
+        out: &mut [f32],
+        flicker: &FlickerRecord,
+    ) -> Result<FrontRecord, PreprocessError> {
+        self.load_repaired(raw, out)?;
+        self.flicker.apply_record(out, flicker)?;
+        self.front_rest(out, *flicker)
+    }
+
+    fn load_repaired<T: RawPixel>(
+        &self,
+        raw: &[T],
+        out: &mut [f32],
+    ) -> Result<(), PreprocessError> {
         let dims = self.dims();
         dims.check("raw frame", raw.len())?;
         dims.check("output frame", out.len())?;
@@ -291,7 +331,14 @@ impl Preprocessor {
             let v = r.to_f32();
             *o = if v.is_finite() { v } else { 0.0 };
         }
-        self.calib.hot.apply(out)?;
+        self.calib.hot.apply(out)
+    }
+
+    fn front_rest(
+        &mut self,
+        out: &mut [f32],
+        flicker: FlickerRecord,
+    ) -> Result<FrontRecord, PreprocessError> {
         let fl = self.flatten.apply(out)?;
         let ln = self.lines.apply(out)?;
         Ok(FrontRecord {
@@ -299,6 +346,7 @@ impl Preprocessor {
             lowpass_mean: fl.lowpass_mean,
             row_rms: ln.row_rms,
             col_rms: ln.col_rms,
+            flicker,
         })
     }
 
@@ -371,6 +419,10 @@ impl Preprocessor {
         &self.noise
     }
 
+    pub fn flicker(&self) -> &FlickerCorrector {
+        &self.flicker
+    }
+
     /// The last frame's glow low-pass (0 outside the FOV).
     pub fn last_lowpass(&self) -> Vec<f32> {
         self.flatten.lowpass()
@@ -383,6 +435,7 @@ impl Preprocessor {
             calibration: self.calib.clone(),
             background: self.background.state(),
             noise: self.noise.state(),
+            flicker: self.flicker.state(),
             next_frame: self.next_frame,
         }
     }
@@ -404,13 +457,14 @@ impl Preprocessor {
         }
         self.background.restore(&state.background)?;
         self.noise.restore(&state.noise)?;
+        self.flicker.restore(&state.flicker)?;
         self.next_frame = state.next_frame;
         Ok(())
     }
 }
 
 /// A serializable snapshot of a [`Preprocessor`]: config, frozen calibration,
-/// and the background and noise state. Background snapshots are not included
+/// and the background, noise and flicker-reference state. Background snapshots are not included
 /// (each is as large as the background state itself).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreprocessState {
@@ -418,11 +472,13 @@ pub struct PreprocessState {
     pub calibration: Calibration,
     pub background: BackgroundState,
     pub noise: NoiseState,
+    pub flicker: FlickerState,
     pub next_frame: u64,
 }
 
 const MAGIC: &[u8; 8] = b"CALAPRE\0";
-const VERSION: u32 = 1;
+/// 2: adds the flicker stage (config and reference).
+const VERSION: u32 = 2;
 
 impl PreprocessState {
     /// Little-endian binary encoding (see `codec.rs`), versioned.
@@ -468,6 +524,11 @@ impl PreprocessState {
         }
         w.u32(c.noise.init_frames);
         w.u8(u8::from(c.noise.dither));
+        w.u8(c.flicker.mode.code());
+        w.f32(c.flicker.tau_frames);
+        w.usize(c.flicker.grid_pixels);
+        w.f32(c.flicker.clip_sigma);
+        w.f32(c.flicker.min_contrast);
 
         let cal = &self.calibration;
         w.usize(cal.dims.width);
@@ -498,6 +559,9 @@ impl PreprocessState {
         w.f32s(&n.prev);
         w.f32s(&n.mean_abs);
         w.f32s(&n.median);
+
+        w.u64(self.flicker.frames);
+        w.f32s(&self.flicker.reference);
 
         w.u64(self.next_frame);
         w.finish()
@@ -557,10 +621,19 @@ impl PreprocessState {
             init_frames: r.u32("noise")?,
             dither: r.u8("noise")? != 0,
         };
+        let flicker_cfg = FlickerConfig {
+            mode: FlickerMode::from_code(r.u8("flicker")?)
+                .ok_or_else(|| PreprocessError::InvalidState("bad flicker mode".into()))?,
+            tau_frames: r.f32("flicker")?,
+            grid_pixels: r.usize("flicker")?,
+            clip_sigma: r.f32("flicker")?,
+            min_contrast: r.f32("flicker")?,
+        };
         let config = PreprocessConfig {
             warmup_frames,
             fov,
             hot,
+            flicker: flicker_cfg,
             flatten,
             lines,
             background,
@@ -613,6 +686,11 @@ impl PreprocessState {
             frames: nframes,
         };
         noise.check(matches!(estimator, NoiseEstimator::MedianTracker { .. }))?;
+        let flicker = FlickerState {
+            frames: r.u64("flicker")?,
+            reference: r.f32s("flicker reference")?,
+        };
+        // The grid length is checked against the calibration on restore.
         let next_frame = r.u64("next frame")?;
         if !r.done() {
             return Err(PreprocessError::InvalidState("trailing bytes".into()));
@@ -622,6 +700,7 @@ impl PreprocessState {
             calibration,
             background,
             noise,
+            flicker,
             next_frame,
         })
     }

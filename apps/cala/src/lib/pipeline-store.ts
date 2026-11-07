@@ -16,17 +16,29 @@ export const MAX_IN_FLIGHT = 2;
 
 export type PipelineStatus = 'idle' | 'starting' | 'running' | 'paused' | 'done' | 'error';
 
-/** Rigid shifts per processed frame, appended batch by batch. */
+/** Rigid shifts and global flicker per processed frame, appended batch by batch. */
 export class ShiftTrace {
   readonly frame: number[] = [];
   readonly dy: number[] = [];
   readonly dx: number[] = [];
+  /** Flicker offset `a_t`, grey levels. */
+  readonly offset: number[] = [];
+  /** Flicker gain `m_t`, percent. */
+  readonly gainPct: number[] = [];
 
-  push(start: number, dy: ArrayLike<number>, dx: ArrayLike<number>): void {
+  push(
+    start: number,
+    dy: ArrayLike<number>,
+    dx: ArrayLike<number>,
+    offset?: ArrayLike<number>,
+    gain?: ArrayLike<number>,
+  ): void {
     for (let i = 0; i < dy.length; i++) {
       this.frame.push(start + i);
       this.dy.push(dy[i]);
       this.dx.push(dx[i]);
+      this.offset.push(offset ? offset[i] : 0);
+      this.gainPct.push(gain ? 100 * gain[i] : 0);
     }
   }
 
@@ -99,7 +111,7 @@ export function createPipelineStore(
         setSetup({ phase: step.phase, done: step.done, total: step.total });
         return;
       case 'batch': {
-        trace.push(step.start, step.dy, step.dx);
+        trace.push(step.start, step.dy, step.dx, step.flickerOffset, step.flickerGain);
         setTraceVersion((v) => v + 1);
         setPreviews(step.previews);
         setProcessed(step.start + step.count);

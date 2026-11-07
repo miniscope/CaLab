@@ -28,18 +28,20 @@ What is here:
   preprocess + motion pipeline. Three walks over the recording in small
   batches: preprocessing calibration (200 raw frames), motion warm-up template
   (200 preprocessed frames, pushed batch by batch into the corrector), then every frame through the front half of the
-  preprocessing (hot pixels, glow flattening, line removal), the rigid motion
+  preprocessing (hot pixels, global flicker, glow flattening, line removal), the rigid motion
   corrector (warm-up template, pinned running template) and the back half
   (background floor, noise map). Each batch yields per-frame shifts and
-  downsampled previews of its last frame. Runs in the frame worker, one step
+  downsampled previews of its last frame, plus the flicker offset and gain
+  removed per frame. Runs in the frame worker, one step
   per request; `src/lib/pipeline-store.ts` keeps at most two requests
   outstanding (backpressure) and only the latest previews.
 - `src/components/PipelinePanel.tsx`: raw or preprocessed vs motion-corrected
   (or background-removed) video, progress, throughput, and the live motion
-  trace.
+  and flicker traces (`MotionTrace.tsx`, `FlickerTrace.tsx`).
 - `src/__tests__/`: frame source tests on synthetic AVIs (`synth-avi.ts`), and
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
 - `scripts/real-data-check.mjs`: local-only check against a real recording
   (not run in CI); also runs the pipeline headless on the first frames
-  (`--motion N`, `--motion-only`) and prints shift statistics and throughput.
+  (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
+  throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).

@@ -4,7 +4,7 @@
  * recording. Not run in CI (it needs ~8 GB of data on disk).
  *
  *   node apps/cala/scripts/real-data-check.mjs [dir] [--python <python>] [--samples N]
- *        [--throughput N] [--motion N] [--batch N] [--motion-only]
+ *        [--throughput N] [--motion N] [--batch N] [--motion-only] [--flicker-mode M]
  *
  * Opens the folder with the real `FrameSource` (the wasm AviHeader reading
  * only header prefixes, idx1 regions and single frames through lazily-read
@@ -14,8 +14,9 @@
  *
  * Then runs the app's preprocess + motion pipeline (`PipelineEngine`, the
  * same code the worker runs) headless over the first `--motion` frames
- * (default 300; 0 skips it) and prints rigid-shift statistics and per-stage
- * throughput. `--motion-only` skips the frame checks and the Python reader.
+ * (default 300; 0 skips it) and prints rigid-shift and global-flicker
+ * statistics and per-stage throughput (`--flicker-mode`: 0 off, 3 both, the
+ * default; compare the preprocess ms/frame to time the flicker stage). `--motion-only` skips the frame checks and the Python reader.
  *
  * `--python` (or $CALA_PYTHON) must point at an interpreter with numpy, e.g.
  *   uv venv <dir> && uv pip install --python <dir>/bin/python numpy
@@ -47,6 +48,8 @@ const throughputFrames = Number(option('--throughput', '5000'));
 // Frames run through the preprocess + motion pipeline (0 = skip).
 const motionFrames = Number(option('--motion', '300'));
 const motionBatch = Number(option('--batch', '8'));
+const flickerModeArg = option('--flicker-mode', undefined);
+const flickerMode = flickerModeArg === undefined ? undefined : Number(flickerModeArg);
 function flag(name) {
   const on = args.includes(name);
   if (on) args.splice(args.indexOf(name), 1);
@@ -109,7 +112,7 @@ function stats(xs) {
 
 // The app's preprocess + motion pipeline, headless, over the first frames.
 if (motionFrames > 0) {
-  const engine = new PipelineEngine(source, { batchSize: motionBatch });
+  const engine = new PipelineEngine(source, { batchSize: motionBatch }, flickerMode);
   const plan = engine.plan;
   const want = Math.min(motionFrames, plan.frameCount);
   console.log(
@@ -119,6 +122,8 @@ if (motionFrames > 0) {
   const dy = [];
   const dx = [];
   const quality = [];
+  const flickerA = [];
+  const flickerM = [];
   let anomalous = 0;
   const sum = { readMs: 0, preprocessMs: 0, motionMs: 0, otherMs: 0 };
   let peakRss = process.memoryUsage().rss;
@@ -142,6 +147,8 @@ if (motionFrames > 0) {
       dy.push(r.dy[i]);
       dx.push(r.dx[i]);
       quality.push(r.quality[i]);
+      flickerA.push(r.flickerOffset[i]);
+      flickerM.push(100 * r.flickerGain[i]);
       if (r.flags[i] & 2) anomalous++;
     }
   }
@@ -151,6 +158,8 @@ if (motionFrames > 0) {
   const q = [...quality].sort((a, b) => a - b);
   console.log(`  dy (px): ${stats(dy)}`);
   console.log(`  dx (px): ${stats(dx)}`);
+  console.log(`  flicker gain m (%): ${stats(flickerM)}`);
+  console.log(`  flicker offset a (grey levels): ${stats(flickerA)}`);
   console.log(
     `  peak quality: median ${q[Math.floor(n / 2)].toFixed(3)}, p1 ${q[Math.floor(n / 100)].toFixed(3)}; ` +
       `anomalous frames ${anomalous}`,
