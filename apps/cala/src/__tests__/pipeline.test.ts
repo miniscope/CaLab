@@ -89,6 +89,11 @@ describe('shift trace and throughput', () => {
     expect(t.frame).toEqual([10, 11]);
     expect(t.dy).toEqual([1, 2]);
     expect(t.dx).toEqual([3, 4]);
+    // Flicker is optional and stored with the gain in percent.
+    expect(t.offset).toEqual([0, 0]);
+    t.push(12, [0], [0], [0.5], [0.02]);
+    expect(t.offset).toEqual([0, 0, 0.5]);
+    expect(t.gainPct).toEqual([0, 0, 2]);
   });
 
   it('measures frames per second over a sliding window', () => {
@@ -130,6 +135,8 @@ function batch(start: number, count: number): PipelineStepResult {
     dx: new Float32Array(count).fill(-2),
     quality: new Float32Array(count),
     flags: new Uint32Array(count),
+    flickerOffset: new Float32Array(count),
+    flickerGain: new Float32Array(count),
     previews: { frame: start, raw: image, preprocessed: image, corrected: image, output: image },
     timings: { readMs: count, preprocessMs: 2 * count, motionMs: 3 * count, otherMs: 0 },
   };

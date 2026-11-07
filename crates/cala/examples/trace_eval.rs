@@ -11,6 +11,11 @@
 //!   --learn N        frames used to learn the background maps (default 200)
 //!   --learn-iters N  alternate solve / learn N times (default 3)
 //!   --tol / --omega / --sweeps   solver settings (default: SolverConfig)
+//!   --inject-flicker M,A[,SEED]  add a global flicker y = a_t + (1 + m_t) x to
+//!                    the movie (2-8 Hz broadband series with RMS M and A grey
+//!                    levels, re-quantized to 8 bits), see examples/flicker_eval.rs
+//!   --flicker-mode N 0 off, 1 additive, 2 multiplicative, 3 both (default)
+//!   --flicker-tau T  flicker reference time constant, frames
 //! ```
 //!
 //! `<sim dir>` is written by `tools/minisim-calibration/make_trace_sim.py`: a DAQ folder
@@ -94,6 +99,33 @@ struct Recording {
     starts: Vec<u32>,
     dims: Dims,
     total: u32,
+    /// Injected flicker `(a_t, m_t)` per frame.
+    flicker: Option<(Vec<f64>, Vec<f64>)>,
+}
+
+/// 2-8 Hz broadband series with RMS `amp` (same as examples/flicker_eval.rs).
+fn flicker_series(n: usize, fps: f64, amp: f64, seed: u64) -> Vec<f64> {
+    let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = || {
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (s >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let comps: Vec<(f64, f64)> = (0..64)
+        .map(|_| (2.0 + 6.0 * rnd(), std::f64::consts::TAU * rnd()))
+        .collect();
+    let x: Vec<f64> = (0..n)
+        .map(|t| {
+            let tt = t as f64 / fps;
+            comps
+                .iter()
+                .map(|&(f, p)| (std::f64::consts::TAU * f * tt + p).sin())
+                .sum()
+        })
+        .collect();
+    let r = (x.iter().map(|v| v * v).sum::<f64>() / n.max(1) as f64).sqrt();
+    x.iter().map(|v| v * amp / r).collect()
 }
 
 impl Recording {
@@ -120,6 +152,7 @@ impl Recording {
             starts,
             dims,
             total,
+            flicker: None,
         }
     }
 
@@ -132,6 +165,16 @@ impl Recording {
             let n = (self.files[k].header.frame_count() - local).min(start + count - s);
             self.files[k].read(local, n, &mut out);
             s += n;
+        }
+        if let Some((a, m)) = &self.flicker {
+            let px = self.dims.pixels();
+            for (k, f) in out.chunks_exact_mut(px).enumerate() {
+                let t = start as usize + k;
+                let (a, g) = (a[t] as f32, (1.0 + m[t]) as f32);
+                for v in f {
+                    *v = (a + g * f32::from(*v)).round().clamp(0.0, 255.0) as u8;
+                }
+            }
         }
         out
     }
@@ -429,8 +472,29 @@ fn main() {
         .min(rec.total)
         .min(oracle.n_frames as u32);
     let t = frames as usize;
+    if let Some(spec) = arg_value(&args, "--inject-flicker") {
+        let v: Vec<f64> = spec.split(',').map(|x| x.parse().unwrap()).collect();
+        let seed = v.get(2).map_or(1, |&s| s as u64);
+        let n = rec.total as usize;
+        rec.flicker = Some((
+            flicker_series(n, 20.0, v[1], seed + 1000),
+            flicker_series(n, 20.0, v[0], seed),
+        ));
+        println!(
+            "injected flicker: m rms {}, a rms {} grey levels",
+            v[0], v[1]
+        );
+    }
     // ---- calibration and the preprocessing start state
-    let cfg = PreprocessConfig::for_fps(20.0);
+    let mut cfg = PreprocessConfig::for_fps(20.0);
+    if let Some(m) = arg_value(&args, "--flicker-mode") {
+        cfg.flicker.mode =
+            calab_cala::preprocess::flicker::FlickerMode::from_code(m.parse().unwrap())
+                .expect("flicker mode 0..=3");
+    }
+    if let Some(v) = arg_value(&args, "--flicker-tau") {
+        cfg.flicker.tau_frames = v.parse().unwrap();
+    }
     let warm = rec.read(0, (cfg.warmup_frames as u32).min(frames));
     let mut acc = WarmupAccumulator::new(dims);
     for f in warm.chunks_exact(n_px) {

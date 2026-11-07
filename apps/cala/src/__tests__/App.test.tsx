@@ -85,6 +85,8 @@ function fakePipeline(): void {
       dx: new Float32Array(25).fill(-1),
       quality: new Float32Array(25),
       flags: new Uint32Array(25),
+      flickerOffset: new Float32Array(25),
+      flickerGain: new Float32Array(25).fill(0.01),
       previews: {
         frame: start + 24,
         raw: image(),
@@ -184,6 +186,7 @@ describe('App', () => {
       'motion 0.1',
     );
     expect(root.querySelector('[data-testid="motion-trace"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="flicker-trace"]')).not.toBeNull();
     expect(root.querySelectorAll('.cala-preview')).toHaveLength(2);
 
     // Opening another folder stops the worker-side pipeline.

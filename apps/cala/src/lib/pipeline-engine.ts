@@ -29,7 +29,7 @@ export interface FrameReader {
 /** Wall time per stage for one step, ms. */
 export interface StageTimings {
   readMs: number;
-  /** Preprocessing: front half (hot pixels, flattening, lines) plus back half (background, noise). */
+  /** Preprocessing: front half (hot pixels, flicker, flattening, lines) plus back half (background, noise). */
   preprocessMs: number;
   motionMs: number;
   /** Preview downsampling and bookkeeping. */
@@ -41,7 +41,7 @@ export interface BatchPreviews {
   /** Index of the frame shown. */
   frame: number;
   raw: PreviewImage;
-  /** After hot pixels, glow flattening and line removal, before motion. */
+  /** After hot pixels, flicker, glow flattening and line removal, before motion. */
   preprocessed: PreviewImage;
   /** After motion correction (same intensity domain as `preprocessed`). */
   corrected: PreviewImage;
@@ -69,6 +69,10 @@ export type PipelineStepResult =
       quality: Float32Array;
       /** `FLAG_*` bits of the motion record per frame. */
       flags: Uint32Array;
+      /** Global flicker removed per frame: additive offset `a_t` (grey levels). */
+      flickerOffset: Float32Array;
+      /** ... and relative gain `m_t` (the frame was scaled by `1 + m_t`). */
+      flickerGain: Float32Array;
       previews: BatchPreviews;
       timings: StageTimings;
     }
@@ -83,6 +87,8 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     r.dx,
     r.quality,
     r.flags,
+    r.flickerOffset,
+    r.flickerGain,
     p.raw.data,
     p.preprocessed.data,
     p.corrected.data,
@@ -91,6 +97,9 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
 }
 
 const now = (): number => performance.now();
+
+/** Numbers per frame returned by `Preprocessor.frontFrames`; the last two are the flicker offset and gain. */
+const FRONT_RECORD_STRIDE = 6;
 
 export class PipelineEngine {
   readonly plan: PipelinePlan;
@@ -103,6 +112,12 @@ export class PipelineEngine {
 
   private warmup: PreprocessWarmup | null = null;
   private pre: Preprocessor | null = null;
+  /**
+   * A second preprocessor with the same calibration that only feeds the motion
+   * warm-up: the flicker stage keeps a running reference, so the warm-up must
+   * not advance the one that processes the recording from frame 0.
+   */
+  private warmupPre: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
 
   private raw: FramePixels;
@@ -113,7 +128,11 @@ export class PipelineEngine {
 
   private readonly reader: FrameReader;
 
-  constructor(reader: FrameReader, options: PipelineOptions = {}) {
+  /**
+   * `flickerMode` overrides the global flicker correction (0 off, 1 additive,
+   * 2 multiplicative, 3 both; default both), e.g. to time it.
+   */
+  constructor(reader: FrameReader, options: PipelineOptions = {}, flickerMode?: number) {
     this.reader = reader;
     const { width, height, bitDepth, frameCount, fps } = reader.info;
     this.plan = makePlan(frameCount, options);
@@ -126,6 +145,7 @@ export class PipelineEngine {
 
     const config = new PreprocessConfig(fps ?? 0);
     config.warmupFrames = this.plan.calibrationFrames;
+    if (flickerMode !== undefined) config.flickerMode = flickerMode;
     try {
       this.warmup = new PreprocessWarmup(width, height, config);
     } finally {
@@ -172,11 +192,15 @@ export class PipelineEngine {
       const motion = this.motion!;
       if (s.start === 0) motion.warmupBegin();
       const front = this.grow('front', s.count * this.px);
-      this.runFront(pre, raw, s.count, front);
+      this.runFront(this.warmupPre ?? pre, raw, s.count, front);
       const t2 = now();
       timings.preprocessMs = t2 - t1;
       motion.warmupPushF32(front);
-      if (s.last) motion.warmupFinish();
+      if (s.last) {
+        motion.warmupFinish();
+        this.warmupPre?.free();
+        this.warmupPre = null;
+      }
       timings.motionMs = now() - t2;
       return {
         kind: 'setup',
@@ -197,7 +221,7 @@ export class PipelineEngine {
       this.records = new Float32Array(this.plan.batchSize * len);
     const records = this.records.subarray(0, s.count * len);
 
-    this.runFront(pre, raw, s.count, front);
+    const frontRec = this.runFront(pre, raw, s.count, front);
     const t2 = now();
     motion.processF32(front, corrected, records);
     const t3 = now();
@@ -211,7 +235,11 @@ export class PipelineEngine {
     const dx = new Float32Array(s.count);
     const quality = new Float32Array(s.count);
     const flags = new Uint32Array(s.count);
+    const flickerOffset = new Float32Array(s.count);
+    const flickerGain = new Float32Array(s.count);
     for (let i = 0; i < s.count; i++) {
+      flickerOffset[i] = frontRec[i * FRONT_RECORD_STRIDE + 4];
+      flickerGain[i] = frontRec[i * FRONT_RECORD_STRIDE + 5];
       dy[i] = records[i * len];
       dx[i] = records[i * len + 1];
       quality[i] = records[i * len + 2];
@@ -236,6 +264,8 @@ export class PipelineEngine {
       dx,
       quality,
       flags,
+      flickerOffset,
+      flickerGain,
       previews,
       timings,
     };
@@ -246,12 +276,14 @@ export class PipelineEngine {
     this.disposed = true;
     this.warmup?.free();
     this.pre?.free();
+    this.warmupPre?.free();
     this.motion?.free();
-    this.warmup = this.pre = this.motion = null;
+    this.warmup = this.pre = this.warmupPre = this.motion = null;
   }
 
   private finishCalibration(): void {
     const pre = this.warmup!.finish();
+    this.warmupPre = this.warmup!.finish();
     this.warmup!.free();
     this.warmup = null;
     this.pre = pre;
@@ -264,9 +296,14 @@ export class PipelineEngine {
     this.motion.setFovMask(pre.fovMask());
   }
 
-  private runFront(pre: Preprocessor, raw: FramePixels, count: number, out: Float32Array): void {
-    if (this.sixteen) pre.frontFrames16(raw as Uint16Array, count, out);
-    else pre.frontFrames(raw as Uint8Array, count, out);
+  private runFront(
+    pre: Preprocessor,
+    raw: FramePixels,
+    count: number,
+    out: Float32Array,
+  ): Float64Array {
+    if (this.sixteen) return pre.frontFrames16(raw as Uint16Array, count, out);
+    return pre.frontFrames(raw as Uint8Array, count, out);
   }
 
   private async readRaw(start: number, count: number): Promise<FramePixels> {
