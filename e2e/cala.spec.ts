@@ -38,6 +38,11 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(info).toContainText('20.00 Hz from metaData.json');
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
+  // Opening also runs preprocessing and motion correction in the worker.
+  await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
+  await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  await expect(page.getByTestId('motion-trace')).toBeVisible();
+
   // Raw gray levels: turn auto contrast off, scrub to global frame 4 (file 1).
   await page.getByLabel('Auto contrast').uncheck();
   await page.getByRole('slider', { name: 'Frame' }).fill('4');
