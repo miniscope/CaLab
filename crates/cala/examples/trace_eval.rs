@@ -13,7 +13,7 @@
 //!   --tol / --omega / --sweeps   solver settings (default: SolverConfig)
 //! ```
 //!
-//! `<sim dir>` is written by the calibration tooling's `gen.py`: a DAQ folder
+//! `<sim dir>` is written by `tools/minisim-calibration/make_trace_sim.py`: a DAQ folder
 //! (`daq/Miniscope/N.avi`) plus `oracle.bin` (per-unit footprints in FOV
 //! coordinates, already multiplied by the illumination / vignette / vessel
 //! gains and the photon-to-ADU factor, and the GT traces `C`). The movie is

@@ -11,6 +11,7 @@ only needs its output.
 - `calibrated.py`: `calibrated_spec(duration_s, seed=, n_px=)` re-times or crops it; `python calibrated.py` rebuilds the JSON.
 - `calibrate_to_real.py`: realism statistics, real vs simulated (see `CALIBRATION.md`).
 - `make_fixtures.py <dir>`: renders the 2 min 600 px DAQ fixture and a 128 px small one.
+- `make_trace_sim.py OUT --f 0.45 --dur 60`: streams a 600 px recording plus oracle footprints (with and without the scatter halo) for `crates/cala/examples/trace_eval.rs`.
 - `vessel_share.py REAL_AVI REAL_SHIFTS.npy [SIM_DIR ...]`: static power in vessel lines.
 
 ## Setup
