@@ -23,7 +23,7 @@
   },
   "fps": 20.0,
   "duration_s": 15.0,
-  "focal_depth_in_tissue_um": "auto",
+  "focal_depth_in_tissue_um": 180.0,
   "front_working_distance_um": 700.0
  },
  "seed": 7,

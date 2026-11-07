@@ -31,14 +31,16 @@ the real CA1 recording. The spec simulates 15 s; the fixture keeps the first
 
 ## How it was made
 
-minisim commit `81e680d` (branch `feat/realistic-motion`, minisim PR #33),
+minisim commit `e33edad` (main, includes the realistic-motion PR #33),
 in a Python 3.12 venv (numpy 2.5.4):
 
 ```sh
 <venv>/bin/python make_fixture.py <out_dir>
 ```
 
-This reproduces the committed arrays bit for bit.
+`spec.json` is `tools/minisim-calibration/calibrated.py`'s `calibrated_spec(15, seed=7, n_px=128)`,
+with the focal depth pinned to 180 um (not "auto", which picked an out-of-focus plane). See
+`tools/minisim-calibration/README.md`.
 
 ## What it can and cannot test
 
@@ -47,8 +49,8 @@ cell activity changes the band-passed image from frame to frame, and with
 little static structure in a 128 px field the registration peak moves with
 it. The diagnosis on 384 px variants: with activity switched off the same
 corrector reaches 0.037-0.11 px RMS; with it on, ~0.55-0.65 px before the
-content calibration. On this calibrated fixture the rigid RMSE is 0.17 px
-(0.34 px on the previous, uncalibrated version). So the rigid
+content calibration. On this calibrated fixture the rigid RMSE is 0.28 px
+(0.17 px with the earlier auto-focus spec, whose focal plane sat further from the cells). So the rigid
 test checks tracking (correlation with the truth and a loose RMSE bound)
 rather than sub-pixel accuracy, which
 `recovers_known_shifts_of_a_static_image` checks on a static scene (errors
