@@ -20,7 +20,7 @@
 //!   non-rigid motion and checks the recovered records.
 //!
 //! Set `MOTION_UPSAMPLE`, `MOTION_ANCHOR`, `MOTION_ALPHA` (temporal), `MOTION_GRID`
-//! (e.g. `5x5`), `MOTION_BILINEAR=1`, `MOTION_NOSHRINK=1`, `MOTION_TAU`, `MOTION_SIGMA2` to vary the
+//! (e.g. `5x5`), `MOTION_SAVE=<dir>` (write rigid shifts as .npy), `MOTION_BILINEAR=1`, `MOTION_NOSHRINK=1`, `MOTION_TAU`, `MOTION_SIGMA2` to vary the
 //! configuration.
 
 #[path = "../tests/common/metrics.rs"]
@@ -433,6 +433,9 @@ fn real(dir: &Path, refdir: &Path, max: usize) -> Res<()> {
         let r = run(&src, cfg, n, 200)?;
         summary(name, &r);
         let est = rigid(&r);
+        if let Ok(dir) = std::env::var("MOTION_SAVE") {
+            save_shifts(&Path::new(&dir).join(format!("cala_{name}.npy")), &est)?;
+        }
         let m = est.len();
         for (ax, label) in [(0, "dy"), (1, "dx")] {
             let a: Vec<f64> = est
@@ -452,6 +455,28 @@ fn real(dir: &Path, refdir: &Path, max: usize) -> Res<()> {
             compare_patches(&r, refdir)?;
         }
     }
+    Ok(())
+}
+
+/// Write `(n, 2)` float64 shifts as `.npy` (for offline analysis).
+fn save_shifts(path: &Path, v: &[(f64, f64)]) -> Res<()> {
+    let header = format!(
+        "{{'descr': '<f8', 'fortran_order': False, 'shape': ({}, 2), }}",
+        v.len()
+    );
+    let mut h = header.into_bytes();
+    while (10 + h.len() + 1) % 64 != 0 {
+        h.push(b' ');
+    }
+    h.push(b'\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    out.extend_from_slice(&(h.len() as u16).to_le_bytes());
+    out.extend_from_slice(&h);
+    for &(a, b) in v {
+        out.extend_from_slice(&a.to_le_bytes());
+        out.extend_from_slice(&b.to_le_bytes());
+    }
+    std::fs::write(path, out)?;
     Ok(())
 }
 
@@ -559,8 +584,12 @@ fn synthetic(dir: &Path) -> Res<()> {
         w,
         MotionConfig {
             template_tau: 0.0,
+            // The synthetic field is independent from frame to frame, so
+            // the temporal smoother and the shrinkage (which would read it
+            // as noise) are off.
             nonrigid: Some(NonRigidConfig {
                 temporal_alpha: 1.0,
+                shrink: false,
                 ..NonRigidConfig::default()
             }),
             ..MotionConfig::default()
