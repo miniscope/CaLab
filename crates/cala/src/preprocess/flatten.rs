@@ -254,6 +254,10 @@ impl GlowFlattener {
         self.sigma
     }
 
+    pub fn dims(&self) -> Dims {
+        self.dims
+    }
+
     /// Flatten `frame` in place (stateless: depends only on the frozen mask).
     pub fn apply(&mut self, frame: &mut [f32]) -> Result<FlattenStats, PreprocessError> {
         self.dims.check("frame", frame.len())?;
