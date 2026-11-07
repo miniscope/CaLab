@@ -40,19 +40,19 @@ export const theoryTutorial: Tutorial = {
         'Two time constants define its shape: the <b>rise constant \u03C4<sub>r</sub></b> (how fast calcium rises) and the <b>decay constant \u03C4<sub>d</sub></b> (how slowly it returns to baseline). The plot shows this shape, annotated with its rise-to-peak time and full-width at half-maximum (FWHM). Convolving the spike train with this kernel gives the expected fluorescence trace. The kernel is scaled to a peak height of 1, so the separate <b>amplitude</b> term carries the real transient size.',
       onPopoverRender: renderKernelShape,
     },
-    // Step 4: Explaining FISTA
+    // Step 4: Explaining the relaxation
     {
       title: 'The Hard Part: All-or-Nothing Spikes',
       description:
         'As mentioned, the math underlying CaDecon comes from the field of <b>convex optimization</b>. Requiring spikes to be strictly 0 or 1 makes the problem hard, because there is an enormous number of spike / no-spike combinations to consider.<br><br>' +
-        'CaDecon\u2019s trick is to <b>relax the all-or-nothing rule</b>: instead of forcing each spike to be 0 or 1, it lets it take any value in between. This relaxed problem is a convex one that can be solved efficiently with a method called <b>FISTA</b>. The result is a <b>graded spike estimate</b> at each time point \u2014 higher where a spike almost certainly happened, lower where it didn\u2019t. The next step covers how CaDecon turns that graded estimate into the whole-number spike counts we ultimately want.',
+        'CaDecon\u2019s trick is to <b>relax the all-or-nothing rule</b>: instead of forcing each spike to be 0 or 1, it lets it take any value in between. This relaxed problem is a convex one that CaDecon solves exactly, in a few dozen steps, with an <b>interior-point method</b>. The result is a <b>graded spike estimate</b> at each time point \u2014 higher where a spike almost certainly happened, lower where it didn\u2019t. The next step covers how CaDecon turns that graded estimate into the whole-number spike counts we ultimately want.',
     },
     // Step 5: Counting spikes by event mass
     {
       title: 'Getting Back to Real Spikes',
       description:
         'The relaxed solve gives each recorded frame a graded <b>mass</b>: roughly, how many spikes’ worth of calcium that frame needs. CaDecon groups consecutive frames with positive mass into <b>events</b>, then turns each event’s total mass into a whole number of spikes: <b>round(mass / a)</b>, where <b>a</b> is the size of one spike. The spikes are placed along the event’s mass profile, so a front-loaded event gets its spikes early. Result: an <b>integer spike count per frame</b>.<br><br>' +
-        'It doesn’t guess <b>a</b>. It tries sizes and rebuilds the predicted trace for each, scoring it through the <b>same filter and baseline processing as your data</b>. The largest size whose fit stays within one noise standard error of the unrounded relaxed solution wins. There is no sparsity penalty. The amplitude is handled separately: fit at each step, then re-estimated until it stops changing. The logic throughout is the same: the best answer is the one that explains the trace you actually saw.',
+        'It doesn’t guess <b>a</b>. It tries sizes and rebuilds the predicted trace for each, scoring it through the <b>same filter and baseline processing as your data</b>. The largest size whose fit stays within one noise standard error of the unrounded relaxed solution wins; if none does, the size that fits best wins. There is no sparsity penalty. The amplitude is handled separately: fit at each step, then re-estimated until it stops changing. The logic throughout is the same: the best answer is the one that explains the trace you actually saw.',
     },
     // Step 6: Max firing rate
     {

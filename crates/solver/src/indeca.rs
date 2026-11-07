@@ -516,6 +516,40 @@ pub(crate) struct SolveConfig {
     pub alpha_init: AlphaInit,
     /// How the binarization candidates are scored.
     pub scoring: Scoring,
+    /// Which method solves the relaxed problem (same optimum either way).
+    pub relaxed: Relaxed,
+    /// Test-only counterfactual applied to the frame masses before the
+    /// binarization (exp/exact-vs-fista diagnostics).
+    #[cfg(test)]
+    pub x_hook: XHook,
+}
+
+/// Counterfactual edits of the relaxed frame masses (tests only).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum XHook {
+    None,
+    /// Zero every frame whose mass is below `f x` the largest interior frame mass.
+    ZeroFrames(f32),
+    /// Zero every event whose total mass is below `f x` the largest event mass.
+    ZeroEvents(f32),
+}
+
+/// Method for the native-rate relaxed solve. Both reach the same certificate
+/// on the same problem, but FISTA stops at the first check that passes, far
+/// from the optimum, while the interior-point solve lands on it. `Ipm` is
+/// the default (iteration count independent of the kernel's conditioning,
+/// and the same solution on every platform); `Fista` is kept for comparison
+/// and tests, and for problems with a penalty (`lambda > 0`) or no noise
+/// model, which the interior point does not handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Relaxed {
+    Ipm,
+    Fista,
+    /// FISTA to a certificate 1e-6 times tighter (tests: the converged
+    /// reference both are compared with).
+    #[cfg(test)]
+    FistaTight,
 }
 
 impl Default for SolveConfig {
@@ -524,6 +558,9 @@ impl Default for SolveConfig {
             native_stop: NativeStop::Certificate,
             alpha_init: AlphaInit::PeakToTrough,
             scoring: Scoring::Chain,
+            relaxed: Relaxed::Ipm,
+            #[cfg(test)]
+            x_hook: XHook::None,
         }
     }
 }
@@ -551,6 +588,15 @@ pub(crate) struct SolveStats {
     pub chain_gain: f64,
     /// What the binarization saw and picked.
     pub diag: EventMassDiag,
+    /// The interior-point relaxed solve fell back to FISTA to reach the
+    /// certificate (false for a FISTA solve).
+    pub ipm_fallback: bool,
+    /// The relaxed solution in scaled units, `[0, 1]` (tests only).
+    #[cfg(test)]
+    pub relaxed_x: Vec<f64>,
+    /// The scaled trace the relaxed problem was solved on (tests only).
+    #[cfg(test)]
+    pub relaxed_y: Vec<f64>,
 }
 
 /// The preprocessed trace and what is derived from it once per solve.
@@ -615,16 +661,18 @@ pub(crate) fn prepare(
     // through the same filter. Fully data-derived — no knob. It sets the
     // size pick's standard error and the relaxed solve's convergence
     // certificate.
-    let noise = estimate_noise_model(trace, filter.as_mut());
+    let noise = { estimate_noise_model(trace, filter.as_mut()) };
     // The rolling-quantile stage's gain on that noise, measured on the trace.
-    let gain = chain_noise_gain(
-        trace,
-        &working,
-        filter.as_mut(),
-        bl_window,
-        pad,
-        high_band_sigma(trace),
-    );
+    let gain = {
+        chain_noise_gain(
+            trace,
+            &working,
+            filter.as_mut(),
+            bl_window,
+            pad,
+            high_band_sigma(trace),
+        )
+    };
     let noise = noise.with_chain_gain(gain);
     let noise_model = (noise.grid.sigma > 0.0).then_some(noise.grid);
     Prepared {
@@ -714,9 +762,17 @@ pub(crate) fn solve_trace_cfg(
     // The certificate in the solver's units: the trace was divided by
     // `scale`, so energies are divided by `scale^2`. Without a noise model
     // there is no certificate and the caller's step tolerance applies.
+    #[cfg(test)]
+    let tight = if cfg.relaxed == Relaxed::FistaTight {
+        1e-6
+    } else {
+        1.0
+    };
+    #[cfg(not(test))]
+    let tight = 1.0;
     let stop = match cfg.native_stop {
         NativeStop::Certificate if std_error > 0.0 => Some(Stop {
-            se: std_error / (scale * scale),
+            se: std_error / (scale * scale) * tight,
             lo,
             hi,
         }),
@@ -735,19 +791,48 @@ pub(crate) fn solve_trace_cfg(
         None => max_iters,
     };
     let lambda_eff = lambda * prep.banded.dc_gain();
-    let nr = native_solve::solve_box(
-        &scaled64,
-        &prep.banded,
-        lambda_eff,
-        cap_iters,
-        tol,
-        stop,
-        None,
-    );
+    let nr = {
+        match (cfg.relaxed, stop) {
+            (Relaxed::Ipm, Some(st)) if lambda_eff == 0.0 => {
+                crate::ipm::solve_box_ipm(&scaled64, &prep.banded, st, cap_iters)
+            }
+            _ => native_solve::solve_box(
+                &scaled64,
+                &prep.banded,
+                lambda_eff,
+                cap_iters,
+                tol,
+                stop,
+                None,
+            ),
+        }
+    };
     let u: Vec<f32> = nr.x.iter().map(|&v| v as f32).collect();
     let (iterations, converged) = (nr.iterations, nr.converged());
     // Frame masses in units of alpha_est per spike.
-    let x: Vec<f32> = u.iter().map(|&v| v * cap as f32).collect();
+    #[allow(unused_mut)]
+    let mut x: Vec<f32> = u.iter().map(|&v| v * cap as f32).collect();
+    #[cfg(test)]
+    match cfg.x_hook {
+        XHook::None => {}
+        XHook::ZeroFrames(f) => {
+            let m = x[lo..hi].iter().cloned().fold(0.0_f32, f32::max);
+            for v in x.iter_mut() {
+                if *v < f * m {
+                    *v = 0.0;
+                }
+            }
+        }
+        XHook::ZeroEvents(f) => {
+            let ev = crate::event_mass::segment(&x, lo, hi);
+            let mx = ev.iter().map(|e| e.mass).fold(0.0_f64, f64::max);
+            for e in ev.iter().filter(|e| e.mass < f as f64 * mx) {
+                for v in &mut x[e.start..e.end] {
+                    *v = 0.0;
+                }
+            }
+        }
+    }
     prep.banded.convolve_forward(&x, &mut conv);
     let objective = interior_energy(&prep.working, &conv, alpha_est, lo);
     let u_peak = interior_peak(&u, lo) as f64;
@@ -782,6 +867,11 @@ pub(crate) fn solve_trace_cfg(
         budget,
         chain_gain: prep.noise.chain_gain,
         diag: em.diag,
+        ipm_fallback: nr.ipm_fallback,
+        #[cfg(test)]
+        relaxed_x: nr.x.clone(),
+        #[cfg(test)]
+        relaxed_y: scaled64.clone(),
     };
 
     // The amplitude and offset handed downstream. The kernel estimator models
@@ -1534,6 +1624,40 @@ mod tests {
     }
 
     #[test]
+    fn ipm_relaxed_solve_matches_a_converged_fista_solve_end_to_end() {
+        // The interior-point solve reaches the relaxed optimum the FISTA
+        // solve approaches; against FISTA run to a certificate 1e-6 times
+        // tighter the relaxed solutions agree and so do the spike trains.
+        // (Against FISTA stopped at the shipped certificate the trains can
+        // differ: that iterate is not the optimum.)
+        for (name, trace, tr, td, fs, k) in preset_cells(1, 900).into_iter().take(4) {
+            let run = |relaxed| {
+                run_cfg(
+                    &trace,
+                    (tr, td, fs, k),
+                    500,
+                    SolveConfig {
+                        relaxed,
+                        ..SolveConfig::default()
+                    },
+                )
+            };
+            let (a, sa) = run(Relaxed::Ipm);
+            let (b, sb) = run(Relaxed::FistaTight);
+            assert!(sa.converged && sb.converged, "{name}");
+            let dmax = sa
+                .relaxed_x
+                .iter()
+                .zip(&sb.relaxed_x)
+                .map(|(p, q)| (p - q).abs())
+                .fold(0.0, f64::max);
+            assert!(dmax < 1e-4, "{name}: max|dx| = {dmax:.2e}");
+            assert_eq!(a.s_counts, b.s_counts, "{name}");
+            assert!(sa.iterations < sb.iterations, "{name}");
+        }
+    }
+
+    #[test]
     fn solve_ignores_warm_counts() {
         // The solve does not take the caller's warm start, so the output is a
         // deterministic function of the data.
@@ -1845,8 +1969,12 @@ mod tests {
     #[test]
     fn native_solve_is_invariant_to_the_prescale() {
         // The spread is scale-free and the box cannot bind from the
-        // peak-to-trough start, so a power-of-two prescale change (every
-        // iterate scaled exactly) leaves the output bit-identical.
+        // peak-to-trough start, so a power-of-two prescale change leaves
+        // the spike train identical. (The default interior-point solve is
+        // not exactly scale-equivariant in its Newton path, so the
+        // amplitude and threshold agree to the certificate (1e-4) rather than bit
+        // for bit, and the iteration count is not compared.)
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-4 * a.abs().max(b.abs()).max(1e-12);
         for (name, trace, _, tr, td, fs, k) in preset_cells_at(30.0, 30.0) {
             let p = (tr, td, fs, k);
             let (base, st) = run_native(&trace, p, u32::MAX, 0.0, SolveConfig::default());
@@ -1856,15 +1984,20 @@ mod tests {
                     alpha_init: AlphaInit::Fixed(st.alpha_est * m),
                     ..SolveConfig::default()
                 };
-                let (r, st2) = run_native(&trace, p, u32::MAX, 0.0, cfg);
+                let (r, _) = run_native(&trace, p, u32::MAX, 0.0, cfg);
                 assert_eq!(r.s_counts, base.s_counts, "{name} x{m}");
-                assert_eq!(r.alpha.to_bits(), base.alpha.to_bits(), "{name} x{m}");
-                assert_eq!(
-                    r.threshold.to_bits(),
-                    base.threshold.to_bits(),
-                    "{name} x{m}"
+                assert!(
+                    close(r.alpha, base.alpha),
+                    "{name} x{m}: alpha {} vs {}",
+                    r.alpha,
+                    base.alpha
                 );
-                assert_eq!(st2.iterations, st.iterations, "{name} x{m}");
+                assert!(
+                    close(r.threshold, base.threshold),
+                    "{name} x{m}: threshold {} vs {}",
+                    r.threshold,
+                    base.threshold
+                );
             }
         }
     }

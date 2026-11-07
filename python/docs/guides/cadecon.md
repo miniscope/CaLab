@@ -229,7 +229,7 @@ Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `basel
 The last four fields are diagnostics; they never change the result:
 
 - `cap_limited`: the chosen spike size sits at the floor `frame_max / cap`, so the cap (not the data) set the spike size. Always `True` when the trace has no measurable noise floor.
-- `no_size_fit`: a noise floor was measurable but no spike size passed the one-standard-error test.
+- `no_size_fit`: a noise floor was measurable but no spike size passed the one-standard-error test, so the spike size that fits the data best was used (usually the floor).
 - `peak_outlier_ratio`: largest event-peak frame mass divided by the second largest (1 with fewer than two events, 0 with none). A large value flags one dominant event.
 - `dropped_spikes`: spikes that no frame of their event had room for.
 

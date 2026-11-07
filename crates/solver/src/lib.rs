@@ -8,6 +8,7 @@ mod fft;
 mod filter;
 mod fista;
 pub(crate) mod indeca;
+pub(crate) mod ipm;
 mod kernel;
 pub(crate) mod kernel_est;
 pub(crate) mod native_solve;
@@ -823,3 +824,9 @@ mod test_util;
 
 #[cfg(test)]
 mod eval_event_mass;
+
+#[cfg(test)]
+mod fast_relaxed_eval;
+
+#[cfg(test)]
+mod eval_exact_vs_fista;

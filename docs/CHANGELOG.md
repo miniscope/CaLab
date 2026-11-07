@@ -14,7 +14,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   are maximal runs of positive mass; an event's count is `round(mass / a)`,
   placed along its mass profile; `a` is the largest spike size whose
   chain-scored error is within one noise standard error of the continuous
-  relaxed solution (the floor `busiest frame / cap` otherwise). No sparsity
+  relaxed solution (the best-fitting size otherwise, see below). No sparsity
   penalty. The tent threshold search, the 300 Hz grid and the upsample
   factor are removed. Builds on #268 (Krisha Aghi).
 - **CaDecon setting:** "Max firing rate (spikes/s)", default 300, replaces
@@ -23,6 +23,24 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - **Per-cell diagnostics** in WASM and Python results: `cap_limited`,
   `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes` (none changes the
   result); the Trace Inspector shows a short note when they apply.
+- **CaDecon: the relaxed solve is exact and about 12x cheaper.** The
+  per-trace relaxed problem is solved with a primal-dual interior-point
+  method on the banded AR(2) operator (tens of Newton steps at any frame rate
+  or indicator speed) instead of FISTA stopped at its first certificate
+  check. It reaches the optimum FISTA only approaches, and removes the
+  slow-indicator cost (12x less total time on the 42-dataset sweep, GCaMP6s
+  at 60 Hz 27x; jGCaMP8f at 10-30 Hz is 10-40% slower). FISTA is
+  kept for penalised problems and as the fallback (it fired in 1.8% of the
+  evaluated cells, all GCaMP6s at 60 Hz and SNR >= 12). `iterations` in the
+  results is now the Newton step count. Builds on #269.
+- **CaDecon: spike size falls back to the best-fitting size.** When no size
+  is within one standard error of the relaxed fit (the usual case once the
+  per-frame cap binds), the size that fits the data best through the
+  trace's own filter chain is used instead of the floor
+  `busiest frame / cap`. On the 42-dataset simulated sweep, F1 vs the
+  previous FISTA behaviour: fast indicators (jGCaMP8f) +0.00 to +0.09,
+  GCaMP6s -0.016 to +0.003 pooled over firing regimes, up to -0.06 for
+  bursting GCaMP6s at 30-60 Hz where the pipeline undercounts. Builds on #269.
 - **CaDecon: default Max Iterations raised from 20 to 30.** With event-mass
   counting the kernel drifts smoothly to its fixed point and then converges
   sharply; on real data that took ~18 iterations, close to the old cap, and

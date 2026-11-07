@@ -551,14 +551,17 @@ fn seed_kernel_estimate<'py>(
 /// per-sample noise variance of the processed (working) trace, `sigma_raw^2`
 /// through the bandpass times `chain_noise_gain`, the rolling-quantile
 /// stage's measured gain on the noise (0 and 1 when no noise floor is
-/// measurable); `iterations` is the FISTA iteration count and `converged`
+/// measurable); `iterations` is the iteration count of the relaxed solve (tens of
+/// interior-point Newton steps; FISTA iterations only on the fallback paths)
+/// and `converged`
 /// says the certificate (or, without noise, the step rule) fired.
 /// `converged = False` means the certificate could not be met in f64
 /// arithmetic: in practice the stall detector on the certificate's bound
 /// stopped the solve, since the derived cap is not reached. The last four are
 /// per-cell diagnostics that never change the result: `cap_limited` (the pick
 /// ended at the floor spike size, so the cap set the spike size),
-/// `no_size_fit` (no spike size passed the one-standard-error test),
+/// `no_size_fit` (no spike size passed the one-standard-error test, so the
+/// size that fits the data best was taken, usually the floor),
 /// `peak_outlier_ratio` (largest event-peak frame mass over the second
 /// largest) and `dropped_spikes` (spikes no frame of their event had room
 /// for).

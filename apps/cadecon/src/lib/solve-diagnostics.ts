@@ -35,7 +35,7 @@ export function solveDiagnosticNotes(d: SolveDiagnosticsInput | undefined): Diag
     notes.push({
       text: 'no spike size fit the data',
       title:
-        'No spike size reproduced the continuous fit within one noise standard error, so the smallest allowed size was used. Counts for this cell are less reliable.',
+        'No spike size reproduced the continuous fit within one noise standard error, so the size that fit best was used (usually the smallest allowed size). Counts for this cell are less reliable.',
     });
   }
   if (d.peakOutlierRatio !== undefined && d.peakOutlierRatio > PEAK_OUTLIER_RATIO_NOTE_THRESHOLD) {
