@@ -4,8 +4,9 @@
  *
  * Runs wherever the cala WASM module is initialized: in the frame worker for
  * the app, in Node for `scripts/real-data-check.mjs` and the tests. Buffers
- * are sized to one batch and reused; the only larger allocation is the motion
- * warm-up stack, freed as soon as the template is built.
+ * are sized to one batch and reused. The motion warm-up frames are pushed into
+ * the corrector one batch at a time and held, band-passed, inside WASM until
+ * the template is built.
  */
 import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
@@ -103,7 +104,6 @@ export class PipelineEngine {
   private warmup: PreprocessWarmup | null = null;
   private pre: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
-  private motionWarm: Float32Array | null = null;
 
   private raw: FramePixels;
   private front: Float32Array;
@@ -169,20 +169,15 @@ export class PipelineEngine {
 
     const pre = this.pre!;
     if (s.phase === 'motion-warmup') {
-      this.motionWarm ??= new Float32Array(this.plan.motionWarmupFrames * this.px);
-      this.runFront(
-        pre,
-        raw,
-        s.count,
-        this.motionWarm.subarray(s.start * this.px, (s.start + s.count) * this.px),
-      );
+      const motion = this.motion!;
+      if (s.start === 0) motion.warmupBegin();
+      const front = this.grow('front', s.count * this.px);
+      this.runFront(pre, raw, s.count, front);
       const t2 = now();
       timings.preprocessMs = t2 - t1;
-      if (s.last) {
-        this.motion!.initializeF32(this.motionWarm);
-        this.motionWarm = null;
-        timings.motionMs = now() - t2;
-      }
+      motion.warmupPushF32(front);
+      if (s.last) motion.warmupFinish();
+      timings.motionMs = now() - t2;
       return {
         kind: 'setup',
         phase: s.phase,
@@ -253,7 +248,6 @@ export class PipelineEngine {
     this.pre?.free();
     this.motion?.free();
     this.warmup = this.pre = this.motion = null;
-    this.motionWarm = null;
   }
 
   private finishCalibration(): void {
