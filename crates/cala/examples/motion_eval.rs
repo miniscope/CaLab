@@ -364,6 +364,7 @@ fn minisim(dir: &Path, gt: &Path, max: usize) -> Res<()> {
         shift_rmse_aligned(&rigid(&rg), shifts),
         shift_rmse_aligned(&rigid(&nr), shifts),
     );
+    println!("   {}", regress(&rigid(&rg), shifts));
     for (ax, label) in [(0, "dy"), (1, "dx")] {
         let a: Vec<f64> = rigid(&rg)
             .iter()
@@ -633,6 +634,29 @@ fn synthetic(dir: &Path) -> Res<()> {
 }
 
 /// A movie stored as `movie.npy` (u8, `(frame, h, w)`) with `shifts.npy`.
+/// Per-axis least-squares fit `-est = slope * truth + intercept`, with R².
+fn regress(est: &[(f64, f64)], truth: &[(f64, f64)]) -> String {
+    let mut out = String::new();
+    for ax in 0..2 {
+        let a: Vec<f64> = est.iter().map(|v| -[v.0, v.1][ax]).collect();
+        let b: Vec<f64> = truth.iter().map(|v| [v.0, v.1][ax]).collect();
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let sab: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let sbb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+        let saa: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+        let slope = sab / sbb;
+        out += &format!(
+            " {}: slope {:.3} intercept {:.3} R2 {:.3};",
+            ["dy", "dx"][ax],
+            slope,
+            ma - slope * mb,
+            sab * sab / (saa * sbb)
+        );
+    }
+    out
+}
+
 fn npy_movie(dir: &Path) -> Res<()> {
     let m = Npy::read(dir.join("movie.npy"))?;
     let (n, h, w) = (m.shape[0], m.shape[1], m.shape[2]);
@@ -644,14 +668,19 @@ fn npy_movie(dir: &Path) -> Res<()> {
         mc.initialize(Frames::U8(&movie[..n.min(200) * px]))?;
         let mut out = vec![0.0; px];
         let mut est = Vec::new();
+        let mut q = Vec::new();
         for i in 0..n {
             let r = mc.process(Frame::U8(&movie[i * px..(i + 1) * px]), &mut out)?;
             est.push((r.dy as f64, r.dx as f64));
+            q.push(r.quality);
         }
+        q.sort_by(f32::total_cmp);
         println!(
-            "  [{name}] {n} frames {h}x{w}, roi {:?}: rigid RMSE {:.4} px",
+            "  [{name}] {n} frames {h}x{w}, roi {:?}: rigid RMSE {:.4} px, quality median {:.3};{}",
             mc.geometry().map(|g| g.roi),
-            shift_rmse_aligned(&est, &shifts)
+            shift_rmse_aligned(&est, &shifts),
+            q[q.len() / 2],
+            regress(&est, &shifts)
         );
     }
     Ok(())
