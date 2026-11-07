@@ -21,7 +21,7 @@ pub struct JsAviHeader {
 impl JsAviHeader {
     /// Parse a file prefix and, optionally, the `idx1` payload. Throws with a
     /// message starting `need more data` when the prefix is too short (see
-    /// `needed_bytes_hint`).
+    /// `neededBytes`).
     pub fn parse(prefix: &[u8], idx1: Option<Vec<u8>>) -> Result<JsAviHeader, JsError> {
         console_error_panic_hook::set_once();
         avi::AviHeader::parse(prefix, idx1.as_deref())
