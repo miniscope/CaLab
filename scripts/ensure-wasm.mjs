@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * Ensure the wasm-pack output (crates/solver/pkg/) exists and is not stale.
+ * Ensure the wasm-pack output of every wasm crate (crates/solver/pkg/ and
+ * crates/cala/pkg/) exists and is not stale.
  *
- * The pkg/ directory is build-only and gitignored — it is NOT committed (the
+ * The pkg/ directories are build-only and gitignored — it is NOT committed (the
  * binary previously was, and went silently stale because gitignored rebuilds
  * never show up in `git status`). This guard runs as a pre-hook for the JS
  * entry points (dev/typecheck/test/build:apps) so consumers always see a fresh
  * binding surface and binary, without paying for a rebuild when nothing changed.
  *
- * Rebuilds only when:
- *   - pkg/calab_solver_bg.wasm is missing, OR
- *   - any tracked solver source (src/**, Cargo.toml) is newer than the binary.
+ * Rebuilds a crate only when:
+ *   - its pkg/<name>_bg.wasm is missing, OR
+ *   - any tracked source of the crate (src/**, Cargo.toml) is newer than the binary.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, statSync, readdirSync } from 'node:fs';
@@ -18,8 +19,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const solverDir = join(repoRoot, 'crates', 'solver');
-const wasmFile = join(solverDir, 'pkg', 'calab_solver_bg.wasm');
+/** The wasm crates `npm run build:wasm` builds. Keep in sync with that script. */
+const crates = [
+  { dir: join(repoRoot, 'crates', 'solver'), wasm: 'calab_solver_bg.wasm' },
+  { dir: join(repoRoot, 'crates', 'cala'), wasm: 'calab_cala_bg.wasm' },
+];
 
 /** Latest mtime (ms) across a directory tree, recursively. */
 function newestMtime(dir) {
@@ -35,18 +39,21 @@ function newestMtime(dir) {
   return newest;
 }
 
-function needsRebuild() {
+function needsRebuild({ dir, wasm }) {
+  const wasmFile = join(dir, 'pkg', wasm);
   if (!existsSync(wasmFile)) return 'pkg/ missing';
   const wasmMtime = statSync(wasmFile).mtimeMs;
   const srcMtime = Math.max(
-    newestMtime(join(solverDir, 'src')),
-    statSync(join(solverDir, 'Cargo.toml')).mtimeMs,
+    newestMtime(join(dir, 'src')),
+    statSync(join(dir, 'Cargo.toml')).mtimeMs,
   );
-  return srcMtime > wasmMtime ? 'solver source changed' : null;
+  return srcMtime > wasmMtime ? 'crate source changed' : null;
 }
 
-const reason = needsRebuild();
-if (!reason) {
+const stale = crates
+  .map((crate) => ({ crate, reason: needsRebuild(crate) }))
+  .filter((c) => c.reason !== null);
+if (stale.length === 0) {
   console.log('[ensure-wasm] pkg/ is up to date — skipping rebuild.');
   process.exit(0);
 }
@@ -65,9 +72,9 @@ const missing = ['cargo', 'wasm-pack'].filter((cmd) => !hasTool(cmd));
 if (missing.length > 0) {
   console.error(
     [
-      `[ensure-wasm] Cannot build the WASM solver (${reason}): ${missing.join(' and ')} not found on PATH.`,
+      `[ensure-wasm] Cannot build the WASM crates (${stale.map((c) => `${c.crate.dir.split('/').pop()}: ${c.reason}`).join(', ')}): ${missing.join(' and ')} not found on PATH.`,
       '',
-      '  Rust is required even if you never touch the solver: crates/solver/pkg/ is',
+      '  Rust is required even if you never touch the solver: crates/*/pkg/ is',
       '  gitignored, so a fresh clone has to build it before dev/test/typecheck/build.',
       '',
       '  Install:',
@@ -81,19 +88,21 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-console.log(`[ensure-wasm] Rebuilding WASM (${reason})...`);
-try {
-  // Invoke wasm-pack directly (no shell) — mirrors the `build:wasm` npm script.
-  execFileSync('wasm-pack', ['build', '--target', 'web', '--release'], {
-    cwd: solverDir,
-    stdio: 'inherit',
-  });
-} catch {
-  console.error(
-    '[ensure-wasm] WASM build failed (see the wasm-pack output above). Rust and ' +
-      'wasm-pack are required on a fresh clone because crates/solver/pkg/ is ' +
-      'gitignored. Check that `rustup target list --installed` includes ' +
-      'wasm32-unknown-unknown, then retry with `npm run build:wasm`.',
-  );
-  process.exit(1);
+for (const { crate, reason } of stale) {
+  console.log(`[ensure-wasm] Rebuilding WASM for ${crate.dir.split('/').pop()} (${reason})...`);
+  try {
+    // Invoke wasm-pack directly (no shell) — mirrors the `build:wasm` npm script.
+    execFileSync('wasm-pack', ['build', '--target', 'web', '--release'], {
+      cwd: crate.dir,
+      stdio: 'inherit',
+    });
+  } catch {
+    console.error(
+      '[ensure-wasm] WASM build failed (see the wasm-pack output above). Rust and ' +
+        'wasm-pack are required on a fresh clone because crates/*/pkg/ is ' +
+        'gitignored. Check that `rustup target list --installed` includes ' +
+        'wasm32-unknown-unknown, then retry with `npm run build:wasm`.',
+    );
+    process.exit(1);
+  }
 }

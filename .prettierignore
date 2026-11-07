@@ -3,6 +3,8 @@ apps/*/dist/
 packages/*/dist/
 crates/solver/pkg/
 crates/solver/target/
+crates/cala/pkg/
+crates/cala/target/
 .planning/
 package-lock.json
 python/.venv/

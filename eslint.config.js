@@ -14,6 +14,10 @@ const BOUNDARY_PATTERNS = [
     message: 'Import from @calab/core/wasm instead of the WASM pkg directly.',
   },
   {
+    group: ['**/crates/cala/pkg/*'],
+    message: "Import from apps/cala's src/lib/cala-wasm.ts instead of the WASM pkg directly.",
+  },
+  {
     group: ['@supabase/supabase-js'],
     message: 'Import from @calab/community instead of @supabase/supabase-js directly.',
   },
@@ -87,6 +91,7 @@ export default tseslint.config(
     files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
     ignores: [
       'packages/core/src/wasm-adapter.ts',
+      'apps/cala/src/lib/cala-wasm.ts',
       'packages/community/src/supabase.ts',
       'packages/community/src/auth.ts',
       'packages/community/src/submission-service.ts',
