@@ -82,6 +82,12 @@ use crate::threshold::{interior_pve, threshold_grid, NoiseModel};
 ///
 /// The event-span floor is `max_e m_e / (cap * len_e)`: the smallest size at
 /// which every event fits its own span at `cap` spikes per frame.
+///
+/// Open question: the busiest-frame floor ties a cell's scale to one extreme
+/// frame of the relaxed solution (artifact-sensitive; the exact solve is
+/// peakier than early-stopped FISTA, which costs bursting slow-indicator
+/// cells F1). The event-span floor fixes bursts but loses on fast
+/// indicators. A better floor is worth investigating later.
 pub(crate) const DEFAULT_MODE: u8 = 3;
 
 #[cfg(test)]
