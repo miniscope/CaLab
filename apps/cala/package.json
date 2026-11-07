@@ -7,11 +7,12 @@
     "id": "cala",
     "displayName": "Cala",
     "description": "Streaming calcium imaging from raw 1-photon Miniscope video",
-    "longDescription": "A streaming, in-browser pipeline that turns raw 1-photon Miniscope video into per-cell footprints and traces, frame by frame (Rust and WebAssembly, WebGPU later). Milestone 1 reads Miniscope AVI folders directly from disk and plays them back.",
+    "longDescription": "A streaming, in-browser pipeline that turns raw 1-photon Miniscope video into per-cell footprints and traces, frame by frame (Rust and WebAssembly, WebGPU later). It reads Miniscope AVI folders directly from disk, plays them back, and preprocesses and motion-corrects them live.",
     "features": [
       "Reads Miniscope AVI folders in place, frame by frame",
       "Never uploads or loads whole videos",
-      "Frame rate from timestamps and metadata, not the AVI header"
+      "Frame rate from timestamps and metadata, not the AVI header",
+      "Live preprocessing and rigid motion correction with a motion trace"
     ],
     "status": "coming-soon",
     "hidden": true,
@@ -29,7 +30,9 @@
     "@calab/community-ui": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",
-    "solid-js": "^1.9.18"
+    "@dschz/solid-uplot": "^0.5.2",
+    "solid-js": "^1.9.18",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@calab/vite-config": "*"
