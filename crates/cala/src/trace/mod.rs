@@ -68,6 +68,7 @@ pub use library::{
     Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };
 pub use solver::{FrameTraces, SolverConfig, TraceEngine, TraceState};
+pub(crate) use library::support_disk;
 
 use crate::preprocess::PreprocessError;
 

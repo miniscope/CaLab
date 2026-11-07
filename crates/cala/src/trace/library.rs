@@ -288,7 +288,7 @@ impl LibraryBuilder {
 }
 
 /// Centre (intensity-weighted over the half-max area) and support radius.
-fn support_disk(
+pub(crate) fn support_disk(
     fp: &Footprint,
     dims: Dims,
     cfg: &LibraryConfig,
