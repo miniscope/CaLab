@@ -56,25 +56,25 @@ calab.decon(
 
 ### Parameters
 
-| Parameter           | Description                                                                                                                 |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `traces`            | Calcium traces. Shape `(n_cells, n_timepoints)` or `(n_timepoints,)`.                                                       |
-| `fs`                | Sampling rate in Hz. Default: `30.0`.                                                                                       |
-| `timeout`           | Seconds to wait for results. `None` waits forever (until Ctrl-C or browser close).                                          |
-| `port`              | Port to bind the bridge server to. `None` auto-assigns a free port.                                                         |
-| `app_url`           | Override CaDecon URL (useful for local dev). Default: GitHub Pages deployment.                                              |
-| `open_browser`      | Auto-open the browser. Default: `True`.                                                                                     |
-| `headless`          | `None`/`False`: normal browser. `True`: create a temporary headless browser. `HeadlessBrowser`: reuse an existing instance. |
-| `autorun`           | Start the solver automatically after traces load. Default: `False`.                                                         |
+| Parameter           | Description                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `traces`            | Calcium traces. Shape `(n_cells, n_timepoints)` or `(n_timepoints,)`.                                                                              |
+| `fs`                | Sampling rate in Hz. Default: `30.0`.                                                                                                              |
+| `timeout`           | Seconds to wait for results. `None` waits forever (until Ctrl-C or browser close).                                                                 |
+| `port`              | Port to bind the bridge server to. `None` auto-assigns a free port.                                                                                |
+| `app_url`           | Override CaDecon URL (useful for local dev). Default: GitHub Pages deployment.                                                                     |
+| `open_browser`      | Auto-open the browser. Default: `True`.                                                                                                            |
+| `headless`          | `None`/`False`: normal browser. `True`: create a temporary headless browser. `HeadlessBrowser`: reuse an existing instance.                        |
+| `autorun`           | Start the solver automatically after traces load. Default: `False`.                                                                                |
 | `max_firing_rate`   | Maximum firing rate (spikes/s) the solver may assign; caps spikes per frame at `round(max_firing_rate / fs)`. Range (0, 10000]. App default `300`. |
-| `hp_filter_enabled` | Enable high-pass filter before deconvolution.                                                                               |
-| `lp_filter_enabled` | Enable low-pass filter before deconvolution.                                                                                |
-| `max_iterations`    | Maximum solver iterations (1--200).                                                                                         |
-| `convergence_tol`   | Convergence tolerance (0--1, exclusive).                                                                                    |
-| `num_subsets`       | Number of random subsets for optimization. Must be > 0.                                                                     |
-| `target_coverage`   | Fraction of data covered by subsets (0--1].                                                                                 |
-| `aspect_ratio`      | Subset aspect ratio (> 0). Greater than 1 = wider, less than 1 = taller.                                                    |
-| `seed`              | Random seed for reproducible subset placement.                                                                              |
+| `hp_filter_enabled` | Enable high-pass filter before deconvolution.                                                                                                      |
+| `lp_filter_enabled` | Enable low-pass filter before deconvolution.                                                                                                       |
+| `max_iterations`    | Maximum solver iterations (1--200).                                                                                                                |
+| `convergence_tol`   | Convergence tolerance (0--1, exclusive).                                                                                                           |
+| `num_subsets`       | Number of random subsets for optimization. Must be > 0.                                                                                            |
+| `target_coverage`   | Fraction of data covered by subsets (0--1].                                                                                                        |
+| `aspect_ratio`      | Subset aspect ratio (> 0). Greater than 1 = wider, less than 1 = taller.                                                                           |
+| `seed`              | Random seed for reproducible subset placement.                                                                                                     |
 
 Parameters after `headless` are keyword-only. Any parameter set to `None` falls through to the browser's default value.
 
@@ -208,19 +208,19 @@ calab.solve_trace(
 ) -> SolveTraceResult
 ```
 
-| Parameter           | Description                                                                                                                                                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `trace`             | 1-D calcium trace.                                                                                                                                                                                                                |
-| `tau_rise`          | Rise time constant in seconds.                                                                                                                                                                                                    |
-| `tau_decay`         | Decay time constant in seconds.                                                                                                                                                                                                   |
-| `fs`                | Sampling rate in Hz.                                                                                                                                                                                                              |
-| `max_firing_rate`   | Maximum firing rate in spikes/s (default `300.0`, range (0, 10000]). The solve runs at the recorded frame rate; each frame holds at most `max(1, round(max_firing_rate / fs))` spikes.                                            |
-| `max_iters`         | Maximum FISTA iterations.                                                                                                                                                                                                         |
-| `tol`               | Convergence tolerance.                                                                                                                                                                                                            |
-| `hp_enabled`        | Enable high-pass filtering.                                                                                                                                                                                                       |
-| `lp_enabled`        | Enable low-pass filtering.                                                                                                                                                                                                        |
-| `warm_counts`       | Accepted for API compatibility; currently has no effect (round 0 ignores it).                                                                                                                                                     |
-| `lambda_`           | L1 sparsity penalty (0 = auto).                                                                                                                                                                                                   |
+| Parameter         | Description                                                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trace`           | 1-D calcium trace.                                                                                                                                                                     |
+| `tau_rise`        | Rise time constant in seconds.                                                                                                                                                         |
+| `tau_decay`       | Decay time constant in seconds.                                                                                                                                                        |
+| `fs`              | Sampling rate in Hz.                                                                                                                                                                   |
+| `max_firing_rate` | Maximum firing rate in spikes/s (default `300.0`, range (0, 10000]). The solve runs at the recorded frame rate; each frame holds at most `max(1, round(max_firing_rate / fs))` spikes. |
+| `max_iters`       | Maximum FISTA iterations.                                                                                                                                                              |
+| `tol`             | Convergence tolerance.                                                                                                                                                                 |
+| `hp_enabled`      | Enable high-pass filtering.                                                                                                                                                            |
+| `lp_enabled`      | Enable low-pass filtering.                                                                                                                                                             |
+| `warm_counts`     | Accepted for API compatibility; currently has no effect (round 0 ignores it).                                                                                                          |
+| `lambda_`         | L1 sparsity penalty (0 = auto).                                                                                                                                                        |
 
 Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`, `noise_var_processed`, `chain_noise_gain`, `cap_limited`, `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes`.
 
