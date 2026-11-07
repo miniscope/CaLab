@@ -23,6 +23,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - **Per-cell diagnostics** in WASM and Python results: `cap_limited`,
   `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes` (none changes the
   result); the Trace Inspector shows a short note when they apply.
+- **CaDecon: default Max Iterations raised from 20 to 30.** With event-mass
+  counting the kernel drifts smoothly to its fixed point and then converges
+  sharply; on real data that took ~18 iterations, close to the old cap, and
+  runs are now fast enough to afford the headroom.
 - **Fixed:** the FFT batch route of the superposition scorer dropped repeated
   spikes in one bin.
 

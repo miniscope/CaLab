@@ -12,7 +12,7 @@ function setMaxFiringRate(v: number): void {
 }
 const [hpFilterEnabled, setHpFilterEnabled] = createSignal(true);
 const [lpFilterEnabled, setLpFilterEnabled] = createSignal(true);
-const [maxIterations, setMaxIterations] = createSignal(20);
+const [maxIterations, setMaxIterations] = createSignal(30);
 
 // Convergence is tested with the peak-normalized RMSE between successive
 // iterations' kernels. convergenceTol is the fraction-of-peak change below which
