@@ -42,6 +42,9 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
   await expect(page.getByTestId('motion-trace')).toBeVisible();
+  // The cells panel is up; six frames are too few for the slow loop to start.
+  await expect(page.getByTestId('cells-view')).toBeVisible();
+  await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
 
   // Raw gray levels: turn auto contrast off, scrub to global frame 4 (file 1).
   await page.getByLabel('Auto contrast').uncheck();

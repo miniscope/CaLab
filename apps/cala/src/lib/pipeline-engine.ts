@@ -19,6 +19,17 @@ import {
   type PipelinePlan,
 } from './pipeline-plan.ts';
 import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import type { CellsBatch, FastLoop } from './fast-loop.ts';
+
+/** What a fast loop is built from (see `PipelineEngine`'s `fastLoop` option). */
+export interface FastLoopSetup {
+  width: number;
+  height: number;
+  batchSize: number;
+  /** The preprocessing's flattening settings (the slow loop must match them). */
+  cellDiameterPx: number;
+  flattenSigmaPx: number;
+}
 
 /** What the engine needs from a `FrameSource`. */
 export interface FrameReader {
@@ -34,6 +45,8 @@ export interface StageTimings {
   motionMs: number;
   /** Preview downsampling and bookkeeping. */
   otherMs: number;
+  /** Fast loop: library swap, trace solve and the forward copy to the slow loop. */
+  traceMs: number;
 }
 
 /** The previews of one batch, all of its last frame. */
@@ -75,6 +88,8 @@ export type PipelineStepResult =
       flickerGain: Float32Array;
       previews: BatchPreviews;
       timings: StageTimings;
+      /** Traces of the batch (present when the engine runs a fast loop). */
+      cells?: CellsBatch;
     }
   | { kind: 'done' };
 
@@ -93,6 +108,7 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.preprocessed.data,
     p.corrected.data,
     p.output.data,
+    ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
   ].map((a) => a.buffer as ArrayBuffer);
 }
 
@@ -127,12 +143,19 @@ export class PipelineEngine {
   private disposed = false;
 
   private readonly reader: FrameReader;
+  private fast: FastLoop | null = null;
 
   /**
    * `flickerMode` overrides the global flicker correction (0 off, 1 additive,
-   * 2 multiplicative, 3 both; default both), e.g. to time it.
+   * 2 multiplicative, 3 both; default both), e.g. to time it. `fastLoop`
+   * builds the trace solver run on every corrected batch (none: no traces).
    */
-  constructor(reader: FrameReader, options: PipelineOptions = {}, flickerMode?: number) {
+  constructor(
+    reader: FrameReader,
+    options: PipelineOptions = {},
+    flickerMode?: number,
+    fastLoop?: (setup: FastLoopSetup) => FastLoop,
+  ) {
     this.reader = reader;
     const { width, height, bitDepth, frameCount, fps } = reader.info;
     this.plan = makePlan(frameCount, options);
@@ -148,6 +171,14 @@ export class PipelineEngine {
     if (flickerMode !== undefined) config.flickerMode = flickerMode;
     try {
       this.warmup = new PreprocessWarmup(width, height, config);
+      this.fast =
+        fastLoop?.({
+          width,
+          height,
+          batchSize: this.plan.batchSize,
+          cellDiameterPx: config.cellDiameterPx,
+          flattenSigmaPx: config.flattenSigmaPx,
+        }) ?? null;
     } finally {
       config.free();
     }
@@ -155,6 +186,11 @@ export class PipelineEngine {
     this.raw = this.sixteen ? new Uint16Array(0) : new Uint8Array(0);
     this.front = new Float32Array(0);
     this.corrected = new Float32Array(0);
+  }
+
+  /** The fast loop, when the engine runs one. */
+  get fastLoop(): FastLoop | null {
+    return this.fast;
   }
 
   get frameCount(): number {
@@ -165,12 +201,21 @@ export class PipelineEngine {
   async step(): Promise<PipelineStepResult> {
     if (this.disposed) throw new Error('The pipeline was stopped.');
     const s = this.cursor.next();
-    if (!s) return { kind: 'done' };
+    if (!s) {
+      this.fast?.end();
+      return { kind: 'done' };
+    }
 
     const t0 = now();
     const raw = await this.readRaw(s.start, s.count);
     const t1 = now();
-    const timings: StageTimings = { readMs: t1 - t0, preprocessMs: 0, motionMs: 0, otherMs: 0 };
+    const timings: StageTimings = {
+      readMs: t1 - t0,
+      preprocessMs: 0,
+      motionMs: 0,
+      otherMs: 0,
+      traceMs: 0,
+    };
 
     if (s.phase === 'calibrate') {
       const w = this.warmup!;
@@ -230,6 +275,8 @@ export class PipelineEngine {
     const t4 = now();
     pre.backFrames(corrected, s.count);
     const t5 = now();
+    const cells = this.fast?.process(corrected, s.start, s.count, pre);
+    const t5b = now();
 
     const dy = new Float32Array(s.count);
     const dx = new Float32Array(s.count);
@@ -255,7 +302,8 @@ export class PipelineEngine {
     const t6 = now();
     timings.preprocessMs = t2 - t1 + (t5 - t4);
     timings.motionMs = t3 - t2;
-    timings.otherMs = t4 - t3 + (t6 - t5);
+    timings.traceMs = t5b - t5;
+    timings.otherMs = t4 - t3 + (t6 - t5b);
     return {
       kind: 'batch',
       start: s.start,
@@ -268,12 +316,15 @@ export class PipelineEngine {
       flickerGain,
       previews,
       timings,
+      ...(cells ? { cells } : {}),
     };
   }
 
   /** Release the WASM objects. The engine is unusable afterwards. */
   dispose(): void {
     this.disposed = true;
+    this.fast?.dispose();
+    this.fast = null;
     this.warmup?.free();
     this.pre?.free();
     this.warmupPre?.free();

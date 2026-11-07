@@ -6,7 +6,10 @@ import { authLoading, user } from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
+import { createCellStore } from './lib/cell-store.ts';
+import { createSlowClient } from './lib/slow-client.ts';
 import { PipelinePanel } from './components/PipelinePanel.tsx';
+import { CellsPanel } from './components/CellsPanel.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { FrameViewer } from './components/FrameViewer.tsx';
 import { InfoPanel } from './components/InfoPanel.tsx';
@@ -22,7 +25,14 @@ const App: Component = () => {
   // The worker (and the files it holds) lives as long as the app.
   const client = createFrameClient();
   const store = createViewerStore(client);
-  const pipeline = createPipelineStore(client);
+  const cells = createCellStore();
+  // Cell discovery runs in a worker of its own, fed directly by the frame worker.
+  createSlowClient(client, (msg) => cells.onSlowMessage(msg));
+  const pipeline = createPipelineStore(client, {}, undefined, cells);
+  // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
+  if (new URLSearchParams(window.location.search).has('debug')) {
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline };
+  }
 
   // Opening a folder starts preprocessing and motion correction right away.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
@@ -85,6 +95,12 @@ const App: Component = () => {
                 </div>
               )}
             </Show>
+            <CellsPanel
+              store={pipeline}
+              cells={cells}
+              width={info().width}
+              height={info().height}
+            />
             <PipelinePanel store={pipeline} />
             <FrameViewer store={store} />
             <InfoPanel info={info()} />

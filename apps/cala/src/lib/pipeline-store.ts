@@ -7,6 +7,7 @@
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
 import { createSignal } from 'solid-js';
+import type { CellStore } from './cell-store.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type { BatchPreviews, PipelineStepResult, StageTimings } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
@@ -80,12 +81,22 @@ export interface SetupProgress {
   total: number;
 }
 
-const ZERO_TIMINGS: StageTimings = { readMs: 0, preprocessMs: 0, motionMs: 0, otherMs: 0 };
+const ZERO_TIMINGS: StageTimings = {
+  readMs: 0,
+  preprocessMs: 0,
+  motionMs: 0,
+  otherMs: 0,
+  traceMs: 0,
+};
+
+/** Pipeline sessions, so late messages of a stopped run are told apart. */
+let nextSession = 1;
 
 export function createPipelineStore(
   client: PipelineClient,
   options: PipelineOptions = {},
   clock: () => number = () => performance.now(),
+  cells?: CellStore,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -97,6 +108,8 @@ export function createPipelineStore(
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
   const [error, setError] = createSignal<string | null>(null);
+  /** Cell discovery (the slow loop) on or off. */
+  const [discover, setDiscoverSignal] = createSignal(true);
 
   let trace = new ShiftTrace();
   let meter = new ThroughputMeter();
@@ -117,11 +130,13 @@ export function createPipelineStore(
         setProcessed(step.start + step.count);
         setFps(meter.record(clock(), step.count));
         const t = step.timings;
+        if (step.cells && cells) cells.onBatch(step.start, step.count, step.cells, t);
         totals = {
           readMs: totals.readMs + t.readMs,
           preprocessMs: totals.preprocessMs + t.preprocessMs,
           motionMs: totals.motionMs + t.motionMs,
           otherMs: totals.otherMs + t.otherMs,
+          traceMs: totals.traceMs + t.traceMs,
         };
         const n = trace.length;
         setStageMs({
@@ -129,6 +144,7 @@ export function createPipelineStore(
           preprocessMs: totals.preprocessMs / n,
           motionMs: totals.motionMs / n,
           otherMs: totals.otherMs / n,
+          traceMs: totals.traceMs / n,
         });
         return;
       }
@@ -178,6 +194,7 @@ export function createPipelineStore(
     setFps(0);
     setStageMs(ZERO_TIMINGS);
     setError(null);
+    cells?.reset(-1);
   }
 
   /** Start (or restart) the pipeline from frame 0. */
@@ -185,8 +202,10 @@ export function createPipelineStore(
     reset();
     const gen = generation;
     setStatus('starting');
+    const session = nextSession++;
+    cells?.reset(session);
     try {
-      const p = await client.startPipeline(options);
+      const p = await client.startPipeline(options, { session, discover: discover() });
       if (gen !== generation) return;
       setPlan(p);
       setStatus('running');
@@ -217,8 +236,16 @@ export function createPipelineStore(
     if (wasActive) void client.stopPipeline().catch(() => {});
   }
 
+  /** Turn cell discovery on or off (applies to the running pipeline at once). */
+  function setDiscover(on: boolean): void {
+    setDiscoverSignal(on);
+    void client.setDiscovery?.(on).catch(() => {});
+  }
+
   return {
     status,
+    discover,
+    setDiscover,
     plan,
     setup,
     processed,

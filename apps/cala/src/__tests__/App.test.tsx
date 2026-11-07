@@ -44,6 +44,8 @@ const fake = vi.hoisted(() => ({
   stopPipeline: vi.fn(),
 }));
 vi.mock('../lib/frame-client.ts', () => ({ createFrameClient: (): FrameClient => fake }));
+// No slow worker in jsdom; discovery itself is tested in cells.test.ts.
+vi.mock('../lib/slow-client.ts', () => ({ createSlowClient: () => ({ dispose() {} }) }));
 
 import App from '../App.tsx';
 
@@ -69,7 +71,7 @@ function fakePipeline(): void {
   });
   fake.stopPipeline.mockResolvedValue(undefined);
   fake.stepPipeline.mockImplementation(async (): Promise<PipelineStepResult> => {
-    const timings = { readMs: 1, preprocessMs: 2, motionMs: 3, otherMs: 0 };
+    const timings = { readMs: 1, preprocessMs: 2, motionMs: 3, otherMs: 0, traceMs: 0 };
     if (next === 0) {
       next = 1;
       return { kind: 'setup', phase: 'calibrate', done: 50, total: 50, timings };
