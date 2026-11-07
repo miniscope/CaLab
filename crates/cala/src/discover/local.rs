@@ -162,6 +162,8 @@ pub(crate) struct Cell {
     pub raw: Vec<f32>,
     /// Filtered values `(H a)` on the support (unwhitened).
     pub filt: Vec<f32>,
+    /// Frame at which the cell entered the working set (seeded: 0).
+    pub born: u64,
 }
 
 impl Cell {
@@ -233,6 +235,7 @@ impl Cell {
             pix,
             raw,
             filt,
+            born: 0,
         })
     }
 

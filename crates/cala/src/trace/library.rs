@@ -116,6 +116,7 @@ pub struct LibraryBuilder {
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
     version: Option<u64>,
+    reuse: Option<std::sync::Arc<Library>>,
 }
 
 impl LibraryBuilder {
@@ -128,6 +129,7 @@ impl LibraryBuilder {
             noise: None,
             background: BackgroundModel::None,
             version: None,
+            reuse: None,
         }
     }
 
@@ -158,6 +160,15 @@ impl LibraryBuilder {
     /// Explicit version number (default: a process-wide counter).
     pub fn version(mut self, v: u64) -> LibraryBuilder {
         self.version = Some(v);
+        self
+    }
+
+    /// Take the filtered values of footprints that are unchanged from
+    /// `prev` (same id, support and values) instead of filtering them again.
+    /// `prev` must have been built with the same filter. An incremental
+    /// rebuild after a few edits then filters only the edited cells.
+    pub fn reuse(mut self, prev: std::sync::Arc<Library>) -> LibraryBuilder {
+        self.reuse = Some(prev);
         self
     }
 
@@ -234,11 +245,29 @@ impl LibraryBuilder {
             col_start.push(pix.len());
         }
         let n = ids.len();
+        let mut val = vec![0.0f32; pix.len()];
+        // Unchanged footprints keep the filtered values of `reuse`.
+        let mut done = vec![false; n];
+        if let Some(prev) = &self.reuse {
+            if prev.dims() == dims {
+                for i in 0..n {
+                    let Some(slot) = prev.slot(ids[i]) else {
+                        continue;
+                    };
+                    let (a, b) = (col_start[i], col_start[i + 1]);
+                    let (pp, pr) = prev.unfiltered(slot);
+                    if pp == &pix[a..b] && pr == &raw[a..b] {
+                        val[a..b].copy_from_slice(prev.filtered(slot).1);
+                        done[i] = true;
+                    }
+                }
+            }
+        }
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
         let mut canvases: Vec<Vec<usize>> = Vec::new();
-        for i in 0..n {
+        for i in (0..n).filter(|&i| !done[i]) {
             let fits = |members: &Vec<usize>| {
                 members.iter().all(|&j| {
                     let (dy, dx) = (centers[i].0 - centers[j].0, centers[i].1 - centers[j].1);
@@ -251,7 +280,6 @@ impl LibraryBuilder {
                 None => canvases.push(vec![i]),
             }
         }
-        let mut val = vec![0.0f32; pix.len()];
         let mut img = vec![0.0f32; n_px];
         for members in &canvases {
             for &i in members {

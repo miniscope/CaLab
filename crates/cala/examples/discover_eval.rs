@@ -11,6 +11,8 @@
 //!   --checkpoints K   library snapshots matched against GT (default 10)
 //!   --no-pass2        skip re-extraction
 //!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
+//!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
+//!   --v1              all v2 additions off (prune, pre-test)
 //! ```
 //!
 //! Pass 1 runs preprocessing (and motion correction), the fast loop and the
@@ -34,7 +36,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig};
+use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
@@ -305,15 +307,42 @@ impl Pipeline {
         }
     }
 
-    fn frame(&mut self, raw: &[u8], out: &mut [f32]) {
+    /// Returns the rigid motion shift `(dy, dx)` (zero without motion).
+    fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> (f32, f32) {
         self.pre.front(raw, &mut self.buf).unwrap();
-        match &mut self.mc {
+        let sh = match &mut self.mc {
             Some(mc) => {
-                mc.process(Frame::F32(&self.buf), out).unwrap();
+                let r = mc.process(Frame::F32(&self.buf), out).unwrap();
+                (r.dy, r.dx)
             }
-            None => out.copy_from_slice(&self.buf),
-        }
+            None => {
+                out.copy_from_slice(&self.buf);
+                (0.0, 0.0)
+            }
+        };
         self.pre.back(out).unwrap();
+        sh
+    }
+}
+
+/// Footprints (unfiltered and filtered) as `CALAFP01`.
+fn write_footprints(path: &Path, lib: &Library) {
+    let dims = lib.dims();
+    let mut f = std::io::BufWriter::new(File::create(path).unwrap());
+    f.write_all(b"CALAFP01").unwrap();
+    for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
+        f.write_all(&v.to_le_bytes()).unwrap();
+    }
+    for s in 0..lib.len() {
+        let (p, a) = lib.unfiltered(s);
+        let (_, h) = lib.filtered(s);
+        f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
+        f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
+        for q in p {
+            f.write_all(&q.to_le_bytes()).unwrap();
+        }
+        write_f32s(&mut f, a);
+        write_f32s(&mut f, h);
     }
 }
 
@@ -560,6 +589,19 @@ fn main() {
     if let Some(v) = arg_value(&args, "--merge-corr") {
         scfg.merge_corr = v.parse().unwrap();
     }
+    let v1 = args.iter().any(|a| a == "--v1");
+    if v1 || args.iter().any(|a| a == "--no-prune") {
+        scfg.prune = false;
+    }
+    if v1 || args.iter().any(|a| a == "--no-pretest") {
+        scfg.pretest = false;
+    }
+    if let Some(v) = arg_value(&args, "--probation") {
+        scfg.probation_frames = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--keep-z") {
+        scfg.keep_z = v.parse().unwrap();
+    }
 
     let avi_dir = if sim {
         input.join("daq/Miniscope")
@@ -616,9 +658,14 @@ fn main() {
     let mut curve = File::create(out_dir.join("curve.tsv")).unwrap();
     writeln!(
         curve,
-        "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb"
+        "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb\tdeletes\tpretest_rejects\testablished"
     )
     .unwrap();
+    let mut deleted_log: Vec<DeletedCell> = Vec::new();
+    let mut ldump = args
+        .iter()
+        .any(|a| a == "--dump-ledger")
+        .then(|| std::io::BufWriter::new(File::create(out_dir.join("ledger.bin")).unwrap()));
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -656,6 +703,13 @@ fn main() {
                 let a = Instant::now();
                 sl.observe(&y, &lib, &tr).unwrap();
                 let b = Instant::now();
+                if let Some(f) = ldump.as_mut() {
+                    for (id, u, b, sc) in sl.debug_ledger() {
+                        f.write_all(&(t as u32).to_le_bytes()).unwrap();
+                        f.write_all(&(id as u32).to_le_bytes()).unwrap();
+                        write_f32s(f, &[u, b, sc]);
+                    }
+                }
                 if let Some(l) = sl.step(budget).unwrap() {
                     engine.set_library(l).unwrap();
                 }
@@ -665,9 +719,17 @@ fn main() {
                 step_ms.push((c - b).as_secs_f64() * 1e3);
                 if (t + 1).is_multiple_of(100) {
                     let st = sl.stats();
+                    let est = sl
+                        .cell_infos()
+                        .iter()
+                        .filter(|c| c.status == CellStatus::Established)
+                        .count();
+                    for d in sl.take_deleted() {
+                        deleted_log.push(d);
+                    }
                     writeln!(
                         curve,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{est}",
                         t + 1,
                         sl.len(),
                         engine.library().len(),
@@ -677,7 +739,9 @@ fn main() {
                         st.rejects,
                         st.visits,
                         st.commits,
-                        sl.reservoir_bytes() as f64 / 1048576.0
+                        sl.reservoir_bytes() as f64 / 1048576.0,
+                        st.deletes,
+                        st.pretest_rejects
                     )
                     .unwrap();
                 }
@@ -727,24 +791,68 @@ fn main() {
 
     // ---- export footprints, max projection
     {
-        let mut f = std::io::BufWriter::new(File::create(out_dir.join("footprints.bin")).unwrap());
-        f.write_all(b"CALAFP01").unwrap();
-        for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
-            f.write_all(&v.to_le_bytes()).unwrap();
-        }
-        for s in 0..lib.len() {
-            let (p, a) = lib.unfiltered(s);
-            let (_, h) = lib.filtered(s);
-            f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
-            f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
-            for q in p {
-                f.write_all(&q.to_le_bytes()).unwrap();
-            }
-            write_f32s(&mut f, a);
-            write_f32s(&mut f, h);
-        }
+        write_footprints(&out_dir.join("footprints.bin"), &lib);
         let mut f = File::create(out_dir.join("maxproj.f32")).unwrap();
         write_f32s(&mut f, &maxproj);
+        let mut f = File::create(out_dir.join("births.tsv")).unwrap();
+        writeln!(f, "id\tborn").unwrap();
+        for (id, b) in sl.births() {
+            writeln!(f, "{id}\t{b}").unwrap();
+        }
+        let mut f = File::create(out_dir.join("ledger.tsv")).unwrap();
+        writeln!(
+            f,
+            "id\tborn\tstatus\tframes\ttransients\tdips\tpeak_z\tcy\tcx\tpasses\tfails"
+        )
+        .unwrap();
+        for c in sl.cell_infos() {
+            writeln!(
+                f,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}",
+                c.id,
+                c.born,
+                c.status.as_str(),
+                c.frames,
+                c.transients,
+                c.dips,
+                c.peak_z,
+                c.center.0,
+                c.center.1,
+                c.passes,
+                c.fails
+            )
+            .unwrap();
+        }
+        deleted_log.extend(sl.take_deleted());
+        let mut f = File::create(out_dir.join("deleted.tsv")).unwrap();
+        writeln!(
+            f,
+            "id\tborn\tdeleted\treason\tframes\ttransients\tdips\tpeak_z\tcy\tcx\tpasses\tfails"
+        )
+        .unwrap();
+        for d in &deleted_log {
+            let c = d.info;
+            writeln!(
+                f,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}",
+                c.id,
+                c.born,
+                d.frame,
+                d.reason.as_str(),
+                c.frames,
+                c.transients,
+                c.dips,
+                c.peak_z,
+                c.center.0,
+                c.center.1,
+                c.passes,
+                c.fails
+            )
+            .unwrap();
+        }
+        for (t, l) in &checkpoints {
+            write_footprints(&out_dir.join(format!("fp_{t:06}.bin")), l);
+        }
     }
 
     // ---- pass 2: re-extract every frame with the final library
@@ -754,12 +862,26 @@ fn main() {
         let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
         let mut s = 0u32;
         let t0 = Instant::now();
+        let mut meanimg = vec![0.0f64; n_px];
+        let mut finfo = std::io::BufWriter::new(File::create(out_dir.join("frames.tsv")).unwrap());
+        writeln!(finfo, "frame\tdy\tdx\tmean").unwrap();
+        let n_fov = fov.iter().filter(|&&m| m != 0).count().max(1) as f64;
         while s < frames {
             let cnt = 64.min(frames - s);
             let raw = rec.read(s, cnt);
             for (k, f) in raw.chunks_exact(n_px).enumerate() {
                 let t = s as usize + k;
-                pipe.frame(f, &mut y);
+                let (dy, dx) = pipe.frame(f, &mut y);
+                let mut m = 0.0f64;
+                for ((a, &v), &k) in meanimg.iter_mut().zip(&y).zip(&fov) {
+                    if v.is_finite() {
+                        *a += f64::from(v);
+                        if k != 0 {
+                            m += f64::from(v);
+                        }
+                    }
+                }
+                writeln!(finfo, "{t}\t{dy}\t{dx}\t{}", m / n_fov).unwrap();
                 let r = eng.process(&y).unwrap();
                 traces[t * lib.len()..(t + 1) * lib.len()].copy_from_slice(&r.traces);
             }
@@ -771,6 +893,9 @@ fn main() {
         );
         let mut f = std::io::BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
         write_f32s(&mut f, &traces);
+        let mi: Vec<f32> = meanimg.iter().map(|&v| (v / t_len as f64) as f32).collect();
+        let mut f = File::create(out_dir.join("meanimg.f32")).unwrap();
+        write_f32s(&mut f, &mi);
     }
 
     // ---- curve of library size (also for real data)
@@ -902,7 +1027,22 @@ fn main() {
         let mut split_log =
             String::from("det\tmatched_det\tdist\ttrace_r_pair\ttrace_r_gt\tfocus\tsnr\n");
         let mut unexpl_tr: Vec<f64> = Vec::new();
+        let mut labels = String::from("slot\tid\tclass\tgt\tr\n");
         for (i, m) in mt.iter().enumerate() {
+            let (bj, br) = best[i];
+            let cls = match m {
+                Some((j, _)) if !detectable[*j] => "nondet",
+                Some(_) => "match",
+                None if bj != usize::MAX && br >= 0.5 && gt_hit[bj] => "dup",
+                None if bj != usize::MAX && br >= thr => "nondet",
+                None => "fp",
+            };
+            let _ = writeln!(
+                labels,
+                "{i}\t{}\t{cls}\t{}\t{br:.3}",
+                l.ids()[i],
+                m.map_or(bj as i64, |(j, _)| j as i64)
+            );
             match m {
                 Some((j, _)) if !detectable[*j] => nondet += 1,
                 Some(_) => {}
@@ -1031,6 +1171,58 @@ fn main() {
         );
         split_log_out = split_log.clone();
         std::fs::write(out_dir.join("unexplained.tsv"), &unexpl_log).unwrap();
+        std::fs::write(out_dir.join("labels.tsv"), &labels).unwrap();
+        // Deleted cells: the nearest GT unit (centre within 5 px), whether
+        // it is matched at the end, its SNR.
+        let gt_c: Vec<(f32, f32)> = gt_cols.iter().map(|g| centroid(g, dims.width)).collect();
+        let mut dl = String::from(
+            "id\treason\tdeleted\ttransients\tdips\tpasses\tfails\tgt\tdist\tgt_matched_end\tsnr\n",
+        );
+        let (mut d_true, mut d_true_lost) = (0, 0);
+        for d in &deleted_log {
+            let (cy, cx) = (
+                d.info.center.0 + off.0 as f32,
+                d.info.center.1 + off.1 as f32,
+            );
+            let (j, dist) = gt_c
+                .iter()
+                .enumerate()
+                .fold((usize::MAX, f32::MAX), |b, (j, c)| {
+                    let dd = ((c.0 - cy).powi(2) + (c.1 - cx).powi(2)).sqrt();
+                    if dd < b.1 {
+                        (j, dd)
+                    } else {
+                        b
+                    }
+                });
+            let near = dist <= 5.0;
+            if near {
+                d_true += 1;
+                if !gt_hit[j] {
+                    d_true_lost += 1;
+                }
+            }
+            let _ = writeln!(
+                dl,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{dist:.1}\t{}\t{:.1}",
+                d.info.id,
+                d.reason.as_str(),
+                d.frame,
+                d.info.transients,
+                d.info.dips,
+                d.info.passes,
+                d.info.fails,
+                if near { j as i64 } else { -1 },
+                near && gt_hit[j],
+                if near { snr[j] } else { 0.0 }
+            );
+        }
+        std::fs::write(out_dir.join("deleted_gt.tsv"), &dl).unwrap();
+        let _ = writeln!(
+            summary,
+            "deleted {} cells: {d_true} within 5 px of a GT centre ({d_true_lost} of those GT units unmatched at the end)",
+            deleted_log.len()
+        );
         let corr_m: Vec<f64> = mt.iter().flatten().map(|m| m.1).collect();
         let _ = writeln!(
             summary,
