@@ -75,7 +75,7 @@ use std::fmt;
 
 pub use corrector::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionGeometry, MotionRecord, NonRigidConfig,
-    Roi, FLAG_ANOMALOUS, FLAG_BOOTSTRAP, FLAG_HELD, FLAG_TEMPLATE_UPDATED,
+    Roi, TemplateStrategy, FLAG_ANOMALOUS, FLAG_BOOTSTRAP, FLAG_HELD, FLAG_TEMPLATE_UPDATED,
 };
 pub use fft2d::Fft2d;
 pub use warp::{Interpolation, Warper};

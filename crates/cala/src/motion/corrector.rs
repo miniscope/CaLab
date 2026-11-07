@@ -29,6 +29,10 @@ const BAND_GAIN_FLOOR: f64 = 1e-2;
 const MIN_ROI_SIDE: usize = 16;
 /// Rate of the running brightness / quality statistics (per frame).
 const STATS_RATE: f32 = 0.02;
+/// Smoothing (px) of the maps behind the static-fraction weights.
+const WEIGHT_SIGMA: f32 = 2.0;
+/// Rate of the running moments behind the static-fraction weights.
+const WEIGHT_RATE: f32 = 1.0 / 1000.0;
 /// Largest drift of the running template searched against the warm-up one.
 const DRIFT_SEARCH_PX: f32 = 4.0;
 /// Rate of the running per-patch noise and power estimates (per frame).
@@ -81,6 +85,28 @@ impl Default for NonRigidConfig {
     }
 }
 
+/// How the registration template evolves after the warm-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateStrategy {
+    /// The warm-up template, never updated.
+    Frozen,
+    /// Exponentially weighted running template (time constant
+    /// `template_tau`) of rigidly corrected frames, free to drift.
+    Running,
+    /// Running template whose position is pinned to the warm-up template:
+    /// at every refresh it is registered onto the warm-up template and the
+    /// offset is added to every shift.
+    PinnedToWarmup,
+    /// Running template pinned to a slowly growing reference, the cumulative
+    /// mean of all corrected frames.
+    PinnedToCumulative,
+    /// R. Chang's dual anchor: the global template is the cumulative mean of
+    /// all corrected frames, and the previous frame (local anchor) seeds the
+    /// search: local registration to the previous frame, then the global
+    /// refinement against the cumulative mean.
+    DualAnchor,
+}
+
 /// Motion-correction settings. [`Default`] gives the values below; sizes
 /// that depend on the frame (registration region, patch size, the clamp on
 /// `max_shift` and `dog_sigma_large`) are derived when the corrector sees
@@ -116,6 +142,15 @@ pub struct MotionConfig {
     pub template_tau: f32,
     /// Accepted frames between template spectrum refreshes (default 20).
     pub template_refresh: usize,
+    /// How the template evolves (default [`TemplateStrategy::PinnedToWarmup`]).
+    /// `template_tau == 0` also freezes it.
+    pub template_strategy: TemplateStrategy,
+    /// Weight each pixel of the registration crop by its static fraction,
+    /// `T^2 / (T^2 + var_t)` (smoothed; template `T`, temporal variance of the
+    /// corrected frames `var_t`), so content that changes over time (active
+    /// cells) pulls less on the peak. Estimated during warm-up and refreshed
+    /// slowly. Default off.
+    pub variance_weighting: bool,
     /// Robust z-score beyond which a frame's brightness or (low) peak
     /// quality counts as anomalous (default 6).
     pub anomaly_threshold: f32,
@@ -143,6 +178,8 @@ impl Default for MotionConfig {
             warmup_iterations: 2,
             template_tau: 400.0,
             template_refresh: 20,
+            template_strategy: TemplateStrategy::PinnedToWarmup,
+            variance_weighting: false,
             anomaly_threshold: 6.0,
             anchor_weight: 0.0,
             nonrigid: None,
@@ -663,12 +700,26 @@ struct Engine {
     brightness: Tracker,
     quality: Tracker,
     accepted_since_refresh: usize,
-    /// Spectrum and energy of the warm-up template (the position reference).
-    t0_spec: Vec<Complex32>,
-    t0_energy: f64,
-    /// Shift registering the running template onto the warm-up template.
+    /// The warm-up template (the position reference of `PinnedToWarmup`).
+    t0: Vec<f32>,
+    /// Spectrum and energy of the pinning reference (scratch).
+    ref_spec: Vec<Complex32>,
+    /// Shift registering the running template onto its reference.
     drift: (f32, f32),
     upsample: u32,
+    strategy: TemplateStrategy,
+    /// Cumulative mean of corrected crops (in output coordinates) and its count.
+    cum: Vec<f32>,
+    cum_n: f64,
+    /// Static-fraction weights (empty when off), the running first and second
+    /// moments they come from, and scratch.
+    weight: Vec<f32>,
+    m1: Vec<f32>,
+    m2: Vec<f32>,
+    weighted: Vec<f32>,
+    wtmp: Vec<f32>,
+    wtmp2: Vec<f32>,
+    blur_scratch: Vec<f32>,
 }
 
 /// Outcome of registering one frame's crop against the template.
@@ -715,7 +766,7 @@ impl Engine {
     ) -> Result<Registration, MotionError> {
         let round = |v: (f32, f32)| (v.0.round() as isize, v.1.round() as isize);
         self.cut(round(predicted));
-        let mut energy = self.corr.spectrum(&self.crop, &mut self.f_spec)?;
+        let mut energy = self.crop_spectrum()?;
         let mut peak = self.corr.register(
             &self.t_spec,
             self.t_energy,
@@ -729,7 +780,7 @@ impl Engine {
             let total = (first.0 as f32 + peak.dy, first.1 as f32 + peak.dx);
             self.cut(round(total));
             if self.offset != first {
-                energy = self.corr.spectrum(&self.crop, &mut self.f_spec)?;
+                energy = self.crop_spectrum()?;
                 peak = self.corr.register(
                     &self.t_spec,
                     self.t_energy,
@@ -749,30 +800,117 @@ impl Engine {
         })
     }
 
+    /// Spectrum of the current crop (weighted when enabled) into `f_spec`.
+    fn crop_spectrum(&mut self) -> Result<f64, MotionError> {
+        if self.weight.is_empty() {
+            return self.corr.spectrum(&self.crop, &mut self.f_spec);
+        }
+        for ((o, &c), &w) in self.weighted.iter_mut().zip(&self.crop).zip(&self.weight) {
+            *o = c * w;
+        }
+        self.corr.spectrum(&self.weighted, &mut self.f_spec)
+    }
+
+    /// Spectrum of a region-sized image (weighted when enabled).
+    fn image_spectrum(&mut self, which: Image, out: Out) -> Result<f64, MotionError> {
+        let img: &[f32] = match which {
+            Image::Template => &self.template,
+            Image::WarmUp => &self.t0,
+            Image::Cumulative => &self.cum,
+        };
+        let spec = match out {
+            Out::Template => &mut self.t_spec,
+            Out::Reference => &mut self.ref_spec,
+        };
+        if self.weight.is_empty() {
+            return self.corr.spectrum(img, spec);
+        }
+        for ((o, &c), &w) in self.weighted.iter_mut().zip(img).zip(&self.weight) {
+            *o = c * w;
+        }
+        self.corr.spectrum(&self.weighted, spec)
+    }
+
+    /// Recompute the static-fraction weights from the running moments.
+    fn refresh_weights(&mut self) {
+        if self.weight.is_empty() {
+            return;
+        }
+        let (h, w) = (self.roi.height, self.roi.width);
+        for ((t2, v), (&a, &b)) in self
+            .wtmp
+            .iter_mut()
+            .zip(self.wtmp2.iter_mut())
+            .zip(self.m1.iter().zip(&self.m2))
+        {
+            *t2 = a * a;
+            *v = (b - a * a).max(0.0);
+        }
+        // Smooth both maps (sigma 2 px) and form T^2 / (T^2 + var).
+        gaussian_blur(
+            &self.wtmp,
+            h,
+            w,
+            WEIGHT_SIGMA,
+            &mut self.weighted,
+            &mut self.blur_scratch,
+        );
+        std::mem::swap(&mut self.wtmp, &mut self.weighted);
+        gaussian_blur(
+            &self.wtmp2,
+            h,
+            w,
+            WEIGHT_SIGMA,
+            &mut self.weighted,
+            &mut self.blur_scratch,
+        );
+        for ((wt, &t2), &v) in self.weight.iter_mut().zip(&self.wtmp).zip(&self.weighted) {
+            *wt = if t2 + v > 0.0 { t2 / (t2 + v) } else { 0.0 };
+        }
+    }
+
     fn refresh_spectra(&mut self) -> Result<(), MotionError> {
-        self.t_energy = self.corr.spectrum(&self.template, &mut self.t_spec)?;
+        self.refresh_weights();
+        self.t_energy = self.image_spectrum(Image::Template, Out::Template)?;
         if let Some(p) = &mut self.patches {
             p.refresh(&self.template, self.roi.width)?;
         }
         self.accepted_since_refresh = 0;
-        // Pin the running template's position to the warm-up template: a
-        // frame registered onto the running template with shift `s` is
-        // registered onto the warm-up one with `s + drift`.
-        if !self.t0_spec.is_empty() {
-            let d = self.corr.register(
-                &self.t0_spec,
-                self.t0_energy,
-                &self.t_spec,
-                self.t_energy,
-                DRIFT_SEARCH_PX,
-                self.upsample,
-            )?;
-            if d.ncc > 0.0 {
-                self.drift = (d.dy, d.dx);
-            }
+        // Pin the running template's position to its reference: a frame
+        // registered onto the running template with shift `s` is registered
+        // onto the reference with `s + drift`.
+        let reference = match self.strategy {
+            TemplateStrategy::PinnedToWarmup if !self.t0.is_empty() => Image::WarmUp,
+            TemplateStrategy::PinnedToCumulative if !self.cum.is_empty() => Image::Cumulative,
+            _ => return Ok(()),
+        };
+        let e_ref = self.image_spectrum(reference, Out::Reference)?;
+        let d = self.corr.register(
+            &self.ref_spec,
+            e_ref,
+            &self.t_spec,
+            self.t_energy,
+            DRIFT_SEARCH_PX,
+            self.upsample,
+        )?;
+        if d.ncc > 0.0 {
+            self.drift = (d.dy, d.dx);
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum Image {
+    Template,
+    WarmUp,
+    Cumulative,
+}
+
+#[derive(Clone, Copy)]
+enum Out {
+    Template,
+    Reference,
 }
 
 /// Streaming motion corrector for `height x width` frames.
@@ -926,9 +1064,11 @@ impl MotionCorrector {
             .zip(&acc)
             .for_each(|(t, &a)| *t = a / n as f32);
 
+        let mut acc2 = vec![0.0f32; rpx];
         for _ in 0..self.cfg.warmup_iterations {
             eng.refresh_spectra()?;
             acc.fill(0.0);
+            acc2.fill(0.0);
             quality.clear();
             for i in 0..n {
                 frames.frame(i, px).to_f32(&mut self.frame)?;
@@ -937,8 +1077,9 @@ impl MotionCorrector {
                 quality.push(reg.ncc);
                 eng.roi_warper
                     .warp(&eng.crop, reg.rel, &[], &mut eng.warped_roi, None)?;
-                for (a, &v) in acc.iter_mut().zip(&eng.warped_roi) {
+                for ((a, a2), &v) in acc.iter_mut().zip(acc2.iter_mut()).zip(&eng.warped_roi) {
                     *a += v;
+                    *a2 += v * v;
                 }
             }
             eng.template
@@ -946,10 +1087,16 @@ impl MotionCorrector {
                 .zip(&acc)
                 .for_each(|(t, &a)| *t = a / n as f32);
         }
-        eng.refresh_spectra()?;
-        eng.t0_spec = eng.t_spec.clone();
-        eng.t0_energy = eng.t_energy;
+        if self.cfg.variance_weighting && self.cfg.warmup_iterations > 0 {
+            eng.m1 = eng.template.clone();
+            eng.m2 = acc2.iter().map(|&v| v / n as f32).collect();
+            eng.weight = vec![1.0; rpx];
+        }
+        eng.t0 = eng.template.clone();
+        eng.cum = eng.template.clone();
+        eng.cum_n = n as f64;
         eng.drift = (0.0, 0.0);
+        eng.refresh_spectra()?;
         let bscale = brightness.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
         eng.brightness = Tracker::from_samples(&brightness, 1e-3 * bscale + 1e-6);
         eng.quality = Tracker::from_samples(&quality, 0.01);
@@ -1091,6 +1238,7 @@ impl MotionCorrector {
         };
         let epx = ext.height * ext.width;
         let mut corr = Correlator::new(rh, rw, self.cfg.window_alpha)?;
+        let ref_spec_init = corr.make_spectrum();
         let band = band_limit(s1);
         corr.set_band_limit(band);
         let patches = match &self.cfg.nonrigid {
@@ -1200,10 +1348,24 @@ impl MotionCorrector {
             brightness: Tracker::from_samples(&[], 1e-6),
             quality: Tracker::from_samples(&[], 0.01),
             accepted_since_refresh: 0,
-            t0_spec: Vec::new(),
-            t0_energy: 0.0,
+            t0: Vec::new(),
+            ref_spec: ref_spec_init,
             drift: (0.0, 0.0),
             upsample: self.cfg.upsample,
+            strategy: if self.cfg.template_tau == 0.0 {
+                TemplateStrategy::Frozen
+            } else {
+                self.cfg.template_strategy
+            },
+            cum: Vec::new(),
+            cum_n: 0.0,
+            weight: Vec::new(),
+            m1: Vec::new(),
+            m2: Vec::new(),
+            weighted: vec![0.0; rh * rw],
+            wtmp: vec![0.0; rh * rw],
+            wtmp2: vec![0.0; rh * rw],
+            blur_scratch: Vec::new(),
         })
     }
 
@@ -1302,7 +1464,29 @@ impl MotionCorrector {
 
         // Search around the previous shift: frame-to-frame motion is small,
         // so the first cut is usually already aligned to within a pixel.
-        let predicted = eng.prev_shift.unwrap_or((0.0, 0.0));
+        let mut predicted = eng.prev_shift.unwrap_or((0.0, 0.0));
+        let dual = eng.strategy == TemplateStrategy::DualAnchor;
+        if dual && eng.prev_shift.is_some() && eng.prev_energy > 0.0 {
+            // Local anchor: register onto the previous corrected crop, chained
+            // onto its shift; the global refinement below starts from there.
+            let round = |v: (f32, f32)| (v.0.round() as isize, v.1.round() as isize);
+            eng.cut(round(predicted));
+            let e = eng.crop_spectrum()?;
+            let d = eng.corr.register(
+                &eng.prev_spec,
+                eng.prev_energy,
+                &eng.f_spec,
+                e,
+                eng.max_shift,
+                cfg.upsample,
+            )?;
+            if d.ncc > 0.0 {
+                predicted = (
+                    eng.offset.0 as f32 + d.dy + eng.prev_rel.0,
+                    eng.offset.1 as f32 + d.dx + eng.prev_rel.1,
+                );
+            }
+        }
         let reg = eng.register(predicted, eng.max_shift, cfg.upsample)?;
 
         // Nothing to register: hold the previous correction.
@@ -1324,7 +1508,7 @@ impl MotionCorrector {
         }
 
         let mut rel = reg.rel;
-        if cfg.anchor_weight > 0.0 {
+        if cfg.anchor_weight > 0.0 || dual {
             if eng.prev_shift.is_some() && eng.prev_energy > 0.0 {
                 // Register the current crop onto the previous one and chain
                 // onto the previous shift: s = offset + d + prev_rel.
@@ -1336,7 +1520,7 @@ impl MotionCorrector {
                     eng.max_shift,
                     cfg.upsample,
                 )?;
-                if d.ncc > 0.0 {
+                if d.ncc > 0.0 && cfg.anchor_weight > 0.0 {
                     let w = cfg.anchor_weight;
                     rel.0 = (1.0 - w) * rel.0 + w * (d.dy + eng.prev_rel.0);
                     rel.1 = (1.0 - w) * rel.1 + w * (d.dx + eng.prev_rel.1);
@@ -1376,8 +1560,7 @@ impl MotionCorrector {
         // normal ones.
         eng.brightness.update(brightness, cfg.anomaly_threshold);
         eng.quality.update(reg.ncc, cfg.anomaly_threshold);
-        if !anomalous && cfg.template_tau > 0.0 {
-            let a = 1.0 / cfg.template_tau.max(1.0);
+        if !anomalous && eng.strategy != TemplateStrategy::Frozen {
             // The crop is aligned to within `rel`; finish with the sub-pixel
             // part. The non-rigid field is deliberately left out: folding the
             // (noisier) patch estimates into the template measurably degraded
@@ -1385,8 +1568,37 @@ impl MotionCorrector {
             // non-rigid stage never changes the rigid result.
             eng.roi_warper
                 .warp(&eng.crop, rel, &[], &mut eng.warped_roi, None)?;
+            let a = if dual {
+                (1.0 / (eng.cum_n + 1.0)) as f32
+            } else {
+                1.0 / cfg.template_tau.max(1.0)
+            };
             for (t, &v) in eng.template.iter_mut().zip(&eng.warped_roi) {
                 *t += a * (v - *t);
+            }
+            if !eng.weight.is_empty() {
+                for ((m1, m2), &v) in eng
+                    .m1
+                    .iter_mut()
+                    .zip(eng.m2.iter_mut())
+                    .zip(&eng.warped_roi)
+                {
+                    *m1 += WEIGHT_RATE * (v - *m1);
+                    *m2 += WEIGHT_RATE * (v * v - *m2);
+                }
+            }
+            if dual {
+                eng.cum_n += 1.0;
+            } else if eng.strategy == TemplateStrategy::PinnedToCumulative {
+                // In output coordinates: the running template's frame plus drift.
+                let r = (rel.0 + eng.drift.0, rel.1 + eng.drift.1);
+                eng.roi_warper
+                    .warp(&eng.crop, r, &[], &mut eng.warped_roi, None)?;
+                let a = (1.0 / (eng.cum_n + 1.0)) as f32;
+                for (c, &v) in eng.cum.iter_mut().zip(&eng.warped_roi) {
+                    *c += a * (v - *c);
+                }
+                eng.cum_n += 1.0;
             }
             flags |= FLAG_TEMPLATE_UPDATED;
             eng.accepted_since_refresh += 1;
