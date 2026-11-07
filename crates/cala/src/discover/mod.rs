@@ -211,6 +211,7 @@ pub struct SlowLoop {
     flattener: GlowFlattener,
     filter: LocalFilter,
     detect: LocalFilter,
+    smooth: LocalFilter,
     tiles: Vec<Tile>,
     tile_visits: Vec<u32>,
     bgs: Vec<Option<BgBasis>>,
@@ -349,6 +350,7 @@ impl SlowLoop {
             flattener,
             filter: LocalFilter::new(sigma),
             detect: LocalFilter::new((cfg.cell_diameter_px / 4.0).max(0.6)),
+            smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
             tiles,
             tile_visits: vec![0; n_tiles],
             bgs: vec![None; n_tiles],
@@ -1023,6 +1025,22 @@ impl SlowLoop {
             target[l] = v * self.noise[gy * w + gx];
             mask[l] = true;
         }
+        // Footprints are smooth at the scale of the optics (a tenth of a
+        // cell diameter): a masked, normalised blur of the target removes the
+        // pixel noise of a footprint estimated from a few dozen frames.
+        {
+            let m: Vec<f32> = mask.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
+            let tm: Vec<f32> = target.iter().zip(&m).map(|(t, m)| t * m).collect();
+            let (mut bt, mut bm) = (vec![0.0f32; canvas.len()], vec![0.0f32; canvas.len()]);
+            self.smooth.blur(canvas.h, canvas.w, &tm, &mut bt);
+            self.smooth.blur(canvas.h, canvas.w, &m, &mut bm);
+            for p in 0..canvas.len() {
+                if mask[p] {
+                    target[p] = bt[p] / bm[p].max(1e-6);
+                }
+            }
+            self.work += (canvas.len() * 60) as u64;
+        }
         let mut a: Vec<f32> = target.iter().map(|v| v.max(0.0)).collect();
         if let Some(c) = start {
             a.iter_mut().for_each(|v| *v = 0.0);
@@ -1070,7 +1088,7 @@ impl SlowLoop {
         let (cy, cx) = (sy / sw, sx / sw);
         let dom = self.disk(rect, cy, cx, r0);
         let h = rank1(&refs, &dom, c, 10, false);
-        self.work += (dom.len() * resid.len() * 40) as u64;
+        self.work += (dom.len() * resid.len() * 42) as u64;
         self.to_cell(id, rect, &dom, &h, None)
     }
 
