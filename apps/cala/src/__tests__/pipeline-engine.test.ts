@@ -172,7 +172,8 @@ describe('PipelineEngine (wasm)', () => {
     // Off (0): nothing is reported.
     const off = await run(0);
     expect(off.gain.every((g) => g === 0) && off.offset.every((a) => a === 0)).toBe(true);
-  });
+    // Three engine runs: slow under coverage instrumentation in CI.
+  }, 30_000);
 
   it('refuses to step after dispose', async () => {
     const engine = new PipelineEngine(makeMovie([[0, 0]]), {});
