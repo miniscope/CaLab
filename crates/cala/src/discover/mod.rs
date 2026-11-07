@@ -144,7 +144,7 @@ impl Default for SlowLoopConfig {
             max_adds_per_visit: 4,
             max_rejects_per_visit: 3,
             refine_every_visits: 2,
-            commit_interval_frames: 40,
+            commit_interval_frames: 100,
             reject_cooldown_frames: 400,
             min_fit_frames: 16,
             min_test_frames: 8,
@@ -194,6 +194,11 @@ pub struct SlowStats {
     pub merge_tests: u64,
     pub refines: u64,
     pub commits: u64,
+    /// Work spent loading frames, refining, merging and adding.
+    pub work_load: u64,
+    pub work_refine: u64,
+    pub work_merge: u64,
+    pub work_add: u64,
 }
 
 /// The slow loop. See the module docs.
@@ -231,6 +236,13 @@ pub struct SlowLoop {
     coarse_dims: Dims,
     coarse_gauss: RecursiveGaussian,
     sample: Vec<f32>,
+}
+
+/// A tile's model solved on its fitting frames.
+struct Solved {
+    base: Problem,
+    fits: Vec<Fit>,
+    resid: Vec<Vec<f32>>,
 }
 
 /// A tile's frames loaded for a visit.
@@ -667,11 +679,14 @@ impl SlowLoop {
     }
 
     fn solve_all(&mut self, pr: &Problem, fr: &Frames) -> Vec<Fit> {
+        self.solve_with(pr, &fr.y, &fr.proj)
+    }
+
+    fn solve_with(&mut self, pr: &Problem, ys: &[Vec<f32>], proj: &[(Vec<f64>, f64)]) -> Vec<Fit> {
         let mut work = 0;
-        let fits = fr
-            .y
+        let fits = ys
             .iter()
-            .zip(&fr.proj)
+            .zip(proj)
             .map(|(y, (qb, yy))| pr.solve(y, qb, *yy, &mut work))
             .collect();
         self.work += work;
@@ -718,18 +733,32 @@ impl SlowLoop {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
+        let w0 = self.work;
         let fit_fr = self.load(ti, false);
         let test_fr = self.load(ti, true);
+        self.stats.work_load += self.work - w0;
         if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
             return Ok(());
         }
         let refine = self.cfg.refine_every_visits > 0
             && self.tile_visits[ti] % self.cfg.refine_every_visits == 0;
+        // One solve of the tile's model serves all three edits; refinements
+        // and merges made on this visit leave its residual slightly stale for
+        // the add proposals, but every edit is tested on the current model.
+        let w0 = self.work;
+        let solved = self.solve_tile(ti, &fit_fr);
+        self.stats.work_load += self.work - w0;
         if refine {
-            self.refine(ti, &fit_fr, &test_fr);
+            let w0 = self.work;
+            self.refine(ti, &solved, &test_fr);
+            self.stats.work_refine += self.work - w0;
         }
+        let w0 = self.work;
         self.merge(ti, &fit_fr, &test_fr);
-        self.add(ti, &fit_fr, &test_fr);
+        self.stats.work_merge += self.work - w0;
+        let w0 = self.work;
+        self.add(ti, solved.resid, &test_fr);
+        self.stats.work_add += self.work - w0;
         Ok(())
     }
 
@@ -747,36 +776,48 @@ impl SlowLoop {
         fits.iter().map(|f| f.chi2).sum()
     }
 
-    fn add(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
+    fn add(&mut self, ti: usize, resid: Vec<Vec<f32>>, test_fr: &Frames) {
         let rect = self.tiles[ti].rect;
         let core = self.tiles[ti].core;
         let d = self.cfg.cell_diameter_px;
         let (mut adds, mut rejects) = (0, 0);
+        // Residual maps of the fitting frames, computed once; an accepted
+        // cell's signal is subtracted from them in place.
+        let mut maps: Option<(Vec<Vec<f32>>, Vec<Vec<f32>>, f32, Vec<f32>)> = None;
+        let mut resid = Some(resid);
         while adds < self.cfg.max_adds_per_visit && rejects < self.cfg.max_rejects_per_visit {
-            let cols = self.columns(rect, &[], &[]);
-            let base = self.problem(ti, cols);
-            let fits = self.solve_all(&base, fit_fr);
-            let resid = self.residuals(&base, fit_fr, &fits, ti);
-            // Cell-scale blur of each residual, then a robust noise scale.
-            let mut blurred = Vec::with_capacity(resid.len());
-            for r in &resid {
-                let mut b = vec![0.0f32; r.len()];
-                self.detect.blur(rect.h, rect.w, r, &mut b);
-                blurred.push(b);
+            if maps.is_none() {
+                let resid = resid.take().expect("first pass");
+                // Cell-scale blur of each residual (over the core only), then
+                // a robust noise scale.
+                let mut blurred = Vec::with_capacity(resid.len());
+                for r in &resid {
+                    let mut b = vec![0.0f32; r.len()];
+                    self.blur_window(rect, core, r, &mut b);
+                    blurred.push(b);
+                }
+                let mut sample: Vec<f32> = blurred
+                    .iter()
+                    .flat_map(|b| {
+                        (0..core.h).step_by(3).flat_map(move |y| {
+                            let row = (core.y0 - rect.y0 + y) * rect.w + core.x0 - rect.x0;
+                            b[row..row + core.w].iter().step_by(3).map(|v| v.abs())
+                        })
+                    })
+                    .collect();
+                let mid = sample.len() / 2;
+                let scale = if sample.is_empty() {
+                    1.0
+                } else {
+                    1.4826 * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
+                }
+                .max(1e-6);
+                let mut score = vec![0.0f32; core.len()];
+                self.score_window(rect, core, core, &blurred, scale, &mut score);
+                maps = Some((resid, blurred, scale, score));
             }
-            self.work += (resid.len() * rect.len() * 30) as u64;
-            let mut sample: Vec<f32> = blurred
-                .iter()
-                .flat_map(|b| b.iter().step_by(7).map(|v| v.abs()))
-                .collect();
-            let mid = sample.len() / 2;
-            let scale = if sample.is_empty() {
-                1.0
-            } else {
-                1.4826 * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
-            }
-            .max(1e-6);
-            // Score: summed squared excursions above 2 σ.
+            let (resid, blurred, scale, score) = maps.as_ref().expect("computed");
+            let scale = *scale;
             let mut best: Option<(usize, usize, f32)> = None;
             let now = self.frames;
             for gy in core.y0..core.y0 + core.h {
@@ -785,14 +826,7 @@ impl SlowLoop {
                         continue;
                     }
                     let (fy, fx) = (gy as f32, gx as f32);
-                    let l = rect.local(gy, gx).expect("core inside rect");
-                    let mut s = 0.0f32;
-                    for b in &blurred {
-                        let z = b[l] / scale - 2.0;
-                        if z > 0.0 {
-                            s += z * z;
-                        }
-                    }
+                    let s = score[(gy - core.y0) * core.w + gx - core.x0];
                     if best.is_some_and(|b| s <= b.2) {
                         continue;
                     }
@@ -806,7 +840,6 @@ impl SlowLoop {
                     }
                 }
             }
-            self.work += (core.len() * blurred.len()) as u64;
             let ev = self.cfg.event_z - 2.0;
             let Some((py, px, s)) = best else { break };
             if s < self.cfg.min_events as f32 * ev * ev {
@@ -818,7 +851,7 @@ impl SlowLoop {
             let id = self.next_id;
             let cand = self.fit_new(id, rect, &resid, &mut c0, (py as f32, px as f32));
             let accepted = match cand {
-                Some(cell) => self.test_add(ti, &base, test_fr, &cell).then_some(cell),
+                Some(cell) => self.test_add(ti, test_fr, &cell).then_some(cell),
                 None => None,
             };
             match accepted {
@@ -826,6 +859,35 @@ impl SlowLoop {
                     self.next_id += 1;
                     self.stats.adds += 1;
                     let bbox = cell.bbox;
+                    // Blank the new cell's signal from the residual maps (its
+                    // least-squares trace per frame), so the same signal is
+                    // not proposed again; neighbours are re-solved on the
+                    // next visit.
+                    let col = Column::of(&cell, rect, self.dims.width, &self.inv_sigma);
+                    let (resid, blurred, scale, score) = maps.as_mut().expect("computed");
+                    let cc: f32 = col.val.iter().map(|v| v * v).sum::<f32>().max(1e-12);
+                    for r in resid.iter_mut() {
+                        let c = (col.pix.iter().zip(&col.val).map(|(&p, &v)| v * r[p as usize]).sum::<f32>() / cc).max(0.0);
+                        for (&p, &v) in col.pix.iter().zip(&col.val) {
+                            r[p as usize] -= v * c;
+                        }
+                    }
+                    let m = (3.0 * self.detect_sigma()).ceil() as usize;
+                    let win = clip(
+                        Rect {
+                            y0: bbox.y0.saturating_sub(m),
+                            x0: bbox.x0.saturating_sub(m),
+                            h: bbox.h + 2 * m,
+                            w: bbox.w + 2 * m,
+                        },
+                        core,
+                    );
+                    let scale = *scale;
+                    for (r, b) in resid.iter().zip(blurred.iter_mut()) {
+                        self.blur_window(rect, win, r, b);
+                    }
+                    self.work += (resid.len() * col.pix.len() * 2) as u64;
+                    self.score_window(rect, core, win, blurred, scale, score);
                     self.cells.push(cell);
                     self.pending = true;
                     self.touch(bbox);
@@ -839,6 +901,63 @@ impl SlowLoop {
                 }
             }
         }
+    }
+
+    fn detect_sigma(&self) -> f32 {
+        (self.cfg.cell_diameter_px / 4.0).max(0.6)
+    }
+
+    /// Cell-scale blur of the patch residual `r` into `out`, only over the
+    /// window `win` (read with a 3 σ margin, so the window is exact).
+    fn blur_window(&mut self, rect: Rect, win: Rect, r: &[f32], out: &mut [f32]) {
+        let m = (3.0 * self.detect_sigma()).ceil() as usize;
+        let full = Rect {
+            y0: rect.y0,
+            x0: rect.x0,
+            h: rect.h,
+            w: rect.w,
+        };
+        let canvas = clip(
+            Rect {
+                y0: win.y0.saturating_sub(m),
+                x0: win.x0.saturating_sub(m),
+                h: win.h + 2 * m,
+                w: win.w + 2 * m,
+            },
+            full,
+        );
+        let mut src = vec![0.0f32; canvas.len()];
+        for y in 0..canvas.h {
+            let row = (canvas.y0 - rect.y0 + y) * rect.w + canvas.x0 - rect.x0;
+            src[y * canvas.w..(y + 1) * canvas.w].copy_from_slice(&r[row..row + canvas.w]);
+        }
+        let mut dst = vec![0.0f32; canvas.len()];
+        self.detect.blur(canvas.h, canvas.w, &src, &mut dst);
+        for y in 0..win.h {
+            let crow = (win.y0 - canvas.y0 + y) * canvas.w + win.x0 - canvas.x0;
+            let row = (win.y0 - rect.y0 + y) * rect.w + win.x0 - rect.x0;
+            out[row..row + win.w].copy_from_slice(&dst[crow..crow + win.w]);
+        }
+        self.work += (canvas.len() * 15) as u64;
+    }
+
+    /// Detection score (summed squared excursions above 2 σ over the fitting
+    /// frames) of the core pixels inside `win`.
+    fn score_window(&mut self, rect: Rect, core: Rect, win: Rect, blurred: &[Vec<f32>], scale: f32, score: &mut [f32]) {
+        for y in win.y0..win.y0 + win.h {
+            for x in win.x0..win.x0 + win.w {
+                let l = rect.local(y, x).expect("window inside rect");
+                let mut s = 0.0f32;
+                for b in blurred {
+                    let z = b[l] / scale - 2.0;
+                    if z > 0.0 {
+                        s += z * z;
+                    }
+                }
+                score[(y - core.y0) * core.w + x - core.x0] = s;
+            }
+        }
+        self.work += (win.len() * blurred.len()) as u64;
     }
 
     fn reject(&mut self, ti: usize, y: f32, x: f32) {
@@ -956,24 +1075,100 @@ impl SlowLoop {
     }
 
     /// Held-out test of adding `cell` to the tile's problem.
-    fn test_add(&mut self, ti: usize, base: &Problem, test_fr: &Frames, cell: &Cell) -> bool {
+    ///
+    /// Both arms get one extra free background term, a Gaussian of σ = one
+    /// cell diameter centred on the candidate: broad local signal (scatter
+    /// halo of the neighbours, neuropil, out-of-focus light) is explained
+    /// without the candidate, so the candidate must explain *compact*
+    /// signal (the patch's 3 x 3 bumps are too smooth to do this alone).
+    fn test_add(&mut self, ti: usize, test_fr: &Frames, cell: &Cell) -> bool {
         let rect = self.tiles[ti].rect;
-        let b = self.solve_all(base, test_fr);
-        let cols = self.columns(rect, &[], &[cell]);
-        let ext = self.problem(ti, cols);
-        let e = self.solve_all(&ext, test_fr);
+        let s = self.cfg.cell_diameter_px;
+        let mut bump = vec![0.0f32; rect.len()];
+        for y in 0..rect.h {
+            for x in 0..rect.w {
+                let dy = (rect.y0 + y) as f32 - cell.center.0;
+                let dx = (rect.x0 + x) as f32 - cell.center.1;
+                bump[y * rect.w + x] = (-(dy * dy + dx * dx) / (2.0 * s * s)).exp();
+            }
+        }
+        let bg = self.bgs[ti].as_ref().expect("basis").with_extra(&bump);
+        let proj: Vec<(Vec<f64>, f64)> = test_fr
+            .y
+            .iter()
+            .zip(&test_fr.proj)
+            .map(|(y, (q, yy))| {
+                let mut q = q.clone();
+                q.push(bump.iter().zip(y).map(|(&a, &b)| f64::from(a * b)).sum());
+                (q, *yy)
+            })
+            .collect();
+        self.work += (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
+        let mut work = 0;
+        let base = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+        let ext = Problem::new(self.columns(rect, &[], &[cell]), &bg, rect.len(), &mut work);
+        self.work += work;
+        let b = self.solve_with(&base, &test_fr.y, &proj);
+        let e = self.solve_with(&ext, &test_fr.y, &proj);
         let k = ext.len() - 1;
-        let sig = ext.coord_sigma(k);
-        let events = e.iter().filter(|f| f.c[k] >= self.cfg.event_z * sig).count() as u32;
-        let gain = Self::total_chi2(&b) - Self::total_chi2(&e);
+        // What the base model leaves is noise *plus* everything not modelled
+        // (dim cells below detection, neuropil): measure its variance per
+        // pixel and express gains and events in that unit (>= 1, the noise).
+        let n_px = self.fov_px(rect) as f64;
+        let dof = (test_fr.len() as f64 * (n_px - (bg.k + base.len()) as f64)).max(1.0);
+        let s2 = (Self::total_chi2(&b) / dof).max(1.0);
+        let sig = ext.coord_sigma(k) * s2.sqrt() as f32;
+        // Events are transients above the candidate's own held-out median:
+        // a static pattern (a floor or vessel-edge residual) with a constant
+        // trace explains held-out χ² but is not a cell.
+        let mut sorted: Vec<f32> = e.iter().map(|f| f.c[k]).collect();
+        sorted.sort_by(f32::total_cmp);
+        let base_level = sorted[sorted.len() / 2];
+        let events = e
+            .iter()
+            .filter(|f| f.c[k] - base_level >= self.cfg.event_z * sig)
+            .count() as u32;
+        let gain = (Self::total_chi2(&b) - Self::total_chi2(&e)) / s2;
         let (m, s) = self.null(test_fr.len());
-        events >= self.cfg.min_events && gain > m + f64::from(self.cfg.accept_z) * s
+        if events < self.cfg.min_events || gain <= m + f64::from(self.cfg.accept_z) * s {
+            return false;
+        }
+        // A candidate whose held-out trace follows a nearby cell's is that
+        // cell's unmodelled light (scatter halo, a footprint mismatch), not
+        // a new cell: leave it to refinement and merging.
+        let ck: Vec<f32> = e.iter().map(|f| f.c[k]).collect();
+        let reach = 2.0 * self.cfg.library.max_support_px;
+        for j in 0..k {
+            let Some(cj) = self.cells.iter().find(|c| c.id == ext.cols[j].id) else {
+                continue;
+            };
+            let d2 = (cj.center.0 - cell.center.0).powi(2) + (cj.center.1 - cell.center.1).powi(2);
+            if d2 <= reach * reach {
+                let tj: Vec<f32> = e.iter().map(|f| f.c[j]).collect();
+                if corr(&ck, &tj) >= self.cfg.merge_corr {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// FOV pixels inside `rect`.
+    fn fov_px(&self, rect: Rect) -> usize {
+        (rect.y0..rect.y0 + rect.h)
+            .map(|y| {
+                self.fov[y * self.dims.width + rect.x0..y * self.dims.width + rect.x0 + rect.w]
+                    .iter()
+                    .filter(|&&m| m != 0)
+                    .count()
+            })
+            .sum()
     }
 
     fn merge(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
         let rect = self.tiles[ti].rect;
         let core = self.tiles[ti].core;
-        for _ in 0..2 {
+        for _ in 0..4 {
             let cols = self.columns(rect, &[], &[]);
             if cols.len() < 2 {
                 return;
@@ -997,7 +1192,7 @@ impl SlowLoop {
                     }
                     let cj = &self.cells[cell_of(&self.cells, ids[j])];
                     let dist = ((ci.center.0 - cj.center.0).powi(2) + (ci.center.1 - cj.center.1).powi(2)).sqrt();
-                    if dist >= ci.radius.max(cj.radius) {
+                    if dist >= ci.radius + cj.radius {
                         continue;
                     }
                     let a: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
@@ -1063,16 +1258,23 @@ impl SlowLoop {
         }
     }
 
-    fn refine(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
+    /// The tile's current model solved on its fitting frames.
+    fn solve_tile(&mut self, ti: usize, fit_fr: &Frames) -> Solved {
         let rect = self.tiles[ti].rect;
-        let core = self.tiles[ti].core;
         let cols = self.columns(rect, &[], &[]);
-        if cols.is_empty() {
-            return;
-        }
         let base = self.problem(ti, cols);
         let fits = self.solve_all(&base, fit_fr);
         let resid = self.residuals(&base, fit_fr, &fits, ti);
+        Solved { base, fits, resid }
+    }
+
+    fn refine(&mut self, ti: usize, solved: &Solved, test_fr: &Frames) {
+        let core = self.tiles[ti].core;
+        let rect = self.tiles[ti].rect;
+        let Solved { base, fits, resid } = solved;
+        if base.len() == 0 {
+            return;
+        }
         let base_test = self.solve_all(&base, test_fr);
         let chi_base = Self::total_chi2(&base_test);
         let mut updates = Vec::new();
@@ -1122,6 +1324,20 @@ impl SlowLoop {
             }
         }
         self.tiles[ti].fresh = 0;
+    }
+}
+
+/// Intersection of two rectangles (empty when disjoint).
+fn clip(a: Rect, b: Rect) -> Rect {
+    let y0 = a.y0.max(b.y0);
+    let x0 = a.x0.max(b.x0);
+    let y1 = (a.y0 + a.h).min(b.y0 + b.h).max(y0);
+    let x1 = (a.x0 + a.w).min(b.x0 + b.w).max(x0);
+    Rect {
+        y0,
+        x0,
+        h: y1 - y0,
+        w: x1 - x0,
     }
 }
 

@@ -35,6 +35,8 @@ ap.add_argument("--dur", type=float, default=60.0)
 ap.add_argument("--npx", type=int, default=600)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--motion", action="store_true")
+ap.add_argument("--p-q2a", type=float, default=None, help="cell_activity p_quiescent_to_active (per frame)")
+ap.add_argument("--q-rate", type=float, default=None, help="cell_activity quiescent_rate_hz")
 a = ap.parse_args()
 out = Path(a.out)
 out.mkdir(parents=True, exist_ok=True)
@@ -44,6 +46,16 @@ acq = spec.acquisition
 if a.f > 0:
     acq = acq.model_copy(update={"tissue": acq.tissue.model_copy(update={"scatter_halo_fraction": a.f})})
     spec = spec.model_copy(update={"acquisition": acq})
+# Firing overrides (cell_activity spec params), e.g. sparse firing so that many
+# cells stay silent for the first half (late-born cells for the slow loop).
+act = {}
+if a.p_q2a is not None:
+    act["p_quiescent_to_active"] = a.p_q2a
+if a.q_rate is not None:
+    act["quiescent_rate_hz"] = a.q_rate
+if act:
+    steps = [st.model_copy(update=act) if st.kind == "cell_activity" else st for st in spec.steps]
+    spec = spec.model_copy(update={"steps": steps})
 (out / "spec.json").write_text(spec.model_dump_json(indent=1))
 
 daq = out / "daq"

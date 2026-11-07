@@ -258,6 +258,8 @@ pub(crate) struct BgBasis {
     pub maps: Vec<Vec<f32>>,
     /// `G_bb⁻¹` (k x k).
     pub inv: Vec<f64>,
+    /// `G_bb` without the ridge.
+    gram: Vec<f64>,
 }
 
 impl BgBasis {
@@ -280,6 +282,34 @@ impl BgBasis {
                 maps.push(m);
             }
         }
+        BgBasis::from_maps(maps)
+    }
+
+    /// This basis plus one more map (same patch): only the new Gram row is
+    /// computed.
+    pub fn with_extra(&self, map: &[f32]) -> BgBasis {
+        let k = self.k;
+        let k1 = k + 1;
+        let mut g = vec![0.0f64; k1 * k1];
+        for a in 0..k {
+            for b in 0..k {
+                g[a * k1 + b] = self.gram[a * k + b];
+            }
+            let d: f64 = self.maps[a]
+                .iter()
+                .zip(map)
+                .map(|(&u, &v)| f64::from(u) * f64::from(v))
+                .sum();
+            g[a * k1 + k] = d;
+            g[k * k1 + a] = d;
+        }
+        g[k * k1 + k] = map.iter().map(|&v| f64::from(v) * f64::from(v)).sum();
+        let mut maps = self.maps.clone();
+        maps.push(map.to_vec());
+        BgBasis::from_gram(maps, g)
+    }
+
+    fn from_maps(maps: Vec<Vec<f32>>) -> BgBasis {
         let k = maps.len();
         let mut g = vec![0.0f64; k * k];
         for a in 0..k {
@@ -293,8 +323,24 @@ impl BgBasis {
                 g[b * k + a] = d;
             }
         }
-        let inv = invert(&g, k).expect("bump basis is well conditioned");
-        BgBasis { k, maps, inv }
+        BgBasis::from_gram(maps, g)
+    }
+
+    fn from_gram(maps: Vec<Vec<f32>>, gram: Vec<f64>) -> BgBasis {
+        let k = maps.len();
+        let mut g = gram.clone();
+        // A tiny ridge keeps a nearly dependent extra map solvable.
+        let tr = (0..k).map(|a| g[a * k + a]).sum::<f64>() / k as f64;
+        for a in 0..k {
+            g[a * k + a] += 1e-9 * tr;
+        }
+        let inv = invert(&g, k).expect("ridge keeps the basis invertible");
+        BgBasis {
+            k,
+            maps,
+            inv,
+            gram,
+        }
     }
 
     /// Projections `g_kᵀ y` and `yᵀy` of a patch.
@@ -494,7 +540,7 @@ impl Problem {
         }
         let mut c = vec![0.0f64; n];
         let mut qc = vec![0.0f64; n];
-        for _sweep in 0..300 {
+        for _sweep in 0..100 {
             let mut worst = 0.0f64;
             for i in 0..n {
                 let d_ii = self.q[i * n + i];
@@ -513,7 +559,7 @@ impl Problem {
                 }
             }
             *work += (n * n) as u64;
-            if worst < 1e-3 {
+            if worst < 1e-2 {
                 break;
             }
         }
