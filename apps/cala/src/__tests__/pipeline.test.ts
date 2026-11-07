@@ -138,7 +138,13 @@ function batch(start: number, count: number): PipelineStepResult {
     flickerOffset: new Float32Array(count),
     flickerGain: new Float32Array(count),
     previews: { frame: start, raw: image, preprocessed: image, corrected: image, output: image },
-    timings: { readMs: count, preprocessMs: 2 * count, motionMs: 3 * count, otherMs: 0 },
+    timings: {
+      readMs: count,
+      preprocessMs: 2 * count,
+      motionMs: 3 * count,
+      otherMs: 0,
+      traceMs: 0,
+    },
   };
 }
 

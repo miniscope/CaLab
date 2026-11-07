@@ -138,6 +138,9 @@ mod reservoir;
 
 pub use ledger::{CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts};
 
+#[cfg(feature = "jsbindings")]
+mod js;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

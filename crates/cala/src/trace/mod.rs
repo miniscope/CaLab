@@ -58,7 +58,7 @@ mod library;
 mod solver;
 
 #[cfg(feature = "jsbindings")]
-mod js;
+pub(crate) mod js;
 
 use std::fmt;
 

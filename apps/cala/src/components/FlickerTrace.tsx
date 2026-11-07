@@ -32,7 +32,7 @@ export function FlickerTrace(props: { store: PipelineStore }): JSX.Element {
           offset a (grey levels)
         </span>
       </div>
-      <TracePanel data={data} series={SERIES} height={150} syncKey="cala-motion" xLabel="Frame" />
+      <TracePanel data={data} series={SERIES} height={130} syncKey="cala-motion" xLabel="Frame" />
     </div>
   );
 }

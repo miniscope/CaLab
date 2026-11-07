@@ -18,7 +18,7 @@ function fpsText(info: FrameSourceInfo): string {
 export function InfoPanel(props: { info: FrameSourceInfo }): JSX.Element {
   const i = () => props.info;
   return (
-    <DashboardPanel id="info" variant="controls">
+    <DashboardPanel id="info" variant="flush">
       <h2 class="panel-label">Recording</h2>
       <dl class="cala-info">
         <dt>Frame size</dt>

@@ -4,14 +4,28 @@
  * batch back as a Transferable. Also runs the preprocess + motion pipeline
  * (`PipelineEngine`), one step per request, so the pipeline reads frames
  * without a round trip through the main thread.
+ *
+ * This is the fast loop: after motion correction each batch is solved for
+ * the traces of the current footprint library, and the frames are forwarded
+ * to the slow worker (cell discovery) over a `MessagePort`. The fast loop
+ * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
  */
-import { initCalaWasm } from '../lib/cala-wasm.ts';
+import { initCalaWasm, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
+import { FastLoop, type TraceBackend } from '../lib/fast-loop.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { PipelineEngine, transferablesOf } from '../lib/pipeline-engine.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
+import type { FastToSlow, SlowToFast } from './slow-types.ts';
 
 let source: FrameSource | null = null;
 let pipeline: PipelineEngine | null = null;
+let slowPort: MessagePort | null = null;
+
+const backend: TraceBackend = {
+  libraryFromBytes: (bytes) => TraceLibrary.fromBytes(bytes),
+  // 0, 0: the solver's default tolerance and sweep cap.
+  newEngine: (lib) => new TraceEngine(lib as TraceLibrary, 0, 0),
+};
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -54,7 +68,19 @@ async function handle(req: FrameRequest): Promise<void> {
       case 'pipeline-start': {
         if (!source) throw new Error('No recording is open.');
         stopPipeline();
-        pipeline = new PipelineEngine(source, req.options);
+        const cells = req.cells;
+        const port = slowPort;
+        pipeline = new PipelineEngine(source, req.options, undefined, (setup) => {
+          return new FastLoop(
+            {
+              ...setup,
+              session: cells?.session ?? 0,
+              discover: (cells?.discover ?? true) && port !== null,
+            },
+            port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
+            backend,
+          );
+        });
         post({ type: 'pipeline-ready', id: req.id, plan: pipeline.plan });
         break;
       }
@@ -67,6 +93,20 @@ async function handle(req: FrameRequest): Promise<void> {
       case 'pipeline-stop': {
         stopPipeline();
         post({ type: 'pipeline-stopped', id: req.id });
+        break;
+      }
+      case 'connect-slow': {
+        slowPort?.close();
+        slowPort = req.port;
+        // Slow-worker answers only record state; they are applied between batches.
+        slowPort.onmessage = (e: MessageEvent<SlowToFast>) =>
+          pipeline?.fastLoop?.handleSlow(e.data);
+        post({ type: 'ok', id: req.id });
+        break;
+      }
+      case 'set-discovery': {
+        pipeline?.fastLoop?.setDiscovery(req.on && slowPort !== null);
+        post({ type: 'ok', id: req.id });
         break;
       }
     }

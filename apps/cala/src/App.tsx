@@ -1,15 +1,18 @@
 import type { Component } from 'solid-js';
 import { Show } from 'solid-js';
-import { CompactHeader, DashboardShell, VizLayout } from '@calab/ui';
+import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
-import { createViewerStore } from './lib/viewer-store.ts';
+import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
-import { PipelinePanel } from './components/PipelinePanel.tsx';
+import { createCellStore } from './lib/cell-store.ts';
+import { createSlowClient } from './lib/slow-client.ts';
+import { StatusBar } from './components/StatusBar.tsx';
+import { VideoPanel } from './components/VideoPanel.tsx';
+import { SelectedCellPanel } from './components/CellsPanel.tsx';
+import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { FrameViewer } from './components/FrameViewer.tsx';
-import { InfoPanel } from './components/InfoPanel.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -22,7 +25,14 @@ const App: Component = () => {
   // The worker (and the files it holds) lives as long as the app.
   const client = createFrameClient();
   const store = createViewerStore(client);
-  const pipeline = createPipelineStore(client);
+  const cells = createCellStore();
+  // Cell discovery runs in a worker of its own, fed directly by the frame worker.
+  createSlowClient(client, (msg) => cells.onSlowMessage(msg));
+  const pipeline = createPipelineStore(client, {}, undefined, cells);
+  // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
+  if (new URLSearchParams(window.location.search).has('debug')) {
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline };
+  }
 
   // Opening a folder starts preprocessing and motion correction right away.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
@@ -77,7 +87,9 @@ const App: Component = () => {
             />
           }
         >
-          <VizLayout mode="scroll">
+          {/* One screen, no page scroll: status strip on top; video and
+              tabbed plots on the left; the selected cell on the right. */}
+          <div class="cala-main">
             <Show when={store.error()}>
               {(message) => (
                 <div class="error-card" role="alert">
@@ -85,10 +97,20 @@ const App: Component = () => {
                 </div>
               )}
             </Show>
-            <PipelinePanel store={pipeline} />
-            <FrameViewer store={store} />
-            <InfoPanel info={info()} />
-          </VizLayout>
+            <StatusBar store={pipeline} cells={cells} />
+            <div class="cala-body">
+              <div class="cala-body__left">
+                <VideoPanel
+                  store={pipeline}
+                  cells={cells}
+                  width={info().width}
+                  height={info().height}
+                />
+                <DetailsTabs store={pipeline} cells={cells} viewer={store} info={info()} />
+              </div>
+              <SelectedCellPanel cells={cells} fps={info().fps ?? FALLBACK_PLAYBACK_FPS} />
+            </div>
+          </div>
         </DashboardShell>
       )}
     </Show>

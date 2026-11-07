@@ -75,6 +75,11 @@ impl JsPreprocessConfig {
         self.inner.flatten.cell_diameter_px = v;
     }
 
+    #[wasm_bindgen(getter, js_name = cellDiameterPx)]
+    pub fn cell_diameter_px(&self) -> f32 {
+        self.inner.flatten.cell_diameter_px
+    }
+
     /// Explicit flattening σ in pixels; 0 = derive from the cell diameter.
     #[wasm_bindgen(setter, js_name = flattenSigmaPx)]
     pub fn set_flatten_sigma_px(&mut self, v: f32) {
