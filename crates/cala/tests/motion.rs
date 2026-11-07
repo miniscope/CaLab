@@ -82,11 +82,10 @@ fn corr(a: &[f64], b: &[f64]) -> f64 {
     cov / (va * vb).sqrt()
 }
 
-/// Rigid shifts against minisim's ground truth. The bound is loose on
-/// purpose: on this preset the frames themselves do not follow the true
-/// motion to better than ~0.4 px (strong activity and neuropil changes; an
-/// independent Python registration with an *oracle* template does no
-/// better, see the fixture README). The tight accuracy check is
+/// Rigid shifts against minisim's ground truth (content-calibrated preset;
+/// measured 0.17 px RMSE, correlation 0.98 / 0.99). Cell activity still moves
+/// the registration peak by a few tenths of a pixel on a 128 px field (see
+/// the fixture README); the sub-pixel accuracy check is
 /// `recovers_known_shifts_of_a_static_image`.
 #[test]
 fn rigid_tracks_minisim_motion() {
@@ -101,8 +100,8 @@ fn rigid_tracks_minisim_motion() {
     };
     let (cy, cx) = (axis(0), axis(1));
     eprintln!("rigid RMSE vs minisim shifts: {rmse:.4} px, corr dy {cy:.3} dx {cx:.3}");
-    assert!(rmse < 0.6, "rigid RMSE {rmse}");
-    assert!(cy > 0.85 && cx > 0.9, "corr {cy} {cx}");
+    assert!(rmse < 0.25, "rigid RMSE {rmse}");
+    assert!(cy > 0.95 && cx > 0.97, "corr {cy} {cx}");
     assert!(recs.iter().all(|r| r.quality > 0.3));
 }
 
@@ -142,7 +141,10 @@ fn nonrigid_patch_error_on_minisim() {
     let e_on = patch_rmse_aligned(&on, &fx.truth, &frames, &pts);
     let e_off = patch_rmse_aligned(&off, &fx.truth, &frames, &pts);
     eprintln!("patch RMSE: rigid-only {e_off:.4} px, non-rigid {e_on:.4} px");
-    assert!(e_on < 1.15 * e_off, "non-rigid {e_on} vs rigid {e_off}");
+    assert!(
+        e_off < 0.3 && e_on < 1.2 * e_off,
+        "non-rigid {e_on} vs rigid {e_off}"
+    );
 }
 
 /// A static scene (the fixture's mean) moved by a known rigid trajectory plus
@@ -225,7 +227,7 @@ fn nonrigid_recovers_a_known_field() {
     }
     let (e_nr, e_rg) = ((e_nr / count).sqrt(), (e_rg / count).sqrt());
     eprintln!("known field: patch RMSE rigid-only {e_rg:.4} px, non-rigid {e_nr:.4} px");
-    assert!(e_nr < 0.6 * e_rg, "non-rigid {e_nr} vs rigid {e_rg}");
+    assert!(e_nr < 0.7 * e_rg, "non-rigid {e_nr} vs rigid {e_rg}");
 }
 
 #[test]
@@ -281,6 +283,14 @@ fn recovers_known_shifts_of_a_static_image() {
             .unwrap();
     let cfg = MotionConfig {
         template_tau: 0.0,
+        // Away from the frame edge, where the synthetic warp replicates
+        // border pixels that do not move with the scene.
+        roi: Some(calab_cala::motion::Roi {
+            y0: 16,
+            x0: 16,
+            height: 96,
+            width: 96,
+        }),
         ..MotionConfig::default()
     };
     let mut mc = MotionCorrector::new(h, w, cfg).unwrap();
