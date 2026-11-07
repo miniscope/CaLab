@@ -402,3 +402,14 @@
   font-size: 0.8rem;
   cursor: pointer;
 }
+
+.cala-trace-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cala-hint {
+  margin: 0;
+  font-size: 0.75rem;
+}

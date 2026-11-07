@@ -86,13 +86,84 @@ describe('TraceHistory', () => {
     expect(h.bytes).toBe(2 * 5 * 4);
   });
 
-  it('starts a new cell at its first frame and restarts after a gap', () => {
-    const h = new TraceHistory(8);
+  it('starts a new cell at its first frame, fills gaps with NaN, restarts after a long one', () => {
+    const h = new TraceHistory(16);
     h.push(0, 2, [1], [1, 2]);
     h.push(2, 2, [1, 2], [3, 30, 4, 40]);
     expect(h.get(2)).toEqual({ frames: [2, 3], values: [30, 40] });
     h.push(10, 1, [1, 2], [9, 90]);
-    expect(h.get(1)).toEqual({ frames: [10], values: [9] });
+    const one = h.get(1);
+    expect(one.frames).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(one.values.slice(0, 4)).toEqual([1, 2, 3, 4]);
+    expect(one.values.slice(4, 10).every(Number.isNaN)).toBe(true);
+    expect(one.values[10]).toBe(9);
+    expect(h.span(2)).toEqual({ first: 2, end: 11 });
+    // A gap longer than the buffer can hold starts the cell afresh.
+    h.push(40, 1, [1], [5]);
+    expect(h.get(1)).toEqual({ frames: [40], values: [5] });
+  });
+
+  it('grows with the data up to `capacity` frames, then keeps the newest', () => {
+    const h = new TraceHistory(4096);
+    const ids = [3];
+    for (let f = 0; f < 3000; f += 10) {
+      h.push(
+        f,
+        10,
+        ids,
+        Array.from({ length: 10 }, (_, i) => f + i),
+      );
+    }
+    // 1024 -> 1536 -> 2304 -> 3456 frames as it filled.
+    expect(h.bytes).toBe(3456 * 4);
+    const t = h.get(3);
+    expect(t.frames.length).toBe(3000);
+    expect(t.values[2999]).toBe(2999);
+    for (let f = 3000; f < 5000; f += 10) {
+      h.push(
+        f,
+        10,
+        ids,
+        Array.from({ length: 10 }, (_, i) => f + i),
+      );
+    }
+    const r = h.get(3);
+    expect(r.frames[0]).toBe(5000 - 4096);
+    expect(r.values[0]).toBe(5000 - 4096);
+    expect(r.values[4095]).toBe(4999);
+    expect(h.bytes).toBe(4096 * 4);
+  });
+
+  it('stops growing at the byte budget and rings at its current size', () => {
+    const h = new TraceHistory(1 << 17, 10, 9 * 1024);
+    for (let f = 0; f < 5000; f += 100) {
+      h.push(
+        f,
+        100,
+        [1, 2],
+        new Array(200).fill(1).map((_, k) => f + (k >> 1)),
+      );
+    }
+    // Both start at 1024 frames (8 KB); growing one to 1536 would pass 10 KB.
+    expect(h.bytes).toBe(2 * 1024 * 4);
+    expect(h.get(1).frames.length).toBe(1024);
+    expect(h.get(1).values[1023]).toBe(4999);
+    // A third cell does not fit at all; dropping one frees its share.
+    h.push(5000, 1, [1, 2, 7], [1, 2, 3]);
+    expect(h.has(7)).toBe(false);
+    h.retain([1]);
+    expect(h.bytes).toBe(1024 * 4);
+    h.push(5001, 1, [1, 7], [1, 3]);
+    expect(h.has(7)).toBe(true);
+  });
+
+  it('lays a trace out densely on stream frames with NaN where it has none', () => {
+    const h = new TraceHistory(64);
+    h.push(5, 3, [1], [1, 2, 3]);
+    const d = h.dense(1, 10);
+    expect(Array.from(d.subarray(5, 8))).toEqual([1, 2, 3]);
+    expect([...d.subarray(0, 5), ...d.subarray(8)].every(Number.isNaN)).toBe(true);
+    expect(h.dense(99, 4).every(Number.isNaN)).toBe(true);
   });
 
   it('drops cells that left the library, except the kept one, and caps the cell count', () => {

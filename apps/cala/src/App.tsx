@@ -4,7 +4,7 @@ import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
-import { createViewerStore } from './lib/viewer-store.ts';
+import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { createSlowClient } from './lib/slow-client.ts';
@@ -108,7 +108,7 @@ const App: Component = () => {
                 />
                 <DetailsTabs store={pipeline} cells={cells} viewer={store} info={info()} />
               </div>
-              <SelectedCellPanel cells={cells} />
+              <SelectedCellPanel cells={cells} fps={info().fps ?? FALLBACK_PLAYBACK_FPS} />
             </div>
           </div>
         </DashboardShell>

@@ -4,6 +4,7 @@ import { OKABE_ITO, TracePanel, viridisRGB } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
+import { CellTraceViewer } from './CellTraceViewer.tsx';
 
 function fmt(s: Summary): string {
   if (s.n === 0) return 'n/a';
@@ -71,10 +72,6 @@ function FootprintZoom(props: { cells: CellStore; id: number }): JSX.Element {
   );
 }
 
-const TRACE_SERIES: uPlot.Series[] = [
-  {},
-  { label: 'trace', stroke: OKABE_ITO.vermillion, width: 1.25 },
-];
 const COUNT_SERIES: uPlot.Series[] = [
   {},
   { label: 'fast-loop library', stroke: OKABE_ITO.blue, width: 1.5 },
@@ -85,13 +82,8 @@ const LAG_SERIES: uPlot.Series[] = [
   { label: 'lag (frames)', stroke: OKABE_ITO.orange, width: 1.25 },
 ];
 
-function SelectedCell(props: { cells: CellStore; id: number }): JSX.Element {
+function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX.Element {
   const c = () => props.cells;
-  const data = createMemo((): [number[], ...number[][]] => {
-    c().tick();
-    const t = c().history().get(props.id);
-    return [t.frames, t.values];
-  });
   const inLibrary = () => c().library()?.ids.includes(props.id) ?? false;
   const info = () => {
     const view = c().library();
@@ -127,20 +119,13 @@ function SelectedCell(props: { cells: CellStore; id: number }): JSX.Element {
           </Show>
         </div>
       </div>
-      <h3 class="panel-label">Trace</h3>
-      <TracePanel
-        data={data}
-        series={TRACE_SERIES}
-        height={200}
-        syncKey="cala-cell"
-        xLabel="Frame"
-      />
+      <CellTraceViewer cells={c()} id={props.id} fps={props.fps} />
     </div>
   );
 }
 
 /** The clicked cell: footprint, facts and trace (right-hand column). */
-export function SelectedCellPanel(props: { cells: CellStore }): JSX.Element {
+export function SelectedCellPanel(props: { cells: CellStore; fps: number }): JSX.Element {
   return (
     <DashboardPanel id="cell" variant="data" class="cala-cell-panel">
       <Show
@@ -152,7 +137,7 @@ export function SelectedCellPanel(props: { cells: CellStore }): JSX.Element {
           </>
         }
       >
-        {(id) => <SelectedCell cells={props.cells} id={id()} />}
+        {(id) => <SelectedCell cells={props.cells} id={id()} fps={props.fps} />}
       </Show>
     </DashboardPanel>
   );
