@@ -11,3 +11,4 @@ package-lock.json
 python/.venv/
 python/docs/_build/
 python/docs/autoapi/
+tools/minisim-calibration/*.spec.json
