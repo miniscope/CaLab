@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@calab/community": "*",
+    "@calab/compute": "*",
     "@calab/community-ui": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",

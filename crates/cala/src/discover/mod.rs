@@ -91,6 +91,9 @@
 mod local;
 mod reservoir;
 
+#[cfg(feature = "jsbindings")]
+mod js;
+
 use std::sync::Arc;
 
 use local::{rank1, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};

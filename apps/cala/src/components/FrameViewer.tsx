@@ -11,7 +11,7 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
   const seconds = () => store().frameIndex() / (info().fps ?? FALLBACK_PLAYBACK_FPS);
 
   return (
-    <DashboardPanel id="viewer" variant="data">
+    <DashboardPanel id="viewer" variant="flush">
       <div class="cala-stage">
         <FrameCanvas
           width={info().width}
