@@ -29,7 +29,7 @@ export function MotionTrace(props: { store: PipelineStore }): JSX.Element {
           dx
         </span>
       </div>
-      <TracePanel data={data} series={SERIES} height={170} syncKey="cala-motion" xLabel="Frame" />
+      <TracePanel data={data} series={SERIES} height={130} syncKey="cala-motion" xLabel="Frame" />
     </div>
   );
 }

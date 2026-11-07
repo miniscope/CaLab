@@ -15,7 +15,7 @@
 .cala-canvas {
   display: block;
   max-width: 100%;
-  max-height: 65vh;
+  max-height: 150px;
   width: auto;
   height: auto;
   image-rendering: pixelated;
@@ -86,60 +86,6 @@
 
 /* Live preprocessing + motion pipeline */
 
-.cala-pipeline-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-}
-
-.cala-progress {
-  height: 4px;
-  margin: var(--space-sm) 0 var(--space-md);
-  background: var(--border-subtle);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.cala-progress__bar {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.2s linear;
-}
-
-.cala-pair {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-md);
-}
-
-.cala-pane {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-  min-width: 0;
-}
-
-.cala-view-select {
-  align-self: flex-start;
-  font-size: 0.85rem;
-}
-
-.cala-preview {
-  display: block;
-  width: 100%;
-  height: auto;
-  max-height: min(50vh, 480px);
-  object-fit: contain;
-  image-rendering: pixelated;
-}
-
-.cala-motion-trace {
-  margin-top: var(--space-md);
-}
-
 .cala-trace-head {
   display: flex;
   align-items: baseline;
@@ -164,14 +110,6 @@
 }
 
 /* Live cell discovery */
-.cala-cells-stage {
-  position: relative;
-  width: min(100%, 640px);
-  margin: 0 auto;
-  background: #000;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
 
 .cala-cells-layer {
   position: absolute;
@@ -197,19 +135,270 @@
   align-items: flex-start;
 }
 
-.cala-footprint-zoom {
-  width: 160px;
-  height: 160px;
-  object-fit: contain;
-  background: #000;
-  border-radius: var(--radius-sm);
-  image-rendering: pixelated;
-}
-
 .cala-check {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
   font-size: 0.9rem;
   white-space: nowrap;
+}
+
+/* ========================
+   One-screen layout: status strip, then video + tabbed plots (left) and the
+   selected cell (right). Fills the shell's main area; nothing scrolls the page.
+   ======================== */
+.cala-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  height: 100%;
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+  overflow: hidden;
+}
+
+.cala-main > .dashboard-panel {
+  flex: none;
+}
+
+.cala-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 560px);
+  gap: var(--space-sm);
+}
+
+.cala-body__left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 0;
+  min-width: 0;
+}
+
+.cala-main .dashboard-panel {
+  padding: var(--space-sm) var(--space-md);
+}
+
+.cala-main .dashboard-panel--flush {
+  padding: 0;
+}
+
+/* Status strip */
+.cala-statusbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+}
+
+.cala-status {
+  font-size: 0.9rem;
+  font-weight: var(--font-weight-medium, 500);
+  white-space: nowrap;
+}
+
+.cala-progress {
+  flex: 1 1 120px;
+  min-width: 80px;
+  height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cala-progress__bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.cala-statusbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.cala-statusbar__error {
+  flex-basis: 100%;
+}
+
+/* Video: two panes, each fitted to the space left over */
+.cala-video-panel {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.cala-pane {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  min-height: 0;
+}
+
+.cala-pane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-height: 26px;
+  flex-wrap: wrap;
+}
+
+.cala-pane__head .panel-label {
+  margin: 0;
+}
+
+.cala-fit {
+  flex: 1;
+  min-height: 120px;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cala-fit__box {
+  position: relative;
+}
+
+.cala-fit__box > .cala-stage,
+.cala-fit__box > .cala-cells-stage {
+  width: 100%;
+  height: 100%;
+}
+
+.cala-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.cala-cells-stage {
+  position: relative;
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* Tabs under the video */
+.cala-details {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.cala-tabs__bar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-default);
+  margin: calc(-1 * var(--space-sm)) calc(-1 * var(--space-md)) 0;
+  padding: 0 var(--space-sm);
+  overflow-x: auto;
+}
+
+.cala-details--closed .cala-tabs__bar {
+  border-bottom: none;
+  margin-bottom: calc(-1 * var(--space-sm));
+}
+
+.cala-tabs__tab {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-xs) var(--space-md);
+  font-size: 0.85rem;
+  font-family: var(--font-body);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cala-tabs__tab:hover {
+  color: var(--text-primary);
+}
+
+.cala-tabs__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: var(--font-weight-medium, 500);
+}
+
+.cala-tabs__toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.cala-tabs__content {
+  height: 205px;
+  overflow-y: auto;
+  padding-top: var(--space-sm);
+}
+
+.cala-tabs__content[hidden] {
+  display: none;
+}
+
+.cala-tabs__content .panel-label {
+  margin: 0;
+}
+
+.cala-tab-note {
+  margin: var(--space-xs) 0 0;
+}
+
+.cala-timing p {
+  margin: 0 0 var(--space-sm);
+}
+
+/* Selected cell (right column) */
+.cala-cell-panel {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cala-footprint-zoom {
+  width: 140px;
+  height: 140px;
+  flex: none;
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--radius-sm);
+  image-rendering: pixelated;
+}
+
+@media (max-width: 900px) {
+  .cala-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Section labels, as in CaDecon */
+.panel-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin: 0 0 2px;
+  font-weight: var(--font-weight-medium);
+}
+
+.cala-view-select {
+  padding: 2px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
 }
