@@ -2,13 +2,15 @@
  * Main-thread handle on the frame worker: promise-based `open` / `readFrame`
  * over the message protocol in `workers/frame-types.ts`.
  */
-import type { FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
 import type { FrameRequest, FrameRequestBody, FrameResponse } from '../workers/frame-types.ts';
 
 /** What the UI needs from a frame source; the tests substitute a fake. */
 export interface FrameClient {
-  open(files: File[]): Promise<FrameSourceInfo>;
-  readFrame(index: number): Promise<Uint8Array>;
+  open(entries: FolderEntry[]): Promise<FrameSourceInfo>;
+  readFrame(index: number): Promise<FramePixels>;
+  /** `count` consecutive frames in one buffer of `count * width * height` samples. */
+  readFrames(start: number, count: number): Promise<FramePixels>;
   dispose(): void;
 }
 
@@ -47,15 +49,18 @@ export function createFrameClient(
   }
 
   return {
-    async open(files) {
-      const res = await call({ type: 'open', files });
+    async open(entries) {
+      const res = await call({ type: 'open', entries });
       if (res.type !== 'opened') throw new Error('Unexpected worker response.');
       return res.info;
     },
-    async readFrame(index) {
-      const res = await call({ type: 'read', index });
-      if (res.type !== 'frame') throw new Error('Unexpected worker response.');
+    async readFrames(start, count) {
+      const res = await call({ type: 'read', start, count });
+      if (res.type !== 'frames') throw new Error('Unexpected worker response.');
       return res.pixels;
+    },
+    readFrame(index) {
+      return this.readFrames(index, 1);
     },
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.

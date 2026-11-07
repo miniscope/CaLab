@@ -6,14 +6,14 @@
  */
 import { createSignal, onCleanup } from 'solid-js';
 import type { FrameClient } from './frame-client.ts';
-import type { FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
 
 /** Playback rate when the recording has neither timestamps nor metadata. */
 export const FALLBACK_PLAYBACK_FPS = 20;
 
 export interface CurrentFrame {
   index: number;
-  pixels: Uint8Array;
+  pixels: FramePixels;
 }
 
 export function createViewerStore(client: FrameClient) {
@@ -90,13 +90,13 @@ export function createViewerStore(client: FrameClient) {
     raf = requestAnimationFrame(tick);
   }
 
-  async function openFiles(files: File[], name: string): Promise<void> {
+  async function openFiles(entries: FolderEntry[], name: string): Promise<void> {
     pause();
     generation++;
     setError(null);
     setLoading(true);
     try {
-      const opened = await client.open(files);
+      const opened = await client.open(entries);
       setInfo(opened);
       setLabel(name);
       setFrame(null);

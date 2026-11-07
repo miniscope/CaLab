@@ -312,7 +312,7 @@ rate is exposed for diagnostics only.
 The TypeScript side lives in `apps/cala/src/lib/` (not a package: only cala uses
 it, and `@calab/core` must stay wasm-free). `frame-source.ts` sorts `N.avi` files
 naturally, reads each file's prefix and `idx1` region with `File.slice`, exposes
-`readFrame(globalIndex)` and takes the frame rate from `timeStamps.csv` or
+`readFrame(globalIndex)` plus a batched `readFrames(start, count, out?)` (one `File.slice` per contiguous span, decoded by wasm straight into a caller-owned `Uint8Array`/`Uint16Array`; the entry point for a streaming processing worker), and takes the frame rate from `timeStamps.csv` or
 `metaData.json`. A worker (`workers/frame-worker.ts`) owns the `FrameSource` and
 transfers decoded frames to the main thread. `src/lib/cala-wasm.ts` is the only
 file allowed to import `crates/cala/pkg/` (ESLint boundary).

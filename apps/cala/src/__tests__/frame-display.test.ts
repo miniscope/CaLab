@@ -29,7 +29,7 @@ describe('frame display', () => {
   });
 
   it('reads 16-bit samples as little-endian pairs', () => {
-    const bytes = new Uint8Array([0x34, 0x12, 0xff, 0xff]); // 0x1234, 0xffff
+    const bytes = new Uint16Array([0x1234, 0xffff]);
     expect(pixelCount(bytes, 16)).toBe(2);
     const gray = toGray8(bytes, 16, { lo: 0, hi: 65535 });
     expect(gray[0]).toBe(Math.round((0x1234 * 255) / 65535) | 0);

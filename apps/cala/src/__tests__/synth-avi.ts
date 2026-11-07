@@ -15,6 +15,12 @@ export interface SynthOptions {
   usec?: number;
   /** Added to frame numbers so that files of one recording differ in content. */
   frameOffset?: number;
+  /** `dwTotalFrames` written to avih (default: the real count). */
+  avihFrames?: number;
+  /** Write 0 as the movi LIST size, as a writer that crashed before close leaves it. */
+  zeroMoviSize?: boolean;
+  /** A JUNK chunk before the first frame inside movi (no fixed stride then). */
+  junkInMovi?: boolean;
 }
 
 const enc = new TextEncoder();
@@ -103,7 +109,7 @@ export function buildAvi(o: SynthOptions): Uint8Array {
 
   const avih = new Uint8Array(56);
   avih.set(u32(o.usec ?? 16666), 0);
-  avih.set(u32(o.frames), 16);
+  avih.set(u32(o.avihFrames ?? o.frames), 16);
   avih.set(u32(o.width), 32);
   avih.set(u32(Math.abs(o.height)), 36);
 
@@ -136,6 +142,11 @@ export function buildAvi(o: SynthOptions): Uint8Array {
   const frames: Uint8Array[] = [];
   const offsets: number[] = [];
   let rel = 4;
+  if (o.junkInMovi) {
+    const junk = chunk('JUNK', new Uint8Array(10));
+    frames.push(junk);
+    rel += junk.length;
+  }
   for (let f = 0; f < o.frames; f++) {
     offsets.push(rel);
     const c = chunk('00dc', framePayload(o, f + (o.frameOffset ?? 0)));
@@ -143,6 +154,7 @@ export function buildAvi(o: SynthOptions): Uint8Array {
     rel += c.length;
   }
   const movi = list('movi', concat(...frames));
+  if (o.zeroMoviSize) new DataView(movi.buffer).setUint32(4, 0, true);
 
   const parts = [head, movi];
   if (idx !== 'none') {

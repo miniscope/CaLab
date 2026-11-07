@@ -1,20 +1,20 @@
 import { createSignal, Show, type JSX } from 'solid-js';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { filesFromDrop } from '../lib/dropped-files.ts';
+import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
 
 interface OpenFolderProps {
   loading: boolean;
   error: string | null;
   /** Called with every file picked or dropped, and a label for the header. */
-  onOpen: (files: File[], label: string) => void;
+  onOpen: (entries: FolderEntry[], label: string) => void;
 }
 
 /** The folder name for the header: the picked directory, else the first file's name. */
-function labelFor(files: File[]): string {
-  const rel = (files[0] as (File & { webkitRelativePath?: string }) | undefined)
-    ?.webkitRelativePath;
-  if (rel && rel.includes('/')) return rel.split('/')[0];
-  return files.length === 1 ? files[0].name : `${files.length} files`;
+function labelFor(entries: FolderEntry[]): string {
+  const rel = entries[0].relPath;
+  if (rel.includes('/')) return rel.split('/')[0];
+  return entries.length === 1 ? entries[0].file.name : `${entries.length} files`;
 }
 
 /** First screen: pick or drop a Miniscope recording folder. */
@@ -23,8 +23,8 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
 
-  const submit = (files: File[]) => {
-    if (files.length > 0) props.onOpen(files, labelFor(files));
+  const submit = (entries: FolderEntry[]) => {
+    if (entries.length > 0) props.onOpen(entries, labelFor(entries));
   };
 
   return (
@@ -78,7 +78,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           webkitdirectory=""
           multiple
           onChange={(e) => {
-            submit(Array.from(e.currentTarget.files ?? []));
+            submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />
@@ -90,7 +90,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           multiple
           accept=".avi,.json,.csv"
           onChange={(e) => {
-            submit(Array.from(e.currentTarget.files ?? []));
+            submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />

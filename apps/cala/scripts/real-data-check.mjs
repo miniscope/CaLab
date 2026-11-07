@@ -36,11 +36,17 @@ function option(name, fallback) {
 }
 const python = option('--python', process.env.CALA_PYTHON ?? 'python3');
 const sampleCount = Number(option('--samples', '40'));
+// Sequential batched-read throughput over this many frames from frame 0 (0 = skip).
+const throughputFrames = Number(option('--throughput', '5000'));
+const full = args.includes('--full');
+if (full) args.splice(args.indexOf('--full'), 1);
 const dir = resolve(args[0] ?? DEFAULT_DIR);
 
 const here = import.meta.dirname;
 const { initCalaWasm } = await import(resolve(here, '../src/lib/cala-wasm.ts'));
-const { FrameSource } = await import(resolve(here, '../src/lib/frame-source.ts'));
+const { FrameSource, entriesFromFiles, MAX_FRAMES_PER_READ } = await import(
+  resolve(here, '../src/lib/frame-source.ts')
+);
 await initCalaWasm(readFileSync(resolve(here, '../../../crates/cala/pkg/calab_cala_bg.wasm')));
 
 /** mulberry32: a seeded PRNG, so a failing sample list is reproducible. */
@@ -63,7 +69,7 @@ const files = await Promise.all(
 
 const rssBefore = process.memoryUsage().rss;
 const t0 = performance.now();
-const source = await FrameSource.open(files);
+const source = await FrameSource.open(entriesFromFiles(files));
 const openMs = performance.now() - t0;
 const info = source.info;
 console.log(`opened ${dir}`);
@@ -101,6 +107,29 @@ console.log(
     `(${(readMs / samples.length).toFixed(1)} ms/frame); RSS grew ${rssGrowthMb.toFixed(0)} MB ` +
     `(dataset is ${(info.files.length * 360).toFixed(0)} MB on disk)`,
 );
+
+// Sequential throughput, as the streaming preprocessing will read: batches of
+// MAX_FRAMES_PER_READ into one reused buffer (so no allocation per batch).
+const span = full ? info.frameCount : Math.min(throughputFrames, info.frameCount);
+if (span > 0) {
+  const px = info.width * info.height;
+  const Pixels = info.bitDepth === 16 ? Uint16Array : Uint8Array;
+  const out = new Pixels(px * MAX_FRAMES_PER_READ);
+  const t2 = performance.now();
+  let checksum = 0;
+  for (let at = 0; at < span; at += MAX_FRAMES_PER_READ) {
+    const n = Math.min(MAX_FRAMES_PER_READ, span - at);
+    const buf = n === MAX_FRAMES_PER_READ ? out : new Pixels(px * n);
+    await source.readFrames(at, n, buf);
+    checksum = (checksum + buf[0] + buf[buf.length - 1]) % 1e9;
+  }
+  const secs = (performance.now() - t2) / 1000;
+  const mb = (span * px * (info.bitDepth / 8)) / 1e6;
+  console.log(
+    `  sequential batched read: ${span} frames in ${secs.toFixed(2)} s = ${(span / secs).toFixed(0)} frames/s, ` +
+      `${(mb / secs).toFixed(0)} MB/s (checksum ${checksum})`,
+  );
+}
 
 const work = mkdtempSync(join(tmpdir(), 'cala-real-'));
 const jsonPath = join(work, 'samples.json');

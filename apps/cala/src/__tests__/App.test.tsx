@@ -35,6 +35,7 @@ const INFO: FrameSourceInfo = {
 const fake = vi.hoisted(() => ({
   open: vi.fn(),
   readFrame: vi.fn(),
+  readFrames: vi.fn(),
   dispose: vi.fn(),
 }));
 vi.mock('../lib/frame-client.ts', () => ({ createFrameClient: (): FrameClient => fake }));
@@ -88,7 +89,9 @@ describe('App', () => {
     await pick(root, files);
 
     await vi.waitFor(() => expect(root.querySelector('.dashboard-shell')).not.toBeNull());
-    expect(fake.open).toHaveBeenCalledWith(files);
+    expect(fake.open).toHaveBeenCalledWith(
+      files.map((file) => ({ file, relPath: `rec/${file.name}` })),
+    );
     expect(root.querySelector('.compact-header__file')?.textContent).toBe('rec');
     expect(root.querySelector('.compact-header__info')?.textContent).toContain('50 frames');
 

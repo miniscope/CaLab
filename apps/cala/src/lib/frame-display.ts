@@ -1,5 +1,7 @@
 /** Map raw frame bytes to 8-bit display gray levels. Pure, so it is unit-tested. */
 
+import type { FramePixels } from './frame-source.ts';
+
 const HIST_BINS = 1024;
 /** Fraction of pixels clipped at each end by auto contrast. */
 const CLIP_FRACTION = 0.005;
@@ -10,19 +12,19 @@ export interface DisplayRange {
 }
 
 /** Number of pixels in a frame buffer of the given depth. */
-export function pixelCount(bytes: Uint8Array, bitDepth: number): number {
-  return bitDepth === 16 ? bytes.length >> 1 : bytes.length;
+export function pixelCount(pixels: FramePixels, _bitDepth?: number): number {
+  return pixels.length;
 }
 
-function valueAt(bytes: Uint8Array, bitDepth: number, i: number): number {
-  return bitDepth === 16 ? bytes[2 * i] | (bytes[2 * i + 1] << 8) : bytes[i];
+function valueAt(pixels: FramePixels, _bitDepth: number, i: number): number {
+  return pixels[i];
 }
 
 /**
  * Display range: the full sample range, or with `auto` the 0.5%-99.5%
  * percentiles (so a few hot pixels or vignetting do not flatten the image).
  */
-export function displayRange(bytes: Uint8Array, bitDepth: number, auto: boolean): DisplayRange {
+export function displayRange(bytes: FramePixels, bitDepth: number, auto: boolean): DisplayRange {
   const fullHi = bitDepth === 16 ? 65535 : 255;
   const n = pixelCount(bytes, bitDepth);
   if (!auto || n === 0) return { lo: 0, hi: fullHi };
@@ -60,7 +62,7 @@ export function displayRange(bytes: Uint8Array, bitDepth: number, auto: boolean)
 
 /** One gray byte per pixel for `bytes`, linearly mapped from `range` to 0-255. */
 export function toGray8(
-  bytes: Uint8Array,
+  bytes: FramePixels,
   bitDepth: number,
   range: DisplayRange,
 ): Uint8ClampedArray {

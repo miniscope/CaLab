@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { initCalaWasm } from '../lib/cala-wasm.ts';
-import { FrameSource, HEADER_PREFIX_BYTES } from '../lib/frame-source.ts';
+import {
+  entriesFromFiles,
+  FrameSource,
+  HEADER_PREFIX_BYTES,
+  MAX_FRAMES_PER_READ,
+} from '../lib/frame-source.ts';
 import { naturalCompare } from '../lib/natural-sort.ts';
 import {
   fpsFromTimeStamps,
@@ -18,6 +23,8 @@ beforeAll(async () => {
   );
   await initCalaWasm(wasm);
 });
+
+const open = (files: File[]) => FrameSource.open(entriesFromFiles(files));
 
 const TS_HEADER = 'Frame Number,Time Stamp (ms),Buffer Index\n';
 
@@ -107,7 +114,7 @@ describe('FrameSource', () => {
     // Deliberately shuffled, and a 10th file to prove natural ordering.
     const { opts, files } = recording([3, 2, 4, 1, 2, 2, 1, 3, 2, 2, 5]);
     const shuffled = [...files].reverse();
-    const src = await FrameSource.open(shuffled);
+    const src = await open(shuffled);
     expect(src.frameCount).toBe(27);
     expect([src.width, src.height]).toEqual([6, 4]);
     expect(src.info.files.map((f) => f.name).slice(8)).toEqual(['8.avi', '9.avi', '10.avi']);
@@ -133,7 +140,7 @@ describe('FrameSource', () => {
         return slice(start, end, type);
       };
     }
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     reads.length = 0;
     await src.readFrame(8);
     expect(reads).toEqual([8 + 40 * 30 + ((40 * 30) % 2)]);
@@ -143,7 +150,7 @@ describe('FrameSource', () => {
 
   it.each(['relative', 'absolute', 'none'] as const)('works with %s idx1', async (idx) => {
     const { opts, files } = recording([4, 3], { idx });
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     expect(src.frameCount).toBe(7);
     expect(await src.readFrame(5)).toEqual(expectedPixels(opts[1], 5));
     if (idx === 'none') expect(src.info.warnings.join(' ')).toContain('no idx1');
@@ -151,24 +158,27 @@ describe('FrameSource', () => {
 
   it('returns frames in stored order despite biHeight > 0 and reports it', async () => {
     const { opts, files } = recording([2], { height: 5 });
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     expect(src.info.bottomUp).toBe(true);
     expect(await src.readFrame(1)).toEqual(expectedPixels(opts[0], 1));
   });
 
   it('strips row padding (width 6 pads to 8)', async () => {
     const { files } = recording([1], { width: 6, height: 3 });
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     expect((await src.readFrame(0)).length).toBe(18);
   });
 
-  it('decodes 16-bit grayscale as byte pairs', async () => {
+  it('decodes 16-bit grayscale into a Uint16Array', async () => {
     const { opts, files } = recording([2], { fourcc: 'Y16 ', bitCount: 16, width: 5, height: 3 });
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     expect(src.info.bitDepth).toBe(16);
     const px = await src.readFrame(1);
-    expect(px.length).toBe(5 * 3 * 2);
-    expect(px).toEqual(expectedPixels(opts[0], 1));
+    expect(px).toBeInstanceOf(Uint16Array);
+    expect(px.length).toBe(5 * 3);
+    expect(new Uint8Array(px.buffer, px.byteOffset, px.byteLength)).toEqual(
+      expectedPixels(opts[0], 1),
+    );
   });
 
   it('takes fps from timestamps, then metadata, never from the AVI header', async () => {
@@ -176,17 +186,17 @@ describe('FrameSource', () => {
     const meta = makeFile('metaData.json', '{"frameRate":"20FPS","framesPerFile":5}', 'rec');
     const ts = makeFile('timeStamps.csv', timeStamps(10, 50), 'rec');
 
-    const both = await FrameSource.open([...files, meta, ts]);
+    const both = await open([...files, meta, ts]);
     expect(both.info.fpsSource).toBe('timestamps');
     expect(both.info.fps).toBeCloseTo(20, 6);
     expect(both.info.aviDeclaredFps).toBeCloseTo(60, 1);
     expect(both.info.warnings).toEqual([]);
 
-    const metaOnly = await FrameSource.open([...files, meta]);
+    const metaOnly = await open([...files, meta]);
     expect(metaOnly.info.fpsSource).toBe('metadata');
     expect(metaOnly.info.fps).toBe(20);
 
-    const neither = await FrameSource.open(files);
+    const neither = await open(files);
     expect(neither.info.fpsSource).toBe('none');
     expect(neither.info.fps).toBeNull();
     expect(neither.info.warnings.join(' ')).toContain('No frame rate');
@@ -194,7 +204,7 @@ describe('FrameSource', () => {
 
   it('finds prefixed sidecars (neural_*) and ignores behavior_* and camap copies', async () => {
     const { files } = recording([5]);
-    const src = await FrameSource.open([
+    const src = await open([
       ...files,
       makeFile('neural_metaData.json', '{"frameRate":"30FPS"}', 'rec'),
       makeFile('behavior_metaData.json', '{"frameRate":"99FPS"}', 'rec'),
@@ -213,7 +223,7 @@ describe('FrameSource', () => {
 
   it('warns when timestamps disagree with metadata or the frame count', async () => {
     const { files } = recording([5]);
-    const src = await FrameSource.open([
+    const src = await open([
       ...files,
       makeFile('metaData.json', '{"frameRate":"30FPS"}', 'rec'),
       makeFile('timeStamps.csv', timeStamps(8, 50), 'rec'),
@@ -227,7 +237,7 @@ describe('FrameSource', () => {
   it('picks the miniscope folder when a parent holds several devices', async () => {
     const mini = recording([3], {}, 'session/My_V4_Miniscope');
     const cam = recording([5, 5], {}, 'session/My_WebCam');
-    const src = await FrameSource.open([
+    const src = await open([
       ...cam.files,
       ...mini.files,
       makeFile('metaData.json', '{"frameRate":"20FPS"}', 'session/My_V4_Miniscope'),
@@ -240,10 +250,8 @@ describe('FrameSource', () => {
   });
 
   it('rejects folders with no N.avi', async () => {
-    await expect(FrameSource.open([makeFile('notes.txt', 'x')])).rejects.toThrow(
-      /No Miniscope video/,
-    );
-    await expect(FrameSource.open([makeFile('clip.avi', new Uint8Array(4))])).rejects.toThrow(
+    await expect(open([makeFile('notes.txt', 'x')])).rejects.toThrow(/No Miniscope video/);
+    await expect(open([makeFile('clip.avi', new Uint8Array(4))])).rejects.toThrow(
       /No Miniscope video/,
     );
   });
@@ -253,33 +261,31 @@ describe('FrameSource', () => {
       '0.avi',
       buildAvi({ width: 8, height: 4, frames: 1, fourcc: 'MJPG', bitCount: 24 }),
     );
-    await expect(FrameSource.open([f])).rejects.toThrow(/0\.avi: .*MJPG/);
+    await expect(open([f])).rejects.toThrow(/0\.avi: .*MJPG/);
   });
 
   it('rejects files that are not AVI', async () => {
-    await expect(FrameSource.open([makeFile('0.avi', new Uint8Array(200))])).rejects.toThrow(
-      /0\.avi: .*RIFF/,
-    );
+    await expect(open([makeFile('0.avi', new Uint8Array(200))])).rejects.toThrow(/0\.avi: .*RIFF/);
   });
 
   it('rejects files whose geometry disagrees', async () => {
     const a = makeFile('0.avi', buildAvi({ width: 8, height: 4, frames: 1 }));
     const b = makeFile('1.avi', buildAvi({ width: 9, height: 4, frames: 1 }));
-    await expect(FrameSource.open([a, b])).rejects.toThrow(/all files must match/);
+    await expect(open([a, b])).rejects.toThrow(/all files must match/);
   });
 
   it('survives a truncated final file by dropping the cut frames', async () => {
     const o: SynthOptions = { width: 8, height: 4, frames: 5, idx: 'none' };
     const full = buildAvi(o);
     const cut = makeFile('0.avi', full.subarray(0, full.length - 40));
-    const src = await FrameSource.open([cut]);
+    const src = await open([cut]);
     expect(src.frameCount).toBe(4);
     expect(await src.readFrame(3)).toEqual(expectedPixels(o, 3));
   });
 
   it('rejects out-of-range and non-integer frame indices', async () => {
     const { files } = recording([2]);
-    const src = await FrameSource.open(files);
+    const src = await open(files);
     await expect(src.readFrame(2)).rejects.toThrow(RangeError);
     await expect(src.readFrame(-1)).rejects.toThrow(RangeError);
     await expect(src.readFrame(0.5)).rejects.toThrow(RangeError);
@@ -298,8 +304,130 @@ describe('FrameSource', () => {
     withJunk.set(junk, 12);
     withJunk.set(base.subarray(12), 12 + junk.length);
     new DataView(withJunk.buffer).setUint32(4, withJunk.length - 8, true);
-    const src = await FrameSource.open([makeFile('0.avi', withJunk)]);
+    const src = await open([makeFile('0.avi', withJunk)]);
     expect(src.frameCount).toBe(2);
     expect(await src.readFrame(1)).toEqual(expectedPixels({ width: 8, height: 4, frames: 2 }, 1));
+  });
+});
+
+describe('FrameSource batched reads', () => {
+  /** Count the byte lengths of every slice taken from `files` from now on. */
+  function trackSlices(files: File[]): number[] {
+    const reads: number[] = [];
+    for (const file of files) {
+      const slice = file.slice.bind(file);
+      file.slice = (start?: number, end?: number, type?: string) => {
+        reads.push((end ?? file.size) - (start ?? 0));
+        return slice(start, end, type);
+      };
+    }
+    return reads;
+  }
+
+  it('reads a span across file boundaries with one slice per file', async () => {
+    const { opts, files } = recording([4, 3, 5]);
+    const reads = trackSlices(files);
+    const src = await open(files);
+    reads.length = 0;
+    const px = await src.readFrames(2, 8); // 2 from file 0, 3 from file 1, 3 from file 2
+    expect(reads).toHaveLength(3);
+    const n = 6 * 4;
+    expect(px.length).toBe(8 * n);
+    let g = 2;
+    for (let i = 0; i < 8; i++, g++) {
+      const k = g < 4 ? 0 : g < 7 ? 1 : 2;
+      const local = g - [0, 4, 7][k];
+      expect(px.subarray(i * n, (i + 1) * n)).toEqual(
+        expectedPixels(opts[k], local + (opts[k].frameOffset ?? 0)),
+      );
+    }
+  });
+
+  it('splits long runs at MAX_FRAMES_PER_READ', async () => {
+    const { opts, files } = recording([70], { width: 4, height: 2 });
+    const reads = trackSlices(files);
+    const src = await open(files);
+    reads.length = 0;
+    const px = await src.readFrames(0, 70);
+    expect(reads).toHaveLength(2);
+    expect(reads[0]).toBe(MAX_FRAMES_PER_READ * (8 + 8));
+    expect(px.subarray(69 * 8)).toEqual(expectedPixels(opts[0], 69));
+  });
+
+  it('decodes into a caller-provided buffer and validates it', async () => {
+    const { opts, files } = recording([5]);
+    const src = await open(files);
+    const out = new Uint8Array(3 * 24);
+    const res = await src.readFrames(1, 3, out);
+    expect(res).toBe(out);
+    expect(out.subarray(24, 48)).toEqual(expectedPixels(opts[0], 2));
+    await expect(src.readFrames(1, 3, new Uint8Array(5))).rejects.toThrow(TypeError);
+    await expect(src.readFrames(1, 3, new Uint16Array(72))).rejects.toThrow(TypeError);
+    await expect(src.readFrames(3, 3)).rejects.toThrow(RangeError);
+    await expect(src.readFrames(0, 0)).rejects.toThrow(RangeError);
+  });
+
+  it('matches readFrame frame for frame on 16-bit video', async () => {
+    const { files } = recording([3, 3], { fourcc: 'Y16 ', bitCount: 16, width: 5, height: 3 });
+    const src = await open(files);
+    const batch = (await src.readFrames(1, 4)) as Uint16Array;
+    expect(batch).toBeInstanceOf(Uint16Array);
+    for (let i = 0; i < 4; i++) {
+      expect(batch.subarray(i * 15, (i + 1) * 15)).toEqual(await src.readFrame(1 + i));
+    }
+  });
+});
+
+describe('FrameSource robustness', () => {
+  it('lets idx1 decide when the first movi chunk is not a frame', async () => {
+    for (const idx of ['relative', 'absolute'] as const) {
+      const { opts, files } = recording([4], { junkInMovi: true, avihFrames: 0, idx });
+      const src = await open(files);
+      expect(src.frameCount).toBe(4);
+      expect(await src.readFrame(3)).toEqual(expectedPixels(opts[0], 3));
+    }
+  });
+
+  it('keeps a crash-truncated last file and drops one with no complete frame', async () => {
+    const good = recording([3]);
+    const crashed: SynthOptions = {
+      width: 6,
+      height: 4,
+      frames: 5,
+      idx: 'none',
+      avihFrames: 0,
+      zeroMoviSize: true,
+      frameOffset: 3,
+    };
+    const full = buildAvi(crashed);
+    const chunk = 8 + 32; // width 6 pads its rows to 8 bytes
+    const cut = full.subarray(0, full.length - chunk - 7); // 3 whole frames + a partial one
+    const empty = full.subarray(0, full.length - 5 * chunk + 10); // header + a stub
+    const src = await open([
+      ...good.files,
+      makeFile('1.avi', cut, 'rec'),
+      makeFile('2.avi', empty, 'rec'),
+    ]);
+    expect(src.frameCount).toBe(6);
+    expect(src.info.files.map((f) => f.name)).toEqual(['0.avi', '1.avi']);
+    expect(src.info.warnings.join(' ')).toContain('2.avi has no complete frames');
+    expect(await src.readFrame(5)).toEqual(expectedPixels(crashed, 5));
+  });
+
+  it('warns about gaps and duplicates in the numbering', async () => {
+    const { files } = recording([2, 2, 2], {}, 'rec');
+    const gap = await open([
+      files[0],
+      files[1],
+      makeFile('3.avi', buildAvi({ width: 6, height: 4, frames: 1 }), 'rec'),
+    ]);
+    expect(gap.info.warnings.join(' ')).toContain('Missing 2.avi');
+    const dup = await open([
+      files[0],
+      makeFile('00.avi', buildAvi({ width: 6, height: 4, frames: 1 }), 'rec'),
+    ]);
+    expect(dup.info.warnings.join(' ')).toContain('0.avi and 00.avi have the same number');
+    const late = await open([files[1]]);
+    expect(late.info.warnings.join(' ')).toContain('starts at 1.avi');
   });
 });

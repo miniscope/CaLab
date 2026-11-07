@@ -4,10 +4,16 @@
  *
  * Nothing here reads a whole video file. Per file it reads a byte prefix (the
  * AVI header) and the `idx1` region that follows the `movi` list, then parses
- * both with the wasm `AviHeader`; `readFrame` later slices exactly one frame
- * out of the owning `File`. The frame source lives in the app (not a package)
- * because only cala uses it and it depends on the cala WASM module, which
- * `@calab/core` must not import.
+ * both with the wasm `AviHeader`; `readFrame` / `readFrames` later slice just
+ * the frames asked for out of the owning `File`.
+ *
+ * Intended reuse: this module imports nothing from the UI, only the wasm
+ * adapter and pure helpers, so it is meant to move into a package and be
+ * driven by the streaming-processing worker, which reads sequentially at high
+ * throughput with `readFrames(start, count, out)` into buffers it owns
+ * (reusing them between calls, or transferring them on). It lives in the app
+ * for now because only cala uses it and it depends on the cala WASM module,
+ * which `@calab/core` must not import.
  */
 import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm.ts';
 import { naturalCompare } from './natural-sort.ts';
@@ -24,6 +30,34 @@ export const HEADER_PREFIX_BYTES = 64 * 1024;
 const MAX_HEADER_PREFIX_BYTES = 8 * 1024 * 1024;
 /** Relative frame-rate disagreement (timestamps vs metadata) that earns a warning. */
 const FPS_MISMATCH_TOLERANCE = 0.05;
+/**
+ * Most frames fetched with one `File.slice`. The span is copied into wasm
+ * memory to decode, so this bounds peak memory to about twice the span
+ * (64 x 600x600 frames = 23 MB).
+ */
+export const MAX_FRAMES_PER_READ = 64;
+
+/** Decoded pixels: one element per pixel, `Uint16Array` for 16-bit video. */
+export type FramePixels = Uint8Array | Uint16Array;
+
+/**
+ * A selected file with its path inside the picked or dropped folder. The path
+ * travels as data (not as a `webkitRelativePath` property, which structured
+ * clone drops when the files are posted to a worker).
+ */
+export interface FolderEntry {
+  file: File;
+  /** Path relative to the selection root, `/`-separated; a bare name for loose files. */
+  relPath: string;
+}
+
+/** Entries for a `webkitdirectory` input or a plain file list, read on the main thread. */
+export function entriesFromFiles(files: File[]): FolderEntry[] {
+  return files.map((file) => ({
+    file,
+    relPath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+  }));
+}
 
 export interface FrameSourceFileInfo {
   name: string;
@@ -61,6 +95,8 @@ export interface FrameSourceInfo {
 interface Group {
   dir: string;
   avis: { file: File; index: number }[];
+  /** Gaps or duplicate numbers among the N.avi names. */
+  numberingWarnings: string[];
   /** Files that might be metaData.json / timeStamps.csv (picked after the folder is chosen). */
   sidecars: File[];
 }
@@ -94,13 +130,37 @@ function pickSidecar(files: File[], pattern: RegExp, exactName: RegExp): File | 
   return prefixed.length === 1 ? prefixed[0] : undefined;
 }
 
-function dirOf(file: File): string {
-  const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath ?? '';
-  const slash = rel.lastIndexOf('/');
-  return slash < 0 ? '' : rel.slice(0, slash);
+function dirOf(relPath: string): string {
+  const slash = relPath.lastIndexOf('/');
+  return slash < 0 ? '' : relPath.slice(0, slash);
 }
 
-function groupFiles(files: File[]): {
+/** Warnings for N.avi numbering that is not 0, 1, 2, ... without repeats. */
+function numberingWarnings(avis: { file: File; index: number }[]): string[] {
+  const out: string[] = [];
+  const seen = new Map<number, string>();
+  for (const { file, index } of avis) {
+    const prior = seen.get(index);
+    if (prior !== undefined) {
+      out.push(`${prior} and ${file.name} have the same number; both are used.`);
+    }
+    seen.set(index, file.name);
+  }
+  const unique = [...seen.keys()].sort((a, b) => a - b);
+  if (unique.length > 0 && unique[0] !== 0) {
+    out.push(`The numbering starts at ${unique[0]}.avi, not 0.avi.`);
+  }
+  const missing: number[] = [];
+  for (let i = 1; i < unique.length; i++) {
+    for (let k = unique[i - 1] + 1; k < unique[i] && missing.length < 20; k++) missing.push(k);
+  }
+  if (missing.length > 0) {
+    out.push(`Missing ${missing.map((k) => `${k}.avi`).join(', ')} in the numbering.`);
+  }
+  return out;
+}
+
+function groupFiles(entries: FolderEntry[]): {
   group: Group;
   metaData?: File;
   timeStamps?: File;
@@ -110,13 +170,13 @@ function groupFiles(files: File[]): {
   const get = (dir: string): Group => {
     let g = byDir.get(dir);
     if (!g) {
-      g = { dir, avis: [], sidecars: [] };
+      g = { dir, avis: [], numberingWarnings: [], sidecars: [] };
       byDir.set(dir, g);
     }
     return g;
   };
-  for (const file of files) {
-    const dir = dirOf(file);
+  for (const { file, relPath } of entries) {
+    const dir = dirOf(relPath);
     const m = AVI_NAME.exec(file.name);
     if (m) get(dir).avis.push({ file, index: Number(m[1]) });
     else if (METADATA_NAME.test(file.name) || TIMESTAMPS_NAME.test(file.name)) {
@@ -139,9 +199,10 @@ function groupFiles(files: File[]): {
   const timeStamps = pickSidecar(group.sidecars, TIMESTAMPS_NAME, /^timestamps\.csv$/i);
   group.avis.sort((a, b) => a.index - b.index || naturalCompare(a.file.name, b.file.name));
   const used = new Set<File>(group.avis.map((a) => a.file));
-  const ignored = files
-    .filter((f) => !used.has(f) && f !== metaData && f !== timeStamps)
-    .map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name);
+  group.numberingWarnings = numberingWarnings(group.avis);
+  const ignored = entries
+    .filter((e) => !used.has(e.file) && e.file !== metaData && e.file !== timeStamps)
+    .map((e) => e.relPath);
   return { group, metaData, timeStamps, ignored };
 }
 
@@ -152,10 +213,10 @@ async function readBytes(file: File, start: number, end: number): Promise<Uint8A
 /** Parse one AVI file from a prefix and its idx1 region, never reading it whole. */
 async function openAvi(file: File): Promise<AviHeader> {
   let prefix = await readBytes(file, 0, Math.min(file.size, HEADER_PREFIX_BYTES));
-  let header: AviHeader;
+  let layout: Float64Array;
   for (;;) {
     try {
-      header = AviHeader.parse(prefix, null);
+      layout = AviHeader.layout(prefix);
       break;
     } catch (err) {
       const needed = AviHeader.neededBytes(prefix);
@@ -165,20 +226,20 @@ async function openAvi(file: File): Promise<AviHeader> {
       prefix = await readBytes(file, 0, Math.min(file.size, needed));
     }
   }
+  const [riffEnd, moviEnd] = layout;
 
   // OpenDML files continue in further RIFF chunks; not supported (yet).
-  const riffEnd = header.riffEnd;
   if (file.size >= riffEnd + 12) {
     const next = await readBytes(file, riffEnd, riffEnd + 12);
     if (aviIsAvixContinuation(next)) {
-      header.free();
       throw withFile(file, new Error('OpenDML AVI (AVIX continuation) is not supported.'));
     }
   }
 
-  // idx1 follows the movi list. A missing or short one just means the
-  // fixed-stride offsets from the first parse stay in force.
-  const moviEnd = header.moviEnd;
+  // idx1 follows the movi list and, when present and whole, decides the frame
+  // offsets. A missing, unknown-position or cut-short one leaves the fixed
+  // stride (bounded by the file size) in charge.
+  let idx1: Uint8Array | null = null;
   if (moviEnd > 0 && file.size >= moviEnd + 8) {
     let payloadLen: number | null;
     try {
@@ -187,17 +248,14 @@ async function openAvi(file: File): Promise<AviHeader> {
       payloadLen = null;
     }
     if (payloadLen !== null && moviEnd + 8 + payloadLen <= file.size) {
-      const idx1 = await readBytes(file, moviEnd + 8, moviEnd + 8 + payloadLen);
-      header.free();
-      try {
-        header = AviHeader.parse(prefix, idx1);
-      } catch (err) {
-        throw withFile(file, err);
-      }
+      idx1 = await readBytes(file, moviEnd + 8, moviEnd + 8 + payloadLen);
     }
   }
-  header.limitToFileSize(file.size);
-  return header;
+  try {
+    return AviHeader.parse(prefix, idx1, file.size);
+  } catch (err) {
+    throw withFile(file, err);
+  }
 }
 
 function withFile(file: File, err: unknown): Error {
@@ -225,13 +283,24 @@ export class FrameSource {
     this.info = info;
   }
 
-  /** Open a Miniscope folder given as the flat list of its files. */
-  static async open(files: File[]): Promise<FrameSource> {
-    const { group, metaData, timeStamps, ignored } = groupFiles(files);
+  /** Open a Miniscope folder given as the flat list of its files (see `entriesFromFiles`). */
+  static async open(entries: FolderEntry[]): Promise<FrameSource> {
+    const { group, metaData, timeStamps, ignored } = groupFiles(entries);
+    const warnings: string[] = [...group.numberingWarnings];
 
-    const opened = await Promise.all(
+    const all = await Promise.all(
       group.avis.map(async ({ file }) => ({ file, header: await openAvi(file) })),
     );
+    // A file with no complete frame (a crash right after it was created) is
+    // dropped with a warning instead of failing the whole recording.
+    const opened = all.filter((o) => o.header.frameCount > 0);
+    for (const o of all) {
+      if (o.header.frameCount === 0) {
+        warnings.push(`${o.file.name} has no complete frames and was skipped.`);
+        o.header.free();
+      }
+    }
+    if (opened.length === 0) throw new Error('The video files contain no frames.');
     const first = opened[0].header;
     const geometry = (h: AviHeader) => `${h.width}x${h.height} ${h.bitDepth}-bit`;
     for (const { file, header } of opened) {
@@ -252,9 +321,7 @@ export class FrameSource {
       start += header.frameCount;
       return a;
     });
-    if (start === 0) throw new Error('The video files contain no frames.');
 
-    const warnings: string[] = [];
     const meta: MiniscopeMetadata | null = parseMetadataText(await readText(metaData));
     const stamps = parseTimeStampsText(await readText(timeStamps));
     const fpsMeta = meta?.frameRate ?? null;
@@ -286,6 +353,13 @@ export class FrameSource {
     }
     if (fps === null) {
       warnings.push('No frame rate found (no usable timeStamps.csv or metaData.json).');
+    }
+    for (const a of avis) {
+      if (a.header.skippedEmptyFrames > 0) {
+        warnings.push(
+          `${a.name}: ${a.header.skippedEmptyFrames} dropped-frame index entries were skipped, so later frames shift against the timestamps.`,
+        );
+      }
     }
     for (const a of avis) {
       if (a.header.hasIdx1 === false) {
@@ -339,21 +413,64 @@ export class FrameSource {
   }
 
   /**
-   * Read and decode one frame: `width * height` bytes (times 2 for 16-bit),
-   * rows in stored order, padding removed. Reads only that frame's bytes.
+   * Read and decode `count` consecutive frames starting at global `start`
+   * into one buffer of `count * width * height` pixels (`Uint16Array` for
+   * 16-bit video, little-endian host assumed), rows in stored order with
+   * padding removed. Pass `out` (right length and type) to reuse a buffer.
+   *
+   * Frames contiguous in a file are fetched with a single `File.slice`
+   * (at most `MAX_FRAMES_PER_READ` per slice), split across file boundaries,
+   * and decoded by wasm straight into `out`, with no allocation per frame.
+   * idx1 gaps fall back to shorter slices.
    */
-  async readFrame(index: number): Promise<Uint8Array> {
-    if (!Number.isInteger(index) || index < 0 || index >= this.info.frameCount) {
-      throw new RangeError(`Frame ${index} out of range (0..${this.info.frameCount - 1}).`);
+  async readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels> {
+    const n = this.info.frameCount;
+    if (
+      !Number.isInteger(start) ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      start < 0 ||
+      start + count > n
+    ) {
+      throw new RangeError(`Frames ${start}..${start + count} out of range (0..${n - 1}).`);
     }
-    const { avi, local } = this.locate(index);
-    const [start, end] = avi.header.frameByteRange(local);
-    const chunk = await readBytes(avi.file, start, end);
-    try {
-      return avi.header.decodeFrame(chunk);
-    } catch (err) {
-      throw withFile(avi.file, err);
+    const px = this.info.width * this.info.height;
+    const sixteen = this.info.bitDepth === 16;
+    const total = px * count;
+    if (out && (out.length !== total || out instanceof Uint16Array !== sixteen)) {
+      throw new TypeError(
+        `out must be a ${sixteen ? 'Uint16Array' : 'Uint8Array'} of ${total} elements.`,
+      );
     }
+    const dst: FramePixels = out ?? (sixteen ? new Uint16Array(total) : new Uint8Array(total));
+    const bytes = new Uint8Array(dst.buffer, dst.byteOffset, dst.byteLength);
+    const bytesPerFrame = px * (sixteen ? 2 : 1);
+
+    let done = 0;
+    while (done < count) {
+      const { avi, local } = this.locate(start + done);
+      const want = Math.min(count - done, avi.header.frameCount - local, MAX_FRAMES_PER_READ);
+      const run = avi.header.contiguousRun(local, want);
+      if (run === 0) throw new Error(`${avi.name}: no frame at ${local}.`);
+      try {
+        const [from, to] = avi.header.spanByteRange(local, run);
+        const span = await readBytes(avi.file, from, to);
+        avi.header.decodeSpanInto(
+          span,
+          run,
+          bytes.subarray(done * bytesPerFrame, (done + run) * bytesPerFrame),
+        );
+      } catch (err) {
+        throw withFile(avi.file, err);
+      }
+      done += run;
+    }
+    return dst;
+  }
+
+  /** One frame: `readFrames(index, 1)`. */
+  readFrame(index: number): Promise<FramePixels> {
+    return this.readFrames(index, 1);
   }
 
   /** Release the WASM-side tables. The source is unusable afterwards. */
