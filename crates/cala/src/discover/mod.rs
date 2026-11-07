@@ -22,7 +22,7 @@
 //!   plus a uniform sample of all frames (random slots), within a byte
 //!   budget.
 //! * [`SlowLoop::step`] (budgeted): visits the tile with the most new frames.
-//!   On its patches, a [`local::Problem`] solves the working set's cells plus
+//!   On its patches, a patch problem solves the working set's cells plus
 //!   a smooth 3 x 3 bump background exactly (non-negative traces) and gives
 //!   whitened residuals and χ² values. Frames are split once, by a hash of
 //!   the frame index, into fitting frames and held-out frames.
@@ -36,12 +36,28 @@
 //!   footprint `a ≥ 0` with `H a ≈ h` comes from projected gradient through
 //!   the same high-pass the preprocessing applies (`a − G_σ * a`, exact away
 //!   from the lens edge), normalised to peak 1, cut to the library's support
-//!   disk. The candidate is accepted when, on the **held-out** frames, adding
-//!   its column lowers χ² by more than adding a column of pure noise would
-//!   (0.5 per frame for a non-negative coefficient, variance 1.25 per frame)
-//!   by `accept_z` standard deviations, and its trace exceeds `event_z`
-//!   noise σ on at least `min_events` held-out frames. Thresholds are in
-//!   noise units throughout, never raw intensity.
+//!   disk; the target is first smoothed at a tenth of a cell diameter (the
+//!   optics' scale), which removes the pixel noise of a footprint estimated
+//!   from a few dozen frames. The candidate is accepted when, on the
+//!   **held-out** frames:
+//!   1. adding its column lowers χ² by more than adding a column of pure
+//!      noise would (0.5 per frame for a non-negative coefficient, variance
+//!      1.25 per frame) by `accept_z` standard deviations. χ² is measured in
+//!      units of the variance the current model leaves per pixel (at least
+//!      the noise), because undetected dim cells and neuropil inflate it;
+//!      both arms also get a free Gaussian background term (σ = one cell
+//!      diameter) at the candidate, so broad local light does not count;
+//!   2. its trace rises `event_z` σ above its own held-out median on at
+//!      least `min_events` frames (transients: a static residual pattern
+//!      with a constant trace is not a cell);
+//!   3. its trace does not follow a nearby cell's (r < `merge_corr`):
+//!      that is the neighbour's unmodelled light (scatter halo, footprint
+//!      mismatch), left to refinement.
+//!
+//!   On the calibrated minisim recording, without 1-3 the loop kept adding
+//!   cells (2187 cells for 823 GT units, precision 0.24); with them
+//!   precision is 0.92. Thresholds are in noise units throughout, never raw
+//!   intensity.
 //! * **Merge.** Two cells whose supports overlap and whose traces correlate
 //!   over the fitting frames are refitted as one (rank 1 on the union of the
 //!   supports, from the residual plus both cells' fitted signal). The merge
@@ -64,6 +80,14 @@
 //! WASM worker can interleave it with the fast loop deterministically, and
 //! it could move to its own worker by sending it frames.
 
+// Index loops over pixels and cells read more clearly here; `!(x > 0.0)`
+// deliberately treats NaN as "not positive".
+#![allow(
+    clippy::needless_range_loop,
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::type_complexity
+)]
+
 mod local;
 mod reservoir;
 
@@ -76,7 +100,8 @@ use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
 use crate::trace::{
-    BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, LibraryConfig, LinearFilter, TraceError,
+    BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, LibraryConfig, LinearFilter,
+    TraceError,
 };
 
 /// Settings of the slow loop. Pixel sizes follow the expected cell diameter.
@@ -385,7 +410,9 @@ impl SlowLoop {
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
         crate::trace::check_len("noise map", self.dims.pixels(), noise.len())?;
         if noise.iter().any(|v| !v.is_finite() || *v < 0.0) {
-            return Err(TraceError::InvalidConfig("noise map must be finite and >= 0".into()));
+            return Err(TraceError::InvalidConfig(
+                "noise map must be finite and >= 0".into(),
+            ));
         }
         self.inv_sigma = noise
             .iter()
@@ -509,7 +536,11 @@ impl SlowLoop {
             let s = self.inv_sigma[i];
             let y = frame[i];
             self.z[i] = if y.is_finite() { y * s } else { 0.0 };
-            let r = if y.is_finite() { (y - self.model[i]) * s } else { 0.0 };
+            let r = if y.is_finite() {
+                (y - self.model[i]) * s
+            } else {
+                0.0
+            };
             self.coarse[(i / w / 2) * cw + (i % w) / 2] += 0.25 * r;
         }
         self.coarse_gauss
@@ -526,7 +557,9 @@ impl SlowLoop {
             1.0
         } else {
             let mid = self.sample.len() / 2;
-            let (_, m, _) = self.sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+            let (_, m, _) = self
+                .sample
+                .select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
             (1.4826 * *m).max(1e-6)
         };
         self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
@@ -556,7 +589,7 @@ impl SlowLoop {
     }
 
     fn is_test(&self, frame: u64) -> bool {
-        mix(frame ^ self.cfg.seed.rotate_left(17)) % u64::from(self.cfg.holdout_every) == 0
+        mix(frame ^ self.cfg.seed.rotate_left(17)).is_multiple_of(u64::from(self.cfg.holdout_every))
     }
 
     /// Spend about `budget` work units (multiply-adds; ~1e9/s native) on
@@ -619,7 +652,9 @@ impl SlowLoop {
             let (pix, raw) = lib.unfiltered(slot);
             let (_, filt) = lib.filtered(slot);
             let bbox = Rect::around(center.0, center.1, radius, self.dims);
-            debug_assert!(pix.iter().all(|&g| bbox.local(g as usize / w, g as usize % w).is_some()));
+            debug_assert!(pix
+                .iter()
+                .all(|&g| bbox.local(g as usize / w, g as usize % w).is_some()));
             cells.push(Cell {
                 id: lib.ids()[slot],
                 center,
@@ -698,16 +733,15 @@ impl SlowLoop {
     fn residuals(&mut self, pr: &Problem, fr: &Frames, fits: &[Fit], ti: usize) -> Vec<Vec<f32>> {
         let bg = self.bgs[ti].as_ref().expect("basis");
         let mut work = 0;
-        let out = fr
-            .y
-            .iter()
-            .zip(fits)
-            .map(|(y, f)| {
-                let mut r = vec![0.0f32; y.len()];
-                pr.residual(y, f, bg, &mut r, &mut work);
-                r
-            })
-            .collect();
+        let out =
+            fr.y.iter()
+                .zip(fits)
+                .map(|(y, f)| {
+                    let mut r = vec![0.0f32; y.len()];
+                    pr.residual(y, f, bg, &mut r, &mut work);
+                    r
+                })
+                .collect();
         self.work += work;
         out
     }
@@ -731,7 +765,9 @@ impl SlowLoop {
         self.tiles[ti].last_visit = self.frames;
         self.tile_visits[ti] += 1;
         let now = self.frames;
-        self.tiles[ti].rejected.retain(|r| r.2 > now || r.3 > 0 && r.2 + 4 * self.cfg.reject_cooldown_frames > now);
+        self.tiles[ti]
+            .rejected
+            .retain(|r| r.2 > now || r.3 > 0 && r.2 + 4 * self.cfg.reject_cooldown_frames > now);
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
@@ -743,7 +779,7 @@ impl SlowLoop {
             return Ok(());
         }
         let refine = self.cfg.refine_every_visits > 0
-            && self.tile_visits[ti] % self.cfg.refine_every_visits == 0;
+            && self.tile_visits[ti].is_multiple_of(self.cfg.refine_every_visits);
         // One solve of the tile's model serves all three edits; refinements
         // and merges made on this visit leave its residual slightly stale for
         // the add proposals, but every edit is tested on the current model.
@@ -849,9 +885,12 @@ impl SlowLoop {
             }
             self.stats.proposals += 1;
             let l = rect.local(py, px).expect("inside");
-            let mut c0: Vec<f32> = blurred.iter().map(|b| (b[l] / scale - 2.0).max(0.0)).collect();
+            let mut c0: Vec<f32> = blurred
+                .iter()
+                .map(|b| (b[l] / scale - 2.0).max(0.0))
+                .collect();
             let id = self.next_id;
-            let cand = self.fit_new(id, rect, &resid, &mut c0, (py as f32, px as f32));
+            let cand = self.fit_new(id, rect, resid, &mut c0, (py as f32, px as f32));
             let accepted = match cand {
                 Some(cell) => self.test_add(ti, test_fr, &cell).then_some(cell),
                 None => None,
@@ -869,7 +908,14 @@ impl SlowLoop {
                     let (resid, blurred, scale, score) = maps.as_mut().expect("computed");
                     let cc: f32 = col.val.iter().map(|v| v * v).sum::<f32>().max(1e-12);
                     for r in resid.iter_mut() {
-                        let c = (col.pix.iter().zip(&col.val).map(|(&p, &v)| v * r[p as usize]).sum::<f32>() / cc).max(0.0);
+                        let c = (col
+                            .pix
+                            .iter()
+                            .zip(&col.val)
+                            .map(|(&p, &v)| v * r[p as usize])
+                            .sum::<f32>()
+                            / cc)
+                            .max(0.0);
                         for (&p, &v) in col.pix.iter().zip(&col.val) {
                             r[p as usize] -= v * c;
                         }
@@ -945,7 +991,15 @@ impl SlowLoop {
 
     /// Detection score (summed squared excursions above 2 σ over the fitting
     /// frames) of the core pixels inside `win`.
-    fn score_window(&mut self, rect: Rect, core: Rect, win: Rect, blurred: &[Vec<f32>], scale: f32, score: &mut [f32]) {
+    fn score_window(
+        &mut self,
+        rect: Rect,
+        core: Rect,
+        win: Rect,
+        blurred: &[Vec<f32>],
+        scale: f32,
+        score: &mut [f32],
+    ) {
         for y in win.y0..win.y0 + win.h {
             for x in win.x0..win.x0 + win.w {
                 let l = rect.local(y, x).expect("window inside rect");
@@ -998,7 +1052,14 @@ impl SlowLoop {
 
     /// Unwhiten a filtered footprint `h` on patch pixels `dom`, invert the
     /// high-pass on a canvas around it, and make a cell.
-    fn to_cell(&mut self, id: u64, rect: Rect, dom: &[u32], h: &[f32], start: Option<&Cell>) -> Option<Cell> {
+    fn make_cell(
+        &mut self,
+        id: u64,
+        rect: Rect,
+        dom: &[u32],
+        h: &[f32],
+        start: Option<&Cell>,
+    ) -> Option<Cell> {
         let w = self.dims.width;
         let (mut ymin, mut ymax, mut xmin, mut xmax) = (usize::MAX, 0, usize::MAX, 0);
         for &p in dom {
@@ -1056,18 +1117,34 @@ impl SlowLoop {
                 / a.iter().map(|v| v * v).sum::<f32>().max(1e-12);
             a.iter_mut().for_each(|v| *v *= s.max(0.0));
         }
-        self.filter.invert(canvas.h, canvas.w, &mask, &target, &mut a, 40);
+        self.filter
+            .invert(canvas.h, canvas.w, &mask, &target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) {
             return None;
         }
         a.iter_mut().for_each(|v| *v /= peak);
-        Cell::from_canvas(id, canvas, &a, self.dims, &self.fov, &self.cfg.library, &mut self.filter)
+        Cell::from_canvas(
+            id,
+            canvas,
+            &a,
+            self.dims,
+            &self.fov,
+            &self.cfg.library,
+            &mut self.filter,
+        )
     }
 
     /// Rank-1 fit of a new cell on a small disk around `peak`.
-    fn fit_new(&mut self, id: u64, rect: Rect, resid: &[Vec<f32>], c: &mut [f32], peak: (f32, f32)) -> Option<Cell> {
+    fn fit_new(
+        &mut self,
+        id: u64,
+        rect: Rect,
+        resid: &[Vec<f32>],
+        c: &mut [f32],
+        peak: (f32, f32),
+    ) -> Option<Cell> {
         let r0 = 0.75 * self.cfg.cell_diameter_px;
         let refs: Vec<&[f32]> = resid.iter().map(|r| r.as_slice()).collect();
         let dom = self.disk(rect, peak.0, peak.1, r0);
@@ -1089,7 +1166,7 @@ impl SlowLoop {
         let dom = self.disk(rect, cy, cx, r0);
         let h = rank1(&refs, &dom, c, 10, false);
         self.work += (dom.len() * resid.len() * 42) as u64;
-        self.to_cell(id, rect, &dom, &h, None)
+        self.make_cell(id, rect, &dom, &h, None)
     }
 
     /// Held-out test of adding `cell` to the tile's problem.
@@ -1195,7 +1272,8 @@ impl SlowLoop {
             let fits = self.solve_all(&base, fit_fr);
             let n = base.len();
             let ids: Vec<u64> = base.cols.iter().map(|c| c.id).collect();
-            let cell_of = |cells: &[Cell], id: u64| cells.iter().position(|c| c.id == id).expect("cell");
+            let cell_of =
+                |cells: &[Cell], id: u64| cells.iter().position(|c| c.id == id).expect("cell");
             // Best-correlated overlapping pair with the first cell in the core.
             let mut best: Option<(usize, usize, f32)> = None;
             for i in 0..n {
@@ -1209,7 +1287,9 @@ impl SlowLoop {
                         continue;
                     }
                     let cj = &self.cells[cell_of(&self.cells, ids[j])];
-                    let dist = ((ci.center.0 - cj.center.0).powi(2) + (ci.center.1 - cj.center.1).powi(2)).sqrt();
+                    let dist = ((ci.center.0 - cj.center.0).powi(2)
+                        + (ci.center.1 - cj.center.1).powi(2))
+                    .sqrt();
                     if dist >= ci.radius + cj.radius {
                         continue;
                     }
@@ -1248,7 +1328,7 @@ impl SlowLoop {
             let h = rank1(&refs, &dom, &mut c, 10, false);
             self.work += (dom.len() * data.len() * 40) as u64;
             let keep = self.cells[ci].id.min(self.cells[cj].id);
-            let Some(m) = self.to_cell(keep, rect, &dom, &h, None) else {
+            let Some(m) = self.make_cell(keep, rect, &dom, &h, None) else {
                 self.reject(ti, self.cells[ci].center.0, self.cells[ci].center.1);
                 return;
             };
@@ -1260,7 +1340,11 @@ impl SlowLoop {
             let (mu, s) = self.null(test_fr.len());
             if loss < mu + f64::from(self.cfg.accept_z) * s {
                 self.stats.merges += 1;
-                let (drop, keep_idx) = if self.cells[ci].id == keep { (cj, ci) } else { (ci, cj) };
+                let (drop, keep_idx) = if self.cells[ci].id == keep {
+                    (cj, ci)
+                } else {
+                    (ci, cj)
+                };
                 let bbox = m.bbox;
                 let center = m.center;
                 self.cells[keep_idx] = m;
@@ -1293,18 +1377,25 @@ impl SlowLoop {
         if base.len() == 0 {
             return;
         }
-        let base_test = self.solve_all(&base, test_fr);
+        let base_test = self.solve_all(base, test_fr);
         let chi_base = Self::total_chi2(&base_test);
         let mut updates = Vec::new();
         for i in 0..base.len() {
             let id = base.cols[i].id;
-            let Some(ci) = self.cells.iter().position(|c| c.id == id) else { continue };
+            let Some(ci) = self.cells.iter().position(|c| c.id == id) else {
+                continue;
+            };
             let cell = self.cells[ci].clone();
-            if core.local(cell.center.0 as usize, cell.center.1 as usize).is_none() {
+            if core
+                .local(cell.center.0 as usize, cell.center.1 as usize)
+                .is_none()
+            {
                 continue;
             }
             let sig = base.coord_sigma(i);
-            let active: Vec<usize> = (0..fits.len()).filter(|&t| fits[t].c[i] >= 2.0 * sig).collect();
+            let active: Vec<usize> = (0..fits.len())
+                .filter(|&t| fits[t].c[i] >= 2.0 * sig)
+                .collect();
             if active.len() < 3 {
                 continue;
             }
@@ -1324,7 +1415,9 @@ impl SlowLoop {
             let mut c: Vec<f32> = active.iter().map(|&t| fits[t].c[i]).collect();
             let h = rank1(&refs, &dom, &mut c, 1, true);
             self.work += (dom.len() * data.len()) as u64;
-            let Some(new) = self.to_cell(id, rect, &dom, &h, Some(&cell)) else { continue };
+            let Some(new) = self.make_cell(id, rect, &dom, &h, Some(&cell)) else {
+                continue;
+            };
             let cols = self.columns(rect, &[id], &[&new]);
             let pr = self.problem(ti, cols);
             let f = self.solve_all(&pr, test_fr);

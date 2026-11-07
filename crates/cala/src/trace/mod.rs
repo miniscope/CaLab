@@ -64,11 +64,11 @@ use std::fmt;
 
 pub use background::{BackgroundFit, BackgroundLearner, BackgroundModel};
 pub use extract::{extract_preprocessed, extract_span, ReplayRegistrar};
+pub(crate) use library::support_disk;
 pub use library::{
     Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };
 pub use solver::{FrameTraces, SolverConfig, TraceEngine, TraceState};
-pub(crate) use library::support_disk;
 
 use crate::preprocess::PreprocessError;
 

@@ -7,6 +7,8 @@
 //! one unit of a trace's coordinate is one noise standard deviation of it
 //! (`1 / sqrt(Q_ii)`).
 
+#![allow(clippy::needless_range_loop, clippy::neg_cmp_op_on_partial_ord)]
+
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
 use crate::trace::{support_disk, Footprint, LibraryConfig};
@@ -50,7 +52,10 @@ impl Rect {
     }
 
     pub fn intersects(&self, o: &Rect) -> bool {
-        self.y0 < o.y0 + o.h && o.y0 < self.y0 + self.h && self.x0 < o.x0 + o.w && o.x0 < self.x0 + self.w
+        self.y0 < o.y0 + o.h
+            && o.y0 < self.y0 + self.h
+            && self.x0 < o.x0 + o.w
+            && o.x0 < self.x0 + self.w
     }
 }
 
@@ -335,12 +340,7 @@ impl BgBasis {
             g[a * k + a] += 1e-9 * tr;
         }
         let inv = invert(&g, k).expect("ridge keeps the basis invertible");
-        BgBasis {
-            k,
-            maps,
-            inv,
-            gram,
-        }
+        BgBasis { k, maps, inv, gram }
     }
 
     /// Projections `g_kᵀ y` and `yᵀy` of a patch.
@@ -363,7 +363,8 @@ pub(crate) fn invert(a: &[f64], k: usize) -> Option<Vec<f64>> {
         inv[i * k + i] = 1.0;
     }
     for col in 0..k {
-        let piv = (col..k).max_by(|&r, &s| m[r * k + col].abs().total_cmp(&m[s * k + col].abs()))?;
+        let piv =
+            (col..k).max_by(|&r, &s| m[r * k + col].abs().total_cmp(&m[s * k + col].abs()))?;
         if m[piv * k + col].abs() < 1e-12 {
             return None;
         }
@@ -450,8 +451,14 @@ impl Problem {
         let k = bg.k;
         let mut gcc = vec![0.0f64; n * n];
         let mut buf = vec![0.0f32; n_px];
-        let lo: Vec<u32> = cols.iter().map(|c| c.pix.iter().copied().min().unwrap_or(0)).collect();
-        let hi: Vec<u32> = cols.iter().map(|c| c.pix.iter().copied().max().unwrap_or(0)).collect();
+        let lo: Vec<u32> = cols
+            .iter()
+            .map(|c| c.pix.iter().copied().min().unwrap_or(0))
+            .collect();
+        let hi: Vec<u32> = cols
+            .iter()
+            .map(|c| c.pix.iter().copied().max().unwrap_or(0))
+            .collect();
         for i in 0..n {
             for (&p, &v) in cols[i].pix.iter().zip(&cols[i].val) {
                 buf[p as usize] = v;
@@ -613,7 +620,13 @@ impl Problem {
 /// Alternating rank-1 fit on the pixels `dom` of residual frames `r`:
 /// `r_t[dom] ≈ h c_t` with `c ≥ 0`, starting from `c` (updated in place).
 /// Returns `h` on `dom`. `fixed_c` keeps the traces and does one `h` step.
-pub(crate) fn rank1(r: &[&[f32]], dom: &[u32], c: &mut [f32], iters: usize, fixed_c: bool) -> Vec<f32> {
+pub(crate) fn rank1(
+    r: &[&[f32]],
+    dom: &[u32],
+    c: &mut [f32],
+    iters: usize,
+    fixed_c: bool,
+) -> Vec<f32> {
     let mut h = vec![0.0f32; dom.len()];
     for it in 0..iters.max(1) {
         let cc: f64 = c.iter().map(|&v| f64::from(v * v)).sum();
@@ -676,13 +689,22 @@ mod tests {
         assert!(target[15 * w + 15] < 0.97);
         let mut est: Vec<f32> = target.iter().map(|v| v.max(0.0)).collect();
         f.invert(h, w, &dom, &target, &mut est, 200);
-        let err = a.iter().zip(&est).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        let err = a
+            .iter()
+            .zip(&est)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
         assert!(err < 0.03, "max error {err}");
     }
 
     #[test]
     fn problem_solves_exact_mixtures() {
-        let rect = Rect { y0: 0, x0: 0, h: 40, w: 40 };
+        let rect = Rect {
+            y0: 0,
+            x0: 0,
+            h: 40,
+            w: 40,
+        };
         let bg = BgBasis::new(rect);
         let mk = |cy: f32, cx: f32, id| {
             let mut pix = Vec::new();
@@ -713,7 +735,11 @@ mod tests {
         let pr = Problem::new(cols, &bg, 1600, &mut work);
         let (qb, yy) = bg.project(&y);
         let fit = pr.solve(&y, &qb, yy, &mut work);
-        assert!((fit.c[0] - 3.0).abs() < 1e-3 && (fit.c[1] - 1.5).abs() < 1e-3, "{:?}", fit.c);
+        assert!(
+            (fit.c[0] - 3.0).abs() < 1e-3 && (fit.c[1] - 1.5).abs() < 1e-3,
+            "{:?}",
+            fit.c
+        );
         assert!(fit.chi2.abs() < 1e-3, "chi2 {}", fit.chi2);
     }
 }

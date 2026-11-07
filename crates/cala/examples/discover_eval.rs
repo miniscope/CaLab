@@ -34,14 +34,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::discover::{SlowLoop, SlowLoopConfig};
+use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
-use calab_cala::trace::{
-    Footprint, Library, LibraryBuilder, SolverConfig, TraceEngine,
-};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig};
-use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
+use calab_cala::trace::{Footprint, Library, LibraryBuilder, SolverConfig, TraceEngine};
 use std::fmt::Write as _;
 
 struct Avi {
@@ -253,13 +251,11 @@ fn quantile(v: &[f64], q: f64) -> f64 {
     s[lo] + (s[hi] - s[lo]) * (pos - lo as f64)
 }
 
-
 fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
 }
-
 
 fn write_f32s(f: &mut impl Write, v: &[f32]) {
     for x in v {
@@ -275,7 +271,13 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    fn new(rec: &mut Recording, pre: Preprocessor, cal: &Calibration, motion: bool, warm: u32) -> Pipeline {
+    fn new(
+        rec: &mut Recording,
+        pre: Preprocessor,
+        cal: &Calibration,
+        motion: bool,
+        warm: u32,
+    ) -> Pipeline {
         let dims = rec.dims;
         let n_px = dims.pixels();
         let mut pre = pre;
@@ -323,7 +325,10 @@ fn columns(lib: &Library, dims: Dims, off: (i32, i32)) -> Vec<Vec<(u32, f32)>> {
             p.iter()
                 .zip(v)
                 .filter_map(|(&q, &a)| {
-                    let (y, x) = ((q as usize / dims.width) as i32 + off.0, (q as usize % dims.width) as i32 + off.1);
+                    let (y, x) = (
+                        (q as usize / dims.width) as i32 + off.0,
+                        (q as usize % dims.width) as i32 + off.1,
+                    );
                     (y >= 0 && x >= 0 && (y as usize) < dims.height && (x as usize) < dims.width)
                         .then(|| ((y as usize * dims.width + x as usize) as u32, a))
                 })
@@ -337,7 +342,10 @@ fn sparse_corr(a: &[(u32, f32)], b: &[(u32, f32)], scratch: &mut [f32]) -> f64 {
     for &(p, v) in a {
         scratch[p as usize] = v;
     }
-    let mut union: Vec<(f64, f64)> = a.iter().map(|&(_, v)| (f64::from(v), 0.0)).collect::<Vec<_>>();
+    let mut union: Vec<(f64, f64)> = a
+        .iter()
+        .map(|&(_, v)| (f64::from(v), 0.0))
+        .collect::<Vec<_>>();
     let mut ia: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for (i, &(p, _)) in a.iter().enumerate() {
         ia.insert(p, i);
@@ -442,15 +450,12 @@ fn hungarian(cost: &[f64], n: usize, m: usize) -> Vec<usize> {
 
 const NO: f64 = 1e3;
 
+type Matches = (Vec<Option<(usize, f64)>>, Vec<(usize, f64)>);
+
 /// Match detected to GT footprints: Hungarian on 1 − r over pairs with
 /// centres within 15 px and r ≥ `thr`. Returns per detected cell the GT
 /// index and r, plus every detected cell's best r against any GT cell.
-fn match_cells(
-    det: &[Vec<(u32, f32)>],
-    gt: &[Vec<(u32, f32)>],
-    dims: Dims,
-    thr: f64,
-) -> (Vec<Option<(usize, f64)>>, Vec<(usize, f64)>) {
+fn match_cells(det: &[Vec<(u32, f32)>], gt: &[Vec<(u32, f32)>], dims: Dims, thr: f64) -> Matches {
     let w = dims.width;
     let dc: Vec<(f32, f32)> = det.iter().map(|c| centroid(c, w)).collect();
     let gc: Vec<(f32, f32)> = gt.iter().map(|c| centroid(c, w)).collect();
@@ -466,7 +471,11 @@ fn match_cells(
     }
     let best: Vec<(usize, f64)> = pairs
         .iter()
-        .map(|p| p.iter().copied().fold((usize::MAX, -1.0), |b, x| if x.1 > b.1 { x } else { b }))
+        .map(|p| {
+            p.iter()
+                .copied()
+                .fold((usize::MAX, -1.0), |b, x| if x.1 > b.1 { x } else { b })
+        })
         .collect();
     let (n, m) = (det.len(), gt.len());
     let mut out = vec![None; n];
@@ -517,7 +526,8 @@ fn best_offset(det: &Library, gt: &Library, dims: Dims, max: i32) -> (i32, i32) 
             let mut s = 0.0f64;
             for y in max..h - max {
                 for x in max..w - max {
-                    s += f64::from(a[(y * w + x) as usize]) * f64::from(b[((y + dy) * w + x + dx) as usize]);
+                    s += f64::from(a[(y * w + x) as usize])
+                        * f64::from(b[((y + dy) * w + x + dx) as usize]);
                 }
             }
             if s > best.1 {
@@ -551,12 +561,18 @@ fn main() {
         scfg.merge_corr = v.parse().unwrap();
     }
 
-    let avi_dir = if sim { input.join("daq/Miniscope") } else { input.clone() };
+    let avi_dir = if sim {
+        input.join("daq/Miniscope")
+    } else {
+        input.clone()
+    };
     let mut rec = Recording::open(&avi_dir);
     let dims = rec.dims;
     let n_px = dims.pixels();
     let oracle = sim.then(|| read_oracle(&input.join("oracle.bin")));
-    let mut frames = arg_value(&args, "--frames").map_or(rec.total, |s| s.parse().unwrap()).min(rec.total);
+    let mut frames = arg_value(&args, "--frames")
+        .map_or(rec.total, |s| s.parse().unwrap())
+        .min(rec.total);
     if let Some(o) = &oracle {
         assert_eq!(o.dims, dims);
         frames = frames.min(o.n_frames as u32);
@@ -598,7 +614,11 @@ fn main() {
     let mut checkpoints: Vec<(usize, Arc<Library>)> = Vec::new();
     let every = (t_len as u32 / n_checkpoints.max(1)).max(1) as usize;
     let mut curve = File::create(out_dir.join("curve.tsv")).unwrap();
-    writeln!(curve, "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb").unwrap();
+    writeln!(
+        curve,
+        "frame\tcells\tpublished\tadds\tmerges\trefines\trejects\tvisits\tcommits\treservoir_mb"
+    )
+    .unwrap();
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -617,10 +637,19 @@ fn main() {
                 *m = m.max(v);
             }
             if t == start as usize {
-                slow = Some(SlowLoop::new(dims, fov.clone(), pipe.pre.noise().sigma(), flat.clone(), scfg.clone()).unwrap());
+                slow = Some(
+                    SlowLoop::new(
+                        dims,
+                        fov.clone(),
+                        pipe.pre.noise().sigma(),
+                        flat.clone(),
+                        scfg.clone(),
+                    )
+                    .unwrap(),
+                );
             }
             if let Some(sl) = slow.as_mut() {
-                if t % 200 == 0 {
+                if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
                 }
                 let lib = engine.library().clone();
@@ -634,7 +663,7 @@ fn main() {
                 t_obs += (b - a).as_secs_f64();
                 t_step += (c - b).as_secs_f64();
                 step_ms.push((c - b).as_secs_f64() * 1e3);
-                if (t + 1) % 100 == 0 {
+                if (t + 1).is_multiple_of(100) {
                     let st = sl.stats();
                     writeln!(
                         curve,
@@ -652,7 +681,7 @@ fn main() {
                     )
                     .unwrap();
                 }
-                if (t + 1) % 600 == 0 {
+                if (t + 1).is_multiple_of(600) {
                     println!(
                         "  frame {}: {} cells ({} published), {:?}, {:.0} s",
                         t + 1,
@@ -663,7 +692,7 @@ fn main() {
                     );
                 }
             }
-            if (t + 1) % every == 0 || t + 1 == t_len {
+            if (t + 1).is_multiple_of(every) || t + 1 == t_len {
                 checkpoints.push((t + 1, engine.library().clone()));
             }
         }
@@ -736,7 +765,10 @@ fn main() {
             }
             s += cnt;
         }
-        println!("pass 2: {t_len} frames in {:.1} s", t0.elapsed().as_secs_f64());
+        println!(
+            "pass 2: {t_len} frames in {:.1} s",
+            t0.elapsed().as_secs_f64()
+        );
         let mut f = std::io::BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
         write_f32s(&mut f, &traces);
     }
@@ -774,8 +806,17 @@ fn main() {
         }
     }
     let gt_lib = b.build(&mut flat).unwrap();
-    let off = if motion { best_offset(&lib, &gt_lib, dims, 16) } else { (0, 0) };
-    println!("GT units with centre in FOV: {} ({} detectable); offset {:?}", kept.len(), kept.iter().filter(|&&u| oracle.units[u].detectable).count(), off);
+    let off = if motion {
+        best_offset(&lib, &gt_lib, dims, 16)
+    } else {
+        (0, 0)
+    };
+    println!(
+        "GT units with centre in FOV: {} ({} detectable); offset {:?}",
+        kept.len(),
+        kept.iter().filter(|&&u| oracle.units[u].detectable).count(),
+        off
+    );
     let gt_cols = columns(&gt_lib, dims, (0, 0));
     let t_gt = oracle.n_frames;
     let c_of = |u: usize| &oracle.c[u * t_gt..u * t_gt + t_len];
@@ -787,7 +828,10 @@ fn main() {
             s.sort_by(f32::total_cmp);
             let amp = s[s.len() - 1] - s[s.len() / 2];
             let (p, v) = gt_lib.filtered(j);
-            let (k, peak) = v.iter().enumerate().fold((0, f32::MIN), |b, (i, &x)| if x > b.1 { (i, x) } else { b });
+            let (k, peak) =
+                v.iter()
+                    .enumerate()
+                    .fold((0, f32::MIN), |b, (i, &x)| if x > b.1 { (i, x) } else { b });
             f64::from(amp * peak / noise[p[k] as usize].max(1e-6))
         })
         .collect();
@@ -805,7 +849,11 @@ fn main() {
     let thr = 0.7;
     let mut summary = String::new();
     let mut cp_file = File::create(out_dir.join("checkpoints.tsv")).unwrap();
-    writeln!(cp_file, "frame\tcells\tmatched\trecall\trecall_focus\trecall_snr10\trecall_late\tprecision").unwrap();
+    writeln!(
+        cp_file,
+        "frame\tcells\tmatched\trecall\trecall_focus\trecall_snr10\trecall_late\tprecision"
+    )
+    .unwrap();
     let frac = |m: &[bool], sel: &dyn Fn(usize) -> bool| {
         let n = (0..m.len()).filter(|&j| sel(j)).count();
         let k = (0..m.len()).filter(|&j| sel(j) && m[j]).count();
@@ -819,7 +867,10 @@ fn main() {
         for m in mt.iter().flatten() {
             gt_hit[m.0] = true;
         }
-        let matched_det = mt.iter().filter(|m| m.is_some_and(|(j, _)| detectable[j])).count();
+        let matched_det = mt
+            .iter()
+            .filter(|m| m.is_some_and(|(j, _)| detectable[j]))
+            .count();
         let all = frac(&gt_hit, &|j| detectable[j]);
         let foc = frac(&gt_hit, &|j| detectable[j] && focus[j]);
         let br = frac(&gt_hit, &|j| detectable[j] && snr[j] >= 10.0);
@@ -846,8 +897,10 @@ fn main() {
         let mut unexpl_r: Vec<f64> = Vec::new();
         let mut unexpl_hit = 0;
         let mut unexpl_split = 0;
-        let mut unexpl_log = String::from("det\tcy\tcx\tnpx\tgt_trace_r\tnb_trace_r\tnb_dist\ttrace_snr\n");
-        let mut split_log = String::from("det\tmatched_det\tdist\ttrace_r_pair\ttrace_r_gt\tfocus\tsnr\n");
+        let mut unexpl_log =
+            String::from("det\tcy\tcx\tnpx\tgt_trace_r\tnb_trace_r\tnb_dist\ttrace_snr\n");
+        let mut split_log =
+            String::from("det\tmatched_det\tdist\ttrace_r_pair\ttrace_r_gt\tfocus\tsnr\n");
         let mut unexpl_tr: Vec<f64> = Vec::new();
         for (i, m) in mt.iter().enumerate() {
             match m {
@@ -876,34 +929,67 @@ fn main() {
                             for (jj, g) in gt_cols.iter().enumerate() {
                                 let cg = centroid(g, dims.width);
                                 if (cg.0 - ci.0).powi(2) + (cg.1 - ci.1).powi(2) <= 225.0 {
-                                    let r = pearson(&tr, c_of(kept[jj])); if r > b { b = r; bj = jj; }
+                                    let r = pearson(&tr, c_of(kept[jj]));
+                                    if r > b {
+                                        b = r;
+                                        bj = jj;
+                                    }
                                 }
                             }
                             unexpl_tr.push(b);
                             {
                                 let mut nb = (0.0f64, f32::MAX);
                                 for (k, m) in mt.iter().enumerate() {
-                                    if m.is_none() { continue; }
+                                    if m.is_none() {
+                                        continue;
+                                    }
                                     let ck = centroid(&det[k], dims.width);
                                     let dd = ((ck.0 - ci.0).powi(2) + (ck.1 - ci.1).powi(2)).sqrt();
                                     if dd < 25.0 {
-                                        let tk: Vec<f32> = (0..t_len).map(|t| traces[t * n + k]).collect();
+                                        let tk: Vec<f32> =
+                                            (0..t_len).map(|t| traces[t * n + k]).collect();
                                         let r = pearson(&tr, &tk);
-                                        if r > nb.0 { nb = (r, dd); }
+                                        if r > nb.0 {
+                                            nb = (r, dd);
+                                        }
                                     }
                                 }
-                                let mut s: Vec<f32> = tr.clone(); s.sort_by(f32::total_cmp);
+                                let mut s: Vec<f32> = tr.clone();
+                                s.sort_by(f32::total_cmp);
                                 let med = s[s.len() / 2];
-                                let mut d: Vec<f32> = tr.windows(2).map(|w| (w[1] - w[0]).abs()).collect(); d.sort_by(f32::total_cmp);
+                                let mut d: Vec<f32> =
+                                    tr.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+                                d.sort_by(f32::total_cmp);
                                 let sd = d[d.len() / 2] / 0.6745 / std::f32::consts::SQRT_2;
-                                let _ = writeln!(unexpl_log, "{i}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.1}\t{:.1}", ci.0, ci.1, det[i].len(), b, nb.0, nb.1, (s[s.len() - 1] - med) / sd.max(1e-9));
+                                let _ = writeln!(
+                                    unexpl_log,
+                                    "{i}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.1}\t{:.1}",
+                                    ci.0,
+                                    ci.1,
+                                    det[i].len(),
+                                    b,
+                                    nb.0,
+                                    nb.1,
+                                    (s[s.len() - 1] - med) / sd.max(1e-9)
+                                );
                             }
                             if b >= 0.6 && gt_hit[bj] {
                                 unexpl_split += 1;
-                                if let Some(k) = mt.iter().position(|m| m.is_some_and(|(g, _)| g == bj)) {
-                                    let tk: Vec<f32> = (0..t_len).map(|t| traces[t * n + k]).collect();
+                                if let Some(k) =
+                                    mt.iter().position(|m| m.is_some_and(|(g, _)| g == bj))
+                                {
+                                    let tk: Vec<f32> =
+                                        (0..t_len).map(|t| traces[t * n + k]).collect();
                                     let ck = centroid(&det[k], dims.width);
-                                    let _ = writeln!(split_log, "{i}\t{k}\t{:.1}\t{:.3}\t{:.3}\t{}\t{:.1}", ((ck.0 - ci.0).powi(2) + (ck.1 - ci.1).powi(2)).sqrt(), pearson(&tr, &tk), b, focus[bj], snr[bj]);
+                                    let _ = writeln!(
+                                        split_log,
+                                        "{i}\t{k}\t{:.1}\t{:.3}\t{:.3}\t{}\t{:.1}",
+                                        ((ck.0 - ci.0).powi(2) + (ck.1 - ci.1).powi(2)).sqrt(),
+                                        pearson(&tr, &tk),
+                                        b,
+                                        focus[bj],
+                                        snr[bj]
+                                    );
                                 }
                             }
                         }
@@ -915,7 +1001,12 @@ fn main() {
         let low = frac(&gt_hit, &|j| detectable[j] && snr[j] < 5.0);
         let vbr = frac(&gt_hit, &|j| detectable[j] && snr[j] >= 20.0);
         let _ = writeln!(summary, "detected {} | matched to detectable GT {matched_det} | duplicates/splits {dup} | matched non-detectable units {nondet} | unexplained {unexplained}", l.len());
-        let _ = writeln!(summary, "precision {:.3} (any GT unit: {:.3})", matched_det as f64 / l.len().max(1) as f64, (matched_det + nondet) as f64 / l.len().max(1) as f64);
+        let _ = writeln!(
+            summary,
+            "precision {:.3} (any GT unit: {:.3})",
+            matched_det as f64 / l.len().max(1) as f64,
+            (matched_det + nondet) as f64 / l.len().max(1) as f64
+        );
         let _ = writeln!(
             summary,
             "recall: all {}/{} = {:.3} | in focus {}/{} = {:.3} | SNR>=20 {}/{} = {:.3} | 10-20 {:.3} | 5-10 {}/{} = {:.3} | <5 {}/{} = {:.3} | late-born {}/{} = {:.3}",
@@ -941,7 +1032,12 @@ fn main() {
         split_log_out = split_log.clone();
         std::fs::write(out_dir.join("unexplained.tsv"), &unexpl_log).unwrap();
         let corr_m: Vec<f64> = mt.iter().flatten().map(|m| m.1).collect();
-        let _ = writeln!(summary, "footprint r of matches: median {:.3} p10 {:.3}", quantile(&corr_m, 0.5), quantile(&corr_m, 0.1));
+        let _ = writeln!(
+            summary,
+            "footprint r of matches: median {:.3} p10 {:.3}",
+            quantile(&corr_m, 0.5),
+            quantile(&corr_m, 0.1)
+        );
         if pass2 {
             let n = lib.len();
             let (mut r_all, mut r_foc) = (Vec::new(), Vec::new());

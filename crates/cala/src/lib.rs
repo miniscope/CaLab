@@ -9,6 +9,8 @@
 //! * [`preprocess`]: hot pixels, glow flattening (the spatial high-pass), line
 //!   artifacts, background floor and noise map.
 //! * [`motion`]: rigid and piecewise-rigid motion correction.
+//! * [`discover`]: the slow loop, streaming cell discovery (add, merge,
+//!   refine footprints) that publishes new library versions to the fast loop.
 //! * [`trace`]: the fast loop, per-frame cell traces from a (swappable)
 //!   footprint library, and re-extraction of past frames.
 //!

@@ -120,7 +120,14 @@ fn config() -> SlowLoopConfig {
 /// Fast + slow loop over the movie; returns the final library.
 fn run(movie: &[f32], t: usize, seed: &[Footprint]) -> (Arc<Library>, SlowLoop) {
     let n_px = N * N;
-    let mut slow = SlowLoop::new(dims(), vec![1; n_px], vec![1.0; n_px], flattener(), config()).unwrap();
+    let mut slow = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        config(),
+    )
+    .unwrap();
     slow.seed(seed).unwrap();
     let lib0 = slow.finalize().unwrap();
     let mut eng = TraceEngine::new(lib0, SolverConfig::default()).unwrap();
@@ -193,7 +200,8 @@ fn neighbours_with_independent_activity_stay_separate() {
     for (fp, _) in &cells {
         let (gy, gx) = (fp.y0 as f32 + 12.0, fp.x0 as f32 + 12.0);
         assert!(
-            c.iter().any(|&(y, x)| (y - gy).abs() < 2.0 && (x - gx).abs() < 2.0),
+            c.iter()
+                .any(|&(y, x)| (y - gy).abs() < 2.0 && (x - gx).abs() < 2.0),
             "{gy},{gx} not found in {c:?}"
         );
     }
@@ -202,7 +210,14 @@ fn neighbours_with_independent_activity_stay_separate() {
 #[test]
 fn library_from_seed_matches_builder() {
     let n_px = N * N;
-    let mut slow = SlowLoop::new(dims(), vec![1; n_px], vec![1.0; n_px], flattener(), config()).unwrap();
+    let mut slow = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        config(),
+    )
+    .unwrap();
     assert_eq!(slow.seed(&[blob(4, 30.0, 30.0)]).unwrap(), 1);
     let lib = slow.finalize().unwrap();
     let direct = LibraryBuilder::new(dims())
@@ -212,6 +227,10 @@ fn library_from_seed_matches_builder() {
     assert_eq!(lib.support(0), direct.support(0));
     let (_, a) = lib.filtered(0);
     let (_, b) = direct.filtered(0);
-    let err = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    let err = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
     assert!(err < 1e-5);
 }
