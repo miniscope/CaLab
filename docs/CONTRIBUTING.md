@@ -56,7 +56,7 @@ Run from the repo root:
 | `npm run dev [app]`           | Start an app's dev server (default: CaTune)                         |
 | `npm run build`               | Build WASM + every app in `apps/`                                   |
 | `npm run build:pages`         | Build + combine dist for GitHub Pages                               |
-| `npm run build:wasm`          | Compile Rust solver to WASM                                         |
+| `npm run build:wasm`          | Compile the Rust solver and cala crates to WASM                     |
 | `npm run test`                | Run Vitest tests across all workspaces                              |
 | `npm run test:watch`          | Run tests in watch mode (`apps/catune`)                             |
 | `npm run test:coverage`       | Run all tests once under V8 coverage (floors in `vitest.config.ts`) |
@@ -115,7 +115,8 @@ Run `npm run lint && npm run format:check && npm run typecheck` before pushing.
 
 ESLint enforces these import boundaries:
 
-- **WASM**: Only `packages/core/src/wasm-adapter.ts` may import from `crates/solver/pkg/`
+- **WASM**: Only `packages/core/src/wasm-adapter.ts` may import from `crates/solver/pkg/`,
+  and only `apps/cala/src/lib/cala-wasm.ts` from `crates/cala/pkg/`
 - **Supabase**: Only `packages/community/src/supabase.ts` may import `@supabase/supabase-js`
 - **Package barrels**: App files import from `@calab/<pkg>`, never from `@calab/<pkg>/src/*`
 

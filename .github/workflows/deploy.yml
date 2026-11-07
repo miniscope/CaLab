@@ -44,7 +44,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: 'crates/solver -> target'
+          workspaces: |
+            crates/solver -> target
+            crates/cala -> target
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
@@ -88,7 +90,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: 'crates/solver -> target'
+          workspaces: |
+            crates/solver -> target
+            crates/cala -> target
 
       - name: Format check
         run: cargo fmt --all --check
@@ -107,6 +111,24 @@ jobs:
         run: cargo clippy --all-targets --no-default-features --features pybindings -- -D warnings
 
       - name: Tests
+        run: cargo test --no-default-features --features jsbindings
+
+      # crates/cala (the streaming Miniscope pipeline): the same four checks,
+      # in the same job so the `rust` check name is unchanged.
+      - name: Cala - format check
+        working-directory: crates/cala
+        run: cargo fmt --all --check
+
+      - name: Cala - clippy (jsbindings)
+        working-directory: crates/cala
+        run: cargo clippy --all-targets --no-default-features --features jsbindings -- -D warnings
+
+      - name: Cala - clippy (pybindings)
+        working-directory: crates/cala
+        run: cargo clippy --all-targets --no-default-features --features pybindings -- -D warnings
+
+      - name: Cala - tests
+        working-directory: crates/cala
         run: cargo test --no-default-features --features jsbindings
 
   python:
@@ -217,7 +239,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: 'crates/solver -> target'
+          workspaces: |
+            crates/solver -> target
+            crates/cala -> target
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
@@ -287,7 +311,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: 'crates/solver -> target'
+          workspaces: |
+            crates/solver -> target
+            crates/cala -> target
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32

@@ -1,0 +1,85 @@
+/* App-specific styles and design token overrides */
+
+.cala-hidden-input {
+  display: none;
+}
+
+.cala-stage {
+  display: flex;
+  justify-content: center;
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.cala-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 65vh;
+  width: auto;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.cala-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.cala-play {
+  min-width: 4.5rem;
+}
+
+.cala-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.cala-readout {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cala-contrast {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cala-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-xs) var(--space-lg);
+  margin: var(--space-sm) 0 0;
+  font-size: 0.9rem;
+}
+
+.cala-info dt {
+  color: var(--text-secondary);
+}
+
+.cala-info dd {
+  margin: 0;
+}
+
+.cala-files {
+  margin: var(--space-xs) 0 0;
+  padding-left: var(--space-lg);
+  max-height: 10rem;
+  overflow: auto;
+}
+
+.cala-muted {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.cala-warning {
+  margin: var(--space-sm) 0 0;
+  color: var(--warning);
+  font-size: 0.85rem;
+}

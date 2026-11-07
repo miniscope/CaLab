@@ -1,0 +1,34 @@
+[package]
+name = "calab-cala"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-simd"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["jsbindings"]
+jsbindings = ["wasm-bindgen", "console_error_panic_hook"]
+# Stub for now: the Python module only reports the crate version. It exists so
+# the feature set mirrors crates/solver and the CI lint covers both surfaces.
+pybindings = ["pyo3"]
+
+[dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+# Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"], optional = true }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.rust]
+# Items reached from only one binding surface look dead in a build with the
+# other feature alone (same reasoning as crates/solver).
+dead_code = "allow"

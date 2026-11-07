@@ -49,6 +49,14 @@ updates:
       cargo-minor-patch:
         update-types: [minor, patch]
 
+  - package-ecosystem: cargo
+    directory: /crates/cala
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: pip
     directory: /python
     schedule:
