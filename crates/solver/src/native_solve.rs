@@ -259,6 +259,9 @@ pub(crate) struct NativeResult {
     pub reason: StopReason,
     /// The certificate on the final iterate (`None` without a certificate).
     pub certificate: Option<CertificateState>,
+    /// The interior-point solve did not reach the certificate and FISTA
+    /// finished it (always false for a plain FISTA solve).
+    pub ipm_fallback: bool,
 }
 
 impl NativeResult {
@@ -391,6 +394,7 @@ pub(crate) fn solve_box(
             iterations: 0,
             reason: StopReason::Certificate,
             certificate,
+            ipm_fallback: false,
         };
     }
 
@@ -461,13 +465,14 @@ pub(crate) fn solve_box(
         iterations: iteration,
         reason,
         certificate,
+        ipm_fallback: false,
     }
 }
 
 /// Evaluate the certificate on the iterate `x` (see the module docs). The
 /// three buffers are scratch.
 #[allow(clippy::too_many_arguments)]
-fn certify(
+pub(crate) fn certify(
     x: &[f64],
     y: &[f64],
     banded: &BandedAR2,
