@@ -10,6 +10,7 @@
 //! panic is a trap that leaves the WASM module unusable in its worker.
 
 pub mod avi;
+pub mod preprocess;
 
 pub use avi::{AviError, AviHeader, AviInfo, PixelFormat};
 

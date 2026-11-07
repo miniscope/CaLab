@@ -1,0 +1,16 @@
+{
+  "minisim_commit": "ede7c36be12b12c400d9495d7b3f03ec62129646",
+  "seed": 7,
+  "fps": 20.0,
+  "frames": 160,
+  "height": 128,
+  "width": 128,
+  "n_cells": 36,
+  "photons_per_unit": 45.0,
+  "neuropil_amplitude": 1.8,
+  "leakage_level": 2.2,
+  "read_noise_e": 2.0,
+  "gain_adu_per_e": 1.0,
+  "n_hot": 40,
+  "n_stuck": 7
+}

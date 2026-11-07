@@ -5,6 +5,7 @@ crates/solver/pkg/
 crates/solver/target/
 crates/cala/pkg/
 crates/cala/target/
+crates/cala/tests/fixtures/
 .planning/
 package-lock.json
 python/.venv/
