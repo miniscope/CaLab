@@ -1,6 +1,6 @@
 """Render a calibrated minisim recording (streamed) and export oracle footprints.
 
-python make_trace_sim.py OUT --f 0.45 --dur 60 --npx 600 [--motion] [--seed 0]
+python make_trace_sim.py OUT --f 0.45 --dur 60 --npx 600 [--motion] [--seed 0] [--spec SPEC.json]
 
 Writes OUT/daq/... (AVI files, streamed), and OUT/oracle.bin:
   header: magic b"CALAORC1", u32 H, W, n_units, n_frames
@@ -24,7 +24,7 @@ import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrated import calibrated_spec  # noqa: E402
-from minisim import write_miniscope_daq  # noqa: E402
+from minisim import Spec, write_miniscope_daq  # noqa: E402
 from minisim.footprint import degrade_footprint  # noqa: E402
 from minisim.recording import load_ground_truth  # noqa: E402
 
@@ -35,13 +35,15 @@ ap.add_argument("--dur", type=float, default=60.0)
 ap.add_argument("--npx", type=int, default=600)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--motion", action="store_true")
+ap.add_argument("--spec", default=None, help="base spec JSON (default: ca1_workshop_calibrated.spec.json)")
 ap.add_argument("--p-q2a", type=float, default=None, help="cell_activity p_quiescent_to_active (per frame)")
 ap.add_argument("--q-rate", type=float, default=None, help="cell_activity quiescent_rate_hz")
 a = ap.parse_args()
 out = Path(a.out)
 out.mkdir(parents=True, exist_ok=True)
 
-spec = calibrated_spec(a.dur, seed=a.seed, n_px=None if a.npx == 600 else a.npx, motion=a.motion)
+base = None if a.spec is None else Spec.model_validate_json(Path(a.spec).read_text())
+spec = calibrated_spec(a.dur, seed=a.seed, n_px=None if a.npx == 600 else a.npx, motion=a.motion, base=base)
 acq = spec.acquisition
 if a.f > 0:
     acq = acq.model_copy(update={"tissue": acq.tissue.model_copy(update={"scatter_halo_fraction": a.f})})

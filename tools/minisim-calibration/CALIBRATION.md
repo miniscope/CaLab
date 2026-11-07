@@ -98,5 +98,124 @@ rather than a shrunken copy.
 
 - Optics and scatter are unchanged. A separate experiment is measuring the real 1p
   scatter halo, which may later sharpen cells (real somata look crisper than sim).
-- There is no bleaching step. The real session dims ~30% and loses ~4x of its static
-  structure after the first ~2 min.
+- There is no bleaching step in v1. The real session dims ~30% and loses ~4x of its
+  static structure after the first ~2 min. v2 (below) shows that most of this is a
+  one-frame excitation step at 92 s, which minisim cannot express. The rest is a ~9 %
+  dimming over the first minute, which v2 models.
+
+# v2: activity, bleaching and background (`ca1_workshop_v2.spec.json`)
+
+v1 matched what motion correction sees, but its cells were much brighter and busier
+than the real ones, so cell discovery and QC were validated on easy data. v2 keeps
+v1's optics, sensor, illumination, vessels and motion. It recalibrates activity and
+background through spec parameters only (`calibrated._build_v2`,
+`calibrated_spec(..., version="v2")`). v1 is unchanged and still drives the motion
+fixtures.
+
+## How it was measured
+
+Activity is compared on cala's own traces, so the cell selection, the trace floor and
+the background model are the same on both sides.
+`crates/cala/examples/discover_eval.rs` (slow loop, pass-2 traces) runs on two 2-min
+windows of the real recording (minutes 0-2 and 7-9, `--motion`). It also runs on 2-min
+sims (`make_trace_sim.py --f 0.45 --dur 120 [--spec ...]`, seeds 0 and 1, no motion).
+`activity_stats.py` then applies cala QC's definitions (`crates/cala/src/qc`) to each
+60 s window:
+
+- Peak SNR uses the CaLab robust convention: the mean of the top 1 % minus the median,
+  divided by the MAD-of-differences noise.
+- Events are runs of the 0.25 s running mean above 2 sigma whose peak reaches 4 sigma.
+  Each event gives a half-height width, a rise and a decay.
+
+Other statistics use these scripts:
+
+- `session_curve.py`: the session curve.
+- `background_stats.py`: the frame-mean wander and the flicker.
+- `neuropil_truth.py`: the neuropil structure, from the sims' ground truth.
+- `calibrate_to_real.py`: the registration statistics, on the same basis as the v1
+  table (300 frames, 600 px, seeds 0 and 1).
+
+## Result
+
+Quartiles are over cells. Real values are minutes 0-2 and 7-9. Sim values are seeds 0
+and 1.
+
+| property                                        | real                                   | v1 spec                      | v2 spec                                |
+| ----------------------------------------------- | -------------------------------------- | ---------------------------- | -------------------------------------- |
+| cala cells found in 2 min                       | 371, 359                               | 647, 618                     | 382, 382                               |
+| peak SNR q25 / median / q75                     | 12.4 / 21.1 / 35.0, 12.4 / 20.0 / 31.5 | 26 / 37 / 56, 28 / 41 / 61   | 13.6 / 20.4 / 29.9, 13.0 / 18.5 / 26.6 |
+| events per min per cell, median (IQR)           | 6.5 (5-8.5), 7.0 (5.5-9)               | 13 (11.5-14.5), 14 (12.5-15) | 7.0 (5.5-8.5), 6.5 (5.5-8)             |
+| event width at half height, median (q75), s     | 0.60 (1.25), 0.55 (1.05)               | 0.50 (0.65)                  | 0.58 (1.15), 0.60 (1.20)               |
+| events wider than 2 s                           | 14 %, 12 %                             | 0.1 %                        | 13 %, 14 %                             |
+| rise, median, s                                 | 0.18, 0.13                             | 0.13                         | 0.13, 0.18                             |
+| decay (80 % to 50 %), median (q75), s           | 0.18 (0.38), 0.18 (0.33)               | 0.18 (0.23)                  | 0.18 (0.33)                            |
+| inter-event intervals under 2 s (bursts)        | 26 %, 33 %                             | 26 %, 27 %                   | 27 %, 26 %                             |
+| drifting cells (baseline > 5 sigma, > 1/4 peak) | 23 %\*, 12 %                           | 1 %, 2 %                     | 0.5 %, 0.3 %                           |
+| frame dimming over the first 60 s               | -9 %, then flat\*\*                    | none                         | -10 % (mean B 0.90), then flat         |
+| frame-mean wander (1 s means, detrended)        | 1.5 %, 1.8 %, 1.4 % (min 0, 3, 10)     | 3.9 %, 3.8 %                 | 1.2 %, 1.5 %                           |
+| neuropil global share, local 1/e scale          | ~0.9, 100-120 px (earlier analysis)    | ~0.99, ~36 px (truth)        | 0.94-0.99, 95-99 px (truth)            |
+| flicker, 2-8 Hz RMS of the frame mean           | 0.5 % (min 0-1), 1.6 % (later)         | 0.3-0.5 %                    | 0.2 %                                  |
+| static (registration band)                      | 40.4 (early), 5-15 (later)             | 48.9, 49.5                   | 38.9, 34.5                             |
+| slow / static, white / static                   | 0.19, 0.014 (early)                    | 0.19-0.24, 0.011-0.013       | 0.10-0.11, 0.009-0.013                 |
+| NCC to template                                 | 0.88-0.93                              | 0.91-0.93                    | 0.95                                   |
+| noise slope (grey/e-), intercept                | 0.128, 2.33                            | 0.135-0.137, 1.84-1.88       | 0.125-0.132, 2.0-2.2                   |
+| mean grey in FOV                                | 79.6 (early), 55-72 (later)            | 60-68                        | 50-63                                  |
+| rigid registration RMSE (px)                    | -                                      | 0.13-0.15                    | 0.10-0.12                              |
+
+\* Minutes 0-2 contain the excitation step at 92 s (see below), which reads as baseline
+drift. \*\* Followed by a one-frame -24 % step at 92 s.
+
+Downstream cala results on 2-min sims (no motion unless stated; seeds 0 and 1):
+
+| eval                                                              | v1 spec                    | v2 spec                    |
+| ----------------------------------------------------------------- | -------------------------- | -------------------------- |
+| trace_eval, oracle footprints (full, rank3): trace r median (p10) | 0.955 (0.72), 0.957 (0.70) | 0.917 (0.54), 0.905 (0.57) |
+| trace_eval: crosstalk p90; amplitude bias, median                 | 0.11-0.14; -0.07           | 0.22-0.25; -0.23\*\*\*     |
+| discover_eval: precision                                          | 0.937, 0.945               | 0.974, 0.961               |
+| discover_eval: recall, all (in focus)                             | 0.736 (0.89), 0.725 (0.86) | 0.633 (0.78), 0.630 (0.77) |
+| discover_eval: pass-2 trace r of matched cells                    | 0.958, 0.959               | 0.946, 0.940               |
+| discover_eval with motion, seed 0: precision, recall, r           | 0.861, 0.716, 0.951        | 0.903, 0.668, 0.941        |
+
+\*\*\* The ground-truth `C` excludes bleaching (the movie carries `C * B`), so the oracle
+counts the bleached amplitude as bias.
+
+## Parameters changed from v1
+
+| parameter                                  | v1    | v2                                                   | why                                                                                                                            |
+| ------------------------------------------ | ----- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `cell_activity.p_quiescent_to_active`      | 0.005 | 0.002                                                | event rate: one bout every ~25 s per cell                                                                                      |
+| `cell_activity.p_active_to_quiescent`      | 0.3   | 0.02                                                 | long bouts (mean 2.5 s, geometric): the multi-second humps and plateaus of real CA1 traces                                     |
+| `cell_activity.active_rate_hz`             | 150   | 18                                                   | burst size, which sets peak SNR. v1's 25-spike bursts in 0.17 s doubled the real SNR                                           |
+| `cell_activity.quiescent_rate_hz`          | 0.6   | 0.05                                                 | v1's single-spike background was detected as extra events                                                                      |
+| `cell_activity.tau_decay_s`                | 0.5   | 0.7                                                  | event widths and decays slightly longer than v1's                                                                              |
+| `cell_activity.brightness_cv`              | 0.6   | 0.9                                                  | a wider SNR spread across cells                                                                                                |
+| population density (cytosolic, 140-160 um) | 45000 | 33750                                                | as many cala cells in 2 min as real                                                                                            |
+| `bleaching` step (new)                     | -     | susceptibility 6.3e-6, excitation 100, turnover 33 s | the real frame dims ~9 % over the first minute, then holds. The short turnover stands in for reversible (dark-state) bleaching |
+| `neuropil.spatial_sigma_um`                | 40    | 190                                                  | ~100 px correlation length of the local background field                                                                       |
+| `neuropil.n_components`                    | 3     | 5                                                    | adds some local variance (v1 was ~99 % global)                                                                                 |
+| `neuropil.population_coupling`             | 0.7   | 0.85                                                 | frame-mean wander down from 3.8 % to ~1.5 %                                                                                    |
+
+## What minisim cannot express
+
+None of these got a minisim PR. Each is a candidate if it turns out to matter.
+
+- **Per-cell slow baseline drift.** In 12 % of real cells (minutes 7-9) the baseline
+  wanders by more than 5 sigma and more than a quarter of the cell's peak within 2 min.
+  In v2 it is ~0.5 %. minisim has no per-cell slow baseline process. The neuropil is
+  smooth (~100 px), and bleaching is monotone and saturates within a minute.
+- **Per-cell firing heterogeneity.** One `cell_activity` step drives every cell, so rates
+  and burst sizes vary between cells only through brightness. The real SNR upper
+  quartile is 15-20 % above v2's.
+- **LED flicker.** The real frame mean carries multiplicative flicker of ~1.5 % RMS in
+  2-8 Hz after the first minute, plus an additive offset, and minisim has no
+  time-varying excitation or offset. Inject it with `trace_eval --inject-flicker`.
+- **The excitation step.** At 92 s (frame ~1850) the frame drops 24 % in one frame and
+  then stays flat. This looks like an LED or gain change, not bleaching, and has the
+  same missing cause as the flicker. It makes most of the gap noted above, where the
+  first 2 minutes are brighter and carry ~4x the static structure.
+- **Global share of the background.** `n_components` sets most of it, and over a 2-min
+  window it varies strongly with the seed (0.78-0.99 for 5-6 components), so it only
+  matches on average.
+
+The mean grey is still set mostly by the random neuropil field (50-63 for v2 seeds 0
+and 1). It falls in the later session's range rather than the first minute's.
