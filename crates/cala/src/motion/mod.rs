@@ -31,10 +31,13 @@
 //!    iteratively re-registered and re-averaged
 //!    ([`MotionCorrector::initialize`]). It then follows slow changes
 //!    (bleaching, drift of the background) as an exponentially weighted mean
-//!    of rigidly corrected registration images. Frames whose brightness or
-//!    peak quality is anomalous against robust running statistics (flashes,
-//!    blank or corrupt frames) are corrected but never folded into the
-//!    template.
+//!    of rigidly corrected registration images, whose *position* is pinned
+//!    to the warm-up template (at every refresh the running template is
+//!    registered onto it and the offset added to every shift; without this,
+//!    slowly varying registration bias integrates into a drift of ~0.5 px
+//!    over 20 minutes). Frames whose brightness or peak quality is anomalous
+//!    against robust running statistics (flashes, blank or corrupt frames)
+//!    are corrected but never folded into the template.
 //! 4. **Piecewise-rigid refinement** (optional, [`NonRigidConfig`]). The
 //!    registration region is tiled with a grid of half-overlapping patches.
 //!    Each is registered against the matching template patch starting from
