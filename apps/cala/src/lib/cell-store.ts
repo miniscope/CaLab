@@ -1,6 +1,7 @@
 /**
  * Main-thread state of live cell discovery: the newest published library (as
- * drawable geometry), when each cell was first seen, per-cell trace history,
+ * drawable geometry), when each cell was first seen, per-cell trace history
+ * and footprint snapshots,
  * the selected cell, and the metrics plotted against frames read (library
  * size, slow-loop lag, fast-loop timing).
  *
@@ -13,6 +14,7 @@ import type { LibraryView, SlowStatus, SlowToMain } from '../workers/slow-types.
 import { buildGeometry, type CellGeometry } from './cell-overlay.ts';
 import type { CellsBatch } from './fast-loop.ts';
 import type { StageTimings } from './pipeline-engine.ts';
+import { FootprintHistory } from './footprint-history.ts';
 import { TraceHistory } from './trace-history.ts';
 
 /** A library version as it arrived: size and the change from the one before. */
@@ -90,7 +92,7 @@ export class CellMetrics {
 /** Frames a new cell stays highlighted. */
 export const NEW_CELL_FRAMES = 300;
 
-export function createCellStore(history = new TraceHistory()) {
+export function createCellStore(history = new TraceHistory(), footprints = new FootprintHistory()) {
   const [library, setLibrary] = createSignal<LibraryView | null>(null);
   const [geometry, setGeometry] = createSignal<CellGeometry | null>(null);
   const [status, setStatus] = createSignal<SlowStatus | null>(null);
@@ -113,6 +115,7 @@ export function createCellStore(history = new TraceHistory()) {
   function reset(next: number): void {
     session = next;
     history.clear();
+    footprints.clear();
     firstSeen = new Map();
     events = [];
     metrics = new CellMetrics();
@@ -146,6 +149,9 @@ export function createCellStore(history = new TraceHistory()) {
       added,
       removed: prevIds.size,
     });
+    // Footprint snapshots: only cells whose footprint changed get a new one.
+    footprints.retain(view.ids, selected());
+    footprints.record(view);
     setLibrary(view);
     setGeometry(buildGeometry(view));
   }
@@ -221,6 +227,8 @@ export function createCellStore(history = new TraceHistory()) {
     age,
     firstSeen: (id: number) => firstSeen.get(id),
     history: () => history,
+    /** Per-cell footprint snapshots (changes with `library()`). */
+    footprints: () => footprints,
     /** Library versions as they arrived (tracks `library()`). */
     events: () => {
       library();

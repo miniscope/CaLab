@@ -413,3 +413,21 @@
   margin: 0;
   font-size: 0.75rem;
 }
+
+.cala-footprint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 140px;
+  flex: none;
+}
+
+.cala-footprint__slider {
+  width: 100%;
+  margin: 0;
+}
+
+.cala-footprint__readout {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}

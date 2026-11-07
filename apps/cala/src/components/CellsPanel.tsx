@@ -1,4 +1,4 @@
-import { createEffect, createMemo, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import { OKABE_ITO, TracePanel, viridisRGB } from '@calab/ui/chart';
 import type uPlot from 'uplot';
@@ -11,64 +11,95 @@ function fmt(s: Summary): string {
   return `${s.mean.toFixed(1)} / ${s.p99.toFixed(1)} / ${s.max.toFixed(1)} ms (${s.n} batches)`;
 }
 
-const ZOOM_PAD = 6;
-
-/** The selected cell's unfiltered footprint, cropped to its support, viridis. */
-function FootprintZoom(props: { cells: CellStore; id: number }): JSX.Element {
+/**
+ * The selected cell's footprint (unfiltered, viridis, its own peak = 1) and how
+ * it changed: one snapshot per library version that changed it, drawn in the
+ * union of their crops so successive versions line up. The slider steps
+ * through them; it stays on the newest while it is there.
+ */
+function FootprintEvolution(props: { cells: CellStore; id: number }): JSX.Element {
   let canvas!: HTMLCanvasElement;
+  const snaps = createMemo(() => {
+    props.cells.library();
+    return [...props.cells.footprints().get(props.id)];
+  });
+  const [picked, setPicked] = createSignal<number | null>(null);
+  // null = follow the newest snapshot.
+  createEffect(
+    on(
+      () => props.id,
+      () => setPicked(null),
+    ),
+  );
+  const index = () => {
+    const n = snaps().length;
+    const p = picked();
+    return p === null ? n - 1 : Math.min(p, n - 1);
+  };
+  const current = () => snaps()[index()];
+
   createEffect(() => {
-    const view = props.cells.library();
+    const all = snaps();
+    const snap = current();
     const ctx = canvas.getContext('2d');
-    if (!view || !ctx) return;
-    const slot = view.ids.indexOf(props.id);
-    if (slot < 0) return;
-    const a = view.starts[slot];
-    const b = view.starts[slot + 1];
-    let y0 = view.height;
-    let x0 = view.width;
-    let y1 = 0;
+    if (!snap || !ctx) return;
+    let x0 = Infinity;
+    let y0 = Infinity;
     let x1 = 0;
-    let peak = 0;
-    for (let k = a; k < b; k++) {
-      const p = view.pixels[k];
-      const y = Math.floor(p / view.width);
-      const x = p - y * view.width;
-      y0 = Math.min(y0, y);
-      x0 = Math.min(x0, x);
-      y1 = Math.max(y1, y + 1);
-      x1 = Math.max(x1, x + 1);
-      peak = Math.max(peak, view.values[k]);
+    let y1 = 0;
+    for (const s of all) {
+      x0 = Math.min(x0, s.x0);
+      y0 = Math.min(y0, s.y0);
+      x1 = Math.max(x1, s.x0 + s.w);
+      y1 = Math.max(y1, s.y0 + s.h);
     }
-    if (b <= a) return;
-    y0 = Math.max(0, y0 - ZOOM_PAD);
-    x0 = Math.max(0, x0 - ZOOM_PAD);
-    y1 = Math.min(view.height, y1 + ZOOM_PAD);
-    x1 = Math.min(view.width, x1 + ZOOM_PAD);
     const w = x1 - x0;
     const h = y1 - y0;
+    if (w <= 0 || h <= 0) return;
     canvas.width = w;
     canvas.height = h;
     const img = ctx.createImageData(w, h);
-    const bg = viridisRGB(0);
-    for (let i = 0; i < w * h; i++) {
-      img.data.set([bg[0], bg[1], bg[2], 255], i * 4);
-    }
-    for (let k = a; k < b; k++) {
-      const p = view.pixels[k];
-      const y = Math.floor(p / view.width) - y0;
-      const x = (p % view.width) - x0;
-      const c = viridisRGB(peak > 0 ? view.values[k] / peak : 0);
-      img.data.set([c[0], c[1], c[2], 255], (y * w + x) * 4);
+    const lut = Array.from({ length: 256 }, (_, v) => viridisRGB(v / 255));
+    const bg = lut[0];
+    for (let i = 0; i < w * h; i++) img.data.set([bg[0], bg[1], bg[2], 255], i * 4);
+    for (let y = 0; y < snap.h; y++) {
+      for (let x = 0; x < snap.w; x++) {
+        const c = lut[snap.data[y * snap.w + x]];
+        img.data.set([c[0], c[1], c[2], 255], ((snap.y0 - y0 + y) * w + snap.x0 - x0 + x) * 4);
+      }
     }
     ctx.putImageData(img, 0, 0);
   });
+
   return (
-    <canvas
-      ref={canvas}
-      class="cala-footprint-zoom"
-      aria-label="Footprint of the selected cell"
-      data-testid="footprint-zoom"
-    />
+    <div class="cala-footprint">
+      <canvas
+        ref={canvas}
+        class="cala-footprint-zoom"
+        aria-label="Footprint of the selected cell"
+        data-testid="footprint-zoom"
+      />
+      <Show when={snaps().length > 0}>
+        <input
+          type="range"
+          class="cala-footprint__slider"
+          aria-label="Footprint version"
+          min="0"
+          max={Math.max(0, snaps().length - 1)}
+          step="1"
+          value={index()}
+          disabled={snaps().length < 2}
+          onInput={(e) => {
+            const v = Number(e.currentTarget.value);
+            setPicked(v >= snaps().length - 1 ? null : v);
+          }}
+        />
+        <span class="cala-muted cala-footprint__readout" data-testid="footprint-version">
+          v{current()?.version} &middot; frame {current()?.frame.toLocaleString()} ({index() + 1} /{' '}
+          {snaps().length})
+        </span>
+      </Show>
+    </div>
   );
 }
 
@@ -104,7 +135,7 @@ function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX
         </button>
       </div>
       <div class="cala-selected__body">
-        <FootprintZoom cells={c()} id={props.id} />
+        <FootprintEvolution cells={c()} id={props.id} />
         <div class="cala-muted">
           <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
             {(i) => (
@@ -115,7 +146,9 @@ function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX
           </Show>
           <div>found after frame {c().firstSeen(props.id)?.toLocaleString() ?? '?'}</div>
           <Show when={inLibrary()}>
-            <div>footprint: unfiltered, its own peak = 1</div>
+            <div>
+              footprint: unfiltered, its own peak = 1; the slider steps through its versions
+            </div>
           </Show>
         </div>
       </div>
