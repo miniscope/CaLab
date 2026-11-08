@@ -103,6 +103,57 @@ pub struct EditCounts {
     pub refines: u64,
     /// Published library versions.
     pub commits: u64,
+    /// Cells split in two.
+    pub splits: u64,
+    /// Residual candidates explained by growing an existing cell's
+    /// footprint instead of adding a cell (counted in `refines` too).
+    pub absorbs: u64,
+}
+
+/// Kind of a structural edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EditKind {
+    Add,
+    Merge,
+    Split,
+    Delete,
+    /// A footprint re-estimated in place (periodic refinement).
+    Refine,
+    /// A footprint grown to take up a residual candidate.
+    Absorb,
+}
+
+impl EditKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EditKind::Add => "add",
+            EditKind::Merge => "merge",
+            EditKind::Split => "split",
+            EditKind::Delete => "delete",
+            EditKind::Refine => "refine",
+            EditKind::Absorb => "absorb",
+        }
+    }
+}
+
+/// One structural edit, for inspection
+/// ([`SlowLoop::take_edit_log`](super::SlowLoop::take_edit_log)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditEvent {
+    /// Frames observed when the edit was made.
+    pub frame: u64,
+    pub kind: EditKind,
+    /// The cell edited (add: the new cell; merge: the cell kept; split: the
+    /// cell kept; delete: the deleted cell).
+    pub id: u64,
+    /// The other cell involved (merge: the one removed; split: the new
+    /// one; add / absorb: the nearest existing cell), 0 when none.
+    pub other: u64,
+    /// Centre of the edited cell after the edit (row, column), px.
+    pub center: (f32, f32),
+    /// Held-out evidence of the decision, in χ² units of the noise-column
+    /// null's standard deviation (the margin by which it won).
+    pub margin: f32,
 }
 
 /// Running evidence of one published cell.

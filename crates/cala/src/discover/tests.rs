@@ -386,3 +386,196 @@ fn edit_counts_are_per_interval() {
     assert!(e.adds >= 1 && e.commits >= 1, "{e:?}");
     assert_eq!(slow.take_edit_counts(), EditCounts::default());
 }
+
+// ---- v3: model comparison, running statistics, splits ---------------------
+
+/// Gaussian soma of width `s` px (peak 1) as an unfiltered footprint.
+fn blob_w(id: u64, cy: f32, cx: f32, s: f32) -> Footprint {
+    let mut fp = blob(id, cy.round(), cx.round());
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            let (dy, dx) = ((fp.y0 + y) as f32 - cy, (fp.x0 + x) as f32 - cx);
+            fp.values[y * fp.width + x] = (-(dy * dy + dx * dx) / (2.0 * s * s)).exp();
+        }
+    }
+    fp
+}
+
+/// Edits per interval: adds + merges + splits + deletes + refines.
+fn edits(e: &EditCounts) -> u64 {
+    e.adds + e.merges + e.splits + e.deletes + e.refines
+}
+
+#[test]
+fn residual_of_a_slightly_wrong_footprint_is_absorbed_not_added() {
+    let t = 1500;
+    let mut rng = Lcg(61);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 67);
+    // The library's footprint is too small and 2 px off: the rest of the
+    // cell is left in the residual, next to the cell.
+    let (mut slow, mut eng) = start(v2_config(), &[blob_w(1, 45.5, 46.0, 1.6)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    let st = slow.stats();
+    assert_eq!(lib.ids(), &[1], "stats {st:?}, deleted {deleted:?}");
+    assert_eq!(st.adds, 0, "the residual became a new cell: {st:?}");
+    assert!(near(centres(&lib)[0], 47.0, 47.0), "{:?}", centres(&lib));
+}
+
+#[test]
+fn two_real_adjacent_cells_are_not_merged() {
+    let t = 2000;
+    let mut rng = Lcg(71);
+    // Supports overlap (7 px apart); activity is independent.
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 49.0, 50.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 73);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 45.0, 44.0), blob(2, 49.0, 50.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 2, "stats {:?}", slow.stats());
+    assert_eq!(slow.stats().merges, 0, "stats {:?}", slow.stats());
+    let c = centres(&lib);
+    assert!(c.iter().any(|&p| near(p, 45.0, 44.0)), "{c:?}");
+    assert!(c.iter().any(|&p| near(p, 49.0, 50.0)), "{c:?}");
+}
+
+#[test]
+fn a_merged_pair_footprint_is_split() {
+    let t = 2000;
+    let mut rng = Lcg(81);
+    let cells = vec![
+        (blob(0, 44.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 50.0, 51.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 83);
+    // One footprint covering both cells.
+    let mut pair = blob_w(1, 47.0, 47.5, 2.5);
+    let (a, b) = (blob(0, 44.0, 44.0), blob(0, 50.0, 51.0));
+    for y in 0..pair.height {
+        for x in 0..pair.width {
+            let (gy, gx) = (pair.y0 + y, pair.x0 + x);
+            let v = |f: &Footprint| {
+                if gy >= f.y0 && gy < f.y0 + f.height && gx >= f.x0 && gx < f.x0 + f.width {
+                    f.values[(gy - f.y0) * f.width + gx - f.x0]
+                } else {
+                    0.0
+                }
+            };
+            pair.values[y * pair.width + x] = v(&a) + v(&b);
+        }
+    }
+    let (mut slow, mut eng) = start(v2_config(), &[pair]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    let c = centres(&lib);
+    assert_eq!(c.len(), 2, "{c:?}, stats {:?}", slow.stats());
+    assert!(c.iter().any(|&p| near(p, 44.0, 44.0)), "{c:?}");
+    assert!(c.iter().any(|&p| near(p, 50.0, 51.0)), "{c:?}");
+}
+
+#[test]
+fn noise_only_adds_nothing_over_a_long_run() {
+    let t = 2000;
+    let m = movie(&[], t, 91);
+    let (mut slow, mut eng) = start(v2_config(), &[]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 0, "stats {:?}", slow.stats());
+    assert_eq!(edits(&slow.take_edit_counts()), 0);
+}
+
+#[test]
+fn edits_die_out_on_a_stationary_movie() {
+    let t = 3000;
+    let mut rng = Lcg(101);
+    let pos = [
+        (20.0, 22.0),
+        (24.0, 70.0),
+        (46.0, 46.0),
+        (52.0, 55.0),
+        (72.0, 26.0),
+        (74.0, 72.0),
+    ];
+    let cells: Vec<_> = pos
+        .iter()
+        .enumerate()
+        .map(|(i, &(y, x))| (blob(i as u64, y, x), trace(&mut rng, t, 0.02, 5.0)))
+        .collect();
+    let m = movie(&cells, t, 103);
+    let (mut slow, mut eng) = start(v2_config(), &[]);
+    let mut deleted = Vec::new();
+    let mut per = Vec::new();
+    for q in 0..6 {
+        drive(
+            &m,
+            q * 500..(q + 1) * 500,
+            &mut slow,
+            &mut eng,
+            &mut deleted,
+        );
+        per.push(edits(&slow.take_edit_counts()));
+    }
+    let lib = slow.finalize().unwrap();
+    assert_eq!(
+        lib.len(),
+        pos.len(),
+        "edits {per:?}, stats {:?}",
+        slow.stats()
+    );
+    let first: u64 = per[..2].iter().sum();
+    let last: u64 = per[4..].iter().sum();
+    assert!(
+        first > 0 && last * 4 <= first,
+        "edits per 500 frames {per:?}"
+    );
+}
+
+/// Merges over a run of `t` frames from `seed` with `cfg`, and the final
+/// library size.
+fn merges_with(cfg: SlowLoopConfig, m: &[f32], t: usize, seed: &[Footprint]) -> (u64, usize) {
+    let (mut slow, mut eng) = start(cfg, seed);
+    let mut deleted = Vec::new();
+    drive(m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    (slow.stats().merges, lib.len())
+}
+
+#[test]
+fn neighbours_with_lagging_footprints_are_not_merged() {
+    let t = 2000;
+    let mut rng = Lcg(91);
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 50.0, 51.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 93);
+    // Both footprints too narrow and shifted toward each other: a fresh
+    // single footprint over the pair can fit better than the two current
+    // ones, but not better than the pair refitted on the same frames.
+    let seed = [blob_w(1, 46.0, 45.5, 1.8), blob_w(2, 49.0, 49.5, 1.8)];
+    let (merges, n) = merges_with(v2_config(), &m, t, &seed);
+    assert_eq!(merges, 0, "{n} cells");
+    assert_eq!(n, 2);
+}
+
+#[test]
+fn a_fragment_beside_its_cell_is_not_kept() {
+    let t = 1500;
+    let mut rng = Lcg(97);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 99);
+    // The cell, and a small fragment on its edge (supports overlap by less
+    // than half, so the refitted pair is tried): the fragment must not be
+    // kept as a second cell (merged, or deleted by the keep tests).
+    let seed = [blob(1, 47.0, 47.0), blob_w(2, 47.0, 52.0, 1.5)];
+    let (merges, n) = merges_with(v2_config(), &m, t, &seed);
+    assert_eq!(n, 1, "{merges} merges");
+}
