@@ -5,6 +5,7 @@ import type uPlot from 'uplot';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
+import { CellQcSummary, DemixView } from './CellQcView.tsx';
 
 function fmt(s: Summary): string {
   if (s.n === 0) return 'n/a';
@@ -17,7 +18,12 @@ function fmt(s: Summary): string {
  * union of their crops so successive versions line up. The slider steps
  * through them; it stays on the newest while it is there.
  */
-function FootprintEvolution(props: { cells: CellStore; id: number }): JSX.Element {
+function FootprintEvolution(props: {
+  cells: CellStore;
+  id: number;
+  /** The frame of the snapshot shown, for the marker on the trace. */
+  onFrame?: (frame: number | null) => void;
+}): JSX.Element {
   let canvas!: HTMLCanvasElement;
   const snaps = createMemo(() => {
     props.cells.library();
@@ -37,6 +43,8 @@ function FootprintEvolution(props: { cells: CellStore; id: number }): JSX.Elemen
     return p === null ? n - 1 : Math.min(p, n - 1);
   };
   const current = () => snaps()[index()];
+  // Mark the version on the trace only while an older one is picked.
+  createEffect(() => props.onFrame?.(picked() === null ? null : (current()?.frame ?? null)));
 
   createEffect(() => {
     const all = snaps();
@@ -115,6 +123,8 @@ const LAG_SERIES: uPlot.Series[] = [
 
 function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX.Element {
   const c = () => props.cells;
+  const [view, setView] = createSignal<'trace' | 'demix'>('trace');
+  const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
   const inLibrary = () => c().library()?.ids.includes(props.id) ?? false;
   const info = () => {
     const view = c().library();
@@ -135,8 +145,8 @@ function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX
         </button>
       </div>
       <div class="cala-selected__body">
-        <FootprintEvolution cells={c()} id={props.id} />
-        <div class="cala-muted">
+        <FootprintEvolution cells={c()} id={props.id} onFrame={setMarkerFrame} />
+        <div class="cala-muted cala-selected__facts">
           <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
             {(i) => (
               <div>
@@ -152,7 +162,38 @@ function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX
           </Show>
         </div>
       </div>
-      <CellTraceViewer cells={c()} id={props.id} fps={props.fps} />
+      <CellQcSummary cells={c()} id={props.id} />
+      <div class="cala-subtabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view() === 'trace'}
+          class="cala-tabs__tab"
+          classList={{ 'cala-tabs__tab--active': view() === 'trace' }}
+          onClick={() => setView('trace')}
+        >
+          Trace
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view() === 'demix'}
+          class="cala-tabs__tab"
+          classList={{ 'cala-tabs__tab--active': view() === 'demix' }}
+          onClick={() => setView('demix')}
+          data-testid="demix-tab"
+        >
+          Demixing
+        </button>
+      </div>
+      <Show
+        when={view() === 'demix'}
+        fallback={
+          <CellTraceViewer cells={c()} id={props.id} fps={props.fps} markerFrame={markerFrame()} />
+        }
+      >
+        <DemixView cells={c()} id={props.id} />
+      </Show>
     </div>
   );
 }
@@ -264,6 +305,9 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
       off: summarize(t.off),
       solveOn: summarize(t.solveOn),
       solveOff: summarize(t.solveOff),
+      solveQc: summarize(t.solveQc),
+      solveNoQc: summarize(t.solveNoQc),
+      qcBuild: summarize(t.qcBuildMs),
       slowStep: summarize(c().slowTiming().stepMs),
       slowBatch: summarize(c().slowTiming().batchMs),
     };
@@ -278,6 +322,10 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
         Fast loop per frame (mean / p99 / max), discovery on: {fmt(timing().on)}; off:{' '}
         {fmt(timing().off)}. Trace solve per frame, on: {fmt(timing().solveOn)}; off:{' '}
         {fmt(timing().solveOff)}.
+      </p>
+      <p class="cala-muted" data-testid="qc-timing">
+        Trace solve per frame with online QC: {fmt(timing().solveQc)}; without:{' '}
+        {fmt(timing().solveNoQc)}. QC snapshot (about once a second): {fmt(timing().qcBuild)}.
         <Show when={timing().slowBatch.n > 0}>
           {' '}
           Slow loop per batch: {fmt(timing().slowBatch)}; longest step per batch:{' '}

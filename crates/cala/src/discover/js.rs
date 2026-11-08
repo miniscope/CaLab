@@ -152,7 +152,7 @@ impl JsSlowLoop {
     }
 
     /// Counters: visits, proposals, adds, rejects, merges, merge tests,
-    /// refines, commits.
+    /// refines, commits, deletes, splits, absorbs (cumulative).
     pub fn stats(&self) -> Vec<f64> {
         let s = self.inner.stats();
         [
@@ -164,9 +164,33 @@ impl JsSlowLoop {
             s.merge_tests,
             s.refines,
             s.commits,
+            s.deletes,
+            s.splits,
+            s.absorbs,
         ]
         .map(|v| v as f64)
         .to_vec()
+    }
+
+    /// Evidence status of every working-set cell: `(id, established 0/1,
+    /// transients since birth)` triples.
+    #[wasm_bindgen(js_name = cellStatus)]
+    pub fn cell_status(&self) -> Vec<f64> {
+        self.inner
+            .cell_infos()
+            .iter()
+            .flat_map(|c| {
+                [
+                    c.id as f64,
+                    if c.status == super::CellStatus::Established {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    c.transients as f64,
+                ]
+            })
+            .collect()
     }
 }
 

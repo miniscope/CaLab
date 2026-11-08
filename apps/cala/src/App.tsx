@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { Show } from 'solid-js';
+import { createEffect, Show } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
@@ -13,6 +13,7 @@ import { VideoPanel } from './components/VideoPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
+import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -28,9 +29,12 @@ const App: Component = () => {
   const cells = createCellStore();
   // Cell discovery runs in a worker of its own, fed directly by the frame worker.
   createSlowClient(client, (msg) => cells.onSlowMessage(msg));
-  const pipeline = createPipelineStore(client, {}, undefined, cells);
+  const params = new URLSearchParams(window.location.search);
+  // `?noqc`: run without online quality control (to measure its cost).
+  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'));
+  createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
-  if (new URLSearchParams(window.location.search).has('debug')) {
+  if (params.has('debug')) {
     (globalThis as { __cala?: unknown }).__cala = { cells, pipeline };
   }
 
@@ -98,6 +102,7 @@ const App: Component = () => {
               )}
             </Show>
             <StatusBar store={pipeline} cells={cells} />
+            <ConvergenceStrip cells={cells} />
             <div class="cala-body">
               <div class="cala-body__left">
                 <VideoPanel

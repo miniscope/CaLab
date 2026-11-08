@@ -49,6 +49,13 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // The cells panel is up; six frames are too few for the slow loop to start.
   await expect(page.getByTestId('cells-view')).toBeVisible();
   await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
+  // Quality control: the convergence strip, the cell table and the overlay modes.
+  await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
+  await page.getByRole('tab', { name: 'Cell QC' }).click();
+  await expect(page.getByTestId('qc-counts')).toContainText('QC starts once');
+  await page.getByTestId('color-mode').selectOption('peakSnr');
+  await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
+  await page.getByTestId('residual-toggle').check();
 
   // Raw gray levels: turn auto contrast off, scrub to global frame 4 (file 1).
   await page.getByRole('tab', { name: 'Raw file' }).click();

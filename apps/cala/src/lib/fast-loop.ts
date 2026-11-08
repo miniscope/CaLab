@@ -11,6 +11,7 @@
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import { ForwardPool } from './forward-pool.ts';
+import type { QcWire } from './qc.ts';
 
 /** What the fast loop needs of a `TraceLibrary`. */
 export interface TraceLibraryLike {
@@ -26,10 +27,36 @@ export interface TraceEngineLike {
   free(): void;
 }
 
+/** What the fast loop needs of a `QcMonitor` (online quality control). */
+export interface QcMonitorLike {
+  /** Solves the batch with `engine` (same result as `engine.processFrames`) and observes it. */
+  processFrames(engine: TraceEngineLike, frames: Float32Array, count: number): Float32Array;
+  setNoise(noise: Float32Array): void;
+  cellMetrics(): Float64Array;
+  globalMetrics(): Float64Array;
+  neighbours(slot: number): Float64Array;
+  residualMap(): Float32Array;
+  residualMapDims(): Uint32Array;
+  free(): void;
+}
+
+/** What a `QcMonitor` is built from. */
+export interface QcSetup {
+  width: number;
+  height: number;
+  fov: Uint8Array;
+  noise: Float32Array;
+  fps: number;
+}
+
 /** Constructors of the WASM objects (the real ones, or fakes in tests). */
 export interface TraceBackend {
   libraryFromBytes(bytes: Uint8Array): TraceLibraryLike;
   newEngine(lib: TraceLibraryLike): TraceEngineLike;
+  /** Online QC (absent: no QC). */
+  newQc?(setup: QcSetup): QcMonitorLike;
+  /** `QcMonitor.cellFields()` / `globalFields()`, comma-separated. */
+  qcFields?(): { cell: string; global: string };
 }
 
 /** What the fast loop reads from the preprocessor when the slow loop starts. */
@@ -56,6 +83,12 @@ export interface FastLoopOptions {
   noiseEvery?: number;
   /** Forward buffers (batches in flight to the slow worker). */
   poolSize?: number;
+  /** Run online quality control on the traces (when the backend has it). */
+  qc?: boolean;
+  /** Frame rate of the recording (QC rates are per minute). */
+  fps?: number;
+  /** Wall time between QC snapshots sent to the main thread, ms. */
+  qcEveryMs?: number;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -65,6 +98,9 @@ export const FAST_LOOP_DEFAULTS = {
   noiseEvery: 200,
   // One batch being observed, one queued.
   poolSize: 2,
+  qc: true,
+  fps: 20,
+  qcEveryMs: 1000,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -86,6 +122,10 @@ export interface CellsBatch {
   droppedFrames: number;
   /** Stream frame up to which the slow loop has consumed batches. */
   slowFrame: number;
+  /** QC is observing the traces (its cost is part of `solveMs`). */
+  qcOn: boolean;
+  /** A QC snapshot, about once per `qcEveryMs` of wall time. */
+  qc?: QcWire;
 }
 
 const now = (): number => performance.now();
@@ -99,6 +139,11 @@ export class FastLoop {
   private engine: TraceEngineLike | null = null;
   private version = 0;
   private ids: Uint32Array = new Uint32Array(0);
+  private qc: QcMonitorLike | null = null;
+  private qcFields: { cell: string[]; global: string[] } | null = null;
+  private qcNoise = 0;
+  private qcLast = -Infinity;
+  private qcFrame = 0;
   private pendingLibrary: Uint8Array | null = null;
   private initSent = false;
   private lastNoise = 0;
@@ -109,6 +154,7 @@ export class FastLoop {
 
   constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...options };
+    if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
@@ -160,13 +206,20 @@ export class FastLoop {
     const t1 = now();
     const n = count * this.px;
     const batch = frames.subarray(0, n);
-    const traces =
-      this.engine && this.ids.length > 0
-        ? this.engine.processFrames(batch, count)
-        : new Float32Array(0);
+    let traces: Float32Array = new Float32Array(0);
+    let qcOn = false;
+    if (this.engine && this.ids.length > 0) {
+      const qc = this.qcMonitor(start, calibration);
+      qcOn = qc !== null;
+      traces = qc
+        ? qc.processFrames(this.engine, batch, count)
+        : this.engine.processFrames(batch, count);
+      if (qc) this.qcFrame = start + count;
+    }
     const t2 = now();
     this.forward(batch, start, count, traces, calibration);
     const t3 = now();
+    const qc = qcOn ? this.qcSnapshot(t3) : undefined;
     return {
       version: this.version,
       ids: this.ids.slice(),
@@ -178,6 +231,68 @@ export class FastLoop {
       forwardedFrames: this.pool.forwardedFrames,
       droppedFrames: this.pool.droppedFrames,
       slowFrame: this.slowFrame,
+      qcOn,
+      ...(qc ? { qc } : {}),
+    };
+  }
+
+  /** The QC monitor, created on first use; refreshes its noise map now and then. */
+  private qcMonitor(start: number, calibration: CalibrationSource): QcMonitorLike | null {
+    const b = this.backend;
+    if (!this.o.qc || !b.newQc || !b.qcFields) return null;
+    if (!this.qc) {
+      const f = b.qcFields();
+      this.qcFields = { cell: f.cell.split(','), global: f.global.split(',') };
+      this.qc = b.newQc({
+        width: this.o.width,
+        height: this.o.height,
+        fov: calibration.fovMask(),
+        noise: calibration.noiseSigma(),
+        fps: this.o.fps,
+      });
+      this.qcNoise = start;
+    } else if (start - this.qcNoise >= this.o.noiseEvery) {
+      this.qc.setNoise(calibration.noiseSigma());
+      this.qcNoise = start;
+    }
+    return this.qc;
+  }
+
+  /** Copy the QC metrics out, at most once per `qcEveryMs`. */
+  private qcSnapshot(t: number): QcWire | undefined {
+    const qc = this.qc;
+    const fields = this.qcFields;
+    if (!qc || !fields || t - this.qcLast < this.o.qcEveryMs) return undefined;
+    this.qcLast = t;
+    const cells = qc.cellMetrics();
+    const n = fields.cell.length > 0 ? Math.floor(cells.length / fields.cell.length) : 0;
+    const nbStarts = new Uint32Array(n + 1);
+    const lists: Float64Array[] = [];
+    let total = 0;
+    for (let s = 0; s < n; s++) {
+      const l = qc.neighbours(s);
+      lists.push(l);
+      total += l.length / 3;
+      nbStarts[s + 1] = total;
+    }
+    const nb = new Float32Array(total * 3);
+    let o = 0;
+    for (const l of lists) {
+      nb.set(l, o);
+      o += l.length;
+    }
+    return {
+      frame: this.qcFrame,
+      version: this.version,
+      cellFields: fields.cell,
+      globalFields: fields.global,
+      cells,
+      global: qc.globalMetrics(),
+      nbStarts,
+      nb,
+      residualDims: qc.residualMapDims(),
+      residual: qc.residualMap(),
+      buildMs: now() - t,
     };
   }
 
@@ -190,6 +305,8 @@ export class FastLoop {
     if (this.disposed) return;
     this.disposed = true;
     this.port?.postMessage({ type: 'reset', session: this.o.session });
+    this.qc?.free();
+    this.qc = null;
     this.engine?.free();
     this.engine = null;
     this.pendingLibrary = null;

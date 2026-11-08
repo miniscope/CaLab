@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { initCalaWasm, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
+import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell, renderOverlay } from '../lib/cell-overlay.ts';
 import { summarize } from '../lib/cell-store.ts';
 import {
@@ -19,6 +19,7 @@ import {
   type SlowRunnerDeps,
 } from '../lib/slow-runner.ts';
 import { TraceHistory } from '../lib/trace-history.ts';
+import { parseQc } from '../lib/qc.ts';
 import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
 
 beforeAll(async () => {
@@ -242,6 +243,109 @@ function fastLoop(port: ReturnType<typeof recorder<FastToSlow>>, backend: TraceB
   );
 }
 
+describe('FastLoop online QC', () => {
+  function fakeQc() {
+    const calls = { process: 0, noise: 0, freed: false, created: 0 };
+    const backend = fakeBackend();
+    backend.backend.qcFields = () => ({
+      cell: 'id,peak_snr,flags,pass',
+      global: 'cells,explained',
+    });
+    backend.backend.newQc = () => {
+      calls.created++;
+      return {
+        processFrames(engine, f, n) {
+          calls.process++;
+          return engine.processFrames(f, n);
+        },
+        setNoise: () => void calls.noise++,
+        cellMetrics: () => Float64Array.of(7, 9, 0, 1, 8, 2, 1, 0),
+        globalMetrics: () => Float64Array.of(2, 0.5),
+        neighbours: (slot) => (slot === 0 ? Float64Array.of(8, 0.3, 0.9) : new Float64Array(0)),
+        residualMap: () => Float32Array.of(0, 1),
+        residualMapDims: () => Uint32Array.of(2, 1, 8),
+        free: () => void (calls.freed = true),
+      };
+    };
+    return { ...backend, calls };
+  }
+
+  it('solves through the monitor and sends a snapshot at most once per qcEveryMs', () => {
+    const t = fakeQc();
+    t.libs.set(4, [7, 8]);
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 1,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        qcEveryMs: 1000,
+        noiseEvery: 6,
+      },
+      null,
+      t.backend,
+    );
+    const frames = new Float32Array(12);
+    // No library yet: nothing to observe.
+    expect(fl.process(frames, 0, 3, calibration).qcOn).toBe(false);
+    fl.handleSlow({ type: 'library', session: 1, version: 4, bytes: Uint8Array.of(4) });
+    const a = fl.process(frames, 3, 3, calibration);
+    expect(a.qcOn).toBe(true);
+    expect(Array.from(a.traces)).toEqual([0, 1, 10, 11, 20, 21]);
+    expect(a.qc).toBeDefined();
+    const snap = parseQc(a.qc!);
+    expect(snap.frame).toBe(6);
+    expect(snap.version).toBe(4);
+    expect(snap.rows.map((r) => [r.id, r.peakSnr, r.pass])).toEqual([
+      [7, 9, true],
+      [8, 2, false],
+    ]);
+    expect(snap.neighbours.get(7)).toEqual([
+      { id: 8, overlap: expect.closeTo(0.3, 5), r: expect.closeTo(0.9, 5) },
+    ]);
+    expect(snap.neighbours.get(8)).toEqual([]);
+    expect(snap.global.explained).toBe(0.5);
+    // Within the interval: no snapshot. After it: one; the noise map is refreshed every 6 frames.
+    clock = 500;
+    expect(fl.process(frames, 6, 3, calibration).qc).toBeUndefined();
+    clock = 1200;
+    expect(fl.process(frames, 9, 3, calibration).qc).toBeDefined();
+    expect(t.calls.process).toBe(3);
+    expect(t.calls.noise).toBe(1);
+    expect(t.calls.created).toBe(1);
+    fl.dispose();
+    expect(t.calls.freed).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it('can be turned off', () => {
+    const t = fakeQc();
+    t.libs.set(4, [7]);
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 1,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        qc: false,
+      },
+      null,
+      t.backend,
+    );
+    fl.handleSlow({ type: 'library', session: 1, version: 4, bytes: Uint8Array.of(4) });
+    const out = fl.process(new Float32Array(12), 0, 3, calibration);
+    expect(out.qcOn).toBe(false);
+    expect(out.qc).toBeUndefined();
+    expect(t.calls.created).toBe(0);
+  });
+});
+
 describe('FastLoop (fast worker side of the hand-off)', () => {
   it('starts the slow loop at startFrame and forwards batches as transferables', () => {
     const port = recorder<FastToSlow>();
@@ -395,7 +499,8 @@ function runner(publishAt: Set<number>) {
     setNoise: vi.fn(),
     cellCount: 3,
     reservoirBytes: 1024,
-    stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8),
+    stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+    cellStatus: () => Float64Array.of(1, 1, 3, 2, 0, 0),
     free: vi.fn(),
   };
   const create = vi.fn<SlowRunnerDeps['create']>(() => loop);
@@ -449,7 +554,10 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     expect(t.libs.every((l) => l.freed)).toBe(true);
     const [status] = t.toMain.of('status');
     expect(status.status).toMatchObject({ frame: 43, observed: 3, cells: 3, version: 102 });
-    expect(status.status.counters.adds).toBe(3);
+    expect(status.status.counters).toMatchObject({ adds: 3, deletes: 9, splits: 10, absorbs: 11 });
+    // Evidence status rides along (the first status of a run always carries it).
+    expect(Array.from(status.status.cellStatus!.ids)).toEqual([1, 2]);
+    expect(Array.from(status.status.cellStatus!.established)).toEqual([1, 0]);
   });
 
   it('skips frames of a version it no longer holds, and still acks', () => {
@@ -612,11 +720,27 @@ describe('fast and slow loop over the real WASM bindings', () => {
         startFrame: 8,
         // Plenty of budget per frame for a 64 x 64 movie.
         budget: 1e8,
+        // A QC snapshot after every batch.
+        qcEveryMs: 0,
       },
       { postMessage: (msg) => toSlow.push({ msg }) },
       {
         libraryFromBytes: (b) => TraceLibrary.fromBytes(b),
         newEngine: (l) => new TraceEngine(l as TraceLibrary, 0, 0),
+        newQc: (q) => {
+          const m = new QcMonitor(q.width, q.height, q.fov, q.noise, q.fps, 0);
+          return {
+            processFrames: (e, f, n) => m.processFrames(e as TraceEngine, f, n),
+            setNoise: (n) => m.setNoise(n),
+            cellMetrics: () => m.cellMetrics(),
+            globalMetrics: () => m.globalMetrics(),
+            neighbours: (s) => m.neighbours(s),
+            residualMap: () => m.residualMap(),
+            residualMapDims: () => m.residualMapDims(),
+            free: () => m.free(),
+          };
+        },
+        qcFields: () => ({ cell: QcMonitor.cellFields(), global: QcMonitor.globalFields() }),
       },
     );
     const slow = new SlowRunner({
@@ -655,6 +779,22 @@ describe('fast and slow loop over the real WASM bindings', () => {
     // Every true cell centre falls inside a discovered footprint.
     const found = cells.filter(([y, x]) => pickCell(g, x, y) !== null);
     expect(found.length).toBeGreaterThanOrEqual(2);
+    // Online QC rode along: one row per solved cell, in slot order.
+    expect(last!.qcOn).toBe(true);
+    const snap = parseQc(last!.qc!);
+    expect(snap.rows.map((r) => r.id)).toEqual(Array.from(last!.ids));
+    expect(snap.frame).toBe(640);
+    expect(snap.global.cells).toBe(last!.ids.length);
+    expect(snap.residual.blocksWide).toBe(8);
+    expect(snap.residual.values).toHaveLength(64);
+    expect(Number.isFinite(snap.global.explained)).toBe(true);
+    expect(snap.rows.some((r) => Number.isFinite(r.peakSnr))).toBe(true);
+    // The slow loop reports each cell's evidence status and the edit totals.
+    const st = toMain.of('status').filter((m) => m.status.cellStatus);
+    expect(st.length).toBeGreaterThan(0);
+    const cs = st.at(-1)!.status.cellStatus!;
+    expect(cs.ids.length).toBe(cs.established.length);
+    expect(st.at(-1)!.status.counters.deletes).toBeGreaterThanOrEqual(0);
     fast.dispose();
   });
 });

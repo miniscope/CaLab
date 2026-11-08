@@ -9,6 +9,7 @@ import { FlickerTrace } from './FlickerTrace.tsx';
 import { FrameViewer } from './FrameViewer.tsx';
 import { InfoPanel } from './InfoPanel.tsx';
 import { MotionTrace } from './MotionTrace.tsx';
+import { QcTable } from './QcTable.tsx';
 
 interface Tab {
   id: string;
@@ -28,6 +29,7 @@ export function DetailsTabs(props: {
   info: FrameSourceInfo;
 }): JSX.Element {
   const tabs: Tab[] = [
+    { id: 'qc', label: 'Cell QC', content: <QcTable cells={props.cells} /> },
     { id: 'cells', label: 'Cells', content: <CellCountPlot cells={props.cells} /> },
     { id: 'lag', label: 'Lag', content: <LagPlot cells={props.cells} /> },
     { id: 'motion', label: 'Motion', content: <MotionTrace store={props.store} /> },
@@ -40,7 +42,7 @@ export function DetailsTabs(props: {
     { id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> },
     { id: 'recording', label: 'Recording', content: <InfoPanel info={props.info} /> },
   ];
-  const [active, setActive] = createSignal('cells');
+  const [active, setActive] = createSignal('qc');
   const [open, setOpen] = createSignal(true);
 
   return (

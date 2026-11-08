@@ -97,6 +97,8 @@ export function createPipelineStore(
   options: PipelineOptions = {},
   clock: () => number = () => performance.now(),
   cells?: CellStore,
+  /** Online quality control in the fast loop (default on; off to measure its cost). */
+  qc = true,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -205,7 +207,7 @@ export function createPipelineStore(
     const session = nextSession++;
     cells?.reset(session);
     try {
-      const p = await client.startPipeline(options, { session, discover: discover() });
+      const p = await client.startPipeline(options, { session, discover: discover(), qc });
       if (gen !== generation) return;
       setPlan(p);
       setStatus('running');

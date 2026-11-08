@@ -431,3 +431,293 @@
   font-size: 0.75rem;
   white-space: nowrap;
 }
+
+/* Convergence strip (always visible) */
+.cala-convergence {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.cala-convergence__status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.cala-convergence__reason,
+.cala-convergence__axis {
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.cala-conv-chip {
+  align-self: flex-start;
+  font-size: 0.85rem;
+  font-weight: var(--font-weight-medium, 500);
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+}
+
+.cala-conv-chip--waiting {
+  color: var(--text-secondary);
+}
+
+.cala-conv-chip--discovering {
+  color: #b07800;
+}
+
+.cala-conv-chip--settling {
+  color: #0072b2;
+}
+
+.cala-conv-chip--converged {
+  color: #007a59;
+}
+
+.cala-convergence__plots {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.cala-spark {
+  min-width: 0;
+}
+
+.cala-spark__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.cala-spark__title {
+  color: var(--text-secondary);
+}
+
+.cala-spark__value {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cala-spark__plot {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Overlay modes */
+.cala-heat-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.cala-heat-layer[hidden] {
+  display: none;
+}
+
+.cala-legend--row {
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  min-height: 1.1rem;
+}
+
+.cala-legend__ramp {
+  display: inline-block;
+  width: 60px;
+  height: 6px;
+  border-radius: 1px;
+}
+
+.cala-legend__note {
+  margin-left: var(--space-sm);
+}
+
+/* QC table */
+.cala-qc-table {
+  display: flex;
+  flex-direction: column;
+  height: 195px;
+}
+
+.cala-qc-table__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin-top: var(--space-xs);
+}
+
+.cala-qc-table table,
+.cala-demix__table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  width: 100%;
+}
+
+.cala-qc-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elevated, var(--bg-primary, #fff));
+  z-index: 1;
+  text-align: left;
+}
+
+.cala-qc-table th button {
+  background: none;
+  border: none;
+  padding: 2px 6px 2px 0;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cala-qc-table td,
+.cala-demix__table td,
+.cala-demix__table th {
+  padding: 1px 6px 1px 0;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.cala-qc-table tbody tr {
+  cursor: pointer;
+}
+
+.cala-qc-table tbody tr:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.cala-qc-row--selected {
+  outline: 1px solid var(--accent);
+}
+
+.cala-qc-badge {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  padding: 0 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.cala-qc-badge--pass {
+  background: rgba(0, 158, 115, 0.18);
+  color: #007a59;
+}
+
+.cala-qc-badge--fail {
+  background: rgba(213, 94, 0, 0.16);
+  color: #b04c00;
+}
+
+.cala-qc-badge--warn {
+  background: rgba(230, 159, 0, 0.2);
+  color: #8a5f00;
+}
+
+.cala-qc-badge--pending {
+  background: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.cala-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+/* Selected-cell QC and demixing */
+.cala-cellqc__verdict {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.cala-cellqc__verdict .cala-qc-badge {
+  font-size: 0.85rem;
+}
+
+.cala-cellqc__grid {
+  display: grid;
+  grid-template-columns: repeat(3, max-content minmax(3.5em, 1fr));
+  gap: 0 var(--space-sm);
+  margin: var(--space-xs) 0 0;
+  font-size: 0.8rem;
+}
+
+.cala-cellqc__grid dt {
+  color: var(--text-secondary);
+}
+
+.cala-cellqc__grid dd {
+  margin: 0;
+  font-family: var(--font-mono);
+}
+
+.cala-cellqc__note {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.cala-subtabs {
+  display: flex;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.cala-demix__verdict {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.cala-demix__top {
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-start;
+  margin: var(--space-xs) 0;
+}
+
+.cala-demix__crop {
+  width: 130px;
+  height: 130px;
+  flex: none;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #000;
+  border-radius: var(--radius-sm);
+}
+
+.cala-demix__pair td {
+  color: #b04c00;
+  font-weight: var(--font-weight-medium, 500);
+}
+
+.cala-qc-table .cala-link {
+  margin-left: 0.4em;
+}
+
+.cala-demix__self {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.cala-demix__table {
+  width: auto;
+}
