@@ -13,6 +13,7 @@
 //!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
 //!   --v1              all v2 additions off (prune, pre-test)
+//!   --no-merge-refit  merge test against the pair's current footprints only
 //! ```
 //!
 //! Pass 1 runs preprocessing (and motion correction), the fast loop and the
@@ -616,6 +617,9 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--stats-snr") {
         scfg.stats_min_snr = v.parse().unwrap();
+    }
+    if args.iter().any(|a| a == "--no-merge-refit") {
+        scfg.merge_refit_pair = false;
     }
     if let Some(v) = arg_value(&args, "--merge-z") {
         scfg.merge_z = v.parse().unwrap();

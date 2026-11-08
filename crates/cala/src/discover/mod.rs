@@ -149,6 +149,10 @@
 //! * **Merge.** A pair is compared with one cell fitted to both and with
 //!   either cell alone; it is kept apart only when that beats the best
 //!   single-cell alternative by `merge_z` (hysteresis below `accept_z`).
+//!   The merged cell is a fresh fit, so the pair is also refitted on the
+//!   same frames (`merge_refit_pair`) and the better of the two pairs is
+//!   the baseline: otherwise footprints that lag the data (motion, slow
+//!   change) lose to any fresh footprint and distinct cells are merged.
 //!   A young cell merged back marks its spot like a rejection.
 //!
 //! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
@@ -307,6 +311,11 @@ pub struct SlowLoopConfig {
     /// of the stronger one's held-out energy, whatever the χ² test says
     /// (v2: 0.25; 0 = off).
     pub merge_weak_share: f32,
+    /// Compare a merge with the pair refitted on the same fitting frames
+    /// (not only with their current footprints). The merged arm is a fresh
+    /// fit; without this, two distinct cells whose footprints lag the data
+    /// lose to one fresh footprint and are merged (v3 churn on real data).
+    pub merge_refit_pair: bool,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -356,6 +365,7 @@ impl Default for SlowLoopConfig {
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_weak_share: 0.0,
+            merge_refit_pair: true,
             merge_z: 2.0,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -2639,7 +2649,46 @@ impl SlowLoop {
             // duplicate or a fragment of it). The best one is taken unless
             // keeping both beats it by the add margin.
             let sep = self.solve_all(&base, test_fr);
-            let chi_sep = Self::total_chi2(&sep);
+            let mut chi_sep = Self::total_chi2(&sep);
+            if self.cfg.merge_refit_pair {
+                // The pair refitted like the merged arm: alternating rank-1
+                // fits of each cell on the union support, the other's
+                // current signal removed.
+                let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
+                let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
+                let mut other: Vec<Vec<f32>> = data
+                    .iter()
+                    .zip(&fits)
+                    .map(|(d, f)| {
+                        let mut d = d.clone();
+                        for (&p, &v) in base.cols[j].pix.iter().zip(&base.cols[j].val) {
+                            d[p as usize] -= v * f.c[j];
+                        }
+                        d
+                    })
+                    .collect();
+                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+                let ha = rank1(&refs, &dom, &mut ca, 5, false);
+                for ((o, d), &ct) in other.iter_mut().zip(&data).zip(&ca) {
+                    o.copy_from_slice(d);
+                    for (&p, &v) in dom.iter().zip(&ha) {
+                        o[p as usize] -= v * ct;
+                    }
+                }
+                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+                let hb = rank1(&refs, &dom, &mut cb, 5, false);
+                self.work += (2 * dom.len() * data.len() * 30) as u64;
+                let (idi, idj) = (ids[i], ids[j]);
+                if let (Some(na), Some(nb)) = (
+                    self.make_cell(idi, rect, &dom, &ha, None),
+                    self.make_cell(idj, rect, &dom, &hb, None),
+                ) {
+                    let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
+                    let rp = self.problem(ti, cols);
+                    let rf = self.solve_all(&rp, test_fr);
+                    chi_sep = chi_sep.min(Self::total_chi2(&rf));
+                }
+            }
             let mut best_arm: Option<(f64, Option<Cell>, usize, usize)> = None;
             if let Some(m) = self.make_cell(keep, rect, &dom, &h, None) {
                 let cols = self.columns(rect, &[ids[i], ids[j]], &[&m]);
