@@ -245,8 +245,8 @@ impl JsTraceLibrary {
 /// The per-frame trace solver.
 #[wasm_bindgen(js_name = TraceEngine)]
 pub struct JsTraceEngine {
-    inner: TraceEngine,
-    out: FrameTraces,
+    pub(crate) inner: TraceEngine,
+    pub(crate) out: FrameTraces,
 }
 
 #[wasm_bindgen(js_class = TraceEngine)]
