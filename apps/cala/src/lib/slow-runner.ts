@@ -9,6 +9,7 @@
  * (see `ForwardPool`).
  */
 import type {
+  CellStatusView,
   FastToSlow,
   LibraryView,
   PortLike,
@@ -42,6 +43,8 @@ export interface SlowLoopLike {
   readonly cellCount: number;
   readonly reservoirBytes: number;
   stats(): Float64Array;
+  /** `(id, established, transients)` triples (absent in older fakes). */
+  cellStatus?(): Float64Array;
   free(): void;
 }
 
@@ -62,7 +65,24 @@ function counters(s: ArrayLike<number>): SlowCounters {
     mergeTests: s[5] ?? 0,
     refines: s[6] ?? 0,
     commits: s[7] ?? 0,
+    deletes: s[8] ?? 0,
+    splits: s[9] ?? 0,
+    absorbs: s[10] ?? 0,
   };
+}
+
+/** Wall time between cell-status updates to the main thread, ms. */
+export const CELL_STATUS_EVERY_MS = 1000;
+
+function cellStatusView(flat: ArrayLike<number>): CellStatusView {
+  const n = Math.floor(flat.length / 3);
+  const ids = new Uint32Array(n);
+  const established = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    ids[i] = flat[3 * i];
+    established[i] = flat[3 * i + 1] > 0 ? 1 : 0;
+  }
+  return { ids, established };
 }
 
 export class SlowRunner {
@@ -76,6 +96,7 @@ export class SlowRunner {
   private skipped = 0;
   private version = 0;
   private final = false;
+  private statusAt = -Infinity;
 
   constructor(deps: SlowRunnerDeps) {
     this.deps = deps;
@@ -206,7 +227,15 @@ export class SlowRunner {
       maxStepMs,
       final: this.final,
     };
-    this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
+    const t = this.now();
+    const transfer: Transferable[] = [];
+    if (loop.cellStatus && (this.final || t - this.statusAt >= CELL_STATUS_EVERY_MS)) {
+      this.statusAt = t;
+      const view = cellStatusView(loop.cellStatus());
+      status.cellStatus = view;
+      transfer.push(view.ids.buffer as ArrayBuffer, view.established.buffer as ArrayBuffer);
+    }
+    this.deps.toMain.postMessage({ type: 'status', session: this.session, status }, transfer);
   }
 
   private drop(): void {
@@ -218,5 +247,6 @@ export class SlowRunner {
     this.skipped = 0;
     this.version = 0;
     this.final = false;
+    this.statusAt = -Infinity;
   }
 }

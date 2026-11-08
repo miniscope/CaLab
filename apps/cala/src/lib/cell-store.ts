@@ -16,6 +16,14 @@ import type { CellsBatch } from './fast-loop.ts';
 import type { StageTimings } from './pipeline-engine.ts';
 import { FootprintHistory } from './footprint-history.ts';
 import { TraceHistory } from './trace-history.ts';
+import {
+  ConvergenceHistory,
+  convergenceStatus,
+  EditRates,
+  parseQc,
+  type ConvergenceStatus,
+  type QcSnapshot,
+} from './qc.ts';
 
 /** A library version as it arrived: size and the change from the one before. */
 export interface LibraryEvent {
@@ -50,7 +58,22 @@ export interface FastTiming {
   /** Trace solve alone (incl. library swap), per frame. */
   solveOn: number[];
   solveOff: number[];
+  /** Trace solve per frame with online QC observing, and without. */
+  solveQc: number[];
+  solveNoQc: number[];
+  /** Worker time to build each QC snapshot, ms. */
+  qcBuildMs: number[];
 }
+
+const emptyTiming = (): FastTiming => ({
+  on: [],
+  off: [],
+  solveOn: [],
+  solveOff: [],
+  solveQc: [],
+  solveNoQc: [],
+  qcBuildMs: [],
+});
 
 /** Metric series against fast-loop frames read (one point per batch). */
 export class CellMetrics {
@@ -102,12 +125,19 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
   const [batch, setBatch] = createSignal<CellsBatch | null>(null);
   const [tick, setTick] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
+  const [qc, setQc] = createSignal<QcSnapshot | null>(null);
+  /** Established (true) or on probation (false), by cell id. */
+  const [established, setEstablished] = createSignal<Map<number, boolean>>(new Map());
+  const [convergence, setConvergence] = createSignal<ConvergenceStatus>(convergenceStatus([]));
+  const [fps, setFps] = createSignal(20);
 
   let session = -1;
+  let convHistory = new ConvergenceHistory();
+  let editRates = new EditRates();
   let firstSeen = new Map<number, number>();
   let events: LibraryEvent[] = [];
   let metrics = new CellMetrics();
-  let timing: FastTiming = { on: [], off: [], solveOn: [], solveOff: [] };
+  let timing: FastTiming = emptyTiming();
   /** Slow loop per received batch: wall time, and its longest single step, ms. */
   let slowBatchMs: number[] = [];
   let slowStepMs: number[] = [];
@@ -119,7 +149,12 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     firstSeen = new Map();
     events = [];
     metrics = new CellMetrics();
-    timing = { on: [], off: [], solveOn: [], solveOff: [] };
+    timing = emptyTiming();
+    convHistory = new ConvergenceHistory();
+    editRates = new EditRates();
+    setQc(null);
+    setEstablished(new Map());
+    setConvergence(convergenceStatus([]));
     slowBatchMs = [];
     slowStepMs = [];
     setLibrary(null);
@@ -166,8 +201,40 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
         slowBatchMs.push(msg.status.batchMs);
         slowStepMs.push(msg.status.maxStepMs);
       }
-      setStatus(msg.status);
+      const st = msg.status;
+      const c = st.counters;
+      editRates.push(st.frame / fps() / 60, {
+        adds: c.adds,
+        merges: c.merges,
+        splits: c.splits ?? 0,
+        deletes: c.deletes ?? 0,
+      });
+      if (st.cellStatus) {
+        const m = new Map<number, boolean>();
+        const { ids, established: est } = st.cellStatus;
+        for (let i = 0; i < ids.length; i++) m.set(ids[i], est[i] === 1);
+        setEstablished(m);
+      }
+      setStatus(st);
     } else setError(msg.message);
+  }
+
+  /** A QC snapshot from the fast worker. */
+  function onQc(snap: QcSnapshot): void {
+    const g = snap.global;
+    convHistory.push({
+      minutes: snap.frame / fps() / 60,
+      cells: g.cells,
+      explained: g.explained,
+      residualExcess: g.residualExcess,
+      snrMedian: g.snrMedian,
+      passFrac: g.passFrac,
+      addsPerMin: g.addsPerMin,
+      removesPerMin: g.removesPerMin,
+      edits: editRates.rates(),
+    });
+    setConvergence(convergenceStatus(convHistory.points));
+    setQc(snap);
   }
 
   /** The fast loop's result for one pipeline batch. */
@@ -178,6 +245,11 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     const end = start + count;
     const perFrame = (t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs) / count;
     const solve = (cells.swapMs + cells.solveMs) / count;
+    if (cells.ids.length > 0) (cells.qcOn ? timing.solveQc : timing.solveNoQc).push(solve);
+    if (cells.qc) {
+      timing.qcBuildMs.push(cells.qc.buildMs);
+      onQc(parseQc(cells.qc));
+    }
     if (cells.discovering) {
       timing.on.push(perFrame);
       timing.solveOn.push(solve);
@@ -236,6 +308,18 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     },
     metrics: () => metrics,
     timing: () => timing,
+    /** Newest QC snapshot (null until the fast loop has cells and a snapshot). */
+    qc,
+    /** Probation/established by cell id (from the slow loop). */
+    established,
+    /** Convergence history, one point per QC snapshot (tracks `qc()`). */
+    convergenceHistory: () => {
+      qc();
+      return convHistory.points;
+    },
+    convergence,
+    fps,
+    setFps: (v: number) => setFps(v > 0 ? v : 20),
     slowTiming: () => ({ batchMs: slowBatchMs, stepMs: slowStepMs }),
   };
 }

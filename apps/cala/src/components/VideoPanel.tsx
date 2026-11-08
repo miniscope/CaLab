@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import { OKABE_ITO, viridisRGB } from '@calab/ui/chart';
 import { renderOverlay, pickCell, type Rgb } from '../lib/cell-overlay.ts';
@@ -7,6 +7,21 @@ import { displayRange, grayToImageData, toGray8, type DisplayRange } from '../li
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { PreviewImage } from '../lib/preview.ts';
+import {
+  COLOR_MODES,
+  ESTABLISHED_RGB,
+  FAIL_RGB,
+  heatCss,
+  modeScale,
+  PASS_RGB,
+  PROBATION_RGB,
+  qcColor,
+  residualMax,
+  residualRgba,
+  rgbCss,
+  UNKNOWN_RGB,
+  type ColorMode,
+} from '../lib/qc-colors.ts';
 import { PreviewCanvas } from './PreviewCanvas.tsx';
 
 type View = keyof Omit<BatchPreviews, 'frame'>;
@@ -54,9 +69,40 @@ function CellsView(props: {
   cells: CellStore;
   width: number;
   height: number;
+  mode: ColorMode;
+  residual: boolean;
 }): JSX.Element {
   let video!: HTMLCanvasElement;
   let overlay!: HTMLCanvasElement;
+  let heat!: HTMLCanvasElement;
+
+  // Residual map: one pixel per block, stretched over the field of view.
+  const residualMap = () => (props.residual ? (props.cells.qc()?.residual ?? null) : null);
+  createEffect(() => {
+    const m = residualMap();
+    const ctx = heat.getContext('2d');
+    if (!ctx) return;
+    if (!m || m.blocksWide === 0) {
+      ctx.clearRect(0, 0, heat.width, heat.height);
+      return;
+    }
+    if (heat.width !== m.blocksWide) heat.width = m.blocksWide;
+    if (heat.height !== m.blocksHigh) heat.height = m.blocksHigh;
+    const rgba = residualRgba(m);
+    ctx.putImageData(
+      new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, m.blocksWide, m.blocksHigh),
+      0,
+      0,
+    );
+  });
+  const heatStyle = () => {
+    const m = props.cells.qc()?.residual;
+    if (!m || m.blocksWide === 0) return {};
+    return {
+      width: `${((m.blocksWide * m.blockPx) / props.width) * 100}%`,
+      height: `${((m.blocksHigh * m.blockPx) / props.height) * 100}%`,
+    };
+  };
   let range: DisplayRange | null = null;
 
   createEffect(() => {
@@ -90,13 +136,21 @@ function CellsView(props: {
       return;
     }
     const frame = props.cells.frame();
+    const mode = props.mode;
+    const qc = mode === 'found' ? null : props.cells.qc();
+    const est = mode === 'status' ? props.cells.established() : null;
+    const scale = qc ? modeScale(mode, qc.rows) : { lo: 0, hi: 1 };
     const rgba = renderOverlay(g, {
       selected,
-      color: (id) =>
-        props.cells.age(id) < NEW_CELL_FRAMES
+      color: (id) => {
+        if (mode !== 'found')
+          return qcColor(mode, qc?.byId.get(id), est?.get(id), scale, viridisRGB);
+        return props.cells.age(id) < NEW_CELL_FRAMES
           ? NEW_COLOR
-          : foundColor(props.cells.firstSeen(id), frame),
+          : foundColor(props.cells.firstSeen(id), frame);
+      },
       fill: (id) => {
+        if (mode !== 'found') return 0;
         const age = props.cells.age(id);
         return age < NEW_CELL_FRAMES ? 0.3 * (1 - age / NEW_CELL_FRAMES) + 0.08 : 0;
       },
@@ -121,6 +175,14 @@ function CellsView(props: {
     <div class="cala-cells-stage" data-testid="cells-view">
       <canvas ref={video} class="cala-cells-layer" aria-label="Motion-corrected video" />
       <canvas
+        ref={heat}
+        class="cala-heat-layer"
+        aria-label="Residual map"
+        data-testid="residual-layer"
+        style={heatStyle()}
+        hidden={!props.residual}
+      />
+      <canvas
         ref={overlay}
         class="cala-cells-layer cala-cells-overlay"
         aria-label="Cell outlines (click a cell)"
@@ -139,7 +201,15 @@ export function VideoPanel(props: {
   height: number;
 }): JSX.Element {
   const [input, setInput] = createSignal<View>('raw');
+  const [mode, setMode] = createSignal<ColorMode>('pass');
+  const [residual, setResidual] = createSignal(false);
   const swatch = (t: number) => `rgb(${viridisRGB(t).join(',')})`;
+  const scale = createMemo(() => modeScale(mode(), props.cells.qc()?.rows ?? []));
+  const residualTop = createMemo(() => {
+    const m = props.cells.qc()?.residual;
+    return m ? residualMax(m) : 1;
+  });
+  const fmtScale = (v: number) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
   return (
     <DashboardPanel id="video" variant="data" class="cala-video-panel">
@@ -166,7 +236,32 @@ export function VideoPanel(props: {
       <figure class="cala-pane">
         <div class="cala-pane__head">
           <h2 class="panel-label">Cells (click one)</h2>
-          <span class="cala-legend">
+          <select
+            class="cala-view-select"
+            aria-label="Colour cells by"
+            data-testid="color-mode"
+            value={mode()}
+            onChange={(e) => setMode(e.currentTarget.value as ColorMode)}
+          >
+            <For each={Object.keys(COLOR_MODES) as ColorMode[]}>
+              {(m) => <option value={m}>{COLOR_MODES[m].label}</option>}
+            </For>
+          </select>
+          <label
+            class="cala-check"
+            title="Residual left after the model, in noise units: hot blocks without an outline are signal no cell explains yet."
+          >
+            <input
+              type="checkbox"
+              data-testid="residual-toggle"
+              checked={residual()}
+              onChange={(e) => setResidual(e.currentTarget.checked)}
+            />
+            Residual
+          </label>
+        </div>
+        <div class="cala-legend cala-legend--row" data-testid="color-legend">
+          <Show when={mode() === 'found'}>
             found
             <span class="cala-legend__swatch" style={{ background: swatch(0.2) }} />
             early
@@ -174,7 +269,48 @@ export function VideoPanel(props: {
             late
             <span class="cala-legend__swatch" style={{ background: OKABE_ITO.yellow }} />
             new
-          </span>
+          </Show>
+          <Show when={mode() === 'pass'}>
+            <span class="cala-legend__swatch" style={{ background: rgbCss(PASS_RGB) }} />
+            passes
+            <span class="cala-legend__swatch" style={{ background: rgbCss(FAIL_RGB) }} />
+            fails
+            <span class="cala-legend__swatch" style={{ background: rgbCss(UNKNOWN_RGB) }} />
+            not measured
+          </Show>
+          <Show when={mode() === 'status'}>
+            <span class="cala-legend__swatch" style={{ background: rgbCss(ESTABLISHED_RGB) }} />
+            established
+            <span class="cala-legend__swatch" style={{ background: rgbCss(PROBATION_RGB) }} />
+            probation
+            <span class="cala-legend__swatch" style={{ background: rgbCss(UNKNOWN_RGB) }} />
+            unknown
+          </Show>
+          <Show when={mode() !== 'found' && mode() !== 'pass' && mode() !== 'status'}>
+            {fmtScale(scale().lo)}
+            <span
+              class="cala-legend__ramp"
+              style={{
+                background: `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1].map(swatch).join(',')})`,
+              }}
+            />
+            {fmtScale(scale().hi)}
+            <span class="cala-legend__swatch" style={{ background: rgbCss(UNKNOWN_RGB) }} />
+            n/a
+          </Show>
+          <Show when={COLOR_MODES[mode()].note}>
+            <span class="cala-legend__note">({COLOR_MODES[mode()].note})</span>
+          </Show>
+          <Show when={residual()}>
+            <span class="cala-legend__note">residual 0</span>
+            <span
+              class="cala-legend__ramp"
+              style={{
+                background: `linear-gradient(90deg, ${heatCss(0.1)}, ${heatCss(0.5)}, ${heatCss(1)})`,
+              }}
+            />
+            {residualTop().toFixed(1)} (log, noise var above 1)
+          </Show>
         </div>
         <FitStage width={props.width} height={props.height}>
           <CellsView
@@ -182,6 +318,8 @@ export function VideoPanel(props: {
             cells={props.cells}
             width={props.width}
             height={props.height}
+            mode={mode()}
+            residual={residual()}
           />
         </FitStage>
       </figure>

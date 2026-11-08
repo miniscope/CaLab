@@ -8,6 +8,8 @@ export interface CellsSettings {
   session: number;
   /** Run cell discovery (forward frames to the slow worker). */
   discover: boolean;
+  /** Run online quality control on the traces (default on). */
+  qc?: boolean;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */

@@ -10,7 +10,7 @@
  * to the slow worker (cell discovery) over a `MessagePort`. The fast loop
  * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
  */
-import { initCalaWasm, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
+import { initCalaWasm, QcMonitor, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { FastLoop, type TraceBackend } from '../lib/fast-loop.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { PipelineEngine, transferablesOf } from '../lib/pipeline-engine.ts';
@@ -25,6 +25,22 @@ const backend: TraceBackend = {
   libraryFromBytes: (bytes) => TraceLibrary.fromBytes(bytes),
   // 0, 0: the solver's default tolerance and sweep cap.
   newEngine: (lib) => new TraceEngine(lib as TraceLibrary, 0, 0),
+  // 0: the default trace window (one minute).
+  newQc: (s) => {
+    const qc = new QcMonitor(s.width, s.height, s.fov, s.noise, s.fps, 0);
+    return {
+      processFrames: (engine, frames, count) =>
+        qc.processFrames(engine as TraceEngine, frames, count),
+      setNoise: (noise) => qc.setNoise(noise),
+      cellMetrics: () => qc.cellMetrics(),
+      globalMetrics: () => qc.globalMetrics(),
+      neighbours: (slot) => qc.neighbours(slot),
+      residualMap: () => qc.residualMap(),
+      residualMapDims: () => qc.residualMapDims(),
+      free: () => qc.free(),
+    };
+  },
+  qcFields: () => ({ cell: QcMonitor.cellFields(), global: QcMonitor.globalFields() }),
 };
 
 const workerScope = globalThis as unknown as {
@@ -76,6 +92,7 @@ async function handle(req: FrameRequest): Promise<void> {
               ...setup,
               session: cells?.session ?? 0,
               discover: (cells?.discover ?? true) && port !== null,
+              qc: cells?.qc ?? true,
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,

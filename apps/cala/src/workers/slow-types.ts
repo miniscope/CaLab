@@ -76,6 +76,17 @@ export interface SlowCounters {
   mergeTests: number;
   refines: number;
   commits: number;
+  /** Cells deleted (silent or unsupported), split in two, and candidates absorbed by a neighbour. */
+  deletes: number;
+  splits: number;
+  absorbs: number;
+}
+
+/** Evidence status of the working-set cells (`SlowLoop.cellStatus()`). */
+export interface CellStatusView {
+  ids: Uint32Array;
+  /** 1 = established (enough transients since birth), 0 = on probation. */
+  established: Uint8Array;
 }
 
 export interface SlowStatus {
@@ -95,6 +106,8 @@ export interface SlowStatus {
   maxStepMs: number;
   /** The recording ended and the final library is out. */
   final: boolean;
+  /** Probation/established per cell, about once a second. */
+  cellStatus?: CellStatusView;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */

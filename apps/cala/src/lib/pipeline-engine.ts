@@ -20,6 +20,7 @@ import {
 } from './pipeline-plan.ts';
 import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
 import type { CellsBatch, FastLoop } from './fast-loop.ts';
+import { qcTransferables } from './qc.ts';
 
 /** What a fast loop is built from (see `PipelineEngine`'s `fastLoop` option). */
 export interface FastLoopSetup {
@@ -29,6 +30,8 @@ export interface FastLoopSetup {
   /** The preprocessing's flattening settings (the slow loop must match them). */
   cellDiameterPx: number;
   flattenSigmaPx: number;
+  /** Frame rate of the recording (0 when unknown). */
+  fps: number;
 }
 
 /** What the engine needs from a `FrameSource`. */
@@ -109,7 +112,9 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.corrected.data,
     p.output.data,
     ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
-  ].map((a) => a.buffer as ArrayBuffer);
+  ]
+    .map((a) => a.buffer as ArrayBuffer)
+    .concat(r.cells?.qc ? qcTransferables(r.cells.qc) : []);
 }
 
 const now = (): number => performance.now();
@@ -178,6 +183,7 @@ export class PipelineEngine {
           batchSize: this.plan.batchSize,
           cellDiameterPx: config.cellDiameterPx,
           flattenSigmaPx: config.flattenSigmaPx,
+          fps: fps ?? 0,
         }) ?? null;
     } finally {
       config.free();
