@@ -14,6 +14,13 @@
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
 //!   --v1              all v2 additions off (prune, pre-test)
 //!   --no-merge-refit  merge test against the pair's current footprints only
+//!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
+//!                     nuisance terms in the add test
+//! Diagnostics (environment): CALA_MC_ORACLE=<file> corrects with the
+//! simulator's true motion (file from export_gt_motion.py: u32 T, gy, gx,
+//! f64 node rows, node cols, then per frame f32 dy, dx, field), CALA_JITTER=<file>
+//! moves a still recording by those shifts and back (resampling only),
+//! CALA_NR=off rigid-only corrector, CALA_INTERP=bilinear.
 //! ```
 //!
 //! Pass 1 runs preprocessing (and motion correction), the fast loop and the
@@ -280,7 +287,7 @@ struct Pipeline {
     /// Diagnostics: `CALA_JITTER=<motion file>` moves a still recording by
     /// the file's shifts (bilinear, like the simulator) and back (bicubic,
     /// like the corrector): resampling without any registration error.
-    jitter: Option<(Warper, Warper, Vec<f32>, usize, Vec<f32>)>,
+    jitter: Option<Jitter>,
     t: usize,
     /// Last frame's (dy, dx, residual rms).
     pub last: (f32, f32, f32),
@@ -307,8 +314,10 @@ fn read_mc_oracle(
     let nx = f64s(gx);
     let rl = 2 + 2 * gy * gx;
     let rec: Vec<f32> = b[o..o + 4 * t * rl]
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     (Warper::new(h, w, &ny, &nx, interp).unwrap(), rec, rl)
 }
@@ -363,7 +372,13 @@ impl Pipeline {
                 read_mc_oracle(&p, dims.height, dims.width, Interpolation::Bilinear);
             let (bw, _, _) = read_mc_oracle(&p, dims.height, dims.width, interp);
             println!("JITTER: bilinear forward, {interp:?} back");
-            (fw, bw, rec, rl, vec![0.0f32; n_px])
+            Jitter {
+                fwd: fw,
+                back: bw,
+                rec,
+                rl,
+                tmp: vec![0.0f32; n_px],
+            }
         });
         Pipeline {
             pre,
@@ -381,7 +396,14 @@ impl Pipeline {
         self.pre.front(raw, &mut self.buf).unwrap();
         let t = self.t;
         self.t += 1;
-        if let Some((fw, bw, rec, rl, tmp)) = &mut self.jitter {
+        if let Some(Jitter {
+            fwd: fw,
+            back: bw,
+            rec,
+            rl,
+            tmp,
+        }) = &mut self.jitter
+        {
             let r = &rec[t * *rl..(t + 1) * *rl];
             let res: Vec<f32> = r[2..].to_vec();
             let neg: Vec<f32> = r[2..].iter().map(|v| -v).collect();
@@ -413,6 +435,16 @@ impl Pipeline {
         self.pre.back(out).unwrap();
         sh
     }
+}
+
+/// Diagnostics: moves forward (bilinear) and back (corrector's kernel) by
+/// recorded shifts.
+struct Jitter {
+    fwd: Warper,
+    back: Warper,
+    rec: Vec<f32>,
+    rl: usize,
+    tmp: Vec<f32>,
 }
 
 /// Footprints (unfiltered and filtered) as `CALAFP01`.
@@ -706,6 +738,12 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--stats-snr") {
         scfg.stats_min_snr = v.parse().unwrap();
+    }
+    if args.iter().any(|a| a == "--no-noise-corr") {
+        scfg.noise_corr = false;
+    }
+    if args.iter().any(|a| a == "--no-shift-nuisance") {
+        scfg.shift_nuisance = false;
     }
     if args.iter().any(|a| a == "--no-merge-refit") {
         scfg.merge_refit_pair = false;

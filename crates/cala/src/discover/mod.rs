@@ -46,7 +46,13 @@
 //!      units of the variance the current model leaves per pixel (at least
 //!      the noise), because undetected dim cells and neuropil inflate it;
 //!      both arms also get a free Gaussian background term (σ = one cell
-//!      diameter) at the candidate, so broad local light does not count;
+//!      diameter) at the candidate, so broad local light does not count,
+//!      and the spatial gradients of the two nearest cells, so the dipole a
+//!      sub-pixel registration error leaves beside a bright cell does not
+//!      count either (`shift_nuisance`). The noise null (and every other
+//!      one in the loop, and the trace σ of the event test) is widened by
+//!      the measured spatial correlation of the noise, which sub-pixel
+//!      motion correction introduces (`noise_corr`, `noisecorr.rs`);
 //!   2. its trace rises `event_z` σ above its own held-out median on at
 //!      least `min_events` frames (transients: a static residual pattern
 //!      with a constant trace is not a cell);
@@ -331,6 +337,11 @@ pub struct SlowLoopConfig {
     /// assumes independent pixels then takes noise blobs for cells. No
     /// effect on white noise.
     pub noise_corr: bool,
+    /// In the add test, both arms get the spatial gradients of the nearest
+    /// cells as free nuisance terms: residual registration error moves a
+    /// bright cell's light by a fraction of a pixel, which leaves a dipole
+    /// beside it that is not a new cell.
+    pub shift_nuisance: bool,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -384,6 +395,7 @@ impl Default for SlowLoopConfig {
             merge_refit_min_share: 0.1,
             merge_z: 2.0,
             noise_corr: true,
+            shift_nuisance: true,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
                 inner_px: 12.0,
@@ -2163,6 +2175,65 @@ impl SlowLoop {
         (bg, proj)
     }
 
+    /// `bg` plus the spatial gradients of the (up to two) nearest cells whose
+    /// support the candidate disk at `center` touches, as free nuisance
+    /// maps: a registration error `δ` moves a cell's light by `δ · ∇h c_t`,
+    /// a dipole next to the cell that is not a new cell.
+    fn with_shift_terms(
+        &mut self,
+        ti: usize,
+        center: (f32, f32),
+        mut bg: BgBasis,
+        mut proj: Vec<(Vec<f64>, f64)>,
+        ys: &[Vec<f32>],
+    ) -> (BgBasis, Vec<(Vec<f64>, f64)>) {
+        let rect = self.tiles[ti].rect;
+        let r0 = 0.75 * self.cfg.cell_diameter_px;
+        let mut nb: Vec<(f32, usize)> = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let d = ((c.center.0 - center.0).powi(2) + (c.center.1 - center.1).powi(2)).sqrt();
+                (d < c.radius + r0 && c.bbox.intersects(&rect)).then_some((d, i))
+            })
+            .collect();
+        nb.sort_by(|a, b| a.0.total_cmp(&b.0));
+        nb.truncate(2);
+        let w = self.dims.width;
+        let mut dense = vec![0.0f32; rect.len()];
+        for (_, i) in nb {
+            let col = Column::of(&self.cells[i], rect, w, &self.inv_sigma);
+            if col.pix.is_empty() {
+                continue;
+            }
+            for (&p, &v) in col.pix.iter().zip(&col.val) {
+                dense[p as usize] = v;
+            }
+            let mut gy = vec![0.0f32; rect.len()];
+            let mut gx = vec![0.0f32; rect.len()];
+            for y in 0..rect.h {
+                for x in 0..rect.w {
+                    let at = |yy: usize, xx: usize| dense[yy * rect.w + xx];
+                    let p = y * rect.w + x;
+                    gy[p] = 0.5 * (at((y + 1).min(rect.h - 1), x) - at(y.saturating_sub(1), x));
+                    gx[p] = 0.5 * (at(y, (x + 1).min(rect.w - 1)) - at(y, x.saturating_sub(1)));
+                }
+            }
+            for &p in &col.pix {
+                dense[p as usize] = 0.0;
+            }
+            for g in [gy, gx] {
+                bg = bg.with_extra(&g);
+                for (y, (q, _)) in ys.iter().zip(proj.iter_mut()) {
+                    q.push(g.iter().zip(y).map(|(&a, &b)| f64::from(a * b)).sum());
+                }
+                self.work += (rect.len() * (ys.len() + bg.k)) as u64;
+            }
+        }
+        (bg, proj)
+    }
+
     /// Keep tests on the tile's probe frames: for each cell a probe was
     /// taken for, does dropping the cell raise that held-out frame's χ²
     /// (in units of the variance the full model leaves, at least the noise)
@@ -2310,6 +2381,11 @@ impl SlowLoop {
     ) -> AddVerdict {
         let rect = self.tiles[ti].rect;
         let (bg, proj) = self.with_bump(ti, cell.center, &test_fr.y, &test_fr.proj);
+        let (bg, proj) = if self.cfg.shift_nuisance {
+            self.with_shift_terms(ti, cell.center, bg, proj, &test_fr.y)
+        } else {
+            (bg, proj)
+        };
         self.work += (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
         let mut work = 0;
         let base = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
@@ -2884,7 +2960,7 @@ impl SlowLoop {
             {
                 continue;
             }
-            let sig = self.coord_noise(&base, i);
+            let sig = self.coord_noise(base, i);
             let active: Vec<usize> = (0..fits.len())
                 .filter(|&t| fits[t].c[i] >= 2.0 * sig)
                 .collect();
@@ -3090,7 +3166,7 @@ impl SlowLoop {
                 // frames is too noisy to keep replacing).
                 continue;
             } else {
-                let sig = self.coord_noise(&base, i);
+                let sig = self.coord_noise(base, i);
                 let active: Vec<usize> = (0..fits.len())
                     .filter(|&t| fits[t].c[i] >= 2.0 * sig)
                     .collect();

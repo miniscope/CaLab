@@ -579,3 +579,136 @@ fn a_fragment_beside_its_cell_is_not_kept() {
     let (merges, n) = merges_with(v2_config(), &m, t, &seed);
     assert_eq!(n, 1, "{merges} merges");
 }
+
+/// Pure noise resampled by a random sub-pixel shift on every frame (what
+/// motion correction does to the sensor noise), and the per-pixel σ the
+/// noise map would measure on it.
+fn resampled_noise(t: usize, seed: u64) -> (Vec<f32>, f32) {
+    use crate::motion::{Interpolation, Warper};
+    let n_px = N * N;
+    let mut rng = Lcg(seed);
+    let mut wp = Warper::new(N, N, &[], &[], Interpolation::Bicubic).unwrap();
+    let mut out = vec![0.0f32; t * n_px];
+    let mut white = vec![0.0f32; n_px];
+    for k in 0..t {
+        for v in white.iter_mut() {
+            *v = rng.normal();
+        }
+        let s = (rng.next() * 4.0 - 2.0, rng.next() * 4.0 - 2.0);
+        wp.warp(&white, s, &[], &mut out[k * n_px..(k + 1) * n_px], None)
+            .unwrap();
+    }
+    let var = out.iter().map(|&v| f64::from(v * v)).sum::<f64>() / out.len() as f64;
+    (out, var.sqrt() as f32)
+}
+
+#[test]
+fn resampled_noise_adds_nothing() {
+    // Sub-pixel resampling lowers the per-pixel noise while the noise at
+    // cell scale stays: against a white-noise null, noise blobs pass as
+    // cells. The measured spatial correlation widens the null. (The border
+    // rows the warp replicates are outside the FOV, as in a recording.)
+    let t = 2000;
+    let (m, sigma) = resampled_noise(t, 17);
+    let fov: Vec<u8> = (0..N * N)
+        .map(|p| {
+            let (y, x) = (p / N, p % N);
+            u8::from((4..N - 4).contains(&y) && (4..N - 4).contains(&x))
+        })
+        .collect();
+    let mut slow =
+        SlowLoop::new(dims(), fov, vec![sigma; N * N], flattener(), v2_config()).unwrap();
+    let lib0 = slow.finalize().unwrap();
+    let mut eng = TraceEngine::new(lib0, SolverConfig::default()).unwrap();
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let rho = slow.noise_inflation();
+    assert!(rho > 1.3, "inflation {rho}");
+    assert_eq!(slow.stats().adds, 0, "inflation {rho}");
+}
+
+#[test]
+fn white_noise_is_not_inflated() {
+    let t = 300;
+    let m = movie(&[], t, 5);
+    let (mut slow, mut eng) = start(v2_config(), &[]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let r = slow.noise_inflation();
+    assert!((r - 1.0).abs() < 0.03, "{r}");
+}
+
+/// One bright cell whose position jitters by a registration error of
+/// `sd` px per axis (every frame), filtered, plus unit noise.
+fn jittered_cell(t: usize, sd: f32, amp: f32, seed: u64) -> Vec<f32> {
+    let n_px = N * N;
+    let mut flat = flattener();
+    let mut rng = Lcg(seed);
+    let c = trace(&mut rng, t, 0.05, amp);
+    let mut out = vec![0.0f32; t * n_px];
+    let mut img = vec![0.0f32; n_px];
+    for k in 0..t {
+        let f = &mut out[k * n_px..(k + 1) * n_px];
+        for v in f.iter_mut() {
+            *v = rng.normal();
+        }
+        if c[k] == 0.0 {
+            continue;
+        }
+        let fp = blob(0, 47.0 + sd * rng.normal(), 47.0 + sd * rng.normal());
+        img.iter_mut().for_each(|v| *v = 0.0);
+        for y in 0..fp.height {
+            for x in 0..fp.width {
+                img[(fp.y0 + y) * N + fp.x0 + x] = fp.values[y * fp.width + x];
+            }
+        }
+        flat.apply(&mut img).unwrap();
+        for (o, &a) in f.iter_mut().zip(&img) {
+            *o += a * c[k];
+        }
+    }
+    out
+}
+
+#[test]
+fn registration_error_beside_a_bright_cell_adds_nothing() {
+    // A bright cell misregistered by a fraction of a pixel leaves a dipole
+    // residual beside it on every active frame; the add test's shift terms
+    // explain it.
+    let t = 1500;
+    let m = jittered_cell(t, 0.3, 30.0, 23);
+    let run = |shift_nuisance: bool| {
+        let cfg = SlowLoopConfig {
+            shift_nuisance,
+            ..v2_config()
+        };
+        let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
+        let mut deleted = Vec::new();
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        (slow.finalize().unwrap().len(), slow.stats().adds)
+    };
+    let (n, adds) = run(true);
+    let (n_off, adds_off) = run(false);
+    eprintln!("with shift terms: {n} cells, {adds} adds; without: {n_off} cells, {adds_off} adds");
+    assert_eq!(n, 1);
+    assert_eq!(adds, 0);
+}
+
+#[test]
+fn a_dim_cell_beside_a_bright_one_is_still_found() {
+    // The shift terms are dipoles: they cannot take up a second soma's
+    // light beside a bright cell.
+    let t = 1500;
+    let mut rng = Lcg(29);
+    let cells = vec![
+        (blob(0, 47.0, 47.0), trace(&mut rng, t, 0.05, 30.0)),
+        (blob(0, 47.0, 55.0), trace(&mut rng, t, 0.03, 5.0)),
+    ];
+    let m = movie(&cells, t, 31);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let c = centres(&slow.finalize().unwrap());
+    assert_eq!(c.len(), 2, "{c:?}");
+    assert!(c.iter().any(|&p| near(p, 47.0, 55.0)), "{c:?}");
+}
