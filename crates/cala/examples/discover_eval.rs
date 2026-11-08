@@ -621,6 +621,9 @@ fn main() {
     if args.iter().any(|a| a == "--no-merge-refit") {
         scfg.merge_refit_pair = false;
     }
+    if let Some(v) = arg_value(&args, "--refit-min-share") {
+        scfg.merge_refit_min_share = v.parse().unwrap();
+    }
     if let Some(v) = arg_value(&args, "--merge-z") {
         scfg.merge_z = v.parse().unwrap();
     }

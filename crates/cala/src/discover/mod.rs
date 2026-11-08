@@ -153,6 +153,9 @@
 //!   same frames (`merge_refit_pair`) and the better of the two pairs is
 //!   the baseline: otherwise footprints that lag the data (motion, slow
 //!   change) lose to any fresh footprint and distinct cells are merged.
+//!   The refitted pair counts only while it stays two cells (supports
+//!   overlapping by less than half, the weaker part with at least
+//!   `merge_refit_min_share` of the energy), so duplicates still merge.
 //!   A young cell merged back marks its spot like a rejection.
 //!
 //! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
@@ -316,6 +319,10 @@ pub struct SlowLoopConfig {
     /// fit; without this, two distinct cells whose footprints lag the data
     /// lose to one fresh footprint and are merged (v3 churn on real data).
     pub merge_refit_pair: bool,
+    /// The refitted pair is the baseline only when its weaker part
+    /// carries at least this share of the stronger one's fitted energy
+    /// (and the two supports overlap by less than half).
+    pub merge_refit_min_share: f32,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -366,6 +373,7 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_weak_share: 0.0,
             merge_refit_pair: true,
+            merge_refit_min_share: 0.1,
             merge_z: 2.0,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -2650,10 +2658,21 @@ impl SlowLoop {
             // keeping both beats it by the add margin.
             let sep = self.solve_all(&base, test_fr);
             let mut chi_sep = Self::total_chi2(&sep);
-            if self.cfg.merge_refit_pair {
-                // The pair refitted like the merged arm: alternating rank-1
-                // fits of each cell on the union support, the other's
-                // current signal removed.
+            let ovl = overlap(&base.cols[i], &base.cols[j], rect.len());
+            // The merged arm is a fresh fit, so the pair is refitted on the
+            // same frames too (alternating rank-1 fits of each cell on the
+            // union support, the other's signal removed) and the better of
+            // the current and the refitted pair is the baseline: otherwise
+            // footprints that lag the data lose to any fresh footprint and
+            // distinct cells are merged. The refitted pair counts only while
+            // it stays two cells: supports that do not largely coincide, and
+            // the weaker part carrying `merge_refit_min_share` of the
+            // stronger one's energy. A duplicate or a fragment refits into
+            // the whole cell plus a weak leftover that only soaks up
+            // footprint mismatch (on the minisim recording with motion,
+            // letting that leftover count kept 4 in 5 pairs on one GT unit
+            // apart); then the current pair is the baseline.
+            if self.cfg.merge_refit_pair && ovl < 0.5 {
                 let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
                 let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
                 let mut other: Vec<Vec<f32>> = data
@@ -2678,8 +2697,14 @@ impl SlowLoop {
                 let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
                 let hb = rank1(&refs, &dom, &mut cb, 5, false);
                 self.work += (2 * dom.len() * data.len() * 30) as u64;
+                let energy = |h: &[f32], c: &[f32]| {
+                    h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
+                };
+                let (ea, eb) = (energy(&ha, &ca), energy(&hb, &cb));
+                let two = ea.min(eb) >= self.cfg.merge_refit_min_share * ea.max(eb);
                 let (idi, idj) = (ids[i], ids[j]);
-                if let (Some(na), Some(nb)) = (
+                if let (true, Some(na), Some(nb)) = (
+                    two,
                     self.make_cell(idi, rect, &dom, &ha, None),
                     self.make_cell(idj, rect, &dom, &hb, None),
                 ) {
@@ -2715,7 +2740,7 @@ impl SlowLoop {
             // Footprints that largely coincide and whose held-out traces
             // move together act as one cell even when the second column
             // buys a little χ² (it absorbs footprint mismatch).
-            let one = overlap(&base.cols[i], &base.cols[j], rect.len()) >= 0.5 && {
+            let one = ovl >= 0.5 && {
                 let a: Vec<f32> = sep.iter().map(|f| f.c[i]).collect();
                 let b: Vec<f32> = sep.iter().map(|f| f.c[j]).collect();
                 let energy = |c: &[f32], k: usize| {
