@@ -683,7 +683,7 @@ pub(crate) fn rank1(
 /// Rank-2 factorisation `x_t ≈ h_a a_t + h_b b_t` (`a, b ≥ 0`) of frames
 /// `x` (each on the pixels `pix` of a patch `w` wide), started from the
 /// footprint `h0` cut in two across its long axis. Returns the two spatial
-/// factors when the parts look distinct on these frames: their traces
+/// factors (and the rank-1 one) when the parts look distinct on these frames: their traces
 /// correlate below `max_corr`, each carries at least a fifth of the
 /// energy, and the squared error drops by more than `2 (frames + pixels)`
 /// (twice the parameters the second factor adds) against rank 1.
@@ -693,7 +693,7 @@ pub(crate) fn rank2_split(
     pix: &[u32],
     w: usize,
     max_corr: f32,
-) -> Option<(Vec<f32>, Vec<f32>)> {
+) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
     let (nt, np) = (x.len(), h0.len());
     if nt < 2 || np < 4 {
         return None;
@@ -833,7 +833,7 @@ pub(crate) fn rank2_split(
         }
     };
     (sse1 - sse2 > 2.0 * (nt + np) as f64 && share >= 0.2 && r < f64::from(max_corr))
-        .then_some((ha, hb))
+        .then_some((ha, hb, h1))
 }
 
 #[cfg(test)]

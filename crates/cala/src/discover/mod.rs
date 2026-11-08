@@ -117,6 +117,43 @@
 //! libraries filter again only the footprints that changed
 //! ([`LibraryBuilder::reuse`]).
 //!
+//! # Competing explanations (v3)
+//!
+//! v2 still churned on real data: residual left around an existing cell
+//! (its footprint imperfect) was added as a small new cell and later
+//! merged back, over and over. v3 decides every structural edit by model
+//! comparison on held-out frames, and keeps footprints converging so that
+//! less residual arises in the first place.
+//!
+//! * **Running footprint statistics** (`fpstats.rs`). Every fitting frame
+//!   updates, per cell, the centred covariance of its own-signal residual
+//!   with its fast-loop trace on a disk wider than its support. The
+//!   least-squares footprint from all frames so far is their ratio; its
+//!   standard error falls as frames come in. A cell is refined from it
+//!   when the estimate disagrees with the current footprint beyond its own
+//!   noise (a χ² test) *and* the change lowers held-out χ² (paired z ≥
+//!   `refine_z`). Converged footprints stop being proposed. The reservoir's
+//!   noisier estimate is used only for young cells.
+//! * **Add vs absorb vs merge-in.** A residual candidate competes with the
+//!   overlapping cells re-estimated to take it up: from their statistics,
+//!   grown into the candidate's disk with their trace fixed, or (when the
+//!   candidate's trace follows theirs) refitted at rank 1 with it. A new
+//!   cell costs a column, so it must beat the best alternative by the add
+//!   margin; otherwise the best alternative is applied if it is confirmed
+//!   on held-out frames it was not chosen on (`absorb_z`), and the spot is
+//!   suppressed for a cooldown that doubles each time.
+//! * **Split.** A cell whose active frames factorise at rank 2 into parts
+//!   with distinct traces is tested as two cells; the pair must beat both
+//!   the single cell and its best re-estimate by the add margin, and each
+//!   part must pass the add test's event and neighbour-trace checks.
+//! * **Merge.** A pair is compared with one cell fitted to both and with
+//!   either cell alone; it is kept apart only when that beats the best
+//!   single-cell alternative by `merge_z` (hysteresis below `accept_z`).
+//!   A young cell merged back marks its spot like a rejection.
+//!
+//! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
+//! involved and its held-out margin.
+//!
 //! # Threading
 //!
 //! The slow loop is a plain struct with no clock: `step(budget)` spends a
@@ -249,11 +286,23 @@ pub struct SlowLoopConfig {
     pub refine_z: f32,
     /// ...and an absorption (the best of several alternatives) above this.
     pub absorb_z: f32,
+    /// An alternative competes with adding a candidate only when it
+    /// explains at least this share of the candidate's held-out gain.
+    pub absorb_share: f32,
     /// ...and changes the whitened filtered footprint by at least this
     /// share of its norm (smaller changes are not proposed).
     pub refine_min_change: f32,
+    /// Cells are refined from the reservoir (while their running statistics
+    /// are not yet precise) only this many frames after their birth.
+    pub reservoir_refine_frames: u64,
     /// Try splitting cells on every n-th visit of a tile (0 = never).
     pub split_every_visits: u32,
+    /// A pair of cells is kept apart when separating them beats the best
+    /// single-cell alternative on held-out frames by this many standard
+    /// deviations of the noise-column null (v2: `accept_z`). Below
+    /// `accept_z`, this is hysteresis: a cell that once passed the add test
+    /// is not removed on the next unlucky set of test frames.
+    pub merge_z: f32,
     /// Merge a coinciding pair when the weaker carries less than this share
     /// of the stronger one's held-out energy, whatever the χ² test says
     /// (v2: 0.25; 0 = off).
@@ -299,12 +348,15 @@ impl Default for SlowLoopConfig {
             compare: true,
             stats_half_life_frames: 6000.0,
             stats_margin_cells: 0.4,
-            stats_min_snr: 6.0,
-            refine_z: 2.0,
+            stats_min_snr: 4.0,
+            refine_z: 3.0,
             absorb_z: 3.0,
+            absorb_share: 0.8,
             refine_min_change: 0.03,
+            reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_weak_share: 0.0,
+            merge_z: 2.0,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
                 inner_px: 12.0,
@@ -341,8 +393,10 @@ impl SlowLoopConfig {
             && self.stats_min_snr.is_finite()
             && self.refine_z.is_finite()
             && self.absorb_z.is_finite()
+            && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
-            && self.merge_weak_share.is_finite();
+            && self.merge_weak_share.is_finite()
+            && self.merge_z.is_finite();
         if ok {
             Ok(())
         } else {
@@ -1174,7 +1228,15 @@ impl SlowLoop {
         self.stats.deletes += 1;
         self.edits.deletes += 1;
         self.log(EditKind::Delete, id, 0, cell.center, 0.0);
-        let (cy, cx) = cell.center;
+        self.entomb(cell.center);
+        self.pending = true;
+        self.touch(cell.bbox);
+    }
+
+    /// Mark a spot where a cell was removed: nothing is added there for
+    /// 4^k cooldowns after the k-th removal, and a new cell there needs
+    /// held-out events from after it.
+    fn entomb(&mut self, (cy, cx): (f32, f32)) {
         let now = self.frames;
         let d = self.cfg.cell_diameter_px;
         if let Some(ti) = self.tile_of(cy, cx) {
@@ -1191,8 +1253,6 @@ impl SlowLoop {
             }
             self.reject(ti, cy, cx);
         }
-        self.pending = true;
-        self.touch(cell.bbox);
     }
 
     /// The tile whose core holds `(y, x)`.
@@ -1597,7 +1657,15 @@ impl SlowLoop {
                 let (m, sd) = v.null;
                 let alt_gain = v.alt.map_or(0.0, |a| a.1.max(0.0));
                 let margin = v.gain - alt_gain - m;
-                if v.ok && margin > f64::from(self.cfg.accept_z) * sd {
+                let pen = f64::from(self.cfg.accept_z) * sd;
+                // An alternative that explains only part of the new cell's
+                // gain is a neighbour stretched over a distinct cell (on the
+                // minisim recordings, letting it win cost half the recall):
+                // the candidate is then added if it passes the add test on
+                // its own. Only an alternative that explains most of it
+                // (`absorb_share`) holds the add to the stricter margin.
+                let distinct = alt_gain < f64::from(self.cfg.absorb_share) * v.gain;
+                if v.ok && (margin > pen || distinct && v.gain - m > pen) {
                     outcome = Outcome::Add(cell, (margin / sd) as f32);
                 } else if let Some((k, g, z)) = v.alt {
                     // The best of several alternatives, chosen on these
@@ -2341,6 +2409,14 @@ impl SlowLoop {
             if !c0.iter().any(|&v| v > 0.0) {
                 continue;
             }
+            // Grown or merged in only when the candidate's fitting-frame
+            // trace follows the cell's (the residual is that cell's light):
+            // otherwise a neighbouring cell would be swallowed whenever a
+            // stretched footprint happens to explain part of it (on the
+            // minisim recordings this cost half the recall).
+            if corr(cand_trace, &c0) < self.cfg.merge_corr {
+                continue;
+            }
             self.work += (dom.len() * data.len() * 13) as u64;
             let mut c = c0.clone();
             let h = rank1(&refs, &local, &mut c, 1, true);
@@ -2348,12 +2424,6 @@ impl SlowLoop {
                 new.born = cell.born;
                 out.push(new);
                 kinds.push(2);
-            }
-            // Merged in only when the candidate's fitting-frame trace
-            // follows the cell's: otherwise a neighbouring cell would be
-            // swallowed whenever one rank-1 fit happens to beat it.
-            if corr(cand_trace, &c0) < self.cfg.merge_corr {
-                continue;
             }
             let mut c = c0;
             let h = rank1(&refs, &local, &mut c, 10, false);
@@ -2609,7 +2679,7 @@ impl SlowLoop {
             };
             let accept = best_arm
                 .as_ref()
-                .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.accept_z) * s);
+                .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.merge_z) * s);
             if let (true, Some((loss, merged, stay, go))) = (accept, best_arm) {
                 self.stats.merges += 1;
                 self.edits.merges += 1;
@@ -2654,9 +2724,9 @@ impl SlowLoop {
                 // doubles each time the same residual comes back).
                 self.reject(ti, center.0, center.1);
                 if gone_young {
-                    if let Some(t) = self.tile_of(gone_center.0, gone_center.1) {
-                        self.reject(t, gone_center.0, gone_center.1);
-                    }
+                    // The same residual added and merged back again and
+                    // again: treat the spot like a deletion's.
+                    self.entomb(gone_center);
                 }
             } else {
                 self.merge_rejected.push((pair.0, pair.1, cooldown));
@@ -2724,7 +2794,7 @@ impl SlowLoop {
                 .collect();
             self.stats.split_tests += 1;
             self.work += (np * active.len() * 60) as u64;
-            let Some((ha, hb)) =
+            let Some((ha, hb, h1)) =
                 rank2_split(&data, &col.val, &col.pix, rect.w, self.cfg.merge_corr)
             else {
                 continue;
@@ -2765,6 +2835,29 @@ impl SlowLoop {
             if gain <= m + f64::from(self.cfg.accept_z) * sd {
                 continue;
             }
+            // Two columns also fit an imperfect single footprint better
+            // than one does: the pair must beat the best single-cell
+            // re-estimate (rank 1 on the same frames, or the running
+            // statistics) by the add margin too.
+            let mut singles = Vec::new();
+            if let Some(mut c1) = self.make_cell(id, rect, &col.pix, &h1, None) {
+                c1.born = cell.born;
+                singles.push(c1);
+            }
+            if let Some(c1) = self.stats_proposal(&cell, false) {
+                singles.push(c1);
+            }
+            let mut best_single = 0.0f64;
+            for c1 in &singles {
+                let mut work = 0;
+                let pr = Problem::new(self.columns(rect, &[id], &[c1]), &bg, rect.len(), &mut work);
+                self.work += work;
+                let f = self.solve_with(&pr, &test_fr.y, &proj);
+                best_single = best_single.max((chi1 - Self::total_chi2(&f)) / s2);
+            }
+            if gain - best_single <= m + f64::from(self.cfg.accept_z) * sd {
+                continue;
+            }
             let (ka, kb) = (two.len() - 2, two.len() - 1);
             let ta: Vec<f32> = f2.iter().map(|f| f.c[ka]).collect();
             let tb: Vec<f32> = f2.iter().map(|f| f.c[kb]).collect();
@@ -2781,6 +2874,26 @@ impl SlowLoop {
                     .count() as u32
             };
             if events(&ta, ka) < self.cfg.min_events || events(&tb, kb) < self.cfg.min_events {
+                continue;
+            }
+            // Each part is a cell by the add test's rules: its held-out
+            // trace must not follow a neighbour's (then it is that
+            // neighbour's light, for refinement to give back).
+            let reach = 2.0 * self.cfg.library.max_support_px;
+            let follows = |t: &[f32], c: (f32, f32)| {
+                (0..two.len() - 2).any(|j| {
+                    self.cells
+                        .iter()
+                        .find(|x| x.id == two.cols[j].id)
+                        .is_some_and(|cj| {
+                            (cj.center.0 - c.0).powi(2) + (cj.center.1 - c.1).powi(2)
+                                <= reach * reach
+                                && corr(t, &f2.iter().map(|f| f.c[j]).collect::<Vec<_>>())
+                                    >= self.cfg.merge_corr
+                        })
+                })
+            };
+            if follows(&ta, a.center) || follows(&tb, b.center) {
                 continue;
             }
             // Accepted.
@@ -2854,11 +2967,17 @@ impl SlowLoop {
             {
                 continue;
             }
-            let new = if self.stats_estimate(id).is_some() {
+            let from_stats = self.stats_estimate(id).is_some();
+            let new = if from_stats {
                 match self.stats_proposal(&cell, true) {
                     Some(n) => n,
                     None => continue,
                 }
+            } else if self.frames.saturating_sub(cell.born) > self.cfg.reservoir_refine_frames {
+                // Past its youth a cell is refined from its running
+                // statistics only (a footprint from a few dozen reservoir
+                // frames is too noisy to keep replacing).
+                continue;
             } else {
                 let sig = base.coord_sigma(i);
                 let active: Vec<usize> = (0..fits.len())
@@ -2897,15 +3016,22 @@ impl SlowLoop {
             let f = self.solve_all(&pr, test_fr);
             let gain = (chi_base - Self::total_chi2(&f)) / s2;
             let z = paired_z(&base_test, &f);
-            if gain > 0.0 && z > f64::from(self.cfg.refine_z) {
-                updates.push((id, new, z as f32));
+            // A reservoir estimate is noisy and re-proposed on every
+            // visit, so it needs the stronger evidence an absorption does.
+            let need = if from_stats {
+                self.cfg.refine_z
+            } else {
+                self.cfg.absorb_z
+            };
+            if gain > 0.0 && z > f64::from(need) {
+                updates.push((id, new, z as f32, if from_stats { 1 } else { 2 }));
             }
         }
-        for (id, new, margin) in updates {
+        for (id, new, margin, source) in updates {
             if let Some(ci) = self.cells.iter().position(|c| c.id == id) {
                 self.stats.refines += 1;
                 self.edits.refines += 1;
-                self.log(EditKind::Refine, id, 0, new.center, margin);
+                self.log(EditKind::Refine, id, source, new.center, margin);
                 let bbox = new.bbox;
                 self.cells[ci] = new;
                 self.pending = true;

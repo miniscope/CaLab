@@ -617,6 +617,9 @@ fn main() {
     if let Some(v) = arg_value(&args, "--stats-snr") {
         scfg.stats_min_snr = v.parse().unwrap();
     }
+    if let Some(v) = arg_value(&args, "--merge-z") {
+        scfg.merge_z = v.parse().unwrap();
+    }
     if let Some(v) = arg_value(&args, "--weak-share") {
         scfg.merge_weak_share = v.parse().unwrap();
     }
