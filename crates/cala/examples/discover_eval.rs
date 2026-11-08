@@ -871,10 +871,12 @@ fn main() {
                 )
                 .unwrap();
             }
+            // (The diagnostics above are not timed.)
+            let t1b = Instant::now();
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
             t_pre += (t1 - t0).as_secs_f64();
-            t_fast += (t2 - t1).as_secs_f64();
+            t_fast += (t2 - t1b).as_secs_f64();
             for (m, &v) in maxproj.iter_mut().zip(&y) {
                 *m = m.max(v);
             }

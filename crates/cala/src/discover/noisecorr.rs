@@ -22,9 +22,15 @@
 //!
 //! [`NoiseCorr`] measures the correlation of the whitened frame-to-frame
 //! difference at every lag within two pixels (the frame difference removes
-//! static structure; transients are rare and spatially sparse) and turns it
-//! into the variance inflation `ρ = Σ_l K(l) g(l)` of a cell-scale column,
-//! with `g` the autocorrelation of a Gaussian of a quarter cell diameter.
+//! static structure) and turns it into the variance inflation
+//! `ρ = Σ_l (K(l) − K_4) g(l)` of a cell-scale column, with `g` the
+//! autocorrelation of a Gaussian of a quarter cell diameter. `K_4`, the
+//! correlation at 4 px (beyond any interpolation kernel), is the part of
+//! the difference that is signal (neuropil, transients): it is about as
+//! large at every short lag and is not noise. On the 15 min workshop
+//! recording without motion correction the short lags alone summed to
+//! `ρ` = 1.11 although no single lag exceeded 0.01; with the baseline that
+//! is 1.0 again.
 //! `ρ` is never taken below 1: white noise (no motion correction) leaves
 //! every test exactly as it was.
 
@@ -60,6 +66,42 @@ pub(crate) struct NoiseCorr {
     /// Every `row_step`-th row is sampled.
     row_step: usize,
     pushes: usize,
+    /// Running mean of the correlation at `BASE_LAG` px (along either axis).
+    base: f64,
+    d: Vec<f32>,
+}
+
+/// Lag (px) beyond the reach of any interpolation kernel: correlation there
+/// is signal (neuropil, transients, light that changes across many pixels),
+/// which is about as strong at the short lags and is not noise.
+const BASE_LAG: usize = 4;
+
+/// Lags (half plane) at 4 to 5.7 px whose mean correlation is the signal
+/// baseline: several, so the baseline is not the noisiest term of `ρ`.
+const BASE_LAGS: [(usize, isize); 10] = [
+    (0, 4),
+    (3, -4),
+    (3, 4),
+    (4, -4),
+    (4, -2),
+    (4, -1),
+    (4, 0),
+    (4, 1),
+    (4, 2),
+    (4, 4),
+];
+
+fn dot(a: &[f32], b: &[f32]) -> f64 {
+    let mut acc = [0.0f32; 8];
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
+    for (x, y) in ca.iter().zip(cb) {
+        for k in 0..8 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    let tail: f32 = ra.iter().zip(rb).map(|(x, y)| x * y).sum();
+    acc.iter().map(|&v| f64::from(v)).sum::<f64>() + f64::from(tail)
 }
 
 impl NoiseCorr {
@@ -72,6 +114,8 @@ impl NoiseCorr {
             tau: 1000.0,
             row_step: 8,
             pushes: 0,
+            base: 0.0,
+            d: Vec::new(),
         }
     }
 
@@ -81,7 +125,7 @@ impl NoiseCorr {
     /// (only the rows the next frame needs are kept).
     pub fn push(&mut self, z: &[f32], fov: &[u8], dims: Dims) -> u64 {
         let (h, w) = (dims.height, dims.width);
-        if h < 5 || w < 5 {
+        if h < 2 * BASE_LAG + 1 || w < 2 * BASE_LAG + 1 {
             return 0;
         }
         let step = self.row_step;
@@ -89,31 +133,44 @@ impl NoiseCorr {
         let mut work = 0u64;
         let mut s0 = 0.0f64;
         let mut s = [0.0f64; 12];
+        let mut sb = 0.0f64;
         if self.has_prev {
-            for y in (phase..h - 2).step_by(step) {
-                for x in 2..w - 2 {
-                    let p = y * w + x;
-                    if fov[p] == 0 {
-                        continue;
-                    }
-                    let d0 = z[p] - self.prev[p];
-                    s0 += f64::from(d0 * d0);
-                    for (l, &(dy, dx)) in LAGS.iter().enumerate() {
-                        let q = (p as isize + (dy * w) as isize + dx) as usize;
-                        if fov[q] != 0 {
-                            s[l] += f64::from(d0 * (z[q] - self.prev[q]));
-                        }
+            let rows = BASE_LAG + 1;
+            self.d.resize(rows * w, 0.0);
+            for y in (phase..h - BASE_LAG).step_by(step) {
+                // Masked differences of rows y .. y + BASE_LAG.
+                for r in 0..rows {
+                    let o = (y + r) * w;
+                    for x in 0..w {
+                        self.d[r * w + x] = if fov[o + x] != 0 {
+                            z[o + x] - self.prev[o + x]
+                        } else {
+                            0.0
+                        };
                     }
                 }
-                work += (13 * w) as u64;
+                let (lo, hi) = (BASE_LAG, w - BASE_LAG);
+                let d0 = &self.d[lo..hi];
+                s0 += dot(d0, d0);
+                for (l, &(dy, dx)) in LAGS.iter().enumerate() {
+                    let a = (dy * w) as isize + lo as isize + dx;
+                    let o = &self.d[a as usize..a as usize + (hi - lo)];
+                    s[l] += dot(d0, o);
+                }
+                for &(dy, dx) in &BASE_LAGS {
+                    let a = (dy * w) as isize + lo as isize + dx;
+                    sb += dot(d0, &self.d[a as usize..a as usize + (hi - lo)])
+                        / BASE_LAGS.len() as f64;
+                }
+                work += (rows * w + 23 * (hi - lo)) as u64;
             }
         }
-        // Keep the rows (three per sampled row) the next frame compares.
+        // Keep the rows the next frame compares.
         let next = (self.pushes + 1) % step;
         for y in (next..h).step_by(step) {
-            let rows = y * w..((y + 3).min(h)) * w;
+            let rows = y * w..((y + BASE_LAG + 1).min(h)) * w;
+            work += rows.len() as u64;
             self.prev[rows.clone()].copy_from_slice(&z[rows]);
-            work += (3 * w) as u64;
         }
         self.pushes += 1;
         self.has_prev = true;
@@ -125,6 +182,7 @@ impl NoiseCorr {
         for (k, v) in self.k.iter_mut().zip(s) {
             *k += a * (v / s0 - *k);
         }
+        self.base += a * (sb / s0 - self.base);
         work
     }
 
@@ -137,7 +195,7 @@ impl NoiseCorr {
         let mut r = 1.0f64;
         for (&k, &(dy, dx)) in self.k.iter().zip(&LAGS) {
             let d2 = (dy * dy) as f64 + (dx * dx) as f64;
-            r += 2.0 * k * (-d2 / (4.0 * sc * sc)).exp();
+            r += 2.0 * (k - self.base) * (-d2 / (4.0 * sc * sc)).exp();
         }
         r.max(1.0) as f32
     }

@@ -629,7 +629,9 @@ fn resampled_noise_adds_nothing() {
 
 #[test]
 fn white_noise_is_not_inflated() {
-    let t = 300;
+    // (A 96 x 96 frame samples few pixels per frame: a long run keeps the
+    // estimate's own noise below the tolerance.)
+    let t = 1500;
     let m = movie(&[], t, 5);
     let (mut slow, mut eng) = start(v2_config(), &[]);
     let mut deleted = Vec::new();
