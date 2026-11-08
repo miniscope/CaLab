@@ -59,6 +59,7 @@ pub(crate) struct NoiseCorr {
     tau: f64,
     /// Every `row_step`-th row is sampled.
     row_step: usize,
+    pushes: usize,
 }
 
 impl NoiseCorr {
@@ -69,39 +70,53 @@ impl NoiseCorr {
             k: [0.0; 12],
             frames: 0.0,
             tau: 1000.0,
-            row_step: 4,
+            row_step: 8,
+            pushes: 0,
         }
     }
 
     /// Account for one whitened frame `z` (0 outside the FOV / at NaN).
+    /// Each frame samples every `row_step`-th row, starting at a row that
+    /// rotates from frame to frame, against the previous frame's same rows
+    /// (only the rows the next frame needs are kept).
     pub fn push(&mut self, z: &[f32], fov: &[u8], dims: Dims) -> u64 {
         let (h, w) = (dims.height, dims.width);
-        if !self.has_prev || h < 5 || w < 5 {
-            self.prev.copy_from_slice(z);
-            self.has_prev = true;
-            return z.len() as u64;
+        if h < 5 || w < 5 {
+            return 0;
         }
+        let step = self.row_step;
+        let phase = self.pushes % step;
+        let mut work = 0u64;
         let mut s0 = 0.0f64;
         let mut s = [0.0f64; 12];
-        let mut work = 0u64;
-        for y in (0..h - 2).step_by(self.row_step) {
-            for x in 2..w - 2 {
-                let p = y * w + x;
-                if fov[p] == 0 {
-                    continue;
-                }
-                let d0 = z[p] - self.prev[p];
-                s0 += f64::from(d0 * d0);
-                for (l, &(dy, dx)) in LAGS.iter().enumerate() {
-                    let q = (p as isize + (dy * w) as isize + dx) as usize;
-                    if fov[q] != 0 {
-                        s[l] += f64::from(d0 * (z[q] - self.prev[q]));
+        if self.has_prev {
+            for y in (phase..h - 2).step_by(step) {
+                for x in 2..w - 2 {
+                    let p = y * w + x;
+                    if fov[p] == 0 {
+                        continue;
+                    }
+                    let d0 = z[p] - self.prev[p];
+                    s0 += f64::from(d0 * d0);
+                    for (l, &(dy, dx)) in LAGS.iter().enumerate() {
+                        let q = (p as isize + (dy * w) as isize + dx) as usize;
+                        if fov[q] != 0 {
+                            s[l] += f64::from(d0 * (z[q] - self.prev[q]));
+                        }
                     }
                 }
+                work += (13 * w) as u64;
             }
-            work += (13 * w) as u64;
         }
-        self.prev.copy_from_slice(z);
+        // Keep the rows (three per sampled row) the next frame compares.
+        let next = (self.pushes + 1) % step;
+        for y in (next..h).step_by(step) {
+            let rows = y * w..((y + 3).min(h)) * w;
+            self.prev[rows.clone()].copy_from_slice(&z[rows]);
+            work += (3 * w) as u64;
+        }
+        self.pushes += 1;
+        self.has_prev = true;
         if s0 <= 0.0 {
             return work;
         }
@@ -110,7 +125,7 @@ impl NoiseCorr {
         for (k, v) in self.k.iter_mut().zip(s) {
             *k += a * (v / s0 - *k);
         }
-        work + z.len() as u64
+        work
     }
 
     /// Variance inflation of a cell-scale column (at least 1).
