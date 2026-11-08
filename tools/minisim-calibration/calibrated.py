@@ -6,8 +6,16 @@ calibrated full-frame (600 x 600 px, the DAQ frame size) spec is stored as
 ``ca1_workshop_calibrated.spec.json`` next to this file; :func:`calibrated_spec`
 loads it and adjusts sampling, size and motion.
 
-Regenerate the JSON with ``python calibrated.py`` (prints the overrides). See
-``CALIBRATION.md`` for the target numbers and what was matched.
+``ca1_workshop_v2.spec.json`` (``calibrated_spec(..., version="v2")``) keeps v1's
+optics, sensor, illumination, vessels and motion, and recalibrates the cells and
+background to the real recording's activity: Markov bursts with long bouts (per-cell
+peak SNR, event rate and event widths of cala's traces), a lower cell density (cells
+found in 2 min), activity-driven bleaching with fast recovery (the first minute's
+dimming), and a broader, mostly global neuropil whose fluctuation matches the real
+frame-mean wander. v1 stays as it is for the motion fixtures.
+
+Regenerate the JSONs with ``python calibrated.py`` (v1) and ``python calibrated.py
+v2``. See ``CALIBRATION.md`` for the target numbers and what was matched.
 
 Needs a minisim that has the ``"miniscope"`` brain-motion model (PR #33,
 ``feat/realistic-motion``).
@@ -19,10 +27,11 @@ import math
 from pathlib import Path
 
 from minisim import Spec, presets
-from minisim.spec import CellActivity, Sensor
+from minisim.spec import Bleaching, CellActivity, Sensor
 
 HERE = Path(__file__).resolve().parent
 SPEC_JSON = HERE / "ca1_workshop_calibrated.spec.json"
+SPEC_V2_JSON = HERE / "ca1_workshop_v2.spec.json"
 
 N_PX = 600  # the workshop DAQ frames are 600 x 600 (V4 sensor windowed from 608)
 FPS = 20.0
@@ -125,6 +134,68 @@ def _build(n_px: int = N_PX, **over) -> Spec:
     )
 
 
+# --- v2: activity and background (CALIBRATION.md, "v2"). The targets are measured
+# on cala's own traces (discover_eval + activity_stats.py) of 2-min windows of the
+# real recording, so the cell selection and the trace model match on both sides.
+#
+# * Markov bursts with long bouts. The mean bout is 1/0.02 = 50 frames (2.5 s,
+#   geometric, so a minority are multi-second plateaus: ~12 % of events are wider
+#   than 2 s at half height, as in real CA1 traces) at 18 Hz in-bout. A bout starts
+#   every ~25 s per cell, over a sparse 0.05 Hz single-spike background. v1's 0.17 s
+#   bouts at 150 Hz made 25-spike bursts and twice the real peak SNR and event rate.
+# * tau_decay 0.7 s (v1 0.5): the real half-height widths and decays run slightly
+#   longer than v1's.
+# * brightness_cv 0.9 (v1 0.6): the real peak-SNR spread across cells is wider.
+V2_ACTIVITY = dict(
+    p_quiescent_to_active=0.002,
+    p_active_to_quiescent=0.02,
+    active_rate_hz=18.0,
+    quiescent_rate_hz=0.05,
+    tau_decay_s=0.7,
+    brightness_cv=0.9,
+)
+# * 3/4 of v1's cell density: a 2-min window then yields as many cala cells as real.
+V2_DENSITY_SCALE = 0.75
+# * Bleaching with fast recovery: the real frame dims ~9 % over the first minute
+#   and then holds. The 33 s turnover is not protein turnover. It stands in for the
+#   reversible (dark-state) part of 1p bleaching: B settles at ~0.88 within ~1 min,
+#   and lower for bright, central, busy cells.
+V2_BLEACHING = dict(
+    bleach_susceptibility=6.3e-6, turnover_tau_s=33.0, excitation_intensity=100.0
+)
+# * Neuropil: the real background is ~90 % one global mode plus a smooth field with
+#   a ~100-120 px (1/e) correlation length, and the frame mean wanders 1.4-1.8 %
+#   (1 s means). sigma 190 um gives a ~95-100 px residual field, and 5 components
+#   leave ~5 % of the variance local. Coupling 0.85 brings the frame-mean wander
+#   down from ~4 % to ~1.5 %.
+V2_NEUROPIL = dict(spatial_sigma_um=190.0, n_components=5, population_coupling=0.85)
+
+
+def _build_v2(base: Spec | None = None) -> Spec:
+    """The v2 spec: the v1 JSON with the activity and background above."""
+    if base is None:
+        base = Spec.model_validate_json(SPEC_JSON.read_text())
+    steps = []
+    for st in base.steps:
+        if st.kind == "place_neurons":
+            pops = [
+                p.model_copy(
+                    update={"density_per_mm3": p.density_per_mm3 * V2_DENSITY_SCALE}
+                )
+                for p in st.populations
+            ]
+            st = st.model_copy(update={"populations": pops})
+        elif st.kind == "cell_activity":
+            steps.append(st.model_copy(update=V2_ACTIVITY))
+            steps.append(Bleaching(**V2_BLEACHING))
+            continue
+        elif st.kind == "neuropil":
+            st = st.model_copy(update=V2_NEUROPIL)
+        steps.append(st)
+    spec = base.model_copy(update={"steps": steps})
+    return Spec.model_validate(spec.model_dump())
+
+
 def _crop_falloff(step, n_px: int, px_um: float):
     """Re-express a full-frame radial falloff on a centred ``n_px`` crop.
 
@@ -155,6 +226,7 @@ def calibrated_spec(
     nonrigid: bool = True,
     vasculature: bool = True,
     base: Spec | None = None,
+    version: str = "v1",
 ) -> Spec:
     """The calibrated V4 CA1 spec, re-timed / resized.
 
@@ -163,10 +235,12 @@ def calibrated_spec(
     so the crop sees the centre of the calibrated field, not a shrunken copy.
     ``motion=False`` drops brain motion; ``nonrigid=False`` keeps rigid motion only.
     ``vasculature=False`` drops the vessels (for a content ablation). ``base``
-    replaces the stored JSON (used while calibrating).
+    replaces the stored JSON (used while calibrating). ``version="v2"`` loads the
+    activity-calibrated ``ca1_workshop_v2.spec.json`` instead of v1.
     """
     if base is None:
-        base = Spec.model_validate_json(SPEC_JSON.read_text())
+        path = {"v1": SPEC_JSON, "v2": SPEC_V2_JSON}[version]
+        base = Spec.model_validate_json(path.read_text())
     acq = base.acquisition
     px_um = acq.pixel_size_um
     acq_upd: dict = {"fps": fps, "duration_s": duration_s}
@@ -199,6 +273,12 @@ def calibrated_spec(
 
 
 if __name__ == "__main__":
-    spec = _build()
-    SPEC_JSON.write_text(spec.model_dump_json(indent=1))
-    print(f"wrote {SPEC_JSON}")
+    import sys
+
+    if sys.argv[1:] == ["v2"]:
+        SPEC_V2_JSON.write_text(_build_v2().model_dump_json(indent=1))
+        print(f"wrote {SPEC_V2_JSON}")
+    else:
+        spec = _build()
+        SPEC_JSON.write_text(spec.model_dump_json(indent=1))
+        print(f"wrote {SPEC_JSON}")
