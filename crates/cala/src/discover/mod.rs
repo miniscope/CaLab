@@ -179,6 +179,7 @@
 mod fpstats;
 mod ledger;
 mod local;
+mod noisecorr;
 mod reservoir;
 
 pub use ledger::{
@@ -194,6 +195,7 @@ use std::sync::Arc;
 use fpstats::FpStats;
 use ledger::Evidence;
 use local::{rank1, rank2_split, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
+use noisecorr::NoiseCorr;
 use reservoir::{mix, Slot, Tile};
 
 use crate::preprocess::flatten::GlowFlattener;
@@ -323,6 +325,12 @@ pub struct SlowLoopConfig {
     /// carries at least this share of the stronger one's fitted energy
     /// (and the two supports overlap by less than half).
     pub merge_refit_min_share: f32,
+    /// Measure the spatial correlation of the noise and widen every noise
+    /// null by the variance it adds at cell scale (see `noisecorr.rs`):
+    /// sub-pixel motion correction resamples the noise, and a test that
+    /// assumes independent pixels then takes noise blobs for cells. No
+    /// effect on white noise.
+    pub noise_corr: bool,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -375,6 +383,7 @@ impl Default for SlowLoopConfig {
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
             merge_z: 2.0,
+            noise_corr: true,
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
                 inner_px: 12.0,
@@ -518,6 +527,9 @@ pub struct SlowLoop {
     coarse_dims: Dims,
     coarse_gauss: RecursiveGaussian,
     sample: Vec<f32>,
+    ncorr: NoiseCorr,
+    /// Cell-scale noise variance inflation `ρ` (1 = white noise).
+    rho: f32,
 }
 
 /// Per library slot: the residual weights `h / σ²` on the support, the
@@ -715,6 +727,8 @@ impl SlowLoop {
             coarse_dims,
             coarse_gauss,
             sample: Vec::new(),
+            ncorr: NoiseCorr::new(n_px),
+            rho: 1.0,
             cfg,
         };
         s.set_noise(noise)?;
@@ -747,6 +761,12 @@ impl SlowLoop {
     }
 
     /// Cells in the working set (published or not).
+    /// Measured cell-scale variance inflation of the noise over white noise
+    /// (1 without spatial correlation; see [`SlowLoopConfig::noise_corr`]).
+    pub fn noise_inflation(&self) -> f32 {
+        self.rho
+    }
+
     pub fn len(&self) -> usize {
         self.cells.len()
     }
@@ -970,6 +990,13 @@ impl SlowLoop {
             (1.4826 * *m).max(1e-6)
         };
         self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
+        if self.cfg.noise_corr {
+            self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
+            self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
+            if let Ok(v) = std::env::var("CALA_RHO") {
+                self.rho = v.parse().unwrap();
+            }
+        }
         self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
@@ -1480,8 +1507,18 @@ impl SlowLoop {
     }
 
     /// Held-out χ² improvement a column of noise would give: mean and sd.
+    /// What a column of pure noise buys over `n` frames: mean and sd of the
+    /// χ² gain (white noise: 0.5 and 1.25 per frame), scaled by the noise's
+    /// cell-scale variance inflation.
     fn null(&self, n: usize) -> (f64, f64) {
-        (0.5 * n as f64, (1.25 * n as f64).sqrt())
+        let r = f64::from(self.rho);
+        (0.5 * n as f64 * r, (1.25 * n as f64).sqrt() * r)
+    }
+
+    /// Trace noise of coordinate `i` of `pr` (white-noise σ times the
+    /// inflation of correlated noise).
+    fn coord_noise(&self, pr: &Problem, i: usize) -> f32 {
+        pr.coord_sigma(i) * self.rho.sqrt()
     }
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
@@ -2288,7 +2325,7 @@ impl SlowLoop {
         let dof = (test_fr.len() as f64 * (n_px - (bg.k + base.len()) as f64)).max(1.0);
         let chi_b = Self::total_chi2(&b);
         let s2 = (chi_b / dof).max(1.0);
-        let sig = ext.coord_sigma(k) * s2.sqrt() as f32;
+        let sig = self.coord_noise(&ext, k) * s2.sqrt() as f32;
         let null = self.null(test_fr.len());
         let gain = (chi_b - Self::total_chi2(&e)) / s2;
         // Competing explanations, on the same frames and background. The
@@ -2847,7 +2884,7 @@ impl SlowLoop {
             {
                 continue;
             }
-            let sig = base.coord_sigma(i);
+            let sig = self.coord_noise(&base, i);
             let active: Vec<usize> = (0..fits.len())
                 .filter(|&t| fits[t].c[i] >= 2.0 * sig)
                 .collect();
@@ -2942,7 +2979,7 @@ impl SlowLoop {
                 let mut s: Vec<f32> = t.to_vec();
                 s.sort_by(f32::total_cmp);
                 let lvl = s[s.len() / 2];
-                let sig = two.coord_sigma(k) * s2.sqrt() as f32;
+                let sig = self.coord_noise(&two, k) * s2.sqrt() as f32;
                 t.iter()
                     .filter(|&&v| v - lvl >= self.cfg.event_z * sig)
                     .count() as u32
@@ -3053,7 +3090,7 @@ impl SlowLoop {
                 // frames is too noisy to keep replacing).
                 continue;
             } else {
-                let sig = base.coord_sigma(i);
+                let sig = self.coord_noise(&base, i);
                 let active: Vec<usize> = (0..fits.len())
                     .filter(|&t| fits[t].c[i] >= 2.0 * sig)
                     .collect();

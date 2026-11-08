@@ -38,7 +38,9 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
-use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
+use calab_cala::motion::{
+    Frame, Frames, Interpolation, MotionConfig, MotionCorrector, NonRigidConfig, Warper,
+};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
@@ -271,6 +273,44 @@ struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
     buf: Vec<f32>,
+    /// Diagnostics: oracle correction from the simulator's true motion
+    /// (`CALA_MC_ORACLE=<file from export_gt_motion.py>`): warper, per-frame
+    /// records (dy, dx, field) and record length.
+    oracle: Option<(Warper, Vec<f32>, usize)>,
+    /// Diagnostics: `CALA_JITTER=<motion file>` moves a still recording by
+    /// the file's shifts (bilinear, like the simulator) and back (bicubic,
+    /// like the corrector): resampling without any registration error.
+    jitter: Option<(Warper, Warper, Vec<f32>, usize, Vec<f32>)>,
+    t: usize,
+    /// Last frame's (dy, dx, residual rms).
+    pub last: (f32, f32, f32),
+}
+
+fn read_mc_oracle(
+    path: &str,
+    h: usize,
+    w: usize,
+    interp: Interpolation,
+) -> (Warper, Vec<f32>, usize) {
+    let b = std::fs::read(path).unwrap();
+    let u = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+    let (t, gy, gx) = (u(0), u(4), u(8));
+    let mut o = 12;
+    let mut f64s = |n: usize| {
+        let v: Vec<f64> = (0..n)
+            .map(|i| f64::from_le_bytes(b[o + 8 * i..o + 8 * i + 8].try_into().unwrap()))
+            .collect();
+        o += 8 * n;
+        v
+    };
+    let ny = f64s(gy);
+    let nx = f64s(gx);
+    let rl = 2 + 2 * gy * gx;
+    let rec: Vec<f32> = b[o..o + 4 * t * rl]
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    (Warper::new(h, w, &ny, &nx, interp).unwrap(), rec, rl)
 }
 
 impl Pipeline {
@@ -291,7 +331,14 @@ impl Pipeline {
                 pre.front(r, o).unwrap();
             }
             let cfg = MotionConfig {
-                nonrigid: Some(NonRigidConfig::default()),
+                // Diagnostics: CALA_NR=off for a rigid-only corrector.
+                nonrigid: (std::env::var("CALA_NR").ok().as_deref() != Some("off"))
+                    .then(NonRigidConfig::default),
+                interpolation: if std::env::var("CALA_INTERP").ok().as_deref() == Some("bilinear") {
+                    Interpolation::Bilinear
+                } else {
+                    Interpolation::Bicubic
+                },
                 ..MotionConfig::default()
             };
             let mut mc = MotionCorrector::new(dims.height, dims.width, cfg).unwrap();
@@ -301,19 +348,61 @@ impl Pipeline {
         } else {
             None
         };
+        let interp = match std::env::var("CALA_INTERP").ok().as_deref() {
+            Some("bilinear") => Interpolation::Bilinear,
+            _ => Interpolation::Bicubic,
+        };
+        let oracle = std::env::var("CALA_MC_ORACLE")
+            .ok()
+            .map(|p| read_mc_oracle(&p, dims.height, dims.width, interp));
+        if oracle.is_some() {
+            println!("motion: ORACLE correction ({interp:?})");
+        }
+        let jitter = std::env::var("CALA_JITTER").ok().map(|p| {
+            let (fw, rec, rl) =
+                read_mc_oracle(&p, dims.height, dims.width, Interpolation::Bilinear);
+            let (bw, _, _) = read_mc_oracle(&p, dims.height, dims.width, interp);
+            println!("JITTER: bilinear forward, {interp:?} back");
+            (fw, bw, rec, rl, vec![0.0f32; n_px])
+        });
         Pipeline {
             pre,
-            mc,
+            mc: if oracle.is_some() { None } else { mc },
             buf: vec![0.0; n_px],
+            oracle,
+            jitter,
+            t: 0,
+            last: (0.0, 0.0, 0.0),
         }
     }
 
     /// Returns the rigid motion shift `(dy, dx)` (zero without motion).
     fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> (f32, f32) {
         self.pre.front(raw, &mut self.buf).unwrap();
+        let t = self.t;
+        self.t += 1;
+        if let Some((fw, bw, rec, rl, tmp)) = &mut self.jitter {
+            let r = &rec[t * *rl..(t + 1) * *rl];
+            let res: Vec<f32> = r[2..].to_vec();
+            let neg: Vec<f32> = r[2..].iter().map(|v| -v).collect();
+            fw.warp(&self.buf, (r[0], r[1]), &res, tmp, None).unwrap();
+            bw.warp(tmp, (-r[0], -r[1]), &neg, &mut self.buf, None)
+                .unwrap();
+        }
+        if let Some((wp, rec, rl)) = &mut self.oracle {
+            let r = &rec[t * *rl..(t + 1) * *rl];
+            let res: Vec<f32> = r[2..].iter().map(|v| -v).collect();
+            wp.warp(&self.buf, (-r[0], -r[1]), &res, out, None).unwrap();
+            self.pre.back(out).unwrap();
+            self.last = (-r[0], -r[1], 0.0);
+            return (-r[0], -r[1]);
+        }
         let sh = match &mut self.mc {
             Some(mc) => {
                 let r = mc.process(Frame::F32(&self.buf), out).unwrap();
+                let n = (r.residual.len() / 2).max(1);
+                let ss: f32 = r.residual.iter().map(|v| v * v).sum();
+                self.last = (r.dy, r.dx, (ss / n as f32).sqrt());
                 (r.dy, r.dx)
             }
             None => {
@@ -696,6 +785,9 @@ fn main() {
         .iter()
         .any(|a| a == "--dump-ledger")
         .then(|| std::io::BufWriter::new(File::create(out_dir.join("ledger.bin")).unwrap()));
+    let mut flog = std::io::BufWriter::new(File::create(out_dir.join("frames1.tsv")).unwrap());
+    writeln!(flog, "frame\tdy\tdx\tnr_rms\tdvar\trho_x\trho_y\trho_xy").unwrap();
+    let mut yprev = vec![0.0f32; n_px];
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -706,6 +798,41 @@ fn main() {
             let t0 = Instant::now();
             pipe.frame(f, &mut y);
             let t1 = Instant::now();
+            {
+                // Spatial correlation of the frame-to-frame difference (mostly
+                // noise): lag (0,1), (1,0), (1,1), robust to the FOV edge.
+                let w = dims.width;
+                let (mut s0, mut sx, mut sy, mut sd, mut n) =
+                    (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0u64);
+                for yy in 8..dims.height - 8 {
+                    for xx in 8..w - 8 {
+                        let p = yy * w + xx;
+                        if fov[p] == 0 || fov[p + w + 1] == 0 {
+                            continue;
+                        }
+                        let d = |q: usize| f64::from(y[q] - yprev[q]);
+                        let d0 = d(p);
+                        s0 += d0 * d0;
+                        sx += d0 * d(p + 1);
+                        sy += d0 * d(p + w);
+                        sd += d0 * d(p + w + 1);
+                        n += 1;
+                    }
+                }
+                yprev.copy_from_slice(&y);
+                writeln!(
+                    flog,
+                    "{t}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+                    pipe.last.0,
+                    pipe.last.1,
+                    pipe.last.2,
+                    s0 / n.max(1) as f64,
+                    sx / s0.max(1e-12),
+                    sy / s0.max(1e-12),
+                    sd / s0.max(1e-12)
+                )
+                .unwrap();
+            }
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
             t_pre += (t1 - t0).as_secs_f64();
@@ -793,10 +920,11 @@ fn main() {
                 }
                 if (t + 1).is_multiple_of(600) {
                     println!(
-                        "  frame {}: {} cells ({} published), {:?}, {:.0} s",
+                        "  frame {}: {} cells ({} published), noise rho {:.2}, {:?}, {:.0} s",
                         t + 1,
                         sl.len(),
                         engine.library().len(),
+                        sl.noise_inflation(),
                         sl.stats(),
                         t_all.elapsed().as_secs_f64()
                     );
