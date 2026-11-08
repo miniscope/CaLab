@@ -18,6 +18,10 @@ import init, {
   PreprocessConfig,
   Preprocessor,
   PreprocessWarmup,
+  SlowLoop,
+  TraceEngine,
+  TraceLibrary,
+  TraceLibraryBuilder,
 } from '../../../../crates/cala/pkg/calab_cala.js';
 
 export {
@@ -30,6 +34,10 @@ export {
   PreprocessConfig,
   Preprocessor,
   PreprocessWarmup,
+  SlowLoop,
+  TraceEngine,
+  TraceLibrary,
+  TraceLibraryBuilder,
 };
 
 let ready: Promise<void> | null = null;

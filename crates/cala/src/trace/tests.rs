@@ -512,3 +512,43 @@ fn reextraction_reproduces_the_online_pass() {
     .unwrap();
     assert_eq!(again, online);
 }
+
+#[test]
+fn library_bytes_round_trip_solves_identically() {
+    let c = traces(6, 15, 21);
+    let frames = filtered_frames(&c, 0.1, 22);
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let lib = library(&[0, 1, 2, 3, 4, 5], model, 41);
+        let bytes = lib.to_bytes();
+        let back = Library::from_bytes(&bytes).unwrap();
+        assert_eq!(back.version(), 41);
+        assert_eq!(back.ids(), lib.ids());
+        assert_eq!(back.to_bytes(), bytes);
+        let mut a = TraceEngine::new(Arc::new(lib), SolverConfig::default()).unwrap();
+        let mut b = TraceEngine::new(Arc::new(back), SolverConfig::default()).unwrap();
+        for f in &frames {
+            let ra = a.process(f).unwrap();
+            let rb = b.process(f).unwrap();
+            assert_eq!(ra.traces, rb.traces);
+            assert_eq!(ra.background, rb.background);
+        }
+    }
+    // An empty library round-trips too, and damaged bytes are an error.
+    let empty = LibraryBuilder::new(dims())
+        .version(0)
+        .build(&mut flattener())
+        .unwrap();
+    let bytes = empty.to_bytes();
+    assert_eq!(Library::from_bytes(&bytes).unwrap().len(), 0);
+    assert!(Library::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    let mut wrong = bytes.clone();
+    wrong[0] = b'X';
+    assert!(Library::from_bytes(&wrong).is_err());
+}

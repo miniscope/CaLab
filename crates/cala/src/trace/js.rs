@@ -168,6 +168,78 @@ impl JsTraceLibrary {
     pub fn trace_noise(&self) -> Vec<f32> {
         self.inner.trace_noise().to_vec()
     }
+
+    /// The library as bytes, to send to another worker (`fromBytes`).
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes()
+    }
+
+    /// A library from `toBytes` (same version; footprints are not filtered
+    /// again, only the solver's precomputed terms are rebuilt).
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(bytes: &[u8]) -> Result<JsTraceLibrary, JsError> {
+        console_error_panic_hook::set_once();
+        let lib = Library::from_bytes(bytes).map_err(|e| js_err("fromBytes", e))?;
+        Ok(JsTraceLibrary::from_arc(Arc::new(lib)))
+    }
+
+    /// Support centre `(y, x)` of each cell, interleaved, slot order.
+    pub fn centers(&self) -> Vec<f32> {
+        (0..self.inner.len())
+            .flat_map(|i| {
+                let ((y, x), _) = self.inner.support(i);
+                [y, x]
+            })
+            .collect()
+    }
+
+    /// Support radius of each cell, px, slot order.
+    pub fn radii(&self) -> Vec<f32> {
+        (0..self.inner.len())
+            .map(|i| self.inner.support(i).1)
+            .collect()
+    }
+
+    /// Offsets into `supportPixels` / `footprintValues`: cell `i` owns
+    /// `[starts[i], starts[i + 1])` (length `cellCount + 1`).
+    #[wasm_bindgen(js_name = supportStarts)]
+    pub fn support_starts(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.inner.len() + 1);
+        let mut at = 0u32;
+        out.push(at);
+        for i in 0..self.inner.len() {
+            at += self.inner.unfiltered(i).0.len() as u32;
+            out.push(at);
+        }
+        out
+    }
+
+    /// Row-major pixel index of every support pixel, cell after cell.
+    #[wasm_bindgen(js_name = supportPixels)]
+    pub fn support_pixels(&self) -> Vec<u32> {
+        (0..self.inner.len())
+            .flat_map(|i| self.inner.unfiltered(i).0.iter().copied())
+            .collect()
+    }
+
+    /// Unfiltered footprint value of every support pixel (as `supportPixels`).
+    #[wasm_bindgen(js_name = footprintValues)]
+    pub fn footprint_values(&self) -> Vec<f32> {
+        (0..self.inner.len())
+            .flat_map(|i| self.inner.unfiltered(i).1.iter().copied())
+            .collect()
+    }
+}
+
+impl JsTraceLibrary {
+    pub(crate) fn from_arc(inner: Arc<Library>) -> JsTraceLibrary {
+        JsTraceLibrary { inner }
+    }
+
+    pub(crate) fn arc(&self) -> &Arc<Library> {
+        &self.inner
+    }
 }
 
 /// The per-frame trace solver.

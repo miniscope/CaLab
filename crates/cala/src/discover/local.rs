@@ -51,6 +51,20 @@ impl Rect {
         }
     }
 
+    /// Smallest rectangle holding both.
+    pub fn union(&self, o: &Rect) -> Rect {
+        let y0 = self.y0.min(o.y0);
+        let x0 = self.x0.min(o.x0);
+        let y1 = (self.y0 + self.h).max(o.y0 + o.h);
+        let x1 = (self.x0 + self.w).max(o.x0 + o.w);
+        Rect {
+            y0,
+            x0,
+            h: y1 - y0,
+            w: x1 - x0,
+        }
+    }
+
     pub fn intersects(&self, o: &Rect) -> bool {
         self.y0 < o.y0 + o.h
             && o.y0 < self.y0 + self.h
@@ -162,6 +176,8 @@ pub(crate) struct Cell {
     pub raw: Vec<f32>,
     /// Filtered values `(H a)` on the support (unwhitened).
     pub filt: Vec<f32>,
+    /// Frame at which the cell entered the working set (seeded: 0).
+    pub born: u64,
 }
 
 impl Cell {
@@ -233,6 +249,7 @@ impl Cell {
             pix,
             raw,
             filt,
+            born: 0,
         })
     }
 
@@ -661,6 +678,162 @@ pub(crate) fn rank1(
         }
     }
     h
+}
+
+/// Rank-2 factorisation `x_t ≈ h_a a_t + h_b b_t` (`a, b ≥ 0`) of frames
+/// `x` (each on the pixels `pix` of a patch `w` wide), started from the
+/// footprint `h0` cut in two across its long axis. Returns the two spatial
+/// factors (and the rank-1 one) when the parts look distinct on these frames: their traces
+/// correlate below `max_corr`, each carries at least a fifth of the
+/// energy, and the squared error drops by more than `2 (frames + pixels)`
+/// (twice the parameters the second factor adds) against rank 1.
+pub(crate) fn rank2_split(
+    x: &[Vec<f32>],
+    h0: &[f32],
+    pix: &[u32],
+    w: usize,
+    max_corr: f32,
+) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+    let (nt, np) = (x.len(), h0.len());
+    if nt < 2 || np < 4 {
+        return None;
+    }
+    // Long axis of the positive part of the footprint.
+    let (mut sw, mut my, mut mx) = (0.0f64, 0.0f64, 0.0f64);
+    for (&p, &v) in pix.iter().zip(h0) {
+        if v > 0.0 {
+            let v = f64::from(v);
+            sw += v;
+            my += v * (p as usize / w) as f64;
+            mx += v * (p as usize % w) as f64;
+        }
+    }
+    if !(sw > 0.0) {
+        return None;
+    }
+    let (my, mx) = (my / sw, mx / sw);
+    let (mut cyy, mut cxx, mut cxy) = (0.0f64, 0.0f64, 0.0f64);
+    for (&p, &v) in pix.iter().zip(h0) {
+        if v > 0.0 {
+            let v = f64::from(v);
+            let (dy, dx) = ((p as usize / w) as f64 - my, (p as usize % w) as f64 - mx);
+            cyy += v * dy * dy;
+            cxx += v * dx * dx;
+            cxy += v * dy * dx;
+        }
+    }
+    // Major eigenvector of [[cyy, cxy], [cxy, cxx]].
+    let th = 0.5 * (2.0 * cxy).atan2(cyy - cxx);
+    let (vy, vx) = (th.cos(), th.sin());
+    let mut ha = vec![0.0f32; np];
+    let mut hb = vec![0.0f32; np];
+    for (k, &p) in pix.iter().enumerate() {
+        let (dy, dx) = ((p as usize / w) as f64 - my, (p as usize % w) as f64 - mx);
+        if dy * vy + dx * vx > 0.0 {
+            ha[k] = h0[k];
+        } else {
+            hb[k] = h0[k];
+        }
+    }
+    let dot = |a: &[f32], b: &[f32]| -> f64 {
+        a.iter()
+            .zip(b)
+            .map(|(&u, &v)| f64::from(u) * f64::from(v))
+            .sum()
+    };
+    let mut ca = vec![0.0f32; nt];
+    let mut cb = vec![0.0f32; nt];
+    for _ in 0..30 {
+        // Traces: 2 x 2 non-negative least squares per frame.
+        let (gaa, gab, gbb) = (dot(&ha, &ha), dot(&ha, &hb), dot(&hb, &hb));
+        if !(gaa > 0.0) || !(gbb > 0.0) {
+            return None;
+        }
+        for t in 0..nt {
+            let (ra, rb) = (dot(&ha, &x[t]), dot(&hb, &x[t]));
+            let det = gaa * gbb - gab * gab;
+            let (mut a, mut b) = if det > 1e-12 * gaa * gbb {
+                ((gbb * ra - gab * rb) / det, (gaa * rb - gab * ra) / det)
+            } else {
+                (-1.0, -1.0)
+            };
+            if a < 0.0 || b < 0.0 {
+                let (a1, b1) = ((ra / gaa).max(0.0), (rb / gbb).max(0.0));
+                // The better of the two one-sided solutions.
+                let ea = a1 * a1 * gaa - 2.0 * a1 * ra;
+                let eb = b1 * b1 * gbb - 2.0 * b1 * rb;
+                if ea <= eb {
+                    (a, b) = (a1, 0.0);
+                } else {
+                    (a, b) = (0.0, b1);
+                }
+            }
+            ca[t] = a as f32;
+            cb[t] = b as f32;
+        }
+        // Footprints: least squares per pixel with the traces fixed.
+        let (maa, mab, mbb) = (dot(&ca, &ca), dot(&ca, &cb), dot(&cb, &cb));
+        let det = maa * mbb - mab * mab;
+        if !(det > 1e-9 * (maa * mbb).max(1e-30)) {
+            return None;
+        }
+        for k in 0..np {
+            let (mut sa, mut sb) = (0.0f64, 0.0f64);
+            for t in 0..nt {
+                let v = f64::from(x[t][k]);
+                sa += f64::from(ca[t]) * v;
+                sb += f64::from(cb[t]) * v;
+            }
+            ha[k] = ((mbb * sa - mab * sb) / det) as f32;
+            hb[k] = ((maa * sb - mab * sa) / det) as f32;
+        }
+    }
+    let mut sse2 = 0.0f64;
+    for t in 0..nt {
+        for k in 0..np {
+            let e = f64::from(x[t][k] - ha[k] * ca[t] - hb[k] * cb[t]);
+            sse2 += e * e;
+        }
+    }
+    // Rank 1 from the whole footprint.
+    let refs: Vec<&[f32]> = x.iter().map(|v| v.as_slice()).collect();
+    let local: Vec<u32> = (0..np as u32).collect();
+    let mut c1: Vec<f32> = x
+        .iter()
+        .map(|v| (dot(h0, v) / dot(h0, h0).max(1e-30)).max(0.0) as f32)
+        .collect();
+    let h1 = rank1(&refs, &local, &mut c1, 10, false);
+    let mut sse1 = 0.0f64;
+    for t in 0..nt {
+        for k in 0..np {
+            let e = f64::from(x[t][k] - h1[k] * c1[t]);
+            sse1 += e * e;
+        }
+    }
+    let ea = dot(&ha, &ha) * dot(&ca, &ca);
+    let eb = dot(&hb, &hb) * dot(&cb, &cb);
+    let share = ea.min(eb) / (ea + eb).max(1e-30);
+    let r = {
+        let n = nt as f64;
+        let (ma, mb) = (
+            ca.iter().map(|&v| f64::from(v)).sum::<f64>() / n,
+            cb.iter().map(|&v| f64::from(v)).sum::<f64>() / n,
+        );
+        let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+        for t in 0..nt {
+            let (u, v) = (f64::from(ca[t]) - ma, f64::from(cb[t]) - mb);
+            sab += u * v;
+            saa += u * u;
+            sbb += v * v;
+        }
+        if saa > 0.0 && sbb > 0.0 {
+            sab / (saa * sbb).sqrt()
+        } else {
+            1.0
+        }
+    };
+    (sse1 - sse2 > 2.0 * (nt + np) as f64 && share >= 0.2 && r < f64::from(max_corr))
+        .then_some((ha, hb, h1))
 }
 
 #[cfg(test)]

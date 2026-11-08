@@ -8,10 +8,15 @@ only needs its output.
 
 - Pinned minisim commit: `e33edad` (main, includes the realistic-motion PR #33).
 - `ca1_workshop_calibrated.spec.json`: the calibrated 600 px spec (focal depth pinned at 180 um).
-- `calibrated.py`: `calibrated_spec(duration_s, seed=, n_px=)` re-times or crops it; `python calibrated.py` rebuilds the JSON.
+- `ca1_workshop_v2.spec.json`: v1 plus realistic activity (event rate, burst size and long events, giving real peak SNR), cell density, bleaching and neuropil (see `CALIBRATION.md`, "v2"). Use it to validate cell discovery and QC; the motion fixtures stay on v1.
+- `calibrated.py`: `calibrated_spec(duration_s, seed=, n_px=, version="v1"|"v2")` re-times or crops either spec; `python calibrated.py [v2]` rebuilds the JSON.
 - `calibrate_to_real.py`: realism statistics, real vs simulated (see `CALIBRATION.md`).
 - `make_fixtures.py <dir>`: renders the 2 min 600 px DAQ fixture and a 128 px small one.
-- `make_trace_sim.py OUT --f 0.45 --dur 60`: streams a 600 px recording plus oracle footprints (with and without the scatter halo) for `crates/cala/examples/trace_eval.rs`.
+- `make_trace_sim.py OUT --f 0.45 --dur 60 [--spec ca1_workshop_v2.spec.json]`: streams a 600 px recording plus oracle footprints (with and without the scatter halo) for `crates/cala/examples/trace_eval.rs` and `discover_eval.rs`.
+- `activity_stats.py RUN_DIR ...`: per-cell peak SNR, events, widths, bursts and drift of `discover_eval` traces (real or sim), using cala QC's definitions.
+- `session_curve.py AVI_DIR`: grey level and static structure over a session (bleaching).
+- `background_stats.py AVI_DIR`: frame-mean wander, 2-8 Hz flicker and the global share of the background.
+- `neuropil_truth.py SIM_DIR ...`: global share and correlation length of a sim's true neuropil.
 - `vessel_share.py REAL_AVI REAL_SHIFTS.npy [SIM_DIR ...]`: static power in vessel lines.
 
 ## Setup

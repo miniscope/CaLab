@@ -2,6 +2,14 @@ import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-sou
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 
+/** Fast-loop settings of a pipeline run. */
+export interface CellsSettings {
+  /** Tags the run's messages to the slow worker and the main thread. */
+  session: number;
+  /** Run cell discovery (forward frames to the slow worker). */
+  discover: boolean;
+}
+
 /** Main thread -> frame worker. `id` pairs a request with its response. */
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
@@ -9,7 +17,7 @@ export type FrameRequest =
   /** `count` consecutive frames from global index `start` (one for a single frame). */
   | { type: 'read'; id: number; start: number; count: number }
   /** Set up the preprocess + motion pipeline over the open recording (replaces any running one). */
-  | { type: 'pipeline-start'; id: number; options: PipelineOptions }
+  | { type: 'pipeline-start'; id: number; options: PipelineOptions; cells?: CellsSettings }
   /**
    * Run one pipeline step and answer with its result. The main thread keeps
    * at most a couple of these outstanding, which is the backpressure: the
@@ -17,7 +25,11 @@ export type FrameRequest =
    */
   | { type: 'pipeline-step'; id: number }
   /** Free the pipeline's WASM state. */
-  | { type: 'pipeline-stop'; id: number };
+  | { type: 'pipeline-stop'; id: number }
+  /** The port to the slow worker (transferred). */
+  | { type: 'connect-slow'; id: number; port: MessagePort }
+  /** Turn cell discovery on or off in the running pipeline. */
+  | { type: 'set-discovery'; id: number; on: boolean };
 
 /** A request before the client stamps it with an `id` (distributes over the union). */
 export type FrameRequestBody = FrameRequest extends infer R
@@ -41,4 +53,5 @@ export type FrameResponse =
   /** Buffers inside `step` are transferred, not copied. */
   | { type: 'pipeline-step'; id: number; step: PipelineStepResult }
   | { type: 'pipeline-stopped'; id: number }
+  | { type: 'ok'; id: number }
   | { type: 'error'; id: number; message: string };

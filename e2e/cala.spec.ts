@@ -29,10 +29,13 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS","framesPerFile":3}');
   await page.getByTestId('folder-input').setInputFiles(folder);
 
+  // The raw-file player and the recording facts live in tabs under the video.
+  await page.getByRole('tab', { name: 'Raw file' }).click();
   await expect(page.getByTestId('frame-readout')).toContainText('1 / 6');
   const header = page.getByRole('banner');
   await expect(header.getByText('24 x 16')).toBeVisible();
   await expect(header.getByText('6 frames')).toBeVisible();
+  await page.getByRole('tab', { name: 'Recording' }).click();
   const info = page.locator('[data-panel-id="info"]');
   await expect(info).toContainText('24 x 16 px, 8-bit (GREY)');
   await expect(info).toContainText('20.00 Hz from metaData.json');
@@ -41,9 +44,14 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // Opening also runs preprocessing and motion correction in the worker.
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  await page.getByRole('tab', { name: 'Motion' }).click();
   await expect(page.getByTestId('motion-trace')).toBeVisible();
+  // The cells panel is up; six frames are too few for the slow loop to start.
+  await expect(page.getByTestId('cells-view')).toBeVisible();
+  await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
 
   // Raw gray levels: turn auto contrast off, scrub to global frame 4 (file 1).
+  await page.getByRole('tab', { name: 'Raw file' }).click();
   await page.getByLabel('Auto contrast').uncheck();
   await page.getByRole('slider', { name: 'Frame' }).fill('4');
   await expect(page.getByTestId('frame-readout')).toContainText('5 / 6');

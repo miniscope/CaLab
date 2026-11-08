@@ -116,6 +116,7 @@ pub struct LibraryBuilder {
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
     version: Option<u64>,
+    reuse: Option<std::sync::Arc<Library>>,
 }
 
 impl LibraryBuilder {
@@ -128,6 +129,7 @@ impl LibraryBuilder {
             noise: None,
             background: BackgroundModel::None,
             version: None,
+            reuse: None,
         }
     }
 
@@ -158,6 +160,15 @@ impl LibraryBuilder {
     /// Explicit version number (default: a process-wide counter).
     pub fn version(mut self, v: u64) -> LibraryBuilder {
         self.version = Some(v);
+        self
+    }
+
+    /// Take the filtered values of footprints that are unchanged from
+    /// `prev` (same id, support and values) instead of filtering them again.
+    /// `prev` must have been built with the same filter. An incremental
+    /// rebuild after a few edits then filters only the edited cells.
+    pub fn reuse(mut self, prev: std::sync::Arc<Library>) -> LibraryBuilder {
+        self.reuse = Some(prev);
         self
     }
 
@@ -234,11 +245,29 @@ impl LibraryBuilder {
             col_start.push(pix.len());
         }
         let n = ids.len();
+        let mut val = vec![0.0f32; pix.len()];
+        // Unchanged footprints keep the filtered values of `reuse`.
+        let mut done = vec![false; n];
+        if let Some(prev) = &self.reuse {
+            if prev.dims() == dims {
+                for i in 0..n {
+                    let Some(slot) = prev.slot(ids[i]) else {
+                        continue;
+                    };
+                    let (a, b) = (col_start[i], col_start[i + 1]);
+                    let (pp, pr) = prev.unfiltered(slot);
+                    if pp == &pix[a..b] && pr == &raw[a..b] {
+                        val[a..b].copy_from_slice(prev.filtered(slot).1);
+                        done[i] = true;
+                    }
+                }
+            }
+        }
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
         let mut canvases: Vec<Vec<usize>> = Vec::new();
-        for i in 0..n {
+        for i in (0..n).filter(|&i| !done[i]) {
             let fits = |members: &Vec<usize>| {
                 members.iter().all(|&j| {
                     let (dy, dx) = (centers[i].0 - centers[j].0, centers[i].1 - centers[j].1);
@@ -251,7 +280,6 @@ impl LibraryBuilder {
                 None => canvases.push(vec![i]),
             }
         }
-        let mut val = vec![0.0f32; pix.len()];
         let mut img = vec![0.0f32; n_px];
         for members in &canvases {
             for &i in members {
@@ -798,6 +826,211 @@ impl Library {
 
     pub(crate) fn fov(&self) -> &[u8] {
         &self.core.fov
+    }
+}
+
+/// Magic of [`Library::to_bytes`].
+const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB1";
+
+/// Little-endian reader over a byte buffer, for [`Library::from_bytes`].
+struct ByteReader<'a> {
+    buf: &'a [u8],
+    at: usize,
+}
+
+impl ByteReader<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], TraceError> {
+        let end = self
+            .at
+            .checked_add(n)
+            .filter(|&e| e <= self.buf.len())
+            .ok_or_else(|| TraceError::InvalidConfig("library bytes: truncated".into()))?;
+        let s = &self.buf[self.at..end];
+        self.at = end;
+        Ok(s)
+    }
+
+    fn u32(&mut self) -> Result<u32, TraceError> {
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, TraceError> {
+        let lo = u64::from(self.u32()?);
+        let hi = u64::from(self.u32()?);
+        Ok(lo | (hi << 32))
+    }
+
+    fn f32(&mut self) -> Result<f32, TraceError> {
+        Ok(f32::from_bits(self.u32()?))
+    }
+
+    fn u32s(&mut self, n: usize) -> Result<Vec<u32>, TraceError> {
+        let len = n
+            .checked_mul(4)
+            .ok_or_else(|| TraceError::InvalidConfig("library bytes: length overflow".into()))?;
+        Ok(self
+            .take(len)?
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
+    }
+
+    fn f32s(&mut self, n: usize) -> Result<Vec<f32>, TraceError> {
+        Ok(self.u32s(n)?.into_iter().map(f32::from_bits).collect())
+    }
+}
+
+fn put_u32s(out: &mut Vec<u8>, v: impl IntoIterator<Item = u32>) {
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+}
+
+fn put_f32s(out: &mut Vec<u8>, v: &[f32]) {
+    put_u32s(out, v.iter().map(|x| x.to_bits()));
+}
+
+/// Serialization, to hand a library from one worker to another (the slow
+/// loop publishes, the fast loop solves) without filtering the footprints
+/// again.
+impl Library {
+    /// The library as bytes: version, frame size, background model, and per
+    /// cell its id, support centre and radius, support pixels with filtered
+    /// and unfiltered values; then the FOV mask and the noise map. The
+    /// solver's precomputed terms are rebuilt by [`Library::from_bytes`]
+    /// (no filtering), and the result solves identically.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let c = &self.core;
+        let n = c.ids.len();
+        let nnz = c.pix.len();
+        let mut out = Vec::with_capacity(64 + n * 24 + nnz * 12 + c.fov.len() * 5);
+        out.extend_from_slice(LIBRARY_MAGIC);
+        put_u32s(
+            &mut out,
+            [
+                self.version as u32,
+                (self.version >> 32) as u32,
+                c.dims.width as u32,
+                c.dims.height as u32,
+                n as u32,
+                nnz as u32,
+            ],
+        );
+        match &self.model {
+            BackgroundModel::None => put_u32s(&mut out, [0]),
+            BackgroundModel::Ring { inner_px, outer_px } => {
+                put_u32s(&mut out, [1, inner_px.to_bits(), outer_px.to_bits()])
+            }
+            BackgroundModel::Basis(maps) => {
+                put_u32s(&mut out, [2, maps.len() as u32]);
+                for m in maps {
+                    put_f32s(&mut out, m);
+                }
+            }
+        }
+        put_u32s(
+            &mut out,
+            c.ids.iter().flat_map(|&id| [id as u32, (id >> 32) as u32]),
+        );
+        for &(y, x) in &c.centers {
+            put_f32s(&mut out, &[y, x]);
+        }
+        put_f32s(&mut out, &c.radii);
+        put_u32s(&mut out, c.col_start.iter().map(|&v| v as u32));
+        put_u32s(&mut out, c.pix.iter().copied());
+        put_f32s(&mut out, &c.val);
+        put_f32s(&mut out, &c.raw);
+        out.extend_from_slice(&c.fov);
+        put_f32s(&mut out, &c.noise);
+        out
+    }
+
+    /// Inverse of [`Library::to_bytes`] (keeps the version number).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Library, TraceError> {
+        let bad = |m: &str| TraceError::InvalidConfig(format!("library bytes: {m}"));
+        let mut r = ByteReader { buf: bytes, at: 0 };
+        if r.take(8)? != LIBRARY_MAGIC {
+            return Err(bad("not a cala library"));
+        }
+        let version = r.u64()?;
+        let width = r.u32()? as usize;
+        let height = r.u32()? as usize;
+        let dims = Dims::new(width, height).map_err(|e| bad(&e.to_string()))?;
+        let n_px = dims.pixels();
+        let n = r.u32()? as usize;
+        let nnz = r.u32()? as usize;
+        let model = match r.u32()? {
+            0 => BackgroundModel::None,
+            1 => BackgroundModel::Ring {
+                inner_px: r.f32()?,
+                outer_px: r.f32()?,
+            },
+            2 => {
+                let k = r.u32()? as usize;
+                let mut maps = Vec::with_capacity(k.min(64));
+                for _ in 0..k {
+                    maps.push(r.f32s(n_px)?);
+                }
+                BackgroundModel::Basis(maps)
+            }
+            _ => return Err(bad("unknown background model")),
+        };
+        let ids: Vec<u64> = r
+            .u32s(n.checked_mul(2).ok_or_else(|| bad("cell count"))?)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u64::from(p[0]) | (u64::from(p[1]) << 32))
+            .collect();
+        let centers: Vec<(f32, f32)> = r
+            .f32s(2 * n)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| (p[0], p[1]))
+            .collect();
+        let radii = r.f32s(n)?;
+        let col_start: Vec<usize> = r.u32s(n + 1)?.into_iter().map(|v| v as usize).collect();
+        if col_start[0] != 0 || col_start[n] != nnz || col_start.windows(2).any(|w| w[0] > w[1]) {
+            return Err(bad("support offsets"));
+        }
+        let pix = r.u32s(nnz)?;
+        if pix.iter().any(|&p| p as usize >= n_px) {
+            return Err(bad("support pixel outside the frame"));
+        }
+        let val = r.f32s(nnz)?;
+        let raw = r.f32s(nnz)?;
+        let fov = r.take(n_px)?.to_vec();
+        let noise = r.f32s(n_px)?;
+        if r.at != bytes.len() {
+            return Err(bad("trailing bytes"));
+        }
+        if val.iter().chain(&raw).chain(&noise).any(|v| !v.is_finite()) {
+            return Err(bad("non-finite values"));
+        }
+        let mut index_of = HashMap::with_capacity(n);
+        for (i, &id) in ids.iter().enumerate() {
+            if index_of.insert(id, i).is_some() {
+                return Err(TraceError::InvalidFootprint(format!("duplicate id {id}")));
+            }
+        }
+        let core = Core {
+            dims,
+            ids,
+            index_of,
+            centers,
+            radii,
+            col_start,
+            pix,
+            val,
+            raw,
+            fov,
+            noise,
+        };
+        Library::assemble(core, model, version)
     }
 }
 
