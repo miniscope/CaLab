@@ -71,10 +71,14 @@ export function CellTraceViewer(props: {
   const frames = () => props.cells.frame();
   const duration = () => frames() / fs();
 
-  // The trace on stream frames [0, frames): NaN before the cell was found.
-  const trace = createMemo(() => {
+  const span = createMemo(() => {
     props.cells.tick();
-    return props.cells.history().dense(props.id, frames());
+    return props.cells.history().span(props.id);
+  });
+  const envelope = createMemo(() => {
+    props.cells.tick();
+    const e = props.cells.history().overview(props.id);
+    return { duration: duration(), x: e.frames.map((f) => f / fs()), y: e.values };
   });
 
   const [width, setWidth] = createSignal(DEFAULT_WINDOW_S);
@@ -118,15 +122,20 @@ export function CellTraceViewer(props: {
 
   const data = createMemo((): uPlot.AlignedData => {
     markerTime(); // new data redraws the chart, and with it the marker
-    const t = trace();
+    props.cells.tick();
     const [s, e] = view();
-    const i0 = Math.max(0, Math.floor(s * fs()));
-    const i1 = Math.min(t.length, Math.ceil(e * fs()) + 1);
-    const y = t.subarray(i0, i1);
+    const retained = span();
+    const i0 = Math.max(retained?.first ?? 0, Math.ceil(s * fs()));
+    const i1 = Math.max(i0, Math.min(retained?.end ?? 0, Math.floor(e * fs()) + 1));
+    const y = props.cells.history().range(props.id, i0, i1);
     const x = new Float64Array(y.length);
     for (let i = 0; i < y.length; i++) x[i] = (i0 + i) / fs();
     const [dx, dy] = downsampleMinMax(x, y, ZOOM_BUCKETS);
-    return [dx, dy];
+    // Null endpoints preserve the requested time range even without detail.
+    return [
+      [s, ...dx, e],
+      [null, ...dy, null],
+    ];
   });
 
   const frameRange = () => {
@@ -152,12 +161,23 @@ export function CellTraceViewer(props: {
         fallback={<p class="cala-muted">No frames solved for this cell yet.</p>}
       >
         <TraceOverview
-          trace={trace()}
+          envelope={envelope()}
           samplingRate={fs()}
           zoomStart={view()[0]}
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
         />
+        <p class="cala-muted" data-testid="cell-trace-history-note">
+          Whole-session overview: min/max envelope.{' '}
+          <Show when={span()} fallback="Full-resolution samples are unavailable for this cell.">
+            {(s) => (
+              <>
+                Full-resolution detail retained for frames {s().first.toLocaleString()} to{' '}
+                {(s().end - 1).toLocaleString()}; earlier regions have overview only.
+              </>
+            )}
+          </Show>
+        </p>
         <div class="cala-trace-zoom" style={{ height: `${height()}px` }}>
           <Show when={height()} keyed>
             {(h) => (

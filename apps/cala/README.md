@@ -3,7 +3,7 @@
 A streaming, in-browser pipeline from raw 1-photon Miniscope video to per-cell
 footprints and traces (Rust compiled to WebAssembly, WebGPU later). So far it
 reads Miniscope AVI folders, plays them back, and runs preprocessing and
-motion correction live on the opened recording (no cell extraction yet). The app is hidden from the landing page
+motion correction, cell discovery, demixed trace extraction, and online quality control live on the opened recording. The app is hidden from the landing page
 (`calab.hidden`) but built at `/CaLab/Cala/`.
 
 ```sh
@@ -45,3 +45,21 @@ What is here:
   (not run in CI); also runs the pipeline headless on the first frames
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
+
+## Long-recording display limits
+
+The motion and flicker charts keep the latest 32,768 frames at full resolution
+(about 27 minutes at 20 fps), so brief artifacts remain visible without chart
+memory and redraw work growing with recording duration. Older chart samples are
+discarded; pipeline progress and stage timing averages still cover the entire run.
+Per-cell trace history has its own frame and byte budgets in `trace-history.ts`.
+
+The selected-cell trace viewer keeps a fixed-height whole-session min/max
+overview, using 512 adaptive buckets per tracked cell (12 KiB per cell, at most
+about 36 MiB for 3,000 cells, in addition to the full-resolution trace budget).
+Coarsening preserves extrema and their original frame positions; timing within
+a bucket is only a coarse summary, and gaps smaller than a bucket may disappear.
+The zoom plot reads only full-resolution samples still retained. Older regions
+remain navigable through the overview, with no reconstructed detail. Removed
+cells release both histories unless the cell is selected; a restarted run clears
+them. These summaries are for display, not analysis or export.

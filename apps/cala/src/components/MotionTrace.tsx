@@ -21,7 +21,7 @@ export function MotionTrace(props: { store: PipelineStore }): JSX.Element {
   return (
     <div class="cala-motion-trace" data-testid="motion-trace">
       <div class="cala-trace-head">
-        <h3 class="panel-label">Rigid motion (registering shift, px)</h3>
+        <h3 class="panel-label">Rigid motion (recent frames, px)</h3>
         <span class="cala-legend">
           <span class="cala-legend__swatch" style={{ background: OKABE_ITO.blue }} />
           dy

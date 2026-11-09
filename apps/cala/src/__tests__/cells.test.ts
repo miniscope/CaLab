@@ -167,6 +167,17 @@ describe('TraceHistory', () => {
     expect(h.dense(99, 4).every(Number.isNaN)).toBe(true);
   });
 
+  it('reads a bounded window late in a recording, with gaps and wrapped history', () => {
+    const h = new TraceHistory(4);
+    h.push(1_000_000, 6, [1], [1, 2, 3, 4, 5, 6]);
+    const v = h.range(1, 999_999, 1_000_007);
+    expect(v.length).toBe(8);
+    expect(Array.from(v)).toEqual([NaN, NaN, NaN, 3, 4, 5, 6, NaN]);
+    expect(Array.from(h.range(1, 1_000_003, 1_000_005))).toEqual([4, 5]);
+    expect(h.range(99, 1_000_000, 1_000_003).every(Number.isNaN)).toBe(true);
+    expect(h.range(1, 10, 10).length).toBe(0);
+  });
+
   it('drops cells that left the library, except the kept one, and caps the cell count', () => {
     const h = new TraceHistory(4, 2);
     h.push(0, 1, [1, 2, 3], [1, 2, 3]);
