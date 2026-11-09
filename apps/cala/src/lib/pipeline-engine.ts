@@ -91,6 +91,8 @@ export type PipelineStepResult =
       flickerGain: Float32Array;
       previews: BatchPreviews;
       timings: StageTimings;
+      /** Busy wall time of each pipeline stage (A, B, C) for this batch, ms (pipelined runs only). */
+      stageBusyMs?: number[];
       /** Traces of the batch (present when the engine runs a fast loop). */
       cells?: CellsBatch;
     }

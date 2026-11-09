@@ -24,12 +24,13 @@ const App: Component = () => {
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   // The worker (and the files it holds) lives as long as the app.
-  const client = createFrameClient();
+  // `?pipeline=0`: the old single-worker path (to compare frame rates).
+  const params = new URLSearchParams(window.location.search);
+  const client = createFrameClient(undefined, { pipelined: params.get('pipeline') !== '0' });
   const store = createViewerStore(client);
   const cells = createCellStore();
   // Cell discovery runs in a worker of its own, fed directly by the frame worker.
   createSlowClient(client, (msg) => cells.onSlowMessage(msg));
-  const params = new URLSearchParams(window.location.search);
   // `?noqc`: run without online quality control (to measure its cost).
   const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'));
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));

@@ -127,6 +127,8 @@ export function createPipelineStore(
   const [fps, setFps] = createSignal(0);
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
+  /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty unless pipelined. */
+  const [stageBusy, setStageBusy] = createSignal<number[]>([]);
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
@@ -134,6 +136,7 @@ export function createPipelineStore(
   let trace = new ShiftTrace();
   let meter = new ThroughputMeter();
   let totals: StageTimings = { ...ZERO_TIMINGS };
+  let busyTotals: number[] = [];
   let inFlight = 0;
   let exhausted = false;
   let generation = 0; // bumps on start/stop, so late answers are dropped
@@ -159,6 +162,10 @@ export function createPipelineStore(
           traceMs: totals.traceMs + t.traceMs,
         };
         const n = trace.totalFrames;
+        if (step.stageBusyMs) {
+          busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
+          setStageBusy(busyTotals.map((v) => v / n));
+        }
         setStageMs({
           readMs: totals.readMs / n,
           preprocessMs: totals.preprocessMs / n,
@@ -178,7 +185,11 @@ export function createPipelineStore(
   }
 
   function pump(): void {
-    while (status() === 'running' && !exhausted && inFlight < MAX_IN_FLIGHT) {
+    while (
+      status() === 'running' &&
+      !exhausted &&
+      inFlight < (client.maxInFlight ?? MAX_IN_FLIGHT)
+    ) {
       const gen = generation;
       inFlight++;
       client
@@ -213,6 +224,8 @@ export function createPipelineStore(
     setTraceVersion((v) => v + 1);
     setFps(0);
     setStageMs(ZERO_TIMINGS);
+    busyTotals = [];
+    setStageBusy([]);
     setError(null);
     cells?.reset(-1);
   }
@@ -272,6 +285,7 @@ export function createPipelineStore(
     previews,
     fps,
     stageMs,
+    stageBusy,
     error,
     /** Changes whenever `trace()` gained frames. */
     traceVersion,

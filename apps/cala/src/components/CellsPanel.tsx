@@ -317,6 +317,12 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
       <p class="cala-muted" data-testid="pipeline-stages">
         Pipeline ms/frame: read {s().stageMs().readMs.toFixed(1)}, preprocess{' '}
         {s().stageMs().preprocessMs.toFixed(1)}, motion {s().stageMs().motionMs.toFixed(1)}
+        <Show when={s().stageBusy().length > 0}>
+          {' '}
+          | pipelined stage busy ms/frame: frame+preprocess {s().stageBusy()[0].toFixed(1)}, motion{' '}
+          {s().stageBusy()[1].toFixed(1)}, trace {s().stageBusy()[2].toFixed(1)};{' '}
+          {s().fps().toFixed(1)} fps
+        </Show>
       </p>
       <p class="cala-muted" data-testid="fast-timing">
         Fast loop per frame (mean / p99 / max), discovery on: {fmt(timing().on)}; off:{' '}

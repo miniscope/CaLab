@@ -31,7 +31,9 @@ export type FrameRequest =
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
-  | { type: 'set-discovery'; id: number; on: boolean };
+  | { type: 'set-discovery'; id: number; on: boolean }
+  /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
+  | { type: 'link'; id: number; down: MessagePort };
 
 /** A request before the client stamps it with an `id` (distributes over the union). */
 export type FrameRequestBody = FrameRequest extends infer R
