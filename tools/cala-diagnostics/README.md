@@ -224,3 +224,10 @@ not a random population sample. `tentative_unexplained` simulation outputs are
 not proven background-only controls. Penalties can improve their objective while
 worsening raw residuals, so both gains must be reported. See the experiment notes
 before interpreting any apparent improvement.
+
+## Masked-background experiment
+
+[Masked-background protocol and results](MASKED_BACKGROUND.md) describe the
+exterior-fit comparison, empirical calibration, portable manifest commands,
+and its negative result. The native background basis extrapolates noisily into
+the footprint mask; this experiment does not change the production detector.
