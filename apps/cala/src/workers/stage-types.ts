@@ -36,6 +36,8 @@ export interface StageFree {
 export interface StageLink {
   type: 'stage-link';
   up: MessagePort;
+  /** Motion worker: use WebGPU for the prefilter and warp when available (default true). */
+  gpu?: boolean;
   /** The motion worker's port to the trace worker. */
   down?: MessagePort;
 }

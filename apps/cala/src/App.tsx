@@ -26,7 +26,11 @@ const App: Component = () => {
   // The worker (and the files it holds) lives as long as the app.
   // `?pipeline=0`: the old single-worker path (to compare frame rates).
   const params = new URLSearchParams(window.location.search);
-  const client = createFrameClient(undefined, { pipelined: params.get('pipeline') !== '0' });
+  const client = createFrameClient(undefined, {
+    pipelined: params.get('pipeline') !== '0',
+    // `?gpu=0`: WASM motion correction (to compare with WebGPU).
+    gpu: params.get('gpu') !== '0',
+  });
   const store = createViewerStore(client);
   const cells = createCellStore();
   // Cell discovery runs in a worker of its own, fed directly by the frame worker.

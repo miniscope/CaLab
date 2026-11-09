@@ -453,12 +453,7 @@ impl Prefilter {
             let src = &frame[(y0 + y) * width + x0..][..w];
             self.raw[y * w..][..w].copy_from_slice(src);
         }
-        let r = self.roi;
-        let mut sum = 0.0f64;
-        for y in 0..r.height {
-            let src = &frame[(r.y0 + y) * width + r.x0..][..r.width];
-            sum += src.iter().map(|&v| v as f64).sum::<f64>();
-        }
+        let brightness = self.brightness(frame, width);
         let input = if self.median {
             median3x3(&self.raw, h, w, &mut self.med, &mut self.med_scratch);
             &self.med
@@ -466,6 +461,17 @@ impl Prefilter {
             &self.raw
         };
         difference_of_gaussians(input, h, w, self.s1, self.s2, out, &mut self.dog);
+        brightness
+    }
+
+    /// Mean raw brightness of the registration region of `frame`.
+    fn brightness(&self, frame: &[f32], width: usize) -> f32 {
+        let r = self.roi;
+        let mut sum = 0.0f64;
+        for y in 0..r.height {
+            let src = &frame[(r.y0 + y) * width + r.x0..][..r.width];
+            sum += src.iter().map(|&v| v as f64).sum::<f64>();
+        }
         (sum / (r.height * r.width) as f64) as f32
     }
 }
@@ -979,6 +985,18 @@ fn refine_template(
     eng.brightness = Tracker::from_samples(&brightness, 1e-3 * bscale + 1e-6);
     eng.quality = Tracker::from_samples(&quality, 0.01);
     Ok(())
+}
+
+/// What an external prefilter needs to match the CPU one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PrefilterParams {
+    /// Filtered (extended) region.
+    pub ext: Roi,
+    /// Registration region (inside `ext`).
+    pub roi: Roi,
+    pub median: bool,
+    pub sigma_small: f32,
+    pub sigma_large: f32,
 }
 
 /// Streaming motion corrector for `height x width` frames.
@@ -1614,9 +1632,71 @@ impl MotionCorrector {
     }
 
     fn estimate(&mut self, bootstrap: bool) -> Result<MotionRecord, MotionError> {
-        let cfg = &self.cfg;
         let eng = self.engine.as_mut().ok_or(MotionError::NotInitialized)?;
         let brightness = eng.pre.run(&self.frame, self.w, &mut eng.filtered);
+        self.estimate_with(bootstrap, brightness)
+    }
+
+    /// Prefilter parameters an external (GPU) prefilter needs to reproduce
+    /// the CPU one, or `None` before initialisation.
+    pub fn prefilter_params(&self) -> Option<PrefilterParams> {
+        let eng = self.engine.as_ref()?;
+        Some(PrefilterParams {
+            ext: eng.pre.ext,
+            roi: eng.pre.roi,
+            median: eng.pre.median,
+            sigma_small: eng.pre.s1,
+            sigma_large: eng.pre.s2,
+        })
+    }
+
+    /// Estimate the motion of `frames` whose band-passed extended regions
+    /// (`ext.height * ext.width` each, as the CPU prefilter would produce)
+    /// were computed elsewhere; writes the flat records only (no warp).
+    /// Registration and template bookkeeping are identical to
+    /// [`process_batch`](Self::process_batch).
+    pub fn estimate_batch_prefiltered(
+        &mut self,
+        frames: &[f32],
+        filtered: &[f32],
+        records: &mut [f32],
+    ) -> Result<(), MotionError> {
+        let px = self.h * self.w;
+        let rl = self.record_len();
+        let (n, fpx) = {
+            let eng = self.engine.as_ref().ok_or(MotionError::NotInitialized)?;
+            (
+                frames.len() / px.max(1),
+                eng.pre.ext.height * eng.pre.ext.width,
+            )
+        };
+        if !frames.len().is_multiple_of(px) || filtered.len() != n * fpx || records.len() != n * rl
+        {
+            return Err(MotionError::SizeMismatch(format!(
+                "{} frame values, {} filtered, {} record values: expected multiples of {px}, {fpx}, {rl}",
+                frames.len(),
+                filtered.len(),
+                records.len()
+            )));
+        }
+        for i in 0..n {
+            let eng = self.engine.as_mut().ok_or(MotionError::NotInitialized)?;
+            eng.filtered
+                .copy_from_slice(&filtered[i * fpx..(i + 1) * fpx]);
+            let brightness = eng.pre.brightness(&frames[i * px..(i + 1) * px], self.w);
+            let rec = self.estimate_with(false, brightness)?;
+            rec.write_flat(&mut records[i * rl..(i + 1) * rl])?;
+        }
+        Ok(())
+    }
+
+    fn estimate_with(
+        &mut self,
+        bootstrap: bool,
+        brightness: f32,
+    ) -> Result<MotionRecord, MotionError> {
+        let cfg = &self.cfg;
+        let eng = self.engine.as_mut().ok_or(MotionError::NotInitialized)?;
         let residual_len = cfg.nonrigid.as_ref().map_or(0, |n| 2 * n.grid.0 * n.grid.1);
         let mut flags = if bootstrap { FLAG_BOOTSTRAP } else { 0 };
 
