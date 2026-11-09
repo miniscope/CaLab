@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["jsbindings"]
+# Explicit opt-in for target-only frozen keep-test evidence.
+diagnostics = []
 jsbindings = ["wasm-bindgen", "console_error_panic_hook"]
 # Stub for now: the Python module only reports the crate version. It exists so
 # the feature set mirrors crates/solver and the CI lint covers both surfaces.
