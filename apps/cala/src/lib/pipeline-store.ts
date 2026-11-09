@@ -17,8 +17,19 @@ export const MAX_IN_FLIGHT = 2;
 
 export type PipelineStatus = 'idle' | 'starting' | 'running' | 'paused' | 'done' | 'error';
 
-/** Rigid shifts and global flicker per processed frame, appended batch by batch. */
+/** Maximum full-resolution motion/flicker samples retained for the live charts. */
+export const SHIFT_TRACE_CAPACITY = 32768;
+
+/** Recent rigid shifts and global flicker, bounded independently of recording length. */
 export class ShiftTrace {
+  /** All samples processed, including those no longer retained for display. */
+  totalFrames = 0;
+
+  constructor(readonly capacity = SHIFT_TRACE_CAPACITY) {
+    if (!Number.isSafeInteger(capacity) || capacity < 1)
+      throw new RangeError('ShiftTrace capacity must be a positive safe integer.');
+  }
+
   readonly frame: number[] = [];
   readonly dy: number[] = [];
   readonly dx: number[] = [];
@@ -34,7 +45,14 @@ export class ShiftTrace {
     offset?: ArrayLike<number>,
     gain?: ArrayLike<number>,
   ): void {
-    for (let i = 0; i < dy.length; i++) {
+    this.totalFrames += dy.length;
+    // Trim before appending, including when a single batch exceeds capacity.
+    // Both storage and chart copies stay bounded; never subsample away spikes.
+    const first = Math.max(0, dy.length - this.capacity);
+    const remove = Math.max(0, this.length + dy.length - first - this.capacity);
+    for (const values of [this.frame, this.dy, this.dx, this.offset, this.gainPct])
+      values.splice(0, remove);
+    for (let i = first; i < dy.length; i++) {
       this.frame.push(start + i);
       this.dy.push(dy[i]);
       this.dx.push(dx[i]);
@@ -140,7 +158,7 @@ export function createPipelineStore(
           otherMs: totals.otherMs + t.otherMs,
           traceMs: totals.traceMs + t.traceMs,
         };
-        const n = trace.length;
+        const n = trace.totalFrames;
         setStageMs({
           readMs: totals.readMs / n,
           preprocessMs: totals.preprocessMs / n,
