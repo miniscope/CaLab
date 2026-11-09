@@ -65,6 +65,13 @@ export interface BatchPreviews {
   output: PreviewImage;
 }
 
+/**
+ * Where motion correction runs: `webgpu`, or WASM because it was turned off
+ * (`?gpu=0`), WebGPU is unavailable (no adapter, or settings it cannot run),
+ * or the GPU failed mid-run.
+ */
+export type MotionBackend = 'webgpu' | 'wasm-off' | 'wasm-unavailable' | 'wasm-failed';
+
 export type PipelineStepResult =
   | {
       kind: 'setup';
@@ -93,6 +100,8 @@ export type PipelineStepResult =
       timings: StageTimings;
       /** Busy wall time of each pipeline stage (A, B, C) for this batch, ms (pipelined runs only). */
       stageBusyMs?: number[];
+      /** Where motion correction ran for this batch (pipelined runs only; absent = single-worker WASM). */
+      motionBackend?: MotionBackend;
       /** Traces of the batch (present when the engine runs a fast loop). */
       cells?: CellsBatch;
     }

@@ -9,7 +9,12 @@
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { PipelineClient } from './frame-client.ts';
-import type { BatchPreviews, PipelineStepResult, StageTimings } from './pipeline-engine.ts';
+import type {
+  BatchPreviews,
+  MotionBackend,
+  PipelineStepResult,
+  StageTimings,
+} from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
@@ -129,6 +134,8 @@ export function createPipelineStore(
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
   /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty unless pipelined. */
   const [stageBusy, setStageBusy] = createSignal<number[]>([]);
+  /** Where motion correction runs (`null` before the first batch or on the single-worker path). */
+  const [motionBackend, setMotionBackend] = createSignal<MotionBackend | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
@@ -162,6 +169,7 @@ export function createPipelineStore(
           traceMs: totals.traceMs + t.traceMs,
         };
         const n = trace.totalFrames;
+        setMotionBackend(step.motionBackend ?? null);
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
           setStageBusy(busyTotals.map((v) => v / n));
@@ -226,6 +234,7 @@ export function createPipelineStore(
     setStageMs(ZERO_TIMINGS);
     busyTotals = [];
     setStageBusy([]);
+    setMotionBackend(null);
     setError(null);
     cells?.reset(-1);
   }
@@ -286,6 +295,7 @@ export function createPipelineStore(
     fps,
     stageMs,
     stageBusy,
+    motionBackend,
     error,
     /** Changes whenever `trace()` gained frames. */
     traceVersion,

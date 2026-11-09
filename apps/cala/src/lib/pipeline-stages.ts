@@ -32,6 +32,7 @@ import type {
   BatchPreviews,
   FastLoopSetup,
   FrameReader,
+  MotionBackend,
   PipelineStepResult,
   StageTimings,
 } from './pipeline-engine.ts';
@@ -82,6 +83,8 @@ export interface StageJob {
   timings: StageTimings;
   /** Busy wall time of each stage (A, B, C) for this step, ms. */
   busyMs: number[];
+  /** Where stage B ran motion correction (set on process steps). */
+  motionBackend?: MotionBackend;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -295,6 +298,7 @@ export class MotionStage {
   private readonly factor: number;
   private gpu: GpuMotion | null = null;
   private gpuReady = false;
+  private gpuFailed = false;
   private filtered: Float32Array | null = null;
 
   /**
@@ -313,6 +317,13 @@ export class MotionStage {
   /** True when the process steps run on the GPU (after the first one has started). */
   get usingGpu(): boolean {
     return this.gpuReady;
+  }
+
+  /** Where the process steps run (meaningful once the first one has started). */
+  get motionBackend(): MotionBackend {
+    if (this.gpuReady) return 'webgpu';
+    if (!this.gpuMotion) return 'wasm-off';
+    return this.gpuFailed ? 'wasm-failed' : 'wasm-unavailable';
   }
 
   /** Run the job's motion step to completion (in place on the job). The `front` buffer is free afterwards. */
@@ -348,6 +359,7 @@ export class MotionStage {
     if (this.gpu && !this.gpuReady && motion.recordLen === 4) {
       this.gpuReady = this.gpu.setup(motion.prefilterParams());
     }
+    job.motionBackend = this.motionBackend;
     if (this.gpu && this.gpuReady) return this.processGpu(job, motion, front);
     return { finish: Promise.resolve(await this.processCpu(job, motion, front)) };
   }
@@ -398,6 +410,8 @@ export class MotionStage {
       this.gpu?.destroy();
       this.gpu = null;
       this.gpuReady = false;
+      this.gpuFailed = true;
+      job.motionBackend = this.motionBackend;
       return { finish: this.processCpu(job, motion, front, corrected) };
     }
     const records = new Float32Array(s.count * len);
@@ -562,6 +576,7 @@ export class BackStage {
       previews,
       timings: t,
       stageBusyMs: job.busyMs,
+      ...(job.motionBackend ? { motionBackend: job.motionBackend } : {}),
       ...(cells ? { cells } : {}),
     };
   }
