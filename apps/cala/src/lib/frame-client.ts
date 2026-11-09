@@ -55,6 +55,13 @@ export function createFrameClient(
   const worker = makeWorker();
   const pending = new Map<number, Pending>();
   let nextId = 1;
+  let terminalError: Error | null = null;
+
+  function fail(err: Error): void {
+    terminalError ??= err;
+    for (const p of pending.values()) p.reject(terminalError);
+    pending.clear();
+  }
 
   worker.onmessage = (e: MessageEvent<FrameResponse>) => {
     const p = pending.get(e.data.id);
@@ -64,16 +71,22 @@ export function createFrameClient(
     else p.resolve(e.data);
   };
   worker.onerror = (e) => {
-    const err = new Error(e.message || 'The frame worker crashed.');
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
+    fail(new Error(e.message || 'The frame worker crashed.'));
   };
 
   function call(req: FrameRequestBody, transfer: Transferable[] = []): Promise<FrameResponse> {
+    if (terminalError) return Promise.reject(terminalError);
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ ...req, id } as FrameRequest, transfer);
+      try {
+        worker.postMessage({ ...req, id } as FrameRequest, transfer);
+      } catch (err) {
+        // A cloning/transfer failure belongs to this request; the worker can
+        // still handle later calls. Do not retain this rejected request.
+        pending.delete(id);
+        reject(err);
+      }
     });
   }
 
@@ -106,9 +119,7 @@ export function createFrameClient(
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.
       worker.terminate();
-      const err = new Error('The frame client was disposed.');
-      for (const p of pending.values()) p.reject(err);
-      pending.clear();
+      fail(new Error('The frame client was disposed.'));
     },
   };
 }

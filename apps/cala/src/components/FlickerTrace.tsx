@@ -24,7 +24,7 @@ export function FlickerTrace(props: { store: PipelineStore }): JSX.Element {
   return (
     <div class="cala-motion-trace" data-testid="flicker-trace">
       <div class="cala-trace-head">
-        <h3 class="panel-label">Global flicker (removed per frame)</h3>
+        <h3 class="panel-label">Global flicker (recent frames)</h3>
         <span class="cala-legend">
           <span class="cala-legend__swatch" style={{ background: OKABE_ITO.bluishGreen }} />
           gain m (%)

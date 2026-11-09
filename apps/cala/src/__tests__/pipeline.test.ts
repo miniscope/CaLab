@@ -96,6 +96,30 @@ describe('shift trace and throughput', () => {
     expect(t.gainPct).toEqual([0, 0, 2]);
   });
 
+  it('bounds history while retaining aligned, full-resolution recent samples', () => {
+    const t = new ShiftTrace(3);
+    t.push(10, [1, 2], [3, 4], [5, 6], [0.01, 0.02]);
+    t.push(12, [7, 8], [9, 10], [11, 12], [0.03, 0.04]);
+    expect(t.frame).toEqual([11, 12, 13]);
+    expect(t.dy).toEqual([2, 7, 8]);
+    expect(t.dx).toEqual([4, 9, 10]);
+    expect(t.offset).toEqual([6, 11, 12]);
+    expect(t.gainPct).toEqual([2, 3, 4]);
+    expect(t.length).toBe(3);
+    expect(t.totalFrames).toBe(4);
+
+    // A batch larger than the entire window retains only its newest samples.
+    t.push(14, [13, 14, 15, 16], [17, 18, 19, 20]);
+    expect(t.frame).toEqual([15, 16, 17]);
+    expect(t.dy).toEqual([14, 15, 16]);
+    expect(t.dx).toEqual([18, 19, 20]);
+    expect(t.offset).toEqual([0, 0, 0]);
+    expect(t.gainPct).toEqual([0, 0, 0]);
+    expect(t.totalFrames).toBe(8);
+    t.push(18, [], []);
+    expect(t.frame).toEqual([15, 16, 17]);
+  });
+
   it('measures frames per second over a sliding window', () => {
     const m = new ThroughputMeter(1000);
     expect(m.record(0, 8)).toBe(0);
@@ -166,6 +190,26 @@ describe('pipeline store backpressure', () => {
       expect(store.processed()).toBe(8);
       expect(store.trace().dx).toEqual(new Array(8).fill(-2));
       expect(store.stageMs().motionMs).toBe(3);
+      dispose();
+    });
+  });
+
+  it('keeps whole-run timing averages after chart history rolls over', async () => {
+    const { client, steps } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore(client);
+      await store.start();
+      const count = store.trace().capacity + 1;
+      steps[0].resolve(batch(0, count));
+      await flush();
+      expect(store.trace().length).toBe(store.trace().capacity);
+      expect(store.trace().frame[0]).toBe(1);
+      expect(store.processed()).toBe(count);
+      expect(store.stageMs().motionMs).toBe(3);
+      expect(store.stageMs().preprocessMs).toBe(2);
+      store.stop();
+      expect(store.trace().length).toBe(0);
+      expect(store.trace().totalFrames).toBe(0);
       dispose();
     });
   });
