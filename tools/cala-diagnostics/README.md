@@ -182,3 +182,45 @@ baseline; the next-two-second peak is descriptive and need not be an event peak.
 The synthetic signed-background regression is included in the existing unittest
 command. It skips when SciPy is unavailable, leaving NumPy-only diagnostics
 usable. No recording data or frozen real probes are stored in the repository.
+
+## Offline background comparisons
+
+[Background experiment definitions](BACKGROUND_EXPERIMENTS.md) describe the fixed
+nine-model family, units, penalties, and statistical limits. These tools compare
+frozen probes and synthetic controls; they do not modify detector state or choose
+a production rule. NumPy, SciPy, and Matplotlib are required for the controls.
+
+```sh
+python tools/cala-diagnostics/background_models.py /path/to/capture --out /path/to/frozen
+python tools/cala-diagnostics/background_controls.py \
+  --snapshots /path/to/early/keep_EVENT /path/to/late/keep_EVENT \
+  --gt-footprints /path/to/run/gt_footprints.bin --gt-id 18 --out /path/to/controls
+python tools/cala-diagnostics/report_background_controls.py --results /path/to/controls
+python tools/cala-diagnostics/compare_keep_captures.py \
+  --captures /path/to/cases --metrics /path/to/controls/metrics.tsv --out /path/to/comparison
+```
+
+For capture comparison, each immediate case subdirectory contains `capture/`,
+`run/` (the evaluator outputs including exact GT exports), and `manifest.json`.
+The manifest has `case` (label), `target` (detector ID), `category` (e.g.
+`retained_GT` or `tentative_unexplained`), `exit_code: 0`, and
+`final_footprints_identical_to_baseline: true`. Assert that last field only after
+comparing the diagnostic run's final footprint bytes with its baseline. The
+comparison checks these conditions, preserves per-probe GT shape agreement, and
+applies one frozen threshold per model from the supplied calibration metrics.
+
+Synthetic controls use independent spatial fields and disjoint calibration and
+evaluation seeds. Candidate parameters must be fixed before heldout scoring.
+Their false KEEP rates are conditional, probe-level rates for the specified
+mixture, not false-cell production rates. They omit native transient-triggered
+probe selection and sequential ledger history, so calibrated thresholds are not
+production-ready. A pooled rate also does not guarantee protection for every
+negative family. Actual probes from one cell are dependent; pass counts are
+descriptive rather than independent-binomial performance estimates.
+
+A/B defaults reproduce the developmental ID18 geometry, not independent spatial
+fields. Retained matched cells chosen for transfer checks are selected survivors,
+not a random population sample. `tentative_unexplained` simulation outputs are
+not proven background-only controls. Penalties can improve their objective while
+worsening raw residuals, so both gains must be reported. See the experiment notes
+before interpreting any apparent improvement.
