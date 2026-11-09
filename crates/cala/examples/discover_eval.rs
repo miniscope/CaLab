@@ -8,7 +8,8 @@
 //!   --budget U        slow-loop work units per frame (default 3e7)
 //!   --start N         frame at which the slow loop starts (default 50; the
 //!                     noise map needs a few frames)
-//!   --checkpoints K   library snapshots matched against GT (default 10)
+//!   --checkpoints K   full library snapshots matched against GT (default 10)
+//!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
 //!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
@@ -35,7 +36,10 @@
 //! Writes `curve.tsv` (library size against frames), `checkpoints.tsv`,
 //! `summary.txt`, `footprints.bin` (`CALAFP01`, H, W, n, then per cell id,
 //! n_px, pixel indices, unfiltered and filtered values), `maxproj.f32` and
-//! `traces.f32` (frames x cells).
+//! `traces.f32` (frames x cells). `footprint_history.bin` streams changed
+//! footprints at every publication; `library_versions.tsv` records full ID
+//! membership. See emitted `diagnostics-format.txt` for binary schemas, frame
+//! conventions, publication-level limits, and stage timing/work counters.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -689,6 +693,124 @@ fn best_offset(det: &Library, gt: &Library, dims: Dims, max: i32) -> (i32, i32) 
     best.0
 }
 
+/// Append-only changed footprints: only two published libraries are retained.
+/// Membership for each version is streamed separately, so deleted IDs remain
+/// inspectable without repeating every unchanged footprint at every commit.
+struct EvolutionWriter {
+    history: std::io::BufWriter<File>,
+    versions: std::io::BufWriter<File>,
+    previous: Option<Arc<Library>>,
+}
+
+impl EvolutionWriter {
+    fn new(out: &Path, dims: Dims) -> Self {
+        let mut history =
+            std::io::BufWriter::new(File::create(out.join("footprint_history.bin")).unwrap());
+        history.write_all(b"CALAFPH1").unwrap();
+        history
+            .write_all(&(dims.height as u32).to_le_bytes())
+            .unwrap();
+        history
+            .write_all(&(dims.width as u32).to_le_bytes())
+            .unwrap();
+        let mut versions =
+            std::io::BufWriter::new(File::create(out.join("library_versions.tsv")).unwrap());
+        writeln!(
+            versions,
+            "observed_frames\tslow_frames\tversion\tcells\tchanged\tremoved_ids\tids"
+        )
+        .unwrap();
+        Self {
+            history,
+            versions,
+            previous: None,
+        }
+    }
+
+    fn capture(&mut self, observed_frames: usize, slow_frames: u64, lib: &Arc<Library>) {
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|p| p.version() == lib.version())
+        {
+            return;
+        }
+        let removed: Vec<_> = self.previous.as_ref().map_or_else(Vec::new, |p| {
+            p.ids()
+                .iter()
+                .copied()
+                .filter(|&id| lib.slot(id).is_none())
+                .collect()
+        });
+        let mut changed = 0;
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            let unchanged = self
+                .previous
+                .as_ref()
+                .and_then(|p| p.slot(id).map(|old| (p, old)))
+                .is_some_and(|(p, old)| {
+                    p.unfiltered(old) == lib.unfiltered(slot)
+                        && p.filtered(old) == lib.filtered(slot)
+                });
+            if unchanged {
+                continue;
+            }
+            changed += 1;
+            let (pixels, raw) = lib.unfiltered(slot);
+            let (filtered_pixels, filtered) = lib.filtered(slot);
+            assert_eq!(pixels, filtered_pixels);
+            for v in [observed_frames as u64, lib.version(), id] {
+                self.history.write_all(&v.to_le_bytes()).unwrap();
+            }
+            self.history
+                .write_all(&(pixels.len() as u32).to_le_bytes())
+                .unwrap();
+            for q in pixels {
+                self.history.write_all(&q.to_le_bytes()).unwrap();
+            }
+            write_f32s(&mut self.history, raw);
+            write_f32s(&mut self.history, filtered);
+        }
+        let ids = |ids: &[u64]| ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        writeln!(
+            self.versions,
+            "{observed_frames}\t{slow_frames}\t{}\t{}\t{changed}\t{}\t{}",
+            lib.version(),
+            lib.len(),
+            ids(&removed),
+            ids(lib.ids())
+        )
+        .unwrap();
+        // Publish boundaries survive an interrupted long recording; a partially
+        // written trailing binary record can be discarded by readers.
+        self.history.flush().unwrap();
+        self.versions.flush().unwrap();
+        self.previous = Some(lib.clone());
+    }
+}
+
+fn drain_edits(
+    sl: &mut SlowLoop,
+    edits: &mut impl Write,
+    recording_frame: usize,
+    visible_version: u64,
+) {
+    for e in sl.take_edit_log() {
+        writeln!(
+            edits,
+            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{recording_frame}\t{visible_version}",
+            e.frame,
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            e.center.0,
+            e.center.1,
+            e.margin
+        )
+        .unwrap();
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | real").clone();
@@ -701,6 +823,11 @@ fn main() {
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
     let start: u32 = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let n_checkpoints: u32 = arg_value(&args, "--checkpoints").map_or(10, |s| s.parse().unwrap());
+    let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
+    assert!(
+        fps.is_finite() && fps > 0.0,
+        "--fps must be positive and finite"
+    );
     let mut scfg = SlowLoopConfig::default();
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
@@ -775,7 +902,7 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
-    let cfg = PreprocessConfig::for_fps(20.0);
+    let cfg = PreprocessConfig::for_fps(fps);
     scfg.cell_diameter_px = cfg.flatten.cell_diameter_px;
     let warm = rec.read(0, (cfg.warmup_frames as u32).min(frames));
     let mut acc = WarmupAccumulator::new(dims);
@@ -803,6 +930,22 @@ fn main() {
         .build(&mut flat)
         .unwrap();
     let mut engine = TraceEngine::new(Arc::new(empty), SolverConfig::default()).unwrap();
+    let mut evolution = EvolutionWriter::new(&out_dir, dims);
+    evolution.capture(0, 0, engine.library());
+    std::fs::write(out_dir.join("run.txt"), format!("args: {args:?}\ninput: {}\nwidth: {}\nheight: {}\nframes: {frames}\nfps: {fps}\nslow_start_recording_frame: {start}\nconfig: {scfg:#?}\n", input.display(), dims.width, dims.height)).unwrap();
+    std::fs::write(out_dir.join("diagnostics-format.txt"), r#"All binary integers/floats little-endian. Full fp_*.bin checkpoints and footprints.bin use CALAFP01.
+footprint_history.bin: CALAFPH1, u32 H,W; repeated records u64 observed_frames,version,id; u32 n; u32 pixels[n]; f32 raw[n]; f32 filtered[n]. Append only changed/new cells at each published version (including final). Records are sparse, not full-frame images. Ignore a truncated trailing record after interruption.
+library_versions.tsv: full ID membership in slot order per publication, comma-separated IDs; removed_ids explicit. Initial empty library at observed_frames=0. Join history by version/id, carry unchanged cells forward, drop removed IDs. Membership row is flushed after its history records.
+Frames: observed_frames counts consumed recording frames (1-based); edits.frame is slow-loop observed count starting at 1; edits.recording_frame is zero-based recording frame where drained; absolute decision frame = slow_start_recording_frame + edits.frame - 1. visible_version is the library visible after that step; an edit can remain pending until a later publication.
+Accepted edits and margins are public-API decisions. Rejected proposal details and unpublished intermediate footprints are unavailable. Multiple decisions between publishes share the same publication-level before/after; no extra publishes are forced. Add/merge/split lineage and deleted cells are preserved, including the final partial interval.
+Full fp_NNNNNN.bin files are periodic full-library snapshots; final snapshot includes finalize. --checkpoints bounds their count approximately (integer spacing can add one); these libraries remain in RAM for optional GT evaluation. Evolution streaming retains only one additional previous library and no movie frames. Disk footprint history scales with changed sparse support; membership TSV scales with published versions times cell count, not movie pixels.
+timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial diagnostics, fast solve, observe, slow step, library swap, ledger dumping, evolution capture; per-frame work counter deltas for load/keep/split/refine/merge/add/running stats. Step timing excludes ledger dumping and swapping. No wall timing within individual private slow-loop stages; work deltas are an operation-count proxy, not milliseconds.
+"#).unwrap();
+    let mut timings = std::io::BufWriter::new(File::create(out_dir.join("timings.tsv")).unwrap());
+    writeln!(timings, "frame\tpre_ms\tspatial_diag_ms\tfast_ms\tobserve_ms\tstep_ms\tswap_ms\tledger_ms\tevolution_ms\twork_load\twork_keep\twork_split\twork_refine\twork_merge\twork_add\twork_stats").unwrap();
+    let mut read_timings =
+        std::io::BufWriter::new(File::create(out_dir.join("read_timings.tsv")).unwrap());
+    writeln!(read_timings, "start_frame\tframes\tread_ms").unwrap();
     let mut slow: Option<SlowLoop> = None;
     let mut y = vec![0.0f32; n_px];
     let mut maxproj = vec![f32::MIN; n_px];
@@ -818,7 +961,11 @@ fn main() {
     .unwrap();
     let mut deleted_log: Vec<DeletedCell> = Vec::new();
     let mut edits = std::io::BufWriter::new(File::create(out_dir.join("edits.tsv")).unwrap());
-    writeln!(edits, "frame\tkind\tid\tother\tcy\tcx\tmargin").unwrap();
+    writeln!(
+        edits,
+        "frame\tkind\tid\tother\tcy\tcx\tmargin\trecording_frame\tvisible_version"
+    )
+    .unwrap();
     let mut ldump = args
         .iter()
         .any(|a| a == "--dump-ledger")
@@ -830,7 +977,14 @@ fn main() {
     let t_all = Instant::now();
     while s < frames {
         let cnt = 64.min(frames - s);
+        let read_start = Instant::now();
         let raw = rec.read(s, cnt);
+        writeln!(
+            read_timings,
+            "{s}\t{cnt}\t{:.6}",
+            read_start.elapsed().as_secs_f64() * 1e3
+        )
+        .unwrap();
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let t = s as usize + k;
             let t0 = Instant::now();
@@ -871,7 +1025,7 @@ fn main() {
                 )
                 .unwrap();
             }
-            // (The diagnostics above are not timed.)
+            // Spatial diagnostics are recorded separately from fast-loop time.
             let t1b = Instant::now();
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
@@ -892,7 +1046,10 @@ fn main() {
                     .unwrap(),
                 );
             }
+            let mut profile = [0.0f64; 5];
+            let mut work_delta = [0u64; 7];
             if let Some(sl) = slow.as_mut() {
+                let before = sl.stats();
                 if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
                 }
@@ -907,13 +1064,37 @@ fn main() {
                         write_f32s(f, &[u, b, sc]);
                     }
                 }
-                if let Some(l) = sl.step(budget).unwrap() {
+                let step_start = Instant::now();
+                let published = sl.step(budget).unwrap();
+                let c = Instant::now();
+                if let Some(l) = published {
                     engine.set_library(l).unwrap();
                 }
-                let c = Instant::now();
+                let swap_end = Instant::now();
+                evolution.capture(t + 1, sl.frames(), engine.library());
+                let capture_end = Instant::now();
+                profile = [
+                    (b - a).as_secs_f64() * 1e3,
+                    (c - step_start).as_secs_f64() * 1e3,
+                    (swap_end - c).as_secs_f64() * 1e3,
+                    (step_start - b).as_secs_f64() * 1e3,
+                    (capture_end - swap_end).as_secs_f64() * 1e3,
+                ];
+                let after = sl.stats();
+                work_delta = [
+                    after.work_load - before.work_load,
+                    after.work_keep - before.work_keep,
+                    after.work_split - before.work_split,
+                    after.work_refine - before.work_refine,
+                    after.work_merge - before.work_merge,
+                    after.work_add - before.work_add,
+                    after.work_stats - before.work_stats,
+                ];
+                drain_edits(sl, &mut edits, t, engine.library().version());
+                deleted_log.extend(sl.take_deleted());
                 t_obs += (b - a).as_secs_f64();
-                t_step += (c - b).as_secs_f64();
-                step_ms.push((c - b).as_secs_f64() * 1e3);
+                t_step += (c - step_start).as_secs_f64();
+                step_ms.push((c - step_start).as_secs_f64() * 1e3);
                 if (t + 1).is_multiple_of(100) {
                     let st = sl.stats();
                     let est = sl
@@ -921,23 +1102,6 @@ fn main() {
                         .iter()
                         .filter(|c| c.status == CellStatus::Established)
                         .count();
-                    for d in sl.take_deleted() {
-                        deleted_log.push(d);
-                    }
-                    for e in sl.take_edit_log() {
-                        writeln!(
-                            edits,
-                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.2}",
-                            e.frame,
-                            e.kind.as_str(),
-                            e.id,
-                            e.other,
-                            e.center.0,
-                            e.center.1,
-                            e.margin
-                        )
-                        .unwrap();
-                    }
                     writeln!(
                         curve,
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{est}\t{}\t{}",
@@ -970,6 +1134,7 @@ fn main() {
                     );
                 }
             }
+            writeln!(timings, "{t}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", (t1-t0).as_secs_f64()*1e3, (t1b-t1).as_secs_f64()*1e3, (t2-t1b).as_secs_f64()*1e3, profile[0], profile[1], profile[2], profile[3], profile[4], work_delta[0], work_delta[1], work_delta[2], work_delta[3], work_delta[4], work_delta[5], work_delta[6]).unwrap();
             if (t + 1).is_multiple_of(every) || t + 1 == t_len {
                 checkpoints.push((t + 1, engine.library().clone()));
             }
@@ -977,7 +1142,19 @@ fn main() {
         s += cnt;
     }
     let mut sl = slow.expect("slow loop started");
+    let finalize_start = Instant::now();
     let lib = sl.finalize().unwrap();
+    let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1e3;
+    evolution.capture(t_len, sl.frames(), &lib);
+    drain_edits(&mut sl, &mut edits, t_len.saturating_sub(1), lib.version());
+    edits.flush().unwrap();
+    timings.flush().unwrap();
+    read_timings.flush().unwrap();
+    std::fs::write(
+        out_dir.join("finalize_ms.txt"),
+        format!("{finalize_ms:.6}\n"),
+    )
+    .unwrap();
     if let Some(last) = checkpoints.last_mut() {
         last.1 = lib.clone();
     }
@@ -1174,6 +1351,12 @@ fn main() {
             f64::from(amp * peak / noise[p[k] as usize].max(1e-6))
         })
         .collect();
+    write_footprints(&out_dir.join("gt_footprints.bin"), &gt_lib);
+    std::fs::write(
+        out_dir.join("gt_offset.tsv"),
+        format!("dy\tdx\n{}\t{}\n", off.0, off.1),
+    )
+    .unwrap();
     let late: Vec<bool> = (0..kept.len())
         .map(|j| {
             let c = c_of(kept[j]);
@@ -1185,6 +1368,28 @@ fn main() {
         .collect();
     let detectable: Vec<bool> = kept.iter().map(|&u| oracle.units[u].detectable).collect();
     let focus: Vec<bool> = kept.iter().map(|&u| oracle.units[u].in_focus).collect();
+    let mut gt_units = std::io::BufWriter::new(File::create(out_dir.join("gt_units.tsv")).unwrap());
+    writeln!(
+        gt_units,
+        "slot\toracle_id\tdetectable\tin_focus\tcy\tcx\tpeak_snr\tlate\toracle_unit_index"
+    )
+    .unwrap();
+    for (slot, &u) in kept.iter().enumerate() {
+        let unit = &oracle.units[u];
+        writeln!(
+            gt_units,
+            "{slot}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{u}",
+            unit.full.id,
+            unit.detectable,
+            unit.in_focus,
+            unit.center.0,
+            unit.center.1,
+            snr[slot],
+            late[slot]
+        )
+        .unwrap();
+    }
+    gt_units.flush().unwrap();
     let thr = 0.7;
     let mut summary = String::new();
     let mut cp_file = File::create(out_dir.join("checkpoints.tsv")).unwrap();
