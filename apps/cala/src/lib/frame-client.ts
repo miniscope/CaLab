@@ -19,6 +19,8 @@ export interface PipelineClient {
   stopPipeline(): Promise<void>;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
+  /** Step requests the caller may keep outstanding (default 2; a pipelined client needs more to keep every stage busy). */
+  readonly maxInFlight?: number;
 }
 
 /** What the UI needs from a frame source; the tests substitute a fake. */
@@ -48,11 +50,42 @@ function expectType<T extends FrameResponse['type']>(
   return res as Extract<FrameResponse, { type: T }>;
 }
 
+/** Step requests outstanding on a pipelined client: one per stage plus one in transit. */
+export const PIPELINED_IN_FLIGHT = 4;
+
+export interface FrameClientOptions {
+  /**
+   * Split the per-frame work across three workers (frame -> motion -> trace,
+   * see `lib/pipeline-stages.ts`). Off: the frame worker runs it all, as before.
+   */
+  pipelined?: boolean;
+  makeMotionWorker?: () => WorkerLike;
+  makeTraceWorker?: () => WorkerLike;
+}
+
 export function createFrameClient(
   makeWorker: () => WorkerLike = () =>
     new Worker(new URL('../workers/frame-worker.ts', import.meta.url), { type: 'module' }),
+  options: FrameClientOptions = {},
 ): FrameClient {
   const worker = makeWorker();
+  const pipelined = options.pipelined === true;
+  const stageWorkers: WorkerLike[] = pipelined
+    ? [
+        (
+          options.makeMotionWorker ??
+          (() =>
+            new Worker(new URL('../workers/motion-worker.ts', import.meta.url), { type: 'module' }))
+        )(),
+        (
+          options.makeTraceWorker ??
+          (() =>
+            new Worker(new URL('../workers/trace-worker.ts', import.meta.url), { type: 'module' }))
+        )(),
+      ]
+    : [];
+  /** The worker that owns the slow-worker port and the discovery switch. */
+  const traceTarget = pipelined ? stageWorkers[1] : worker;
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let terminalError: Error | null = null;
@@ -63,24 +96,43 @@ export function createFrameClient(
     pending.clear();
   }
 
-  worker.onmessage = (e: MessageEvent<FrameResponse>) => {
+  const onmessage = (e: MessageEvent<FrameResponse>) => {
     const p = pending.get(e.data.id);
     if (!p) return;
     pending.delete(e.data.id);
     if (e.data.type === 'error') p.reject(new Error(e.data.message));
     else p.resolve(e.data);
   };
-  worker.onerror = (e) => {
-    fail(new Error(e.message || 'The frame worker crashed.'));
+  const onerror = (e: ErrorEvent) => {
+    fail(new Error(e.message || 'A pipeline worker crashed.'));
   };
+  for (const w of [worker, ...stageWorkers]) {
+    w.onmessage = onmessage;
+    w.onerror = onerror;
+  }
+  if (pipelined) {
+    // frame (A) -> motion (B) -> trace (C): jobs go down, freed buffers come back up.
+    const ab = new MessageChannel();
+    const bc = new MessageChannel();
+    stageWorkers[0].postMessage({ type: 'stage-link', up: ab.port2, down: bc.port1 }, [
+      ab.port2,
+      bc.port1,
+    ]);
+    stageWorkers[1].postMessage({ type: 'stage-link', up: bc.port2 }, [bc.port2]);
+    void call({ type: 'link', down: ab.port1 }, [ab.port1]).catch(() => {});
+  }
 
-  function call(req: FrameRequestBody, transfer: Transferable[] = []): Promise<FrameResponse> {
+  function call(
+    req: FrameRequestBody,
+    transfer: Transferable[] = [],
+    target: WorkerLike = worker,
+  ): Promise<FrameResponse> {
     if (terminalError) return Promise.reject(terminalError);
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       try {
-        worker.postMessage({ ...req, id } as FrameRequest, transfer);
+        target.postMessage({ ...req, id } as FrameRequest, transfer);
       } catch (err) {
         // A cloning/transfer failure belongs to this request; the worker can
         // still handle later calls. Do not retain this rejected request.
@@ -91,6 +143,7 @@ export function createFrameClient(
   }
 
   return {
+    ...(pipelined ? { maxInFlight: PIPELINED_IN_FLIGHT } : {}),
     async open(entries) {
       return expectType(await call({ type: 'open', entries }), 'opened').info;
     },
@@ -105,10 +158,10 @@ export function createFrameClient(
         .plan;
     },
     async setDiscovery(on) {
-      expectType(await call({ type: 'set-discovery', on }), 'ok');
+      expectType(await call({ type: 'set-discovery', on }, [], traceTarget), 'ok');
     },
     async connectSlow(port) {
-      expectType(await call({ type: 'connect-slow', port }, [port]), 'ok');
+      expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');
     },
     async stepPipeline() {
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
@@ -119,6 +172,7 @@ export function createFrameClient(
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.
       worker.terminate();
+      for (const w of stageWorkers) w.terminate();
       fail(new Error('The frame client was disposed.'));
     },
   };
