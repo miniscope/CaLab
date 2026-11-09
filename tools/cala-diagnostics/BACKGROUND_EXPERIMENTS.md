@@ -124,7 +124,6 @@ Example command (use the existing scientific Python environment):
       tools/cala-diagnostics/background_models.py work/keep-evidence/default/capture \
       --out work/keep-background/frozen
 
-
 ## Initial developmental comparison
 
 The fixed family was evaluated on 5,120 controls (46,080 scores), with disjoint
