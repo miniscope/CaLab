@@ -39,7 +39,6 @@ estimate independent production sensitivity. Unexplained outputs are not proven
 negatives. Native probe selection and sequential ledger history remain omitted.
 No detector source or production threshold is changed by this experiment.
 
-
 ## Running the portable tools
 
 Dependencies: NumPy, SciPy, Matplotlib (the existing independent control generator imports it).
