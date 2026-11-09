@@ -126,3 +126,108 @@ Run the small synthetic diagnostic regressions with:
 ```sh
 python -m unittest discover -s tools/cala-diagnostics -p 'test_*.py'
 ```
+
+## Frozen keep-test replay (optional SciPy)
+
+`replay_keep.py` requires NumPy and SciPy. It reads targeted snapshots produced
+by the `diagnostics` feature (see the capture's `FORMAT.txt`) and independently solves each frozen probe with nonnegative cell
+amplitudes and **unconstrained** background coefficients. It does not rerun or
+change discovery. Run after the capture completes:
+
+```sh
+python tools/cala-diagnostics/replay_keep.py /path/to/capture \
+  --out /path/to/replay --target 18 \
+  --oracle /path/to/sim/oracle.bin --oracle-id 18 --slow-start 50 --fps 20 \
+  --replace final_refine_old=/path/to/capture/refine_SEQUENCE_slowFRAME_tileT/old.bin \
+  --replace final_refine_new=/path/to/capture/refine_SEQUENCE_slowFRAME_tileT/new.bin
+```
+
+`--oracle` and all `--replace` arguments are optional. `--target` selects the
+captured detector ID; `--oracle-id` is the original simulation oracle ID, which
+can differ from a GT export slot or detector ID. Replace arguments use
+`LABEL=CALAFP01_PATH`; the target ID is selected from that library, or its sole
+cell is used. A GT library substitution must already be aligned to the observed
+recording coordinates: inspect `gt_units.tsv` and `gt_offset.tsv` first.
+
+`replay.json` preserves coefficients, signed background weights, losses, and
+spatial identifiability measures; `replay.tsv` is the comparison table. SVD
+projects out the free background and SciPy NNLS solves cell coefficients. The
+numerical audit separately reproduces f32 products with f64 accumulation using
+the dumped native reduced Gram, ridge inverse, projections, and frame energy.
+It compares the 100-sweep/1e-2 native stopping rule with an accurate solve of
+that same rounded quadratic, then with the float64, unregularized SVD solution.
+Native reconstruction errors are explicit so roundoff and optimizer tolerance
+can be distinguished from a substantive change in the verdict.
+
+Built-in contrasts remove only the local bump, remove neighbour cells, compare
+published versus working targets, or restore capture-time noise weights to
+columns when capture-time probe snapshots are available. Each replacement also
+gets a no-local-bump contrast. Probe pixels stay frozen; replacement targets use
+the keep snapshot's noise weights. Other cells, background maps, bump centre,
+and threshold stay fixed except for the element named by the contrast. Loss
+normalization still uses each arm's measured residual variance and degrees of
+freedom. Thus a target-only refinement substitution does not test a new bump
+centre or predict future evidence. A better verdict in one frozen contrast is
+not evidence that the corresponding detector change is safe in general.
+
+`probe_original_frame` is a zero-based slow-loop input index: with example
+`--start S`, its recording index is `S + probe_original_frame` and consumed
+recording count is one larger. Keep/refine/delete `slow_frame` is instead an
+observed count, whose consumed recording count is `S + slow_frame`. `--slow-start`
+sets S (default 50); `--fps` sets timestamp calibration (default 20). Oracle
+amplitudes use the zero-based recording index. Oracle fractions report both raw
+amplitude and amplitude above the complete oracle trace's fifth-percentile
+baseline; the next-two-second peak is descriptive and need not be an event peak.
+
+The synthetic signed-background regression is included in the existing unittest
+command. It skips when SciPy is unavailable, leaving NumPy-only diagnostics
+usable. No recording data or frozen real probes are stored in the repository.
+
+## Offline background comparisons
+
+[Background experiment definitions](BACKGROUND_EXPERIMENTS.md) describe the fixed
+nine-model family, units, penalties, and statistical limits. These tools compare
+frozen probes and synthetic controls; they do not modify detector state or choose
+a production rule. NumPy, SciPy, and Matplotlib are required for the controls.
+
+```sh
+python tools/cala-diagnostics/background_models.py /path/to/capture --out /path/to/frozen
+python tools/cala-diagnostics/background_controls.py \
+  --snapshots /path/to/early/keep_EVENT /path/to/late/keep_EVENT \
+  --gt-footprints /path/to/run/gt_footprints.bin --gt-id 18 --out /path/to/controls
+python tools/cala-diagnostics/report_background_controls.py --results /path/to/controls
+python tools/cala-diagnostics/compare_keep_captures.py \
+  --captures /path/to/cases --metrics /path/to/controls/metrics.tsv --out /path/to/comparison
+```
+
+For capture comparison, each immediate case subdirectory contains `capture/`,
+`run/` (the evaluator outputs including exact GT exports), and `manifest.json`.
+The manifest has `case` (label), `target` (detector ID), `category` (e.g.
+`retained_GT` or `tentative_unexplained`), `exit_code: 0`, and
+`final_footprints_identical_to_baseline: true`. Assert that last field only after
+comparing the diagnostic run's final footprint bytes with its baseline. The
+comparison checks these conditions, preserves per-probe GT shape agreement, and
+applies one frozen threshold per model from the supplied calibration metrics.
+
+Synthetic controls use independent spatial fields and disjoint calibration and
+evaluation seeds. Candidate parameters must be fixed before heldout scoring.
+Their false KEEP rates are conditional, probe-level rates for the specified
+mixture, not false-cell production rates. They omit native transient-triggered
+probe selection and sequential ledger history, so calibrated thresholds are not
+production-ready. A pooled rate also does not guarantee protection for every
+negative family. Actual probes from one cell are dependent; pass counts are
+descriptive rather than independent-binomial performance estimates.
+
+A/B defaults reproduce the developmental ID18 geometry, not independent spatial
+fields. Retained matched cells chosen for transfer checks are selected survivors,
+not a random population sample. `tentative_unexplained` simulation outputs are
+not proven background-only controls. Penalties can improve their objective while
+worsening raw residuals, so both gains must be reported. See the experiment notes
+before interpreting any apparent improvement.
+
+## Masked-background experiment
+
+[Masked-background protocol and results](MASKED_BACKGROUND.md) describe the
+exterior-fit comparison, empirical calibration, portable manifest commands,
+and its negative result. The native background basis extrapolates noisily into
+the footprint mask; this experiment does not change the production detector.

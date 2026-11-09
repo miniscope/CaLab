@@ -182,6 +182,8 @@
     clippy::type_complexity
 )]
 
+#[cfg(feature = "diagnostics")]
+mod diagnostics;
 mod fpstats;
 mod ledger;
 mod local;
@@ -761,6 +763,8 @@ impl SlowLoop {
             .map(|(&s, &m)| if m != 0 && s > 0.0 { 1.0 / s } else { 0.0 })
             .collect();
         self.noise = noise;
+        #[cfg(feature = "diagnostics")]
+        diagnostics::noise(self);
         Ok(())
     }
 
@@ -1169,6 +1173,8 @@ impl SlowLoop {
                 cells.push(per_tile[i].1);
                 i += 1;
             }
+            #[cfg(feature = "diagnostics")]
+            diagnostics::probe(self, frame, ti, &cells);
             self.tiles[ti].probe(&self.z, w, frame, cells, cap);
             self.work += self.tiles[ti].rect.len() as u64;
         }
@@ -1273,6 +1279,8 @@ impl SlowLoop {
         let Some(i) = self.cells.iter().position(|c| c.id == id) else {
             return;
         };
+        #[cfg(feature = "diagnostics")]
+        diagnostics::delete(self, &self.cells[i], reason.as_str());
         let info = self.info(&self.cells[i]);
         let cell = self.cells.remove(i);
         self.ledger.remove(&id);
@@ -2311,12 +2319,22 @@ impl SlowLoop {
                         / ee
                 })
                 .collect();
+            #[cfg(feature = "diagnostics")]
+            let diagnostic_before = self.ledger.get(&id).cloned();
+            #[cfg(feature = "diagnostics")]
+            let mut diagnostic_outcomes = Vec::new();
             let (mut pass, mut fail, mut redundant) = (0, 0, 0);
             let mut partner: Option<(u64, f32)> = None;
             for (ff, rr) in f.iter().zip(&r) {
                 let s2 = (ff.chi2 / dof).max(1.0);
                 if (rr.chi2 - ff.chi2) / s2 > pass_at {
                     pass += 1;
+                    #[cfg(feature = "diagnostics")]
+                    diagnostic_outcomes.push(diagnostics::Outcome {
+                        kind: "pass",
+                        partner: 0,
+                        took: 0.0,
+                    });
                     continue;
                 }
                 // Not needed: did a neighbour take over at least half of
@@ -2338,8 +2356,22 @@ impl SlowLoop {
                     Some(b) if ci > 0.0 => {
                         redundant += 1;
                         partner = Some(b);
+                        #[cfg(feature = "diagnostics")]
+                        diagnostic_outcomes.push(diagnostics::Outcome {
+                            kind: "redundant",
+                            partner: b.0,
+                            took: b.1,
+                        });
                     }
-                    _ => fail += 1,
+                    _ => {
+                        fail += 1;
+                        #[cfg(feature = "diagnostics")]
+                        diagnostic_outcomes.push(diagnostics::Outcome {
+                            kind: "fail",
+                            partner: best.map_or(0, |b| b.0),
+                            took: best.map_or(0.0, |b| b.1),
+                        });
+                    }
                 }
             }
             self.stats.keep_tests += (pass + fail + redundant) as u64;
@@ -2352,6 +2384,28 @@ impl SlowLoop {
                     ev.partner = Some(p.0);
                 }
             }
+            #[cfg(feature = "diagnostics")]
+            diagnostics::keep(
+                self,
+                id,
+                ti,
+                &probes,
+                &ys,
+                &proj,
+                &bg,
+                &full,
+                &red,
+                &f,
+                &r,
+                &share,
+                ki,
+                dof,
+                m,
+                sd,
+                pass_at,
+                diagnostic_before.as_ref(),
+                &diagnostic_outcomes,
+            );
         }
     }
 
@@ -3216,6 +3270,8 @@ impl SlowLoop {
         }
         for (id, new, margin, source) in updates {
             if let Some(ci) = self.cells.iter().position(|c| c.id == id) {
+                #[cfg(feature = "diagnostics")]
+                diagnostics::refine(self, &self.cells[ci], &new, margin, source);
                 self.stats.refines += 1;
                 self.edits.refines += 1;
                 self.log(EditKind::Refine, id, source, new.center, margin);

@@ -270,6 +270,16 @@ jobs:
         working-directory: crates/cala
         run: cargo test --no-default-features --features jsbindings
 
+      # Compile and test the opt-in native capture surface without enabling it
+      # in normal bindings or deployment builds.
+      - name: Cala - clippy (diagnostics)
+        working-directory: crates/cala
+        run: cargo clippy --all-targets --no-default-features --features diagnostics -- -D warnings
+
+      - name: Cala - diagnostic capture tests
+        working-directory: crates/cala
+        run: cargo test --no-default-features --features diagnostics --lib discover::diagnostics
+
   python:
     runs-on: ubuntu-latest
     strategy:
