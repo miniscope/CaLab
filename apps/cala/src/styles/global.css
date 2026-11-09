@@ -44,6 +44,21 @@
   white-space: nowrap;
 }
 
+.cala-backend-badge {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.cala-backend-badge--gpu {
+  border-color: var(--success);
+  color: var(--success);
+}
+
 .cala-contrast {
   font-size: 0.85rem;
   color: var(--text-secondary);

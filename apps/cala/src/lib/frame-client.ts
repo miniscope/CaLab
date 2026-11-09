@@ -59,6 +59,8 @@ export interface FrameClientOptions {
    * see `lib/pipeline-stages.ts`). Off: the frame worker runs it all, as before.
    */
   pipelined?: boolean;
+  /** WebGPU motion correction (default true; falls back to WASM when unavailable). */
+  gpu?: boolean;
   makeMotionWorker?: () => WorkerLike;
   makeTraceWorker?: () => WorkerLike;
 }
@@ -114,10 +116,10 @@ export function createFrameClient(
     // frame (A) -> motion (B) -> trace (C): jobs go down, freed buffers come back up.
     const ab = new MessageChannel();
     const bc = new MessageChannel();
-    stageWorkers[0].postMessage({ type: 'stage-link', up: ab.port2, down: bc.port1 }, [
-      ab.port2,
-      bc.port1,
-    ]);
+    stageWorkers[0].postMessage(
+      { type: 'stage-link', up: ab.port2, down: bc.port1, gpu: options.gpu },
+      [ab.port2, bc.port1],
+    );
     stageWorkers[1].postMessage({ type: 'stage-link', up: bc.port2 }, [bc.port2]);
     void call({ type: 'link', down: ab.port1 }, [ab.port1]).catch(() => {});
   }

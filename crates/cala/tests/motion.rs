@@ -448,3 +448,60 @@ fn streaming_warmup_misuse_is_an_error() {
     mc.warmup_finish().unwrap();
     assert!(mc.is_initialized());
 }
+
+#[test]
+fn external_prefilter_gives_identical_records() {
+    use calab_cala::motion::filter::{difference_of_gaussians, median3x3, DogScratch};
+    let fx = load();
+    let (h, w) = (fx.h, fx.w);
+    let px = h * w;
+    let movie: Vec<f32> = fx.movie.iter().map(|&v| v as f32).collect();
+    let warm = fx.n.min(60);
+    let make = || {
+        let mut mc = MotionCorrector::new(h, w, MotionConfig::default()).unwrap();
+        mc.initialize(Frames::F32(&movie[..warm * px])).unwrap();
+        mc
+    };
+    let (mut a, mut b) = (make(), make());
+    let p = b.prefilter_params().unwrap();
+    let (eh, ew) = (p.ext.height, p.ext.width);
+    let rl = a.record_len();
+    let n = fx.n.min(40);
+    let mut out = vec![0.0; n * px];
+    let mut rec_a = vec![0.0; n * rl];
+    a.process_batch(Frames::F32(&movie[..n * px]), &mut out, &mut rec_a)
+        .unwrap();
+    // The prefilter an external implementation must reproduce, built from the public filters.
+    let mut filtered = vec![0.0f32; n * eh * ew];
+    let (mut raw, mut med) = (vec![0.0f32; eh * ew], vec![0.0f32; eh * ew]);
+    let (mut scratch, mut dog) = (Vec::new(), DogScratch::default());
+    for i in 0..n {
+        for y in 0..eh {
+            raw[y * ew..][..ew]
+                .copy_from_slice(&movie[i * px + (p.ext.y0 + y) * w + p.ext.x0..][..ew]);
+        }
+        let input: &[f32] = if p.median {
+            median3x3(&raw, eh, ew, &mut med, &mut scratch);
+            &med
+        } else {
+            &raw
+        };
+        difference_of_gaussians(
+            input,
+            eh,
+            ew,
+            p.sigma_small,
+            p.sigma_large,
+            &mut filtered[i * eh * ew..(i + 1) * eh * ew],
+            &mut dog,
+        );
+    }
+    let mut rec_b = vec![0.0; n * rl];
+    b.estimate_batch_prefiltered(&movie[..n * px], &filtered, &mut rec_b)
+        .unwrap();
+    assert_eq!(rec_a, rec_b);
+    // Wrong sizes are errors, not panics.
+    assert!(b
+        .estimate_batch_prefiltered(&movie[..px], &filtered, &mut rec_b[..rl])
+        .is_err());
+}

@@ -32,6 +32,7 @@ import type {
   BatchPreviews,
   FastLoopSetup,
   FrameReader,
+  MotionBackend,
   PipelineStepResult,
   StageTimings,
 } from './pipeline-engine.ts';
@@ -42,6 +43,7 @@ import {
   type PipelinePlan,
   type PipelineStep,
 } from './pipeline-plan.ts';
+import { GpuMotion } from './gpu-motion.ts';
 import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
 
 const now = (): number => performance.now();
@@ -81,6 +83,8 @@ export interface StageJob {
   timings: StageTimings;
   /** Busy wall time of each stage (A, B, C) for this step, ms. */
   busyMs: number[];
+  /** Where stage B ran motion correction (set on process steps). */
+  motionBackend?: MotionBackend;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -280,27 +284,64 @@ export class FrontStage {
   }
 }
 
+/** What `MotionStage.handleStaged` returns: the stage is free again, the job completes later. */
+export interface StagedJob {
+  /** Resolves with the finished job (corrected frames filled in). */
+  finish: Promise<StageJob>;
+}
+
 /** Stage B: the motion corrector. */
 export class MotionStage {
   private motion: MotionCorrector | null = null;
   private records: Float32Array | null = null;
   private readonly px: number;
   private readonly factor: number;
+  private gpu: GpuMotion | null = null;
+  private gpuReady = false;
+  private gpuFailed = false;
+  private filtered: Float32Array | null = null;
 
-  /** `acquireOut` hands out a buffer of `batchSize * width * height` floats (waits while C holds them all). */
+  /**
+   * `acquireOut` hands out a buffer of `batchSize * width * height` floats (waits while C holds them all).
+   * `gpuMotion`: use WebGPU for the prefilter and warp when available (falls back to WASM).
+   */
   constructor(
     private readonly setup: StageSetup,
     private readonly acquireOut: () => Promise<Float32Array>,
+    private readonly gpuMotion = false,
   ) {
     this.px = setup.width * setup.height;
     this.factor = previewFactor(setup.width, setup.height, setup.plan.previewMaxSide);
   }
 
-  /** Run the job's motion step (in place on the job). The `front` buffer is free afterwards. */
+  /** True when the process steps run on the GPU (after the first one has started). */
+  get usingGpu(): boolean {
+    return this.gpuReady;
+  }
+
+  /** Where the process steps run (meaningful once the first one has started). */
+  get motionBackend(): MotionBackend {
+    if (this.gpuReady) return 'webgpu';
+    if (!this.gpuMotion) return 'wasm-off';
+    return this.gpuFailed ? 'wasm-failed' : 'wasm-unavailable';
+  }
+
+  /** Run the job's motion step to completion (in place on the job). The `front` buffer is free afterwards. */
   async handle(job: StageJob): Promise<StageJob> {
-    if (job.calib) this.initMotion(job.calib.fovMask);
+    const staged = await this.handleStaged(job);
+    return staged.finish;
+  }
+
+  /**
+   * Run the step up to the point where the next job may start: on the GPU
+   * path that is after the shifts are estimated and the warp is queued (the
+   * `front` buffer is free then); the warp readback finishes in `finish`.
+   * On the CPU path `finish` is already resolved.
+   */
+  async handleStaged(job: StageJob): Promise<StagedJob> {
+    if (job.calib) await this.initMotion(job.calib.fovMask);
     const s = job.step;
-    if (s.phase === 'calibrate') return job;
+    if (s.phase === 'calibrate') return { finish: Promise.resolve(job) };
     const motion = this.motion;
     if (!motion) throw new Error('The motion stage was not calibrated.');
     const n = s.count * this.px;
@@ -313,10 +354,25 @@ export class MotionStage {
       const dt = now() - t0;
       job.timings.motionMs = dt;
       job.busyMs[1] = dt;
-      return job;
+      return { finish: Promise.resolve(job) };
     }
+    if (this.gpu && !this.gpuReady && motion.recordLen === 4) {
+      this.gpuReady = this.gpu.setup(motion.prefilterParams());
+    }
+    job.motionBackend = this.motionBackend;
+    if (this.gpu && this.gpuReady) return this.processGpu(job, motion, front);
+    return { finish: Promise.resolve(await this.processCpu(job, motion, front)) };
+  }
 
-    const corrected = await this.acquireOut();
+  private async processCpu(
+    job: StageJob,
+    motion: MotionCorrector,
+    front: Float32Array,
+    pooled?: Float32Array,
+  ): Promise<StageJob> {
+    const s = job.step;
+    const n = s.count * this.px;
+    const corrected = pooled ?? (await this.acquireOut());
     const t0 = now();
     const len = motion.recordLen;
     if (!this.records || this.records.length < s.count * len)
@@ -325,6 +381,71 @@ export class MotionStage {
     const out = corrected.subarray(0, n);
     motion.processF32(front, out, records);
     const t1 = now();
+    this.finishJob(job, corrected, records, t0, t1);
+    return job;
+  }
+
+  private async processGpu(
+    job: StageJob,
+    motion: MotionCorrector,
+    front: Float32Array,
+  ): Promise<StagedJob> {
+    const gpu = this.gpu!;
+    const s = job.step;
+    const n = s.count * this.px;
+    const len = motion.recordLen;
+    const corrected = await this.acquireOut();
+    const t0 = now();
+    const geo = motion.prefilterParams();
+    const fpx = geo[2] * geo[3];
+    if (!this.filtered || this.filtered.length < s.count * fpx)
+      this.filtered = new Float32Array(this.setup.plan.batchSize * fpx);
+    const filtered = this.filtered.subarray(0, s.count * fpx);
+    let slot;
+    try {
+      ({ slot } = await gpu.prefilter(front, s.count, filtered));
+    } catch (err) {
+      // Device lost or out of memory before any state changed: finish on the CPU from here on.
+      console.warn('WebGPU motion failed; falling back to WASM.', err);
+      this.gpu?.destroy();
+      this.gpu = null;
+      this.gpuReady = false;
+      this.gpuFailed = true;
+      job.motionBackend = this.motionBackend;
+      return { finish: this.processCpu(job, motion, front, corrected) };
+    }
+    const records = new Float32Array(s.count * len);
+    motion.estimateF32Prefiltered(front, filtered, records);
+    const dy = new Float32Array(s.count);
+    const dx = new Float32Array(s.count);
+    for (let i = 0; i < s.count; i++) {
+      dy[i] = records[i * len];
+      dx[i] = records[i * len + 1];
+    }
+    const out = corrected.subarray(0, n);
+    const warped = gpu.warp(slot, dy, dx, s.count, out);
+    const t1 = now();
+    const finish = warped.then(() => {
+      const t2 = now();
+      this.finishJob(job, corrected, records, t0, t2);
+      job.busyMs[1] = t1 - t0 + (now() - t2);
+      return job;
+    });
+    return { finish };
+  }
+
+  /** Fill the job's motion results from `records` (and downsample the preview). */
+  private finishJob(
+    job: StageJob,
+    corrected: Float32Array,
+    records: Float32Array,
+    t0: number,
+    t1: number,
+  ): void {
+    const s = job.step;
+    const n = s.count * this.px;
+    const len = records.length / s.count;
+    const out = corrected.subarray(0, n);
     const before = downsampleFrame(
       out,
       s.count - 1,
@@ -352,15 +473,17 @@ export class MotionStage {
     job.timings.motionMs = t1 - t0;
     job.timings.otherMs += t2 - t1;
     job.busyMs[1] = t2 - t0;
-    return job;
   }
 
   dispose(): void {
     this.motion?.free();
     this.motion = null;
+    this.gpu?.destroy();
+    this.gpu = null;
+    this.gpuReady = false;
   }
 
-  private initMotion(fovMask: Uint8Array): void {
+  private async initMotion(fovMask: Uint8Array): Promise<void> {
     this.motion?.free();
     const opts = new MotionOptions();
     try {
@@ -369,6 +492,14 @@ export class MotionStage {
       opts.free();
     }
     this.motion.setFovMask(fovMask);
+    this.gpuReady = false;
+    if (this.gpuMotion && !this.gpu) {
+      this.gpu = await GpuMotion.create(
+        this.setup.width,
+        this.setup.height,
+        this.setup.plan.batchSize,
+      );
+    }
   }
 }
 
@@ -445,6 +576,7 @@ export class BackStage {
       previews,
       timings: t,
       stageBusyMs: job.busyMs,
+      ...(job.motionBackend ? { motionBackend: job.motionBackend } : {}),
       ...(cells ? { cells } : {}),
     };
   }

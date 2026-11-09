@@ -86,7 +86,7 @@ pub fn gaussian_blur(
 }
 
 /// Normalised sampled Gaussian of radius `ceil(3 sigma)`.
-fn gaussian_kernel(sigma: f32) -> Vec<f32> {
+pub fn gaussian_kernel(sigma: f32) -> Vec<f32> {
     let r = (3.0 * sigma).ceil().max(1.0) as isize;
     let mut k: Vec<f32> = (-r..=r)
         .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
@@ -129,7 +129,7 @@ fn conv_cols(src: &[f32], h: usize, w: usize, k: &[f32], dst: &mut [f32]) {
 
 /// Odd box widths whose `n`-fold cascade approximates a Gaussian of `sigma`
 /// (Kovesi, "Fast almost-Gaussian filtering", 2010).
-fn box_sizes(sigma: f32, n: usize) -> Vec<usize> {
+pub fn box_sizes(sigma: f32, n: usize) -> Vec<usize> {
     let nf = n as f32;
     let w_ideal = (12.0 * sigma * sigma / nf + 1.0).sqrt();
     let mut wl = w_ideal.floor() as isize;

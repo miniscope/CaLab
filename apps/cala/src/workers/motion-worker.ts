@@ -24,6 +24,9 @@ let down: MessagePort | null = null;
 let stage: MotionStage | null = null;
 let pool: StagePool | null = null;
 let epoch = 0;
+let useGpu = true;
+// Finished jobs leave in arrival order; the GPU warp readback of one overlaps the next job's estimate.
+let outChain: Promise<void> = Promise.resolve();
 // Messages are handled one at a time, in arrival order.
 let queue: Promise<void> = Promise.resolve();
 
@@ -36,6 +39,7 @@ function stopStage(): void {
 async function handle(msg: StageMsg): Promise<void> {
   switch (msg.type) {
     case 'start': {
+      await outChain;
       await initCalaWasm();
       stopStage();
       epoch = msg.epoch;
@@ -44,13 +48,14 @@ async function handle(msg: StageMsg): Promise<void> {
         msg.setup.plan.batchSize * msg.setup.width * msg.setup.height,
       );
       pool = p;
-      stage = new MotionStage(msg.setup, () => p.acquire());
+      stage = new MotionStage(msg.setup, () => p.acquire(), useGpu);
       down?.postMessage(msg);
       break;
     }
     case 'job': {
       if (!stage) throw new Error('The motion stage is not running.');
-      const job = await stage.handle(msg.job);
+      const staged = await stage.handleStaged(msg.job);
+      const job = msg.job;
       const front = job.front;
       delete job.front;
       if (front) {
@@ -58,13 +63,28 @@ async function handle(msg: StageMsg): Promise<void> {
           front.buffer as ArrayBuffer,
         ]);
       }
-      down?.postMessage({ ...msg, job } satisfies StageMsg, jobTransferables(job));
+      outChain = outChain
+        .then(() => staged.finish)
+        .then(
+          (done) => {
+            down?.postMessage({ ...msg, job: done } satisfies StageMsg, jobTransferables(done));
+          },
+          (err: unknown) => {
+            workerScope.postMessage({
+              type: 'error',
+              id: msg.id,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          },
+        );
       break;
     }
     case 'end':
+      await outChain;
       down?.postMessage(msg);
       break;
     case 'stop':
+      await outChain;
       stopStage();
       down?.postMessage(msg);
       break;
@@ -76,6 +96,7 @@ workerScope.onmessage = (e) => {
   up?.close();
   down?.close();
   up = e.data.up;
+  useGpu = e.data.gpu !== false;
   down = e.data.down ?? null;
   up.onmessage = (ev: MessageEvent<StageMsg>) => {
     const msg = ev.data;

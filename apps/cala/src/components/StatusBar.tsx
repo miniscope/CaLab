@@ -8,6 +8,21 @@ const SETUP_LABEL = {
   'motion-warmup': 'Building the motion template',
 } as const;
 
+/** Badge text and tooltip for where motion correction runs. */
+const MOTION_BACKEND = {
+  webgpu: ['Motion: WebGPU', 'Motion prefilter and warp run on the GPU.'],
+  'wasm-off': ['Motion: CPU', 'WebGPU turned off with ?gpu=0.'],
+  'wasm-unavailable': [
+    'Motion: CPU',
+    'WebGPU is not available in this browser (or cannot run these settings).',
+  ],
+  'wasm-failed': [
+    'Motion: CPU',
+    'WebGPU failed during the run; continued on the CPU. See the console.',
+  ],
+  single: ['Motion: CPU', 'Single-worker pipeline (?pipeline=0) runs motion in WASM.'],
+} as const;
+
 /** One compact strip: pipeline status and progress, run controls, the cell count. */
 export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JSX.Element {
   const s = () => props.store;
@@ -26,6 +41,11 @@ export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JS
       return `${prefix}${SETUP_LABEL[setup.phase]} ${setup.done} / ${setup.total}`;
     }
     return st === 'paused' ? 'Paused' : 'Running';
+  };
+  const backend = () => {
+    if (s().fps() <= 0) return null;
+    const b = s().motionBackend() ?? 'single';
+    return { key: b, text: MOTION_BACKEND[b][0], title: MOTION_BACKEND[b][1] };
   };
   const busy = () => s().status() === 'running' || s().status() === 'paused';
   const lagNow = () => {
@@ -52,6 +72,19 @@ export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JS
         frame {s().processed().toLocaleString()} / {total().toLocaleString()}
         <Show when={s().fps() > 0}> &middot; {s().fps().toFixed(1)} frames/s</Show>
       </span>
+      <Show when={backend()}>
+        {(b) => (
+          <span
+            class="cala-backend-badge"
+            classList={{ 'cala-backend-badge--gpu': b().key === 'webgpu' }}
+            data-testid="motion-backend"
+            data-backend={b().key}
+            title={b().title}
+          >
+            {b().text}
+          </span>
+        )}
+      </Show>
       <div class="cala-statusbar__actions">
         <button
           type="button"
