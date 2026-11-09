@@ -163,7 +163,7 @@ export function DemixView(props: { cells: CellStore; id: number }): JSX.Element 
     const end = c().frame();
     const n = Math.min(end, Math.round(60 * c().fps()));
     const h = c().history();
-    const raw = ids().map((id) => h.dense(id, end).subarray(end - n));
+    const raw = ids().map((id) => h.range(id, end - n, end));
     const x = new Float64Array(n);
     for (let i = 0; i < n; i++) x[i] = (end - n + i) / c().fps();
     return { x, raw, norm: raw.map(normalize) };

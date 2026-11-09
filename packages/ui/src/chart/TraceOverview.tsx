@@ -21,7 +21,9 @@ export interface HighlightZone {
 }
 
 export interface TraceOverviewProps {
-  trace: Float64Array;
+  trace?: Float64Array;
+  /** Precomputed whole-session envelope; rendered in a fixed-height single row. */
+  envelope?: { duration: number; x: number[]; y: (number | null)[] };
   samplingRate: number;
   /** Zoom window start time (seconds) */
   zoomStart: number;
@@ -43,14 +45,21 @@ export function TraceOverview(props: TraceOverviewProps) {
   let containerRef: HTMLDivElement | undefined;
   const [cursor, setCursor] = createSignal('grab');
 
-  const totalDuration = createMemo(() => props.trace.length / props.samplingRate);
-  const numRows = createMemo(() => Math.max(1, Math.ceil(totalDuration() / ROW_DURATION_S)));
+  const totalDuration = createMemo(
+    () => props.envelope?.duration ?? (props.trace?.length ?? 0) / props.samplingRate,
+  );
+  const numRows = createMemo(() =>
+    props.envelope ? 1 : Math.max(1, Math.ceil(totalDuration() / ROW_DURATION_S)),
+  );
 
   const canvasHeight = createMemo(() => numRows() * ROW_HEIGHT);
 
   // Compute row data once when trace changes
   const rowData = createMemo(() => {
-    const trace = props.trace;
+    if (props.envelope) {
+      return [{ dsX: props.envelope.x, dsY: props.envelope.y, timeOffset: 0 }];
+    }
+    const trace = props.trace ?? new Float64Array(0);
     const fs = props.samplingRate;
     const rows = numRows();
     const samplesPerRow = Math.floor(ROW_DURATION_S * fs);
@@ -207,7 +216,7 @@ export function TraceOverview(props: TraceOverviewProps) {
 
   createEffect(
     on(
-      () => [props.trace, props.zoomStart, props.zoomEnd, props.highlightZones],
+      () => [props.trace, props.envelope, props.zoomStart, props.zoomEnd, props.highlightZones],
       () => draw(),
     ),
   );

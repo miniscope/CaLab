@@ -12,10 +12,14 @@
  *     stops growing and becomes a ring at its current size.
  * At most `maxCells` cells are tracked. Frames a cell missed (a gap in the
  * stream) are stored as NaN. Cells that leave the library are dropped by
- * `retain`. Pure, unit-tested.
+ * `retain`. Each tracked cell also retains a fixed 12 KiB whole-session min/max
+ * envelope (at most about 36 MiB at maxCells). Pure, unit-tested.
  */
 
+import { OVERVIEW_BUCKETS, TraceOverviewHistory, type TraceEnvelope } from './trace-overview.ts';
+
 interface Buffer {
+  overview: TraceOverviewHistory;
   values: Float32Array;
   /** Stream frame of the first sample ever stored (index origin). */
   origin: number;
@@ -51,9 +55,18 @@ export class TraceHistory {
     return this.bufs.size;
   }
 
-  /** Bytes held by the trace buffers. */
+  /** Bytes held by full-resolution trace buffers (envelopes counted separately). */
   get bytes(): number {
     return this.held;
+  }
+
+  /** Fixed envelope storage, released with its cell (at most maxCells * 12 KiB). */
+  get overviewBytes(): number {
+    return this.bufs.size * OVERVIEW_BUCKETS * 24;
+  }
+
+  overview(id: number): TraceEnvelope {
+    return this.bufs.get(id)?.overview.get() ?? { frames: [], values: [], bucketFrames: 8 };
   }
 
   /** Count `frames` more f32 samples against the budget; false when over it. */
@@ -93,6 +106,8 @@ export class TraceHistory {
     for (let j = 0; j < n; j++) {
       const id = ids[j];
       let b = this.bufs.get(id);
+      // A long gap resets detailed storage, but keeps the session envelope.
+      const overview = b && start >= b.end ? b.overview : new TraceOverviewHistory();
       if (b && (start < b.end || start - b.end > this.capacity)) {
         // Rewound, or a gap longer than the buffer: start this cell afresh.
         this.drop(id);
@@ -102,14 +117,18 @@ export class TraceHistory {
         if (this.bufs.size >= this.maxCells) continue;
         const size = Math.min(this.capacity, Math.max(INITIAL_FRAMES, count));
         if (!this.reserve(size)) continue;
-        b = { values: new Float32Array(size), origin: start, len: 0, end: start };
+        b = { values: new Float32Array(size), origin: start, len: 0, end: start, overview };
         this.bufs.set(id, b);
       }
       // Frames this cell missed are kept as NaN, so frames stay aligned.
       const gap = start - b.end;
       this.grow(b, gap + count);
       for (let f = b.end; f < start; f++) this.write(b, f, NaN);
-      for (let i = 0; i < count; i++) this.write(b, start + i, traces[i * n + j]);
+      for (let i = 0; i < count; i++) {
+        const value = traces[i * n + j];
+        this.write(b, start + i, value);
+        b.overview.push(start + i, value);
+      }
       b.end = start + count;
       b.len = Math.min(b.values.length, b.len + gap + count);
     }
@@ -144,13 +163,20 @@ export class TraceHistory {
    * no sample (before it appeared, or frames since lost to the ring).
    */
   dense(id: number, frames: number): Float64Array {
-    const out = new Float64Array(Math.max(0, frames)).fill(NaN);
+    return this.range(id, 0, frames);
+  }
+
+  /** A dense slice on [first, end), allocating only the requested window. */
+  range(id: number, first: number, end: number): Float64Array {
+    first = Math.max(0, Math.floor(first));
+    end = Math.max(first, Math.floor(end));
+    const out = new Float64Array(end - first).fill(NaN);
     const b = this.bufs.get(id);
     if (!b) return out;
     const size = b.values.length;
-    const from = Math.max(0, b.end - b.len);
-    const to = Math.min(frames, b.end);
-    for (let f = from; f < to; f++) out[f] = b.values[(f - b.origin) % size];
+    const from = Math.max(first, b.end - b.len);
+    const to = Math.min(end, b.end);
+    for (let f = from; f < to; f++) out[f - first] = b.values[(f - b.origin) % size];
     return out;
   }
 
