@@ -21,7 +21,10 @@
 //! simulator's true motion (file from export_gt_motion.py: u32 T, gy, gx,
 //! f64 node rows, node cols, then per frame f32 dy, dx, field), CALA_JITTER=<file>
 //! moves a still recording by those shifts and back (resampling only),
-//! CALA_NR=off rigid-only corrector, CALA_INTERP=bilinear.
+//! CALA_NR=off rigid-only corrector, CALA_INTERP=bilinear,
+//! CALA_PREFILTER=median3|gauss<σ> spatial denoising of each registered frame,
+//! CALA_FLATFIELD=1 sensor gain map from the warm-up mean divided out of the
+//! raw frames (see tools/cala-diagnostics/PIXEL_NOISE.md).
 //! ```
 //!
 //! Pass 1 runs preprocessing (and motion correction), the fast loop and the
@@ -46,6 +49,9 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[path = "common/prefilter.rs"]
+mod prefilter;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
@@ -295,6 +301,12 @@ struct Pipeline {
     t: usize,
     /// Last frame's (dy, dx, residual rms).
     pub last: (f32, f32, f32),
+    /// Diagnostics: `CALA_PREFILTER=median3|gauss<σ>` denoises each
+    /// registered frame before the background / noise stages.
+    prefilter: Option<(prefilter::Prefilter, Vec<u8>, Vec<f32>)>,
+    /// Diagnostics: `CALA_FLATFIELD=1` divides each raw frame by a pixel gain
+    /// map from the warm-up mean (sensor-fixed pattern) before preprocessing.
+    flat: Option<(Vec<f32>, Vec<f32>)>,
 }
 
 fn read_mc_oracle(
@@ -333,15 +345,47 @@ impl Pipeline {
         cal: &Calibration,
         motion: bool,
         warm: u32,
+        flat_mean: Option<&[f32]>,
     ) -> Pipeline {
         let dims = rec.dims;
         let n_px = dims.pixels();
         let mut pre = pre;
+        let flat = flat_mean
+            .filter(|_| std::env::var("CALA_FLATFIELD").ok().as_deref() == Some("1"))
+            .map(|m| {
+                let g = prefilter::flat_field(
+                    m,
+                    cal.fov().mask(),
+                    cal.hot_pixels().flags(),
+                    dims.width,
+                    dims.height,
+                );
+                let (mut s, mut s2, mut n) = (0.0f64, 0.0f64, 0.0f64);
+                for (&v, &f) in g.iter().zip(cal.fov().mask()) {
+                    if f != 0 {
+                        s += f64::from(v);
+                        s2 += f64::from(v) * f64::from(v);
+                        n += 1.0;
+                    }
+                }
+                let sd = (s2 / n - (s / n).powi(2)).max(0.0).sqrt();
+                println!("flat field: gain map mean {:.4} sd {:.4}", s / n, sd);
+                (g, vec![0.0f32; n_px])
+            });
         let mc = if motion {
             let raw = rec.read(0, warm.min(rec.total));
             let mut frames = vec![0.0f32; raw.len()];
             for (r, o) in raw.chunks_exact(n_px).zip(frames.chunks_exact_mut(n_px)) {
-                pre.front(r, o).unwrap();
+                match &flat {
+                    Some((g, _)) => {
+                        let rf: Vec<f32> =
+                            r.iter().zip(g).map(|(&v, &gg)| f32::from(v) / gg).collect();
+                        pre.front(&rf, o).unwrap();
+                    }
+                    None => {
+                        pre.front(r, o).unwrap();
+                    }
+                }
             }
             let cfg = MotionConfig {
                 // Diagnostics: CALA_NR=off for a rigid-only corrector.
@@ -392,12 +436,27 @@ impl Pipeline {
             jitter,
             t: 0,
             last: (0.0, 0.0, 0.0),
+            flat,
+            prefilter: prefilter::Prefilter::from_env().map(|p| {
+                println!("prefilter {}", std::env::var("CALA_PREFILTER").unwrap());
+                (p, cal.fov().mask().to_vec(), Vec::new())
+            }),
         }
     }
 
     /// Returns the rigid motion shift `(dy, dx)` (zero without motion).
     fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> (f32, f32) {
-        self.pre.front(raw, &mut self.buf).unwrap();
+        match &mut self.flat {
+            Some((g, rf)) => {
+                for ((o, &v), &gg) in rf.iter_mut().zip(raw).zip(g.iter()) {
+                    *o = f32::from(v) / gg;
+                }
+                self.pre.front(rf.as_slice(), &mut self.buf).unwrap();
+            }
+            None => {
+                self.pre.front(raw, &mut self.buf).unwrap();
+            }
+        }
         let t = self.t;
         self.t += 1;
         if let Some(Jitter {
@@ -436,8 +495,16 @@ impl Pipeline {
                 (0.0, 0.0)
             }
         };
+        self.prefilter_frame(out);
         self.pre.back(out).unwrap();
         sh
+    }
+
+    fn prefilter_frame(&mut self, out: &mut [f32]) {
+        if let Some((pf, fov, tmp)) = &mut self.prefilter {
+            let d = self.pre.dims();
+            pf.apply(out, fov, d.width, d.height, tmp);
+        }
     }
 }
 
@@ -911,6 +978,7 @@ fn main() {
     }
     drop(warm);
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
+    let warm_mean = acc.mean().unwrap();
     let fov = cal.fov().mask().to_vec();
     let pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
     let mut flat = GlowFlattener::new(cal.fov(), &cfg.flatten).unwrap();
@@ -923,7 +991,7 @@ fn main() {
     );
 
     // ---- pass 1: fast + slow loop
-    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200, Some(&warm_mean));
     let empty = LibraryBuilder::new(dims)
         .fov(fov.clone())
         .background(scfg.background.clone())
@@ -1249,7 +1317,7 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
     // ---- pass 2: re-extract every frame with the final library
     let mut traces = vec![0.0f32; if pass2 { t_len * lib.len() } else { 0 }];
     if pass2 {
-        let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+        let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200, Some(&warm_mean));
         let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
         let mut s = 0u32;
         let t0 = Instant::now();

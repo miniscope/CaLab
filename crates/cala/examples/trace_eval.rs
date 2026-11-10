@@ -16,6 +16,9 @@
 //!                    levels, re-quantized to 8 bits), see examples/flicker_eval.rs
 //!   --flicker-mode N 0 off, 1 additive, 2 multiplicative, 3 both (default)
 //!   --flicker-tau T  flicker reference time constant, frames
+//! Diagnostics (environment): CALA_PREFILTER=median3|gauss<σ> denoises each
+//! preprocessed frame before the solve; CALA_PREFILTER_FP=1 also blurs the
+//! oracle footprints (Gaussian only; see tools/cala-diagnostics/PIXEL_NOISE.md).
 //! ```
 //!
 //! `<sim dir>` is written by `tools/minisim-calibration/make_trace_sim.py`: a DAQ folder
@@ -37,6 +40,9 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[path = "common/prefilter.rs"]
+mod prefilter;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::preprocess::flatten::GlowFlattener;
@@ -528,6 +534,18 @@ fn main() {
 
     let pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
     let mut flat = GlowFlattener::new(cal.fov(), &cfg.flatten).unwrap();
+    // Diagnostics: CALA_PREFILTER=median3|gauss<σ> denoises every
+    // preprocessed frame before the solve; CALA_PREFILTER_FP=1 also blurs the
+    // oracle footprints (a consistent model; Gaussian only).
+    let prefilter = prefilter::Prefilter::from_env();
+    let prefilter_fp = std::env::var("CALA_PREFILTER_FP").ok().as_deref() == Some("1");
+    let mut pf_tmp = Vec::new();
+    if prefilter.is_some() {
+        println!(
+            "prefilter {:?} (footprints too: {prefilter_fp})",
+            std::env::var("CALA_PREFILTER").unwrap()
+        );
+    }
 
     // ---- learning pass: preprocess the first frames once, keep them
     let learn = learn.min(frames);
@@ -542,6 +560,15 @@ fn main() {
             let o = (s as usize + k) * n_px;
             pre.process_frame(f, &mut learn_frames[o..o + n_px])
                 .unwrap();
+            if let Some(pf) = &prefilter {
+                pf.apply(
+                    &mut learn_frames[o..o + n_px],
+                    &fov_mask,
+                    dims.width,
+                    dims.height,
+                    &mut pf_tmp,
+                );
+            }
         }
         s += cnt;
     }
@@ -570,7 +597,11 @@ fn main() {
             } else {
                 &unit.full
             };
-            b.push(fp.clone());
+            let mut fp = fp.clone();
+            if let (Some(pf), true) = (&prefilter, prefilter_fp) {
+                pf.apply_patch(&mut fp.values, fp.width, fp.height);
+            }
+            b.push(fp);
         }
         let lib0 = b.build(&mut flat).unwrap();
         let build_s = t_build.elapsed().as_secs_f64();
@@ -649,6 +680,9 @@ fn main() {
                 for (k, f) in raw.chunks_exact(n_px).enumerate() {
                     let a = Instant::now();
                     pre.process_frame(f, &mut buf).unwrap();
+                    if let Some(pf) = &prefilter {
+                        pf.apply(&mut buf, &fov_mask, dims.width, dims.height, &mut pf_tmp);
+                    }
                     let bt = Instant::now();
                     let r = engine.process(&buf).unwrap();
                     t_solve += bt.elapsed().as_secs_f64();
