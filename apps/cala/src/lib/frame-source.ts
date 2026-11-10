@@ -36,6 +36,12 @@ const FPS_MISMATCH_TOLERANCE = 0.05;
  * (64 x 600x600 frames = 23 MB).
  */
 export const MAX_FRAMES_PER_READ = 64;
+/** Header reads in flight while opening a folder (a multi-day recording has thousands of files). */
+export const OPEN_CONCURRENCY = 16;
+/** Read spans kept in flight: the one being decoded and the next. */
+export const READ_AHEAD_SPANS = 2;
+/** Spans larger than this are not read ahead of the call that needs them, bytes. */
+const MAX_PREFETCH_BYTES = 64 * 1048576;
 
 /** Decoded pixels: one element per pixel, `Uint16Array` for 16-bit video. */
 export type FramePixels = Uint8Array | Uint16Array;
@@ -221,6 +227,33 @@ function groupFiles(entries: FolderEntry[]): {
   return { group, metaData, timeStamps, ignored };
 }
 
+/**
+ * `fn` over `items` with at most `limit` running at once, results in order.
+ * Stops starting new work after the first failure and rethrows it.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const i = next++;
+      try {
+        out[i] = await fn(items[i], i);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 async function readBytes(file: File, start: number, end: number): Promise<Uint8Array> {
   return new Uint8Array(await file.slice(start, end).arrayBuffer());
 }
@@ -287,8 +320,20 @@ async function readText(file: File | undefined): Promise<string | null> {
   }
 }
 
+/** One file read: `run` frames of `avi` at bytes [from, to). */
+interface Span {
+  avi: OpenedAvi;
+  run: number;
+  from: number;
+  to: number;
+}
+
 export class FrameSource {
   private readonly avis: OpenedAvi[];
+  /** Reads started ahead of the call that will want them, by span. */
+  private readonly ahead = new Map<string, Promise<Uint8Array>>();
+  /** End frame of the last `readFrames` call (to spot sequential reading). */
+  private lastEnd = -1;
   readonly info: FrameSourceInfo;
 
   // Explicit fields rather than parameter properties, so the file also runs
@@ -299,13 +344,21 @@ export class FrameSource {
   }
 
   /** Open a Miniscope folder given as the flat list of its files (see `entriesFromFiles`). */
-  static async open(entries: FolderEntry[]): Promise<FrameSource> {
+  static async open(
+    entries: FolderEntry[],
+    options: { onProgress?: (opened: number, total: number) => void } = {},
+  ): Promise<FrameSource> {
     const { group, metaData, timeStamps, ignored } = groupFiles(withNames(entries));
     const warnings: string[] = [...group.numberingWarnings];
 
-    const all = await Promise.all(
-      group.avis.map(async ({ file }) => ({ file, header: await openAvi(file) })),
-    );
+    // Header reads are throttled: ~7.8k files for a three-day recording, and
+    // each is a few small reads that a network drive answers slowly.
+    let opening = 0;
+    const all = await mapLimit(group.avis, OPEN_CONCURRENCY, async ({ file }) => {
+      const header = await openAvi(file);
+      options.onProgress?.(++opening, group.avis.length);
+      return { file, header };
+    });
     // A file with no complete frame (a crash right after it was created) is
     // dropped with a warning instead of failing the whole recording.
     const opened = all.filter((o) => o.header.frameCount > 0);
@@ -427,6 +480,63 @@ export class FrameSource {
     return { avi, local: index - avi.start };
   }
 
+  /** The file reads that cover frames [start, start + count): contiguous runs, at most MAX_FRAMES_PER_READ each. */
+  private plan(start: number, count: number): Span[] {
+    const spans: Span[] = [];
+    let done = 0;
+    while (done < count) {
+      const { avi, local } = this.locate(start + done);
+      const want = Math.min(count - done, avi.header.frameCount - local, MAX_FRAMES_PER_READ);
+      let run: number;
+      let range: [number, number];
+      try {
+        run = avi.header.contiguousRun(local, want);
+        if (run === 0) throw new Error(`${avi.name}: no frame at ${local}.`);
+        range = avi.header.spanByteRange(local, run) as unknown as [number, number];
+      } catch (err) {
+        throw withFile(avi.file, err);
+      }
+      spans.push({ avi, run, from: range[0], to: range[1] });
+      done += run;
+    }
+    return spans;
+  }
+
+  /** The bytes of a span: a read-ahead already under way, or a new read. */
+  private fetchSpan(span: Span): Promise<Uint8Array> {
+    const key = `${span.avi.start}:${span.from}:${span.to}`;
+    const ahead = this.ahead.get(key);
+    if (ahead) {
+      this.ahead.delete(key);
+      return ahead;
+    }
+    return readBytes(span.avi.file, span.from, span.to);
+  }
+
+  /**
+   * Start reading the first span of the call that will follow (frames from
+   * `next`, `count` of them): sequential readers wait on the file system or
+   * network for each batch, and this overlaps that wait with decoding and
+   * everything downstream. At most one span ahead, and not a huge one.
+   */
+  private prefetchNext(next: number, count: number): void {
+    const n = Math.min(count, this.info.frameCount - next);
+    if (n < 1) return;
+    let first: Span;
+    try {
+      first = this.plan(next, Math.min(n, MAX_FRAMES_PER_READ))[0];
+    } catch {
+      return;
+    }
+    const key = `${first.avi.start}:${first.from}:${first.to}`;
+    if (this.ahead.has(key) || first.to - first.from > MAX_PREFETCH_BYTES) return;
+    const p = readBytes(first.avi.file, first.from, first.to);
+    p.catch(() => {});
+    this.ahead.set(key, p);
+    // Bounded: a reader that jumped around leaves at most a couple of stale spans.
+    while (this.ahead.size > READ_AHEAD_SPANS) this.ahead.delete(this.ahead.keys().next().value!);
+  }
+
   /**
    * Read and decode `count` consecutive frames starting at global `start`
    * into one buffer of `count * width * height` pixels (`Uint16Array` for
@@ -461,15 +571,24 @@ export class FrameSource {
     const bytes = new Uint8Array(dst.buffer, dst.byteOffset, dst.byteLength);
     const bytesPerFrame = px * (sixteen ? 2 : 1);
 
+    const spans = this.plan(start, count);
+    const sequential = start === this.lastEnd;
+    this.lastEnd = start + count;
+    // Up to READ_AHEAD_SPANS reads in flight: this span's, and the next's.
+    const reads: (Promise<Uint8Array> | undefined)[] = new Array(spans.length);
+    const kick = (i: number): void => {
+      if (i < spans.length && !reads[i]) {
+        reads[i] = this.fetchSpan(spans[i]);
+        reads[i]!.catch(() => {}); // surfaced when awaited; unused read-aheads stay quiet
+      }
+    };
     let done = 0;
-    while (done < count) {
-      const { avi, local } = this.locate(start + done);
-      const want = Math.min(count - done, avi.header.frameCount - local, MAX_FRAMES_PER_READ);
-      const run = avi.header.contiguousRun(local, want);
-      if (run === 0) throw new Error(`${avi.name}: no frame at ${local}.`);
+    for (let i = 0; i < spans.length; i++) {
+      for (let k = 0; k < READ_AHEAD_SPANS; k++) kick(i + k);
+      const { avi, run } = spans[i];
+      if (i === 0 && sequential) this.prefetchNext(start + count, count);
       try {
-        const [from, to] = avi.header.spanByteRange(local, run);
-        const span = await readBytes(avi.file, from, to);
+        const span = await reads[i]!;
         avi.header.decodeSpanInto(
           span,
           run,
@@ -490,6 +609,7 @@ export class FrameSource {
 
   /** Release the WASM-side tables. The source is unusable afterwards. */
   dispose(): void {
+    this.ahead.clear();
     for (const a of this.avis) a.header.free();
     this.avis.length = 0;
   }

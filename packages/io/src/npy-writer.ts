@@ -24,6 +24,40 @@ function descrOf(data: NpyWritable): string {
   return '|u1';
 }
 
+/** The numpy `descr` of a typed array. */
+export function npyDescr(data: NpyWritable): string {
+  return descrOf(data);
+}
+
+/**
+ * The header (magic, version 1.0, length, dict, padding, newline) of a .npy
+ * file, padded to a 64-byte multiple. The data follows it directly. With
+ * `fortranOrder` the first axis varies fastest, so a (rows, cols) array is
+ * written column after column: a frame-major stream of a cells x frames
+ * matrix needs no transpose.
+ */
+export function writeNpyHeader(
+  descr: string,
+  shape: number[],
+  fortranOrder = false,
+): Uint8Array<ArrayBuffer> {
+  const shapeStr = shape.length === 1 ? `(${shape[0]},)` : `(${shape.join(', ')})`;
+  const headerDict = `{'descr': '${descr}', 'fortran_order': ${fortranOrder ? 'True' : 'False'}, 'shape': ${shapeStr}, }`;
+  const headerBytes = new TextEncoder().encode(headerDict);
+  const preambleLen = 10; // magic(6) + version(2) + headerLen(2)
+  let totalHeaderLen = headerBytes.length + 1; // +1 for newline
+  const remainder = (preambleLen + totalHeaderLen) % 64;
+  if (remainder !== 0) totalHeaderLen += 64 - remainder;
+  if (totalHeaderLen > 0xffff) throw new RangeError('.npy header too long for format 1.0');
+  const out = new Uint8Array(preambleLen + totalHeaderLen);
+  out.set([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0]); // \x93NUMPY, version 1.0
+  new DataView(out.buffer).setUint16(8, totalHeaderLen, true);
+  out.set(headerBytes, preambleLen);
+  out.fill(0x20, preambleLen + headerBytes.length, preambleLen + totalHeaderLen - 1);
+  out[preambleLen + totalHeaderLen - 1] = 0x0a;
+  return out;
+}
+
 /**
  * Write a typed array as a .npy binary buffer (version 1.0, little-endian). A
  * Float32Array (the default case) becomes float32; integer arrays keep their
@@ -34,53 +68,10 @@ function descrOf(data: NpyWritable): string {
  * @returns ArrayBuffer containing the complete .npy file
  */
 export function writeNpy(data: NpyWritable, shape: number[]): ArrayBuffer {
-  // 1. Build header dict string
-  const shapeStr = shape.length === 1 ? `(${shape[0]},)` : `(${shape.join(', ')})`;
-  const headerDict = `{'descr': '${descrOf(data)}', 'fortran_order': False, 'shape': ${shapeStr}, }`;
-  const headerBytes = new TextEncoder().encode(headerDict);
-
-  // 2. Compute padding to 64-byte alignment
-  const preambleLen = 10; // magic(6) + version(2) + headerLen(2)
-  let totalHeaderLen = headerBytes.length + 1; // +1 for newline
-  const remainder = (preambleLen + totalHeaderLen) % 64;
-  if (remainder !== 0) {
-    totalHeaderLen += 64 - remainder;
-  }
-
-  // 3. Allocate buffer
-  const dataBytes = data.byteLength;
-  const buffer = new ArrayBuffer(preambleLen + totalHeaderLen + dataBytes);
-  const view = new DataView(buffer);
+  const header = writeNpyHeader(descrOf(data), shape);
+  const buffer = new ArrayBuffer(header.length + data.byteLength);
   const bytes = new Uint8Array(buffer);
-
-  // 4. Magic bytes: \x93NUMPY
-  bytes[0] = 0x93;
-  bytes[1] = 0x4e; // N
-  bytes[2] = 0x55; // U
-  bytes[3] = 0x4d; // M
-  bytes[4] = 0x50; // P
-  bytes[5] = 0x59; // Y
-
-  // 5. Version 1.0
-  bytes[6] = 1;
-  bytes[7] = 0;
-
-  // 6. Header length (2 bytes, little-endian)
-  view.setUint16(8, totalHeaderLen, true);
-
-  // 7. Header string + space padding + newline
-  const headerStart = preambleLen;
-  bytes.set(headerBytes, headerStart);
-  for (let i = headerBytes.length; i < totalHeaderLen - 1; i++) {
-    bytes[headerStart + i] = 0x20; // space
-  }
-  bytes[headerStart + totalHeaderLen - 1] = 0x0a; // \n
-
-  // 8. Raw data (copy Float32Array bytes)
-  const dataOffset = preambleLen + totalHeaderLen;
-  new Uint8Array(buffer, dataOffset, dataBytes).set(
-    new Uint8Array(data.buffer, data.byteOffset, dataBytes),
-  );
-
+  bytes.set(header);
+  bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), header.length);
   return buffer;
 }

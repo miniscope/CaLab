@@ -7,7 +7,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { CompressStatus, CompressToMain } from '../workers/compress-types.ts';
-import { MAX_PASS2_BYTES } from './pass2-store.ts';
+import { MAX_MEMORY_TRACE_BYTES } from './trace-file.ts';
 
 /** A finished back-fill. */
 export interface BackfillInfo {
@@ -171,7 +171,7 @@ export function createCompressStore(
         const inc = incoming;
         if (inc && inc.version === msg.version) {
           inc.bytes += msg.traces.byteLength;
-          if (inc.bytes <= MAX_PASS2_BYTES)
+          if (inc.bytes <= MAX_MEMORY_TRACE_BYTES)
             inc.parts.push({ start: msg.start, count: msg.count, traces: msg.traces });
           else incoming = null;
         }

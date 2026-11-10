@@ -1,15 +1,20 @@
 import { createSignal, createEffect, on, Show, type JSX } from 'solid-js';
+import { liveTraceResult } from '../lib/live-export.ts';
+import { memoryTraceFile } from '../lib/trace-file.ts';
 import { DashboardPanel } from '@calab/ui';
+import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { CompressStore } from '../lib/compress-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import {
-  buildCaDeconExport,
-  buildCalaExport,
   cadeconCells,
-  downloadBytes,
+  cadeconIsClassic,
+  calaExportBytes,
   fileStem,
+  saveExport,
+  writeCaDeconExport,
+  writeCalaExport,
   type ExportInput,
 } from '../lib/export.ts';
 
@@ -19,7 +24,11 @@ export interface Pass2BarProps {
   cells: CellStore;
   /** The compression (`?compress`): its back-fill stands in for pass 2 when there is no file. */
   compress?: CompressStore;
-  /** A live source: no file to re-read, so pass 2 cannot run; the stop button ends the stream. */
+  /**
+   * A live source: no file to re-read, so pass 2 cannot run; the stop button
+   * ends the stream and the export takes the back-filled traces (with
+   * compression) or the live ones.
+   */
   live?: boolean;
   /** Recording label (the folder name). */
   label: string;
@@ -39,15 +48,62 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
   const p = () => props.pass2;
   const [auto, setAuto] = createSignal(true);
   const [passOnly, setPassOnly] = createSignal(true);
+  const [exporting, setExporting] = createSignal<string | null>(null);
+  const [exportError, setExportError] = createSignal<string | null>(null);
+  /** Live run: the traces solved as the frames came in, once the run and the final library are in. */
+  const [liveResult, setLiveResult] = createSignal<Pass2Result | null>(null);
+  createEffect(() => {
+    if (!props.live || props.compress) return;
+    const done = props.pipeline.status() === 'done';
+    const final = props.cells.status()?.final ?? true;
+    const frames = props.pipeline.processed();
+    props.cells.library();
+    if (!done || !final) {
+      setLiveResult(null);
+      return;
+    }
+    liveTraceResult(props.cells, frames, 0).then(setLiveResult, (err: unknown) =>
+      setExportError(err instanceof Error ? err.message : String(err)),
+    );
+  });
 
-  /** The back-fill's traces as a pass-2 result, when its library is the current one. */
-  const backfillResult = (): Pass2Result | null => {
+  /** Stream one export to disk (see `saveExport`), with progress and errors in the bar. */
+  async function runExport(
+    name: string,
+    sizeHint: number,
+    write: (sink: ByteSink, progress: (done: number, total: number) => void) => Promise<void>,
+  ): Promise<void> {
+    setExportError(null);
+    setExporting(`Exporting ${name}`);
+    try {
+      await saveExport(name, sizeHint, (sink) =>
+        write(sink, (done, total) =>
+          setExporting(`Exporting ${name}: ${total > 0 ? Math.floor((100 * done) / total) : 0}%`),
+        ),
+      );
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  /** The back-fill's traces as a pass-2 result (in a memory trace file), when its library is the current one. */
+  const [backfillResult, setBackfillResult] = createSignal<Pass2Result | null>(null);
+  createEffect(() => {
     const r = props.compress?.result();
     const library = props.cells.library();
-    if (!r || !library || library.version !== r.version) return null;
-    return { ...r, library };
-  };
-  const exportResult = () => p().result() ?? backfillResult();
+    if (!r || !library || library.version !== r.version) {
+      setBackfillResult(null);
+      return;
+    }
+    memoryTraceFile(r.traces, r.frames, r.cells).then(
+      (traces) => setBackfillResult({ ...r, traces, library }),
+      (err: unknown) => setExportError(err instanceof Error ? err.message : String(err)),
+    );
+  });
+  /** Pass 2's traces, else the back-fill's (compression), else the live ones. */
+  const exportResult = () => p().result() ?? backfillResult() ?? liveResult();
 
   // A new pass 1 invalidates pass 2's result.
   createEffect(
@@ -88,13 +144,18 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
         return 'Pass 2 cancelled';
       default:
         if (props.live) {
+          if (pass1Busy())
+            return props.compress
+              ? 'Live: the traces are back-filled from the compressed windows'
+              : 'Live: the traces are solved as the frames come in';
           const b = props.compress?.backfill();
-          if (pass1Busy()) return 'Live: the traces are back-filled from the compressed windows';
-          return b
-            ? `Back-filled ${b.frames.toLocaleString()} frames from ${b.windows} windows with library v${b.version}`
-            : props.compress
-              ? 'Live run ended: waiting for the back-fill'
-              : 'Live run ended (no compression: add ?compress for a back-fill)';
+          if (b)
+            return `Back-filled ${b.frames.toLocaleString()} frames from ${b.windows} windows with library v${b.version}`;
+          if (props.compress) return 'Live run ended: waiting for the back-fill';
+          const r = liveResult();
+          return r
+            ? `Live run ended: ${r.cells} cells x ${r.frames.toLocaleString()} frames of live traces to export (add ?compress for a back-fill)`
+            : 'Live run ended';
         }
         return pass1Busy()
           ? 'Pass 2 starts when pass 1 finishes'
@@ -159,7 +220,9 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
             data-testid="pass2-finish"
             title={
               props.live
-                ? 'End the live run here: the cells found so far become the final library and the traces are back-filled.'
+                ? props.compress
+                  ? 'End the live run here: the cells found so far become the final library and the traces are back-filled.'
+                  : 'End the live run here: the cells found so far become the final library.'
                 : 'Stop reading here: the cells found so far become the final library, then pass 2 runs over the frames read.'
             }
             onClick={() => void props.pipeline.finishEarly()}
@@ -202,11 +265,22 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-npz"
-          disabled={!exportResult()}
-          title="Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz)."
+          disabled={!exportResult() || exporting() !== null}
+          title={
+            props.live
+              ? props.compress
+                ? 'Footprints, the back-filled traces, motion, flicker and cell metadata (NumPy .npz).'
+                : 'Footprints, the live traces, motion, flicker and cell metadata (NumPy .npz).'
+              : 'Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz).'
+          }
           onClick={() => {
             const input = exportInput();
-            if (input) downloadBytes(`${fileStem(props.label)}_cala.npz`, buildCalaExport(input));
+            if (input)
+              void runExport(
+                `${fileStem(props.label)}_cala.npz`,
+                calaExportBytes(input),
+                (sink, p) => writeCalaExport(input, sink, { onProgress: p }),
+              );
           }}
         >
           Export (.npz)
@@ -215,14 +289,15 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-cadecon"
-          disabled={!exportResult()}
+          disabled={!exportResult() || exporting() !== null}
           title={`Traces for CaDecon (open the file there, sampling rate ${props.fps > 0 ? `${props.fps} Hz` : 'of your recording'}).`}
           onClick={() => {
             const input = exportInput();
             if (input)
-              downloadBytes(
+              void runExport(
                 `${fileStem(props.label)}_cala_cadecon.npz`,
-                buildCaDeconExport(input, passOnly()),
+                input.result.frames * cadeconCells(input, passOnly()).length * 4,
+                (sink, p) => writeCaDeconExport(input, sink, passOnly(), { onProgress: p }),
               );
           }}
         >
@@ -236,6 +311,30 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           />
           QC-passing cells only
         </label>
+        <Show when={exporting()}>
+          <span class="cala-readout" data-testid="export-progress">
+            {exporting()}
+          </span>
+        </Show>
+        <Show when={exportError()}>
+          <span class="cala-status" data-testid="export-error" data-state="error">
+            Export failed: {exportError()}
+          </span>
+        </Show>
+        <Show
+          when={
+            exportResult() &&
+            !cadeconIsClassic(
+              exportResult()!.frames,
+              cadeconCells(exportInput()!, passOnly()).length,
+            )
+          }
+        >
+          <span class="cala-readout" data-testid="cadecon-large-note">
+            Too large for CaDecon to open (over 512 MB of traces): use the .npz with np.load, or
+            export fewer cells.
+          </span>
+        </Show>
       </div>
     </DashboardPanel>
   );
