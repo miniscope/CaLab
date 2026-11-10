@@ -510,6 +510,8 @@ function runner(publishAt: Set<number>) {
     setNoise: vi.fn(),
     cellCount: 3,
     reservoirBytes: 1024,
+    framesPerTile: 40,
+    reservoirWarning: 'capped',
     stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
     cellStatus: () => Float64Array.of(1, 1, 3, 2, 0, 0),
     free: vi.fn(),
@@ -566,6 +568,8 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     const [status] = t.toMain.of('status');
     expect(status.status).toMatchObject({ frame: 43, observed: 3, cells: 3, version: 102 });
     expect(status.status.counters).toMatchObject({ adds: 3, deletes: 9, splits: 10, absorbs: 11 });
+    // The reservoir's size and its memory-cap warning reach the UI.
+    expect(status.status).toMatchObject({ framesPerTile: 40, reservoirWarning: 'capped' });
     // Evidence status rides along (the first status of a run always carries it).
     expect(Array.from(status.status.cellStatus!.ids)).toEqual([1, 2]);
     expect(Array.from(status.status.cellStatus!.established)).toEqual([1, 0]);

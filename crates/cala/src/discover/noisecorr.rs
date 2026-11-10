@@ -63,8 +63,6 @@ pub(crate) struct NoiseCorr {
     frames: f64,
     /// Time constant of the running mean (frames).
     tau: f64,
-    /// Every `row_step`-th row is sampled.
-    row_step: usize,
     pushes: usize,
     /// Running mean of the correlation at `BASE_LAG` px (along either axis).
     base: f64,
@@ -91,6 +89,15 @@ const BASE_LAGS: [(usize, isize); 10] = [
     (4, 4),
 ];
 
+/// Every this-many-th row is sampled per frame: about 18 rows, every 8th
+/// to every 32nd. `ρ` is a running mean over ~1000 frames, so on a 600 px
+/// frame every 32nd row (it was every 8th) moves it by about its own
+/// frame-to-frame jitter (mean |Δρ| 0.002 at ρ ≈ 1.5 on the motion sims)
+/// for a quarter of the cost; small frames keep every 8th.
+fn row_step(height: usize) -> usize {
+    (height / 18).clamp(8, 32)
+}
+
 fn dot(a: &[f32], b: &[f32]) -> f64 {
     let mut acc = [0.0f32; 8];
     let (ca, ra) = a.as_chunks::<8>();
@@ -112,7 +119,6 @@ impl NoiseCorr {
             k: [0.0; 12],
             frames: 0.0,
             tau: 1000.0,
-            row_step: 8,
             pushes: 0,
             base: 0.0,
             d: Vec::new(),
@@ -120,7 +126,7 @@ impl NoiseCorr {
     }
 
     /// Account for one whitened frame `z` (0 outside the FOV / at NaN).
-    /// Each frame samples every `row_step`-th row, starting at a row that
+    /// Each frame samples every `row_step(h)`-th row, starting at a row that
     /// rotates from frame to frame, against the previous frame's same rows
     /// (only the rows the next frame needs are kept).
     pub fn push(&mut self, z: &[f32], fov: &[u8], dims: Dims) -> u64 {
@@ -128,7 +134,7 @@ impl NoiseCorr {
         if h < 2 * BASE_LAG + 1 || w < 2 * BASE_LAG + 1 {
             return 0;
         }
-        let step = self.row_step;
+        let step = row_step(h);
         let phase = self.pushes % step;
         let mut work = 0u64;
         let mut s0 = 0.0f64;

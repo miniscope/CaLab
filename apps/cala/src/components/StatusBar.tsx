@@ -110,6 +110,17 @@ export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JS
         {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
         {lagNow() ?? 'n/a'} frames
       </span>
+      <Show when={c().status()?.reservoirWarning}>
+        {(w) => (
+          <p
+            class="cala-warning cala-statusbar__warning"
+            role="status"
+            data-testid="statusbar-warning"
+          >
+            {w()}
+          </p>
+        )}
+      </Show>
       <Show when={s().error()}>
         {(message) => (
           <div class="error-card cala-statusbar__error" role="alert">

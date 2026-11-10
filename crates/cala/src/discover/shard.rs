@@ -43,7 +43,7 @@ use super::churn::Churn;
 use super::fpstats::FpStats;
 use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
-use super::reservoir::Tile;
+use super::reservoir::{SharedFrames, Tile};
 use super::wire::{Reader, Writer, MAGIC};
 use super::{SlowLoop, SlowStats};
 use crate::trace::{Library, TraceError};
@@ -137,11 +137,13 @@ impl VisitJob {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.encode(&self.tile)
+        // A job's own tile carries every patch.
+        self.encode(&self.tile, &SharedFrames::new(self.tile.rect))
     }
 
-    /// The bytes, with the reservoir slots taken from `slots`.
-    fn encode(&self, slots: &Tile) -> Vec<u8> {
+    /// The bytes, with the reservoir slots taken from `slots` (random
+    /// slots without a patch of their own from `shared`).
+    fn encode(&self, slots: &Tile, shared: &SharedFrames) -> Vec<u8> {
         let bytes: usize = (slots.events.len() + slots.randoms.len() + self.tile.probes.len())
             * (self.tile.rect.len() * 2 + 128);
         let mut w = Writer {
@@ -155,7 +157,7 @@ impl VisitJob {
         w.u32(self.visits);
         w.u64(self.id_base);
         w.u64(self.noise_gen);
-        w.tile(&self.tile, slots);
+        w.tile(&self.tile, slots, shared);
         w.usize(self.others.len());
         for (ti, rej, tombs) in &self.others {
             w.usize(*ti);
@@ -536,7 +538,7 @@ impl SlowLoop {
     pub fn take_job_bytes(&mut self) -> Option<Vec<u8>> {
         let ti = self.next_free_tile()?;
         let job = self.make_job(ti, false);
-        Some(job.encode(&self.tiles[ti]))
+        Some(job.encode(&self.tiles[ti], &self.shared))
     }
 
     /// The job for tile `ti`; its tile holds a copy of the reservoir slots
@@ -550,8 +552,8 @@ impl SlowLoop {
         if slots {
             tile.events = t.events.clone();
             tile.randoms = t.randoms.clone();
+            tile.fill_randoms(&self.shared);
         }
-        tile.seen = t.seen;
         tile.fresh = t.fresh;
         tile.rejected = t.rejected.clone();
         tile.tombs = t.tombs.clone();
@@ -779,7 +781,7 @@ impl SlowLoop {
                 break;
             };
             let job = self.make_job(ti, false);
-            let job = VisitJob::from_bytes(&job.encode(&self.tiles[ti]))?;
+            let job = VisitJob::from_bytes(&job.encode(&self.tiles[ti], &self.shared))?;
             let res = runner.run(job)?;
             let res = VisitResult::from_bytes(&res.to_bytes())?;
             let w = res.work;

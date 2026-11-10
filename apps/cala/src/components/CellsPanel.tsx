@@ -268,6 +268,14 @@ export function CellCountPlot(props: { cells: CellStore }): JSX.Element {
               {st().counters.rejects} &middot; versions {changes().versions} (+{changes().added} / -
               {changes().removed} cells) &middot; dropped {dropPct().toFixed(0)}% of frames &middot;
               reservoir {(st().reservoirBytes / 1048576).toFixed(0)} MB
+              <Show when={st().framesPerTile > 0}>, {st().framesPerTile} frames per tile</Show>
+              <Show when={st().reservoirWarning}>
+                {(w) => (
+                  <span class="cala-warning cala-block" data-testid="reservoir-warning">
+                    {w()}
+                  </span>
+                )}
+              </Show>
             </>
           )}
         </Show>
