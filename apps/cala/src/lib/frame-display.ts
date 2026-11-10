@@ -77,6 +77,99 @@ export function displayRange(bytes: DisplayPixels, bitDepth: number, auto: boole
   return { lo, hi: Math.max(hi, lo + 1) };
 }
 
+/** Images pooled for the one-time range fit (one preview image per batch). */
+export const FIT_FRAMES = 8;
+/** Pixels sampled per image for the range fit. */
+const FIT_SAMPLES = 4096;
+
+/** Evenly strided subsample of at most `max` finite values. */
+export function subsamplePixels(pixels: DisplayPixels, max = FIT_SAMPLES): Float32Array {
+  const stride = Math.max(1, Math.floor(pixels.length / max));
+  const out: number[] = [];
+  for (let i = 0; i < pixels.length; i += stride) {
+    const v = pixels[i];
+    if (Number.isFinite(v)) out.push(v);
+  }
+  return Float32Array.from(out);
+}
+
+/** Robust (0.5%-99.5%) range of pooled samples; null when there are none. */
+export function percentileRange(samples: Float32Array[]): DisplayRange | null {
+  let n = 0;
+  for (const s of samples) n += s.length;
+  if (n === 0) return null;
+  const all = new Float32Array(n);
+  let o = 0;
+  for (const s of samples) {
+    all.set(s, o);
+    o += s.length;
+  }
+  all.sort();
+  const lo = all[Math.floor(CLIP_FRACTION * (n - 1))];
+  const hi = all[Math.ceil((1 - CLIP_FRACTION) * (n - 1))];
+  return { lo, hi: Math.max(hi, lo + 1e-6 * Math.max(1, Math.abs(lo))) };
+}
+
+/**
+ * A display range that never adapts on its own. It is fitted once, from
+ * robust percentiles pooled over the first `fitFrames` images, then held
+ * until a manual change, an explicit re-fit, or a reset (new run). Pixels
+ * outside it clip, so a real change in contrast or amplitude stays visible.
+ */
+export class RangeHold {
+  private recent: Float32Array[] = [];
+  private pooled: Float32Array[] = [];
+  private held = false;
+  private current: DisplayRange | null = null;
+
+  constructor(private readonly fitFrames = FIT_FRAMES) {}
+
+  /** Current range; null before the first image. */
+  get range(): DisplayRange | null {
+    return this.current;
+  }
+
+  /** True once the range is held (fit complete, or set by hand). */
+  get locked(): boolean {
+    return this.held;
+  }
+
+  /** Feed an image shown in this panel; returns the range to draw it with. */
+  observe(pixels: DisplayPixels): DisplayRange | null {
+    const sample = subsamplePixels(pixels);
+    this.recent.push(sample);
+    if (this.recent.length > this.fitFrames) this.recent.shift();
+    if (this.held) return this.current;
+    this.pooled.push(sample);
+    this.current = percentileRange(this.pooled);
+    if (this.pooled.length >= this.fitFrames) this.held = true;
+    return this.current;
+  }
+
+  /** Hold a manually chosen range. */
+  setManual(range: DisplayRange): void {
+    if (!(range.hi > range.lo)) return;
+    this.current = { lo: range.lo, hi: range.hi };
+    this.held = true;
+  }
+
+  /** Recompute once from the most recent images, then hold again. */
+  refit(): void {
+    const r = percentileRange(this.recent);
+    if (!r) return;
+    this.current = r;
+    this.held = true;
+  }
+
+  /** Forget everything (new run, restart, or a different view). */
+  reset(): void {
+    this.recent = [];
+    this.pooled = [];
+    this.held = false;
+    this.current = null;
+  }
+}
+
 /** One gray byte per pixel for `bytes`, linearly mapped from `range` to 0-255. */
 export function toGray8(
   bytes: DisplayPixels,

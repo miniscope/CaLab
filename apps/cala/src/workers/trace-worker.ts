@@ -35,13 +35,15 @@ function handle(msg: StageMsg): void {
     case 'start': {
       stopStage();
       const cells = msg.cells;
-      const port = slowPort;
+      // Pass 2 (a library is given) is not connected to the slow loop.
+      const port = cells?.library ? null : slowPort;
       const fast = new FastLoop(
         {
           ...msg.fast,
           session: cells?.session ?? 0,
           discover: (cells?.discover ?? true) && port !== null,
           qc: cells?.qc ?? true,
+          ...(cells?.library ? { initialLibrary: cells.library } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,

@@ -1,5 +1,6 @@
 export { parseNpy } from './npy-parser.ts';
 export { writeNpy } from './npy-writer.ts';
+export type { NpyWritable } from './npy-writer.ts';
 export { parseNpz } from './npz-parser.ts';
 export { parseMat } from './mat-parser.ts';
 export type { DataSource } from '@calab/core';

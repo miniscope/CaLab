@@ -57,9 +57,9 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
   await page.getByTestId('residual-toggle').check();
 
-  // Raw gray levels: turn auto contrast off, scrub to global frame 4 (file 1).
+  // Raw gray levels: fitted range off (full scale), scrub to global frame 4 (file 1).
   await page.getByRole('tab', { name: 'Raw file' }).click();
-  await page.getByLabel('Auto contrast').uncheck();
+  await page.getByLabel('Fixed range (fitted once, held)').uncheck();
   await page.getByRole('slider', { name: 'Frame' }).fill('4');
   await expect(page.getByTestId('frame-readout')).toContainText('5 / 6');
   await expect

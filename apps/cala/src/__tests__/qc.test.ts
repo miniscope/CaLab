@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
+  churnPerMin,
   CONVERGENCE_RULE,
   ConvergenceHistory,
   convergenceStatus,
@@ -17,6 +18,7 @@ import {
   verdict,
   type CellQcRow,
   type ConvergencePoint,
+  type EditTotals,
   type QcWire,
 } from '../lib/qc.ts';
 import {
@@ -169,9 +171,27 @@ function point(minutes: number, over: Partial<ConvergencePoint> = {}): Convergen
     residualExcess: 1,
     snrMedian: 10,
     passFrac: 0.7,
+    stableCells: 280,
+    fpStability: 1,
+    traceSigmaChange: 0.01,
+    stableFrac: 0.95,
     addsPerMin: 1,
     removesPerMin: 1,
-    edits: { adds: 1, merges: 0, splits: 0, deletes: 1 },
+    edits: edits({}),
+    ...over,
+  };
+}
+
+function edits(over: Partial<EditTotals>): EditTotals {
+  return {
+    adds: 5,
+    merges: 1,
+    splits: 0,
+    deletes: 1,
+    newAdds: 4,
+    reAdds: 1,
+    churned: 1,
+    establishedRemovals: 1,
     ...over,
   };
 }
@@ -180,27 +200,45 @@ const series = (n: number, f: (m: number) => Partial<ConvergencePoint>) =>
   Array.from({ length: n }, (_, i) => point(i * 0.25, f(i * 0.25)));
 
 describe('convergenceStatus', () => {
-  it('waits for cells, then needs the window of history', () => {
+  it('waits for cells, then needs the window of history and old enough cells', () => {
     expect(convergenceStatus([]).state).toBe('waiting');
     expect(convergenceStatus([point(0, { cells: 0 })]).state).toBe('waiting');
     expect(convergenceStatus([point(0), point(1)]).state).toBe('discovering');
+    const young = series(20, () => ({ stableCells: 100 }));
+    expect(convergenceStatus(young)).toMatchObject({ state: 'discovering' });
+    expect(convergenceStatus(young).reason).toMatch(/under a minute old/);
+    const unmeasured = series(20, () => ({ stableFrac: NaN }));
+    expect(convergenceStatus(unmeasured).state).toBe('discovering');
   });
-  it('discovering while explained rises or the library grows fast', () => {
-    const rising = series(20, (m) => ({ explained: 0.3 + 0.05 * m }));
-    expect(convergenceStatus(rising)).toMatchObject({ state: 'discovering' });
-    const growing = series(20, (m) => ({ cells: 100 + 30 * m }));
-    expect(convergenceStatus(growing).reason).toMatch(/library grew/);
-    const adding = series(20, () => ({ addsPerMin: 30 }));
-    expect(convergenceStatus(adding).reason).toMatch(/added per min/);
+  it('new-cell discovery never blocks convergence', () => {
+    // A library still growing by 30 new cells a minute (10 % of it) and
+    // explaining more signal is converged when existing cells are stable
+    // and churn is low.
+    const growing = series(20, (m) => ({
+      cells: 300 + 30 * m,
+      stableCells: 250 + 30 * m,
+      explained: 0.5 + 0.05 * m,
+      addsPerMin: 30,
+      edits: edits({ adds: 30, newAdds: 30 }),
+    }));
+    const st = convergenceStatus(growing);
+    expect(st.state).toBe('converged');
+    expect(st.reason).toMatch(/30\.0 new cells\/min/);
   });
-  it('converged when everything is flat; settling otherwise', () => {
+  it('settling while churn is high or existing cells still change', () => {
     expect(convergenceStatus(series(20, () => ({}))).state).toBe('converged');
-    const drifting = series(20, (m) => ({ residualExcess: 1 + 0.2 * m }));
-    expect(convergenceStatus(drifting)).toMatchObject({ state: 'settling' });
-    expect(convergenceStatus(drifting).reason).toMatch(/residual/);
-    // Churn above 2 % of the library per minute keeps it settling.
-    const churning = series(20, () => ({ addsPerMin: 5, removesPerMin: 5 }));
-    expect(convergenceStatus(churning).state).toBe('settling');
+    // 6 re-adds + 6 churned + 3 established removals per minute: 5 % of 300.
+    const churning = series(20, () => ({
+      edits: edits({ reAdds: 6, churned: 6, establishedRemovals: 3 }),
+    }));
+    expect(convergenceStatus(churning)).toMatchObject({ state: 'settling' });
+    expect(convergenceStatus(churning).reason).toMatch(/churn 5\.0%/);
+    const changing = series(20, () => ({ stableFrac: 0.7 }));
+    expect(convergenceStatus(changing).reason).toMatch(/30\.0% of cells still changing/);
+    // Churn is averaged over the window: one busy point does not flip it.
+    const blip = series(20, (m) => (m === 4.75 ? { edits: edits({ churned: 20 }) } : {}));
+    expect(convergenceStatus(blip).state).toBe('converged');
+    expect(churnPerMin(edits({}))).toBe(3);
     expect(CONVERGENCE_RULE.windowMin).toBe(2);
   });
 });
@@ -217,13 +255,14 @@ describe('bounded histories', () => {
   it('EditRates: per-minute rates over the last minute of recording', () => {
     const r = new EditRates(1);
     expect(r.rates().adds).toBeNaN();
-    const t = (adds: number) => ({ adds, merges: adds / 2, splits: 0, deletes: 1 });
+    const t = (adds: number) => edits({ adds, merges: adds / 2, deletes: 1, newAdds: adds / 2 });
     r.push(0, t(0));
     r.push(0.5, t(10));
     r.push(1, t(20));
     r.push(1.5, t(22));
     // Base is the newest sample at least a minute old (0.5): (22 - 10) / 1.
-    expect(r.rates()).toEqual({ adds: 12, merges: 6, splits: 0, deletes: 0 });
+    expect(r.rates()).toMatchObject({ adds: 12, merges: 6, splits: 0, deletes: 0, newAdds: 6 });
+    expect(r.rates().churned).toBe(0);
   });
 });
 

@@ -1,6 +1,7 @@
 import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
+import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
 export interface CellsSettings {
@@ -10,6 +11,8 @@ export interface CellsSettings {
   discover: boolean;
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
+  /** Pass 2: solve every frame with this library (`TraceLibrary.toBytes()`), no discovery. */
+  library?: Uint8Array;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
@@ -19,7 +22,16 @@ export type FrameRequest =
   /** `count` consecutive frames from global index `start` (one for a single frame). */
   | { type: 'read'; id: number; start: number; count: number }
   /** Set up the preprocess + motion pipeline over the open recording (replaces any running one). */
-  | { type: 'pipeline-start'; id: number; options: PipelineOptions; cells?: CellsSettings }
+  | {
+      type: 'pipeline-start';
+      id: number;
+      options: PipelineOptions;
+      cells?: CellsSettings;
+      /** Pass 2: replay the recorded flicker and motion (pipelined workers only). */
+      replay?: ReplayInput;
+    }
+  /** Stop reading at the current position: the next step reports the end of the recording. */
+  | { type: 'pipeline-truncate'; id: number }
   /**
    * Run one pipeline step and answer with its result. The main thread keeps
    * at most a couple of these outstanding, which is the backpressure: the

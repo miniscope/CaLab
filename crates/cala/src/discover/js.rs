@@ -152,9 +152,12 @@ impl JsSlowLoop {
     }
 
     /// Counters: visits, proposals, adds, rejects, merges, merge tests,
-    /// refines, commits, deletes, splits, absorbs (cumulative).
+    /// refines, commits, deletes, splits, absorbs, then the add
+    /// classification: new adds, re-adds, churned adds, churned re-adds,
+    /// established removals (all cumulative; see `ChurnCounts`).
     pub fn stats(&self) -> Vec<f64> {
         let s = self.inner.stats();
+        let c = self.inner.churn_counts();
         [
             s.visits,
             s.proposals,
@@ -167,6 +170,11 @@ impl JsSlowLoop {
             s.deletes,
             s.splits,
             s.absorbs,
+            c.adds_new,
+            c.adds_readd,
+            c.churned,
+            c.churned_readd,
+            c.established_removals,
         ]
         .map(|v| v as f64)
         .to_vec()

@@ -29,6 +29,7 @@
     "@calab/community": "*",
     "@calab/compute": "*",
     "@calab/community-ui": "*",
+    "@calab/io": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",
     "@dschz/solid-uplot": "^0.5.2",

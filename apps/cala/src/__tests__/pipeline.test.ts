@@ -46,6 +46,19 @@ describe('pipeline plan', () => {
     expect(cursor.next()).toBeNull();
   });
 
+  it('ends the recording early when truncated', () => {
+    const cursor = new PipelineCursor(makePlan(100, { calibrationFrames: 8, batchSize: 8 }));
+    let processed = 0;
+    for (let s = cursor.next(); s; s = cursor.next()) {
+      if (s.phase !== 'process') continue;
+      processed += s.count;
+      if (processed === 24) cursor.truncate();
+    }
+    expect(processed).toBe(24);
+    expect(cursor.done).toBe(true);
+    expect(cursor.next()).toBeNull();
+  });
+
   it('processes each frame exactly once, in order, never more than a batch at a time', () => {
     const plan = makePlan(1001, { batchSize: 7 });
     const process = walk(new PipelineCursor(plan)).filter((s) => s.phase === 'process');
