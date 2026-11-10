@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell, renderOverlay } from '../lib/cell-overlay.ts';
-import { summarize } from '../lib/cell-store.ts';
+import { CellMetrics, pushRecent, summarize } from '../lib/cell-store.ts';
 import {
   FastLoop,
   type TraceBackend,
@@ -670,6 +670,32 @@ describe('summarize', () => {
     const v = Array.from({ length: 200 }, (_, i) => i + 1);
     expect(summarize(v)).toEqual({ n: 200, mean: 100.5, p99: 198, max: 200 });
     expect(summarize([])).toEqual({ n: 0, mean: 0, p99: 0, max: 0 });
+  });
+});
+
+describe('bounded per-batch histories', () => {
+  it('pushRecent keeps the newest cap..2cap samples', () => {
+    const s: number[] = [];
+    for (let i = 0; i < 100; i++) pushRecent(s, i, 8);
+    expect(s.length).toBeGreaterThanOrEqual(8);
+    expect(s.length).toBeLessThan(16);
+    expect(s.at(-1)).toBe(99);
+    // contiguous newest samples, in order
+    expect(s).toEqual(Array.from({ length: s.length }, (_, k) => 100 - s.length + k));
+  });
+
+  it('CellMetrics thins every series together and keeps the newest point', () => {
+    const m = new CellMetrics(8);
+    for (let i = 0; i < 1000; i++) m.push(8 * (i + 1), i, i % 3 ? i : null, i, i, i / 10, i / 20);
+    expect(m.length).toBeLessThanOrEqual(8);
+    for (const s of [m.cells, m.working, m.lag, m.version, m.fastMs, m.solveMs])
+      expect(s.length).toBe(m.length);
+    expect(m.frame.at(-1)).toBe(8000);
+    expect(m.lag.at(-1)).toBe(999);
+    // the series stay aligned: cells[i] was pushed with frame[i]
+    m.frame.forEach((f, i) => expect(m.cells[i]).toBe(f / 8 - 1));
+    // frames stay increasing
+    for (let i = 1; i < m.length; i++) expect(m.frame[i]).toBeGreaterThan(m.frame[i - 1]);
   });
 });
 
