@@ -325,9 +325,9 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
         </Show>
       </p>
       <p class="cala-muted" data-testid="fast-timing">
-        Fast loop per frame (mean / p99 / max), discovery on: {fmt(timing().on)}; off:{' '}
-        {fmt(timing().off)}. Trace solve per frame, on: {fmt(timing().solveOn)}; off:{' '}
-        {fmt(timing().solveOff)}.
+        Over recent batches (mean / p99 / max): fast loop per frame, discovery on:{' '}
+        {fmt(timing().on)}; off: {fmt(timing().off)}. Trace solve per frame, on:{' '}
+        {fmt(timing().solveOn)}; off: {fmt(timing().solveOff)}.
       </p>
       <p class="cala-muted" data-testid="qc-timing">
         Trace solve per frame with online QC: {fmt(timing().solveQc)}; without:{' '}
