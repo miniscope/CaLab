@@ -231,3 +231,10 @@ before interpreting any apparent improvement.
 exterior-fit comparison, empirical calibration, portable manifest commands,
 and its negative result. The native background basis extrapolates noisily into
 the footprint mask; this experiment does not change the production detector.
+
+## Pixel noise
+
+`PIXEL_NOISE.md` covers the fine noise in the preprocessed video and its
+apparent waves, measured with `crates/cala/examples/pixnoise_eval.rs`. It
+also has the ground-truth tests of spatial pre-filters and a flat field
+(`CALA_PREFILTER`, `CALA_FLATFIELD` in `discover_eval` / `trace_eval`).
