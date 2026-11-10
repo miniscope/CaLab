@@ -766,3 +766,235 @@ fn a_cell_on_diffuse_light_is_still_deleted() {
     let (n, stats) = keep_run(&cells, blob(1, 48.0, 48.0), 41);
     assert_eq!(n, 1, "{stats:?}");
 }
+
+// ---- parallel visits (shard.rs) ---------------------------------------------
+
+/// A movie with something for every edit: cells to add, a duplicate pair
+/// to merge, a merged pair to split, a seeded cell on empty sky to delete,
+/// and cells in most tiles.
+fn busy_movie(t: usize) -> (Vec<f32>, Vec<Footprint>) {
+    let mut rng = Lcg(211);
+    let pos = [
+        (20.0, 22.0),
+        (24.0, 70.0),
+        (44.0, 44.0),
+        (50.0, 51.0),
+        (72.0, 26.0),
+        (74.0, 72.0),
+    ];
+    let cells: Vec<_> = pos
+        .iter()
+        .enumerate()
+        .map(|(i, &(y, x))| (blob(i as u64, y, x), trace(&mut rng, t, 0.03, 6.0)))
+        .collect();
+    let m = movie(&cells, t, 223);
+    let seed = vec![
+        blob(1, 20.0, 22.0),
+        blob(2, 21.0, 23.0),
+        blob_w(3, 47.0, 47.5, 4.0),
+        blob(4, 30.0, 48.0),
+    ];
+    (m, seed)
+}
+
+fn shard_config() -> SlowLoopConfig {
+    SlowLoopConfig {
+        probation_frames: 300,
+        probe_gap_frames: 20,
+        tile_px: 24,
+        ..config()
+    }
+}
+
+fn new_loop(cfg: &SlowLoopConfig) -> SlowLoop {
+    let n_px = N * N;
+    SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        cfg.clone(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn visits_run_as_jobs_match_step_exactly() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        assert_eq!(ta.traces, tb.traces, "frame {k}");
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        if k % 400 == 399 {
+            // A new noise map mid-run reaches the runner too.
+            let noise = vec![1.0 + 0.01 * (k / 400) as f32; n_px];
+            a.set_noise(noise.clone()).unwrap();
+            b.set_noise(noise.clone()).unwrap();
+            runner.set_noise(noise).unwrap();
+        }
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(
+                la.to_bytes()[16..] == lb.to_bytes()[16..],
+                "frame {k}: {:?} vs {:?}; {:?} vs {:?}; {:?} vs {:?}",
+                la.ids(),
+                lb.ids(),
+                (0..la.len()).map(|s| la.support(s)).collect::<Vec<_>>(),
+                (0..lb.len()).map(|s| lb.support(s)).collect::<Vec<_>>(),
+                a.stats(),
+                b.stats()
+            );
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(
+        s.adds > 0 && s.merges > 0 && s.refines > 0 && s.keep_tests > 0,
+        "{s:?}"
+    );
+    assert_eq!(s, b.stats());
+    assert_eq!(a.work(), b.work());
+    assert_eq!(a.cell_infos(), b.cell_infos());
+    assert_eq!(a.churn_counts(), b.churn_counts());
+    // (NaN fields: compare as text.)
+    assert_eq!(
+        format!("{:?}", a.take_add_log()),
+        format!("{:?}", b.take_add_log())
+    );
+    assert_eq!(
+        format!("{:?}", a.take_removal_log()),
+        format!("{:?}", b.take_removal_log())
+    );
+    // The edit logs agree except for the nearest-cell note of an add (a
+    // job holds only the cells near its tile).
+    let strip = |v: Vec<EditEvent>| -> Vec<EditEvent> {
+        v.into_iter()
+            .map(|mut e| {
+                if e.kind == EditKind::Add {
+                    e.other = 0;
+                }
+                e
+            })
+            .collect()
+    };
+    assert_eq!(strip(a.take_edit_log()), strip(b.take_edit_log()));
+    // (Bytes 8..16: the version, from a process-wide counter.)
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+#[test]
+fn concurrent_jobs_never_share_cells_and_apply_in_any_order() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    // Small patches, so that tiles at opposite corners of the small test
+    // frame can run at once.
+    let cfg = SlowLoopConfig {
+        tile_px: 16,
+        margin_px: 10,
+        library: crate::trace::LibraryConfig {
+            max_support_px: 10.0,
+            ..crate::trace::LibraryConfig::default()
+        },
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut s, mut eng) = start(cfg.clone(), &seed);
+    let mut runners: Vec<VisitRunner> = (0..4).map(|_| VisitRunner::new(new_loop(&cfg))).collect();
+    let mut max_out = 0;
+    let mut out: Vec<VisitResult> = Vec::new();
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        s.observe(f, &lib, &tr).unwrap();
+        // Results come back one batch late, newest first.
+        if k % 8 == 7 {
+            while let Some(r) = out.pop() {
+                s.apply_job(r).unwrap();
+            }
+            let mut jobs = Vec::new();
+            while jobs.len() < runners.len() {
+                let Some(j) = s.take_job() else { break };
+                jobs.push(j);
+            }
+            max_out = max_out.max(jobs.len());
+            // Zones of the jobs out at once are disjoint, so are their cells.
+            for i in 0..s.inflight.len() {
+                for j in i + 1..s.inflight.len() {
+                    let (x, y) = (&s.inflight[i], &s.inflight[j]);
+                    assert!(!x.zone.intersects(&y.zone));
+                    assert!(x.ids.iter().all(|id| !y.ids.contains(id)));
+                }
+            }
+            for (j, r) in jobs.into_iter().zip(runners.iter_mut()) {
+                let j = VisitJob::from_bytes(&j.to_bytes()).unwrap();
+                out.push(VisitResult::from_bytes(&r.run(j).unwrap().to_bytes()).unwrap());
+            }
+            if let Some(l) = s.housekeep().unwrap() {
+                eng.set_library(l).unwrap();
+            }
+        }
+    }
+    while let Some(r) = out.pop() {
+        s.apply_job(r).unwrap();
+    }
+    assert_eq!(s.jobs_in_flight(), 0);
+    assert!(max_out >= 2, "never more than {max_out} job at once");
+    let lib = s.finalize().unwrap();
+    let mut ids = lib.ids().to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), lib.len(), "duplicate ids");
+    let c = centres(&lib);
+    for (y, x) in [(24.0, 70.0), (72.0, 26.0), (74.0, 72.0)] {
+        assert!(c.iter().any(|&p| near(p, y, x)), "{c:?}");
+    }
+    assert!(c.len() <= 7, "{c:?}, stats {:?}", s.stats());
+}
+
+#[test]
+fn a_result_from_elsewhere_or_a_bad_buffer_is_an_error() {
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (m, seed) = busy_movie(200);
+    let (mut s, mut eng) = start(cfg.clone(), &seed);
+    let mut job = None;
+    for k in 0..200 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        s.observe(f, &lib, &tr).unwrap();
+        if job.is_none() {
+            job = s.take_job();
+        }
+    }
+    let job = job.expect("a tile became due");
+    let bytes = job.to_bytes();
+    for cut in [0, 3, bytes.len() / 2, bytes.len() - 1] {
+        assert!(VisitJob::from_bytes(&bytes[..cut]).is_err());
+    }
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    let r = runner.run(job).unwrap();
+    let rb = r.to_bytes();
+    assert!(VisitResult::from_bytes(&rb[..rb.len() - 1]).is_err());
+    // A runner with an older noise map refuses; a loop that did not hand
+    // the job out refuses its result.
+    s.set_noise(vec![1.1; n_px]).unwrap();
+    if let Some(j2) = s.take_job() {
+        assert!(runner.run(j2).is_err());
+    }
+    let mut other = new_loop(&cfg);
+    assert!(other.apply_job(r).is_err());
+}

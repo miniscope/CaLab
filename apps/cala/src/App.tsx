@@ -8,7 +8,12 @@ import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts'
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { createPass2Store } from './lib/pass2-store.ts';
-import { createSlowClient } from './lib/slow-client.ts';
+import {
+  createSlowClient,
+  PARALLEL_FORWARD_BUFFERS,
+  RESERVED_THREADS,
+  visitWorkerCount,
+} from './lib/slow-client.ts';
 import { StatusBar } from './components/StatusBar.tsx';
 import { VideoPanel } from './components/VideoPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
@@ -35,10 +40,27 @@ const App: Component = () => {
   });
   const store = createViewerStore(client);
   const cells = createCellStore();
-  // Cell discovery runs in a worker of its own, fed directly by the frame worker.
-  createSlowClient(client, (msg) => cells.onSlowMessage(msg));
+  // Cell discovery runs in a worker of its own, fed directly by the frame
+  // worker, with its tile visits spread over the spare cores.
+  // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
+  const visits = params.get('visits');
+  const slow = createSlowClient(
+    client,
+    (msg) => cells.onSlowMessage(msg),
+    undefined,
+    visits !== null && visits !== ''
+      ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
+      : visitWorkerCount(navigator.hardwareConcurrency),
+  );
   // `?noqc`: run without online quality control (to measure its cost).
-  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'));
+  const pipeline = createPipelineStore(
+    client,
+    {},
+    undefined,
+    cells,
+    !params.has('noqc'),
+    slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
+  );
   const pass2 = createPass2Store(client, pipeline, cells);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).

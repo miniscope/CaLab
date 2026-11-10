@@ -28,6 +28,23 @@
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
+//!   --offered-fps R    model the app's workers on a virtual clock instead
+//!                      (`Timed`): the fast loop reads R frames per second,
+//!                      batches of `--batch` frames are dropped when the
+//!                      `--pool` (2) forward buffers are busy, and work
+//!                      costs time at `--units-per-ms` (WASM calibration)
+//!   --visit-workers K  with --offered-fps: the slow worker only observes and
+//!                      hands its tile visits to K workers (0: it observes
+//!                      and steps itself, as the app did before)
+//!   --via-jobs         run every tile visit as a job through the parallel
+//!                      protocol, one at a time (`SlowLoop::step_via`): must
+//!                      give the same results as without
+//!   --observe-ms O     with --offered-fps: cost of observing one frame (the
+//!                      app's measured time; default: its work units)
+//!   --job-ms C         with K > 0: owner-side cost of a visit job, hand-out
+//!                      and result together (encode, copy, decode), ms; a
+//!                      worker also spends it on top of the visit's work
+//!   --visit-depth D    visits a worker may hold at once (1)
 //! ```
 //!
 //! * `sim`: the merged fast and slow loops on a minisim recording, from an
@@ -61,7 +78,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig};
+use calab_cala::discover::{SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
@@ -1101,6 +1118,258 @@ fn global_line(g: &GlobalQc, extra: &[f64]) -> String {
     s
 }
 
+/// A batch forwarded to the slow loop: frames with their traces, library
+/// and recording frame, and a new noise map when one was due.
+type Batch = (
+    Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)>,
+    Option<Vec<f32>>,
+);
+
+enum Msg {
+    Batch(Batch),
+    /// A visit result and the worker it came from.
+    Result(Box<VisitResult>, usize),
+}
+
+/// The app's slow-loop workers on a virtual clock (`--offered-fps`).
+///
+/// The fast loop reads `fps` frames per second of wall time and offers the
+/// slow loop a batch of frames whenever one is full. A batch is forwarded
+/// when one of `pool` buffers is free (a buffer is busy from forwarding
+/// until the owner has handled the batch) and dropped otherwise, as in
+/// `ForwardPool`. The owner (the slow worker) handles its messages one at
+/// a time in arrival order: a batch costs its work (observe, and with no
+/// visit workers `step(budget)` per frame, as the app's single slow worker
+/// does); a visit result costs applying it. With `k` visit workers the owner
+/// hands out a tile visit to every idle worker after each message
+/// (`SlowLoop::take_job`); a visit costs its work on the worker, and each
+/// hand-out and result costs `job_ms` on the owner (encode, copy, decode).
+/// Work converts to time at `units_per_ms` (calibrated on the app's WASM
+/// build). Visits are computed at hand-out (they are pure functions of the
+/// job) and applied when their virtual time is up, so the run is
+/// deterministic.
+struct Timed {
+    fps: f64,
+    units_per_ms: f64,
+    observe_ms: Option<f64>,
+    job_ms: f64,
+    pool: usize,
+    budget: u64,
+    inbox: std::collections::VecDeque<(f64, Msg)>,
+    owner_free: f64,
+    /// Release time of each forwarded buffer (infinite until handled).
+    bufs: Vec<f64>,
+    /// Each visit worker, when it is free, and its visits not yet applied.
+    runners: Vec<(VisitRunner, f64, usize)>,
+    /// Visits handed to a worker before its last one has come back.
+    depth: usize,
+    libs: std::collections::VecDeque<(f64, Arc<Library>)>,
+    pub forwarded: u64,
+    pub dropped: u64,
+    pub jobs: u64,
+    pub owner_busy: f64,
+    pub runner_busy: f64,
+    pub last_ms: f64,
+    /// The recording ended: no more hand-outs.
+    pub ending: bool,
+}
+
+impl Timed {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        fps: f64,
+        units_per_ms: f64,
+        observe_ms: Option<f64>,
+        job_ms: f64,
+        pool: usize,
+        budget: u64,
+        runners: Vec<VisitRunner>,
+        depth: usize,
+    ) -> Timed {
+        Timed {
+            fps,
+            units_per_ms,
+            observe_ms,
+            job_ms,
+            pool,
+            budget,
+            inbox: Default::default(),
+            owner_free: 0.0,
+            bufs: Vec::new(),
+            runners: runners.into_iter().map(|r| (r, 0.0, 0)).collect(),
+            depth: depth.max(1),
+            libs: Default::default(),
+            forwarded: 0,
+            dropped: 0,
+            jobs: 0,
+            owner_busy: 0.0,
+            runner_busy: 0.0,
+            last_ms: 0.0,
+            ending: false,
+        }
+    }
+
+    /// Wall time (ms) at which frame `t` has been read.
+    fn at(&self, t: usize) -> f64 {
+        t as f64 * 1e3 / self.fps
+    }
+
+    /// A forward buffer is free at `now`.
+    fn has_buffer(&mut self, now: f64) -> bool {
+        self.bufs.retain(|&r| r > now);
+        self.bufs.len() < self.pool
+    }
+
+    /// Forward a full batch at `now` (after `has_buffer`).
+    fn forward(&mut self, now: f64, batch: Batch) {
+        self.bufs.push(f64::INFINITY);
+        self.forwarded += batch.0.len() as u64;
+        self.push(now, Msg::Batch(batch));
+    }
+
+    fn push(&mut self, at: f64, m: Msg) {
+        let i = self.inbox.partition_point(|(a, _)| *a <= at);
+        self.inbox.insert(i, (at, m));
+    }
+
+    /// Handle every message the owner starts by `until` (all of them with
+    /// `f64::INFINITY`). `log` gets each handled batch's frames (recording
+    /// frame of each slow-loop frame).
+    fn advance(&mut self, until: f64, sl: &mut SlowLoop, slow_rec: &mut Vec<u32>) {
+        while let Some(&(arr, _)) = self.inbox.front() {
+            let start = arr.max(self.owner_free);
+            if start > until {
+                break;
+            }
+            let (_, msg) = self.inbox.pop_front().unwrap();
+            let w0 = sl.work();
+            let mut extra = 0.0;
+            let mut lib = None;
+            let is_batch = matches!(msg, Msg::Batch(_));
+            match msg {
+                Msg::Batch((frames, noise)) => {
+                    if let Some(n) = noise {
+                        sl.set_noise(n.clone()).unwrap();
+                        for (r, ..) in &mut self.runners {
+                            r.set_noise(n.clone()).unwrap();
+                        }
+                    }
+                    for (y, tr, l, tf) in &frames {
+                        let o = sl.work();
+                        sl.observe(y, l, tr).unwrap();
+                        if let Some(ms) = self.observe_ms {
+                            extra += ms - (sl.work() - o) as f64 / self.units_per_ms;
+                        }
+                        slow_rec.push(*tf as u32);
+                        if self.runners.is_empty() {
+                            if let Some(l) = sl.step(self.budget).unwrap() {
+                                lib = Some(l);
+                            }
+                        }
+                    }
+                }
+                Msg::Result(r, i) => {
+                    // The visit's work was done by its worker; `apply_job`
+                    // adds it to the loop's total.
+                    extra -= r.work() as f64 / self.units_per_ms;
+                    sl.apply_job(*r).unwrap();
+                    // Half the owner's cost of a job is the hand-out.
+                    extra += 0.5 * self.job_ms;
+                    self.runners[i].2 -= 1;
+                }
+            }
+            if !self.runners.is_empty() {
+                if let Some(l) = sl.housekeep().unwrap() {
+                    lib = Some(l);
+                }
+            }
+            let mut end = start + (sl.work() - w0) as f64 / self.units_per_ms + extra;
+            if is_batch {
+                // The batch's buffer goes back now.
+                if let Some(b) = self.bufs.iter_mut().find(|b| b.is_infinite()) {
+                    *b = end;
+                }
+            }
+            if let Some(l) = lib {
+                self.libs.push_back((end, l));
+            }
+            // Hand out visits to workers with fewer than `depth` out (as
+            // `SlowRunner.dispatch`; a worker runs its visits in turn).
+            'hand: for _ in 0..self.depth {
+                for i in 0..self.runners.len() {
+                    if self.ending || self.runners[i].2 >= self.depth {
+                        continue;
+                    }
+                    let Some(job) = sl.take_job() else {
+                        break 'hand;
+                    };
+                    end += 0.5 * self.job_ms;
+                    let res = self.runners[i].0.run(job).unwrap();
+                    let dur = res.work() as f64 / self.units_per_ms + self.job_ms;
+                    self.runner_busy += dur;
+                    self.jobs += 1;
+                    let done = end.max(self.runners[i].1) + dur;
+                    self.runners[i].1 = done;
+                    self.runners[i].2 += 1;
+                    self.push(done, Msg::Result(Box::new(res), i));
+                }
+            }
+            self.owner_busy += end - start;
+            self.owner_free = end;
+            self.last_ms = self.last_ms.max(end);
+        }
+    }
+
+    /// The newest library published by `now`.
+    fn library(&mut self, now: f64) -> Option<Arc<Library>> {
+        let mut out = None;
+        while self.libs.front().is_some_and(|l| l.0 <= now) {
+            out = self.libs.pop_front().map(|l| l.1);
+        }
+        out
+    }
+}
+
+/// Move the slow loop's add and removal logs into the TSV buffers.
+fn write_logs(
+    sl: &mut SlowLoop,
+    rf: &dyn Fn(u64) -> u32,
+    add_log: &mut String,
+    rem_log: &mut String,
+) {
+    for a in sl.take_add_log() {
+        let _ = writeln!(
+            add_log,
+            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.4}\t{:.2}\t{}",
+            a.frame,
+            rf(a.frame),
+            a.id,
+            a.class.as_str(),
+            a.center.0,
+            a.center.1,
+            a.cos,
+            a.dist,
+            a.since as i64
+        );
+    }
+    for r in sl.take_removal_log() {
+        let _ = writeln!(
+            rem_log,
+            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}",
+            r.frame,
+            rf(r.frame),
+            r.id,
+            r.kind.as_str(),
+            r.center.0,
+            r.center.1,
+            r.born,
+            rf(r.born),
+            r.class.map_or("none", |c| c.as_str()),
+            u8::from(r.churned)
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -1120,6 +1389,16 @@ fn main() {
     let keep: f64 = arg_value(&args, "--slow-keep").map_or(1.0, |s| s.parse().unwrap());
     let score_mode = arg_value(&args, "--drop-mode").is_some_and(|m| m == "score");
     let drop_step = args.iter().any(|a| a == "--drop-step");
+    let via_jobs = args.iter().any(|a| a == "--via-jobs");
+    let offered_fps: Option<f64> = arg_value(&args, "--offered-fps").map(|s| s.parse().unwrap());
+    let visit_workers: usize =
+        arg_value(&args, "--visit-workers").map_or(0, |s| s.parse().unwrap());
+    let units_per_ms: f64 =
+        arg_value(&args, "--units-per-ms").map_or(2.0e6, |s| s.parse().unwrap());
+    let observe_ms: Option<f64> = arg_value(&args, "--observe-ms").map(|s| s.parse().unwrap());
+    let depth: usize = arg_value(&args, "--visit-depth").map_or(1, |s| s.parse().unwrap());
+    let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
+    let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
     assert!(batch_n >= 1 && keep > 0.0 && keep <= 1.0);
 
     let avi_dir = if has_gt {
@@ -1177,6 +1456,10 @@ fn main() {
         .unwrap();
     let mut engine = TraceEngine::new(Arc::new(empty), SolverConfig::default()).unwrap();
     let mut slow: Option<SlowLoop> = None;
+    let mut timed: Option<Timed> = None;
+    let mut timed_noise: Option<Vec<f32>> = None;
+    // `--via-jobs`: every visit through the parallel protocol, one at a time.
+    let mut via: Option<VisitRunner> = None;
     let mut qc: Option<QcMonitor> = None;
     let mut gt: Option<Gt> = None;
     let mut own: Option<HashMap<u64, (Vec<usize>, u32)>> = None;
@@ -1188,7 +1471,7 @@ fn main() {
         let _ = write!(global, "{f}\t");
     }
     global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
-    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\n");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\n");
     // Batches waiting to be forwarded: (frame, traces, library, recording frame).
     let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
     let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
@@ -1224,12 +1507,36 @@ fn main() {
                     gt = Some(g);
                 }
                 if !oracle_mode {
-                    slow = Some(
+                    let mk = || {
                         SlowLoop::new(dims, fov.clone(), noise.clone(), flat.clone(), scfg.clone())
-                            .unwrap(),
-                    );
+                            .unwrap()
+                    };
+                    slow = Some(mk());
+                    if via_jobs {
+                        via = Some(VisitRunner::new(mk()));
+                    }
+                    if let Some(fps) = offered_fps {
+                        let runners = (0..visit_workers).map(|_| VisitRunner::new(mk())).collect();
+                        timed = Some(Timed::new(
+                            fps,
+                            units_per_ms,
+                            observe_ms,
+                            job_ms,
+                            pool,
+                            budget,
+                            runners,
+                            depth,
+                        ));
+                    }
                 }
                 qc = Some(QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap());
+            }
+            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                let now = tm.at(t);
+                tm.advance(now, sl, &mut slow_rec);
+                if let Some(l) = tm.library(now) {
+                    engine.set_library(l).unwrap();
+                }
             }
             let tr = engine.process(&y).unwrap();
             let Some(q) = qc.as_mut() else { continue };
@@ -1241,9 +1548,34 @@ fn main() {
             if t.is_multiple_of(200) {
                 q.set_noise(pipe.pre.noise().sigma()).unwrap();
             }
-            if let Some(sl) = slow.as_mut() {
+            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                if t.is_multiple_of(200) {
+                    timed_noise = Some(pipe.pre.noise().sigma());
+                }
+                pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                if pending.len() >= batch_n || t + 1 == t_len {
+                    n_batches += 1;
+                    let now = tm.at(t + 1);
+                    let n = pending.len() as u64;
+                    if tm.has_buffer(now) {
+                        let batch = (std::mem::take(&mut pending), timed_noise.take());
+                        tm.forward(now, batch);
+                        n_fwd += 1;
+                        fwd_frames += n;
+                    } else {
+                        pending.clear();
+                        tm.dropped += n;
+                    }
+                    tm.advance(now, sl, &mut slow_rec);
+                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                }
+            } else if let Some(sl) = slow.as_mut() {
                 if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
+                    if let Some(r) = via.as_mut() {
+                        r.set_noise(pipe.pre.noise().sigma()).unwrap();
+                    }
                 }
                 pending.push((y.clone(), tr.clone(), lib.clone(), t));
                 if pending.len() >= batch_n || t + 1 == t_len {
@@ -1303,42 +1635,16 @@ fn main() {
                         } else if !drop_step {
                             continue;
                         }
-                        if let Some(l) = sl.step(budget).unwrap() {
+                        let published = match via.as_mut() {
+                            Some(r) => sl.step_via(budget, r).unwrap(),
+                            None => sl.step(budget).unwrap(),
+                        };
+                        if let Some(l) = published {
                             engine.set_library(l).unwrap();
                         }
                     }
                     let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                    for a in sl.take_add_log() {
-                        let _ = writeln!(
-                            add_log,
-                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.4}\t{:.2}\t{}",
-                            a.frame,
-                            rf(a.frame),
-                            a.id,
-                            a.class.as_str(),
-                            a.center.0,
-                            a.center.1,
-                            a.cos,
-                            a.dist,
-                            a.since as i64
-                        );
-                    }
-                    for r in sl.take_removal_log() {
-                        let _ = writeln!(
-                            rem_log,
-                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}",
-                            r.frame,
-                            rf(r.frame),
-                            r.id,
-                            r.kind.as_str(),
-                            r.center.0,
-                            r.center.1,
-                            r.born,
-                            rf(r.born),
-                            r.class.map_or("none", |c| c.as_str()),
-                            u8::from(r.churned)
-                        );
-                    }
+                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
                 }
             }
             let t_end = t + 1;
@@ -1385,6 +1691,9 @@ fn main() {
                     .map_or((Default::default(), Default::default(), 0, 0), |sl| {
                         (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
                     });
+                let (dropped, jobs, vms) = timed
+                    .as_ref()
+                    .map_or((0, 0, 0.0), |tm| (tm.dropped, tm.jobs, tm.at(t_end)));
                 extra.extend(
                     [
                         cc.adds_new,
@@ -1399,9 +1708,13 @@ fn main() {
                         sf,
                         sn as u64,
                         fwd_frames,
+                        dropped,
+                        st.visits,
+                        jobs,
                     ]
                     .map(|v| v as f64),
                 );
+                extra.push(vms);
                 global.push_str(&global_line(&g, &extra));
                 if t_end.is_multiple_of(1200) || t_end == t_len {
                     println!(
@@ -1413,6 +1726,28 @@ fn main() {
             }
         }
         s += cnt;
+    }
+    if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+        tm.ending = true;
+        tm.advance(f64::INFINITY, sl, &mut slow_rec);
+        let wall = t_len as f64 * 1e3 / tm.fps;
+        let msg = format!(
+            "timed: {} visit workers, offered {} fps over {:.1} s: forwarded {} frames, dropped {}, observed {}; visits {} ({} jobs); owner busy {:.0}% , visit workers busy {:.0}%, slow loop done at {:.1} s, {:.0} observed frames/s\n",
+            tm.runners.len(),
+            tm.fps,
+            wall / 1e3,
+            tm.forwarded,
+            tm.dropped,
+            sl.frames(),
+            sl.stats().visits,
+            tm.jobs,
+            100.0 * tm.owner_busy / wall,
+            100.0 * tm.runner_busy / (wall * tm.runners.len().max(1) as f64),
+            tm.last_ms / 1e3,
+            sl.frames() as f64 / (wall / 1e3),
+        );
+        print!("{msg}");
+        std::fs::write(out_dir.join("timed.txt"), &msg).unwrap();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();

@@ -35,6 +35,12 @@ What is here:
   removed per frame. Runs in the frame worker, one step
   per request; `src/lib/pipeline-store.ts` keeps at most two requests
   outstanding (backpressure) and only the latest previews.
+- `src/workers/slow-worker.ts` + `src/lib/slow-runner.ts`: the slow loop
+  (cell discovery). With spare cores (`navigator.hardwareConcurrency` minus 5,
+  at most 4; `?visits=N` sets 0 to 4) it only observes frames and hands its tile
+  visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
+  visits out together never touch the same cells
+  (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
 - `src/components/PipelinePanel.tsx`: raw or preprocessed vs motion-corrected
   (or background-removed) video, progress, throughput, and the live motion
   and flicker traces (`MotionTrace.tsx`, `FlickerTrace.tsx`).

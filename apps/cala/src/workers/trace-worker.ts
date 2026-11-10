@@ -44,6 +44,7 @@ function handle(msg: StageMsg): void {
           discover: (cells?.discover ?? true) && port !== null,
           qc: cells?.qc ?? true,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
+          ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,

@@ -23,6 +23,7 @@ import init, {
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
+  VisitWorker,
 } from '../../../../crates/cala/pkg/calab_cala.js';
 
 export {
@@ -40,6 +41,7 @@ export {
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
+  VisitWorker,
 };
 
 let ready: Promise<void> | null = null;

@@ -123,6 +123,8 @@ export function createPipelineStore(
   cells?: CellStore,
   /** Online quality control in the fast loop (default on; off to measure its cost). */
   qc = true,
+  /** Batches in flight to the slow worker (default: the fast loop's). */
+  forwardBuffers?: number,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -252,7 +254,12 @@ export function createPipelineStore(
     const session = nextSession++;
     cells?.reset(session);
     try {
-      const p = await client.startPipeline(options, { session, discover: discover(), qc });
+      const p = await client.startPipeline(options, {
+        session,
+        discover: discover(),
+        qc,
+        ...(forwardBuffers ? { forwardBuffers } : {}),
+      });
       if (gen !== generation) return;
       setPlan(p);
       setStatus('running');
