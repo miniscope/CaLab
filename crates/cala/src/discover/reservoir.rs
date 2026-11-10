@@ -1,10 +1,13 @@
-//! The frame reservoir: per tile, a bounded set of whitened patches of past
-//! preprocessed frames, chosen to keep the frames with the strongest
-//! unexplained signal (event slots, whose priority fades with age so late
-//! events displace old ones) plus a uniform sample of all frames (random
-//! slots). Every frame is assigned to the fitting or the held-out side by a
-//! hash of its index, once, so a hypothesis is never tested on the frames
-//! used to fit it.
+//! The frame reservoir: a bounded set of whitened past preprocessed frames
+//! per tile, chosen to keep the frames with the strongest unexplained signal
+//! (event slots, per tile, whose priority fades with age so late events
+//! displace old ones) plus a uniform sample of all frames (random slots).
+//! The uniform sample is one sample for the whole frame, stored once as
+//! full frames ([`SharedFrames`]) and read by every tile through its patch:
+//! per-tile patches overlap about three times (core plus margin), so a
+//! shared store holds the same sample in a third of the memory. Every frame
+//! is assigned to the fitting or the held-out side by a hash of its index,
+//! once, so a hypothesis is never tested on the frames used to fit it.
 
 use super::local::Rect;
 
@@ -17,6 +20,10 @@ pub(crate) struct Slot {
     pub frame: u64,
     pub score: f32,
     pub test: bool,
+    /// The patch (`Tile::rect`), quantised. Empty for a random slot of the
+    /// slow loop that owns the reservoir: its pixels are frame `j` of the
+    /// shared store ([`SharedFrames`], `j` = the slot's index), read with
+    /// [`Tile::slot_values`]. A visit job carries the patch itself.
     pub data: Vec<i16>,
     /// Background projections and energy, filled lazily by the slow loop.
     pub proj: Option<(Vec<f64>, f64)>,
@@ -29,12 +36,130 @@ impl Slot {
     }
 }
 
+#[inline]
+fn quantize(v: f32) -> i16 {
+    (v * QUANT).round().clamp(-32767.0, 32767.0) as i16
+}
+
+/// Copy `r` out of the full frame `z` (row width `width`), quantised.
+fn copy_rect(z: &[f32], width: usize, r: Rect, out: &mut Vec<i16>) {
+    out.clear();
+    out.reserve(r.len());
+    for y in 0..r.h {
+        let row = (r.y0 + y) * width + r.x0;
+        out.extend(z[row..row + r.w].iter().map(|&v| quantize(v)));
+    }
+}
+
 /// splitmix64.
 pub(crate) fn mix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
+}
+
+/// One frame of the shared uniform sample.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedFrame {
+    pub frame: u64,
+    pub test: bool,
+    /// `SharedFrames::rect` of the whitened frame, quantised.
+    pub data: Vec<i16>,
+}
+
+/// The random slots of every tile: one uniform sample of all frames
+/// (reservoir sampling), stored once over `rect` (the union of the tiles'
+/// patches). Random slot `j` of every tile is frame `j` here, so the sample
+/// is the same for every tile, and still uniform for each.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedFrames {
+    pub rect: Rect,
+    pub frames: Vec<SharedFrame>,
+    /// Frames offered so far.
+    pub seen: u64,
+}
+
+impl SharedFrames {
+    pub fn new(rect: Rect) -> SharedFrames {
+        SharedFrames {
+            rect,
+            frames: Vec::new(),
+            seen: 0,
+        }
+    }
+
+    /// Offer frame `frame` (whitened, full frame `z`); `rand` is a fresh
+    /// random number. Returns the slot it took, if any.
+    pub fn offer(
+        &mut self,
+        z: &[f32],
+        width: usize,
+        frame: u64,
+        test: bool,
+        cap: usize,
+        rand: u64,
+    ) -> Option<usize> {
+        if cap == 0 || self.rect.len() == 0 {
+            return None;
+        }
+        self.seen += 1;
+        let j = if self.frames.len() < cap {
+            self.frames.push(SharedFrame {
+                frame,
+                test,
+                data: Vec::new(),
+            });
+            self.frames.len() - 1
+        } else {
+            let j = (rand % self.seen) as usize;
+            if j >= cap {
+                return None;
+            }
+            j
+        };
+        let f = &mut self.frames[j];
+        f.frame = frame;
+        f.test = test;
+        copy_rect(z, width, self.rect, &mut f.data);
+        Some(j)
+    }
+
+    /// Offset in a stored frame of the first pixel of `r` (inside `rect`).
+    fn origin(&self, r: Rect) -> usize {
+        let s = self.rect;
+        debug_assert!(r.y0 >= s.y0 && r.x0 >= s.x0);
+        debug_assert!(r.y0 + r.h <= s.y0 + s.h && r.x0 + r.w <= s.x0 + s.w);
+        (r.y0 - s.y0) * s.w + (r.x0 - s.x0)
+    }
+
+    /// The patch `r` (inside `rect`) of stored frame `j`, quantised.
+    pub fn patch(&self, j: usize, r: Rect, out: &mut Vec<i16>) {
+        let src = &self.frames[j].data;
+        let o = self.origin(r);
+        out.clear();
+        out.reserve(r.len());
+        for y in 0..r.h {
+            let a = o + y * self.rect.w;
+            out.extend_from_slice(&src[a..a + r.w]);
+        }
+    }
+
+    /// The patch `r` of stored frame `j`, in σ units.
+    pub fn values(&self, j: usize, r: Rect, out: &mut Vec<f32>) {
+        let src = &self.frames[j].data;
+        let o = self.origin(r);
+        out.clear();
+        out.reserve(r.len());
+        for y in 0..r.h {
+            let a = o + y * self.rect.w;
+            out.extend(src[a..a + r.w].iter().map(|&v| f32::from(v) / QUANT));
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.frames.len() * self.rect.len() * 2
+    }
 }
 
 /// A held-out frame on which some of the tile's cells fired (by the fast
@@ -52,9 +177,8 @@ pub(crate) struct Tile {
     /// `core` plus the margin: the stored patch.
     pub rect: Rect,
     pub events: Vec<Slot>,
+    /// Random slot `j` is frame `j` of the shared uniform sample.
     pub randoms: Vec<Slot>,
-    /// Frames offered to the random sample.
-    pub seen: u64,
     /// New slots since the tile was last visited (scheduling priority).
     pub fresh: u32,
     /// Spots recently rejected: `(y, x, until_frame, rejections)`.
@@ -73,7 +197,6 @@ impl Tile {
             rect,
             events: Vec::new(),
             randoms: Vec::new(),
-            seen: 0,
             fresh: 0,
             rejected: Vec::new(),
             tombs: Vec::new(),
@@ -83,16 +206,8 @@ impl Tile {
     }
 
     fn copy(&self, z: &[f32], width: usize, frame: u64, score: f32, test: bool) -> Slot {
-        let r = self.rect;
-        let mut data = Vec::with_capacity(r.len());
-        for y in 0..r.h {
-            let row = (r.y0 + y) * width + r.x0;
-            data.extend(
-                z[row..row + r.w]
-                    .iter()
-                    .map(|&v| (v * QUANT).round().clamp(-32767.0, 32767.0) as i16),
-            );
-        }
+        let mut data = Vec::new();
+        copy_rect(z, width, self.rect, &mut data);
         Slot {
             frame,
             score,
@@ -102,9 +217,9 @@ impl Tile {
         }
     }
 
-    /// Offer frame `frame` (whitened, full frame `z`) with this tile's
-    /// residual `score`. `decay` is the per-frame priority decay of event
-    /// slots; `rand` a fresh random number.
+    /// Offer frame `frame` (whitened, full frame `z`) to the event slots,
+    /// with this tile's residual `score`. `decay` is the per-frame priority
+    /// decay of event slots.
     #[allow(clippy::too_many_arguments)]
     pub fn offer(
         &mut self,
@@ -114,47 +229,49 @@ impl Tile {
         score: f32,
         test: bool,
         cap_events: usize,
-        cap_random: usize,
         decay: f64,
-        rand: u64,
     ) {
-        // Event slots.
-        if cap_events > 0 {
-            let prio = |s: &Slot| f64::from(s.score) * decay.powf((frame - s.frame) as f64);
-            // Neighbouring frames of one transient: keep the stronger.
-            if let Some(i) = self.events.iter().position(|s| frame - s.frame <= 2) {
-                if score > self.events[i].score {
-                    self.events[i] = self.copy(z, width, frame, score, test);
-                    self.fresh += 1;
-                }
-            } else if self.events.len() < cap_events {
-                self.events.push(self.copy(z, width, frame, score, test));
+        if cap_events == 0 {
+            return;
+        }
+        let prio = |s: &Slot| f64::from(s.score) * decay.powf((frame - s.frame) as f64);
+        // Neighbouring frames of one transient: keep the stronger.
+        if let Some(i) = self.events.iter().position(|s| frame - s.frame <= 2) {
+            if score > self.events[i].score {
+                self.events[i] = self.copy(z, width, frame, score, test);
                 self.fresh += 1;
-            } else {
-                let (imin, pmin) = self
-                    .events
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| (i, prio(s)))
-                    .min_by(|a, b| a.1.total_cmp(&b.1))
-                    .expect("non-empty");
-                if f64::from(score) > pmin {
-                    self.events[imin] = self.copy(z, width, frame, score, test);
-                    self.fresh += 1;
-                }
+            }
+        } else if self.events.len() < cap_events {
+            self.events.push(self.copy(z, width, frame, score, test));
+            self.fresh += 1;
+        } else {
+            let (imin, pmin) = self
+                .events
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, prio(s)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .expect("non-empty");
+            if f64::from(score) > pmin {
+                self.events[imin] = self.copy(z, width, frame, score, test);
+                self.fresh += 1;
             }
         }
-        // Uniform sample of all frames (reservoir sampling).
-        if cap_random > 0 {
-            self.seen += 1;
-            if self.randoms.len() < cap_random {
-                self.randoms.push(self.copy(z, width, frame, score, test));
-            } else {
-                let j = (rand % self.seen) as usize;
-                if j < cap_random {
-                    self.randoms[j] = self.copy(z, width, frame, score, test);
-                }
-            }
+    }
+
+    /// Frame `frame` took slot `j` of the shared uniform sample.
+    pub fn set_random(&mut self, j: usize, frame: u64, test: bool) {
+        let slot = Slot {
+            frame,
+            score: 0.0,
+            test,
+            data: Vec::new(),
+            proj: None,
+        };
+        if j == self.randoms.len() {
+            self.randoms.push(slot);
+        } else {
+            self.randoms[j] = slot;
         }
     }
 
@@ -199,7 +316,32 @@ impl Tile {
         }
     }
 
+    /// The pixels of a slot (σ units): its own patch, or, for a random slot
+    /// without one, its patch of the shared store.
+    pub fn slot_values(&self, which: (bool, usize), shared: &SharedFrames, out: &mut Vec<f32>) {
+        let s = self.slot(which);
+        if !which.0 && s.data.is_empty() {
+            debug_assert_eq!(shared.frames[which.1].frame, s.frame);
+            shared.values(which.1, self.rect, out);
+        } else {
+            s.values(out);
+        }
+    }
+
+    /// Give every random slot its own patch (from the shared store): a
+    /// visit job carries its frames.
+    pub fn fill_randoms(&mut self, shared: &SharedFrames) {
+        for (j, s) in self.randoms.iter_mut().enumerate() {
+            if s.data.is_empty() {
+                shared.patch(j, self.rect, &mut s.data);
+            }
+        }
+    }
+
+    /// Bytes held by this tile's own slots: event slots, probes, and random
+    /// slots that carry their patch (none in the owner's reservoir).
     pub fn bytes(&self) -> usize {
-        (self.events.len() + self.randoms.len() + self.probes.len()) * self.rect.len() * 2
+        let own = self.randoms.iter().filter(|s| !s.data.is_empty()).count();
+        (self.events.len() + own + self.probes.len()) * self.rect.len() * 2
     }
 }

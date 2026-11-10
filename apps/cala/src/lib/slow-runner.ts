@@ -56,6 +56,9 @@ export interface SlowLoopLike {
   housekeep?(): PublishedLibrary | undefined;
   readonly cellCount: number;
   readonly reservoirBytes: number;
+  /** Frames stored per tile, and why that is below target (absent in older fakes). */
+  readonly framesPerTile?: number;
+  readonly reservoirWarning?: string;
   /** Work spent so far, about multiply-adds (absent in older fakes). */
   readonly work?: number;
   stats(): Float64Array;
@@ -336,6 +339,8 @@ export class SlowRunner {
       version: this.version,
       counters: counters(loop.stats()),
       reservoirBytes: loop.reservoirBytes,
+      framesPerTile: loop.framesPerTile ?? 0,
+      reservoirWarning: loop.reservoirWarning,
       batchMs,
       maxStepMs,
       visitWorkers: this.visits.length,

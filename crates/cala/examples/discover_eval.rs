@@ -11,7 +11,8 @@
 //!   --checkpoints K   full library snapshots matched against GT (default 10)
 //!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
-//!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
+//!   --accept-z Z / --merge-corr R / --frames-per-tile N / --reservoir-max-mb M
+//!                     slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
 //!   --v1              all v2 additions off (prune, pre-test)
 //!   --no-merge-refit  merge test against the pair's current footprints only
@@ -899,8 +900,11 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
-    if let Some(v) = arg_value(&args, "--reservoir-mb") {
-        scfg.reservoir_bytes = v.parse::<usize>().unwrap() << 20;
+    if let Some(v) = arg_value(&args, "--frames-per-tile") {
+        scfg.frames_per_tile = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--reservoir-max-mb") {
+        scfg.reservoir_max_bytes = v.parse::<usize>().unwrap() << 20;
     }
     if let Some(v) = arg_value(&args, "--merge-corr") {
         scfg.merge_corr = v.parse().unwrap();

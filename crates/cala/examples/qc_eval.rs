@@ -11,6 +11,7 @@
 //!   --every K          checkpoint every K frames (default 300)
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
 //!   --seed S           oracle: perturbation seed
+//!   --slow-seed S      slow-loop seed (held-out split, random slots)
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
@@ -25,6 +26,7 @@
 //!                      recent batches go whenever capacity (a share F of
 //!                      the batches, at most 4 banked) allows; quiet ones
 //!                      only when capacity would otherwise go unused
+//!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
@@ -1422,8 +1424,17 @@ fn main() {
         cell_diameter_px: cfg.flatten.cell_diameter_px,
         ..SlowLoopConfig::default()
     };
+    if let Some(v) = arg_value(&args, "--slow-seed") {
+        scfg.seed = v.parse().unwrap();
+    }
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--frames-per-tile") {
+        scfg.frames_per_tile = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--reservoir-max-mb") {
+        scfg.reservoir_max_bytes = v.parse::<usize>().unwrap() << 20;
     }
     if let Some(v) = arg_value(&args, "--readd-window") {
         scfg.churn.readd_window_frames = v.parse().unwrap();
@@ -1512,6 +1523,21 @@ fn main() {
                             .unwrap()
                     };
                     slow = Some(mk());
+                    if let Some(s) = &slow {
+                        let p = s.reservoir_plan();
+                        println!(
+                            "reservoir: {} frames/tile ({} event + {} random, target {}), capacity {:.0} MB of {:.0} MB",
+                            p.frames_per_tile,
+                            p.event_slots,
+                            p.random_slots,
+                            p.target_frames_per_tile,
+                            p.capacity_bytes as f64 / 1048576.0,
+                            p.max_bytes as f64 / 1048576.0
+                        );
+                        if let Some(w) = p.warning() {
+                            println!("reservoir warning: {w}");
+                        }
+                    }
                     if via_jobs {
                         via = Some(VisitRunner::new(mk()));
                     }

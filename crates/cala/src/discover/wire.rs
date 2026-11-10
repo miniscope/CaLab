@@ -5,12 +5,12 @@
 
 use super::ledger::{EditCounts, EditEvent, EditKind};
 use super::local::{Cell, Rect};
-use super::reservoir::{Probe, Slot, Tile};
+use super::reservoir::{Probe, SharedFrames, Slot, Tile};
 use super::SlowStats;
 use crate::discover::fpstats::FpStats;
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5331; // "VIS1"
+pub(crate) const MAGIC: u32 = 0x5649_5332; // "VIS2"
 
 #[derive(Default)]
 pub(crate) struct Writer {
@@ -104,10 +104,14 @@ impl Writer {
         self.u64(c.born);
     }
     pub fn slot(&mut self, s: &Slot) {
+        self.slot_with(s, &s.data);
+    }
+    /// `s` with the pixels `data`.
+    fn slot_with(&mut self, s: &Slot, data: &[i16]) {
         self.u64(s.frame);
         self.f32(s.score);
         self.bool(s.test);
-        self.i16s(&s.data);
+        self.i16s(data);
         self.proj(s.proj.as_ref());
     }
     pub fn proj(&mut self, p: Option<&(Vec<f64>, f64)>) {
@@ -118,8 +122,9 @@ impl Writer {
         }
     }
     /// `t`, with the reservoir slots of `slots` (the owner's tile, so a
-    /// job need not copy them first).
-    pub fn tile(&mut self, t: &Tile, slots: &Tile) {
+    /// job need not copy them first); random slots without a patch of
+    /// their own get theirs from `shared`.
+    pub fn tile(&mut self, t: &Tile, slots: &Tile, shared: &SharedFrames) {
         self.rect(t.core);
         self.rect(t.rect);
         self.usize(slots.events.len());
@@ -127,10 +132,15 @@ impl Writer {
             self.slot(s);
         }
         self.usize(slots.randoms.len());
-        for s in &slots.randoms {
-            self.slot(s);
+        let mut patch = Vec::new();
+        for (j, s) in slots.randoms.iter().enumerate() {
+            if s.data.is_empty() {
+                shared.patch(j, slots.rect, &mut patch);
+                self.slot_with(s, &patch);
+            } else {
+                self.slot(s);
+            }
         }
-        self.u64(t.seen);
         self.u32(t.fresh);
         self.spots(&t.rejected);
         self.spots(&t.tombs);
@@ -313,7 +323,6 @@ impl<'a> Reader<'a> {
         t.events = (0..n).map(|_| self.slot()).collect::<Option<_>>()?;
         let n = self.count(22)?;
         t.randoms = (0..n).map(|_| self.slot()).collect::<Option<_>>()?;
-        t.seen = self.u64()?;
         t.fresh = self.u32()?;
         t.rejected = self.spots()?;
         t.tombs = self.spots()?;

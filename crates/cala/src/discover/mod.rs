@@ -19,8 +19,11 @@
 //!   The tile's **reservoir** keeps the whitened patch (tile + 24 px margin)
 //!   of high-scoring frames (event slots whose priority halves every
 //!   `event_half_life_frames`, so late-born cells' events displace old ones)
-//!   plus a uniform sample of all frames (random slots), within a byte
-//!   budget.
+//!   plus a uniform sample of all frames (random slots; one sample for the
+//!   whole frame, stored once as full frames and shared by the tiles). It
+//!   is sized by frames per tile (`frames_per_tile`), within a byte cap
+//!   (`reservoir_max_bytes`); [`SlowLoop::reservoir_plan`] says when the cap
+//!   limits it.
 //! * [`SlowLoop::step`] (budgeted): visits the tile with the most new frames.
 //!   On its patches, a patch problem solves the working set's cells plus
 //!   a smooth 3 x 3 bump background exactly (non-negative traces) and gives
@@ -224,7 +227,7 @@ use fpstats::FpStats;
 use ledger::Evidence;
 use local::{rank1, rank2_split, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
 use noisecorr::NoiseCorr;
-use reservoir::{mix, Slot, Tile};
+use reservoir::{mix, SharedFrames, Slot, Tile};
 use shard::{InFlight, Op};
 
 use crate::preprocess::flatten::GlowFlattener;
@@ -245,8 +248,16 @@ pub struct SlowLoopConfig {
     /// Extra margin stored around each tile, px (at least the largest
     /// support radius, so a cell centred in the tile is inside its patch).
     pub margin_px: usize,
-    /// Reservoir budget, bytes.
-    pub reservoir_bytes: usize,
+    /// Reservoir size: stored frames per tile (event plus random slots).
+    /// Recall rises steeply with it up to about this many (measured at
+    /// 600 x 600: 31 / 63 / 126 / 252 frames per tile gave recall .52 /
+    /// .67 / .76 / .78 at 8 min), and a visit's cost grows with it.
+    pub frames_per_tile: usize,
+    /// Cap on the reservoir's bytes (event slots, shared random frames and
+    /// probes). When `frames_per_tile` does not fit (large sensors), the
+    /// slots per tile are cut until it does, and
+    /// [`SlowLoop::reservoir_plan`] reports it.
+    pub reservoir_max_bytes: usize,
     /// Share of each tile's slots that hold a uniform sample of all frames.
     pub random_share: f32,
     /// Event-slot priority halves every this many frames.
@@ -380,7 +391,8 @@ impl Default for SlowLoopConfig {
             cell_diameter_px: 10.0,
             tile_px: 64,
             margin_px: 24,
-            reservoir_bytes: 256 << 20,
+            frames_per_tile: 128,
+            reservoir_max_bytes: 1536 << 20,
             random_share: 0.3,
             event_half_life_frames: 2000.0,
             holdout_every: 3,
@@ -440,6 +452,7 @@ impl SlowLoopConfig {
             && self.cell_diameter_px >= 2.0
             && self.tile_px >= 8
             && self.margin_px as f32 >= self.library.max_support_px
+            && self.frames_per_tile >= 2
             && self.random_share >= 0.0
             && self.random_share < 1.0
             && self.event_half_life_frames > 0.0
@@ -469,6 +482,56 @@ impl SlowLoopConfig {
         } else {
             Err(TraceError::InvalidConfig(format!("{self:?}")))
         }
+    }
+}
+
+/// How the reservoir is sized ([`SlowLoop::reservoir_plan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservoirPlan {
+    /// Stored frames per tile (event plus random slots), and the split.
+    pub frames_per_tile: usize,
+    pub event_slots: usize,
+    pub random_slots: usize,
+    /// The configured target (`SlowLoopConfig::frames_per_tile`).
+    pub target_frames_per_tile: usize,
+    /// Bytes with every slot full (event patches, shared random frames and
+    /// probes), and the cap.
+    pub capacity_bytes: usize,
+    pub max_bytes: usize,
+    /// Fewest stored frames per tile with which a visit can run (enough
+    /// fitting and held-out frames on average).
+    pub min_frames_per_tile: usize,
+}
+
+impl ReservoirPlan {
+    /// The byte cap cut the frames per tile below the target.
+    pub fn limited(&self) -> bool {
+        self.frames_per_tile < self.target_frames_per_tile
+    }
+
+    /// A message for the user when the cap limits discovery.
+    pub fn warning(&self) -> Option<String> {
+        if !self.limited() {
+            return None;
+        }
+        let mb = self.max_bytes as f64 / f64::from(1u32 << 20);
+        // Below about 1.5 times the minimum, few tiles ever hold enough
+        // frames of both kinds for a visit.
+        Some(if self.frames_per_tile * 2 < self.min_frames_per_tile * 3 {
+            format!(
+                "Cell discovery is starved: the reservoir memory cap ({mb:.0} MB) leaves \
+                 {} frames per tile for this frame size, and a tile visit needs about {}. \
+                 Few or no cells will be found.",
+                self.frames_per_tile,
+                self.min_frames_per_tile * 3 / 2
+            )
+        } else {
+            format!(
+                "The reservoir memory cap ({mb:.0} MB) limits the slow loop to {} frames \
+                 per tile for this frame size (target {}): cells are found more slowly.",
+                self.frames_per_tile, self.target_frames_per_tile
+            )
+        })
     }
 }
 
@@ -522,6 +585,9 @@ pub struct SlowLoop {
     detect: LocalFilter,
     smooth: LocalFilter,
     tiles: Vec<Tile>,
+    /// The tiles' random slots: one uniform sample of full frames.
+    shared: SharedFrames,
+    plan: ReservoirPlan,
     tile_visits: Vec<u32>,
     bgs: Vec<Option<BgBasis>>,
     cap_events: usize,
@@ -652,6 +718,39 @@ impl Frames {
     }
 }
 
+/// Slots per tile: `cfg.frames_per_tile`, or fewer if that does not fit in
+/// `cfg.reservoir_max_bytes` (event patches per tile, random frames once
+/// over `shared`, and the probes).
+fn plan_reservoir(cfg: &SlowLoopConfig, tiles: &[Tile], shared: Rect) -> ReservoirPlan {
+    let patch_bytes: usize = tiles.iter().map(|t| t.rect.len() * 2).sum();
+    let frame_bytes = shared.len() * 2;
+    let split = |n: usize| {
+        let random = ((n as f32 * cfg.random_share).round() as usize).max(1);
+        (n.saturating_sub(random).max(1), random)
+    };
+    let bytes = |n: usize| {
+        let (e, r) = split(n);
+        (e + cfg.probes_per_tile) * patch_bytes + r * frame_bytes
+    };
+    let target = cfg.frames_per_tile;
+    let mut n = target;
+    while n > 2 && bytes(n) > cfg.reservoir_max_bytes {
+        n -= 1;
+    }
+    let (event_slots, random_slots) = split(n);
+    let k = cfg.holdout_every as usize;
+    ReservoirPlan {
+        frames_per_tile: event_slots + random_slots,
+        event_slots,
+        random_slots,
+        target_frames_per_tile: target,
+        capacity_bytes: bytes(n),
+        max_bytes: cfg.reservoir_max_bytes,
+        min_frames_per_tile: (cfg.min_test_frames * k)
+            .max((cfg.min_fit_frames * k).div_ceil(k - 1)),
+    }
+}
+
 impl SlowLoop {
     /// `flattener` is the preprocessing high-pass (used to build published
     /// libraries); `fov` the FOV mask; `noise` the per-pixel noise σ.
@@ -717,10 +816,18 @@ impl SlowLoop {
                 y += t;
             }
         }
-        let bytes_per_set: usize = tiles.iter().map(|t| t.rect.len() * 2).sum::<usize>().max(1);
-        let per_tile = (cfg.reservoir_bytes / bytes_per_set).max(4);
-        let cap_random = ((per_tile as f32 * cfg.random_share).round() as usize).max(1);
-        let cap_events = per_tile.saturating_sub(cap_random).max(1);
+        let shared_rect = tiles
+            .iter()
+            .map(|t| t.rect)
+            .reduce(|a, b| a.union(&b))
+            .unwrap_or(Rect {
+                y0: 0,
+                x0: 0,
+                h: 0,
+                w: 0,
+            });
+        let plan = plan_reservoir(&cfg, &tiles, shared_rect);
+        let (cap_events, cap_random) = (plan.event_slots, plan.random_slots);
         let coarse_dims = Dims {
             width: dims.width.div_ceil(2),
             height: dims.height.div_ceil(2),
@@ -746,6 +853,8 @@ impl SlowLoop {
             detect: LocalFilter::new((cfg.cell_diameter_px / 4.0).max(0.6)),
             smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
             tiles,
+            shared: SharedFrames::new(shared_rect),
+            plan,
             tile_visits: vec![0; n_tiles],
             bgs: vec![None; n_tiles],
             cap_events,
@@ -857,11 +966,17 @@ impl SlowLoop {
 
     /// Bytes held by the reservoir now, and the per-tile slot counts.
     pub fn reservoir_bytes(&self) -> usize {
-        self.tiles.iter().map(Tile::bytes).sum()
+        self.tiles.iter().map(Tile::bytes).sum::<usize>() + self.shared.bytes()
     }
 
+    /// `(event, random)` slots per tile.
     pub fn slots_per_tile(&self) -> (usize, usize) {
         (self.cap_events, self.cap_random)
+    }
+
+    /// How the reservoir is sized, and whether its byte cap limits it.
+    pub fn reservoir_plan(&self) -> ReservoirPlan {
+        self.plan
     }
 
     /// `(id, frame it entered the working set)` of every working-set cell.
@@ -1046,24 +1161,27 @@ impl SlowLoop {
         if !test && self.cfg.stats_half_life_frames > 0.0 {
             self.update_fpstats(frame, lib, traces);
         }
+        // Random slots: one uniform sample for every tile.
+        self.rng = mix(self.rng);
+        let w = self.dims.width;
+        let took = self
+            .shared
+            .offer(&self.z, w, frame_idx, test, self.cap_random, self.rng);
         for ti in 0..self.tiles.len() {
             let score = self.tile_score(ti, scale);
-            self.rng = mix(self.rng);
-            let (ce, cr, decay, rand) = (self.cap_events, self.cap_random, self.decay, self.rng);
             let tile = &mut self.tiles[ti];
-            let before = tile.events.len() + tile.randoms.len();
             tile.offer(
                 &self.z,
-                self.dims.width,
+                w,
                 frame_idx,
                 score,
                 test,
-                ce,
-                cr,
-                decay,
-                rand,
+                self.cap_events,
+                self.decay,
             );
-            let _ = before;
+            if let Some(j) = took {
+                tile.set_random(j, frame_idx, test);
+            }
         }
         if test {
             self.take_probes(lib, frame_idx);
@@ -1580,10 +1698,10 @@ impl SlowLoop {
         let mut proj = Vec::with_capacity(ids.len());
         let mut idx = Vec::with_capacity(ids.len());
         for s in ids {
+            let mut v = Vec::new();
+            self.tiles[ti].slot_values(s, &self.shared, &mut v);
             let slot: &mut Slot = self.tiles[ti].slot_mut(s);
             idx.push(slot.frame);
-            let mut v = Vec::new();
-            slot.values(&mut v);
             if slot.proj.is_none() {
                 slot.proj = Some(bg.project(&v));
                 self.work += (v.len() * (bg.k + 1)) as u64;

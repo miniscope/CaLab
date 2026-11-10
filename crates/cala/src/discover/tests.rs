@@ -111,7 +111,8 @@ fn movie(cells: &[(Footprint, Vec<f32>)], t: usize, seed: u64) -> Vec<f32> {
 fn config() -> SlowLoopConfig {
     SlowLoopConfig {
         tile_px: 48,
-        reservoir_bytes: 8 << 20,
+        // About what the old 8 MB byte budget gave on this frame.
+        frames_per_tile: 200,
         commit_interval_frames: 20,
         ..SlowLoopConfig::default()
     }
@@ -997,4 +998,78 @@ fn a_result_from_elsewhere_or_a_bad_buffer_is_an_error() {
     }
     let mut other = new_loop(&cfg);
     assert!(other.apply_job(r).is_err());
+}
+
+#[test]
+fn the_reservoir_is_sized_by_frames_per_tile_within_its_cap() {
+    let s = new_loop(&config());
+    let p = s.reservoir_plan();
+    assert_eq!(p.frames_per_tile, 200);
+    assert_eq!((p.event_slots, p.random_slots), (140, 60));
+    assert!(!p.limited() && p.warning().is_none());
+    // Random frames are stored once for the whole frame: the 2 x 2 tiles'
+    // patches (72 x 72 each) would hold 4 x 5184 px per frame, the shared
+    // store holds the 96 x 96 frame.
+    let patches: usize = s.tiles.iter().map(|t| t.rect.len() * 2).sum();
+    assert_eq!(patches, 4 * 72 * 72 * 2);
+    assert_eq!(
+        p.capacity_bytes,
+        (140 + config().probes_per_tile) * patches + 60 * N * N * 2
+    );
+    // A cap below that cuts the frames per tile, and says so.
+    let capped = |share: f64| {
+        new_loop(&SlowLoopConfig {
+            reservoir_max_bytes: (p.capacity_bytes as f64 * share) as usize,
+            ..config()
+        })
+        .reservoir_plan()
+    };
+    let half = capped(0.5);
+    assert!(half.limited() && half.capacity_bytes <= half.max_bytes);
+    assert!(half.frames_per_tile < 200 && half.frames_per_tile > 80);
+    assert!(half.warning().unwrap().contains("frames per tile"));
+    let starved = capped(0.05);
+    assert_eq!(starved.min_frames_per_tile, 24);
+    assert!(starved.frames_per_tile < 36);
+    assert!(starved
+        .warning()
+        .unwrap()
+        .starts_with("Cell discovery is starved"));
+}
+
+#[test]
+fn random_slots_share_one_uniform_sample() {
+    let cfg = SlowLoopConfig {
+        frames_per_tile: 10,
+        ..config()
+    };
+    let n_px = N * N;
+    let (m, seed) = busy_movie(120);
+    let (mut s, mut eng) = start(cfg, &seed);
+    for k in 0..120 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        s.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(s.shared.frames.len(), 3);
+    assert!(s.reservoir_bytes() <= s.reservoir_plan().capacity_bytes);
+    let frames: Vec<u64> = s.shared.frames.iter().map(|f| f.frame).collect();
+    for t in &s.tiles {
+        let own: Vec<u64> = t.randoms.iter().map(|r| r.frame).collect();
+        assert_eq!(own, frames);
+        assert!(t.randoms.iter().all(|r| r.data.is_empty()));
+    }
+    // A tile's random patch read from the shared store is the patch a job
+    // carries.
+    let t = &s.tiles[3];
+    let mut job_tile = t.clone();
+    job_tile.fill_randoms(&s.shared);
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for j in 0..3 {
+        t.slot_values((false, j), &s.shared, &mut a);
+        job_tile.slot((false, j)).values(&mut b);
+        assert_eq!(a.len(), t.rect.len());
+        assert_eq!(a, b);
+    }
 }
