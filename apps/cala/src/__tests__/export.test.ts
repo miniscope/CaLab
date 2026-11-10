@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseNpz, traceCandidates } from '@calab/io';
+import { parseNpz, processNpyResult, traceCandidates } from '@calab/io';
 import type { CellQcRow, QcSnapshot } from '../lib/qc.ts';
 import { buildCaDeconExport, buildCalaExport, cadeconCells, fileStem } from '../lib/export.ts';
-import { transposeTraces, type Pass2Result } from '../lib/pass2-store.ts';
+import type { Pass2Result } from '../lib/pass2-store.ts';
+import { memoryTraceFile } from '../lib/trace-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -40,11 +41,19 @@ function library(): LibraryView {
   };
 }
 
-function result(): Pass2Result {
+async function result(): Promise<Pass2Result> {
   // Frame-major (as the solver emits): value = 100 * cell + frame.
   const traces = new Float32Array(T * 3);
   for (let f = 0; f < T; f++) for (let c = 0; c < 3; c++) traces[f * 3 + c] = 100 * c + f;
-  return { ids, traces, frames: T, cells: 3, version: 12, library: library(), seconds: 1.5 };
+  return {
+    ids,
+    traces: await memoryTraceFile(traces, T, 3),
+    frames: T,
+    cells: 3,
+    version: 12,
+    library: library(),
+    seconds: 1.5,
+  };
 }
 
 function qc(): QcSnapshot {
@@ -54,7 +63,7 @@ function qc(): QcSnapshot {
   return { rows, byId: new Map(rows.map((r) => [r.id, r])) } as unknown as QcSnapshot;
 }
 
-function input() {
+async function input() {
   const rec = new RunRecord(2);
   for (let t = 0; t < T; t++) rec.push(t, [0.5 * t], [-t], [t % 2], [t], [0.01 * t]);
   return {
@@ -62,7 +71,7 @@ function input() {
     width: W,
     height: H,
     fps: 20,
-    result: result(),
+    result: await result(),
     run: rec.snapshot(),
     qc: qc(),
     firstSeen: (id: number) => (id === 11 ? undefined : id * 10),
@@ -90,18 +99,22 @@ describe('run record', () => {
 });
 
 describe('export', () => {
-  it('transposes frame-major traces to one row per cell', () => {
-    const t = transposeTraces(result().traces, T, 3);
-    expect([...t.subarray(0, T)]).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect([...t.subarray(2 * T, 3 * T)]).toEqual([200, 201, 202, 203, 204, 205, 206]);
+  it('reads cells and frames back from the trace file', async () => {
+    const { traces } = await result();
+    expect([...(await traces.readCell(0))]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...(await traces.readCell(2))]).toEqual([200, 201, 202, 203, 204, 205, 206]);
+    expect([...(await traces.readFrames(2, 4))]).toEqual([2, 102, 202, 3, 103, 203]);
   });
 
-  it('writes a self-describing archive numpy can read', () => {
-    const z = parseNpz(buildCalaExport(input()));
+  it('writes a self-describing archive numpy can read', async () => {
+    const z = parseNpz(await buildCalaExport(await input()));
     const a = z.arrays;
+    // Fortran order on disk (frame-major, no transpose); numpy returns the (N, T) array.
+    expect(a.traces.fortranOrder).toBe(true);
     expect(a.traces.shape).toEqual([3, T]);
     expect(a.traces.dtype).toBe('<f4');
-    expect(a.traces.data[T + 3]).toBe(103);
+    const traces = processNpyResult(a.traces);
+    expect([...traces.data.slice(T, 2 * T)]).toEqual([100, 101, 102, 103, 104, 105, 106]);
     expect(a.cell_ids.shape).toEqual([3]);
     expect([...a.cell_ids.data]).toEqual([4, 9, 11]);
     expect(a.centroids_yx.shape).toEqual([3, 2]);
@@ -137,15 +150,38 @@ describe('export', () => {
     expect([...px.slice(st[1], st[2])]).toEqual([2 * W + 3, 2 * W + 4, 3 * W + 3, 3 * W + 4]);
   });
 
-  it('writes the CaDecon file with one trace matrix, QC-passing cells by default', () => {
-    const inp = input();
+  it('writes the same archive with ZIP64 records forced', async () => {
+    const inp = await input();
+    const plain = parseNpz(await buildCalaExport(inp)).arrays;
+    const z64 = parseNpz(await buildCalaExport(inp, { forceZip64: true })).arrays;
+    expect(Object.keys(z64).sort()).toEqual(Object.keys(plain).sort());
+    for (const k of Object.keys(plain)) expect(z64[k].data).toEqual(plain[k].data);
+  });
+
+  it('streams a big CaDecon file in Fortran order with the same values as the classic one', async () => {
+    const inp = await input();
+    const classic = parseNpz(await buildCaDeconExport(inp, false)).arrays;
+    const streamed = parseNpz(
+      await buildCaDeconExport(inp, false, { cadeconMemoryBytes: 0, forceZip64: true }),
+    ).arrays;
+    expect(classic.traces.fortranOrder).toBe(false);
+    expect(streamed.traces.fortranOrder).toBe(true);
+    expect(processNpyResult(streamed.traces).data).toEqual(classic.traces.data);
+    // A column subset streams too.
+    const sub = parseNpz(await buildCaDeconExport(inp, true, { cadeconMemoryBytes: 0 })).arrays;
+    expect(sub.traces.shape).toEqual([1, T]);
+    expect([...processNpyResult(sub.traces).data]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it('writes the CaDecon file with one trace matrix, QC-passing cells by default', async () => {
+    const inp = await input();
     expect(cadeconCells(inp, true)).toEqual([0]);
     expect(cadeconCells(inp, false)).toEqual([0, 1, 2]);
-    const z = parseNpz(buildCaDeconExport(inp, true));
+    const z = parseNpz(await buildCaDeconExport(inp, true));
     expect(z.arrays.traces.shape).toEqual([1, T]);
     // A lone cells x timepoints array: CaDecon's importer (soleTraceCandidate) takes it without asking.
     expect(traceCandidates(z)).toEqual(['traces']);
-    const all = parseNpz(buildCaDeconExport(inp, false));
+    const all = parseNpz(await buildCaDeconExport(inp, false));
     expect(all.arrays.traces.shape).toEqual([3, T]);
     expect(traceCandidates(all)).toEqual(['traces']);
     // No QC judged any cell: keep them all rather than export nothing.

@@ -7,6 +7,8 @@ import {
   FrameSource,
   HEADER_PREFIX_BYTES,
   MAX_FRAMES_PER_READ,
+  OPEN_CONCURRENCY,
+  mapLimit,
 } from '../lib/frame-source.ts';
 import { naturalCompare } from '../lib/natural-sort.ts';
 import {
@@ -429,5 +431,89 @@ describe('FrameSource robustness', () => {
     expect(dup.info.warnings.join(' ')).toContain('0.avi and 00.avi have the same number');
     const late = await open([files[1]]);
     expect(late.info.warnings.join(' ')).toContain('starts at 1.avi');
+  });
+});
+
+describe('read-ahead and throttled open', () => {
+  it('mapLimit bounds concurrency, keeps order and stops after a failure', async () => {
+    let active = 0;
+    let peak = 0;
+    const out = await mapLimit([...Array(40).keys()], 5, async (i) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 1));
+      active--;
+      return i * 2;
+    });
+    expect(peak).toBe(5);
+    expect(out).toEqual([...Array(40).keys()].map((i) => i * 2));
+    let started = 0;
+    await expect(
+      mapLimit([...Array(50).keys()], 2, async (i) => {
+        started++;
+        if (i === 3) throw new Error('boom');
+        await new Promise((r) => setTimeout(r, 1));
+      }),
+    ).rejects.toThrow('boom');
+    expect(started).toBeLessThan(50);
+  });
+
+  it('opens a many-file folder with bounded header reads and reports progress', async () => {
+    const n = OPEN_CONCURRENCY * 3;
+    const { files } = recording(Array<number>(n).fill(2));
+    let active = 0;
+    let peak = 0;
+    for (const file of files) {
+      const slice = file.slice.bind(file);
+      file.slice = (start?: number, end?: number, type?: string) => {
+        const blob = slice(start, end, type);
+        const read = blob.arrayBuffer.bind(blob);
+        blob.arrayBuffer = async () => {
+          active++;
+          peak = Math.max(peak, active);
+          await new Promise((r) => setTimeout(r, 1));
+          const buf = await read();
+          active--;
+          return buf;
+        };
+        return blob;
+      };
+    }
+    const progress: number[] = [];
+    const src = await FrameSource.open(entriesFromFiles(files), {
+      onProgress: (done) => progress.push(done),
+    });
+    expect(src.frameCount).toBe(2 * n);
+    expect(peak).toBeLessThanOrEqual(OPEN_CONCURRENCY);
+    expect(progress).toHaveLength(n);
+    expect(progress[n - 1]).toBe(n);
+  });
+
+  it('reads the next batch ahead when reading sequentially, and returns the same pixels', async () => {
+    const { opts, files } = recording([12]);
+    const reads: number[] = [];
+    for (const file of files) {
+      const slice = file.slice.bind(file);
+      file.slice = (start?: number, end?: number, type?: string) => {
+        reads.push(start ?? 0);
+        return slice(start, end, type);
+      };
+    }
+    const src = await open(files);
+    reads.length = 0;
+    const n = 6 * 4;
+    const a = await src.readFrames(0, 4);
+    expect(reads).toHaveLength(1); // the first call has nothing to anticipate
+    const b = await src.readFrames(4, 4);
+    expect(reads).toHaveLength(3); // its own span, and frames 8..11 started ahead
+    const c = await src.readFrames(8, 4);
+    expect(reads).toHaveLength(3); // used the read-ahead; nothing past the end to fetch
+    expect(a.subarray(0, n)).toEqual(expectedPixels(opts[0], 0));
+    expect(b.subarray(3 * n)).toEqual(expectedPixels(opts[0], 7));
+    expect(c.subarray(3 * n)).toEqual(expectedPixels(opts[0], 11));
+    // A jump away from the sequence does not read ahead.
+    reads.length = 0;
+    await src.readFrames(1, 2);
+    expect(reads).toHaveLength(1);
   });
 });

@@ -8,7 +8,14 @@ interface OpenFolderProps {
   error: string | null;
   /** Called with every file picked or dropped, and a label for the header. */
   onOpen: (entries: FolderEntry[], label: string) => void;
+  /** Connect to a live source (a WebSocket URL, see `lib/live-source.ts`). */
+  onOpenLive?: (url: string) => void;
+  /** The URL offered in the live-source field. */
+  liveUrl?: string;
 }
+
+/** Where the simulator (`scripts/live-sim.mjs`) listens by default. */
+export const DEFAULT_LIVE_URL = 'ws://localhost:8765';
 
 /** The folder name for the header: the picked directory, else the first file's name. */
 function labelFor(entries: FolderEntry[]): string {
@@ -20,6 +27,9 @@ function labelFor(entries: FolderEntry[]): string {
 /** First screen: pick or drop a Miniscope recording folder. */
 export function OpenFolder(props: OpenFolderProps): JSX.Element {
   const [dragging, setDragging] = createSignal(false);
+  // The offered URL seeds the field once; the user edits it from there.
+  // eslint-disable-next-line solid/reactivity
+  const [liveUrl, setLiveUrl] = createSignal(props.liveUrl ?? DEFAULT_LIVE_URL);
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
 
@@ -102,9 +112,36 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
         </button>
       </p>
 
+      <Show when={props.onOpenLive}>
+        <form
+          class="file-info cala-live-open"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const url = liveUrl().trim();
+            if (url) props.onOpenLive?.(url);
+          }}
+        >
+          <label>
+            Or stream from a live source{' '}
+            <input
+              type="text"
+              class="cala-live-open__url"
+              data-testid="live-url"
+              value={liveUrl()}
+              onInput={(e) => setLiveUrl(e.currentTarget.value)}
+              placeholder={DEFAULT_LIVE_URL}
+              spellcheck={false}
+            />
+          </label>{' '}
+          <button type="submit" class="btn-secondary btn-small" data-testid="live-connect">
+            Connect
+          </button>
+        </form>
+      </Show>
+
       <Show when={props.loading}>
         <p class="file-info" role="status">
-          Reading video headers...
+          Opening...
         </p>
       </Show>
       <Show when={props.error}>

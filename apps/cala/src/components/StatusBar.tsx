@@ -35,7 +35,8 @@ export function StatusBar(props: {
   const c = () => props.cells;
 
   const total = () => s().plan()?.frameCount ?? 0;
-  const fraction = () => (total() > 0 ? s().processed() / total() : 0);
+  const unbounded = () => !Number.isFinite(total());
+  const fraction = () => (total() > 0 && !unbounded() ? s().processed() / total() : 0);
   const statusText = () => {
     const st = s().status();
     if (st === 'starting') return 'Starting';
@@ -65,19 +66,38 @@ export function StatusBar(props: {
       <span class="cala-status" data-testid="pipeline-status">
         {statusText()}
       </span>
-      <div
-        class="cala-progress"
-        role="progressbar"
-        aria-valuemin="0"
-        aria-valuemax={total()}
-        aria-valuenow={s().processed()}
-      >
-        <div class="cala-progress__bar" style={{ width: `${(fraction() * 100).toFixed(2)}%` }} />
-      </div>
+      <Show when={!unbounded()}>
+        <div
+          class="cala-progress"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax={total()}
+          aria-valuenow={s().processed()}
+        >
+          <div class="cala-progress__bar" style={{ width: `${(fraction() * 100).toFixed(2)}%` }} />
+        </div>
+      </Show>
       <span class="cala-readout" data-testid="pipeline-readout">
-        frame {s().processed().toLocaleString()} / {total().toLocaleString()}
+        frame {s().processed().toLocaleString()}
+        <Show when={!unbounded()}> / {total().toLocaleString()}</Show>
         <Show when={s().fps() > 0}> &middot; {s().fps().toFixed(1)} frames/s</Show>
       </span>
+      <Show when={s().live()}>
+        {(live) => (
+          <span class="cala-readout" data-testid="live-readout">
+            live: {live().received.toLocaleString()} received
+            <Show when={live().dropped + live().missed > 0}>
+              {' '}
+              &middot; {live().dropped.toLocaleString()} dropped
+              <Show when={live().missed > 0}>
+                {' '}
+                ({live().missed.toLocaleString()} missed at the source)
+              </Show>
+            </Show>{' '}
+            &middot; lag {live().lagFrames} frames ({live().lagMs.toFixed(0)} ms)
+          </span>
+        )}
+      </Show>
       <Show when={backend()}>
         {(b) => (
           <span

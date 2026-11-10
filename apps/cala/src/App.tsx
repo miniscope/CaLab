@@ -92,6 +92,14 @@ const App: Component = () => {
     await store.openFiles(files, label);
     if (store.info()) void pipeline.start();
   }
+  // So does connecting to a live source (`?live=<url>` connects on load).
+  async function openLive(url: string) {
+    pipeline.stop();
+    await store.openLive(url);
+    if (store.info()) void pipeline.start();
+  }
+  const liveParam = params.get('live');
+  if (liveParam) void openLive(liveParam);
 
   return (
     <Show
@@ -101,6 +109,8 @@ const App: Component = () => {
           loading={store.loading()}
           error={store.error()}
           onOpen={(files, label) => void open(files, label)}
+          onOpenLive={(url) => void openLive(url)}
+          liveUrl={liveParam ?? undefined}
         />
       }
     >
@@ -118,7 +128,9 @@ const App: Component = () => {
                     {info().width} x {info().height}
                   </span>
                   <span class="compact-header__sep">&middot;</span>
-                  <span>{info().frameCount.toLocaleString()} frames</span>
+                  <span>
+                    {info().live ? 'live' : `${info().frameCount.toLocaleString()} frames`}
+                  </span>
                 </>
               }
               actions={
@@ -130,7 +142,7 @@ const App: Component = () => {
                       store.close();
                     }}
                   >
-                    Open another folder
+                    {info().live ? 'Open another source' : 'Open another folder'}
                   </button>
                   <FeedbackMenu appId={__APP_ID__} />
                   <CommunityAuthMenu />
@@ -154,6 +166,7 @@ const App: Component = () => {
               pipeline={pipeline}
               pass2={pass2}
               cells={cells}
+              live={info().live !== undefined}
               label={store.label()}
               width={info().width}
               height={info().height}

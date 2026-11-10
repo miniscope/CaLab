@@ -761,3 +761,17 @@
   color: var(--text-primary);
   font-size: 0.75rem;
 }
+
+/* Live source row on the open screen. */
+.cala-live-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.cala-live-open__url {
+  width: 16rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85rem;
+}

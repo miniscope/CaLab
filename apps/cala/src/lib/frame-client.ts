@@ -34,6 +34,8 @@ export interface PipelineClient {
 /** What the UI needs from a frame source; the tests substitute a fake. */
 export interface FrameClient extends PipelineClient {
   open(entries: FolderEntry[]): Promise<FrameSourceInfo>;
+  /** Connect to a live source at a WebSocket URL (the worker owns the socket). */
+  openLive?(url: string): Promise<FrameSourceInfo>;
   readFrame(index: number): Promise<FramePixels>;
   /** `count` consecutive frames in one buffer of `count * width * height` samples. */
   readFrames(start: number, count: number): Promise<FramePixels>;
@@ -158,6 +160,9 @@ export function createFrameClient(
     ...(pipelined ? { maxInFlight: PIPELINED_IN_FLIGHT } : {}),
     async open(entries) {
       return expectType(await call({ type: 'open', entries }), 'opened').info;
+    },
+    async openLive(url) {
+      return expectType(await call({ type: 'open-live', url }), 'opened').info;
     },
     async readFrames(start, count) {
       return expectType(await call({ type: 'read', start, count }), 'frames').pixels;
