@@ -68,6 +68,10 @@ function counters(s: ArrayLike<number>): SlowCounters {
     deletes: s[8] ?? 0,
     splits: s[9] ?? 0,
     absorbs: s[10] ?? 0,
+    newAdds: s[11] ?? 0,
+    reAdds: s[12] ?? 0,
+    churned: s[13] ?? 0,
+    establishedRemovals: s[15] ?? 0,
   };
 }
 

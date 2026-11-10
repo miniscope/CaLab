@@ -212,6 +212,10 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
         merges: c.merges,
         splits: c.splits ?? 0,
         deletes: c.deletes ?? 0,
+        newAdds: c.newAdds ?? 0,
+        reAdds: c.reAdds ?? 0,
+        churned: c.churned ?? 0,
+        establishedRemovals: c.establishedRemovals ?? 0,
       });
       if (st.cellStatus) {
         const m = new Map<number, boolean>();
@@ -233,6 +237,10 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
       residualExcess: g.residualExcess,
       snrMedian: g.snrMedian,
       passFrac: g.passFrac,
+      stableCells: g.stableCells,
+      fpStability: g.fpStability,
+      traceSigmaChange: g.traceSigmaChange,
+      stableFrac: g.stableFrac,
       addsPerMin: g.addsPerMin,
       removesPerMin: g.removesPerMin,
       edits: editRates.rates(),

@@ -80,6 +80,15 @@ export interface SlowCounters {
   deletes: number;
   splits: number;
   absorbs: number;
+  /**
+   * Add classification (cumulative; 0 from an older WASM build): adds at a
+   * fresh spot, adds where a cell was just removed, adds removed again soon
+   * after (counted at the removal), and merges/deletes of established cells.
+   */
+  newAdds: number;
+  reAdds: number;
+  churned: number;
+  establishedRemovals: number;
 }
 
 /** Evidence status of the working-set cells (`SlowLoop.cellStatus()`). */
