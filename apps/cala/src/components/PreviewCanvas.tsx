@@ -1,30 +1,36 @@
 import { createEffect, type JSX } from 'solid-js';
-import { displayRange, grayToImageData, toGray8, type DisplayRange } from '../lib/frame-display.ts';
+import { grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import type { PreviewImage } from '../lib/preview.ts';
+import { createHeldRange, type HeldRange } from './RangeControl.tsx';
 
-/** Weight of the newest frame in the smoothed contrast range (less flicker). */
-const RANGE_SMOOTHING = 0.3;
-
-/** Draws a float preview image with auto contrast smoothed over time. */
-export function PreviewCanvas(props: { image: PreviewImage | null; label: string }): JSX.Element {
+/**
+ * Draws a float preview image with a fixed display range (see `RangeHold`):
+ * fitted once from the first images, then held. Never auto-contrast.
+ */
+export function PreviewCanvas(props: {
+  image: PreviewImage | null;
+  label: string;
+  held?: HeldRange;
+}): JSX.Element {
   let canvas!: HTMLCanvasElement;
-  let range: DisplayRange | null = null;
+  // eslint-disable-next-line solid/reactivity
+  const held = props.held ?? createHeldRange();
   let shown = '';
 
   createEffect(() => {
     const img = props.image;
-    // A different view has a different intensity domain: start the range afresh.
-    if (props.label !== shown) range = null;
+    held.revision();
+    // A different view has a different intensity domain: fit afresh.
+    if (props.label !== shown) held.reset();
     shown = props.label;
     const ctx = canvas.getContext('2d');
-    if (!img || !ctx) return;
-    const r = displayRange(img.data, 0, true);
-    range = range
-      ? {
-          lo: range.lo + RANGE_SMOOTHING * (r.lo - range.lo),
-          hi: range.hi + RANGE_SMOOTHING * (r.hi - range.hi),
-        }
-      : r;
+    if (!img) {
+      held.reset();
+      return;
+    }
+    if (!ctx) return;
+    const range = held.observe(img.data);
+    if (!range) return;
     if (canvas.width !== img.width) canvas.width = img.width;
     if (canvas.height !== img.height) canvas.height = img.height;
     ctx.putImageData(grayToImageData(toGray8(img.data, 0, range), img.width, img.height), 0, 0);
