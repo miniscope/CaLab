@@ -83,7 +83,7 @@ export interface FrameSourceFileInfo {
   frames: number;
 }
 
-export type FpsSourceKind = 'timestamps' | 'metadata' | 'none';
+export type FpsSourceKind = 'timestamps' | 'metadata' | 'none' | 'live';
 
 /** Plain, structured-cloneable description of an opened recording. */
 export interface FrameSourceInfo {
@@ -108,6 +108,8 @@ export interface FrameSourceInfo {
   /** Files in the selection that were not used (other folders, other names). */
   ignoredFiles: string[];
   warnings: string[];
+  /** A live stream (`lib/live-source.ts`): `frameCount` is unbounded and frames cannot be re-read. */
+  live?: { url: string; name?: string };
 }
 
 /** A recording folder's files after picking the Miniscope directory. */

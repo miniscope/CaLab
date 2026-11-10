@@ -6,6 +6,7 @@ const FPS_SOURCE_LABEL = {
   timestamps: 'timeStamps.csv (mean frame interval)',
   metadata: 'metaData.json',
   none: 'not found',
+  live: 'the live source',
 } as const;
 
 function fpsText(info: FrameSourceInfo): string {
@@ -26,7 +27,7 @@ export function InfoPanel(props: { info: FrameSourceInfo }): JSX.Element {
           {i().width} x {i().height} px, {i().bitDepth}-bit ({i().fourcc})
         </dd>
         <dt>Frames</dt>
-        <dd>{i().frameCount.toLocaleString()}</dd>
+        <dd>{i().live ? 'live stream (no end known)' : i().frameCount.toLocaleString()}</dd>
         <dt>Frame rate</dt>
         <dd>{fpsText(i())}</dd>
         <Show when={i().aviDeclaredFps !== null}>
@@ -35,19 +36,29 @@ export function InfoPanel(props: { info: FrameSourceInfo }): JSX.Element {
         </Show>
         <dt>Row order</dt>
         <dd>{i().bottomUp ? 'bottom-up DIB, shown as stored' : 'top-down'}</dd>
-        <dt>Files</dt>
-        <dd>
-          {i().files.length} video file{i().files.length === 1 ? '' : 's'}
-          <ul class="cala-files">
-            <For each={i().files}>
-              {(f) => (
-                <li>
-                  {f.name} <span class="cala-muted">({f.frames.toLocaleString()} frames)</span>
-                </li>
-              )}
-            </For>
-          </ul>
-        </dd>
+        <Show when={i().live}>
+          {(live) => (
+            <>
+              <dt>Source</dt>
+              <dd>{live().url}</dd>
+            </>
+          )}
+        </Show>
+        <Show when={!i().live}>
+          <dt>Files</dt>
+          <dd>
+            {i().files.length} video file{i().files.length === 1 ? '' : 's'}
+            <ul class="cala-files">
+              <For each={i().files}>
+                {(f) => (
+                  <li>
+                    {f.name} <span class="cala-muted">({f.frames.toLocaleString()} frames)</span>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </dd>
+        </Show>
       </dl>
       <Show when={i().ignoredFiles.length > 0}>
         <p class="cala-muted">

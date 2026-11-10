@@ -13,7 +13,8 @@
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FrameSource } from '../lib/frame-source.ts';
-import { PipelineEngine, transferablesOf } from '../lib/pipeline-engine.ts';
+import { LiveSource, type SocketLike } from '../lib/live-source.ts';
+import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
@@ -22,6 +23,9 @@ import type { StageFree, StageMsg } from './stage-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 
 let source: FrameSource | null = null;
+/** A live source (the socket lives here): frames arrive while steps wait for them. */
+let live: LiveSource | null = null;
+let liveUrl: string | null = null;
 let pipeline: PipelineEngine | null = null;
 let slowPort: MessagePort | null = null;
 
@@ -47,6 +51,26 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The open recording: a folder or a live stream. */
+function reader(): FrameReader {
+  if (live) return live;
+  if (!source) throw new Error('No recording is open.');
+  return source;
+}
+
+function closeSources(): void {
+  source?.dispose();
+  source = null;
+  live?.dispose();
+  live = null;
+}
+
+/** Connect to the live source at `url` and wait for its hello. */
+function openLive(url: string): Promise<LiveSource> {
+  // A WebSocket's handlers take MessageEvents, which carry `data` as the source expects.
+  return LiveSource.open(new WebSocket(url) as unknown as SocketLike, url);
+}
+
 function stopPipeline(): void {
   pipeline?.dispose();
   pipeline = null;
@@ -64,14 +88,26 @@ async function handle(req: FrameRequest): Promise<void> {
       case 'open': {
         await initCalaWasm();
         stopPipeline();
-        source?.dispose();
-        source = null;
+        closeSources();
+        liveUrl = null;
         source = await FrameSource.open(req.entries);
         post({ type: 'opened', id: req.id, info: source.info });
         break;
       }
+      case 'open-live': {
+        await initCalaWasm();
+        stopPipeline();
+        closeSources();
+        liveUrl = req.url;
+        live = await openLive(req.url);
+        post({ type: 'opened', id: req.id, info: live.info });
+        break;
+      }
       case 'read': {
-        if (!source) throw new Error('No recording is open.');
+        if (!source)
+          throw new Error(
+            live ? 'A live source cannot be read at random.' : 'No recording is open.',
+          );
         const pixels = await source.readFrames(req.start, req.count);
         post({ type: 'frames', id: req.id, start: req.start, count: req.count, pixels }, [
           pixels.buffer,
@@ -79,21 +115,32 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-start': {
-        if (!source) throw new Error('No recording is open.');
         stopPipeline();
+        // A live stream cannot be rewound: a restart (or a run after the stream
+        // ended) connects again, and the source streams from where it is now.
+        if (live && liveUrl && (live.used || live.stats().ended)) {
+          live.dispose();
+          live = null;
+          live = await openLive(liveUrl);
+        }
+        const src = reader();
+        if (live && req.replay) throw new Error('Pass 2 needs the recording on disk.');
         if (down) {
           epoch++;
           // The stage asks for buffers only from its first `next()`, after the pool exists.
           const stage = new FrontStage(
-            source,
+            src,
             req.options,
             () => frontPool!.acquire(),
             undefined,
             req.replay,
           );
+          live?.setRetainFrames(
+            Math.max(stage.plan.calibrationFrames, stage.plan.motionWarmupFrames),
+          );
           frontPool = new StagePool(
             FRONT_BUFFERS,
-            stage.plan.batchSize * source.info.width * source.info.height,
+            stage.plan.batchSize * src.info.width * src.info.height,
           );
           front = stage;
           down.postMessage({
@@ -110,7 +157,7 @@ async function handle(req: FrameRequest): Promise<void> {
         if (req.replay) throw new Error('Pass 2 needs the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
-        pipeline = new PipelineEngine(source, req.options, undefined, (setup) => {
+        pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
           return new FastLoop(
             {
               ...setup,
@@ -123,6 +170,9 @@ async function handle(req: FrameRequest): Promise<void> {
             backend,
           );
         });
+        live?.setRetainFrames(
+          Math.max(pipeline.plan.calibrationFrames, pipeline.plan.motionWarmupFrames),
+        );
         post({ type: 'pipeline-ready', id: req.id, plan: pipeline.plan });
         break;
       }
@@ -147,8 +197,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-truncate': {
-        front?.truncate();
-        pipeline?.truncate();
+        // Handled before queueing (see below); answered here, in order.
         post({ type: 'ok', id: req.id });
         break;
       }
@@ -186,10 +235,24 @@ async function handle(req: FrameRequest): Promise<void> {
   }
 }
 
+/**
+ * Stop reading here. Done as soon as the message arrives, not in its turn:
+ * a step on a live source may be waiting for frames that never come (the
+ * stream paused, or the user wants to stop), and the queued requests sit
+ * behind it. Both are flag flips, so running them out of order is safe.
+ */
+function truncateNow(): void {
+  front?.truncate();
+  pipeline?.truncate();
+  live?.stop();
+}
+
 // One message at a time, in arrival order: an `open` must never dispose the
 // headers while a `read` is awaiting its slice, nor a `pipeline-stop` free the
 // pipeline while a step is running.
 let queue: Promise<void> = Promise.resolve();
 workerScope.onmessage = (e) => {
-  queue = queue.then(() => handle(e.data));
+  const req = e.data;
+  if (req.type === 'pipeline-truncate' || req.type === 'pipeline-stop') truncateNow();
+  queue = queue.then(() => handle(req));
 };

@@ -12,11 +12,13 @@ import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } fr
 import type { Preprocessor } from './cala-wasm.ts';
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
 import {
+  isUnbounded,
   makePlan,
   PipelineCursor,
   type PipelineOptions,
   type PipelinePhase,
   type PipelinePlan,
+  type PipelineStep,
 } from './pipeline-plan.ts';
 import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
 import type { CellsBatch, FastLoop } from './fast-loop.ts';
@@ -34,10 +36,48 @@ export interface FastLoopSetup {
   fps: number;
 }
 
+/** A live source's view of the batch just read (see `lib/live-source.ts`). */
+export interface LiveBatchInfo {
+  /** Frames received from the acquisition side so far. */
+  received: number;
+  /** Frames received but dropped here (queue full, out of order). */
+  dropped: number;
+  /** Frames the acquisition side never delivered. */
+  missed: number;
+  /** Frames received and not yet read by the pipeline. */
+  queued: number;
+  /** Wall time from the arrival of the batch's last frame to the end of its read, ms. */
+  lagMs: number;
+}
+
 /** What the engine needs from a `FrameSource`. */
 export interface FrameReader {
   readonly info: Pick<FrameSourceInfo, 'width' | 'height' | 'bitDepth' | 'frameCount' | 'fps'>;
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
+  /**
+   * Live source: resolves once frames below `end` can be read, with
+   * `UNBOUNDED`, or with the stream's final frame count once it has ended.
+   */
+  waitFor?(end: number): Promise<number>;
+  /** Live source: stats of the batch just read. */
+  liveInfo?(): LiveBatchInfo;
+}
+
+/**
+ * The cursor's next step. On an unbounded plan the reader is asked to wait
+ * for the step's frames first; when the stream ended before them, the plan
+ * is bounded to the frames it has and the step shrinks or goes away.
+ */
+export async function nextStep(
+  cursor: PipelineCursor,
+  reader: FrameReader,
+): Promise<PipelineStep | null> {
+  if (!reader.waitFor || !isUnbounded(cursor.plan)) return cursor.next();
+  const peek = cursor.peek();
+  if (!peek) return null;
+  const total = await reader.waitFor(peek.start + peek.count);
+  if (Number.isFinite(total)) cursor.limit(total);
+  return cursor.next();
 }
 
 /** Wall time per stage for one step, ms. */
@@ -104,6 +144,8 @@ export type PipelineStepResult =
       motionBackend?: MotionBackend;
       /** Traces of the batch (present when the engine runs a fast loop). */
       cells?: CellsBatch;
+      /** The live source's counters after this batch (live runs only). */
+      live?: LiveBatchInfo;
     }
   | { kind: 'done' };
 
@@ -222,7 +264,7 @@ export class PipelineEngine {
   /** Run the next step. After the last batch, returns `{ kind: 'done' }`. */
   async step(): Promise<PipelineStepResult> {
     if (this.disposed) throw new Error('The pipeline was stopped.');
-    const s = this.cursor.next();
+    const s = await nextStep(this.cursor, this.reader);
     if (!s) {
       this.fast?.end();
       return { kind: 'done' };
@@ -326,6 +368,7 @@ export class PipelineEngine {
     timings.motionMs = t3 - t2;
     timings.traceMs = t5b - t5;
     timings.otherMs = t4 - t3 + (t6 - t5b);
+    const live = this.reader.liveInfo?.();
     return {
       kind: 'batch',
       start: s.start,
@@ -339,6 +382,7 @@ export class PipelineEngine {
       previews,
       timings,
       ...(cells ? { cells } : {}),
+      ...(live ? { live } : {}),
     };
   }
 
