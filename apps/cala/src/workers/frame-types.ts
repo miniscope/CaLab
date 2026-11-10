@@ -21,6 +21,8 @@ export interface CellsSettings {
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
   | { type: 'open'; id: number; entries: FolderEntry[] }
+  /** Connect to a live source (`lib/live-source.ts`) at a WebSocket URL. */
+  | { type: 'open-live'; id: number; url: string }
   /** `count` consecutive frames from global index `start` (one for a single frame). */
   | { type: 'read'; id: number; start: number; count: number }
   /** Set up the preprocess + motion pipeline over the open recording (replaces any running one). */

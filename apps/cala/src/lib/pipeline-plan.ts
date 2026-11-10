@@ -60,10 +60,17 @@ function positiveInt(name: string, v: number): number {
   return Math.floor(v);
 }
 
-/** Resolve the options against a recording of `frameCount` frames. */
+/** `frameCount` of a plan over a stream whose end is not known (a live source). */
+export const UNBOUNDED = Infinity;
+
+/**
+ * Resolve the options against a recording of `frameCount` frames
+ * (`UNBOUNDED`: a stream whose length is learnt only when it ends; see
+ * `limitPlan`).
+ */
 export function makePlan(frameCount: number, options: PipelineOptions = {}): PipelinePlan {
   const o = { ...PIPELINE_DEFAULTS, ...options };
-  const n = positiveInt('frameCount', frameCount);
+  const n = frameCount === UNBOUNDED ? UNBOUNDED : positiveInt('frameCount', frameCount);
   return {
     frameCount: n,
     batchSize: Math.min(positiveInt('batchSize', o.batchSize), MAX_FRAMES_PER_READ),
@@ -71,6 +78,23 @@ export function makePlan(frameCount: number, options: PipelineOptions = {}): Pip
     motionWarmupFrames: Math.min(positiveInt('motionWarmupFrames', o.motionWarmupFrames), n),
     previewMaxSide: positiveInt('previewMaxSide', o.previewMaxSide),
   };
+}
+
+/** True for a plan over a stream whose end is not known yet. */
+export function isUnbounded(plan: PipelinePlan): boolean {
+  return plan.frameCount === UNBOUNDED;
+}
+
+/**
+ * The stream ended after `frames` frames: bound the plan in place (the
+ * warm-ups shrink with it when the stream was shorter than they are).
+ */
+export function limitPlan(plan: PipelinePlan, frames: number): void {
+  const n = Math.max(0, Math.floor(frames));
+  if (n >= plan.frameCount) return;
+  plan.frameCount = n;
+  plan.calibrationFrames = Math.min(plan.calibrationFrames, n);
+  plan.motionWarmupFrames = Math.min(plan.motionWarmupFrames, n);
 }
 
 const PHASES: PipelinePhase[] = ['calibrate', 'motion-warmup', 'process'];
@@ -113,6 +137,23 @@ export class PipelineCursor {
       this.at = 0;
     }
     return null;
+  }
+
+  /**
+   * The step `next()` would return, without advancing (a live source waits
+   * for its frames first; the plan may be bounded in between, see `limit`).
+   */
+  peek(): PipelineStep | null {
+    const { phaseIndex, at } = this;
+    const step = this.next();
+    this.phaseIndex = phaseIndex;
+    this.at = at;
+    return step;
+  }
+
+  /** The stream ended after `frames` frames (`limitPlan` on this cursor's plan). */
+  limit(frames: number): void {
+    limitPlan(this.plan, frames);
   }
 
   /**

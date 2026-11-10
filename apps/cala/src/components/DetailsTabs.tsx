@@ -39,7 +39,12 @@ export function DetailsTabs(props: {
       label: 'Timing',
       content: <TimingText store={props.store} cells={props.cells} />,
     },
-    { id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> },
+    // A live stream has no file to scrub through (the recording is opened once
+    // per mount, so this is read once on purpose).
+    // eslint-disable-next-line solid/reactivity
+    ...(props.info.live
+      ? []
+      : [{ id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> }]),
     { id: 'recording', label: 'Recording', content: <InfoPanel info={props.info} /> },
   ];
   const [active, setActive] = createSignal('qc');
