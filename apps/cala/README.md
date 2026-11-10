@@ -51,8 +51,11 @@ What is here:
 With `?compress` in the URL the run also compresses the preprocessed,
 motion-corrected frames (the fast loop's input) into low-rank factors per
 64 px tile and 600-frame window (`crates/cala/src/compress`, ported from
-MiniMe), so past frames can later be revisited without the raw video. Nothing
-reads the factors yet.
+MiniMe), so past frames can be revisited without the raw video. When the
+recording has been read, the final library is out and every window is
+compressed, the traces of the whole recording are solved again from the
+factors with that library (back-fill): a cell found late gets its trace from
+the first frame on, and the trace viewer shows the back-filled traces.
 
 - `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
   quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
@@ -63,15 +66,25 @@ reads the factors yet.
   once), and keeps the factors in `f<window>.bin`.
 - `src/lib/window-store.ts`: the files, in the origin private file system
   (`cala-compress/<run>`, removed at the next page load); in memory for tests.
+- Back-fill (`CompressRunner.backfill`): reads each factor file back
+  (`FactorWindow`), rebuilds 16 frames at a time and solves them with a
+  `TraceEngine` on the library the fast worker forwarded; one `traces` message
+  per window goes to the main thread, where the first one replaces the live
+  trace history (`CellStore.onBackfill`).
 - `src/lib/compress-store.ts`: the status bar readout (windows, mean rank,
-  ms per frame, MB of factors, windows waiting).
+  ms per frame, MB of factors, windows waiting, the back-fill) and the
+  once-per-run back-fill request.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
 A window waits on disk (432 MB at 600 x 600) until it is compressed, so a
 replay faster than the compressor (about 8 ms per frame) queues windows there.
-A short last window keeps fewer components: the rank cut's white-noise test is
-stricter on few frames.
+A short last window keeps fewer components (the rank cut's white-noise test is
+stricter on few frames) and costs more per frame, but on the synthetic test
+session 200-frame windows gave traces as close to the truth as 600-frame
+windows. Back-filled traces match the live ones closely for
+cells that pass QC; for low-SNR cells they differ, because the factors drop
+most of the noise such a live trace consists of.
 
 ## Long-recording display limits
 
