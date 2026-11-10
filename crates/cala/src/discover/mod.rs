@@ -96,8 +96,12 @@
 //!   visit, the tile's model is solved on it with and without the cell, both
 //!   with the add test's free local bump. The probe *passes* when the cell
 //!   lowers χ² by `keep_z` σ of the noise-column null. It *fails* when the
-//!   bump explains the signal as well (diffuse light, neuropil, a halo).
-//!   It counts as *redundant* when a neighbouring cell takes the signal over.
+//!   bump explains the signal as well (diffuse light, neuropil, a halo)
+//!   although the cell's light on the probe, had it been shaped like the
+//!   footprint, would have passed by `keep_z` σ. When it would not have
+//!   (a weak transient), the probe is *inconclusive* and counts neither
+//!   way. It counts as *redundant* when a neighbouring cell takes the
+//!   signal over.
 //! * **Decisions** (`SlowLoop::prune`, every step). Established: at least
 //!   `establish_events` transients and no more failed than passed probes.
 //!   Deleted as unsupported: `delete_fails` failed probes, outnumbering the
@@ -469,9 +473,12 @@ pub struct SlowStats {
     pub work_merge: u64,
     pub work_add: u64,
     pub work_keep: u64,
-    /// Probe frames tested, and how many of those tests failed.
+    /// Probe frames tested, how many of those tests failed, and how many
+    /// were inconclusive (too little of the cell's light on the probe to
+    /// tell it from the free local bump; counted neither way).
     pub keep_tests: u64,
     pub keep_fails: u64,
+    pub keep_inconclusive: u64,
     /// Candidates taken up by growing an existing cell, cells split, and
     /// split tests.
     pub absorbs: u64,
@@ -2248,6 +2255,17 @@ impl SlowLoop {
     /// by more than a noise column would, by `keep_z` standard deviations?
     /// Both arms have the free local bump, so diffuse light (neuropil, a
     /// neighbour's halo) does not count. Each probe is used once.
+    ///
+    /// The bump (σ = one cell diameter, centred on the cell) overlaps the
+    /// cell itself: on the minisim recordings it takes ~70% of a typical
+    /// footprint's energy, so a weak transient of a real cell cannot pass.
+    /// A probe that is not needed therefore only counts as a *fail* when
+    /// the test had the power to pass it: when the cell's light on the
+    /// probe, measured without the bump, would have passed by `keep_z`
+    /// noise σ had it been shaped like the footprint. Otherwise (a weak
+    /// transient, or none of the cell's light on the frame) the probe is
+    /// inconclusive and counts neither way, so absence of evidence never
+    /// accumulates as evidence against a cell.
     fn keep_tests(&mut self, ti: usize) {
         let probes = std::mem::take(&mut self.tiles[ti].probes);
         if probes.is_empty() {
@@ -2266,6 +2284,8 @@ impl SlowLoop {
         let n_px = self.fov_px(rect) as f64;
         let (m, sd) = self.null(1);
         let pass_at = m + f64::from(self.cfg.keep_z) * sd;
+        // Noise σ of √(χ² gain) of one column (the noise inflation ρ).
+        let sd_unit = f64::from(self.rho).sqrt();
         for id in ids {
             let Some(cell) = self.cells.iter().find(|c| c.id == id) else {
                 continue;
@@ -2283,6 +2303,21 @@ impl SlowLoop {
                 }
                 self.work += (ys.len() * rect.len() * (bg.k + 1)) as u64;
             }
+            // The cell's amplitude on each probe without the bump: the light
+            // a fail claims is not shaped like the cell.
+            let plain = {
+                let mut work = 0;
+                let pr = Problem::new(
+                    self.columns(rect, &[], &[]),
+                    self.bgs[ti].as_ref().expect("basis"),
+                    rect.len(),
+                    &mut work,
+                );
+                self.work += work + (rect.len() * ys.len()) as u64;
+                let k0 = pr.cols.iter().position(|c| c.id == id);
+                let fits = self.solve_with(&pr, &ys, &proj);
+                k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
+            };
             let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
             let mut work = 0;
             let full = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
@@ -2323,9 +2358,13 @@ impl SlowLoop {
             let diagnostic_before = self.ledger.get(&id).cloned();
             #[cfg(feature = "diagnostics")]
             let mut diagnostic_outcomes = Vec::new();
-            let (mut pass, mut fail, mut redundant) = (0, 0, 0);
+            let (mut pass, mut fail, mut redundant, mut inconclusive) = (0, 0, 0, 0);
             let mut partner: Option<(u64, f32)> = None;
-            for (ff, rr) in f.iter().zip(&r) {
+            // χ² gain per unit amplitude² with the bump (the cell's energy
+            // the bump and background cannot reproduce).
+            let q_ii = full.q[ki * full.len() + ki].max(0.0);
+            let power_at = pass_at.max(0.0).sqrt() + f64::from(self.cfg.keep_z) * sd_unit;
+            for (j, (ff, rr)) in f.iter().zip(&r).enumerate() {
                 let s2 = (ff.chi2 / dof).max(1.0);
                 if (rr.chi2 - ff.chi2) / s2 > pass_at {
                     pass += 1;
@@ -2352,6 +2391,10 @@ impl SlowLoop {
                         best = Some((c.id, took));
                     }
                 }
+                // Would a real cell with the light the probe shows (without
+                // the bump) have passed? If not, the probe cannot tell.
+                let c0 = plain.as_ref().map_or(0.0, |c| c[j].max(0.0));
+                let powered = (c0 * c0 * q_ii / s2).sqrt() >= power_at;
                 match best {
                     Some(b) if ci > 0.0 => {
                         redundant += 1;
@@ -2361,6 +2404,15 @@ impl SlowLoop {
                             kind: "redundant",
                             partner: b.0,
                             took: b.1,
+                        });
+                    }
+                    _ if !powered => {
+                        inconclusive += 1;
+                        #[cfg(feature = "diagnostics")]
+                        diagnostic_outcomes.push(diagnostics::Outcome {
+                            kind: "inconclusive",
+                            partner: best.map_or(0, |b| b.0),
+                            took: best.map_or(0.0, |b| b.1),
                         });
                     }
                     _ => {
@@ -2374,8 +2426,9 @@ impl SlowLoop {
                     }
                 }
             }
-            self.stats.keep_tests += (pass + fail + redundant) as u64;
+            self.stats.keep_tests += (pass + fail + redundant + inconclusive) as u64;
             self.stats.keep_fails += fail as u64;
+            self.stats.keep_inconclusive += inconclusive as u64;
             if let Some(ev) = self.ledger.get_mut(&id) {
                 ev.passes += pass;
                 ev.fails += fail;
