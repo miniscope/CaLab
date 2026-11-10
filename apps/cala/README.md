@@ -35,6 +35,12 @@ What is here:
   removed per frame. Runs in the frame worker, one step
   per request; `src/lib/pipeline-store.ts` keeps at most two requests
   outstanding (backpressure) and only the latest previews.
+- `src/workers/slow-worker.ts` + `src/lib/slow-runner.ts`: the slow loop
+  (cell discovery). With spare cores (`navigator.hardwareConcurrency` minus 5,
+  at most 4; `?visits=N` sets 0 to 4) it only observes frames and hands its tile
+  visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
+  visits out together never touch the same cells
+  (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
 - `src/components/PipelinePanel.tsx`: raw or preprocessed vs motion-corrected
   (or background-removed) video, progress, throughput, and the live motion
   and flicker traces (`MotionTrace.tsx`, `FlickerTrace.tsx`).
@@ -46,12 +52,62 @@ What is here:
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
 
+## Pass 2 and export
+
+Pass 1 discovers the footprint library while the recording streams by, and the
+traces it emits along the way were solved with whatever library was current at
+the time. Pass 2 (`src/lib/pass2-store.ts`) walks the recording again through
+the same three workers and solves **every** frame with the **final** library,
+so cells found late have traces from frame 0.
+
+- **Recorded in pass 1** (`src/lib/run-record.ts`, 17 bytes per frame, kept in
+  full): the rigid shift `(dy, dx)`, the motion flags, and the global flicker
+  `(offset, gain)`. Nothing is estimated in pass 2: the frame worker replays the
+  recorded flicker (`Preprocessor.frontFramesReplay`), the motion worker warps
+  by the recorded shifts (the same WebGPU warp as pass 1 when available), and
+  the trace worker solves with the final library
+  (`FastLoop` option `initialLibrary`).
+- **Background and noise** restart from the calibrated state. Calibration
+  depends only on the first frames, so it is recomputed identically, and the
+  back half is a deterministic function of the corrected frames in order, so
+  replaying from frame 0 rebuilds the state pass 1 had at every frame. No
+  checkpoints are needed while the whole recording is replayed.
+- **Finish pass 1 now** ends the stream at the frames read so far (the slow
+  loop publishes its final library and pass 2 covers those frames). Pass 2 runs
+  automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
+  and frames/s, and the UI stays live (the work is in workers).
+- Pass 2 holds its traces (frames x cells float32) in memory, capped at 1.5 GB;
+  the export is built in the page.
+
+**Export** (`src/lib/export.ts`; both are NumPy `.npz`, stored uncompressed):
+
+- `<folder>_cala.npz`, self-describing: `traces` (cells x frames, float32),
+  `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
+  (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
+  flat pixel index `row * W + column`) with `fov_shape`, per-frame
+  `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
+  `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
+  `qc_flags`, `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
+  cell table). The full layout is the header of `src/lib/export.ts`.
+- `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
+  `cell_ids` and `sampling_rate_hz`. CaDecon's existing `.npz` import takes the
+  one cells x timepoints array without asking; it then asks for the sampling
+  rate (shown on the button's tooltip).
+
+```python
+import json, numpy as np
+z = np.load("raw_cala.npz")
+traces = z["traces"]                      # (cells, frames)
+meta = json.loads(z["meta_json"].tobytes().decode())
+```
+
 ## Compression (experimental, `?compress`)
 
 With `?compress` in the URL the run also compresses the preprocessed,
 motion-corrected frames (the fast loop's input) into low-rank factors per
 64 px tile and 600-frame window (`crates/cala/src/compress`, ported from
-MiniMe), so past frames can be revisited without the raw video. When the
+MiniMe), so past frames can be revisited without the raw video (pass 2 above
+re-reads the file; the factors are for a source that has none). When the
 recording has been read, the final library is out and every window is
 compressed, the traces of the whole recording are solved again from the
 factors with that library (back-fill): a cell found late gets its trace from

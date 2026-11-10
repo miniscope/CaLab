@@ -87,7 +87,13 @@ async function handle(req: FrameRequest): Promise<void> {
         if (down) {
           epoch++;
           // The stage asks for buffers only from its first `next()`, after the pool exists.
-          const stage = new FrontStage(source, req.options, () => frontPool!.acquire());
+          const stage = new FrontStage(
+            source,
+            req.options,
+            () => frontPool!.acquire(),
+            undefined,
+            req.replay,
+          );
           frontPool = new StagePool(
             FRONT_BUFFERS,
             stage.plan.batchSize * source.info.width * source.info.height,
@@ -104,6 +110,7 @@ async function handle(req: FrameRequest): Promise<void> {
           post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
           break;
         }
+        if (req.replay) throw new Error('Pass 2 needs the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
         pipeline = new PipelineEngine(source, req.options, undefined, (setup) => {
@@ -113,6 +120,7 @@ async function handle(req: FrameRequest): Promise<void> {
               session: cells?.session ?? 0,
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
+              ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,
@@ -146,6 +154,12 @@ async function handle(req: FrameRequest): Promise<void> {
         if (!pipeline) throw new Error('The pipeline is not running.');
         const step = await pipeline.step();
         post({ type: 'pipeline-step', id: req.id, step }, transferablesOf(step));
+        break;
+      }
+      case 'pipeline-truncate': {
+        front?.truncate();
+        pipeline?.truncate();
+        post({ type: 'ok', id: req.id });
         break;
       }
       case 'pipeline-stop': {

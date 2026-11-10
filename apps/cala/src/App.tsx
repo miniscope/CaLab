@@ -7,15 +7,22 @@ import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
-import { createSlowClient } from './lib/slow-client.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
+import { createPass2Store } from './lib/pass2-store.ts';
+import {
+  createSlowClient,
+  PARALLEL_FORWARD_BUFFERS,
+  RESERVED_THREADS,
+  visitWorkerCount,
+} from './lib/slow-client.ts';
 import { StatusBar } from './components/StatusBar.tsx';
 import { VideoPanel } from './components/VideoPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
+import { Pass2Bar } from './components/Pass2Bar.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -35,8 +42,18 @@ const App: Component = () => {
   });
   const store = createViewerStore(client);
   const cells = createCellStore();
-  // Cell discovery runs in a worker of its own, fed directly by the frame worker.
-  createSlowClient(client, (msg) => cells.onSlowMessage(msg));
+  // Cell discovery runs in a worker of its own, fed directly by the frame
+  // worker, with its tile visits spread over the spare cores.
+  // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
+  const visits = params.get('visits');
+  const slow = createSlowClient(
+    client,
+    (msg) => cells.onSlowMessage(msg),
+    undefined,
+    visits !== null && visits !== ''
+      ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
+      : visitWorkerCount(navigator.hardwareConcurrency),
+  );
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
   // window, in a worker of its own (experimental; windows and factors are files in OPFS).
@@ -44,7 +61,16 @@ const App: Component = () => {
   const compressClient = compress
     ? createCompressClient(client, (msg) => compress.onMessage(msg))
     : undefined;
-  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'), compress);
+  const pipeline = createPipelineStore(
+    client,
+    {},
+    undefined,
+    cells,
+    !params.has('noqc'),
+    slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
+    compress,
+  );
+  const pass2 = createPass2Store(client, pipeline, cells);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // Recording read, final library out, every window compressed: solve the
   // traces of the whole recording again from the factors, with that library.
@@ -57,7 +83,7 @@ const App: Component = () => {
   });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, compress };
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, compress };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -124,6 +150,15 @@ const App: Component = () => {
               )}
             </Show>
             <StatusBar store={pipeline} cells={cells} compress={compress} />
+            <Pass2Bar
+              pipeline={pipeline}
+              pass2={pass2}
+              cells={cells}
+              label={store.label()}
+              width={info().width}
+              height={info().height}
+              fps={info().fps ?? 0}
+            />
             <ConvergenceStrip cells={cells} />
             <div class="cala-body">
               <div class="cala-body__left">

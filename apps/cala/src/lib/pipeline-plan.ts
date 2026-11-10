@@ -115,6 +115,14 @@ export class PipelineCursor {
     return null;
   }
 
+  /**
+   * End the recording at the current position (a stream stopped early):
+   * every remaining step is dropped, whichever phase the cursor is in.
+   */
+  truncate(): void {
+    this.phaseIndex = PHASES.length;
+  }
+
   get done(): boolean {
     return this.phaseIndex >= PHASES.length;
   }

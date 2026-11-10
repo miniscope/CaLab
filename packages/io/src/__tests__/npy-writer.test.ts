@@ -98,4 +98,21 @@ describe('writeNpy', () => {
       expect(bytes[10 + headerLen - 1]).toBe(0x0a);
     });
   });
+
+  describe('integer dtypes', () => {
+    it('keeps the width and signedness of integer arrays', () => {
+      const cases: [Parameters<typeof writeNpy>[0], string][] = [
+        [new Uint32Array([0, 4294967295]), '<u4'],
+        [new Int32Array([-5, 7]), '<i4'],
+        [new Uint8Array([0, 255]), '|u1'],
+        [new Int8Array([-1, 1]), '|i1'],
+        [new Float64Array([0.1, 0.2]), '<f8'],
+      ];
+      for (const [data, dtype] of cases) {
+        const r = parseNpy(writeNpy(data, [data.length]));
+        expect(r.dtype).toBe(dtype);
+        expect(Array.from(r.data)).toEqual(Array.from(data));
+      }
+    });
+  });
 });

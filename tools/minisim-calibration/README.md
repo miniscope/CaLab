@@ -9,6 +9,7 @@ only needs its output.
 - Pinned minisim commit: `e33edad` (main, includes the realistic-motion PR #33).
 - `ca1_workshop_calibrated.spec.json`: the calibrated 600 px spec (focal depth pinned at 180 um).
 - `ca1_workshop_v2.spec.json`: v1 plus realistic activity (event rate, burst size and long events, giving real peak SNR), cell density, bleaching and neuropil (see `CALIBRATION.md`, "v2"). Use it to validate cell discovery and QC; the motion fixtures stay on v1.
+- `ca1_workshop_v2_fpn.spec.json`: v2 plus a `sensor_defects` step (PRNU 2.4 %, column offsets 1.0 ADU, default hot pixels). It reproduces the workshop data's sensor-fixed pixel pattern: 2.4 grey levels SD, 2.7 % of brightness, which motion correction turns into a slow pixel-scale shimmer. See `tools/cala-diagnostics/PIXEL_NOISE.md`. On the GT sims tested so far the pattern does not hurt discovery. Use this spec when testing anything that is sensitive to pixel-scale texture.
 - `calibrated.py`: `calibrated_spec(duration_s, seed=, n_px=, version="v1"|"v2")` re-times or crops either spec; `python calibrated.py [v2]` rebuilds the JSON.
 - `calibrate_to_real.py`: realism statistics, real vs simulated (see `CALIBRATION.md`).
 - `make_fixtures.py <dir>`: renders the 2 min 600 px DAQ fixture and a 128 px small one.

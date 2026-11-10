@@ -1,8 +1,16 @@
 /**
  * The slow loop (streaming cell discovery), inside its own worker: observes
- * every frame the fast worker forwards, spends its work budget after each,
- * returns the frame buffer, and publishes each new library version to the
- * fast worker (bytes) and to the main thread (footprints for drawing).
+ * every frame the fast worker forwards, returns the frame buffer, and
+ * publishes each new library version to the fast worker (bytes) and to the
+ * main thread (footprints for drawing).
+ *
+ * Tile visits (the expensive part) run either here, `budget` work units
+ * after each observed frame, or, with visit workers, in parallel on those
+ * workers: after every batch and every visit result the runner hands a
+ * visit (`SlowLoop.takeJob`) to each idle worker and applies what comes back
+ * (`applyJob`); the slow loop guarantees that visits out at the same time
+ * never touch the same cells (see `discover/shard.rs`). This worker then
+ * only observes, so it keeps up with the fast loop.
  *
  * Its stalls (a tile visit or a library rebuild can take 50-160 ms) only
  * delay this worker; the fast worker drops batches for it instead of waiting
@@ -12,12 +20,14 @@ import type {
   CellStatusView,
   FastToSlow,
   LibraryView,
+  OwnerToVisit,
   PortLike,
   SlowCounters,
   SlowInit,
   SlowStatus,
   SlowToFast,
   SlowToMain,
+  VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables } from '../workers/slow-types.ts';
 
@@ -40,8 +50,14 @@ export interface SlowLoopLike {
   step(budget: number): PublishedLibrary | undefined;
   finalize(): PublishedLibrary;
   setNoise(noise: Float32Array): void;
+  /** Parallel visits (needed only with visit workers). */
+  takeJob?(): Uint8Array | undefined;
+  applyJob?(bytes: Uint8Array): void;
+  housekeep?(): PublishedLibrary | undefined;
   readonly cellCount: number;
   readonly reservoirBytes: number;
+  /** Work spent so far, about multiply-adds (absent in older fakes). */
+  readonly work?: number;
   stats(): Float64Array;
   /** `(id, established, transients)` triples (absent in older fakes). */
   cellStatus?(): Float64Array;
@@ -52,6 +68,8 @@ export interface SlowRunnerDeps {
   create(init: SlowInit): SlowLoopLike;
   toFast: PortLike<SlowToFast>;
   toMain: PortLike<SlowToMain>;
+  /** Ports to the visit workers (none: visit tiles here). */
+  visits?: PortLike<OwnerToVisit>[];
   now?: () => number;
 }
 
@@ -68,6 +86,10 @@ function counters(s: ArrayLike<number>): SlowCounters {
     deletes: s[8] ?? 0,
     splits: s[9] ?? 0,
     absorbs: s[10] ?? 0,
+    newAdds: s[11] ?? 0,
+    reAdds: s[12] ?? 0,
+    churned: s[13] ?? 0,
+    establishedRemovals: s[15] ?? 0,
   };
 }
 
@@ -88,6 +110,7 @@ function cellStatusView(flat: ArrayLike<number>): CellStatusView {
 export class SlowRunner {
   private readonly deps: SlowRunnerDeps;
   private readonly now: () => number;
+  private readonly visits: PortLike<OwnerToVisit>[];
   private session = -1;
   private loop: SlowLoopLike | null = null;
   private init: SlowInit | null = null;
@@ -96,11 +119,27 @@ export class SlowRunner {
   private skipped = 0;
   private version = 0;
   private final = false;
+  private ending = false;
   private statusAt = -Infinity;
+  /** Per visit worker: a visit is out. */
+  private busy: boolean[];
+  private jobs = 0;
+  private visitMsSum = 0;
+  private visitMsN = 0;
+  private visitMs = 0;
+  /** Wall time this worker spent handing out and applying visits, ms. */
+  private jobOwnerMs = 0;
 
   constructor(deps: SlowRunnerDeps) {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
+    this.visits = deps.visits ?? [];
+    this.busy = this.visits.map(() => false);
+  }
+
+  /** Tile visits run on visit workers. */
+  private get parallel(): boolean {
+    return this.visits.length > 0;
   }
 
   handle(msg: FastToSlow): void {
@@ -108,10 +147,15 @@ export class SlowRunner {
       if (msg.session < this.session) return;
       this.drop();
       this.session = msg.session;
+      // (An init replaces a visit worker's state too.)
+      if (msg.type === 'reset')
+        for (const v of this.visits) v.postMessage({ type: 'reset', session: msg.session });
       if (msg.type === 'init') {
         const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget } = msg;
         this.init = { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget };
         this.loop = this.deps.create(this.init);
+        for (const v of this.visits)
+          v.postMessage({ type: 'init', session: msg.session, ...this.init });
       }
       return;
     }
@@ -120,13 +164,38 @@ export class SlowRunner {
       if (msg.type === 'frames') this.frames(msg);
       else if (msg.type === 'end') this.end();
     } catch (err) {
-      this.deps.toMain.postMessage({
-        type: 'error',
-        session: this.session,
-        message: err instanceof Error ? err.message : String(err),
-      });
-      this.drop();
+      this.fail(err);
     }
+  }
+
+  /** A message from visit worker `i`. */
+  handleVisit(i: number, msg: VisitToOwner): void {
+    if (msg.session !== this.session || !this.loop) return;
+    try {
+      if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
+      this.busy[i] = false;
+      const t0 = this.now();
+      this.loop.applyJob!(msg.bytes);
+      this.jobOwnerMs += this.now() - t0;
+      this.jobs++;
+      this.visitMsSum += msg.ms;
+      this.visitMsN++;
+      this.housekeep();
+      if (this.ending) {
+        if (!this.busy.some((b) => b)) this.finish();
+      } else this.dispatch();
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  private fail(err: unknown): void {
+    this.deps.toMain.postMessage({
+      type: 'error',
+      session: this.session,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    this.drop();
   }
 
   private frames(msg: Extract<FastToSlow, { type: 'frames' }>): void {
@@ -137,7 +206,11 @@ export class SlowRunner {
     const t0 = this.now();
     try {
       if (loop && init) {
-        if (msg.noise) loop.setNoise(msg.noise);
+        if (msg.noise) {
+          loop.setNoise(msg.noise);
+          for (const v of this.visits)
+            v.postMessage({ type: 'noise', session: this.session, noise: msg.noise });
+        }
         const px = init.width * init.height;
         for (let i = 0; i < msg.count; i++) {
           const frame = msg.frames.subarray(i * px, (i + 1) * px);
@@ -149,10 +222,17 @@ export class SlowRunner {
           observed++;
           this.observed++;
           this.frame = msg.start + i + 1;
+          if (this.parallel) continue;
           const s = this.now();
           const lib = loop.step(init.budget);
           maxStep = Math.max(maxStep, this.now() - s);
           if (lib) this.publish(lib);
+        }
+        if (this.parallel) {
+          const s = this.now();
+          this.housekeep();
+          maxStep = this.now() - s;
+          this.dispatch();
         }
       }
     } finally {
@@ -172,7 +252,38 @@ export class SlowRunner {
     this.status(this.now() - t0, maxStep);
   }
 
+  /** Trimming decisions and, when due, a new library (parallel mode). */
+  private housekeep(): void {
+    const lib = this.loop?.housekeep!();
+    if (lib) this.publish(lib);
+  }
+
+  /** A tile visit to every idle visit worker, while any is due. */
+  private dispatch(): void {
+    const loop = this.loop;
+    if (!loop || this.ending) return;
+    for (let i = 0; i < this.visits.length; i++) {
+      if (this.busy[i]) continue;
+      const t0 = this.now();
+      const bytes = loop.takeJob!();
+      if (!bytes) break;
+      this.busy[i] = true;
+      this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
+        bytes.buffer as ArrayBuffer,
+      ]);
+      this.jobOwnerMs += this.now() - t0;
+    }
+  }
+
   private end(): void {
+    const loop = this.loop;
+    if (!loop || this.final || this.ending) return;
+    // Visits out still come back and are applied before the final library.
+    this.ending = true;
+    if (!this.busy.some((b) => b)) this.finish();
+  }
+
+  private finish(): void {
     const loop = this.loop;
     if (!loop || this.final) return;
     this.final = true;
@@ -186,6 +297,8 @@ export class SlowRunner {
       if (version !== this.version) {
         this.version = version;
         const bytes = lib.toBytes();
+        // The main thread keeps the newest library's bytes for pass 2.
+        const mainBytes = bytes.slice();
         this.deps.toFast.postMessage({ type: 'library', session: this.session, version, bytes }, [
           bytes.buffer as ArrayBuffer,
         ]);
@@ -203,8 +316,8 @@ export class SlowRunner {
           values: lib.footprintValues(),
         };
         this.deps.toMain.postMessage(
-          { type: 'library', session: this.session, library },
-          libraryViewTransferables(library),
+          { type: 'library', session: this.session, library, bytes: mainBytes },
+          libraryViewTransferables(library, mainBytes),
         );
       }
     } finally {
@@ -225,8 +338,17 @@ export class SlowRunner {
       reservoirBytes: loop.reservoirBytes,
       batchMs,
       maxStepMs,
+      visitWorkers: this.visits.length,
+      jobs: this.jobs,
+      jobsInFlight: this.busy.filter((b) => b).length,
+      visitMs: this.visitMsN > 0 ? this.visitMsSum / this.visitMsN : this.visitMs,
+      jobOwnerMs: this.jobOwnerMs,
+      work: loop.work ?? 0,
       final: this.final,
     };
+    this.visitMs = status.visitMs;
+    this.visitMsSum = 0;
+    this.visitMsN = 0;
     const t = this.now();
     const transfer: Transferable[] = [];
     if (loop.cellStatus && (this.final || t - this.statusAt >= CELL_STATUS_EVERY_MS)) {
@@ -247,6 +369,13 @@ export class SlowRunner {
     this.skipped = 0;
     this.version = 0;
     this.final = false;
+    this.ending = false;
     this.statusAt = -Infinity;
+    this.busy = this.visits.map(() => false);
+    this.jobs = 0;
+    this.visitMsSum = 0;
+    this.visitMsN = 0;
+    this.visitMs = 0;
+    this.jobOwnerMs = 0;
   }
 }

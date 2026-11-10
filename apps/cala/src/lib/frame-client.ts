@@ -6,13 +6,21 @@
 import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
 import type { PipelineStepResult } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
+import type { ReplayInput } from './pipeline-stages.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
 import type { FrameRequest, FrameRequestBody, FrameResponse } from '../workers/frame-types.ts';
 
 /** The preprocess + motion pipeline, as the UI drives it. */
 export interface PipelineClient {
   /** Set up the pipeline over the open recording (replacing a running one). */
-  startPipeline(options?: PipelineOptions, cells?: CellsSettings): Promise<PipelinePlan>;
+  startPipeline(
+    options?: PipelineOptions,
+    cells?: CellsSettings,
+    /** Pass 2: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
+    replay?: ReplayInput,
+  ): Promise<PipelinePlan>;
+  /** End the running pipeline's recording at the current position (finish pass 1 early). */
+  truncatePipeline?(): Promise<void>;
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
   /** Free the worker-side pipeline. */
@@ -157,9 +165,14 @@ export function createFrameClient(
     readFrame(index) {
       return this.readFrames(index, 1);
     },
-    async startPipeline(options = {}, cells) {
-      return expectType(await call({ type: 'pipeline-start', options, cells }), 'pipeline-ready')
-        .plan;
+    async startPipeline(options = {}, cells, replay) {
+      return expectType(
+        await call({ type: 'pipeline-start', options, cells, ...(replay ? { replay } : {}) }),
+        'pipeline-ready',
+      ).plan;
+    },
+    async truncatePipeline() {
+      expectType(await call({ type: 'pipeline-truncate' }), 'ok');
     },
     async setDiscovery(on) {
       expectType(await call({ type: 'set-discovery', on }, [], traceTarget), 'ok');

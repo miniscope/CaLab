@@ -2,11 +2,13 @@ import { Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import type { ViewerStore } from '../lib/viewer-store.ts';
 import { FALLBACK_PLAYBACK_FPS } from '../lib/viewer-store.ts';
+import { createHeldRange, RangeControl } from './RangeControl.tsx';
 import { FrameCanvas } from './FrameCanvas.tsx';
 
-/** Frame canvas with a scrubber, play/pause and an auto-contrast toggle. */
+/** Frame canvas with a scrubber, play/pause and a fixed-range toggle. */
 export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
   const store = () => props.store;
+  const held = createHeldRange();
   const info = () => store().info()!;
   const seconds = () => store().frameIndex() / (info().fps ?? FALLBACK_PLAYBACK_FPS);
 
@@ -19,6 +21,7 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
           bitDepth={info().bitDepth}
           frame={store().frame()}
           autoContrast={store().autoContrast()}
+          held={held}
         />
       </div>
       <div class="cala-controls">
@@ -53,8 +56,9 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
             checked={store().autoContrast()}
             onChange={(e) => store().setAutoContrast(e.currentTarget.checked)}
           />{' '}
-          Auto contrast
+          Fixed range (fitted once, held)
         </label>
+        <RangeControl held={held} label="Frame" />
       </div>
     </DashboardPanel>
   );
