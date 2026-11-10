@@ -9,6 +9,7 @@ export interface StoreFile {
   write(data: ArrayBufferView, at: number): void;
   /** Fills `into` from byte `at`; returns the bytes read. */
   read(into: ArrayBufferView, at: number): number;
+  size(): number;
   close(): void;
 }
 
@@ -24,6 +25,7 @@ export interface WindowStore {
 interface SyncHandle {
   write(data: ArrayBufferView, options: { at: number }): number;
   read(into: ArrayBufferView, options: { at: number }): number;
+  getSize(): number;
   flush(): void;
   close(): void;
 }
@@ -64,6 +66,7 @@ export function opfsStore(
       return {
         write: (data, at) => void h.write(data, { at }),
         read: (into, at) => h.read(into, { at }),
+        size: () => h.getSize(),
         close: () => {
           h.flush();
           h.close();
@@ -110,6 +113,7 @@ export function memoryStore(): WindowStore & { files: Map<string, Uint8Array> } 
           dst.set(part);
           return part.length;
         },
+        size: () => files.get(name)?.length ?? 0,
         close() {},
       };
     },

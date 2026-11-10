@@ -11,6 +11,12 @@
  * Memory is one tile of one window plus the batches in flight; windows that
  * wait and all factors are on disk.
  *
+ * Back-fill (`backfill`): once no window is waiting and the requested library
+ * has arrived, every factor file is read back, its frames are rebuilt a few
+ * at a time and solved with that library, and the traces of each window go
+ * to the main thread. A cell found late in the recording so gets its trace
+ * from the first frame on, without the raw video being read again.
+ *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
  * Factor file `f<index>.bin`: `CALAFAC1`, u32 width, height, tile, frames,
  * tiles, f64 stream index of the first frame, then per tile u32 byte length
@@ -44,9 +50,29 @@ export interface TileCompressorLike {
   free(): void;
 }
 
+/** A trace solver for one library, and a compressed window read back from its file. */
+export interface BackfillEngineLike {
+  ids(): Uint32Array;
+  processFrames(frames: Float32Array, count: number): Float32Array;
+  free(): void;
+}
+export interface FactorWindowLike {
+  readonly frames: number;
+  /** Stream index of the first frame. */
+  readonly start: number;
+  reconstruct(t0: number, count: number, out: Float32Array): void;
+  free(): void;
+}
+
+/** Frames rebuilt and solved per step of the back-fill. */
+const BACKFILL_BATCH = 16;
+
 export interface CompressRunnerDeps {
   store: WindowStore;
   create(quant: number): TileCompressorLike;
+  /** For the back-fill (absent: `backfill` does nothing). */
+  engine?(library: Uint8Array): BackfillEngineLike;
+  factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
   /** Lets queued messages run (default: a macrotask). */
   yieldNow?: () => Promise<void>;
@@ -105,6 +131,11 @@ export class CompressRunner {
   /** Bumps on reset, so a running loop stops at its next yield. */
   private epoch = 0;
   private final = false;
+  /** Compressed windows, in stream order. */
+  private done: number[] = [];
+  private library: { version: number; bytes: Uint8Array } | null = null;
+  /** Library version a requested back-fill waits for. */
+  private wanted: number | null = null;
   private windows = 0;
   private frames = 0;
   private factorBytes = 0;
@@ -130,6 +161,11 @@ export class CompressRunner {
       await this.clear();
       this.session = -1;
       this.init = null;
+    } else if (msg.type === 'library') {
+      if (msg.version >= (this.library?.version ?? 0)) {
+        this.library = { version: msg.version, bytes: msg.bytes };
+      }
+      this.maybeBackfill();
     } else if (msg.type === 'chunk') {
       this.open ??= {
         index: msg.window,
@@ -154,7 +190,17 @@ export class CompressRunner {
     }
   }
 
-  /** Resolves when no window is being compressed (for tests). */
+  /**
+   * Solve the traces of every compressed window with library `version` or a
+   * newer one. Starts when that library is here and no window is waiting.
+   */
+  backfill(session: number, version: number): void {
+    if (session !== this.session || !this.init) return;
+    this.wanted = version;
+    this.maybeBackfill();
+  }
+
+  /** Resolves when no window is being compressed or back-filled (for tests). */
   async idle(): Promise<void> {
     while (this.loop) await this.loop;
   }
@@ -169,10 +215,25 @@ export class CompressRunner {
   }
 
   private kick(): void {
-    if (this.loop) return;
+    if (!this.loop) this.launch(this.run());
+  }
+
+  private maybeBackfill(): void {
+    const lib = this.library;
+    const { engine, factors } = this.deps;
+    if (this.loop || this.wanted === null || !lib || lib.version < this.wanted) return;
+    if (this.open || this.pending.length > 0 || !engine || !factors) return;
+    this.wanted = null;
+    this.launch(this.runBackfill(lib, engine, factors));
+  }
+
+  /** Run `task` as the worker's one background loop. */
+  private launch(task: Promise<void>): void {
     const session = this.session;
-    this.loop = this.run()
+    let failed = false;
+    this.loop = task
       .catch((err: unknown) => {
+        failed = true;
         this.deps.toMain.postMessage({
           type: 'error',
           session,
@@ -181,7 +242,77 @@ export class CompressRunner {
       })
       .finally(() => {
         this.loop = null;
+        // A window closed, or a back-fill was asked for, while the loop was busy.
+        if (failed) return;
+        if (this.pending.length > 0) this.kick();
+        else this.maybeBackfill();
       });
+  }
+
+  private async runBackfill(
+    lib: { version: number; bytes: Uint8Array },
+    makeEngine: (library: Uint8Array) => BackfillEngineLike,
+    openFactors: (file: Uint8Array) => FactorWindowLike,
+  ): Promise<void> {
+    const init = this.init;
+    if (!init) return;
+    const epoch = this.epoch;
+    const session = this.session;
+    const t0 = this.now();
+    const px = init.width * init.height;
+    const engine = makeEngine(lib.bytes);
+    try {
+      const ids = engine.ids();
+      if (ids.length === 0) return;
+      const buf = new Float32Array(BACKFILL_BATCH * px);
+      let frames = 0;
+      let first = true;
+      for (const index of [...this.done]) {
+        const file = await this.deps.store.open(factorName(index));
+        const bytes = new Uint8Array(file.size());
+        file.read(bytes, 0);
+        file.close();
+        const window = openFactors(bytes);
+        try {
+          const traces = new Float32Array(window.frames * ids.length);
+          for (let t = 0; t < window.frames; t += BACKFILL_BATCH) {
+            const n = Math.min(BACKFILL_BATCH, window.frames - t);
+            const view = buf.subarray(0, n * px);
+            window.reconstruct(t, n, view);
+            traces.set(engine.processFrames(view, n), t * ids.length);
+            await this.yieldNow();
+            if (epoch !== this.epoch) return;
+          }
+          const cellIds = ids.slice();
+          this.deps.toMain.postMessage(
+            {
+              type: 'traces',
+              session,
+              version: lib.version,
+              first,
+              start: window.start,
+              count: window.frames,
+              ids: cellIds,
+              traces,
+            },
+            [cellIds.buffer as ArrayBuffer, traces.buffer as ArrayBuffer],
+          );
+          first = false;
+          frames += window.frames;
+        } finally {
+          window.free();
+        }
+      }
+      this.deps.toMain.postMessage({
+        type: 'backfilled',
+        session,
+        version: lib.version,
+        frames,
+        msPerFrame: (this.now() - t0) / Math.max(1, frames),
+      });
+    } finally {
+      engine.free();
+    }
   }
 
   private async run(): Promise<void> {
@@ -257,6 +388,7 @@ export class CompressRunner {
       }
       close();
       await store.remove(windowName(job.index));
+      this.done.push(job.index);
       this.windows++;
       this.frames += job.frames;
       this.factorBytes += at;
@@ -287,9 +419,13 @@ export class CompressRunner {
     this.open?.file.close();
     this.open = null;
     this.pending = [];
+    this.wanted = null;
     await this.idle();
     this.compressor?.free();
     this.compressor = null;
+    this.done = [];
+    this.library = null;
+    this.wanted = null;
     this.final = false;
     this.windows = 0;
     this.frames = 0;

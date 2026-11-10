@@ -35,6 +35,8 @@ export const COMPRESS_DEFAULTS = { tile: 64, window: 600, quant: 64 } as const;
 /** What the fast loop needs of a feed. */
 export interface CompressFeedLike {
   push(batch: Float32Array, start: number, count: number): void;
+  /** A library the slow loop published (the bytes are copied). */
+  library(version: number, bytes: Uint8Array): void;
   end(): void;
   reset(): void;
 }
@@ -105,6 +107,14 @@ export class CompressFeed implements CompressFeedLike {
       done += n;
     }
     this.next = start + count;
+  }
+
+  library(version: number, bytes: Uint8Array): void {
+    if (this.disposed || !this.initSent) return;
+    const copy = bytes.slice();
+    this.port.postMessage({ type: 'library', session: this.o.session, version, bytes: copy }, [
+      copy.buffer as ArrayBuffer,
+    ]);
   }
 
   private close(final: boolean): void {

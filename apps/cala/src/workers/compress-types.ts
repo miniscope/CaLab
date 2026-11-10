@@ -37,6 +37,8 @@ export type FastToCompress =
       /** `count * width * height` values in tile order (`quantizeTiles`). Transferred. */
       data: Int16Array;
     }
+  /** The newest footprint library (`TraceLibrary.toBytes()`), for the back-fill. Transferred. */
+  | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** Close the open (shorter) window; `final`: the recording ended. */
   | { type: 'close'; session: number; final: boolean }
   /** Pipeline stopped or restarted: drop everything. */
@@ -62,10 +64,33 @@ export interface CompressStatus {
 /** Compress worker -> main thread. */
 export type CompressToMain =
   | { type: 'status'; session: number; status: CompressStatus }
+  /**
+   * Back-filled traces of one window: `count * ids.length` values, frame
+   * after frame, solved from the factors with library `version`. `first`
+   * marks the first window of a back-fill (earlier traces are replaced).
+   */
+  | {
+      type: 'traces';
+      session: number;
+      version: number;
+      first: boolean;
+      start: number;
+      count: number;
+      ids: Uint32Array;
+      traces: Float32Array;
+    }
+  /** The back-fill is complete: frames solved and wall time per frame, ms. */
+  | { type: 'backfilled'; session: number; version: number; frames: number; msPerFrame: number }
   | { type: 'error'; session: number; message: string };
 
-/** Main thread -> compress worker: the port to the fast worker. */
-export interface CompressConnect {
-  type: 'connect';
-  port: MessagePort;
-}
+/** Main thread -> compress worker. */
+export type MainToCompress =
+  /** The port to the fast worker. */
+  | { type: 'connect'; port: MessagePort }
+  /**
+   * Solve the traces of every compressed window with the library `version`
+   * (or a newer one), once that library has arrived and no window is waiting.
+   */
+  | { type: 'backfill'; session: number; version: number };
+
+export type CompressConnect = Extract<MainToCompress, { type: 'connect' }>;

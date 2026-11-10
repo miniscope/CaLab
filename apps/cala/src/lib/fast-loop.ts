@@ -197,6 +197,9 @@ export class FastLoop {
     } else if (msg.type === 'library') {
       // Only the newest matters: an older pending version is replaced.
       if (msg.version > this.version) this.pendingLibrary = msg.bytes;
+      // The compress worker back-fills with the newest library, also the
+      // final one, which arrives after the last batch and is never applied here.
+      this.feed?.library(msg.version, msg.bytes);
     }
   }
 
