@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell, renderOverlay } from '../lib/cell-overlay.ts';
-import { summarize } from '../lib/cell-store.ts';
+import { CellMetrics, pushRecent, summarize } from '../lib/cell-store.ts';
 import {
   FastLoop,
   type TraceBackend,
@@ -510,6 +510,8 @@ function runner(publishAt: Set<number>) {
     setNoise: vi.fn(),
     cellCount: 3,
     reservoirBytes: 1024,
+    framesPerTile: 40,
+    reservoirWarning: 'capped',
     stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
     cellStatus: () => Float64Array.of(1, 1, 3, 2, 0, 0),
     free: vi.fn(),
@@ -566,6 +568,8 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     const [status] = t.toMain.of('status');
     expect(status.status).toMatchObject({ frame: 43, observed: 3, cells: 3, version: 102 });
     expect(status.status.counters).toMatchObject({ adds: 3, deletes: 9, splits: 10, absorbs: 11 });
+    // The reservoir's size and its memory-cap warning reach the UI.
+    expect(status.status).toMatchObject({ framesPerTile: 40, reservoirWarning: 'capped' });
     // Evidence status rides along (the first status of a run always carries it).
     expect(Array.from(status.status.cellStatus!.ids)).toEqual([1, 2]);
     expect(Array.from(status.status.cellStatus!.established)).toEqual([1, 0]);
@@ -670,6 +674,32 @@ describe('summarize', () => {
     const v = Array.from({ length: 200 }, (_, i) => i + 1);
     expect(summarize(v)).toEqual({ n: 200, mean: 100.5, p99: 198, max: 200 });
     expect(summarize([])).toEqual({ n: 0, mean: 0, p99: 0, max: 0 });
+  });
+});
+
+describe('bounded per-batch histories', () => {
+  it('pushRecent keeps the newest cap..2cap samples', () => {
+    const s: number[] = [];
+    for (let i = 0; i < 100; i++) pushRecent(s, i, 8);
+    expect(s.length).toBeGreaterThanOrEqual(8);
+    expect(s.length).toBeLessThan(16);
+    expect(s.at(-1)).toBe(99);
+    // contiguous newest samples, in order
+    expect(s).toEqual(Array.from({ length: s.length }, (_, k) => 100 - s.length + k));
+  });
+
+  it('CellMetrics thins every series together and keeps the newest point', () => {
+    const m = new CellMetrics(8);
+    for (let i = 0; i < 1000; i++) m.push(8 * (i + 1), i, i % 3 ? i : null, i, i, i / 10, i / 20);
+    expect(m.length).toBeLessThanOrEqual(8);
+    for (const s of [m.cells, m.working, m.lag, m.version, m.fastMs, m.solveMs])
+      expect(s.length).toBe(m.length);
+    expect(m.frame.at(-1)).toBe(8000);
+    expect(m.lag.at(-1)).toBe(999);
+    // the series stay aligned: cells[i] was pushed with frame[i]
+    m.frame.forEach((f, i) => expect(m.cells[i]).toBe(f / 8 - 1));
+    // frames stay increasing
+    for (let i = 1; i < m.length; i++) expect(m.frame[i]).toBeGreaterThan(m.frame[i - 1]);
   });
 });
 

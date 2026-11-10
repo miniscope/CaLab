@@ -123,6 +123,17 @@ export function StatusBar(props: {
           </span>
         )}
       </Show>
+      <Show when={c().status()?.reservoirWarning}>
+        {(w) => (
+          <p
+            class="cala-warning cala-statusbar__warning"
+            role="status"
+            data-testid="statusbar-warning"
+          >
+            {w()}
+          </p>
+        )}
+      </Show>
       <Show when={s().error()}>
         {(message) => (
           <div class="error-card cala-statusbar__error" role="alert">
