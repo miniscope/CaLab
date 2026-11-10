@@ -13,6 +13,8 @@ export interface CellsSettings {
   qc?: boolean;
   /** Pass 2: solve every frame with this library (`TraceLibrary.toBytes()`), no discovery. */
   library?: Uint8Array;
+  /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
+  forwardBuffers?: number;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */

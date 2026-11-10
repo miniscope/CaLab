@@ -178,8 +178,15 @@
 //!
 //! The slow loop is a plain struct with no clock: `step(budget)` spends a
 //! work budget (approximately multiply-adds) with carry-over, so a single
-//! WASM worker can interleave it with the fast loop deterministically, and
-//! it could move to its own worker by sending it frames.
+//! WASM worker can interleave it with the fast loop deterministically.
+//!
+//! Tile visits can also run in parallel on other workers (`shard.rs`):
+//! the loop then only observes, and hands each visit out as a
+//! [`VisitJob`] ([`SlowLoop::take_job`]) to a [`VisitRunner`], applies the
+//! [`VisitResult`] when it comes back ([`SlowLoop::apply_job`]) and
+//! publishes from [`SlowLoop::housekeep`]. Visits out at the same time
+//! never share a cell; [`SlowLoop::step_via`] runs the same protocol one
+//! visit at a time and is identical to `step`.
 
 // Index loops over pixels and cells read more clearly here; `!(x > 0.0)`
 // deliberately treats NaN as "not positive".
@@ -197,11 +204,14 @@ mod ledger;
 mod local;
 mod noisecorr;
 mod reservoir;
+mod shard;
+mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind,
 };
+pub use shard::{VisitJob, VisitResult, VisitRunner};
 
 #[cfg(feature = "jsbindings")]
 mod js;
@@ -215,6 +225,7 @@ use ledger::Evidence;
 use local::{rank1, rank2_split, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
 use noisecorr::NoiseCorr;
 use reservoir::{mix, Slot, Tile};
+use shard::{InFlight, Op};
 
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::gaussian::RecursiveGaussian;
@@ -564,6 +575,23 @@ pub struct SlowLoop {
     rho: f32,
     /// Add classification (new / re-add / churned).
     churn: Churn,
+    /// Parallel visits (`shard.rs`): the edits a visit run for another
+    /// slow loop makes (`Some` only in a [`VisitRunner`]), the visits
+    /// handed out and not yet applied, and a counter for their ids.
+    journal: Option<Vec<Op>>,
+    inflight: Vec<InFlight>,
+    job_seq: u64,
+    /// Bumped by every `set_noise` (a visit must run on the same map).
+    noise_gen: u64,
+}
+
+/// Record an edit for the slow loop a visit was run for (`shard.rs`).
+macro_rules! journal {
+    ($s:ident, $op:expr) => {
+        if let Some(j) = $s.journal.as_mut() {
+            j.push($op);
+        }
+    };
 }
 
 /// Per library slot: the residual weights `h / σ²` on the support, the
@@ -764,6 +792,10 @@ impl SlowLoop {
             ncorr: NoiseCorr::new(n_px),
             rho: 1.0,
             churn: Churn::new(cfg.churn, cfg.cell_diameter_px),
+            journal: None,
+            inflight: Vec::new(),
+            job_seq: 0,
+            noise_gen: 0,
             cfg,
         };
         s.set_noise(noise)?;
@@ -784,6 +816,7 @@ impl SlowLoop {
             .map(|(&s, &m)| if m != 0 && s > 0.0 { 1.0 / s } else { 0.0 })
             .collect();
         self.noise = noise;
+        self.noise_gen += 1;
         #[cfg(feature = "diagnostics")]
         diagnostics::noise(self);
         Ok(())
@@ -1339,7 +1372,7 @@ impl SlowLoop {
                     }
                 }
             }
-            if !cfg.prune {
+            if !cfg.prune || self.inflight.iter().any(|f| f.ids.contains(&c.id)) {
                 continue;
             }
             let lives = u64::from(self.lives.get(&c.id).copied().unwrap_or(0));
@@ -1386,6 +1419,11 @@ impl SlowLoop {
     /// 4^k cooldowns after the k-th removal, and a new cell there needs
     /// held-out events from after it.
     fn entomb(&mut self, (cy, cx): (f32, f32)) {
+        journal!(self, Op::Entomb(cy, cx));
+        self.entomb_at((cy, cx));
+    }
+
+    fn entomb_at(&mut self, (cy, cx): (f32, f32)) {
         let now = self.frames;
         let d = self.cfg.cell_diameter_px;
         if let Some(ti) = self.tile_of(cy, cx) {
@@ -1400,7 +1438,7 @@ impl SlowLoop {
                 }
                 None => t.tombs.push((cy, cx, now, 1)),
             }
-            self.reject(ti, cy, cx);
+            self.reject_at(ti, cy, cx);
         }
     }
 
@@ -1626,6 +1664,12 @@ impl SlowLoop {
     }
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
+        self.visit_begin(ti);
+        self.visit_body(ti)
+    }
+
+    /// The bookkeeping of a visit (on the slow loop that owns the tile).
+    fn visit_begin(&mut self, ti: usize) {
         self.stats.visits += 1;
         self.tiles[ti].fresh = 0;
         self.tiles[ti].last_visit = self.frames;
@@ -1634,6 +1678,10 @@ impl SlowLoop {
         self.tiles[ti]
             .rejected
             .retain(|r| r.2 > now || r.3 > 0 && r.2 + 4 * self.cfg.reject_cooldown_frames > now);
+    }
+
+    /// The tests and edits of a visit (here, or in a [`VisitRunner`]).
+    fn visit_body(&mut self, ti: usize) -> Result<(), TraceError> {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
@@ -1681,6 +1729,7 @@ impl SlowLoop {
 
     /// Mark the tiles whose patch overlaps `bbox` as due for a visit.
     fn touch(&mut self, bbox: Rect) {
+        journal!(self, Op::Touch(bbox));
         let due = self.cfg.visit_after_slots;
         for t in self.tiles.iter_mut() {
             if t.rect.intersects(&bbox) {
@@ -1844,12 +1893,15 @@ impl SlowLoop {
                     self.log(EditKind::Add, cell.id, nb, cell.center, margin);
                     self.churn
                         .on_add(self.frames, cell.id, cell.center, &cell.pix, &cell.filt);
+                    journal!(self, Op::ChurnAdd(cell.clone()));
                     if lives > 0 {
                         self.lives.insert(cell.id, lives);
+                        journal!(self, Op::LivesInsert(cell.id, lives));
                     }
                     self.next_id += 1;
                     self.stats.adds += 1;
                     self.cells.push(cell.clone());
+                    journal!(self, Op::Push(cell.clone()));
                     cell
                 }
                 Outcome::Absorb(cell, alt, kind, margin) => {
@@ -1862,6 +1914,7 @@ impl SlowLoop {
                     self.log(EditKind::Absorb, alt.id, kind, alt.center, margin);
                     self.touch(alt.bbox);
                     if let Some(ci) = self.cells.iter().position(|c| c.id == alt.id) {
+                        journal!(self, Op::Replace(alt.id, alt.clone()));
                         self.cells[ci] = alt;
                     }
                     self.reject(ti, py as f32, px as f32);
@@ -2033,6 +2086,11 @@ impl SlowLoop {
     }
 
     fn reject(&mut self, ti: usize, y: f32, x: f32) {
+        journal!(self, Op::Reject(ti, y, x));
+        self.reject_at(ti, y, x);
+    }
+
+    fn reject_at(&mut self, ti: usize, y: f32, x: f32) {
         let now = self.frames;
         let d = self.cfg.cell_diameter_px;
         let base = self.cfg.reject_cooldown_frames;
@@ -2515,6 +2573,16 @@ impl SlowLoop {
                 if let Some(p) = partner {
                     ev.partner = Some(p.0);
                 }
+                journal!(
+                    self,
+                    Op::Keep {
+                        id,
+                        pass,
+                        fail,
+                        redundant,
+                        partner: partner.map(|p| p.0),
+                    }
+                );
             }
             #[cfg(feature = "diagnostics")]
             diagnostics::keep(
@@ -2950,6 +3018,7 @@ impl SlowLoop {
             let cooldown = now + 4 * self.cfg.reject_cooldown_frames;
             let was_forced = self.forced.contains(&pair);
             self.forced.retain(|&p| p != pair);
+            journal!(self, Op::ForcedRemove(pair.0, pair.1));
             // Alternatives to keeping the pair, on held-out frames: one cell
             // fitted to both (rank 1 on the union of the supports), or either
             // cell alone with its footprint unchanged (the other being a
@@ -3064,6 +3133,7 @@ impl SlowLoop {
                     Some(m) => {
                         // A new footprint: its running statistics start over.
                         self.fpstats.remove(&kept_id);
+                        journal!(self, Op::FpRemove(kept_id));
                         m
                     }
                     None => self.cells[stay].clone(),
@@ -3082,6 +3152,7 @@ impl SlowLoop {
                     let g = &self.cells[go];
                     self.churn
                         .on_merge(self.frames, kept_id, gone, g.center, &g.pix, &g.filt);
+                    journal!(self, Op::ChurnMerge(kept_id, g.clone()));
                 }
                 // The merged cell keeps the stronger evidence record.
                 if let Some(ev) = self.ledger.remove(&gone) {
@@ -3090,8 +3161,11 @@ impl SlowLoop {
                         .or_insert_with(Evidence::new)
                         .absorb(&ev);
                 }
+                journal!(self, Op::LedgerAbsorb(kept_id, gone));
                 self.lives.remove(&gone);
                 self.fpstats.remove(&gone);
+                journal!(self, Op::Replace(kept_id, new.clone()));
+                journal!(self, Op::Remove(gone));
                 self.cells[stay] = new;
                 self.cells.remove(go);
                 self.pending = true;
@@ -3108,6 +3182,7 @@ impl SlowLoop {
                 }
             } else {
                 self.merge_rejected.push((pair.0, pair.1, cooldown));
+                journal!(self, Op::MergeRejected(pair.0, pair.1, cooldown));
                 self.stats.merge_rejects += 1;
                 // Kept apart: they are two cells after all, so the probes
                 // that found them redundant no longer count.
@@ -3117,6 +3192,7 @@ impl SlowLoop {
                             ev.redundant = 0;
                             ev.partner = None;
                         }
+                        journal!(self, Op::ClearRedundant(id));
                     }
                 }
             }
@@ -3287,6 +3363,10 @@ impl SlowLoop {
             );
             self.churn.on_split(self.frames, new_id);
             self.fpstats.remove(&id);
+            journal!(self, Op::ChurnSplit(new_id));
+            journal!(self, Op::FpRemove(id));
+            journal!(self, Op::Replace(id, a.clone()));
+            journal!(self, Op::Push(b.clone()));
             let bbox = a.bbox.union(&b.bbox).union(&cell.bbox);
             self.cells[ci] = a;
             self.cells.push(b);
@@ -3294,6 +3374,10 @@ impl SlowLoop {
             let until = self.frames + 16 * self.cfg.reject_cooldown_frames;
             self.merge_rejected
                 .push((id.min(new_id), id.max(new_id), until));
+            journal!(
+                self,
+                Op::MergeRejected(id.min(new_id), id.max(new_id), until)
+            );
             self.pending = true;
             self.touch(bbox);
             self.tiles[ti].fresh = 0;
@@ -3414,6 +3498,7 @@ impl SlowLoop {
                 self.edits.refines += 1;
                 self.log(EditKind::Refine, id, source, new.center, margin);
                 let bbox = new.bbox;
+                journal!(self, Op::Replace(id, new.clone()));
                 self.cells[ci] = new;
                 self.pending = true;
                 self.touch(bbox);

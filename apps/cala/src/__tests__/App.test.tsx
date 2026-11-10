@@ -45,7 +45,12 @@ const fake = vi.hoisted(() => ({
 }));
 vi.mock('../lib/frame-client.ts', () => ({ createFrameClient: (): FrameClient => fake }));
 // No slow worker in jsdom; discovery itself is tested in cells.test.ts.
-vi.mock('../lib/slow-client.ts', () => ({ createSlowClient: () => ({ dispose() {} }) }));
+vi.mock('../lib/slow-client.ts', () => ({
+  createSlowClient: () => ({ visitWorkers: 0, dispose() {} }),
+  RESERVED_THREADS: 5,
+  PARALLEL_FORWARD_BUFFERS: 4,
+  visitWorkerCount: () => 0,
+}));
 
 import App from '../App.tsx';
 

@@ -113,6 +113,19 @@ export interface SlowStatus {
   /** Wall time of the last batch (observe + step), and its longest single step, ms. */
   batchMs: number;
   maxStepMs: number;
+  /**
+   * Visit workers (0: the slow worker visits tiles itself), tile visits
+   * they ran, visits out now, and the mean wall time of a visit on a worker
+   * over the last status interval (ms).
+   */
+  visitWorkers: number;
+  jobs: number;
+  jobsInFlight: number;
+  visitMs: number;
+  /** Total wall time the slow worker spent handing out and applying visits, ms. */
+  jobOwnerMs: number;
+  /** Slow-loop work so far (about multiply-adds; visits included). */
+  work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
   /** Probation/established per cell, about once a second. */
@@ -148,11 +161,39 @@ export type SlowToMain =
     }
   | { type: 'error'; session: number; message: string };
 
-/** Main thread -> slow worker: the port to the fast worker. */
+/**
+ * Main thread -> slow worker: the port to the fast worker, and one port to
+ * each visit worker (none: the slow worker visits tiles itself).
+ */
 export interface SlowConnect {
   type: 'connect';
   port: MessagePort;
+  visits?: MessagePort[];
 }
+
+/** Main thread -> visit worker: the port to the slow worker. */
+export interface VisitConnect {
+  type: 'connect';
+  port: MessagePort;
+}
+
+/**
+ * Slow worker -> visit worker. The visit worker builds its `VisitWorker`
+ * from the same settings as the slow loop and gets every noise map the slow
+ * loop gets, in the same order (port messages are ordered).
+ */
+export type OwnerToVisit =
+  | ({ type: 'init'; session: number } & SlowInit)
+  | { type: 'noise'; session: number; noise: Float32Array }
+  /** `SlowLoop.takeJob()` bytes (transferred). */
+  | { type: 'job'; session: number; bytes: Uint8Array }
+  | { type: 'reset'; session: number };
+
+/** Visit worker -> slow worker. */
+export type VisitToOwner =
+  /** `VisitWorker.run()` bytes (transferred) and the wall time of the run. */
+  | { type: 'result'; session: number; bytes: Uint8Array; ms: number }
+  | { type: 'error'; session: number; message: string };
 
 /** The part of a `MessagePort` (or worker scope) the loops use, so tests can fake it. */
 export interface PortLike<T> {

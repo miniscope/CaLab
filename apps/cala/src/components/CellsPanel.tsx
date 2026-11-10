@@ -337,6 +337,15 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
           Slow loop per batch: {fmt(timing().slowBatch)}; longest step per batch:{' '}
           {fmt(timing().slowStep)}.
         </Show>
+        <Show when={(c().status()?.visitWorkers ?? 0) > 0 ? c().status() : undefined}>
+          {(st) => (
+            <span data-testid="visit-timing">
+              {' '}
+              Tile visits on {st().visitWorkers} workers: {st().jobs} so far, {st().jobsInFlight}{' '}
+              out now, {st().visitMs.toFixed(0)} ms each (latest).
+            </span>
+          )}
+        </Show>
       </p>
     </div>
   );

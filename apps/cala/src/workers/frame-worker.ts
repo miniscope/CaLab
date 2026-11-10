@@ -117,6 +117,7 @@ async function handle(req: FrameRequest): Promise<void> {
               session: cells?.session ?? 0,
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
+              ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,
