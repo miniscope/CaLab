@@ -61,7 +61,7 @@ for (let y0 = 0; y0 < height; y0 += tile) {
       }
     }
     const t0 = performance.now();
-    const f = compressor.compress(raw, frames, w * h, tiles);
+    const f = compressor.compress(raw, frames, x0, y0, w, h, tiles);
     ms += performance.now() - t0;
     rank += f.rank;
     svdRank += f.svdRank;

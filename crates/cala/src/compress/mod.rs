@@ -115,6 +115,78 @@ impl TileFactors {
     pub fn bytes(&self) -> usize {
         4 * (self.spatial.len() + self.temporal.len() + self.mean.len())
     }
+
+    /// Little-endian encoding: `CTF1`, u32 x0, y0, w, h, rank, frames,
+    /// svd_rank, f64 energy, kept_energy, then f32 mean (`P`), spatial
+    /// (`P x rank`) and temporal (`frames x rank`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let frames = self.temporal.len().checked_div(self.rank).unwrap_or(0);
+        let mut b = Vec::with_capacity(48 + self.bytes());
+        b.extend_from_slice(b"CTF1");
+        for v in [
+            self.x0,
+            self.y0,
+            self.w,
+            self.h,
+            self.rank,
+            frames,
+            self.svd_rank,
+        ] {
+            b.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        b.extend_from_slice(&self.energy.to_le_bytes());
+        b.extend_from_slice(&self.kept_energy.to_le_bytes());
+        for a in [&self.mean, &self.spatial, &self.temporal] {
+            for v in a.iter() {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// Inverse of [`TileFactors::to_bytes`]; `None` for truncated or
+    /// inconsistent input.
+    pub fn from_bytes(b: &[u8]) -> Option<TileFactors> {
+        if b.get(..4)? != b"CTF1" {
+            return None;
+        }
+        let u = |i: usize| -> Option<usize> {
+            let o = 4 + 4 * i;
+            Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
+        };
+        let (x0, y0, w, h, rank, frames, svd_rank) =
+            (u(0)?, u(1)?, u(2)?, u(3)?, u(4)?, u(5)?, u(6)?);
+        let f = |o: usize| -> Option<f64> {
+            Some(f64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?))
+        };
+        let (energy, kept_energy) = (f(32)?, f(40)?);
+        let p = w.checked_mul(h)?;
+        let (ns, nt) = (p.checked_mul(rank)?, frames.checked_mul(rank)?);
+        let total = p.checked_add(ns)?.checked_add(nt)?;
+        let body = b.get(48..)?;
+        if body.len() != total.checked_mul(4)? {
+            return None;
+        }
+        let vals: Vec<f32> = body
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        Some(TileFactors {
+            x0,
+            y0,
+            w,
+            h,
+            rank,
+            spatial: vals[p..p + ns].to_vec(),
+            temporal: vals[p + ns..].to_vec(),
+            mean: vals[..p].to_vec(),
+            energy,
+            kept_energy,
+            svd_rank,
+        })
+    }
 }
 
 /// The factors of one window of frames.
@@ -187,18 +259,7 @@ pub struct WindowCompressor {
 
 impl WindowCompressor {
     pub fn new(dims: Dims, cfg: CompressConfig) -> WindowCompressor {
-        let tile = cfg.tile.max(1);
-        let mut grid = Vec::new();
-        for y0 in (0..dims.height).step_by(tile) {
-            for x0 in (0..dims.width).step_by(tile) {
-                grid.push((
-                    x0,
-                    y0,
-                    tile.min(dims.width - x0),
-                    tile.min(dims.height - y0),
-                ));
-            }
-        }
+        let grid = tile_grid(dims, cfg.tile);
         let buf = grid
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
@@ -303,6 +364,53 @@ impl WindowCompressor {
         self.n = 0;
         self.windows += 1;
         Some(out)
+    }
+}
+
+/// `(x0, y0, w, h)` of the tiles of a frame, row by row; the tiles at the
+/// right and bottom edge are smaller when `tile` does not divide the frame.
+pub fn tile_grid(dims: Dims, tile: usize) -> Vec<(usize, usize, usize, usize)> {
+    let tile = tile.max(1);
+    let mut grid = Vec::new();
+    for y0 in (0..dims.height).step_by(tile) {
+        for x0 in (0..dims.width).step_by(tile) {
+            grid.push((
+                x0,
+                y0,
+                tile.min(dims.width - x0),
+                tile.min(dims.height - y0),
+            ));
+        }
+    }
+    grid
+}
+
+/// Quantize `count` frames (frame after frame in `frames`) into tile order:
+/// for each tile of [`tile_grid`], its `count x P` values, a frame per row,
+/// which is what [`compress_tile`] reads. `out` holds as many values as
+/// `frames`.
+pub fn quantize_tiles(
+    frames: &[f32],
+    count: usize,
+    dims: Dims,
+    tile: usize,
+    quant: f32,
+    out: &mut [i16],
+) {
+    let (width, px) = (dims.width, dims.pixels());
+    debug_assert_eq!(frames.len(), count * px);
+    debug_assert_eq!(out.len(), count * px);
+    let mut o = 0;
+    for (x0, y0, w, h) in tile_grid(dims, tile) {
+        for t in 0..count {
+            for y in 0..h {
+                let row = t * px + (y0 + y) * width + x0;
+                for (d, &v) in out[o..o + w].iter_mut().zip(&frames[row..row + w]) {
+                    *d = quantize(v, quant);
+                }
+                o += w;
+            }
+        }
     }
 }
 
@@ -703,6 +811,38 @@ mod tests {
         }
         assert!(err_rec < 0.1 * err_noisy, "{err_rec} vs {err_noisy}");
         assert!(wf.bytes() * 10 < t * side * side * 4);
+    }
+
+    #[test]
+    fn tile_order_and_bytes_round_trip() {
+        // 2 frames of 5 x 3 px in 2 px tiles: quantize_tiles lays out each
+        // tile's frames one after the other.
+        let dims = Dims::new(5, 3).unwrap();
+        let frames: Vec<f32> = (0..30).map(|i| i as f32).collect();
+        let mut out = vec![0i16; 30];
+        quantize_tiles(&frames, 2, dims, 2, 1.0, &mut out);
+        let grid = tile_grid(dims, 2);
+        assert_eq!(grid.len(), 6);
+        assert_eq!(grid[2], (4, 0, 1, 2));
+        // Tile 0 (x 0..2, y 0..2): frame 0 then frame 1.
+        assert_eq!(&out[..8], &[0, 1, 5, 6, 15, 16, 20, 21]);
+        // Last tile (x 4, y 2): one pixel per frame.
+        assert_eq!(&out[28..], &[14, 29]);
+
+        let (t, side) = (120, 12);
+        let (noisy, _) = synth(t, side, 3, 0.5);
+        let cfg = CompressConfig::default();
+        let mut tf = compress_tile(&quantized(&noisy), t, side * side, &cfg, 4);
+        (tf.x0, tf.y0, tf.w, tf.h) = (64, 128, side, side);
+        let back = TileFactors::from_bytes(&tf.to_bytes()).expect("decodes");
+        assert_eq!((back.x0, back.y0, back.w, back.h), (64, 128, side, side));
+        assert_eq!((back.rank, back.svd_rank), (tf.rank, tf.svd_rank));
+        assert_eq!(back.spatial, tf.spatial);
+        assert_eq!(back.temporal, tf.temporal);
+        assert_eq!(back.mean, tf.mean);
+        assert_eq!(back.energy, tf.energy);
+        let bytes = tf.to_bytes();
+        assert!(TileFactors::from_bytes(&bytes[..bytes.len() - 1]).is_none());
     }
 
     #[test]

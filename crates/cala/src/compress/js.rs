@@ -6,7 +6,8 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::{compress_tile, quantize, CompressConfig, TileFactors};
+use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors};
+use crate::preprocess::Dims;
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -27,6 +28,41 @@ pub fn quantize_frames(frames: &[f32], quant: f32, out: &mut [i16]) -> Result<()
     for (o, &v) in out.iter_mut().zip(frames) {
         *o = quantize(v, quant);
     }
+    Ok(())
+}
+
+/// Quantize `count` frames into tile order: for each tile (row by row over
+/// the frame, `tile` px squares, smaller at the right and bottom edge), its
+/// `count x pixels` values, a frame per row. A tile's block of every batch
+/// of a window, one after the other, is the input of
+/// `TileCompressor.compress`.
+#[wasm_bindgen(js_name = quantizeTiles)]
+pub fn quantize_tiles_js(
+    frames: &[f32],
+    count: u32,
+    width: u32,
+    height: u32,
+    tile: u32,
+    quant: f32,
+    out: &mut [i16],
+) -> Result<(), JsError> {
+    let dims =
+        Dims::new(width as usize, height as usize).map_err(|e| js_err("quantizeTiles", e))?;
+    let n = count as usize * dims.pixels();
+    if frames.len() != n || out.len() != n {
+        return Err(js_err(
+            "quantizeTiles",
+            format!(
+                "{} values in, {} out, {n} expected",
+                frames.len(),
+                out.len()
+            ),
+        ));
+    }
+    if tile == 0 || !(quant.is_finite() && quant > 0.0) {
+        return Err(js_err("quantizeTiles", "tile and quant must be positive"));
+    }
+    quantize_tiles(frames, count as usize, dims, tile as usize, quant, out);
     Ok(())
 }
 
@@ -64,24 +100,29 @@ impl JsTileCompressor {
         Ok(())
     }
 
-    /// `raw`: `frames x pixels` quantized values of one tile, a frame per row.
+    /// `raw`: `frames x (w * h)` quantized values of the tile at `(x0, y0)`,
+    /// a frame per row.
+    #[allow(clippy::too_many_arguments)]
     pub fn compress(
         &self,
         raw: &[i16],
         frames: u32,
-        pixels: u32,
+        x0: u32,
+        y0: u32,
+        w: u32,
+        h: u32,
         seed: u32,
     ) -> Result<JsTileFactors, JsError> {
-        let (t, p) = (frames as usize, pixels as usize);
+        let (t, p) = (frames as usize, w as usize * h as usize);
         if t < 2 || p < 2 || raw.len() != t * p {
             return Err(js_err(
                 "compress",
                 format!("{} values for {t} frames x {p} pixels", raw.len()),
             ));
         }
-        Ok(JsTileFactors {
-            inner: compress_tile(raw, t, p, &self.cfg, u64::from(seed)),
-        })
+        let mut inner = compress_tile(raw, t, p, &self.cfg, u64::from(seed));
+        (inner.x0, inner.y0, inner.w, inner.h) = (x0 as usize, y0 as usize, w as usize, h as usize);
+        Ok(JsTileFactors { inner })
     }
 }
 
@@ -127,5 +168,11 @@ impl JsTileFactors {
 
     pub fn mean(&self) -> Vec<f32> {
         self.inner.mean.clone()
+    }
+
+    /// The factors as bytes (`TileFactors::to_bytes`), for a file.
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes()
     }
 }
