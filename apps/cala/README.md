@@ -46,6 +46,55 @@ What is here:
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
 
+## Pass 2 and export
+
+Pass 1 discovers the footprint library while the recording streams by, and the
+traces it emits along the way were solved with whatever library was current at
+the time. Pass 2 (`src/lib/pass2-store.ts`) walks the recording again through
+the same three workers and solves **every** frame with the **final** library,
+so cells found late have traces from frame 0.
+
+- **Recorded in pass 1** (`src/lib/run-record.ts`, 17 bytes per frame, kept in
+  full): the rigid shift `(dy, dx)`, the motion flags, and the global flicker
+  `(offset, gain)`. Nothing is estimated in pass 2: the frame worker replays the
+  recorded flicker (`Preprocessor.frontFramesReplay`), the motion worker warps
+  by the recorded shifts (the same WebGPU warp as pass 1 when available), and
+  the trace worker solves with the final library
+  (`FastLoop` option `initialLibrary`).
+- **Background and noise** restart from the calibrated state. Calibration
+  depends only on the first frames, so it is recomputed identically, and the
+  back half is a deterministic function of the corrected frames in order, so
+  replaying from frame 0 rebuilds the state pass 1 had at every frame. No
+  checkpoints are needed while the whole recording is replayed.
+- **Finish pass 1 now** ends the stream at the frames read so far (the slow
+  loop publishes its final library and pass 2 covers those frames). Pass 2 runs
+  automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
+  and frames/s, and the UI stays live (the work is in workers).
+- Pass 2 holds its traces (frames x cells float32) in memory, capped at 1.5 GB;
+  the export is built in the page.
+
+**Export** (`src/lib/export.ts`; both are NumPy `.npz`, stored uncompressed):
+
+- `<folder>_cala.npz`, self-describing: `traces` (cells x frames, float32),
+  `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
+  (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
+  flat pixel index `row * W + column`) with `fov_shape`, per-frame
+  `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
+  `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
+  `qc_flags`, `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
+  cell table). The full layout is the header of `src/lib/export.ts`.
+- `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
+  `cell_ids` and `sampling_rate_hz`. CaDecon's existing `.npz` import takes the
+  one cells x timepoints array without asking; it then asks for the sampling
+  rate (shown on the button's tooltip).
+
+```python
+import json, numpy as np
+z = np.load("raw_cala.npz")
+traces = z["traces"]                      # (cells, frames)
+meta = json.loads(z["meta_json"].tobytes().decode())
+```
+
 ## Long-recording display limits
 
 The motion and flicker charts keep the latest 32,768 frames at full resolution

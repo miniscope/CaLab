@@ -370,6 +370,14 @@ fn a_deleted_spot_comes_back_only_on_new_evidence() {
     assert!(near(c[0], 47.0, 47.0), "{c:?}");
     assert_ne!(lib.ids()[0], 1, "a new cell, not the deleted one");
     assert_eq!(slow.stats().deletes, 1);
+    // Accounting: the seeded cell's deletion is an established removal and
+    // the cell added back at its spot is a re-add, not a new cell.
+    let cc = slow.churn_counts();
+    assert_eq!((cc.adds_new, cc.adds_readd), (0, 1), "{cc:?}");
+    assert_eq!((cc.churned, cc.established_removals), (0, 1), "{cc:?}");
+    let adds = slow.take_add_log();
+    assert_eq!(adds.len(), 1);
+    assert!(adds[0].dist < 2.0 && adds[0].cos > 0.5, "{adds:?}");
 }
 
 #[test]
@@ -384,6 +392,8 @@ fn edit_counts_are_per_interval() {
     let e = slow.take_edit_counts();
     assert_eq!(e.adds, slow.stats().adds);
     assert!(e.adds >= 1 && e.commits >= 1, "{e:?}");
+    let cc = slow.churn_counts();
+    assert_eq!(cc.adds_new + cc.adds_readd, e.adds);
     assert_eq!(slow.take_edit_counts(), EditCounts::default());
 }
 
@@ -713,4 +723,46 @@ fn a_dim_cell_beside_a_bright_one_is_still_found() {
     let c = centres(&slow.finalize().unwrap());
     assert_eq!(c.len(), 2, "{c:?}");
     assert!(c.iter().any(|&p| near(p, 47.0, 55.0)), "{c:?}");
+}
+
+/// Unsupported deletions of the cell seeded as `seed` (id 1) and the slow
+/// loop's stats, over a movie of `cells`.
+fn keep_run(cells: &[(Footprint, Vec<f32>)], seed: Footprint, noise: u64) -> (usize, SlowStats) {
+    let t = cells[0].1.len();
+    let m = movie(cells, t, noise);
+    let (mut slow, mut eng) = start(v2_config(), &[seed]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let n = deleted
+        .iter()
+        .filter(|d| d.info.id == 1 && d.reason == DeleteReason::Unsupported)
+        .count();
+    (n, slow.stats())
+}
+
+#[test]
+fn weak_transients_of_a_true_cell_are_not_failures() {
+    // A soma about the size of the free bump, with weak transients: on
+    // many probes too little of its light is left once the bump has taken
+    // its share for the test to pass. Those probes are inconclusive;
+    // counted as failures (as before) they were 13 of 71.
+    let t = 3000;
+    let mut rng = Lcg(77);
+    let cells = vec![(blob_w(0, 48.0, 48.0, 7.0), trace(&mut rng, t, 0.05, 1.5))];
+    let (n, stats) = keep_run(&cells, blob_w(1, 48.0, 48.0, 7.0), 41);
+    assert_eq!(n, 0, "{stats:?}");
+    assert_eq!(stats.keep_fails, 0, "{stats:?}");
+    assert!(stats.keep_inconclusive > 0, "{stats:?}");
+}
+
+#[test]
+fn a_cell_on_diffuse_light_is_still_deleted() {
+    // Only broad light (σ 10 px, a neuropil-like glow) where a compact
+    // cell was seeded: the keep tests had the power to see the cell's
+    // shape and did not, so they fail and the cell goes.
+    let t = 3000;
+    let mut rng = Lcg(77);
+    let cells = vec![(blob_w(0, 48.0, 48.0, 10.0), trace(&mut rng, t, 0.03, 4.0))];
+    let (n, stats) = keep_run(&cells, blob(1, 48.0, 48.0), 41);
+    assert_eq!(n, 1, "{stats:?}");
 }

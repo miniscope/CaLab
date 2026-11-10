@@ -90,14 +90,17 @@ const STATE_LABEL: Record<ConvergenceState, string> = {
   converged: 'Converged',
 };
 
-const EDIT_COLORS = {
-  adds: OKABE_ITO.bluishGreen,
-  merges: OKABE_ITO.blue,
-  splits: OKABE_ITO.orange,
-  deletes: OKABE_ITO.vermillion,
-} as const;
-
-const EDIT_KEYS = ['adds', 'merges', 'splits', 'deletes'] as const;
+/** The three kinds of churn, each its own line. */
+const CHURN = [
+  { key: 'reAdds', label: 'r', name: 're-adds', color: OKABE_ITO.orange },
+  { key: 'churned', label: 'c', name: 'adds removed again', color: OKABE_ITO.vermillion },
+  {
+    key: 'establishedRemovals',
+    label: 'e',
+    name: 'established cells merged or deleted',
+    color: OKABE_ITO.blue,
+  },
+] as const;
 
 const fmt = (v: number | undefined, digits = 2) =>
   v === undefined || !Number.isFinite(v) ? 'n/a' : v.toFixed(digits);
@@ -135,25 +138,42 @@ export function ConvergenceStrip(props: { cells: CellStore }): JSX.Element {
           testid="spark-cells"
         />
         <Spark
-          title="Edits / min"
+          title="New cells / min"
+          value={fmt(last()?.edits.newAdds, 1)}
+          hint="Discovery: cells added at a spot where nothing was just removed. It slows over a recording but never has to reach zero (long recordings keep revealing cells), so it does not hold up the status."
+          x={x()}
+          lines={[{ values: edit('newAdds'), color: OKABE_ITO.bluishGreen }]}
+          testid="spark-discovery"
+        />
+        <Spark
+          title="Churn / min"
           value={
-            <For each={EDIT_KEYS}>
-              {(k) => (
-                <span style={{ color: EDIT_COLORS[k] }} title={k}>
+            <For each={CHURN}>
+              {(c) => (
+                <span style={{ color: c.color }} title={c.name}>
                   {' '}
-                  {k[0]}
-                  {fmt(last()?.edits[k], 0)}
+                  {c.label}
+                  {fmt(last()?.edits[c.key], 0)}
                 </span>
               )}
             </For>
           }
-          hint="Slow-loop edits per minute of recording: a = adds (green), m = merges (blue), s = splits (orange), d = deletes (red). Churn should fall towards a floor."
+          hint="Spurious edits per minute of recording: r = re-adds (a cell added where one was removed in the last 2 min, orange), c = adds merged or deleted again within 2 min (red), e = established cells merged or deleted (blue). Should die out; it feeds the status."
           x={x()}
-          lines={EDIT_KEYS.map((k) => ({
-            values: edit(k),
-            color: EDIT_COLORS[k],
-          }))}
-          testid="spark-edits"
+          lines={CHURN.map((c) => ({ values: edit(c.key), color: c.color }))}
+          testid="spark-churn"
+        />
+        <Spark
+          title="Stable cells"
+          value={fmt(last()?.stableFrac)}
+          hint="Share of cells older than 2 min whose footprint (cosine >= 0.95) and trace noise (within 10%) match 1-2 min ago; dashed: median footprint cosine. Should rise to a plateau; it feeds the status."
+          x={x()}
+          lines={[
+            { values: col('stableFrac'), color: OKABE_ITO.reddishPurple },
+            { values: col('fpStability'), color: OKABE_ITO.reddishPurple, dash: '3 2' },
+          ]}
+          range={[0, 1]}
+          testid="spark-stability"
         />
         <Spark
           title="Explained"
@@ -171,22 +191,6 @@ export function ConvergenceStrip(props: { cells: CellStore }): JSX.Element {
           x={x()}
           lines={[{ values: col('residualExcess'), color: OKABE_ITO.vermillion }]}
           testid="spark-residual"
-        />
-        <Spark
-          title="Median SNR"
-          value={fmt(last()?.snrMedian, 1)}
-          hint="Median peak SNR of measured cells, and the share passing QC (dashed, x20). Context only: these did not track recall in validation and do not feed the status."
-          x={x()}
-          lines={[
-            { values: col('snrMedian'), color: OKABE_ITO.reddishPurple },
-            {
-              values: col('passFrac').map((v) => 20 * v),
-              color: OKABE_ITO.reddishPurple,
-              dash: '3 2',
-            },
-          ]}
-          range={[0, 20]}
-          testid="spark-snr"
         />
       </div>
     </DashboardPanel>

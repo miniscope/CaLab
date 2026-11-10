@@ -80,6 +80,15 @@ export interface SlowCounters {
   deletes: number;
   splits: number;
   absorbs: number;
+  /**
+   * Add classification (cumulative; 0 from an older WASM build): adds at a
+   * fresh spot, adds where a cell was just removed, adds removed again soon
+   * after (counted at the removal), and merges/deletes of established cells.
+   */
+  newAdds: number;
+  reAdds: number;
+  churned: number;
+  establishedRemovals: number;
 }
 
 /** Evidence status of the working-set cells (`SlowLoop.cellStatus()`). */
@@ -130,7 +139,13 @@ export interface LibraryView {
 /** Slow worker -> main thread. */
 export type SlowToMain =
   | { type: 'status'; session: number; status: SlowStatus }
-  | { type: 'library'; session: number; library: LibraryView }
+  | {
+      type: 'library';
+      session: number;
+      library: LibraryView;
+      /** The same library as `TraceLibrary.toBytes()` (a copy), so pass 2 can solve with the final one. */
+      bytes: Uint8Array;
+    }
   | { type: 'error'; session: number; message: string };
 
 /** Main thread -> slow worker: the port to the fast worker. */
@@ -144,8 +159,8 @@ export interface PortLike<T> {
   postMessage(msg: T, transfer?: Transferable[]): void;
 }
 
-export function libraryViewTransferables(v: LibraryView): ArrayBuffer[] {
-  return [v.ids, v.centers, v.radii, v.starts, v.pixels, v.values].map(
+export function libraryViewTransferables(v: LibraryView, bytes?: Uint8Array): ArrayBuffer[] {
+  return [v.ids, v.centers, v.radii, v.starts, v.pixels, v.values, ...(bytes ? [bytes] : [])].map(
     (a) => a.buffer as ArrayBuffer,
   );
 }

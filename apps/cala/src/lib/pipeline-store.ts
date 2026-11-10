@@ -16,6 +16,7 @@ import type {
   StageTimings,
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
+import { RunRecord } from './run-record.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -141,6 +142,8 @@ export function createPipelineStore(
   const [discover, setDiscoverSignal] = createSignal(true);
 
   let trace = new ShiftTrace();
+  /** Pass 1's per-frame motion and flicker, kept in full for pass 2 and the export. */
+  let record = new RunRecord();
   let meter = new ThroughputMeter();
   let totals: StageTimings = { ...ZERO_TIMINGS };
   let busyTotals: number[] = [];
@@ -155,6 +158,7 @@ export function createPipelineStore(
         return;
       case 'batch': {
         trace.push(step.start, step.dy, step.dx, step.flickerOffset, step.flickerGain);
+        record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
         setTraceVersion((v) => v + 1);
         setPreviews(step.previews);
         setProcessed(step.start + step.count);
@@ -223,6 +227,7 @@ export function createPipelineStore(
     inFlight = 0;
     exhausted = false;
     trace = new ShiftTrace();
+    record = new RunRecord();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
     setPlan(null);
@@ -278,6 +283,27 @@ export function createPipelineStore(
     if (wasActive) void client.stopPipeline().catch(() => {});
   }
 
+  /**
+   * End pass 1 at the frames processed so far (the rest of the recording is not
+   * read): the slow loop publishes its final library and the run reports done.
+   */
+  async function finishEarly(): Promise<void> {
+    const st = status();
+    if (st !== 'running' && st !== 'paused') return;
+    const gen = generation;
+    try {
+      await client.truncatePipeline?.();
+    } catch (err) {
+      if (gen !== generation) return;
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus('error');
+      return;
+    }
+    if (gen !== generation) return;
+    if (status() === 'paused') setStatus('running');
+    pump();
+  }
+
   /** Turn cell discovery on or off (applies to the running pipeline at once). */
   function setDiscover(on: boolean): void {
     setDiscoverSignal(on);
@@ -300,6 +326,9 @@ export function createPipelineStore(
     /** Changes whenever `trace()` gained frames. */
     traceVersion,
     trace: () => trace,
+    /** What pass 1 recorded per frame (motion shifts and flicker) so far. */
+    record: () => record,
+    finishEarly,
     /** Steps currently requested from the worker (for tests). */
     inFlight: () => inFlight,
     start,

@@ -205,6 +205,11 @@ export class PipelineEngine {
     this.corrected = new Float32Array(0);
   }
 
+  /** End the recording at the current position (finish early): the next step reports `done`. */
+  truncate(): void {
+    this.cursor.truncate();
+  }
+
   /** The fast loop, when the engine runs one. */
   get fastLoop(): FastLoop | null {
     return this.fast;

@@ -12,7 +12,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::flicker::FlickerMode;
+use super::flicker::{FlickerMode, FlickerRecord};
 use super::lines::LineMode;
 use super::warmup::WarmupAccumulator;
 use super::{
@@ -278,6 +278,54 @@ impl JsPreprocessor {
     }
 }
 
+impl JsPreprocessor {
+    /// [`Self::front`] with recorded flicker (`offset`, `gain` per frame) instead of new estimates.
+    fn front_replay<T: RawPixel>(
+        &mut self,
+        input: &[T],
+        count: u32,
+        offset: &[f32],
+        gain: &[f32],
+        out: &mut [f32],
+    ) -> Result<Vec<f64>, JsError> {
+        let n = self.inner.dims().pixels();
+        let count = check_batch("frontFramesReplay", input.len(), count, n)?;
+        check_batch("frontFramesReplay (output)", out.len(), count as u32, n)?;
+        if offset.len() != count || gain.len() != count {
+            return Err(JsError::new(&format!(
+                "frontFramesReplay: {} offsets and {} gains for {count} frames",
+                offset.len(),
+                gain.len()
+            )));
+        }
+        let mut rec = Vec::with_capacity(count * FRONT_RECORD_STRIDE);
+        for (i, (raw, o)) in input
+            .chunks_exact(n)
+            .zip(out.chunks_exact_mut(n))
+            .enumerate()
+        {
+            let flicker = FlickerRecord {
+                offset: offset[i],
+                gain: gain[i],
+                ..FlickerRecord::default()
+            };
+            let r = self
+                .inner
+                .front_replay(raw, o, &flicker)
+                .map_err(|e| js_err("frontFramesReplay", e))?;
+            rec.extend_from_slice(&[
+                f64::from(r.input_mean),
+                f64::from(r.lowpass_mean),
+                f64::from(r.row_rms),
+                f64::from(r.col_rms),
+                f64::from(r.flicker.offset),
+                f64::from(r.flicker.gain),
+            ]);
+        }
+        Ok(rec)
+    }
+}
+
 #[wasm_bindgen(js_class = Preprocessor)]
 impl JsPreprocessor {
     /// The whole chain without motion correction, `count` 8-bit frames from
@@ -330,6 +378,34 @@ impl JsPreprocessor {
         out: &mut [f32],
     ) -> Result<Vec<f64>, JsError> {
         self.front(input, count, out)
+    }
+
+    /// [`Self::front_frames`] replaying recorded flicker (`offset`, `gain`
+    /// per frame, as `frontFrames` returned them) instead of estimating it:
+    /// stateless, so any frames in any order reproduce the original front
+    /// half bit for bit. Same record layout as `frontFrames`.
+    #[wasm_bindgen(js_name = frontFramesReplay)]
+    pub fn front_frames_replay(
+        &mut self,
+        input: &[u8],
+        count: u32,
+        offset: &[f32],
+        gain: &[f32],
+        out: &mut [f32],
+    ) -> Result<Vec<f64>, JsError> {
+        self.front_replay(input, count, offset, gain, out)
+    }
+
+    #[wasm_bindgen(js_name = frontFramesReplay16)]
+    pub fn front_frames_replay16(
+        &mut self,
+        input: &[u16],
+        count: u32,
+        offset: &[f32],
+        gain: &[f32],
+        out: &mut [f32],
+    ) -> Result<Vec<f64>, JsError> {
+        self.front_replay(input, count, offset, gain, out)
     }
 
     /// The tissue-coordinate half (background, noise map), in place on

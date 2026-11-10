@@ -2,17 +2,41 @@
 // Inverse of npy-parser.ts — serializes a Float32Array + shape into .npy format.
 // Reference: https://numpy.org/doc/2.3/reference/generated/numpy.lib.format.html
 
+/** Typed arrays `writeNpy` can serialize, and the numpy dtype each becomes (little-endian). */
+export type NpyWritable =
+  | Float32Array
+  | Float64Array
+  | Int32Array
+  | Uint32Array
+  | Int16Array
+  | Uint16Array
+  | Int8Array
+  | Uint8Array;
+
+function descrOf(data: NpyWritable): string {
+  if (data instanceof Float32Array) return '<f4';
+  if (data instanceof Float64Array) return '<f8';
+  if (data instanceof Int32Array) return '<i4';
+  if (data instanceof Uint32Array) return '<u4';
+  if (data instanceof Int16Array) return '<i2';
+  if (data instanceof Uint16Array) return '<u2';
+  if (data instanceof Int8Array) return '|i1';
+  return '|u1';
+}
+
 /**
- * Write a Float32Array as a .npy binary buffer (version 1.0, little-endian float32).
+ * Write a typed array as a .npy binary buffer (version 1.0, little-endian). A
+ * Float32Array (the default case) becomes float32; integer arrays keep their
+ * width and signedness.
  *
- * @param data - The flat Float32Array of values
+ * @param data - The flat typed array of values
  * @param shape - The array shape, e.g. [rows, cols]
  * @returns ArrayBuffer containing the complete .npy file
  */
-export function writeNpy(data: Float32Array, shape: number[]): ArrayBuffer {
+export function writeNpy(data: NpyWritable, shape: number[]): ArrayBuffer {
   // 1. Build header dict string
   const shapeStr = shape.length === 1 ? `(${shape[0]},)` : `(${shape.join(', ')})`;
-  const headerDict = `{'descr': '<f4', 'fortran_order': False, 'shape': ${shapeStr}, }`;
+  const headerDict = `{'descr': '${descrOf(data)}', 'fortran_order': False, 'shape': ${shapeStr}, }`;
   const headerBytes = new TextEncoder().encode(headerDict);
 
   // 2. Compute padding to 64-byte alignment

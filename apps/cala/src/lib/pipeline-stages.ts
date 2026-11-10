@@ -45,6 +45,7 @@ import {
 } from './pipeline-plan.ts';
 import { GpuMotion } from './gpu-motion.ts';
 import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import type { RunSpan } from './run-record.ts';
 
 const now = (): number => performance.now();
 
@@ -107,11 +108,22 @@ export function jobTransferables(job: StageJob): ArrayBuffer[] {
   return arrays.filter((a) => a !== undefined).map((a) => a.buffer as ArrayBuffer);
 }
 
+/**
+ * Pass 2: what pass 1 recorded about frames `[0, frameCount)`, so the stages
+ * replay them instead of estimating (see `FrontStage` and `MotionStage`).
+ */
+export interface ReplayInput extends RunSpan {
+  /** Frames to replay (the recorded ones, which may be fewer than the recording has). */
+  frameCount: number;
+}
+
 /** What a stage needs to know about the recording and the plan. */
 export interface StageSetup {
   width: number;
   height: number;
   plan: PipelinePlan;
+  /** Pass 2: motion shifts come with the jobs and are applied, not estimated. */
+  replay?: boolean;
 }
 
 /** Stage A: read, calibrate, and run the preprocessing front half. */
@@ -140,8 +152,18 @@ export class FrontStage {
     options: PipelineOptions,
     private readonly acquireFront: () => Promise<Float32Array>,
     flickerMode?: number,
+    /** Pass 2: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
+    private readonly replay?: ReplayInput,
   ) {
-    const { width, height, bitDepth, frameCount, fps } = reader.info;
+    const { width, height, bitDepth, frameCount: recorded, fps } = reader.info;
+    const frameCount = replay ? replay.frameCount : recorded;
+    if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
+      throw new RangeError(
+        `Pass 2 replays ${replay.frameCount} frames of a recording of ${recorded}.`,
+      );
+    for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
+      if (replay && replay[k].length < replay.frameCount)
+        throw new RangeError(`Pass 2: the recorded ${k} has fewer values than frames.`);
     this.plan = makePlan(frameCount, options);
     this.cursor = new PipelineCursor(this.plan);
     this.width = width;
@@ -168,8 +190,18 @@ export class FrontStage {
     this.raw = this.sixteen ? new Uint16Array(0) : new Uint8Array(0);
   }
 
+  /** End the recording here: `next()` returns `null` from now on (pass 1 finished early). */
+  truncate(): void {
+    this.cursor.truncate();
+  }
+
   get setup(): StageSetup {
-    return { width: this.width, height: this.height, plan: this.plan };
+    return {
+      width: this.width,
+      height: this.height,
+      plan: this.plan,
+      ...(this.replay ? { replay: true } : {}),
+    };
   }
 
   /** The next job, or `null` once every frame has been through. */
@@ -224,7 +256,10 @@ export class FrontStage {
       };
     }
 
-    const frontRec = this.runFront(this.pre!, raw, s.count, frontView);
+    const rp = this.replay;
+    const frontRec = rp
+      ? this.runFrontReplay(this.pre!, raw, s.count, frontView, s.start)
+      : this.runFront(this.pre!, raw, s.count, frontView);
     const t2 = now();
     const last = s.count - 1;
     const flickerOffset = new Float32Array(s.count);
@@ -233,6 +268,14 @@ export class FrontStage {
       flickerOffset[i] = frontRec[i * FRONT_RECORD_STRIDE + 4];
       flickerGain[i] = frontRec[i * FRONT_RECORD_STRIDE + 5];
     }
+    // Pass 2: the recorded shifts travel with the job (copies: the job's buffers are transferred).
+    const shifts = rp
+      ? {
+          dy: rp.dy.slice(s.start, s.start + s.count),
+          dx: rp.dx.slice(s.start, s.start + s.count),
+          flags: Uint32Array.from(rp.flags.subarray(s.start, s.start + s.count)),
+        }
+      : {};
     const rawPreview = downsampleFrame(raw, last, this.width, this.height, this.factor);
     const preprocessed = downsampleFrame(frontView, last, this.width, this.height, this.factor);
     const t3 = now();
@@ -244,6 +287,7 @@ export class FrontStage {
       front,
       flickerOffset,
       flickerGain,
+      ...shifts,
       raw: rawPreview,
       preprocessed,
       timings,
@@ -275,6 +319,21 @@ export class FrontStage {
   ): Float64Array {
     if (this.sixteen) return pre.frontFrames16(raw as Uint16Array, count, out);
     return pre.frontFrames(raw as Uint8Array, count, out);
+  }
+
+  /** `runFront` with the flicker recorded for frames from `start` (no estimate, no state). */
+  private runFrontReplay(
+    pre: Preprocessor,
+    raw: FramePixels,
+    count: number,
+    out: Float32Array,
+    start: number,
+  ): Float64Array {
+    const rp = this.replay!;
+    const offset = rp.flickerOffset.subarray(start, start + count);
+    const gain = rp.flickerGain.subarray(start, start + count);
+    if (this.sixteen) return pre.frontFramesReplay16(raw as Uint16Array, count, offset, gain, out);
+    return pre.frontFramesReplay(raw as Uint8Array, count, offset, gain, out);
   }
 
   private async readRaw(start: number, count: number): Promise<FramePixels> {
@@ -360,8 +419,57 @@ export class MotionStage {
       this.gpuReady = this.gpu.setup(motion.prefilterParams());
     }
     job.motionBackend = this.motionBackend;
+    if (this.setup.replay) return this.replayShifts(job, motion, front);
     if (this.gpu && this.gpuReady) return this.processGpu(job, motion, front);
     return { finish: Promise.resolve(await this.processCpu(job, motion, front)) };
+  }
+
+  /**
+   * Pass 2: warp the frames by the shifts pass 1 recorded (`job.dy`, `job.dx`,
+   * `job.flags`), without estimating them. Same warp as pass 1 (the GPU one
+   * when it ran there), so the registered frames are the same.
+   */
+  private async replayShifts(
+    job: StageJob,
+    motion: MotionCorrector,
+    front: Float32Array,
+  ): Promise<StagedJob> {
+    const s = job.step;
+    const n = s.count * this.px;
+    const len = motion.recordLen;
+    if (len !== 4 || !job.dy || !job.dx || !job.flags)
+      throw new Error('Pass 2 replays rigid shifts only.');
+    const records = new Float32Array(s.count * len);
+    for (let i = 0; i < s.count; i++) {
+      records[i * len] = job.dy[i];
+      records[i * len + 1] = job.dx[i];
+      records[i * len + 3] = job.flags[i];
+    }
+    const corrected = await this.acquireOut();
+    const t0 = now();
+    const out = corrected.subarray(0, n);
+    if (this.gpu && this.gpuReady) {
+      try {
+        const { done } = await this.gpu.warpFrames(front, job.dy, job.dx, s.count, out);
+        const t1 = now();
+        const finish = done.then(() => {
+          this.finishJob(job, corrected, records, t0, now());
+          job.busyMs[1] = t1 - t0 + (now() - t1);
+          return job;
+        });
+        return { finish };
+      } catch (err) {
+        console.warn('WebGPU warp failed; falling back to WASM.', err);
+        this.gpu?.destroy();
+        this.gpu = null;
+        this.gpuReady = false;
+        this.gpuFailed = true;
+        job.motionBackend = this.motionBackend;
+      }
+    }
+    motion.applyF32(front, records, out);
+    this.finishJob(job, corrected, records, t0, now());
+    return { finish: Promise.resolve(job) };
   }
 
   private async processCpu(

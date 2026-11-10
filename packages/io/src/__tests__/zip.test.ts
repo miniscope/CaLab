@@ -19,6 +19,14 @@ describe('zipFiles', () => {
       expect(Array.from(entries['activity.npy'])).toEqual(Array.from(files['activity.npy']));
     });
 
+    it('stores entries uncompressed at level 0 and they still unzip', () => {
+      const data = new Uint8Array(4096).fill(7);
+      const stored = zipFiles({ 'a.bin': data }, { level: 0 });
+      expect(stored.byteLength).toBeGreaterThan(data.length);
+      expect(zipFiles({ 'a.bin': data }).byteLength).toBeLessThan(data.length);
+      expect(Array.from(unzipSync(new Uint8Array(stored))['a.bin'])).toEqual(Array.from(data));
+    });
+
     it('preserves arbitrary binary bytes, not just text', () => {
       // Every byte value, so a UTF-8 round trip anywhere in the path would corrupt it.
       const all = new Uint8Array(256);
