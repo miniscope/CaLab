@@ -10,6 +10,7 @@
  * always happens between frames, and warm starts follow cell ids.
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
+import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
 import type { QcWire } from './qc.ts';
 
@@ -126,6 +127,8 @@ export interface CellsBatch {
   qcOn: boolean;
   /** A QC snapshot, about once per `qcEveryMs` of wall time. */
   qc?: QcWire;
+  /** Wall time of quantizing and sending the batch to the compress worker, ms (compression on). */
+  compressMs?: number;
 }
 
 const now = (): number => performance.now();
@@ -152,7 +155,13 @@ export class FastLoop {
   private resumed = false;
   private disposed = false;
 
-  constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
+  constructor(
+    options: FastLoopOptions,
+    port: PortLike<FastToSlow> | null,
+    backend: TraceBackend,
+    /** The feed to the compress worker (`null`: no compression). */
+    private readonly feed: CompressFeedLike | null = null,
+  ) {
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...options };
     if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
     this.px = options.width * options.height;
@@ -219,6 +228,8 @@ export class FastLoop {
     const t2 = now();
     this.forward(batch, start, count, traces, calibration);
     const t3 = now();
+    this.feed?.push(batch, start, count);
+    const compressMs = this.feed ? now() - t3 : undefined;
     const qc = qcOn ? this.qcSnapshot(t3) : undefined;
     return {
       version: this.version,
@@ -233,6 +244,7 @@ export class FastLoop {
       slowFrame: this.slowFrame,
       qcOn,
       ...(qc ? { qc } : {}),
+      ...(compressMs === undefined ? {} : { compressMs }),
     };
   }
 
@@ -299,12 +311,14 @@ export class FastLoop {
   /** The recording ended: let the slow loop publish what it has. */
   end(): void {
     if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
+    this.feed?.end();
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.port?.postMessage({ type: 'reset', session: this.o.session });
+    this.feed?.reset();
     this.qc?.free();
     this.qc = null;
     this.engine?.free();

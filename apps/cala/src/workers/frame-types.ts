@@ -10,6 +10,8 @@ export interface CellsSettings {
   discover: boolean;
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
+  /** Feed the compress worker (default off; needs its port). */
+  compress?: boolean;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
@@ -30,6 +32,8 @@ export type FrameRequest =
   | { type: 'pipeline-stop'; id: number }
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
+  /** The port to the compress worker (transferred). */
+  | { type: 'connect-compress'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */

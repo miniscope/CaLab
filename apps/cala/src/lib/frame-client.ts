@@ -31,6 +31,8 @@ export interface FrameClient extends PipelineClient {
   readFrames(start: number, count: number): Promise<FramePixels>;
   /** Hand the frame worker its port to the slow worker (cell discovery). */
   connectSlow?(port: MessagePort): Promise<void>;
+  /** Hand the fast worker its port to the compress worker. */
+  connectCompress?(port: MessagePort): Promise<void>;
   dispose(): void;
 }
 
@@ -164,6 +166,9 @@ export function createFrameClient(
     },
     async connectSlow(port) {
       expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');
+    },
+    async connectCompress(port) {
+      expectType(await call({ type: 'connect-compress', port }, [port], traceTarget), 'ok');
     },
     async stepPipeline() {
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
