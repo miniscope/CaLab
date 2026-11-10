@@ -149,7 +149,7 @@ async function liveRun(browser) {
           c.pipeline.status() === 'error'
         );
       },
-      5 * 60_000,
+      60 * 60_000,
       'the final back-fill',
     );
     const seconds = (Date.now() - t0) / 1000;
