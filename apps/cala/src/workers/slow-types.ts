@@ -110,6 +110,13 @@ export interface SlowStatus {
   version: number;
   counters: SlowCounters;
   reservoirBytes: number;
+  /** Frames the reservoir stores per tile (0 = unknown). */
+  framesPerTile: number;
+  /**
+   * Set when the reservoir's memory cap holds the frames per tile below
+   * target (large sensors): discovery is slower, or starved.
+   */
+  reservoirWarning?: string;
   /** Wall time of the last batch (observe + step), and its longest single step, ms. */
   batchMs: number;
   maxStepMs: number;
