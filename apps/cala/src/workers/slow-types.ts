@@ -130,7 +130,13 @@ export interface LibraryView {
 /** Slow worker -> main thread. */
 export type SlowToMain =
   | { type: 'status'; session: number; status: SlowStatus }
-  | { type: 'library'; session: number; library: LibraryView }
+  | {
+      type: 'library';
+      session: number;
+      library: LibraryView;
+      /** The same library as `TraceLibrary.toBytes()` (a copy), so pass 2 can solve with the final one. */
+      bytes: Uint8Array;
+    }
   | { type: 'error'; session: number; message: string };
 
 /** Main thread -> slow worker: the port to the fast worker. */
@@ -144,8 +150,8 @@ export interface PortLike<T> {
   postMessage(msg: T, transfer?: Transferable[]): void;
 }
 
-export function libraryViewTransferables(v: LibraryView): ArrayBuffer[] {
-  return [v.ids, v.centers, v.radii, v.starts, v.pixels, v.values].map(
+export function libraryViewTransferables(v: LibraryView, bytes?: Uint8Array): ArrayBuffer[] {
+  return [v.ids, v.centers, v.radii, v.starts, v.pixels, v.values, ...(bytes ? [bytes] : [])].map(
     (a) => a.buffer as ArrayBuffer,
   );
 }

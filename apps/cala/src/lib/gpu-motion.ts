@@ -521,6 +521,30 @@ export class GpuMotion {
   }
 
   /**
+   * Upload `count` frames and warp them by known rigid shifts (pass 2: no
+   * prefilter, no estimate). Resolves once the work is queued, with `done`,
+   * the promise of the corrected frames in `out` (boxed, so awaiting this
+   * call does not wait for the readback).
+   */
+  async warpFrames(
+    frames: Float32Array,
+    dy: Float32Array,
+    dx: Float32Array,
+    count: number,
+    out: Float32Array,
+  ): Promise<{ done: Promise<void> }> {
+    const slot = await this.takeSlot();
+    this.device.queue.writeBuffer(
+      slot.frames,
+      0,
+      frames.buffer as ArrayBuffer,
+      frames.byteOffset,
+      count * this.px * f32Bytes,
+    );
+    return { done: this.warp(slot, dy, dx, count, out) };
+  }
+
+  /**
    * Warp the frames still resident in `slot` by the rigid shifts and read the
    * corrected frames into `out`. The slot is busy until the readback is done.
    */

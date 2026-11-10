@@ -132,6 +132,8 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
   const [fps, setFps] = createSignal(20);
 
   let session = -1;
+  /** Newest published library as `TraceLibrary.toBytes()` (pass 2 solves with it). */
+  let latestBytes: Uint8Array | null = null;
   let convHistory = new ConvergenceHistory();
   let editRates = new EditRates();
   let firstSeen = new Map<number, number>();
@@ -144,6 +146,7 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
 
   function reset(next: number): void {
     session = next;
+    latestBytes = null;
     history.clear();
     footprints.clear();
     firstSeen = new Map();
@@ -168,7 +171,8 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     setTick((v) => v + 1);
   }
 
-  function onLibrary(view: LibraryView): void {
+  function onLibrary(view: LibraryView, bytes?: Uint8Array): void {
+    if (bytes) latestBytes = bytes;
     const prev = library();
     const prevIds = new Set(prev ? prev.ids : []);
     let added = 0;
@@ -195,7 +199,7 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
   function onSlowMessage(msg: SlowToMain): void {
     // Errors outside a session (the worker crashed) always count.
     if (msg.session !== session && !(msg.type === 'error' && msg.session === -1)) return;
-    if (msg.type === 'library') onLibrary(msg.library);
+    if (msg.type === 'library') onLibrary(msg.library, msg.bytes);
     else if (msg.type === 'status') {
       if (!msg.status.final) {
         slowBatchMs.push(msg.status.batchMs);
@@ -284,6 +288,8 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     onSlowMessage,
     onBatch,
     library,
+    /** Bytes of `library()` for the trace solver (null before the first publish). */
+    libraryBytes: () => latestBytes,
     geometry,
     status,
     error,
