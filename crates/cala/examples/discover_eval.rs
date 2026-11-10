@@ -19,6 +19,11 @@
 //!   --compress-taps LIST   any of final,front,raw (default all)
 //!   --compress-threads N   threads sharing a window's tiles (default: all
 //!                     cores; 1 for clean single-thread timings)
+//!   --compress-dump   also write the first window of each tap, quantized
+//!                     (`window_<tap>_<N>.i16`: `CALAWIN1`, u32 width, height,
+//!                     frames, f32 quant, then i16 frames), the input of
+//!                     examples/compress_bench.rs and
+//!                     apps/cala/scripts/compress-bench.mjs
 //!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
 //!   --v1              all v2 additions off (prune, pre-test)
@@ -56,7 +61,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
+use calab_cala::compress::{quantize, CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
 use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, NonRigidConfig, Warper,
@@ -846,6 +851,7 @@ fn compress_report(
     windows_list: &[usize],
     taps: &[String],
     threads: usize,
+    dump: bool,
     pass2_ms: f64,
     out_dir: &Path,
 ) {
@@ -869,7 +875,20 @@ fn compress_report(
             threads,
             ..CompressConfig::default()
         };
+        let quant = cfg.quant;
         let mut wc = WindowCompressor::new(dims, cfg);
+        let mut dump_file = dump.then(|| {
+            let path = out_dir.join(format!("window_{tap}_{window}.i16"));
+            let mut f = std::io::BufWriter::new(File::create(path).unwrap());
+            f.write_all(b"CALAWIN1").unwrap();
+            let n = window.min(t_len) as u32;
+            for v in [dims.width as u32, dims.height as u32, n] {
+                f.write_all(&v.to_le_bytes()).unwrap();
+            }
+            f.write_all(&quant.to_le_bytes()).unwrap();
+            f
+        });
+        let mut pushed = 0usize;
         let mut got = vec![0.0f32; reference.len()];
         let (mut y, mut hat, mut y2) = (vec![0.0f32; n_px], vec![0.0f32; n_px], vec![0.0f32; n_px]);
         let mut rawf = vec![0.0f32; n_px];
@@ -910,16 +929,23 @@ fn compress_report(
             let raw = rec.read(s, cnt);
             for f in raw.chunks_exact(n_px) {
                 src.frame(f, &mut y);
-                let wf = match tap {
-                    "final" => wc.push(&y),
-                    "front" => wc.push(&src.buf),
+                let tapped: &[f32] = match tap {
+                    "final" => &y,
+                    "front" => &src.buf,
                     _ => {
                         for (o, &v) in rawf.iter_mut().zip(f) {
                             *o = f32::from(v);
                         }
-                        wc.push(&rawf)
+                        &rawf
                     }
                 };
+                if let Some(f) = dump_file.as_mut().filter(|_| pushed < window) {
+                    for &v in tapped {
+                        f.write_all(&quantize(v, quant).to_le_bytes()).unwrap();
+                    }
+                }
+                pushed += 1;
+                let wf = wc.push(tapped);
                 buffer = buffer.max(wc.buffer_bytes());
                 if let Some(wf) = wf {
                     replay(wf, &mut rest, &mut eng);
@@ -995,6 +1021,7 @@ fn main() {
         .split(',')
         .map(str::to_string)
         .collect();
+    let compress_dump = args.iter().any(|a| a == "--compress-dump");
     let compress_threads: usize = arg_value(&args, "--compress-threads").map_or(
         std::thread::available_parallelism().map_or(1, |v| v.get()),
         |s| s.parse().unwrap(),
@@ -1471,6 +1498,7 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
                 &compress_windows,
                 &compress_taps,
                 compress_threads,
+                compress_dump,
                 pass2_s * 1e3 / t_len as f64,
                 &out_dir,
             );
