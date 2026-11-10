@@ -1019,10 +1019,10 @@ mod tests {
             let v = &tf.temporal[i * tf.rank..(i + 1) * tf.rank];
             let fast: f32 = am + aw.iter().zip(v).map(|(x, y)| x * y).sum::<f32>();
             let mut slow = 0.0f32;
-            for j in 0..p {
+            for (j, &aj) in a.iter().enumerate() {
                 let w = &tf.spatial[j * tf.rank..(j + 1) * tf.rank];
                 let rec = tf.mean[j] + w.iter().zip(v).map(|(x, y)| x * y).sum::<f32>();
-                slow += a[j] * rec;
+                slow += aj * rec;
             }
             assert!(
                 (fast - slow).abs() < 1e-2 * slow.abs().max(1.0),
