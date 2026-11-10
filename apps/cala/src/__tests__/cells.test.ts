@@ -135,7 +135,8 @@ describe('TraceHistory', () => {
     expect(h.bytes).toBe(4096 * 4);
   });
 
-  it('stops growing at the byte budget and rings at its current size', () => {
+  it('splits the byte budget evenly: late cells get as long a trace as early ones', () => {
+    // 9 KB = 2304 frames of f32 for all cells together.
     const h = new TraceHistory(1 << 17, 10, 9 * 1024);
     for (let f = 0; f < 5000; f += 100) {
       h.push(
@@ -145,17 +146,42 @@ describe('TraceHistory', () => {
         new Array(200).fill(1).map((_, k) => f + (k >> 1)),
       );
     }
-    // Both start at 1024 frames (8 KB); growing one to 1536 would pass 10 KB.
-    expect(h.bytes).toBe(2 * 1024 * 4);
-    expect(h.get(1).frames.length).toBe(1024);
-    expect(h.get(1).values[1023]).toBe(4999);
-    // A third cell does not fit at all; dropping one frees its share.
+    // Two cells share 2304 frames: 1152 each.
+    expect(h.bytes).toBe(2 * 1152 * 4);
+    expect(h.get(1).frames.length).toBe(1152);
+    expect(h.get(1).values[1151]).toBe(4999);
+    // A third cell found late is tracked; every ring is cut back to its share (768).
     h.push(5000, 1, [1, 2, 7], [1, 2, 3]);
-    expect(h.has(7)).toBe(false);
-    h.retain([1]);
-    expect(h.bytes).toBe(1024 * 4);
-    h.push(5001, 1, [1, 7], [1, 3]);
     expect(h.has(7)).toBe(true);
+    expect(h.get(1).frames.length).toBe(768);
+    expect(h.get(1).values[767]).toBe(1);
+    expect(h.get(1).frames[0]).toBe(5001 - 768);
+    expect(h.get(7).values).toEqual([3]);
+    expect(h.bytes).toBeLessThanOrEqual(9 * 1024);
+    // Dropping a cell frees its share; the others may grow back when linear.
+    h.retain([1]);
+    expect(h.bytes).toBe(768 * 4);
+  });
+
+  it('tracks every cell of a large library within the budget, late ones included', () => {
+    const cells = 4000;
+    const budget = 64 * 1048576;
+    const h = new TraceHistory(1 << 17, 100_000, budget);
+    const ids = Array.from({ length: cells }, (_, i) => i);
+    // The first 1000 cells exist from the start; the rest appear one batch each.
+    let frame = 0;
+    for (; frame < 400; frame += 8) {
+      const active = ids.slice(0, Math.min(cells, 1000 + frame * 8));
+      h.push(frame, 8, active, new Float32Array(8 * active.length).fill(1));
+    }
+    expect(h.cellCount).toBe(cells);
+    // Equal rings: 64 MB / 4000 cells / 4 B = 4194 frames each; every cell has data.
+    expect(h.bytes).toBeLessThanOrEqual(budget);
+    expect(h.get(cells - 1).frames.length).toBeGreaterThan(0);
+    expect(h.span(0)!.end).toBe(h.span(cells - 1)!.end);
+    // Once the library has stopped growing, long-lived cells are cut to the same ring as new ones.
+    const sizes = new Set(ids.map((i) => h.get(i).frames.length).filter((n) => n > 8));
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(Math.floor(budget / 4 / cells));
   });
 
   it('lays a trace out densely on stream frames with NaN where it has none', () => {

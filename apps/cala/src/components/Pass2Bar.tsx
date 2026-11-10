@@ -1,14 +1,17 @@
 import { createSignal, createEffect, on, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
+import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Store } from '../lib/pass2-store.ts';
 import {
-  buildCaDeconExport,
-  buildCalaExport,
   cadeconCells,
-  downloadBytes,
+  cadeconIsClassic,
+  calaExportBytes,
   fileStem,
+  saveExport,
+  writeCaDeconExport,
+  writeCalaExport,
   type ExportInput,
 } from '../lib/export.ts';
 
@@ -33,6 +36,29 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
   const p = () => props.pass2;
   const [auto, setAuto] = createSignal(true);
   const [passOnly, setPassOnly] = createSignal(true);
+  const [exporting, setExporting] = createSignal<string | null>(null);
+  const [exportError, setExportError] = createSignal<string | null>(null);
+
+  /** Stream one export to disk (see `saveExport`), with progress and errors in the bar. */
+  async function runExport(
+    name: string,
+    sizeHint: number,
+    write: (sink: ByteSink, progress: (done: number, total: number) => void) => Promise<void>,
+  ): Promise<void> {
+    setExportError(null);
+    setExporting(`Exporting ${name}`);
+    try {
+      await saveExport(name, sizeHint, (sink) =>
+        write(sink, (done, total) =>
+          setExporting(`Exporting ${name}: ${total > 0 ? Math.floor((100 * done) / total) : 0}%`),
+        ),
+      );
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(null);
+    }
+  }
 
   // A new pass 1 invalidates pass 2's result.
   createEffect(
@@ -171,11 +197,16 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-npz"
-          disabled={!p().result()}
+          disabled={!p().result() || exporting() !== null}
           title="Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz)."
           onClick={() => {
             const input = exportInput();
-            if (input) downloadBytes(`${fileStem(props.label)}_cala.npz`, buildCalaExport(input));
+            if (input)
+              void runExport(
+                `${fileStem(props.label)}_cala.npz`,
+                calaExportBytes(input),
+                (sink, p) => writeCalaExport(input, sink, { onProgress: p }),
+              );
           }}
         >
           Export (.npz)
@@ -184,14 +215,15 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-cadecon"
-          disabled={!p().result()}
+          disabled={!p().result() || exporting() !== null}
           title={`Traces for CaDecon (open the file there, sampling rate ${props.fps > 0 ? `${props.fps} Hz` : 'of your recording'}).`}
           onClick={() => {
             const input = exportInput();
             if (input)
-              downloadBytes(
+              void runExport(
                 `${fileStem(props.label)}_cala_cadecon.npz`,
-                buildCaDeconExport(input, passOnly()),
+                input.result.frames * cadeconCells(input, passOnly()).length * 4,
+                (sink, p) => writeCaDeconExport(input, sink, passOnly(), { onProgress: p }),
               );
           }}
         >
@@ -205,6 +237,27 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           />
           QC-passing cells only
         </label>
+        <Show when={exporting()}>
+          <span class="cala-readout" data-testid="export-progress">
+            {exporting()}
+          </span>
+        </Show>
+        <Show when={exportError()}>
+          <span class="cala-status" data-testid="export-error" data-state="error">
+            Export failed: {exportError()}
+          </span>
+        </Show>
+        <Show
+          when={
+            p().result() &&
+            !cadeconIsClassic(p().result()!.frames, cadeconCells(exportInput()!, passOnly()).length)
+          }
+        >
+          <span class="cala-readout" data-testid="cadecon-large-note">
+            Too large for CaDecon to open (over 512 MB of traces): use the .npz with np.load, or
+            export fewer cells.
+          </span>
+        </Show>
       </div>
     </DashboardPanel>
   );

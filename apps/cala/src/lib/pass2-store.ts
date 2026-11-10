@@ -12,28 +12,28 @@
  * same order, which gives the same state pass 1 had at each frame: that is why
  * no checkpoints are needed when the whole recording is replayed.
  *
- * Traces are held frame-major in one `Float32Array` (frames x cells) because
- * batches arrive in frame order; `transposeTraces` makes the cells x frames
- * layout the export writes.
+ * Traces go straight to a `TraceFile` (trace-file.ts): frame-major (frames x
+ * cells) because batches arrive in frame order, in a file in the origin
+ * private file system, so memory stays at a few batches whatever the
+ * recording length (only disk quota limits it). The export streams from that
+ * file. Without OPFS the matrix is held in memory, up to 1.5 GB.
  */
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type { PipelinePlan } from './pipeline-plan.ts';
 import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-store.ts';
+import { createTraceFile, type TraceFile } from './trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
-
-/** The largest trace matrix pass 2 holds in memory, bytes. */
-export const MAX_PASS2_BYTES = 1_500_000_000;
 
 /** What pass 2 produced. */
 export interface Pass2Result {
   /** Cell ids in column order of `traces`. */
   ids: Uint32Array;
-  /** `frames x cells`, frame after frame (as the solver emits them). */
-  traces: Float32Array;
+  /** `frames x cells`, frame after frame (as the solver emits them), on disk or in memory. */
+  traces: TraceFile;
   frames: number;
   cells: number;
   /** Library version solved with, and the library itself (footprints for the export). */
@@ -41,16 +41,6 @@ export interface Pass2Result {
   library: LibraryView;
   /** Wall time of the whole pass, s. */
   seconds: number;
-}
-
-/** `frames x cells` (solver order) to `cells x frames` (row per cell). */
-export function transposeTraces(traces: Float32Array, frames: number, cells: number): Float32Array {
-  const out = new Float32Array(traces.length);
-  for (let f = 0; f < frames; f++) {
-    const row = f * cells;
-    for (let c = 0; c < cells; c++) out[c * frames + f] = traces[row + c];
-  }
-  return out;
 }
 
 export function createPass2Store(
@@ -69,6 +59,17 @@ export function createPass2Store(
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
 
   let generation = 0;
+  /** The trace file of the current run or result (deleted when replaced or cleared). */
+  let file: TraceFile | null = null;
+
+  /** Drop the result and delete its trace file. */
+  async function discard(): Promise<void> {
+    setResult(null);
+    const f = file;
+    file = null;
+    if (f) await f.dispose().catch(() => {});
+  }
+
   let inFlight = 0;
   let exhausted = false;
 
@@ -90,7 +91,11 @@ export function createPass2Store(
     return null;
   }
 
-  function handle(step: Awaited<ReturnType<PipelineClient['stepPipeline']>>, ctx: Ctx): void {
+  async function handle(
+    step: Awaited<ReturnType<PipelineClient['stepPipeline']>>,
+    ctx: Ctx,
+    gen: number,
+  ): Promise<void> {
     switch (step.kind) {
       case 'setup':
         return;
@@ -98,7 +103,7 @@ export function createPass2Store(
         const c = step.cells;
         if (!c || c.ids.length !== ctx.cellCount || c.ids.some((id, i) => id !== ctx.ids[i]))
           throw new Error('Pass 2 got no traces for the final library.');
-        ctx.traces.set(c.traces, step.start * ctx.cellCount);
+        ctx.traces.append(step.start, c.traces);
         ctx.done = step.start + step.count;
         setProcessed(ctx.done);
         setFps(ctx.meter.record(clock(), step.count));
@@ -114,6 +119,8 @@ export function createPass2Store(
         exhausted = true;
         if (ctx.done !== ctx.frames)
           throw new Error(`Pass 2 ended after ${ctx.done} of ${ctx.frames} frames.`);
+        await ctx.traces.finish();
+        if (gen !== generation) return;
         setResult({
           ids: ctx.ids,
           traces: ctx.traces,
@@ -132,7 +139,7 @@ export function createPass2Store(
     frames: number;
     cellCount: number;
     ids: Uint32Array;
-    traces: Float32Array;
+    traces: TraceFile;
     library: LibraryView;
     meter: ThroughputMeter;
     busy: number[];
@@ -150,14 +157,15 @@ export function createPass2Store(
       inFlight++;
       client
         .stepPipeline()
-        .then((step) => {
-          if (gen === generation) handle(step, ctx);
+        .then(async (step) => {
+          if (gen === generation) await handle(step, ctx, gen);
         })
         .catch((err: unknown) => {
           if (gen !== generation) return;
           generation++;
           setError(err instanceof Error ? err.message : String(err));
           setStatus('error');
+          void discard();
         })
         .finally(() => {
           if (gen !== generation) return;
@@ -182,8 +190,9 @@ export function createPass2Store(
     const gen = ++generation;
     inFlight = 0;
     exhausted = false;
+    setStatus('running');
     setError(null);
-    setResult(null);
+    await discard();
     setProcessed(0);
     setFps(0);
     setStageBusy([]);
@@ -195,19 +204,25 @@ export function createPass2Store(
     const frames = rec.frames;
     const cellCount = library.ids.length;
     setTotal(frames);
-    if (frames * cellCount * 4 > MAX_PASS2_BYTES) {
-      setError(
-        `${cellCount} cells x ${frames.toLocaleString()} frames is more traces than fit in memory.`,
-      );
+    let traces: TraceFile;
+    try {
+      traces = await createTraceFile(frames, cellCount);
+    } catch (err) {
+      if (gen !== generation) return;
+      setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
       return;
     }
-    setStatus('running');
+    if (gen !== generation) {
+      void traces.dispose();
+      return;
+    }
+    file = traces;
     const ctx: Ctx = {
       frames,
       cellCount,
       ids: library.ids.slice(),
-      traces: new Float32Array(frames * cellCount),
+      traces,
       library,
       meter: new ThroughputMeter(),
       busy: [],
@@ -243,6 +258,7 @@ export function createPass2Store(
     generation++;
     inFlight = 0;
     setStatus('cancelled');
+    void discard();
     void client.stopPipeline().catch(() => {});
   }
 
@@ -250,7 +266,7 @@ export function createPass2Store(
   function clear(): void {
     if (status() === 'running') generation++;
     setStatus('idle');
-    setResult(null);
+    void discard();
     setError(null);
     setProcessed(0);
     setTotal(0);
