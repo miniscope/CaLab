@@ -19,6 +19,13 @@
 //!   --compress-taps LIST   any of final,front,raw (default all)
 //!   --compress-threads N   threads sharing a window's tiles (default: all
 //!                     cores; 1 for clean single-thread timings)
+//!   --bg-arms LIST    after pass 2, re-extract every frame with the final
+//!                     footprints under other background models and write
+//!                     `traces_bg_<arm>.f32`: none, ring (the slow loop's),
+//!                     learn:K (global + rank K-1 maps learned from the first
+//!                     --bg-learn frames' residual, 3 rounds, as trace_eval),
+//!                     maps:K (the first K maps of --bg-maps, a raw f32 file of
+//!                     full-frame maps, e.g. from the factors of the whole run)
 //!   --seed-file F --seed-at N   at recording frame N, seed the slow loop with
 //!                     the footprints in F (`CALASEED`, u32 n, then per cell
 //!                     u32 id, y0, x0, h, w and f32 h*w unfiltered values),
@@ -73,7 +80,10 @@ use calab_cala::motion::{
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor, RawPixel};
-use calab_cala::trace::{Footprint, Library, LibraryBuilder, SolverConfig, TraceEngine};
+use calab_cala::trace::{
+    BackgroundLearner, BackgroundModel, Footprint, Library, LibraryBuilder, SolverConfig,
+    TraceEngine,
+};
 use std::fmt::Write as _;
 
 struct Avi {
@@ -840,6 +850,168 @@ fn drain_edits(
     }
 }
 
+/// The final library's footprints with another background model.
+fn with_background(
+    lib: &Arc<Library>,
+    model: BackgroundModel,
+    scfg: &SlowLoopConfig,
+    fov: &[u8],
+    noise: Vec<f32>,
+    flat: &mut GlowFlattener,
+) -> Arc<Library> {
+    let dims = lib.dims();
+    let w = dims.width;
+    let mut b = LibraryBuilder::new(dims)
+        .config(scfg.library)
+        .fov(fov.to_vec())
+        .noise(noise)
+        .background(model)
+        .reuse(lib.clone());
+    for s in 0..lib.len() {
+        let (pix, vals) = lib.unfiltered(s);
+        let (mut y0, mut x0, mut y1, mut x1) = (usize::MAX, usize::MAX, 0, 0);
+        for &p in pix {
+            let (y, x) = (p as usize / w, p as usize % w);
+            y0 = y0.min(y);
+            x0 = x0.min(x);
+            y1 = y1.max(y);
+            x1 = x1.max(x);
+        }
+        let (h, ww) = (y1 - y0 + 1, x1 - x0 + 1);
+        let mut values = vec![0.0f32; h * ww];
+        for (&p, &v) in pix.iter().zip(vals) {
+            let (y, x) = (p as usize / w, p as usize % w);
+            values[(y - y0) * ww + (x - x0)] = v;
+        }
+        b.push(Footprint {
+            id: lib.ids()[s],
+            y0,
+            x0,
+            height: h,
+            width: ww,
+            values,
+        });
+    }
+    Arc::new(b.build(flat).unwrap())
+}
+
+/// `--bg-arms`: re-extract every frame with the final footprints under other
+/// background models; traces to `traces_bg_<arm>.f32`.
+#[allow(clippy::too_many_arguments)]
+fn background_arms(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    lib: &Arc<Library>,
+    scfg: &SlowLoopConfig,
+    fov: &[u8],
+    flat: &mut GlowFlattener,
+    frames: u32,
+    arms: &[String],
+    learn: u32,
+    maps: &[Vec<f32>],
+    out_dir: &Path,
+) {
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let n = lib.len();
+    let t_len = frames as usize;
+    let noise = {
+        let mut p = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+        let raw = rec.read(0, learn.min(frames));
+        let mut y = vec![0.0f32; n_px];
+        for f in raw.chunks_exact(n_px) {
+            p.frame(f, &mut y);
+        }
+        p.pre.noise().sigma()
+    };
+    // The first `learn` frames, preprocessed, for the learned arms.
+    let learn = learn.min(frames) as usize;
+    let mut learn_frames = vec![0.0f32; learn * n_px];
+    {
+        let mut p = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+        let raw = rec.read(0, learn as u32);
+        for (f, o) in raw
+            .chunks_exact(n_px)
+            .zip(learn_frames.chunks_exact_mut(n_px))
+        {
+            p.frame(f, o);
+        }
+    }
+    for arm in arms {
+        let (kind, k) = arm.split_once(':').unwrap_or((arm.as_str(), "0"));
+        let k: usize = k.parse().unwrap();
+        let model = match kind {
+            "none" => BackgroundModel::None,
+            "ring" => scfg.background.clone(),
+            "maps" => BackgroundModel::Basis(maps[..k.min(maps.len())].to_vec()),
+            "learn" => {
+                let mut cur =
+                    with_background(lib, BackgroundModel::None, scfg, fov, noise.clone(), flat);
+                let mut model_buf = vec![0.0f32; n_px];
+                let mut resid = vec![0.0f32; n_px];
+                let mut fit_maps = Vec::new();
+                for _ in 0..3 {
+                    let mut eng = TraceEngine::new(cur.clone(), SolverConfig::default()).unwrap();
+                    let mut learner =
+                        BackgroundLearner::new(dims, Some(fov), 4, 8.0, learn).unwrap();
+                    for f in learn_frames.chunks_exact(n_px) {
+                        let r = eng.process(f).unwrap();
+                        let bg = match cur.background_model() {
+                            BackgroundModel::Basis(_) => Some(r.background.as_slice()),
+                            _ => None,
+                        };
+                        cur.render(&r.traces, bg, &mut model_buf).unwrap();
+                        for ((o, &y), &m) in resid.iter_mut().zip(f).zip(&model_buf) {
+                            *o = y - m;
+                        }
+                        learner.push(&resid).unwrap();
+                    }
+                    fit_maps = learner.fit(k).unwrap().maps;
+                    cur = with_background(
+                        lib,
+                        BackgroundModel::Basis(fit_maps.clone()),
+                        scfg,
+                        fov,
+                        noise.clone(),
+                        flat,
+                    );
+                }
+                BackgroundModel::Basis(fit_maps)
+            }
+            _ => panic!("unknown background arm {arm}"),
+        };
+        let l = with_background(lib, model, scfg, fov, noise.clone(), flat);
+        let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+        let mut eng = TraceEngine::new(l.clone(), SolverConfig::default()).unwrap();
+        let mut traces = vec![0.0f32; t_len * n];
+        let mut y = vec![0.0f32; n_px];
+        let t0 = Instant::now();
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let raw = rec.read(s, cnt);
+            for (i, f) in raw.chunks_exact(n_px).enumerate() {
+                let t = s as usize + i;
+                pipe.frame(f, &mut y);
+                let r = eng.process(&y).unwrap();
+                traces[t * n..(t + 1) * n].copy_from_slice(&r.traces);
+            }
+            s += cnt;
+        }
+        println!(
+            "background arm {arm}: {} coefficients, pass 2 in {:.1} s",
+            l.background_len(),
+            t0.elapsed().as_secs_f64()
+        );
+        let mut f = std::io::BufWriter::new(
+            File::create(out_dir.join(format!("traces_bg_{}.f32", arm.replace(':', "")))).unwrap(),
+        );
+        write_f32s(&mut f, &traces);
+    }
+}
+
 /// `--compress-window`: compress the frames at three points of the chain,
 /// replay pass 2 from the factors and compare with `reference` (pass 2 from
 /// the frames, `frames x cells`).
@@ -1027,6 +1199,9 @@ fn main() {
         .collect();
     let compress_dump = args.iter().any(|a| a == "--compress-dump");
     let seed_at: u32 = arg_value(&args, "--seed-at").map_or(u32::MAX, |s| s.parse().unwrap());
+    let bg_arms: Vec<String> = arg_value(&args, "--bg-arms")
+        .map_or(Vec::new(), |s| s.split(',').map(str::to_string).collect());
+    let bg_learn: u32 = arg_value(&args, "--bg-learn").map_or(200, |s| s.parse().unwrap());
     let seed_fps: Vec<Footprint> = arg_value(&args, "--seed-file").map_or(Vec::new(), |p| {
         let b = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
         assert_eq!(&b[..8], b"CALASEED", "not a seed file");
@@ -1133,6 +1308,16 @@ fn main() {
     let mut rec = Recording::open(&avi_dir);
     let dims = rec.dims;
     let n_px = dims.pixels();
+    let bg_maps: Vec<Vec<f32>> = arg_value(&args, "--bg-maps").map_or(Vec::new(), |p| {
+        let b = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let v: Vec<f32> = b
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        v.chunks_exact(n_px).map(|m| m.to_vec()).collect()
+    });
     let oracle = sim.then(|| read_oracle(&input.join("oracle.bin")));
     let mut frames = arg_value(&args, "--frames")
         .map_or(rec.total, |s| s.parse().unwrap())
@@ -1546,6 +1731,12 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
         let mi: Vec<f32> = meanimg.iter().map(|&v| (v / t_len as f64) as f32).collect();
         let mut f = File::create(out_dir.join("meanimg.f32")).unwrap();
         write_f32s(&mut f, &mi);
+        if !bg_arms.is_empty() && !lib.is_empty() {
+            background_arms(
+                &mut rec, &pre0, &cal, motion, &lib, &scfg, &fov, &mut flat, frames, &bg_arms,
+                bg_learn, &bg_maps, &out_dir,
+            );
+        }
     }
 
     // ---- curve of library size (also for real data)
