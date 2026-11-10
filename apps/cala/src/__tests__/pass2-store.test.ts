@@ -102,7 +102,7 @@ describe('pass 2 store', () => {
     expect(r.frames).toBe(8);
     expect(r.cells).toBe(2);
     // Frame-major: frame f, cell c at f * 2 + c.
-    expect(r.traces[5 * 2 + 1]).toBe(51);
+    expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
     expect(store.processed()).toBe(8);
   });
 
