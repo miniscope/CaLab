@@ -219,6 +219,23 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     } else setError(msg.message);
   }
 
+  /**
+   * Traces of one compressed window, solved again with the final library
+   * (`?compress`). The first window replaces the live history, so every cell
+   * has its trace from the first frame on.
+   */
+  function onBackfill(
+    first: boolean,
+    start: number,
+    count: number,
+    ids: Uint32Array,
+    traces: Float32Array,
+  ): void {
+    if (first) history.clear();
+    history.push(start, count, ids, traces);
+    setTick((t) => t + 1);
+  }
+
   /** A QC snapshot from the fast worker. */
   function onQc(snap: QcSnapshot): void {
     const g = snap.global;
@@ -282,6 +299,7 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     reset,
     session: () => session,
     onSlowMessage,
+    onBackfill,
     onBatch,
     library,
     geometry,

@@ -2,10 +2,19 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm, quantizeTiles, TileCompressor } from '../lib/cala-wasm.ts';
+import {
+  FactorWindow,
+  initCalaWasm,
+  quantizeTiles,
+  TileCompressor,
+  TraceEngine,
+  TraceLibrary,
+  TraceLibraryBuilder,
+} from '../lib/cala-wasm.ts';
+import { createCellStore } from '../lib/cell-store.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { CompressRunner, factorName, tileGrid } from '../lib/compress-runner.ts';
-import { compressReadout } from '../lib/compress-store.ts';
+import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
 
@@ -60,6 +69,18 @@ function runner(store = memoryStore()) {
   const r = new CompressRunner({
     store,
     create: (quant) => new TileCompressor(quant),
+    engine: (bytes) => {
+      const lib = TraceLibrary.fromBytes(bytes);
+      const engine = new TraceEngine(lib, 0, 0);
+      const ids = lib.ids();
+      lib.free();
+      return {
+        ids: () => ids,
+        processFrames: (frames, count) => engine.processFrames(frames, count),
+        free: () => engine.free(),
+      };
+    },
+    factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m) => toMain.push(m) },
     yieldNow: () => Promise.resolve(),
   });
@@ -227,5 +248,141 @@ describe('CompressRunner', () => {
     await r.idle();
     expect(store.files.size).toBe(0);
     expect(toMain.length).toBe(before);
+  });
+});
+
+/** Two cells with known footprints and slow, non-negative traces. */
+const CELLS = [
+  { id: 11, cy: 7, cx: 9, trace: (t: number) => 5 * (1 + Math.sin(t / 9)) },
+  { id: 12, cy: 15, cx: 28, trace: (t: number) => 4 * (1 + Math.cos(t / 5)) },
+];
+const PATCH = 9;
+const blob = (dy: number, dx: number): number => Math.exp(-(dy * dy + dx * dx) / 6);
+
+function cellFrames(start: number, count: number): Float32Array {
+  const out = new Float32Array(count * PX);
+  for (let i = 0; i < count; i++) {
+    for (const c of CELLS) {
+      const v = c.trace(start + i);
+      for (let y = c.cy - 4; y <= c.cy + 4; y++) {
+        for (let x = c.cx - 4; x <= c.cx + 4; x++) {
+          out[i * PX + y * W + x] += v * blob(y - c.cy, x - c.cx);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function cellLibrary(): { version: number; bytes: Uint8Array } {
+  const b = new TraceLibraryBuilder(W, H);
+  for (const c of CELLS) {
+    const values = new Float32Array(PATCH * PATCH);
+    for (let y = 0; y < PATCH; y++) {
+      for (let x = 0; x < PATCH; x++) values[y * PATCH + x] = blob(y - 4, x - 4);
+    }
+    b.addFootprint(c.id, c.cy - 4, c.cx - 4, PATCH, PATCH, values);
+  }
+  const lib = b.buildUnfiltered();
+  const out = { version: lib.version, bytes: lib.toBytes() };
+  lib.free();
+  b.free();
+  return out;
+}
+
+describe('back-fill from the factors', () => {
+  it('solves the traces of every window with the library it is given', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    feed.library(lib.version, lib.bytes); // before the first frame: not sent
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    expect(sent.filter((m) => m.type === 'library').length).toBe(1);
+
+    const { r, toMain } = runner();
+    // Asked for before anything is compressed: it waits for the windows and the library.
+    await r.handle(sent[0]);
+    r.backfill(7, lib.version);
+    for (const m of sent.slice(1)) await r.handle(m);
+    await r.idle();
+
+    const windows = toMain.filter((m) => m.type === 'traces');
+    expect(windows.map((m) => [m.first, m.start, m.count])).toEqual([
+      [true, 0, 50],
+      [false, 50, 50],
+    ]);
+    const done = toMain[toMain.length - 1];
+    expect(done).toMatchObject({ type: 'backfilled', session: 7, frames: 100 });
+    for (const m of windows) {
+      expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
+      for (let i = 0; i < m.count; i++) {
+        CELLS.forEach((c, j) => {
+          expect(m.traces[i * CELLS.length + j]).toBeCloseTo(c.trace(m.start + i), 1);
+        });
+      }
+    }
+
+    // A second request needs a library at least that new.
+    r.backfill(7, lib.version + 1);
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
+    r.backfill(99, lib.version); // another session
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
+  });
+
+  it('is requested once per run, and its traces replace the live history', () => {
+    const cells = createCellStore();
+    const store = createCompressStore(cells);
+    cells.reset(3);
+    store.reset(3);
+    const status = {
+      windows: 2,
+      frames: 100,
+      pending: 0,
+      pendingFrames: 0,
+      meanRank: 2,
+      msPerFrame: 8,
+      factorBytes: 1 << 20,
+      final: false,
+    };
+    store.onMessage({ type: 'status', session: 3, status });
+    expect(store.takeBackfill(true, true, 4)).toBe(false); // windows still open
+    store.onMessage({ type: 'status', session: 3, status: { ...status, final: true } });
+    expect(store.takeBackfill(false, true, 4)).toBe(false); // still reading
+    expect(store.takeBackfill(true, true, 0)).toBe(false); // no cells
+    expect(store.takeBackfill(true, true, 4)).toBe(true);
+    expect(store.takeBackfill(true, true, 4)).toBe(false);
+
+    // Live history: cell 5 from frame 60 on. Back-fill: from frame 0.
+    cells.history().push(60, 2, [5], [1, 2]);
+    const traces = Float32Array.from({ length: 50 }, (_, i) => i);
+    store.onMessage({
+      type: 'traces',
+      session: 3,
+      version: 4,
+      first: true,
+      start: 0,
+      count: 50,
+      ids: Uint32Array.of(5),
+      traces,
+    });
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
+    store.onMessage({
+      type: 'traces',
+      session: 9,
+      version: 4,
+      first: true,
+      start: 0,
+      count: 1,
+      ids: Uint32Array.of(5),
+      traces: Float32Array.of(7),
+    });
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
+    store.onMessage({ type: 'backfilled', session: 3, version: 4, frames: 100, msPerFrame: 2.5 });
+    expect(compressReadout(store.status(), store.backfill())).toMatch(
+      /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
+    );
   });
 });

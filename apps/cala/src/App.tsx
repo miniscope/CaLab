@@ -40,10 +40,21 @@ const App: Component = () => {
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
   // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = params.has('compress') ? createCompressStore() : undefined;
-  if (compress) createCompressClient(client, (msg) => compress.onMessage(msg));
+  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  const compressClient = compress
+    ? createCompressClient(client, (msg) => compress.onMessage(msg))
+    : undefined;
   const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'), compress);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
+  // Recording read, final library out, every window compressed: solve the
+  // traces of the whole recording again from the factors, with that library.
+  createEffect(() => {
+    const slow = cells.status();
+    const done = pipeline.status() === 'done';
+    if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
+      compressClient?.backfill(cells.session(), slow?.version ?? 0);
+    }
+  });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
     (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, compress };

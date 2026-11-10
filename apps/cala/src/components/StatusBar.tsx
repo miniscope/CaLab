@@ -119,7 +119,7 @@ export function StatusBar(props: {
       <Show when={props.compress}>
         {(compress) => (
           <span class="cala-readout" data-testid="compress-readout">
-            {compress().error() ?? compressReadout(compress().status())}
+            {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
           </span>
         )}
       </Show>
