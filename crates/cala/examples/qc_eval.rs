@@ -14,6 +14,20 @@
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
+//!   --batch B          forward frames to the slow loop in batches of B (the
+//!                      app uses 8); library swaps land between batches (1)
+//!   --slow-keep F      forward only a share F of the batches to the slow loop
+//!                      (it observes and steps on those only), modelling the
+//!                      app's drops when the slow worker is busy (1)
+//!   --drop-mode M      `uniform`: evenly spaced batches; `score`: the batches
+//!                      whose residual excursion score (`SlowLoop::tile_scores`,
+//!                      summed over tiles above 4 σ) is in the top F of
+//!                      recent batches go whenever capacity (a share F of
+//!                      the batches, at most 4 banked) allows; quiet ones
+//!                      only when capacity would otherwise go unused
+//!   --readd-window N / --churn-frames N   add classification windows
+//!   --drop-step        keep stepping the slow loop on dropped batches (only
+//!                      the observation is lost, not the compute)
 //! ```
 //!
 //! * `sim`: the merged fast and slow loops on a minisim recording, from an
@@ -32,7 +46,10 @@
 //!   `footprints.bin` for matching to another pipeline's cells.
 //!
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
-//! every 100 frames, GT precision / recall / trace r at checkpoints) and, with
+//! every 100 frames, GT precision / recall / trace r at checkpoints, and the
+//! slow loop's cumulative add classification), `adds.tsv` / `removals.tsv`
+//! (every add with its class, every removal with its age; recording frames)
+//! and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
 //! order) and `cells_pass2.tsv` (QC of the re-extracted traces).
 
@@ -1099,6 +1116,11 @@ fn main() {
     let every: usize = arg_value(&args, "--every").map_or(300, |s| s.parse().unwrap());
     let frac: f64 = arg_value(&args, "--perturb-frac").map_or(0.3, |s| s.parse().unwrap());
     let seed: u64 = arg_value(&args, "--seed").map_or(1, |s| s.parse().unwrap());
+    let batch_n: usize = arg_value(&args, "--batch").map_or(1, |s| s.parse().unwrap());
+    let keep: f64 = arg_value(&args, "--slow-keep").map_or(1.0, |s| s.parse().unwrap());
+    let score_mode = arg_value(&args, "--drop-mode").is_some_and(|m| m == "score");
+    let drop_step = args.iter().any(|a| a == "--drop-step");
+    assert!(batch_n >= 1 && keep > 0.0 && keep <= 1.0);
 
     let avi_dir = if has_gt {
         input.join("daq/Miniscope")
@@ -1123,6 +1145,12 @@ fn main() {
     };
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--readd-window") {
+        scfg.churn.readd_window_frames = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--churn-frames") {
+        scfg.churn.churn_frames = v.parse().unwrap();
     }
     let warm = rec.read(0, (cfg.warmup_frames as u32).min(frames));
     let mut acc = WarmupAccumulator::new(dims);
@@ -1159,7 +1187,19 @@ fn main() {
     for f in GlobalQc::FIELDS.iter().take(GlobalQc::FIELDS.len() - 1) {
         let _ = write!(global, "{f}\t");
     }
-    global.push_str("gt_precision\tgt_recall\tgt_median_true_r\n");
+    global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\n");
+    // Batches waiting to be forwarded: (frame, traces, library, recording frame).
+    let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
+    let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
+    let mut recent_scores: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
+    let mut tokens = 1.0f64;
+    // Recording frame of each slow-loop frame.
+    let mut slow_rec: Vec<u32> = Vec::new();
+    let mut add_log = String::from("frame\trecording_frame\tid\tclass\tcy\tcx\tcos\tdist\tsince\n");
+    let mut rem_log = String::from(
+        "frame\trecording_frame\tid\tkind\tcy\tcx\tborn\tborn_recording\tclass\tchurned\n",
+    );
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
     let mut summary = Vec::new();
     let mut s = 0u32;
@@ -1205,9 +1245,100 @@ fn main() {
                 if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
                 }
-                sl.observe(&y, &lib, &tr).unwrap();
-                if let Some(l) = sl.step(budget).unwrap() {
-                    engine.set_library(l).unwrap();
+                pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                if pending.len() >= batch_n || t + 1 == t_len {
+                    n_batches += 1;
+                    let forward = if keep >= 1.0 {
+                        true
+                    } else if score_mode {
+                        // Residual excursions above 4 σ, per tile the
+                        // largest in the batch, summed over tiles.
+                        let mut best: Vec<f32> = Vec::new();
+                        for (yy, tt, ll, _) in &pending {
+                            let sc = sl.tile_scores(yy, ll, tt).unwrap();
+                            if best.is_empty() {
+                                best = sc;
+                            } else {
+                                for (b, v) in best.iter_mut().zip(sc) {
+                                    *b = b.max(v);
+                                }
+                            }
+                        }
+                        let score: f32 = best.iter().map(|v| (v - 4.0).max(0.0)).sum();
+                        let mut v: Vec<f32> = recent_scores.iter().copied().collect();
+                        let busy = if v.len() < 16 {
+                            true
+                        } else {
+                            v.sort_by(f32::total_cmp);
+                            let k = ((1.0 - keep) * (v.len() - 1) as f64).round() as usize;
+                            score > v[k] || score >= v[v.len() - 1]
+                        };
+                        // Capacity: `keep` batches' worth per batch, at most
+                        // 4 banked. A busy batch goes whenever there is
+                        // capacity; a quiet one only when capacity would
+                        // otherwise go unused.
+                        tokens = (tokens + keep).min(4.0);
+                        let fwd = tokens >= 1.0 && (busy || tokens >= 3.0);
+                        if fwd {
+                            tokens -= 1.0;
+                        }
+                        recent_scores.push_back(score);
+                        if recent_scores.len() > 256 {
+                            recent_scores.pop_front();
+                        }
+                        fwd
+                    } else {
+                        // Evenly spaced: the k-th batch goes when the share
+                        // forwarded so far falls behind `keep`.
+                        (n_fwd as f64) < keep * n_batches as f64
+                    };
+                    if forward {
+                        n_fwd += 1;
+                    }
+                    for (yy, tt, ll, tf) in pending.drain(..) {
+                        if forward {
+                            sl.observe(&yy, &ll, &tt).unwrap();
+                            slow_rec.push(tf as u32);
+                            fwd_frames += 1;
+                        } else if !drop_step {
+                            continue;
+                        }
+                        if let Some(l) = sl.step(budget).unwrap() {
+                            engine.set_library(l).unwrap();
+                        }
+                    }
+                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                    for a in sl.take_add_log() {
+                        let _ = writeln!(
+                            add_log,
+                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.4}\t{:.2}\t{}",
+                            a.frame,
+                            rf(a.frame),
+                            a.id,
+                            a.class.as_str(),
+                            a.center.0,
+                            a.center.1,
+                            a.cos,
+                            a.dist,
+                            a.since as i64
+                        );
+                    }
+                    for r in sl.take_removal_log() {
+                        let _ = writeln!(
+                            rem_log,
+                            "{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}",
+                            r.frame,
+                            rf(r.frame),
+                            r.id,
+                            r.kind.as_str(),
+                            r.center.0,
+                            r.center.1,
+                            r.born,
+                            rf(r.born),
+                            r.class.map_or("none", |c| c.as_str()),
+                            u8::from(r.churned)
+                        );
+                    }
                 }
             }
             let t_end = t + 1;
@@ -1248,6 +1379,29 @@ fn main() {
                 } else {
                     vec![f64::NAN; 3]
                 };
+                let mut extra = extra;
+                let (cc, st, sf, sn) = slow
+                    .as_ref()
+                    .map_or((Default::default(), Default::default(), 0, 0), |sl| {
+                        (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
+                    });
+                extra.extend(
+                    [
+                        cc.adds_new,
+                        cc.adds_readd,
+                        cc.churned,
+                        cc.churned_readd,
+                        cc.established_removals,
+                        st.adds,
+                        st.merges,
+                        st.deletes,
+                        st.splits,
+                        sf,
+                        sn as u64,
+                        fwd_frames,
+                    ]
+                    .map(|v| v as f64),
+                );
                 global.push_str(&global_line(&g, &extra));
                 if t_end.is_multiple_of(1200) || t_end == t_len {
                     println!(
@@ -1262,6 +1416,9 @@ fn main() {
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
+    std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
+    std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
+    println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();
     sorted.sort_by(f64::total_cmp);

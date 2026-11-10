@@ -350,3 +350,54 @@ fn bad_inputs_are_errors() {
     };
     assert!(QcMonitor::new(dims(), vec![1; W * H], vec![1.0; W * H], cfg).is_err());
 }
+
+#[test]
+fn stability_compares_old_cells_with_their_earlier_state() {
+    let (fps, cs) = scene();
+    let lib1 = Arc::new(library(&fps, 1));
+    let mut moved = fps[1].clone();
+    moved.x0 += 3;
+    let lib2 = Arc::new(library(&[fps[0].clone(), moved, fps[2].clone()], 2));
+    let mut eng = TraceEngine::new(lib1.clone(), SolverConfig::default()).unwrap();
+    // Snapshots every 100 frames; cells judged from 200 frames old.
+    let cfg = QcConfig {
+        window_frames: 600,
+        refresh_frames: 10,
+        residual_every: 2,
+        block_px: 4,
+        stability_lag_s: 5.0,
+        stable_min_age_s: 10.0,
+        ..QcConfig::default()
+    };
+    let mut qc = QcMonitor::new(dims(), vec![1; W * H], vec![1.0; W * H], cfg).unwrap();
+    let mut rng = Lcg(9);
+    let mut seen = Vec::new();
+    for t in 0..1400 {
+        if t == 1000 {
+            eng.set_library(lib2.clone()).unwrap();
+        }
+        let lib = if t < 1000 { &lib1 } else { &lib2 };
+        let y = frame(&fps, &cs, t, &mut rng);
+        let tr = eng.process(&y).unwrap();
+        qc.observe(&y, lib, &tr).unwrap();
+        if t == 150 || t == 999 || t == 1050 || t == 1399 {
+            seen.push(qc.global());
+        }
+    }
+    // Too young at first: nothing compared.
+    assert_eq!(seen[0].stable_cells, 0);
+    assert!(seen[0].stable_frac.is_nan());
+    // Unchanged library: every cell stable.
+    assert_eq!(seen[1].stable_cells, 3);
+    assert_eq!(seen[1].stable_frac, 1.0);
+    assert_eq!(seen[1].fp_stability, 1.0);
+    // Cell 2 moved 3 px (cosine ~0.7): one of three unstable until the
+    // reference snapshot holds the new footprint.
+    assert!(
+        (seen[2].stable_frac - 2.0 / 3.0).abs() < 1e-6,
+        "{:?}",
+        seen[2]
+    );
+    assert_eq!(seen[3].stable_frac, 1.0);
+    assert!(seen[2].trace_sigma_change.is_finite());
+}

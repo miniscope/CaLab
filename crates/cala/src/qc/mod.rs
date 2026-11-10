@@ -44,8 +44,25 @@
 //!   footprint shape and stability are descriptive.
 //! * **Global, validated.** `explained` and `residual_excess` track true
 //!   recall over a run (ρ 0.93-1.00 and −0.87 to −1.00), and `adds_per_min`
-//!   falls as recall rises (ρ −0.64 to −0.92); these are the convergence
-//!   curves. `pass_frac` and the median SNR do not track recall consistently.
+//!   falls as recall rises (ρ −0.64 to −0.92). `pass_frac` and the median
+//!   SNR do not track recall consistently.
+//! * **Convergence: existing-cell stability.** Cell discovery never stops
+//!   on long recordings (batch tools find nearly twice the cells in 30-120
+//!   min as in 10-30 min), so adds per minute cannot say whether a run has
+//!   converged. What should settle is the cells already found: every
+//!   `stability_lag_s` the monitor snapshots each cell's unfiltered
+//!   footprint and trace noise σ (own footprint and demixing with its
+//!   neighbours), and compares every cell older than `stable_min_age_s` with
+//!   the snapshot one to two lags old (`stable_frac`, `fp_stability`,
+//!   `trace_sigma_change`; per cell `fp_ref_cos`, `sigma_ref_change`). On
+//!   minisim, `stable_frac` rises from ~0.6 to a plateau of 0.87-0.96 while
+//!   GT precision is flat. It is a run-level signal, not a per-cell flag:
+//!   cells that are unstable at a given moment are true positives about as
+//!   often as stable ones (0.96 vs 0.98, 8-min runs; 0.89 vs 0.96, 20 min)
+//!   with traces as good (true r 0.95-0.96 either way). The slow loop's add
+//!   classification (re-adds, adds removed again, removals of established
+//!   cells: `crate::discover::ChurnCounts`) is the other half of the
+//!   convergence rule, which lives in the app (`apps/cala/src/lib/qc.ts`).
 
 // Index loops over pixels and cells read more clearly here; `!(x > 0.0)`
 // deliberately treats NaN as "not positive".
@@ -93,6 +110,17 @@ pub struct QcConfig {
     pub min_overlap: f32,
     /// Window of the churn rates, frames.
     pub churn_window_frames: u64,
+    /// Existing-cell stability: each cell is compared with its state
+    /// between one and two of these lags ago (seconds).
+    pub stability_lag_s: f32,
+    /// Only cells at least this old (seconds) are judged for stability.
+    pub stable_min_age_s: f32,
+    /// A cell is stable when its unfiltered footprint has at least this
+    /// cosine with that earlier one...
+    pub stable_cos: f32,
+    /// ...and its trace noise σ (own footprint and demixing with its
+    /// neighbours) changed by less than this fraction.
+    pub stable_sigma: f32,
     /// Thresholds of [`CellQc::pass`].
     pub pass: PassRule,
 }
@@ -133,6 +161,10 @@ impl Default for QcConfig {
             max_neighbours: 8,
             min_overlap: 0.02,
             churn_window_frames: 1200,
+            stability_lag_s: 60.0,
+            stable_min_age_s: 120.0,
+            stable_cos: 0.95,
+            stable_sigma: 0.1,
             pass: PassRule {
                 min_snr: 5.0,
                 pair_r: 0.8,
@@ -158,7 +190,12 @@ impl QcConfig {
             && self.residual_tau_frames.is_finite()
             && self.residual_tau_frames >= 1.0
             && self.block_px >= 1
-            && self.min_overlap.is_finite();
+            && self.min_overlap.is_finite()
+            && self.stability_lag_s.is_finite()
+            && self.stability_lag_s > 0.0
+            && self.stable_min_age_s.is_finite()
+            && self.stable_cos.is_finite()
+            && self.stable_sigma.is_finite();
         if ok {
             Ok(())
         } else {
@@ -192,6 +229,11 @@ pub struct CellQc {
     pub fp_last_r: f32,
     /// Number of footprint changes since the cell entered.
     pub fp_changes: u32,
+    /// Cosine of the unfiltered footprint with the cell's footprint one to
+    /// two `stability_lag_s` ago, and the relative change of its trace noise
+    /// σ since then (NaN when the cell was not in the library then).
+    pub fp_ref_cos: f32,
+    pub sigma_ref_change: f32,
     pub n_neighbours: u32,
     /// Largest |normalised overlap| ã_iᵀã_j / (‖ã_i‖ ‖ã_j‖) with a neighbour.
     pub max_overlap: f32,
@@ -234,6 +276,8 @@ impl CellQc {
             fp_edge_frac: f32::NAN,
             fp_last_r: 1.0,
             fp_changes: 0,
+            fp_ref_cos: f32::NAN,
+            sigma_ref_change: f32::NAN,
             n_neighbours: 0,
             max_overlap: 0.0,
             vif: 1.0,
@@ -249,7 +293,7 @@ impl CellQc {
     }
 
     /// Field names of [`CellQc::to_row`], in order.
-    pub const FIELDS: [&'static str; 32] = [
+    pub const FIELDS: [&'static str; 34] = [
         "id",
         "age_frames",
         "frames",
@@ -271,6 +315,8 @@ impl CellQc {
         "fp_edge_frac",
         "fp_last_r",
         "fp_changes",
+        "fp_ref_cos",
+        "sigma_ref_change",
         "n_neighbours",
         "max_overlap",
         "vif",
@@ -286,7 +332,7 @@ impl CellQc {
 
     /// The metrics as numbers, in [`CellQc::FIELDS`] order (ids as f64 are
     /// exact below 2⁵³; no neighbour = -1).
-    pub fn to_row(&self) -> [f64; 32] {
+    pub fn to_row(&self) -> [f64; 34] {
         let t = &self.trace;
         let f = |v: f32| f64::from(v);
         [
@@ -311,6 +357,8 @@ impl CellQc {
             f(self.fp_edge_frac),
             f(self.fp_last_r),
             f64::from(self.fp_changes),
+            f(self.fp_ref_cos),
+            f(self.sigma_ref_change),
             f64::from(self.n_neighbours),
             f(self.max_overlap),
             f(self.vif),
@@ -371,10 +419,19 @@ pub struct GlobalQc {
     pub median_asymmetry: f32,
     /// Measured cells in a correlated pair.
     pub pair_frac: f32,
+    /// Existing-cell stability against the cells' state one to two
+    /// `stability_lag_s` ago: cells compared (present then and now), the
+    /// median cosine of their unfiltered footprints, the median relative
+    /// change of their trace noise σ, and the share that is stable
+    /// (`stable_cos` and `stable_sigma`). NaN before the first comparison.
+    pub stable_cells: u32,
+    pub fp_stability: f32,
+    pub trace_sigma_change: f32,
+    pub stable_frac: f32,
 }
 
 impl GlobalQc {
-    pub const FIELDS: [&'static str; 22] = [
+    pub const FIELDS: [&'static str; 26] = [
         "frames",
         "library_version",
         "cells",
@@ -396,6 +453,10 @@ impl GlobalQc {
         "median_vif",
         "median_asymmetry",
         "pair_frac",
+        "stable_cells",
+        "fp_stability",
+        "trace_sigma_change",
+        "stable_frac",
         "residual_blocks",
     ];
 }
@@ -418,6 +479,23 @@ struct CellState {
     res: [ResAvg; 2],
     /// Running means of (p, c, p², c², pc) for `proj_r`.
     pc: [ResAvg; 5],
+}
+
+/// A cell's state at a stability snapshot.
+#[derive(Debug, Clone)]
+struct Snap {
+    pix: Vec<u32>,
+    val: Vec<f32>,
+    sigma: f32,
+}
+
+/// Existing-cell stability (recomputed on library changes and snapshots).
+#[derive(Debug, Clone, Copy)]
+struct Stability {
+    cells: u32,
+    cos: f32,
+    sigma: f32,
+    frac: f32,
 }
 
 /// Running average with a time constant (cumulative while young).
@@ -475,6 +553,12 @@ pub struct QcMonitor {
     churn: VecDeque<(u64, u32, u32, u32)>,
     total_adds: u64,
     total_removes: u64,
+    /// Stability snapshots: the reference (one to two lags old) and the
+    /// next one, with the frames they were taken at.
+    snap_ref: HashMap<u64, Snap>,
+    snap_next: HashMap<u64, Snap>,
+    snap_next_frame: u64,
+    stability: Stability,
     scratch: Vec<f32>,
     scratch2: Vec<f32>,
     img: Vec<f32>,
@@ -521,6 +605,15 @@ impl QcMonitor {
             churn: VecDeque::new(),
             total_adds: 0,
             total_removes: 0,
+            snap_ref: HashMap::new(),
+            snap_next: HashMap::new(),
+            snap_next_frame: 0,
+            stability: Stability {
+                cells: 0,
+                cos: f32::NAN,
+                sigma: f32::NAN,
+                frac: f32::NAN,
+            },
             scratch: Vec::new(),
             scratch2: Vec::new(),
             img: vec![0.0; n_px],
@@ -582,7 +675,93 @@ impl QcMonitor {
                     + std::mem::size_of::<CellState>()
             })
             .sum();
-        cells + self.model.len() * 12 + self.blk_r.len() * 36
+        let snaps: usize = self
+            .snap_ref
+            .values()
+            .chain(self.snap_next.values())
+            .map(|s| 8 * s.pix.len() + std::mem::size_of::<Snap>() + 8)
+            .sum();
+        cells + snaps + self.model.len() * 12 + self.blk_r.len() * 36
+    }
+
+    /// Lag of the stability snapshots, frames.
+    fn lag_frames(&self) -> u64 {
+        (self.cfg.stability_lag_s * self.cfg.fps).round().max(1.0) as u64
+    }
+
+    /// Take a stability snapshot every lag; the previous one becomes the
+    /// reference.
+    fn snapshot(&mut self) {
+        if self.frames < self.snap_next_frame + self.lag_frames() {
+            return;
+        }
+        let next: HashMap<u64, Snap> = self
+            .cells
+            .iter()
+            .map(|c| {
+                (
+                    c.qc.id,
+                    Snap {
+                        pix: c.fp_pix.clone(),
+                        val: c.fp_val.clone(),
+                        sigma: c.qc.model_sigma,
+                    },
+                )
+            })
+            .collect();
+        self.snap_ref = std::mem::replace(&mut self.snap_next, next);
+        self.snap_next_frame = self.frames;
+        self.update_stability();
+    }
+
+    /// Compare every cell with its reference snapshot.
+    fn update_stability(&mut self) {
+        let (mut cos, mut sig) = (Vec::new(), Vec::new());
+        let (mut n, mut stable) = (0u32, 0u32);
+        let min_age = (self.cfg.stable_min_age_s * self.cfg.fps).round() as u64;
+        let ln_sigma = self.cfg.stable_sigma.ln_1p();
+        for c in &mut self.cells {
+            c.qc.fp_ref_cos = f32::NAN;
+            c.qc.sigma_ref_change = f32::NAN;
+            let Some(r) = self.snap_ref.get(&c.qc.id) else {
+                continue;
+            };
+            let k = if r.pix == c.fp_pix && r.val == c.fp_val {
+                1.0
+            } else {
+                sparse_cos(&r.pix, &r.val, &c.fp_pix, &c.fp_val, &mut self.img)
+            };
+            let d = if r.sigma > 0.0 && c.qc.model_sigma > 0.0 {
+                (c.qc.model_sigma / r.sigma).ln().abs()
+            } else {
+                f32::NAN
+            };
+            c.qc.fp_ref_cos = k;
+            c.qc.sigma_ref_change = d.exp_m1();
+            if self.frames.saturating_sub(c.born) < min_age {
+                continue;
+            }
+            n += 1;
+            if k >= self.cfg.stable_cos && d < ln_sigma {
+                stable += 1;
+            }
+            if k.is_finite() {
+                cos.push(k);
+            }
+            if d.is_finite() {
+                sig.push(d.exp_m1());
+            }
+        }
+        self.stability = Stability {
+            cells: n,
+            cos: median_or_nan(&mut cos),
+            sigma: median_or_nan(&mut sig),
+            frac: if n > 0 {
+                stable as f32 / n as f32
+            } else {
+                f32::NAN
+            },
+        };
     }
 
     /// One frame: `y` is the preprocessed frame the fast loop solved, `lib`
@@ -612,6 +791,7 @@ impl QcMonitor {
             c.valid = (c.valid + 1).min(w);
         }
         self.frames += 1;
+        self.snapshot();
         if self
             .frames
             .is_multiple_of(u64::from(self.cfg.residual_every))
@@ -690,6 +870,7 @@ impl QcMonitor {
         self.n_cells = n;
         self.version = Some(lib.version());
         self.neighbours(lib);
+        self.update_stability();
     }
 
     /// Overlapping neighbours, local variance inflation and control cells.
@@ -1060,6 +1241,10 @@ impl QcMonitor {
             median_vif: f32::NAN,
             median_asymmetry: f32::NAN,
             pair_frac: f32::NAN,
+            stable_cells: self.stability.cells,
+            fp_stability: self.stability.cos,
+            trace_sigma_change: self.stability.sigma,
+            stable_frac: self.stability.frac,
         };
         if self.res_updates >= 2.0 {
             let (mut num, mut den, mut ex, mut nb) = (0.0f64, 0.0f64, 0.0f64, 0u32);
@@ -1136,7 +1321,7 @@ impl QcMonitor {
 impl GlobalQc {
     /// The metrics as numbers in [`GlobalQc::FIELDS`] order; the last entry
     /// is the number of residual blocks (map size), for the bindings.
-    pub fn to_row(&self, blocks: usize) -> [f64; 22] {
+    pub fn to_row(&self, blocks: usize) -> [f64; 26] {
         let f = |v: f32| f64::from(v);
         [
             self.frames as f64,
@@ -1160,6 +1345,10 @@ impl GlobalQc {
             f(self.median_vif),
             f(self.median_asymmetry),
             f(self.pair_frac),
+            f64::from(self.stable_cells),
+            f(self.fp_stability),
+            f(self.trace_sigma_change),
+            f(self.stable_frac),
             blocks as f64,
         ]
     }
@@ -1214,6 +1403,29 @@ fn shape(pix: &[u32], val: &[f32], width: usize, c: (f32, f32), radius: f32) -> 
         (l1 / l2).sqrt() as f32,
         (edge / sw) as f32,
     )
+}
+
+/// Cosine of two sparse images (`img` is a zeroed full-frame scratch, left
+/// zeroed).
+fn sparse_cos(pa: &[u32], va: &[f32], pb: &[u32], vb: &[f32], img: &mut [f32]) -> f32 {
+    for (&q, &a) in pa.iter().zip(va) {
+        img[q as usize] = a;
+    }
+    let ab: f64 = pb
+        .iter()
+        .zip(vb)
+        .map(|(&q, &b)| f64::from(img[q as usize]) * f64::from(b))
+        .sum();
+    for &q in pa {
+        img[q as usize] = 0.0;
+    }
+    let aa: f64 = va.iter().map(|&v| f64::from(v).powi(2)).sum();
+    let bb: f64 = vb.iter().map(|&v| f64::from(v).powi(2)).sum();
+    if aa > 0.0 && bb > 0.0 {
+        (ab / (aa * bb).sqrt()) as f32
+    } else {
+        f32::NAN
+    }
 }
 
 /// Pearson correlation of two sparse images over the union of their pixels
