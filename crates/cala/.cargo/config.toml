@@ -1,0 +1,4 @@
+# The compression GEMMs (matrixmultiply) need simd128 in the browser:
+# 8 ms instead of 19 ms per frame. Same flag as crates/solver.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
