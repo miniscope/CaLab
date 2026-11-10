@@ -40,6 +40,9 @@ use crate::preprocess::Dims;
 const N_OVERSAMPLES: usize = 10;
 /// Trailing components that must all fail the cut for the rank to stop growing.
 const ADAPT_MARGIN: usize = 10;
+/// Magic and header length of a factor file ([`WindowFactors::to_bytes`]).
+const FILE_MAGIC: &[u8; 8] = b"CALAFAC1";
+const FILE_HEADER: usize = 36;
 /// Frames converted to float32 at a time for a product with `Y`.
 const CHUNK: usize = 512;
 
@@ -223,8 +226,81 @@ impl WindowFactors {
         }
     }
 
+    /// Frames `t0..t0 + count` of the window rebuilt into `out`, frame
+    /// after frame.
+    pub fn reconstruct_range(&self, t0: usize, count: usize, out: &mut [f32]) {
+        let px = self.dims.pixels();
+        for (i, frame) in out.chunks_exact_mut(px).take(count).enumerate() {
+            self.reconstruct(t0 + i, frame);
+        }
+    }
+
     pub fn bytes(&self) -> usize {
         self.tiles.iter().map(TileFactors::bytes).sum()
+    }
+
+    /// The window as a factor file: `CALAFAC1`, u32 width, height, tile,
+    /// frames, tiles, f64 stream index of the first frame, then per tile a
+    /// u32 byte length and [`TileFactors::to_bytes`]. `tile` is the edge of
+    /// the grid the tiles were cut on.
+    pub fn to_bytes(&self, tile: usize) -> Vec<u8> {
+        let mut b = Vec::with_capacity(FILE_HEADER + self.bytes() + 52 * self.tiles.len());
+        b.extend_from_slice(FILE_MAGIC);
+        for v in [
+            self.dims.width,
+            self.dims.height,
+            tile,
+            self.frames,
+            self.tiles.len(),
+        ] {
+            b.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        b.extend_from_slice(&(self.start as f64).to_le_bytes());
+        for t in &self.tiles {
+            let tb = t.to_bytes();
+            b.extend_from_slice(&(tb.len() as u32).to_le_bytes());
+            b.extend_from_slice(&tb);
+        }
+        b
+    }
+
+    /// Inverse of [`WindowFactors::to_bytes`]: `None` for truncated input or
+    /// tiles that do not fit the frame or the window's length.
+    pub fn from_bytes(b: &[u8]) -> Option<WindowFactors> {
+        if b.get(..8)? != FILE_MAGIC {
+            return None;
+        }
+        let u = |o: usize| -> Option<usize> {
+            Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
+        };
+        let (width, height, frames, n) = (u(8)?, u(12)?, u(20)?, u(24)?);
+        let start = f64::from_le_bytes(b.get(28..36)?.try_into().ok()?);
+        if !(start.is_finite() && start >= 0.0) {
+            return None;
+        }
+        let dims = Dims::new(width, height).ok()?;
+        let mut tiles = Vec::with_capacity(n.min(1 << 16));
+        let mut at = FILE_HEADER;
+        for _ in 0..n {
+            let len = u(at)?;
+            let end = at.checked_add(4)?.checked_add(len)?;
+            let t = TileFactors::from_bytes(b.get(at + 4..end)?)?;
+            let fits = t.x0.checked_add(t.w)? <= width
+                && t.y0.checked_add(t.h)? <= height
+                && t.temporal.len() == frames.checked_mul(t.rank)?;
+            if !fits {
+                return None;
+            }
+            tiles.push(t);
+            at = end;
+        }
+        (at == b.len()).then_some(WindowFactors {
+            dims,
+            start: start as u64,
+            frames,
+            tiles,
+            compress_seconds: 0.0,
+        })
     }
 
     /// Mean rank over the tiles.
@@ -843,6 +919,48 @@ mod tests {
         assert_eq!(back.energy, tf.energy);
         let bytes = tf.to_bytes();
         assert!(TileFactors::from_bytes(&bytes[..bytes.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn a_window_file_round_trips_and_rejects_bad_input() {
+        let (t, w, h) = (90, 20, 12);
+        let dims = Dims::new(w, h).unwrap();
+        let mut frames = Vec::new();
+        for i in 0..t {
+            for p in 0..w * h {
+                let (a, b) = (i as f32 / 7.0, p as f32 / 13.0);
+                frames.push(30.0 + 6.0 * a.sin() * b.cos() + 2.0 * (0.4 * a).cos() * b.sin());
+            }
+        }
+        let cfg = CompressConfig {
+            tile: 8,
+            window: t,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(dims, cfg);
+        let mut wf = None;
+        for f in frames.chunks_exact(w * h) {
+            wf = wc.push(f).or(wf);
+        }
+        let mut wf = wf.expect("one window");
+        wf.start = 1200;
+        let bytes = wf.to_bytes(8);
+        let back = WindowFactors::from_bytes(&bytes).expect("decodes");
+        assert_eq!((back.start, back.frames, back.tiles.len()), (1200, t, 6));
+        // Rebuilding a range from the decoded window gives the frames back.
+        let mut out = vec![0.0f32; 3 * w * h];
+        back.reconstruct_range(40, 3, &mut out);
+        let want = &frames[40 * w * h..43 * w * h];
+        let worst = out
+            .iter()
+            .zip(want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.1, "worst error {worst}");
+        assert!(WindowFactors::from_bytes(&bytes[..bytes.len() - 3]).is_none());
+        let mut bad = bytes.clone();
+        bad[8..12].copy_from_slice(&10u32.to_le_bytes()); // frame narrower than its tiles
+        assert!(WindowFactors::from_bytes(&bad).is_none());
     }
 
     #[test]

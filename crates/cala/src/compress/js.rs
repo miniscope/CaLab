@@ -6,7 +6,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors};
+use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
@@ -174,5 +174,64 @@ impl JsTileFactors {
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.inner.to_bytes()
+    }
+}
+
+/// A compressed window read back from its factor file, to rebuild frames.
+#[wasm_bindgen(js_name = FactorWindow)]
+pub struct JsFactorWindow {
+    inner: WindowFactors,
+}
+
+#[wasm_bindgen(js_class = FactorWindow)]
+impl JsFactorWindow {
+    /// `bytes`: a whole factor file (`CALAFAC1`, see `WindowFactors::to_bytes`).
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(bytes: &[u8]) -> Result<JsFactorWindow, JsError> {
+        console_error_panic_hook::set_once();
+        WindowFactors::from_bytes(bytes)
+            .map(|inner| JsFactorWindow { inner })
+            .ok_or_else(|| js_err("FactorWindow.fromBytes", "truncated or corrupt factor file"))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.inner.dims.width as u32
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.inner.dims.height as u32
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn frames(&self) -> u32 {
+        self.inner.frames as u32
+    }
+
+    /// Stream index of the window's first frame.
+    #[wasm_bindgen(getter)]
+    pub fn start(&self) -> f64 {
+        self.inner.start as f64
+    }
+
+    /// Frames `t0..t0 + count` of the window rebuilt into `out`
+    /// (`count * width * height` values, frame after frame).
+    pub fn reconstruct(&self, t0: u32, count: u32, out: &mut [f32]) -> Result<(), JsError> {
+        let (t0, count) = (t0 as usize, count as usize);
+        let px = self.inner.dims.pixels();
+        if t0 + count > self.inner.frames || out.len() != count * px {
+            return Err(js_err(
+                "reconstruct",
+                format!(
+                    "frames {t0}..{} of {}, {} values out",
+                    t0 + count,
+                    self.inner.frames,
+                    out.len()
+                ),
+            ));
+        }
+        self.inner.reconstruct_range(t0, count, out);
+        Ok(())
     }
 }
