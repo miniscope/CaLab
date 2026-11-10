@@ -112,6 +112,8 @@ export function createPass2Store(
           setStageBusy(ctx.busy.map((v) => v / ctx.done));
         }
         setMotionBackend(step.motionBackend ?? null);
+        // Backpressure: the pump asks for the next step only after this returns.
+        await ctx.traces.drained();
         return;
       }
       case 'done':
@@ -206,7 +208,11 @@ export function createPass2Store(
     setTotal(frames);
     let traces: TraceFile;
     try {
-      traces = await createTraceFile(frames, cellCount);
+      // `?pass2=memory` keeps the matrix in memory (the pre-OPFS behaviour), for measurements.
+      const forceMemory =
+        typeof location !== 'undefined' &&
+        new URLSearchParams(location.search).get('pass2') === 'memory';
+      traces = await createTraceFile(frames, cellCount, { forceMemory });
     } catch (err) {
       if (gen !== generation) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -285,6 +291,8 @@ export function createPass2Store(
     result,
     motionBackend,
     blockedReason,
+    /** The trace file of the current run (for measurements). */
+    traceFile: () => file,
     run,
     cancel,
     clear,

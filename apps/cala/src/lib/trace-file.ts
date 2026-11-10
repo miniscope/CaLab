@@ -49,6 +49,8 @@ export interface BlockBackend {
   remove(): Promise<void>;
 }
 
+/** Bytes that may wait for the disk before `append` callers should pause. */
+const DRAIN_LIMIT_BYTES = 32 * 1048576;
 /** Frames per read when scanning a whole file for one cell (bounds the read at ~16 MB). */
 const SCAN_BYTES = 16 * 1048576;
 
@@ -60,12 +62,18 @@ export class TraceFile {
   private writes: Promise<void> = Promise.resolve();
   private failed: unknown = null;
   private finished = false;
+  private pending = 0;
 
   constructor(frames: number, cells: number, backend: BlockBackend, kind: 'memory' | 'opfs') {
     this.frames = frames;
     this.cells = cells;
     this.backend = backend;
     this.kind = kind;
+  }
+
+  /** Bytes queued for writing and not yet stored. */
+  get queuedBytes(): number {
+    return this.pending;
   }
 
   /** Size of the whole matrix, bytes. */
@@ -91,11 +99,26 @@ export class TraceFile {
     const copy = new Uint8Array(traces.byteLength);
     copy.set(new Uint8Array(traces.buffer, traces.byteOffset, traces.byteLength));
     const offset = start * this.cells * 4;
+    const size = copy.length; // the backend may transfer (detach) `copy`
+    this.pending += size;
     this.writes = this.writes
       .then(() => (this.failed ? undefined : this.backend.write(offset, copy)))
       .catch((err: unknown) => {
         this.failed ??= err;
+      })
+      .finally(() => {
+        this.pending -= size;
       });
+  }
+
+  /**
+   * Wait until at most `limit` bytes are queued for writing (backpressure: a
+   * disk slower than the solver must not let the queue grow without bound).
+   * Throws the first write error.
+   */
+  async drained(limit = DRAIN_LIMIT_BYTES): Promise<void> {
+    while (this.pending > limit) await this.writes;
+    if (this.failed) throw this.failed;
   }
 
   /** Wait for every queued write; throws the first write error. */

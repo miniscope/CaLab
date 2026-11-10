@@ -462,6 +462,9 @@ interface SaveFilePicker {
 /** How `saveExport` delivered the file. */
 export type SaveMethod = 'picker' | 'opfs-download' | 'memory-download' | 'cancelled';
 
+/** The OPFS file behind the last download, deleted when the next export starts. */
+let lastExportFile: string | null = null;
+
 /** Memory-fallback ceiling when the browser has neither a save dialog nor OPFS, bytes. */
 const MEMORY_DOWNLOAD_BYTES = 1_000_000_000;
 
@@ -510,6 +513,9 @@ export async function saveExport(
   if (opfsAvailable()) {
     const client = OpfsWriterClient.shared();
     const file = `cala-export-${Date.now().toString(36)}.npz`;
+    // The previous export's file has been handed to the browser by now.
+    if (lastExportFile) await client.remove(lastExportFile).catch(() => {});
+    lastExportFile = null;
     await client.sweep().catch(() => {});
     await client.open(file);
     let pos = 0;
@@ -531,6 +537,7 @@ export async function saveExport(
       }
       throw err;
     }
+    lastExportFile = file;
     downloadBlob(name, await client.getFile(file));
     return 'opfs-download';
   }

@@ -106,6 +106,45 @@ describe('TraceFile', () => {
     expect(() => file.append(16, batch(16, 4))).toThrow(/ran out of storage/);
   });
 
+  it('applies backpressure: drained() waits until the queued bytes fall under the limit', async () => {
+    const gate: (() => void)[] = [];
+    const slow = new FakeBackend(FRAMES * CELLS * 4);
+    const write = slow.write.bind(slow);
+    slow.write = (o, b) => new Promise<void>((r) => gate.push(() => void write(o, b).then(r)));
+    const file = new TraceFile(FRAMES, CELLS, slow, 'opfs');
+    const one = 4 * CELLS * 4;
+    for (let s = 0; s < 16; s += 4) file.append(s, batch(s, 4)); // 4 batches queued
+    let resolved = false;
+    const waiting = file.drained(one).then(() => (resolved = true));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resolved).toBe(false);
+    while (!resolved) {
+      gate.shift()?.();
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await waiting;
+    expect(gate.length).toBeLessThanOrEqual(1);
+  });
+
+  it('settles its queue even when the backend takes ownership of (detaches) the bytes', async () => {
+    const inner = new FakeBackend(FRAMES * CELLS * 4);
+    const detaching: BlockBackend = {
+      ...inner,
+      write: async (offset, bytes) => {
+        await inner.write(offset, bytes.slice());
+        structuredClone(bytes.buffer, { transfer: [bytes.buffer] }); // like a worker transfer
+      },
+      finish: () => inner.finish(),
+      read: (o, l) => inner.read(o, l),
+      remove: () => inner.remove(),
+    };
+    const file = new TraceFile(FRAMES, CELLS, detaching, 'opfs');
+    for (let s = 0; s < FRAMES; s += 4) file.append(s, batch(s, Math.min(4, FRAMES - s)));
+    await file.finish();
+    expect(file.queuedBytes).toBe(0);
+    await file.drained(0);
+  });
+
   it('removes its storage on dispose', async () => {
     const backend = new FakeBackend(FRAMES * CELLS * 4);
     const file = await filled(backend);

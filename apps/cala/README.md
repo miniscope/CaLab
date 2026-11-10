@@ -76,10 +76,23 @@ so cells found late have traces from frame 0.
   loop publishes its final library and pass 2 covers those frames). Pass 2 runs
   automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
   and frames/s, and the UI stays live (the work is in workers).
-- Pass 2 holds its traces (frames x cells float32) in memory, capped at 1.5 GB;
-  the export is built in the page.
+- Pass 2 streams its traces (frames x cells float32, frame-major) into a file in
+  the browser's origin private file system (OPFS) as it runs, so memory stays at
+  a few batches whatever the recording length; the limit is browser storage
+  quota (checked up front, with a clear error). Old files are swept when a new
+  run starts. Without OPFS the matrix is held in memory, capped at 1.5 GB.
+  Multi-day recordings are fine: the main-thread histories are bounded, the
+  per-cell trace history splits its 256 MB evenly across all cells, the frame
+  source reads one batch ahead (helps network drives), and opening a folder of
+  thousands of AVIs reads headers 16 at a time.
 
-**Export** (`src/lib/export.ts`; both are NumPy `.npz`, stored uncompressed):
+**Export** (`src/lib/export.ts`; both are NumPy `.npz`, stored uncompressed,
+written as a stream so nothing the size of the traces is held in memory; ZIP64
+records are written for entries of 4 GiB or more). Chrome and Edge ask where to
+save the file (File System Access API) and write straight into it; Firefox and
+Safari build the file in OPFS and hand it to the download (disk-backed, no RAM).
+`traces` is stored in Fortran order (column per frame, the same bytes as the
+pass-2 file, no transpose): `np.load` still returns the (cells, frames) array.
 
 - `<folder>_cala.npz`, self-describing: `traces` (cells x frames, float32),
   `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
@@ -92,7 +105,10 @@ so cells found late have traces from frame 0.
 - `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
   `cell_ids` and `sampling_rate_hz`. CaDecon's existing `.npz` import takes the
   one cells x timepoints array without asking; it then asks for the sampling
-  rate (shown on the button's tooltip).
+  rate (shown on the button's tooltip). Up to 512 MB of traces it is the classic
+  C-order, non-ZIP64 file. Beyond that it is streamed like the main export, and
+  CaDecon's importer (1 GiB limit, no ZIP64) cannot open it: for very long
+  recordings use `np.load` on the cala `.npz`, or export fewer cells.
 
 ```python
 import json, numpy as np
@@ -107,11 +123,13 @@ The motion and flicker charts keep the latest 32,768 frames at full resolution
 (about 27 minutes at 20 fps), so brief artifacts remain visible without chart
 memory and redraw work growing with recording duration. Older chart samples are
 discarded; pipeline progress and stage timing averages still cover the entire run.
-Per-cell trace history has its own frame and byte budgets in `trace-history.ts`.
+Per-cell trace history (`trace-history.ts`) splits one byte budget evenly across
+all tracked cells (a ring per cell, re-split as the library grows), so cells
+found late in a long run get as long a trace as early ones.
 
 The selected-cell trace viewer keeps a fixed-height whole-session min/max
 overview, using 512 adaptive buckets per tracked cell (12 KiB per cell, at most
-about 36 MiB for 3,000 cells, in addition to the full-resolution trace budget).
+about 48 MiB for 4,000 cells, in addition to the full-resolution trace budget).
 Coarsening preserves extrema and their original frame positions; timing within
 a bucket is only a coarse summary, and gaps smaller than a bucket may disappear.
 The zoom plot reads only full-resolution samples still retained. Older regions

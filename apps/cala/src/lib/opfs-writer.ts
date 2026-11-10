@@ -32,6 +32,41 @@ function rebuild(res: Extract<OpfsResponse, { ok: false }>): Error {
   return err;
 }
 
+/**
+ * A file is "in use" while some tab holds a Web Lock named after it. The lock
+ * is taken when the file is created and released when it is removed; a closed
+ * or crashed tab releases it by dying, which is what lets `sweep` delete only
+ * files nobody owns (so one tab's cleanup never deletes another tab's result).
+ */
+const LOCK_PREFIX = 'cala-opfs:';
+const heldLocks = new Map<string, () => void>();
+
+function holdName(name: string): void {
+  if (heldLocks.has(name) || typeof navigator === 'undefined' || !navigator.locks) return;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  void navigator.locks.request(LOCK_PREFIX + name, () => gate);
+  heldLocks.set(name, release);
+}
+
+function releaseName(name: string): void {
+  heldLocks.get(name)?.();
+  heldLocks.delete(name);
+}
+
+/** Names of OPFS files some tab currently owns. */
+async function ownedNames(): Promise<string[]> {
+  try {
+    const q = await navigator.locks.query();
+    return (q.held ?? [])
+      .map((l) => l.name ?? '')
+      .filter((n) => n.startsWith(LOCK_PREFIX))
+      .map((n) => n.slice(LOCK_PREFIX.length));
+  } catch {
+    return [];
+  }
+}
+
 type Distribute<T> = T extends unknown ? Omit<T, 'id'> : never;
 
 export class OpfsWriterClient {
@@ -80,6 +115,7 @@ export class OpfsWriterClient {
 
   /** Create (or truncate) `name` and keep a write handle on it. */
   async open(name: string): Promise<void> {
+    holdName(name);
     await this.call({ op: 'open', name });
   }
 
@@ -100,7 +136,11 @@ export class OpfsWriterClient {
 
   /** Delete `name` (closing its handle first). A missing file is fine. */
   async remove(name: string): Promise<void> {
-    await this.call({ op: 'remove', name });
+    try {
+      await this.call({ op: 'remove', name });
+    } finally {
+      releaseName(name);
+    }
   }
 
   /** The file as a disk-backed `File` (after `close`). */
@@ -109,9 +149,10 @@ export class OpfsWriterClient {
     return (await root.getFileHandle(name)).getFile();
   }
 
-  /** Delete every `cala-*` file except those named in `keep`; returns how many were removed. */
+  /** Delete every `cala-*` file that no tab owns, except those named in `keep`; returns how many were removed. */
   async sweep(keep: string[] = []): Promise<number> {
-    const res = await this.call({ op: 'sweep', prefix: OPFS_PREFIX, keep });
+    const owned = await ownedNames();
+    const res = await this.call({ op: 'sweep', prefix: OPFS_PREFIX, keep: [...keep, ...owned] });
     return res.count ?? 0;
   }
 }
