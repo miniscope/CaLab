@@ -370,6 +370,14 @@ fn a_deleted_spot_comes_back_only_on_new_evidence() {
     assert!(near(c[0], 47.0, 47.0), "{c:?}");
     assert_ne!(lib.ids()[0], 1, "a new cell, not the deleted one");
     assert_eq!(slow.stats().deletes, 1);
+    // Accounting: the seeded cell's deletion is an established removal and
+    // the cell added back at its spot is a re-add, not a new cell.
+    let cc = slow.churn_counts();
+    assert_eq!((cc.adds_new, cc.adds_readd), (0, 1), "{cc:?}");
+    assert_eq!((cc.churned, cc.established_removals), (0, 1), "{cc:?}");
+    let adds = slow.take_add_log();
+    assert_eq!(adds.len(), 1);
+    assert!(adds[0].dist < 2.0 && adds[0].cos > 0.5, "{adds:?}");
 }
 
 #[test]
@@ -384,6 +392,8 @@ fn edit_counts_are_per_interval() {
     let e = slow.take_edit_counts();
     assert_eq!(e.adds, slow.stats().adds);
     assert!(e.adds >= 1 && e.commits >= 1, "{e:?}");
+    let cc = slow.churn_counts();
+    assert_eq!(cc.adds_new + cc.adds_readd, e.adds);
     assert_eq!(slow.take_edit_counts(), EditCounts::default());
 }
 

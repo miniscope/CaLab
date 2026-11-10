@@ -170,6 +170,9 @@
 //!
 //! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
 //! involved and its held-out margin.
+//! [`SlowLoop::churn_counts`] classifies every add as new or a re-add and
+//! counts adds removed again soon and removals of established cells
+//! (`churn.rs`), for the QC's convergence rule; it changes no decision.
 //!
 //! # Threading
 //!
@@ -186,6 +189,7 @@
     clippy::type_complexity
 )]
 
+mod churn;
 #[cfg(feature = "diagnostics")]
 mod diagnostics;
 mod fpstats;
@@ -194,6 +198,7 @@ mod local;
 mod noisecorr;
 mod reservoir;
 
+pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind,
 };
@@ -204,6 +209,7 @@ mod js;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use churn::Churn;
 use fpstats::FpStats;
 use ledger::Evidence;
 use local::{rank1, rank2_split, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
@@ -348,6 +354,9 @@ pub struct SlowLoopConfig {
     /// bright cell's light by a fraction of a pixel, which leaves a dipole
     /// beside it that is not a new cell.
     pub shift_nuisance: bool,
+    /// Classification of adds (new / re-add / churned) for the QC; does not
+    /// change any decision.
+    pub churn: ChurnConfig,
     pub library: LibraryConfig,
     /// Background model of the published libraries.
     pub background: BackgroundModel,
@@ -402,6 +411,7 @@ impl Default for SlowLoopConfig {
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
+            churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
                 inner_px: 12.0,
@@ -441,7 +451,8 @@ impl SlowLoopConfig {
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
             && self.merge_weak_share.is_finite()
-            && self.merge_z.is_finite();
+            && self.merge_z.is_finite()
+            && self.churn.is_valid();
         if ok {
             Ok(())
         } else {
@@ -551,6 +562,8 @@ pub struct SlowLoop {
     ncorr: NoiseCorr,
     /// Cell-scale noise variance inflation `ρ` (1 = white noise).
     rho: f32,
+    /// Add classification (new / re-add / churned).
+    churn: Churn,
 }
 
 /// Per library slot: the residual weights `h / σ²` on the support, the
@@ -750,6 +763,7 @@ impl SlowLoop {
             sample: Vec::new(),
             ncorr: NoiseCorr::new(n_px),
             rho: 1.0,
+            churn: Churn::new(cfg.churn, cfg.cell_diameter_px),
             cfg,
         };
         s.set_noise(noise)?;
@@ -856,6 +870,23 @@ impl SlowLoop {
     /// deleted on.
     pub fn take_deleted(&mut self) -> Vec<DeletedCell> {
         std::mem::take(&mut self.deleted)
+    }
+
+    /// Cumulative add classification: new adds, re-adds, adds churned
+    /// (removed again soon), removals of established cells.
+    pub fn churn_counts(&self) -> ChurnCounts {
+        self.churn.counts()
+    }
+
+    /// Adds since the last call, with their class and the evidence for it.
+    pub fn take_add_log(&mut self) -> Vec<AddRecord> {
+        self.churn.take_adds()
+    }
+
+    /// Removals (deletes, merges) since the last call, with the removed
+    /// cell's age and whether it counted as churn.
+    pub fn take_removal_log(&mut self) -> Vec<RemovalRecord> {
+        self.churn.take_removals()
     }
 
     /// Structural edits since the last call (at most the latest 100 000),
@@ -967,6 +998,56 @@ impl SlowLoop {
         traces: &FrameTraces,
     ) -> Result<(), TraceError> {
         let n_px = self.dims.pixels();
+        let scale = self.score_residual(frame, lib, traces)?;
+        self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
+        if self.cfg.noise_corr {
+            self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
+            self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
+            if let Ok(v) = std::env::var("CALA_RHO") {
+                self.rho = v.parse().unwrap();
+            }
+        }
+        self.update_ledger(frame, lib, traces);
+        let frame_idx = self.frames;
+        let test = self.is_test(frame_idx);
+        if !test && self.cfg.stats_half_life_frames > 0.0 {
+            self.update_fpstats(frame, lib, traces);
+        }
+        for ti in 0..self.tiles.len() {
+            let score = self.tile_score(ti, scale);
+            self.rng = mix(self.rng);
+            let (ce, cr, decay, rand) = (self.cap_events, self.cap_random, self.decay, self.rng);
+            let tile = &mut self.tiles[ti];
+            let before = tile.events.len() + tile.randoms.len();
+            tile.offer(
+                &self.z,
+                self.dims.width,
+                frame_idx,
+                score,
+                test,
+                ce,
+                cr,
+                decay,
+                rand,
+            );
+            let _ = before;
+        }
+        if test {
+            self.take_probes(lib, frame_idx);
+        }
+        self.frames += 1;
+        Ok(())
+    }
+
+    /// Whitened frame (`z`) and the residual blurred to cell scale
+    /// (`coarse_blur`), with the residual's robust noise scale.
+    fn score_residual(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+    ) -> Result<f32, TraceError> {
+        let n_px = self.dims.pixels();
         crate::trace::check_len("frame", n_px, frame.len())?;
         if lib.dims() != self.dims || traces.library_version != lib.version() {
             return Err(TraceError::Incompatible(
@@ -1012,44 +1093,38 @@ impl SlowLoop {
                 .select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
             (1.4826 * *m).max(1e-6)
         };
-        self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
-        if self.cfg.noise_corr {
-            self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
-            self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
-            if let Ok(v) = std::env::var("CALA_RHO") {
-                self.rho = v.parse().unwrap();
-            }
-        }
-        self.update_ledger(frame, lib, traces);
-        let frame_idx = self.frames;
-        let test = self.is_test(frame_idx);
-        if !test && self.cfg.stats_half_life_frames > 0.0 {
-            self.update_fpstats(frame, lib, traces);
-        }
-        for ti in 0..self.tiles.len() {
-            let core = self.tiles[ti].core;
-            let mut best = f32::MIN;
-            for y in (core.y0 / 2)..(core.y0 + core.h).div_ceil(2) {
-                for x in (core.x0 / 2)..(core.x0 + core.w).div_ceil(2) {
-                    let i = y * cw + x;
-                    if self.coarse_fov[i] {
-                        best = best.max(self.coarse_blur[i]);
-                    }
+        Ok(scale)
+    }
+
+    /// Each tile's score for `frame` (the largest excursion of the blurred
+    /// residual in its core, in robust noise units): what `observe` ranks
+    /// reservoir frames by. Read-only for the slow loop's state, so a
+    /// driver can use it to decide which frames to forward.
+    pub fn tile_scores(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+    ) -> Result<Vec<f32>, TraceError> {
+        let scale = self.score_residual(frame, lib, traces)?;
+        Ok((0..self.tiles.len())
+            .map(|ti| self.tile_score(ti, scale))
+            .collect())
+    }
+
+    fn tile_score(&self, ti: usize, scale: f32) -> f32 {
+        let cw = self.coarse_dims.width;
+        let core = self.tiles[ti].core;
+        let mut best = f32::MIN;
+        for y in (core.y0 / 2)..(core.y0 + core.h).div_ceil(2) {
+            for x in (core.x0 / 2)..(core.x0 + core.w).div_ceil(2) {
+                let i = y * cw + x;
+                if self.coarse_fov[i] {
+                    best = best.max(self.coarse_blur[i]);
                 }
             }
-            let score = (best / scale).max(0.0);
-            self.rng = mix(self.rng);
-            let (ce, cr, decay, rand) = (self.cap_events, self.cap_random, self.decay, self.rng);
-            let tile = &mut self.tiles[ti];
-            let before = tile.events.len() + tile.randoms.len();
-            tile.offer(&self.z, w, frame_idx, score, test, ce, cr, decay, rand);
-            let _ = before;
         }
-        if test {
-            self.take_probes(lib, frame_idx);
-        }
-        self.frames += 1;
-        Ok(())
+        (best / scale).max(0.0)
     }
 
     /// Ledger update for one frame: each published cell's unconstrained
@@ -1300,6 +1375,8 @@ impl SlowLoop {
         self.stats.deletes += 1;
         self.edits.deletes += 1;
         self.log(EditKind::Delete, id, 0, cell.center, 0.0);
+        self.churn
+            .on_delete(self.frames, id, cell.center, &cell.pix, &cell.filt);
         self.entomb(cell.center);
         self.pending = true;
         self.touch(cell.bbox);
@@ -1765,6 +1842,8 @@ impl SlowLoop {
                     self.edits.adds += 1;
                     let nb = self.nearest(cell.center.0, cell.center.1, cell.id);
                     self.log(EditKind::Add, cell.id, nb, cell.center, margin);
+                    self.churn
+                        .on_add(self.frames, cell.id, cell.center, &cell.pix, &cell.filt);
                     if lives > 0 {
                         self.lives.insert(cell.id, lives);
                     }
@@ -2999,6 +3078,11 @@ impl SlowLoop {
                     center,
                     ((mu - loss) / s) as f32,
                 );
+                {
+                    let g = &self.cells[go];
+                    self.churn
+                        .on_merge(self.frames, kept_id, gone, g.center, &g.pix, &g.filt);
+                }
                 // The merged cell keeps the stronger evidence record.
                 if let Some(ev) = self.ledger.remove(&gone) {
                     self.ledger
@@ -3201,6 +3285,7 @@ impl SlowLoop {
                 a.center,
                 ((gain - m) / sd) as f32,
             );
+            self.churn.on_split(self.frames, new_id);
             self.fpstats.remove(&id);
             let bbox = a.bbox.union(&b.bbox).union(&cell.bbox);
             self.cells[ci] = a;
