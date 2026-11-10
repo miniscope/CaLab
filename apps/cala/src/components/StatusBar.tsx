@@ -1,6 +1,7 @@
 import { Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import type { CellStore } from '../lib/cell-store.ts';
+import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 
 const SETUP_LABEL = {
@@ -24,7 +25,12 @@ const MOTION_BACKEND = {
 } as const;
 
 /** One compact strip: pipeline status and progress, run controls, the cell count. */
-export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JSX.Element {
+export function StatusBar(props: {
+  store: PipelineStore;
+  cells: CellStore;
+  /** Present when the run compresses its frames (`?compress`). */
+  compress?: CompressStore;
+}): JSX.Element {
   const s = () => props.store;
   const c = () => props.cells;
 
@@ -110,6 +116,13 @@ export function StatusBar(props: { store: PipelineStore; cells: CellStore }): JS
         {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
         {lagNow() ?? 'n/a'} frames
       </span>
+      <Show when={props.compress}>
+        {(compress) => (
+          <span class="cala-readout" data-testid="compress-readout">
+            {compress().error() ?? compressReadout(compress().status())}
+          </span>
+        )}
+      </Show>
       <Show when={s().error()}>
         {(message) => (
           <div class="error-card cala-statusbar__error" role="alert">

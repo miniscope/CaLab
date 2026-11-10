@@ -8,6 +8,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
+import type { CompressStore } from './compress-store.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type {
   BatchPreviews,
@@ -122,6 +123,8 @@ export function createPipelineStore(
   cells?: CellStore,
   /** Online quality control in the fast loop (default on; off to measure its cost). */
   qc = true,
+  /** Feed the compress worker; its store is reset with each run. */
+  compress?: Pick<CompressStore, 'reset'>,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -246,8 +249,14 @@ export function createPipelineStore(
     setStatus('starting');
     const session = nextSession++;
     cells?.reset(session);
+    compress?.reset(session);
     try {
-      const p = await client.startPipeline(options, { session, discover: discover(), qc });
+      const p = await client.startPipeline(options, {
+        session,
+        discover: discover(),
+        qc,
+        ...(compress ? { compress: true } : {}),
+      });
       if (gen !== generation) return;
       setPlan(p);
       setStatus('running');

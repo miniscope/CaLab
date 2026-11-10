@@ -8,6 +8,8 @@ import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts'
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { createSlowClient } from './lib/slow-client.ts';
+import { createCompressClient } from './lib/compress-client.ts';
+import { createCompressStore } from './lib/compress-store.ts';
 import { StatusBar } from './components/StatusBar.tsx';
 import { VideoPanel } from './components/VideoPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
@@ -36,11 +38,15 @@ const App: Component = () => {
   // Cell discovery runs in a worker of its own, fed directly by the frame worker.
   createSlowClient(client, (msg) => cells.onSlowMessage(msg));
   // `?noqc`: run without online quality control (to measure its cost).
-  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'));
+  // `?compress`: also compress the preprocessed frames into low-rank factors, window by
+  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
+  const compress = params.has('compress') ? createCompressStore() : undefined;
+  if (compress) createCompressClient(client, (msg) => compress.onMessage(msg));
+  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'), compress);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline };
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, compress };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -106,7 +112,7 @@ const App: Component = () => {
                 </div>
               )}
             </Show>
-            <StatusBar store={pipeline} cells={cells} />
+            <StatusBar store={pipeline} cells={cells} compress={compress} />
             <ConvergenceStrip cells={cells} />
             <div class="cala-body">
               <div class="cala-body__left">
