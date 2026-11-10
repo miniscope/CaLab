@@ -1,0 +1,6 @@
+# WASM SIMD (128-bit) for the browser build, as in crates/solver. Every
+# browser with WebGPU has it (Chrome 91, Firefox 89, Safari 16.4). LLVM only
+# vectorizes where IEEE semantics are unchanged (no float reassociation), so
+# the output is bit-identical to the scalar build.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
