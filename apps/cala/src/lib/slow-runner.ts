@@ -190,6 +190,8 @@ export class SlowRunner {
       if (version !== this.version) {
         this.version = version;
         const bytes = lib.toBytes();
+        // The main thread keeps the newest library's bytes for pass 2.
+        const mainBytes = bytes.slice();
         this.deps.toFast.postMessage({ type: 'library', session: this.session, version, bytes }, [
           bytes.buffer as ArrayBuffer,
         ]);
@@ -207,8 +209,8 @@ export class SlowRunner {
           values: lib.footprintValues(),
         };
         this.deps.toMain.postMessage(
-          { type: 'library', session: this.session, library },
-          libraryViewTransferables(library),
+          { type: 'library', session: this.session, library, bytes: mainBytes },
+          libraryViewTransferables(library, mainBytes),
         );
       }
     } finally {

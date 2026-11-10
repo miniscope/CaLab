@@ -89,6 +89,8 @@ export interface FastLoopOptions {
   fps?: number;
   /** Wall time between QC snapshots sent to the main thread, ms. */
   qcEveryMs?: number;
+  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
+  initialLibrary?: Uint8Array;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -131,7 +133,7 @@ export interface CellsBatch {
 const now = (): number => performance.now();
 
 export class FastLoop {
-  private readonly o: Required<FastLoopOptions>;
+  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary'>>;
   private readonly px: number;
   private readonly port: PortLike<FastToSlow> | null;
   private readonly backend: TraceBackend;
@@ -153,7 +155,9 @@ export class FastLoop {
   private disposed = false;
 
   constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
-    this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...options };
+    const { initialLibrary, ...rest } = options;
+    this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
+    this.pendingLibrary = initialLibrary ?? null;
     if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
     this.px = options.width * options.height;
     this.port = port;
