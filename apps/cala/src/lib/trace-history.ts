@@ -134,6 +134,65 @@ export class TraceHistory {
     }
   }
 
+  /**
+   * Store `count` frames from stream frame `start` for `ids`, replacing what
+   * is held for those frames and extending a cell's history backwards when
+   * the span starts before it (a back-fill from the compressed windows: a cell
+   * found late gets its earlier frames). Frames past the end append as `push`
+   * does; frames older than a wrapped buffer holds are skipped.
+   */
+  replace(start: number, count: number, ids: ArrayLike<number>, traces: ArrayLike<number>): void {
+    const n = ids.length;
+    if (n === 0 || traces.length < count * n) return;
+    for (let j = 0; j < n; j++) {
+      const id = ids[j];
+      const b = this.bufs.get(id);
+      if (!b || start >= b.end) {
+        this.push(start, count, [id], this.column(traces, count, n, j));
+        continue;
+      }
+      let first = b.end - b.len;
+      if (start < first) {
+        // Extend backwards: a linear buffer over [from, b.end), where `from`
+        // keeps at most `capacity` frames, within the byte budget.
+        const from = Math.max(start, b.end - this.capacity);
+        const need = b.end - from;
+        if (need > b.values.length) {
+          const size = Math.min(this.capacity, Math.max(need, Math.ceil(b.values.length * GROWTH)));
+          if (!this.reserve(size - b.values.length)) continue;
+          const bigger = new Float32Array(size).fill(NaN);
+          for (let f = first; f < b.end; f++)
+            bigger[f - from] = b.values[(f - b.origin) % b.values.length];
+          b.values = bigger;
+        } else {
+          const moved = new Float32Array(b.values.length).fill(NaN);
+          for (let f = first; f < b.end; f++)
+            moved[f - from] = b.values[(f - b.origin) % b.values.length];
+          b.values = moved;
+        }
+        b.origin = from;
+        b.len = need;
+        first = from;
+      }
+      const stop = Math.min(start + count, b.end);
+      for (let f = Math.max(start, first); f < stop; f++) {
+        const value = traces[(f - start) * n + j];
+        this.write(b, f, value);
+        b.overview.push(f, value);
+      }
+      if (start + count > b.end) {
+        const tail = start + count - b.end;
+        this.push(b.end, tail, [id], this.column(traces, count, n, j).subarray(count - tail));
+      }
+    }
+  }
+
+  private column(traces: ArrayLike<number>, count: number, n: number, j: number): Float32Array {
+    const out = new Float32Array(count);
+    for (let i = 0; i < count; i++) out[i] = traces[i * n + j];
+    return out;
+  }
+
   private drop(id: number): void {
     const b = this.bufs.get(id);
     if (!b) return;

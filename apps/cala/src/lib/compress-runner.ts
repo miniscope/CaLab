@@ -15,7 +15,11 @@
  * has arrived, every factor file is read back, its frames are rebuilt a few
  * at a time and solved with that library, and the traces of each window go
  * to the main thread. A cell found late in the recording so gets its trace
- * from the first frame on, without the raw video being read again.
+ * from the first frame on, without the raw video being read again. It may
+ * run while the recording is still coming in (a window may be open): a window
+ * that closes meanwhile is compressed between two of its steps, so incoming
+ * frames are never held up by it, and the windows compressed during a
+ * back-fill are left to the next one.
  *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
  * Factor file `f<index>.bin`: `CALAFAC1`, u32 width, height, tile, frames,
@@ -192,7 +196,8 @@ export class CompressRunner {
 
   /**
    * Solve the traces of every compressed window with library `version` or a
-   * newer one. Starts when that library is here and no window is waiting.
+   * newer one. Starts when that library is here and no window is waiting to
+   * be compressed (the open window, still being written, is not waited for).
    */
   backfill(session: number, version: number): void {
     if (session !== this.session || !this.init) return;
@@ -222,7 +227,7 @@ export class CompressRunner {
     const lib = this.library;
     const { engine, factors } = this.deps;
     if (this.loop || this.wanted === null || !lib || lib.version < this.wanted) return;
-    if (this.open || this.pending.length > 0 || !engine || !factors) return;
+    if (this.pending.length > 0 || !engine || !factors) return;
     this.wanted = null;
     this.launch(this.runBackfill(lib, engine, factors));
   }
@@ -266,6 +271,7 @@ export class CompressRunner {
       if (ids.length === 0) return;
       const buf = new Float32Array(BACKFILL_BATCH * px);
       let frames = 0;
+      let windows = 0;
       let first = true;
       for (const index of [...this.done]) {
         const file = await this.deps.store.open(factorName(index));
@@ -281,6 +287,9 @@ export class CompressRunner {
             window.reconstruct(t, n, view);
             traces.set(engine.processFrames(view, n), t * ids.length);
             await this.yieldNow();
+            if (epoch !== this.epoch) return;
+            // A window closed meanwhile: compress it now, so it never waits on the back-fill.
+            if (this.pending.length > 0) await this.run();
             if (epoch !== this.epoch) return;
           }
           const cellIds = ids.slice();
@@ -299,6 +308,7 @@ export class CompressRunner {
           );
           first = false;
           frames += window.frames;
+          windows++;
         } finally {
           window.free();
         }
@@ -308,6 +318,7 @@ export class CompressRunner {
         session,
         version: lib.version,
         frames,
+        windows,
         msPerFrame: (this.now() - t0) / Math.max(1, frames),
       });
     } finally {

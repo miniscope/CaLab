@@ -28,13 +28,15 @@ import {
 } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
 import type { FramePixels } from './frame-source.ts';
-import type {
-  BatchPreviews,
-  FastLoopSetup,
-  FrameReader,
-  MotionBackend,
-  PipelineStepResult,
-  StageTimings,
+import {
+  nextStep,
+  type BatchPreviews,
+  type FastLoopSetup,
+  type FrameReader,
+  type LiveBatchInfo,
+  type MotionBackend,
+  type PipelineStepResult,
+  type StageTimings,
 } from './pipeline-engine.ts';
 import {
   makePlan,
@@ -86,6 +88,8 @@ export interface StageJob {
   busyMs: number[];
   /** Where stage B ran motion correction (set on process steps). */
   motionBackend?: MotionBackend;
+  /** The live source's counters after this batch (live runs only). */
+  live?: LiveBatchInfo;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -206,7 +210,7 @@ export class FrontStage {
 
   /** The next job, or `null` once every frame has been through. */
   async next(): Promise<StageJob | null> {
-    const s = this.cursor.next();
+    const s = await nextStep(this.cursor, this.reader);
     if (!s) return null;
     const t0 = now();
     const raw = await this.readRaw(s.start, s.count);
@@ -281,6 +285,7 @@ export class FrontStage {
     const t3 = now();
     timings.preprocessMs = t2 - t1b;
     timings.otherMs = t3 - t2;
+    const live = this.reader.liveInfo?.();
     return {
       step: s,
       total: this.plan.frameCount,
@@ -292,6 +297,7 @@ export class FrontStage {
       preprocessed,
       timings,
       busyMs: [t3 - t0 - (t1b - t1), 0, 0],
+      ...(live ? { live } : {}),
     };
   }
 
@@ -686,6 +692,7 @@ export class BackStage {
       stageBusyMs: job.busyMs,
       ...(job.motionBackend ? { motionBackend: job.motionBackend } : {}),
       ...(cells ? { cells } : {}),
+      ...(job.live ? { live: job.live } : {}),
     };
   }
 

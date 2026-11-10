@@ -228,9 +228,11 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
   }
 
   /**
-   * Traces of one compressed window, solved again with the final library
-   * (`?compress`). The first window replaces the live history, so every cell
-   * has its trace from the first frame on.
+   * Traces of one compressed window, solved again with a newer library
+   * (`?compress`). They replace the live traces of those frames, so every
+   * cell has its trace from the first frame on; frames the back-fill does not
+   * cover (the open window, frames arriving meanwhile) keep their live
+   * traces. The first window of a back-fill drops cells that left the library.
    */
   function onBackfill(
     first: boolean,
@@ -239,8 +241,8 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     ids: Uint32Array,
     traces: Float32Array,
   ): void {
-    if (first) history.clear();
-    history.push(start, count, ids, traces);
+    if (first) history.retain(ids, selected());
+    history.replace(start, count, ids, traces);
     setTick((t) => t + 1);
   }
 

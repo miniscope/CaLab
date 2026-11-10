@@ -79,8 +79,15 @@ export type CompressToMain =
       ids: Uint32Array;
       traces: Float32Array;
     }
-  /** The back-fill is complete: frames solved and wall time per frame, ms. */
-  | { type: 'backfilled'; session: number; version: number; frames: number; msPerFrame: number }
+  /** The back-fill is complete: windows and frames solved, and wall time per frame, ms. */
+  | {
+      type: 'backfilled';
+      session: number;
+      version: number;
+      frames: number;
+      windows: number;
+      msPerFrame: number;
+    }
   | { type: 'error'; session: number; message: string };
 
 /** Main thread -> compress worker. */
@@ -89,7 +96,9 @@ export type MainToCompress =
   | { type: 'connect'; port: MessagePort }
   /**
    * Solve the traces of every compressed window with the library `version`
-   * (or a newer one), once that library has arrived and no window is waiting.
+   * (or a newer one), once that library has arrived and no window is waiting
+   * to be compressed. Asked for once at the end of a run, and during a run
+   * now and then (see `CompressStore.takePeriodic`).
    */
   | { type: 'backfill'; session: number; version: number };
 

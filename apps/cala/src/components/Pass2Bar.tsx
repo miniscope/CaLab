@@ -1,8 +1,9 @@
 import { createSignal, createEffect, on, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import type { CellStore } from '../lib/cell-store.ts';
+import type { CompressStore } from '../lib/compress-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import type { Pass2Store } from '../lib/pass2-store.ts';
+import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import {
   buildCaDeconExport,
   buildCalaExport,
@@ -16,6 +17,10 @@ export interface Pass2BarProps {
   pipeline: PipelineStore;
   pass2: Pass2Store;
   cells: CellStore;
+  /** The compression (`?compress`): its back-fill stands in for pass 2 when there is no file. */
+  compress?: CompressStore;
+  /** A live source: no file to re-read, so pass 2 cannot run; the stop button ends the stream. */
+  live?: boolean;
   /** Recording label (the folder name). */
   label: string;
   width: number;
@@ -27,12 +32,22 @@ export interface Pass2BarProps {
 /**
  * Pass 2 and export: ends pass 1 early on request, re-extracts every frame's
  * traces with the final library, then offers the two downloads (all of it as
- * `.npz`, and the traces for CaDecon).
+ * `.npz`, and the traces for CaDecon). On a live source the export takes the
+ * back-filled traces instead (solved from the compressed windows).
  */
 export function Pass2Bar(props: Pass2BarProps): JSX.Element {
   const p = () => props.pass2;
   const [auto, setAuto] = createSignal(true);
   const [passOnly, setPassOnly] = createSignal(true);
+
+  /** The back-fill's traces as a pass-2 result, when its library is the current one. */
+  const backfillResult = (): Pass2Result | null => {
+    const r = props.compress?.result();
+    const library = props.cells.library();
+    if (!r || !library || library.version !== r.version) return null;
+    return { ...r, library };
+  };
+  const exportResult = () => p().result() ?? backfillResult();
 
   // A new pass 1 invalidates pass 2's result.
   createEffect(
@@ -47,6 +62,7 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
   createEffect(() => {
     if (
       auto() &&
+      !props.live &&
       props.pipeline.status() === 'done' &&
       p().status() === 'idle' &&
       p().blockedReason() === null
@@ -71,6 +87,15 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
       case 'cancelled':
         return 'Pass 2 cancelled';
       default:
+        if (props.live) {
+          const b = props.compress?.backfill();
+          if (pass1Busy()) return 'Live: the traces are back-filled from the compressed windows';
+          return b
+            ? `Back-filled ${b.frames.toLocaleString()} frames from ${b.windows} windows with library v${b.version}`
+            : props.compress
+              ? 'Live run ended: waiting for the back-fill'
+              : 'Live run ended (no compression: add ?compress for a back-fill)';
+        }
         return pass1Busy()
           ? 'Pass 2 starts when pass 1 finishes'
           : (p().blockedReason() ?? 'Ready for pass 2');
@@ -78,7 +103,7 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
   };
 
   const exportInput = (): ExportInput | null => {
-    const r = p().result();
+    const r = exportResult();
     if (!r) return null;
     return {
       label: props.label,
@@ -132,14 +157,18 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
             type="button"
             class="btn-secondary btn-small"
             data-testid="pass2-finish"
-            title="Stop reading here: the cells found so far become the final library, then pass 2 runs over the frames read."
+            title={
+              props.live
+                ? 'End the live run here: the cells found so far become the final library and the traces are back-filled.'
+                : 'Stop reading here: the cells found so far become the final library, then pass 2 runs over the frames read.'
+            }
             onClick={() => void props.pipeline.finishEarly()}
           >
-            Finish pass 1 now
+            {props.live ? 'Stop the live run' : 'Finish pass 1 now'}
           </button>
         </Show>
         <Show
-          when={p().status() !== 'running'}
+          when={p().status() !== 'running' && !props.live}
           fallback={
             <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
               Cancel pass 2
@@ -157,21 +186,23 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
             Run pass 2
           </button>
         </Show>
-        <label class="cala-check">
-          <input
-            type="checkbox"
-            checked={auto()}
-            onChange={(e) => setAuto(e.currentTarget.checked)}
-          />
-          Run automatically after pass 1
-        </label>
+        <Show when={!props.live}>
+          <label class="cala-check">
+            <input
+              type="checkbox"
+              checked={auto()}
+              onChange={(e) => setAuto(e.currentTarget.checked)}
+            />
+            Run automatically after pass 1
+          </label>
+        </Show>
       </div>
       <div class="cala-statusbar__actions">
         <button
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-npz"
-          disabled={!p().result()}
+          disabled={!exportResult()}
           title="Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz)."
           onClick={() => {
             const input = exportInput();
@@ -184,7 +215,7 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="export-cadecon"
-          disabled={!p().result()}
+          disabled={!exportResult()}
           title={`Traces for CaDecon (open the file there, sampling rate ${props.fps > 0 ? `${props.fps} Hz` : 'of your recording'}).`}
           onClick={() => {
             const input = exportInput();
@@ -195,7 +226,7 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
               );
           }}
         >
-          Export for CaDecon{p().result() ? ` (${keptForCaDecon()} cells)` : ''}
+          Export for CaDecon{exportResult() ? ` (${keptForCaDecon()} cells)` : ''}
         </button>
         <label class="cala-check">
           <input

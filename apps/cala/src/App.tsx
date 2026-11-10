@@ -24,6 +24,9 @@ import { OpenFolder } from './components/OpenFolder.tsx';
 import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
 import { Pass2Bar } from './components/Pass2Bar.tsx';
 
+/** Least time between two back-fills during a run, ms. */
+export const BACKFILL_EVERY_MS = 30_000;
+
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
   // `isAuthCallback()` inspects window.location at mount time; the URL
@@ -81,6 +84,19 @@ const App: Component = () => {
       compressClient?.backfill(cells.session(), slow?.version ?? 0);
     }
   });
+  // During the run, too: whenever a newer library is out and no window waits,
+  // at most once per `BACKFILL_EVERY_MS`, so cells found late get their earlier
+  // traces while the recording is still going (`?backfill=0` turns it off).
+  const backfillEvery = params.has('backfill')
+    ? Number(params.get('backfill')) * 1000
+    : BACKFILL_EVERY_MS;
+  createEffect(() => {
+    const version = cells.library()?.version ?? 0;
+    compress?.status();
+    if (backfillEvery > 0 && compress?.takePeriodic(version, backfillEvery)) {
+      compressClient?.backfill(cells.session(), version);
+    }
+  });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
     (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, compress };
@@ -92,6 +108,14 @@ const App: Component = () => {
     await store.openFiles(files, label);
     if (store.info()) void pipeline.start();
   }
+  // So does connecting to a live source (`?live=<url>` connects on load).
+  async function openLive(url: string) {
+    pipeline.stop();
+    await store.openLive(url);
+    if (store.info()) void pipeline.start();
+  }
+  const liveParam = params.get('live');
+  if (liveParam) void openLive(liveParam);
 
   return (
     <Show
@@ -101,6 +125,8 @@ const App: Component = () => {
           loading={store.loading()}
           error={store.error()}
           onOpen={(files, label) => void open(files, label)}
+          onOpenLive={(url) => void openLive(url)}
+          liveUrl={liveParam ?? undefined}
         />
       }
     >
@@ -118,7 +144,9 @@ const App: Component = () => {
                     {info().width} x {info().height}
                   </span>
                   <span class="compact-header__sep">&middot;</span>
-                  <span>{info().frameCount.toLocaleString()} frames</span>
+                  <span>
+                    {info().live ? 'live' : `${info().frameCount.toLocaleString()} frames`}
+                  </span>
                 </>
               }
               actions={
@@ -130,7 +158,7 @@ const App: Component = () => {
                       store.close();
                     }}
                   >
-                    Open another folder
+                    {info().live ? 'Open another source' : 'Open another folder'}
                   </button>
                   <FeedbackMenu appId={__APP_ID__} />
                   <CommunityAuthMenu />
@@ -154,6 +182,8 @@ const App: Component = () => {
               pipeline={pipeline}
               pass2={pass2}
               cells={cells}
+              compress={compress}
+              live={info().live !== undefined}
               label={store.label()}
               width={info().width}
               height={info().height}

@@ -108,6 +108,26 @@ export function createViewerStore(client: FrameClient) {
     }
   }
 
+  /** Connect to a live source; the frames shown come from the pipeline's previews. */
+  async function openLive(url: string): Promise<void> {
+    pause();
+    generation++;
+    setError(null);
+    setLoading(true);
+    try {
+      if (!client.openLive) throw new Error('This frame client cannot open a live source.');
+      const opened = await client.openLive(url);
+      setInfo(opened);
+      setLabel(opened.live?.name ?? url);
+      setFrame(null);
+      setFrameIndex(0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function close(): void {
     pause();
     generation++;
@@ -134,6 +154,7 @@ export function createViewerStore(client: FrameClient) {
     autoContrast,
     setAutoContrast,
     openFiles,
+    openLive,
     showFrame,
     play,
     pause,

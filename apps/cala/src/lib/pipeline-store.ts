@@ -12,6 +12,7 @@ import type { CompressStore } from './compress-store.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type {
   BatchPreviews,
+  LiveBatchInfo,
   MotionBackend,
   PipelineStepResult,
   StageTimings,
@@ -23,6 +24,17 @@ import { RunRecord } from './run-record.ts';
 export const MAX_IN_FLIGHT = 2;
 
 export type PipelineStatus = 'idle' | 'starting' | 'running' | 'paused' | 'done' | 'error';
+
+/** A live source's counters after one batch, against the frames processed and the time. */
+export interface LivePoint extends LiveBatchInfo {
+  /** Frames processed (the batch's end) and the fast loop's lag behind the stream, frames. */
+  frame: number;
+  lagFrames: number;
+  t: number;
+}
+
+/** Live points kept (one per batch: 100k = 800k frames, 11 h at 20 fps). */
+const MAX_LIVE_POINTS = 100_000;
 
 /** Maximum full-resolution motion/flicker samples retained for the live charts. */
 export const SHIFT_TRACE_CAPACITY = 32768;
@@ -145,6 +157,9 @@ export function createPipelineStore(
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
+  /** The live source's counters after the newest batch (null on a file source). */
+  const [live, setLive] = createSignal<LivePoint | null>(null);
+  let livePoints: LivePoint[] = [];
 
   let trace = new ShiftTrace();
   /** Pass 1's per-frame motion and flicker, kept in full for pass 2 and the export. */
@@ -190,6 +205,17 @@ export function createPipelineStore(
           otherMs: totals.otherMs / n,
           traceMs: totals.traceMs / n,
         });
+        if (step.live) {
+          const end = step.start + step.count;
+          const point: LivePoint = {
+            ...step.live,
+            frame: end,
+            lagFrames: Math.max(0, step.live.received - step.live.dropped - end),
+            t: clock(),
+          };
+          if (livePoints.length < MAX_LIVE_POINTS) livePoints.push(point);
+          setLive(point);
+        }
         return;
       }
       case 'done':
@@ -246,6 +272,8 @@ export function createPipelineStore(
     setStageBusy([]);
     setMotionBackend(null);
     setError(null);
+    livePoints = [];
+    setLive(null);
     cells?.reset(-1);
   }
 
@@ -335,6 +363,9 @@ export function createPipelineStore(
     stageBusy,
     motionBackend,
     error,
+    /** The live source's counters after the newest batch, and all of them this run. */
+    live,
+    livePoints: () => livePoints,
     /** Changes whenever `trace()` gained frames. */
     traceVersion,
     trace: () => trace,

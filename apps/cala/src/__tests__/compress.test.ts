@@ -355,7 +355,7 @@ describe('back-fill from the factors', () => {
     expect(store.takeBackfill(true, true, 4)).toBe(true);
     expect(store.takeBackfill(true, true, 4)).toBe(false);
 
-    // Live history: cell 5 from frame 60 on. Back-fill: from frame 0.
+    // Live history: cell 5 from frame 60 on. Back-fill: from frame 0; the live frames after it stay.
     cells.history().push(60, 2, [5], [1, 2]);
     const traces = Float32Array.from({ length: 50 }, (_, i) => i);
     store.onMessage({
@@ -368,7 +368,9 @@ describe('back-fill from the factors', () => {
       ids: Uint32Array.of(5),
       traces,
     });
-    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 62 });
+    expect(cells.history().dense(5, 62)[49]).toBe(49);
+    expect(cells.history().dense(5, 62)[61]).toBe(2);
     store.onMessage({
       type: 'traces',
       session: 9,
@@ -379,10 +381,84 @@ describe('back-fill from the factors', () => {
       ids: Uint32Array.of(5),
       traces: Float32Array.of(7),
     });
-    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
-    store.onMessage({ type: 'backfilled', session: 3, version: 4, frames: 100, msPerFrame: 2.5 });
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 62 });
+    store.onMessage({
+      type: 'backfilled',
+      session: 3,
+      version: 4,
+      frames: 100,
+      windows: 2,
+      msPerFrame: 2.5,
+    });
     expect(compressReadout(store.status(), store.backfill())).toMatch(
       /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
     );
+    // The complete back-fill is kept as a result (frames x cells from frame 0).
+    expect(store.result()).toMatchObject({ frames: 50, cells: 1, version: 4 });
+    expect(store.backfills()).toHaveLength(1);
+  });
+
+  it('is also asked for during the run, rate-limited, when a newer library is out', () => {
+    let t = 0;
+    const store = createCompressStore(undefined, () => t);
+    store.reset(3);
+    const status = {
+      windows: 1,
+      frames: 600,
+      pending: 0,
+      pendingFrames: 0,
+      meanRank: 2,
+      msPerFrame: 8,
+      factorBytes: 1 << 20,
+      final: false,
+    };
+    expect(store.takePeriodic(2, 30_000)).toBe(false); // no status yet
+    store.onMessage({ type: 'status', session: 3, status: { ...status, windows: 0 } });
+    expect(store.takePeriodic(2, 30_000)).toBe(false); // nothing compressed
+    store.onMessage({ type: 'status', session: 3, status: { ...status, pending: 1 } });
+    expect(store.takePeriodic(2, 30_000)).toBe(false); // a window is waiting
+    store.onMessage({ type: 'status', session: 3, status });
+    expect(store.takePeriodic(0, 30_000)).toBe(false); // no library
+    expect(store.takePeriodic(2, 30_000)).toBe(true);
+    expect(store.takePeriodic(3, 30_000)).toBe(false); // one is running
+    t = 40_000;
+    store.onMessage({
+      type: 'backfilled',
+      session: 3,
+      version: 2,
+      frames: 600,
+      windows: 1,
+      msPerFrame: 2,
+    });
+    expect(store.takePeriodic(2, 30_000)).toBe(false); // already filled with v2
+    expect(store.takePeriodic(3, 30_000)).toBe(false); // 40 s since the request: under 2 x its 40 s
+    t = 90_000;
+    expect(store.takePeriodic(3, 30_000)).toBe(true);
+    expect(store.backfills().map((b) => [b.version, b.requestedMs, b.doneMs])).toEqual([
+      [2, 0, 40_000],
+    ]);
+  });
+
+  it('compresses a window that closes during a back-fill before going on', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(20);
+    for (let s = 0; s < 40; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    const { r, toMain, store } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'status').at(-1)?.status).toMatchObject({ windows: 2 });
+
+    // A back-fill of the 2 windows; a third window closes during its first step.
+    sent.length = 0;
+    r.backfill(7, lib.version);
+    feed.push(cellFrames(40, 20), 40, 20);
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const kinds = toMain.slice(3).map((m) => m.type);
+    // The window was compressed (a status) between the traces of the back-fill, not after it.
+    expect(kinds.indexOf('status')).toBeLessThan(kinds.indexOf('backfilled'));
+    expect(toMain.at(-1)).toMatchObject({ type: 'backfilled', frames: 40, windows: 2 });
+    expect([...store.files.keys()].sort()).toEqual([0, 1, 2].map(factorName));
   });
 });

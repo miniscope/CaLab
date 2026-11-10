@@ -142,6 +142,133 @@ windows. Back-filled traces match the live ones closely for
 cells that pass QC; for low-SNR cells they differ, because the factors drop
 most of the noise such a live trace consists of.
 
+## Live source (experimental)
+
+Cala's target is a recording in progress: frames arriving from the
+acquisition board while the mouse is on the wheel, analysed as they come. A
+live run has no frame count, no random access and no file to re-read, so the
+pipeline runs on an unbounded stream and the compression above becomes the
+only record of the past.
+
+**Transport.** The app takes frames pushed over a WebSocket by whatever is
+acquiring (`src/lib/live-source.ts`): a text `hello` with the geometry and
+frame rate, then one binary message per frame (16-byte header with the
+acquisition-side frame index and a timestamp, then the raw pixels), then
+`end`. Server push over a socket is the shape of the real target (a board
+streaming into the browser; a Miniscope DAQ writing AVIs could be tailed, but
+that is a file source with a delay, and it would couple the app to the DAQ's
+file format, which is left as is). The socket lives in the frame worker, so
+frames go straight into the pipeline; steps wait for frames instead of
+reading them, which is the only backpressure a live source has. For now the
+acquisition side is simulated: `scripts/live-sim.mjs` streams a Miniscope AVI
+folder at its frame rate over that protocol (`--fps`, `--drop i,j` to skip
+frames, `--buffer` to drop when the client is not reading).
+
+```sh
+node apps/cala/scripts/live-sim.mjs ~/data/session/raw      # ws://localhost:8765
+# then open the app on it: the "stream from a live source" field, or
+#   http://localhost:5173/?live=ws://localhost:8765&compress
+```
+
+What changes in a live run:
+
+- The plan is unbounded (`UNBOUNDED` in `pipeline-plan.ts`): the warm-ups
+  are the same 200 + 200 frames, then batches until the stream ends, which
+  bounds the plan at the frames received (also when it ends during a
+  warm-up). The source keeps the first frames for the warm-ups' re-reads and
+  releases them once the processing walk is past them; after that it is a
+  queue (256 MB, 35 s at 600 x 600 and 20 fps) that drops the newest frames
+  when the pipeline falls that far behind. Frames are indexed by arrival: a
+  frame the source never sent, or one dropped here, is counted (the status
+  bar shows received, dropped, missed at the source, and the fast loop's lag
+  behind the stream in frames and ms) and the next frame follows, so windows,
+  traces and the motion record stay contiguous.
+- No progress bar, no total, no raw-file tab. "Stop the live run" ends the
+  stream at the frames received (the slow loop publishes its final library,
+  the compression closes its last window, the back-fill runs); "Restart"
+  connects again, and the source streams from wherever it is then. Pass 2
+  cannot run (nothing to re-read); the export takes the back-filled traces.
+- With `?compress` (recommended for a live run) the back-fill also runs
+  during the run: whenever a newer library is out, at least one window is
+  compressed and none is waiting, at most once per 30 s
+  (`?backfill=<seconds>`, 0 turns it off) and never within twice the last
+  back-fill's duration, so it takes at most a third of the compress worker.
+  A back-fill solves 16 frames at a time and yields between steps; a window
+  that closes meanwhile is compressed before the next step, so incoming
+  frames are never held up. Its traces replace those frames in the trace
+  history (`TraceHistory.replace`: a late cell is extended backwards; frames
+  after the last compressed window keep their live traces), so a cell found
+  late shows its earlier trace within a window or two.
+
+### Measured: the synthetic 5-min session streamed at 20 fps
+
+`scripts/live-measure.mjs` drives both runs headless (Playwright Chromium,
+`--enable-unsafe-webgpu`) and scores the exports against the session's truth
+with `scripts/score_cala_export.py` (`minime.score.score_run`). Session:
+`synth_grin_5min`, 6,000 frames of 600 x 600 at 20 fps, 461 true cells of
+which 290 are detectable. Apple silicon laptop, headless Chromium with WebGPU.
+
+Both runs on the same laptop, motion correction on WebGPU in both (headless
+Chromium's WebGPU is slower than the desktop app's: the file run processed
+45 frames/s here against 175-215 in the app itself). The live run is paced
+by the stream, so its throughput is 20 frames/s by construction.
+
+|                                                                 | live (`?live=...&compress`)                                                                                                                                       | file (pass 1 + pass 2)                       |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| frames received / processed / dropped (queue) / missed (source) | 6,000 / 6,000 / 0 / 0                                                                                                                                             | 6,000 read                                   |
+| frames forwarded to the slow loop / dropped there               | 5,952 / 0 (the first 48 precede its start)                                                                                                                        | 5,952 / 0                                    |
+| frames compressed (windows)                                     | 6,000 (10 x 600)                                                                                                                                                  | -                                            |
+| wall time                                                       | 324 s (300 s of stream, 23 s final back-fill)                                                                                                                     | 143 s pass 1 + 55 s pass 2                   |
+| fast loop behind the stream                                     | steady state 0 frames (p99 0, max 6), a batch solved 36 ms (p99 45 ms) after its last frame; the processing walk starts 218 frames behind and catches up in 9.7 s | -                                            |
+| slow loop behind the fast loop (frames)                         | mean 8.2, p99 8, max 56                                                                                                                                           | mean 8.2, p99 8, max 56                      |
+| slow loop behind the stream (frames)                            | 8 frames in the steady state (one batch), 226-281 during the catch-up                                                                                             | -                                            |
+| windows waiting on disk                                         | never (compression 8-14 ms/frame, a window every 30 s)                                                                                                            | -                                            |
+| back-fills during the run                                       | 8, one every 31 s: 600 frames in 1.3 s up to 4,800 in 10 s (2.0-2.4 ms/frame; 20 s when a window closed during one and was compressed in between)                 | -                                            |
+| final back-fill                                                 | 6,000 x 284 in 23 s wall (14 s solving, 2.3 ms/frame)                                                                                                             | pass 2: 6,000 x 280 in 54.5 s (110 frames/s) |
+| cells (final library)                                           | 284 (a second run: 291)                                                                                                                                           | 280                                          |
+| recall / precision / F1 against the truth                       | 0.488 / 0.792 / 0.604 (second run 0.501 / 0.794 / 0.614)                                                                                                          | 0.505 / 0.832 / 0.629                        |
+| recall of detectable cells                                      | 0.655 (0.666)                                                                                                                                                     | 0.666                                        |
+| trace correlation with the truth, median (q25)                  | 0.978 (0.931)                                                                                                                                                     | 0.970 (0.900)                                |
+
+For reference, MiniMe itself (offline, CNMF) scores this session at recall
+0.477, precision 0.936, trace correlation 0.922 with 235 units. The
+back-filled traces of the live run and pass 2's traces of the file run score
+the same within the run-to-run spread of the slow loop (its visits are
+timed, so two runs never find exactly the same library).
+
+The lag numbers hide one structural step: the pipeline's three walks mean
+the processing walk starts when the warm-ups are done, about 200 frames
+(10 s) behind the stream, and catches up at the pipeline's spare rate
+(218 frames in 9.7 s here, about 42 frames/s against the 20 fps stream).
+Everything after that is the steady state, where a batch is solved 36 ms
+(p99 45 ms) after its last frame arrived (the 8-frame batch itself is 400 ms
+of stream).
+
+Limitations found:
+
+- The periodic back-fill solves every compressed frame again each time, so
+  its cost grows with the recording (1.3 s for one window, 10 s for eight,
+  23 s for the whole 5 min); the "twice the last duration" rule keeps it
+  under a third of the compress worker but on a one-hour recording a
+  back-fill takes about three minutes and runs every six. An incremental back-fill (only the windows a library change touches)
+  is the next step.
+- The frames of the open window (up to 30 s) and those that arrive during a
+  back-fill keep their live traces until the next back-fill or the final
+  one; the final one covers everything.
+- OPFS holds one uncompressed window (432 MB at 600 x 600) plus the factors
+  (about 5 MB per window here: 10 MB/min, 600 MB/h). A long run is bounded
+  by the browser's storage quota for the factors, and by the trace history
+  budgets (`trace-history.ts`) and the back-fill result cap (1.5 GB) in
+  memory.
+- The simulator does not model the DAQ's own frame drops beyond `--drop`;
+  with a real board, the arrival-indexed stream means a dropped frame shifts
+  the trace timeline by one sample at that point (it is counted and shown,
+  not interpolated).
+- The queue drops the newest frames when the pipeline falls 35 s behind; it
+  never did here (queue max 345 frames during the warm-up catch-up), but a
+  pipeline slower than the stream (a CPU-only motion stage on a slow
+  machine) would lose frames rather than memory.
+
 ## Long-recording display limits
 
 The motion and flicker charts keep the latest 32,768 frames at full resolution
