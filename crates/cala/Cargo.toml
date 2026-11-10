@@ -20,8 +20,10 @@ pybindings = ["pyo3"]
 
 [dependencies]
 # FFTs for motion registration (same crates and versions as crates/solver).
+# `wasm_simd` lets rustfft's planner pick its SIMD kernels in the `+simd128`
+# browser build (.cargo/config.toml); the output is bit-identical.
 realfft = "3"
-rustfft = "6"
+rustfft = { version = "6", features = ["wasm_simd"] }
 # Float32 GEMMs of the compression (has a wasm simd128 kernel).
 matrixmultiply = "0.3"
 wasm-bindgen = { version = "0.2", optional = true }
