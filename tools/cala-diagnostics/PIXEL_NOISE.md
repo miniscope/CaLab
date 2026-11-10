@@ -87,11 +87,11 @@ Per-frame noise in the data (Laplacian-residual MAD and frame-difference MAD
 inside the eroded FOV) against flicker, brightness, activity and the old
 auto-contrast range, all as 1 s means:
 
-| quantity (1 s means) | CV | p95/p5 |
-|---|---|---|
-| noise in the preprocessed data | 3.8 % | 1.13 |
-| old auto-contrast range (0.5-99.5 % quantiles, EMA 0.3) | 13 % | 1.42 |
-| noise / display range (what the eye saw) | 9 % | 1.36 |
+| quantity (1 s means)                                    | CV    | p95/p5 |
+| ------------------------------------------------------- | ----- | ------ |
+| noise in the preprocessed data                          | 3.8 % | 1.13   |
+| old auto-contrast range (0.5-99.5 % quantiles, EMA 0.3) | 13 %  | 1.42   |
+| noise / display range (what the eye saw)                | 9 %   | 1.36   |
 
 - **The waves are mostly display.** About 90 % of the variance of log(noise ÷
   range) comes from the range: var 0.0133 for log range against 0.0014 for
@@ -145,14 +145,14 @@ the eval harness (`crates/cala/examples/common/prefilter.rs`):
 4000 frames, 606 cells, rank-5 background. The `fp` arms blur the oracle
 footprints with the same Gaussian, a consistent model.
 
-| arm | r median | r p10 | crosstalk p90 | close pairs <12 px (n=344): r / crosstalk p90 | <18 px (n=502): crosstalk p90 |
-|---|---|---|---|---|---|
-| none | **0.949** | **0.697** | **0.141** | **0.946** / **0.144** | **0.154** |
-| median3 | 0.945 | 0.684 | 0.145 | 0.942 / 0.153 | 0.156 |
-| gauss1 (data only) | 0.948 | 0.694 | 0.152 | 0.946 / 0.168 | 0.166 |
-| gauss1 + footprints | 0.948 | 0.693 | 0.149 | 0.946 / 0.153 | 0.160 |
-| gauss0.7 + footprints | 0.949 | 0.696 | 0.145 | 0.946 / 0.152 | 0.157 |
-| gauss2 + footprints | 0.944 | 0.678 | 0.165 | 0.943 / 0.171 | 0.175 |
+| arm                   | r median  | r p10     | crosstalk p90 | close pairs <12 px (n=344): r / crosstalk p90 | <18 px (n=502): crosstalk p90 |
+| --------------------- | --------- | --------- | ------------- | --------------------------------------------- | ----------------------------- |
+| none                  | **0.949** | **0.697** | **0.141**     | **0.946** / **0.144**                         | **0.154**                     |
+| median3               | 0.945     | 0.684     | 0.145         | 0.942 / 0.153                                 | 0.156                         |
+| gauss1 (data only)    | 0.948     | 0.694     | 0.152         | 0.946 / 0.168                                 | 0.166                         |
+| gauss1 + footprints   | 0.948     | 0.693     | 0.149         | 0.946 / 0.153                                 | 0.160                         |
+| gauss0.7 + footprints | 0.949     | 0.696     | 0.145         | 0.946 / 0.152                                 | 0.157                         |
+| gauss2 + footprints   | 0.944     | 0.678     | 0.165         | 0.943 / 0.171                                 | 0.175                         |
 
 No filter is best or tied on every column. Close-pair crosstalk gets worse
 with every filter. That is expected: with white noise, least squares on the
@@ -165,21 +165,21 @@ measured sensor pattern (`fpn`, the same seed as v2r). Trace r is the pass-2
 r of matched cells. ρ is the noise-correlation inflation that `noise_corr`
 measures and applies to every null.
 
-| sim | arm | precision | recall (all) | recall (in focus) | recall @ 2400 frames | trace r | ρ |
-|---|---|---|---|---|---|---|---|
-| v2 s5 | none | 0.976 | 0.754 | 0.908 | **0.573** | 0.962 | 1.00 |
-| | median3 | 0.976 | 0.733 | 0.896 | 0.525 | 0.962 | 6.70 |
-| | gauss1 | 0.985 | 0.766 | 0.913 | 0.541 | 0.965 | 9.60 |
-| v2 s6 | none | 0.959 | **0.782** | **0.867** | **0.583** | 0.963 | 1.00 |
-| | gauss0.7 | 0.957 | 0.776 | 0.879 | 0.547 | 0.966 | 5.46 |
-| | gauss1 | 0.960 | 0.765 | 0.830 | 0.529 | 0.965 | 9.60 |
-| v2r (motion) | none | 0.932 | **0.741** | **0.843** | **0.546** | 0.963 | 1.51 |
-| | median3 | 0.953 | 0.723 | 0.820 | 0.491 | 0.966 | 7.22 |
-| | gauss1 | 0.951 | 0.723 | 0.814 | 0.506 | 0.965 | 9.84 |
-| fpn (motion + pattern) | none | 0.953 | **0.736** | **0.820** | **0.527** | 0.963 | 1.40 |
-| | flat field | 0.945 | 0.733 | 0.814 | 0.522 | 0.964 | 1.50 |
-| | median3 | 0.944 | 0.725 | 0.791 | 0.494 | 0.964 | 7.00 |
-| | gauss1 | 0.962 | 0.707 | 0.814 | 0.506 | 0.965 | 9.73 |
+| sim                    | arm        | precision | recall (all) | recall (in focus) | recall @ 2400 frames | trace r | ρ    |
+| ---------------------- | ---------- | --------- | ------------ | ----------------- | -------------------- | ------- | ---- |
+| v2 s5                  | none       | 0.976     | 0.754        | 0.908             | **0.573**            | 0.962   | 1.00 |
+|                        | median3    | 0.976     | 0.733        | 0.896             | 0.525                | 0.962   | 6.70 |
+|                        | gauss1     | 0.985     | 0.766        | 0.913             | 0.541                | 0.965   | 9.60 |
+| v2 s6                  | none       | 0.959     | **0.782**    | **0.867**         | **0.583**            | 0.963   | 1.00 |
+|                        | gauss0.7   | 0.957     | 0.776        | 0.879             | 0.547                | 0.966   | 5.46 |
+|                        | gauss1     | 0.960     | 0.765        | 0.830             | 0.529                | 0.965   | 9.60 |
+| v2r (motion)           | none       | 0.932     | **0.741**    | **0.843**         | **0.546**            | 0.963   | 1.51 |
+|                        | median3    | 0.953     | 0.723        | 0.820             | 0.491                | 0.966   | 7.22 |
+|                        | gauss1     | 0.951     | 0.723        | 0.814             | 0.506                | 0.965   | 9.84 |
+| fpn (motion + pattern) | none       | 0.953     | **0.736**    | **0.820**         | **0.527**            | 0.963   | 1.40 |
+|                        | flat field | 0.945     | 0.733        | 0.814             | 0.522                | 0.964   | 1.50 |
+|                        | median3    | 0.944     | 0.725        | 0.791             | 0.494                | 0.964   | 7.00 |
+|                        | gauss1     | 0.962     | 0.707        | 0.814             | 0.506                | 0.965   | 9.73 |
 
 Recall by peak-SNR bin is left out: those SNRs are measured against the
 filtered noise map, so they are not comparable across arms.
