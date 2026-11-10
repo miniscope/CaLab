@@ -3,7 +3,7 @@ import { DashboardPanel } from '@calab/ui';
 import { OKABE_ITO, viridisRGB } from '@calab/ui/chart';
 import { renderOverlay, pickCell, type Rgb } from '../lib/cell-overlay.ts';
 import { NEW_CELL_FRAMES, type CellStore } from '../lib/cell-store.ts';
-import { displayRange, grayToImageData, toGray8, type DisplayRange } from '../lib/frame-display.ts';
+import { grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { PreviewImage } from '../lib/preview.ts';
@@ -23,6 +23,7 @@ import {
   type ColorMode,
 } from '../lib/qc-colors.ts';
 import { PreviewCanvas } from './PreviewCanvas.tsx';
+import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
 
 type View = keyof Omit<BatchPreviews, 'frame'>;
 
@@ -35,7 +36,6 @@ const VIEW_LABEL: Record<View, string> = {
 const INPUT_VIEWS: View[] = ['raw', 'preprocessed', 'corrected'];
 
 const NEW_COLOR: Rgb = [0xf0, 0xe4, 0x42]; // Okabe-Ito yellow
-const RANGE_SMOOTHING = 0.3;
 
 /** Outline colour by when the cell was found: early blue to late green (viridis .2-.7). */
 function foundColor(firstSeen: number | undefined, frame: number): Rgb {
@@ -71,6 +71,7 @@ function CellsView(props: {
   height: number;
   mode: ColorMode;
   residual: boolean;
+  held: HeldRange;
 }): JSX.Element {
   let video!: HTMLCanvasElement;
   let overlay!: HTMLCanvasElement;
@@ -103,19 +104,17 @@ function CellsView(props: {
       height: `${((m.blocksHigh * m.blockPx) / props.height) * 100}%`,
     };
   };
-  let range: DisplayRange | null = null;
-
   createEffect(() => {
     const img = props.image;
+    props.held.revision();
     const ctx = video.getContext('2d');
-    if (!img || !ctx) return;
-    const r = displayRange(img.data, 0, true);
-    range = range
-      ? {
-          lo: range.lo + RANGE_SMOOTHING * (r.lo - range.lo),
-          hi: range.hi + RANGE_SMOOTHING * (r.hi - range.hi),
-        }
-      : r;
+    if (!img) {
+      props.held.reset();
+      return;
+    }
+    if (!ctx) return;
+    const range = props.held.observe(img.data);
+    if (!range) return;
     if (video.width !== img.width) video.width = img.width;
     if (video.height !== img.height) video.height = img.height;
     ctx.putImageData(grayToImageData(toGray8(img.data, 0, range), img.width, img.height), 0, 0);
@@ -203,6 +202,8 @@ export function VideoPanel(props: {
   const [input, setInput] = createSignal<View>('raw');
   const [mode, setMode] = createSignal<ColorMode>('pass');
   const [residual, setResidual] = createSignal(false);
+  const rawHeld = createHeldRange();
+  const cellsHeld = createHeldRange();
   const swatch = (t: number) => `rgb(${viridisRGB(t).join(',')})`;
   const scale = createMemo(() => modeScale(mode(), props.cells.qc()?.rows ?? []));
   const residualTop = createMemo(() => {
@@ -223,12 +224,14 @@ export function VideoPanel(props: {
           >
             <For each={INPUT_VIEWS}>{(v) => <option value={v}>{VIEW_LABEL[v]}</option>}</For>
           </select>
+          <RangeControl held={rawHeld} label="Video" />
         </div>
         <FitStage width={props.width} height={props.height}>
           <div class="cala-stage">
             <PreviewCanvas
               image={props.store.previews()?.[input()] ?? null}
               label={VIEW_LABEL[input()]}
+              held={rawHeld}
             />
           </div>
         </FitStage>
@@ -259,6 +262,7 @@ export function VideoPanel(props: {
             />
             Residual
           </label>
+          <RangeControl held={cellsHeld} label="Cells video" />
         </div>
         <div class="cala-legend cala-legend--row" data-testid="color-legend">
           <Show when={mode() === 'found'}>
@@ -320,6 +324,7 @@ export function VideoPanel(props: {
             height={props.height}
             mode={mode()}
             residual={residual()}
+            held={cellsHeld}
           />
         </FitStage>
       </figure>

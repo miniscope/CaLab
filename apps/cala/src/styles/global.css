@@ -736,3 +736,23 @@
 .cala-demix__table {
   width: auto;
 }
+
+/* Fixed display range control (lo / hi / re-fit) */
+.cala-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.cala-range__input {
+  width: 4.5rem;
+  padding: 1px 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
