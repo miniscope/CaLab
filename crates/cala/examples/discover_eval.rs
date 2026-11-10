@@ -11,6 +11,14 @@
 //!   --checkpoints K   full library snapshots matched against GT (default 10)
 //!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
+//!   --compress-window N[,M...]   after pass 2, compress the frames in
+//!                     windows of N (crate::compress) at three points of the
+//!                     chain (raw, after the front half, the fast loop's
+//!                     input), replay pass 2 from the factors and compare the
+//!                     traces with pass 2 from the frames (`compress.tsv`)
+//!   --compress-taps LIST   any of final,front,raw (default all)
+//!   --compress-threads N   threads sharing a window's tiles (default: all
+//!                     cores; 1 for clean single-thread timings)
 //!   --accept-z Z / --merge-corr R / --reservoir-mb M   slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
 //!   --v1              all v2 additions off (prune, pre-test)
@@ -48,13 +56,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
 use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, NonRigidConfig, Warper,
 };
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor, RawPixel};
 use calab_cala::trace::{Footprint, Library, LibraryBuilder, SolverConfig, TraceEngine};
 use std::fmt::Write as _;
 
@@ -396,8 +405,19 @@ impl Pipeline {
     }
 
     /// Returns the rigid motion shift `(dy, dx)` (zero without motion).
-    fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> (f32, f32) {
+    fn frame<T: RawPixel>(&mut self, raw: &[T], out: &mut [f32]) -> (f32, f32) {
         self.pre.front(raw, &mut self.buf).unwrap();
+        self.finish(out)
+    }
+
+    /// The chain from a front-half frame on (`--compress-window`, tap `front`).
+    fn frame_from_front(&mut self, front: &[f32], out: &mut [f32]) -> (f32, f32) {
+        self.buf.copy_from_slice(front);
+        self.finish(out)
+    }
+
+    /// Motion correction and the back half, on the front-half frame in `buf`.
+    fn finish(&mut self, out: &mut [f32]) -> (f32, f32) {
         let t = self.t;
         self.t += 1;
         if let Some(Jitter {
@@ -811,6 +831,152 @@ fn drain_edits(
     }
 }
 
+/// `--compress-window`: compress the frames at three points of the chain,
+/// replay pass 2 from the factors and compare with `reference` (pass 2 from
+/// the frames, `frames x cells`).
+#[allow(clippy::too_many_arguments)]
+fn compress_report(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    lib: &Arc<Library>,
+    reference: &[f32],
+    frames: u32,
+    windows_list: &[usize],
+    taps: &[String],
+    threads: usize,
+    pass2_ms: f64,
+    out_dir: &Path,
+) {
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let n = lib.len();
+    let t_len = frames as usize;
+    let mut report = String::from(
+        "tap\tcells\tframes\twindow\tmean_rank\tsvd_rank\tbuffer_mb\tkept_energy\tbytes_per_frame\tratio_vs_u8\tcompress_ms\treplay_ms\tpass2_ms\ttrace_r_median\ttrace_r_p10\trel_rmse_median\trel_rmse_p90\n",
+    );
+    let jobs: Vec<(usize, &str)> = windows_list
+        .iter()
+        .flat_map(|&w| taps.iter().map(move |t| (w, t.as_str())))
+        .collect();
+    for (window, tap) in jobs {
+        let mut src = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+        let mut rest = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+        let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        let cfg = CompressConfig {
+            window,
+            threads,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(dims, cfg);
+        let mut got = vec![0.0f32; reference.len()];
+        let (mut y, mut hat, mut y2) = (vec![0.0f32; n_px], vec![0.0f32; n_px], vec![0.0f32; n_px]);
+        let mut rawf = vec![0.0f32; n_px];
+        let (mut bytes, mut rank_sum, mut e_all, mut e_kept) = (0usize, 0.0f64, 0.0f64, 0.0f64);
+        let (mut t_comp, mut t_replay, mut windows) = (0.0f64, 0.0f64, 0usize);
+        let (mut svd_rank, mut buffer) = (0.0f64, 0usize);
+        let mut replay = |wf: WindowFactors, rest: &mut Pipeline, eng: &mut TraceEngine| {
+            bytes += wf.bytes();
+            rank_sum += wf.mean_rank();
+            svd_rank +=
+                wf.tiles.iter().map(|t| t.svd_rank as f64).sum::<f64>() / wf.tiles.len() as f64;
+            e_all += wf.tiles.iter().map(|t| t.energy).sum::<f64>();
+            e_kept += wf.tiles.iter().map(|t| t.kept_energy).sum::<f64>();
+            t_comp += wf.compress_seconds;
+            windows += 1;
+            let t0 = Instant::now();
+            for i in 0..wf.frames {
+                wf.reconstruct(i, &mut hat);
+                let r = match tap {
+                    "final" => eng.process(&hat).unwrap(),
+                    "front" => {
+                        rest.frame_from_front(&hat, &mut y2);
+                        eng.process(&y2).unwrap()
+                    }
+                    _ => {
+                        rest.frame(&hat, &mut y2);
+                        eng.process(&y2).unwrap()
+                    }
+                };
+                let t = wf.start as usize + i;
+                got[t * n..(t + 1) * n].copy_from_slice(&r.traces);
+            }
+            t_replay += t0.elapsed().as_secs_f64();
+        };
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let raw = rec.read(s, cnt);
+            for f in raw.chunks_exact(n_px) {
+                src.frame(f, &mut y);
+                let wf = match tap {
+                    "final" => wc.push(&y),
+                    "front" => wc.push(&src.buf),
+                    _ => {
+                        for (o, &v) in rawf.iter_mut().zip(f) {
+                            *o = f32::from(v);
+                        }
+                        wc.push(&rawf)
+                    }
+                };
+                buffer = buffer.max(wc.buffer_bytes());
+                if let Some(wf) = wf {
+                    replay(wf, &mut rest, &mut eng);
+                }
+            }
+            s += cnt;
+        }
+        if let Some(wf) = wc.flush() {
+            replay(wf, &mut rest, &mut eng);
+        }
+        // Per cell: Pearson r with the reference trace, and the RMS
+        // difference in units of the reference trace's standard deviation.
+        let (mut rs, mut es) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let a: Vec<f32> = (0..t_len).map(|t| reference[t * n + i]).collect();
+            let b: Vec<f32> = (0..t_len).map(|t| got[t * n + i]).collect();
+            let mu = a.iter().map(|&v| f64::from(v)).sum::<f64>() / t_len as f64;
+            let var = a.iter().map(|&v| (f64::from(v) - mu).powi(2)).sum::<f64>() / t_len as f64;
+            if var <= 0.0 {
+                continue;
+            }
+            let mse = a
+                .iter()
+                .zip(&b)
+                .map(|(&x, &y)| f64::from(x - y).powi(2))
+                .sum::<f64>()
+                / t_len as f64;
+            rs.push(pearson(&a, &b));
+            es.push((mse / var).sqrt());
+        }
+        let mut f = std::io::BufWriter::new(
+            File::create(out_dir.join(format!("traces_compress_{tap}_{window}.f32"))).unwrap(),
+        );
+        write_f32s(&mut f, &got);
+        let per_frame = bytes as f64 / t_len as f64;
+        let line = format!(
+            "{tap}\t{}\t{t_len}\t{window}\t{:.1}\t{:.1}\t{:.0}\t{:.4}\t{:.0}\t{:.1}\t{:.2}\t{:.2}\t{pass2_ms:.2}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\n",
+            rs.len(),
+            rank_sum / windows.max(1) as f64,
+            svd_rank / windows.max(1) as f64,
+            buffer as f64 / 1048576.0,
+            e_kept / e_all.max(1e-300),
+            per_frame,
+            n_px as f64 / per_frame,
+            t_comp * 1e3 / t_len as f64,
+            t_replay * 1e3 / t_len as f64,
+            quantile(&rs, 0.5),
+            quantile(&rs, 0.1),
+            quantile(&es, 0.5),
+            quantile(&es, 0.9),
+        );
+        print!("compress {line}");
+        report.push_str(&line);
+    }
+    std::fs::write(out_dir.join("compress.tsv"), report).unwrap();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | real").clone();
@@ -820,6 +986,19 @@ fn main() {
     let sim = mode == "sim";
     let motion = args.iter().any(|a| a == "--motion");
     let pass2 = !args.iter().any(|a| a == "--no-pass2");
+    let compress_windows: Vec<usize> = arg_value(&args, "--compress-window")
+        .map_or(Vec::new(), |s| {
+            s.split(',').map(|v| v.parse().unwrap()).collect()
+        });
+    let compress_taps: Vec<String> = arg_value(&args, "--compress-taps")
+        .unwrap_or("final,front,raw".into())
+        .split(',')
+        .map(str::to_string)
+        .collect();
+    let compress_threads: usize = arg_value(&args, "--compress-threads").map_or(
+        std::thread::available_parallelism().map_or(1, |v| v.get()),
+        |s| s.parse().unwrap(),
+    );
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
     let start: u32 = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let n_checkpoints: u32 = arg_value(&args, "--checkpoints").map_or(10, |s| s.parse().unwrap());
@@ -1278,10 +1457,24 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
             s += cnt;
         }
-        println!(
-            "pass 2: {t_len} frames in {:.1} s",
-            t0.elapsed().as_secs_f64()
-        );
+        let pass2_s = t0.elapsed().as_secs_f64();
+        println!("pass 2: {t_len} frames in {pass2_s:.1} s");
+        if !compress_windows.is_empty() && !lib.is_empty() {
+            compress_report(
+                &mut rec,
+                &pre0,
+                &cal,
+                motion,
+                &lib,
+                &traces,
+                frames,
+                &compress_windows,
+                &compress_taps,
+                compress_threads,
+                pass2_s * 1e3 / t_len as f64,
+                &out_dir,
+            );
+        }
         let mut f = std::io::BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
         write_f32s(&mut f, &traces);
         let mi: Vec<f32> = meanimg.iter().map(|&v| (v / t_len as f64) as f32).collect();
