@@ -1073,3 +1073,109 @@ fn random_slots_share_one_uniform_sample() {
         assert_eq!(a, b);
     }
 }
+
+#[test]
+fn two_pass_whitening_is_bit_identical_to_the_pixel_loop() {
+    let mut rng = Lcg(7);
+    for (h, w) in [(6usize, 8usize), (7, 9), (1, 5), (33, 31)] {
+        let n = h * w;
+        let mut frame: Vec<f32> = (0..n).map(|_| 40.0 * rng.normal()).collect();
+        frame[n / 3] = f32::NAN;
+        frame[n / 2] = f32::INFINITY;
+        let inv: Vec<f32> = (0..n).map(|_| 0.2 + rng.next()).collect();
+        let model: Vec<f32> = (0..n).map(|_| 30.0 * rng.next()).collect();
+        let cw = w.div_ceil(2);
+        // The original pixel-by-pixel loop.
+        let mut z0 = vec![0.0f32; n];
+        let mut c0 = vec![0.0f32; cw * h.div_ceil(2)];
+        for i in 0..n {
+            let (s, y) = (inv[i], frame[i]);
+            z0[i] = if y.is_finite() { y * s } else { 0.0 };
+            let r = if y.is_finite() {
+                (y - model[i]) * s
+            } else {
+                0.0
+            };
+            c0[(i / w / 2) * cw + (i % w) / 2] += 0.25 * r;
+        }
+        let mut z = vec![1.0f32; n];
+        let mut c = vec![1.0f32; c0.len()];
+        let mut q = Vec::new();
+        whiten(&frame, &inv, &model, &mut z, &mut c, w, &mut q);
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&z), bits(&z0), "{h}x{w}");
+        assert_eq!(bits(&c), bits(&c0), "{h}x{w}");
+    }
+}
+
+#[test]
+fn event_slots_keep_the_highest_decayed_priority() {
+    // The cached log-priority keys pick the slot a direct scan of
+    // `score · decay^age` would, over a long random stream.
+    let rect = Rect {
+        y0: 0,
+        x0: 0,
+        h: 2,
+        w: 2,
+    };
+    let z = vec![0.0f32; 4];
+    let ln_decay = -std::f64::consts::LN_2 / 50.0;
+    let mut tile = Tile::new(rect, rect);
+    let mut reference: Vec<(u64, f32)> = Vec::new();
+    let mut rng = Lcg(3);
+    for frame in 0..5000u64 {
+        let score = if rng.next() < 0.3 {
+            0.0
+        } else {
+            10.0 * rng.next()
+        };
+        tile.offer(&z, 2, frame, score, false, 12, ln_decay);
+        // Reference: the original rule.
+        if let Some(i) = reference.iter().position(|s| frame - s.0 <= 2) {
+            if score > reference[i].1 {
+                reference[i] = (frame, score);
+            }
+        } else if reference.len() < 12 {
+            reference.push((frame, score));
+        } else {
+            let prio = |s: &(u64, f32)| f64::from(s.1) * ln_decay.exp().powf((frame - s.0) as f64);
+            let (imin, pmin) = reference
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, prio(s)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            if f64::from(score) > pmin {
+                reference[imin] = (frame, score);
+            }
+        }
+        let got: Vec<(u64, f32)> = tile.events.iter().map(|s| (s.frame, s.score)).collect();
+        assert_eq!(got, reference, "frame {frame}");
+    }
+}
+
+#[test]
+fn wasm_quantisation_rounds_like_f32_round() {
+    use super::reservoir::{quantize_round, quantize_trunc};
+    let mut vals = vec![
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        -0.0,
+        1e9,
+        -1e9,
+        2047.99,
+        -2047.99,
+    ];
+    // Every tie (k + 1/2) / 16 and its neighbours, over the stored range.
+    for k in -40_000i32..40_000 {
+        let tie = (k as f32 + 0.5) / 16.0;
+        vals.extend([tie, tie.next_up(), tie.next_down(), k as f32 / 16.0]);
+    }
+    let mut rng = Lcg(11);
+    vals.extend((0..100_000).map(|_| 300.0 * rng.normal()));
+    for v in vals {
+        assert_eq!(quantize_round(v), quantize_trunc(v), "{v}");
+    }
+}

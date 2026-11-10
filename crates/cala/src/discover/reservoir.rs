@@ -36,9 +36,33 @@ impl Slot {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[inline]
-fn quantize(v: f32) -> i16 {
+pub(crate) fn quantize_round(v: f32) -> i16 {
     (v * QUANT).round().clamp(-32767.0, 32767.0) as i16
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use quantize_round as quantize;
+#[cfg(target_arch = "wasm32")]
+use quantize_trunc as quantize;
+
+/// `quantize_round` without `f32::round`, which WASM has no instruction
+/// for (a libm call per pixel; this is ~8x faster there, a little slower
+/// natively): `x − trunc(x)` is exact, so the rounding (half away from
+/// zero) and the result are bit-identical.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[inline]
+pub(crate) fn quantize_trunc(v: f32) -> i16 {
+    let x = v * QUANT;
+    let t = x.trunc();
+    let r = if (x - t).abs() >= 0.5 {
+        t + 1.0f32.copysign(x)
+    } else {
+        t
+    };
+    // NaN stays NaN through the clamp and casts to 0, as `as i16` does.
+    r.clamp(-32767.0, 32767.0) as i32 as i16
 }
 
 /// Copy `r` out of the full frame `z` (row width `width`), quantised.
@@ -177,6 +201,13 @@ pub(crate) struct Tile {
     /// `core` plus the margin: the stored patch.
     pub rect: Rect,
     pub events: Vec<Slot>,
+    /// Per event slot, the time-invariant log priority `ln score − frame ·
+    /// ln decay` (its priority now is `exp(key + now · ln decay)`, so the
+    /// order of the keys is the order of the priorities at any time), and
+    /// the index of the smallest (`usize::MAX`: to be found again). Rebuilt
+    /// when its length is not that of `events` (a decoded job's tile).
+    ev_key: Vec<f64>,
+    ev_min: usize,
     /// Random slot `j` is frame `j` of the shared uniform sample.
     pub randoms: Vec<Slot>,
     /// New slots since the tile was last visited (scheduling priority).
@@ -196,6 +227,8 @@ impl Tile {
             core,
             rect,
             events: Vec::new(),
+            ev_key: Vec::new(),
+            ev_min: usize::MAX,
             randoms: Vec::new(),
             fresh: 0,
             rejected: Vec::new(),
@@ -218,8 +251,9 @@ impl Tile {
     }
 
     /// Offer frame `frame` (whitened, full frame `z`) to the event slots,
-    /// with this tile's residual `score`. `decay` is the per-frame priority
-    /// decay of event slots.
+    /// with this tile's residual `score`. An event slot's priority is its
+    /// score times `exp(ln_decay)` per frame of age; a full tile replaces
+    /// its lowest-priority slot when `score` beats it.
     #[allow(clippy::too_many_arguments)]
     pub fn offer(
         &mut self,
@@ -229,31 +263,46 @@ impl Tile {
         score: f32,
         test: bool,
         cap_events: usize,
-        decay: f64,
+        ln_decay: f64,
     ) {
         if cap_events == 0 {
             return;
         }
-        let prio = |s: &Slot| f64::from(s.score) * decay.powf((frame - s.frame) as f64);
+        let key = |score: f32, frame: u64| f64::from(score).ln() - frame as f64 * ln_decay;
+        if self.ev_key.len() != self.events.len() {
+            self.ev_key = self.events.iter().map(|s| key(s.score, s.frame)).collect();
+            self.ev_min = usize::MAX;
+        }
         // Neighbouring frames of one transient: keep the stronger.
         if let Some(i) = self.events.iter().position(|s| frame - s.frame <= 2) {
             if score > self.events[i].score {
                 self.events[i] = self.copy(z, width, frame, score, test);
+                self.ev_key[i] = key(score, frame);
+                self.ev_min = usize::MAX;
                 self.fresh += 1;
             }
         } else if self.events.len() < cap_events {
             self.events.push(self.copy(z, width, frame, score, test));
+            self.ev_key.push(key(score, frame));
+            self.ev_min = usize::MAX;
             self.fresh += 1;
         } else {
-            let (imin, pmin) = self
-                .events
-                .iter()
-                .enumerate()
-                .map(|(i, s)| (i, prio(s)))
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .expect("non-empty");
-            if f64::from(score) > pmin {
+            if self.ev_min == usize::MAX {
+                // The first of the smallest, as a scan of the priorities.
+                self.ev_min = self
+                    .ev_key
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.total_cmp(b.1))
+                    .expect("non-empty")
+                    .0;
+            }
+            let imin = self.ev_min;
+            // score > priority of slot imin now, in logs.
+            if key(score, frame) > self.ev_key[imin] {
                 self.events[imin] = self.copy(z, width, frame, score, test);
+                self.ev_key[imin] = key(score, frame);
+                self.ev_min = usize::MAX;
                 self.fresh += 1;
             }
         }

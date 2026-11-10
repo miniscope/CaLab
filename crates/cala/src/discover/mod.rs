@@ -592,7 +592,8 @@ pub struct SlowLoop {
     bgs: Vec<Option<BgBasis>>,
     cap_events: usize,
     cap_random: usize,
-    decay: f64,
+    /// Per-frame log decay of the event slots' priority.
+    ln_decay: f64,
     cells: Vec<Cell>,
     next_id: u64,
     frames: u64,
@@ -630,6 +631,7 @@ pub struct SlowLoop {
     // observe() buffers
     model: Vec<f32>,
     z: Vec<f32>,
+    qrow: Vec<f32>,
     coarse: Vec<f32>,
     coarse_blur: Vec<f32>,
     coarse_fov: Vec<bool>,
@@ -715,6 +717,45 @@ struct Frames {
 impl Frames {
     fn len(&self) -> usize {
         self.y.len()
+    }
+}
+
+/// The whitened frame `z = y / σ` and the whitened residual `(y − model) /
+/// σ` block-averaged 2 x 2 into `coarse` (non-finite `y` count as 0). Two
+/// passes per row, so the first vectorises: `z` and the quarter residual
+/// `q`, then each coarse pixel adds its two `q` in the order a single
+/// pixel-by-pixel loop would (`(c + q0) + q1`, the upper row first), so the
+/// result is bit-identical to that loop.
+fn whiten(
+    frame: &[f32],
+    inv_sigma: &[f32],
+    model: &[f32],
+    z: &mut [f32],
+    coarse: &mut [f32],
+    w: usize,
+    q: &mut Vec<f32>,
+) {
+    let cw = w.div_ceil(2);
+    q.resize(w, 0.0);
+    coarse.iter_mut().for_each(|v| *v = 0.0);
+    let rows = frame
+        .chunks_exact(w)
+        .zip(inv_sigma.chunks_exact(w))
+        .zip(model.chunks_exact(w).zip(z.chunks_exact_mut(w)));
+    for (row, ((yr, sr), (mr, zr))) in rows.enumerate() {
+        for ((((zv, qv), &y), &s), &m) in zr.iter_mut().zip(q.iter_mut()).zip(yr).zip(sr).zip(mr) {
+            let fin = y.is_finite();
+            *zv = if fin { y * s } else { 0.0 };
+            *qv = 0.25 * if fin { (y - m) * s } else { 0.0 };
+        }
+        let crow = &mut coarse[(row / 2) * cw..(row / 2) * cw + cw];
+        let (pairs, tail) = q.as_chunks::<2>();
+        for (c, p) in crow.iter_mut().zip(pairs) {
+            *c = (*c + p[0]) + p[1];
+        }
+        if let Some(&t) = tail.first() {
+            crow[cw - 1] += t;
+        }
     }
 }
 
@@ -859,7 +900,7 @@ impl SlowLoop {
             bgs: vec![None; n_tiles],
             cap_events,
             cap_random,
-            decay: 0.5f64.powf(1.0 / f64::from(cfg.event_half_life_frames)),
+            ln_decay: -std::f64::consts::LN_2 / f64::from(cfg.event_half_life_frames),
             cells: Vec::new(),
             next_id: 1,
             frames: 0,
@@ -892,6 +933,7 @@ impl SlowLoop {
             forced: Vec::new(),
             model: vec![0.0; n_px],
             z: vec![0.0; n_px],
+            qrow: Vec::new(),
             coarse: vec![0.0; coarse_dims.pixels()],
             coarse_blur: vec![0.0; coarse_dims.pixels()],
             coarse_fov,
@@ -1177,7 +1219,7 @@ impl SlowLoop {
                 score,
                 test,
                 self.cap_events,
-                self.decay,
+                self.ln_decay,
             );
             if let Some(j) = took {
                 tile.set_random(j, frame_idx, test);
@@ -1211,20 +1253,15 @@ impl SlowLoop {
         };
         lib.render(&traces.traces, bg, &mut self.model)?;
         // Whitened frame (stored) and whitened residual (scored).
-        let w = self.dims.width;
-        let cw = self.coarse_dims.width;
-        self.coarse.iter_mut().for_each(|v| *v = 0.0);
-        for i in 0..n_px {
-            let s = self.inv_sigma[i];
-            let y = frame[i];
-            self.z[i] = if y.is_finite() { y * s } else { 0.0 };
-            let r = if y.is_finite() {
-                (y - self.model[i]) * s
-            } else {
-                0.0
-            };
-            self.coarse[(i / w / 2) * cw + (i % w) / 2] += 0.25 * r;
-        }
+        whiten(
+            frame,
+            &self.inv_sigma,
+            &self.model,
+            &mut self.z,
+            &mut self.coarse,
+            self.dims.width,
+            &mut self.qrow,
+        );
         self.coarse_gauss
             .blur(&self.coarse, &mut self.coarse_blur)
             .map_err(TraceError::Preprocess)?;
