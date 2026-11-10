@@ -176,6 +176,19 @@ impl JsSlowLoop {
         self.inner.reservoir_bytes() as f64
     }
 
+    /// Frames the reservoir stores per tile (event plus random slots).
+    #[wasm_bindgen(getter, js_name = framesPerTile)]
+    pub fn frames_per_tile(&self) -> u32 {
+        self.inner.reservoir_plan().frames_per_tile as u32
+    }
+
+    /// Why discovery is slower than it could be, when the reservoir's
+    /// memory cap limits the frames per tile (large sensors).
+    #[wasm_bindgen(getter, js_name = reservoirWarning)]
+    pub fn reservoir_warning(&self) -> Option<String> {
+        self.inner.reservoir_plan().warning()
+    }
+
     /// Counters: visits, proposals, adds, rejects, merges, merge tests,
     /// refines, commits, deletes, splits, absorbs, then the add
     /// classification: new adds, re-adds, churned adds, churned re-adds,

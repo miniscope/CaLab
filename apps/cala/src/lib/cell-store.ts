@@ -51,7 +51,23 @@ export function summarize(v: readonly number[]): Summary {
   return { n: s.length, mean, p99, max: s[s.length - 1] };
 }
 
-/** Fast-loop timing per frame (batch wall time / frames), split by discovery on/off. */
+/**
+ * Timing samples kept per series. These are read on every batch tick
+ * (`summarize` copies and sorts them), so an unbounded series makes the
+ * main thread, which also drives the pipeline, slower the longer a run
+ * goes: at 8 h of 30 fps video (108k batches) the nine timing summaries took
+ * ~170 ms per tick. A series holds the newest `MAX_TIMING_SAMPLES` to
+ * `2 * MAX_TIMING_SAMPLES` samples.
+ */
+export const MAX_TIMING_SAMPLES = 4096;
+
+/** Append `v` to a timing series, dropping the oldest samples past the bound (amortized O(1)). */
+export function pushRecent(series: number[], v: number, cap = MAX_TIMING_SAMPLES): void {
+  series.push(v);
+  if (series.length >= 2 * cap) series.splice(0, series.length - cap);
+}
+
+/** Fast-loop timing per frame (batch wall time / frames), split by discovery on/off; recent batches. */
 export interface FastTiming {
   on: number[];
   off: number[];
@@ -75,8 +91,30 @@ const emptyTiming = (): FastTiming => ({
   qcBuildMs: [],
 });
 
-/** Metric series against fast-loop frames read (one point per batch). */
+/** Points kept per metric series before the series is thinned. */
+export const MAX_METRIC_POINTS = 4096;
+
+/** Keep the odd indices and the last element of `a`, in place. */
+function thin<T>(a: T[]): void {
+  const last = a.length - 1;
+  let j = 0;
+  for (let i = 0; i <= last; i++) if (i % 2 === 1 || i === last) a[j++] = a[i];
+  a.length = j;
+}
+
+/**
+ * Metric series against fast-loop frames read (one point per batch). Bounded
+ * like `ConvergenceHistory`: past `maxPoints`, every other point is dropped
+ * (older points get sparser, the newest is always kept), so the plots that
+ * redraw from these on every batch cost the same at hour 8 as at minute 1.
+ */
 export class CellMetrics {
+  readonly maxPoints: number;
+
+  constructor(maxPoints = MAX_METRIC_POINTS) {
+    this.maxPoints = Math.max(4, Math.floor(maxPoints));
+  }
+
   readonly frame: number[] = [];
   /** Cells in the library the fast loop is solving. */
   readonly cells: number[] = [];
@@ -105,6 +143,18 @@ export class CellMetrics {
     this.working.push(working);
     this.lag.push(lag);
     this.version.push(version);
+    if (this.frame.length > this.maxPoints) {
+      for (const s of [
+        this.fastMs,
+        this.solveMs,
+        this.frame,
+        this.cells,
+        this.working,
+        this.lag,
+        this.version,
+      ] as unknown[][])
+        thin(s);
+    }
   }
 
   get length(): number {
@@ -202,8 +252,8 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     if (msg.type === 'library') onLibrary(msg.library, msg.bytes);
     else if (msg.type === 'status') {
       if (!msg.status.final) {
-        slowBatchMs.push(msg.status.batchMs);
-        slowStepMs.push(msg.status.maxStepMs);
+        pushRecent(slowBatchMs, msg.status.batchMs);
+        pushRecent(slowStepMs, msg.status.maxStepMs);
       }
       const st = msg.status;
       const c = st.counters;
@@ -276,17 +326,17 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
     const end = start + count;
     const perFrame = (t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs) / count;
     const solve = (cells.swapMs + cells.solveMs) / count;
-    if (cells.ids.length > 0) (cells.qcOn ? timing.solveQc : timing.solveNoQc).push(solve);
+    if (cells.ids.length > 0) pushRecent(cells.qcOn ? timing.solveQc : timing.solveNoQc, solve);
     if (cells.qc) {
-      timing.qcBuildMs.push(cells.qc.buildMs);
+      pushRecent(timing.qcBuildMs, cells.qc.buildMs);
       onQc(parseQc(cells.qc));
     }
     if (cells.discovering) {
-      timing.on.push(perFrame);
-      timing.solveOn.push(solve);
+      pushRecent(timing.on, perFrame);
+      pushRecent(timing.solveOn, solve);
     } else {
-      timing.off.push(perFrame);
-      timing.solveOff.push(solve);
+      pushRecent(timing.off, perFrame);
+      pushRecent(timing.solveOff, solve);
     }
     metrics.push(
       end,

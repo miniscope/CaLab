@@ -234,8 +234,13 @@
   gap: var(--space-sm);
 }
 
-.cala-statusbar__error {
+.cala-statusbar__error,
+.cala-statusbar__warning {
   flex-basis: 100%;
+}
+
+.cala-block {
+  display: block;
 }
 
 /* Video: two panes, each fitted to the space left over */
