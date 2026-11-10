@@ -19,6 +19,10 @@
 //!   --compress-taps LIST   any of final,front,raw (default all)
 //!   --compress-threads N   threads sharing a window's tiles (default: all
 //!                     cores; 1 for clean single-thread timings)
+//!   --seed-file F --seed-at N   at recording frame N, seed the slow loop with
+//!                     the footprints in F (`CALASEED`, u32 n, then per cell
+//!                     u32 id, y0, x0, h, w and f32 h*w unfiltered values),
+//!                     e.g. a batch detection on the first frames
 //!   --compress-dump   also write the first window of each tap, quantized
 //!                     (`window_<tap>_<N>.i16`: `CALAWIN1`, u32 width, height,
 //!                     frames, f32 quant, then i16 frames), the input of
@@ -1022,6 +1026,36 @@ fn main() {
         .map(str::to_string)
         .collect();
     let compress_dump = args.iter().any(|a| a == "--compress-dump");
+    let seed_at: u32 = arg_value(&args, "--seed-at").map_or(u32::MAX, |s| s.parse().unwrap());
+    let seed_fps: Vec<Footprint> = arg_value(&args, "--seed-file").map_or(Vec::new(), |p| {
+        let b = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert_eq!(&b[..8], b"CALASEED", "not a seed file");
+        let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let n = u(8);
+        let mut at = 12;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (id, y0, x0, h, w) = (u(at), u(at + 4), u(at + 8), u(at + 12), u(at + 16));
+            at += 20;
+            let values: Vec<f32> = b[at..at + 4 * h * w]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect();
+            at += 4 * h * w;
+            out.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: h,
+                width: w,
+                values,
+            });
+        }
+        println!("seed file: {n} footprints, applied at frame {seed_at}");
+        out
+    });
     let compress_threads: usize = arg_value(&args, "--compress-threads").map_or(
         std::thread::available_parallelism().map_or(1, |v| v.get()),
         |s| s.parse().unwrap(),
@@ -1255,6 +1289,10 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             let mut profile = [0.0f64; 5];
             let mut work_delta = [0u64; 7];
             if let Some(sl) = slow.as_mut() {
+                if t == seed_at as usize && !seed_fps.is_empty() {
+                    let kept = sl.seed(&seed_fps).unwrap();
+                    println!("frame {t}: seeded {kept} of {} footprints", seed_fps.len());
+                }
                 let before = sl.stats();
                 if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
