@@ -44,6 +44,7 @@ const fps = option('--fps', undefined);
 const port = Number(option('--port', '8766'));
 const python = option('--python', undefined);
 const headed = flag('--headed');
+const compressFile = flag('--file-compress');
 const folder = resolve(args[0] ?? '.');
 const meta = join(dirname(folder), 'meta.json');
 mkdirSync(out, { recursive: true });
@@ -133,7 +134,7 @@ async function liveRun(browser) {
     await until(
       page,
       () => window.__cala.pipeline.status() === 'done',
-      20 * 60_000,
+      180 * 60_000,
       'the end of the stream',
     );
     console.log('stream ended; waiting for the final back-fill');
@@ -247,18 +248,59 @@ async function liveRun(browser) {
 async function fileRun(browser) {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  await page.goto(`${url}/?debug`);
+  await page.goto(`${url}/?debug${compressFile ? '&compress' : ''}`);
   await page.setInputFiles('[data-testid=folder-input]', folder);
   const t0 = Date.now();
   await until(page, () => window.__cala?.pipeline.status() === 'running', 60_000, 'the file run');
   console.log('file run started');
-  await until(page, () => window.__cala.pipeline.status() === 'done', 20 * 60_000, 'pass 1');
+  await until(page, () => window.__cala.pipeline.status() === 'done', 180 * 60_000, 'pass 1');
   const pass1Seconds = (Date.now() - t0) / 1000;
   console.log('pass 1 done; waiting for pass 2');
+  if (compressFile) {
+    await until(
+      page,
+      () => {
+        const c = window.__cala;
+        const b = c.compress.backfill();
+        return (
+          (c.cells.status()?.final && b && b.version === c.cells.library()?.version) ||
+          c.pipeline.status() === 'error'
+        );
+      },
+      90 * 60_000,
+      'the final back-fill (file+compress)',
+    );
+    const pass1s = (Date.now() - t0) / 1000;
+    const r = await page.evaluate(() => {
+      const c = window.__cala;
+      const x = c.compress.result();
+      return {
+        pipeline: (0, eval)(`(${window.__pipelineMetrics})`)(),
+        result: x ? { frames: x.frames, cells: x.cells, version: x.version } : null,
+        backfills: c.compress.backfills(),
+        error: c.compress.error(),
+      };
+    });
+    writeFileSync(
+      join(out, 'filec_metrics.json'),
+      JSON.stringify(
+        {
+          seconds: pass1s,
+          ...r,
+          pipeline: { ...r.pipeline, slowLag: undefined, fastMs: undefined },
+        },
+        null,
+        1,
+      ),
+    );
+    if (r.result) await exportNpz(page, join(out, 'filec_cala.npz'));
+    await page.close();
+    return { filec: true, seconds: pass1s, ...r };
+  }
   await until(
     page,
     () => ['done', 'error'].includes(window.__cala.pass2.status()),
-    10 * 60_000,
+    90 * 60_000,
     'pass 2',
   );
   const raw = await page.evaluate(() => {
@@ -331,6 +373,11 @@ try {
         `windows waiting max ${m.pendingWindows.max}; back-fills ${m.backfills.length}; ${m.pipeline.cells} cells`,
     );
     scoreExport('live');
+  }
+  if (mode === 'filec') {
+    const m = await fileRun(context);
+    console.log(`filec: ${m.seconds}s, result ${JSON.stringify(m.result)}`);
+    scoreExport('filec');
   }
   if (mode === 'file' || mode === 'both') {
     const m = await fileRun(context);
