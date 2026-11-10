@@ -29,6 +29,9 @@
 
 mod linalg;
 
+#[cfg(feature = "jsbindings")]
+mod js;
+
 use linalg::{qr_q, sym_eig};
 
 use crate::preprocess::Dims;
