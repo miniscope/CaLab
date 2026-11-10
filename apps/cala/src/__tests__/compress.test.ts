@@ -158,6 +158,16 @@ describe('CompressFeed', () => {
     feed.end();
     expect(sent.map((m) => m.type)).toEqual(['init', 'chunk', 'reset']);
   });
+
+  it('keeps the windows when the fast loop is dropped after the end', () => {
+    // Pass 2 replaces the fast loop in the trace worker once the recording
+    // has ended; the compressed windows are the record of the run.
+    const { feed, sent } = collectingFeed(10);
+    feed.push(batch(0, 1), 0, 1);
+    feed.end();
+    feed.reset();
+    expect(sent.map((m) => m.type)).toEqual(['init', 'chunk', 'close']);
+  });
 });
 
 describe('CompressRunner', () => {

@@ -49,6 +49,7 @@ export class CompressFeed implements CompressFeedLike {
   private filled = 0;
   private windowIndex = 0;
   private next = -1;
+  private ended = false;
   private disposed = false;
 
   constructor(
@@ -127,13 +128,22 @@ export class CompressFeed implements CompressFeedLike {
 
   /** The recording ended: compress the last, shorter window too. */
   end(): void {
-    if (this.disposed || !this.initSent) return;
+    if (this.disposed || !this.initSent || this.ended) return;
+    this.ended = true;
     this.close(true);
   }
 
+  /**
+   * The fast loop is dropped. Before the end of the recording that is a stop
+   * or restart, and the compress worker drops its windows too. After it (pass
+   * 2 replaces the fast loop in the same worker) the windows stay: they are
+   * the record of the run, and the next run's `init` clears them.
+   */
   reset(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (this.initSent) this.port.postMessage({ type: 'reset', session: this.o.session });
+    if (this.initSent && !this.ended) {
+      this.port.postMessage({ type: 'reset', session: this.o.session });
+    }
   }
 }
