@@ -226,14 +226,16 @@ fn library_from_seed_matches_builder() {
         .build(&mut flattener())
         .unwrap();
     assert_eq!(lib.support(0), direct.support(0));
-    let (_, a) = lib.filtered(0);
-    let (_, b) = direct.filtered(0);
-    let err = a
-        .iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    assert!(err < 1e-5);
+    // The seeded cell's support holds the whole disk (zeros past the given
+    // window); compare on the window's pixels.
+    let (pa, a) = lib.filtered(0);
+    let (pb, b) = direct.filtered(0);
+    let mut err = 0.0f32;
+    for (p, y) in pb.iter().zip(b) {
+        let k = pa.binary_search(p).expect("window pixel in the support");
+        err = err.max((a[k] - y).abs());
+    }
+    assert!(err < 1e-5, "err {err}");
 }
 
 // ---- v2: evidence ledger, pruning, merging of established cells ----------
@@ -789,12 +791,31 @@ fn busy_movie(t: usize) -> (Vec<f32>, Vec<Footprint>) {
         .map(|(i, &(y, x))| (blob(i as u64, y, x), trace(&mut rng, t, 0.03, 6.0)))
         .collect();
     let m = movie(&cells, t, 223);
+    // Seeds cut to tight disks (a footprint keeps its given extent, and
+    // the concurrency test needs small zones).
     let seed = vec![
         blob(1, 20.0, 22.0),
         blob(2, 21.0, 23.0),
         blob_w(3, 47.0, 47.5, 4.0),
         blob(4, 30.0, 48.0),
-    ];
+    ]
+    .into_iter()
+    .map(|mut fp| {
+        let c = (fp.y0 + fp.height / 2, fp.x0 + fp.width / 2);
+        for y in 0..fp.height {
+            for x in 0..fp.width {
+                let (dy, dx) = (
+                    (fp.y0 + y) as f32 - c.0 as f32,
+                    (fp.x0 + x) as f32 - c.1 as f32,
+                );
+                if dy * dy + dx * dx > 64.0 {
+                    fp.values[y * fp.width + x] = 0.0;
+                }
+            }
+        }
+        fp
+    })
+    .collect();
     (m, seed)
 }
 
@@ -904,10 +925,6 @@ fn concurrent_jobs_never_share_cells_and_apply_in_any_order() {
     let cfg = SlowLoopConfig {
         tile_px: 16,
         margin_px: 10,
-        library: crate::trace::LibraryConfig {
-            max_support_px: 10.0,
-            ..crate::trace::LibraryConfig::default()
-        },
         ..shard_config()
     };
     let n_px = N * N;

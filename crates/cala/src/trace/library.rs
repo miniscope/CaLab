@@ -68,16 +68,20 @@ impl LinearFilter for IdentityFilter {
     }
 }
 
-/// How each footprint's support is chosen.
+/// The support a new footprint starts on, before its extent is measured.
+///
+/// The library itself never trims a footprint: a footprint's support is the
+/// disk that holds every one of its non-zero values (its own extent, see
+/// [`support_disk`]). Where to cut a *new* estimate is the caller's choice;
+/// the slow loop seeds a candidate on this rule and then lets the running
+/// statistics grow it to wherever its light is significant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LibraryConfig {
-    /// Support radius as a multiple of the footprint's half-width at half
-    /// maximum (from the area above half the peak). 2.5 keeps the core and
-    /// drops most of the scatter halo.
+    /// Seed support radius as a multiple of the footprint's half-width at
+    /// half maximum (from the area above half the peak).
     pub support_per_hwhm: f32,
-    /// Bounds on the support radius, px.
+    /// Smallest seed support radius, px.
     pub min_support_px: f32,
-    pub max_support_px: f32,
 }
 
 impl Default for LibraryConfig {
@@ -85,7 +89,6 @@ impl Default for LibraryConfig {
         LibraryConfig {
             support_per_hwhm: 2.5,
             min_support_px: 6.0,
-            max_support_px: 20.0,
         }
     }
 }
@@ -95,14 +98,18 @@ impl LibraryConfig {
         let ok = self.support_per_hwhm.is_finite()
             && self.support_per_hwhm > 0.0
             && self.min_support_px.is_finite()
-            && self.min_support_px >= 1.0
-            && self.max_support_px.is_finite()
-            && self.max_support_px >= self.min_support_px;
+            && self.min_support_px >= 1.0;
         if ok {
             Ok(())
         } else {
             Err(TraceError::InvalidConfig(format!("{self:?}")))
         }
+    }
+
+    /// Seed support radius for a footprint of half-width `hwhm` (no upper
+    /// bound).
+    pub fn seed_radius(&self, hwhm: f32) -> f32 {
+        (self.support_per_hwhm * hwhm).max(self.min_support_px)
     }
 }
 
@@ -110,7 +117,6 @@ impl LibraryConfig {
 #[derive(Debug, Clone)]
 pub struct LibraryBuilder {
     dims: Dims,
-    cfg: LibraryConfig,
     footprints: Vec<Footprint>,
     fov: Option<Vec<u8>>,
     noise: Option<Vec<f32>>,
@@ -123,7 +129,6 @@ impl LibraryBuilder {
     pub fn new(dims: Dims) -> LibraryBuilder {
         LibraryBuilder {
             dims,
-            cfg: LibraryConfig::default(),
             footprints: Vec::new(),
             fov: None,
             noise: None,
@@ -131,11 +136,6 @@ impl LibraryBuilder {
             version: None,
             reuse: None,
         }
-    }
-
-    pub fn config(mut self, cfg: LibraryConfig) -> LibraryBuilder {
-        self.cfg = cfg;
-        self
     }
 
     /// The lit field of view (non-zero = inside); ring pixels outside it are
@@ -183,7 +183,6 @@ impl LibraryBuilder {
 
     /// Filter every footprint with `filter` and precompute the solve terms.
     pub fn build(self, filter: &mut dyn LinearFilter) -> Result<Library, TraceError> {
-        self.cfg.validate()?;
         let dims = self.dims;
         let n_px = dims.pixels();
         if filter.dims() != dims {
@@ -227,7 +226,11 @@ impl LibraryBuilder {
                 )));
             }
             ids.push(fp.id);
-            let (cy, cx, r) = support_disk(fp, dims, &self.cfg)?;
+            let Support {
+                center: (cy, cx),
+                radius: r,
+                ..
+            } = support_disk(fp, dims)?;
             centers.push((cy, cx));
             radii.push(r);
             let r2 = r * r;
@@ -315,12 +318,22 @@ impl LibraryBuilder {
     }
 }
 
-/// Centre (intensity-weighted over the half-max area) and support radius.
-pub(crate) fn support_disk(
-    fp: &Footprint,
-    dims: Dims,
-    cfg: &LibraryConfig,
-) -> Result<(f32, f32, f32), TraceError> {
+/// A footprint's support disk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Support {
+    /// Intensity-weighted centre of the area above half the peak, `(y, x)`.
+    pub center: (f32, f32),
+    /// Distance from the centre to the farthest non-zero value, px: the
+    /// footprint's own extent (no cap).
+    pub radius: f32,
+    /// Half-width at half maximum, px (radius of a disk with the half-max
+    /// area).
+    pub hwhm: f32,
+}
+
+/// The support of `fp`: the disk around its half-max centroid that holds
+/// every non-zero value.
+pub fn support_disk(fp: &Footprint, dims: Dims) -> Result<Support, TraceError> {
     let bad = |m: &str| TraceError::InvalidFootprint(format!("id {}: {m}", fp.id));
     if fp.height == 0 || fp.width == 0 {
         return Err(bad("empty patch"));
@@ -350,9 +363,22 @@ pub(crate) fn support_disk(
             }
         }
     }
-    let hwhm = (count as f32 / std::f32::consts::PI).sqrt();
-    let r = (cfg.support_per_hwhm * hwhm).clamp(cfg.min_support_px, cfg.max_support_px);
-    Ok(((sy / sw) as f32, (sx / sw) as f32, r))
+    let (cy, cx) = ((sy / sw) as f32, (sx / sw) as f32);
+    let mut r2 = 0.0f32;
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            if fp.values[y * fp.width + x] > 0.0 {
+                let (dy, dx) = ((fp.y0 + y) as f32 - cy, (fp.x0 + x) as f32 - cx);
+                r2 = r2.max(dy * dy + dx * dx);
+            }
+        }
+    }
+    Ok(Support {
+        center: (cy, cx),
+        // A hair over the farthest value, so rounding never drops it.
+        radius: r2.sqrt() + 1e-3,
+        hwhm: (count as f32 / std::f32::consts::PI).sqrt(),
+    })
 }
 
 /// The footprint part of a library (independent of the background model).

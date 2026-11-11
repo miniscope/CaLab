@@ -179,12 +179,7 @@ fn recovers_traces_exactly_when_the_model_is_exact() {
     let t = 30;
     let c = traces(6, t, 1);
     let frames = unfiltered_frames(&c);
-    let wide = LibraryConfig {
-        support_per_hwhm: 4.0,
-        ..LibraryConfig::default()
-    };
     let mut b = LibraryBuilder::new(dims())
-        .config(wide)
         .background(BackgroundModel::Basis(vec![global_map()]))
         .version(1);
     for (i, &centre) in CENTRES.iter().enumerate() {
@@ -211,9 +206,9 @@ fn recovers_traces_exactly_when_the_model_is_exact() {
 
 #[test]
 fn recovers_traces_through_the_high_pass() {
-    // High-passed data, filtered footprints on tight supports. What is not
-    // modelled are the neighbours' filtered tails and negative lobes outside
-    // their own supports, a few percent of a neighbour's amplitude.
+    // High-passed data, filtered footprints on their full windows. What is
+    // not modelled are the negative lobes outside each window, a few percent
+    // of a neighbour's amplitude.
     let t = 30;
     let c = traces(6, t, 1);
     let frames = filtered_frames(&c, 0.0, 2);
@@ -222,7 +217,9 @@ fn recovers_traces_through_the_high_pass() {
         BackgroundModel::Basis(vec![global_map()]),
         1,
     ));
-    assert_eq!(lib.groups().len(), 4, "two overlapping pairs, two singles");
+    // Full-extent supports (every value of the 19 px windows) couple
+    // neighbours into overlap groups.
+    assert!(lib.groups().len() < 6, "overlapping cells share a group");
     let mut e = TraceEngine::new(lib, tight()).unwrap();
     let peak = c.iter().flatten().fold(0.0f32, |m, &v| m.max(v));
     let mut worst = 0.0f32;

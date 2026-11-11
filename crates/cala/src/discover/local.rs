@@ -11,7 +11,7 @@
 
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
-use crate::trace::{support_disk, Footprint, LibraryConfig};
+use crate::trace::{support_disk, Footprint, LibraryConfig, Support};
 
 /// A rectangle of the frame (rows `y0..y0 + h`, columns `x0..x0 + w`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +162,18 @@ impl LocalFilter {
     }
 }
 
+/// Where a new footprint's support ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Extent {
+    /// Keep every non-zero value (a footprint given from outside).
+    Given,
+    /// The seed rule ([`LibraryConfig::seed_radius`]): a candidate whose
+    /// extent has not been measured yet.
+    Seed,
+    /// A measured radius around the half-max centroid.
+    Radius(f32),
+}
+
 /// A footprint in the slow loop's working set, on its library support disk.
 #[derive(Debug, Clone)]
 pub(crate) struct Cell {
@@ -181,10 +193,10 @@ pub(crate) struct Cell {
 }
 
 impl Cell {
-    /// From unfiltered values `a` on canvas `rect`: the library's support
-    /// rule (2.5 half-widths around the half-max centroid), the values cut to
-    /// that disk, and the filtered column. `None` when the footprint is
-    /// empty or its support leaves the FOV or the canvas.
+    /// From unfiltered values `a` on canvas `rect`: the values cut to the
+    /// support disk `extent` gives (around the half-max centroid) and to the
+    /// FOV, and the filtered column. `None` when the footprint is empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_canvas(
         id: u64,
         rect: Rect,
@@ -192,6 +204,7 @@ impl Cell {
         dims: Dims,
         fov: &[u8],
         cfg: &LibraryConfig,
+        extent: Extent,
         filter: &mut LocalFilter,
     ) -> Option<Cell> {
         let peak = a.iter().copied().fold(0.0f32, f32::max);
@@ -206,7 +219,16 @@ impl Cell {
             width: rect.w,
             values: a.to_vec(),
         };
-        let (cy, cx, r) = support_disk(&fp, dims, cfg).ok()?;
+        let Support {
+            center: (cy, cx),
+            radius: own,
+            hwhm,
+        } = support_disk(&fp, dims).ok()?;
+        let r = match extent {
+            Extent::Given => own,
+            Extent::Seed => cfg.seed_radius(hwhm).min(own),
+            Extent::Radius(r) => r.min(own),
+        };
         let bbox = Rect::around(cy, cx, r, dims);
         let mut canvas = vec![0.0f32; bbox.len()];
         let mut inside = vec![false; bbox.len()];
@@ -217,8 +239,9 @@ impl Cell {
                 let (dy, dx) = (gy as f32 - cy, gx as f32 - cx);
                 if dy * dy + dx * dx <= r * r {
                     let g = gy * dims.width + gx;
+                    // Clipped at the lens edge (the filtered data is 0 there).
                     if fov[g] == 0 {
-                        return None;
+                        continue;
                     }
                     inside[y * bbox.w + x] = true;
                     pix.push(g as u32);

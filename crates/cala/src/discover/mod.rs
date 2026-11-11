@@ -233,7 +233,7 @@ use std::sync::Arc;
 use churn::Churn;
 use fpstats::FpStats;
 use ledger::Evidence;
-use local::{rank1, rank2_split, BgBasis, Cell, Column, Fit, LocalFilter, Problem, Rect};
+use local::{rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, Problem, Rect};
 use noisecorr::NoiseCorr;
 use reservoir::{mix, SharedFrames, Slot, Tile};
 use shard::{InFlight, Op};
@@ -253,8 +253,10 @@ pub struct SlowLoopConfig {
     pub cell_diameter_px: f32,
     /// Tile side, px.
     pub tile_px: usize,
-    /// Extra margin stored around each tile, px (at least the largest
-    /// support radius, so a cell centred in the tile is inside its patch).
+    /// Extra margin stored around each tile, px. Supports have no upper
+    /// bound, so a large cell near the core's edge can reach past its
+    /// patch: the patch then sees it clipped, and reservoir refits leave
+    /// it to the running statistics, which see all of it.
     pub margin_px: usize,
     /// Reservoir size: stored frames per tile (event plus random slots).
     /// Recall rises steeply with it up to about this many (measured at
@@ -338,6 +340,12 @@ pub struct SlowLoopConfig {
     /// A footprint estimated from the statistics is used once its peak
     /// pixel is this many standard errors above zero.
     pub stats_min_snr: f32,
+    /// The support of a footprint estimated from the statistics reaches
+    /// out to where its light is significant: each 1 px ring around the
+    /// centre belongs to it while the ring's mean light is this many
+    /// standard errors above zero (no size cap; dim cells stay small,
+    /// bright ones take their full extent as the frames accumulate).
+    pub support_z: f32,
     /// A refinement is accepted when its per-frame held-out χ² gains are
     /// positive with a paired z (mean over standard error) above this...
     pub refine_z: f32,
@@ -440,6 +448,7 @@ impl Default for SlowLoopConfig {
             stats_half_life_frames: 6000.0,
             stats_margin_cells: 0.4,
             stats_min_snr: 4.0,
+            support_z: 2.0,
             refine_z: 3.0,
             absorb_z: 3.0,
             absorb_share: 0.8,
@@ -470,7 +479,6 @@ impl SlowLoopConfig {
         let ok = self.cell_diameter_px.is_finite()
             && self.cell_diameter_px >= 2.0
             && self.tile_px >= 8
-            && self.margin_px as f32 >= self.library.max_support_px
             && self.frames_per_tile >= 2
             && self.random_share >= 0.0
             && self.random_share < 1.0
@@ -489,6 +497,7 @@ impl SlowLoopConfig {
             && self.stats_margin_cells.is_finite()
             && self.stats_margin_cells >= 0.0
             && self.stats_min_snr.is_finite()
+            && self.support_z.is_finite()
             && self.refine_z.is_finite()
             && self.absorb_z.is_finite()
             && self.absorb_share.is_finite()
@@ -1155,8 +1164,8 @@ impl SlowLoop {
     }
 
     /// Start from existing footprints (unfiltered, `id`s kept), e.g. to
-    /// resume or to refine a library from another source. They are cut to
-    /// the library's support disks; ones that leave the FOV are dropped.
+    /// resume or to refine a library from another source. They keep their
+    /// own extent (clipped to the FOV).
     /// Returns how many were kept. Published with the next commit.
     pub fn seed(&mut self, footprints: &[Footprint]) -> Result<usize, TraceError> {
         let mut kept = 0;
@@ -1187,6 +1196,7 @@ impl SlowLoop {
                 self.dims,
                 &self.fov,
                 &self.cfg.library,
+                Extent::Given,
                 &mut self.filter,
             ) {
                 self.next_id = self.next_id.max(fp.id + 1);
@@ -1681,7 +1691,6 @@ impl SlowLoop {
 
     fn publish(&mut self) -> Result<Arc<Library>, TraceError> {
         let mut b = LibraryBuilder::new(self.dims)
-            .config(self.cfg.library)
             .fov(self.fov.clone())
             .noise(self.noise.clone())
             .background(self.cfg.background.clone());
@@ -2334,16 +2343,20 @@ impl SlowLoop {
             target[l] = v * self.noise[gy * w + gx];
             mask[l] = true;
         }
-        self.finish_cell(id, canvas, target, mask, start)
+        self.finish_cell(id, canvas, target, mask, start, None)
     }
 
     /// Make a cell from an unwhitened filtered footprint on global pixels.
+    /// With `se` (the estimate's standard error per unit pixel noise), the
+    /// support is measured: it reaches as far as the cell's light is
+    /// significant ([`Self::significant_radius`]); without, it is seeded.
     fn make_cell_global(
         &mut self,
         id: u64,
         pix: &[u32],
         h: &[f32],
         start: Option<&Cell>,
+        se: Option<f64>,
     ) -> Option<Cell> {
         let w = self.dims.width;
         if pix.is_empty() {
@@ -2372,11 +2385,12 @@ impl SlowLoop {
             target[l] = v;
             mask[l] = true;
         }
-        self.finish_cell(id, canvas, target, mask, start)
+        self.finish_cell(id, canvas, target, mask, start, se)
     }
 
     /// Smooth the target at the optics' scale, invert the high-pass from
-    /// `start` (or the target), normalise and cut to the support disk.
+    /// `start` (or the target), normalise and cut to the support disk
+    /// (measured with `se`, else seeded).
     fn finish_cell(
         &mut self,
         id: u64,
@@ -2384,8 +2398,10 @@ impl SlowLoop {
         mut target: Vec<f32>,
         mask: Vec<bool>,
         start: Option<&Cell>,
+        se: Option<f64>,
     ) -> Option<Cell> {
         let w = self.dims.width;
+        let unsmoothed = se.map(|_| target.clone());
         // Footprints are smooth at the scale of the optics (a tenth of a
         // cell diameter): a masked, normalised blur of the target removes the
         // pixel noise of a footprint estimated from a few dozen frames.
@@ -2424,6 +2440,12 @@ impl SlowLoop {
         if !(peak > 0.0) {
             return None;
         }
+        let extent = match (se, &unsmoothed) {
+            (Some(se), Some(h)) => self
+                .significant_radius(canvas, h, &mask, &a, se)
+                .map_or(Extent::Seed, Extent::Radius),
+            _ => Extent::Seed,
+        };
         a.iter_mut().for_each(|v| *v /= peak);
         Cell::from_canvas(
             id,
@@ -2432,8 +2454,67 @@ impl SlowLoop {
             self.dims,
             &self.fov,
             &self.cfg.library,
+            extent,
             &mut self.filter,
         )
+    }
+
+    /// How far a footprint's light is significant: rings (1 px wide) around
+    /// the half-max centroid of `a`, outward while the ring's mean light is
+    /// `support_z` standard errors above zero. The light is the unbiased
+    /// `h + L a` (filtered estimate `h` plus the low-pass the high-pass took
+    /// from the fitted footprint `a`, i.e. the unfiltered light with `h`'s
+    /// noise), so the high-pass moat does not end the support early and the
+    /// non-negativity of `a` does not bias it. `se` is `h`'s standard error
+    /// per unit pixel noise. `None` when `a` is empty.
+    fn significant_radius(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        a: &[f32],
+        se: f64,
+    ) -> Option<f32> {
+        let fp = Footprint {
+            id: 0,
+            y0: canvas.y0,
+            x0: canvas.x0,
+            height: canvas.h,
+            width: canvas.w,
+            values: a.to_vec(),
+        };
+        let (cy, cx) = crate::trace::support_disk(&fp, self.dims).ok()?.center;
+        let mut low = vec![0.0f32; canvas.len()];
+        self.filter.blur(canvas.h, canvas.w, a, &mut low);
+        self.work += (canvas.len() * 30) as u64;
+        let w = self.dims.width;
+        let mut sum: Vec<f64> = Vec::new();
+        let mut var: Vec<f64> = Vec::new();
+        for y in 0..canvas.h {
+            for x in 0..canvas.w {
+                let p = y * canvas.w + x;
+                if !mask[p] {
+                    continue;
+                }
+                let (gy, gx) = (canvas.y0 + y, canvas.x0 + x);
+                let d = ((gy as f32 - cy).powi(2) + (gx as f32 - cx).powi(2)).sqrt();
+                let k = d as usize;
+                if k >= sum.len() {
+                    sum.resize(k + 1, 0.0);
+                    var.resize(k + 1, 0.0);
+                }
+                sum[k] += f64::from(h[p] + low[p]);
+                let sd = se * f64::from(self.noise[gy * w + gx]);
+                var[k] += sd * sd;
+            }
+        }
+        let z = f64::from(self.cfg.support_z);
+        let rings = sum
+            .iter()
+            .zip(&var)
+            .take_while(|(&s, &v)| v > 0.0 && s > z * v.sqrt())
+            .count();
+        Some((rings as f32).max(self.cfg.library.min_support_px))
     }
 
     /// Rank-1 fit of a new cell on a small disk around `peak`.
@@ -2877,12 +2958,13 @@ impl SlowLoop {
         // a new cell: left to the alternatives (and refinement, merging).
         if ok {
             let ck: Vec<f32> = e.iter().map(|f| f.c[k]).collect();
-            let reach = 2.0 * self.cfg.library.max_support_px;
             let mut near: Vec<Vec<f32>> = Vec::new();
             for j in 0..k {
                 let Some(cj) = self.cells.iter().find(|c| c.id == ext.cols[j].id) else {
                     continue;
                 };
+                // Supports that touch.
+                let reach = cj.radius + cell.radius;
                 let d2 =
                     (cj.center.0 - cell.center.0).powi(2) + (cj.center.1 - cell.center.1).powi(2);
                 if d2 <= reach * reach {
@@ -3028,7 +3110,8 @@ impl SlowLoop {
         if changed && !self.stats_disagree(cell, &pix, &h) {
             return None;
         }
-        let mut new = self.make_cell_global(cell.id, &pix, &h, Some(cell))?;
+        let se = self.fpstats.get(&cell.id).map(|st| st.std_err());
+        let mut new = self.make_cell_global(cell.id, &pix, &h, Some(cell), se)?;
         new.born = cell.born;
         if changed && self.change(cell, &new) < self.cfg.refine_min_change {
             return None;
@@ -3516,21 +3599,21 @@ impl SlowLoop {
             // Each part is a cell by the add test's rules: its held-out
             // trace must not follow a neighbour's (then it is that
             // neighbour's light, for refinement to give back).
-            let reach = 2.0 * self.cfg.library.max_support_px;
-            let follows = |t: &[f32], c: (f32, f32)| {
+            // Neighbours whose supports touch the part's.
+            let follows = |t: &[f32], c: (f32, f32), r: f32| {
                 (0..two.len() - 2).any(|j| {
                     self.cells
                         .iter()
                         .find(|x| x.id == two.cols[j].id)
                         .is_some_and(|cj| {
                             (cj.center.0 - c.0).powi(2) + (cj.center.1 - c.1).powi(2)
-                                <= reach * reach
+                                <= (cj.radius + r).powi(2)
                                 && corr(t, &f2.iter().map(|f| f.c[j]).collect::<Vec<_>>())
                                     >= self.cfg.merge_corr
                         })
                 })
             };
-            if follows(&ta, a.center) || follows(&tb, b.center) {
+            if follows(&ta, a.center, a.radius) || follows(&tb, b.center, b.radius) {
                 continue;
             }
             // Accepted.
@@ -3632,7 +3715,13 @@ impl SlowLoop {
                 if active.len() < 3 {
                     continue;
                 }
-                let r = (cell.radius + 2.0).min(self.cfg.library.max_support_px);
+                let r = cell.radius + 2.0;
+                // A footprint the patch cannot hold whole is left to its
+                // running statistics (which see all of it).
+                let whole = Rect::around(cell.center.0, cell.center.1, r, self.dims);
+                if clip(whole, rect) != whole {
+                    continue;
+                }
                 let dom = self.disk(rect, cell.center.0, cell.center.1, r);
                 let data: Vec<Vec<f32>> = active
                     .iter()
