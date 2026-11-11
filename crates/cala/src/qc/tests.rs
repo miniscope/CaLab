@@ -44,6 +44,39 @@ fn calcium(n: usize, every: usize, amp: f32, tau: f32, phase: usize) -> Vec<f32>
 }
 
 #[test]
+fn non_finite_trace_samples_do_not_stall_the_event_scan() {
+    // A diverged trace (halo_s5: the fast loop returned 1e37, then inf):
+    // the running mean turns NaN once `inf - inf` enters its sum, and the
+    // event scan used to spin on the first NaN sample forever. Run it on a
+    // thread so a regression fails here instead of hanging the suite.
+    let mut rng = Lcg(3);
+    let mut x: Vec<f32> = calcium(600, 97, 10.0, 12.0, 20)
+        .iter()
+        .map(|&c| c + rng.normal())
+        .collect();
+    x[300..310].iter_mut().for_each(|v| *v = f32::INFINITY);
+    x[400] = f32::NAN;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut sc = Vec::new();
+        let _ = tx.send(trace_stats(
+            &x,
+            4.0,
+            100,
+            5,
+            f32::NEG_INFINITY,
+            1.0,
+            &mut sc,
+        ));
+    });
+    let st = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("trace_stats did not return on a trace with inf / NaN samples");
+    // The finite transients before the bad stretch still count.
+    assert!(st.events >= 2, "{st:?}");
+}
+
+#[test]
 fn calcium_transients_read_as_calcium() {
     let mut rng = Lcg(7);
     let n = 1200;

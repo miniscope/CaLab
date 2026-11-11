@@ -744,6 +744,9 @@ struct LedgerProj {
     start: Vec<usize>,
     pix: Vec<u32>,
     w: Vec<f32>,
+    /// `h w` per pixel: the pixel's share of the coordinate normaliser
+    /// (what a missing pixel takes out of it).
+    nw: Vec<f32>,
     inv_n: Vec<f32>,
     wsum: Vec<f32>,
     floor: Vec<f32>,
@@ -785,6 +788,9 @@ struct Frames {
     proj: Vec<(Vec<f64>, f64)>,
     /// Frame index of each.
     idx: Vec<u64>,
+    /// Patch pixels each frame lacks (registration moved them in from
+    /// outside the FOV): zero in `y`, zero weight in the solves.
+    miss: Vec<Vec<u32>>,
 }
 
 impl Frames {
@@ -793,8 +799,9 @@ impl Frames {
     }
 }
 
-/// The whitened frame `z = y / σ` and the whitened residual `(y − model) /
-/// σ` block-averaged 2 x 2 into `coarse` (non-finite `y` count as 0). Two
+/// The whitened frame `z = y / σ` (NaN where `y` is missing: the reservoir
+/// stores it as missing) and the whitened residual `(y − model) / σ`
+/// block-averaged 2 x 2 into `coarse` (non-finite `y` count as 0). Two
 /// passes per row, so the first vectorises: `z` and the quarter residual
 /// `q`, then each coarse pixel adds its two `q` in the order a single
 /// pixel-by-pixel loop would (`(c + q0) + q1`, the upper row first), so the
@@ -818,7 +825,7 @@ fn whiten(
     for (row, ((yr, sr), (mr, zr))) in rows.enumerate() {
         for ((((zv, qv), &y), &s), &m) in zr.iter_mut().zip(q.iter_mut()).zip(yr).zip(sr).zip(mr) {
             let fin = y.is_finite();
-            *zv = if fin { y * s } else { 0.0 };
+            *zv = if fin { y * s } else { f32::NAN };
             *qv = 0.25 * if fin { (y - m) * s } else { 0.0 };
         }
         let crow = &mut coarse[(row / 2) * cw..(row / 2) * cw + cw];
@@ -1512,16 +1519,33 @@ impl SlowLoop {
         for (slot, &id) in lib.ids().iter().enumerate() {
             let (a, b) = (lp.start[slot], lp.start[slot + 1]);
             let mut g = 0.0f32;
+            // What the missing pixels of this frame take out of the
+            // normaliser `hᵀΣ⁻¹h` and of `Σ h/σ²`: they have zero weight, so
+            // the correction is over the valid pixels only.
+            let (mut n_miss, mut w_miss) = (0.0f32, 0.0f32);
             for k in a..b {
                 let p = lp.pix[k] as usize;
                 let y = frame[p];
                 if y.is_finite() {
                     g += lp.w[k] * (y - self.model[p]);
+                } else {
+                    n_miss += lp.nw[k];
+                    w_miss += lp.w[k];
                 }
             }
             work += (b - a) as u64 * 2;
             let level = if ring { traces.background[slot] } else { 0.0 };
-            let u = traces.traces[slot] + (g - level * lp.wsum[slot]) * lp.inv_n[slot];
+            let inv_n = if n_miss > 0.0 {
+                let n = 1.0 / lp.inv_n[slot].max(1e-30);
+                if n_miss > 0.75 * n {
+                    // Too little of the cell is seen: no usable coordinate.
+                    continue;
+                }
+                1.0 / (n - n_miss)
+            } else {
+                lp.inv_n[slot]
+            };
+            let u = traces.traces[slot] + (g - level * (lp.wsum[slot] - w_miss)) * inv_n;
             self.ledger
                 .entry(id)
                 .or_insert_with(Evidence::new)
@@ -1594,7 +1618,9 @@ impl SlowLoop {
                 if y.is_finite() {
                     y - self.model[p as usize] - level
                 } else {
-                    0.0
+                    // Missing: zero weight in the statistics (NaN marks it;
+                    // `FpStats::push` leaves the pixel's moments alone).
+                    f32::NAN
                 }
             }));
             if c != 0.0 {
@@ -1664,6 +1690,7 @@ impl SlowLoop {
                 let w = v * is * is;
                 lp.pix.push(p);
                 lp.w.push(w);
+                lp.nw.push(v * w);
                 n += f64::from(v * w);
                 ws += f64::from(w);
             }
@@ -1982,9 +2009,11 @@ impl SlowLoop {
         let mut y = Vec::with_capacity(ids.len());
         let mut proj = Vec::with_capacity(ids.len());
         let mut idx = Vec::with_capacity(ids.len());
+        let mut miss = Vec::with_capacity(ids.len());
         for s in ids {
             let mut v = Vec::new();
             self.tiles[ti].slot_values(s, &self.shared, &mut v);
+            miss.push(reservoir::take_missing(&mut v));
             let slot: &mut Slot = self.tiles[ti].slot_mut(s);
             idx.push(slot.frame);
             if slot.proj.is_none() {
@@ -1994,7 +2023,7 @@ impl SlowLoop {
             proj.push(slot.proj.clone().expect("set"));
             y.push(v);
         }
-        Frames { y, proj, idx }
+        Frames { y, proj, idx, miss }
     }
 
     /// The moat grid and whitening of a patch.
@@ -2028,15 +2057,24 @@ impl SlowLoop {
     }
 
     fn solve_all(&mut self, pr: &Problem, fr: &Frames) -> Vec<Fit> {
-        self.solve_with(pr, &fr.y, &fr.proj)
+        self.solve_with(pr, &fr.y, &fr.proj, &fr.miss)
     }
 
-    fn solve_with(&mut self, pr: &Problem, ys: &[Vec<f32>], proj: &[(Vec<f64>, f64)]) -> Vec<Fit> {
+    /// Per-frame solves; frames with missing pixels (`miss`) give them zero
+    /// weight ([`Problem::solve_missing`]).
+    fn solve_with(
+        &mut self,
+        pr: &Problem,
+        ys: &[Vec<f32>],
+        proj: &[(Vec<f64>, f64)],
+        miss: &[Vec<u32>],
+    ) -> Vec<Fit> {
         let mut work = 0;
         let fits = ys
             .iter()
             .zip(proj)
-            .map(|(y, (qb, yy))| pr.solve(y, qb, *yy, &mut work))
+            .zip(miss)
+            .map(|((y, (qb, yy)), m)| pr.solve_missing(y, qb, *yy, m, &mut work))
             .collect();
         self.work += work;
         fits
@@ -2048,9 +2086,14 @@ impl SlowLoop {
         let out =
             fr.y.iter()
                 .zip(fits)
-                .map(|(y, f)| {
+                .zip(&fr.miss)
+                .map(|((y, f), m)| {
                     let mut r = vec![0.0f32; y.len()];
                     pr.residual(y, f, bg, &mut r, &mut work);
+                    // No data there: no residual either.
+                    for &p in m {
+                        r[p as usize] = 0.0;
+                    }
                     r
                 })
                 .collect();
@@ -3094,11 +3137,13 @@ impl SlowLoop {
             let center = cell.center;
             let mut ys = Vec::new();
             let mut proj = Vec::new();
+            let mut ymiss = Vec::new();
             {
                 let bg = self.bgs[ti].as_ref().expect("basis");
                 for p in probes.iter().filter(|p| p.cells.contains(&id)) {
                     let mut v = Vec::new();
                     p.slot.values(&mut v);
+                    ymiss.push(reservoir::take_missing(&mut v));
                     proj.push(bg.project(&v));
                     ys.push(v);
                 }
@@ -3116,7 +3161,7 @@ impl SlowLoop {
                 );
                 self.work += work + (rect.len() * ys.len()) as u64;
                 let k0 = pr.cols.iter().position(|c| c.id == id);
-                let fits = self.solve_with(&pr, &ys, &proj);
+                let fits = self.solve_with(&pr, &ys, &proj, &ymiss);
                 k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
             };
             let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
@@ -3124,8 +3169,8 @@ impl SlowLoop {
             let full = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
             let red = Problem::new(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
             self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
-            let f = self.solve_with(&full, &ys, &proj);
-            let r = self.solve_with(&red, &ys, &proj);
+            let f = self.solve_with(&full, &ys, &proj, &ymiss);
+            let r = self.solve_with(&red, &ys, &proj, &ymiss);
             let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
             // Overlap of every other column with this cell's, normalised
             // by the cell's own energy: how much of the cell's signal an
@@ -3290,8 +3335,8 @@ impl SlowLoop {
         let base = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
         let ext = Problem::new(self.columns(rect, &[], &[cell]), &bg, rect.len(), &mut work);
         self.work += work;
-        let b = self.solve_with(&base, &test_fr.y, &proj);
-        let e = self.solve_with(&ext, &test_fr.y, &proj);
+        let b = self.solve_with(&base, &test_fr.y, &proj, &test_fr.miss);
+        let e = self.solve_with(&ext, &test_fr.y, &proj, &test_fr.miss);
         let k = ext.len() - 1;
         // What the base model leaves is noise *plus* everything not modelled
         // (dim cells below detection, neuropil): measure its variance per
@@ -3321,7 +3366,7 @@ impl SlowLoop {
                 &mut work,
             );
             self.work += work;
-            let f = self.solve_with(&pr, &test_fr.y, &proj);
+            let f = self.solve_with(&pr, &test_fr.y, &proj, &test_fr.miss);
             let g_even = b_even - even(&f);
             if g_even > best_even {
                 best_even = g_even;
@@ -3941,8 +3986,8 @@ impl SlowLoop {
                 &mut work,
             );
             self.work += work + (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
-            let f1 = self.solve_with(&one, &test_fr.y, &proj);
-            let f2 = self.solve_with(&two, &test_fr.y, &proj);
+            let f1 = self.solve_with(&one, &test_fr.y, &proj, &test_fr.miss);
+            let f2 = self.solve_with(&two, &test_fr.y, &proj, &test_fr.miss);
             let n_px = self.fov_px(rect) as f64;
             let dof = (test_fr.len() as f64 * (n_px - (bg.k + one.len()) as f64)).max(1.0);
             let chi1 = Self::total_chi2(&f1);
@@ -3969,7 +4014,7 @@ impl SlowLoop {
                 let mut work = 0;
                 let pr = Problem::new(self.columns(rect, &[id], &[c1]), &bg, rect.len(), &mut work);
                 self.work += work;
-                let f = self.solve_with(&pr, &test_fr.y, &proj);
+                let f = self.solve_with(&pr, &test_fr.y, &proj, &test_fr.miss);
                 best_single = best_single.max((chi1 - Self::total_chi2(&f)) / s2);
             }
             if gain - best_single <= m + f64::from(self.cfg.accept_z) * sd {

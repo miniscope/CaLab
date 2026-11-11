@@ -148,8 +148,11 @@ impl NoiseCorr {
                 for r in 0..rows {
                     let o = (y + r) * w;
                     for x in 0..w {
-                        self.d[r * w + x] = if fov[o + x] != 0 {
-                            z[o + x] - self.prev[o + x]
+                        // A missing sample (NaN, in this or the previous
+                        // frame) has no difference: zero weight.
+                        let dz = z[o + x] - self.prev[o + x];
+                        self.d[r * w + x] = if fov[o + x] != 0 && dz.is_finite() {
+                            dz
                         } else {
                             0.0
                         };

@@ -336,14 +336,19 @@ export class PipelineEngine {
     const t3 = now();
     const last = s.count - 1;
     const before = downsampleFrame(corrected, last, this.width, this.height, this.factor);
+    const dy = new Float32Array(s.count);
+    const dx = new Float32Array(s.count);
+    for (let i = 0; i < s.count; i++) {
+      dy[i] = records[i * len];
+      dx[i] = records[i * len + 1];
+    }
     const t4 = now();
-    pre.backFrames(corrected, s.count);
+    // Pixels the shift moved in from outside the FOV mask are missing data.
+    pre.backFramesRegistered(corrected, s.count, dy, dx);
     const t5 = now();
     const cells = this.fast?.process(corrected, s.start, s.count, pre);
     const t5b = now();
 
-    const dy = new Float32Array(s.count);
-    const dx = new Float32Array(s.count);
     const quality = new Float32Array(s.count);
     const flags = new Uint32Array(s.count);
     const flickerOffset = new Float32Array(s.count);
@@ -351,8 +356,6 @@ export class PipelineEngine {
     for (let i = 0; i < s.count; i++) {
       flickerOffset[i] = frontRec[i * FRONT_RECORD_STRIDE + 4];
       flickerGain[i] = frontRec[i * FRONT_RECORD_STRIDE + 5];
-      dy[i] = records[i * len];
-      dx[i] = records[i * len + 1];
       quality[i] = records[i * len + 2];
       flags[i] = records[i * len + 3];
     }
