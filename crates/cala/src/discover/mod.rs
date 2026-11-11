@@ -296,10 +296,16 @@ impl CoreTest {
 /// pixel's noise back into its own footprint: with spatially correlated
 /// noise the fixed point is a textured blob at the noise's correlation
 /// length, not the cell (model review, root cause B).
+///
+/// Off by default: on the workshop recording `ParityLoo` did not remove
+/// the textured components (their split-half reproducibility stayed high,
+/// so their texture is in the data, not a noise fixed point), and on the
+/// minisim arms it traded precision on `halo` for precision on `motion`
+/// (tools/cala-eval/results/2026-11-11-s12-crossfit.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CrossFit {
-    /// The fast loop's clamped trace of the same frame (the old estimator;
-    /// kept only for A/B measurements).
+    /// The fast loop's clamped trace of the same frame.
+    #[default]
     Off,
     /// Instrumental-variable estimate with the mean unclamped coordinate
     /// of the two neighbouring frames, `(u_{t−1} + u_{t+1}) / 2`, as the
@@ -311,7 +317,6 @@ pub enum CrossFit {
     /// that is correlated from one frame to the next must also reach
     /// across blocks to feed back. `rank1` fits are cross-fitted by parity
     /// likewise.
-    #[default]
     ParityLoo,
 }
 
@@ -526,7 +531,7 @@ impl Default for SlowLoopConfig {
             joint_neighbours: false,
             core_test: CoreTest::Off,
             basin_trim: false,
-            crossfit: CrossFit::ParityLoo,
+            crossfit: CrossFit::Off,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
