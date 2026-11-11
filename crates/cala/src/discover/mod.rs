@@ -152,8 +152,11 @@
 //!
 //! * **Running footprint statistics** (`fpstats.rs`). Every fitting frame
 //!   updates, per cell, the centred covariance of its own-signal residual
-//!   with its fast-loop trace on a disk wider than its support. The
-//!   least-squares footprint from all frames so far is their ratio; its
+//!   with a trace of the cell on a disk wider than its support. That trace
+//!   is cross-fitted ([`CrossFit`]): measured in the neighbouring frames
+//!   and on the other block parity's pixels, so a pixel's noise never
+//!   regresses on itself. The footprint from all frames so far is the
+//!   instrumental-variable ratio of the covariances; its
 //!   standard error falls as frames come in. A cell is refined from it
 //!   when the estimate disagrees with the current footprint beyond its own
 //!   noise (a χ² test) *and* the change lowers held-out χ² (paired z ≥
