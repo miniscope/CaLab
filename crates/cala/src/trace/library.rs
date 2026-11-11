@@ -1159,6 +1159,72 @@ impl Library {
     pub(crate) fn fov(&self) -> &[u8] {
         &self.core.fov
     }
+
+    /// Add `Σ coef · column` of the listed `(slot, coef)` pairs into `out`
+    /// (the same representation [`Library::render`] draws: exact on each
+    /// support, the moat as block means over FOV pixels), without clearing
+    /// it. Returns the touched pixel box `(y0, y1, x0, x1)`, end-exclusive
+    /// (empty when nothing was drawn). For evaluation code that needs the
+    /// model change of a few cells (`examples/qc_eval.rs`, the held-out
+    /// score) without rendering a whole frame.
+    pub fn add_columns(
+        &self,
+        coefs: &[(usize, f32)],
+        out: &mut [f32],
+    ) -> Result<(usize, usize, usize, usize), TraceError> {
+        let dims = self.core.dims;
+        check_len("output frame", dims.pixels(), out.len())?;
+        let w = dims.width;
+        let (mut y0, mut y1, mut x0, mut x1) = (usize::MAX, 0usize, usize::MAX, 0usize);
+        let mut field: Vec<(u32, f32)> = Vec::new();
+        for &(i, c) in coefs {
+            if i >= self.len() {
+                return Err(TraceError::Incompatible(format!(
+                    "slot {i} of a {}-cell library",
+                    self.len()
+                )));
+            }
+            if c == 0.0 {
+                continue;
+            }
+            let (p, v) = self.core.core_col(i);
+            for (&q, &a) in p.iter().zip(v) {
+                out[q as usize] += a * c;
+                let (y, x) = (q as usize / w, q as usize % w);
+                (y0, y1, x0, x1) = (y0.min(y), y1.max(y + 1), x0.min(x), x1.max(x + 1));
+            }
+            let (bi, li) = self.core.low(i);
+            field.extend(bi.iter().zip(li).map(|(&b, &l)| (b, l * c)));
+        }
+        if !field.is_empty() {
+            field.sort_unstable_by_key(|f| f.0);
+            let (b, gw) = (self.core.block, self.core.grid_w());
+            let mut k = 0;
+            while k < field.len() {
+                let blk = field[k].0;
+                let mut f = 0.0f32;
+                while k < field.len() && field[k].0 == blk {
+                    f += field[k].1;
+                    k += 1;
+                }
+                let (by, bx) = (blk as usize / gw, blk as usize % gw);
+                let (ya, yb) = (by * b, ((by + 1) * b).min(dims.height));
+                let (xa, xb) = (bx * b, ((bx + 1) * b).min(w));
+                for y in ya..yb {
+                    for x in xa..xb {
+                        if self.core.fov[y * w + x] != 0 {
+                            out[y * w + x] -= f;
+                        }
+                    }
+                }
+                (y0, y1, x0, x1) = (y0.min(ya), y1.max(yb), x0.min(xa), x1.max(xb));
+            }
+        }
+        if y0 == usize::MAX {
+            return Ok((0, 0, 0, 0));
+        }
+        Ok((y0, y1, x0, x1))
+    }
 }
 
 /// Magic of [`Library::to_bytes`].

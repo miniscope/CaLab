@@ -45,7 +45,11 @@
 //! * **Global, validated.** `explained` and `residual_excess` track true
 //!   recall over a run (ρ 0.93-1.00 and −0.87 to −1.00), and `adds_per_min`
 //!   falls as recall rises (ρ −0.64 to −0.92). `pass_frac` and the median
-//!   SNR do not track recall consistently.
+//!   SNR do not track recall consistently. For comparing runs or library
+//!   versions, `explained` is superseded by the held-out score
+//!   ([`heldout`]): `explained` also rises with every column that soaks up
+//!   structured noise, the held-out score nets out what a cell-shaped
+//!   non-cell gains.
 //! * **Convergence: existing-cell stability.** Cell discovery never stops
 //!   on long recordings (batch tools find nearly twice the cells in 30-120
 //!   min as in 10-30 min), so adds per minute cannot say whether a run has
@@ -68,6 +72,7 @@
 // deliberately treats NaN as "not positive".
 #![allow(clippy::needless_range_loop, clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod heldout;
 pub mod stats;
 
 #[cfg(feature = "jsbindings")]

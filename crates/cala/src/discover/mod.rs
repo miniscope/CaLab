@@ -507,6 +507,14 @@ impl Default for SlowLoopConfig {
 }
 
 impl SlowLoopConfig {
+    /// The held-out split: slow-loop frame `frame` (0 = the first frame
+    /// the loop observes) is a test frame. A hash of the frame index and
+    /// `seed`, one frame in `holdout_every`. Public so evaluation code can
+    /// score exactly the frames the slow loop never fitted on.
+    pub fn is_test(&self, frame: u64) -> bool {
+        mix(frame ^ self.seed.rotate_left(17)).is_multiple_of(u64::from(self.holdout_every))
+    }
+
     pub fn validate(&self) -> Result<(), TraceError> {
         self.library.validate()?;
         let ok = self.cell_diameter_px.is_finite()
@@ -1859,8 +1867,11 @@ impl SlowLoop {
             .map(|r| (r.2, r.3))
     }
 
-    fn is_test(&self, frame: u64) -> bool {
-        mix(frame ^ self.cfg.seed.rotate_left(17)).is_multiple_of(u64::from(self.cfg.holdout_every))
+    /// Whether slow-loop frame `frame` (0 = the first frame observed) is
+    /// held out: never used to fit footprints, only to test edits. See
+    /// [`SlowLoopConfig::is_test`].
+    pub fn is_test(&self, frame: u64) -> bool {
+        self.cfg.is_test(frame)
     }
 
     /// Spend about `budget` work units (multiply-adds; ~1e9/s native) on

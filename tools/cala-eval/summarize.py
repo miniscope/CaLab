@@ -36,7 +36,16 @@ METRICS = [
     "P2", "R2", "P8", "R8", "P8x", "AUC_P", "AUC_R", "slope_P", "cells",
     "fp_noise", "fp_adjacent", "fp_partial", "fp_dup", "fp_nondet", "fp_edge10",
     "r_fp", "r_tr", "adds_pm", "deletes_pm", "readds_pm",
+    "S8", "AUC_S", "rho_S_TP", "auc_hoz",
 ]  # fmt: skip
+# Ground-truth-free held-out score (E2, `qc::heldout`): `S8` = `ho_score` at
+# the last checkpoint (penalised held-out gain per held-out frame, units of
+# s^2, over the window since the previous checkpoint), `AUC_S` its mean over
+# checkpoints from AUC_FROM, `rho_S_TP` the Spearman correlation of
+# `ho_score` with the TP count (precision x cells) over those checkpoints,
+# `auc_hoz` the AUC of per-cell `ho_marginal_z` for TP vs not at the last
+# checkpoint (cells never scored count as the lowest score).
+HO_METRICS = {"S8", "AUC_S", "rho_S_TP", "auc_hoz"}
 PRECISION_LIKE = {"P2", "P8", "P8x", "AUC_P"}
 
 
@@ -69,6 +78,74 @@ def lstsq_slope(xs: list[float], ys: list[float]) -> float:
     mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
     den = sum((x - mx) ** 2 for x in xs)
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den if den else math.nan
+
+
+def ranks(v: list[float]) -> list[float]:
+    """Average ranks (1-based), ties shared."""
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    r = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            r[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return r
+
+
+def spearman(a: list[float], b: list[float]) -> float:
+    pairs = [(x, y) for x, y in zip(a, b) if math.isfinite(x) and math.isfinite(y)]
+    if len(pairs) < 3:
+        return math.nan
+    ra, rb = ranks([p[0] for p in pairs]), ranks([p[1] for p in pairs])
+    ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+    num_ = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    den = math.sqrt(sum((x - ma) ** 2 for x in ra) * sum((y - mb) ** 2 for y in rb))
+    return num_ / den if den else math.nan
+
+
+def auc(pos: list[float], neg: list[float]) -> float:
+    """P(score of a positive > score of a negative), ties count 1/2."""
+    if not pos or not neg:
+        return math.nan
+    r = ranks(pos + neg)
+    rp = sum(r[: len(pos)])
+    return (rp - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg))
+
+
+def ho_metrics(run: Path, cps: list[tuple], cell_rows: list[dict], shift: float) -> dict[str, float]:
+    """The held-out score metrics (NaN for runs without the score)."""
+    out = {m: math.nan for m in HO_METRICS}
+    g = [r for r in read_tsv(run / "global.tsv") if math.isfinite(num(r.get("ho_score")))]
+    if not g:
+        return out
+    by_frame = {num(r["frames"]) + shift: r for r in g}
+    final = cps[-1][0]
+    if final in by_frame:
+        out["S8"] = num(by_frame[final]["ho_score"])
+    sel = [(f, r) for f, r in sorted(by_frame.items()) if f >= AUC_FROM]
+    if sel:
+        out["AUC_S"] = sum(num(r["ho_score"]) for _, r in sel) / len(sel)
+        prec = {c[0]: c[1] for c in cps}
+        s_v, tp_v = [], []
+        for f, r in sel:
+            if f in prec:
+                s_v.append(num(r["ho_score"]))
+                tp_v.append(prec[f] * num(r["cells"]))
+        out["rho_S_TP"] = spearman(s_v, tp_v)
+    z = {}
+    for r in read_tsv(run / "ho_cells.tsv"):
+        if num(r["frame"]) == final:
+            v = num(r["ho_marginal_z"])
+            z[r["slot"]] = v if math.isfinite(v) else -1e9
+    rows = [r for r in cell_rows if num(r["frame"]) == final and r.get("slot") in z]
+    if rows and "fp_class" in rows[0]:
+        pos = [z[r["slot"]] for r in rows if r["fp_class"] == "tp"]
+        neg = [z[r["slot"]] for r in rows if r["fp_class"] != "tp"]
+        out["auc_hoz"] = auc(pos, neg)
+    return out
 
 
 def run_metrics(run: Path) -> dict[str, float]:
@@ -131,6 +208,7 @@ def run_metrics(run: Path) -> dict[str, float]:
     out["adds_pm"] = len(adds) / minutes
     out["readds_pm"] = sum(1 for r in adds if r["class"] == "readd") / minutes
     out["deletes_pm"] = sum(1 for r in rem if r["kind"] == "delete") / minutes
+    out.update(ho_metrics(run, cps, cell_rows, shift))
     return out
 
 
@@ -197,6 +275,8 @@ def report(base, new, arms, primary, claim_arms) -> str:
             bm = statistics.fmean([x for x in b if math.isfinite(x)])
             nm = statistics.fmean([x for x in n if math.isfinite(x)])
             nd = 4 if m in ("slope_P",) else 3
+            if m in ("S8", "AUC_S"):
+                nd = 1
             if m in ("cells",) or m.startswith("fp_") or m.endswith("_pm"):
                 nd = 1
             se = ""
