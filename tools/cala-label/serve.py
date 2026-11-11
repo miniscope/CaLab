@@ -60,6 +60,7 @@ def clean_record(raw: dict, known: set[str]) -> dict:
         "label": label,
         "merged": bool(raw.get("merged", False)),
         "edge": bool(raw.get("edge", False)),
+        "part": bool(raw.get("part", False)),
         "ms": int(ms) if isinstance(ms, (int, float)) else 0,
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "session": str(raw.get("session", ""))[:64],

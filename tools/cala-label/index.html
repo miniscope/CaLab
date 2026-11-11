@@ -135,8 +135,9 @@
     <header>
       <b id="count">0 / 0</b>
       <div id="bar"><i></i></div>
-      <span class="badge" id="b-merged">m merged</span>
-      <span class="badge" id="b-edge">e edge</span>
+      <span class="badge" id="b-merged">m merged (2+ cells)</span>
+      <span class="badge" id="b-edge">e FOV/lens edge</span>
+      <span class="badge" id="b-part">p part of another cell</span>
       <span id="current"></span>
     </header>
     <main>
@@ -177,8 +178,9 @@
       <span><kbd>c</kbd> cell</span>
       <span><kbd>n</kbd> not a cell</span>
       <span><kbd>u</kbd> unsure</span>
-      <span><kbd>m</kbd> merged</span>
-      <span><kbd>e</kbd> edge</span>
+      <span><kbd>m</kbd> merged (2+ cells)</span>
+      <span><kbd>e</kbd> FOV/lens edge</span>
+      <span><kbd>p</kbd> part of another cell (fragment, adjacent piece, halo)</span>
       <span><kbd>z</kbd> undo</span>
       <span><kbd>space</kbd> pause</span>
       <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> event</span>
@@ -201,7 +203,7 @@
       const history = []; // {cid, prev}
       const cache = new Map(); // cid -> Promise<data>
       let idx = 0;
-      let flags = { merged: false, edge: false };
+      let flags = { merged: false, edge: false, part: false };
       let shownAt = 0;
       let state = {
         contour: true,
@@ -372,7 +374,11 @@
       function setCandidate() {
         const cid = order[idx];
         const rec = labels.get(cid);
-        flags = { merged: !!(rec && rec.merged), edge: !!(rec && rec.edge) };
+        flags = {
+          merged: !!(rec && rec.merged),
+          edge: !!(rec && rec.edge),
+          part: !!(rec && rec.part),
+        };
         data = null;
         state.step = 0;
         state.event = null;
@@ -410,6 +416,7 @@
         $('bar').firstElementChild.style.width = `${(100 * done) / order.length}%`;
         $('b-merged').classList.toggle('on', flags.merged);
         $('b-edge').classList.toggle('on', flags.edge);
+        $('b-part').classList.toggle('on', flags.part);
         const rec = labels.get(order[idx]);
         const cur = $('current');
         cur.textContent = rec && rec.label ? `labelled: ${rec.label}` : `item ${idx + 1}`;
@@ -462,6 +469,7 @@
           label,
           merged: flags.merged,
           edge: flags.edge,
+          part: flags.part,
           ms: Math.round(performance.now() - shownAt),
           session: SESSION,
         };
@@ -487,6 +495,7 @@
           label: h.prev ? h.prev.label : null,
           merged: h.prev ? h.prev.merged : false,
           edge: h.prev ? h.prev.edge : false,
+          part: h.prev ? !!h.prev.part : false,
           ms: 0,
           session: SESSION,
         });
@@ -526,6 +535,7 @@
         else if (k === 'u') label('unsure');
         else if (k === 'm') ((flags.merged = !flags.merged), updateChrome());
         else if (k === 'e') ((flags.edge = !flags.edge), updateChrome());
+        else if (k === 'p') ((flags.part = !flags.part), updateChrome());
         else if (k === 'z') undo();
         else if (k === ' ') ((state.playing = !state.playing), render(), ev.preventDefault());
         else if (k === 'x') ((state.maxproj = !state.maxproj), drawMean());

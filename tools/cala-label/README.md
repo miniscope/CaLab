@@ -10,19 +10,20 @@ nothing else: no id, no score, no build or run, no Minian match.
 
 ## Keys
 
-| Key                | Action                                                                                |
-| ------------------ | ------------------------------------------------------------------------------------- |
-| `c` / `n` / `u`    | cell / not a cell / unsure (saves and moves on)                                       |
-| `m`                | toggle the flag "merged (two cells)" before pressing `c`/`n`/`u`                      |
-| `e`                | toggle the flag "edge, partly outside"                                                |
-| `z`                | undo the last label                                                                   |
-| `space`            | pause or play                                                                         |
-| `1` `2` `3`        | loop only that event (`0`: all three again)                                           |
-| `x`                | max projection or mean of the crop (default max; max is over the three event windows) |
-| `k`                | contour on or off                                                                     |
-| `r`                | processed or raw registered video and mean image                                      |
-| left / right arrow | previous or next candidate without labelling                                          |
-| `+` / `-`          | playback speed 1x / 2x / 4x real time (default 2x, 40 fps)                            |
+| Key                | Action                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| `c` / `n` / `u`    | cell / not a cell / unsure (saves and moves on)                                           |
+| `m`                | toggle the flag "merged (2+ cells)" before pressing `c`/`n`/`u`                           |
+| `e`                | toggle the flag "FOV/lens edge"                                                           |
+| `p`                | toggle the flag "part of another cell" (fragment, adjacent piece, or halo of a neighbour) |     |
+| `z`                | undo the last label                                                                       |
+| `space`            | pause or play                                                                             |
+| `1` `2` `3`        | loop only that event (`0`: all three again)                                               |
+| `x`                | max projection or mean of the crop (default max; max is over the three event windows)     |
+| `k`                | contour on or off                                                                         |
+| `r`                | processed or raw registered video and mean image                                          |
+| left / right arrow | previous or next candidate without labelling                                              |
+| `+` / `-`          | playback speed 1x / 2x / 4x real time (default 2x, 40 fps)                                |
 
 Progress shows as `labelled / total`. Closing the browser or stopping the server
 loses nothing: the next start opens at the first unlabelled candidate.
@@ -81,7 +82,7 @@ python tools/cala-label/serve.py <bundle dir> --port 8765   # then open http://1
 ## Labels
 
 `bundle/labels.jsonl`, one line per action:
-`{"cid", "label": "cell|not|unsure|null", "merged", "edge", "ms", "ts", "session"}`.
+`{"cid", "label": "cell|not|unsure|null", "merged", "edge", "part", "ms", "ts", "session"}`.
 The last line per `cid` wins; `null` is an undo. The page also keeps unsent lines
 in `localStorage` and resends them. Provenance is in `manifest.json`, which the
 server never serves; `make_bundle.py resolve bundle/` joins the two (writes

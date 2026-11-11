@@ -412,7 +412,7 @@ def resolve(bundle):
     for c in man:
         rec = labels.get(c["cid"])
         if rec:
-            rows.append({**c, "label": rec["label"], "merged": rec.get("merged", False), "edge_flag": rec.get("edge", False), "ms": rec.get("ms")})
+            rows.append({**c, "label": rec["label"], "merged": rec.get("merged", False), "edge_flag": rec.get("edge", False), "part_flag": rec.get("part", False), "ms": rec.get("ms")})
     return rows
 
 

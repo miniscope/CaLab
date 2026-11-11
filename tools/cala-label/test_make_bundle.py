@@ -137,7 +137,7 @@ def test_resolve_joins_labels_with_the_manifest_last_line_wins(tmp_path):
 def test_labels_never_carry_provenance(tmp_path):
     cands = write_bundle(tmp_path)
     rec = serve.clean_record(dict(cid=cands[0]["cid"], label="cell", source="r9", stratum="x", score=3), {c["cid"] for c in cands})
-    assert set(rec) == {"cid", "label", "merged", "edge", "ms", "ts", "session"}
+    assert set(rec) == {"cid", "label", "merged", "edge", "part", "ms", "ts", "session"}
 
 
 def test_serve_rejects_unknown_ids_and_labels():
