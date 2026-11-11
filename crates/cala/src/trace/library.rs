@@ -118,6 +118,8 @@ impl LibraryConfig {
 pub struct LibraryBuilder {
     dims: Dims,
     footprints: Vec<Footprint>,
+    /// Explicit support disks (`push_disk`), one per footprint.
+    disks: Vec<Option<((f32, f32), f32)>>,
     fov: Option<Vec<u8>>,
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
@@ -130,6 +132,7 @@ impl LibraryBuilder {
         LibraryBuilder {
             dims,
             footprints: Vec::new(),
+            disks: Vec::new(),
             fov: None,
             noise: None,
             background: BackgroundModel::None,
@@ -174,10 +177,20 @@ impl LibraryBuilder {
 
     pub fn push(&mut self, fp: Footprint) {
         self.footprints.push(fp);
+        self.disks.push(None);
+    }
+
+    /// `fp` on an explicit support disk (centre `(y, x)`, radius): its
+    /// window's pixels inside the disk, zero values included (the slow loop
+    /// publishes its cells' supports exactly, so a footprint whose outer
+    /// ring is zero keeps the room to grow into it).
+    pub fn push_disk(&mut self, fp: Footprint, center: (f32, f32), radius: f32) {
+        self.footprints.push(fp);
+        self.disks.push(Some((center, radius)));
     }
 
     pub fn footprint(mut self, fp: Footprint) -> LibraryBuilder {
-        self.footprints.push(fp);
+        self.push(fp);
         self
     }
 
@@ -218,7 +231,7 @@ impl LibraryBuilder {
         let mut col_start = vec![0usize];
         let mut pix = Vec::new();
         let mut raw = Vec::new();
-        for fp in &self.footprints {
+        for (fp, disk) in self.footprints.iter().zip(&self.disks) {
             if index_of.insert(fp.id, ids.len()).is_some() {
                 return Err(TraceError::InvalidFootprint(format!(
                     "duplicate id {}",
@@ -226,11 +239,19 @@ impl LibraryBuilder {
                 )));
             }
             ids.push(fp.id);
-            let Support {
-                center: (cy, cx),
-                radius: r,
-                ..
-            } = support_disk(fp, dims)?;
+            let own = support_disk(fp, dims)?;
+            let ((cy, cx), r) = match *disk {
+                Some((c, r)) if c.0.is_finite() && c.1.is_finite() && r.is_finite() && r >= 0.0 => {
+                    (c, r)
+                }
+                Some(_) => {
+                    return Err(TraceError::InvalidFootprint(format!(
+                        "id {}: bad support disk",
+                        fp.id
+                    )))
+                }
+                None => (own.center, own.radius),
+            };
             centers.push((cy, cx));
             radii.push(r);
             let r2 = r * r;

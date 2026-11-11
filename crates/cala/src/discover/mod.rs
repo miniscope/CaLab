@@ -1710,7 +1710,7 @@ impl SlowLoop {
         }
         let support: usize = self.cells.iter().map(|c| c.pix.len()).sum();
         for c in &self.cells {
-            b.push(c.footprint(self.dims));
+            b.push_disk(c.footprint(self.dims), c.center, c.radius);
         }
         let lib = b.build(&mut self.flattener)?;
         // The working set takes the exact filtered columns.
