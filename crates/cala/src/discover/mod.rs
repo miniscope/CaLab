@@ -346,8 +346,23 @@ pub struct SlowLoopConfig {
     pub random_share: f32,
     /// Event-slot priority halves every this many frames.
     pub event_half_life_frames: f32,
-    /// One frame in this many is held out for testing.
+    /// One block of frames in this many is held out for testing.
     pub holdout_every: u32,
+    /// Length of a hold-out block in seconds. Whole blocks are either
+    /// fitted or held out, so a held-out frame is separated from the
+    /// fitting frames by more than the residual's correlation time (a
+    /// motion excursion or a slow transient spans many frames; a per-frame
+    /// split interleaves fitting and held-out frames inside it and the held-out
+    /// frames are then not out of sample for structured residual). Converted
+    /// once with `fps`; at least one frame. Default 12.8 s = 256 frames at
+    /// 20 fps.
+    pub holdout_block_s: f32,
+    /// Sampling rate of the recording (frames per second); used only to
+    /// turn `holdout_block_s` into frames.
+    pub fps: f32,
+    /// Distinct held-out blocks a tile's held-out slots must span before a
+    /// visit tests anything.
+    pub min_test_blocks: usize,
     /// Required held-out χ² improvement over a noise column, in standard
     /// deviations of that null.
     pub accept_z: f32,
@@ -369,7 +384,6 @@ pub struct SlowLoopConfig {
     pub reject_cooldown_frames: u64,
     /// Fitting / held-out frames a tile needs before it is visited.
     pub min_fit_frames: usize,
-    pub min_test_frames: usize,
     /// New slots that make a tile due for a visit.
     pub visit_after_slots: u32,
     /// Evidence ledger: a run of the trace above (below) its baseline counts
@@ -493,6 +507,9 @@ impl Default for SlowLoopConfig {
             random_share: 0.3,
             event_half_life_frames: 2000.0,
             holdout_every: 3,
+            holdout_block_s: 12.8,
+            fps: 20.0,
+            min_test_blocks: 3,
             accept_z: 5.0,
             event_z: 4.0,
             min_events: 2,
@@ -503,7 +520,6 @@ impl Default for SlowLoopConfig {
             commit_interval_frames: 100,
             reject_cooldown_frames: 400,
             min_fit_frames: 16,
-            min_test_frames: 8,
             visit_after_slots: 6,
             event_frames: 3,
             establish_events: 3,
@@ -545,11 +561,22 @@ impl Default for SlowLoopConfig {
 
 impl SlowLoopConfig {
     /// The held-out split: slow-loop frame `frame` (0 = the first frame
-    /// the loop observes) is a test frame. A hash of the frame index and
-    /// `seed`, one frame in `holdout_every`. Public so evaluation code can
-    /// score exactly the frames the slow loop never fitted on.
+    /// the loop observes) is a test frame. Whole blocks of
+    /// `holdout_block_s` seconds are held out or fitted: a hash of the
+    /// block index and `seed`, one block in `holdout_every`. Every frame of
+    /// a block shares the answer, and this is the only place the split is
+    /// decided, so fitting statistics, reservoir slots, probes, visits and
+    /// the QC score agree. Public so evaluation code can score exactly the
+    /// frames the slow loop never fitted on.
     pub fn is_test(&self, frame: u64) -> bool {
-        mix(frame ^ self.seed.rotate_left(17)).is_multiple_of(u64::from(self.holdout_every))
+        mix(self.holdout_block(frame) ^ self.seed.rotate_left(17))
+            .is_multiple_of(u64::from(self.holdout_every))
+    }
+
+    /// Hold-out block id of `frame`: blocks are `holdout_block_s * fps`
+    /// frames (at least one).
+    pub fn holdout_block(&self, frame: u64) -> u64 {
+        frame / holdout_block_frames(self)
     }
 
     pub fn validate(&self) -> Result<(), TraceError> {
@@ -562,11 +589,15 @@ impl SlowLoopConfig {
             && self.random_share < 1.0
             && self.event_half_life_frames > 0.0
             && self.holdout_every >= 2
+            && self.holdout_block_s.is_finite()
+            && self.holdout_block_s > 0.0
+            && self.fps.is_finite()
+            && self.fps > 0.0
+            && self.min_test_blocks >= 1
             && self.accept_z.is_finite()
             && self.event_z.is_finite()
             && self.merge_corr.is_finite()
             && self.min_fit_frames >= 2
-            && self.min_test_frames >= 2
             && self.event_frames >= 1
             && self.keep_z.is_finite()
             && self.fail_ratio.is_finite()
@@ -894,6 +925,11 @@ fn whiten(
     }
 }
 
+/// Hold-out block length in frames (`holdout_block_s` at `fps`, >= 1).
+fn holdout_block_frames(cfg: &SlowLoopConfig) -> u64 {
+    ((f64::from(cfg.holdout_block_s) * f64::from(cfg.fps)).round() as u64).max(1)
+}
+
 /// Slots per tile: `cfg.frames_per_tile`, or fewer if that does not fit in
 /// `cfg.reservoir_max_bytes` (event patches per tile, random frames once
 /// over `shared`, and the probes).
@@ -922,7 +958,7 @@ fn plan_reservoir(cfg: &SlowLoopConfig, tiles: &[Tile], shared: Rect) -> Reservo
         target_frames_per_tile: target,
         capacity_bytes: bytes(n),
         max_bytes: cfg.reservoir_max_bytes,
-        min_frames_per_tile: (cfg.min_test_frames * k)
+        min_frames_per_tile: (cfg.min_test_blocks * k)
             .max((cfg.min_fit_frames * k).div_ceil(k - 1)),
     }
 }
@@ -2063,6 +2099,11 @@ impl SlowLoop {
         self.cfg.is_test(frame)
     }
 
+    /// Hold-out block id of `frame` (see [`SlowLoopConfig::holdout_block`]).
+    pub fn holdout_block(&self, frame: u64) -> u64 {
+        self.cfg.holdout_block(frame)
+    }
+
     /// Spend about `budget` work units (multiply-adds; ~1e9/s native) on
     /// tile visits, carrying any overrun into the next call. Returns a new
     /// library when edits were published; swap it into the fast loop.
@@ -2326,7 +2367,13 @@ impl SlowLoop {
         let fit_fr = self.load(ti, false);
         let test_fr = self.load(ti, true);
         self.stats.work_load += self.work - w0;
-        if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
+        let n_blocks = {
+            let mut b: Vec<u64> = test_fr.idx.iter().map(|&f| self.holdout_block(f)).collect();
+            b.sort_unstable();
+            b.dedup();
+            b.len()
+        };
+        if fit_fr.len() < self.cfg.min_fit_frames || n_blocks < self.cfg.min_test_blocks {
             return Ok(());
         }
         let refine = self.cfg.refine_every_visits > 0
