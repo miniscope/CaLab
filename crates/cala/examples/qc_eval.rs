@@ -64,7 +64,8 @@
 //! copies of a quarter of the cells). Checkpoint rows of `global.tsv` get
 //! `ho_frames`, `ho_gain_per_frame`, `ho_cells`, `ho_placebos`, `ho_mu`,
 //! `ho_penalty`, `ho_score` (S, per held-out frame, units of
-//! s²) and `ho_penalty_ci` over the window since the previous checkpoint;
+//! s²), `ho_penalty_ci`, `ho_signal` (held-out light above noise) and
+//! `ho_score_frac` (S / signal) over the window since the previous checkpoint;
 //! `ho_cells.tsv` holds per checkpoint and cell `ho_marginal`, `ho_frames`,
 //! `ho_marginal_z` (also columns of `final.tsv`), `heldout.tsv` one row per
 //! library version, and `cost.txt` the score's share of the wall time.
@@ -1665,7 +1666,7 @@ fn main() {
         let _ = write!(global, "{f}\t");
     }
     global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
-    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\n");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
     // Batches waiting to be forwarded: (frame, traces, library, recording frame).
     let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
     let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
@@ -1992,8 +1993,10 @@ fn main() {
                         w.penalty,
                         w.score,
                         w.penalty_ci,
+                        w.signal,
+                        w.score_frac,
                     ]),
-                    None => extra.extend([f64::NAN; 8]),
+                    None => extra.extend([f64::NAN; 10]),
                 }
                 global.push_str(&global_line(&g, &extra));
                 if t_end.is_multiple_of(1200) || t_end == t_len {
@@ -2116,11 +2119,11 @@ fn main() {
             h.scored(),
             h.split
         );
-        let mut t = String::from("version\tfirst\tlast\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\n");
+        let mut t = String::from("version\tfirst\tlast\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
         for v in h.versions(true) {
             let _ = writeln!(
                 t,
-                "{}\t{}\t{}\t{}\t{:.4}\t{:.1}\t{:.1}\t{:.5}\t{:.4}\t{:.4}\t{:.4}",
+                "{}\t{}\t{}\t{}\t{:.4}\t{:.1}\t{:.1}\t{:.5}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.5}",
                 v.version,
                 v.first,
                 v.last,
@@ -2131,7 +2134,9 @@ fn main() {
                 v.mu,
                 v.penalty,
                 v.score,
-                v.penalty_ci
+                v.penalty_ci,
+                v.signal,
+                v.score_frac
             );
         }
         std::fs::write(out_dir.join("heldout.tsv"), t).unwrap();

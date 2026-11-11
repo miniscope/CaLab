@@ -36,7 +36,7 @@ METRICS = [
     "P2", "R2", "P8", "R8", "P8x", "AUC_P", "AUC_R", "slope_P", "cells",
     "fp_noise", "fp_adjacent", "fp_partial", "fp_dup", "fp_nondet", "fp_edge10",
     "r_fp", "r_tr", "adds_pm", "deletes_pm", "readds_pm",
-    "S8", "AUC_S", "rho_S_TP", "auc_hoz",
+    "S8", "AUC_S", "rho_S_TP", "Sf8", "rho_Sf_TP", "auc_hoz",
 ]  # fmt: skip
 # Ground-truth-free held-out score (E2, `qc::heldout`): `S8` = `ho_score` at
 # the last checkpoint (penalised held-out gain per held-out frame, units of
@@ -44,8 +44,10 @@ METRICS = [
 # checkpoints from AUC_FROM, `rho_S_TP` the Spearman correlation of
 # `ho_score` with the TP count (precision x cells) over those checkpoints,
 # `auc_hoz` the AUC of per-cell `ho_marginal_z` for TP vs not at the last
-# checkpoint (cells never scored count as the lowest score).
-HO_METRICS = {"S8", "AUC_S", "rho_S_TP", "auc_hoz"}
+# checkpoint (cells never scored count as the lowest score). `Sf8` and
+# `rho_Sf_TP`: the same for `ho_score_frac` (S over the held-out light above
+# noise, which divides out how much the cells fired in each window).
+HO_METRICS = {"S8", "AUC_S", "rho_S_TP", "Sf8", "rho_Sf_TP", "auc_hoz"}
 PRECISION_LIKE = {"P2", "P8", "P8x", "AUC_P"}
 
 
@@ -125,16 +127,19 @@ def ho_metrics(run: Path, cps: list[tuple], cell_rows: list[dict], shift: float)
     final = cps[-1][0]
     if final in by_frame:
         out["S8"] = num(by_frame[final]["ho_score"])
+        out["Sf8"] = num(by_frame[final].get("ho_score_frac"))
     sel = [(f, r) for f, r in sorted(by_frame.items()) if f >= AUC_FROM]
     if sel:
         out["AUC_S"] = sum(num(r["ho_score"]) for _, r in sel) / len(sel)
         prec = {c[0]: c[1] for c in cps}
-        s_v, tp_v = [], []
+        s_v, sf_v, tp_v = [], [], []
         for f, r in sel:
             if f in prec:
                 s_v.append(num(r["ho_score"]))
+                sf_v.append(num(r.get("ho_score_frac")))
                 tp_v.append(prec[f] * num(r["cells"]))
         out["rho_S_TP"] = spearman(s_v, tp_v)
+        out["rho_Sf_TP"] = spearman(sf_v, tp_v)
     z = {}
     for r in read_tsv(run / "ho_cells.tsv"):
         if num(r["frame"]) == final:
@@ -277,6 +282,8 @@ def report(base, new, arms, primary, claim_arms) -> str:
             nd = 4 if m in ("slope_P",) else 3
             if m in ("S8", "AUC_S"):
                 nd = 1
+            if m == "Sf8":
+                nd = 4
             if m in ("cells",) or m.startswith("fp_") or m.endswith("_pm"):
                 nd = 1
             se = ""

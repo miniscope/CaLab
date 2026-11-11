@@ -40,7 +40,12 @@
 //! ```text
 //! μ_t   = mean_k g_k,t                    (gain a cell-shaped non-cell gets)
 //! S     = Σ_t (G_t − k_t μ_t) / |H|       (penalised held-out gain per frame)
+//! S_frac = S / mean_t (χ²_t(∅)/s² − dof)  (share of the held-out light above
+//!                                          noise explained, net of placebos)
 //! ```
+//!
+//! `S` depends on how much the cells fired in the frames scored; `S_frac`
+//! divides that out and is the one to compare across windows of one run.
 //!
 //! The plan's estimator of `μ` was the median of `g_k,t`; it is 0 (most
 //! placebos are clamped at 0 on most frames), so it would not penalise
@@ -155,6 +160,12 @@ pub struct HeldOutWindow {
     /// 95 % half-width of the penalty from the spread of its block means
     /// (`block_frames` held-out frames per block; NaN with < 2 blocks).
     pub penalty_ci: f64,
+    /// Mean held-out light above the noise floor, `χ²_t(∅)/s² − dof`.
+    pub signal: f64,
+    /// `score / signal`: the share of the held-out light above noise that
+    /// the library explains net of the placebo penalty (activity in the
+    /// window cancels; for comparing windows of one run).
+    pub score_frac: f64,
     /// Library version (version rows) or 0.
     pub version: u64,
     /// First and last frame index passed to [`HeldOutScore::frame`].
@@ -182,6 +193,7 @@ struct Acc {
     placebos: f64,
     mu: f64,
     penalty: f64,
+    signal: f64,
     block: (u64, f64),
     blocks: Vec<f64>,
     first: u64,
@@ -189,7 +201,9 @@ struct Acc {
 }
 
 impl Acc {
-    fn push(&mut self, t: u64, g: f64, k: usize, kp: usize, mu: f64, block_len: usize) {
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, t: u64, g: f64, sig: f64, k: usize, kp: usize, mu: f64, block_len: usize) {
+        self.signal += sig;
         if self.frames == 0 {
             self.first = t;
         }
@@ -221,6 +235,8 @@ impl Acc {
                 penalty: f64::NAN,
                 score: f64::NAN,
                 penalty_ci: f64::NAN,
+                signal: f64::NAN,
+                score_frac: f64::NAN,
                 ..HeldOutWindow::default()
             };
         }
@@ -241,6 +257,8 @@ impl Acc {
             penalty: self.penalty / n,
             score: (self.gain - self.penalty) / n,
             penalty_ci,
+            signal: self.signal / n,
+            score_frac: (self.gain - self.penalty) / self.signal.max(1e-12),
             version,
             first: self.first,
             last: self.last,
@@ -446,6 +464,7 @@ impl HeldOutScore {
             f64::from(*v.select_nth_unstable_by(m, f32::total_cmp).1).max(1e-12)
         };
         let g = (chi0 - chil) / s2;
+        let sig = chi0 / s2 - self.dof;
         let k = lib.len();
 
         // Real cells: drop-one gains on every `drop_every`-th held-out frame.
@@ -535,7 +554,7 @@ impl HeldOutScore {
         self.split[4] += t4.elapsed().as_secs_f64();
         let mu = if kp > 0 { sum / kp as f64 } else { 0.0 };
         let bl = self.cfg.block_frames;
-        self.window.push(t, g, k, kp, mu, bl);
+        self.window.push(t, g, sig, k, kp, mu, bl);
         if self.version.0 != lib.version() {
             if self.version.1.frames > 0 {
                 let row = self.version.1.finish(self.version.0);
@@ -543,7 +562,7 @@ impl HeldOutScore {
             }
             self.version = (lib.version(), Acc::default());
         }
-        self.version.1.push(t, g, k, kp, mu, bl);
+        self.version.1.push(t, g, sig, k, kp, mu, bl);
         self.scored += 1;
         self.seconds += t0.elapsed().as_secs_f64();
         Ok(())
