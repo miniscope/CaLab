@@ -1,7 +1,7 @@
 """Residual after cells, measured the same way on real and simulated data.
 
   residual_after_cells.py real  AVI_DIR MINIAN_OUT [--lib RUN_DIR]  --start S --frames N   (Minian A; or a cala library)
-  residual_after_cells.py sim   SIM_DIR [--lib RUN_DIR]  --start S --frames N   (GT units; or a cala library)
+  residual_after_cells.py sim   SIM_DIR [--lib RUN_DIR] [--det-only] --start S --frames N   (GT units; or a cala library)
 
 Frames -> rigid motion correction (phase correlation, sub-px, real/motion only)
 -> high-pass (normalised-convolution Gaussian, sigma 20, FOV mask) -> per frame
@@ -62,6 +62,9 @@ def opt(name, default):
     if name in args:
         i = args.index(name); v = args[i + 1]; del args[i:i + 2]; return v
     return default
+det_only = "--det-only" in args
+if det_only:
+    args.remove("--det-only")  # sim: fit only detectable GT units, so nuisance light stays in the residual
 start = int(opt("--start", 0)); nfr = int(opt("--frames", 2400)); libdir = opt("--lib", None)
 BIN = 10
 mode = args[0]
@@ -153,6 +156,9 @@ elif mode == "real":
     Ctr = np.asarray(zarr.open(mout + "/C.zarr", mode="r")["C"][:, start:start + nfr], dtype=np.float32)
 else:
     units, Cg = read_oracle(sim + "/oracle.bin")
+    if det_only:
+        keep_u = [i for i, u in enumerate(units) if u["det"]]
+        units = [units[i] for i in keep_u]; Cg = Cg[keep_u]
     if libdir:
         _, _, fps = read_fp(libdir + "/footprints.bin")
         for cid, (p, a, h) in fps.items():
