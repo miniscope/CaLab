@@ -68,6 +68,15 @@ const MEDIAN_ABS_DIFF_PER_SIGMA: f32 = MAD_GAUSSIAN * std::f32::consts::SQRT_2;
 /// E|Δ| per σ for iid N(0, σ²): √2 · √(2/π) = 2/√π.
 const MEAN_ABS_DIFF_PER_SIGMA: f32 = std::f32::consts::FRAC_2_SQRT_PI;
 
+/// Window radii (px) searched, in order, for known pixels whose σ stands in
+/// for a pixel that has not had enough differences of its own
+/// ([`NoiseMap::update_masked`]): past the motion's reach, then wider.
+const FILL_RADII: [usize; 2] = [8, 32];
+
+/// Pixels per block of [`NoiseMap::update_masked`]: a block whose pixels
+/// all track their median takes a branch-free loop.
+const MASKED_BLOCK: usize = 1024;
+
 /// A deterministic value in (−½, ½) from a pixel index and a per-frame seed.
 #[inline]
 fn hash_unit(i: u32, seed: u32) -> f32 {
@@ -138,6 +147,9 @@ pub struct NoiseState {
     pub(crate) median: Vec<f32>,
     /// Frames fed so far (differences = frames − 1).
     pub(crate) frames: u64,
+    /// Differences each pixel has had ([`NoiseMap::update_masked`] only;
+    /// empty otherwise). Exact as `f32` up to 2^24.
+    pub(crate) diffs: Vec<f32>,
 }
 
 impl NoiseState {
@@ -150,6 +162,7 @@ impl NoiseState {
         if self.prev.len() != n
             || self.mean_abs.len() != n
             || self.median.len() != if tracker { n } else { 0 }
+            || !(self.diffs.is_empty() || self.diffs.len() == n)
         {
             return Err(PreprocessError::InvalidState(
                 "noise state sizes are inconsistent".into(),
@@ -179,8 +192,186 @@ impl NoiseMap {
                 mean_abs: vec![0.0; n],
                 median: if tracker { vec![0.0; n] } else { Vec::new() },
                 frames: 0,
+                diffs: Vec::new(),
             },
         })
+    }
+
+    /// [`Self::update`] where only the pixels with `valid != 0` hold data.
+    ///
+    /// A difference is taken only between two consecutive valid samples of a
+    /// pixel (a missing sample breaks the chain: the previous value becomes
+    /// unknown, stored as NaN), so a pixel that holds data in some frames and
+    /// none in others gets the σ of its data, not of the on/off switching.
+    /// Each pixel counts its own differences: it initialises on its first
+    /// `init_frames` of them and tracks the median after. Until then its σ
+    /// is not known, and [`Self::sigma`] gives it the σ of the known pixels
+    /// around it. Start a recording in this mode; do not mix it with
+    /// [`Self::update`].
+    pub fn update_masked(&mut self, frame: &[f32], valid: &[u8]) -> Result<(), PreprocessError> {
+        self.st.dims.check("frame", frame.len())?;
+        self.st.dims.check("validity mask", valid.len())?;
+        let st = &mut self.st;
+        if st.diffs.is_empty() {
+            st.diffs = vec![0.0; st.prev.len()];
+        }
+        st.frames += 1;
+        let first = st.frames == 1;
+        let init = self.cfg.init_frames as f32;
+        let tracking = !st.median.is_empty();
+        let eta = match self.cfg.estimator {
+            NoiseEstimator::MedianTracker { eta } => eta,
+            NoiseEstimator::MeanAbs => 0.0,
+        };
+        let to_median = MEDIAN_ABS_DIFF_PER_SIGMA / MEAN_ABS_DIFF_PER_SIGMA;
+        let dither = self.cfg.dither;
+        let seed = (st.frames as u32).wrapping_mul(0x85EB_CA77);
+        let cap = 16_777_216.0f32;
+        let n = st.prev.len();
+        let mut start = 0;
+        while start < n {
+            let end = (start + MASKED_BLOCK).min(n);
+            let fr = &frame[start..end];
+            let ok = &valid[start..end];
+            let prev = &mut st.prev[start..end];
+            let diffs = &mut st.diffs[start..end];
+            let tracked = || diffs.iter().zip(ok).all(|(&k, &o)| k >= init || o == 0);
+            if tracking && !first && tracked() {
+                // Every valid pixel tracks its median: branch-free (vectorised).
+                let med = &mut st.median[start..end];
+                for (j, (((p, k), m), (&v, &o))) in prev
+                    .iter_mut()
+                    .zip(diffs.iter_mut())
+                    .zip(med.iter_mut())
+                    .zip(fr.iter().zip(ok))
+                    .enumerate()
+                {
+                    let good = (o != 0) & v.is_finite();
+                    let last = *p;
+                    *p = if good { v } else { f32::NAN };
+                    let use_it = good & !last.is_nan();
+                    let u = if dither {
+                        hash_unit((start + j) as u32, seed)
+                    } else {
+                        0.0
+                    };
+                    let a = (v - last + u).abs();
+                    let step = if a > *m {
+                        eta
+                    } else if a < *m {
+                        -eta
+                    } else {
+                        0.0
+                    };
+                    let next = *m * (1.0 + step);
+                    let next = if next == 0.0 { a } else { next };
+                    *m = if use_it { next } else { *m };
+                    *k = if use_it { (*k + 1.0).min(cap) } else { *k };
+                }
+            } else {
+                for (j, (p, &v)) in prev.iter_mut().zip(fr).enumerate() {
+                    let i = start + j;
+                    if ok[j] == 0 || !v.is_finite() {
+                        *p = f32::NAN;
+                        continue;
+                    }
+                    let last = std::mem::replace(p, v);
+                    if first || last.is_nan() {
+                        continue;
+                    }
+                    let k = &mut diffs[j];
+                    *k = (*k + 1.0).min(cap);
+                    if !tracking || *k <= init {
+                        // Running mean of this pixel's |Δ| (exact, 1/k weights).
+                        let m = &mut st.mean_abs[i];
+                        *m += ((v - last).abs() - *m) / *k;
+                        if tracking && *k == init {
+                            st.median[i] = *m * to_median;
+                        }
+                    } else {
+                        let u = if dither {
+                            hash_unit(i as u32, seed)
+                        } else {
+                            0.0
+                        };
+                        let a = (v - last + u).abs();
+                        let m = &mut st.median[i];
+                        let step = if a > *m {
+                            eta
+                        } else if a < *m {
+                            -eta
+                        } else {
+                            0.0
+                        };
+                        let next = *m * (1.0 + step);
+                        *m = if next == 0.0 { a } else { next };
+                    }
+                }
+            }
+            start = end;
+        }
+        Ok(())
+    }
+
+    /// [`Self::sigma`] after [`Self::update_masked`]: a pixel's own σ once it
+    /// has had `init_frames` differences; before that (a pixel that rarely
+    /// holds data, at the FOV edge under motion), the mean σ of the known
+    /// pixels within [`FILL_RADII`], or its own early estimate when there is
+    /// none (the first frames of a recording).
+    fn sigma_masked(&self) -> Vec<f32> {
+        let st = &self.st;
+        let (w, h) = (st.dims.width, st.dims.height);
+        let init = self.cfg.init_frames as f32;
+        let tracking = !st.median.is_empty();
+        let own = |i: usize| -> f32 {
+            if tracking && st.diffs[i] >= init {
+                st.median[i] / MEDIAN_ABS_DIFF_PER_SIGMA
+            } else {
+                st.mean_abs[i] / MEAN_ABS_DIFF_PER_SIGMA
+            }
+        };
+        let mut out: Vec<f32> = (0..w * h).map(own).collect();
+        if st.diffs.iter().all(|&k| k >= init) {
+            return out;
+        }
+        // Integral images of the known pixels' σ and count.
+        let (iw, ih) = (w + 1, h + 1);
+        let mut is = vec![0.0f64; iw * ih];
+        let mut ic = vec![0.0f64; iw * ih];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let (v, c) = if st.diffs[i] >= init {
+                    (f64::from(out[i]), 1.0)
+                } else {
+                    (0.0, 0.0)
+                };
+                let o = (y + 1) * iw + x + 1;
+                is[o] = v + is[o - 1] + is[o - iw] - is[o - iw - 1];
+                ic[o] = c + ic[o - 1] + ic[o - iw] - ic[o - iw - 1];
+            }
+        }
+        let boxed = |a: &[f64], y: usize, x: usize, r: usize| -> f64 {
+            let (y0, x0) = (y.saturating_sub(r), x.saturating_sub(r));
+            let (y1, x1) = ((y + r + 1).min(h), (x + r + 1).min(w));
+            a[y1 * iw + x1] - a[y0 * iw + x1] - a[y1 * iw + x0] + a[y0 * iw + x0]
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if st.diffs[i] >= init {
+                    continue;
+                }
+                for &r in &FILL_RADII {
+                    let c = boxed(&ic, y, x, r);
+                    if c > 0.0 {
+                        out[i] = (boxed(&is, y, x, r) / c) as f32;
+                        break;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Feed one (preprocessed) frame. Non-finite samples count as 0.
@@ -252,6 +443,9 @@ impl NoiseMap {
 
     /// Per-pixel σ in the units of the input frames.
     pub fn sigma(&self) -> Vec<f32> {
+        if !self.st.diffs.is_empty() {
+            return self.sigma_masked();
+        }
         let st = &self.st;
         let tracking = !st.median.is_empty();
         let d = st.frames.saturating_sub(1);
@@ -454,5 +648,30 @@ mod tests {
         }
         let s = nm.sigma()[0];
         assert!((s - 2.0).abs() < 0.3, "{s}");
+    }
+
+    /// A pixel that holds data (level 40, σ 2) in some frames and 0 in
+    /// others: unmasked, the on/off switching dominates or the median
+    /// collapses; masked, the σ is that of the data.
+    #[test]
+    fn masked_update_ignores_missing_samples() {
+        let dims = Dims::new(1, 3).unwrap();
+        let mut masked = NoiseMap::new(dims, &NoiseConfig::default()).unwrap();
+        let mut plain = NoiseMap::new(dims, &NoiseConfig::default()).unwrap();
+        let mut rng = Lcg(9);
+        for t in 0..6000 {
+            // Pixel 0 always valid, 1 valid in runs (4 on, 4 off), 2 never.
+            let on1 = t % 8 < 4;
+            let v = [40.0 + 2.0 * rng.normal(), 40.0 + 2.0 * rng.normal(), 0.0];
+            let f = [v[0], if on1 { v[1] } else { 0.0 }, v[2]];
+            masked.update_masked(&f, &[1, u8::from(on1), 0]).unwrap();
+            plain.update(&f).unwrap();
+        }
+        let (m, p) = (masked.sigma(), plain.sigma());
+        assert!((m[0] - 2.0).abs() < 0.2, "{m:?}");
+        assert!((m[1] - 2.0).abs() < 0.25, "{m:?}");
+        // Never valid: the σ of its known neighbours.
+        assert!((m[2] - 2.0).abs() < 0.25, "{m:?}");
+        assert!(p[1] < 1.6, "{p:?}");
     }
 }

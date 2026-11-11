@@ -1107,7 +1107,8 @@ fn two_pass_whitening_is_bit_identical_to_the_pixel_loop() {
         let mut c0 = vec![0.0f32; cw * h.div_ceil(2)];
         for i in 0..n {
             let (s, y) = (inv[i], frame[i]);
-            z0[i] = if y.is_finite() { y * s } else { 0.0 };
+            // A missing sample is filled with the model (residual 0).
+            z0[i] = if y.is_finite() { y * s } else { model[i] * s };
             let r = if y.is_finite() {
                 (y - model[i]) * s
             } else {

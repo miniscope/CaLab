@@ -203,6 +203,8 @@ pub struct RunningMinBackground {
     alpha: f32,
     st: BackgroundState,
     smooth: Vec<f32>,
+    /// Known samples per pixel of a block ([`Self::process_masked`]).
+    count: Vec<f32>,
     frozen: bool,
     snapshots: Vec<BackgroundSnapshot>,
 }
@@ -222,6 +224,7 @@ impl RunningMinBackground {
             },
             st: BackgroundState::new(dims, cfg.boxcar),
             smooth: vec![0.0; BLOCK],
+            count: Vec::new(),
             frozen: false,
             snapshots: Vec::new(),
         })
@@ -321,6 +324,142 @@ impl RunningMinBackground {
             start = end;
         }
         (sum, lowered as f32 / n as f32)
+    }
+
+    /// [`Self::process`] where only the pixels with `valid != 0` hold data.
+    ///
+    /// * **Boxcar.** A missing sample leaves the boxcar alone: each slot
+    ///   keeps the pixel's latest valid sample written there, so the boxcar
+    ///   averages `boxcar` valid samples (fewer only until it has seen that
+    ///   many; unknown slots are NaN). The floor statistic is then the same
+    ///   for a pixel valid in few frames as for one valid in all (averaging
+    ///   fewer samples, its minimum would sit lower).
+    /// * **Floor.** It moves only on frames where the pixel is valid, and is
+    ///   unknown (NaN) until the pixel's first valid sample.
+    /// * **Output.** A valid pixel gets `x − b` as in [`Self::process`]. A
+    ///   missing one gets its recent level, `s − b` with `s` the boxcar of
+    ///   its latest valid samples: no data, but no step either. (Filled with
+    ///   0, a pixel that switches between data and none would switch between
+    ///   its level above the floor, about 1.3 σ, and 0, an edge of false
+    ///   events along the FOV edge; measured on the minisim motion
+    ///   recordings.) It is NaN while the pixel has no valid sample yet, and
+    ///   when frozen (pass 2), where the boxcar is not current.
+    ///
+    /// Start a recording in this mode (the first frame sets it up) and do
+    /// not mix it with [`Self::process`].
+    pub fn process_masked(
+        &mut self,
+        frame: &mut [f32],
+        valid: &[u8],
+    ) -> Result<BackgroundStats, PreprocessError> {
+        self.st.dims.check("frame", frame.len())?;
+        self.st.dims.check("validity mask", valid.len())?;
+        let mut stats = BackgroundStats::default();
+        if self.frozen {
+            for ((v, &b), &ok) in frame.iter_mut().zip(&self.st.floor).zip(valid) {
+                *v = if ok != 0 { *v - b } else { f32::NAN };
+            }
+        } else {
+            if self.st.frames == 0 {
+                self.st.floor.fill(f32::NAN);
+                self.st.ring.fill(f32::NAN);
+            }
+            stats.lowered_fraction = self.update_and_subtract_masked(frame, valid);
+            if self.cfg.snapshot_every > 0
+                && self
+                    .st
+                    .frames
+                    .is_multiple_of(u64::from(self.cfg.snapshot_every))
+            {
+                self.snapshots.push(BackgroundSnapshot {
+                    state: self.st.clone(),
+                });
+                stats.snapshot = true;
+            }
+        }
+        let (mut sum, mut known) = (0.0f64, 0usize);
+        for &b in &self.st.floor {
+            if b.is_finite() {
+                sum += f64::from(b);
+                known += 1;
+            }
+        }
+        stats.floor_mean = (sum / known.max(1) as f64) as f32;
+        Ok(stats)
+    }
+
+    /// [`Self::update_and_subtract`] with missing samples (see
+    /// [`Self::process_masked`]), in blocks of [`BLOCK`] pixels with
+    /// branch-free inner loops; returns the fraction of pixels lowered.
+    fn update_and_subtract_masked(&mut self, frame: &mut [f32], valid: &[u8]) -> f32 {
+        let n = self.st.dims.pixels();
+        let k = self.st.boxcar;
+        let slot = self.st.ring_pos;
+        self.st.ring_pos = (slot + 1) % k;
+        self.st.ring_filled = (self.st.ring_filled + 1).min(k);
+        self.st.frames += 1;
+        let filled = self.st.ring_filled;
+        let warming = filled < k;
+        let alpha = self.alpha;
+        let ring = &mut self.st.ring;
+        let floor = &mut self.st.floor;
+        let acc = &mut self.smooth;
+        let cnt = &mut self.count;
+        cnt.resize(BLOCK, 0.0);
+        let mut lowered = 0usize;
+        let mut start = 0;
+        while start < n {
+            let end = (start + BLOCK).min(n);
+            let len = end - start;
+            let fr = &mut frame[start..end];
+            let ok = &valid[start..end];
+            // This frame's valid samples enter their slot; missing ones leave it.
+            for ((r, &x), &o) in ring[slot * n + start..slot * n + end]
+                .iter_mut()
+                .zip(fr.iter())
+                .zip(ok)
+            {
+                *r = if (o != 0) & x.is_finite() { x } else { *r };
+            }
+            // Boxcar of the known samples, in slot order.
+            let (a, c) = (&mut acc[..len], &mut cnt[..len]);
+            a.fill(0.0);
+            c.fill(0.0);
+            for s in 0..filled {
+                for ((av, cv), &v) in a
+                    .iter_mut()
+                    .zip(c.iter_mut())
+                    .zip(&ring[s * n + start..s * n + end])
+                {
+                    let known = !v.is_nan();
+                    *av += if known { v } else { 0.0 };
+                    *cv += if known { 1.0 } else { 0.0 };
+                }
+            }
+            let mut low = 0u32;
+            for (((b, x), &o), (&av, &cv)) in floor[start..end]
+                .iter_mut()
+                .zip(fr.iter_mut())
+                .zip(ok)
+                .zip(a.iter().zip(c.iter()))
+            {
+                // NaN when the pixel has no sample yet.
+                let s = av / cv;
+                let good = (o != 0) & x.is_finite();
+                let down = s < *b;
+                let next = if warming | b.is_nan() | down {
+                    s
+                } else {
+                    *b + alpha * (s - *b)
+                };
+                low += u32::from(good & down & !warming);
+                *b = if good { next } else { *b };
+                *x = if good { *x - *b } else { s - *b };
+            }
+            lowered += low as usize;
+            start = end;
+        }
+        lowered as f32 / n as f32
     }
 
     /// Stop updating; [`Self::process`] then subtracts the current floor only.
@@ -517,5 +656,53 @@ mod tests {
             RunningMinBackground::new(Dims::new(2, 2).unwrap(), &BackgroundConfig::default())
                 .unwrap();
         assert!(bg.restore(&other.state()).is_err());
+    }
+
+    /// A pixel that holds data (level 50, σ 3) in some frames and 0 in
+    /// others: unmasked, the zeros pull the floor down, so the data reads as
+    /// a large event; masked, the floor is that of the data and the missing
+    /// frames get the pixel's recent level (no step). A pixel never valid
+    /// stays unknown (NaN).
+    #[test]
+    fn masked_floor_uses_valid_samples_only() {
+        let dims = Dims::new(1, 2).unwrap();
+        let cfg = BackgroundConfig::default();
+        let mut masked = RunningMinBackground::new(dims, &cfg).unwrap();
+        let mut plain = RunningMinBackground::new(dims, &cfg).unwrap();
+        let mut rng = Lcg(3);
+        let (mut out_valid, mut out_missing) = (Vec::new(), Vec::new());
+        for t in 0..3000 {
+            // Pixel 0 valid 7 frames in 10, missing first; pixel 1 never.
+            let on = t % 10 >= 3;
+            let v = 50.0 + 3.0 * rng.normal();
+            let mut f = [if on { v } else { 0.0 }, 0.0];
+            let mut g = f;
+            masked.process_masked(&mut f, &[u8::from(on), 0]).unwrap();
+            plain.process(&mut g).unwrap();
+            assert_eq!(f[0].is_nan(), t < 3);
+            assert!(f[1].is_nan());
+            if t > 1000 {
+                if on {
+                    out_valid.push(f[0]);
+                } else {
+                    out_missing.push(f[0]);
+                }
+            }
+        }
+        let floor = masked.final_estimate()[0];
+        assert!((floor - 50.0).abs() < 6.0, "{floor}");
+        assert!(masked.final_estimate()[1].is_nan());
+        assert!(plain.final_estimate()[0] < 25.0);
+        // The valid output sits a few σ above 0, never a 50-unit event, and
+        // the missing frames sit at the same level.
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let (mv, mm) = (mean(&out_valid), mean(&out_missing));
+        assert!(mv > 0.0 && mv < 6.0, "{mv}");
+        assert!((mm - mv).abs() < 0.5, "missing {mm} vs valid {mv}");
+        // Frozen (pass 2): missing samples stay NaN.
+        masked.freeze();
+        let mut f = [50.0, 50.0];
+        masked.process_masked(&mut f, &[0, 1]).unwrap();
+        assert!(f[0].is_nan() && f[1].is_nan());
     }
 }

@@ -86,7 +86,23 @@ pub struct TraceEngine {
     blocks: Vec<f32>,
     active: Vec<bool>,
     next_frame: u64,
+    /// Missing-data imputation (see [`TraceEngine::process_into`]): the
+    /// filled frame, the missing pixels, a per-pixel flag, the moat field of
+    /// the prediction and the last frame's background coefficients.
+    filled: Vec<f32>,
+    missing: Vec<u32>,
+    miss_flag: Vec<u8>,
+    field: Vec<f32>,
+    last_bg: Vec<f32>,
+    /// The traces the current fill was made with.
+    c_em: Vec<f32>,
 }
+
+/// Solves per frame with missing pixels, at most (see
+/// [`TraceEngine::process_into`]). Each refill shrinks a trace's error by the
+/// share of its column's energy on missing pixels; the edge band is a few
+/// pixels wide, so a cell keeps most of its column and two refills suffice.
+pub const EM_PASSES: usize = 3;
 
 impl TraceEngine {
     pub fn new(lib: Arc<Library>, cfg: SolverConfig) -> Result<TraceEngine, TraceError> {
@@ -102,6 +118,12 @@ impl TraceEngine {
             blocks: Vec::new(),
             active: Vec::new(),
             next_frame: 0,
+            filled: Vec::new(),
+            missing: Vec::new(),
+            miss_flag: Vec::new(),
+            field: Vec::new(),
+            last_bg: Vec::new(),
+            c_em: Vec::new(),
         };
         e.install(lib, None);
         Ok(e)
@@ -158,6 +180,7 @@ impl TraceEngine {
             _ => Vec::new(),
         };
         self.active = vec![true; lib.groups.len()];
+        self.last_bg = vec![0.0; k];
         self.lib = lib;
     }
 
@@ -187,11 +210,121 @@ impl TraceEngine {
     }
 
     /// [`Self::process`] reusing `out`'s buffers.
+    ///
+    /// Non-finite pixels are missing data (registration moved them in from
+    /// outside the sensor's FOV mask, [`crate::preprocess::Preprocessor::back_masked`])
+    /// and get zero weight, by expectation-maximisation: they are filled with
+    /// the model's prediction (first at the warm start, the last frame's
+    /// traces and background), the frame is solved, and the fill is redone
+    /// with the new traces, up to [`EM_PASSES`] solves or until no trace
+    /// moves by `tol` of its noise. At the fixed point the missing pixels
+    /// pull no trace away from what the valid pixels say. Frames without
+    /// missing pixels take a single solve, as before.
     pub fn process_into(&mut self, frame: &[f32], out: &mut FrameTraces) -> Result<(), TraceError> {
         let lib = self.lib.clone();
         let lib = &*lib;
         let n_px = lib.dims().pixels();
         check_len("frame", n_px, frame.len())?;
+        let mut filled = std::mem::take(&mut self.filled);
+        let r = if self.impute(lib, frame, &mut filled) {
+            let mut r = Ok(());
+            for pass in 0..EM_PASSES {
+                self.c_em.clear();
+                self.c_em.extend_from_slice(&self.c);
+                r = self.solve_frame(lib, &filled, out);
+                let tol = self.cfg.tol;
+                let moved = self
+                    .c
+                    .iter()
+                    .zip(&self.c_em)
+                    .zip(lib.trace_noise.iter())
+                    .any(|((&a, &b), &sd)| (a - b).abs() > tol * sd.max(f32::MIN_POSITIVE));
+                if r.is_err() || !moved || pass + 1 == EM_PASSES {
+                    break;
+                }
+                self.impute(lib, frame, &mut filled);
+            }
+            r
+        } else {
+            self.solve_frame(lib, frame, out)
+        };
+        self.filled = filled;
+        self.next_frame += 1;
+        r
+    }
+
+    /// Fill the missing (non-finite) pixels of `frame` into `filled` with the
+    /// prediction of the warm start; `false` (and `filled` untouched) when
+    /// nothing is missing.
+    fn impute(&mut self, lib: &Library, frame: &[f32], filled: &mut Vec<f32>) -> bool {
+        self.missing.clear();
+        for (i, v) in frame.iter().enumerate() {
+            if !v.is_finite() {
+                self.missing.push(i as u32);
+            }
+        }
+        if self.missing.is_empty() {
+            return false;
+        }
+        let n_px = frame.len();
+        filled.clear();
+        filled.extend_from_slice(frame);
+        self.miss_flag.resize(n_px, 0);
+        for &q in &self.missing {
+            filled[q as usize] = 0.0;
+            self.miss_flag[q as usize] = 1;
+        }
+        if let (BgTerms::Basis { k, maps, .. }, true) =
+            (&lib.bg, self.last_bg.len() == self.q.len())
+        {
+            for a in 0..*k {
+                let beta = self.last_bg[a];
+                if beta != 0.0 {
+                    let m = &maps[a * n_px..(a + 1) * n_px];
+                    for &q in &self.missing {
+                        filled[q as usize] += m[q as usize] * beta;
+                    }
+                }
+            }
+        }
+        let gl = lib.grid_len();
+        self.field.clear();
+        self.field.resize(gl, 0.0);
+        let mut moat = false;
+        for (i, &c) in self.c.iter().enumerate() {
+            if c == 0.0 {
+                continue;
+            }
+            let (p, v) = lib.core_col(i);
+            for (&q, &a) in p.iter().zip(v) {
+                if self.miss_flag[q as usize] != 0 {
+                    filled[q as usize] += a * c;
+                }
+            }
+            let (bi, li) = lib.lowpass(i);
+            for (&bq, &l) in bi.iter().zip(li) {
+                self.field[bq as usize] += l * c;
+                moat = true;
+            }
+        }
+        let fov = lib.fov();
+        for &q in &self.missing {
+            let q = q as usize;
+            self.miss_flag[q] = 0;
+            if moat && fov[q] != 0 {
+                filled[q] -= self.field[lib.block_of(q as u32)];
+            }
+        }
+        true
+    }
+
+    fn solve_frame(
+        &mut self,
+        lib: &Library,
+        frame: &[f32],
+        out: &mut FrameTraces,
+    ) -> Result<(), TraceError> {
+        let n_px = lib.dims().pixels();
         let n = lib.len();
         // Projections onto the filtered footprints: the support part, minus
         // the moat's block means against the frame's block sums.
@@ -304,8 +437,11 @@ impl TraceEngine {
             }
             BgTerms::None => {}
         }
+        if matches!(lib.bg, BgTerms::Basis { .. }) {
+            self.last_bg.clear();
+            self.last_bg.extend_from_slice(&out.background);
+        }
         out.sweeps = sweeps;
-        self.next_frame += 1;
         Ok(())
     }
 

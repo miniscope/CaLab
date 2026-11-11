@@ -818,7 +818,7 @@ fn whiten(
     for (row, ((yr, sr), (mr, zr))) in rows.enumerate() {
         for ((((zv, qv), &y), &s), &m) in zr.iter_mut().zip(q.iter_mut()).zip(yr).zip(sr).zip(mr) {
             let fin = y.is_finite();
-            *zv = if fin { y * s } else { 0.0 };
+            *zv = if fin { y * s } else { m * s };
             *qv = 0.25 * if fin { (y - m) * s } else { 0.0 };
         }
         let crow = &mut coarse[(row / 2) * cw..(row / 2) * cw + cw];
