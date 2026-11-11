@@ -392,6 +392,66 @@ impl Warper {
         Ok(())
     }
 
+    /// Validity of a frame warped by `rigid` and `residual` (see
+    /// [`SourceMask`]): 1 where the output pixel was sampled only from
+    /// inside `src`. An all-zero residual takes [`SourceMask::fill_rigid`].
+    pub fn fill_validity(
+        &mut self,
+        rigid: (f32, f32),
+        residual: &[f32],
+        src: &SourceMask,
+        out: &mut [u8],
+    ) -> Result<(), MotionError> {
+        let (h, w, gx) = (self.h, self.w, self.gx);
+        if out.len() != h * w || src.h != h || src.w != w {
+            return Err(MotionError::SizeMismatch("validity size".into()));
+        }
+        if !residual.is_empty() && residual.len() != self.residual_len() {
+            return Err(MotionError::SizeMismatch("record residual length".into()));
+        }
+        if !rigid.0.is_finite() || !rigid.1.is_finite() || residual.iter().any(|v| !v.is_finite()) {
+            return Err(MotionError::InvalidRecord("non-finite shift".into()));
+        }
+        if residual.iter().all(|&v| v == 0.0) {
+            return src.fill_rigid(rigid, out);
+        }
+        // Only pixels whose rigid source lies within reach of the field of
+        // the mask's edge need the field: a natural spline through the patch
+        // shifts stays within twice their largest (generously; it is held
+        // constant past the outer centres), plus one pixel for rounding.
+        let reach = 2.0 * residual.iter().fold(0.0f32, |m, v| m.max(v.abs())) + 2.0;
+        let reach = reach.min(f32::from(u16::MAX - 1)) as u16;
+        let (by, bx) = ((-rigid.0).round() as isize, (-rigid.1).round() as isize);
+        for y in 0..h {
+            let sy = y as isize + by;
+            let mut coef_row = None;
+            for x in 0..w {
+                let sx = x as isize + bx;
+                let deep = sy >= 0
+                    && sx >= 0
+                    && sy < h as isize
+                    && sx < w as isize
+                    && src.depth[sy as usize * w + sx as usize] > reach;
+                if deep {
+                    out[y * w + x] = 1;
+                    continue;
+                }
+                if coef_row != Some(y) {
+                    self.row_coefficients(residual, y);
+                    coef_row = Some(y);
+                }
+                let (mut dy, mut dx) = rigid;
+                for j in 0..gx {
+                    let b = self.bx[x * gx + j];
+                    dy += b * self.row_coef[2 * j];
+                    dx += b * self.row_coef[2 * j + 1];
+                }
+                out[y * w + x] = src.at(y as f32 - dy, x as f32 - dx);
+            }
+        }
+        Ok(())
+    }
+
     fn fill_mask(&mut self, rigid: (f32, f32), residual: &[f32], mask: &mut [u8]) {
         let (h, w, gx) = (self.h, self.w, self.gx);
         let eps = 1e-3;
@@ -415,6 +475,199 @@ impl Warper {
                 mask[y * w + x] = u8::from(sy >= -eps && sy <= ymax && sx >= -eps && sx <= xmax);
             }
         }
+    }
+}
+
+/// Fractional parts this close to 0 or 1 count as an integer sample position,
+/// where the kernel's other taps carry (numerically) zero weight.
+const INTEGER_EPS: f32 = 1e-4;
+
+/// Which pixels of a warped frame were computed only from source pixels
+/// inside a fixed source-coordinate mask.
+///
+/// The FOV mask is fixed on the sensor and the preprocessing zeroes the frame
+/// outside it. Registration moves that mask in tissue coordinates, so a
+/// registered pixel near the mask edge holds tissue light in some frames and
+/// 0, or an interpolation blend with 0, in others. Such a sample is not data:
+/// [`SourceMask::fill_rigid`] and [`Warper::fill_validity`] mark it invalid
+/// (0) so the stages downstream can treat it as missing.
+///
+/// A sample is valid when every kernel tap with non-zero weight lies inside
+/// the mask and the frame: the 4 x 4 neighbourhood for bicubic, 2 x 2 for
+/// bilinear, the pixel itself at an integer position. Either way it is one
+/// look-up, in the mask itself or in the mask eroded by the kernel's
+/// footprint (precomputed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceMask {
+    h: usize,
+    w: usize,
+    /// 1 where the source pixel is inside the mask (integer positions).
+    point: Vec<u8>,
+    /// 1 where every tap of the kernel anchored at this pixel is inside.
+    core: Vec<u8>,
+    /// Chessboard distance (px) to the nearest pixel where `core` is 0 (0
+    /// there), capped at `u16::MAX`: how far a sample may move and stay
+    /// valid ([`Warper::fill_validity`] skips the field for deep pixels).
+    depth: Vec<u16>,
+}
+
+impl SourceMask {
+    /// `mask` is `h * w`, nonzero = inside; `interp` is the warp's kernel.
+    pub fn new(
+        h: usize,
+        w: usize,
+        mask: &[u8],
+        interp: Interpolation,
+    ) -> Result<Self, MotionError> {
+        if h == 0 || w == 0 || mask.len() != h * w {
+            return Err(MotionError::SizeMismatch(format!(
+                "source mask has {} pixels, frame has {}",
+                mask.len(),
+                h * w
+            )));
+        }
+        let point: Vec<u8> = mask.iter().map(|&m| u8::from(m != 0)).collect();
+        // Taps relative to the anchor floor(position).
+        let (lo, hi): (isize, isize) = match interp {
+            Interpolation::Bicubic => (-1, 2),
+            Interpolation::Bilinear => (0, 1),
+        };
+        // Separable erosion by the tap box; out of frame counts as outside.
+        let erode = |src: &[u8], stride: usize, step: usize, len: usize, lines: usize| {
+            let mut out = vec![0u8; src.len()];
+            for l in 0..lines {
+                let base = l * stride;
+                for i in 0..len as isize {
+                    let inside = (lo..=hi).all(|t| {
+                        let j = i + t;
+                        j >= 0 && j < len as isize && src[base + j as usize * step] != 0
+                    });
+                    out[base + i as usize * step] = u8::from(inside);
+                }
+            }
+            out
+        };
+        let rows = erode(&point, w, 1, w, h);
+        let core = erode(&rows, 1, w, h, w);
+        // Two-pass chessboard distance transform of `core`.
+        let mut depth: Vec<u16> = core
+            .iter()
+            .map(|&c| if c != 0 { u16::MAX } else { 0 })
+            .collect();
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if depth[i] == 0 {
+                    continue;
+                }
+                let mut d = depth[i];
+                if y == 0 || x == 0 || x + 1 == w {
+                    d = 1;
+                } else {
+                    for j in [i - 1, i - w - 1, i - w, i - w + 1] {
+                        d = d.min(depth[j].saturating_add(1));
+                    }
+                }
+                depth[i] = d;
+            }
+        }
+        for y in (0..h).rev() {
+            for x in (0..w).rev() {
+                let i = y * w + x;
+                if depth[i] == 0 {
+                    continue;
+                }
+                let mut d = depth[i];
+                if y + 1 == h || x == 0 || x + 1 == w {
+                    d = 1;
+                } else {
+                    for j in [i + 1, i + w - 1, i + w, i + w + 1] {
+                        d = d.min(depth[j].saturating_add(1));
+                    }
+                }
+                depth[i] = d;
+            }
+        }
+        Ok(SourceMask {
+            h,
+            w,
+            point,
+            core,
+            depth,
+        })
+    }
+
+    pub fn height(&self) -> usize {
+        self.h
+    }
+
+    pub fn width(&self) -> usize {
+        self.w
+    }
+
+    /// The source mask itself (1 = inside).
+    pub fn mask(&self) -> &[u8] {
+        &self.point
+    }
+
+    /// Anchor index of a sample coordinate, and whether it is an integer one.
+    #[inline]
+    fn anchor(s: f32) -> (isize, bool) {
+        let f = s.floor();
+        let t = s - f;
+        if t < INTEGER_EPS {
+            (f as isize, true)
+        } else if t > 1.0 - INTEGER_EPS {
+            (f as isize + 1, true)
+        } else {
+            (f as isize, false)
+        }
+    }
+
+    /// Validity (0 / 1) of a sample at source position `(sy, sx)`.
+    #[inline]
+    pub fn at(&self, sy: f32, sx: f32) -> u8 {
+        let (iy, ey) = Self::anchor(sy);
+        let (ix, ex) = Self::anchor(sx);
+        if iy < 0 || ix < 0 || iy >= self.h as isize || ix >= self.w as isize {
+            return 0;
+        }
+        let m = if ey && ex { &self.point } else { &self.core };
+        m[iy as usize * self.w + ix as usize]
+    }
+
+    /// Validity of a frame warped by the rigid shift `(dy, dx)`
+    /// (`out(p) = frame(p - s)`, as [`Warper::warp`]), into `out`: a shifted
+    /// copy of one of the two precomputed masks.
+    pub fn fill_rigid(&self, (dy, dx): (f32, f32), out: &mut [u8]) -> Result<(), MotionError> {
+        let (h, w) = (self.h, self.w);
+        if out.len() != h * w {
+            return Err(MotionError::SizeMismatch("validity size".into()));
+        }
+        if !dy.is_finite() || !dx.is_finite() {
+            return Err(MotionError::InvalidRecord("non-finite shift".into()));
+        }
+        let (by, ey) = Self::anchor(-dy);
+        let (bx, ex) = Self::anchor(-dx);
+        let m = if ey && ex { &self.point } else { &self.core };
+        // out(y, x) = m(y + by, x + bx), by row segments.
+        let (wi, hi) = (w as isize, h as isize);
+        let x0 = (-bx).clamp(0, wi) as usize;
+        let x1 = (wi - bx).clamp(x0 as isize, wi) as usize;
+        for y in 0..h {
+            let row = &mut out[y * w..(y + 1) * w];
+            let sy = y as isize + by;
+            if sy < 0 || sy >= hi || x0 >= x1 {
+                row.fill(0);
+                continue;
+            }
+            let s0 = (x0 as isize + bx) as usize;
+            let src = &m[sy as usize * w..(sy as usize + 1) * w];
+            row[..x0].fill(0);
+            row[x0..x1].copy_from_slice(&src[s0..s0 + (x1 - x0)]);
+            row[x1..].fill(0);
+        }
+        Ok(())
     }
 }
 
@@ -487,5 +740,84 @@ mod tests {
         assert!(wp.warp(&src, (f32::NAN, 0.0), &[], &mut out, None).is_err());
         assert!(wp.warp(&src, (0.0, 0.0), &[1.0], &mut out, None).is_err());
         assert!(wp.warp(&src[..3], (0.0, 0.0), &[], &mut out, None).is_err());
+    }
+
+    /// A disk mask, off-centre so the edge is not symmetric.
+    fn disk(h: usize, w: usize) -> Vec<u8> {
+        (0..h * w)
+            .map(|i| {
+                let (y, x) = ((i / w) as f32 - 13.0, (i % w) as f32 - 15.5);
+                u8::from(y * y + x * x <= 100.0)
+            })
+            .collect()
+    }
+
+    /// The defining property: a valid output pixel does not depend on the
+    /// source outside the mask, and every pixel that does is invalid.
+    #[test]
+    fn validity_marks_exactly_the_samples_that_see_outside_the_mask() {
+        let (h, w) = (28, 31);
+        let mask = disk(h, w);
+        let inside: Vec<f32> = (0..h * w).map(|i| 5.0 + ((i * 7) % 11) as f32).collect();
+        let a: Vec<f32> = inside
+            .iter()
+            .zip(&mask)
+            .map(|(&v, &m)| if m != 0 { v } else { 0.0 })
+            .collect();
+        let b: Vec<f32> = inside
+            .iter()
+            .zip(&mask)
+            .map(|(&v, &m)| if m != 0 { v } else { 1000.0 })
+            .collect();
+        let res: Vec<f32> = (0..18).map(|k| 0.6 * ((k as f32) * 0.9).sin()).collect();
+        for interp in [Interpolation::Bicubic, Interpolation::Bilinear] {
+            let src = SourceMask::new(h, w, &mask, interp).unwrap();
+            let mut wp = Warper::new(h, w, &[2.0, 13.0, 25.0], &[3.0, 15.0, 28.0], interp).unwrap();
+            for (rigid, residual) in [
+                ((1.3f32, -2.6f32), &[][..]),
+                ((-2.0, 3.0), &[][..]),
+                ((0.4, 0.7), &res[..]),
+            ] {
+                let (mut oa, mut ob) = (vec![0.0; h * w], vec![0.0; h * w]);
+                wp.warp(&a, rigid, residual, &mut oa, None).unwrap();
+                wp.warp(&b, rigid, residual, &mut ob, None).unwrap();
+                let mut valid = vec![0u8; h * w];
+                wp.fill_validity(rigid, residual, &src, &mut valid).unwrap();
+                let (mut n_valid, mut n_moved) = (0, 0);
+                for p in 0..h * w {
+                    let moved = (oa[p] - ob[p]).abs() > 1e-3;
+                    if valid[p] != 0 {
+                        assert!(!moved, "{interp:?} {rigid:?}: valid pixel {p} sees outside");
+                        n_valid += 1;
+                    }
+                    n_moved += usize::from(moved);
+                }
+                // Conservative only by the kernel's zero crossings: nearly
+                // every invalid pixel inside the warped disk does see outside.
+                let invalid = h * w - n_valid;
+                assert!(n_valid > 150, "{n_valid}");
+                assert!(n_moved > 0 && invalid >= n_moved);
+                // Both paths (the rigid copy, the field with its deep-pixel
+                // shortcut) are the per-pixel rule.
+                for y in 0..h {
+                    for x in 0..w {
+                        let (dy, dx) = wp.displacement_at(rigid, residual, y, x);
+                        let v = src.at(y as f32 - dy, x as f32 - dx);
+                        assert_eq!(valid[y * w + x], v, "{interp:?} {rigid:?} ({y}, {x})");
+                    }
+                }
+            }
+            // An integer shift keeps the mask's own pixels (no blend).
+            let mut valid = vec![0u8; h * w];
+            src.fill_rigid((2.0, -1.0), &mut valid).unwrap();
+            for y in 0..h {
+                for x in 0..w {
+                    let (sy, sx) = (y as isize - 2, x as isize + 1);
+                    let want =
+                        sy >= 0 && sx < w as isize && mask[sy as usize * w + sx as usize] != 0;
+                    assert_eq!(valid[y * w + x], u8::from(want));
+                }
+            }
+        }
     }
 }

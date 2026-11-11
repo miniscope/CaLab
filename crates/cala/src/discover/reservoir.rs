@@ -15,6 +15,35 @@ use super::local::Rect;
 /// a resolution of 1/16 σ and a range of ±2048 σ.
 pub(crate) const QUANT: f32 = 16.0;
 
+/// The stored value of a missing sample (a pixel registration moved in from
+/// outside the sensor's field of view): `i16::MIN`, which no quantised
+/// value takes (they clamp to ±32767). It crosses the wire unchanged.
+pub(crate) const MISSING: i16 = i16::MIN;
+
+/// Decode a stored value: NaN for [`MISSING`].
+#[inline]
+fn decode(v: i16) -> f32 {
+    if v == MISSING {
+        f32::NAN
+    } else {
+        f32::from(v) / QUANT
+    }
+}
+
+/// Zero the NaN (missing) samples of a decoded patch and return their
+/// indices: the patch solves give those pixels zero weight instead of a
+/// value.
+pub(crate) fn take_missing(v: &mut [f32]) -> Vec<u32> {
+    let mut miss = Vec::new();
+    for (i, x) in v.iter_mut().enumerate() {
+        if x.is_nan() {
+            *x = 0.0;
+            miss.push(i as u32);
+        }
+    }
+    miss
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Slot {
     pub frame: u64,
@@ -32,13 +61,16 @@ pub(crate) struct Slot {
 impl Slot {
     pub fn values(&self, out: &mut Vec<f32>) {
         out.clear();
-        out.extend(self.data.iter().map(|&v| f32::from(v) / QUANT));
+        out.extend(self.data.iter().map(|&v| decode(v)));
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[inline]
 pub(crate) fn quantize_round(v: f32) -> i16 {
+    if v.is_nan() {
+        return MISSING;
+    }
     (v * QUANT).round().clamp(-32767.0, 32767.0) as i16
 }
 
@@ -54,6 +86,9 @@ use quantize_trunc as quantize;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[inline]
 pub(crate) fn quantize_trunc(v: f32) -> i16 {
+    if v.is_nan() {
+        return MISSING;
+    }
     let x = v * QUANT;
     let t = x.trunc();
     let r = if (x - t).abs() >= 0.5 {
@@ -61,7 +96,6 @@ pub(crate) fn quantize_trunc(v: f32) -> i16 {
     } else {
         t
     };
-    // NaN stays NaN through the clamp and casts to 0, as `as i16` does.
     r.clamp(-32767.0, 32767.0) as i32 as i16
 }
 
@@ -177,7 +211,7 @@ impl SharedFrames {
         out.reserve(r.len());
         for y in 0..r.h {
             let a = o + y * self.rect.w;
-            out.extend(src[a..a + r.w].iter().map(|&v| f32::from(v) / QUANT));
+            out.extend(src[a..a + r.w].iter().map(|&v| decode(v)));
         }
     }
 

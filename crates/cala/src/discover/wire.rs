@@ -7,7 +7,7 @@ use super::ledger::{EditCounts, EditEvent, EditKind};
 use super::local::{Cell, Rect};
 use super::reservoir::{Probe, SharedFrames, Slot, Tile};
 use super::SlowStats;
-use crate::discover::fpstats::{Fast, FpStats, FAST_GROUPS};
+use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
 pub(crate) const MAGIC: u32 = 0x5649_5332; // "VIS2"
@@ -175,6 +175,21 @@ impl Writer {
                 self.f32s(rc);
                 self.f64(w[0]);
                 self.f64(w[1]);
+            }
+            // Per-pixel valid-frame weights (pixels with missing samples).
+            self.bool(f.wp.is_some());
+            if let Some(wp) = &f.wp {
+                for g in wp {
+                    let flat: Vec<f64> = g.iter().flat_map(|w| *w).collect();
+                    self.f64s(&flat);
+                }
+            }
+        }
+        // Per-pixel moments (cells whose disk has seen missing samples).
+        self.bool(s.pm.is_some());
+        if let Some(pm) = &s.pm {
+            for v in [&pm.n, &pm.n2, &pm.s1, &pm.s2] {
+                self.f64s(v);
             }
         }
     }
@@ -369,6 +384,8 @@ impl<'a> Reader<'a> {
             col: self.f32s()?,
             half: (Vec::new(), Vec::new(), [0.0; 4]),
             k: 0,
+            pm: None,
+            half_pm: None,
             fast: None,
         })
         .and_then(|mut s: FpStats| {
@@ -382,7 +399,39 @@ impl<'a> Reader<'a> {
                         return None;
                     }
                 }
+                if self.bool()? {
+                    let mut wp = Vec::with_capacity(FAST_GROUPS);
+                    for _ in 0..FAST_GROUPS {
+                        let flat = self.f64s()?;
+                        if flat.len() != 2 * s.pix.len() {
+                            return None;
+                        }
+                        wp.push(
+                            flat.as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|c| [c[0], c[1]])
+                                .collect(),
+                        );
+                    }
+                    f.wp = Some(wp);
+                }
                 s.fast = Some(f);
+            }
+            if self.bool()? {
+                let pm = PixMoments {
+                    n: self.f64s()?,
+                    n2: self.f64s()?,
+                    s1: self.f64s()?,
+                    s2: self.f64s()?,
+                };
+                if [&pm.n, &pm.n2, &pm.s1, &pm.s2]
+                    .iter()
+                    .any(|v| v.len() != s.pix.len())
+                {
+                    return None;
+                }
+                s.pm = Some(pm);
             }
             Some(s)
         })

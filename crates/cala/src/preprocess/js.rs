@@ -428,6 +428,44 @@ impl JsPreprocessor {
         Ok(rec)
     }
 
+    /// [`Self::back_frames`] for frames motion-corrected by the rigid shifts
+    /// `dy[i]`, `dx[i]` (bicubic): pixels the shift moved in from outside the
+    /// sensor's FOV mask are missing, so they do not enter the noise map or
+    /// the background, and come out at their recent level (NaN before their
+    /// first valid sample; see `Preprocessor::back_masked`).
+    #[wasm_bindgen(js_name = backFramesRegistered)]
+    pub fn back_frames_registered(
+        &mut self,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<Vec<f64>, JsError> {
+        let n = self.inner.dims().pixels();
+        let count = check_batch("backFramesRegistered", frames.len(), count, n)?;
+        if dy.len() < count || dx.len() < count {
+            return Err(JsError::new(&format!(
+                "backFramesRegistered: {count} frames but {} / {} shifts",
+                dy.len(),
+                dx.len()
+            )));
+        }
+        let mut rec = Vec::with_capacity(count * HALF_RECORD_STRIDE);
+        for (i, f) in frames.chunks_exact_mut(n).take(count).enumerate() {
+            let r = self
+                .inner
+                .back_rigid(f, (dy[i], dx[i]))
+                .map_err(|e| js_err("backFramesRegistered", e))?;
+            rec.extend_from_slice(&[
+                r.frame_index as f64,
+                f64::from(r.floor_mean),
+                f64::from(r.floor_lowered_fraction),
+                f64::from(u8::from(r.snapshot)),
+            ]);
+        }
+        Ok(rec)
+    }
+
     /// Serialized config, calibration and running state.
     pub fn state(&self) -> Vec<u8> {
         self.inner.state().to_bytes()
