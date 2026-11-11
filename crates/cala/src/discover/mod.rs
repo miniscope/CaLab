@@ -343,8 +343,9 @@ pub struct SlowLoopConfig {
     /// The support of a footprint estimated from the statistics reaches
     /// out to where its light is significant: each 1 px ring around the
     /// centre belongs to it while the ring's mean light is this many
-    /// standard errors above zero (no size cap; dim cells stay small,
-    /// bright ones take their full extent as the frames accumulate).
+    /// standard errors above zero (no size cap; never tighter than the
+    /// seed rule, so bright cells take their full extent as the frames
+    /// accumulate and dim ones keep at least their 2.5 half-widths).
     pub support_z: f32,
     /// A refinement is accepted when its per-frame held-out χ² gains are
     /// positive with a paired z (mean over standard error) above this...

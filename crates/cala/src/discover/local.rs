@@ -170,7 +170,8 @@ pub(crate) enum Extent {
     /// The seed rule ([`LibraryConfig::seed_radius`]): a candidate whose
     /// extent has not been measured yet.
     Seed,
-    /// A measured radius around the half-max centroid.
+    /// A measured radius around the half-max centroid (at least the seed
+    /// rule's).
     Radius(f32),
 }
 
@@ -227,7 +228,9 @@ impl Cell {
         let r = match extent {
             Extent::Given => own,
             Extent::Seed => cfg.seed_radius(hwhm).min(own),
-            Extent::Radius(r) => r.min(own),
+            // Never tighter than the seed rule: a dim cell's tail is not
+            // significant ring by ring, but it is still the cell's light.
+            Extent::Radius(r) => r.max(cfg.seed_radius(hwhm)).min(own),
         };
         let bbox = Rect::around(cy, cx, r, dims);
         let mut canvas = vec![0.0f32; bbox.len()];
