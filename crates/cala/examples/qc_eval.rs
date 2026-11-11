@@ -116,7 +116,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{CoreTest, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
+use calab_cala::discover::{
+    CoreTest, CrossFit, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
@@ -1858,6 +1860,14 @@ fn main() {
     }
     if args.iter().any(|a| a == "--basin-trim") {
         scfg.basin_trim = true;
+    }
+    if let Some(v) = arg_value(&args, "--crossfit") {
+        scfg.crossfit = match v.as_str() {
+            "off" => CrossFit::Off,
+            "loo" => CrossFit::Loo,
+            "parity-loo" => CrossFit::ParityLoo,
+            other => panic!("--crossfit: off|loo|parity-loo, not {other}"),
+        };
     }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;

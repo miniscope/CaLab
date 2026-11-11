@@ -236,7 +236,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use churn::Churn;
-use fpstats::{FpStats, FAST_BLOCK};
+use fpstats::{parity, parity_block, FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
     rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, PatchGrid, Problem, Rect,
@@ -285,6 +285,31 @@ impl CoreTest {
     pub fn trims(self) -> bool {
         matches!(self, CoreTest::Trim | CoreTest::Delete)
     }
+}
+
+/// Which trace the running footprint statistics (`fpstats.rs`) and the
+/// rank-1 fits (`local::rank1`) regress the residual on. Regressing a
+/// pixel on a trace fitted from the same pixel in the same frame feeds that
+/// pixel's noise back into its own footprint: with spatially correlated
+/// noise the fixed point is a textured blob at the noise's correlation
+/// length, not the cell (model review, root cause B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CrossFit {
+    /// The fast loop's clamped trace of the same frame (the old estimator;
+    /// kept only for A/B measurements).
+    Off,
+    /// Instrumental-variable estimate with the mean unclamped coordinate
+    /// of the two neighbouring frames, `(u_{t−1} + u_{t+1}) / 2`, as the
+    /// instrument (leave one frame out): a frame's noise never multiplies
+    /// itself. One frame of latency.
+    Loo,
+    /// `Loo`, and each pixel's instrument is measured on the pixels of the
+    /// other block parity only (blocks half a cell diameter wide), so noise
+    /// that is correlated from one frame to the next must also reach
+    /// across blocks to feed back. `rank1` fits are cross-fitted by parity
+    /// likewise.
+    #[default]
+    ParityLoo,
 }
 
 /// Settings of the slow loop. Pixel sizes follow the expected cell diameter.
@@ -437,6 +462,9 @@ pub struct SlowLoopConfig {
     /// basin of its light (`basin_trim_from`, seeded at the footprint's
     /// peak). Off by default.
     pub basin_trim: bool,
+    /// Cross-fitting of the footprint statistics and rank-1 fits (see
+    /// [`CrossFit`]).
+    pub crossfit: CrossFit,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -495,6 +523,7 @@ impl Default for SlowLoopConfig {
             joint_neighbours: false,
             core_test: CoreTest::Off,
             basin_trim: false,
+            crossfit: CrossFit::ParityLoo,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -694,6 +723,11 @@ pub struct SlowLoop {
     /// last read (rebuilt when the version changes).
     lproj: LedgerProj,
     lproj_ids: Vec<u64>,
+    /// Unclamped coordinates of each published cell in the current and the
+    /// two previous frames, `[all pixels, parity 0, parity 1]` (NaN: none):
+    /// the cross-fitted footprint statistics' instruments (see
+    /// [`CrossFit`]).
+    xu: HashMap<u64, [[f32; 3]; 3]>,
     deleted: Vec<DeletedCell>,
     /// Structural edits since the last `take_edit_log` (bounded).
     edit_log: Vec<EditEvent>,
@@ -760,6 +794,11 @@ struct LedgerProj {
     floor: Vec<f32>,
     /// Tile whose core holds the slot's centre (`usize::MAX`: none).
     tile: Vec<usize>,
+    /// Block parity of each pixel, and per slot and parity the normaliser
+    /// `Σ h w` and `Σ w` of that parity's pixels (cross-fitting only).
+    cls: Vec<u8>,
+    n_cls: Vec<[f32; 2]>,
+    ws_cls: Vec<[f32; 2]>,
 }
 
 /// What a residual candidate became.
@@ -1013,6 +1052,7 @@ impl SlowLoop {
                 ..LedgerProj::default()
             },
             lproj_ids: Vec::new(),
+            xu: HashMap::new(),
             deleted: Vec::new(),
             edit_log: Vec::new(),
             fpstats: HashMap::new(),
@@ -1398,9 +1438,7 @@ impl SlowLoop {
         self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
-        if !test {
-            self.update_fpstats(frame, lib, traces);
-        }
+        self.update_fpstats(frame, lib, traces, !test);
         // Random slots: one uniform sample for every tile.
         self.rng = mix(self.rng);
         let w = self.dims.width;
@@ -1522,6 +1560,8 @@ impl SlowLoop {
         let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
             && traces.background.len() == lib.len();
         let (ez, ef) = (self.cfg.event_z, self.cfg.event_frames);
+        let split = self.cfg.crossfit == CrossFit::ParityLoo;
+        let keep_u = self.cfg.crossfit != CrossFit::Off;
         let lp = &self.lproj;
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
@@ -1531,29 +1571,57 @@ impl SlowLoop {
             // normaliser `hᵀΣ⁻¹h` and of `Σ h/σ²`: they have zero weight, so
             // the correction is over the valid pixels only.
             let (mut n_miss, mut w_miss) = (0.0f32, 0.0f32);
+            // The same per block parity (cross-fitting).
+            let (mut gc, mut nmc, mut wmc) = ([0.0f32; 2], [0.0f32; 2], [0.0f32; 2]);
             for k in a..b {
                 let p = lp.pix[k] as usize;
                 let y = frame[p];
                 if y.is_finite() {
-                    g += lp.w[k] * (y - self.model[p]);
+                    let v = lp.w[k] * (y - self.model[p]);
+                    g += v;
+                    if split {
+                        gc[lp.cls[k] as usize] += v;
+                    }
                 } else {
                     n_miss += lp.nw[k];
                     w_miss += lp.w[k];
+                    if split {
+                        nmc[lp.cls[k] as usize] += lp.nw[k];
+                        wmc[lp.cls[k] as usize] += lp.w[k];
+                    }
                 }
             }
             work += (b - a) as u64 * 2;
             let level = if ring { traces.background[slot] } else { 0.0 };
-            let inv_n = if n_miss > 0.0 {
+            let c = traces.traces[slot];
+            let u = if n_miss > 0.0 {
                 let n = 1.0 / lp.inv_n[slot].max(1e-30);
                 if n_miss > 0.75 * n {
                     // Too little of the cell is seen: no usable coordinate.
-                    continue;
+                    f32::NAN
+                } else {
+                    c + (g - level * (lp.wsum[slot] - w_miss)) * (1.0 / (n - n_miss))
                 }
-                1.0 / (n - n_miss)
             } else {
-                lp.inv_n[slot]
+                c + (g - level * lp.wsum[slot]) * lp.inv_n[slot]
             };
-            let u = traces.traces[slot] + (g - level * (lp.wsum[slot] - w_miss)) * inv_n;
+            if keep_u {
+                let mut now = [u, f32::NAN, f32::NAN];
+                if split {
+                    // Each parity's own coordinate, on the same rule.
+                    for k in 0..2 {
+                        let (nk, wk) = (lp.n_cls[slot][k], lp.ws_cls[slot][k]);
+                        if nk > 0.0 && nmc[k] <= 0.75 * nk {
+                            now[1 + k] = c + (gc[k] - level * (wk - wmc[k])) / (nk - nmc[k]);
+                        }
+                    }
+                }
+                let e = self.xu.entry(id).or_insert([[f32::NAN; 3]; 3]);
+                *e = [now, e[0], e[1]];
+            }
+            if !u.is_finite() {
+                continue;
+            }
             self.ledger
                 .entry(id)
                 .or_insert_with(Evidence::new)
@@ -1562,13 +1630,34 @@ impl SlowLoop {
         self.work += work;
     }
 
-    /// Running footprint statistics for one fitting frame (see `fpstats.rs`).
-    fn update_fpstats(&mut self, frame: &[f32], lib: &Library, traces: &FrameTraces) {
+    /// Running footprint statistics (see `fpstats.rs`): a `fitting` frame's
+    /// residual is accumulated (with cross-fitting, one frame later, when
+    /// the next frame's coordinate is known); every frame completes the
+    /// previous fitting frame's.
+    fn update_fpstats(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        fitting: bool,
+    ) {
+        let cross = self.cfg.crossfit != CrossFit::Off;
+        if !fitting && !cross {
+            return;
+        }
         if self.fpstats.len() > lib.len() {
             let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
             self.fpstats.retain(|id, _| ids.contains(id));
             self.fast_checked.retain(|id, _| ids.contains(id));
             self.fast_strikes.retain(|id, _| ids.contains(id));
+        }
+        if !fitting {
+            for &id in lib.ids() {
+                if let Some(st) = self.fpstats.get_mut(&id) {
+                    Self::flush_pending(st, self.xu.get(&id), self.cfg.crossfit);
+                }
+            }
+            return;
         }
         self.stats_w /= self.stats_gamma;
         if self.stats_w > 1024.0 {
@@ -1594,8 +1683,12 @@ impl SlowLoop {
                     height,
                     &self.fov,
                     self.cfg.core_test.collects(),
+                    parity_block(self.cfg.cell_diameter_px),
                 )
             });
+            if cross {
+                Self::flush_pending(st, self.xu.get(&id), self.cfg.crossfit);
+            }
             if !st.covers(center, radius) {
                 *st = st.moved(center, want, width, height, &self.fov);
             }
@@ -1620,6 +1713,10 @@ impl SlowLoop {
             }
             let c = traces.traces[slot];
             let level = if ring { traces.background[slot] } else { 0.0 };
+            if cross {
+                // The buffer of the frame flushed above.
+                std::mem::swap(&mut self.rbuf, &mut st.pending.0);
+            }
             self.rbuf.clear();
             self.rbuf.extend(st.pix.iter().map(|&p| {
                 let y = frame[p as usize];
@@ -1636,11 +1733,55 @@ impl SlowLoop {
                     *r += v * c;
                 }
             }
-            st.push(&self.rbuf, c, w);
+            if cross {
+                // Pushed on the next frame, with its coordinate.
+                std::mem::swap(&mut self.rbuf, &mut st.pending.0);
+                st.pending.1 = w;
+            } else {
+                st.push(&self.rbuf, [c, c], c, w);
+            }
             work += st.pix.len() as u64 * 3;
         }
         self.work += work;
         self.stats.work_stats += work;
+    }
+
+    /// Push `st`'s pending residual (frame `t − 1`) with the cross-fitted
+    /// instruments: per parity class, the mean of the coordinates of
+    /// frames `t − 2` and `t` (those available), measured on the other
+    /// parity's pixels with `ParityLoo` (on all pixels when the other
+    /// parity has none in those frames, or with `Loo`); the regressor is
+    /// the coordinate of frame `t − 1` itself. `xs` = the cell's
+    /// coordinates of frames `t, t − 1, t − 2`.
+    fn flush_pending(st: &mut FpStats, xs: Option<&[[f32; 3]; 3]>, mode: CrossFit) {
+        let w = std::mem::replace(&mut st.pending.1, f32::NAN);
+        let Some(&[now, mid, old]) = xs else {
+            return;
+        };
+        if w.is_nan() || st.pending.0.len() != st.pix.len() {
+            return;
+        }
+        let pick = |j: usize| match (old[j].is_finite(), now[j].is_finite()) {
+            (true, true) => 0.5 * (old[j] + now[j]),
+            (true, false) => old[j],
+            (false, true) => now[j],
+            (false, false) => f32::NAN,
+        };
+        let z = if mode == CrossFit::ParityLoo {
+            [0, 1].map(|k| {
+                let o = pick(2 - k);
+                if o.is_finite() {
+                    o
+                } else {
+                    pick(0)
+                }
+            })
+        } else {
+            [pick(0); 2]
+        };
+        let r = std::mem::take(&mut st.pending.0);
+        st.push(&r, z, mid[0], w);
+        st.pending.0 = r;
     }
 
     /// Held-out frame `frame`: store it as a probe in the tile of each cell
@@ -1690,18 +1831,27 @@ impl SlowLoop {
             start: vec![0],
             ..LedgerProj::default()
         };
+        let blk = parity_block(self.cfg.cell_diameter_px);
+        let width = self.dims.width;
         for slot in 0..lib.len() {
             let (pix, h) = lib.filtered(slot);
             let (mut n, mut ws) = (0.0f64, 0.0f64);
+            let (mut nc, mut wc) = ([0.0f64; 2], [0.0f64; 2]);
             for (&p, &v) in pix.iter().zip(h) {
                 let is = self.inv_sigma[p as usize];
                 let w = v * is * is;
+                let k = parity(p, width, blk);
                 lp.pix.push(p);
                 lp.w.push(w);
                 lp.nw.push(v * w);
+                lp.cls.push(k);
                 n += f64::from(v * w);
                 ws += f64::from(w);
+                nc[k as usize] += f64::from(v * w);
+                wc[k as usize] += f64::from(w);
             }
+            lp.n_cls.push(nc.map(|v| v as f32));
+            lp.ws_cls.push(wc.map(|v| v as f32));
             lp.start.push(lp.pix.len());
             let inv_n = if n > 0.0 { (1.0 / n) as f32 } else { 0.0 };
             lp.inv_n.push(inv_n);
@@ -1714,6 +1864,7 @@ impl SlowLoop {
         // cells whose column changed (a new coordinate scale) warm up again.
         let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
         self.ledger.retain(|id, _| ids.contains(id));
+        self.xu.retain(|id, _| ids.contains(id));
         let old: HashMap<u64, f32> = self
             .lproj_ids
             .iter()
@@ -1725,6 +1876,9 @@ impl SlowLoop {
                 let n = lp.inv_n[slot];
                 if (n - o).abs() > 1e-3 * o.abs().max(1e-12) {
                     ev.rewarm();
+                    // A new column: the coordinates on the old one are on
+                    // another scale and cannot be the next instrument.
+                    self.xu.remove(&id);
                 }
             }
         }
@@ -2571,6 +2725,22 @@ impl SlowLoop {
     }
 
     /// Patch-local pixels of the disk `(cy, cx, r)` inside `rect`.
+    /// Block parity of each rect-local pixel of `dom`, when rank-1 fits
+    /// are cross-fitted ([`CrossFit::ParityLoo`]; reservoir frames have no
+    /// time order, so `Loo` leaves them plain).
+    fn rank1_cls(&self, rect: Rect, dom: &[u32]) -> Option<Vec<u8>> {
+        (self.cfg.crossfit == CrossFit::ParityLoo).then(|| {
+            let blk = parity_block(self.cfg.cell_diameter_px);
+            let w = self.dims.width;
+            dom.iter()
+                .map(|&p| {
+                    let (y, x) = (rect.y0 + p as usize / rect.w, rect.x0 + p as usize % rect.w);
+                    parity((y * w + x) as u32, w, blk)
+                })
+                .collect()
+        })
+    }
+
     fn disk(&self, rect: Rect, cy: f32, cx: f32, r: f32) -> Vec<u32> {
         let mut out = Vec::new();
         for y in 0..rect.h {
@@ -2981,7 +3151,14 @@ impl SlowLoop {
         let r0 = 0.75 * self.cfg.cell_diameter_px;
         let refs: Vec<&[f32]> = resid.iter().map(|r| r.as_slice()).collect();
         let dom = self.disk(rect, peak.0, peak.1, r0);
-        let h = rank1(&refs, &dom, c, 10, false);
+        let h = rank1(
+            &refs,
+            &dom,
+            c,
+            10,
+            false,
+            self.rank1_cls(rect, &dom).as_deref(),
+        );
         // Recentre on the half-max centroid and fit again.
         let hmax = h.iter().copied().fold(0.0f32, f32::max);
         if !(hmax > 0.0) {
@@ -2997,7 +3174,14 @@ impl SlowLoop {
         }
         let (cy, cx) = (sy / sw, sx / sw);
         let dom = self.disk(rect, cy, cx, r0);
-        let h = rank1(&refs, &dom, c, 10, false);
+        let h = rank1(
+            &refs,
+            &dom,
+            c,
+            10,
+            false,
+            self.rank1_cls(rect, &dom).as_deref(),
+        );
         self.work += (dom.len() * resid.len() * 42) as u64;
         self.make_cell(id, rect, &dom, &h, None)
     }
@@ -3512,14 +3696,21 @@ impl SlowLoop {
             }
             self.work += (dom.len() * data.len() * 13) as u64;
             let mut c = c0.clone();
-            let h = rank1(&refs, &local, &mut c, 1, true);
+            let h = rank1(&refs, &local, &mut c, 1, true, None);
             if let Some(mut new) = self.make_cell(id, rect, &dom, &h, Some(&cell)) {
                 new.born = cell.born;
                 out.push(new);
                 kinds.push(2);
             }
             let mut c = c0;
-            let h = rank1(&refs, &local, &mut c, 10, false);
+            let h = rank1(
+                &refs,
+                &local,
+                &mut c,
+                10,
+                false,
+                self.rank1_cls(rect, &dom).as_deref(),
+            );
             if let Some(mut new) = self.make_cell(id, rect, &dom, &h, None) {
                 new.born = cell.born;
                 out.push(new);
@@ -3737,7 +3928,14 @@ impl SlowLoop {
             dom.dedup();
             let mut c: Vec<f32> = fits.iter().map(|f| f.c[i] + f.c[j]).collect();
             let refs: Vec<&[f32]> = data.iter().map(|r| r.as_slice()).collect();
-            let h = rank1(&refs, &dom, &mut c, 10, false);
+            let h = rank1(
+                &refs,
+                &dom,
+                &mut c,
+                10,
+                false,
+                self.rank1_cls(rect, &dom).as_deref(),
+            );
             self.work += (dom.len() * data.len() * 40) as u64;
             let keep = self.cells[ci].id.min(self.cells[cj].id);
             let pair = (ids[i].min(ids[j]), ids[i].max(ids[j]));
@@ -3779,7 +3977,14 @@ impl SlowLoop {
                     })
                     .collect();
                 let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let ha = rank1(&refs, &dom, &mut ca, 5, false);
+                let ha = rank1(
+                    &refs,
+                    &dom,
+                    &mut ca,
+                    5,
+                    false,
+                    self.rank1_cls(rect, &dom).as_deref(),
+                );
                 for ((o, d), &ct) in other.iter_mut().zip(&data).zip(&ca) {
                     o.copy_from_slice(d);
                     for (&p, &v) in dom.iter().zip(&ha) {
@@ -3787,7 +3992,14 @@ impl SlowLoop {
                     }
                 }
                 let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let hb = rank1(&refs, &dom, &mut cb, 5, false);
+                let hb = rank1(
+                    &refs,
+                    &dom,
+                    &mut cb,
+                    5,
+                    false,
+                    self.rank1_cls(rect, &dom).as_deref(),
+                );
                 self.work += (2 * dom.len() * data.len() * 30) as u64;
                 let energy = |h: &[f32], c: &[f32]| {
                     h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
@@ -4186,7 +4398,7 @@ impl SlowLoop {
                     .collect();
                 let refs: Vec<&[f32]> = data.iter().map(|r| r.as_slice()).collect();
                 let mut c: Vec<f32> = active.iter().map(|&t| fits[t].c[i]).collect();
-                let h = rank1(&refs, &dom, &mut c, 1, true);
+                let h = rank1(&refs, &dom, &mut c, 1, true, None);
                 self.work += (dom.len() * data.len()) as u64;
                 let Some(mut new) = self.make_cell(id, rect, &dom, &h, Some(&cell)) else {
                     continue;
