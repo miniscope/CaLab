@@ -68,8 +68,12 @@
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
 //! every 100 frames, GT precision / recall / trace r at checkpoints, and the
 //! slow loop's cumulative add classification), `adds.tsv` / `removals.tsv`
-//! (every add with its class, every removal with its age; recording frames)
-//! and, with
+//! (every add with its class, every removal with its age; recording frames),
+//! `final.tsv` (each cell of the final library: centroid, footprint match,
+//! and the slow loop's evidence record) and, with GT, `gt.tsv` (GT units:
+//! centroid, detectable, peak SNR) and `traces_gt.tsv` (each final cell's
+//! best trace correlation with *any* GT unit and that unit's distance, which
+//! tells a distant unit's light from signal no GT unit made), and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
 //! order) and `cells_pass2.tsv` (QC of the re-extracted traces).
 
@@ -1512,6 +1516,18 @@ fn main() {
                 let noise = pipe.pre.noise().sigma();
                 if let Some(o) = &oracle {
                     let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
+                    let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\n");
+                    for j in 0..g.kept.len() {
+                        let _ = writeln!(
+                            t,
+                            "{j}\t{:.2}\t{:.2}\t{}\t{:.3}",
+                            g.centers[j].0,
+                            g.centers[j].1,
+                            u8::from(g.detectable[j]),
+                            g.snr[j]
+                        );
+                    }
+                    std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
                     if oracle_mode {
                         let (lib, m) =
                             oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
@@ -1779,6 +1795,47 @@ fn main() {
         print!("{msg}");
         std::fs::write(out_dir.join("timed.txt"), &msg).unwrap();
     }
+    // Each cell's best trace correlation with any GT unit (over its whole
+    // life), wherever that unit is: tells light from a distant unit (a
+    // dendrite, an out-of-focus blur) from signal no GT unit made.
+    if let (Some(g), Some(o)) = (&gt, &oracle) {
+        let lib = engine.library().clone();
+        let det = columns(&lib, dims, (0, 0));
+        let mut t = String::from("id\tcy\tcx\tgr\tgr_gt\tgr_dist\tgr_detectable\n");
+        for (&id, col) in lib.ids().iter().zip(&det) {
+            let Some((t0, w)) = hist.map.get(&id) else {
+                continue;
+            };
+            if w.len() < 200 || t0 + w.len() > g.t_gt {
+                continue;
+            }
+            let (mut bj, mut br) = (usize::MAX, f64::NEG_INFINITY);
+            for j in 0..g.kept.len() {
+                let r = pearson(w, &g.c(o, j)[*t0..t0 + w.len()]);
+                if r > br {
+                    (bj, br) = (j, r);
+                }
+            }
+            let c = centroid(col, dims.width);
+            let (d, det_j) = if bj == usize::MAX {
+                (f32::NAN, 0)
+            } else {
+                let gc = g.centers[bj];
+                (
+                    ((gc.0 - c.0).powi(2) + (gc.1 - c.1).powi(2)).sqrt(),
+                    u8::from(g.detectable[bj]),
+                )
+            };
+            let _ = writeln!(
+                t,
+                "{id}\t{:.2}\t{:.2}\t{br:.4}\t{}\t{d:.1}\t{det_j}",
+                c.0,
+                c.1,
+                if bj == usize::MAX { -1 } else { bj as i64 }
+            );
+        }
+        std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
+    }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
@@ -1805,6 +1862,47 @@ fn main() {
         Some(sl) => sl.finalize().unwrap(),
         None => engine.library().clone(),
     };
+    {
+        // Final cells: centroid and footprint match (GT runs).
+        let det = columns(&lib, dims, (0, 0));
+        let mut t = String::from(
+            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\n",
+        );
+        let (mt, best) = match &gt {
+            Some(g) => match_cells(&det, &g.cols, dims, 0.7),
+            None => (
+                vec![None; det.len()],
+                vec![(usize::MAX, f64::NAN); det.len()],
+            ),
+        };
+        for s in 0..lib.len() {
+            let c = centroid(&det[s], dims.width);
+            let (bg, br) = mt[s].unwrap_or(best[s]);
+            let info = slow.as_ref().and_then(|sl| sl.cell_info(lib.ids()[s]));
+            let ev = info.map_or("na\t-1\t-1\t-1\t-1\tnan".to_string(), |i| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{:.2}",
+                    i.status.as_str(),
+                    i.transients,
+                    i.passes,
+                    i.fails,
+                    i.redundant,
+                    i.peak_z
+                )
+            });
+            let _ = writeln!(
+                t,
+                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}",
+                lib.ids()[s],
+                c.0,
+                c.1,
+                u8::from(mt[s].is_some()),
+                if bg == usize::MAX { -1 } else { bg as i64 },
+                br
+            );
+        }
+        std::fs::write(out_dir.join("final.tsv"), t).unwrap();
+    }
     {
         let mut f = BufWriter::new(File::create(out_dir.join("footprints.bin")).unwrap());
         f.write_all(b"CALAFP01").unwrap();
