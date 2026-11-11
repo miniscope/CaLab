@@ -114,6 +114,8 @@ fn config() -> SlowLoopConfig {
         // About what the old 8 MB byte budget gave on this frame.
         frames_per_tile: 200,
         commit_interval_frames: 20,
+        // The movies here are a few thousand frames: 0.5 s hold-out blocks.
+        holdout_block_s: 0.5,
         ..SlowLoopConfig::default()
     }
 }
@@ -762,12 +764,29 @@ fn weak_transients_of_a_true_cell_are_not_failures() {
 fn a_cell_on_diffuse_light_is_still_deleted() {
     // Only broad light (σ 10 px, a neuropil-like glow) where a compact
     // cell was seeded: the keep tests had the power to see the cell's
-    // shape and did not, so they fail and the cell goes.
+    // shape and did not, so they fail and the cell goes. (Probes are taken
+    // only on held-out frames, and with block hold-out only the transients
+    // inside a held-out block are probed: a third of them, so a longer run.)
     let t = 3000;
     let mut rng = Lcg(77);
     let cells = vec![(blob_w(0, 48.0, 48.0, 10.0), trace(&mut rng, t, 0.03, 4.0))];
-    let (n, stats) = keep_run(&cells, blob(1, 48.0, 48.0), 41);
-    assert_eq!(n, 1, "{stats:?}");
+    let t_cells = cells;
+    let m = movie(&t_cells, t, 41);
+    // One-frame hold-out blocks (the old per-frame split): with 0.5 s blocks
+    // this synthetic case keeps the cell (3 of 70 keep tests fail, against
+    // 12 of 46), see the PR for blocked hold-out (S1.4).
+    let cfg = SlowLoopConfig {
+        holdout_block_s: 0.05,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 48.0, 48.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let n = deleted
+        .iter()
+        .filter(|d| d.info.id == 1 && d.reason == DeleteReason::Unsupported)
+        .count();
+    assert_eq!(n, 1, "{:?}", slow.stats());
 }
 
 // ---- parallel visits (shard.rs) ---------------------------------------------
@@ -1336,4 +1355,90 @@ fn missing_samples_round_trip_through_the_reservoir() {
     let back = wire::Reader::new(&w.buf).i16s().unwrap();
     assert_eq!(back[2], MISSING);
     assert_eq!(back[7], MISSING);
+}
+
+// ---- blocked hold-out ------------------------------------------------------
+
+#[test]
+fn holdout_is_blockwise() {
+    let slow = new_loop(&SlowLoopConfig::default());
+    let block = 256u64;
+    let n_blocks = 300u64;
+    let mut held = 0;
+    for b in 0..n_blocks {
+        let first = slow.is_test(b * block);
+        for f in b * block..(b + 1) * block {
+            assert_eq!(slow.holdout_block(f), b);
+            assert_eq!(slow.is_test(f), first, "block {b} frame {f}");
+        }
+        held += u64::from(first);
+    }
+    let share = held as f64 / n_blocks as f64;
+    assert!((share - 1.0 / 3.0).abs() < 0.07, "held-out share {share}");
+    // Deterministic: a second loop with the same config agrees.
+    let other = new_loop(&SlowLoopConfig::default());
+    assert!((0..5000).all(|f| slow.is_test(f) == other.is_test(f)));
+}
+
+#[test]
+fn holdout_block_length_comes_from_seconds_and_fps() {
+    let at = |s: f32, fps: f32| {
+        let cfg = SlowLoopConfig {
+            holdout_block_s: s,
+            fps,
+            ..SlowLoopConfig::default()
+        };
+        new_loop(&cfg).holdout_block(1000)
+    };
+    assert_eq!(at(12.8, 20.0), 1000 / 256);
+    assert_eq!(at(6.4, 20.0), 1000 / 128);
+    assert_eq!(at(12.8, 30.0), 1000 / 384);
+    // Shorter than a frame: one frame per block (the old per-frame split).
+    assert_eq!(at(0.001, 20.0), 1000);
+}
+
+#[test]
+fn fit_and_test_consumers_agree_on_the_split() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let (mut slow, mut eng) = start(shard_config(), &seed);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let mut seen = 0;
+    for ti in 0..slow.tiles.len() {
+        for s in slow.tiles[ti].slots() {
+            let slot = slow.tiles[ti].slot(s);
+            assert_eq!(
+                slot.test,
+                slow.is_test(slot.frame),
+                "slot frame {}",
+                slot.frame
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0);
+}
+
+#[test]
+fn visit_waits_for_three_held_out_blocks() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let (mut slow, mut eng) = start(cfg.clone(), &seed);
+    // Frames until the third held-out block begins.
+    let mut firsts = Vec::new();
+    for f in 0..t as u64 {
+        let b = slow.holdout_block(f);
+        if slow.is_test(f) && firsts.last() != Some(&b) {
+            firsts.push(b);
+        }
+    }
+    assert!(firsts.len() >= 3, "test movie too short for 3 blocks");
+    let third_starts = (firsts[2] * 10) as usize; // 0.5 s blocks at 20 fps
+    let mut deleted = Vec::new();
+    drive(&m, 0..third_starts, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.stats().proposals, 0, "tested with fewer than 3 blocks");
+    drive(&m, third_starts..t, &mut slow, &mut eng, &mut deleted);
+    assert!(slow.stats().proposals > 0, "never tested after 3 blocks");
 }

@@ -29,8 +29,9 @@
 //!   column the full filtered footprint: exact on its support, the
 //!   high-pass moat as block means around it, [`crate::trace::moat_geometry`])
 //!   plus a smooth 3 x 3 bump background exactly (non-negative traces) and
-//!   gives whitened residuals and χ² values. Frames are split once, by a hash of
-//!   the frame index, into fitting frames and held-out frames.
+//!   gives whitened residuals and χ² values. Frames are split once, in blocks of
+//!   `holdout_block_s` seconds (a hash of the block index), into fitting
+//!   frames and held-out frames.
 //!
 //! # Edits
 //!
@@ -1831,7 +1832,9 @@ impl SlowLoop {
     /// Held-out frame `frame`: store it as a probe in the tile of each cell
     /// that is in a confirmed transient of its ledger trace (the first
     /// held-out frame of that transient; at most once per
-    /// `probe_gap_frames` per cell).
+    /// `probe_gap_frames` per cell). With blocked hold-out only transients
+    /// that fall inside a held-out block are probed, so probes cluster in
+    /// those blocks.
     fn take_probes(&mut self, lib: &Library, frame: u64) {
         let gap = self.cfg.probe_gap_frames;
         let mut per_tile: Vec<(usize, u64)> = Vec::new();
