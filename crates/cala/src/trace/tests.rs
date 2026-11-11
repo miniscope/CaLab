@@ -684,3 +684,69 @@ fn missing_pixels_get_zero_weight() {
         "nan fill {err_nan} vs zero fill {err_zero}"
     );
 }
+
+#[test]
+fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
+    // halo_s5: a large footprint at the FOV edge, its ring clipped to a few
+    // pixels that its own moat fills, had `ã_iᵀã_i − s_i q_ii < 0`. The
+    // curvature was floored at 1e-3 `ã_iᵀã_i`, so each SOR step was ~1000x
+    // too long with the wrong sign: traces ran to 1e37, then inf, which
+    // hung the QC event scan downstream. Reproduce the degenerate terms on
+    // the ring probe by scaling `s_0` until the self term exceeds the Gram.
+    let d = Dims::new(64, 64).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 6.0,
+        ..FlattenConfig::default()
+    };
+    let mut flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    let mut b = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    b.push(ring_probe_footprint());
+    let mut lib = b.build(&mut flat).unwrap();
+    let gd = lib.gram_diag[0];
+    let BgTerms::Ring { s, q, .. } = &mut lib.bg else {
+        panic!("ring model expected");
+    };
+    let (cols, vals) = q.row(0);
+    let qii = vals[cols.binary_search(&0).expect("self term in the ring")];
+    assert!(qii != 0.0);
+    // `ã_0ᵀã_0 − s_0 q_00 = −0.5 ã_0ᵀã_0`.
+    s[0] = 1.5 * gd / qii;
+    let mut mdiag = lib.gram_diag.clone();
+    library::ring_self_curvature(&lib.gram_diag, s, q, &mut mdiag);
+    lib.mdiag = mdiag;
+    let lib = Arc::new(lib);
+
+    let mut fp = vec![0.0f32; 64 * 64];
+    let p = ring_probe_footprint();
+    for y in 0..p.height {
+        for x in 0..p.width {
+            fp[(p.y0 + y) * 64 + p.x0 + x] = 3.0 * p.values[y * p.width + x];
+        }
+    }
+    flat.apply(&mut fp).unwrap();
+    fp.iter_mut().for_each(|v| *v += 5.0);
+    let cfg = SolverConfig::default();
+    let mut e = TraceEngine::new(lib, cfg).unwrap();
+    let first = e.process(&fp).unwrap();
+    assert!(first.traces[0].is_finite(), "{first:?}");
+    assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
+    // The same frame again from the warm start: the same fixed point.
+    for _ in 0..3 {
+        let r = e.process(&fp).unwrap();
+        assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+        let tol = cfg.tol * lib_noise(&e) * 2.0;
+        assert!(
+            (r.traces[0] - first.traces[0]).abs() <= tol,
+            "{r:?} vs {first:?}"
+        );
+    }
+}
+
+fn lib_noise(e: &TraceEngine) -> f32 {
+    e.library().trace_noise()[0]
+}
