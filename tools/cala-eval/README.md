@@ -66,13 +66,13 @@ precision (about .011 at 500 cells) is printed next to precision rows.
 Ground-truth-free held-out score (E2, `calab_cala::qc::heldout`; the same
 numbers come out of `qc_eval real`):
 
-| name       | source                       | meaning                                                                                                    |
-| ---------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `S8`       | `global.tsv` `ho_score`      | penalised held-out gain per held-out frame (units of s²) in the last checkpoint window                     |
-| `AUC_S`    | `global.tsv` `ho_score`      | mean of `ho_score` over checkpoints from 1200                                                              |
-| `rho_S_TP` | `global.tsv`                 | Spearman of `ho_score` with the TP count (precision x cells) over those checkpoints                        |
-| `Sf8`, `rho_Sf_TP` | `global.tsv` `ho_score_frac` | S over the held-out light above noise (`ho_signal`): activity in the window divides out |
-| `auc_hoz`  | `ho_cells.tsv`, `cells.tsv`  | AUC of per-cell `ho_marginal_z` for TP vs not at the last checkpoint (unscored cells rank lowest)          |
+| name               | source                       | meaning                                                                                           |
+| ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `S8`               | `global.tsv` `ho_score`      | penalised held-out gain per held-out frame (units of s²) in the last checkpoint window            |
+| `AUC_S`            | `global.tsv` `ho_score`      | mean of `ho_score` over checkpoints from 1200                                                     |
+| `rho_S_TP`         | `global.tsv`                 | Spearman of `ho_score` with the TP count (precision x cells) over those checkpoints               |
+| `Sf8`, `rho_Sf_TP` | `global.tsv` `ho_score_frac` | S over the held-out light above noise (`ho_signal`): activity in the window divides out           |
+| `auc_hoz`          | `ho_cells.tsv`, `cells.tsv`  | AUC of per-cell `ho_marginal_z` for TP vs not at the last checkpoint (unscored cells rank lowest) |
 
 `S = mean over held-out frames of (G_t − k_t μ_t)`: `G_t` is the whitened χ²
 the library removes from a frame the slow loop never fitted on, divided by the
