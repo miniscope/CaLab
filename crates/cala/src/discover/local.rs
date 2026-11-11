@@ -237,10 +237,10 @@ impl Cell {
         } = support_disk(&fp, dims).ok()?;
         let r = match extent {
             Extent::Given => own,
-            Extent::Seed => cfg.seed_radius(hwhm).min(own),
+            Extent::Seed => cfg.seed_radius(hwhm),
             // Never tighter than the seed rule: a dim cell's tail is not
             // significant ring by ring, but it is still the cell's light.
-            Extent::Radius(r) => r.max(cfg.seed_radius(hwhm)).min(own),
+            Extent::Radius(r) => r.max(cfg.seed_radius(hwhm)),
         };
         let bbox = Rect::around(cy, cx, r, dims);
         let mut canvas = vec![0.0f32; bbox.len()];
