@@ -103,6 +103,13 @@ pub struct TraceEngine {
     chunk_acc: Vec<f32>,
     dirty_blocks: Vec<u32>,
     dirty_chunks: Vec<u32>,
+    /// Per cell, the bounding box (`y0, y1, x0, x1`, inclusive) of its
+    /// support and ring pixels (built on first use per library), and whether
+    /// a refill touches its projection (a missing pixel in the box, or a
+    /// dirty moat block).
+    cell_box: Vec<[u32; 4]>,
+    cell_dirty: Vec<bool>,
+    block_flag: Vec<bool>,
 }
 
 /// Pixels per partial sum of the background-map projections.
@@ -137,6 +144,9 @@ impl TraceEngine {
             chunk_acc: Vec::new(),
             dirty_blocks: Vec::new(),
             dirty_chunks: Vec::new(),
+            cell_box: Vec::new(),
+            cell_dirty: Vec::new(),
+            block_flag: Vec::new(),
         };
         e.install(lib, None);
         Ok(e)
@@ -194,6 +204,7 @@ impl TraceEngine {
         };
         self.active = vec![true; lib.groups.len()];
         self.last_bg = vec![0.0; k];
+        self.cell_box.clear();
         self.lib = lib;
     }
 
@@ -309,6 +320,53 @@ impl TraceEngine {
             self.dirty_blocks.sort_unstable();
             self.dirty_blocks.dedup();
         }
+        self.mark_cells(lib);
+    }
+
+    /// `cell_dirty`: the cells whose projection (support, moat or ring
+    /// part) a change of the missing pixels can move.
+    fn mark_cells(&mut self, lib: &Library) {
+        let n = lib.len();
+        let w = lib.dims().width as u32;
+        if self.cell_box.len() != n {
+            self.cell_box.clear();
+            for i in 0..n {
+                let mut bx = [u32::MAX, 0, u32::MAX, 0];
+                let ring: &[u32] = match &lib.bg {
+                    BgTerms::Ring {
+                        ring_start,
+                        ring_pix,
+                        ..
+                    } => &ring_pix[ring_start[i]..ring_start[i + 1]],
+                    _ => &[],
+                };
+                for &q in lib.core_col(i).0.iter().chain(ring) {
+                    let (y, x) = (q / w, q % w);
+                    bx = [bx[0].min(y), bx[1].max(y), bx[2].min(x), bx[3].max(x)];
+                }
+                self.cell_box.push(bx);
+            }
+        }
+        let gl = lib.grid_len();
+        self.block_flag.clear();
+        self.block_flag.resize(gl, false);
+        for &bq in &self.dirty_blocks {
+            self.block_flag[bq as usize] = true;
+        }
+        self.cell_dirty.clear();
+        for (i, &[y0, y1, x0, x1]) in self.cell_box.iter().enumerate() {
+            let inside = self.missing.iter().any(|&q| {
+                let (y, x) = (q / w, q % w);
+                (y0..=y1).contains(&y) && (x0..=x1).contains(&x)
+            });
+            let moat = gl > 0
+                && lib
+                    .lowpass(i)
+                    .0
+                    .iter()
+                    .any(|&bq| self.block_flag[bq as usize]);
+            self.cell_dirty.push(inside | moat);
+        }
     }
 
     /// Fill the missing pixels of `filled` (the rest is the frame) with the
@@ -421,7 +479,13 @@ impl TraceEngine {
                 }
             }
         }
+        // A refill moves only the cells it touches (the others' sums would
+        // come out the same).
+        let skip = |i: usize| refill && self.cell_dirty.len() == n && !self.cell_dirty[i];
         for i in 0..n {
+            if skip(i) {
+                continue;
+            }
             let (p, v) = lib.core_col(i);
             let mut s = 0.0f32;
             for (&q, &a) in p.iter().zip(v) {
@@ -490,6 +554,9 @@ impl TraceEngine {
                 ..
             } => {
                 for i in 0..n {
+                    if skip(i) {
+                        continue;
+                    }
                     let px = &ring_pix[ring_start[i]..ring_start[i + 1]];
                     let mut s = 0.0f32;
                     for &q in px {

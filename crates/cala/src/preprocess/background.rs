@@ -382,16 +382,16 @@ impl RunningMinBackground {
         }
         // Mean of the known floor. Eight running sums, branch-free: a single
         // sequential f64 sum is latency-bound and cost as much as the update.
-        let (mut sums, mut counts) = ([0.0f64; 8], [0u32; 8]);
+        let (mut sums, mut counts) = ([0.0f64; 8], [0.0f64; 8]);
         for ch in self.st.floor.chunks(8) {
             for ((s, c), &b) in sums.iter_mut().zip(counts.iter_mut()).zip(ch) {
                 let known = b.is_finite();
                 *s += if known { f64::from(b) } else { 0.0 };
-                *c += u32::from(known);
+                *c += if known { 1.0 } else { 0.0 };
             }
         }
         let sum: f64 = sums.iter().sum();
-        let known: usize = counts.iter().map(|&c| c as usize).sum();
+        let known = counts.iter().sum::<f64>() as usize;
         stats.floor_mean = (sum / known.max(1) as f64) as f32;
         Ok(stats)
     }
