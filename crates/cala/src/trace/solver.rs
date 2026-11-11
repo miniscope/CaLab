@@ -96,7 +96,17 @@ pub struct TraceEngine {
     last_bg: Vec<f32>,
     /// The traces the current fill was made with.
     c_em: Vec<f32>,
+    /// Per background map, the `f32` partial dot product of each
+    /// [`BASIS_CHUNK`] of the last solved frame, and the moat blocks and
+    /// chunks holding a missing pixel: a refilled frame differs from the
+    /// last one only there, so later passes redo only those sums.
+    chunk_acc: Vec<f32>,
+    dirty_blocks: Vec<u32>,
+    dirty_chunks: Vec<u32>,
 }
+
+/// Pixels per partial sum of the background-map projections.
+const BASIS_CHUNK: usize = 4096;
 
 /// Solves per frame with missing pixels, at most (see
 /// [`TraceEngine::process_into`]). Each refill shrinks a trace's error by the
@@ -124,6 +134,9 @@ impl TraceEngine {
             field: Vec::new(),
             last_bg: Vec::new(),
             c_em: Vec::new(),
+            chunk_acc: Vec::new(),
+            dirty_blocks: Vec::new(),
+            dirty_chunks: Vec::new(),
         };
         e.install(lib, None);
         Ok(e)
@@ -226,12 +239,15 @@ impl TraceEngine {
         let n_px = lib.dims().pixels();
         check_len("frame", n_px, frame.len())?;
         let mut filled = std::mem::take(&mut self.filled);
-        let r = if self.impute(lib, frame, &mut filled) {
+        let r = if self.find_missing(frame, &mut filled) {
+            self.mark_dirty(lib);
+            self.predict_missing(lib, &mut filled);
             let mut r = Ok(());
             for pass in 0..EM_PASSES {
                 self.c_em.clear();
                 self.c_em.extend_from_slice(&self.c);
-                r = self.solve_frame(lib, &filled, out);
+                // Later passes changed only the missing pixels.
+                r = self.solve_frame(lib, &filled, out, pass > 0);
                 let tol = self.cfg.tol;
                 let moved = self
                     .c
@@ -242,33 +258,63 @@ impl TraceEngine {
                 if r.is_err() || !moved || pass + 1 == EM_PASSES {
                     break;
                 }
-                self.impute(lib, frame, &mut filled);
+                self.predict_missing(lib, &mut filled);
             }
             r
         } else {
-            self.solve_frame(lib, frame, out)
+            self.solve_frame(lib, frame, out, false)
         };
         self.filled = filled;
         self.next_frame += 1;
         r
     }
 
-    /// Fill the missing (non-finite) pixels of `frame` into `filled` with the
-    /// prediction of the warm start; `false` (and `filled` untouched) when
-    /// nothing is missing.
-    fn impute(&mut self, lib: &Library, frame: &[f32], filled: &mut Vec<f32>) -> bool {
+    /// List the missing (non-finite) pixels of `frame` and copy it into
+    /// `filled`; `false` (and `filled` untouched) when nothing is missing.
+    fn find_missing(&mut self, frame: &[f32], filled: &mut Vec<f32>) -> bool {
         self.missing.clear();
-        for (i, v) in frame.iter().enumerate() {
-            if !v.is_finite() {
-                self.missing.push(i as u32);
+        // Whole chunks are checked branch-free first: missing pixels are few.
+        for (c, chunk) in frame.chunks(1024).enumerate() {
+            if chunk.iter().fold(true, |ok, v| ok & v.is_finite()) {
+                continue;
+            }
+            for (j, v) in chunk.iter().enumerate() {
+                if !v.is_finite() {
+                    self.missing.push((c * 1024 + j) as u32);
+                }
             }
         }
         if self.missing.is_empty() {
             return false;
         }
-        let n_px = frame.len();
         filled.clear();
         filled.extend_from_slice(frame);
+        true
+    }
+
+    /// The moat blocks and background chunks that hold a missing pixel
+    /// (ascending, `self.missing` is).
+    fn mark_dirty(&mut self, lib: &Library) {
+        self.dirty_chunks.clear();
+        for &q in &self.missing {
+            let c = q / BASIS_CHUNK as u32;
+            if self.dirty_chunks.last() != Some(&c) {
+                self.dirty_chunks.push(c);
+            }
+        }
+        self.dirty_blocks.clear();
+        if lib.grid_len() > 0 {
+            self.dirty_blocks
+                .extend(self.missing.iter().map(|&q| lib.block_of(q) as u32));
+            self.dirty_blocks.sort_unstable();
+            self.dirty_blocks.dedup();
+        }
+    }
+
+    /// Fill the missing pixels of `filled` (the rest is the frame) with the
+    /// prediction of the current traces and the last background.
+    fn predict_missing(&mut self, lib: &Library, filled: &mut [f32]) {
+        let n_px = filled.len();
         self.miss_flag.resize(n_px, 0);
         for &q in &self.missing {
             filled[q as usize] = 0.0;
@@ -315,21 +361,48 @@ impl TraceEngine {
                 filled[q] -= self.field[lib.block_of(q as u32)];
             }
         }
-        true
     }
 
+    /// Solve `frame`. `refill`: it is the last solved frame with only the
+    /// missing pixels changed, so only the moat blocks and background
+    /// chunks that hold one are summed again (in the same order: the result
+    /// is the full computation's, bit for bit).
     fn solve_frame(
         &mut self,
         lib: &Library,
         frame: &[f32],
         out: &mut FrameTraces,
+        refill: bool,
     ) -> Result<(), TraceError> {
         let n_px = lib.dims().pixels();
         let n = lib.len();
         // Projections onto the filtered footprints: the support part, minus
         // the moat's block means against the frame's block sums.
         let gl = lib.grid_len();
-        if gl > 0 {
+        if gl > 0 && refill && self.blocks.len() == gl {
+            let (w, bs) = (lib.dims().width, lib.block_px());
+            let h = lib.dims().height;
+            let gw = w.div_ceil(bs);
+            let fov = lib.fov();
+            for &bq in &self.dirty_blocks {
+                let (by, bx) = (bq as usize / gw, bq as usize % gw);
+                let (x0, x1) = (bx * bs, ((bx + 1) * bs).min(w));
+                let mut o = 0.0f32;
+                for y in by * bs..((by + 1) * bs).min(h) {
+                    let mut acc = 0.0f32;
+                    for (&v, &m) in frame[y * w + x0..y * w + x1]
+                        .iter()
+                        .zip(&fov[y * w + x0..y * w + x1])
+                    {
+                        if m != 0 && v.is_finite() {
+                            acc += v;
+                        }
+                    }
+                    o += acc;
+                }
+                self.blocks[bq as usize] = o;
+            }
+        } else if gl > 0 {
             self.blocks.clear();
             self.blocks.resize(gl, 0.0);
             let (w, bs) = (lib.dims().width, lib.block_px());
@@ -370,14 +443,35 @@ impl TraceEngine {
         match &lib.bg {
             BgTerms::Basis { k, maps, x, .. } => {
                 let k = *k;
-                for a in 0..k {
-                    let m = &maps[a * n_px..(a + 1) * n_px];
-                    let mut s = 0.0f64;
-                    for (cm, cf) in m.chunks(4096).zip(frame.chunks(4096)) {
-                        let mut acc = 0.0f32;
-                        for (&g, &y) in cm.iter().zip(cf) {
-                            acc += g * y;
+                let nc = n_px.div_ceil(BASIS_CHUNK);
+                let dot = |a: usize, c: usize| -> f32 {
+                    let r = c * BASIS_CHUNK..((c + 1) * BASIS_CHUNK).min(n_px);
+                    let mut acc = 0.0f32;
+                    for (&g, &y) in maps[a * n_px..(a + 1) * n_px][r.clone()]
+                        .iter()
+                        .zip(&frame[r])
+                    {
+                        acc += g * y;
+                    }
+                    acc
+                };
+                if refill && self.chunk_acc.len() == k * nc {
+                    for a in 0..k {
+                        for &c in &self.dirty_chunks {
+                            self.chunk_acc[a * nc + c as usize] = dot(a, c as usize);
                         }
+                    }
+                } else {
+                    self.chunk_acc.clear();
+                    for a in 0..k {
+                        for c in 0..nc {
+                            self.chunk_acc.push(dot(a, c));
+                        }
+                    }
+                }
+                for a in 0..k {
+                    let mut s = 0.0f64;
+                    for &acc in &self.chunk_acc[a * nc..(a + 1) * nc] {
                         s += f64::from(acc);
                     }
                     self.q[a] = s;
