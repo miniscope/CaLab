@@ -26,10 +26,11 @@
 //! on pure structured noise included; a white-noise null for that gain is
 //! wrong by the residual's spatial correlation (5–12× on real data). The
 //! null is measured instead: for a random share of the cells, redrawn for
-//! every library version, the footprint is translated by `2d` in one of the
-//! four axis directions (`d` = cell diameter; moved another `d` outward,
-//! up to twice, while more than 10 % of its energy falls on a support or
-//! another placebo) and solved jointly with the library as an extra
+//! every library version (and every `redraw_frames` held-out frames), the
+//! footprint is translated by `2d` in one of the four axis directions (`d`
+//! = cell diameter; moved another `d` outward, up to `max_steps` d, while
+//! more than 10 % of its energy falls on a cell's core or another placebo)
+//! and solved jointly with the library as an extra
 //! non-negative column. A placebo's per-frame gain `g_k,t` is its drop-one
 //! χ² increase in that augmented solve (0 when its trace is 0). Their sum
 //! is taken as the joint gain `χ²_t(L) − χ²_t(L + placebos)` (the placebos
@@ -49,8 +50,10 @@
 //! trace exceeds `active_sigma` of its trace noise is dropped from the
 //! solve (its neighbours re-converge, [`TraceEngine::drop_one`]) and
 //! the χ² increase is accumulated: `ho_marginal` is the mean per such
-//! frame. The placebos give the same statistic (drop-one gain on frames
-//! where the placebo's trace exceeds `active_sigma`), pooled per
+//! frame (a random `max_drops` of the active cells per frame, so the cost
+//! is bounded on dense real libraries). The placebos give the same
+//! statistic (drop-one gain on frames where the placebo's trace exceeds
+//! `active_sigma`, on the same frames, the same cap), pooled per
 //! `tile_px` tile (the last `pool_len` samples); `ho_marginal_z =
 //! (ho_marginal − median) / (1.4826 · MAD)` of the cell's tile pool (the
 //! global pool when the tile has fewer than `min_pool` samples).
@@ -76,11 +79,23 @@ pub struct HeldOutConfig {
     /// Share of the library's cells that get a placebo copy per version.
     pub placebo_share: f32,
     /// A placebo position is rejected while more than this share of its
-    /// energy lies on a cell's support or another placebo.
+    /// energy lies on a cell's core or another placebo's.
     pub max_overlap: f32,
+    /// A cell's (or placebo's) core: where its footprint is at least this
+    /// share of its peak. (Not the support: full-extent supports, zeros
+    /// included, cover nearly the whole field of view on real data.)
+    pub core_frac: f32,
+    /// Farthest placebo displacement, in cell diameters (from 2).
+    pub max_steps: u32,
+    /// Redraw the placebos after this many held-out frames even when the
+    /// library has not changed (a fixed library gets fresh placebos).
+    pub redraw_frames: u64,
     /// Drop-one refits of the real cells on every `drop_every`-th held-out
     /// frame (they cost one group solve per active cell).
     pub drop_every: u32,
+    /// At most this many drop-one refits per frame for the cells, and as
+    /// many for the placebos: a random subset of the active ones.
+    pub max_drops: usize,
     /// A cell (or placebo) is active in a frame when its trace exceeds this
     /// many trace-noise σ.
     pub active_sigma: f32,
@@ -103,6 +118,10 @@ impl Default for HeldOutConfig {
             cell_diameter_px: 10.0,
             placebo_share: 0.25,
             max_overlap: 0.10,
+            core_frac: 0.2,
+            max_drops: 32,
+            max_steps: 6,
+            redraw_frames: 300,
             drop_every: 4,
             active_sigma: 2.0,
             tile_px: 128,
@@ -239,6 +258,7 @@ struct CellAcc {
 /// The augmented library of one version and its engine.
 struct Placebos {
     version: u64,
+    drawn_at: u64,
     engine: TraceEngine,
     /// First placebo slot (the real cells come first, in library order).
     first: usize,
@@ -433,11 +453,14 @@ impl HeldOutScore {
         let t1 = Instant::now();
         if self.scored.is_multiple_of(u64::from(self.cfg.drop_every)) {
             let tn = lib.trace_noise();
-            for slot in 0..k {
-                let c = traces.traces[slot];
-                if !(c > self.cfg.active_sigma * tn[slot]) || c <= 0.0 {
-                    continue;
-                }
+            let mut act: Vec<usize> = (0..k)
+                .filter(|&i| {
+                    let c = traces.traces[i];
+                    c > 0.0 && c > self.cfg.active_sigma * tn[i]
+                })
+                .collect();
+            self.subsample(&mut act);
+            for slot in act {
                 let gain = self.drop_gain(engine, lib, traces, slot)? / s2;
                 let e = self.cells.entry(lib.ids()[slot]).or_default();
                 e.sum += gain;
@@ -449,10 +472,9 @@ impl HeldOutScore {
         self.split[1] += t1.elapsed().as_secs_f64();
         let t2 = Instant::now();
         // Placebos: the augmented solve and each placebo's drop-one gain.
-        let need = self
-            .placebos
-            .as_ref()
-            .is_none_or(|p| p.version != lib.version());
+        let need = self.placebos.as_ref().is_none_or(|p| {
+            p.version != lib.version() || self.scored >= p.drawn_at + self.cfg.redraw_frames
+        });
         if need {
             self.build_placebos(lib, filter)?;
         }
@@ -484,10 +506,18 @@ impl HeldOutScore {
         // placebo is active, for the per-cell pool.
         let kp = plib.len() - pl.first;
         let sum = (chil - chip) / s2;
-        for j in 0..kp {
+        let drop_frame = self.scored.is_multiple_of(u64::from(self.cfg.drop_every));
+        let mut act: Vec<usize> = (0..kp)
+            .filter(|_| drop_frame)
+            .filter(|&j| {
+                let c = ptr.traces[pl.first + j];
+                c > 0.0 && c > self.cfg.active_sigma * plib.trace_noise()[pl.first + j]
+            })
+            .collect();
+        self.subsample(&mut act);
+        for j in act {
             let slot = pl.first + j;
-            let c = ptr.traces[slot];
-            if c > 0.0 && c > self.cfg.active_sigma * plib.trace_noise()[slot] {
+            {
                 let gain = self.drop_gain(&mut pl.engine, &plib, &ptr, slot)? / s2;
                 let ti = self.tile(pl.centers[j]);
                 let pool = &mut self.pools[ti];
@@ -519,6 +549,19 @@ impl HeldOutScore {
         Ok(())
     }
 
+    /// Keep a random `max_drops` of `v` (a uniform subset; the per-cell
+    /// means stay unbiased, the cost per frame is bounded).
+    fn subsample(&mut self, v: &mut Vec<usize>) {
+        let m = self.cfg.max_drops;
+        if v.len() > m {
+            for i in 0..m {
+                let j = i + (self.rand() % (v.len() - i) as u64) as usize;
+                v.swap(i, j);
+            }
+            v.truncate(m);
+        }
+    }
+
     /// χ² increase (unnormalised) when `slot` is dropped from `engine`'s
     /// last solve; `self.resid` must hold that solve's residual.
     fn drop_gain(
@@ -536,10 +579,11 @@ impl HeldOutScore {
         let tn = lib.trace_noise();
         let cut = 0.5 * engine.config().tol;
         self.coefs.clear();
-        self.coefs.extend(self.deltas.iter().filter_map(|&(j, new)| {
-            let d = traces.traces[j] - new;
-            (j == slot || d.abs() >= cut * tn[j]).then_some((j, d))
-        }));
+        self.coefs
+            .extend(self.deltas.iter().filter_map(|&(j, new)| {
+                let d = traces.traces[j] - new;
+                (j == slot || d.abs() >= cut * tn[j]).then_some((j, d))
+            }));
         let (y0, y1, x0, x1) = lib.add_columns(&self.coefs, &mut self.dm)?;
         let w = self.dims.width;
         let mut d = 0.0f64;
@@ -576,8 +620,11 @@ impl HeldOutScore {
         for slot in 0..k {
             let (pix, raw) = lib.unfiltered(slot);
             let (center, radius) = lib.support(slot);
-            for &q in pix {
-                self.occupied[q as usize] = 1;
+            let peak = raw.iter().copied().fold(0.0f32, f32::max);
+            for (&q, &v) in pix.iter().zip(raw) {
+                if v > 0.0 && v >= self.cfg.core_frac * peak {
+                    self.occupied[q as usize] = 1;
+                }
             }
             fps.push((
                 patch(lib.ids()[slot], pix, raw, (0, 0), dims),
@@ -605,7 +652,7 @@ impl HeldOutScore {
             let mut found = None;
             'dirs: for dd in 0..4 {
                 let (uy, ux) = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)][(dir0 + dd) % 4];
-                for step in 2..=4 {
+                for step in 2..=self.cfg.max_steps.max(2) {
                     let s = (step as f32 * d).round() as i32;
                     let (sy, sx) = (uy * s, ux * s);
                     let mut over = 0.0f32;
@@ -642,9 +689,11 @@ impl HeldOutScore {
             };
             let id = u64::MAX - placed.len() as u64;
             let fp = patch(id, pix, raw, (sy, sx), dims);
+            let peak = fp.values.iter().copied().fold(0.0f32, f32::max);
             for y in fp.y0..fp.y0 + fp.height {
                 for x in fp.x0..fp.x0 + fp.width {
-                    if fp.values[(y - fp.y0) * fp.width + (x - fp.x0)] > 0.0 {
+                    let v = fp.values[(y - fp.y0) * fp.width + (x - fp.x0)];
+                    if v > 0.0 && v >= self.cfg.core_frac * peak {
                         self.occupied[y * w + x] = 1;
                     }
                 }
@@ -668,6 +717,7 @@ impl HeldOutScore {
         };
         self.placebos = Some(Placebos {
             version: lib.version(),
+            drawn_at: self.scored,
             engine,
             first: k,
             centers,
