@@ -128,6 +128,10 @@ fn true_cells_score_and_junk_is_not_rewarded() {
     assert!(t.placebos > 2.5, "{t:?}");
     // Placebo columns on white noise gain a little on every frame.
     assert!(t.mu > 0.0 && t.mu < 1.0, "{t:?}");
+    // The true cells explain nearly all the light above the noise.
+    assert!(t.score_frac > 0.8 && t.score_frac < 1.05, "{t:?}");
+    let (half, _) = run(library(&fps[2..]));
+    assert!(half.score_frac < t.score_frac - 0.2, "{half:?} vs {t:?}");
     for c in &cells {
         assert!(c.frames > 50 && c.marginal_z > 3.0, "{c:?}");
     }
