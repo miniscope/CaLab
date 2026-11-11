@@ -1179,3 +1179,36 @@ fn wasm_quantisation_rounds_like_f32_round() {
         assert_eq!(quantize_round(v), quantize_trunc(v), "{v}");
     }
 }
+
+#[test]
+fn joint_neighbour_fit_sees_mixtures_not_noise() {
+    // A candidate trace that is a mix of three neighbours' traces (none of
+    // which follows it alone) is explained jointly; an independent one, or
+    // too few frames for the neighbours, is not.
+    let mut rng = Lcg(7);
+    let n = 40;
+    let spiky = |rng: &mut Lcg| -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                let u = rng.next();
+                if u > 0.85 {
+                    5.0 * u
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    };
+    let nb: Vec<Vec<f32>> = (0..3).map(|_| spiky(&mut rng)).collect();
+    let mix: Vec<f32> = (0..n)
+        .map(|t| 0.6 * nb[0][t] + 0.5 * nb[1][t] + 0.4 * nb[2][t] + 0.3 * rng.normal())
+        .collect();
+    for j in 0..3 {
+        assert!(corr(&mix, &nb[j]) < 0.8, "one neighbour alone explains it");
+    }
+    assert!(adjusted_r2(&mix, &nb) > 0.6);
+    let own = spiky(&mut rng);
+    assert!(adjusted_r2(&own, &nb) < 0.36);
+    let short: Vec<Vec<f32>> = nb.iter().map(|v| v[..5].to_vec()).collect();
+    assert_eq!(adjusted_r2(&mix[..5], &short), 0.0);
+}

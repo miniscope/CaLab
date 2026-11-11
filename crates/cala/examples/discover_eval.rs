@@ -14,6 +14,7 @@
 //!   --accept-z Z / --merge-corr R / --frames-per-tile N / --reservoir-max-mb M
 //!                     slow-loop settings
 //!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
+//!   --joint           add test with the joint neighbour-trace check
 //!   --v1              all v2 additions off (prune, pre-test)
 //!   --no-merge-refit  merge test against the pair's current footprints only
 //!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
@@ -899,6 +900,9 @@ fn main() {
     let mut scfg = SlowLoopConfig::default();
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
+    }
+    if args.iter().any(|a| a == "--joint") {
+        scfg.joint_neighbours = true;
     }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
