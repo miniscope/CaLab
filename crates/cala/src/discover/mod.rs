@@ -61,7 +61,15 @@
 //!      with a constant trace is not a cell);
 //!   3. its trace does not follow a nearby cell's (r < `merge_corr`):
 //!      that is the neighbour's unmodelled light (scatter halo, footprint
-//!      mismatch), left to refinement.
+//!      mismatch), left to refinement. Optionally (`joint_neighbours`,
+//!      off by default) it must not be explained by the nearby cells'
+//!      traces jointly either (adjusted R² ≥ `merge_corr`², significant at
+//!      1e-3): light left over by *several* neighbours (tails, the
+//!      high-pass moat, footprints lagging motion) follows none of them
+//!      alone. On the minisim recordings it lifts precision most where
+//!      compute is high (motion, 4x visits: .858 -> .900 at 8 min); on the
+//!      workshop recording it also blocks real cells, whose neighbours
+//!      co-fire (`tools/cala-diagnostics/LEFTOVER_LIGHT.md`).
 //!
 //!   On the calibrated minisim recording, without 1-3 the loop kept adding
 //!   cells (2187 cells for 823 GT units, precision 0.24); with them
@@ -376,6 +384,16 @@ pub struct SlowLoopConfig {
     /// bright cell's light by a fraction of a pixel, which leaves a dipole
     /// beside it that is not a new cell.
     pub shift_nuisance: bool,
+    /// In the add test, the candidate's held-out trace is also checked
+    /// against the nearby cells' traces *jointly*: when a combination of
+    /// them explains it (adjusted R² ≥ `merge_corr`²) it is their leftover
+    /// light (truncated tails, high-pass moats, footprints that lag motion),
+    /// not a new cell, even when no single neighbour's trace follows it.
+    /// Off by default: it lifts precision on the minisim recordings but
+    /// costs Minian-matched cells on the workshop recording, where
+    /// neighbouring cells co-fire in population events
+    /// (tools/cala-diagnostics/LEFTOVER_LIGHT.md).
+    pub joint_neighbours: bool,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -434,6 +452,7 @@ impl Default for SlowLoopConfig {
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
+            joint_neighbours: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -2859,6 +2878,7 @@ impl SlowLoop {
         if ok {
             let ck: Vec<f32> = e.iter().map(|f| f.c[k]).collect();
             let reach = 2.0 * self.cfg.library.max_support_px;
+            let mut near: Vec<Vec<f32>> = Vec::new();
             for j in 0..k {
                 let Some(cj) = self.cells.iter().find(|c| c.id == ext.cols[j].id) else {
                     continue;
@@ -2871,6 +2891,14 @@ impl SlowLoop {
                         ok = false;
                         break;
                     }
+                    near.push(tj);
+                }
+            }
+            if ok && self.cfg.joint_neighbours && near.len() >= 2 {
+                let r2 = adjusted_r2(&ck, &near);
+                self.work += (ck.len() * near.len() * near.len()) as u64;
+                if r2 >= self.cfg.merge_corr * self.cfg.merge_corr {
+                    ok = false;
                 }
             }
         }
@@ -3713,6 +3741,62 @@ fn overlap(a: &Column, b: &Column, n: usize) -> f32 {
     } else {
         ab / (aa * bb).sqrt()
     }
+}
+
+/// Adjusted R² of the least-squares fit of `y` on the columns `xs` plus an
+/// intercept (0 when there are too few samples for the regressors).
+fn adjusted_r2(y: &[f32], xs: &[Vec<f32>]) -> f32 {
+    let n = y.len();
+    let p = xs.len();
+    if n < p + 3 {
+        return 0.0;
+    }
+    let mean = |v: &[f32]| v.iter().map(|&x| f64::from(x)).sum::<f64>() / n as f64;
+    let my = mean(y);
+    let yc: Vec<f64> = y.iter().map(|&v| f64::from(v) - my).collect();
+    let xc: Vec<Vec<f64>> = xs
+        .iter()
+        .map(|x| {
+            let m = mean(x);
+            x.iter().map(|&v| f64::from(v) - m).collect()
+        })
+        .collect();
+    let syy: f64 = yc.iter().map(|v| v * v).sum();
+    if syy <= 0.0 {
+        return 0.0;
+    }
+    let mut g = vec![0.0f64; p * p];
+    let mut b = vec![0.0f64; p];
+    for a in 0..p {
+        for c in a..p {
+            let d: f64 = xc[a].iter().zip(&xc[c]).map(|(u, v)| u * v).sum();
+            g[a * p + c] = d;
+            g[c * p + a] = d;
+        }
+        b[a] = xc[a].iter().zip(&yc).map(|(u, v)| u * v).sum();
+    }
+    // A small ridge keeps silent (all-zero) neighbours solvable.
+    let tr = (0..p).map(|a| g[a * p + a]).sum::<f64>() / p as f64;
+    for a in 0..p {
+        g[a * p + a] += 1e-6 * tr.max(1e-12);
+    }
+    let Some(inv) = local::invert(&g, p) else {
+        return 0.0;
+    };
+    let explained: f64 = (0..p)
+        .map(|a| b[a] * (0..p).map(|c| inv[a * p + c] * b[c]).sum::<f64>())
+        .sum();
+    let r2 = (explained / syy).clamp(0.0, 0.999_999);
+    // Few held-out frames for many neighbours fit noise: count the fit only
+    // when it is significant (F test at 1e-3, the χ²_p quantile by
+    // Wilson-Hilferty, conservative for small n - p - 1).
+    let f = (r2 / p as f64) / ((1.0 - r2) / (n - p - 1) as f64);
+    let q = 2.0 / (9.0 * p as f64);
+    let chi = p as f64 * (1.0 - q + 3.09 * q.sqrt()).powi(3);
+    if f * (p as f64) < chi {
+        return 0.0;
+    }
+    (1.0 - (1.0 - r2) * (n - 1) as f64 / (n - p - 1) as f64) as f32
 }
 
 fn corr(a: &[f32], b: &[f32]) -> f32 {

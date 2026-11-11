@@ -28,6 +28,7 @@
 //!                      only when capacity would otherwise go unused
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
+//!   --joint            add test with the joint neighbour-trace check
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -1429,6 +1430,9 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
+    }
+    if args.iter().any(|a| a == "--joint") {
+        scfg.joint_neighbours = true;
     }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
