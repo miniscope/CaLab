@@ -57,7 +57,24 @@
 //!                      and result together (encode, copy, decode), ms; a
 //!                      worker also spends it on top of the visit's work
 //!   --visit-depth D    visits a worker may hold at once (1)
+//!   --no-heldout       skip the ground-truth-free held-out score
+//!   --library F        a fixed library (`footprints.bin` of an earlier run,
+//!                      `CALAFP01`) from `--start` on, no slow loop: scores
+//!                      a given cell set (held-out frames: the split the
+//!                      slow loop would use with `--slow-seed`)
 //! ```
+//!
+//! **Held-out score** ([`calab_cala::qc::heldout`], on unless
+//! `--no-heldout`): every frame the slow loop holds out is scored with the
+//! library the fast loop used for it, against placebo columns (displaced
+//! copies of a quarter of the cells). Checkpoint rows of `global.tsv` get
+//! `ho_frames`, `ho_gain_per_frame`, `ho_cells`, `ho_placebos`, `ho_mu`,
+//! `ho_penalty`, `ho_score` (S, per held-out frame, units of
+//! s²), `ho_penalty_ci`, `ho_signal` (held-out light above noise) and
+//! `ho_score_frac` (S / signal) over the window since the previous checkpoint;
+//! `ho_cells.tsv` holds per checkpoint and cell `ho_marginal`, `ho_frames`,
+//! `ho_marginal_z` (also columns of `final.tsv`), `heldout.tsv` one row per
+//! library version, and `cost.txt` the score's share of the wall time.
 //!
 //! * `sim`: the merged fast and slow loops on a minisim recording, from an
 //!   empty library, with a [`QcMonitor`] on the fast loop. At every
@@ -104,6 +121,7 @@ use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidC
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::qc::heldout::{HeldOutConfig, HeldOutScore, HeldOutWindow};
 use calab_cala::qc::{CellQc, GlobalQc, QcConfig, QcMonitor};
 use calab_cala::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
@@ -1486,6 +1504,63 @@ fn write_logs(
     }
 }
 
+/// A fixed library from a `footprints.bin` (`CALAFP01`: height, width, n;
+/// per cell id, pixel count, pixels, unfiltered values, filtered values),
+/// built with this run's filter, noise map and background.
+fn read_footprints(
+    path: &Path,
+    dims: Dims,
+    fov: &[u8],
+    noise: &[f32],
+    scfg: &SlowLoopConfig,
+    flat: &mut GlowFlattener,
+) -> Library {
+    let mut f = BufReader::new(File::open(path).unwrap());
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic).unwrap();
+    assert_eq!(
+        &magic,
+        b"CALAFP01",
+        "{}: not a footprints.bin",
+        path.display()
+    );
+    let (h, w, n) = (read_u32(&mut f), read_u32(&mut f), read_u32(&mut f));
+    assert_eq!((h as usize, w as usize), (dims.height, dims.width));
+    let mut b = LibraryBuilder::new(dims)
+        .fov(fov.to_vec())
+        .noise(noise.to_vec())
+        .background(scfg.background.clone());
+    let wd = dims.width;
+    for _ in 0..n {
+        let id = u64::from(read_u32(&mut f));
+        let np = read_u32(&mut f) as usize;
+        let pix: Vec<u32> = (0..np).map(|_| read_u32(&mut f)).collect();
+        let a = read_f32s(&mut f, np);
+        let _ = read_f32s(&mut f, np);
+        if !a.iter().any(|&v| v > 0.0) {
+            continue;
+        }
+        let y0 = pix.iter().map(|&q| q as usize / wd).min().unwrap();
+        let y1 = pix.iter().map(|&q| q as usize / wd).max().unwrap();
+        let x0 = pix.iter().map(|&q| q as usize % wd).min().unwrap();
+        let x1 = pix.iter().map(|&q| q as usize % wd).max().unwrap();
+        let (fh, fw) = (y1 - y0 + 1, x1 - x0 + 1);
+        let mut values = vec![0.0f32; fh * fw];
+        for (&q, &v) in pix.iter().zip(&a) {
+            values[(q as usize / wd - y0) * fw + (q as usize % wd - x0)] = v.max(0.0);
+        }
+        b.push(Footprint {
+            id,
+            y0,
+            x0,
+            height: fh,
+            width: fw,
+            values,
+        });
+    }
+    b.build(flat).unwrap()
+}
+
 /// Candidate footprints for `--label-bundle`: `(cy, cx)` per tsv row and the
 /// sparse footprint (pixel, weight) of the same row in the sidecar `.bin`.
 type Candidates = (Vec<(f32, f32)>, Vec<(Vec<u32>, Vec<f32>)>);
@@ -1737,6 +1812,12 @@ fn main() {
     let depth: usize = arg_value(&args, "--visit-depth").map_or(1, |s| s.parse().unwrap());
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
+    let heldout_on = !args.iter().any(|a| a == "--no-heldout");
+    let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
+    assert!(
+        fixed_lib.is_none() || !oracle_mode,
+        "--library and oracle mode both set the library"
+    );
     assert!(batch_n >= 1 && keep > 0.0 && keep <= 1.0);
 
     let avi_dir = if has_gt {
@@ -1848,7 +1929,7 @@ fn main() {
         let _ = write!(global, "{f}\t");
     }
     global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
-    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\n");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
     // Batches waiting to be forwarded: (frame, traces, library, recording frame).
     let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
     let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
@@ -1862,6 +1943,8 @@ fn main() {
     );
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
     let mut summary = Vec::new();
+    let mut ho: Option<HeldOutScore> = None;
+    let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -1895,7 +1978,20 @@ fn main() {
                     }
                     gt = Some(g);
                 }
-                if !oracle_mode {
+                if let Some(path) = &fixed_lib {
+                    let lib = read_footprints(path, dims, &fov, &noise, &scfg, &mut flat);
+                    println!("fixed library: {} cells from {}", lib.len(), path.display());
+                    engine.set_library(Arc::new(lib)).unwrap();
+                }
+                if heldout_on {
+                    let hcfg = HeldOutConfig {
+                        cell_diameter_px: scfg.cell_diameter_px,
+                        seed: scfg.seed ^ 0x5eed,
+                        ..HeldOutConfig::default()
+                    };
+                    ho = Some(HeldOutScore::new(dims, fov.clone(), noise.clone(), hcfg).unwrap());
+                }
+                if !oracle_mode && fixed_lib.is_none() {
                     let mk = || {
                         SlowLoop::new(dims, fov.clone(), noise.clone(), flat.clone(), scfg.clone())
                             .unwrap()
@@ -1945,6 +2041,23 @@ fn main() {
             let tr = engine.process(&y).unwrap();
             let Some(q) = qc.as_mut() else { continue };
             let lib = engine.library().clone();
+            if let Some(h) = ho.as_mut() {
+                if t.is_multiple_of(200) {
+                    h.set_noise(pipe.pre.noise().sigma()).unwrap();
+                }
+                // The slow-loop index this frame will get when forwarded
+                // (exact with every batch forwarded; `--slow-keep` < 1 and
+                // `--offered-fps` drop batches, which shifts it).
+                let idx = match (&slow, &fixed_lib) {
+                    (Some(sl), _) => Some(sl.frames() + pending.len() as u64),
+                    (None, Some(_)) => Some((t - start) as u64),
+                    _ => None,
+                };
+                if idx.is_some_and(|i| scfg.is_test(i)) {
+                    h.frame(t as u64, &y, &lib, &tr, &mut engine, &mut flat)
+                        .unwrap();
+                }
+            }
             hist.push(t, lib.ids(), &tr.traces);
             let a = Instant::now();
             q.observe(&y, &lib, &tr).unwrap();
@@ -2053,6 +2166,20 @@ fn main() {
             }
             let t_end = t + 1;
             let cp = t_end.is_multiple_of(every) || t_end == t_len;
+            let ho_win: Option<HeldOutWindow> = if cp {
+                ho.as_mut().map(|h| {
+                    for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {
+                        let _ = writeln!(
+                            ho_cells_out,
+                            "{t_end}\t{sl_}\t{}\t{:.4}\t{}\t{:.3}",
+                            c.id, c.marginal, c.frames, c.marginal_z
+                        );
+                    }
+                    h.take_window()
+                })
+            } else {
+                None
+            };
             if cp {
                 if let (Some(g), Some(o)) = (&gt, &oracle) {
                     label_rows(
@@ -2119,6 +2246,21 @@ fn main() {
                     .map(|v| v as f64),
                 );
                 extra.push(vms);
+                match &ho_win {
+                    Some(w) => extra.extend([
+                        w.frames as f64,
+                        w.gain_per_frame,
+                        w.cells,
+                        w.placebos,
+                        w.mu,
+                        w.penalty,
+                        w.score,
+                        w.penalty_ci,
+                        w.signal,
+                        w.score_frac,
+                    ]),
+                    None => extra.extend([f64::NAN; 10]),
+                }
                 global.push_str(&global_line(&g, &extra));
                 if t_end.is_multiple_of(1200) || t_end == t_len {
                     println!(
@@ -2227,6 +2369,42 @@ fn main() {
         q.state_bytes() as f64 / 1048576.0,
         engine.library().len()
     );
+    let mut msg = msg;
+    if let Some(h) = &ho {
+        let wall = t_all.elapsed().as_secs_f64();
+        let (asked, placed) = h.placebo_counts;
+        let _ = writeln!(
+            msg,
+            "held-out score: {:.1} s of {:.1} s wall ({:.1} %), {} held-out frames, placebos placed {placed} of {asked}; stages (gain, drop-one, placebo builds, placebo solve, placebo gains) {:.1?} s",
+            h.seconds,
+            wall,
+            100.0 * h.seconds / wall,
+            h.scored(),
+            h.split
+        );
+        let mut t = String::from("version\tfirst\tlast\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
+        for v in h.versions(true) {
+            let _ = writeln!(
+                t,
+                "{}\t{}\t{}\t{}\t{:.4}\t{:.1}\t{:.1}\t{:.5}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.5}",
+                v.version,
+                v.first,
+                v.last,
+                v.frames,
+                v.gain_per_frame,
+                v.cells,
+                v.placebos,
+                v.mu,
+                v.penalty,
+                v.score,
+                v.penalty_ci,
+                v.signal,
+                v.score_frac
+            );
+        }
+        std::fs::write(out_dir.join("heldout.tsv"), t).unwrap();
+        std::fs::write(out_dir.join("ho_cells.tsv"), &ho_cells_out).unwrap();
+    }
     print!("{msg}");
     std::fs::write(out_dir.join("cost.txt"), &msg).unwrap();
 
@@ -2239,7 +2417,7 @@ fn main() {
         // Final cells: centroid and footprint match (GT runs).
         let det = columns(&lib, dims, (0, 0));
         let mut t = String::from(
-            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\n",
+            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\tho_marginal\tho_frames\tho_marginal_z\n",
         );
         let (mt, best) = match &gt {
             Some(g) => match_cells(&det, &g.cols, dims, 0.7),
@@ -2248,8 +2426,15 @@ fn main() {
                 vec![(usize::MAX, f64::NAN); det.len()],
             ),
         };
+        let hc = ho.as_ref().map(|h| h.cells(lib.ids()));
         for s in 0..lib.len() {
             let c = centroid(&det[s], dims.width);
+            let hs = hc.as_ref().map_or("nan\t0\tnan".to_string(), |v| {
+                format!(
+                    "{:.4}\t{}\t{:.3}",
+                    v[s].marginal, v[s].frames, v[s].marginal_z
+                )
+            });
             let (bg, br) = mt[s].unwrap_or(best[s]);
             let info = slow.as_ref().and_then(|sl| sl.cell_info(lib.ids()[s]));
             let ev = info.map_or("na\t-1\t-1\t-1\t-1\tnan".to_string(), |i| {
@@ -2265,7 +2450,7 @@ fn main() {
             });
             let _ = writeln!(
                 t,
-                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}",
+                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}\t{hs}",
                 lib.ids()[s],
                 c.0,
                 c.1,

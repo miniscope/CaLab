@@ -106,5 +106,40 @@ class RunMetrics(unittest.TestCase):
             self.assertEqual(md.count("EXCLUDES 0"), 1)  # static is not a claim arm
 
 
+class HeldOutMetrics(unittest.TestCase):
+    def test_rank_statistics(self):
+        self.assertAlmostEqual(S.spearman([1, 2, 3, 4], [10, 20, 30, 40]), 1.0)
+        self.assertAlmostEqual(S.spearman([1, 2, 3, 4], [4, 3, 2, 1]), -1.0)
+        self.assertAlmostEqual(S.auc([3, 4], [1, 2]), 1.0)
+        self.assertAlmostEqual(S.auc([1, 2], [3, 4]), 0.0)
+        self.assertAlmostEqual(S.auc([1, 3], [1, 2]), 0.625)  # ties count 1/2
+
+    def test_metrics_from_synthetic_run(self):
+        with tempfile.TemporaryDirectory() as t:
+            run = Path(t) / "static_s5"
+            frames = list(range(1200, 9601, 300))
+            run.mkdir(parents=True)
+            g = ["frames\tcells\tgt_precision\tgt_recall\tgt_median_true_r\tho_score"]
+            for i, f in enumerate(frames):
+                # TP = P x cells rises; S rises with it except one swap.
+                s_ = i if i != 3 else 1.5
+                g.append(f"{f - 50}\t{100 + 10 * i}\t0.9\t0.5\t0.8\t{s_}")
+            (run / "global.tsv").write_text("\n".join(g) + "\n")
+            c = ["frame\tslot\tfp_class\tedge_px\tfp_r"]
+            h = ["frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z"]
+            for slot, (cls, z) in enumerate([("tp", 5), ("tp", 3), ("noise", 4), ("dup", 0), ("tp", "nan")]):
+                c.append(f"9600\t{slot}\t{cls}\t40\t0.9")
+                h.append(f"9600\t{slot}\t{slot}\t1\t3\t{z}")
+            (run / "cells.tsv").write_text("\n".join(c) + "\n")
+            (run / "ho_cells.tsv").write_text("\n".join(h) + "\n")
+            m = S.run_metrics(run)
+            self.assertAlmostEqual(m["S8"], len(frames) - 1)
+            self.assertAlmostEqual(m["AUC_S"], (sum(range(len(frames))) - 3 + 1.5) / len(frames))
+            self.assertLess(m["rho_S_TP"], 1.0)
+            self.assertGreater(m["rho_S_TP"], 0.99)
+            # TP z = 5, 3, unscored (lowest); non-TP z = 4, 0: 3 of 6 pairs won.
+            self.assertAlmostEqual(m["auc_hoz"], 3 / 6)
+
+
 if __name__ == "__main__":
     unittest.main()

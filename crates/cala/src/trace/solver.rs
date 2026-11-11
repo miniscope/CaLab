@@ -606,6 +606,96 @@ impl TraceEngine {
         Ok(())
     }
 
+    /// Re-solve the last processed frame with the cell in `slot` held at 0
+    /// (a drop-one refit): its neighbours re-converge from the current
+    /// solution to the solver's tolerance, revisiting only cells coupled to
+    /// one that moved (cells outside its overlap group cannot move). `out` receives
+    /// `(slot, new value)` for every cell whose value changed, the dropped
+    /// cell included. The engine's state is left as it was.
+    ///
+    /// For evaluation code (the held-out score in `examples/qc_eval.rs`);
+    /// the fast loop does not use it. Not available with a basis
+    /// background, which couples every group.
+    pub fn drop_one(&mut self, slot: usize, out: &mut Vec<(usize, f32)>) -> Result<(), TraceError> {
+        out.clear();
+        let lib = self.lib.clone();
+        let lib = &*lib;
+        if slot >= lib.len() {
+            return Err(TraceError::Incompatible(format!(
+                "slot {slot} of a {}-cell library",
+                lib.len()
+            )));
+        }
+        if matches!(lib.bg, BgTerms::Basis { .. }) {
+            return Err(TraceError::InvalidConfig(
+                "drop_one: a basis background couples every cell".into(),
+            ));
+        }
+        if self.c[slot] == 0.0 {
+            return Ok(());
+        }
+        // Active-set Gauss-Seidel from the current solution: only the cells
+        // coupled to one that moved by more than `tol` are revisited (the
+        // Gram row, which includes the moats' overlap, and the ring row).
+        let n = lib.len();
+        let mut saved: Vec<(usize, f32)> = vec![(slot, self.c[slot])];
+        let mut seen = vec![false; n];
+        let mut queued = vec![false; n];
+        seen[slot] = true;
+        self.c[slot] = 0.0;
+        let neighbours = |i: usize, next: &mut Vec<usize>, queued: &mut [bool]| {
+            let mut push = |j: usize| {
+                if j != slot && !queued[j] {
+                    queued[j] = true;
+                    next.push(j);
+                }
+            };
+            for &j in lib.gram.row(i).0 {
+                push(j as usize);
+            }
+            if let BgTerms::Ring { q, .. } = &lib.bg {
+                for &j in q.row(i).0 {
+                    push(j as usize);
+                }
+            }
+        };
+        let mut active = Vec::new();
+        neighbours(slot, &mut active, &mut queued);
+        let mut next = Vec::new();
+        for _ in 0..self.cfg.max_sweeps {
+            if active.is_empty() {
+                break;
+            }
+            for &i in &active {
+                queued[i] = false;
+            }
+            for &i in &active {
+                if !seen[i] {
+                    seen[i] = true;
+                    saved.push((i, self.c[i]));
+                }
+                let d = self.update(lib, i);
+                if d.abs() >= self.cfg.tol * lib.trace_noise[i].max(f32::MIN_POSITIVE) {
+                    // Itself too: an over-relaxed step is not its minimum.
+                    if !queued[i] {
+                        queued[i] = true;
+                        next.push(i);
+                    }
+                    neighbours(i, &mut next, &mut queued);
+                }
+            }
+            std::mem::swap(&mut active, &mut next);
+            next.clear();
+        }
+        for &(i, old) in &saved {
+            if self.c[i] != old {
+                out.push((i, self.c[i]));
+            }
+            self.c[i] = old;
+        }
+        Ok(())
+    }
+
     /// Block-coordinate descent over overlap groups; returns the sweeps used.
     fn solve(&mut self, lib: &Library) -> u32 {
         let tol = self.cfg.tol;
