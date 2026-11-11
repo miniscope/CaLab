@@ -48,6 +48,10 @@ pub enum DeleteReason {
     /// background explains the signal about as well as its footprint does
     /// (diffuse light, neuropil, a neighbour's halo, a noise pattern).
     Unsupported,
+    /// No compact, soma-sized core in the transient band that is
+    /// significant on held-out block groups and stands out of the
+    /// footprint's own texture (`fastcore.rs`).
+    NoCore,
 }
 
 impl DeleteReason {
@@ -55,6 +59,7 @@ impl DeleteReason {
         match self {
             DeleteReason::Silent => "silent",
             DeleteReason::Unsupported => "unsupported",
+            DeleteReason::NoCore => "nocore",
         }
     }
 }

@@ -100,6 +100,10 @@ impl LocalFilter {
         moat_geometry(self.sigma)
     }
 
+    pub fn sigma(&self) -> f32 {
+        self.sigma
+    }
+
     pub fn blur(&mut self, h: usize, w: usize, a: &[f32], out: &mut [f32]) {
         let dims = Dims {
             width: w,

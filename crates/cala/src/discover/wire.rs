@@ -7,7 +7,7 @@ use super::ledger::{EditCounts, EditEvent, EditKind};
 use super::local::{Cell, Rect};
 use super::reservoir::{Probe, SharedFrames, Slot, Tile};
 use super::SlowStats;
-use crate::discover::fpstats::FpStats;
+use crate::discover::fpstats::{Fast, FpStats, FAST_GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
 pub(crate) const MAGIC: u32 = 0x5649_5332; // "VIS2"
@@ -165,6 +165,18 @@ impl Writer {
         }
         self.u64(s.version);
         self.f32s(&s.col);
+        // Transient-band sums (the moving averages stay with the owner,
+        // which is the only one that adds frames).
+        self.bool(s.fast.is_some());
+        if let Some(f) = &s.fast {
+            self.f32(f.alpha);
+            self.f64(f.ema_c);
+            for (rc, w) in f.rc.iter().zip(&f.w) {
+                self.f32s(rc);
+                self.f64(w[0]);
+                self.f64(w[1]);
+            }
+        }
     }
     pub fn stats(&mut self, s: &SlowStats) {
         for v in stats_fields(s) {
@@ -355,6 +367,29 @@ impl<'a> Reader<'a> {
             s2: self.f64()?,
             version: self.u64()?,
             col: self.f32s()?,
+            half: (Vec::new(), Vec::new(), [0.0; 4]),
+            k: 0,
+            fast: None,
+        })
+        .and_then(|mut s: FpStats| {
+            if self.bool()? {
+                let mut f = Fast::new(s.pix.len(), self.f32()?);
+                f.ema_c = self.f64()?;
+                for g in 0..FAST_GROUPS {
+                    f.rc[g] = self.f32s()?;
+                    f.w[g] = [self.f64()?, self.f64()?];
+                    if f.rc[g].len() != s.pix.len() {
+                        return None;
+                    }
+                }
+                s.fast = Some(f);
+            }
+            Some(s)
+        })
+        .map(|mut s: FpStats| {
+            // DIAG split-half sums are not on the wire.
+            s.half = (vec![0.0; s.pix.len()], vec![0.0; s.pix.len()], [0.0; 4]);
+            s
         })
     }
     pub fn stats(&mut self) -> Option<SlowStats> {

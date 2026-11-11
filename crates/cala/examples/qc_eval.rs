@@ -29,6 +29,9 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
+//!   --core-test M      transient-band core test: off (default) | report
+//!                      (also writes fast.tsv, split.tsv) | trim | delete
+//!   --basin-trim       trim refined footprints to their significant basin
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -85,7 +88,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
+use calab_cala::discover::{CoreTest, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
@@ -1435,6 +1438,18 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
+    if let Some(v) = arg_value(&args, "--core-test") {
+        scfg.core_test = match v.as_str() {
+            "off" => CoreTest::Off,
+            "report" => CoreTest::Report,
+            "trim" => CoreTest::Trim,
+            "delete" => CoreTest::Delete,
+            other => panic!("--core-test: off|report|trim|delete, not {other}"),
+        };
+    }
+    if args.iter().any(|a| a == "--basin-trim") {
+        scfg.basin_trim = true;
+    }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
@@ -1841,6 +1856,21 @@ fn main() {
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
+    if let Some(sl) = &slow {
+        if sl.config().core_test != CoreTest::Off {
+            let (fp, ff, fd) = sl.fast_diag;
+            println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
+            std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
+            std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().basin_trim {
+            let (c, f, s2) = sl.basin_diag;
+            println!(
+                "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",
+                if c > 0 { f / c as f64 } else { 0.0 }
+            );
+        }
+    }
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();
     sorted.sort_by(f64::total_cmp);
