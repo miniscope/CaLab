@@ -597,6 +597,35 @@ pub(crate) enum BgTerms {
     },
 }
 
+/// Ring model: the local level depends on the cell's own trace through its
+/// column in the ring (its moat), which adds `−s_i q_ii` to the coordinate
+/// curvature, so `mdiag_i = ã_iᵀã_i − s_i q_ii`.
+///
+/// When that is not positive, the cell's own column dominates its ring
+/// level (a large filtered footprint whose moat fills a ring clipped by the
+/// field-of-view edge): raising `c_i` lowers the level by more than the
+/// cell's own light, the coordinate equation has the wrong sign, and the
+/// projected SOR step runs away (halo_s5: traces of 1e37, then inf). The
+/// ring cannot separate such a cell from its local level, so its level is
+/// taken from the ring without the cell's own term (`q_ii = 0`, curvature
+/// `ã_iᵀã_i`). Cells with a positive curvature are unchanged (floored at
+/// 1e-3 `ã_iᵀã_i`, which only shortens their step).
+pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdiag: &mut [f32]) {
+    for i in 0..gram_diag.len() {
+        let (a, b) = (q.start[i], q.start[i + 1]);
+        let Ok(k) = q.col[a..b].binary_search(&(i as u32)) else {
+            continue;
+        };
+        let m = gram_diag[i] - s[i] * q.val[a + k];
+        if m > 0.0 {
+            mdiag[i] = m.max(1e-3 * gram_diag[i]);
+        } else {
+            q.val[a + k] = 0.0;
+            mdiag[i] = gram_diag[i];
+        }
+    }
+}
+
 /// An immutable, versioned footprint library with the solver's precomputed
 /// terms. Share it as `Arc<Library>`; build a new one to change it.
 #[derive(Debug, Clone)]
@@ -784,7 +813,7 @@ impl Library {
         let gram = Csr::from_rows(rows);
 
         // Background terms.
-        let bg = match &model {
+        let mut bg = match &model {
             BackgroundModel::None => BgTerms::None,
             BackgroundModel::Basis(maps) => {
                 let k = maps.len();
@@ -953,15 +982,8 @@ impl Library {
             }
         };
         let mut mdiag = gram_diag.clone();
-        // Ring: the local level depends on the cell's own trace through its
-        // moat in the ring, which adds `−s_i q_ii` to the curvature.
-        if let BgTerms::Ring { s, q, .. } = &bg {
-            for i in 0..n {
-                let (cols, vals) = q.row(i);
-                if let Ok(k) = cols.binary_search(&(i as u32)) {
-                    mdiag[i] = (gram_diag[i] - s[i] * vals[k]).max(1e-3 * gram_diag[i]);
-                }
-            }
+        if let BgTerms::Ring { s, q, .. } = &mut bg {
+            ring_self_curvature(&gram_diag, s, q, &mut mdiag);
         }
         if let BgTerms::Basis { k, x, w, .. } = &bg {
             for i in 0..n {
