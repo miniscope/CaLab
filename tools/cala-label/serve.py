@@ -88,13 +88,13 @@ def make_handler(bundle: Path):
             if path in ("/", "/index.html"):
                 return self.send(200, (HERE / "index.html").read_bytes(), TYPES[".html"], {"Cache-Control": "no-store"})
             if path == "/items.json":
-                return self.send(200, (bundle / "items.json").read_bytes(), TYPES[".json"])
+                return self.send(200, (bundle / "items.json").read_bytes(), TYPES[".json"], {"Cache-Control": "no-store"})
             if path == "/api/labels":
                 return self.send(200, json.dumps(list(read_latest(log).values())).encode(), TYPES[".json"], {"Cache-Control": "no-store"})
             m = SERVED.match(path)
             f = bundle / "c" / m.group(1) / m.group(2) if m else None
             if f and f.is_file():
-                return self.send(200, f.read_bytes(), TYPES[f.suffix], {"Cache-Control": "max-age=3600"})
+                return self.send(200, f.read_bytes(), TYPES[f.suffix], {"Cache-Control": "no-store"})
             self.send(404, b"not found", "text/plain")
 
         def do_POST(self):

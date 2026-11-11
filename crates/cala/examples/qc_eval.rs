@@ -1430,12 +1430,12 @@ fn f32_le_bytes(src: &[f32], dst: &mut [u8]) {
 /// Pass 1 runs the preprocessing (and motion correction) over the recording
 /// and projects every candidate footprint on the floored frame, `aᵀy / aᵀa`,
 /// the same trace for every candidate whatever its origin; the three highest
-/// peaks, at least 5 s apart, are its events. Pass 2 runs the preprocessing
+/// peaks, a window apart (22 s), are its events. Pass 2 runs the preprocessing
 /// again and cuts a `crop`-pixel window around the candidate centroid out of
-/// the registered frame before the floor (`pre`) and after it (`y`) for the 61
-/// frames around each event, plus the whole-recording mean of both. Outputs in
+/// the registered frame before the floor (`pre`) and after it (`y`) for the 441
+/// frames around each event (180 before the peak, 260 after), plus the whole-recording mean of both. Outputs in
 /// `out_dir`: `peaks.tsv`, `crops.tsv`, `traces.f32` (`[cand][t]`),
-/// `snip_y.f32` / `snip_pre.f32` (`[cand][event][61][crop][crop]`) and
+/// `snip_y.f32` / `snip_pre.f32` (`[cand][event][441][crop][crop]`) and
 /// `mean_y.f32` / `mean_pre.f32` (`[cand][crop][crop]`). Nothing is rescaled:
 /// the values are the grey levels the model sees.
 #[allow(clippy::too_many_arguments)]
@@ -1450,9 +1450,10 @@ fn label_bundle(
     out_dir: &Path,
 ) {
     use std::os::unix::fs::FileExt;
-    const HALF: usize = 30;
+    const PRE: usize = 180;
+    const POST: usize = 260;
     const EVENTS: usize = 3;
-    const SPAN: usize = 2 * HALF + 1;
+    const SPAN: usize = PRE + POST + 1;
     let dims = rec.dims;
     let n_px = dims.pixels();
     let t_len = frames as usize;
@@ -1483,7 +1484,7 @@ fn label_bundle(
     }
     println!("label bundle pass 1: {n} candidates x {t_len} frames");
 
-    // Events: highest peaks of the 5-frame running mean, 100 frames apart.
+    // Events: highest peaks of the 5-frame running mean, a window apart.
     let mut peaks = vec![[usize::MAX; EVENTS]; n];
     for (i, found) in peaks.iter_mut().enumerate() {
         let tr = &traces[i * t_len..(i + 1) * t_len];
@@ -1493,14 +1494,14 @@ fn label_bundle(
                 tr[a..b].iter().sum::<f32>() / (b - a) as f32
             })
             .collect();
-        let mut taken: Vec<bool> = (0..t_len).map(|t| t < HALF || t + HALF >= t_len).collect();
+        let mut taken: Vec<bool> = (0..t_len).map(|t| t < PRE || t + POST >= t_len).collect();
         for slot in found.iter_mut() {
             let best = (0..t_len)
                 .filter(|&t| !taken[t])
                 .max_by(|&a, &b| sm[a].total_cmp(&sm[b]));
             let Some(t) = best else { break };
             *slot = t;
-            taken[t.saturating_sub(99)..(t + 100).min(t_len)].fill(true);
+            taken[t.saturating_sub(SPAN - 1)..(t + SPAN).min(t_len)].fill(true);
         }
         found.sort_unstable();
     }
@@ -1541,7 +1542,7 @@ fn label_bundle(
                 continue;
             }
             for off in 0..SPAN {
-                wants.entry(t + off - HALF).or_default().push((i, e, off));
+                wants.entry(t + off - PRE).or_default().push((i, e, off));
             }
         }
     }

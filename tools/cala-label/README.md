@@ -22,7 +22,7 @@ nothing else: no id, no score, no build or run, no Minian match.
 | `k`                | contour on or off                                                                     |
 | `r`                | processed or raw registered video and mean image                                      |
 | left / right arrow | previous or next candidate without labelling                                          |
-| `+` / `-`          | playback speed (default 0.5x, 10 fps)                                                 |
+| `+` / `-`          | playback speed 1x / 2x / 4x real time (default 2x, 40 fps)                            |
 
 Progress shows as `labelled / total`. Closing the browser or stopping the server
 loses nothing: the next start opens at the first unlabelled candidate.
@@ -62,12 +62,12 @@ python tools/cala-label/serve.py <bundle dir> --port 8765   # then open http://1
 
    ```bash
    cargo run --release --example qc_eval -- real <avi dir> raw/ --motion \
-       --frames 18000 --label-bundle work/candidates.tsv
+       --frames 18000 --crop 36 --label-bundle work/candidates.tsv
    ```
 
    Every candidate gets the same trace: its footprint projected on the flattened,
-   floored frame. Events are the three highest peaks at least 5 s apart. Crops
-   are 60 x 60 px, snippets 30 frames either side of each peak.
+   floored frame. Events are the three highest peaks at least one window (22 s) apart. Crops
+   are 36 x 36 px, snippets 180 frames (9 s) before and 260 (13 s) after each peak, looped; the clip's window is shaded on the full trace and a playhead follows the playback.
 
 3. `render`: sprite sheets, traces, `items.json` (opaque ids, shuffled order and
    the fixed ranges) and `manifest.json` (provenance):

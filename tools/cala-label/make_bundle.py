@@ -26,12 +26,14 @@ import hashlib
 import json
 import struct
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 
-HALF = 30  # frames either side of an event
-SPAN = 2 * HALF + 1
+PRE = 180  # frames before an event peak (9 s at 20 fps)
+POST = 260  # frames after it (13 s)
+SPAN = PRE + POST + 1
 EVENTS = 3
 FPS = 20
 TRACE_POINTS = 2000
@@ -324,7 +326,7 @@ def cmd_render(a):
     p_lo, p_hi = fixed_range((snip_pre[i] for i in range(n)), 1.0, 99.5)
     tr_lo, tr_hi = fixed_range((traces[i] for i in range(n)), 0.1, 99.9, per_array=t_len)
     # Event-triggered average: peak frames minus the pre-event baseline, one range for all.
-    eta = np.stack([snip_y[i, :, HALF - 1 : HALF + 2].mean((0, 1)) - snip_y[i, :, 0:15].mean((0, 1)) for i in range(n)])
+    eta = np.stack([snip_y[i, :, PRE - 1 : PRE + 2].mean((0, 1)) - snip_y[i, :, 0 : PRE // 2].mean((0, 1)) for i in range(n)])
     # Max projection of the crop over all event frames; its own fixed ranges (a max sits far above a mean).
     max_y = np.stack([snip_y[i].max((0, 1)) for i in range(n)])
     max_pre = np.stack([snip_pre[i].max((0, 1)) for i in range(n)])
@@ -358,7 +360,7 @@ def cmd_render(a):
         Image.fromarray(to_u8(centre(max_pre[i], show), mp_lo, mp_hi, LEVELS)).save(d / "max_raw.png", optimize=True)
         Image.fromarray(to_u8(centre(eta[i], show), e_lo, e_hi, LEVELS)).save(d / "eta.png", optimize=True)
         full, k = decimate_max(traces[i])
-        wins = [[round(float(v), 3) for v in traces[i][t - HALF : t + HALF + 1]] for t in peaks[i]]
+        wins = [[round(float(v), 3) for v in traces[i][t - PRE : t + POST + 1]] for t in peaks[i]]
         (d / "trace.json").write_text(json.dumps(dict(full=full, step=k, n=t_len, events=[int(t) for t in peaks[i]], windows=wins), separators=(",", ":")))
         if i % 50 == 0:
             print(f"rendered {i}/{n}")
@@ -368,6 +370,8 @@ def cmd_render(a):
         order=order,
         crop=show,
         span=SPAN,
+        pre=PRE,
+        built=int(time.time()),  # cache-busting token for the page's requests
         events=EVENTS,
         fps=FPS,
         trace_range=[tr_lo, tr_hi],
@@ -439,7 +443,7 @@ def main(argv=None):
     r.add_argument("--select", required=True, help="dir of select")
     r.add_argument("--raw", required=True, help="dir written by qc_eval --label-bundle")
     r.add_argument("--out", required=True, help="bundle dir")
-    r.add_argument("--display-crop", type=int, default=48, help="side of the window shown, px (<= the crop qc_eval cut)")
+    r.add_argument("--display-crop", type=int, default=32, help="side of the window shown, px (<= the crop qc_eval cut)")
     r.set_defaults(f=cmd_render)
     v = sub.add_parser("resolve")
     v.add_argument("bundle")
