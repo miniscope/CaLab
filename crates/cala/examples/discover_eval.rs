@@ -13,9 +13,10 @@
 //!   --no-pass2        skip re-extraction
 //!   --accept-z Z / --merge-corr R / --frames-per-tile N / --reservoir-max-mb M
 //!                     slow-loop settings
-//!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
+//!   --probation N / --keep-z Z   slow loop probation and keep test
 //!   --joint           add test with the joint neighbour-trace check
-//!   --v1              all v2 additions off (prune, pre-test)
+//!   --core-test off|report|trim|delete   transient-band core test (default off)
+//!   --basin-trim      trim refined footprints to their significant basin
 //!   --no-merge-refit  merge test against the pair's current footprints only
 //!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
 //!                     nuisance terms in the add test
@@ -913,24 +914,23 @@ fn main() {
     if let Some(v) = arg_value(&args, "--merge-corr") {
         scfg.merge_corr = v.parse().unwrap();
     }
-    let v1 = args.iter().any(|a| a == "--v1");
-    if v1 || args.iter().any(|a| a == "--no-prune") {
-        scfg.prune = false;
+    if let Some(v) = arg_value(&args, "--core-test") {
+        scfg.core_test = match v.as_str() {
+            "off" => calab_cala::discover::CoreTest::Off,
+            "report" => calab_cala::discover::CoreTest::Report,
+            "trim" => calab_cala::discover::CoreTest::Trim,
+            "delete" => calab_cala::discover::CoreTest::Delete,
+            other => panic!("--core-test: off|report|trim|delete, not {other}"),
+        };
     }
-    if v1 || args.iter().any(|a| a == "--no-pretest") {
-        scfg.pretest = false;
+    if args.iter().any(|a| a == "--basin-trim") {
+        scfg.basin_trim = true;
     }
     if let Some(v) = arg_value(&args, "--probation") {
         scfg.probation_frames = v.parse().unwrap();
     }
     if let Some(v) = arg_value(&args, "--keep-z") {
         scfg.keep_z = v.parse().unwrap();
-    }
-    if args.iter().any(|a| a == "--no-compare") {
-        scfg.compare = false;
-    }
-    if args.iter().any(|a| a == "--no-stats") {
-        scfg.stats_half_life_frames = 0.0;
     }
     if let Some(v) = arg_value(&args, "--split-every") {
         scfg.split_every_visits = v.parse().unwrap();
@@ -955,9 +955,6 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--merge-z") {
         scfg.merge_z = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--weak-share") {
-        scfg.merge_weak_share = v.parse().unwrap();
     }
 
     let avi_dir = if sim {

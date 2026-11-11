@@ -214,6 +214,7 @@
 mod churn;
 #[cfg(feature = "diagnostics")]
 mod diagnostics;
+mod fastcore;
 mod fpstats;
 mod ledger;
 mod local;
@@ -235,7 +236,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use churn::Churn;
-use fpstats::FpStats;
+use fpstats::{FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
     rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, PatchGrid, Problem, Rect,
@@ -251,6 +252,40 @@ use crate::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, LibraryConfig, LinearFilter,
     TraceError,
 };
+
+/// The optics' point-spread σ, px (UCLA Miniscope at its native
+/// resolution): the scale light is smoothed at before its basins are
+/// traced, so a basin is not cut by single-pixel noise.
+const PSF_SIGMA_PX: f32 = 1.5;
+
+/// How far the transient-band core test (`fastcore.rs`) acts. Each level
+/// includes the ones before it; `Off` collects nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoreTest {
+    /// No transient-band statistics, no test.
+    #[default]
+    Off,
+    /// Collect the statistics ([`SlowLoop::fast_report`]); no decision
+    /// uses them.
+    Report,
+    /// Also grow supports on the measured noise of the transient band and
+    /// trim each refined footprint to its held-out core's basin.
+    Trim,
+    /// Also delete cells past probation that have no held-out, soma-sized
+    /// core (two consecutive failing checks).
+    Delete,
+}
+
+impl CoreTest {
+    /// Whether the transient-band statistics are collected.
+    pub fn collects(self) -> bool {
+        self != CoreTest::Off
+    }
+    /// Whether the test changes footprints.
+    pub fn trims(self) -> bool {
+        matches!(self, CoreTest::Trim | CoreTest::Delete)
+    }
+}
 
 /// Settings of the slow loop. Pixel sizes follow the expected cell diameter.
 #[derive(Debug, Clone, PartialEq)]
@@ -328,18 +363,7 @@ pub struct SlowLoopConfig {
     /// probes of one cell.
     pub probes_per_tile: usize,
     pub probe_gap_frames: u64,
-    /// Delete cells that lose support (the ledger is kept either way).
-    pub prune: bool,
-    /// Reject a proposal before fitting it when the held-out residual at
-    /// its peak shows fewer than `min_events` excursions above 2 σ.
-    pub pretest: bool,
-    /// v3: before a residual candidate is added, compare on held-out frames
-    /// adding it with growing an overlapping cell to take it up (and with
-    /// merging it into that cell); a new cell must beat the best
-    /// alternative by the add margin. `false` = v2 behaviour.
-    pub compare: bool,
-    /// Running footprint statistics: half-life of the forgetting, frames
-    /// (0 = off: refine from the reservoir only, as in v2).
+    /// Running footprint statistics: half-life of the forgetting, frames.
     pub stats_half_life_frames: f32,
     /// Statistics disk = support radius plus this many cell diameters.
     pub stats_margin_cells: f32,
@@ -375,10 +399,6 @@ pub struct SlowLoopConfig {
     /// `accept_z`, this is hysteresis: a cell that once passed the add test
     /// is not removed on the next unlucky set of test frames.
     pub merge_z: f32,
-    /// Merge a coinciding pair when the weaker carries less than this share
-    /// of the stronger one's held-out energy, whatever the χ² test says
-    /// (v2: 0.25; 0 = off).
-    pub merge_weak_share: f32,
     /// Compare a merge with the pair refitted on the same fitting frames
     /// (not only with their current footprints). The merged arm is a fresh
     /// fit; without this, two distinct cells whose footprints lag the data
@@ -409,6 +429,14 @@ pub struct SlowLoopConfig {
     /// neighbouring cells co-fire in population events
     /// (tools/cala-diagnostics/LEFTOVER_LIGHT.md).
     pub joint_neighbours: bool,
+    /// Transient-band core test (see [`CoreTest`]). Off by default: bright
+    /// compact cells can still fail its noise half (their own light
+    /// dominates every contrast window of a small statistics disk).
+    pub core_test: CoreTest,
+    /// Trim every refined footprint to the significant, single-peaked
+    /// basin of its light (`basin_trim_from`, seeded at the footprint's
+    /// peak). Off by default.
+    pub basin_trim: bool,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -449,9 +477,6 @@ impl Default for SlowLoopConfig {
             fail_ratio: 4.0,
             probes_per_tile: 8,
             probe_gap_frames: 100,
-            prune: true,
-            pretest: true,
-            compare: true,
             stats_half_life_frames: 6000.0,
             stats_margin_cells: 0.4,
             stats_min_snr: 4.0,
@@ -462,13 +487,14 @@ impl Default for SlowLoopConfig {
             refine_min_change: 0.03,
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
-            merge_weak_share: 0.0,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
             joint_neighbours: false,
+            core_test: CoreTest::Off,
+            basin_trim: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -500,7 +526,7 @@ impl SlowLoopConfig {
             && self.keep_z.is_finite()
             && self.fail_ratio.is_finite()
             && self.delete_fails >= 1
-            && self.stats_half_life_frames >= 0.0
+            && self.stats_half_life_frames > 0.0
             && self.stats_margin_cells.is_finite()
             && self.stats_margin_cells >= 0.0
             && self.stats_min_snr.is_finite()
@@ -509,7 +535,6 @@ impl SlowLoopConfig {
             && self.absorb_z.is_finite()
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
-            && self.merge_weak_share.is_finite()
             && self.merge_z.is_finite()
             && self.churn.is_valid();
         if ok {
@@ -619,6 +644,19 @@ pub struct SlowLoop {
     filter: LocalFilter,
     detect: LocalFilter,
     smooth: LocalFilter,
+    /// Smoothing at the optics' PSF scale (basins of a footprint's light).
+    psf: LocalFilter,
+    /// DIAG counters of the basin rule: calls, light removed (sum of fractions), second significant peaks.
+    pub basin_diag: (u64, f64, u64),
+    /// Transient-band estimate (on the statistics disk), its
+    /// measured standard error and the held-out core (if one passed) for
+    /// the next `finish_cell`.
+    fast_tmp: Option<(Vec<f32>, f64, Option<(f32, f32)>)>,
+    /// Last core check per cell (frame) and consecutive failed checks;
+    /// counters: proposals with a passing core, without one, cells deleted.
+    fast_checked: HashMap<u64, u64>,
+    fast_strikes: HashMap<u64, u32>,
+    pub fast_diag: (u64, u64, u64),
     tiles: Vec<Tile>,
     /// The tiles' random slots: one uniform sample of full frames.
     shared: SharedFrames,
@@ -928,6 +966,12 @@ impl SlowLoop {
             filter: LocalFilter::new(sigma),
             detect: LocalFilter::new((cfg.cell_diameter_px / 4.0).max(0.6)),
             smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
+            psf: LocalFilter::new(PSF_SIGMA_PX),
+            basin_diag: (0, 0.0, 0),
+            fast_tmp: None,
+            fast_checked: HashMap::new(),
+            fast_strikes: HashMap::new(),
+            fast_diag: (0, 0, 0),
             tiles,
             shared: SharedFrames::new(shared_rect),
             plan,
@@ -958,11 +1002,7 @@ impl SlowLoop {
             edit_log: Vec::new(),
             fpstats: HashMap::new(),
             stats_w: 1.0,
-            stats_gamma: if cfg.stats_half_life_frames > 0.0 {
-                0.5f32.powf(1.0 / cfg.stats_half_life_frames)
-            } else {
-                1.0
-            },
+            stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
@@ -1063,6 +1103,116 @@ impl SlowLoop {
 
     /// Evidence on every working-set cell (cells not yet published have
     /// `frames == 0`).
+    /// DIAG: measured / assumed variance of ring means of the running
+    /// statistics' footprint estimate: rings (1 px) around the statistics
+    /// disk centre; per ring the mean split-half difference against its
+    /// white-noise standard error; the median z² over the rings over the
+    /// median of χ²₁ (0.455), at least 1. `None` with fewer than 4 rings.
+    fn ring_inflation(&self, id: u64) -> Option<f64> {
+        let st = self.fpstats.get(&id)?;
+        let (ha, hb, sa, sb) = st.halves()?;
+        let var0 = sa * sa + sb * sb;
+        if !(var0 > 0.0) || !var0.is_finite() {
+            return None;
+        }
+        let w = self.dims.width;
+        let mut rs: Vec<(f64, usize)> = Vec::new();
+        for (i, &g) in st.pix.iter().enumerate() {
+            let (y, x) = ((g as usize / w) as f32, (g as usize % w) as f32);
+            let k = ((y - st.center.0).powi(2) + (x - st.center.1).powi(2)).sqrt() as usize;
+            if k >= rs.len() {
+                rs.resize(k + 1, (0.0, 0));
+            }
+            let is = f64::from(self.inv_sigma[g as usize]);
+            rs[k].0 += f64::from(ha[i] - hb[i]) * is;
+            rs[k].1 += 1;
+        }
+        let mut z2: Vec<f64> = rs
+            .iter()
+            .filter(|r| r.1 >= 4)
+            .map(|&(sd, m)| (sd / m as f64).powi(2) / (var0 / m as f64))
+            .collect();
+        if z2.len() < 4 {
+            return None;
+        }
+        z2.sort_by(f64::total_cmp);
+        Some((z2[z2.len() / 2] / 0.455).max(1.0))
+    }
+
+    /// DIAG split-half report of the running statistics on each cell's
+    /// support (whitened): id, support px, split-half correlation, empirical
+    /// / assumed per-pixel noise variance, mean squared ring-mean z of the
+    /// half difference (1 for spatially white noise), mean light in units
+    /// of its assumed standard error, rings (support radius).
+    pub fn split_report(&self) -> String {
+        let mut out = String::from("id\tn\tr_split\tnoise_ratio\tring_z2\tsig_z\tradius\n");
+        for c in &self.cells {
+            let Some(st) = self.fpstats.get(&c.id) else {
+                continue;
+            };
+            let Some((ha, hb, sa, sb)) = st.halves() else {
+                continue;
+            };
+            let mut a = Vec::new();
+            let mut b = Vec::new();
+            let mut rk = Vec::new();
+            for &g in &c.pix {
+                if let Ok(i) = st.pix.binary_search(&g) {
+                    let is = self.inv_sigma[g as usize];
+                    a.push(f64::from(ha[i] * is));
+                    b.push(f64::from(hb[i] * is));
+                    let (y, x) = (
+                        (g as usize / self.dims.width) as f32,
+                        (g as usize % self.dims.width) as f32,
+                    );
+                    rk.push(((y - c.center.0).powi(2) + (x - c.center.1).powi(2)).sqrt() as usize);
+                }
+            }
+            let n = a.len();
+            if n < 10 {
+                continue;
+            }
+            let ma = a.iter().sum::<f64>() / n as f64;
+            let mb = b.iter().sum::<f64>() / n as f64;
+            let (mut sab, mut saa, mut sbb, mut sdd) = (0.0, 0.0, 0.0, 0.0);
+            for i in 0..n {
+                sab += (a[i] - ma) * (b[i] - mb);
+                saa += (a[i] - ma).powi(2);
+                sbb += (b[i] - mb).powi(2);
+                sdd += (a[i] - b[i]).powi(2);
+            }
+            let r = sab / (saa * sbb).sqrt().max(1e-30);
+            let var0 = sa * sa + sb * sb;
+            let ratio = sdd / n as f64 / var0;
+            let kmax = rk.iter().copied().max().unwrap_or(0);
+            let mut rs = vec![(0.0f64, 0usize); kmax + 1];
+            for i in 0..n {
+                rs[rk[i]].0 += a[i] - b[i];
+                rs[rk[i]].1 += 1;
+            }
+            let (mut z2, mut nr) = (0.0, 0usize);
+            for &(sd, m) in &rs {
+                if m >= 4 {
+                    let zz = sd / m as f64 / (var0 / m as f64).sqrt();
+                    z2 += zz * zz;
+                    nr += 1;
+                }
+            }
+            let se = st.std_err();
+            let sig = (ma + mb) / 2.0 / se;
+            let _ = std::fmt::Write::write_fmt(
+                &mut out,
+                format_args!(
+                    "{}\t{n}\t{r:.4}\t{ratio:.3}\t{:.3}\t{sig:.3}\t{:.1}\n",
+                    c.id,
+                    if nr > 0 { z2 / nr as f64 } else { f64::NAN },
+                    c.radius
+                ),
+            );
+        }
+        out
+    }
+
     pub fn cell_infos(&self) -> Vec<CellInfo> {
         self.cells.iter().map(|c| self.info(c)).collect()
     }
@@ -1229,14 +1379,11 @@ impl SlowLoop {
         if self.cfg.noise_corr {
             self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
             self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
-            if let Ok(v) = std::env::var("CALA_RHO") {
-                self.rho = v.parse().unwrap();
-            }
         }
         self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
-        if !test && self.cfg.stats_half_life_frames > 0.0 {
+        if !test {
             self.update_fpstats(frame, lib, traces);
         }
         // Random slots: one uniform sample for every tile.
@@ -1388,6 +1535,8 @@ impl SlowLoop {
         if self.fpstats.len() > lib.len() {
             let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
             self.fpstats.retain(|id, _| ids.contains(id));
+            self.fast_checked.retain(|id, _| ids.contains(id));
+            self.fast_strikes.retain(|id, _| ids.contains(id));
         }
         self.stats_w /= self.stats_gamma;
         if self.stats_w > 1024.0 {
@@ -1405,10 +1554,16 @@ impl SlowLoop {
         for (slot, &id) in lib.ids().iter().enumerate() {
             let (center, radius) = lib.support(slot);
             let want = radius + margin;
-            let st = self
-                .fpstats
-                .entry(id)
-                .or_insert_with(|| FpStats::new(center, want, width, height, &self.fov));
+            let st = self.fpstats.entry(id).or_insert_with(|| {
+                FpStats::new(
+                    center,
+                    want,
+                    width,
+                    height,
+                    &self.fov,
+                    self.cfg.core_test.collects(),
+                )
+            });
             if !st.covers(center, radius) {
                 *st = st.moved(center, want, width, height, &self.fov);
             }
@@ -1572,7 +1727,7 @@ impl SlowLoop {
                     }
                 }
             }
-            if !cfg.prune || self.inflight.iter().any(|f| f.ids.contains(&c.id)) {
+            if self.inflight.iter().any(|f| f.ids.contains(&c.id)) {
                 continue;
             }
             let lives = u64::from(self.lives.get(&c.id).copied().unwrap_or(0));
@@ -1580,6 +1735,50 @@ impl SlowLoop {
                 doomed.push((c.id, DeleteReason::Unsupported));
             } else if ev.transients == 0 && ev.frames >= cfg.probation_frames * (1 + lives) {
                 doomed.push((c.id, DeleteReason::Silent));
+            }
+        }
+        // A cell past probation without a held-out, soma-sized core in its
+        // transient-band light is not a cell (`fastcore.rs`). Checked once
+        // every two blocks, so each check sees new data in both the groups
+        // that choose the core and the ones that test it.
+        if self.cfg.core_test == CoreTest::Delete {
+            let thr = f64::from(self.cfg.keep_z);
+            let mut check = Vec::new();
+            for c in &self.cells {
+                let Some(ev) = self.ledger.get(&c.id) else {
+                    continue;
+                };
+                if ev.frames < self.cfg.probation_frames
+                    || doomed.iter().any(|d| d.0 == c.id)
+                    || self.inflight.iter().any(|f| f.ids.contains(&c.id))
+                {
+                    continue;
+                }
+                if self
+                    .fast_checked
+                    .get(&c.id)
+                    .is_some_and(|&f| self.frames < f + 2 * FAST_BLOCK)
+                {
+                    continue;
+                }
+                check.push((c.id, c.center, c.radius));
+            }
+            for (id, center, radius) in check {
+                self.fast_checked.insert(id, self.frames);
+                // Two consecutive failing checks before a deletion: one
+                // unlucky check of a real cell must not remove it.
+                if let Some(fi) = self.fast_info(id, center, radius) {
+                    if !fi.core_ok(thr) {
+                        let strikes = self.fast_strikes.entry(id).or_insert(0);
+                        *strikes += 1;
+                        if *strikes >= 2 {
+                            doomed.push((id, DeleteReason::NoCore));
+                            self.fast_diag.2 += 1;
+                        }
+                    } else {
+                        self.fast_strikes.remove(&id);
+                    }
+                }
             }
         }
         for (id, reason) in doomed {
@@ -1600,6 +1799,8 @@ impl SlowLoop {
         let cell = self.cells.remove(i);
         self.ledger.remove(&id);
         self.lives.remove(&id);
+        self.fast_checked.remove(&id);
+        self.fast_strikes.remove(&id);
         self.deleted.push(DeletedCell {
             info,
             frame: self.frames,
@@ -2045,7 +2246,7 @@ impl SlowLoop {
             }
             self.stats.proposals += 1;
             let l = rect.local(py, px).expect("inside");
-            if self.cfg.pretest && !self.pretest(ti, test_fr, &mut test_maps, l) {
+            if !self.pretest(ti, test_fr, &mut test_maps, l) {
                 self.stats.pretest_rejects += 1;
                 self.stats.rejects += 1;
                 self.reject(ti, py as f32, px as f32);
@@ -2072,11 +2273,9 @@ impl SlowLoop {
                     .tile_of(cell.center.0, cell.center.1)
                     .and_then(|t| self.tomb(t, cell.center.0, cell.center.1));
                 lives = tomb.map_or(0, |t| t.1);
-                let (mut alts, kinds) = if self.cfg.compare {
+                let (mut alts, kinds) = {
                     let (resid, ..) = maps.as_ref().expect("computed");
                     self.alternatives(ti, &cell, &c0, resid, base, fits)
-                } else {
-                    (Vec::new(), Vec::new())
                 };
                 let v = self.assess_add(ti, test_fr, &cell, tomb.map(|t| t.0), &alts);
                 let (m, sd) = v.null;
@@ -2465,12 +2664,49 @@ impl SlowLoop {
         if !(peak > 0.0) {
             return None;
         }
-        let extent = match (se, &unsmoothed) {
-            (Some(se), Some(h)) => self
+        // The transient-band estimate on this canvas (the statistics disk's
+        // pixels are this canvas's mask): its significant extent on the
+        // measured noise, and the trim to the held-out core's basin.
+        let fast = match (&self.fast_tmp, se) {
+            (Some((hf, sef, core)), Some(_)) => {
+                let mut c = vec![0.0f32; canvas.len()];
+                let mut k = 0;
+                for (p, &m) in mask.iter().enumerate() {
+                    if m {
+                        c[p] = hf.get(k).copied().unwrap_or(0.0);
+                        k += 1;
+                    }
+                }
+                (k == hf.len()).then_some((c, *sef, *core))
+            }
+            _ => None,
+        };
+        let extent = match (se, &unsmoothed, &fast) {
+            (Some(_), Some(_), Some((hf, sef, _))) => self
+                .significant_radius(canvas, hf, &mask, &a, *sef)
+                .map_or(Extent::Seed, Extent::Radius),
+            (Some(se), Some(h), None) => self
                 .significant_radius(canvas, h, &mask, &a, se)
                 .map_or(Extent::Seed, Extent::Radius),
             _ => Extent::Seed,
         };
+        if let Some((hf, sef, core)) = &fast {
+            let z = f64::from(self.cfg.support_z);
+            let seed = core.and_then(|(y, x)| canvas.local(y.round() as usize, x.round() as usize));
+            self.basin_trim_from(canvas, hf, &mask, &mut a, *sef, z, seed);
+        }
+        // Optional: keep only the significant, single-peaked basin of the
+        // footprint's light (see `basin_trim`).
+        if self.cfg.basin_trim {
+            if let (Some(se), Some(h)) = (se, &unsmoothed) {
+                let z = f64::from(self.cfg.support_z);
+                self.basin_trim(canvas, h, &mask, &mut a, se, z);
+            }
+        }
+        let peak = a.iter().copied().fold(0.0f32, f32::max);
+        if !(peak > 0.0) {
+            return None;
+        }
         a.iter_mut().for_each(|v| *v /= peak);
         Cell::from_canvas(
             id,
@@ -2482,6 +2718,143 @@ impl SlowLoop {
             extent,
             &mut self.filter,
         )
+    }
+
+    /// [`Self::basin_trim_from`] seeded at the peak
+    /// of `a`, with the all-band estimate.
+    fn basin_trim(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        a: &mut [f32],
+        se: f64,
+        z: f64,
+    ) {
+        self.basin_trim_from(canvas, h, mask, a, se, z, None);
+    }
+
+    /// Basin trim. The footprint's unfiltered light `u = h + L a` (as in
+    /// [`Self::significant_radius`]) smoothed at the optics' PSF scale; its
+    /// per-pixel standard error `se σ_p sqrt(Σ k²)`. Starting at `seed`
+    /// (the held-out core; the peak of `a` without one), pixels join in
+    /// order of decreasing `u` (4-connected) while `u` is `z` standard
+    /// errors above zero and does not rise more than `z` standard errors
+    /// above the lowest light on its way from the seed: one significant,
+    /// single-peaked blob, which a gentle slope cannot carry into a
+    /// neighbouring cell. Light outside it is set to zero; a neighbour cut
+    /// off this way is left to the residual, where it is found as a cell
+    /// of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn basin_trim_from(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        a: &mut [f32],
+        se: f64,
+        z: f64,
+        seed: Option<usize>,
+    ) {
+        let n = canvas.len();
+        let (ch, cw) = (canvas.h, canvas.w);
+        let mut low = vec![0.0f32; n];
+        self.filter.blur(canvas.h, canvas.w, a, &mut low);
+        let m: Vec<f32> = mask.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
+        let u0: Vec<f32> = (0..n)
+            .map(|p| if mask[p] { h[p] + low[p] } else { 0.0 })
+            .collect();
+        let (mut bu, mut bm) = (vec![0.0f32; n], vec![0.0f32; n]);
+        self.psf.blur(ch, cw, &u0, &mut bu);
+        self.psf.blur(ch, cw, &m, &mut bm);
+        let sp = f64::from(self.psf.sigma());
+        let ksum2 = 1.0 / (4.0 * std::f64::consts::PI * sp * sp);
+        let w = self.dims.width;
+        let mut u = vec![f32::NEG_INFINITY; n];
+        let mut tol = vec![0.0f32; n];
+        for p in 0..n {
+            if mask[p] && bm[p] > 1e-3 {
+                u[p] = bu[p] / bm[p];
+                let (gy, gx) = (canvas.y0 + p / cw, canvas.x0 + p % cw);
+                // normalised blur near the mask edge averages fewer pixels
+                let s = se
+                    * f64::from(self.noise[gy * w + gx])
+                    * (ksum2 / f64::from(bm[p]).max(ksum2)).sqrt();
+                tol[p] = (z * s) as f32;
+            }
+        }
+        // seed: the peak of a
+        let p0 = seed.filter(|&p| mask[p] && u[p].is_finite()).or_else(|| {
+            (0..n)
+                .filter(|&p| mask[p])
+                .max_by(|&i, &j| a[i].total_cmp(&a[j]))
+        });
+        let Some(p0) = p0 else { return };
+        let mut inb = vec![false; n];
+        let mut floor = vec![f32::NEG_INFINITY; n];
+        let mut heap = std::collections::BinaryHeap::new();
+        let key = |v: f32| (v * 1e6) as i64;
+        inb[p0] = true;
+        floor[p0] = u[p0];
+        heap.push((key(u[p0]), p0));
+        while let Some((_, p)) = heap.pop() {
+            let (y, x) = (p / cw, p % cw);
+            let nb = [
+                (y > 0).then(|| p - cw),
+                (y + 1 < ch).then(|| p + cw),
+                (x > 0).then(|| p - 1),
+                (x + 1 < cw).then(|| p + 1),
+            ];
+            for q in nb.into_iter().flatten() {
+                if inb[q] || !mask[q] || !u[q].is_finite() {
+                    continue;
+                }
+                if u[q] > tol[q] && u[q] <= floor[p] + tol[q] {
+                    inb[q] = true;
+                    floor[q] = floor[p].min(u[q]);
+                    heap.push((key(u[q]), q));
+                }
+            }
+        }
+        let tot: f64 = a.iter().map(|&v| f64::from(v.max(0.0))).sum();
+        let mut cut = 0.0f64;
+        // a second significant peak outside the basin: a local max of u that is significant
+        let mut second = false;
+        for p in 0..n {
+            if !inb[p] && mask[p] {
+                cut += f64::from(a[p].max(0.0));
+                a[p] = 0.0;
+                if u[p].is_finite() && u[p] > 2.0 * tol[p] {
+                    let (y, x) = (p / cw, p % cw);
+                    let mut ismax = true;
+                    for (dy, dx) in [
+                        (-1i64, 0i64),
+                        (1, 0),
+                        (0, -1),
+                        (0, 1),
+                        (-1, -1),
+                        (1, 1),
+                        (-1, 1),
+                        (1, -1),
+                    ] {
+                        let (yy, xx) = (y as i64 + dy, x as i64 + dx);
+                        if yy >= 0
+                            && xx >= 0
+                            && (yy as usize) < ch
+                            && (xx as usize) < cw
+                            && u[yy as usize * cw + xx as usize] > u[p]
+                        {
+                            ismax = false;
+                        }
+                    }
+                    second |= ismax;
+                }
+            }
+        }
+        self.basin_diag.0 += 1;
+        self.basin_diag.1 += if tot > 0.0 { cut / tot } else { 0.0 };
+        self.basin_diag.2 += u64::from(second);
+        self.work += (n * 20) as u64;
     }
 
     /// How far a footprint's light is significant: rings (1 px wide) around
@@ -3125,7 +3498,27 @@ impl SlowLoop {
             return None;
         }
         let se = self.fpstats.get(&cell.id).map(|st| st.std_err());
-        let mut new = self.make_cell_global(cell.id, &pix, &h, Some(cell), se)?;
+        // Growth test on the transient-band estimate with its measured
+        // noise; trim to the held-out core's basin (in `finish_cell`).
+        self.fast_tmp = None;
+        let fast = if self.cfg.core_test.trims() {
+            self.fast_info(cell.id, cell.center, cell.radius)
+        } else {
+            None
+        };
+        if let Some(fi) = fast {
+            let ok = fi.core_ok(f64::from(self.cfg.keep_z));
+            if ok {
+                self.fast_diag.0 += 1;
+            } else {
+                self.fast_diag.1 += 1;
+            }
+            let sef = fi.se_white * fi.f_ring.max(0.0).sqrt();
+            self.fast_tmp = Some((fi.h, sef, ok.then_some(fi.core)));
+        }
+        let new = self.make_cell_global(cell.id, &pix, &h, Some(cell), se);
+        self.fast_tmp = None;
+        let mut new = new?;
         new.born = cell.born;
         if changed && self.change(cell, &new) < self.cfg.refine_min_change {
             return None;
@@ -3386,13 +3779,7 @@ impl SlowLoop {
             let one = ovl >= 0.5 && {
                 let a: Vec<f32> = sep.iter().map(|f| f.c[i]).collect();
                 let b: Vec<f32> = sep.iter().map(|f| f.c[j]).collect();
-                let energy = |c: &[f32], k: usize| {
-                    let e: f32 = base.cols[k].norm2();
-                    c.iter().map(|x| x * x).sum::<f32>() * e
-                };
-                let (ea, eb) = (energy(&a, i), energy(&b, j));
                 corr(&a, &b) >= self.cfg.merge_corr
-                    || ea.min(eb) < self.cfg.merge_weak_share * ea.max(eb)
             };
             let accept = best_arm
                 .as_ref()

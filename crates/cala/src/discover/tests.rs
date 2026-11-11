@@ -1229,3 +1229,15 @@ fn joint_neighbour_fit_sees_mixtures_not_noise() {
     let short: Vec<Vec<f32>> = nb.iter().map(|v| v[..5].to_vec()).collect();
     assert_eq!(adjusted_r2(&mix[..5], &short), 0.0);
 }
+
+#[test]
+fn config_defaults_have_no_trim_and_no_core_test() {
+    let cfg = SlowLoopConfig::default();
+    assert_eq!(cfg.core_test, CoreTest::Off);
+    assert!(!cfg.core_test.collects() && !cfg.core_test.trims());
+    assert!(!cfg.basin_trim);
+    assert!(!cfg.joint_neighbours);
+    cfg.validate().unwrap();
+    assert!(CoreTest::Report.collects() && !CoreTest::Report.trims());
+    assert!(CoreTest::Trim.trims() && CoreTest::Delete.trims());
+}
