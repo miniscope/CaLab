@@ -15,6 +15,12 @@
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
+//!   --label-bundle C   `real` only, standalone: read candidate footprints from
+//!                      `C` (tsv: cid, cy, cx) and its sidecar `C.bin` (the
+//!                      `footprints.bin` format), run the preprocessing only and
+//!                      write the raw material of the blind labelling bundle
+//!                      (see `tools/cala-label`); no library is built
+//!   --crop N           with --label-bundle: crop side in pixels (60)
 //!   --batch B          forward frames to the slow loop in batches of B (the
 //!                      app uses 8); library swaps land between batches (1)
 //!   --slow-keep F      forward only a share F of the batches to the slow loop
@@ -348,6 +354,10 @@ struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
     buf: Vec<f32>,
+    /// Registered frames: the sensor FOV mask as the warp's source, and the
+    /// per-frame validity (samples moved in from outside the mask are missing).
+    src: Option<calab_cala::motion::SourceMask>,
+    valid: Vec<u8>,
 }
 
 impl Pipeline {
@@ -378,10 +388,21 @@ impl Pipeline {
         } else {
             None
         };
+        let src = mc.as_ref().map(|_| {
+            calab_cala::motion::SourceMask::new(
+                dims.height,
+                dims.width,
+                cal.fov().mask(),
+                calab_cala::motion::Interpolation::Bicubic,
+            )
+            .unwrap()
+        });
         Pipeline {
             pre,
             mc,
             buf: vec![0.0; n_px],
+            src,
+            valid: vec![0; n_px],
         }
     }
 
@@ -389,11 +410,16 @@ impl Pipeline {
         self.pre.front(raw, &mut self.buf).unwrap();
         match &mut self.mc {
             Some(mc) => {
-                mc.process(Frame::F32(&self.buf), out).unwrap();
+                let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(&rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
             }
-            None => out.copy_from_slice(&self.buf),
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+            }
         }
-        self.pre.back(out).unwrap();
     }
 }
 
@@ -1535,6 +1561,228 @@ fn read_footprints(
     b.build(flat).unwrap()
 }
 
+/// Candidate footprints for `--label-bundle`: `(cy, cx)` per tsv row and the
+/// sparse footprint (pixel, weight) of the same row in the sidecar `.bin`.
+type Candidates = (Vec<(f32, f32)>, Vec<(Vec<u32>, Vec<f32>)>);
+
+fn read_candidates(tsv: &Path) -> Candidates {
+    let text = std::fs::read_to_string(tsv).unwrap_or_else(|e| panic!("{tsv:?}: {e}"));
+    let centres: Vec<(f32, f32)> = text
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[1].parse().unwrap(), f[2].parse().unwrap())
+        })
+        .collect();
+    let bin = tsv.with_extension("bin");
+    let mut r = BufReader::new(File::open(&bin).unwrap_or_else(|e| panic!("{bin:?}: {e}")));
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"CALAFP01");
+    let _h = read_u32(&mut r);
+    let _w = read_u32(&mut r);
+    let n = read_u32(&mut r) as usize;
+    assert_eq!(n, centres.len(), "candidates tsv and bin disagree");
+    let mut fps = Vec::with_capacity(n);
+    for _ in 0..n {
+        let _id = read_u32(&mut r);
+        let m = read_u32(&mut r) as usize;
+        let px: Vec<u32> = (0..m).map(|_| read_u32(&mut r)).collect();
+        let a = read_f32s(&mut r, m);
+        let _filtered = read_f32s(&mut r, m);
+        fps.push((px, a));
+    }
+    (centres, fps)
+}
+
+fn f32_le_bytes(src: &[f32], dst: &mut [u8]) {
+    for (v, b) in src.iter().zip(dst.chunks_mut(4)) {
+        b.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Raw material of the blind labelling bundle (`tools/cala-label`).
+///
+/// Pass 1 runs the preprocessing (and motion correction) over the recording
+/// and projects every candidate footprint on the floored frame, `aᵀy / aᵀa`,
+/// the same trace for every candidate whatever its origin; the three highest
+/// peaks, a window apart (22 s), are its events. Pass 2 runs the preprocessing
+/// again and cuts a `crop`-pixel window around the candidate centroid out of
+/// the registered frame before the floor (`pre`) and after it (`y`) for the 441
+/// frames around each event (180 before the peak, 260 after), plus the whole-recording mean of both. Outputs in
+/// `out_dir`: `peaks.tsv`, `crops.tsv`, `traces.f32` (`[cand][t]`),
+/// `snip_y.f32` / `snip_pre.f32` (`[cand][event][441][crop][crop]`) and
+/// `mean_y.f32` / `mean_pre.f32` (`[cand][crop][crop]`). Nothing is rescaled:
+/// the values are the grey levels the model sees.
+#[allow(clippy::too_many_arguments)]
+fn label_bundle(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    cand_tsv: &Path,
+    crop: usize,
+    frames: u32,
+    out_dir: &Path,
+) {
+    use std::os::unix::fs::FileExt;
+    const PRE: usize = 180;
+    const POST: usize = 260;
+    const EVENTS: usize = 3;
+    const SPAN: usize = PRE + POST + 1;
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let t_len = frames as usize;
+    let (centres, fps) = read_candidates(cand_tsv);
+    let n = centres.len();
+    let norms: Vec<f32> = fps
+        .iter()
+        .map(|(_, a)| a.iter().map(|v| v * v).sum::<f32>().max(1e-12))
+        .collect();
+    let mut y = vec![0.0f32; n_px];
+    let mut pre = vec![0.0f32; n_px];
+
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut traces = vec![0.0f32; n * t_len];
+    let mut s = 0u32;
+    while s < frames {
+        let cnt = 64.min(frames - s);
+        let raw = rec.read(s, cnt);
+        for (k, f) in raw.chunks_exact(n_px).enumerate() {
+            let t = s as usize + k;
+            pipe.frame_split(f, &mut pre, &mut y);
+            for (i, (px, a)) in fps.iter().enumerate() {
+                let d: f32 = px.iter().zip(a).map(|(&q, &w)| w * y[q as usize]).sum();
+                traces[i * t_len + t] = d / norms[i];
+            }
+        }
+        s += cnt;
+    }
+    println!("label bundle pass 1: {n} candidates x {t_len} frames");
+
+    // Events: highest peaks of the 5-frame running mean, a window apart.
+    let mut peaks = vec![[usize::MAX; EVENTS]; n];
+    for (i, found) in peaks.iter_mut().enumerate() {
+        let tr = &traces[i * t_len..(i + 1) * t_len];
+        let sm: Vec<f32> = (0..t_len)
+            .map(|t| {
+                let (a, b) = (t.saturating_sub(2), (t + 3).min(t_len));
+                tr[a..b].iter().sum::<f32>() / (b - a) as f32
+            })
+            .collect();
+        let mut taken: Vec<bool> = (0..t_len).map(|t| t < PRE || t + POST >= t_len).collect();
+        for slot in found.iter_mut() {
+            let best = (0..t_len)
+                .filter(|&t| !taken[t])
+                .max_by(|&a, &b| sm[a].total_cmp(&sm[b]));
+            let Some(t) = best else { break };
+            *slot = t;
+            taken[t.saturating_sub(SPAN - 1)..(t + SPAN).min(t_len)].fill(true);
+        }
+        found.sort_unstable();
+    }
+    let mut pk = String::from("cand\tevent\tframe\n");
+    for (i, p) in peaks.iter().enumerate() {
+        for (e, &t) in p.iter().enumerate() {
+            let t = if t == usize::MAX { -1 } else { t as i64 };
+            let _ = writeln!(pk, "{i}\t{e}\t{t}");
+        }
+    }
+    std::fs::write(out_dir.join("peaks.tsv"), pk).unwrap();
+    {
+        let mut f = BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
+        write_f32s(&mut f, &traces);
+    }
+
+    // Crop origins (top-left, may lie outside the image; outside reads as 0).
+    let origin: Vec<(i64, i64)> = centres
+        .iter()
+        .map(|&(cy, cx)| {
+            (
+                cy.round() as i64 - (crop / 2) as i64,
+                cx.round() as i64 - (crop / 2) as i64,
+            )
+        })
+        .collect();
+    let mut cr = String::from("cand\ty0\tx0\tcrop\n");
+    for (i, (y0, x0)) in origin.iter().enumerate() {
+        let _ = writeln!(cr, "{i}\t{y0}\t{x0}\t{crop}");
+    }
+    std::fs::write(out_dir.join("crops.tsv"), cr).unwrap();
+
+    // Event windows by frame: the (candidate, event, offset) that want it.
+    let mut wants: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+    for (i, p) in peaks.iter().enumerate() {
+        for (e, &t) in p.iter().enumerate() {
+            if t == usize::MAX {
+                continue;
+            }
+            for off in 0..SPAN {
+                wants.entry(t + off - PRE).or_default().push((i, e, off));
+            }
+        }
+    }
+    let cc = crop * crop;
+    let size = (n * EVENTS * SPAN * cc * 4) as u64;
+    let f_y = File::create(out_dir.join("snip_y.f32")).unwrap();
+    let f_pre = File::create(out_dir.join("snip_pre.f32")).unwrap();
+    f_y.set_len(size).unwrap();
+    f_pre.set_len(size).unwrap();
+    let mut sum_y = vec![0.0f64; n * cc];
+    let mut sum_pre = vec![0.0f64; n * cc];
+    let mut buf_y = vec![0.0f32; cc];
+    let mut buf_pre = vec![0.0f32; cc];
+    let mut bytes = vec![0u8; cc * 4];
+    let (h, w) = (dims.height as i64, dims.width as i64);
+    let cut = |src: &[f32], o: (i64, i64), dst: &mut [f32]| {
+        for r in 0..crop {
+            for c in 0..crop {
+                let (yy, xx) = (o.0 + r as i64, o.1 + c as i64);
+                dst[r * crop + c] = if yy >= 0 && xx >= 0 && yy < h && xx < w {
+                    src[(yy * w + xx) as usize]
+                } else {
+                    0.0
+                };
+            }
+        }
+    };
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut s = 0u32;
+    while s < frames {
+        let cnt = 64.min(frames - s);
+        let raw = rec.read(s, cnt);
+        for (k, f) in raw.chunks_exact(n_px).enumerate() {
+            let t = s as usize + k;
+            pipe.frame_split(f, &mut pre, &mut y);
+            for i in 0..n {
+                cut(&y, origin[i], &mut buf_y);
+                cut(&pre, origin[i], &mut buf_pre);
+                for j in 0..cc {
+                    sum_y[i * cc + j] += f64::from(buf_y[j]);
+                    sum_pre[i * cc + j] += f64::from(buf_pre[j]);
+                }
+                let Some(wv) = wants.get(&t) else { continue };
+                for &(_, e, off) in wv.iter().filter(|x| x.0 == i) {
+                    let pos = (((i * EVENTS + e) * SPAN + off) * cc * 4) as u64;
+                    f32_le_bytes(&buf_y, &mut bytes);
+                    f_y.write_all_at(&bytes, pos).unwrap();
+                    f32_le_bytes(&buf_pre, &mut bytes);
+                    f_pre.write_all_at(&bytes, pos).unwrap();
+                }
+            }
+        }
+        s += cnt;
+    }
+    for (name, sum) in [("mean_y.f32", &sum_y), ("mean_pre.f32", &sum_pre)] {
+        let mut f = BufWriter::new(File::create(out_dir.join(name)).unwrap());
+        let m: Vec<f32> = sum.iter().map(|v| (v / t_len as f64) as f32).collect();
+        write_f32s(&mut f, &m);
+    }
+    println!("label bundle pass 2: crops written to {out_dir:?}");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -1635,6 +1883,21 @@ fn main() {
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
     let fov = cal.fov().mask().to_vec();
     let pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
+    if let Some(c) = arg_value(&args, "--label-bundle") {
+        assert!(mode == "real", "--label-bundle needs the real mode");
+        let crop = arg_value(&args, "--crop").map_or(60, |s| s.parse().unwrap());
+        label_bundle(
+            &mut rec,
+            &pre0,
+            &cal,
+            motion,
+            Path::new(&c),
+            crop,
+            frames,
+            &out_dir,
+        );
+        return;
+    }
     let mut flat = GlowFlattener::new(cal.fov(), &cfg.flatten).unwrap();
     println!(
         "{mode} {}: {}x{}, {t_len} frames, motion {motion}",

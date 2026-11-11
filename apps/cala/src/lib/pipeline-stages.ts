@@ -654,7 +654,9 @@ export class BackStage {
     const t0 = now();
     const n = s.count * this.px;
     const corrected = job.corrected!.subarray(0, n);
-    pre.backFrames(corrected, s.count);
+    // Pixels the shift moved in from outside the FOV mask are missing data:
+    // they stay out of the noise map and background (see backFramesRegistered).
+    pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
     const t1 = now();
     const cells = this.fast?.process(corrected, s.start, s.count, pre);
     const t2 = now();
