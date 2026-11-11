@@ -873,13 +873,10 @@ impl Library {
                 let mut s = vec![0.0f32; n];
                 let mut qrows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
                 for i in 0..n {
-                    // DIAG fix: `s_i` is the sum of the whole column (support
-                    // `vc` minus the moat's block means over their FOV pixels),
-                    // the same column the projection uses. CALA_RING_S_OLD=1
-                    // restores the support-only sum.
-                    s[i] = if std::env::var("CALA_RING_S_OLD").is_ok_and(|v| v == "1") {
-                        core.column(i).1.iter().sum()
-                    } else {
+                    // `s_i` is the sum of the whole column (support `vc` minus
+                    // the moat's block means over their FOV pixels), the same
+                    // column the projection uses.
+                    s[i] = {
                         let sc: f32 = core.core_col(i).1.iter().sum();
                         let (bj, lj) = core.low(i);
                         let sm: f32 = bj
