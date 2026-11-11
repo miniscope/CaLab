@@ -41,10 +41,10 @@ pub(crate) struct FpStats {
     pub n2: f64,
     pub s1: f64,
     pub s2: f64,
-    /// Library version the support map below belongs to, and for each
-    /// support pixel of that version's column its index in `pix`.
+    /// Library version the column below belongs to, and that version's
+    /// filtered column on `pix` (moat included).
     pub version: u64,
-    pub map: Vec<u32>,
+    pub col: Vec<f32>,
 }
 
 impl FpStats {
@@ -69,7 +69,7 @@ impl FpStats {
             s1: 0.0,
             s2: 0.0,
             version: u64::MAX,
-            map: Vec::new(),
+            col: Vec::new(),
         }
     }
 

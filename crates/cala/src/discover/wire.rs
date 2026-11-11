@@ -101,6 +101,8 @@ impl Writer {
         self.u32s(&c.pix);
         self.f32s(&c.raw);
         self.f32s(&c.filt);
+        self.u32s(&c.low_blk);
+        self.f32s(&c.low);
         self.u64(c.born);
     }
     pub fn slot(&mut self, s: &Slot) {
@@ -162,7 +164,7 @@ impl Writer {
             self.f64(v);
         }
         self.u64(s.version);
-        self.u32s(&s.map);
+        self.f32s(&s.col);
     }
     pub fn stats(&mut self, s: &SlowStats) {
         for v in stats_fields(s) {
@@ -296,6 +298,8 @@ impl<'a> Reader<'a> {
             pix: self.u32s()?,
             raw: self.f32s()?,
             filt: self.f32s()?,
+            low_blk: self.u32s()?,
+            low: self.f32s()?,
             born: self.u64()?,
         })
     }
@@ -350,7 +354,7 @@ impl<'a> Reader<'a> {
             s1: self.f64()?,
             s2: self.f64()?,
             version: self.u64()?,
-            map: self.u32s()?,
+            col: self.f32s()?,
         })
     }
     pub fn stats(&mut self) -> Option<SlowStats> {
