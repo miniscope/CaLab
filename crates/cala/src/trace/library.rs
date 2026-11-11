@@ -34,7 +34,62 @@ pub trait LinearFilter {
     /// Distance in pixels beyond which one pixel's response is negligible
     /// (used to filter many far-apart footprints in one pass).
     fn reach_px(&self) -> f32;
+    /// σ of the smooth low-pass the high-pass subtracts (`H = I − L`), px;
+    /// 0 when there is none. It sets the coarse grid on which a filtered
+    /// footprint's moat (`−L a`, the negative ring the high-pass leaves
+    /// around every cell) is modelled ([`moat_geometry`]).
+    fn lowpass_sigma_px(&self) -> f32 {
+        0.0
+    }
     fn apply(&mut self, frame: &mut [f32]) -> Result<(), PreprocessError>;
+}
+
+/// Block side (px) and reach beyond the support (px) of the coarse
+/// low-pass part of a filtered footprint, for a high-pass `I − L` whose
+/// low-pass has scale `sigma`; `None` without one.
+///
+/// A filtered footprint is `H a = a − L a`. On its support it is kept
+/// exactly; outside, it is `−L a`, a negative moat as smooth as `L`
+/// (σ = 20 px for the default flattener) that reaches far beyond the cell.
+/// It is stored as block means on a grid of side σ / 2.5 (8 px), which
+/// misses under 2 % of the moat's energy (within-block variation), out to
+/// 2σ beyond the support, where the moat's energy has fallen to e⁻⁴ of its
+/// peak density (what lies beyond is < 0.1 % of a cell's filtered energy).
+/// Projections, the Gram, the background terms and the rendered model all
+/// use this one representation, so the solve is an exact least-squares fit
+/// of it.
+pub fn moat_geometry(sigma: f32) -> Option<(usize, f32)> {
+    (sigma.is_finite() && sigma > 0.0)
+        .then(|| (((sigma / 2.5).round() as usize).max(1), 2.0 * sigma))
+}
+
+/// The moat blocks of a support disk: global indices (`by * gw + bx` on
+/// the grid of side `b` over `dims`), ascending, of the blocks whose centre
+/// lies within `radius + reach + b/√2` of `center`.
+pub fn moat_blocks(center: (f32, f32), radius: f32, b: usize, reach: f32, dims: Dims) -> Vec<u32> {
+    let gw = dims.width.div_ceil(b);
+    let gh = dims.height.div_ceil(b);
+    let lim = radius + reach + 0.7072 * b as f32;
+    let bf = b as f32;
+    let by0 = (((center.0 - lim) / bf).floor().max(0.0)) as usize;
+    let by1 = ((((center.0 + lim) / bf).floor().max(0.0)) as usize).min(gh - 1);
+    let bx0 = (((center.1 - lim) / bf).floor().max(0.0)) as usize;
+    let bx1 = ((((center.1 + lim) / bf).floor().max(0.0)) as usize).min(gw - 1);
+    let mut out = Vec::new();
+    for by in by0..=by1 {
+        // Centre of the block's in-frame part.
+        let y1 = ((by + 1) * b).min(dims.height);
+        let cy = 0.5 * ((by * b) as f32 + y1 as f32) - 0.5;
+        for bx in bx0..=bx1 {
+            let x1 = ((bx + 1) * b).min(dims.width);
+            let cx = 0.5 * ((bx * b) as f32 + x1 as f32) - 0.5;
+            let (dy, dx) = (cy - center.0, cx - center.1);
+            if dy * dy + dx * dx <= lim * lim {
+                out.push((by * gw + bx) as u32);
+            }
+        }
+    }
+    out
 }
 
 impl LinearFilter for GlowFlattener {
@@ -45,6 +100,10 @@ impl LinearFilter for GlowFlattener {
     /// 6 σ: the Gaussian weight there is 1.5e-8 of its peak.
     fn reach_px(&self) -> f32 {
         6.0 * self.sigma()
+    }
+
+    fn lowpass_sigma_px(&self) -> f32 {
+        self.sigma()
     }
 
     fn apply(&mut self, frame: &mut [f32]) -> Result<(), PreprocessError> {
@@ -68,16 +127,20 @@ impl LinearFilter for IdentityFilter {
     }
 }
 
-/// How each footprint's support is chosen.
+/// The support a new footprint starts on, before its extent is measured.
+///
+/// The library itself never trims a footprint: a footprint's support is the
+/// disk that holds every one of its non-zero values (its own extent, see
+/// [`support_disk`]). Where to cut a *new* estimate is the caller's choice;
+/// the slow loop seeds a candidate on this rule and then lets the running
+/// statistics grow it to wherever its light is significant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LibraryConfig {
-    /// Support radius as a multiple of the footprint's half-width at half
-    /// maximum (from the area above half the peak). 2.5 keeps the core and
-    /// drops most of the scatter halo.
+    /// Seed support radius as a multiple of the footprint's half-width at
+    /// half maximum (from the area above half the peak).
     pub support_per_hwhm: f32,
-    /// Bounds on the support radius, px.
+    /// Smallest seed support radius, px.
     pub min_support_px: f32,
-    pub max_support_px: f32,
 }
 
 impl Default for LibraryConfig {
@@ -85,7 +148,6 @@ impl Default for LibraryConfig {
         LibraryConfig {
             support_per_hwhm: 2.5,
             min_support_px: 6.0,
-            max_support_px: 20.0,
         }
     }
 }
@@ -95,14 +157,18 @@ impl LibraryConfig {
         let ok = self.support_per_hwhm.is_finite()
             && self.support_per_hwhm > 0.0
             && self.min_support_px.is_finite()
-            && self.min_support_px >= 1.0
-            && self.max_support_px.is_finite()
-            && self.max_support_px >= self.min_support_px;
+            && self.min_support_px >= 1.0;
         if ok {
             Ok(())
         } else {
             Err(TraceError::InvalidConfig(format!("{self:?}")))
         }
+    }
+
+    /// Seed support radius for a footprint of half-width `hwhm` (no upper
+    /// bound).
+    pub fn seed_radius(&self, hwhm: f32) -> f32 {
+        (self.support_per_hwhm * hwhm).max(self.min_support_px)
     }
 }
 
@@ -110,8 +176,9 @@ impl LibraryConfig {
 #[derive(Debug, Clone)]
 pub struct LibraryBuilder {
     dims: Dims,
-    cfg: LibraryConfig,
     footprints: Vec<Footprint>,
+    /// Explicit support disks (`push_disk`), one per footprint.
+    disks: Vec<Option<((f32, f32), f32)>>,
     fov: Option<Vec<u8>>,
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
@@ -123,19 +190,14 @@ impl LibraryBuilder {
     pub fn new(dims: Dims) -> LibraryBuilder {
         LibraryBuilder {
             dims,
-            cfg: LibraryConfig::default(),
             footprints: Vec::new(),
+            disks: Vec::new(),
             fov: None,
             noise: None,
             background: BackgroundModel::None,
             version: None,
             reuse: None,
         }
-    }
-
-    pub fn config(mut self, cfg: LibraryConfig) -> LibraryBuilder {
-        self.cfg = cfg;
-        self
     }
 
     /// The lit field of view (non-zero = inside); ring pixels outside it are
@@ -174,16 +236,25 @@ impl LibraryBuilder {
 
     pub fn push(&mut self, fp: Footprint) {
         self.footprints.push(fp);
+        self.disks.push(None);
+    }
+
+    /// `fp` on an explicit support disk (centre `(y, x)`, radius): its
+    /// window's pixels inside the disk, zero values included (the slow loop
+    /// publishes its cells' supports exactly, so a footprint whose outer
+    /// ring is zero keeps the room to grow into it).
+    pub fn push_disk(&mut self, fp: Footprint, center: (f32, f32), radius: f32) {
+        self.footprints.push(fp);
+        self.disks.push(Some((center, radius)));
     }
 
     pub fn footprint(mut self, fp: Footprint) -> LibraryBuilder {
-        self.footprints.push(fp);
+        self.push(fp);
         self
     }
 
     /// Filter every footprint with `filter` and precompute the solve terms.
     pub fn build(self, filter: &mut dyn LinearFilter) -> Result<Library, TraceError> {
-        self.cfg.validate()?;
         let dims = self.dims;
         let n_px = dims.pixels();
         if filter.dims() != dims {
@@ -219,7 +290,10 @@ impl LibraryBuilder {
         let mut col_start = vec![0usize];
         let mut pix = Vec::new();
         let mut raw = Vec::new();
-        for fp in &self.footprints {
+        let geom = moat_geometry(filter.lowpass_sigma_px());
+        let mut low_start = vec![0usize];
+        let mut low_blk: Vec<u32> = Vec::new();
+        for (fp, disk) in self.footprints.iter().zip(&self.disks) {
             if index_of.insert(fp.id, ids.len()).is_some() {
                 return Err(TraceError::InvalidFootprint(format!(
                     "duplicate id {}",
@@ -227,7 +301,19 @@ impl LibraryBuilder {
                 )));
             }
             ids.push(fp.id);
-            let (cy, cx, r) = support_disk(fp, dims, &self.cfg)?;
+            let own = support_disk(fp, dims)?;
+            let ((cy, cx), r) = match *disk {
+                Some((c, r)) if c.0.is_finite() && c.1.is_finite() && r.is_finite() && r >= 0.0 => {
+                    (c, r)
+                }
+                Some(_) => {
+                    return Err(TraceError::InvalidFootprint(format!(
+                        "id {}: bad support disk",
+                        fp.id
+                    )))
+                }
+                None => (own.center, own.radius),
+            };
             centers.push((cy, cx));
             radii.push(r);
             let r2 = r * r;
@@ -243,9 +329,14 @@ impl LibraryBuilder {
                 }
             }
             col_start.push(pix.len());
+            if let Some((b, reach)) = geom {
+                low_blk.extend(moat_blocks((cy, cx), r, b, reach, dims));
+            }
+            low_start.push(low_blk.len());
         }
         let n = ids.len();
         let mut val = vec![0.0f32; pix.len()];
+        let mut low_val = vec![0.0f32; low_blk.len()];
         // Unchanged footprints keep the filtered values of `reuse`.
         let mut done = vec![false; n];
         if let Some(prev) = &self.reuse {
@@ -256,8 +347,15 @@ impl LibraryBuilder {
                     };
                     let (a, b) = (col_start[i], col_start[i + 1]);
                     let (pp, pr) = prev.unfiltered(slot);
-                    if pp == &pix[a..b] && pr == &raw[a..b] {
+                    let (lb, lv) = prev.lowpass(slot);
+                    let (la, lz) = (low_start[i], low_start[i + 1]);
+                    if pp == &pix[a..b]
+                        && pr == &raw[a..b]
+                        && prev.core.block == geom.map_or(0, |g| g.0)
+                        && lb == &low_blk[la..lz]
+                    {
                         val[a..b].copy_from_slice(prev.filtered(slot).1);
+                        low_val[la..lz].copy_from_slice(lv);
                         done[i] = true;
                     }
                 }
@@ -281,10 +379,13 @@ impl LibraryBuilder {
             }
         }
         let mut img = vec![0.0f32; n_px];
+        let mut src = vec![0.0f32; n_px];
+        let w = dims.width;
         for members in &canvases {
             for &i in members {
                 for k in col_start[i]..col_start[i + 1] {
                     img[pix[k] as usize] = raw[k];
+                    src[pix[k] as usize] = raw[k];
                 }
             }
             filter.apply(&mut img)?;
@@ -292,10 +393,40 @@ impl LibraryBuilder {
                 for k in col_start[i]..col_start[i + 1] {
                     val[k] = img[pix[k] as usize];
                 }
+                // Moat: block means of the low-pass `a − H a` (FOV only).
+                if let Some((b, _)) = geom {
+                    let gw = dims.width.div_ceil(b);
+                    for k in low_start[i]..low_start[i + 1] {
+                        let (by, bx) = (low_blk[k] as usize / gw, low_blk[k] as usize % gw);
+                        let (mut s, mut m) = (0.0f64, 0usize);
+                        for y in by * b..((by + 1) * b).min(dims.height) {
+                            for x in bx * b..((bx + 1) * b).min(dims.width) {
+                                let q = y * w + x;
+                                if fov[q] != 0 {
+                                    s += f64::from(src[q] - img[q]);
+                                    m += 1;
+                                }
+                            }
+                        }
+                        low_val[k] = if m > 0 { (s / m as f64) as f32 } else { 0.0 };
+                    }
+                }
             }
             img.iter_mut().for_each(|v| *v = 0.0);
+            for &i in members {
+                for k in col_start[i]..col_start[i + 1] {
+                    src[pix[k] as usize] = 0.0;
+                }
+            }
         }
         let core = Core {
+            block: geom.map_or(0, |g| g.0),
+            low_start,
+            low_blk,
+            low_val,
+            vc: Vec::new(),
+            blk_fov: Vec::new(),
+            blk_noise2: Vec::new(),
             dims,
             ids,
             index_of,
@@ -311,16 +442,26 @@ impl LibraryBuilder {
         let version = self
             .version
             .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
-        Library::assemble(core, self.background, version)
+        Library::assemble(core.finish(), self.background, version)
     }
 }
 
-/// Centre (intensity-weighted over the half-max area) and support radius.
-pub(crate) fn support_disk(
-    fp: &Footprint,
-    dims: Dims,
-    cfg: &LibraryConfig,
-) -> Result<(f32, f32, f32), TraceError> {
+/// A footprint's support disk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Support {
+    /// Intensity-weighted centre of the area above half the peak, `(y, x)`.
+    pub center: (f32, f32),
+    /// Distance from the centre to the farthest non-zero value, px: the
+    /// footprint's own extent (no cap).
+    pub radius: f32,
+    /// Half-width at half maximum, px (radius of a disk with the half-max
+    /// area).
+    pub hwhm: f32,
+}
+
+/// The support of `fp`: the disk around its half-max centroid that holds
+/// every non-zero value.
+pub fn support_disk(fp: &Footprint, dims: Dims) -> Result<Support, TraceError> {
     let bad = |m: &str| TraceError::InvalidFootprint(format!("id {}: {m}", fp.id));
     if fp.height == 0 || fp.width == 0 {
         return Err(bad("empty patch"));
@@ -350,9 +491,22 @@ pub(crate) fn support_disk(
             }
         }
     }
-    let hwhm = (count as f32 / std::f32::consts::PI).sqrt();
-    let r = (cfg.support_per_hwhm * hwhm).clamp(cfg.min_support_px, cfg.max_support_px);
-    Ok(((sy / sw) as f32, (sx / sw) as f32, r))
+    let (cy, cx) = ((sy / sw) as f32, (sx / sw) as f32);
+    let mut r2 = 0.0f32;
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            if fp.values[y * fp.width + x] > 0.0 {
+                let (dy, dx) = ((fp.y0 + y) as f32 - cy, (fp.x0 + x) as f32 - cx);
+                r2 = r2.max(dy * dy + dx * dx);
+            }
+        }
+    }
+    Ok(Support {
+        center: (cy, cx),
+        // A hair over the farthest value, so rounding never drops it.
+        radius: r2.sqrt() + 1e-3,
+        hwhm: (count as f32 / std::f32::consts::PI).sqrt(),
+    })
 }
 
 /// The footprint part of a library (independent of the background model).
@@ -372,6 +526,21 @@ struct Core {
     raw: Vec<f32>,
     fov: Vec<u8>,
     noise: Vec<f32>,
+    /// Moat grid block side, px (0: no moat, an identity filter).
+    block: usize,
+    /// Moat of cell `i`: blocks `low_blk[low_start[i]..low_start[i + 1]]`
+    /// (ascending global block indices) with the block means `low_val` of
+    /// the low-pass `L a_i`. The column is `val` on the support and
+    /// `−low(B(p))` off it.
+    low_start: Vec<usize>,
+    low_blk: Vec<u32>,
+    low_val: Vec<f32>,
+    /// Derived ([`Core::finish`]): `val + low(B(p))` on the support, so the
+    /// column is `vc · 1_S − P low` (P: block-constant expansion, FOV only).
+    vc: Vec<f32>,
+    /// FOV pixels and summed noise variance of each grid block.
+    blk_fov: Vec<f32>,
+    blk_noise2: Vec<f32>,
 }
 
 /// A compressed sparse row matrix over cells.
@@ -428,6 +597,35 @@ pub(crate) enum BgTerms {
     },
 }
 
+/// Ring model: the local level depends on the cell's own trace through its
+/// column in the ring (its moat), which adds `−s_i q_ii` to the coordinate
+/// curvature, so `mdiag_i = ã_iᵀã_i − s_i q_ii`.
+///
+/// When that is not positive, the cell's own column dominates its ring
+/// level (a large filtered footprint whose moat fills a ring clipped by the
+/// field-of-view edge): raising `c_i` lowers the level by more than the
+/// cell's own light, the coordinate equation has the wrong sign, and the
+/// projected SOR step runs away (halo_s5: traces of 1e37, then inf). The
+/// ring cannot separate such a cell from its local level, so its level is
+/// taken from the ring without the cell's own term (`q_ii = 0`, curvature
+/// `ã_iᵀã_i`). Cells with a positive curvature are unchanged (floored at
+/// 1e-3 `ã_iᵀã_i`, which only shortens their step).
+pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdiag: &mut [f32]) {
+    for i in 0..gram_diag.len() {
+        let (a, b) = (q.start[i], q.start[i + 1]);
+        let Ok(k) = q.col[a..b].binary_search(&(i as u32)) else {
+            continue;
+        };
+        let m = gram_diag[i] - s[i] * q.val[a + k];
+        if m > 0.0 {
+            mdiag[i] = m.max(1e-3 * gram_diag[i]);
+        } else {
+            q.val[a + k] = 0.0;
+            mdiag[i] = gram_diag[i];
+        }
+    }
+}
+
 /// An immutable, versioned footprint library with the solver's precomputed
 /// terms. Share it as `Arc<Library>`; build a new one to change it.
 #[derive(Debug, Clone)]
@@ -454,8 +652,27 @@ impl Library {
         let n = core.ids.len();
         let dims = core.dims;
         let n_px = dims.pixels();
+        // Each column's extent: its support, or its moat blocks.
+        let (bs, gwb) = (core.block, core.grid_w());
+        let ext: Vec<f32> = (0..n)
+            .map(|i| {
+                let (cy, cx) = core.centers[i];
+                core.low(i)
+                    .0
+                    .iter()
+                    .map(|&bq| {
+                        let (by, bx) = (bq as usize / gwb, bq as usize % gwb);
+                        let (dy, dx) = (
+                            ((by * bs) as f32 + 0.5 * bs as f32) - cy,
+                            ((bx * bs) as f32 + 0.5 * bs as f32) - cx,
+                        );
+                        (dy * dy + dx * dx).sqrt() + 0.7072 * bs as f32
+                    })
+                    .fold(core.radii[i], f32::max)
+            })
+            .collect();
         // Candidate neighbours from a coarse spatial grid.
-        let rmax = core.radii.iter().copied().fold(0.0f32, f32::max);
+        let rmax = ext.iter().copied().fold(0.0f32, f32::max);
         let ring_outer = match &model {
             BackgroundModel::Ring { outer_px, .. } => *outer_px,
             _ => 0.0,
@@ -483,7 +700,7 @@ impl Library {
                         let j = j as usize;
                         let (a, b) = (core.centers[i], core.centers[j]);
                         let (dy, dx) = (a.0 - b.0, a.1 - b.1);
-                        if j != i && dy * dy + dx * dx <= dist * dist {
+                        if dy * dy + dx * dx <= dist * dist {
                             out.push(j);
                         }
                     }
@@ -492,32 +709,66 @@ impl Library {
             out
         };
 
-        // Gram.
+        // Gram of the columns `vc_i 1_S − P low_i`:
+        // `Σ_S∩S vc vc − Σ_S_j vc_j low_i(B) − Σ_B low_j ccore_i + Σ_B low_i low_j n_B`.
+        let gl = core.grid_len();
         let mut img = vec![0.0f32; n_px];
+        let mut lim = vec![0.0f32; gl];
+        let mut ccore = vec![0.0f32; gl];
         let mut rows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
         let mut gram_diag = vec![0.0f32; n];
         let mut noise_num = vec![0.0f32; n];
+        let pair = |j: usize, img: &[f32], lim: &[f32], ccore: &[f32]| -> f64 {
+            let (pj, vj) = core.core_col(j);
+            let mut g = 0.0f64;
+            for (&q, &a) in pj.iter().zip(vj) {
+                let mut t = img[q as usize];
+                if gl > 0 {
+                    t -= lim[core.block_of(q)];
+                }
+                g += f64::from(a) * f64::from(t);
+            }
+            let (bj, lj) = core.low(j);
+            for (&bq, &l) in bj.iter().zip(lj) {
+                let bq = bq as usize;
+                g += f64::from(l)
+                    * (f64::from(lim[bq]) * f64::from(core.blk_fov[bq]) - f64::from(ccore[bq]));
+            }
+            g
+        };
         for i in 0..n {
-            let (p, v) = core.column(i);
-            let mut d = 0.0f64;
-            let mut s2 = 0.0f64;
+            let (p, v) = core.core_col(i);
             for (&q, &a) in p.iter().zip(v) {
                 img[q as usize] = a;
-                d += f64::from(a) * f64::from(a);
-                let sg = f64::from(core.noise[q as usize]);
-                s2 += f64::from(a) * f64::from(a) * sg * sg;
+                if gl > 0 {
+                    ccore[core.block_of(q)] += a;
+                }
             }
-            gram_diag[i] = d as f32;
-            noise_num[i] = s2.sqrt() as f32;
-            for j in near(i, core.radii[i] + rmax + 1.0) {
-                if j < i {
+            let (bi, li) = core.low(i);
+            for (&bq, &l) in bi.iter().zip(li) {
+                lim[bq as usize] = l;
+            }
+            gram_diag[i] = pair(i, &img, &lim, &ccore) as f32;
+            // Noise of hᵀy: Σ h² σ² in the same representation.
+            let mut s2 = 0.0f64;
+            for (&q, &a) in p.iter().zip(v) {
+                let sg = f64::from(core.noise[q as usize]);
+                let mut h2 = f64::from(a) * f64::from(a);
+                if gl > 0 {
+                    let l = f64::from(lim[core.block_of(q)]);
+                    h2 -= 2.0 * f64::from(a) * l;
+                }
+                s2 += h2 * sg * sg;
+            }
+            for (&bq, &l) in bi.iter().zip(li) {
+                s2 += f64::from(l) * f64::from(l) * f64::from(core.blk_noise2[bq as usize]);
+            }
+            noise_num[i] = s2.max(0.0).sqrt() as f32;
+            for j in near(i, ext[i] + rmax + 1.0) {
+                if j <= i {
                     continue;
                 }
-                let (pj, vj) = core.column(j);
-                let mut g = 0.0f64;
-                for (&q, &a) in pj.iter().zip(vj) {
-                    g += f64::from(a) * f64::from(img[q as usize]);
-                }
+                let g = pair(j, &img, &lim, &ccore);
                 if g != 0.0 {
                     rows[i].push((j as u32, g as f32));
                     rows[j].push((i as u32, g as f32));
@@ -525,6 +776,12 @@ impl Library {
             }
             for &q in p {
                 img[q as usize] = 0.0;
+                if gl > 0 {
+                    ccore[core.block_of(q)] = 0.0;
+                }
+            }
+            for &bq in bi {
+                lim[bq as usize] = 0.0;
             }
         }
         if let Some(i) = gram_diag.iter().position(|&d| d.is_nan() || d <= 0.0) {
@@ -556,7 +813,7 @@ impl Library {
         let gram = Csr::from_rows(rows);
 
         // Background terms.
-        let bg = match &model {
+        let mut bg = match &model {
             BackgroundModel::None => BgTerms::None,
             BackgroundModel::Basis(maps) => {
                 let k = maps.len();
@@ -588,16 +845,32 @@ impl Library {
                     let p = invert_spd(&gtg, k).ok_or_else(|| {
                         TraceError::InvalidConfig("background maps are linearly dependent".into())
                     })?;
-                    let mut x = vec![0.0f32; n * k];
-                    for i in 0..n {
-                        let (pp, v) = core.column(i);
+                    // Block sums of each map (FOV only) for the moat term.
+                    let mut msum = vec![0.0f64; k * gl];
+                    if gl > 0 {
                         for b in 0..k {
                             let m = &flat[b * n_px..(b + 1) * n_px];
-                            let s: f64 = pp
+                            for q in 0..n_px {
+                                if core.fov[q] != 0 {
+                                    msum[b * gl + core.block_of(q as u32)] += f64::from(m[q]);
+                                }
+                            }
+                        }
+                    }
+                    let mut x = vec![0.0f32; n * k];
+                    for i in 0..n {
+                        let (pp, v) = core.core_col(i);
+                        let (bi, li) = core.low(i);
+                        for b in 0..k {
+                            let m = &flat[b * n_px..(b + 1) * n_px];
+                            let mut s: f64 = pp
                                 .iter()
                                 .zip(v)
                                 .map(|(&q, &a)| f64::from(a) * f64::from(m[q as usize]))
                                 .sum();
+                            for (&bq, &l) in bi.iter().zip(li) {
+                                s -= f64::from(l) * msum[b * gl + bq as usize];
+                            }
                             x[i * k + b] = s as f32;
                         }
                     }
@@ -629,7 +902,19 @@ impl Library {
                 let mut s = vec![0.0f32; n];
                 let mut qrows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
                 for i in 0..n {
-                    s[i] = core.column(i).1.iter().sum();
+                    // `s_i` is the sum of the whole column (support `vc` minus
+                    // the moat's block means over their FOV pixels), the same
+                    // column the projection uses.
+                    s[i] = {
+                        let sc: f32 = core.core_col(i).1.iter().sum();
+                        let (bj, lj) = core.low(i);
+                        let sm: f32 = bj
+                            .iter()
+                            .zip(lj)
+                            .map(|(&bq, &l)| l * core.blk_fov[bq as usize])
+                            .sum();
+                        sc - sm
+                    };
                     let (cy, cx) = core.centers[i];
                     let inner = inner_px.max(core.radii[i] + 1.0);
                     let outer = outer_px.max(inner + 2.0);
@@ -656,12 +941,21 @@ impl Library {
                     let inv = 1.0 / len as f32;
                     for &q in &ring_pix[start..] {
                         img[q as usize] = inv;
+                        if gl > 0 {
+                            ccore[core.block_of(q)] += inv;
+                        }
                     }
+                    // Ring mean of every column that reaches the ring, the
+                    // cell's own moat included.
                     for j in near(i, outer + rmax + 1.0) {
-                        let (pj, vj) = core.column(j);
+                        let (pj, vj) = core.core_col(j);
                         let mut g = 0.0f32;
                         for (&q, &a) in pj.iter().zip(vj) {
                             g += a * img[q as usize];
+                        }
+                        let (bj, lj) = core.low(j);
+                        for (&bq, &l) in bj.iter().zip(lj) {
+                            g -= l * ccore[bq as usize];
                         }
                         if g != 0.0 {
                             qrows[i].push((j as u32, g));
@@ -669,6 +963,9 @@ impl Library {
                     }
                     for &q in &ring_pix[start..] {
                         img[q as usize] = 0.0;
+                        if gl > 0 {
+                            ccore[core.block_of(q)] = 0.0;
+                        }
                     }
                 }
                 for (i, r) in qrows.iter().enumerate() {
@@ -685,6 +982,9 @@ impl Library {
             }
         };
         let mut mdiag = gram_diag.clone();
+        if let BgTerms::Ring { s, q, .. } = &mut bg {
+            ring_self_curvature(&gram_diag, s, q, &mut mdiag);
+        }
         if let BgTerms::Basis { k, x, w, .. } = &bg {
             for i in 0..n {
                 let xw: f32 = (0..*k).map(|b| x[i * k + b] * w[i * k + b]).sum();
@@ -765,6 +1065,34 @@ impl Library {
         self.core.column(slot)
     }
 
+    /// The moat of the cell in `slot`: grid blocks (ascending, `by * gw +
+    /// bx` with blocks of [`Library::block_px`]) and the block means of the
+    /// low-pass `L a`. The cell's filtered column is [`Library::filtered`]
+    /// on its support and `−L a` (block means) off it, out to these blocks.
+    pub fn lowpass(&self, slot: usize) -> (&[u32], &[f32]) {
+        self.core.low(slot)
+    }
+
+    /// Side of the moat grid's blocks, px (0: no moat, unfiltered data).
+    pub fn block_px(&self) -> usize {
+        self.core.block
+    }
+
+    /// The moat grid: block of every frame pixel (`None` without a moat).
+    pub(crate) fn block_of(&self, q: u32) -> usize {
+        self.core.block_of(q)
+    }
+
+    pub(crate) fn grid_len(&self) -> usize {
+        self.core.grid_len()
+    }
+
+    /// Support pixels and `val + low(B(p))` (the column is this on the
+    /// support minus the block-constant moat everywhere).
+    pub(crate) fn core_col(&self, slot: usize) -> (&[u32], &[f32]) {
+        self.core.core_col(slot)
+    }
+
     /// Pixel indices and unfiltered values of the cell in `slot`.
     pub fn unfiltered(&self, slot: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.core.col_start[slot], self.core.col_start[slot + 1]);
@@ -815,10 +1143,36 @@ impl Library {
                 }
             }
         }
+        let gl = self.core.grid_len();
+        let mut field = vec![0.0f32; gl];
+        let mut any = false;
         for (i, &c) in traces.iter().enumerate() {
-            let (p, v) = self.core.column(i);
+            if c == 0.0 {
+                continue;
+            }
+            let (p, v) = self.core.core_col(i);
             for (&q, &a) in p.iter().zip(v) {
                 out[q as usize] += a * c;
+            }
+            let (bi, li) = self.core.low(i);
+            for (&bq, &l) in bi.iter().zip(li) {
+                field[bq as usize] += l * c;
+                any = true;
+            }
+        }
+        if any {
+            let (w, b, gw) = (self.core.dims.width, self.core.block, self.core.grid_w());
+            for (y, (row, mrow)) in out.chunks_mut(w).zip(self.core.fov.chunks(w)).enumerate() {
+                let frow = &field[(y / b) * gw..(y / b + 1) * gw];
+                for ((seg, mseg), &f) in row.chunks_mut(b).zip(mrow.chunks(b)).zip(frow) {
+                    if f != 0.0 {
+                        for (o, &m) in seg.iter_mut().zip(mseg) {
+                            if m != 0 {
+                                *o -= f;
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -830,7 +1184,7 @@ impl Library {
 }
 
 /// Magic of [`Library::to_bytes`].
-const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB1";
+const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB2";
 
 /// Little-endian reader over a byte buffer, for [`Library::from_bytes`].
 struct ByteReader<'a> {
@@ -945,6 +1299,10 @@ impl Library {
         put_f32s(&mut out, &c.raw);
         out.extend_from_slice(&c.fov);
         put_f32s(&mut out, &c.noise);
+        put_u32s(&mut out, [c.block as u32, c.low_blk.len() as u32]);
+        put_u32s(&mut out, c.low_start.iter().map(|&v| v as u32));
+        put_u32s(&mut out, c.low_blk.iter().copied());
+        put_f32s(&mut out, &c.low_val);
         out
     }
 
@@ -1005,10 +1363,34 @@ impl Library {
         let raw = r.f32s(nnz)?;
         let fov = r.take(n_px)?.to_vec();
         let noise = r.f32s(n_px)?;
+        let block = r.u32()? as usize;
+        let nlow = r.u32()? as usize;
+        let low_start: Vec<usize> = r.u32s(n + 1)?.into_iter().map(|v| v as usize).collect();
+        if low_start[0] != 0
+            || low_start[n] != nlow
+            || low_start.windows(2).any(|w| w[0] > w[1])
+            || (block == 0 && nlow != 0)
+        {
+            return Err(bad("moat offsets"));
+        }
+        let low_blk = r.u32s(nlow)?;
+        let low_val = r.f32s(nlow)?;
+        if block > 0 {
+            let gl = dims.width.div_ceil(block) * dims.height.div_ceil(block);
+            if low_blk.iter().any(|&b| b as usize >= gl) {
+                return Err(bad("moat block outside the grid"));
+            }
+        }
         if r.at != bytes.len() {
             return Err(bad("trailing bytes"));
         }
-        if val.iter().chain(&raw).chain(&noise).any(|v| !v.is_finite()) {
+        if val
+            .iter()
+            .chain(&raw)
+            .chain(&noise)
+            .chain(&low_val)
+            .any(|v| !v.is_finite())
+        {
             return Err(bad("non-finite values"));
         }
         let mut index_of = HashMap::with_capacity(n);
@@ -1029,8 +1411,15 @@ impl Library {
             raw,
             fov,
             noise,
+            block,
+            low_start,
+            low_blk,
+            low_val,
+            vc: Vec::new(),
+            blk_fov: Vec::new(),
+            blk_noise2: Vec::new(),
         };
-        Library::assemble(core, model, version)
+        Library::assemble(core.finish(), model, version)
     }
 }
 
@@ -1039,6 +1428,76 @@ impl Core {
     fn column(&self, i: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.col_start[i], self.col_start[i + 1]);
         (&self.pix[a..b], &self.val[a..b])
+    }
+
+    /// Support pixels and `vc` values of cell `i`.
+    #[inline]
+    fn core_col(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.col_start[i], self.col_start[i + 1]);
+        (&self.pix[a..b], &self.vc[a..b])
+    }
+
+    #[inline]
+    fn low(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.low_start[i], self.low_start[i + 1]);
+        (&self.low_blk[a..b], &self.low_val[a..b])
+    }
+
+    /// Moat grid width (blocks per row); 0 without a moat.
+    fn grid_w(&self) -> usize {
+        if self.block == 0 {
+            0
+        } else {
+            self.dims.width.div_ceil(self.block)
+        }
+    }
+
+    fn grid_len(&self) -> usize {
+        if self.block == 0 {
+            0
+        } else {
+            self.grid_w() * self.dims.height.div_ceil(self.block)
+        }
+    }
+
+    /// Grid block of frame pixel `q`.
+    #[inline]
+    fn block_of(&self, q: u32) -> usize {
+        let (y, x) = (q as usize / self.dims.width, q as usize % self.dims.width);
+        (y / self.block) * self.grid_w() + x / self.block
+    }
+
+    /// Fill the derived terms.
+    fn finish(mut self) -> Core {
+        let gl = self.grid_len();
+        self.blk_fov = vec![0.0; gl];
+        self.blk_noise2 = vec![0.0; gl];
+        if self.block > 0 {
+            for q in 0..self.dims.pixels() {
+                if self.fov[q] != 0 {
+                    let bq = self.block_of(q as u32);
+                    self.blk_fov[bq] += 1.0;
+                    self.blk_noise2[bq] += self.noise[q] * self.noise[q];
+                }
+            }
+        }
+        self.vc = self.val.clone();
+        if self.block > 0 {
+            for i in 0..self.ids.len() {
+                let (la, lz) = (self.low_start[i], self.low_start[i + 1]);
+                for k in self.col_start[i]..self.col_start[i + 1] {
+                    // Outside the FOV the column is 0 (the filtered data is).
+                    if self.fov[self.pix[k] as usize] == 0 {
+                        continue;
+                    }
+                    let bq = self.block_of(self.pix[k]) as u32;
+                    if let Ok(j) = self.low_blk[la..lz].binary_search(&bq) {
+                        self.vc[k] += self.low_val[la + j];
+                    }
+                }
+            }
+        }
+        self
     }
 }
 

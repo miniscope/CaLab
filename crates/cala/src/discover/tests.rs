@@ -226,14 +226,16 @@ fn library_from_seed_matches_builder() {
         .build(&mut flattener())
         .unwrap();
     assert_eq!(lib.support(0), direct.support(0));
-    let (_, a) = lib.filtered(0);
-    let (_, b) = direct.filtered(0);
-    let err = a
-        .iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    assert!(err < 1e-5);
+    // The seeded cell's support holds the whole disk (zeros past the given
+    // window); compare on the window's pixels.
+    let (pa, a) = lib.filtered(0);
+    let (pb, b) = direct.filtered(0);
+    let mut err = 0.0f32;
+    for (p, y) in pb.iter().zip(b) {
+        let k = pa.binary_search(p).expect("window pixel in the support");
+        err = err.max((a[k] - y).abs());
+    }
+    assert!(err < 1e-5, "err {err}");
 }
 
 // ---- v2: evidence ledger, pruning, merging of established cells ----------
@@ -789,12 +791,31 @@ fn busy_movie(t: usize) -> (Vec<f32>, Vec<Footprint>) {
         .map(|(i, &(y, x))| (blob(i as u64, y, x), trace(&mut rng, t, 0.03, 6.0)))
         .collect();
     let m = movie(&cells, t, 223);
+    // Seeds cut to tight disks (a footprint keeps its given extent, and
+    // the concurrency test needs small zones).
     let seed = vec![
         blob(1, 20.0, 22.0),
         blob(2, 21.0, 23.0),
         blob_w(3, 47.0, 47.5, 4.0),
         blob(4, 30.0, 48.0),
-    ];
+    ]
+    .into_iter()
+    .map(|mut fp| {
+        let c = (fp.y0 + fp.height / 2, fp.x0 + fp.width / 2);
+        for y in 0..fp.height {
+            for x in 0..fp.width {
+                let (dy, dx) = (
+                    (fp.y0 + y) as f32 - c.0 as f32,
+                    (fp.x0 + x) as f32 - c.1 as f32,
+                );
+                if dy * dy + dx * dx > 64.0 {
+                    fp.values[y * fp.width + x] = 0.0;
+                }
+            }
+        }
+        fp
+    })
+    .collect();
     (m, seed)
 }
 
@@ -904,10 +925,6 @@ fn concurrent_jobs_never_share_cells_and_apply_in_any_order() {
     let cfg = SlowLoopConfig {
         tile_px: 16,
         margin_px: 10,
-        library: crate::trace::LibraryConfig {
-            max_support_px: 10.0,
-            ..crate::trace::LibraryConfig::default()
-        },
         ..shard_config()
     };
     let n_px = N * N;
@@ -1090,7 +1107,8 @@ fn two_pass_whitening_is_bit_identical_to_the_pixel_loop() {
         let mut c0 = vec![0.0f32; cw * h.div_ceil(2)];
         for i in 0..n {
             let (s, y) = (inv[i], frame[i]);
-            z0[i] = if y.is_finite() { y * s } else { 0.0 };
+            // A missing sample stays missing (NaN; residual 0).
+            z0[i] = if y.is_finite() { y * s } else { f32::NAN };
             let r = if y.is_finite() {
                 (y - model[i]) * s
             } else {
@@ -1211,4 +1229,111 @@ fn joint_neighbour_fit_sees_mixtures_not_noise() {
     assert!(adjusted_r2(&own, &nb) < 0.36);
     let short: Vec<Vec<f32>> = nb.iter().map(|v| v[..5].to_vec()).collect();
     assert_eq!(adjusted_r2(&mix[..5], &short), 0.0);
+}
+
+#[test]
+fn config_defaults_have_no_trim_and_no_core_test() {
+    let cfg = SlowLoopConfig::default();
+    assert_eq!(cfg.core_test, CoreTest::Off);
+    assert!(!cfg.core_test.collects() && !cfg.core_test.trims());
+    assert!(!cfg.basin_trim);
+    assert!(!cfg.joint_neighbours);
+    cfg.validate().unwrap();
+    assert!(CoreTest::Report.collects() && !CoreTest::Report.trims());
+    assert!(CoreTest::Trim.trims() && CoreTest::Delete.trims());
+}
+
+/// Mark a band of columns as missing (NaN) in every frame of `m`; the band
+/// sweeps across the patch (width 4 px, 6 frames per column step), the way
+/// a mask edge sweeps under motion. `rows` limits it vertically.
+fn sweep_missing(
+    m: &mut [f32],
+    t: usize,
+    rows: std::ops::Range<usize>,
+    cols: std::ops::Range<usize>,
+) {
+    let n_px = N * N;
+    for k in 0..t {
+        let x0 = cols.start + (k / 6) % cols.len();
+        for y in rows.clone() {
+            for x in x0..(x0 + 4).min(N) {
+                m[k * n_px + y * N + x] = f32::NAN;
+            }
+        }
+    }
+}
+
+/// A mask edge sweeping across noise (the movie's NaN band keeps moving,
+/// the pixels behind it are ordinary noise) is not a cell: nothing is added
+/// in 2000 frames.
+#[test]
+fn edge_candidate_made_of_the_sweeping_mask_gets_no_held_out_gain() {
+    let t = 2000;
+    let mut m = movie(&[], t, 91);
+    sweep_missing(&mut m, t, 10..86, 20..70);
+    let (mut slow, mut eng) = start(v2_config(), &[]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 0, "stats {:?}", slow.stats());
+    assert_eq!(edits(&slow.take_edit_counts()), 0);
+}
+
+/// A real cell under the sweeping band on a share of the frames is still
+/// established, not deleted, and its footprint stays where it was.
+#[test]
+fn a_cell_under_a_sweeping_band_is_kept() {
+    let t = 3000;
+    let mut rng = Lcg(31);
+    let cells = vec![(blob(0, 40.0, 44.0), trace(&mut rng, t, 0.02, 5.0))];
+    let mut m = movie(&cells, t, 37);
+    sweep_missing(&mut m, t, 20..60, 30..60);
+    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 40.0, 44.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert!(deleted.is_empty(), "deleted {deleted:?}");
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 1, "stats {:?}", slow.stats());
+    assert!(near(centres(&lib)[0], 40.0, 44.0), "{:?}", centres(&lib));
+}
+
+/// A missing sample survives the reservoir (event slot, shared random slot,
+/// the wire encoding of a visit's tile) as NaN, is zeroed with its index
+/// handed to the solves by `take_missing`, and no real value collides with
+/// the marker.
+#[test]
+fn missing_samples_round_trip_through_the_reservoir() {
+    use reservoir::{take_missing, SharedFrames, Tile, MISSING};
+    let rect = Rect {
+        y0: 0,
+        x0: 0,
+        h: 3,
+        w: 4,
+    };
+    let mut z: Vec<f32> = (0..12).map(|i| i as f32 - 5.5).collect();
+    z[2] = f32::NAN;
+    z[7] = f32::NAN;
+    z[11] = -1.0e9; // clamps to -32767, never to the marker
+    let mut tile = Tile::new(rect, rect);
+    tile.offer(&z, 4, 10, 1.0, false, 4, -0.01);
+    let mut shared = SharedFrames::new(rect);
+    let j = shared.offer(&z, 4, 10, false, 4, 1).unwrap();
+    tile.set_random(j, 10, false);
+    for which in [(true, 0), (false, 0)] {
+        let mut v = Vec::new();
+        tile.slot_values(which, &shared, &mut v);
+        assert!(v[2].is_nan() && v[7].is_nan(), "{v:?}");
+        assert_eq!(v[11], -32767.0 / 16.0);
+        let miss = take_missing(&mut v);
+        assert_eq!(miss, vec![2, 7]);
+        assert!(v.iter().all(|x| x.is_finite()) && v[2] == 0.0 && v[7] == 0.0);
+    }
+    assert_ne!(tile.events[0].data[11], MISSING);
+    // The wire carries the marker verbatim.
+    tile.fill_randoms(&shared);
+    let mut w = wire::Writer::default();
+    w.i16s(&tile.events[0].data);
+    let back = wire::Reader::new(&w.buf).i16s().unwrap();
+    assert_eq!(back[2], MISSING);
+    assert_eq!(back[7], MISSING);
 }

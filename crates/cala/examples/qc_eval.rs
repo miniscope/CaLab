@@ -35,6 +35,9 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
+//!   --core-test M      transient-band core test: off (default) | report
+//!                      (also writes fast.tsv, split.tsv) | trim | delete
+//!   --basin-trim       trim refined footprints to their significant basin
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -71,6 +74,11 @@
 //! * `real`: no ground truth; QC time course and final per-cell metrics, plus
 //!   `footprints.bin` for matching to another pipeline's cells.
 //!
+//! `cells.tsv` rows carry `fp_class` (`tp`, or the FP class: `noise`,
+//! `adjacent`, `partial`, `dup`, `nondetectable` for a match to a GT unit
+//! that is not detectable) and `edge_px` (distance of the centroid to the
+//! sensor-mask edge, capped at 40).
+//!
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
 //! every 100 frames, GT precision / recall / trace r at checkpoints, and the
 //! slow loop's cumulative add classification), `adds.tsv` / `removals.tsv`
@@ -91,7 +99,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
+use calab_cala::discover::{CoreTest, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
@@ -328,6 +336,10 @@ struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
     buf: Vec<f32>,
+    /// Registered frames: the sensor FOV mask as the warp's source, and the
+    /// per-frame validity (samples moved in from outside the mask are missing).
+    src: Option<calab_cala::motion::SourceMask>,
+    valid: Vec<u8>,
 }
 
 impl Pipeline {
@@ -358,10 +370,21 @@ impl Pipeline {
         } else {
             None
         };
+        let src = mc.as_ref().map(|_| {
+            calab_cala::motion::SourceMask::new(
+                dims.height,
+                dims.width,
+                cal.fov().mask(),
+                calab_cala::motion::Interpolation::Bicubic,
+            )
+            .unwrap()
+        });
         Pipeline {
             pre,
             mc,
             buf: vec![0.0; n_px],
+            src,
+            valid: vec![0; n_px],
         }
     }
 
@@ -369,11 +392,16 @@ impl Pipeline {
         self.pre.front(raw, &mut self.buf).unwrap();
         match &mut self.mc {
             Some(mc) => {
-                mc.process(Frame::F32(&self.buf), out).unwrap();
+                let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(&rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
             }
-            None => out.copy_from_slice(&self.buf),
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+            }
         }
-        self.pre.back(out).unwrap();
     }
 }
 
@@ -765,6 +793,57 @@ struct Gt {
     detectable: Vec<bool>,
     snr: Vec<f64>,
     t_gt: usize,
+    /// Distance in px from each pixel to the nearest masked-out pixel (or
+    /// the image border), capped at [`EDGE_CAP`].
+    edge: Vec<f32>,
+}
+
+/// Cap of the edge-distance map (px).
+const EDGE_CAP: f32 = 40.0;
+
+/// Distance from every pixel to the nearest pixel outside the sensor mask
+/// (the image border counts as outside), capped at [`EDGE_CAP`]. Two-pass
+/// chamfer (3-4) transform: within a few percent of the Euclidean distance,
+/// which is plenty against a 10 px threshold.
+fn edge_distance(fov: &[u8], dims: Dims) -> Vec<f32> {
+    let (h, w) = (dims.height as i32, dims.width as i32);
+    let at = |d: &Vec<f32>, y: i32, x: i32| -> f32 {
+        if y < 0 || x < 0 || y >= h || x >= w {
+            0.0
+        } else {
+            d[(y * w + x) as usize]
+        }
+    };
+    let mut d: Vec<f32> = fov
+        .iter()
+        .map(|&m| if m != 0 { EDGE_CAP + 10.0 } else { 0.0 })
+        .collect();
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let v = d[i]
+                .min(at(&d, y - 1, x) + 1.0)
+                .min(at(&d, y, x - 1) + 1.0)
+                .min(at(&d, y - 1, x - 1) + std::f32::consts::SQRT_2)
+                .min(at(&d, y - 1, x + 1) + std::f32::consts::SQRT_2);
+            d[i] = v;
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            let i = (y * w + x) as usize;
+            let v = d[i]
+                .min(at(&d, y + 1, x) + 1.0)
+                .min(at(&d, y, x + 1) + 1.0)
+                .min(at(&d, y + 1, x + 1) + std::f32::consts::SQRT_2)
+                .min(at(&d, y + 1, x - 1) + std::f32::consts::SQRT_2);
+            d[i] = v;
+        }
+    }
+    for v in &mut d {
+        *v = v.min(EDGE_CAP);
+    }
+    d
 }
 
 impl Gt {
@@ -835,13 +914,14 @@ fn build_gt(
             detectable,
             snr,
             t_gt: o.n_frames,
+            edge: edge_distance(fov, dims),
         },
         lib,
     )
 }
 
 const LABELS: &str =
-    "frame\tslot\tmatched\ttp\tdup\tfp_r\tgt\tgt_snr\ttrue_r\ttrue_r_any\txt_var\txt_rel\txt_r\tperturb";
+    "frame\tslot\tmatched\ttp\tdup\tfp_r\tgt\tgt_snr\ttrue_r\ttrue_r_any\txt_var\txt_rel\txt_r\tperturb\tfp_class\tedge_px";
 
 /// Per-cell labels of `lib`'s cells at frame `t_end`. `own` maps a cell to
 /// its GT units when known (oracle); otherwise footprints are matched.
@@ -883,6 +963,29 @@ fn label_rows(
         }
         let dup = !matched && best[s].0 != usize::MAX && best[s].1 >= 0.5 && gt_hit[best[s].0];
         let fp_r = mt[s].map_or(best[s].1, |m| m.1);
+        let ctr0 = centroid(&det[s], dims.width);
+        let fp_class = if tp {
+            "tp"
+        } else if matched {
+            // Matched only non-detectable GT units: not a real error of the
+            // pipeline, reported apart from the other FP classes.
+            "nondetectable"
+        } else if dup {
+            "dup"
+        } else if best[s].0 != usize::MAX && best[s].1 >= 0.5 {
+            "partial"
+        } else if !gt.near(ctr0, 10.0, &[]).is_empty() {
+            "adjacent"
+        } else {
+            "noise"
+        };
+        let edge_px = {
+            let (cy, cx) = (
+                (ctr0.0.round() as i64).clamp(0, dims.height as i64 - 1) as usize,
+                (ctr0.1.round() as i64).clamp(0, dims.width as i64 - 1) as usize,
+            );
+            gt.edge[cy * dims.width + cx]
+        };
         let mut vals = [f64::NAN; 8];
         if len >= qc.config().min_frames {
             if let Some((t0, w)) = hist.window(id, len, t_end) {
@@ -927,7 +1030,7 @@ fn label_rows(
         }
         let _ = write!(
             out,
-            "{t_end}\t{s}\t{}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{perturb}",
+            "{t_end}\t{s}\t{}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{perturb}\t{fp_class}\t{edge_px:.1}",
             u8::from(matched),
             u8::from(tp),
             u8::from(dup),
@@ -1663,6 +1766,18 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
+    if let Some(v) = arg_value(&args, "--core-test") {
+        scfg.core_test = match v.as_str() {
+            "off" => CoreTest::Off,
+            "report" => CoreTest::Report,
+            "trim" => CoreTest::Trim,
+            "delete" => CoreTest::Delete,
+            other => panic!("--core-test: off|report|trim|delete, not {other}"),
+        };
+    }
+    if args.iter().any(|a| a == "--basin-trim") {
+        scfg.basin_trim = true;
+    }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
@@ -1957,7 +2072,7 @@ fn main() {
                     for (sl_, c) in q.cells().enumerate() {
                         let _ = write!(
                             cells_out,
-                            "{t_end}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0"
+                            "{t_end}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0\t-\tnan"
                         );
                         for v in c.to_row() {
                             let _ = write!(cells_out, "\t{v:.5}");
@@ -2084,6 +2199,21 @@ fn main() {
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
+    if let Some(sl) = &slow {
+        if sl.config().core_test != CoreTest::Off {
+            let (fp, ff, fd) = sl.fast_diag;
+            println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
+            std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
+            std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().basin_trim {
+            let (c, f, s2) = sl.basin_diag;
+            println!(
+                "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",
+                if c > 0 { f / c as f64 } else { 0.0 }
+            );
+        }
+    }
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();
     sorted.sort_by(f64::total_cmp);
@@ -2235,7 +2365,7 @@ fn main() {
         for (sl_, c) in q2.cells().enumerate() {
             let _ = write!(
                 out,
-                "{t_len}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0"
+                "{t_len}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0\t-\tnan"
             );
             for v in c.to_row() {
                 let _ = write!(out, "\t{v:.5}");

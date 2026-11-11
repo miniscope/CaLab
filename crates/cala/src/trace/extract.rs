@@ -81,6 +81,17 @@ impl<R: FrameRegistrar> FrameRegistrar for ReplayRegistrar<'_, R> {
             .replay(frame, width, height, record)
             .map_err(|e| ReplayError(e.to_string()))
     }
+
+    fn validity(
+        &self,
+        record: &R::Record,
+        src: &crate::motion::SourceMask,
+        valid: &mut [u8],
+    ) -> Result<bool, ReplayError> {
+        self.inner
+            .validity(record, src, valid)
+            .map_err(|e| ReplayError(e.to_string()))
+    }
 }
 
 /// Re-extract traces for a span of raw frames.

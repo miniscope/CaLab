@@ -50,6 +50,7 @@ use super::lines::{LineCorrector, LineMode};
 use super::noise::{NoiseConfig, NoiseEstimator, NoiseMap, NoiseState};
 use super::warmup::{WarmupAccumulator, DEFAULT_WARMUP_FRAMES};
 use super::{Dims, PreprocessError, RawPixel};
+use crate::motion::{Interpolation, SourceMask};
 
 /// Motion correction, as the preprocessing chain sees it.
 ///
@@ -84,6 +85,19 @@ pub trait FrameRegistrar {
         height: usize,
         record: &Self::Record,
     ) -> Result<(), Self::Error>;
+
+    /// Which pixels of the frame `record` registered hold data: 1 where the
+    /// warp sampled only from inside `src` (the sensor FOV mask, see
+    /// [`SourceMask`]), into `valid`. Returns `false` when the registrar does
+    /// not move frames (the default); the FOV mask itself then applies.
+    fn validity(
+        &self,
+        _record: &Self::Record,
+        _src: &SourceMask,
+        _valid: &mut [u8],
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 }
 
 /// The identity registrar: no motion correction.
@@ -257,6 +271,10 @@ pub struct Preprocessor {
     background: RunningMinBackground,
     noise: NoiseMap,
     next_frame: u64,
+    /// The FOV mask as a warp source (built on first use) and a buffer for
+    /// the current frame's validity (see [`Preprocessor::back_masked`]).
+    src_mask: Option<SourceMask>,
+    valid: Vec<u8>,
 }
 
 impl Preprocessor {
@@ -275,6 +293,8 @@ impl Preprocessor {
             noise: NoiseMap::new(dims, &cfg.noise)?,
             calib,
             next_frame: 0,
+            src_mask: None,
+            valid: Vec::new(),
         })
     }
 
@@ -372,6 +392,83 @@ impl Preprocessor {
         Ok(rec)
     }
 
+    /// [`Self::back`] for a registered frame of which only the pixels with
+    /// `valid != 0` hold data (see [`SourceMask`]).
+    ///
+    /// Registration moves the sensor's FOV mask in tissue coordinates, so near
+    /// its edge a pixel holds tissue light in some frames and the zeros
+    /// outside the mask (or an interpolation blend with them) in others.
+    /// Those samples are missing, not data (on the minisim motion
+    /// recordings, the median-|Δ| σ of a pixel 1 px inside the mask edge
+    /// fell to about half that of the tissue next to it, and the on/off
+    /// light read as 5-30 σ events that grew false cells):
+    ///
+    /// * the noise map and the background floor are updated only from a
+    ///   pixel's valid samples ([`NoiseMap::update_masked`],
+    ///   [`RunningMinBackground::process_masked`]); a pixel that has had too
+    ///   few to estimate its own σ gets that of its neighbours;
+    /// * a missing pixel inside the FOV comes out at its recent level above
+    ///   the floor (the boxcar of its latest valid samples), so it neither
+    ///   steps nor carries new data, and as NaN until it has had a valid
+    ///   sample (outside the FOV: 0, as for unregistered frames). The trace
+    ///   solve ([`crate::trace::TraceEngine::process_into`]) and the slow
+    ///   loop give NaN pixels zero weight.
+    ///
+    /// [`NoiseMap::update_masked`]: super::noise::NoiseMap::update_masked
+    /// [`RunningMinBackground::process_masked`]: super::background::RunningMinBackground::process_masked
+    pub fn back_masked(
+        &mut self,
+        frame: &mut [f32],
+        valid: &[u8],
+    ) -> Result<BackRecord, PreprocessError> {
+        self.dims().check("frame", frame.len())?;
+        self.dims().check("validity mask", valid.len())?;
+        self.noise.update_masked(frame, valid)?;
+        let bg = self.background.process_masked(frame, valid)?;
+        // Branch-free (vectorised).
+        for (v, &m) in frame.iter_mut().zip(self.calib.fov.mask()) {
+            *v = if (m == 0) & !v.is_finite() { 0.0 } else { *v };
+        }
+        let rec = BackRecord {
+            frame_index: self.next_frame,
+            floor_mean: bg.floor_mean,
+            floor_lowered_fraction: bg.lowered_fraction,
+            snapshot: bg.snapshot,
+        };
+        self.next_frame += 1;
+        Ok(rec)
+    }
+
+    /// The FOV mask as the source of a bicubic warp (the motion corrector's
+    /// default kernel).
+    pub fn source_mask(&mut self) -> &SourceMask {
+        let (calib, slot) = (&self.calib, &mut self.src_mask);
+        slot.get_or_insert_with(|| {
+            let d = calib.dims();
+            SourceMask::new(d.height, d.width, calib.fov.mask(), Interpolation::Bicubic)
+                .expect("the FOV mask has the frame's size")
+        })
+    }
+
+    /// [`Self::back_masked`] for a frame registered by the rigid shift
+    /// `(dy, dx)` (a [`crate::motion::MotionRecord`]'s `dy`, `dx`) with
+    /// bicubic sampling: the validity is the FOV mask moved by the shift.
+    pub fn back_rigid(
+        &mut self,
+        frame: &mut [f32],
+        shift: (f32, f32),
+    ) -> Result<BackRecord, PreprocessError> {
+        let mut valid = std::mem::take(&mut self.valid);
+        valid.resize(self.dims().pixels(), 0);
+        let filled = self
+            .source_mask()
+            .fill_rigid(shift, &mut valid)
+            .map_err(|e| PreprocessError::Registration(e.to_string()));
+        let rec = filled.and_then(|_| self.back_masked(frame, &valid));
+        self.valid = valid;
+        rec
+    }
+
     /// The whole chain with motion correction in the middle.
     pub fn process<T: RawPixel, R: FrameRegistrar>(
         &mut self,
@@ -384,7 +481,18 @@ impl Preprocessor {
         let registration = registrar
             .register(out, width, height)
             .map_err(|e| PreprocessError::Registration(e.to_string()))?;
-        let back = self.back(out)?;
+        let mut valid = std::mem::take(&mut self.valid);
+        valid.resize(self.dims().pixels(), 0);
+        let masked = registrar
+            .validity(&registration, self.source_mask(), &mut valid)
+            .map_err(|e| PreprocessError::Registration(e.to_string()));
+        let back = match masked {
+            Ok(true) => self.back_masked(out, &valid),
+            Ok(false) => self.back(out),
+            Err(e) => Err(e),
+        };
+        self.valid = valid;
+        let back = back?;
         Ok(PreprocessRecord {
             front,
             back,
@@ -478,7 +586,8 @@ pub struct PreprocessState {
 
 const MAGIC: &[u8; 8] = b"CALAPRE\0";
 /// 2: adds the flicker stage (config and reference).
-const VERSION: u32 = 2;
+/// 3: adds the noise map's per-pixel difference counts (missing samples).
+const VERSION: u32 = 3;
 
 impl PreprocessState {
     /// Little-endian binary encoding (see `codec.rs`), versioned.
@@ -559,6 +668,7 @@ impl PreprocessState {
         w.f32s(&n.prev);
         w.f32s(&n.mean_abs);
         w.f32s(&n.median);
+        w.f32s(&n.diffs);
 
         w.u64(self.flicker.frames);
         w.f32s(&self.flicker.reference);
@@ -576,7 +686,7 @@ impl PreprocessState {
             ));
         }
         let v = r.u32("version")?;
-        if v != VERSION {
+        if v != VERSION && v != 2 {
             return Err(PreprocessError::InvalidState(format!(
                 "unsupported state version {v}"
             )));
@@ -684,6 +794,11 @@ impl PreprocessState {
             mean_abs: r.f32s("noise mean")?,
             median: r.f32s("noise median")?,
             frames: nframes,
+            diffs: if v >= 3 {
+                r.f32s("noise differences")?
+            } else {
+                Vec::new()
+            },
         };
         noise.check(matches!(estimator, NoiseEstimator::MedianTracker { .. }))?;
         let flicker = FlickerState {
@@ -734,6 +849,80 @@ mod tests {
         }
         let cal = Calibration::from_warmup(&acc, cfg).unwrap();
         Preprocessor::new(cal, cfg).unwrap()
+    }
+
+    /// A registrar that moves frames by whole pixels (rows, as the warp's
+    /// sign convention) and reports the validity of the FOV mask moved with
+    /// them.
+    struct RowShift(f32);
+    impl FrameRegistrar for RowShift {
+        type Record = f32;
+        type Error = String;
+        fn register(&mut self, f: &mut [f32], w: usize, h: usize) -> Result<f32, String> {
+            self.replay(f, w, h, &self.0)?;
+            Ok(self.0)
+        }
+        fn replay(&self, f: &mut [f32], w: usize, _: usize, r: &f32) -> Result<(), String> {
+            // out(y) = in(y - r), border replicated as the warp does.
+            let k = *r as usize;
+            f.copy_within(..f.len() - k * w, k * w);
+            for y in 0..k {
+                let (a, b) = f.split_at_mut(k * w);
+                a[y * w..(y + 1) * w].copy_from_slice(&b[..w]);
+            }
+            Ok(())
+        }
+        fn validity(&self, r: &f32, src: &SourceMask, v: &mut [u8]) -> Result<bool, String> {
+            src.fill_rigid((*r, 0.0), v).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn registered_frames_mark_samples_from_outside_the_mask_missing() {
+        let dims = Dims::new(24, 20).unwrap();
+        let frames = synthetic(dims, 40);
+        let cfg = PreprocessConfig::default();
+        let mut a = calibrated(dims, &frames, &cfg);
+        let mut b = a.clone();
+        // The 3-row shift does move FOV pixels out of the data.
+        let mut v = vec![0u8; dims.pixels()];
+        a.source_mask().fill_rigid((3.0, 0.0), &mut v).unwrap();
+        let fov = a.calibration().fov().mask();
+        assert!(fov.iter().zip(&v).any(|(&m, &ok)| m != 0 && ok == 0));
+        let mut out_a = vec![0.0; dims.pixels()];
+        let mut out_b = vec![0.0; dims.pixels()];
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let mut state = None;
+        for (t, f) in frames.iter().enumerate() {
+            // Shift by 0 or 3 rows: the top rows of the FOV come and go.
+            let s = if t % 4 < 2 { 0.0 } else { 3.0 };
+            a.process(f, &mut out_a, &mut RowShift(s)).unwrap();
+            // By hand: front, replay, back with the rigid shift's validity.
+            b.front(f, &mut out_b).unwrap();
+            RowShift(s).replay(&mut out_b, 24, 20, &s).unwrap();
+            b.back_rigid(&mut out_b, (s, 0.0)).unwrap();
+            assert_eq!(bits(&out_a), bits(&out_b), "frame {t}");
+            // Frame 0 is unshifted, so every FOV pixel has had a valid sample:
+            // missing ones come out at their level, never NaN (and 0 outside).
+            assert!(out_a.iter().all(|v| v.is_finite()), "frame {t}");
+            if t == 20 {
+                state = Some(a.state().to_bytes());
+            }
+        }
+        // The masked state (per-pixel noise counts) round-trips exactly.
+        let st = PreprocessState::from_bytes(&state.unwrap()).unwrap();
+        let mut c = Preprocessor::from_state(&st).unwrap();
+        let mut d = calibrated(dims, &frames, &cfg);
+        for (t, f) in frames.iter().enumerate() {
+            let s = if t % 4 < 2 { 0.0 } else { 3.0 };
+            d.process(f, &mut out_b, &mut RowShift(s)).unwrap();
+            if t > 20 {
+                c.process(f, &mut out_a, &mut RowShift(s)).unwrap();
+                assert_eq!(bits(&out_a), bits(&out_b), "frame {t}");
+            }
+        }
+        assert_eq!(bits(&c.noise().sigma()), bits(&d.noise().sigma()));
     }
 
     #[test]

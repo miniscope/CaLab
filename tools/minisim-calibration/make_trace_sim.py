@@ -36,6 +36,10 @@ ap.add_argument("--npx", type=int, default=600)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--motion", action="store_true")
 ap.add_argument("--spec", default=None, help="base spec JSON (default: ca1_workshop_calibrated.spec.json)")
+ap.add_argument("--target-depth-um", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                help="mark units whose depth (centers_um[:,0]) is outside [LO, HI] as non-detectable in "
+                     "oracle.bin (nuisance, not targets); minisim's own flag is a pure SNR test, so a "
+                     "blurred deep cell can still pass it. Default: keep minisim's flag.")
 ap.add_argument("--p-q2a", type=float, default=None, help="cell_activity p_quiescent_to_active (per frame)")
 ap.add_argument("--q-rate", type=float, default=None, help="cell_activity quiescent_rate_hz")
 a = ap.parse_args()
@@ -106,6 +110,12 @@ def window(fp, wy0, wx0, wy1, wx1):
 
 C = np.asarray(gt.C, dtype=np.float32)
 n, T = C.shape
+detectable = np.asarray(gt.detectable, dtype=bool).copy()
+if a.target_depth_um is not None:
+    depth = np.asarray(gt.centers_um)[:, 0]
+    detectable &= (depth >= a.target_depth_um[0]) & (depth <= a.target_depth_um[1])
+    print("target depth window", a.target_depth_um, "detectable",
+          int(np.sum(gt.detectable)), "->", int(detectable.sum()), flush=True)
 with open(out / "oracle.bin", "wb") as fh:
     fh.write(b"CALAORC1" + struct.pack("<4I", H, W, n, T))
     for i, fp in enumerate(gt.planted):
@@ -134,10 +144,10 @@ with open(out / "oracle.bin", "wb") as fh:
             wy1, wx1 = min(cy + R + 1, H), min(cx + R + 1, W)
             cf = window(full, wy0, wx0, wy1, wx1)
             cc = window(core, wy0, wx0, wy1, wx1)
-        fh.write(struct.pack("<IBBxxff", i, bool(gt.detectable[i]), bool(gt.in_focus[i]), cy, cx))
+        fh.write(struct.pack("<IBBxxff", i, bool(detectable[i]), bool(gt.in_focus[i]), cy, cx))
         for (y0, x0, ph, pw, v) in (cf, cc):
             fh.write(struct.pack("<iiII", y0, x0, ph, pw))
             fh.write(v.tobytes())
     fh.write(C.tobytes())
-print("exported", n, "units", T, "frames; detectable", int(np.sum(gt.detectable)),
+print("exported", n, "units", T, "frames; detectable", int(detectable.sum()),
       "in_focus", int(np.sum(gt.in_focus)), "size MB", (out / "oracle.bin").stat().st_size / 1e6, flush=True)

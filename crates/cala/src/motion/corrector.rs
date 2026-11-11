@@ -1637,6 +1637,19 @@ impl MotionCorrector {
         self.estimate_with(bootstrap, brightness)
     }
 
+    /// Validity of the frame `record` corrects (see [`SourceMask`]): 1 where
+    /// the corrected pixel was sampled only from inside `src`, typically the
+    /// sensor FOV mask.
+    pub fn validity(
+        &mut self,
+        record: &MotionRecord,
+        src: &super::SourceMask,
+        out: &mut [u8],
+    ) -> Result<(), MotionError> {
+        self.warper
+            .fill_validity((record.dy, record.dx), &record.residual, src, out)
+    }
+
     /// Prefilter parameters an external (GPU) prefilter needs to reproduce
     /// the CPU one, or `None` before initialisation.
     pub fn prefilter_params(&self) -> Option<PrefilterParams> {
