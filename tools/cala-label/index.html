@@ -142,7 +142,7 @@
     <main>
       <section>
         <figure>
-          <figcaption id="cap-mean">mean image + contour</figcaption>
+          <figcaption id="cap-mean">max projection + contour</figcaption>
           <canvas id="mean" width="168" height="168"></canvas>
         </figure>
         <figure>
@@ -180,6 +180,7 @@
       <span><kbd>z</kbd> undo</span>
       <span><kbd>space</kbd> pause</span>
       <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> event</span>
+      <span><kbd>x</kbd> max / mean</span>
       <span><kbd>k</kbd> contour</span>
       <span><kbd>r</kbd> raw / processed</span>
       <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> browse</span>
@@ -200,7 +201,15 @@
       let idx = 0;
       let flags = { merged: false, edge: false };
       let shownAt = 0;
-      let state = { contour: true, raw: false, playing: true, speed: 0.5, step: 0, event: null };
+      let state = {
+        contour: true,
+        raw: false,
+        maxproj: true,
+        playing: true,
+        speed: 0.5,
+        step: 0,
+        event: null,
+      };
       let data = null;
       let timer = null;
 
@@ -216,7 +225,7 @@
       function fetchCandidate(cid) {
         if (!cache.has(cid)) {
           const base = `/c/${cid}/`;
-          const names = ['snip', 'raw', 'mean', 'mean_raw', 'fp', 'eta'];
+          const names = ['snip', 'raw', 'mean', 'mean_raw', 'max', 'max_raw', 'fp', 'eta'];
           const p = Promise.all([
             ...names.map((n) => loadImage(base + n + '.png')),
             fetch(base + 'trace.json').then((r) => r.json()),
@@ -385,9 +394,11 @@
 
       function drawMean() {
         if (!data) return;
-        drawImg($('mean'), state.raw ? data.mean_raw : data.mean, 0, 0, items.crop);
+        const kind = state.maxproj ? 'max' : 'mean';
+        drawImg($('mean'), data[state.raw ? kind + '_raw' : kind], 0, 0, items.crop);
         drawContour($('mean'), data.contour, items.crop);
-        $('cap-mean').textContent = `mean image (${state.raw ? 'raw' : 'processed'}) + contour`;
+        $('cap-mean').textContent =
+          `${kind === 'max' ? 'max projection' : 'mean image'} (${state.raw ? 'raw' : 'processed'}) + contour`;
       }
 
       function updateChrome() {
@@ -514,6 +525,7 @@
         else if (k === 'e') ((flags.edge = !flags.edge), updateChrome());
         else if (k === 'z') undo();
         else if (k === ' ') ((state.playing = !state.playing), render(), ev.preventDefault());
+        else if (k === 'x') ((state.maxproj = !state.maxproj), drawMean());
         else if (k === 'k') ((state.contour = !state.contour), drawMean(), render());
         else if (k === 'r') ((state.raw = !state.raw), drawMean(), render());
         else if (k === '1' || k === '2' || k === '3')

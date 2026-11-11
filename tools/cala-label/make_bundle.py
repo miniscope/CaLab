@@ -325,6 +325,11 @@ def cmd_render(a):
     tr_lo, tr_hi = fixed_range((traces[i] for i in range(n)), 0.1, 99.9, per_array=t_len)
     # Event-triggered average: peak frames minus the pre-event baseline, one range for all.
     eta = np.stack([snip_y[i, :, HALF - 1 : HALF + 2].mean((0, 1)) - snip_y[i, :, 0:15].mean((0, 1)) for i in range(n)])
+    # Max projection of the crop over all event frames; its own fixed ranges (a max sits far above a mean).
+    max_y = np.stack([snip_y[i].max((0, 1)) for i in range(n)])
+    max_pre = np.stack([snip_pre[i].max((0, 1)) for i in range(n)])
+    my_lo, my_hi = fixed_range([max_y], 1.0, 99.5, per_array=max_y.size)
+    mp_lo, mp_hi = fixed_range([max_pre], 1.0, 99.5, per_array=max_pre.size)
     e_lo, e_hi = fixed_range([eta], 1.0, 99.5, per_array=eta.size)
     e_lo = min(e_lo, -e_hi * 0.1)
     print(f"fixed ranges: y [{y_lo:.2f}, {y_hi:.2f}] raw [{p_lo:.2f}, {p_hi:.2f}] eta [{e_lo:.2f}, {e_hi:.2f}] trace [{tr_lo:.2f}, {tr_hi:.2f}]")
@@ -349,6 +354,8 @@ def cmd_render(a):
         Image.fromarray(to_u8(centre(fp / peak, show), 0.0, 1.0)).save(d / "fp.png", optimize=True)
         Image.fromarray(to_u8(centre(mean_y[i], show), y_lo, y_hi, LEVELS)).save(d / "mean.png", optimize=True)
         Image.fromarray(to_u8(centre(mean_pre[i], show), p_lo, p_hi, LEVELS)).save(d / "mean_raw.png", optimize=True)
+        Image.fromarray(to_u8(centre(max_y[i], show), my_lo, my_hi, LEVELS)).save(d / "max.png", optimize=True)
+        Image.fromarray(to_u8(centre(max_pre[i], show), mp_lo, mp_hi, LEVELS)).save(d / "max_raw.png", optimize=True)
         Image.fromarray(to_u8(centre(eta[i], show), e_lo, e_hi, LEVELS)).save(d / "eta.png", optimize=True)
         full, k = decimate_max(traces[i])
         wins = [[round(float(v), 3) for v in traces[i][t - HALF : t + HALF + 1]] for t in peaks[i]]
@@ -365,7 +372,7 @@ def cmd_render(a):
         fps=FPS,
         trace_range=[tr_lo, tr_hi],
         # Informational only; the PNGs are already scaled with these.
-        grey_range=dict(processed=[y_lo, y_hi], raw=[p_lo, p_hi], eta=[e_lo, e_hi]),
+        grey_range=dict(processed=[y_lo, y_hi], raw=[p_lo, p_hi], eta=[e_lo, e_hi], max=[my_lo, my_hi], max_raw=[mp_lo, mp_hi]),
     )
     (out / "items.json").write_text(json.dumps(items))
     (out / "manifest.json").write_text(json.dumps(dict(selection=sel), indent=1))

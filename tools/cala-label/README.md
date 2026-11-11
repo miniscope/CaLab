@@ -10,18 +10,19 @@ nothing else: no id, no score, no build or run, no Minian match.
 
 ## Keys
 
-| Key                | Action                                                           |
-| ------------------ | ---------------------------------------------------------------- |
-| `c` / `n` / `u`    | cell / not a cell / unsure (saves and moves on)                  |
-| `m`                | toggle the flag "merged (two cells)" before pressing `c`/`n`/`u` |
-| `e`                | toggle the flag "edge, partly outside"                           |
-| `z`                | undo the last label                                              |
-| `space`            | pause or play                                                    |
-| `1` `2` `3`        | loop only that event (`0`: all three again)                      |
-| `k`                | contour on or off                                                |
-| `r`                | processed or raw registered video and mean image                 |
-| left / right arrow | previous or next candidate without labelling                     |
-| `+` / `-`          | playback speed (default 0.5x, 10 fps)                            |
+| Key                | Action                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `c` / `n` / `u`    | cell / not a cell / unsure (saves and moves on)                                       |
+| `m`                | toggle the flag "merged (two cells)" before pressing `c`/`n`/`u`                      |
+| `e`                | toggle the flag "edge, partly outside"                                                |
+| `z`                | undo the last label                                                                   |
+| `space`            | pause or play                                                                         |
+| `1` `2` `3`        | loop only that event (`0`: all three again)                                           |
+| `x`                | max projection or mean of the crop (default max; max is over the three event windows) |
+| `k`                | contour on or off                                                                     |
+| `r`                | processed or raw registered video and mean image                                      |
+| left / right arrow | previous or next candidate without labelling                                          |
+| `+` / `-`          | playback speed (default 0.5x, 10 fps)                                                 |
 
 Progress shows as `labelled / total`. Closing the browser or stopping the server
 loses nothing: the next start opens at the first unlabelled candidate.
