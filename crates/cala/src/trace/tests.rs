@@ -206,9 +206,8 @@ fn recovers_traces_exactly_when_the_model_is_exact() {
 
 #[test]
 fn recovers_traces_through_the_high_pass() {
-    // High-passed data, filtered footprints on their full windows. What is
-    // not modelled are the negative lobes outside each window, a few percent
-    // of a neighbour's amplitude.
+    // High-passed data, filtered footprints on their full windows plus the
+    // high-pass moat around them.
     let t = 30;
     let c = traces(6, t, 1);
     let frames = filtered_frames(&c, 0.0, 2);
@@ -229,7 +228,9 @@ fn recovers_traces_through_the_high_pass() {
             worst = worst.max((r.traces[i] - c[i][s]).abs());
         }
     }
-    assert!(worst < 0.02 * peak, "worst error {worst}, peak {peak}");
+    // With the moat modelled (block means of `L a` out to 2σ) the model is
+    // all but exact: 0.05 % of the peak (1.1 % with the moat dropped).
+    assert!(worst < 0.002 * peak, "worst error {worst}, peak {peak}");
     // Clipping the filtered footprints at zero (the tempting shortcut) is
     // measurably worse on the same data.
     let mut clipped =

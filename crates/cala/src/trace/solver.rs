@@ -82,6 +82,8 @@ pub struct TraceEngine {
     q_snap: Vec<f64>,
     /// Ring model: ring mean of the frame per cell.
     ring: Vec<f32>,
+    /// The frame summed over each moat-grid block (FOV only).
+    blocks: Vec<f32>,
     active: Vec<bool>,
     next_frame: u64,
 }
@@ -97,6 +99,7 @@ impl TraceEngine {
             q: Vec::new(),
             q_snap: Vec::new(),
             ring: Vec::new(),
+            blocks: Vec::new(),
             active: Vec::new(),
             next_frame: 0,
         };
@@ -190,12 +193,37 @@ impl TraceEngine {
         let n_px = lib.dims().pixels();
         check_len("frame", n_px, frame.len())?;
         let n = lib.len();
-        // Projections onto the filtered footprints.
+        // Projections onto the filtered footprints: the support part, minus
+        // the moat's block means against the frame's block sums.
+        let gl = lib.grid_len();
+        if gl > 0 {
+            self.blocks.clear();
+            self.blocks.resize(gl, 0.0);
+            let (w, bs) = (lib.dims().width, lib.block_px());
+            let gw = lib.dims().width.div_ceil(bs);
+            let fov = lib.fov();
+            for (y, (row, mrow)) in frame.chunks(w).zip(fov.chunks(w)).enumerate() {
+                let brow = &mut self.blocks[(y / bs) * gw..(y / bs + 1) * gw];
+                for ((o, seg), mseg) in brow.iter_mut().zip(row.chunks(bs)).zip(mrow.chunks(bs)) {
+                    let mut acc = 0.0f32;
+                    for (&v, &m) in seg.iter().zip(mseg) {
+                        if m != 0 && v.is_finite() {
+                            acc += v;
+                        }
+                    }
+                    *o += acc;
+                }
+            }
+        }
         for i in 0..n {
-            let (p, v) = lib.filtered(i);
+            let (p, v) = lib.core_col(i);
             let mut s = 0.0f32;
             for (&q, &a) in p.iter().zip(v) {
                 s += a * frame[q as usize];
+            }
+            let (bi, li) = lib.lowpass(i);
+            for (&bq, &l) in bi.iter().zip(li) {
+                s -= l * self.blocks[bq as usize];
             }
             self.b[i] = s;
         }
