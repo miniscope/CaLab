@@ -235,21 +235,37 @@ impl NoiseMap {
             let ok = &valid[start..end];
             let prev = &mut st.prev[start..end];
             let diffs = &mut st.diffs[start..end];
-            let tracked = || diffs.iter().zip(ok).all(|(&k, &o)| k >= init || o == 0);
-            if tracking && !first && tracked() {
-                // Every valid pixel tracks its median: branch-free (vectorised).
+            if tracking && !first {
+                // Branch-free (vectorised), both regimes per pixel: the
+                // running mean of |Δ| until a pixel has had `init_frames`
+                // differences (its median starts there), the median tracker
+                // after. Missing samples become NaN first, so the loop reads
+                // f32 only.
+                let mut vm = [0.0f32; MASKED_BLOCK];
+                let vm = &mut vm[..fr.len()];
+                for ((d, &v), &o) in vm.iter_mut().zip(fr).zip(ok) {
+                    *d = if o != 0 { v } else { f32::NAN };
+                }
                 let med = &mut st.median[start..end];
-                for (j, (((p, k), m), (&v, &o))) in prev
+                let mabs = &mut st.mean_abs[start..end];
+                for (j, ((((p, k), m), ma), &v)) in prev
                     .iter_mut()
                     .zip(diffs.iter_mut())
                     .zip(med.iter_mut())
-                    .zip(fr.iter().zip(ok))
+                    .zip(mabs.iter_mut())
+                    .zip(vm.iter())
                     .enumerate()
                 {
-                    let good = (o != 0) & v.is_finite();
+                    let good = v.is_finite();
                     let last = *p;
                     *p = if good { v } else { f32::NAN };
                     let use_it = good & !last.is_nan();
+                    let k1 = if use_it { (*k + 1.0).min(cap) } else { *k };
+                    *k = k1;
+                    let warm = k1 <= init;
+                    // Running mean of this pixel's |Δ| (exact, 1/k weights).
+                    let mean = *ma + ((v - last).abs() - *ma) / k1;
+                    *ma = if use_it & warm { mean } else { *ma };
                     let u = if dither {
                         hash_unit((start + j) as u32, seed)
                     } else {
@@ -265,8 +281,12 @@ impl NoiseMap {
                     };
                     let next = *m * (1.0 + step);
                     let next = if next == 0.0 { a } else { next };
-                    *m = if use_it { next } else { *m };
-                    *k = if use_it { (*k + 1.0).min(cap) } else { *k };
+                    let next = if warm { mean * to_median } else { next };
+                    *m = if use_it & (!warm | (k1 == init)) {
+                        next
+                    } else {
+                        *m
+                    };
                 }
             } else {
                 for (j, (p, &v)) in prev.iter_mut().zip(fr).enumerate() {

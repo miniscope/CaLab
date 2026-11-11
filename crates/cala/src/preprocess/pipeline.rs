@@ -425,10 +425,9 @@ impl Preprocessor {
         self.dims().check("validity mask", valid.len())?;
         self.noise.update_masked(frame, valid)?;
         let bg = self.background.process_masked(frame, valid)?;
+        // Branch-free (vectorised).
         for (v, &m) in frame.iter_mut().zip(self.calib.fov.mask()) {
-            if m == 0 && !v.is_finite() {
-                *v = 0.0;
-            }
+            *v = if (m == 0) & !v.is_finite() { 0.0 } else { *v };
         }
         let rec = BackRecord {
             frame_index: self.next_frame,

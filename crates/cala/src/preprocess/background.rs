@@ -203,8 +203,10 @@ pub struct RunningMinBackground {
     alpha: f32,
     st: BackgroundState,
     smooth: Vec<f32>,
-    /// Known samples per pixel of a block ([`Self::process_masked`]).
-    count: Vec<f32>,
+    /// Known (non-NaN) ring slots per pixel ([`Self::process_masked`]),
+    /// kept up to date while `known_ok`: a slot, once known, stays known.
+    known: Vec<f32>,
+    known_ok: bool,
     frozen: bool,
     snapshots: Vec<BackgroundSnapshot>,
 }
@@ -224,7 +226,8 @@ impl RunningMinBackground {
             },
             st: BackgroundState::new(dims, cfg.boxcar),
             smooth: vec![0.0; BLOCK],
-            count: Vec::new(),
+            known: Vec::new(),
+            known_ok: false,
             frozen: false,
             snapshots: Vec::new(),
         })
@@ -377,13 +380,18 @@ impl RunningMinBackground {
                 stats.snapshot = true;
             }
         }
-        let (mut sum, mut known) = (0.0f64, 0usize);
-        for &b in &self.st.floor {
-            if b.is_finite() {
-                sum += f64::from(b);
-                known += 1;
+        // Mean of the known floor. Eight running sums, branch-free: a single
+        // sequential f64 sum is latency-bound and cost as much as the update.
+        let (mut sums, mut counts) = ([0.0f64; 8], [0u32; 8]);
+        for ch in self.st.floor.chunks(8) {
+            for ((s, c), &b) in sums.iter_mut().zip(counts.iter_mut()).zip(ch) {
+                let known = b.is_finite();
+                *s += if known { f64::from(b) } else { 0.0 };
+                *c += u32::from(known);
             }
         }
+        let sum: f64 = sums.iter().sum();
+        let known: usize = counts.iter().map(|&c| c as usize).sum();
         stats.floor_mean = (sum / known.max(1) as f64) as f32;
         Ok(stats)
     }
@@ -404,8 +412,12 @@ impl RunningMinBackground {
         let ring = &mut self.st.ring;
         let floor = &mut self.st.floor;
         let acc = &mut self.smooth;
-        let cnt = &mut self.count;
-        cnt.resize(BLOCK, 0.0);
+        // While the ring fills (and after a restore) the counts are taken
+        // afresh; after, a slot's count changes only when a valid sample
+        // lands in a slot that never held one.
+        let recount = warming || !self.known_ok || self.known.len() != n;
+        self.known.resize(n, 0.0);
+        let known = &mut self.known;
         let mut lowered = 0usize;
         let mut start = 0;
         while start < n {
@@ -413,39 +425,47 @@ impl RunningMinBackground {
             let len = end - start;
             let fr = &mut frame[start..end];
             let ok = &valid[start..end];
+            // Missing samples as NaN (their output is overwritten below), so
+            // the loops read f32 only.
+            for (x, &o) in fr.iter_mut().zip(ok) {
+                *x = if o != 0 { *x } else { f32::NAN };
+            }
             // This frame's valid samples enter their slot; missing ones leave it.
-            for ((r, &x), &o) in ring[slot * n + start..slot * n + end]
+            let c = &mut known[start..end];
+            for ((r, &x), cv) in ring[slot * n + start..slot * n + end]
                 .iter_mut()
                 .zip(fr.iter())
-                .zip(ok)
+                .zip(c.iter_mut())
             {
-                *r = if (o != 0) & x.is_finite() { x } else { *r };
+                let good = x.is_finite();
+                *cv += if good & r.is_nan() { 1.0 } else { 0.0 };
+                *r = if good { x } else { *r };
+            }
+            if recount {
+                c.fill(0.0);
+                for s in 0..filled {
+                    for (cv, &v) in c.iter_mut().zip(&ring[s * n + start..s * n + end]) {
+                        *cv += if v.is_nan() { 0.0 } else { 1.0 };
+                    }
+                }
             }
             // Boxcar of the known samples, in slot order.
-            let (a, c) = (&mut acc[..len], &mut cnt[..len]);
+            let a = &mut acc[..len];
             a.fill(0.0);
-            c.fill(0.0);
             for s in 0..filled {
-                for ((av, cv), &v) in a
-                    .iter_mut()
-                    .zip(c.iter_mut())
-                    .zip(&ring[s * n + start..s * n + end])
-                {
-                    let known = !v.is_nan();
-                    *av += if known { v } else { 0.0 };
-                    *cv += if known { 1.0 } else { 0.0 };
+                for (av, &v) in a.iter_mut().zip(&ring[s * n + start..s * n + end]) {
+                    *av += if v.is_nan() { 0.0 } else { v };
                 }
             }
             let mut low = 0u32;
-            for (((b, x), &o), (&av, &cv)) in floor[start..end]
+            for ((b, x), (&av, &cv)) in floor[start..end]
                 .iter_mut()
                 .zip(fr.iter_mut())
-                .zip(ok)
                 .zip(a.iter().zip(c.iter()))
             {
                 // NaN when the pixel has no sample yet.
                 let s = av / cv;
-                let good = (o != 0) & x.is_finite();
+                let good = x.is_finite();
                 let down = s < *b;
                 let next = if warming | b.is_nan() | down {
                     s
@@ -459,6 +479,7 @@ impl RunningMinBackground {
             lowered += low as usize;
             start = end;
         }
+        self.known_ok = true;
         lowered as f32 / n as f32
     }
 
@@ -491,6 +512,7 @@ impl RunningMinBackground {
             ));
         }
         self.st = state.clone();
+        self.known_ok = false;
         self.frozen = false;
         Ok(())
     }
