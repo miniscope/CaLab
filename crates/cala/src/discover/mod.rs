@@ -61,14 +61,15 @@
 //!      with a constant trace is not a cell);
 //!   3. its trace does not follow a nearby cell's (r < `merge_corr`):
 //!      that is the neighbour's unmodelled light (scatter halo, footprint
-//!      mismatch), left to refinement. Nor is it explained by the nearby
-//!      cells' traces jointly (adjusted R² ≥ `merge_corr`², significant at
-//!      1e-3; `joint_neighbours`): light left over by *several* neighbours
-//!      (tails beyond their tight supports, the high-pass moat, footprints
-//!      lagging motion) follows none of them alone. With more slow-loop
-//!      compute such leftovers are tested more often and were the bulk of
-//!      the extra false positives (motion sim, 4x visits: precision at
-//!      8 min .858 -> .900 with this check, recall unchanged).
+//!      mismatch), left to refinement. Optionally (`joint_neighbours`,
+//!      off by default) it must not be explained by the nearby cells'
+//!      traces jointly either (adjusted R² ≥ `merge_corr`², significant at
+//!      1e-3): light left over by *several* neighbours (tails, the
+//!      high-pass moat, footprints lagging motion) follows none of them
+//!      alone. On the minisim recordings it lifts precision most where
+//!      compute is high (motion, 4x visits: .858 -> .900 at 8 min); on the
+//!      workshop recording it also blocks real cells, whose neighbours
+//!      co-fire (`tools/cala-diagnostics/LEFTOVER_LIGHT.md`).
 //!
 //!   On the calibrated minisim recording, without 1-3 the loop kept adding
 //!   cells (2187 cells for 823 GT units, precision 0.24); with them
@@ -388,6 +389,10 @@ pub struct SlowLoopConfig {
     /// them explains it (adjusted R² ≥ `merge_corr`²) it is their leftover
     /// light (truncated tails, high-pass moats, footprints that lag motion),
     /// not a new cell, even when no single neighbour's trace follows it.
+    /// Off by default: it lifts precision on the minisim recordings but
+    /// costs Minian-matched cells on the workshop recording, where
+    /// neighbouring cells co-fire in population events
+    /// (tools/cala-diagnostics/LEFTOVER_LIGHT.md).
     pub joint_neighbours: bool,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
@@ -447,7 +452,7 @@ impl Default for SlowLoopConfig {
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
-            joint_neighbours: true,
+            joint_neighbours: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
