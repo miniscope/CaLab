@@ -330,6 +330,10 @@ struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
     buf: Vec<f32>,
+    /// Registered frames: the sensor FOV mask as the warp's source, and the
+    /// per-frame validity (samples moved in from outside the mask are missing).
+    src: Option<calab_cala::motion::SourceMask>,
+    valid: Vec<u8>,
 }
 
 impl Pipeline {
@@ -360,10 +364,21 @@ impl Pipeline {
         } else {
             None
         };
+        let src = mc.as_ref().map(|_| {
+            calab_cala::motion::SourceMask::new(
+                dims.height,
+                dims.width,
+                cal.fov().mask(),
+                calab_cala::motion::Interpolation::Bicubic,
+            )
+            .unwrap()
+        });
         Pipeline {
             pre,
             mc,
             buf: vec![0.0; n_px],
+            src,
+            valid: vec![0; n_px],
         }
     }
 
@@ -371,11 +386,16 @@ impl Pipeline {
         self.pre.front(raw, &mut self.buf).unwrap();
         match &mut self.mc {
             Some(mc) => {
-                mc.process(Frame::F32(&self.buf), out).unwrap();
+                let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(&rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
             }
-            None => out.copy_from_slice(&self.buf),
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+            }
         }
-        self.pre.back(out).unwrap();
     }
 }
 

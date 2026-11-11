@@ -400,7 +400,9 @@ fn invalid_input_is_an_error_not_a_panic() {
     ));
     let mut nan = vec![0.0f32; W * H];
     nan[(CENTRES[0].0 as usize) * W + CENTRES[0].1 as usize] = f32::NAN;
-    assert!(e.process(&nan).is_err());
+    // A non-finite pixel is a missing sample (zero weight), not an error.
+    let r = e.process(&nan).unwrap();
+    assert!(r.traces.iter().all(|v| v.is_finite()));
     assert!(SolverConfig {
         relax: 2.0,
         ..SolverConfig::default()
@@ -628,4 +630,123 @@ fn ring_level_is_not_absorbed_into_the_trace() {
     let r = e.process(&frame(0.0)).unwrap();
     assert!(r.traces[0].abs() < 1e-3 * c, "trace {}", r.traces[0]);
     assert!((r.background[0] - beta).abs() < 1e-3 * beta);
+}
+
+#[test]
+fn missing_pixels_get_zero_weight() {
+    // A band of NaN pixels (data moved in from outside the FOV mask) cuts
+    // through cells 0 and 1. Filled with the warm start's prediction, the
+    // solve follows the valid pixels: exact once the traces are steady, and
+    // far closer to the full-frame solve than filling the band with 0.
+    let t = 40;
+    let mut c = traces(6, t, 3);
+    for ci in c.iter_mut() {
+        for v in ci[20..].iter_mut() {
+            *v = 2.0;
+        }
+    }
+    let frames = filtered_frames(&c, 0.0, 4);
+    let lib = Arc::new(library(
+        &[0, 1, 2, 3, 4, 5],
+        BackgroundModel::Basis(vec![global_map()]),
+        1,
+    ));
+    // Three columns on the flank of cell 0 (2-4 px from its centre), as the
+    // edge band cuts a cell near the lens edge.
+    let band = |p: usize| (10..13).contains(&(p % W)) && p / W < 30;
+    let mut full = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let mut nan = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let mut zero = TraceEngine::new(lib, tight()).unwrap();
+    let peak = c.iter().flatten().fold(0.0f32, |m, &v| m.max(v));
+    let (mut err_nan, mut err_zero) = (0.0f32, 0.0f32);
+    for f in &frames {
+        let want = full.process(f).unwrap();
+        let mut f_nan = f.clone();
+        let mut f_zero = f.clone();
+        for p in 0..W * H {
+            if band(p) {
+                f_nan[p] = f32::NAN;
+                f_zero[p] = 0.0;
+            }
+        }
+        let got = nan.process(&f_nan).unwrap();
+        let got0 = zero.process(&f_zero).unwrap();
+        for i in 0..6 {
+            err_nan = err_nan.max((got.traces[i] - want.traces[i]).abs());
+            err_zero = err_zero.max((got0.traces[i] - want.traces[i]).abs());
+        }
+    }
+    // Every frame, bursts included: the support part is exact, only the
+    // small moat block means on the band lag one frame.
+    assert!(err_nan < 0.03 * peak, "worst {err_nan}, peak {peak}");
+    assert!(
+        err_nan < 0.2 * err_zero,
+        "nan fill {err_nan} vs zero fill {err_zero}"
+    );
+}
+
+#[test]
+fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
+    // halo_s5: a large footprint at the FOV edge, its ring clipped to a few
+    // pixels that its own moat fills, had `ã_iᵀã_i − s_i q_ii < 0`. The
+    // curvature was floored at 1e-3 `ã_iᵀã_i`, so each SOR step was ~1000x
+    // too long with the wrong sign: traces ran to 1e37, then inf, which
+    // hung the QC event scan downstream. Reproduce the degenerate terms on
+    // the ring probe by scaling `s_0` until the self term exceeds the Gram.
+    let d = Dims::new(64, 64).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 6.0,
+        ..FlattenConfig::default()
+    };
+    let mut flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    let mut b = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    b.push(ring_probe_footprint());
+    let mut lib = b.build(&mut flat).unwrap();
+    let gd = lib.gram_diag[0];
+    let BgTerms::Ring { s, q, .. } = &mut lib.bg else {
+        panic!("ring model expected");
+    };
+    let (cols, vals) = q.row(0);
+    let qii = vals[cols.binary_search(&0).expect("self term in the ring")];
+    assert!(qii != 0.0);
+    // `ã_0ᵀã_0 − s_0 q_00 = −0.5 ã_0ᵀã_0`.
+    s[0] = 1.5 * gd / qii;
+    let mut mdiag = lib.gram_diag.clone();
+    library::ring_self_curvature(&lib.gram_diag, s, q, &mut mdiag);
+    lib.mdiag = mdiag;
+    let lib = Arc::new(lib);
+
+    let mut fp = vec![0.0f32; 64 * 64];
+    let p = ring_probe_footprint();
+    for y in 0..p.height {
+        for x in 0..p.width {
+            fp[(p.y0 + y) * 64 + p.x0 + x] = 3.0 * p.values[y * p.width + x];
+        }
+    }
+    flat.apply(&mut fp).unwrap();
+    fp.iter_mut().for_each(|v| *v += 5.0);
+    let cfg = SolverConfig::default();
+    let mut e = TraceEngine::new(lib, cfg).unwrap();
+    let first = e.process(&fp).unwrap();
+    assert!(first.traces[0].is_finite(), "{first:?}");
+    assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
+    // The same frame again from the warm start: the same fixed point.
+    for _ in 0..3 {
+        let r = e.process(&fp).unwrap();
+        assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+        let tol = cfg.tol * lib_noise(&e) * 2.0;
+        assert!(
+            (r.traces[0] - first.traces[0]).abs() <= tol,
+            "{r:?} vs {first:?}"
+        );
+    }
+}
+
+fn lib_noise(e: &TraceEngine) -> f32 {
+    e.library().trace_noise()[0]
 }

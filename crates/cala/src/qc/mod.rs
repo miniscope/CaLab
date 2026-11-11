@@ -1103,6 +1103,10 @@ impl QcMonitor {
             let mut proj = 0.0f32;
             for (&q, &a) in p.iter().zip(v) {
                 let q = q as usize;
+                if !y[q].is_finite() {
+                    // Missing sample (moved in from outside the FOV mask).
+                    continue;
+                }
                 let yb = y[q] - b;
                 proj += a * yb;
                 let iv = self.inv_noise[q];
@@ -1144,7 +1148,7 @@ impl QcMonitor {
             let q0 = row * w;
             for (x, &yv) in yr.iter().enumerate() {
                 let q = q0 + x;
-                if self.fov[q] == 0 {
+                if self.fov[q] == 0 || !yv.is_finite() {
                     continue;
                 }
                 let bi = b0 + self.block_col[x] as usize;

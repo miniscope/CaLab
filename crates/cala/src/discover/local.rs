@@ -821,6 +821,9 @@ pub(crate) struct Problem {
     /// `G_bc` (k x n), for the background coefficients.
     gbc: Vec<f64>,
     bg_inv: Vec<f64>,
+    /// The background the problem was built with (the per-frame solve with
+    /// missing pixels takes their rows out of its Gram).
+    bg: BgBasis,
     /// The moat grid of the patch (when any column has a moat).
     grid: Option<std::sync::Arc<PatchGrid>>,
 }
@@ -959,6 +962,7 @@ impl Problem {
             q,
             gbc,
             bg_inv: bg.inv.clone(),
+            bg: bg.clone(),
             grid,
         }
     }
@@ -975,34 +979,164 @@ impl Problem {
     /// Solve one whitened patch `y` given its background projections and
     /// energy (from [`BgBasis::project`]).
     pub fn solve(&self, y: &[f32], qb: &[f64], yy: f64, work: &mut u64) -> Fit {
-        let (n, k) = (self.n, self.k);
-        let mut p = vec![0.0f64; n];
+        let s = self.column_dots(y, work);
+        self.finish(&self.t, &self.q, &self.gbc, &self.bg_inv, &s, qb, yy, work)
+    }
+
+    /// `h̃_iᵀ y` per column.
+    fn column_dots(&self, y: &[f32], work: &mut u64) -> Vec<f64> {
         let z = self.grid.as_ref().map(|g| {
             *work += y.len() as u64;
             g.sums(y)
         });
+        self.cols
+            .iter()
+            .map(|col| {
+                let mut s: f64 = col
+                    .pix
+                    .iter()
+                    .zip(&col.val)
+                    .map(|(&px, &v)| f64::from(v * y[px as usize]))
+                    .sum();
+                if let Some(z) = &z {
+                    for (&b, &l) in col.blk.iter().zip(&col.low) {
+                        s -= f64::from(l) * z[b as usize];
+                    }
+                }
+                *work += (col.pix.len() + col.blk.len()) as u64;
+                s
+            })
+            .collect()
+    }
+
+    /// [`Problem::solve`] on a frame some of whose pixels are missing
+    /// (`miss`: sorted patch pixels, zero in `y`, and so in `qb` and `yy`):
+    /// those pixels have zero weight. Zero weight is the whitening factor
+    /// `s_p = 0` for that frame, i.e. the frame's normal equations are the
+    /// full ones minus the missing pixels' design rows `a_p = (e_i(p), g_a(p))`
+    /// (the column values, moat included, and the background maps):
+    /// `G_t = G - Σ_p a_p a_pᵀ`. `y`, `qb`, `yy` already omit them, so only
+    /// the Gram changes; the reduced Gram, `T` and the background inverse
+    /// are re-derived for this frame (`k + n` is small).
+    pub fn solve_missing(
+        &self,
+        y: &[f32],
+        qb: &[f64],
+        yy: f64,
+        miss: &[u32],
+        work: &mut u64,
+    ) -> Fit {
+        if miss.is_empty() {
+            return self.solve(y, qb, yy, work);
+        }
+        let (n, k) = (self.n, self.k);
+        let d = n + k;
+        // Design rows of the missing pixels.
+        let mut a = vec![0.0f64; miss.len() * d];
         for (i, col) in self.cols.iter().enumerate() {
-            let mut s: f64 = col
-                .pix
-                .iter()
-                .zip(&col.val)
-                .map(|(&px, &v)| f64::from(v * y[px as usize]))
-                .sum();
-            if let Some(z) = &z {
-                for (&b, &l) in col.blk.iter().zip(&col.low) {
-                    s -= f64::from(l) * z[b as usize];
+            for (&px, &v) in col.pix.iter().zip(&col.val) {
+                if let Ok(j) = miss.binary_search(&px) {
+                    a[j * d + i] += f64::from(v);
                 }
             }
-            *work += (col.pix.len() + col.blk.len()) as u64;
-            let tb: f64 = (0..k).map(|a| self.t[i * k + a] * qb[a]).sum();
-            p[i] = s - tb;
+            if let Some(g) = &col.grid {
+                for (j, &px) in miss.iter().enumerate() {
+                    let b = g.of[px as usize];
+                    if let Some(m) = col.blk.iter().position(|&x| x == b) {
+                        a[j * d + i] -= f64::from(col.low[m]) * f64::from(g.s[px as usize]);
+                    }
+                }
+            }
+        }
+        for (j, &px) in miss.iter().enumerate() {
+            for (b, m) in self.bg.maps.iter().enumerate() {
+                a[j * d + n + b] = f64::from(m[px as usize]);
+            }
+        }
+        *work += (miss.len() * (d * d + d)) as u64;
+        // G_cc, G_bc, G_bb of the frame.
+        let mut gcc = self.q.clone();
+        for i in 0..n {
+            for j in 0..n {
+                gcc[i * n + j] += (0..k)
+                    .map(|b| self.t[i * k + b] * self.gbc[b * n + j])
+                    .sum::<f64>();
+            }
+        }
+        let mut gbc = self.gbc.clone();
+        let mut gbb = self.bg.gram.clone();
+        for row in a.chunks_exact(d) {
+            for i in 0..n {
+                for j in 0..n {
+                    gcc[i * n + j] -= row[i] * row[j];
+                }
+                for b in 0..k {
+                    gbc[b * n + i] -= row[n + b] * row[i];
+                }
+            }
+            for b in 0..k {
+                for c in 0..k {
+                    gbb[b * k + c] -= row[n + b] * row[n + c];
+                }
+            }
+        }
+        let tr = (0..k).map(|b| gbb[b * k + b]).sum::<f64>() / k.max(1) as f64;
+        for b in 0..k {
+            gbb[b * k + b] += 1e-9 * tr.max(0.0);
+        }
+        let Some(inv) = invert(&gbb, k) else {
+            // The missing pixels took the background basis apart (a patch
+            // that is mostly missing): no usable solution for the frame.
+            return Fit {
+                c: vec![0.0; n],
+                beta: vec![0.0; k],
+                chi2: yy,
+            };
+        };
+        let mut t = vec![0.0f64; n * k];
+        for i in 0..n {
+            for b in 0..k {
+                t[i * k + b] = (0..k).map(|c| gbc[c * n + i] * inv[c * k + b]).sum();
+            }
+        }
+        let mut q = gcc;
+        for i in 0..n {
+            for j in 0..n {
+                q[i * n + j] -= (0..k).map(|b| t[i * k + b] * gbc[b * n + j]).sum::<f64>();
+            }
+        }
+        *work += (n * n * k + k * k * k) as u64;
+        let s = self.column_dots(y, work);
+        self.finish(&t, &q, &gbc, &inv, &s, qb, yy, work)
+    }
+
+    /// Non-negative solve from the column dots `s_i = h̃_iᵀ y`, the
+    /// background projections `qb` and the energy `yy`, with the given
+    /// Gram terms.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &self,
+        t: &[f64],
+        q_gram: &[f64],
+        gbc: &[f64],
+        bg_inv: &[f64],
+        s: &[f64],
+        qb: &[f64],
+        yy: f64,
+        work: &mut u64,
+    ) -> Fit {
+        let (n, k) = (self.n, self.k);
+        let mut p = vec![0.0f64; n];
+        for i in 0..n {
+            let tb: f64 = (0..k).map(|a| t[i * k + a] * qb[a]).sum();
+            p[i] = s[i] - tb;
         }
         let mut c = vec![0.0f64; n];
         let mut qc = vec![0.0f64; n];
         for _sweep in 0..100 {
             let mut worst = 0.0f64;
             for i in 0..n {
-                let d_ii = self.q[i * n + i];
+                let d_ii = q_gram[i * n + i];
                 if d_ii <= 0.0 {
                     continue;
                 }
@@ -1010,7 +1144,7 @@ impl Problem {
                 let d = new - c[i];
                 if d != 0.0 {
                     c[i] = new;
-                    let row = &self.q[i * n..(i + 1) * n];
+                    let row = &q_gram[i * n..(i + 1) * n];
                     for (q, &r) in qc.iter_mut().zip(row) {
                         *q += r * d;
                     }
@@ -1026,7 +1160,7 @@ impl Problem {
         let mut bb = 0.0f64;
         for a in 0..k {
             for b in 0..k {
-                bb += qb[a] * self.bg_inv[a * k + b] * qb[b];
+                bb += qb[a] * bg_inv[a * k + b] * qb[b];
             }
         }
         let pc: f64 = p.iter().zip(&c).map(|(a, b)| a * b).sum();
@@ -1035,10 +1169,10 @@ impl Problem {
         // β = G_bb⁻¹ (q_b − G_bc c).
         let mut beta = vec![0.0f64; k];
         let r: Vec<f64> = (0..k)
-            .map(|a| qb[a] - (0..n).map(|i| self.gbc[a * n + i] * c[i]).sum::<f64>())
+            .map(|a| qb[a] - (0..n).map(|i| gbc[a * n + i] * c[i]).sum::<f64>())
             .collect();
         for a in 0..k {
-            beta[a] = (0..k).map(|b| self.bg_inv[a * k + b] * r[b]).sum();
+            beta[a] = (0..k).map(|b| bg_inv[a * k + b] * r[b]).sum();
         }
         Fit {
             c: c.iter().map(|&v| v as f32).collect(),
@@ -1447,5 +1581,143 @@ mod tests {
             fit.c
         );
         assert!(fit.chi2.abs() < 1e-3, "chi2 {}", fit.chi2);
+    }
+
+    /// Missing pixels have zero weight: the per-frame Gram correction gives
+    /// the least-squares solution on the valid pixels only (columns with
+    /// moats, a non-uniform noise map, noise in the data), and the solve
+    /// that ignores the problem (y = 0 there, full Gram) does not.
+    #[test]
+    fn patch_solve_with_missing_pixels_matches_full_solve_on_valid_pixels() {
+        let dims = Dims {
+            width: 100,
+            height: 100,
+        };
+        let fov = vec![1u8; 10_000];
+        let inv: Vec<f32> = (0..10_000).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
+        let mut filter = LocalFilter::new(20.0);
+        let cfg = LibraryConfig::default();
+        let mk = |id, cy: f32, cx: f32, filter: &mut LocalFilter| {
+            let rect = Rect {
+                y0: 0,
+                x0: 0,
+                h: 100,
+                w: 100,
+            };
+            let a: Vec<f32> = (0..10_000)
+                .map(|i| {
+                    let (dy, dx) = ((i / 100) as f32 - cy, (i % 100) as f32 - cx);
+                    let r2 = dy * dy + dx * dx;
+                    if r2 < 100.0 {
+                        (-r2 / 18.0).exp()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter).unwrap()
+        };
+        let c1 = mk(1, 40.0, 40.0, &mut filter);
+        let c2 = mk(2, 48.0, 52.0, &mut filter);
+        let rect = Rect {
+            y0: 16,
+            x0: 16,
+            h: 64,
+            w: 64,
+        };
+        let grid = std::sync::Arc::new(PatchGrid::new(rect, dims, &inv, &fov, 8));
+        let cols = vec![Column::of(&c1, &grid, 100), Column::of(&c2, &grid, 100)];
+        let dense: Vec<Vec<f32>> = cols.iter().map(|c| c.dense(rect.len())).collect();
+        let bg = BgBasis::new(rect);
+        let n_px = rect.len();
+        let mut work = 0;
+        let pr = Problem::new(cols, &bg, n_px, &mut work);
+        // Data: the mixture plus noise (deterministic).
+        let mut seed = 12345u64;
+        let mut noise = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (((seed >> 40) as f32) / (1u64 << 24) as f32 - 0.5) * 1.5
+        };
+        let y_full: Vec<f32> = (0..n_px)
+            .map(|p| 3.0 * dense[0][p] + 1.5 * dense[1][p] + 0.7 * bg.maps[4][p] + noise())
+            .collect();
+        // Missing: a band across both cells' flanks plus a few scattered
+        // pixels (sorted).
+        let miss: Vec<u32> = (0..n_px as u32)
+            .filter(|&p| {
+                let (y, x) = (p as usize / rect.w, p as usize % rect.w);
+                ((20..44).contains(&y) && (30..33).contains(&x)) || p % 211 == 5
+            })
+            .collect();
+        assert!(miss.len() > 60);
+        let mut y = y_full.clone();
+        for &p in &miss {
+            y[p as usize] = 0.0;
+        }
+        let (qb, yy) = bg.project(&y);
+        let got = pr.solve_missing(&y, &qb, yy, &miss, &mut work);
+        // Reference: dense least squares on the valid pixels, columns and
+        // background maps as they are (the ridge is negligible).
+        let valid: Vec<usize> = (0..n_px)
+            .filter(|p| miss.binary_search(&(*p as u32)).is_err())
+            .collect();
+        let design: Vec<&[f32]> = dense
+            .iter()
+            .map(|d| d.as_slice())
+            .chain(bg.maps.iter().map(|m| m.as_slice()))
+            .collect();
+        let d = design.len();
+        let mut g = vec![0.0f64; d * d];
+        let mut b = vec![0.0f64; d];
+        for a in 0..d {
+            for c in 0..d {
+                g[a * d + c] = valid
+                    .iter()
+                    .map(|&p| f64::from(design[a][p]) * f64::from(design[c][p]))
+                    .sum();
+            }
+            b[a] = valid
+                .iter()
+                .map(|&p| f64::from(design[a][p]) * f64::from(y[p]))
+                .sum();
+        }
+        let ginv = invert(&g, d).unwrap();
+        let theta: Vec<f64> = (0..d)
+            .map(|a| (0..d).map(|c| ginv[a * d + c] * b[c]).sum())
+            .collect();
+        let chi2: f64 = valid
+            .iter()
+            .map(|&p| {
+                let m: f64 = (0..d).map(|a| theta[a] * f64::from(design[a][p])).sum();
+                (f64::from(y[p]) - m).powi(2)
+            })
+            .sum();
+        for i in 0..2 {
+            assert!(
+                (f64::from(got.c[i]) - theta[i]).abs() < 1e-3 * theta[i].abs().max(1.0),
+                "cell {i}: {} vs {}",
+                got.c[i],
+                theta[i]
+            );
+        }
+        assert!(
+            (got.chi2 - chi2).abs() < 1e-3 * chi2.max(1.0),
+            "{} vs {chi2}",
+            got.chi2
+        );
+        // Without the correction (zeros, full Gram) the band drags the
+        // amplitudes: the corrected solve is much closer.
+        let plain = pr.solve(&y, &qb, yy, &mut work);
+        let e_fix: f64 = (0..2).map(|i| (f64::from(got.c[i]) - theta[i]).abs()).sum();
+        let e_plain: f64 = (0..2)
+            .map(|i| (f64::from(plain.c[i]) - theta[i]).abs())
+            .sum();
+        assert!(e_fix < 0.05 * e_plain, "fixed {e_fix} vs plain {e_plain}");
+        // No missing pixels: the plain solve exactly.
+        let (qf, yf) = bg.project(&y_full);
+        let none = pr.solve_missing(&y_full, &qf, yf, &[], &mut work);
+        assert_eq!(none.c, pr.solve(&y_full, &qf, yf, &mut work).c);
     }
 }

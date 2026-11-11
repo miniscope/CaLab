@@ -79,7 +79,7 @@ pub use corrector::{
     FLAG_TEMPLATE_UPDATED,
 };
 pub use fft2d::Fft2d;
-pub use warp::{Interpolation, Warper};
+pub use warp::{Interpolation, SourceMask, Warper};
 pub use xcorr::{Correlator, Peak};
 
 /// Error returned by every fallible motion-correction entry point.
