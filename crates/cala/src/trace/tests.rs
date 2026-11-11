@@ -550,3 +550,82 @@ fn library_bytes_round_trip_solves_identically() {
     wrong[0] = b'X';
     assert!(Library::from_bytes(&wrong).is_err());
 }
+
+/// One Gaussian cell (sigma 3 px, support radius 8) on a 64 x 64 field of view.
+fn ring_probe_footprint() -> Footprint {
+    let (cy, cx, r) = (32usize, 32usize, 8usize);
+    let mut values = Vec::new();
+    for y in 0..2 * r + 1 {
+        for x in 0..2 * r + 1 {
+            let (dy, dx) = (y as f32 - r as f32, x as f32 - r as f32);
+            values.push((-(dy * dy + dx * dx) / (2.0 * 3.0 * 3.0)).exp());
+        }
+    }
+    Footprint {
+        id: 0,
+        y0: cy - r,
+        x0: cx - r,
+        height: 2 * r + 1,
+        width: 2 * r + 1,
+        values,
+    }
+}
+
+#[test]
+fn ring_level_is_not_absorbed_into_the_trace() {
+    // Ring background + high-pass + a background offset: with `s_i` summed
+    // over the support only (not the whole column, moat included) the ring
+    // level leaks into the trace by (s_support - s_full) * beta / |h|^2.
+    let d = Dims::new(64, 64).unwrap();
+    let mk_flat = || {
+        let cfg = FlattenConfig {
+            cell_diameter_px: 6.0,
+            ..FlattenConfig::default()
+        };
+        GlowFlattener::new(&FovMask::full(d), &cfg).unwrap()
+    };
+    let fp = ring_probe_footprint();
+    let mut dense_fp = vec![0.0f32; 64 * 64];
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            dense_fp[(fp.y0 + y) * 64 + fp.x0 + x] = fp.values[y * fp.width + x];
+        }
+    }
+    let mut lib_builder = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    lib_builder.push(fp);
+    let lib = Arc::new(lib_builder.build(&mut mk_flat()).unwrap());
+
+    let beta = 5.0f32;
+    let c = 3.0f32;
+    // `H(a c)` plus a flat offset: the offset is what the ring must carry.
+    let frame = |level: f32| {
+        let mut f: Vec<f32> = dense_fp.iter().map(|&a| a * level).collect();
+        mk_flat().apply(&mut f).unwrap();
+        for v in &mut f {
+            *v += beta;
+        }
+        f
+    };
+    let mut e = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let r = e.process(&frame(c)).unwrap();
+    assert!(
+        (r.traces[0] - c).abs() < 1e-3 * c,
+        "trace {} vs {c}",
+        r.traces[0]
+    );
+    assert!(
+        (r.background[0] - beta).abs() < 1e-3 * beta,
+        "background {} vs {beta}",
+        r.background[0]
+    );
+    // The same offset with no light: the trace stays at zero.
+    let mut e = TraceEngine::new(lib, tight()).unwrap();
+    let r = e.process(&frame(0.0)).unwrap();
+    assert!(r.traces[0].abs() < 1e-3 * c, "trace {}", r.traces[0]);
+    assert!((r.background[0] - beta).abs() < 1e-3 * beta);
+}
