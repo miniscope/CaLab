@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render } from 'solid-js/web';
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
 import { StreamHistory } from '@calab/compute';
 import { HistoryPlot } from '../chart/HistoryPlot.tsx';
 import { expansionMarks, normalise, rangeText } from '../chart/history-geometry.ts';
@@ -131,7 +131,7 @@ describe('HistoryPlot DOM', () => {
     (host.querySelector('.history-wrap') as HTMLElement).dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
     );
-    expect(insp()).toBeNull();
+    expect(untrack(insp)).toBeNull();
     expect(chips(host)[0].querySelector('.history-chip__val--insp')).toBeNull();
   });
 
