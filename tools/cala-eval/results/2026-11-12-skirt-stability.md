@@ -23,6 +23,21 @@ precision is within the 1× margins. The two gates that still fail are statistic
 Recommendation: flip the default to `BasinSkirt` once the PI accepts the two redefinitions below. The 4× precision cost
 (P8 −.021 ± .024 against `ctl`) is the remaining risk. It is smaller than before, but all five seeds are negative.
 
+## Decision (12 Nov 2026)
+
+The PI accepted both redefinitions and approved `BasinSkirt` as the default (`SlowLoopConfig::support_rule`, `qc_eval`
+and `discover_eval`; the app takes the library default). `--support-rule rings` stays selectable for comparisons.
+
+1. **Gate 14 drops the block-leftover `|z| > 3` share.** Whole blocks are 0 by construction and partial edge blocks are
+   positive by construction (§3), so the share cannot discriminate. Leftover light is judged by the median leftover z
+   (|z| < 0.2), the mass beyond `r_h` (≤ 2 %), and the held-out S8 and `ho_marginal_z` against placebos.
+2. **The sims median support ratio p3/p1 > 1.10 is read as converge-up, not drift.** It comes from compact first-pass
+   supports in the smallest tercile growing to their extent, and the paired per-cell p3/p2 is 1.000 in every run (§4).
+   The bounded-support gates are p99 and the largest footprint, which pass.
+
+With these, every primary gate passes. A longer real refine-only run (5 passes) checks whether the real median growth
+settles; see §5.
+
 ## 1. Root cause of the fast-loop divergence
 
 **Reproduction.** `static_s7` refine-only under `basin-skirt` blows up at frame 12462, at library v250 in pass 2. That is
@@ -141,7 +156,7 @@ d ± 95 % CI.
 | Sims runs with explained < .85 after pass 1 | 5/7               | 0/10           | 2/10                     | **0/10** (min .878)                 | 0                        | PASS (was FAIL)                             |
 | Fast-loop divergence (traces > 1e6)         | —                 | 0/10           | 2/10                     | **0/10 sims, 0/4 real**             | 0                        | PASS                                        |
 | Sweep-cap frames after pass 1               | —                 | —              | thousands                | **0** (14 runs)                     | —                        | —                                           |
-| Sims median, pass 3 / pass 1                | 1.55              | 1.15           | 1.15                     | 1.18 (paired 2→3: 1.000)            | ≤ 1.10                   | FAIL as defined; converge-up (§4)           |
+| Sims median, pass 3 / pass 1                | 1.55              | 1.15           | 1.15                     | 1.18 (paired 2→3: 1.000)            | ≤ 1.10                   | converge-up (§4); redefined, accepted       |
 | Sims p99, pass 3 / pass 1                   | 8.72              | 0.96           | 0.94                     | **0.88**                            | ≤ 1.25                   | PASS                                        |
 | Real p99, pass 3 / pass 1 (R7)              | 11.8              | —              | 1.06                     | **0.97**                            | ≤ 1.25                   | PASS                                        |
 | Real texture at pass 3 (R7)                 | 32, 27            | —              | 0, 1                     | **0, 0**                            | ≤ 9                      | PASS                                        |
@@ -164,7 +179,7 @@ d ± 95 % CI.
 | Seed-to-seed Jaccard, real                  | .676              | .693           | .680                     | **.697** (R7 pass 3: .740)          | ≥ .65                    | PASS                                        |
 | Audit: mass beyond `r_h`                    | 28.8 %            | 1.2 %          | 1.2 %                    | **1.0 %**                           | ≤ 2 %                    | PASS                                        |
 | Audit: block leftover, median z             | −0.80             | 1.17           | 0.07                     | **0.10**                            | \|z\| < 0.2              | PASS                                        |
-| Audit: block leftover, share with \|z\| > 3 | 12.0 %            | 25.2 %         | 1.9 %                    | 2.5 % (whole 0.00 %, partial 3.5 %) | ≤ 1 %                    | FAIL as defined; not discriminating (§3)    |
+| Audit: block leftover, share with \|z\| > 3 | 12.0 %            | 25.2 %         | 1.9 %                    | 2.5 % (whole 0.00 %, partial 3.5 %) | ≤ 1 %                    | dropped (not discriminating, §3)            |
 | `ho_marginal_z` median, real (R5)           | 6.46, 6.58        | 6.70, 6.52     | 9.28, 9.85               | 5.39, 6.10                          | reported                 | lower against placebos that now have skirts |
 | Wall time, sims 1× / real                   | 281 s / 676–688 s | —              | 268 s / 640–646 s        | 258 s / 600–617 s                   | +10 %                    | PASS                                        |
 | Max RSS                                     | 1.23 GB           | —              | 1.28 GB                  | 1.47 GB                             | +10 % (sims 1×: 1.27 GB) | PASS                                        |

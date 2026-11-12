@@ -2049,6 +2049,7 @@ fn rule_off_is_byte_identical() {
     let (m, seed) = busy_movie(t);
     let run_with = |alpha: f32| {
         let cfg = SlowLoopConfig {
+            support_rule: SupportRule::Rings,
             support_alpha: alpha,
             ..shard_config()
         };

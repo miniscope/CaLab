@@ -42,10 +42,10 @@
 //!   the same high-pass the preprocessing applies (`a − G_σ * a`, exact away
 //!   from the lens edge), normalised to peak 1, cut to a seed support of 2.5
 //!   half-widths (no upper bound; the running statistics later grow it to
-//!   wherever the cell's light is significant: `support_z` rings under
-//!   [`SupportRule::Rings`], the default, or the significant single-peaked
-//!   basin of the PSF-smoothed measured light under the basin rules, see
-//!   [`SupportRule`]); the target is
+//!   wherever the cell's light is significant: the significant
+//!   single-peaked basin of the PSF-smoothed measured light under the basin
+//!   rules ([`SupportRule::BasinSkirt`], the default), or `support_z` rings
+//!   under [`SupportRule::Rings`], see [`SupportRule`]); the target is
 //!   first smoothed at a tenth of a cell diameter (the
 //!   optics' scale), which removes the pixel noise of a footprint estimated
 //!   from a few dozen frames. The candidate is accepted when, on the
@@ -285,8 +285,8 @@ pub enum CoreTest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SupportRule {
     /// 1 px rings around the half-max centroid, outward while the ring's
-    /// light `h + L a` is `support_z` white standard errors above zero.
-    #[default]
+    /// light `h + L a` is `support_z` white standard errors above zero
+    /// (the rule before S2.1; kept for comparisons).
     Rings,
     /// The pixels where the PSF-smoothed measured light `h` alone is
     /// significant (family-wise `support_alpha` per footprint, standard
@@ -295,6 +295,8 @@ pub enum SupportRule {
     Basin,
     /// [`SupportRule::Basin`], and the moat blocks carry the measured
     /// block-mean light of the rest of the statistics disk (the skirt).
+    /// The default.
+    #[default]
     BasinSkirt,
 }
 
@@ -453,7 +455,8 @@ pub struct SlowLoopConfig {
     /// by [`SupportRule::Rings`] (and the optional basin trim) only.
     pub support_z: f32,
     /// How the statistics path measures a support (see [`SupportRule`]);
-    /// `Rings` (the default) is the rule above.
+    /// `BasinSkirt` is the default, `Rings` the rule above. The basin rules
+    /// need `core_test` off and no `basin_trim`.
     pub support_rule: SupportRule,
     /// Family-wise error rate of one support construction under the basin
     /// rules: the probability that it admits at least one pixel without
@@ -564,7 +567,7 @@ impl Default for SlowLoopConfig {
             stats_margin_cells: 0.4,
             stats_min_snr: 4.0,
             support_z: 2.0,
-            support_rule: SupportRule::Rings,
+            support_rule: SupportRule::BasinSkirt,
             support_alpha: 0.05,
             refine_z: 3.0,
             absorb_z: 3.0,

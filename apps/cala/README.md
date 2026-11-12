@@ -41,6 +41,9 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
+  It runs with the library's `SlowLoopConfig` defaults; a footprint's support
+  is the significant single-peaked basin around its peak plus a measured skirt
+  (`SupportRule::BasinSkirt`, see `tools/cala-eval/README.md`).
 - `src/components/FovPanel.tsx`: the field of view, one image (raw,
   preprocessed, motion-corrected, background-removed or the model residual)
   with zoom, pan, a minimap and the cell overlay (contours or full-extent
