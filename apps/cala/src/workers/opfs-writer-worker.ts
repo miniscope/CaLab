@@ -8,7 +8,8 @@ export type OpfsRequest =
   | { id: number; op: 'write'; name: string; at: number; bytes: Uint8Array }
   | { id: number; op: 'close'; name: string }
   | { id: number; op: 'remove'; name: string }
-  | { id: number; op: 'sweep'; prefix: string; keep: string[] };
+  | { id: number; op: 'sweep'; prefix: string; keep: string[] }
+  | { id: number; op: 'probe' };
 
 export type OpfsResponse =
   | { id: number; ok: true; count?: number }
@@ -71,6 +72,17 @@ async function handle(req: OpfsRequest): Promise<number | undefined> {
         if (!(err instanceof DOMException && err.name === 'NotFoundError')) throw err;
       }
       return;
+    case 'probe': {
+      // Some browsers expose OPFS but cannot use it (private windows, ephemeral
+      // storage): the failure only shows when a synchronous handle is opened.
+      const name = 'cala-probe';
+      const fh = (await (await root()).getFileHandle(name, { create: true })) as SyncFileHandle;
+      const h = await fh.createSyncAccessHandle();
+      h.write(new Uint8Array(8), { at: 0 });
+      h.close();
+      await (await root()).removeEntry(name);
+      return;
+    }
     case 'sweep': {
       const dir = await root();
       const names: string[] = [];
