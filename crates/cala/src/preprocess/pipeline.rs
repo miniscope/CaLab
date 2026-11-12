@@ -275,6 +275,10 @@ pub struct Preprocessor {
     /// the current frame's validity (see [`Preprocessor::back_masked`]).
     src_mask: Option<SourceMask>,
     valid: Vec<u8>,
+    /// Optional sensor flat field: per-pixel `1 / gain` (PRNU), applied to
+    /// the raw frame in sensor coordinates before anything else. Off (None)
+    /// unless set with [`Preprocessor::set_flat_field`].
+    inv_gain: Option<Vec<f32>>,
 }
 
 impl Preprocessor {
@@ -295,7 +299,35 @@ impl Preprocessor {
             next_frame: 0,
             src_mask: None,
             valid: Vec::new(),
+            inv_gain: None,
         })
+    }
+
+    /// Divide every raw frame by a sensor gain map (`gain`, one value per
+    /// pixel, 1 = nominal) before hot-pixel repair and everything after it.
+    /// The pixel gain pattern (photo-response non-uniformity) is fixed to the
+    /// sensor; left in, registration moves it over the tissue with every
+    /// shift, and a cell whose trace correlates with motion picks it up as
+    /// footprint texture. `None` turns the correction off.
+    pub fn set_flat_field(&mut self, gain: Option<&[f32]>) -> Result<(), PreprocessError> {
+        self.inv_gain = match gain {
+            None => None,
+            Some(g) => {
+                self.dims().check("flat field", g.len())?;
+                Some(
+                    g.iter()
+                        .map(|&v| {
+                            if v.is_finite() && v > 0.0 {
+                                1.0 / v
+                            } else {
+                                1.0
+                            }
+                        })
+                        .collect(),
+                )
+            }
+        };
+        Ok(())
     }
 
     pub fn dims(&self) -> Dims {
@@ -350,6 +382,11 @@ impl Preprocessor {
         for (o, &r) in out.iter_mut().zip(raw) {
             let v = r.to_f32();
             *o = if v.is_finite() { v } else { 0.0 };
+        }
+        if let Some(ig) = &self.inv_gain {
+            for (o, &k) in out.iter_mut().zip(ig) {
+                *o *= k;
+            }
         }
         self.calib.hot.apply(out)
     }
