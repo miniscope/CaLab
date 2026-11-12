@@ -39,3 +39,6 @@ the -0.02 margin. The fixed split buys precision by testing every edit on frames
 the published footprint has seen the fold being tested at an earlier visit, so keep and refine tests are partly
 in-sample. Rebuilding the tested footprint from the other fold's statistics for keep and refine tests is the missing
 step.
+
+Follow-up: `2026-11-11-s14-oos-keep.md` makes the keep tests out of sample. The leak was real (half of all keep tests
+were in-sample), but fixing it did not close the gap.
