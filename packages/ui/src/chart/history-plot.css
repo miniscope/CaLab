@@ -42,7 +42,10 @@
 }
 
 .history-chip__val {
+  display: inline-block;
   font: 500 11.5px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
   color: var(--text-primary);
 }
 

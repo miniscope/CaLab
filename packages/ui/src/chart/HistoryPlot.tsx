@@ -152,6 +152,24 @@ export function HistoryPlot(props: HistoryPlotProps) {
     return formatValue(h.latest(key), spec.digits);
   }
 
+  /**
+   * Width reserved for a chip's value, in `ch` of the monospace value font:
+   * the series' display range as formatted, with a sign when the range
+   * reaches below 0 and one digit of headroom, so a fast-changing value never
+   * resizes its chip.
+   */
+  function chipValueCh(key: string): number {
+    const h = props.history();
+    const spec = h?.spec(key);
+    if (!h || !spec) return 1;
+    // One integer digit of headroom over the range, so the early range steps
+    // of a fast-rising series (adds per minute at the start) keep the width.
+    const r = h.displayRange(key);
+    const big = 10 * Math.max(Math.abs(r.lo), Math.abs(r.hi));
+    const ends = [big, r.lo < 0 ? -big : 0].map((v) => formatValue(v, spec.digits).length);
+    return Math.max(1, ...ends);
+  }
+
   function chipTitle(key: string): string {
     frame();
     const h = props.history();
@@ -947,6 +965,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
                   <b
                     class="history-chip__val"
                     classList={{ 'history-chip__val--insp': inspectedT() !== null }}
+                    style={{ 'min-width': `${chipValueCh(key)}ch` }}
                   >
                     {chipValue(key)}
                   </b>
