@@ -5,6 +5,121 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-11-12
+
+Web apps `v2.15.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala gains a History view of how a run evolves, from 5 minutes to 5 days, and
+a simulated live stream for testing the live source. Cala's pipeline and
+results are unchanged.
+
+### Added
+
+- Cala: a **History** view of how the run evolves, for runs from 5 minutes to
+  5 days. One overlaid plot per group (Convergence in the Run panel; Scales,
+  Imaging, Motion and Throughput in a new History tab, which can expand into
+  the large area), each series on its own fixed range that steps up visibly
+  and never shrinks; chips as legend, readout and selector; hover readout with
+  clock time, click to pin a time, brush and zoom on a shared time window; an
+  event lane (flat-field maps, pauses, gaps, warnings, range steps). It
+  replaces the Motion, Flicker, Cells and Lag tabs and the Run panel's
+  sparkline rows (#352).
+- Cala: noise σ and background (FOV medians), registration quality, the share
+  of flagged frames, flat-field updates, processing rate and live drops are now
+  tracked over the whole run.
+- Cala: the `.npz` export (format version 2) adds `history_L{k}`,
+  `history_band_L{k}` and `run_events_json`, with a Python reading example in
+  the USER_GUIDE.
+- `@calab/compute`: `StreamHistory`, a bounded multi-resolution history over
+  stream time (min/max preserved at every level; about 9 MB for 5 days).
+
+- Cala: `npm run sim-stream -- <path>` streams a recording over the live-source
+  WebSocket, so the live source can be tested without hardware. It takes a
+  Miniscope AVI folder or a minisim recording (the sim directory, its `daq/` or
+  its `daq/Miniscope/`), and has `--fps`, `--loop`, `--start`, `--frames` and
+  `--port`; it prints the `ws://` address to paste into the start page. It is the
+  existing `live-sim.mjs`, extended; its WebSocket framing now lives in
+  `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
+  USER_GUIDE section, "Testing with a simulated stream" (#349).
+
+### Changed
+
+- Cala: QC snapshots are paced by stream time (once per second of recording),
+  not wall time; the convergence history no longer drops spikes by thinning;
+  the live counters no longer stop silently after 100k batches.
+- `@calab/ui`: `sparkRange` takes a declared range only; the 98th-percentile
+  auto-range is gone. History chips keep a fixed width while values change.
+
+### Developer tooling
+
+- Simulations at the real recording's cell size and blur (v3: about 10 px
+  cells, edge blur about 1.4 px) plus 6 px and 16 px cell-size arms, with the
+  calibration evidence (#351).
+
+## [2.14.0] - 2026-11-12
+
+Web apps `v2.14.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A redesigned Cala screen: one large, zoomable field of view and a single
+right-hand column for the run, the selected cell and the pipeline details.
+Cala's pipeline and results are unchanged; CaTune and CaDecon look the same.
+
+### Changed
+
+- **Cala layout** (#347). One square field of view at full height (about
+  750 px at 1440×900, against two panes of about 280 px before), with a view
+  selector (Raw, Preprocessed, Motion-corrected, Bg removed, Residual), each
+  with its own fixed display range and Re-fit. The right column holds three
+  collapsible panels: Run (pass 1 and pass 2 progress and the convergence
+  metrics on one time axis), Cell (the single-cell viewer) and Details (cell
+  table, motion, flicker, flat field, timing and the other tabs). Narrow
+  windows get a horizontal pass stepper. Cala has its own violet accent.
+- The start page's live-source field starts empty and is marked optional.
+
+### Added
+
+- Zoom and pan on the field of view while it plays (wheel, +/−, Fit, 1:1,
+  drag), with a minimap when zoomed in; zooming adds no pipeline work.
+- Overlay modes Off, Contours (default), Footprints (filled full extent,
+  opacity = value over the cell's peak, no threshold) and Both, with every
+  colour-by mode and a fixed-scale legend. The residual heat map stays as an
+  option.
+- A full-frame Residual view (frame minus footprints times traces), computed
+  only while it is shown.
+- Shared UI components in `packages/ui`: tabs, segmented control, a generic
+  progress bar, metric tile with sparkline and one `.panel-label`; CaDecon's
+  progress bar and analysis tabs use them.
+
+### Fixed
+
+- Cala's raw-file frame controls wrap instead of collapsing to zero width in
+  the narrower column.
+
+## [2.13.1] - 2026-11-12
+
+Web apps `v2.13.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A refreshed landing page built from each app's manifest, and a cleanup after
+the Cala beta. No behaviour change in any app; Cala's default pipeline is
+byte-identical to 2.13.0.
+
+### Changed
+
+- Landing page refresh. It now takes its colours, type and spacing from the
+  apps' shared tokens (`packages/ui/src/styles/tokens.css`, inlined at build
+  time), opens with a one-line statement of what CaLab is and a short "how the
+  apps fit together" panel, and lists released apps as screenshot cards in a
+  grid that fills by width, so more apps need no layout change. Each card has
+  a Details button that expands its `longDescription` and `features`.
+  Coming-soon apps move to a compact, unlinked "In development" list. The
+  header links docs, the Python package, the changelog and GitHub; the footer
+  links the release, citation and licence. The page is built only from each
+  app's `calab` block, rendered by the new `scripts/lib/landing.mjs` (#345).
+- New optional `calab.pipeline` field (`{ input, output, step }`): the app's
+  line in the landing page's workflow panel. `step` is a coarse stage of use;
+  apps with equal steps are shown together as alternatives (Cala 1; CaDecon
+  and CaTune 2). Set for Cala, CaDecon and CaTune, with an
+  empty placeholder in `apps/_template`; `check:apps-manifest` validates it.
+- Cala's landing image is now a single clean footprint from a real run on the
+  workshop recording (cell 168, QC pass), not a full-interface screenshot.
+
 ### Removed
 
 - Cala: code of settled experiments, all opt-in and off by default, so the
@@ -16,7 +131,22 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `qc_eval --crossfit`. `OnlineFlatFieldConfig::enabled` (the app turns the
   flat field off itself), six functions without callers, the `flatfield_eval` and
   `texture_eval` examples, and `qc_eval --ff-dump-maps` and `--no-flat-field`
-  (use `--flat-field off`). Reproduce the removed experiments at a64cd09.
+  (use `--flat-field off`). Reproduce the removed experiments at a64cd09
+  (#343).
+
+### Fixed
+
+- Docs: Cala user guide and README match the app (button names, Safari
+  untested, turning the flat field off); `cala-eval` README lists every script
+  and results note, and notes show the flags that actually ran; minisim pin
+  updated to a version that reproduces the evaluation sims (#342).
+
+### Developer tooling
+
+- `qc_eval --passes N`, `--later-passes` and `--stats-half-life` for the
+  repeated-pass and statistics-window probes, with results notes (#337, #339,
+  #340).
+- Dependency updates (#266, #336).
 
 ## [2.13.0] - 2026-11-12
 

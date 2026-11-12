@@ -30,6 +30,8 @@ export interface PipelineClient {
   stopPipeline(): Promise<void>;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
+  /** Return (or stop returning) the residual preview in the running pipeline. */
+  setResidual?(on: boolean): Promise<void>;
   /**
    * The flat-field estimator's status events (pipelined clients with the
    * estimator worker only; absent: no online flat field). Returns an unsubscribe.
@@ -230,6 +232,9 @@ export function createFrameClient(
     },
     async setDiscovery(on) {
       expectType(await call({ type: 'set-discovery', on }, [], traceTarget), 'ok');
+    },
+    async setResidual(on) {
+      expectType(await call({ type: 'set-residual', on }, [], traceTarget), 'ok');
     },
     async connectSlow(port) {
       expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');

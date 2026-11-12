@@ -1,0 +1,179 @@
+{
+ "acquisition": {
+  "optics": {
+   "na": 0.3,
+   "magnification": 2.9,
+   "emission_nm": 525.0,
+   "depth_of_field_um": "auto",
+   "field_curvature_radius_um": null
+  },
+  "image_sensor": {
+   "n_px_height": 600,
+   "n_px_width": 600,
+   "pixel_pitch_um": 4.8,
+   "quantum_efficiency": 0.7,
+   "read_noise_e": 12.5,
+   "gain_adu_per_e": 0.12,
+   "bit_depth": 8
+  },
+  "tissue": {
+   "scatter_mfp_excitation_um": 600.0,
+   "scatter_mfp_emission_um": 100.0,
+   "scatter_blur_per_um": 0.01
+  },
+  "fps": 20.0,
+  "duration_s": 120.0,
+  "focal_depth_in_tissue_um": 180.0,
+  "front_working_distance_um": 700.0
+ },
+ "seed": 0,
+ "steps": [
+  {
+   "density_per_mm3": 25000.0,
+   "soma_radius_um": 7.0,
+   "irregularity": 0.3,
+   "morphology": "soma",
+   "dendrite_length_um": 24.0,
+   "dendrite_width_um": 3.0,
+   "depth_range_um": [
+    0.0,
+    200.0
+   ],
+   "min_distance_um": 0.0,
+   "positions_um": null,
+   "kind": "place_neurons",
+   "populations": [
+    {
+     "density_per_mm3": 32737.5,
+     "soma_radius_um": 13.1,
+     "irregularity": 0.3,
+     "morphology": "cytosolic",
+     "dendrite_length_um": 24.0,
+     "dendrite_width_um": 3.0,
+     "depth_range_um": [
+      172.0,
+      188.0
+     ],
+     "min_distance_um": 0.0,
+     "positions_um": null
+    }
+   ]
+  },
+  {
+   "kind": "cell_activity",
+   "spike_sim_hz": 300.0,
+   "p_quiescent_to_active": 0.002,
+   "p_active_to_quiescent": 0.02,
+   "active_rate_hz": 18.0,
+   "quiescent_rate_hz": 0.05,
+   "tau_rise_s": 0.05,
+   "tau_decay_s": 0.7,
+   "brightness_cv": 0.9,
+   "f0": 8.0,
+   "trace_noise": 0.0
+  },
+  {
+   "kind": "bleaching",
+   "bleach_susceptibility": 6.3e-6,
+   "turnover_tau_s": 33.0,
+   "excitation_intensity": 100.0
+  },
+  {
+   "kind": "optics"
+  },
+  {
+   "kind": "composite"
+  },
+  {
+   "kind": "neuropil",
+   "spatial_sigma_um": 190.0,
+   "temporal_tau_s": 10.0,
+   "population_tau_s": 1.5,
+   "amplitude": 1.65,
+   "n_components": 5,
+   "population_coupling": 0.85
+  },
+  {
+   "kind": "vasculature",
+   "enabled": true,
+   "layers": [
+    {
+     "depth_um": 120.0,
+     "n_roots": 3,
+     "root_radius_um": 14.0,
+     "min_radius_um": 2.0,
+     "opacity": 0.65,
+     "absorption_per_um": 0.04,
+     "branch_prob": 0.2,
+     "tortuosity_deg": 8.0,
+     "branch_angle_deg": 30.0,
+     "branch_area_main": 0.7,
+     "step_per_radius": 1.5
+    }
+   ]
+  },
+  {
+   "kind": "brain_motion",
+   "model": "miniscope",
+   "trajectory_um": null,
+   "max_shift_um": 15.0,
+   "locomotion_freq_hz": 7.0,
+   "motion_amplitude_um": 10.0,
+   "locomotion_axis": "y",
+   "resonance_freq_hz": 6.0,
+   "damping_ratio": 0.5,
+   "locomotion_fraction": 0.25,
+   "walk_step_um": 0.3,
+   "motion_rms_um": 1.95,
+   "motion_axis_ratio": 0.67,
+   "motion_axis_deg": 60.6,
+   "burst_rate_hz": 0.05,
+   "burst_min_duration_s": 1.0,
+   "burst_max_duration_s": 3.0,
+   "burst_min_peak_um": 3.3,
+   "burst_max_peak_um": 6.6,
+   "drift_um_per_min": 0.083,
+   "nonrigid": true,
+   "nonrigid_grid": [
+    4,
+    4
+   ],
+   "nonrigid_quiet_um": 0.48,
+   "nonrigid_coupling": 0.33,
+   "nonrigid_tau_s": 0.5,
+   "nonrigid_max_um": 6.0
+  },
+  {
+   "kind": "illumination_profile",
+   "falloff": 0.0,
+   "exponent": 2.5,
+   "center_offset_um": [
+    21.3,
+    66.7
+   ]
+  },
+  {
+   "kind": "vignette",
+   "falloff": 0.0,
+   "exponent": 2.5,
+   "center_offset_um": [
+    21.3,
+    66.7
+   ]
+  },
+  {
+   "kind": "leakage",
+   "profile": "gaussian",
+   "level": 0.08,
+   "sigma_um": null
+  },
+  {
+   "kind": "sensor",
+   "photons_per_unit": 1800.0
+  }
+ ],
+ "output": {
+  "save_intermediates": false,
+  "store_dtype": "float32"
+ }
+}

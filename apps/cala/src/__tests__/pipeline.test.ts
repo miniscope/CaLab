@@ -4,13 +4,9 @@ import { createFrameClient, type WorkerLike } from '../lib/frame-client.ts';
 import { MAX_FRAMES_PER_READ } from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-plan.ts';
-import {
-  createPipelineStore,
-  MAX_IN_FLIGHT,
-  ShiftTrace,
-  ThroughputMeter,
-} from '../lib/pipeline-store.ts';
+import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
+import { createRunHistory } from '../lib/run-history.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
@@ -95,44 +91,7 @@ describe('preview downsampling', () => {
   });
 });
 
-describe('shift trace and throughput', () => {
-  it('appends shifts at their frame indices', () => {
-    const t = new ShiftTrace();
-    t.push(10, [1, 2], [3, 4]);
-    expect(t.frame).toEqual([10, 11]);
-    expect(t.dy).toEqual([1, 2]);
-    expect(t.dx).toEqual([3, 4]);
-    // Flicker is optional and stored with the gain in percent.
-    expect(t.offset).toEqual([0, 0]);
-    t.push(12, [0], [0], [0.5], [0.02]);
-    expect(t.offset).toEqual([0, 0, 0.5]);
-    expect(t.gainPct).toEqual([0, 0, 2]);
-  });
-
-  it('bounds history while retaining aligned, full-resolution recent samples', () => {
-    const t = new ShiftTrace(3);
-    t.push(10, [1, 2], [3, 4], [5, 6], [0.01, 0.02]);
-    t.push(12, [7, 8], [9, 10], [11, 12], [0.03, 0.04]);
-    expect(t.frame).toEqual([11, 12, 13]);
-    expect(t.dy).toEqual([2, 7, 8]);
-    expect(t.dx).toEqual([4, 9, 10]);
-    expect(t.offset).toEqual([6, 11, 12]);
-    expect(t.gainPct).toEqual([2, 3, 4]);
-    expect(t.length).toBe(3);
-    expect(t.totalFrames).toBe(4);
-
-    // A batch larger than the entire window retains only its newest samples.
-    t.push(14, [13, 14, 15, 16], [17, 18, 19, 20]);
-    expect(t.frame).toEqual([15, 16, 17]);
-    expect(t.dy).toEqual([14, 15, 16]);
-    expect(t.dx).toEqual([18, 19, 20]);
-    expect(t.offset).toEqual([0, 0, 0]);
-    expect(t.gainPct).toEqual([0, 0, 0]);
-    expect(t.totalFrames).toBe(8);
-    t.push(18, [], []);
-    expect(t.frame).toEqual([15, 16, 17]);
-  });
-
+describe('throughput', () => {
   it('measures frames per second over a sliding window', () => {
     const m = new ThroughputMeter(1000);
     expect(m.record(0, 8)).toBe(0);
@@ -189,7 +148,17 @@ describe('pipeline store backpressure', () => {
   it('keeps at most MAX_IN_FLIGHT steps outstanding and refills as they finish', async () => {
     const { client, steps } = manualClient();
     await createRoot(async (dispose) => {
-      const store = createPipelineStore(client);
+      const history = createRunHistory();
+      const store = createPipelineStore(
+        client,
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        {},
+        history,
+      );
       await store.start();
       expect(store.status()).toBe('running');
       expect(client.stepPipeline).toHaveBeenCalledTimes(MAX_IN_FLIGHT);
@@ -201,28 +170,28 @@ describe('pipeline store backpressure', () => {
       expect(client.stepPipeline).toHaveBeenCalledTimes(MAX_IN_FLIGHT + 1);
       expect(store.inFlight()).toBe(MAX_IN_FLIGHT);
       expect(store.processed()).toBe(8);
-      expect(store.trace().dx).toEqual(new Array(8).fill(-2));
+      // The batch's shifts reach the run history (stream time; 20 fps without a recording rate).
+      expect(history.history().at('shift_dx', 0.1)?.mean).toBe(-2);
+      expect(history.now()).toBeCloseTo(8 / 20);
       expect(store.stageMs().motionMs).toBe(3);
       dispose();
     });
   });
 
-  it('keeps whole-run timing averages after chart history rolls over', async () => {
+  it('keeps whole-run timing averages over a long batch and resets them on stop', async () => {
     const { client, steps } = manualClient();
     await createRoot(async (dispose) => {
       const store = createPipelineStore(client);
       await store.start();
-      const count = store.trace().capacity + 1;
+      const count = 40_000;
       steps[0].resolve(batch(0, count));
       await flush();
-      expect(store.trace().length).toBe(store.trace().capacity);
-      expect(store.trace().frame[0]).toBe(1);
       expect(store.processed()).toBe(count);
       expect(store.stageMs().motionMs).toBe(3);
       expect(store.stageMs().preprocessMs).toBe(2);
       store.stop();
-      expect(store.trace().length).toBe(0);
-      expect(store.trace().totalFrames).toBe(0);
+      expect(store.processed()).toBe(0);
+      expect(store.stageMs().motionMs).toBe(0);
       dispose();
     });
   });

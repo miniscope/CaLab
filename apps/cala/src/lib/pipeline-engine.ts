@@ -11,6 +11,7 @@
 import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
+import { ImagingSampler, type ImagingStats } from './imaging-stats.ts';
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
 import {
   isUnbounded,
@@ -21,7 +22,12 @@ import {
   type PipelinePlan,
   type PipelineStep,
 } from './pipeline-plan.ts';
-import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import {
+  downsampleFrame,
+  previewFactor,
+  takeResidualPreview,
+  type PreviewImage,
+} from './preview.ts';
 import type { CellsBatch, FastLoop } from './fast-loop.ts';
 import { qcTransferables } from './qc.ts';
 
@@ -104,6 +110,8 @@ export interface BatchPreviews {
   corrected: PreviewImage;
   /** Final output: motion-corrected with the background floor removed. */
   output: PreviewImage;
+  /** What the cell model leaves unexplained in `output` (only while asked for; see `FastLoop.setResidual`). */
+  residual?: PreviewImage;
 }
 
 /**
@@ -149,6 +157,8 @@ export type PipelineStepResult =
       live?: LiveBatchInfo;
       /** A flat-field map took effect at this batch (pipelined runs only). */
       flatField?: FlatFieldApplied;
+      /** FOV noise σ and background, about once a second of stream (History view). */
+      imaging?: ImagingStats;
     }
   | { kind: 'done' };
 
@@ -210,6 +220,8 @@ export class PipelineEngine {
   private raw: FramePixels;
   private front: Float32Array;
   private corrected: Float32Array;
+  private fovMask: Uint8Array | null = null;
+  private readonly imaging = new ImagingSampler(() => this.fovMask);
   private records: Float32Array | null = null;
   private disposed = false;
 
@@ -360,6 +372,7 @@ export class PipelineEngine {
     pre.backFramesRegistered(corrected, s.count, dy, dx);
     const t5 = now();
     const cells = this.fast?.process(corrected, s.start, s.count, pre, { dy, dx });
+    const imaging = this.imaging.sample(pre, s.start, s.count);
     const t5b = now();
 
     const quality = new Float32Array(s.count);
@@ -379,6 +392,8 @@ export class PipelineEngine {
       corrected: before,
       output: downsampleFrame(corrected, last, this.width, this.height, this.factor),
     };
+    const residual = takeResidualPreview(cells, this.width, this.height, this.factor);
+    if (residual) previews.residual = residual;
     const t6 = now();
     timings.preprocessMs = t2 - t1 + (t5 - t4);
     timings.motionMs = t3 - t2;
@@ -399,6 +414,7 @@ export class PipelineEngine {
       timings,
       ...(cells ? { cells } : {}),
       ...(live ? { live } : {}),
+      ...(imaging ? { imaging } : {}),
     };
   }
 
@@ -426,7 +442,8 @@ export class PipelineEngine {
     } finally {
       opts.free();
     }
-    this.motion.setFovMask(pre.fovMask());
+    this.fovMask = pre.fovMask();
+    this.motion.setFovMask(this.fovMask);
   }
 
   private runFront(

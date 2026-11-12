@@ -16,6 +16,7 @@ import type { CellsBatch } from './fast-loop.ts';
 import type { StageTimings } from './pipeline-engine.ts';
 import { FootprintHistory } from './footprint-history.ts';
 import { TraceHistory } from './trace-history.ts';
+import type { RunHistory } from './run-history.ts';
 import {
   ConvergenceHistory,
   convergenceStatus,
@@ -165,7 +166,12 @@ export class CellMetrics {
 /** Frames a new cell stays highlighted. */
 export const NEW_CELL_FRAMES = 300;
 
-export function createCellStore(history = new TraceHistory(), footprints = new FootprintHistory()) {
+export function createCellStore(
+  history = new TraceHistory(),
+  footprints = new FootprintHistory(),
+  /** The run's history over stream time: QC snapshots feed its convergence group. */
+  runHistory?: RunHistory,
+) {
   const [library, setLibrary] = createSignal<LibraryView | null>(null);
   const [geometry, setGeometry] = createSignal<CellGeometry | null>(null);
   const [status, setStatus] = createSignal<SlowStatus | null>(null);
@@ -296,6 +302,20 @@ export function createCellStore(history = new TraceHistory(), footprints = new F
       edits: editRates.rates(),
     });
     setConvergence(convergenceStatus(convHistory.points));
+    runHistory?.convergence(
+      snap.frame,
+      {
+        cells: g.cells,
+        explained: g.explained,
+        residualExcess: g.residualExcess,
+        stableFrac: g.stableFrac,
+        fpStability: g.fpStability,
+        snrMedian: g.snrMedian,
+        passFrac: g.passFrac,
+        edits: convHistory.points[convHistory.points.length - 1].edits,
+      },
+      status()?.cells ?? null,
+    );
     setQc(snap);
   }
 

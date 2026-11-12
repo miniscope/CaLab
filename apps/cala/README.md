@@ -41,11 +41,15 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
-- `src/components/VideoPanel.tsx`: raw, preprocessed or motion-corrected (or
-  background-removed) video with the cell overlay and the residual map;
-  `StatusBar.tsx`: progress and throughput; `DetailsTabs.tsx`: the detail tabs,
-  including the live motion and flicker traces (`MotionTrace.tsx`,
-  `FlickerTrace.tsx`).
+- `src/components/FovPanel.tsx`: the field of view, one image (raw,
+  preprocessed, motion-corrected, background-removed or the model residual)
+  with zoom, pan, a minimap and the cell overlay (contours or full-extent
+  footprints, `lib/cell-overlay.ts`; zoom math in `lib/fov-layout.ts` and
+  `lib/fov-view.ts`). The right-hand column (`SidePanel.tsx`): `RunPanel.tsx`
+  (pass progress and convergence metrics on one time axis, run controls,
+  export), `CellsPanel.tsx` (the selected cell) and `DetailsTabs.tsx` (the
+  detail tabs, including the live motion and flicker traces, `MotionTrace.tsx`
+  and `FlickerTrace.tsx`).
 - `src/__tests__/`: frame source tests on synthetic AVIs (`synth-avi.ts`), and
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
@@ -110,7 +114,7 @@ so cells found late have traces from frame 0.
   back half is a deterministic function of the corrected frames in order, so
   replaying from frame 0 rebuilds the state pass 1 had at every frame. No
   checkpoints are needed while the whole recording is replayed.
-- **Finish pass 1 now** ends the stream at the frames read so far (the slow
+- **End pass 1** ends the stream at the frames read so far (the slow
   loop publishes its final library and pass 2 covers those frames). Pass 2 runs
   automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
   and frames/s, and the UI stays live (the work is in workers).
@@ -172,15 +176,26 @@ that is a file source with a delay, and it would couple the app to the DAQ's
 file format, which is left as is). The socket lives in the frame worker, so
 frames go straight into the pipeline; steps wait for frames instead of
 reading them, which is the only backpressure a live source has. For now the
-acquisition side is simulated: `scripts/live-sim.mjs` streams a Miniscope AVI
-folder at its frame rate over that protocol (`--fps`, `--drop i,j` to skip
-frames, `--buffer` to drop when the client is not reading).
+acquisition side is simulated: `scripts/live-sim.mjs` (`npm run sim-stream`)
+streams a recording over that protocol, as the board would push it.
 
 ```sh
-node apps/cala/scripts/live-sim.mjs ~/data/session/raw      # ws://localhost:8765
-# then open the app on it: the "stream from a live source" field, or
-#   http://localhost:5173/?live=ws://localhost:8765
+npm run sim-stream -- ~/data/session/raw              # a Miniscope AVI folder
+npm run sim-stream -- $SIM_MOTION_S5 --fps 30 --loop  # a minisim recording
+# prints ws://localhost:8765; paste it into the start page's live-source
+# field, or open the app on  ?live=ws://localhost:8765
 ```
+
+The path is a Miniscope AVI folder (AVIs with `metaData.json` and
+`timeStamps.csv`) or a minisim recording: the sim directory, its `daq/` or its
+`daq/Miniscope/`. Options: `--fps` (default: the recording's metadata, else
+20), `--start N` (first recording frame), `--frames N` (stop after N), `--loop`
+(wrap from the last frame to the first until stopped; the frame index the app
+sees keeps counting), `--port` (default 8765), `--drop i,j` (skip those frames,
+as a camera drop would) and `--buffer N` (drop frames when the client is not
+reading). Frames are paced on a fixed schedule, and every connection gets the
+recording from its start. The framing lives in `src/lib/live-sim-protocol.ts`
+(unit-tested), the receiving side in `src/lib/live-source.ts`.
 
 What changes in a live run:
 

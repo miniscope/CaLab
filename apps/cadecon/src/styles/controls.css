@@ -194,37 +194,6 @@
   min-height: 0;
 }
 
-.analysis-panel__tabs {
-  display: flex;
-  flex-shrink: 0;
-}
-
-.analysis-panel__tab {
-  flex: 1;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
-  font-size: 0.7rem;
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 4px 8px;
-  cursor: pointer;
-  transition:
-    color var(--transition-fast),
-    border-color var(--transition-fast);
-}
-
-.analysis-panel__tab:hover {
-  color: var(--text-primary);
-}
-
-.analysis-panel__tab--active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
 .analysis-panel__content {
   flex: 1;
   min-height: 0;
@@ -273,77 +242,6 @@
   color: var(--text-secondary);
   text-align: center;
   padding-bottom: 2px;
-}
-
-/* ========================
-   Progress Bar
-   ======================== */
-.progress-bar {
-  margin-top: var(--space-xs);
-}
-
-.progress-bar__label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-bottom: 2px;
-}
-
-.progress-bar__pct {
-  font-family: var(--font-mono);
-  font-weight: 600;
-}
-
-.progress-bar__track {
-  height: 8px;
-  background: var(--border-default);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-@keyframes progress-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 4px var(--accent-muted);
-  }
-  50% {
-    box-shadow: 0 0 10px var(--accent-muted);
-  }
-}
-
-.progress-bar__track--running {
-  animation: progress-pulse 2s ease-in-out infinite;
-}
-
-.progress-bar__fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.progress-bar__fill--paused {
-  background: var(--text-tertiary);
-}
-
-.progress-bar__fill--complete {
-  background: var(--success, #4caf50);
-}
-
-.progress-bar__phase {
-  font-size: 0.65rem;
-  color: var(--accent);
-  margin-top: 2px;
-  font-style: italic;
-}
-
-.progress-bar__status {
-  font-size: 0.65rem;
-  color: var(--text-tertiary);
-  margin-top: 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 /* ========================

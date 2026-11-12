@@ -7,6 +7,10 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 - `arms.py`: the sim arms. A new arm is a new entry in `ARMS` (spec file and
   flags). `halo`, `oof` and `fpn` use `ca1_workshop_v2_{halo,oof,fpn}.spec.json`
   in `tools/minisim-calibration/`; an arm whose spec file is missing is skipped.
+  `v3_{static,motion}`, `size6_*` and `size16_*` use the `ca1_workshop_v3*.spec.json` specs
+  (cells of 10, 6 and 16 px at the real recording's edge blur; `make_v3_specs.py`).
+- `gt_scales.py`: half-max diameter and edge sigma of the ground-truth footprints in `oracle.bin`.
+- `recovery_vs_snr.py SIM RUN OUT.tsv`: per GT unit, minisim's matched-filter detection SNR (minisim >= 1.1) and whether a qc_eval run recovered it; the calibration data behind minisim's `DETECT_SNR_THRESHOLD` (`results/2026-11-12-matched-filter-detectable.md`).
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
   would write are symlinked (`--reuse <dir>`) instead of regenerated. At most 2

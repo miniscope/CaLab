@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::background::BackgroundModel;
-use super::{check_len, TraceError};
+use super::{check_len, FrameTraces, TraceError};
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::{Dims, PreprocessError};
 
@@ -1402,6 +1402,34 @@ impl Library {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Residual `y − Σ ã_i c_i` (minus the basis background `Σ g_k β_k` for a
+    /// basis model) of one solved frame into `out`: what the model leaves
+    /// unexplained, as cell discovery scores it (the ring model's per-cell
+    /// local levels are not drawn, as in discovery). Pixels missing from the
+    /// frame (non-finite) stay non-finite. For the app's residual view.
+    pub fn residual(
+        &self,
+        frame: &[f32],
+        traces: &FrameTraces,
+        out: &mut [f32],
+    ) -> Result<(), TraceError> {
+        check_len("frame", self.core.dims.pixels(), frame.len())?;
+        if traces.library_version != self.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library".into(),
+            ));
+        }
+        let bg = match self.model {
+            BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
+            _ => None,
+        };
+        self.render(&traces.traces, bg, out)?;
+        for (o, &y) in out.iter_mut().zip(frame) {
+            *o = y - *o;
         }
         Ok(())
     }

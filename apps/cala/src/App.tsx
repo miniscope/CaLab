@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { createEffect, Show } from 'solid-js';
+import { createEffect, createSignal, on, Show } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
@@ -15,13 +15,14 @@ import {
   RESERVED_THREADS,
   visitWorkerCount,
 } from './lib/slow-client.ts';
-import { StatusBar } from './components/StatusBar.tsx';
-import { VideoPanel } from './components/VideoPanel.tsx';
+import { FovPanel } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
-import { Pass2Bar } from './components/Pass2Bar.tsx';
+import { RunPanel } from './components/RunPanel.tsx';
+import { createFovLayout } from './lib/fov-layout.ts';
+import { createRunHistory } from './lib/run-history.ts';
+import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -40,7 +41,10 @@ const App: Component = () => {
     gpu: params.get('gpu') !== '0',
   });
   const store = createViewerStore(client);
-  const cells = createCellStore();
+  // The run's history over stream time: fed by the cell and pipeline stores, read by the History views.
+  const runHistory = createRunHistory();
+  const historyUi = createHistoryUi(runHistory);
+  const cells = createCellStore(undefined, undefined, runHistory);
   // Cell discovery runs in a worker of its own, fed directly by the frame
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
@@ -78,12 +82,22 @@ const App: Component = () => {
         };
       },
     },
+    runHistory,
   );
   const pass2 = createPass2Store(client, pipeline, cells);
+  // Slow-loop warnings (the reservoir filling up) go into the run's event log.
+  createEffect(
+    on(
+      () => cells.status()?.reservoirWarning ?? null,
+      (w) => {
+        if (w) runHistory.log({ frame: pipeline.processed(), kind: 'warning', detail: w });
+      },
+    ),
+  );
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2 };
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, runHistory, historyUi };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -99,6 +113,86 @@ const App: Component = () => {
     if (store.info()) void pipeline.start();
   }
   const liveParam = params.get('live');
+
+  /**
+   * One screen, no page scroll: the field of view, square-ish and as tall as
+   * the window, on the left; Run, Cell and the details tabs in one column on
+   * the right. Narrow windows stack the column under the image and scroll.
+   */
+  function Layout(lp: { info: NonNullable<ReturnType<typeof store.info>> }) {
+    let main!: HTMLDivElement;
+    const layout = createFovLayout(
+      () => main,
+      () => ({ width: lp.info.width, height: lp.info.height }),
+    );
+    const [tab, setTab] = createSignal('qc');
+    const expanded = () => historyUi.expanded() && !layout().narrow;
+    // Expanding swaps History into the large area and shows the FOV in the History tab.
+    createEffect(
+      on(historyUi.expanded, (x) => {
+        if (x) setTab('history');
+      }),
+    );
+    const fov = () => (
+      <FovPanel
+        store={pipeline}
+        cells={cells}
+        width={lp.info.width}
+        height={lp.info.height}
+        fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+      />
+    );
+    return (
+      <div
+        ref={main}
+        class="cala-main"
+        classList={{ 'cala-main--narrow': layout().narrow }}
+        style={layout().narrow ? {} : { '--cala-fov-w': `${layout().fovWidth}px` }}
+      >
+        <Show when={store.error()}>
+          {(message) => (
+            <div class="error-card cala-main__error" role="alert">
+              <span>{message()}</span>
+            </div>
+          )}
+        </Show>
+        <div class="cala-main__fov">
+          <Show when={expanded()} fallback={fov()}>
+            <HistoryExpanded ui={historyUi} />
+          </Show>
+        </div>
+        <div class="cala-main__side">
+          <RunPanel
+            pipeline={pipeline}
+            pass2={pass2}
+            cells={cells}
+            live={lp.info.live !== undefined}
+            label={store.label()}
+            width={lp.info.width}
+            height={lp.info.height}
+            fps={lp.info.fps ?? 0}
+            narrow={layout().narrow}
+            ui={historyUi}
+          />
+          <SelectedCellPanel
+            cells={cells}
+            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+            folded={tab() === 'history'}
+          />
+          <DetailsTabs
+            store={pipeline}
+            cells={cells}
+            viewer={store}
+            info={lp.info}
+            ui={historyUi}
+            active={tab()}
+            onActive={setTab}
+            fov={() => (expanded() ? fov() : null)}
+          />
+        </div>
+      </div>
+    );
+  }
   if (liveParam) void openLive(liveParam);
 
   return (
@@ -151,41 +245,7 @@ const App: Component = () => {
             />
           }
         >
-          {/* One screen, no page scroll: status strip on top; video and
-              tabbed plots on the left; the selected cell on the right. */}
-          <div class="cala-main">
-            <Show when={store.error()}>
-              {(message) => (
-                <div class="error-card" role="alert">
-                  <span>{message()}</span>
-                </div>
-              )}
-            </Show>
-            <StatusBar store={pipeline} cells={cells} />
-            <Pass2Bar
-              pipeline={pipeline}
-              pass2={pass2}
-              cells={cells}
-              live={info().live !== undefined}
-              label={store.label()}
-              width={info().width}
-              height={info().height}
-              fps={info().fps ?? 0}
-            />
-            <ConvergenceStrip cells={cells} />
-            <div class="cala-body">
-              <div class="cala-body__left">
-                <VideoPanel
-                  store={pipeline}
-                  cells={cells}
-                  width={info().width}
-                  height={info().height}
-                />
-                <DetailsTabs store={pipeline} cells={cells} viewer={store} info={info()} />
-              </div>
-              <SelectedCellPanel cells={cells} fps={info().fps ?? FALLBACK_PLAYBACK_FPS} />
-            </div>
-          </div>
+          <Layout info={info()} />
         </DashboardShell>
       )}
     </Show>

@@ -26,6 +26,8 @@ export interface TraceLibraryLike {
 export interface TraceEngineLike {
   setLibrary(lib: TraceLibraryLike): void;
   processFrames(frames: Float32Array, count: number): Float32Array;
+  /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
+  residualOfLast?(frame: Float32Array): Float32Array;
   free(): void;
 }
 
@@ -97,10 +99,12 @@ export interface FastLoopOptions {
   qc?: boolean;
   /** Frame rate of the recording (QC rates are per minute). */
   fps?: number;
-  /** Wall time between QC snapshots sent to the main thread, ms. */
-  qcEveryMs?: number;
+  /** Stream time between QC snapshots sent to the main thread, s (paced by frames, not the wall clock). */
+  qcEveryS?: number;
   /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
   initialLibrary?: Uint8Array;
+  /** Return the model residual of each batch's last frame (the app's residual view). */
+  residual?: boolean;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -112,7 +116,8 @@ export const FAST_LOOP_DEFAULTS = {
   poolSize: 2,
   qc: true,
   fps: 20,
-  qcEveryMs: 1000,
+  qcEveryS: 1,
+  residual: false,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -136,8 +141,14 @@ export interface CellsBatch {
   slowFrame: number;
   /** QC is observing the traces (its cost is part of `solveMs`). */
   qcOn: boolean;
-  /** A QC snapshot, about once per `qcEveryMs` of wall time. */
+  /** A QC snapshot, about once per `qcEveryS` of stream time. */
   qc?: QcWire;
+  /**
+   * Full-frame model residual of the batch's last frame (with `residual` on
+   * and cells in the library). The worker turns it into a preview and drops
+   * it before the batch is posted.
+   */
+  residual?: Float32Array;
 }
 
 const now = (): number => performance.now();
@@ -154,7 +165,7 @@ export class FastLoop {
   private qc: QcMonitorLike | null = null;
   private qcFields: { cell: string[]; global: string[] } | null = null;
   private qcNoise = 0;
-  private qcLast = -Infinity;
+  private qcLastFrame = -Infinity;
   private qcFrame = 0;
   private pendingLibrary: Uint8Array | null = null;
   private initSent = false;
@@ -191,6 +202,11 @@ export class FastLoop {
   setDiscovery(on: boolean): void {
     if (on && !this.o.discover) this.resumed = true;
     this.o.discover = on;
+  }
+
+  /** Return the residual of each batch's last frame (see `CellsBatch.residual`), or stop. */
+  setResidual(on: boolean): void {
+    this.o.residual = on;
   }
 
   /** A message from the slow worker. Records it; never calls into WASM. */
@@ -233,10 +249,15 @@ export class FastLoop {
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
     }
+    // One frame per batch, only while the residual view is shown.
+    const residual =
+      this.o.residual && this.engine?.residualOfLast && this.ids.length > 0 && count > 0
+        ? this.engine.residualOfLast(batch.subarray((count - 1) * this.px, count * this.px))
+        : null;
     const t2 = now();
     this.forward(batch, start, count, traces, calibration);
     const t3 = now();
-    const qc = qcOn ? this.qcSnapshot(t3) : undefined;
+    const qc = qcOn ? this.qcSnapshot() : undefined;
     return {
       version: this.version,
       ids: this.ids.slice(),
@@ -250,6 +271,7 @@ export class FastLoop {
       slowFrame: this.slowFrame,
       qcOn,
       ...(qc ? { qc } : {}),
+      ...(residual && residual.length === this.px ? { residual } : {}),
     };
   }
 
@@ -275,12 +297,18 @@ export class FastLoop {
     return this.qc;
   }
 
-  /** Copy the QC metrics out, at most once per `qcEveryMs`. */
-  private qcSnapshot(t: number): QcWire | undefined {
+  /**
+   * Copy the QC metrics out, at most once per `qcEveryS` of stream time, so
+   * the History view gets the same spacing at 52 fps from a file, 30 fps
+   * live, or while the main thread is slow.
+   */
+  private qcSnapshot(): QcWire | undefined {
     const qc = this.qc;
     const fields = this.qcFields;
-    if (!qc || !fields || t - this.qcLast < this.o.qcEveryMs) return undefined;
-    this.qcLast = t;
+    if (!qc || !fields || this.qcFrame - this.qcLastFrame < this.o.qcEveryS * this.o.fps)
+      return undefined;
+    this.qcLastFrame = this.qcFrame;
+    const t = now();
     const cells = qc.cellMetrics();
     const n = fields.cell.length > 0 ? Math.floor(cells.length / fields.cell.length) : 0;
     const nbStarts = new Uint32Array(n + 1);

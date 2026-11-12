@@ -16,6 +16,8 @@ export interface CellsSettings {
   library?: Uint8Array;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
+  /** Return a residual preview with each batch (the residual view is shown). */
+  residual?: boolean;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
@@ -51,6 +53,8 @@ export type FrameRequest =
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
+  /** Return (or stop returning) the model residual preview in the running pipeline. */
+  | { type: 'set-residual'; id: number; on: boolean }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
   | { type: 'link'; id: number; down: MessagePort }
   /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */

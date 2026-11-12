@@ -135,7 +135,9 @@ jobs:
           npm run build -w apps/smoketest
           node scripts/combine-dist.mjs
           npm run check:apps-manifest
-          grep -q 'href="SmokeTest/"' dist/CaLab/index.html
+          # A new app defaults to coming-soon: listed on the landing page, not linked.
+          grep -q '>SmokeTest<' dist/CaLab/index.html
+          ! grep -q 'href="SmokeTest/"' dist/CaLab/index.html
 
       - name: Remove scaffolded app
         if: always()
