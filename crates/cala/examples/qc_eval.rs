@@ -2753,7 +2753,13 @@ fn main() {
     // Pass 2: re-extract with the final library; per cell the trace, its ring
     // background, and the footprint projection ã_iᵀ y / ã_iᵀ ã_i of the frame
     // before and after the floor.
-    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    // Online flat field: pass 2 corrects from frame 0 with the final map, as the
+    // app does (pass 1 only had it from the first map on).
+    let mut pre2 = pre0.clone();
+    if let Some(ff) = online_ff.as_ref().and_then(|o| o.current()) {
+        ff.apply(&mut pre2).unwrap();
+    }
+    let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
     let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
     let mut q2 = QcMonitor::new(
         dims,
@@ -2777,7 +2783,12 @@ fn main() {
     let mut s = 0u32;
     while s < frames {
         let cnt = 64.min(frames - s);
-        let raw = rec.read(s, cnt);
+        let mut raw = rec.read(s, cnt);
+        if let Some(d) = &drift {
+            for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                d.apply(f, s as usize + k);
+            }
+        }
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let t = s as usize + k;
             pipe.frame_split(f, &mut pre, &mut y);
