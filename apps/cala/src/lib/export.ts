@@ -77,6 +77,7 @@ import { verdict, type QcSnapshot } from './qc.ts';
 import type { Pass2Result } from './pass2-store.ts';
 import type { TraceFile } from './trace-file.ts';
 import { opfsAvailable, OpfsWriterClient } from './opfs-writer.ts';
+import type { FlatFieldApplied } from './flat-field.ts';
 import type { RunSpan } from './run-record.ts';
 
 export const EXPORT_FORMAT_VERSION = 1;
@@ -97,6 +98,12 @@ export interface ExportInput {
   result: Pass2Result;
   /** Pass 1's per-frame motion and flicker (at least `result.frames` long). */
   run: RunSpan;
+  /**
+   * The sensor flat field of pass 1 (omit: none): the maps that took effect and
+   * the frame each did. Pass 2 (the traces here) corrected every frame with the
+   * last map, from frame 0.
+   */
+  flatField?: readonly FlatFieldApplied[];
   /** The last QC snapshot, if any. */
   qc: QcSnapshot | null;
   /** Frame at which a cell was first seen. */
@@ -269,6 +276,18 @@ export async function writeCalaExport(
     traces_layout: 'cells x frames, float32 (stored in Fortran order)',
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     pass2_seconds: result.seconds,
+    ...(input.flatField && input.flatField.length > 0
+      ? {
+          flat_field: {
+            pass2: 'every frame divided by the last map of pass 1, from frame 0',
+            pass1_maps: input.flatField.map((a) => ({
+              frame: a.frame,
+              source: a.source,
+              first: a.first,
+            })),
+          },
+        }
+      : {}),
     cell_table: cellTable(input),
   };
   const metaBytes = new TextEncoder().encode(JSON.stringify(meta));

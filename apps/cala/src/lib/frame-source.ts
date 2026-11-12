@@ -16,9 +16,11 @@
  * which `@calab/core` must not import.
  */
 import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm.ts';
+import type { DeviceIdentity } from './flat-field.ts';
 import { naturalCompare } from './natural-sort.ts';
 import {
   fpsFromTimeStamps,
+  parseDeviceIdentity,
   parseMetadata,
   parseTimeStamps,
   type MiniscopeMetadata,
@@ -110,6 +112,8 @@ export interface FrameSourceInfo {
   warnings: string[];
   /** A live stream (`lib/live-source.ts`): `frameCount` is unbounded and frames cannot be re-read. */
   live?: { url: string; name?: string };
+  /** What `metaData.json` (or a live hello) says about the sensor; see `flatFieldKey`. */
+  device?: DeviceIdentity;
 }
 
 /** A recording folder's files after picking the Miniscope directory. */
@@ -390,7 +394,9 @@ export class FrameSource {
       return a;
     });
 
-    const meta: MiniscopeMetadata | null = parseMetadataText(await readText(metaData));
+    const metaText = await readText(metaData);
+    const meta: MiniscopeMetadata | null = parseMetadataText(metaText);
+    const device = metaText === null ? null : parseDeviceIdentity(metaText);
     const stamps = parseTimeStampsText(await readText(timeStamps));
     const fpsMeta = meta?.frameRate ?? null;
     const fpsStamps = stamps ? fpsFromTimeStamps(stamps.ms) : null;
@@ -453,6 +459,7 @@ export class FrameSource {
       files: avis.map((a) => ({ name: a.name, frames: a.header.frameCount })),
       ignoredFiles: ignored,
       warnings,
+      ...(device ? { device } : {}),
     };
     return new FrameSource(avis, info);
   }

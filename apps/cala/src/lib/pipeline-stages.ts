@@ -3,7 +3,8 @@
  * so batch N+1's decode + preprocessing overlaps batch N's motion correction
  * and batch N-1's trace solve:
  *
- *   FrontStage (A)  read, calibration, motion warm-up front half, preprocess front half
+ *   FrontStage (A)  read, calibration, motion warm-up front half, preprocess front half,
+ *                   flat-field apply (the estimator itself runs in a worker of its own)
  *   MotionStage (B) the motion corrector (template, warm-up, per-batch registration)
  *   BackStage (C)   preprocess back half (background, noise), fast loop (traces, slow feed)
  *
@@ -27,6 +28,8 @@ import {
   PreprocessWarmup,
 } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
+import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
+import type { FlatFieldSink } from './flat-field-runner.ts';
 import type { FramePixels } from './frame-source.ts';
 import {
   nextStep,
@@ -90,6 +93,8 @@ export interface StageJob {
   motionBackend?: MotionBackend;
   /** The live source's counters after this batch (live runs only). */
   live?: LiveBatchInfo;
+  /** A flat-field map that took effect at this batch (process steps; see `FrontStage`). */
+  flatField?: FlatFieldApplied;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -119,7 +124,34 @@ export function jobTransferables(job: StageJob): ArrayBuffer[] {
 export interface ReplayInput extends RunSpan {
   /** Frames to replay (the recorded ones, which may be fewer than the recording has). */
   frameCount: number;
+  /**
+   * The latest flat-field map of pass 1: the whole recording is corrected with
+   * it from frame 0 (no estimation in pass 2). Absent: no flat field.
+   */
+  flatField?: FlatFieldMap;
 }
+
+/**
+ * The flat field of one run. Pass 1: `sink` receives the raw batches (with
+ * their shifts) for estimation; `initial` is a stored map in force from the
+ * first processed frame (also the estimator's seed). Pass 2 takes its map from
+ * `ReplayInput.flatField` instead.
+ */
+export interface FlatFieldRun {
+  sink?: FlatFieldSink;
+  initial?: FlatFieldMap;
+  /** Tags the estimator run (echoed by its answers). */
+  session?: number;
+}
+
+/** A batch whose raw frames wait for the shifts stage B is still finding. */
+interface PendingRaw {
+  raw: FramePixels;
+  count: number;
+}
+
+/** Raw batches held for the estimator at most (the pipeline has ~4 batches in flight). */
+const MAX_PENDING_RAW = 8;
 
 /** What a stage needs to know about the recording and the plan. */
 export interface StageSetup {
@@ -146,6 +178,17 @@ export class FrontStage {
   /** Feeds the motion warm-up so the flicker reference of `pre` starts at frame 0. */
   private warmupPre: Preprocessor | null = null;
   private raw: FramePixels;
+  /** Flat field: off, or a stored map and/or an estimator sink (see `FlatFieldRun`). */
+  private readonly flatOn: boolean;
+  private readonly flatSink: FlatFieldSink | undefined;
+  private readonly flatInitial: FlatFieldMap | null;
+  /** Raw batches by start, held (copied) until stage B's shifts for them arrive. */
+  private readonly pendingRaw = new Map<number, PendingRaw>();
+  /** The newest map from the estimator, applied at the next batch boundary. */
+  private offered: { seq: number; map: FlatFieldMap } | null = null;
+  /** A map in force from the first processed frame, reported with that batch. */
+  private initialEvent: FlatFieldApplied | null = null;
+  private flatApplied = false;
 
   /**
    * `acquireFront` hands out a buffer of `plan.batchSize * width * height`
@@ -158,6 +201,8 @@ export class FrontStage {
     flickerMode?: number,
     /** Pass 2: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
     private readonly replay?: ReplayInput,
+    /** Pass 1: the sensor flat field (estimator sink, stored map). Pass 2 uses `replay.flatField`. */
+    private readonly flat?: FlatFieldRun,
   ) {
     const { width, height, bitDepth, frameCount: recorded, fps } = reader.info;
     const frameCount = replay ? replay.frameCount : recorded;
@@ -168,6 +213,9 @@ export class FrontStage {
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
         throw new RangeError(`Pass 2: the recorded ${k} has fewer values than frames.`);
+    this.flatOn = options.flatField !== false;
+    this.flatSink = this.flatOn && !replay ? flat?.sink : undefined;
+    this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
     this.plan = makePlan(frameCount, options);
     this.cursor = new PipelineCursor(this.plan);
     this.width = width;
@@ -260,6 +308,8 @@ export class FrontStage {
       };
     }
 
+    // A new flat-field map takes effect here, between batches, never mid-batch.
+    const flatField = this.takeFlatField(s.start);
     const rp = this.replay;
     const frontRec = rp
       ? this.runFrontReplay(this.pre!, raw, s.count, frontView, s.start)
@@ -280,6 +330,15 @@ export class FrontStage {
           flags: Uint32Array.from(rp.flags.subarray(s.start, s.start + s.count)),
         }
       : {};
+    // The estimator needs the raw frames with the shifts stage B will find: keep one copy
+    // (a memcpy) until they come back, unless the estimator has fallen behind.
+    if (this.flatSink && this.flatSink.ready()) {
+      if (this.pendingRaw.size >= MAX_PENDING_RAW) {
+        const oldest = this.pendingRaw.keys().next().value;
+        if (oldest !== undefined) this.pendingRaw.delete(oldest);
+      }
+      this.pendingRaw.set(s.start, { raw: raw.slice(0, s.count * this.px), count: s.count });
+    }
     const rawPreview = downsampleFrame(raw, last, this.width, this.height, this.factor);
     const preprocessed = downsampleFrame(frontView, last, this.width, this.height, this.factor);
     const t3 = now();
@@ -298,10 +357,59 @@ export class FrontStage {
       timings,
       busyMs: [t3 - t0 - (t1b - t1), 0, 0],
       ...(live ? { live } : {}),
+      ...(flatField ? { flatField } : {}),
     };
   }
 
+  /**
+   * Stage B found the rigid shifts of the batch that starts at `start`: hand
+   * the batch's raw frames and the shifts to the estimator. Dropped (never
+   * waited for) when the estimator's queue is full.
+   */
+  onShifts(start: number, dy: Float32Array, dx: Float32Array): void {
+    const pending = this.pendingRaw.get(start);
+    if (!pending) return;
+    this.pendingRaw.delete(start);
+    const sink = this.flatSink;
+    if (!sink || !sink.ready()) return;
+    sink.push({
+      session: this.flat?.session ?? 0,
+      start,
+      count: pending.count,
+      raw: pending.raw,
+      dy,
+      dx,
+    });
+  }
+
+  /** The estimator produced a map: it is applied at the next batch boundary (the newest wins). */
+  offerFlatField(seq: number, map: FlatFieldMap): void {
+    if (this.flatOn && !this.replay && this.pre) this.offered = { seq, map };
+  }
+
+  private takeFlatField(start: number): FlatFieldApplied | undefined {
+    const initial = this.initialEvent;
+    if (initial) {
+      this.initialEvent = null;
+      return { ...initial, frame: start };
+    }
+    const o = this.offered;
+    if (!o) return undefined;
+    this.offered = null;
+    this.setFlatField(this.pre!, o.map);
+    const first = !this.flatApplied;
+    this.flatApplied = true;
+    return { frame: start, seq: o.seq, source: 'estimate', first };
+  }
+
+  private setFlatField(pre: Preprocessor, map: FlatFieldMap): void {
+    pre.setFlatField(map.gain, map.offset.length > 0 ? map.offset : undefined, map.dark);
+  }
+
   dispose(): void {
+    this.flatSink?.stop();
+    this.pendingRaw.clear();
+    this.offered = null;
     this.warmup?.free();
     this.pre?.free();
     this.warmupPre?.free();
@@ -314,6 +422,25 @@ export class FrontStage {
     this.warmup!.free();
     this.warmup = null;
     this.pre = pre;
+    // A stored (or, in pass 2, the final) map is in force from the first processed frame:
+    // on the motion warm-up's front half too, so the template is built from corrected frames.
+    const initial = this.flatInitial;
+    if (initial) {
+      this.setFlatField(pre, initial);
+      this.setFlatField(this.warmupPre, initial);
+      this.flatApplied = true;
+      const source: FlatFieldSource = this.replay ? 'replay' : 'cache';
+      this.initialEvent = { frame: 0, seq: 0, source, first: true };
+    }
+    this.flatSink?.start({
+      session: this.flat?.session ?? 0,
+      width: this.width,
+      height: this.height,
+      fovMask: pre.fovMask(),
+      fps: this.fastSetup.fps,
+      sixteen: this.sixteen,
+      ...(this.flat?.initial ? { seed: this.flat.initial } : {}),
+    });
     return { fovMask: pre.fovMask(), preState: pre.state() };
   }
 
@@ -695,6 +822,7 @@ export class BackStage {
       ...(job.motionBackend ? { motionBackend: job.motionBackend } : {}),
       ...(cells ? { cells } : {}),
       ...(job.live ? { live: job.live } : {}),
+      ...(job.flatField ? { flatField: job.flatField } : {}),
     };
   }
 

@@ -41,6 +41,47 @@
 //!
 //! Apply it with [`super::Preprocessor::set_flat_field`]; it divides the raw
 //! frame before every other stage.
+//!
+//! # Dark offsets
+//!
+//! The model above is multiplicative; the sensor also adds a fixed-pattern
+//! dark offset (DSNU), part of it per column, and it drifts with
+//! temperature. On the workshop recording the column profile is 12 % of the
+//! high-passed log-gain variance, and the column offsets measured in the
+//! unlit rows explain about a sixth of that (r .41, slope .74 where a pure
+//! offset predicts 1): the column structure is part offset, part gain.
+//! Offsets inside the FOV are only identifiable per column (from the unlit
+//! rows of the same column); a per-pixel offset cannot be told from gain
+//! without a change of illumination. With
+//! [`FlatFieldConfig::offset_half_life_frames`] > 0 the estimator keeps a
+//! running mean of every unlit pixel (its own, shorter half-life), takes the
+//! per-column median as the column offset, subtracts it from every frame
+//! before binning, and the correction becomes `(raw − offset) / gain + dark`.
+//!
+//! # Online (streaming) use: [`OnlineFlatField`]
+//!
+//! Recordings run for days, so the map is never frozen: the bin sums forget
+//! exponentially (gain half-life hours, [`GAIN_HALF_LIFE_S`]; offsets
+//! minutes, [`OFFSET_HALF_LIFE_S`]), and a warm-started solve runs every
+//! [`REFINE_EVERY_S`]. Each push costs a pass over the frame; each solve is
+//! bounded (bins × pixels × iterations) and runs off the frame path. A solve
+//! needs two shift bins with fresh frames since the last one: still
+//! stretches carry no information that separates gain from tissue, and the
+//! map is kept as it is. A stored map of the same sensor (a seed) is applied
+//! from the first frame and blended into every solve by its weight, decayed
+//! with the gain half-life.
+//!
+//! Before the first map the data are uncorrected; the first map is a single
+//! switch at a batch boundary (on the workshop recording it moves the
+//! corrected mean image by 0.8 σ median per pixel), later refinements are
+//! small (median 0.07 σ falling to 0.02 σ, 99th percentile below 0.35 σ;
+//! [`FlatFieldUpdate`]). What the slow loop accumulated across a change:
+//! the running footprint statistics are centred covariances with a
+//! half-life (`stats_half_life_frames`, 6000 frames), so the static light a
+//! map change moves cancels in the centring, and the motion-locked texture
+//! learnt before the first map is forgotten with that half-life; the
+//! ledger's running baseline and noise scale follow a step the same way.
+//! Changes far below the noise (the refinements) are a slow drift to both.
 
 use super::gaussian::RecursiveGaussian;
 use super::{Dims, PreprocessError, RawPixel};
