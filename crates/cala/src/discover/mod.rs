@@ -168,6 +168,10 @@
 //!   block group instead of residual sums, so a footprint is estimated
 //!   under the neighbours' *current* columns: a neighbour's change reaches
 //!   it at once instead of fading in with the forgetting half-life.
+//!   Neighbours that reach a region only through their moat or the ring
+//!   keep their cross-moments per cell rather than per pixel class (an
+//!   approximation with a derived error, `suffstats.rs`), and visit jobs
+//!   carry the stores summed to the two halves of the block groups.
 //! * **Add vs absorb vs merge-in.** A residual candidate competes with the
 //!   overlapping cells re-estimated to take it up: from their statistics,
 //!   grown into the candidate's disk with their trace fixed, or (when the
@@ -1862,7 +1866,11 @@ impl SlowLoop {
                 own.xbuf.extend(st.pix.iter().map(|&p| frame[p as usize]));
             }
             st.push(&own.xbuf, g, w, &own.cbuf, rho);
-            work += (st.pix.len() * 2 + nbs.len() * 2 * st.classes()) as u64;
+            work +=
+                (st.pix.len() * 2 + nbs.len() * 2 + st.near_neighbours() * 2 * st.classes()) as u64;
+            if let Some(sh) = own.shadow.as_mut().and_then(|m| m.get_mut(&id)) {
+                sh.push(&own.xbuf, g, w, &own.cbuf, rho);
+            }
         }
         // Counted apart from `self.work` (which paces the visits), so that
         // keeping the store changes no decision.
@@ -1879,6 +1887,11 @@ impl SlowLoop {
     /// (its trace history with the cell was not kept). The moat's older
     /// frames are kept in both cases: a moat reaches 2σ = 40 px, and
     /// restarting under it would restart most of every region nearby.
+    /// A neighbour whose support disk reaches the region is near (per-class
+    /// cross terms); the others are far (`suffstats.rs`, near and far
+    /// neighbours), and near stays near. With a shadow store
+    /// ([`SlowLoop::enable_joint_shadow`]) the same bookkeeping is applied
+    /// to it with every neighbour near.
     fn suff_sync(&mut self, lib: &Library) {
         let version = lib.version();
         if self.suff_own.version == version {
@@ -1888,6 +1901,9 @@ impl SlowLoop {
         let ids = lib.ids();
         let present: std::collections::HashSet<u64> = ids.iter().copied().collect();
         self.suff.retain(|id, _| present.contains(id));
+        if let Some(sh) = self.suff_own.shadow.as_mut() {
+            sh.retain(|id, _| present.contains(id));
+        }
         let mut born: std::collections::HashSet<u64> = ids
             .iter()
             .copied()
@@ -1902,6 +1918,9 @@ impl SlowLoop {
             if present.contains(&id) {
                 born.insert(id);
                 self.suff.remove(&id);
+                if let Some(sh) = self.suff_own.shadow.as_mut() {
+                    sh.remove(&id);
+                }
             }
         }
         self.suff_own.births += born.len() as u64;
@@ -1948,10 +1967,12 @@ impl SlowLoop {
                     disk_pixels(center, want, width, height, fov),
                 )
             });
+            let mut moved = None;
             if !st.covers(center, radius) {
                 let pix = disk_pixels(center, want, width, height, fov);
                 work += pix.len() as u64 * 2;
-                *st = st.moved(center, want, pix);
+                *st = st.moved(center, want, pix.clone());
+                moved = Some(pix);
             }
             // Columns that can reach the region: support plus moat, and the
             // ring's coupling (the level's columns).
@@ -2010,15 +2031,48 @@ impl SlowLoop {
                     }
                 }
             }
-            st.set_neighbours(&nb);
-            for j in reset {
-                if let Some(k) = st.nb.iter().position(|&o| o == j) {
-                    st.zero_neighbour(k);
-                }
-            }
+            // Near: the support reaches the region (per-class terms); the
+            // others reach it only through their moat or the ring (far).
+            let near: Vec<bool> = nb
+                .iter()
+                .enumerate()
+                .map(|(k, &j)| {
+                    k == 0
+                        || lib
+                            .slot(j)
+                            .is_some_and(|sj| st.reached_by(sup[sj].0, sup[sj].1))
+                })
+                .collect();
+            self.suff_own.promotions += nb
+                .iter()
+                .zip(&near)
+                .filter(|&(j, &n)| {
+                    n && st
+                        .nb
+                        .iter()
+                        .position(|o| o == j)
+                        .is_some_and(|k| !st.near[k])
+                })
+                .count() as u64;
             let idx: Vec<usize> = (0..restart.len()).filter(|&i| restart[i]).collect();
             self.suff_own.restarted += idx.len() as u64;
-            st.restart(&idx);
+            suff_apply(st, &nb, &near, &reset, &idx);
+            if let Some(sh) = self.suff_own.shadow.as_mut() {
+                // The exact store: every neighbour near.
+                let sh = sh.entry(id).or_insert_with(|| {
+                    CellStats::new(
+                        id,
+                        center,
+                        want,
+                        disk_pixels(center, want, width, height, fov),
+                    )
+                });
+                if let Some(pix) = moved {
+                    *sh = sh.moved(center, want, pix);
+                }
+                suff_apply(sh, &nb, &vec![true; nb.len()], &reset, &idx);
+                debug_assert_eq!(sh.pix, st.pix);
+            }
             self.suff_own.nb_slot[slot] = st
                 .nb
                 .iter()
@@ -2058,28 +2112,85 @@ impl SlowLoop {
         mask: GroupMask,
     ) -> Option<(Vec<u32>, Vec<f32>)> {
         let st = self.suff.get(&id)?;
-        let slot = lib.slot(id)?;
-        let cols: Vec<Vec<f32>> = st
-            .nb
-            .iter()
-            .enumerate()
-            .map(|(k, &j)| match (k, lib.slot(j)) {
-                (0, _) | (_, None) => Vec::new(),
-                (_, Some(s)) => column_on(lib, s, &st.pix),
-            })
-            .collect();
-        let refs: Vec<&[f32]> = cols.iter().map(Vec::as_slice).collect();
-        let (qc, qv) = lib.ring_row(slot);
-        let ids = lib.ids();
-        let q: Vec<(usize, f32)> = qc
-            .iter()
-            .zip(qv)
-            .filter_map(|(&j, &v)| {
-                let jid = ids[j as usize];
-                st.nb.iter().position(|&o| o == jid).map(|k| (k, v))
-            })
-            .collect();
-        Some((st.pix.clone(), st.estimate(mask, &refs, &q)?))
+        Some((st.pix.clone(), store_estimate(lib, st, mask)?))
+    }
+
+    /// Keep an exact copy of the joint statistics beside the store (every
+    /// neighbour near: PR-1's per-class terms), to measure the far
+    /// neighbours' approximation ([`SlowLoop::joint_shadow_error`]). A
+    /// diagnostic: it doubles the store's memory and changes nothing else.
+    /// Call before the first frame.
+    #[doc(hidden)]
+    pub fn enable_joint_shadow(&mut self) {
+        self.suff_own.shadow = Some(HashMap::new());
+    }
+
+    /// The far neighbours' approximation against the exact shadow store
+    /// (see [`SlowLoop::enable_joint_shadow`]) under `lib`, over every
+    /// cell with both: per cell, the largest difference relative to the
+    /// largest exact value, and the RMS difference relative to the RMS
+    /// standard error of the exact estimate (spread across the block
+    /// groups / sqrt(groups)). `None` without a shadow.
+    #[doc(hidden)]
+    pub fn joint_shadow_error(&self, lib: &Library) -> Option<JointShadowError> {
+        let sh = self.suff_own.shadow.as_ref()?;
+        let (mut rel, mut per_se) = (Vec::new(), Vec::new());
+        for (id, st) in &self.suff {
+            let Some(ex) = sh.get(id) else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (
+                store_estimate(lib, st, suffstats::ALL_GROUPS),
+                store_estimate(lib, ex, suffstats::ALL_GROUPS),
+            ) else {
+                continue;
+            };
+            let per: Vec<Vec<f32>> = (0..GROUPS)
+                .filter_map(|g| store_estimate(lib, ex, 1 << g))
+                .collect();
+            let peak = b.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+            let dmax = a
+                .iter()
+                .zip(&b)
+                .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+            if peak > 0.0 {
+                rel.push(f64::from(dmax / peak));
+            }
+            if per.len() == GROUPS {
+                let k = GROUPS as f64;
+                let (mut d2, mut se2) = (0.0f64, 0.0f64);
+                for i in 0..b.len() {
+                    let d = f64::from(a[i] - b[i]);
+                    d2 += d * d;
+                    let m = per.iter().map(|e| f64::from(e[i])).sum::<f64>() / k;
+                    let v = per
+                        .iter()
+                        .map(|e| (f64::from(e[i]) - m).powi(2))
+                        .sum::<f64>()
+                        / (k - 1.0);
+                    se2 += v / k;
+                }
+                if se2 > 0.0 {
+                    per_se.push((d2 / se2).sqrt());
+                }
+            }
+        }
+        let q = |v: &mut Vec<f64>, p: f64| -> f64 {
+            if v.is_empty() {
+                return f64::NAN;
+            }
+            v.sort_by(f64::total_cmp);
+            v[((v.len() - 1) as f64 * p).round() as usize]
+        };
+        Some(JointShadowError {
+            cells: rel.len(),
+            rel_max: [q(&mut rel, 0.5), q(&mut rel, 0.95), q(&mut rel, 1.0)],
+            rms_per_se: [
+                q(&mut per_se, 0.5),
+                q(&mut per_se, 0.95),
+                q(&mut per_se, 1.0),
+            ],
+        })
     }
 
     /// The residual-statistics estimate (`fpstats.rs`) of cell `id`: its
@@ -2101,12 +2212,14 @@ impl SlowLoop {
             jobs: self.suff_own.jobs,
             job_bytes: self.suff_own.job_bytes,
             job_suff_bytes: self.suff_own.job_suff_bytes,
+            promotions: self.suff_own.promotions,
             ..JointStatsDiag::default()
         };
         for st in self.suff.values() {
             d.bytes += st.bytes();
             d.pixels += st.pix.len();
             d.neighbours += st.nb.len() - 1;
+            d.near += st.near_neighbours();
             d.classes += st.classes();
         }
         d.residual_bytes = self.fpstats.values().map(fpstats_bytes).sum();
@@ -4835,6 +4948,65 @@ struct SuffOwner {
     jobs: u64,
     job_bytes: u64,
     job_suff_bytes: u64,
+    /// Far neighbours that became near (their class terms seeded from the
+    /// far approximation).
+    promotions: u64,
+    /// The exact store (every neighbour near), when measuring the far
+    /// approximation ([`SlowLoop::enable_joint_shadow`]).
+    shadow: Option<HashMap<u64, CellStats>>,
+}
+
+/// The far neighbours' approximation measured against the exact shadow
+/// store ([`SlowLoop::joint_shadow_error`]): median, 95th percentile and
+/// maximum over cells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JointShadowError {
+    pub cells: usize,
+    /// Largest |approx − exact| over the region / largest |exact|.
+    pub rel_max: [f64; 3],
+    /// RMS |approx − exact| / RMS standard error of the exact estimate.
+    pub rms_per_se: [f64; 3],
+}
+
+/// Apply one library version's bookkeeping to a store: the neighbour list
+/// (`near` as the owner decided), the newborns' zeroed histories and the
+/// restarted pixels.
+fn suff_apply(st: &mut CellStats, nb: &[u64], near: &[bool], reset: &[u64], idx: &[usize]) {
+    st.set_neighbours(nb, near);
+    for j in reset {
+        if let Some(k) = st.nb.iter().position(|o| o == j) {
+            st.zero_neighbour(k);
+        }
+    }
+    st.restart(idx);
+}
+
+/// The joint estimate of `st` (its cell's filtered column on its region)
+/// from the groups in `mask`, under `lib`'s current columns and ring
+/// coupling.
+fn store_estimate(lib: &Library, st: &CellStats, mask: GroupMask) -> Option<Vec<f32>> {
+    let slot = lib.slot(st.nb[0])?;
+    let cols: Vec<Vec<f32>> = st
+        .nb
+        .iter()
+        .enumerate()
+        .map(|(k, &j)| match (k, lib.slot(j)) {
+            (0, _) | (_, None) => Vec::new(),
+            (_, Some(s)) => column_on(lib, s, &st.pix),
+        })
+        .collect();
+    let refs: Vec<&[f32]> = cols.iter().map(Vec::as_slice).collect();
+    let (qc, qv) = lib.ring_row(slot);
+    let ids = lib.ids();
+    let q: Vec<(usize, f32)> = qc
+        .iter()
+        .zip(qv)
+        .filter_map(|(&j, &v)| {
+            let jid = ids[j as usize];
+            st.nb.iter().position(|&o| o == jid).map(|k| (k, v))
+        })
+        .collect();
+    st.estimate(mask, &refs, &q)
 }
 
 /// Size and cost of the joint statistics ([`SlowLoop::joint_stats_diag`]).
@@ -4847,6 +5019,10 @@ pub struct JointStatsDiag {
     pub pixels: usize,
     pub neighbours: usize,
     pub classes: usize,
+    /// Near neighbours (support reaches the region; summed over cells), and
+    /// far neighbours promoted to near (cumulative).
+    pub near: usize,
+    pub promotions: u64,
     /// Pixels started over (epochs, cumulative), births seen, and existing
     /// columns that newly reached a region.
     pub restarted_px: u64,

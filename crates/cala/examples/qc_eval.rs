@@ -41,6 +41,9 @@
 //!   --footprint-stats M  residual (default) | joint: also keep the joint
 //!                      sufficient statistics (S1.7; no decision reads them
 //!                      yet) and print their size and cost
+//!   --joint-shadow     with joint: also keep the exact store (every
+//!                      neighbour near) and print the far neighbours'
+//!                      approximation error against it (doubles the store)
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -2087,6 +2090,11 @@ fn main() {
                             .unwrap()
                     };
                     slow = Some(mk());
+                    if args.iter().any(|a| a == "--joint-shadow") {
+                        if let Some(s) = slow.as_mut() {
+                            s.enable_joint_shadow();
+                        }
+                    }
                     if let Some(s) = &slow {
                         let p = s.reservoir_plan();
                         println!(
@@ -2476,7 +2484,8 @@ fn main() {
                 "joint stats: {} cells, {:.1} MB ({:.1} KB/cell, residual stats {:.1} MB), \
                  {:.0} px/cell, {:.1} neighbours/cell, {:.2} classes/cell, {} births, \
                  {} px restarted, {} reach joins, work {} (residual stats {}), \
-                 {} jobs {:.0} KB/job of which stores {:.0} KB",
+                 {} jobs {:.0} KB/job of which stores {:.0} KB; \
+                 {:.1} near neighbours/cell, {} promotions",
                 d.cells,
                 d.bytes as f64 / 1e6,
                 d.bytes as f64 / c / 1e3,
@@ -2492,7 +2501,23 @@ fn main() {
                 d.jobs,
                 d.job_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
                 d.job_suff_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
+                d.near as f64 / c,
+                d.promotions,
             );
+            if let Some(e) = sl.joint_shadow_error(&engine.library().clone()) {
+                println!(
+                    "joint far approximation vs exact store ({} cells): max|diff|/max|est| \
+                     median {:.2e} p95 {:.2e} max {:.2e}; rms diff / rms SE median {:.3} \
+                     p95 {:.3} max {:.3}",
+                    e.cells,
+                    e.rel_max[0],
+                    e.rel_max[1],
+                    e.rel_max[2],
+                    e.rms_per_se[0],
+                    e.rms_per_se[1],
+                    e.rms_per_se[2],
+                );
+            }
         }
         if sl.config().basin_trim {
             let (c, f, s2) = sl.basin_diag;
