@@ -192,6 +192,64 @@ describe('flat field in the pipeline store', () => {
     });
   });
 
+  it('does not apply a stored map with implausible gain: it estimates fresh', async () => {
+    const stored: FlatFieldRecord = {
+      key: 'device:SN1|4x3',
+      keySource: 'device',
+      width: W,
+      height: H,
+      gain: new Float32Array(W * H).fill(7),
+      offset: new Float32Array(0),
+      dark: 0,
+      framesUsed: 1,
+      binsUsed: 1,
+      gainSd: 0,
+      updatedAt: 1,
+    };
+    const { client, startPipeline } = fakeClient([]);
+    const { cache } = memoryCache(stored);
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore(client, {}, undefined, undefined, true, undefined, {
+        cache,
+        identity,
+      });
+      await store.start();
+      expect((startPipeline.mock.calls[0] as unknown[])[3]).toBeUndefined();
+      expect(store.flatFieldMap()).toBeNull();
+      dispose();
+    });
+  });
+
+  it('a live source neither reads nor writes the cache', async () => {
+    const stored: FlatFieldRecord = {
+      key: 'live-device:SN1|4x3',
+      keySource: 'live-device',
+      width: W,
+      height: H,
+      gain: new Float32Array(W * H).fill(1.01),
+      offset: new Float32Array(0),
+      dark: 0,
+      framesUsed: 1,
+      binsUsed: 1,
+      gainSd: 0,
+      updatedAt: 1,
+    };
+    const { client, startPipeline, emit } = fakeClient([{ kind: 'done' }]);
+    const { cache, put } = memoryCache(stored);
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore(client, {}, undefined, undefined, true, undefined, {
+        cache,
+        identity: () => ({ ...identity(), live: true }),
+      });
+      await store.start();
+      expect((startPipeline.mock.calls[0] as unknown[])[3]).toBeUndefined();
+      emit({ type: 'map', session: sid(startPipeline), seq: 1, map: map(), change: null });
+      store.flushFlatField();
+      expect(put).not.toHaveBeenCalled();
+      dispose();
+    });
+  });
+
   it('does not reuse a map of another frame size', async () => {
     const stored: FlatFieldRecord = {
       key: 'device:SN1|4x3',

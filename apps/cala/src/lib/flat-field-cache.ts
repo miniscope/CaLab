@@ -69,16 +69,40 @@ export function mapFromRecord(r: FlatFieldRecord): FlatFieldMap {
   };
 }
 
+/** Plausible per-pixel gain: sensor gain is within a few percent of 1, so 0.5 to 2 is generous. */
+export const GAIN_MIN = 0.5;
+export const GAIN_MAX = 2;
+
+function allFinite(a: Float32Array, lo = -Infinity, hi = Infinity): boolean {
+  for (let i = 0; i < a.length; i++) {
+    const v = a[i];
+    if (!Number.isFinite(v) || v < lo || v > hi) return false;
+  }
+  return true;
+}
+
+/**
+ * True when a map is safe to apply to `w x h` frames: the arrays have the
+ * frame's size (offset: empty or full), every gain is finite and plausible,
+ * every offset and the dark level are finite. Checked on write and on read;
+ * a map that fails is rejected whole (the run estimates fresh).
+ */
+export function mapIsValid(m: FlatFieldMap | null | undefined, w: number, h: number): boolean {
+  return (
+    !!m &&
+    m.gain instanceof Float32Array &&
+    m.offset instanceof Float32Array &&
+    m.gain.length === w * h &&
+    (m.offset.length === 0 || m.offset.length === w * h) &&
+    Number.isFinite(m.dark) &&
+    allFinite(m.gain, GAIN_MIN, GAIN_MAX) &&
+    allFinite(m.offset)
+  );
+}
+
 /** True when a stored record can seed a run of `width x height` frames. */
 export function recordFits(r: FlatFieldRecord | null | undefined, w: number, h: number): boolean {
-  return (
-    !!r &&
-    r.width === w &&
-    r.height === h &&
-    r.gain instanceof Float32Array &&
-    r.gain.length === w * h &&
-    (r.offset.length === 0 || r.offset.length === w * h)
-  );
+  return !!r && r.width === w && r.height === h && mapIsValid(mapFromRecord(r), w, h);
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
@@ -123,6 +147,8 @@ export function createIndexedDbFlatFieldCache(
     },
     async put(record) {
       try {
+        // Never persist a map that would be rejected on read.
+        if (!recordFits(record, record.width, record.height)) return;
         const db = await open();
         if (!db) return;
         await request(db.transaction(STORE, 'readwrite').objectStore(STORE).put(record));

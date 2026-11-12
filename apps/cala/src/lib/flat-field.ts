@@ -81,7 +81,7 @@ export interface DeviceIdentity {
   deviceId?: string;
 }
 
-export type FlatFieldKeySource = 'device' | 'live-name' | 'folder';
+export type FlatFieldKeySource = 'device' | 'live-device' | 'live-name' | 'folder';
 
 export interface FlatFieldKey {
   key: string;
@@ -110,11 +110,20 @@ export function flatFieldKey(args: {
   device?: DeviceIdentity;
   /** A live source's name, if it sent one. */
   liveName?: string;
+  /** The source is a live stream: its keys live in their own namespace (`live-device:`, `live:`). */
+  live?: boolean;
   /** The opened folder's name (the viewer label). */
   folder: string;
 }): FlatFieldKey {
   const dims = `${args.width}x${args.height}`;
   const serial = args.device?.serial?.trim();
+  if (serial && args.live) {
+    return {
+      key: `live-device:${serial}|${dims}`,
+      source: 'live-device',
+      description: `live device ${serial}`,
+    };
+  }
   if (serial) {
     return { key: `device:${serial}|${dims}`, source: 'device', description: `device ${serial}` };
   }

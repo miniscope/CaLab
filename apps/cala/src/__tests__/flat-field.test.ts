@@ -16,6 +16,7 @@ import {
 import {
   createIndexedDbFlatFieldCache,
   mapFromRecord,
+  mapIsValid,
   recordFits,
   recordFromMap,
 } from '../lib/flat-field-cache.ts';
@@ -456,6 +457,20 @@ describe('device identity and cache key', () => {
     expect(folder.description).toContain('no device serial');
   });
 
+  it('keeps live sources in their own namespace', () => {
+    const live = flatFieldKey({
+      ...dims,
+      live: true,
+      device: { serial: 'SN-1' },
+      folder: '',
+    });
+    expect(live).toMatchObject({ key: 'live-device:SN-1|600x600', source: 'live-device' });
+    const file = flatFieldKey({ ...dims, device: { serial: 'SN-1' }, folder: 'f' });
+    expect(live.key).not.toBe(file.key);
+    const named = flatFieldKey({ ...dims, live: true, liveName: 'SN-1', folder: '' });
+    expect(named.key.startsWith('live:')).toBe(true);
+  });
+
   it('puts the frame size in every key', () => {
     const a = flatFieldKey({ width: 600, height: 600, device: { serial: 'X' }, folder: 'f' });
     const b = flatFieldKey({ width: 608, height: 600, device: { serial: 'X' }, folder: 'f' });
@@ -493,6 +508,105 @@ describe('flat-field cache', () => {
     expect(recordFits(rec, W + 1, H)).toBe(false);
     expect(recordFits(null, W, H)).toBe(false);
     expect(mapFromRecord(rec).gain).toBe(rec.gain);
+  });
+
+  it('rejects implausible, non-finite or mis-sized maps whole, on read and on write', async () => {
+    const key = flatFieldKey({ width: W, height: H, device: { serial: 'S' }, folder: 'f' });
+    const good = recordFromMap(key, W, H, halfMap(), 1);
+    expect(recordFits(good, W, H)).toBe(true);
+    const bad = (patch: (m: FlatFieldMap) => void) => {
+      const m = halfMap();
+      patch(m);
+      return recordFromMap(key, W, H, m, 1);
+    };
+    expect(
+      recordFits(
+        bad((m) => (m.gain[5] = NaN)),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.gain[5] = Infinity)),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.gain[5] = 0.3)),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.gain[5] = 2.5)),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.dark = NaN)),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.offset = new Float32Array(PX).fill(NaN))),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.offset = new Float32Array(7))),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(
+      recordFits(
+        bad((m) => (m.gain = new Float32Array(PX - 1).fill(1))),
+        W,
+        H,
+      ),
+    ).toBe(false);
+    expect(mapIsValid({ ...halfMap(), offset: new Float32Array(PX).fill(3) }, W, H)).toBe(true);
+
+    // A fake IndexedDB: the write of an invalid map never reaches it.
+    const puts: unknown[] = [];
+    const store = {
+      put: (r: unknown) => {
+        puts.push(r);
+        const req = {} as IDBRequest;
+        setTimeout(() => (req as unknown as { onsuccess?: () => void }).onsuccess?.());
+        return req;
+      },
+      get: () => {
+        const req = { result: bad((m) => (m.gain[0] = NaN)) } as unknown as IDBRequest;
+        setTimeout(() => (req as unknown as { onsuccess?: () => void }).onsuccess?.());
+        return req;
+      },
+    };
+    const db = { transaction: () => ({ objectStore: () => store }) };
+    const factory = {
+      open: () => {
+        const req = { result: db } as unknown as IDBOpenDBRequest;
+        setTimeout(() => (req as unknown as { onsuccess?: () => void }).onsuccess?.());
+        return req;
+      },
+    } as unknown as IDBFactory;
+    const cache = createIndexedDbFlatFieldCache(factory);
+    await cache.put(bad((m) => (m.gain[0] = 9)));
+    expect(puts).toHaveLength(0);
+    await cache.put(good);
+    expect(puts).toHaveLength(1);
+    // A poisoned record in the store reads back as nothing.
+    await expect(cache.get(key.key, W, H)).resolves.toBeNull();
   });
 
   it('is inert without IndexedDB: reads find nothing, writes do nothing', async () => {

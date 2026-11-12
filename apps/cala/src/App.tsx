@@ -54,9 +54,10 @@ const App: Component = () => {
       : visitWorkerCount(navigator.hardwareConcurrency),
   );
   // `?noqc`: run without online quality control (to measure its cost).
+  // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
-    {},
+    params.get('flatfield') === '0' ? { flatField: false } : {},
     undefined,
     cells,
     !params.has('noqc'),
@@ -71,6 +72,7 @@ const App: Component = () => {
           width: i.width,
           height: i.height,
           ...(i.device ? { device: i.device } : {}),
+          ...(i.live ? { live: true } : {}),
           ...(i.live?.name ? { liveName: i.live.name } : {}),
           folder: store.label(),
         };

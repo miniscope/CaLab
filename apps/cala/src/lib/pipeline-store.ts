@@ -150,6 +150,8 @@ export interface FlatFieldStoreOptions {
     height: number;
     device?: DeviceIdentity;
     liveName?: string;
+    /** A live stream (its maps are neither read from nor written to the cache). */
+    live?: boolean;
     folder: string;
   } | null;
   /** Minimum time between cache writes, ms (default one minute; the run end always writes). */
@@ -410,7 +412,10 @@ export function createPipelineStore(
       flatKey = null;
       let seed: FlatFieldMap | undefined;
       const id = useFlat ? (flat.identity?.() ?? null) : null;
-      if (id) {
+      // A live stream (including an auto-connected `?live=` one) neither reads nor writes
+      // the cache: a stored map is never applied silently to a stream, and a stream
+      // cannot overwrite a map cached for a file or device. It estimates fresh.
+      if (id && !id.live) {
         flatKey = flatFieldKey(id);
         flatDims = { width: id.width, height: id.height };
         const rec = flat.cache ? await flat.cache.get(flatKey.key, id.width, id.height) : null;
