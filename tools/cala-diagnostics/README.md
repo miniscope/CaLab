@@ -4,7 +4,7 @@ These tools inspect `discover_eval` runs without changing discovery algorithms.
 Run from the repository root. Python 3.10+ and NumPy are required for trajectory
 analysis; Matplotlib is optional for PNG/PDF plots; Zarr is optional for the Minian
 comparison. The small benchmark additionally needs the pinned Minisim environment
-described in `tools/minisim-calibration/README.md` (pinned at 01a9ce2, the
+described in `tools/minisim-calibration/README.md` (pinned at minisim v1.1.0, the
 revision the validated benchmark used; the exporter needs c243dca or later).
 
 ```sh
