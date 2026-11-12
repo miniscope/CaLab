@@ -1850,11 +1850,14 @@ impl SlowLoop {
 
     /// Bring the joint statistics up to library `lib` (once per version):
     /// new cells get a store, moved regions keep their shared pixels,
-    /// neighbour lists follow the columns that reach each region. Epochs:
-    /// pixels under a newborn's support (a new cell, or a merge or split
-    /// result, whose old frames had no such column) start over, and so do
-    /// pixels reached by an existing column that newly reaches the region
-    /// (its trace history with the cell was not kept).
+    /// neighbour lists gain the columns that reach each region (support plus
+    /// moat, and the ring's coupling) and keep them until they are deleted.
+    /// Epochs: pixels under a newborn's support (a new cell, or a merge or
+    /// split result, whose old frames had no such column) start over, and
+    /// so do those under an existing column that first reaches the region
+    /// (its trace history with the cell was not kept). The moat's older
+    /// frames are kept in both cases: a moat reaches 2σ = 40 px, and
+    /// restarting under it would restart most of every region nearby.
     fn suff_sync(&mut self, lib: &Library) {
         let version = lib.version();
         if self.suff_own.version == version {
@@ -1952,6 +1955,10 @@ impl SlowLoop {
             work += cand.len() as u64;
             let (qcols, _) = lib.ring_row(slot);
             cand.extend(qcols.iter().map(|&j| ids[j as usize]).filter(|&j| j != id));
+            // A neighbour stays until it is deleted: dropping one that moved
+            // out of reach and taking it back later would lose its history
+            // with the cell (and cost a restart) for nothing.
+            cand.extend(st.nb[1..].iter().copied().filter(|j| present.contains(j)));
             cand.sort_unstable();
             cand.dedup();
             let mut nb = Vec::with_capacity(cand.len() + 1);
@@ -1972,13 +1979,12 @@ impl SlowLoop {
                             reset.push(j);
                         }
                     } else if !known {
-                        // An existing column newly in reach: wherever it is
-                        // non-zero.
-                        let col = column_on(lib, sj, &st.pix);
-                        for (r, &v) in restart.iter_mut().zip(&col) {
-                            *r |= v != 0.0;
-                        }
-                        work += st.pix.len() as u64;
+                        // An existing column newly in reach: its trace
+                        // history with the cell was not kept, so the pixels
+                        // under its support start over (as for a birth; its
+                        // moat's older frames stay, the same approximation).
+                        let (spix, _) = lib.filtered(sj);
+                        mark(&st.pix, spix, &mut restart);
                         self.suff_own.reach_joins += 1;
                     }
                 }
