@@ -16,6 +16,11 @@
       "Quality control: convergence strip, per-cell pass/fail and flags (including trace follows motion)",
       "Exports traces, footprints and run metadata as .npz, plus a CaDecon-ready file"
     ],
+    "pipeline": {
+      "input": "Raw Miniscope video",
+      "output": "cell footprints and traces",
+      "step": 1
+    },
     "status": "beta",
     "screenshot": "screenshot.png"
   },

@@ -5,6 +5,26 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Landing page refresh. It now takes its colours, type and spacing from the
+  apps' shared tokens (`packages/ui/src/styles/tokens.css`, inlined at build
+  time), opens with a one-line statement of what CaLab is and a short "how the
+  apps fit together" panel, and lists released apps as screenshot cards in a
+  grid that fills by width, so more apps need no layout change. Each card has
+  a Details button that expands its `longDescription` and `features`.
+  Coming-soon apps move to a compact, unlinked "In development" list. The
+  header links docs, the Python package, the changelog and GitHub; the footer
+  links the release, citation and licence. The page is built only from each
+  app's `calab` block, rendered by the new `scripts/lib/landing.mjs`.
+- New optional `calab.pipeline` field (`{ input, output, step }`): the app's
+  line in the landing page's workflow panel. `step` is a coarse stage of use;
+  apps with equal steps are shown together as alternatives (Cala 1; CaDecon
+  and CaTune 2). Set for Cala, CaDecon and CaTune, with an
+  empty placeholder in `apps/_template`; `check:apps-manifest` validates it.
+- Cala's landing image is now a single clean footprint from a real run on the
+  workshop recording (cell 168, QC pass), not a full-interface screenshot.
+
 ### Removed
 
 - Cala: code of settled experiments, all opt-in and off by default, so the
