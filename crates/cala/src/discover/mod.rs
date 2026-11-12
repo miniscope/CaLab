@@ -182,9 +182,9 @@
 //!   overlapping by less than half, the weaker part with at least
 //!   `merge_refit_min_share` of the energy), so duplicates still merge.
 //!   A young cell merged back marks its spot like a rejection.
-//!   Optionally (`merge_history_corr`, off by default) an accepted merge
-//!   is refused when the two cells' fast-loop traces over the whole
-//!   session correlate below a threshold (`tracehist.rs`).
+//!   An accepted merge is refused when the two cells' fast-loop traces
+//!   over the whole session correlate below `merge_history_corr`
+//!   (`tracehist.rs`).
 //!
 //! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
 //! involved and its held-out margin.
@@ -450,7 +450,8 @@ pub struct SlowLoopConfig {
     /// traces, over all the frames both were in the library (at least 600),
     /// correlate below this. The merge test itself sees only the tile's
     /// reservoir, a short event-biased sample in which two neighbours that
-    /// fired together look like one cell (`tracehist.rs`). Off by default.
+    /// fired together look like one cell (`tracehist.rs`). `None` turns it
+    /// off.
     pub merge_history_corr: Option<f32>,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
@@ -533,7 +534,7 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
-            merge_history_corr: None,
+            merge_history_corr: Some(0.3),
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,

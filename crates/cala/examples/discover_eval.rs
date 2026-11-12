@@ -16,6 +16,7 @@
 //!   --probation N / --keep-z Z   slow loop probation and keep test
 //!   --joint           add test with the joint neighbour-trace check
 //!   --merge-history R refuse a merge of two cells whose session traces correlate below R
+//!                     (default 0.3; `off` disables it)
 //!   --core-test off|report|trim|delete   transient-band core test (default off)
 //!   --basin-trim      trim refined footprints to their significant basin
 //!   --no-merge-refit  merge test against the pair's current footprints only
@@ -907,7 +908,7 @@ fn main() {
         scfg.joint_neighbours = true;
     }
     if let Some(v) = arg_value(&args, "--merge-history") {
-        scfg.merge_history_corr = Some(v.parse().unwrap());
+        scfg.merge_history_corr = (v != "off").then(|| v.parse().unwrap());
     }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();

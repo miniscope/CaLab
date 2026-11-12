@@ -846,9 +846,9 @@ fn visits_run_as_jobs_match_step_exactly() {
 }
 
 #[test]
-fn visits_run_as_jobs_match_step_exactly_with_the_merge_veto() {
+fn visits_run_as_jobs_match_step_exactly_without_the_merge_veto() {
     jobs_match_step(SlowLoopConfig {
-        merge_history_corr: Some(0.3),
+        merge_history_corr: None,
         ..shard_config()
     });
 }
@@ -1327,7 +1327,7 @@ fn config_defaults_have_no_trim_and_no_core_test() {
     assert!(!cfg.core_test.collects() && !cfg.core_test.trims());
     assert!(!cfg.basin_trim);
     assert!(!cfg.joint_neighbours);
-    assert!(cfg.merge_history_corr.is_none());
+    assert_eq!(cfg.merge_history_corr, Some(0.3));
     cfg.validate().unwrap();
     assert!(CoreTest::Report.collects() && !CoreTest::Report.trims());
     assert!(CoreTest::Trim.trims() && CoreTest::Delete.trims());
