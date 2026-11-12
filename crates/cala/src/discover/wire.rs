@@ -158,10 +158,13 @@ impl Writer {
         self.f32(s.center.1);
         self.f32(s.radius);
         self.u32s(&s.pix);
+        self.u32(s.blk);
+        let cls: Vec<u32> = s.cls.iter().map(|&c| u32::from(c)).collect();
+        self.u32s(&cls);
         self.f32s(&s.rc);
         self.f32s(&s.r);
-        for v in [s.n, s.n2, s.s1, s.s2] {
-            self.f64(v);
+        for m in &s.m {
+            self.f64s(m);
         }
         self.u64(s.version);
         self.f32s(&s.col);
@@ -170,11 +173,12 @@ impl Writer {
         self.bool(s.fast.is_some());
         if let Some(f) = &s.fast {
             self.f32(f.alpha);
-            self.f64(f.ema_c);
+            self.f64s(&f.ema_c);
             for (rc, w) in f.rc.iter().zip(&f.w) {
                 self.f32s(rc);
-                self.f64(w[0]);
-                self.f64(w[1]);
+                for wc in w {
+                    self.f64s(wc);
+                }
             }
             // Per-pixel valid-frame weights (pixels with missing samples).
             self.bool(f.wp.is_some());
@@ -370,31 +374,41 @@ impl<'a> Reader<'a> {
         Some(t)
     }
     pub fn fpstats(&mut self) -> Option<FpStats> {
+        let mom = |r: &mut Self| -> Option<[f64; 6]> { r.f64s()?.try_into().ok() };
         Some(FpStats {
             center: (self.f32()?, self.f32()?),
             radius: self.f32()?,
             pix: self.u32s()?,
+            blk: self.u32()?,
+            cls: self
+                .u32s()?
+                .into_iter()
+                .map(|c| u8::try_from(c).ok().filter(|&c| c < 2))
+                .collect::<Option<Vec<u8>>>()?,
             rc: self.f32s()?,
             r: self.f32s()?,
-            n: self.f64()?,
-            n2: self.f64()?,
-            s1: self.f64()?,
-            s2: self.f64()?,
+            m: [mom(self)?, mom(self)?],
             version: self.u64()?,
             col: self.f32s()?,
-            half: (Vec::new(), Vec::new(), [0.0; 4]),
+            half: (Vec::new(), Vec::new(), [[0.0; 6]; 2]),
             k: 0,
             pm: None,
             half_pm: None,
             fast: None,
+            pending: (Vec::new(), f32::NAN),
         })
         .and_then(|mut s: FpStats| {
+            if s.cls.len() != s.pix.len() {
+                return None;
+            }
             if self.bool()? {
                 let mut f = Fast::new(s.pix.len(), self.f32()?);
-                f.ema_c = self.f64()?;
+                f.ema_c = self.f64s()?.try_into().ok()?;
                 for g in 0..FAST_GROUPS {
                     f.rc[g] = self.f32s()?;
-                    f.w[g] = [self.f64()?, self.f64()?];
+                    for c in 0..2 {
+                        f.w[g][c] = self.f64s()?.try_into().ok()?;
+                    }
                     if f.rc[g].len() != s.pix.len() {
                         return None;
                     }
@@ -437,7 +451,11 @@ impl<'a> Reader<'a> {
         })
         .map(|mut s: FpStats| {
             // DIAG split-half sums are not on the wire.
-            s.half = (vec![0.0; s.pix.len()], vec![0.0; s.pix.len()], [0.0; 4]);
+            s.half = (
+                vec![0.0; s.pix.len()],
+                vec![0.0; s.pix.len()],
+                [[0.0; 6]; 2],
+            );
             s
         })
     }

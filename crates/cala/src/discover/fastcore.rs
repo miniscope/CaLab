@@ -65,15 +65,15 @@ impl SlowLoop {
     /// Transient-band analysis of cell `id` (support disk `center`, `radius`).
     pub(crate) fn fast_info(&self, id: u64, center: (f32, f32), radius: f32) -> Option<FastInfo> {
         let st = self.fpstats.get(&id)?;
-        let fa = st.fast.as_ref()?;
-        let (h, se_white) = fa.estimate()?;
-        let groups = fa.groups();
+        let (h, se_white) = st.fast_estimate()?;
+        let groups = st.fast_groups()?;
         if groups.iter().any(|g| g.is_none()) {
             return None;
         }
         let groups: Vec<Vec<f32>> = groups.into_iter().map(|g| g.expect("checked")).collect();
-        let wg: Vec<f64> = fa.w.iter().map(|w| w[0]).collect();
-        let w2: Vec<f64> = fa.w.iter().map(|w| w[1]).collect();
+        let gw = st.fast_weights()?;
+        let wg: Vec<f64> = gw.iter().map(|w| w[0]).collect();
+        let w2: Vec<f64> = gw.iter().map(|w| w[1]).collect();
         let sw: f64 = wg.iter().sum();
         let sw2: f64 = w2.iter().sum();
         let white_unit = sw2 / (sw * sw);
