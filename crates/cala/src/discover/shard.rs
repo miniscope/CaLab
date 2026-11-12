@@ -41,6 +41,8 @@ use std::collections::HashMap;
 
 use super::churn::Churn;
 use super::fpstats::FpStats;
+#[cfg(feature = "diagnostics")]
+use super::ledger::TestEvent;
 use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
 use super::reservoir::{SharedFrames, Tile};
@@ -123,6 +125,9 @@ pub struct VisitResult {
     ids_used: u64,
     ops: Vec<Op>,
     log: Vec<EditEvent>,
+    /// Held-out edit tests (`diagnostics` only; not carried on the wire).
+    #[cfg(feature = "diagnostics")]
+    tests: Vec<TestEvent>,
     stats: SlowStats,
     edits: EditCounts,
     pending: bool,
@@ -342,6 +347,8 @@ impl VisitResult {
             ids_used,
             ops,
             log,
+            #[cfg(feature = "diagnostics")]
+            tests: Vec::new(),
             stats,
             edits,
             pending,
@@ -767,6 +774,17 @@ impl SlowLoop {
             }
             self.edit_log.push(e);
         }
+        #[cfg(feature = "diagnostics")]
+        for mut e in r.tests {
+            e.id = map(e.id);
+            if matches!(e.kind, EditKind::Merge | EditKind::Split) {
+                e.other = map(e.other);
+            }
+            if self.test_log.len() >= 200_000 {
+                self.test_log.drain(..100_000);
+            }
+            self.test_log.push(e);
+        }
         add_stats(&mut self.stats, &r.stats);
         let e = &mut self.edits;
         e.adds += r.edits.adds;
@@ -913,6 +931,8 @@ impl VisitRunner {
         s.stats = SlowStats::default();
         s.edits = EditCounts::default();
         s.edit_log.clear();
+        #[cfg(feature = "diagnostics")]
+        s.test_log.clear();
         s.pending = false;
         s.work = 0;
         s.churn = Churn::new(s.cfg.churn, s.cfg.cell_diameter_px);
@@ -940,6 +960,8 @@ impl VisitRunner {
             ids_used: s.next_id - job.id_base,
             ops,
             log: std::mem::take(&mut s.edit_log),
+            #[cfg(feature = "diagnostics")]
+            tests: std::mem::take(&mut s.test_log),
             stats: s.stats,
             edits: s.edits,
             pending: s.pending,

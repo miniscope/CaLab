@@ -118,6 +118,15 @@
 //! tells a distant unit's light from signal no GT unit made), and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
 //! order) and `cells_pass2.tsv` (QC of the re-extracted traces).
+//!
+//! `--churn-log` (attribution of footprint changes) adds `edits.tsv` (every
+//! structural edit of the slow loop: add, merge, split, delete, refine,
+//! absorb, with the cells involved and the decision's margin),
+//! `fp_history.bin` (every cell's filtered and unfiltered footprint and
+//! split-half noise at every checkpoint; `CALAFH01`, see
+//! [`write_fp_history`]) and, built with `--features diagnostics`,
+//! `tests.tsv` (every held-out refine / merge / split / absorb test,
+//! accepted or not).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -1521,6 +1530,82 @@ fn write_logs(
     }
 }
 
+/// Move the slow loop's structural edits (and, with `diagnostics`, its
+/// held-out edit tests) into the `--churn-log` TSV buffers.
+fn write_churn_logs(
+    sl: &mut SlowLoop,
+    rf: &dyn Fn(u64) -> u32,
+    edit_log: &mut String,
+    test_log: &mut String,
+) {
+    for e in sl.take_edit_log() {
+        let _ = writeln!(
+            edit_log,
+            "{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            e.center.0,
+            e.center.1,
+            e.margin
+        );
+    }
+    #[cfg(feature = "diagnostics")]
+    for e in sl.take_test_log() {
+        let _ = writeln!(
+            test_log,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            u8::from(e.accepted),
+            e.z
+        );
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = test_log;
+}
+
+/// Append one checkpoint to `fp_history.bin` (`--churn-log`): `CALAFH01`
+/// once, then per checkpoint the recording frame (u64) and cell count
+/// (u32), and per cell its id (u64), birth (recording frame, u64),
+/// split-half noise (f64, NaN when none), then the filtered footprint
+/// (pixel count u32, pixels u32, values f32) and the unfiltered one (the
+/// same layout). Little endian.
+fn write_fp_history(
+    out: &mut BufWriter<File>,
+    frame: u64,
+    lib: &calab_cala::trace::Library,
+    births: &HashMap<u64, u64>,
+    noise: &dyn Fn(u64, &[u32]) -> Option<f64>,
+) {
+    out.write_all(&frame.to_le_bytes()).unwrap();
+    out.write_all(&(lib.len() as u32).to_le_bytes()).unwrap();
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        let (fpix, fval) = lib.filtered(slot);
+        let (rpix, rval) = lib.unfiltered(slot);
+        out.write_all(&id.to_le_bytes()).unwrap();
+        out.write_all(&births.get(&id).copied().unwrap_or(0).to_le_bytes())
+            .unwrap();
+        out.write_all(&noise(id, fpix).unwrap_or(f64::NAN).to_le_bytes())
+            .unwrap();
+        for (pix, val) in [(fpix, fval), (rpix, rval)] {
+            out.write_all(&(pix.len() as u32).to_le_bytes()).unwrap();
+            for &p in pix {
+                out.write_all(&p.to_le_bytes()).unwrap();
+            }
+            for &v in val {
+                out.write_all(&v.to_le_bytes()).unwrap();
+            }
+        }
+    }
+}
+
 /// A fixed library from a `footprints.bin` (`CALAFP01`: height, width, n;
 /// per cell id, pixel count, pixels, unfiltered values, filtered values),
 /// built with this run's filter, noise map and background.
@@ -1830,6 +1915,7 @@ fn main() {
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
+    let churn_log = args.iter().any(|a| a == "--churn-log");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
         fixed_lib.is_none() || !oracle_mode,
@@ -2032,6 +2118,13 @@ fn main() {
     let mut rem_log = String::from(
         "frame\trecording_frame\tid\tkind\tcy\tcx\tborn\tborn_recording\tclass\tchurned\n",
     );
+    let mut edit_log = String::from("frame\trecording_frame\tkind\tid\tother\tcy\tcx\tmargin\n");
+    let mut test_log = String::from("frame\trecording_frame\tkind\tid\tother\taccepted\tz\n");
+    let mut fp_hist: Option<BufWriter<File>> = churn_log.then(|| {
+        let mut f = BufWriter::new(File::create(out_dir.join("fp_history.bin")).unwrap());
+        f.write_all(b"CALAFH01").unwrap();
+        f
+    });
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
@@ -2184,6 +2277,9 @@ fn main() {
                     tm.advance(now, sl, &mut slow_rec);
                     let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                     write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                    if churn_log {
+                        write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                    }
                 }
             } else if let Some(sl) = slow.as_mut() {
                 if t.is_multiple_of(200) {
@@ -2260,6 +2356,9 @@ fn main() {
                     }
                     let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                     write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                    if churn_log {
+                        write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                    }
                 }
             }
             let t_end = t + 1;
@@ -2333,6 +2432,12 @@ fn main() {
                         }
                     })
                     .collect();
+                if let Some(f) = fp_hist.as_mut() {
+                    let noise = |id: u64, pix: &[u32]| {
+                        slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix))
+                    };
+                    write_fp_history(f, t_end as u64, &lib, &births, &noise);
+                }
                 for row in conv.checkpoint(t_end as u64, snaps) {
                     conv_out.push_str(&row.to_line());
                 }
@@ -2469,6 +2574,15 @@ fn main() {
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
+    if churn_log {
+        std::fs::write(out_dir.join("edits.tsv"), &edit_log).unwrap();
+        if cfg!(feature = "diagnostics") {
+            std::fs::write(out_dir.join("tests.tsv"), &test_log).unwrap();
+        }
+        if let Some(mut f) = fp_hist.take() {
+            f.flush().unwrap();
+        }
+    }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
         if sl.config().core_test != CoreTest::Off {
