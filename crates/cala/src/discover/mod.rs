@@ -340,8 +340,11 @@ pub enum CrossFit {
 /// statistics of `suffstats.rs` (data sums per cell region, neighbour trace
 /// cross-moments, ring scalars, per block group), from which a footprint is
 /// estimated under the neighbours' *current* columns (S1.7). With `Joint`
-/// the store is maintained and shipped with visit jobs alongside `fpstats`;
-/// no decision reads it yet.
+/// the slow loop's footprint estimates (refinement, the add's competing
+/// re-estimates, split proposals; `SlowLoop::stats_estimate`) come from the
+/// store, under the working set's current columns, with the store's own
+/// standard error; `fpstats` is still kept for the split-half diagnostics
+/// (`footprint_noise`, E7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FootprintStats {
     #[default]
@@ -785,6 +788,13 @@ pub struct SlowLoop {
     /// only with [`FootprintStats::Joint`]), and the owner's bookkeeping.
     suff: HashMap<u64, CellStats>,
     suff_own: SuffOwner,
+    /// On a visit runner only (from the job): the published ring coupling
+    /// of each zone store, `(neighbour id, q)`, and the cells outside the
+    /// zone that are neighbours of its stores (read only; their columns
+    /// enter the joint estimates). On the owner both come from the
+    /// published library and the working set.
+    suff_q: HashMap<u64, Vec<(u64, f32)>>,
+    halo: Vec<Cell>,
     /// Pairs whose merge was rejected: `(id, id, until_frame)`.
     merge_rejected: Vec<(u64, u64, u64)>,
     /// Pairs the keep tests found redundant, to be merge-tested regardless
@@ -1108,6 +1118,8 @@ impl SlowLoop {
             rbuf: Vec::new(),
             suff: HashMap::new(),
             suff_own: SuffOwner::default(),
+            suff_q: HashMap::new(),
+            halo: Vec::new(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             model: vec![0.0; n_px],
@@ -4201,18 +4213,148 @@ impl SlowLoop {
     }
 
     /// `id`'s footprint estimated from its running statistics (pixels of
-    /// the statistics disk, unwhitened filtered values), once its peak is
-    /// `stats_min_snr` standard errors above zero.
-    fn stats_estimate(&self, id: u64) -> Option<(Vec<u32>, Vec<f32>)> {
-        let st = self.fpstats.get(&id)?;
-        let se = st.std_err();
-        let h = st.estimate()?;
+    /// the statistics disk, unwhitened filtered values) and the estimate's
+    /// standard error per unit pixel noise, once its peak is
+    /// `stats_min_snr` standard errors above zero. With
+    /// [`FootprintStats::Joint`] from the joint store under the working
+    /// set's current columns ([`SlowLoop::joint_visit_estimate`]), else from
+    /// `fpstats`.
+    fn stats_estimate(&mut self, id: u64) -> Option<(Vec<u32>, Vec<f32>, f64)> {
+        let (pix, h, se) = if self.cfg.footprint_stats == FootprintStats::Joint {
+            self.joint_visit_estimate(id)?
+        } else {
+            let st = self.fpstats.get(&id)?;
+            (st.pix.clone(), st.estimate()?, st.std_err())
+        };
         let peak = h
             .iter()
-            .zip(&st.pix)
+            .zip(&pix)
             .map(|(&v, &p)| v * self.inv_sigma[p as usize])
             .fold(0.0f32, f32::max);
-        (f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * se).then(|| (st.pix.clone(), h))
+        (f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * se).then_some((pix, h, se))
+    }
+
+    /// The joint store's estimate of `id` for a visit: every group the
+    /// store holds (summed to the halves first, as a visit job carries
+    /// them, so the owner and a runner compute the same numbers), the
+    /// neighbours' columns from the working set (or the job's halo; a
+    /// neighbour no longer present is a zero column), the published ring
+    /// coupling, and the store's standard error.
+    fn joint_visit_estimate(&mut self, id: u64) -> Option<(Vec<u32>, Vec<f32>, f64)> {
+        let full = self.suff.get(&id)?;
+        let red;
+        let st = if full.groups == GROUPS {
+            red = full.reduced(&suffstats::HALVES);
+            &red
+        } else {
+            full
+        };
+        let cols = self.region_columns(st);
+        let refs: Vec<&[f32]> = cols.iter().map(Vec::as_slice).collect();
+        let q: Vec<(usize, f32)> = self
+            .ring_q(id)
+            .into_iter()
+            .filter_map(|(j, v)| st.nb.iter().position(|&o| o == j).map(|k| (k, v)))
+            .collect();
+        let h = st.estimate(suffstats::ALL_GROUPS, &refs, &q)?;
+        let se = st.std_err(suffstats::ALL_GROUPS);
+        self.work += (st.pix.len() * (st.nb.len() + 2)) as u64;
+        Some((st.pix.clone(), h, se))
+    }
+
+    /// The published ring coupling of cell `id`: `(neighbour id, q)` (from
+    /// the job on a runner, from the published library on the owner).
+    fn ring_q(&self, id: u64) -> Vec<(u64, f32)> {
+        if let Some(q) = self.suff_q.get(&id) {
+            return q.clone();
+        }
+        let Some(lib) = self.published.as_ref() else {
+            return Vec::new();
+        };
+        let Some(slot) = lib.slot(id) else {
+            return Vec::new();
+        };
+        let (qc, qv) = lib.ring_row(slot);
+        let ids = lib.ids();
+        qc.iter()
+            .zip(qv)
+            .map(|(&j, &v)| (ids[j as usize], v))
+            .collect()
+    }
+
+    /// The current filtered columns of `st`'s neighbours on its region
+    /// (aligned with `st.nb`; the cell's own and absent neighbours empty,
+    /// as are columns that are zero on the whole region): `Cell::column_at`
+    /// of the working-set cell (or the job's halo cell) with that id.
+    fn region_columns(&self, st: &CellStats) -> Vec<Vec<f32>> {
+        let w = self.dims.width;
+        let block = self.filter.moat().map_or(0, |m| m.0);
+        let byid: HashMap<u64, &Cell> = self
+            .cells
+            .iter()
+            .chain(&self.halo)
+            .map(|c| (c.id, c))
+            .collect();
+        // The region's pixels grouped by moat block (ascending pixels, so
+        // each block's run is found once).
+        let blk_of = |g: u32| -> u32 {
+            let (y, x) = (g as usize / w, g as usize % w);
+            ((y / block) * w.div_ceil(block) + x / block) as u32
+        };
+        let mut blocks: Vec<(u32, Vec<usize>)> = Vec::new();
+        if block > 0 {
+            let mut idx: HashMap<u32, usize> = HashMap::new();
+            for (i, &g) in st.pix.iter().enumerate() {
+                let b = blk_of(g);
+                let k = *idx.entry(b).or_insert_with(|| {
+                    blocks.push((b, Vec::new()));
+                    blocks.len() - 1
+                });
+                blocks[k].1.push(i);
+            }
+        }
+        st.nb
+            .iter()
+            .enumerate()
+            .map(|(k, j)| {
+                let Some(c) = (k > 0).then(|| byid.get(j)).flatten() else {
+                    return Vec::new();
+                };
+                let mut col = vec![0.0f32; st.pix.len()];
+                let mut any = false;
+                for (b, idx) in &blocks {
+                    if let Ok(m) = c.low_blk.binary_search(b) {
+                        let v = -c.low[m];
+                        if v != 0.0 {
+                            any = true;
+                            idx.iter().for_each(|&i| col[i] = v);
+                        }
+                    }
+                }
+                // The support overrides the moat (both sorted ascending).
+                let (mut a, mut z) = (0, 0);
+                while a < c.pix.len() && z < st.pix.len() {
+                    match c.pix[a].cmp(&st.pix[z]) {
+                        std::cmp::Ordering::Less => a += 1,
+                        std::cmp::Ordering::Greater => {
+                            // Off the support: the moat value set above.
+                            z += 1;
+                        }
+                        std::cmp::Ordering::Equal => {
+                            col[z] = c.filt[a];
+                            any |= c.filt[a] != 0.0;
+                            a += 1;
+                            z += 1;
+                        }
+                    }
+                }
+                if any {
+                    col
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect()
     }
 
     /// The footprint of `cell` re-estimated from its running statistics.
@@ -4220,11 +4362,22 @@ impl SlowLoop {
     /// least `refine_min_change` (sine of the angle between the whitened
     /// filtered columns).
     fn stats_proposal(&mut self, cell: &Cell, changed: bool) -> Option<Cell> {
-        let (pix, h) = self.stats_estimate(cell.id)?;
-        if changed && !self.stats_disagree(cell, &pix, &h) {
+        let est = self.stats_estimate(cell.id)?;
+        self.stats_proposal_from(cell, changed, est)
+    }
+
+    /// [`SlowLoop::stats_proposal`] from the estimate `(pix, h, se)` of
+    /// [`SlowLoop::stats_estimate`].
+    fn stats_proposal_from(
+        &mut self,
+        cell: &Cell,
+        changed: bool,
+        (pix, h, se): (Vec<u32>, Vec<f32>, f64),
+    ) -> Option<Cell> {
+        if changed && !self.stats_disagree(cell, &pix, &h, se) {
             return None;
         }
-        let se = self.fpstats.get(&cell.id).map(|st| st.std_err());
+        let se = Some(se);
         // Growth test on the transient-band estimate with its measured
         // noise; trim to the held-out core's basin (in `finish_cell`).
         self.fast_tmp = None;
@@ -4260,11 +4413,7 @@ impl SlowLoop {
     /// its χ² null (`n + 3 sqrt(2 n)` on `n` pixels). As frames accumulate
     /// the standard error shrinks, so a real mismatch is found ever more
     /// surely while a converged footprint stops being proposed.
-    fn stats_disagree(&self, cell: &Cell, pix: &[u32], h: &[f32]) -> bool {
-        let Some(st) = self.fpstats.get(&cell.id) else {
-            return false;
-        };
-        let se = st.std_err();
+    fn stats_disagree(&self, cell: &Cell, pix: &[u32], h: &[f32], se: f64) -> bool {
         if !(se > 0.0) || !se.is_finite() {
             return false;
         }
@@ -4841,9 +4990,10 @@ impl SlowLoop {
             {
                 continue;
             }
-            let from_stats = self.stats_estimate(id).is_some();
-            let new = if from_stats {
-                match self.stats_proposal(&cell, true) {
+            let est = self.stats_estimate(id);
+            let from_stats = est.is_some();
+            let new = if let Some(est) = est {
+                match self.stats_proposal_from(&cell, true, est) {
                     Some(n) => n,
                     None => continue,
                 }

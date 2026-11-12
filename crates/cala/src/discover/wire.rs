@@ -11,7 +11,7 @@ use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 use crate::discover::suffstats::CellStats;
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5334; // "VIS4"
+pub(crate) const MAGIC: u32 = 0x5649_5335; // "VIS5"
 
 #[derive(Default)]
 pub(crate) struct Writer {

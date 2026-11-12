@@ -283,21 +283,23 @@ fn a_birth_restarts_the_pixels_under_the_newborn() {
     assert!(bj * 2.0 < bs, "{bj} {bs}");
 }
 
+/// The joint estimates read the same numbers on the owner and on a visit
+/// runner: the job carries the stores reduced to the halves, the published
+/// ring coupling and the stores' neighbours outside the zone (halo), so
+/// `step` and `step_via` make the same decisions.
 #[test]
-fn keeping_the_store_changes_no_decision() {
+fn joint_decisions_are_the_same_on_the_owner_and_via_jobs() {
     let t = 1500;
     let (m, seed) = busy_movie(t);
-    let base = shard_config();
     let cfg = SlowLoopConfig {
         footprint_stats: FootprintStats::Joint,
-        ..base.clone()
+        ..shard_config()
     };
     let n_px = N * N;
-    let (mut a, mut ea) = start(base, &seed);
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
     let (mut b, mut eb) = start(cfg.clone(), &seed);
-    // With the exact shadow store too (it must change nothing either).
+    // With the exact shadow store too (it must change nothing).
     b.enable_joint_shadow();
-    // The joint run's visits go through the byte encoding.
     let mut runner = VisitRunner::new(new_loop(&cfg));
     for k in 0..t {
         let f = &m[k * n_px..(k + 1) * n_px];
@@ -377,4 +379,75 @@ fn a_job_carries_the_zone_stores_through_the_wire() {
         assert!(VisitJob::from_bytes(&bytes[..bytes.len() - 9]).is_err());
     }
     assert!(jobs > 0 && checked > 0, "{jobs} {checked}");
+}
+
+/// With nothing changed and nothing restarted, the store's standard error
+/// is `fpstats`'s (`z = c`, the same frames and weights).
+#[test]
+fn the_store_standard_error_is_fpstats_with_nothing_changed() {
+    let t = 2000;
+    let mut rng = Lcg(41);
+    let c0 = trace(&mut rng, t, 0.03, 6.0);
+    let c1 = cofiring(&mut rng, &c0, 0.5);
+    let fps = [blob(1, 44.0, 42.0), blob(2, 45.0, 49.0)];
+    let cells: Vec<_> = fps.iter().cloned().zip([c0, c1]).collect();
+    let m = movie(&cells, t, 3);
+    let (mut slow, mut eng) = start(joint_cfg(), &fps);
+    observe(&m, 0..t, &mut slow, &mut eng, &mut Vec::new());
+    for id in 1..=2 {
+        let a = slow.suff[&id].std_err(ALL_GROUPS);
+        let b = slow.fpstats[&id].std_err();
+        eprintln!("cell {id}: store se {a:.5}, fpstats se {b:.5}");
+        assert!(((a - b) / b).abs() < 1e-3, "cell {id}: {a} {b}");
+    }
+}
+
+/// A visit's footprint estimate (`stats_estimate`, what refinement, the
+/// add's alternatives and split read) comes from the store under the
+/// working set's current columns: right after a neighbour's column is
+/// corrected it is the from-scratch fit under the corrected column, while
+/// `Residual` still carries the old column's light.
+#[test]
+fn a_visit_estimate_reads_the_neighbours_current_columns() {
+    let t = 3000;
+    let mut rng = Lcg(77);
+    let ci = trace(&mut rng, t + 1, 0.03, 6.0);
+    let cj = cofiring(&mut rng, &ci, 0.8);
+    let (fi, fj) = (blob(1, 48.0, 44.0), blob(2, 48.0, 50.0));
+    let m = movie(&[(fi.clone(), ci), (fj.clone(), cj)], t + 1, 9);
+    let wrong = [fi.clone(), blob(2, 48.0, 53.0)];
+    let run = |stats: FootprintStats| {
+        let cfg = SlowLoopConfig {
+            footprint_stats: stats,
+            ..joint_cfg()
+        };
+        let (mut slow, mut eng) = start(cfg.clone(), &wrong);
+        let mut log = Vec::new();
+        observe(&m, 0..t, &mut slow, &mut eng, &mut log);
+        // The slow loop corrects cell 2 (working set and published).
+        let (mut other, _) = start(cfg, &[fi.clone(), fj.clone()]);
+        let fixed = other.finalize().unwrap();
+        let k = slow.cells.iter().position(|c| c.id == 2).unwrap();
+        slow.cells[k] = other.cells.iter().find(|c| c.id == 2).unwrap().clone();
+        slow.published = Some(fixed.clone());
+        eng.set_library(fixed).unwrap();
+        observe(&m, t..t + 1, &mut slow, &mut eng, &mut log);
+        let est = slow.stats_estimate(1).unwrap();
+        (est, log, eng.library().clone())
+    };
+    let ((pix, joint, se), log, lib) = run(FootprintStats::Joint);
+    let ((rpix, resid, _), _, _) = run(FootprintStats::Residual);
+    assert_eq!(pix, rpix);
+    let scratch = from_scratch(&log, &lib, 1, &pix, &vec![false; pix.len()], 0);
+    let rel = max_diff(&joint, &scratch) / max_abs(&scratch);
+    let img = filtered(&fi);
+    let truth: Vec<f32> = pix.iter().map(|&p| img[p as usize]).collect();
+    let (rj, rr) = (pearson(&joint, &truth), pearson(&resid, &truth));
+    eprintln!(
+        "visit estimate: vs from-scratch {rel:.2e}; oracle r joint {rj:.4}, \
+         residual {rr:.4}; se {se:.4}"
+    );
+    assert!(rel < 1e-3, "{rel}");
+    assert!(rr < rj - 0.05, "residual {rr} vs joint {rj}");
+    assert!(se.is_finite() && se > 0.0);
 }

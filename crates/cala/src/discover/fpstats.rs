@@ -224,7 +224,7 @@ fn pixel_estimate(rc: f64, r: f64, m: [f64; 4], n_ref: f64) -> Option<(f32, f64)
 }
 
 /// Median of the finite values (`INFINITY` when there are none).
-fn median_finite(mut v: Vec<f64>) -> f64 {
+pub(crate) fn median_finite(mut v: Vec<f64>) -> f64 {
     v.retain(|x| x.is_finite());
     if v.is_empty() {
         return f64::INFINITY;

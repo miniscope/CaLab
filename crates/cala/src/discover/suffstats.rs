@@ -71,7 +71,7 @@
 //!
 //! The store accepts only `z = c` (no cross-fitting instrument yet).
 
-use super::fpstats::MIN_VALID_SHARE;
+use super::fpstats::{median_finite, MIN_VALID_SHARE};
 
 /// Number of block groups (2-fold folds are even/odd groups, 4-fold the
 /// single groups).
@@ -685,6 +685,36 @@ impl CellStats {
             }
         }
         out
+    }
+
+    /// Standard error of the estimate per unit pixel noise, from the groups
+    /// of `mask`: the median over the region's pixels of `1 / sqrt(n_eff
+    /// var(c_i))`, `n_eff = (Σ w)² / Σ w²`, over the frames the pixel's class
+    /// counts (`FpStats::std_err` with `z = c`, on the store's own frames:
+    /// a restart or a missing sample raises it). Infinite without an
+    /// estimate. It ignores the neighbours: with co-firing neighbours the
+    /// joint estimate's error is larger by `1 / (1 − ρ²)` in variance.
+    pub fn std_err(&self, mask: GroupMask) -> f64 {
+        let nref: f64 = (0..self.groups)
+            .filter(|g| mask & (1 << g) != 0)
+            .map(|g| self.tot[g])
+            .sum();
+        let per: Vec<f64> = (0..self.mom.len())
+            .map(|c| {
+                let m = self.class_sums(c, mask);
+                let (n, n2) = (m[N], m[N2]);
+                if !(n > 0.0) || !(n2 > 0.0) || n < MIN_VALID_SHARE * nref {
+                    return f64::INFINITY;
+                }
+                let vc = (m[HEAD + 1] - m[HEAD] * m[HEAD] / n).max(0.0) / n;
+                if vc > 0.0 {
+                    1.0 / ((n * n / n2) * vc).sqrt()
+                } else {
+                    f64::INFINITY
+                }
+            })
+            .collect();
+        median_finite(self.cls.iter().map(|&c| per[c as usize]).collect())
     }
 
     /// The far slopes `β_k = C_ik / C_ii` over the groups of `mask`, every

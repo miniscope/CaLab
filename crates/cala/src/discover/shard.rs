@@ -110,6 +110,11 @@ pub struct VisitJob {
     /// Joint statistics of the zone's cells (`FootprintStats::Joint` only),
     /// summed to the two halves of the block groups (`HALVES`).
     suff: Vec<(u64, CellStats)>,
+    /// The published ring coupling of each zone store, `(neighbour id, q)`,
+    /// and the stores' neighbours outside the zone (read only, their
+    /// columns only: `raw` is not sent).
+    suff_q: Vec<(u64, Vec<(u64, f32)>)>,
+    halo: Vec<Cell>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
 }
@@ -194,6 +199,19 @@ impl VisitJob {
             w.u64(*id);
             w.cellstats(s);
         }
+        w.usize(self.suff_q.len());
+        for (id, q) in &self.suff_q {
+            w.u64(*id);
+            w.usize(q.len());
+            for &(j, v) in q {
+                w.u64(j);
+                w.f32(v);
+            }
+        }
+        w.usize(self.halo.len());
+        for c in &self.halo {
+            w.cell(c);
+        }
         w.usize(self.merge_rejected.len());
         for &(a, b, u) in &self.merge_rejected {
             w.u64(a);
@@ -244,6 +262,19 @@ impl VisitJob {
         let suff = (0..n)
             .map(|_| Some((r.u64()?, r.cellstats()?)))
             .collect::<Option<_>>()?;
+        let n = r.count(16)?;
+        let suff_q = (0..n)
+            .map(|_| {
+                let id = r.u64()?;
+                let m = r.count(12)?;
+                let q = (0..m)
+                    .map(|_| Some((r.u64()?, r.f32()?)))
+                    .collect::<Option<_>>()?;
+                Some((id, q))
+            })
+            .collect::<Option<_>>()?;
+        let n = r.count(40)?;
+        let halo = (0..n).map(|_| r.cell()).collect::<Option<_>>()?;
         let n = r.count(24)?;
         let merge_rejected = (0..n)
             .map(|_| Some((r.u64()?, r.u64()?, r.u64()?)))
@@ -267,6 +298,8 @@ impl VisitJob {
             lives,
             fpstats,
             suff,
+            suff_q,
+            halo,
             merge_rejected,
             forced,
         })
@@ -616,10 +649,27 @@ impl SlowLoop {
             .iter()
             .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
             .collect();
-        let suff = ids
+        let suff: Vec<(u64, CellStats)> = ids
             .iter()
             .filter_map(|id| self.suff.get(id).map(|s| (*id, s.reduced(&HALVES))))
             .collect();
+        let suff_q = suff.iter().map(|(id, _)| (*id, self.ring_q(*id))).collect();
+        let halo = {
+            let zone_ids: std::collections::HashSet<u64> = ids.iter().copied().collect();
+            let want: std::collections::HashSet<u64> = suff
+                .iter()
+                .flat_map(|(_, s)| s.nb.iter().copied())
+                .filter(|j| !zone_ids.contains(j))
+                .collect();
+            self.cells
+                .iter()
+                .filter(|c| want.contains(&c.id))
+                .map(|c| Cell {
+                    raw: Vec::new(),
+                    ..c.clone()
+                })
+                .collect()
+        };
         self.job_seq += 1;
         let seq = self.job_seq;
         self.inflight.push(InFlight { seq, ti, zone, ids });
@@ -638,6 +688,8 @@ impl SlowLoop {
             lives,
             fpstats,
             suff,
+            suff_q,
+            halo,
             merge_rejected: self.merge_rejected.clone(),
             forced: self.forced.clone(),
         }
@@ -908,6 +960,8 @@ impl VisitRunner {
         s.lives = job.lives.iter().copied().collect::<HashMap<_, _>>();
         s.fpstats = job.fpstats.into_iter().collect::<HashMap<_, _>>();
         s.suff = job.suff.into_iter().collect::<HashMap<_, _>>();
+        s.suff_q = job.suff_q.into_iter().collect::<HashMap<_, _>>();
+        s.halo = job.halo;
         s.merge_rejected = job.merge_rejected;
         s.forced = job.forced;
         s.stats = SlowStats::default();
@@ -951,6 +1005,8 @@ impl VisitRunner {
         s.cells.clear();
         s.fpstats.clear();
         s.suff.clear();
+        s.suff_q.clear();
+        s.halo.clear();
         s.ledger.clear();
         Ok(res)
     }
