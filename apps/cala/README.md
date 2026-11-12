@@ -52,6 +52,42 @@ What is here:
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
 
+## Sensor flat field (on by default)
+
+Sensor pixel gain (about 5% SD, fixed to the sensor) rides over the tissue as
+registration moves it, and motion-correlated traces pick it up as footprint
+texture. The pipelined path divides it out of the raw frames, with a gain map
+estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/cala):
+
+- **Off the frame path.** Stage A (frame worker) keeps one copy of each process
+  batch's raw frames until stage B returns that batch's shifts (a `shifts`
+  message up the A<-B link), then transfers raw + shifts to
+  `src/workers/flat-field-worker.ts`. At most four batches wait there; beyond
+  that stage A drops frames for the estimator, it never waits. The worker pushes
+  frames and, when due (first map after 150 s of frames, then every 60 s), runs
+  the expensive `refine()` and posts the map to stage A and to the main thread.
+- **Applied at batch boundaries.** Stage A calls `Preprocessor.setFlatField`
+  before the next batch's front half, never mid-batch. The first map is a
+  one-time switch from uncorrected to corrected frames; its frame is in the run
+  record (`RunRecord.flatFieldApplied`), the status panel, and the export's
+  `meta_json` (`flat_field`). Later refinements are small and applied as they come.
+  The motion template and the calibration come from the first frames, so they
+  are built before any estimated map exists (a stored map is applied before the
+  motion warm-up, so then the template is built on corrected frames).
+- **Per-device cache** (`src/lib/flat-field-cache.ts`, IndexedDB `cala-flatfield`):
+  written at most once a minute and at the run end, read at run start; a map of
+  another frame size is never reused. The key is a device serial from
+  `metaData.json` / the live hello when there is one (`serial`, `serialNumber`,
+  ...), else the live source name, else the recording folder name. Miniscope
+  `metaData.json` has no serial (`deviceID` is a camera index), so folders are
+  keyed by name. See `flatFieldKey` in `src/lib/flat-field.ts`.
+- **Pass 2** applies pass 1's newest map from frame 0 and estimates nothing.
+- **Single-worker `PipelineEngine`** (`?pipeline=0`) has no flat field: estimating
+  there would put the solve on the frame path.
+- The Flat field tab shows the gain map at a fixed 0.9 to 1.1 range (no
+  auto-contrast), the status, the last update's change, and the on/off setting
+  (`PipelineOptions.flatField`, applied at the next start of pass 1).
+
 ## Pass 2 and export
 
 Pass 1 discovers the footprint library while the recording streams by, and the

@@ -5,6 +5,7 @@ import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { ViewerStore } from '../lib/viewer-store.ts';
 import { CellCountPlot, LagPlot, TimingText } from './CellsPanel.tsx';
+import { FlatFieldPanel } from './FlatFieldPanel.tsx';
 import { FlickerTrace } from './FlickerTrace.tsx';
 import { FrameViewer } from './FrameViewer.tsx';
 import { InfoPanel } from './InfoPanel.tsx';
@@ -34,6 +35,13 @@ export function DetailsTabs(props: {
     { id: 'lag', label: 'Lag', content: <LagPlot cells={props.cells} /> },
     { id: 'motion', label: 'Motion', content: <MotionTrace store={props.store} /> },
     { id: 'flicker', label: 'Flicker', content: <FlickerTrace store={props.store} /> },
+    {
+      id: 'flatfield',
+      label: 'Flat field',
+      content: (
+        <FlatFieldPanel store={props.store} width={props.info.width} height={props.info.height} />
+      ),
+    },
     {
       id: 'timing',
       label: 'Timing',

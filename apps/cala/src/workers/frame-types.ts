@@ -1,6 +1,7 @@
 import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
+import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
@@ -33,6 +34,8 @@ export type FrameRequest =
       cells?: CellsSettings;
       /** Pass 2: replay the recorded flicker and motion (pipelined workers only). */
       replay?: ReplayInput;
+      /** Pass 1 flat field: a stored map of this sensor, in force from the first processed frame and seeding the estimator. */
+      flat?: { seed?: FlatFieldMap };
     }
   /** Stop reading at the current position: the next step reports the end of the recording. */
   | { type: 'pipeline-truncate'; id: number }
@@ -49,7 +52,9 @@ export type FrameRequest =
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
-  | { type: 'link'; id: number; down: MessagePort };
+  | { type: 'link'; id: number; down: MessagePort }
+  /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */
+  | { type: 'link-flat'; id: number; port: MessagePort };
 
 /** A request before the client stamps it with an `id` (distributes over the union). */
 export type FrameRequestBody = FrameRequest extends infer R

@@ -45,6 +45,8 @@ export interface LiveHello {
   bottomUp?: boolean;
   /** A label for the header (the recording or device name). */
   name?: string;
+  /** A serial number of the physical sensor, if the source knows it (the flat-field cache key). */
+  serial?: string;
 }
 
 export type LiveControl = LiveHello | { type: 'end'; frames?: number };
@@ -134,6 +136,7 @@ function parseControl(text: string): LiveControl {
       ...(typeof m.fourcc === 'string' ? { fourcc: m.fourcc } : {}),
       ...(typeof m.bottomUp === 'boolean' ? { bottomUp: m.bottomUp } : {}),
       ...(typeof m.name === 'string' ? { name: m.name } : {}),
+      ...(typeof m.serial === 'string' && m.serial.trim() !== '' ? { serial: m.serial } : {}),
     };
   }
   if (m.type === 'end')
@@ -160,6 +163,7 @@ export function liveInfo(hello: LiveHello, url: string): FrameSourceInfo {
     ignoredFiles: [],
     warnings: hello.fps === null ? ['The live source gave no frame rate.'] : [],
     live: { url, ...(hello.name ? { name: hello.name } : {}) },
+    ...(hello.serial ? { device: { serial: hello.serial } } : {}),
   };
 }
 
