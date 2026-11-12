@@ -369,9 +369,10 @@ pub struct SlowLoopConfig {
     /// only, so every block is held-out evidence at some visit and no
     /// evidence is used for the footprint it tests. A cell whose
     /// transients all fall in one fold's blocks is still testable.
-    /// Note that the published library's footprints have seen earlier
-    /// visits' frames; keep tests on the current footprint are therefore
-    /// partly in-sample for the fold fitted last.
+    /// A footprint records the fold it was estimated from
+    /// ([`Cell::fit_folds`]); a keep test on a probe of that fold uses the
+    /// footprint re-estimated from the other fold instead (see
+    /// `keep_tests`).
     pub holdout_folds: u32,
     /// Distinct held-out blocks a tile's held-out slots must span before a
     /// visit tests anything.
@@ -581,7 +582,11 @@ impl SlowLoopConfig {
     /// a block shares the answer, and this is the only place the split is
     /// decided, so fitting statistics, reservoir slots, probes, visits and
     /// the QC score agree. Public so evaluation code can score exactly the
-    /// frames the slow loop never fitted on.
+    /// frames the slow loop never fitted on. With two folds every frame is
+    /// fitted at some visit, so this is fold 1 (half the frames): the
+    /// held-out score (E2) stays out of sample because it scores frame `t`
+    /// with the library published before the slow loop observes `t`
+    /// (prequential), not because of the fold.
     pub fn is_test(&self, frame: u64) -> bool {
         self.fold(frame) == 1
     }
