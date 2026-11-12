@@ -44,6 +44,7 @@ use super::fpstats::FpStats;
 use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
 use super::reservoir::{SharedFrames, Tile};
+use super::suffstats::{CellStats, HALVES};
 use super::wire::{Reader, Writer, MAGIC};
 use super::{SlowLoop, SlowStats};
 use crate::trace::{Library, TraceError};
@@ -106,6 +107,9 @@ pub struct VisitJob {
     ledger: Vec<u64>,
     lives: Vec<(u64, u32)>,
     fpstats: Vec<(u64, FpStats)>,
+    /// Joint statistics of the zone's cells (`FootprintStats::Joint` only),
+    /// summed to the two halves of the block groups (`HALVES`).
+    suff: Vec<(u64, CellStats)>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
 }
@@ -131,6 +135,12 @@ pub struct VisitResult {
 }
 
 impl VisitJob {
+    /// The joint statistics it carries (tests).
+    #[cfg(test)]
+    pub(crate) fn suff(&self) -> &[(u64, CellStats)] {
+        &self.suff
+    }
+
     /// The tile it visits.
     pub fn tile_index(&self) -> usize {
         self.ti
@@ -179,6 +189,11 @@ impl VisitJob {
             w.u64(*id);
             w.fpstats(s);
         }
+        w.usize(self.suff.len());
+        for (id, s) in &self.suff {
+            w.u64(*id);
+            w.cellstats(s);
+        }
         w.usize(self.merge_rejected.len());
         for &(a, b, u) in &self.merge_rejected {
             w.u64(a);
@@ -225,6 +240,10 @@ impl VisitJob {
         let fpstats = (0..n)
             .map(|_| Some((r.u64()?, r.fpstats()?)))
             .collect::<Option<_>>()?;
+        let n = r.count(40)?;
+        let suff = (0..n)
+            .map(|_| Some((r.u64()?, r.cellstats()?)))
+            .collect::<Option<_>>()?;
         let n = r.count(24)?;
         let merge_rejected = (0..n)
             .map(|_| Some((r.u64()?, r.u64()?, r.u64()?)))
@@ -247,6 +266,7 @@ impl VisitJob {
             ledger,
             lives,
             fpstats,
+            suff,
             merge_rejected,
             forced,
         })
@@ -538,7 +558,22 @@ impl SlowLoop {
     pub fn take_job_bytes(&mut self) -> Option<Vec<u8>> {
         let ti = self.next_free_tile()?;
         let job = self.make_job(ti, false);
-        Some(job.encode(&self.tiles[ti], &self.shared))
+        let bytes = job.encode(&self.tiles[ti], &self.shared);
+        self.count_job(&job, bytes.len());
+        Some(bytes)
+    }
+
+    /// Wire diagnostics of the joint statistics: jobs encoded, their bytes
+    /// and the share the stores take.
+    fn count_job(&mut self, job: &VisitJob, bytes: usize) {
+        let o = &mut self.suff_own;
+        o.jobs += 1;
+        o.job_bytes += bytes as u64;
+        o.job_suff_bytes += job
+            .suff
+            .iter()
+            .map(|(_, s)| super::suffstats::wire_bytes(s) as u64 + 8)
+            .sum::<u64>();
     }
 
     /// The job for tile `ti`; its tile holds a copy of the reservoir slots
@@ -581,6 +616,10 @@ impl SlowLoop {
             .iter()
             .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
             .collect();
+        let suff = ids
+            .iter()
+            .filter_map(|id| self.suff.get(id).map(|s| (*id, s.reduced(&HALVES))))
+            .collect();
         self.job_seq += 1;
         let seq = self.job_seq;
         self.inflight.push(InFlight { seq, ti, zone, ids });
@@ -598,6 +637,7 @@ impl SlowLoop {
             ledger,
             lives,
             fpstats,
+            suff,
             merge_rejected: self.merge_rejected.clone(),
             forced: self.forced.clone(),
         }
@@ -689,7 +729,7 @@ impl SlowLoop {
                     self.lives.insert(map(id), n);
                 }
                 Op::FpRemove(id) => {
-                    self.fpstats.remove(&map(id));
+                    self.stats_forget(map(id));
                 }
                 Op::MergeRejected(a, b, u) => {
                     let (a, b) = (map(a), map(b));
@@ -781,7 +821,9 @@ impl SlowLoop {
                 break;
             };
             let job = self.make_job(ti, false);
-            let job = VisitJob::from_bytes(&job.encode(&self.tiles[ti], &self.shared))?;
+            let bytes = job.encode(&self.tiles[ti], &self.shared);
+            self.count_job(&job, bytes.len());
+            let job = VisitJob::from_bytes(&bytes)?;
             let res = runner.run(job)?;
             let res = VisitResult::from_bytes(&res.to_bytes())?;
             let w = res.work;
@@ -865,6 +907,7 @@ impl VisitRunner {
         s.ledger = job.ledger.iter().map(|&id| (id, Evidence::new())).collect();
         s.lives = job.lives.iter().copied().collect::<HashMap<_, _>>();
         s.fpstats = job.fpstats.into_iter().collect::<HashMap<_, _>>();
+        s.suff = job.suff.into_iter().collect::<HashMap<_, _>>();
         s.merge_rejected = job.merge_rejected;
         s.forced = job.forced;
         s.stats = SlowStats::default();
@@ -907,6 +950,7 @@ impl VisitRunner {
         // Drop the copies (the next job brings its own).
         s.cells.clear();
         s.fpstats.clear();
+        s.suff.clear();
         s.ledger.clear();
         Ok(res)
     }

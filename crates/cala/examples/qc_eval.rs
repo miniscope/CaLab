@@ -38,6 +38,12 @@
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
+//!   --footprint-stats M  residual (default) | joint: also keep the joint
+//!                      sufficient statistics (S1.7; no decision reads them
+//!                      yet) and print their size and cost
+//!   --joint-shadow     with joint: also keep the exact store (every
+//!                      neighbour near) and print the far neighbours'
+//!                      approximation error against it (doubles the store)
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -137,7 +143,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, CrossFit, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+    CoreTest, CrossFit, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatfield::{
@@ -1973,6 +1979,13 @@ fn main() {
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
+    if let Some(v) = arg_value(&args, "--footprint-stats") {
+        scfg.footprint_stats = match v.as_str() {
+            "residual" => FootprintStats::Residual,
+            "joint" => FootprintStats::Joint,
+            other => panic!("--footprint-stats: residual|joint, not {other}"),
+        };
+    }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
     }
@@ -2145,6 +2158,8 @@ fn main() {
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
+    let mut conv = calab_cala::qc::convergence::Tracker::new();
+    let mut conv_out = calab_cala::qc::convergence::header();
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -2252,6 +2267,11 @@ fn main() {
                             .unwrap()
                     };
                     slow = Some(mk());
+                    if args.iter().any(|a| a == "--joint-shadow") {
+                        if let Some(s) = slow.as_mut() {
+                            s.enable_joint_shadow();
+                        }
+                    }
                     if let Some(s) = &slow {
                         let p = s.reservoir_plan();
                         println!(
@@ -2464,6 +2484,36 @@ fn main() {
                     summary = vec![f64::NAN; 3];
                 }
             }
+            if cp {
+                // Footprint convergence: change since 1 and 4 checkpoints ago
+                // against each cell's split-half noise.
+                let births: HashMap<u64, u64> = slow
+                    .as_ref()
+                    .map(|sl| {
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        sl.births()
+                            .into_iter()
+                            .map(|(id, b)| (id, u64::from(rf(b))))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let snaps: Vec<calab_cala::qc::convergence::CellSnap> = (0..lib.len())
+                    .map(|slot| {
+                        let (pix, val) = lib.filtered(slot);
+                        let id = lib.ids()[slot];
+                        calab_cala::qc::convergence::CellSnap {
+                            id,
+                            pix: pix.to_vec(),
+                            val: val.to_vec(),
+                            born: births.get(&id).copied().unwrap_or(0),
+                            noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
+                        }
+                    })
+                    .collect();
+                for row in conv.checkpoint(t_end as u64, snaps) {
+                    conv_out.push_str(&row.to_line());
+                }
+            }
             if t_end.is_multiple_of(100) || cp {
                 let g = q.global();
                 let extra = if cp {
@@ -2592,6 +2642,7 @@ fn main() {
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
+    std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     if let Some(o) = &online_ff {
         std::fs::write(out_dir.join("flat_field_updates.tsv"), &ff_log).unwrap();
@@ -2615,6 +2666,48 @@ fn main() {
             println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
             std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
             std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().footprint_stats == FootprintStats::Joint {
+            let d = sl.joint_stats_diag();
+            let c = d.cells.max(1) as f64;
+            println!(
+                "joint stats: {} cells, {:.1} MB ({:.1} KB/cell, residual stats {:.1} MB), \
+                 {:.0} px/cell, {:.1} neighbours/cell, {:.2} classes/cell, {} births, \
+                 {} px restarted, {} reach joins, work {} (residual stats {}), \
+                 {} jobs {:.0} KB/job of which stores {:.0} KB; \
+                 {:.1} near neighbours/cell, {} promotions",
+                d.cells,
+                d.bytes as f64 / 1e6,
+                d.bytes as f64 / c / 1e3,
+                d.residual_bytes as f64 / 1e6,
+                d.pixels as f64 / c,
+                d.neighbours as f64 / c,
+                d.classes as f64 / c,
+                d.births,
+                d.restarted_px,
+                d.reach_joins,
+                d.work,
+                sl.stats().work_stats,
+                d.jobs,
+                d.job_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
+                d.job_suff_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
+                d.near as f64 / c,
+                d.promotions,
+            );
+            if let Some(e) = sl.joint_shadow_error(&engine.library().clone()) {
+                println!(
+                    "joint far approximation vs exact store ({} cells): max|diff|/max|est| \
+                     median {:.2e} p95 {:.2e} max {:.2e}; rms diff / rms SE median {:.3} \
+                     p95 {:.3} max {:.3}",
+                    e.cells,
+                    e.rel_max[0],
+                    e.rel_max[1],
+                    e.rel_max[2],
+                    e.rms_per_se[0],
+                    e.rms_per_se[1],
+                    e.rms_per_se[2],
+                );
+            }
         }
         if sl.config().basin_trim {
             let (c, f, s2) = sl.basin_diag;

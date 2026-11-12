@@ -1337,3 +1337,7 @@ fn missing_samples_round_trip_through_the_reservoir() {
     assert_eq!(back[2], MISSING);
     assert_eq!(back[7], MISSING);
 }
+
+/// S1.7 PR-1: the joint sufficient statistics kept beside `fpstats`.
+#[path = "joint_tests.rs"]
+mod joint;

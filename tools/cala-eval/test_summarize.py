@@ -28,6 +28,50 @@ def write_run(d: Path, precision, cells_rows, adds=(), removals=()):
     (d / "removals.tsv").write_text("\n".join(r) + "\n")
 
 
+def write_convergence(d: Path, rows):
+    """rows: [(frame, k, median_change, share_changing)] with fixed bin columns."""
+    d.mkdir(parents=True, exist_ok=True)
+    cols = ["frame", "k", "pairs", "with_noise", "median_change", "median_shape", "median_noise", "share_moved", "median_moved", "share_big", "share_changing"]
+    for b in range(4):
+        cols += [f"n_b{b}", f"share_b{b}", f"median_b{b}"]
+    lines = ["\t".join(cols)]
+    for f, k, med, share in rows:
+        v = [f, k, 100, 90, med, med, 0.1, 0.5, med, share / 2, share] + [10, share, med] * 4
+        lines.append("\t".join(str(x) for x in v))
+    (d / "convergence.tsv").write_text("\n".join(lines) + "\n")
+
+
+class Convergence(unittest.TestCase):
+    def test_final_checkpoint_metrics_and_curve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "r"
+            write_convergence(run, [(1200, 1, 0.5, 0.9), (2400, 1, 0.3, 0.6), (2400, 4, 0.8, 0.95),
+                                    (3600, 1, 0.2, 0.4), (3600, 4, 0.6, 0.7), (3900, 1, 0.19, 0.38)])
+            m = S.convergence_metrics(run)
+            self.assertAlmostEqual(m["conv_med1"], 0.19)
+            self.assertAlmostEqual(m["conv_share1"], 0.38)
+            self.assertAlmostEqual(m["conv_med4"], 0.6)
+            self.assertAlmostEqual(m["conv_share4"], 0.7)
+            self.assertAlmostEqual(m["conv_big4"], 0.35)
+            table = S.convergence_curve(run, 1)
+            self.assertIn("| 1200 |", table)
+            self.assertIn("| 3600 |", table)
+            self.assertNotIn("| 3900 |", table)  # only every 1200 frames
+            self.assertIn("0.40 (10)", table)
+
+    def test_missing_file_is_nan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            m = S.convergence_metrics(Path(tmp))
+            self.assertTrue(all(math.isnan(v) for v in m.values()))
+
+    def test_run_metrics_carries_them_without_ground_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "r"
+            write_convergence(run, [(1200, 1, 0.5, 0.9)])
+            (run / "global.tsv").write_text("frames\tcells\n100\t3\n")
+            self.assertAlmostEqual(S.run_metrics(run)["conv_med1"], 0.5)
+
+
 class PairedStats(unittest.TestCase):
     def test_t_ci_formula(self):
         st = S.paired([0.0] * 5, [0.01, 0.02, 0.03, 0.02, 0.02])
