@@ -84,6 +84,13 @@ impl Chain {
         }
     }
 
+    /// The linear part alone (the bandpass, when it was applied), in place.
+    pub(crate) fn filter_only(&mut self, z: &mut [f32]) {
+        if let Some(f) = self.filter.as_mut() {
+            f.apply(z);
+        }
+    }
+
     /// Push `z` through the chain in place.
     pub(crate) fn apply(&mut self, z: &mut [f32]) {
         if let Some(f) = self.filter.as_mut() {
