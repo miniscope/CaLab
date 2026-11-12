@@ -31,6 +31,9 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
   `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
   built with `--features diagnostics`, `tests.tsv`. Needs numpy.
+- `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
+  (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
+  50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
@@ -193,6 +196,7 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-11-e7-convergence.md`     | E7: footprint convergence metric                                                          |
 | `2026-11-11-s12-crossfit.md`       | S1.2: cross-fitted statistics give no gain; the texture is in the data                    |
 | `2026-11-11-d4-flat-field.md`      | D4: textured footprints are sensor-gain shimmer; a flat field removes them                |
+| `2026-11-12-support-rule.md`       | S2.1: measured basin support rule (rings / basin / basin-skirt); not flipped yet          |
 | `2026-11-11-flat-field-default.md` | online flat field as the default (#330)                                                   |
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
