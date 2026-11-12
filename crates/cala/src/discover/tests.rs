@@ -1370,3 +1370,739 @@ fn a_refine_only_scope_freezes_the_cell_set() {
         "{before:?} -> {after:?}"
     );
 }
+
+// ---- S2.1: the support rule ------------------------------------------------
+
+/// A library cell's filtered column at global pixel `g`: the support
+/// values, `−low` of the pixel's block off it, 0 beyond the moat.
+fn lib_column_at(lib: &Library, slot: usize, g: u32) -> f32 {
+    let (pix, val) = lib.filtered(slot);
+    if let Ok(k) = pix.binary_search(&g) {
+        return val[k];
+    }
+    let b = lib.block_px();
+    if b == 0 {
+        return 0.0;
+    }
+    let (y, x) = (g as usize / N, g as usize % N);
+    let bq = ((y / b) * N.div_ceil(b) + x / b) as u32;
+    let (blk, low) = lib.lowpass(slot);
+    blk.binary_search(&bq).map_or(0.0, |k| -low[k])
+}
+
+/// A cell of `blob` (σ 2.5 px) cut to `r` px, centre (40, 44), on a disk of
+/// 8 px with a ring of zero values, and a skirt on four blocks.
+fn skirt_cell(skirt: &[(u32, f32)]) -> Cell {
+    let fp = blob(9, 40.0, 44.0);
+    let rect = Rect {
+        y0: fp.y0,
+        x0: fp.x0,
+        h: fp.height,
+        w: fp.width,
+    };
+    let mut a = fp.values.clone();
+    for y in 0..rect.h {
+        for x in 0..rect.w {
+            let (dy, dx) = ((rect.y0 + y) as f32 - 40.0, (rect.x0 + x) as f32 - 44.0);
+            if dy * dy + dx * dx > 25.0 {
+                a[y * rect.w + x] = 0.0;
+            }
+        }
+    }
+    // A single far pixel keeps zeros inside the support disk.
+    a[0] = 1e-3;
+    let mut f = LocalFilter::new(flattener().sigma());
+    Cell::from_canvas(
+        9,
+        rect,
+        &a,
+        dims(),
+        &vec![1u8; N * N],
+        &LibraryConfig::default(),
+        Extent::Given,
+        &mut f,
+        skirt,
+    )
+    .unwrap()
+}
+
+/// The skirt is the same block-constant field on the complement of the
+/// support in the slow loop's cell and in the published library (and in
+/// its bytes): zero on `S`, `skirt_b` on zero-valued disk pixels and off
+/// the disk.
+#[test]
+fn library_skirt_matches_slow_loop_column() {
+    let b = LocalFilter::new(flattener().sigma()).moat().unwrap().0;
+    let gw = N.div_ceil(b) as u32;
+    let blk = |y: u32, x: u32| (y / b as u32) * gw + x / b as u32;
+    let mut skirt = vec![
+        (blk(40, 44), 0.03f32),
+        (blk(40, 56), 0.02),
+        (blk(30, 44), -0.01),
+        (blk(56, 60), 0.015),
+    ];
+    skirt.sort_by_key(|s| s.0);
+    let plain = skirt_cell(&[]);
+    let cell = skirt_cell(&skirt);
+    assert!(plain.raw.contains(&0.0), "the disk has zero-valued pixels");
+    assert_eq!(
+        cell.skirt_blk,
+        skirt.iter().map(|s| s.0).collect::<Vec<_>>()
+    );
+    let build = |c: &Cell, sk: bool| {
+        let mut bld = LibraryBuilder::new(dims());
+        if sk {
+            bld.push_disk_skirt(c.footprint(dims()), c.center, c.radius, skirt.clone());
+        } else {
+            bld.push_disk(c.footprint(dims()), c.center, c.radius);
+        }
+        bld.build(&mut flattener()).unwrap()
+    };
+    let (lp, ls) = (build(&plain, false), build(&cell, true));
+    assert_eq!(ls.skirt(0).0, cell.skirt_blk.as_slice());
+    // Bytes: CALALIB3 without a skirt, CALALIB4 with one; both round-trip.
+    assert_eq!(&lp.to_bytes()[..8], b"CALALIB3");
+    assert_eq!(&ls.to_bytes()[..8], b"CALALIB4");
+    let back = Library::from_bytes(&ls.to_bytes()).unwrap();
+    assert_eq!(back.skirt(0), ls.skirt(0));
+    let in_s: std::collections::HashSet<u32> = cell
+        .pix
+        .iter()
+        .zip(&cell.raw)
+        .filter(|(_, &v)| v > 0.0)
+        .map(|(&g, _)| g)
+        .collect();
+    // The skirt as unfiltered light `u` (block-constant outside `S`); the
+    // column of the footprint with a skirt is `H (a + u)`, so the skirt
+    // adds `u − L u`: on the disk exactly, off it at block resolution.
+    let field: Vec<f32> = (0..(N * N) as u32)
+        .map(|g| {
+            let (y, x) = (g / N as u32, g % N as u32);
+            if in_s.contains(&g) {
+                0.0
+            } else {
+                skirt.iter().find(|s| s.0 == blk(y, x)).map_or(0.0, |s| s.1)
+            }
+        })
+        .collect();
+    let mut lu = vec![0.0f32; N * N];
+    LocalFilter::new(flattener().sigma()).blur(N, N, &field, &mut lu);
+    // The library is built with the flattener, which matches the local
+    // filter in the FOV interior only; this 96 px frame (σ = 20 px) has no
+    // interior, so the plain column's own gap bounds the skirt's.
+    let gap = (0..(N * N) as u32)
+        .map(|g| (lib_column_at(&lp, 0, g) - plain.column_at(g, N, b)).abs())
+        .fold(0.0f32, f32::max);
+    let (mut on_zero, mut off_disk) = (0, 0);
+    for g in 0..(N * N) as u32 {
+        let (y, x) = (g / N as u32, g % N as u32);
+        let d_cell = cell.column_at(g, N, b) - plain.column_at(g, N, b);
+        let d_lib = lib_column_at(&ls, 0, g) - lib_column_at(&lp, 0, g);
+        let d_back = lib_column_at(&back, 0, g) - lib_column_at(&lp, 0, g);
+        assert_eq!(d_back.to_bits(), d_lib.to_bits(), "bytes at ({y}, {x})");
+        assert!(
+            (d_lib - d_cell).abs() <= gap,
+            "library at ({y}, {x}): {d_lib} vs cell {d_cell} (gap {gap})"
+        );
+        let on_disk = cell.pix.binary_search(&g).is_ok();
+        if on_disk {
+            let want = field[g as usize] - lu[g as usize];
+            assert!(
+                (d_cell - want).abs() < 1e-5,
+                "disk ({y}, {x}): {d_cell} vs {want}"
+            );
+        }
+        if field[g as usize] != 0.0 {
+            if on_disk {
+                on_zero += 1;
+            } else {
+                off_disk += 1;
+            }
+        }
+    }
+    assert!(on_zero > 0 && off_disk > 0, "{on_zero} {off_disk}");
+}
+
+/// Visit jobs carry the split halves (with per-pixel moments) and the
+/// cells' skirts.
+#[test]
+fn wire_round_trips_halves_and_skirt() {
+    let skirt = [(10u32, 0.02f32), (11, -0.01)];
+    let mut cell = skirt_cell(&[]);
+    cell.skirt_blk = skirt.iter().map(|s| s.0).collect();
+    cell.skirt = skirt.iter().map(|s| s.1).collect();
+    let mut w = wire::Writer::default();
+    w.cell(&cell);
+    let back = wire::Reader::new(&w.buf).cell().unwrap();
+    assert_eq!(back.skirt_blk, cell.skirt_blk);
+    assert_eq!(back.skirt, cell.skirt);
+    assert_eq!(back.low, cell.low);
+    for missing in [false, true] {
+        let mut st = fpstats::FpStats::new((8.0, 8.0), 6.0, 17, 17, &[1u8; 289], false, 5);
+        let m = st.pix.len();
+        let mut rng = Lcg(5);
+        for t in 0..1100usize {
+            let c = rng.next() + 0.5;
+            let r: Vec<f32> = (0..m)
+                .map(|i| {
+                    if missing && (i + t).is_multiple_of(9) {
+                        f32::NAN
+                    } else {
+                        0.1 * i as f32 * c + rng.normal()
+                    }
+                })
+                .collect();
+            st.push(&r, [c, c], c, 1.0);
+        }
+        let mut w = wire::Writer::default();
+        w.fpstats(&st);
+        let back = wire::Reader::new(&w.buf).fpstats().unwrap();
+        assert_eq!(back.half_pm.is_some(), missing);
+        assert_eq!(
+            format!("{:?}", st.halves()),
+            format!("{:?}", back.halves()),
+            "missing {missing}"
+        );
+        assert!(st.halves().is_some());
+    }
+}
+
+/// A loop on a `side`² frame (full FOV, unit noise) under `rule`.
+fn basin_loop(side: usize, rule: SupportRule) -> SlowLoop {
+    let d = Dims::new(side, side).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 10.0,
+        ..FlattenConfig::default()
+    };
+    let flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    SlowLoop::new(
+        d,
+        vec![1; side * side],
+        vec![1.0; side * side],
+        flat,
+        SlowLoopConfig {
+            support_rule: rule,
+            ..config()
+        },
+    )
+    .unwrap()
+}
+
+/// Gaussian of σ `s` (and σ `s * e` along x) at `(cy, cx)`, peak `amp`, on
+/// a `side`² frame.
+fn gauss(side: usize, cy: f32, cx: f32, s: f32, e: f32, amp: f32) -> Vec<f32> {
+    (0..side * side)
+        .map(|i| {
+            let (dy, dx) = ((i / side) as f32 - cy, ((i % side) as f32 - cx) / e);
+            amp * (-(dy * dy + dx * dx) / (2.0 * s * s)).exp()
+        })
+        .collect()
+}
+
+/// Spatially correlated unit-variance noise: white noise blurred at 2 px.
+fn corr_noise(side: usize, rng: &mut Lcg) -> Vec<f32> {
+    let white: Vec<f32> = (0..side * side).map(|_| rng.normal()).collect();
+    let mut out = vec![0.0f32; side * side];
+    LocalFilter::new(2.0).blur(side, side, &white, &mut out);
+    let k = (4.0 * std::f32::consts::PI * 4.0).sqrt();
+    out.iter_mut().for_each(|v| *v *= k);
+    out
+}
+
+/// The disk of radius `r` around `(cy, cx)` on a `side`² frame (global
+/// pixels, the mask on the full-frame canvas).
+fn disk_mask(side: usize, cy: f32, cx: f32, r: f32) -> (Vec<u32>, Vec<bool>) {
+    let mask: Vec<bool> = (0..side * side)
+        .map(|i| {
+            let (dy, dx) = ((i / side) as f32 - cy, (i % side) as f32 - cx);
+            dy * dy + dx * dx <= r * r
+        })
+        .collect();
+    let pix = (0..side * side)
+        .filter(|&i| mask[i])
+        .map(|i| i as u32)
+        .collect();
+    (pix, mask)
+}
+
+fn full(side: usize) -> Rect {
+    Rect {
+        y0: 0,
+        x0: 0,
+        h: side,
+        w: side,
+    }
+}
+
+/// The filtered truth `H a` of an unfiltered footprint on the full frame.
+fn filtered(side: usize, a: &[f32]) -> Vec<f32> {
+    let mut out = vec![0.0f32; side * side];
+    LocalFilter::new(flattener().sigma()).apply(side, side, a, &mut out);
+    out
+}
+
+/// One noisy measurement of `truth` with per-pixel noise `se` (correlated
+/// at 2 px): `(h, (h_A, h_B, s_A, s_B))`, the halves independent with twice
+/// the variance and `h` their mean.
+fn measure(truth: &[f32], se: f32, rng: &mut Lcg) -> (Vec<f32>, (Vec<f32>, Vec<f32>, f64, f64)) {
+    measure_with(truth, se, rng, true)
+}
+
+/// [`measure`], with white noise when `!correlated`.
+fn measure_with(
+    truth: &[f32],
+    se: f32,
+    rng: &mut Lcg,
+    correlated: bool,
+) -> (Vec<f32>, (Vec<f32>, Vec<f32>, f64, f64)) {
+    let side = (truth.len() as f64).sqrt() as usize;
+    let s2 = se * std::f32::consts::SQRT_2;
+    let noise = |rng: &mut Lcg| -> Vec<f32> {
+        if correlated {
+            corr_noise(side, rng)
+        } else {
+            (0..side * side).map(|_| rng.normal()).collect()
+        }
+    };
+    let na = noise(rng);
+    let nb = noise(rng);
+    let ha: Vec<f32> = truth.iter().zip(&na).map(|(t, n)| t + s2 * n).collect();
+    let hb: Vec<f32> = truth.iter().zip(&nb).map(|(t, n)| t + s2 * n).collect();
+    let h = ha.iter().zip(&hb).map(|(a, b)| 0.5 * (a + b)).collect();
+    (h, (ha, hb, f64::from(s2), f64::from(s2)))
+}
+
+/// Pixels of `set` farther than 1 px (8-neighbourhood) from `lobe`.
+fn outside_lobe(side: usize, set: &[bool], lobe: &[bool]) -> usize {
+    (0..side * side)
+        .filter(|&p| {
+            set[p] && {
+                let (y, x) = ((p / side) as i64, (p % side) as i64);
+                !(-1i64..=1).any(|dy| {
+                    (-1i64..=1).any(|dx| {
+                        let (yy, xx) = (y + dy, x + dx);
+                        yy >= 0
+                            && xx >= 0
+                            && (yy as usize) < side
+                            && (xx as usize) < side
+                            && lobe[yy as usize * side + xx as usize]
+                    })
+                })
+            }
+        })
+        .count()
+}
+
+/// The declared error rate holds in spatially correlated noise because the
+/// inflation φ is measured from the halves: a planted cell's basin leaves
+/// its true positive lobe (by more than 1 px) in at most 3 α of 200
+/// constructions; with φ forced to 1 (identical halves) it leaves it in
+/// most of them.
+#[test]
+fn basin_support_holds_the_declared_error_rate() {
+    let side = 64;
+    let mut slow = basin_loop(side, SupportRule::Basin);
+    let alpha = f64::from(slow.cfg.support_alpha);
+    let truth = filtered(side, &gauss(side, 32.0, 32.0, 2.5, 1.0, 12.0));
+    let lobe: Vec<bool> = truth.iter().map(|&v| v > 0.0).collect();
+    let (_, mask) = disk_mask(side, 32.0, 32.0, 24.0);
+    let mut rng = Lcg(77);
+    let reps = 200;
+    let (mut bad, mut bad_phi1, mut phis) = (0, 0, Vec::new());
+    for _ in 0..reps {
+        let (h, halves) = measure(&truth, 1.0, &mut rng);
+        let ms = slow
+            .measured_support(full(side), &h, &mask, &halves, 1.0, None)
+            .expect("the cell is significant");
+        phis.push(ms.phi);
+        bad += usize::from(outside_lobe(side, &ms.s0, &lobe) > 0);
+        let same = (h.clone(), h.clone(), halves.2, halves.3);
+        let m1 = slow
+            .measured_support(full(side), &h, &mask, &same, 1.0, None)
+            .unwrap();
+        assert_eq!(m1.phi, 1.0);
+        bad_phi1 += usize::from(outside_lobe(side, &m1.s0, &lobe) > 0);
+    }
+    phis.sort_by(f64::total_cmp);
+    let limit = (3.0 * alpha * reps as f64).ceil() as usize;
+    assert!(
+        bad <= limit,
+        "{bad} of {reps} constructions left the lobe (limit {limit}); phi median {}",
+        phis[reps / 2]
+    );
+    assert!(
+        bad_phi1 > reps / 2,
+        "phi = 1: only {bad_phi1} of {reps} left the lobe"
+    );
+}
+
+/// A cell with a faint scatter halo (0.04 of its peak, decaying over
+/// 15 px): as frames accumulate (standard error ∝ 1 / sqrt(n)) the basin
+/// support grows toward its limit, the part of the positive lobe of `H a*`
+/// reached from the peak, and never leaves that fixed, finite set; the ring
+/// rule's support (`h + L a`, whose limit is `{a* > 0}`) leaves it.
+#[test]
+fn support_converges_as_frames_accumulate() {
+    let side = 128;
+    let c = 64.0;
+    let a: Vec<f32> = gauss(side, c, c, 2.5, 1.0, 20.0)
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let (dy, dx) = ((i / side) as f32 - c, (i % side) as f32 - c);
+            let r = (dy * dy + dx * dx).sqrt();
+            v + 0.8 * (-r / 15.0).exp()
+        })
+        .collect();
+    let truth = filtered(side, &a);
+    let lobe: Vec<bool> = truth.iter().map(|&v| v > 0.0).collect();
+    let (mut sizes, mut outside) = (Vec::new(), Vec::new());
+    for rule in [SupportRule::Basin, SupportRule::Rings] {
+        let mut slow = basin_loop(side, rule);
+        let mut row = Vec::new();
+        for n in [2_000.0f32, 8_000.0, 32_000.0, 128_000.0] {
+            let se = 40.0 / n.sqrt();
+            let mut rng = Lcg(5);
+            let (h, halves) = measure(&truth, se, &mut rng);
+            let (pix, mask) = disk_mask(side, c, c, 48.0);
+            let hp: Vec<f32> = pix.iter().map(|&g| h[g as usize]).collect();
+            let ha: Vec<f32> = pix.iter().map(|&g| halves.0[g as usize]).collect();
+            let hb: Vec<f32> = pix.iter().map(|&g| halves.1[g as usize]).collect();
+            slow.support_tmp = Some((pix.clone(), ha, hb, halves.2, halves.3));
+            let cell = slow
+                .make_cell_global(1, &pix, &hp, None, Some(f64::from(se)))
+                .unwrap();
+            slow.support_tmp = None;
+            let mut s = vec![false; side * side];
+            for (&g, &v) in cell.pix.iter().zip(&cell.raw) {
+                s[g as usize] = v > 0.0;
+            }
+            let out = outside_lobe(side, &s, &lobe);
+            if rule == SupportRule::Basin {
+                assert_eq!(out, 0, "n {n}");
+            } else {
+                outside.push(out);
+            }
+            let _ = &mask;
+            row.push(s.iter().filter(|&&v| v).count());
+        }
+        sizes.push(row);
+    }
+    let (basin, rings) = (&sizes[0], &sizes[1]);
+    let n_lobe = lobe.iter().filter(|&&v| v).count();
+    assert!(
+        basin.windows(2).all(|w| w[0] <= w[1]) && basin[3] <= n_lobe,
+        "basin sizes {basin:?}, lobe {n_lobe}, rings {rings:?}"
+    );
+    assert!(
+        outside[3] > n_lobe,
+        "rings leave the lobe by only {} px (lobe {n_lobe}, rings {rings:?})",
+        outside[3]
+    );
+}
+
+/// Under the skirt rule the moat carries the faint light outside the
+/// support: on a halo cell, the block-mean leftover `h − column` over the
+/// disk outside the support is significant under `Basin` and within noise
+/// under `BasinSkirt`.
+#[test]
+fn skirt_blocks_carry_the_truncated_light() {
+    let side = 96;
+    let c = 48.0;
+    let a: Vec<f32> = gauss(side, c, c, 2.5, 1.0, 20.0)
+        .iter()
+        .zip(gauss(side, c, c, 9.0, 1.0, 1.0))
+        .map(|(&v, w)| v + w)
+        .collect();
+    let truth = filtered(side, &a);
+    let mut worst = Vec::new();
+    for rule in [SupportRule::Basin, SupportRule::BasinSkirt] {
+        let mut slow = basin_loop(side, rule);
+        let b = slow.filter.moat().unwrap().0;
+        let se = 0.2f32;
+        let mut rng = Lcg(11);
+        // White noise: a block sum then averages it down (8 px blocks).
+        let (h, halves) = measure_with(&truth, se, &mut rng, false);
+        let (pix, _) = disk_mask(side, c, c, 30.0);
+        let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+        slow.support_tmp = Some((
+            pix.clone(),
+            pick(&halves.0),
+            pick(&halves.1),
+            halves.2,
+            halves.3,
+        ));
+        let cell = slow
+            .make_cell_global(1, &pix, &pick(&h), None, Some(f64::from(se)))
+            .unwrap();
+        // The column's scale: least squares on the support.
+        let (mut hc, mut cc) = (0.0f64, 0.0f64);
+        for (&g, &v) in cell.pix.iter().zip(&cell.raw) {
+            if v > 0.0 {
+                let col = f64::from(cell.column_at(g, side, b));
+                hc += f64::from(h[g as usize]) * col;
+                cc += col * col;
+            }
+        }
+        let k = hc / cc;
+        // Leftover z of each moat block that lies wholly inside the disk
+        // and outside the support.
+        let mut z_max = 0.0f64;
+        for by in 0..side / b {
+            for bx in 0..side / b {
+                let (mut sum, mut n, mut ok) = (0.0f64, 0usize, true);
+                for y in by * b..(by + 1) * b {
+                    for x in bx * b..(bx + 1) * b {
+                        let g = (y * side + x) as u32;
+                        let in_s = cell.pix.binary_search(&g).is_ok_and(|k| cell.raw[k] > 0.0);
+                        ok &= pix.binary_search(&g).is_ok() && !in_s;
+                        sum += f64::from(h[g as usize]) - k * f64::from(cell.column_at(g, side, b));
+                        n += 1;
+                    }
+                }
+                if ok {
+                    let sd = f64::from(se) * (n as f64).sqrt();
+                    z_max = z_max.max((sum / sd).abs());
+                }
+            }
+        }
+        worst.push(z_max);
+    }
+    assert!(worst[0] > 3.0, "basin leftover max |z| {:.2}", worst[0]);
+    assert!(worst[1] < 2.0, "skirt leftover max |z| {:.2}", worst[1]);
+}
+
+/// A second soma inside the statistics disk is other significant light:
+/// it is neither in the support nor painted into the skirt, and it is
+/// counted as a second peak.
+#[test]
+fn neighbour_light_is_not_skirt() {
+    let side = 96;
+    let a: Vec<f32> = gauss(side, 48.0, 44.0, 2.5, 1.0, 20.0)
+        .iter()
+        .zip(gauss(side, 48.0, 58.0, 2.5, 1.0, 20.0))
+        .map(|(&v, w)| v + w)
+        .collect();
+    let truth = filtered(side, &a);
+    let mut slow = basin_loop(side, SupportRule::BasinSkirt);
+    let b = slow.filter.moat().unwrap().0;
+    let mut rng = Lcg(3);
+    let (h, halves) = measure(&truth, 0.5, &mut rng);
+    let (pix, _) = disk_mask(side, 48.0, 44.0, 22.0);
+    let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+    // The current cell (the start): the first soma only.
+    let start = skirt_cell(&[]);
+    let mut start = start;
+    start.pix = vec![(48 * side + 44) as u32];
+    start.raw = vec![1.0];
+    slow.support_tmp = Some((
+        pix.clone(),
+        pick(&halves.0),
+        pick(&halves.1),
+        halves.2,
+        halves.3,
+    ));
+    let seconds = slow.basin_diag.2;
+    let cell = slow
+        .make_cell_global(1, &pix, &pick(&h), Some(&start), Some(0.5))
+        .unwrap();
+    assert_eq!(slow.basin_diag.2, seconds + 1, "second peak counted");
+    let g2 = (48 * side + 58) as u32;
+    assert!(
+        cell.pix
+            .binary_search(&g2)
+            .map_or(true, |k| cell.raw[k] == 0.0),
+        "the neighbour is not in the support"
+    );
+    let near =
+        |g: u32| ((g as usize / side) as f32 - 48.0).hypot((g as usize % side) as f32 - 58.0);
+    assert!(
+        cell.pix
+            .iter()
+            .zip(&cell.raw)
+            .all(|(&g, &v)| v == 0.0 || near(g) > 4.0),
+        "no support pixel within 4 px of the neighbour"
+    );
+    // The neighbour's block carries (almost) none of its light.
+    let bq = ((48 / b) * side.div_ceil(b) + 58 / b) as u32;
+    let sk = cell
+        .skirt_blk
+        .binary_search(&bq)
+        .map_or(0.0, |k| cell.skirt[k]);
+    assert!(
+        sk.abs() < 0.1,
+        "skirt at the neighbour {sk} of the cell's peak"
+    );
+}
+
+/// An elongated (2:1) single cell is one single-peaked basin: the support
+/// keeps all but 2 % of its energy.
+#[test]
+fn elongated_single_cell_is_not_cut() {
+    let side = 96;
+    let a = gauss(side, 48.0, 48.0, 2.5, 2.0, 20.0);
+    let truth = filtered(side, &a);
+    let mut slow = basin_loop(side, SupportRule::Basin);
+    let mut rng = Lcg(19);
+    let (h, halves) = measure(&truth, 0.5, &mut rng);
+    let (pix, _) = disk_mask(side, 48.0, 48.0, 24.0);
+    let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+    slow.support_tmp = Some((
+        pix.clone(),
+        pick(&halves.0),
+        pick(&halves.1),
+        halves.2,
+        halves.3,
+    ));
+    let cell = slow
+        .make_cell_global(1, &pix, &pick(&h), None, Some(0.5))
+        .unwrap();
+    let tot: f64 = a.iter().map(|&v| f64::from(v * v)).sum();
+    let kept: f64 = cell
+        .pix
+        .iter()
+        .zip(&cell.raw)
+        .filter(|(_, &v)| v > 0.0)
+        .map(|(&g, _)| f64::from(a[g as usize] * a[g as usize]))
+        .sum();
+    assert!(kept / tot > 0.98, "kept {:.4} of the energy", kept / tot);
+}
+
+/// The largest published support (positive pixels) of the loop's cells.
+fn largest_support(slow: &SlowLoop) -> usize {
+    slow.cells
+        .iter()
+        .map(|c| c.raw.iter().filter(|&&v| v > 0.0).count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Under the skirt rule, refinement-only passes over the same movie keep
+/// the supports bounded: the largest support does not grow from pass 1 to
+/// pass 3, and every statistics disk follows its support.
+#[test]
+fn refine_only_passes_keep_supports_bounded() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..shard_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &seed);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let pass1 = largest_support(&slow);
+    slow.set_edit_scope(EditScope::Refine);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let pass3 = largest_support(&slow);
+    let s = slow.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert!(pass3 <= pass1, "largest support {pass1} -> {pass3}");
+    let margin = slow.cfg.stats_margin_cells * slow.cfg.cell_diameter_px;
+    let lib = slow.finalize().unwrap();
+    for (slot, id) in lib.ids().iter().enumerate() {
+        if let Some(st) = slow.fpstats.get(id) {
+            let r = lib.support(slot).1;
+            assert!(
+                st.radius <= r + 2.0 * margin + 1e-3,
+                "disk {} for support {r}",
+                st.radius
+            );
+        }
+    }
+}
+
+/// When the outer light goes, the support follows: a cell seeded with a
+/// footprint much wider than its light ends with a compact support (no
+/// memory of the old extent) under the basin rule.
+#[test]
+fn support_shrinks_when_light_goes() {
+    let t = 3000;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 48.0, 48.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let wide = blob_w(1, 48.0, 48.0, 6.0);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, std::slice::from_ref(&wide));
+    let before = largest_support(&slow);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let after = largest_support(&slow);
+    assert!(slow.stats().refines > 0, "{:?}", slow.stats());
+    assert!(
+        (after as f64) < 0.6 * before as f64,
+        "support {before} -> {after}"
+    );
+}
+
+/// Under the ring rule the basin settings change nothing: the same run
+/// with another `support_alpha` gives byte-identical libraries, written as
+/// CALALIB3 with no skirt. (Identity with the code before S2.1 is checked
+/// end to end with `qc_eval`; see the results note.)
+#[test]
+fn rule_off_is_byte_identical() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let run_with = |alpha: f32| {
+        let cfg = SlowLoopConfig {
+            support_alpha: alpha,
+            ..shard_config()
+        };
+        let (mut slow, mut eng) = start(cfg, &seed);
+        let mut deleted = Vec::new();
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        (slow.finalize().unwrap(), slow.stats())
+    };
+    let (a, sa) = run_with(0.05);
+    let (b, sb) = run_with(0.5);
+    assert!(sa.refines > 0, "{sa:?}");
+    assert_eq!(sa, sb);
+    assert_eq!(sa.support_no_se, 0);
+    assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
+    assert!(a.to_bytes()[16..] == b.to_bytes()[16..]);
+    assert!((0..a.len()).all(|s| a.skirt(s).0.is_empty()));
+}
+
+/// Visits run as jobs under the skirt rule give the same libraries as
+/// `step` (the halves and the skirts cross the wire).
+#[test]
+fn basin_skirt_visits_run_as_jobs_match_step_exactly() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert_eq!(s, b.stats());
+    let lib = a.finalize().unwrap();
+    assert!(
+        (0..lib.len()).any(|s| !lib.skirt(s).0.is_empty()),
+        "some cell carries a skirt"
+    );
+    assert!(lib.to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}

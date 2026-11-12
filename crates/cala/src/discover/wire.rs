@@ -10,7 +10,7 @@ use super::SlowStats;
 use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5335; // "VIS5"
+pub(crate) const MAGIC: u32 = 0x5649_5336; // "VIS6"
 
 #[derive(Default)]
 pub(crate) struct Writer {
@@ -103,6 +103,8 @@ impl Writer {
         self.f32s(&c.filt);
         self.u32s(&c.low_blk);
         self.f32s(&c.low);
+        self.u32s(&c.skirt_blk);
+        self.f32s(&c.skirt);
         self.u64(c.born);
     }
     pub fn slot(&mut self, s: &Slot) {
@@ -193,6 +195,22 @@ impl Writer {
         self.bool(s.pm.is_some());
         if let Some(pm) = &s.pm {
             for v in [&pm.n, &pm.n2, &pm.s1, &pm.s2] {
+                self.f64s(v);
+            }
+        }
+        // Split-half sums (the measured standard error of the support
+        // rule), with their per-pixel moments when the full sums have them.
+        self.f32s(&s.half.0);
+        self.f32s(&s.half.1);
+        for m in &s.half.2 {
+            self.f64s(m);
+        }
+        if s.pm.is_some() {
+            let hpm = s
+                .half_pm
+                .clone()
+                .unwrap_or_else(|| PixMoments::filled(&s.cls, &s.half.2));
+            for v in [&hpm.n, &hpm.n2, &hpm.s1, &hpm.s2] {
                 self.f64s(v);
             }
         }
@@ -331,8 +349,11 @@ impl<'a> Reader<'a> {
             filt: self.f32s()?,
             low_blk: self.u32s()?,
             low: self.f32s()?,
+            skirt_blk: self.u32s()?,
+            skirt: self.f32s()?,
             born: self.u64()?,
         })
+        .filter(|c| c.skirt_blk.len() == c.skirt.len())
     }
     pub fn slot(&mut self) -> Option<Slot> {
         Some(Slot {
@@ -446,16 +467,27 @@ impl<'a> Reader<'a> {
                 }
                 s.pm = Some(pm);
             }
+            let (h0, h1) = (self.f32s()?, self.f32s()?);
+            if h0.len() != s.pix.len() || h1.len() != s.pix.len() {
+                return None;
+            }
+            s.half = (h0, h1, [mom(self)?, mom(self)?]);
+            if s.pm.is_some() {
+                let pm = PixMoments {
+                    n: self.f64s()?,
+                    n2: self.f64s()?,
+                    s1: self.f64s()?,
+                    s2: self.f64s()?,
+                };
+                if [&pm.n, &pm.n2, &pm.s1, &pm.s2]
+                    .iter()
+                    .any(|v| v.len() != s.pix.len())
+                {
+                    return None;
+                }
+                s.half_pm = Some(pm);
+            }
             Some(s)
-        })
-        .map(|mut s: FpStats| {
-            // DIAG split-half sums are not on the wire.
-            s.half = (
-                vec![0.0; s.pix.len()],
-                vec![0.0; s.pix.len()],
-                [[0.0; 6]; 2],
-            );
-            s
         })
     }
     pub fn stats(&mut self) -> Option<SlowStats> {
@@ -550,4 +582,5 @@ stats_list!(
     split_tests,
     work_split,
     work_stats,
+    support_no_se,
 );
