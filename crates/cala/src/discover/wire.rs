@@ -8,9 +8,10 @@ use super::local::{Cell, Rect};
 use super::reservoir::{Probe, SharedFrames, Slot, Tile};
 use super::SlowStats;
 use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
+use crate::discover::suffstats::{CellStats, GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5332; // "VIS2"
+pub(crate) const MAGIC: u32 = 0x5649_5333; // "VIS3"
 
 #[derive(Default)]
 pub(crate) struct Writer {
@@ -196,6 +197,25 @@ impl Writer {
                 self.f64s(v);
             }
         }
+    }
+    /// Joint statistics of one cell (`suffstats.rs`): the region, the
+    /// pixel classes, the neighbour ids, `W` and `S` per group, the class
+    /// moments and the per-group frame weights.
+    pub fn cellstats(&mut self, s: &CellStats) {
+        self.f32(s.center.0);
+        self.f32(s.center.1);
+        self.f32(s.radius);
+        self.u32s(&s.pix);
+        self.u32s(&s.cls);
+        self.u64s(&s.nb);
+        self.f32s(&s.w);
+        self.f32s(&s.s);
+        self.usize(s.mom.len());
+        for m in &s.mom {
+            self.f64s(m);
+        }
+        self.f64s(&s.tot);
+        self.u64(s.restarts);
     }
     pub fn stats(&mut self, s: &SlowStats) {
         for v in stats_fields(s) {
@@ -457,6 +477,39 @@ impl<'a> Reader<'a> {
                 [[0.0; 6]; 2],
             );
             s
+        })
+    }
+    pub fn cellstats(&mut self) -> Option<CellStats> {
+        let center = (self.f32()?, self.f32()?);
+        let radius = self.f32()?;
+        let pix = self.u32s()?;
+        let cls = self.u32s()?;
+        let nb = self.u64s()?;
+        let w = self.f32s()?;
+        let s = self.f32s()?;
+        let k = self.count(8)?;
+        let mom: Vec<Vec<f64>> = (0..k).map(|_| self.f64s()).collect::<Option<_>>()?;
+        let tot: [f64; GROUPS] = self.f64s()?.try_into().ok()?;
+        let restarts = self.u64()?;
+        let n = pix.len();
+        let stride = 4 + 2 * nb.len();
+        let ok = !nb.is_empty()
+            && cls.len() == n
+            && w.len() == GROUPS * n
+            && s.len() == GROUPS * n
+            && cls.iter().all(|&c| (c as usize) < k)
+            && mom.iter().all(|m| m.len() == GROUPS * stride);
+        ok.then_some(CellStats {
+            center,
+            radius,
+            pix,
+            cls,
+            nb,
+            w,
+            s,
+            mom,
+            tot,
+            restarts,
         })
     }
     pub fn stats(&mut self) -> Option<SlowStats> {
