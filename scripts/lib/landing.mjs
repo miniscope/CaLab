@@ -104,21 +104,32 @@ function renderUpcoming(app) {
 }
 
 /**
- * One line per released app with a `calab.pipeline`, in data-flow order:
- * `pipeline.step` ascending, then landing order (the sort is stable) for ties
- * or a missing step.
+ * Released apps with a `calab.pipeline`, grouped into stages of use by
+ * `pipeline.step` (a coarse stage number, lower is earlier). Apps sharing a
+ * step are alternatives and share one bracketed row; within a stage, and for
+ * apps without a step (each its own stage, last), landing order holds.
  */
 function renderWorkflow(released) {
-  const order = (app) => app.pipeline.step ?? Infinity;
-  const steps = released
-    .filter((app) => app.pipeline)
-    .sort((a, b) => order(a) - order(b))
-    .map(
-      (app) => `          <li>
-            <a href="${escapeHtml(app.path)}/">${escapeHtml(app.displayName)}</a>
-            <span class="flow__io">${escapeHtml(app.pipeline.input)} <span aria-hidden="true">&rarr;</span><span class="sr-only">in,</span> ${escapeHtml(app.pipeline.output)}<span class="sr-only"> out</span></span>
-          </li>`,
-    );
+  const stages = new Map();
+  for (const app of released.filter((a) => a.pipeline)) {
+    const key = app.pipeline.step ?? `solo:${app.id}`;
+    if (!stages.has(key)) stages.set(key, []);
+    stages.get(key).push(app);
+  }
+  const rank = (key) => (typeof key === 'number' ? key : Infinity);
+  const line = (app) => `              <div class="flow__line">
+                <a href="${escapeHtml(app.path)}/">${escapeHtml(app.displayName)}</a>
+                <span class="flow__io">${escapeHtml(app.pipeline.input)} <span aria-hidden="true">&rarr;</span><span class="sr-only">in,</span> ${escapeHtml(app.pipeline.output)}<span class="sr-only"> out</span></span>
+              </div>`;
+  const steps = [...stages.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([, group]) => {
+      const alt = group.length > 1;
+      const body = group.map(line).join('\n              <span class="flow__or">or</span>\n');
+      return `          <li class="flow__stage${alt ? ' flow__stage--alt' : ''}">
+${body}
+          </li>`;
+    });
   if (steps.length === 0) return '';
   return `      <section class="flow" aria-labelledby="flow-heading">
         <h2 id="flow-heading">How the apps fit together</h2>
@@ -246,10 +257,17 @@ ${designTokens()}
     }
     .flow h2 { font-size: 0.95rem; font-weight: var(--font-weight-semibold); margin-bottom: var(--space-sm); }
     .flow ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-    .flow li {
+    .flow__stage { display: flex; flex-direction: column; gap: 2px; }
+    /* Alternatives for the same stage share a bracket */
+    .flow__stage--alt {
+      border-left: 2px solid var(--border-default);
+      padding-left: calc(var(--space-sm) + 2px); margin-left: calc(-1 * var(--space-sm) - 4px);
+    }
+    .flow__line {
       display: grid; grid-template-columns: 5.5rem minmax(0, 1fr);
       column-gap: var(--space-sm); align-items: baseline;
     }
+    .flow__or { font-size: 0.75rem; color: var(--text-secondary); line-height: 1; }
     .flow li a { font-weight: var(--font-weight-semibold); text-decoration: none; }
     .flow li a:hover { text-decoration: underline; }
     .flow__io { color: var(--text-secondary); }

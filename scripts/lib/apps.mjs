@@ -64,8 +64,9 @@ export function siteDir(env = process.env) {
  * `calab.pipeline` (optional): where the app sits in the analysis chain, as
  * `{ "input": "Raw Miniscope video", "output": "cell footprints and traces", "step": 1 }`.
  * The landing page's "How the apps fit together" panel lists every released
- * app that sets it, in data-flow order: by `step` (optional number, lower is
- * earlier), then landing order for ties or a missing step. Absent, null, or both strings empty (the
+ * app that sets it, by `step`: an optional coarse stage of use (lower is
+ * earlier). Apps with equal steps are alternatives, shown together as one
+ * stage; landing order holds within a stage and for apps without a step. Absent, null, or both strings empty (the
  * template's placeholder) leaves the app out of the panel.
  */
 function pipelineOf(value) {

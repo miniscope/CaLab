@@ -87,8 +87,11 @@ registered.
 The landing page is built only from these fields (`scripts/lib/landing.mjs`
 names no app). `pipeline` reads as `input → output`, e.g.
 `{ "input": "Raw Miniscope video", "output": "cell footprints and traces", "step": 1 }`.
-The optional numeric `step` orders the panel by data flow (lower is earlier;
-ties and a missing step fall back to the card order).
+The optional numeric `step` is the app's rough stage of use, not a strict
+chain: lower stages come first, and apps with equal steps are alternatives,
+shown together as one bracketed stage (CaDecon and CaTune are both 2: automated
+and by-hand deconvolution). Within a stage, and for apps without a step, the
+card order holds.
 Leave both strings empty (the template's placeholder) or drop the field to
 stay out of the panel. `npm run check:apps-manifest` fails on a malformed
 `pipeline` (not an object, unknown keys, non-strings, only one of the two

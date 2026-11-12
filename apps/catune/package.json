@@ -17,7 +17,7 @@
     "pipeline": {
       "input": "Traces",
       "output": "deconvolution parameters, tuned by eye",
-      "step": 3
+      "step": 2
     },
     "status": "stable",
     "screenshot": "screenshot.png"

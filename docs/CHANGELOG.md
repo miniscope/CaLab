@@ -18,10 +18,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   links the release, citation and licence. The page is built only from each
   app's `calab` block, rendered by the new `scripts/lib/landing.mjs`.
 - New optional `calab.pipeline` field (`{ input, output, step }`): the app's
-  line in the landing page's workflow panel, ordered by `step` (data flow). Set for Cala, CaDecon and CaTune, with an
+  line in the landing page's workflow panel. `step` is a coarse stage of use;
+  apps with equal steps are shown together as alternatives (Cala 1; CaDecon
+  and CaTune 2). Set for Cala, CaDecon and CaTune, with an
   empty placeholder in `apps/_template`; `check:apps-manifest` validates it.
 - Cala's landing image is now a single clean footprint from a real run on the
-  workshop recording (cell 398, QC pass), not a full-interface screenshot.
+  workshop recording (cell 168, QC pass), not a full-interface screenshot.
 
 ### Removed
 
