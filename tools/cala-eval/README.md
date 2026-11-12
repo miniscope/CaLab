@@ -63,6 +63,31 @@ precision (about .011 at 500 cells) is printed next to precision rows.
 | `r_tr`                                                         | `global.tsv`               | median true-trace r                                                                       |
 | `adds_pm`, `readds_pm`, `deletes_pm`                           | `adds.tsv`, `removals.tsv` | per minute over the last 4 minutes                                                        |
 
+Ground-truth-free held-out score (E2, `calab_cala::qc::heldout`; the same
+numbers come out of `qc_eval real`):
+
+| name               | source                       | meaning                                                                                           |
+| ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `S8`               | `global.tsv` `ho_score`      | penalised held-out gain per held-out frame (units of s²) in the last checkpoint window            |
+| `AUC_S`            | `global.tsv` `ho_score`      | mean of `ho_score` over checkpoints from 1200                                                     |
+| `rho_S_TP`         | `global.tsv`                 | Spearman of `ho_score` with the TP count (precision x cells) over those checkpoints               |
+| `Sf8`, `rho_Sf_TP` | `global.tsv` `ho_score_frac` | S over the held-out light above noise (`ho_signal`): activity in the window divides out           |
+| `auc_hoz`          | `ho_cells.tsv`, `cells.tsv`  | AUC of per-cell `ho_marginal_z` for TP vs not at the last checkpoint (unscored cells rank lowest) |
+
+`S = mean over held-out frames of (G_t − k_t μ_t)`: `G_t` is the whitened χ²
+the library removes from a frame the slow loop never fitted on, divided by the
+running median `s²` of the residual χ² per pixel; `μ_t` is the gain of one
+placebo column (a cell's footprint displaced by 2 to 4 diameters onto empty
+tissue, solved jointly with the library), so a cell-shaped non-cell adds
+nothing to `S` on average and a real cell adds its light. `ho_marginal_z` is a
+cell's mean drop-one gain on frames where it is active (trace > 2 σ), against
+the same statistic of the placebos in its 128 px tile. Definition and
+deviations from the plan: the `qc::heldout` module docs.
+
+`qc_eval ... --library <footprints.bin>` scores a fixed cell set (an earlier
+run's final library, or another pipeline's footprints converted to `CALAFP01`)
+with no slow loop; its `final.tsv` carries each cell's `ho_marginal_z`.
+
 FP classes (`qc_eval` `label_rows`): `noise` r < .5 with every GT unit and no GT
 centroid within 10 px; `adjacent` r < .5 but a centroid within 10 px; `partial`
 r .5 to .7 with a GT unit no other cell matched; `dup` r >= .5 with a unit
