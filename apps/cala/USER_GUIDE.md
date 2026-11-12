@@ -36,11 +36,11 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
 
 ## Browser requirements
 
-| Browser                | Status                                                                                                                                                 |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                    |
-| Firefox, Safari        | Run the full pipeline with motion correction on the CPU. Exports are built in the browser's private file system and handed to the download.            |
-| Any browser, no WebGPU | Motion correction falls back to the CPU. The status bar badge says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same. |
+| Browser                | Status                                                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                                             |
+| Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
+| Any browser, no WebGPU | Motion correction falls back to the CPU. The status bar badge says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                          |
 
 Needed in any browser: WebAssembly, module Web Workers, and the folder picker
 (`<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
@@ -63,8 +63,9 @@ few batches of frames is plenty.
    **Finish pass 1 now** ends discovery at the frames read so far.
 4. **Export.** Once pass 2 has finished, **Export (.npz)** writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
-   and a JSON block with the run's provenance. **CaDecon export** writes just the
-   traces of cells that pass QC, for CaDecon. Python:
+   and a JSON block with the run's provenance. **Export for CaDecon (N cells)** writes just
+   the traces of the cells that pass QC (untick **QC-passing cells only** to include
+   every cell), for CaDecon. Python:
    `np.load("<folder>_cala.npz")["traces"]`.
 
 ## Reading the quality-control indicators
@@ -108,6 +109,9 @@ estimates the pattern from the recording's own motion:
   recorded in the run (status panel, export `meta_json`). Later refinements come about
   every 60 s and are small.
 - The **Flat field** tab shows the map on a fixed 0.9 to 1.1 scale and its status.
+  The flat field is on by default. To run without it, untick **Divide out the
+  sensor gain map** (takes effect at the next Restart) or open the page with
+  `?flatfield=0`.
 - The map is cached in your browser (IndexedDB) so the next recording from the same
   sensor starts corrected. The cache key is a serial number from `metaData.json`
   when it has one. Stock Miniscope metadata has none, so the key is then the folder

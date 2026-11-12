@@ -1,17 +1,17 @@
 # cala-eval: paired multi-seed evaluation
 
 Runs two (or more) `qc_eval` binaries over the same minisim recordings, one per
-seed, and reports paired per-seed differences with t confidence intervals. Spec:
-sections 3.2 to 3.5 of the overhaul plan.
+seed, and reports paired per-seed differences with t confidence intervals.
+Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 
 - `arms.py`: the sim arms. A new arm is a new entry in `ARMS` (spec file and
-  flags). `halo`, `oof` and `fpn` are listed; they are skipped until their spec
-  file is committed.
+  flags). `halo`, `oof` and `fpn` use `ca1_workshop_v2_{halo,oof,fpn}.spec.json`
+  in `tools/minisim-calibration/`; an arm whose spec file is missing is skipped.
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
   would write are symlinked (`--reuse <dir>`) instead of regenerated. At most 2
   generations at once (3 GB check on the first, stop above 6 GB). Run it with
-  the pinned minisim venv python.
+  the pinned minisim venv python (`tools/minisim-calibration/README.md`).
 - `run_arms.py`: the queue. At most 4 light `qc_eval sim` runs machine-wide, no
   start while free memory is below 5 GB, each run under `/usr/bin/time -l`
   (wall time and max RSS in `run.json`). Finished runs are skipped.
@@ -22,15 +22,30 @@ sections 3.2 to 3.5 of the overhaul plan.
   score is held out in pass 1 only. `qc_eval --later-passes MODE` (`refine`,
   `refine-prune`, `refine-merge`; default `all`) restricts the slow loop's
   edits in passes ≥ 2 (S2.3b, `results/2026-11-12-refine-only-passes.md`).
+- `baseline_table.py`: per-arm mean and sd over seeds of one or more run trees
+  (`main=<runs>/base [LABEL=DIR ...] [--arms ...]`); the reference numbers in
+  `results/2026-11-baseline.md`.
+- `seed_jaccard.py`: seed-to-seed reproducibility of two `qc_eval real` runs
+  (`<runA> <runB> [--min-cos 0.5]`); needs numpy.
+- `churn_attribution.py`: attributes late footprint changes in a
+  `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
+  `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
+  built with `--features diagnostics`, `tests.tsv`. Needs numpy.
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
+
+On the lab Mac the sims (arms static, motion, halo, oof; seeds 5-9) and the
+minisim venv live outside `/tmp` in `~/Projects/cala-data` (layout and rebuild
+steps in its `README.md`); `source ~/Projects/cala-data/sims.env` sets
+`CALA_SIMS` (use as `<sims>`), `MINISIM_PY` and `QC_EVAL_BIN`. Do not keep sims
+under `/tmp`: macOS deletes them.
 
 ```
 cargo build --release -p calab-cala --example qc_eval   # from crates/cala
 cp target/release/examples/qc_eval tools/cala-eval/bin/<commit>
 
-MS=<minisim venv>/bin/python
+MS=<minisim venv>/bin/python   # or $MINISIM_PY from sims.env
 $MS tools/cala-eval/gen_sims.py --sims <sims> --arms static,motion --seeds 5-9 --reuse <old sims>
 
 python tools/cala-eval/run_arms.py --bin base=tools/cala-eval/bin/<base> \
@@ -45,7 +60,11 @@ python tools/cala-eval/summarize.py --base <runs>/base --new <runs>/new \
 Arguments after `--` go to every run; `--extra LABEL="..."` replaces or adds
 flags for one binary. `--budget-mult 4` scales `--budget` (the 4x runs).
 Check `ps` before generating sims or running `qc_eval real`: no more than 2
-heavy processes machine-wide.
+heavy processes machine-wide. `run_arms.py` only counts binaries whose path
+contains `qc_eval` or `/cala-eval/bin/` towards the cap, so keep them there.
+
+`qc_eval` ignores flags it does not know, without a warning; check the spelling
+of every flag (`--every`, not `--checkpoints`; there is no `--no-pass2`).
 
 ## Statistics
 
@@ -126,7 +145,7 @@ capped at 40.
 
 ## Validation (E1)
 
-- Reproduction of `COMPUTE_VS_PRECISION.md`: the main binary of that table
+- Reproduction of `tools/cala-diagnostics/COMPUTE_VS_PRECISION.md`: the main binary of that table
   (f30ce26, default `--slow-seed`, `--batch 8`) on the existing recordings
   gives `motion s5 1x` P2 .946, R2 .538, P8 .934, R8 .754, 501 cells (exact) and
   `static s6 1x` P2 .966, R2 .582, P8 .969 (table .966), R8 .782, 508 cells.
@@ -137,3 +156,24 @@ capped at 40.
 - Demo comparison (`--core-test trim` vs off): `results/2026-11-11-e1-core-test-trim.md`.
 - Seed-to-seed spread is larger than the binomial SE: on `motion` the P8 CI
   half-width is about .024 for the null, so one run decides nothing.
+
+## Results notes
+
+`results/` holds one note per comparison or probe. Paths such as
+`scratchpad/e6/...` in the notes are the authoring session's scratch directory
+under `/private/tmp`; they are not in the repo and macOS may delete them. The
+sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
+
+| note                               | what it settles                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| `2026-11-baseline.md`              | E6 reference numbers at 81f041c (sims and real, seed Jaccard)                             |
+| `2026-11-11-e1-null.md`            | E1 null: same binary, slow seed 1 vs 2; primary CIs cover 0                               |
+| `2026-11-11-e1-core-test-trim.md`  | E1 demo: `--core-test trim` vs off                                                        |
+| `2026-11-11-e2-heldout-score.md`   | E2: ground-truth-free held-out score                                                      |
+| `2026-11-11-e7-convergence.md`     | E7: footprint convergence metric                                                          |
+| `2026-11-11-s12-crossfit.md`       | S1.2: cross-fitted statistics give no gain; the texture is in the data                    |
+| `2026-11-11-d4-flat-field.md`      | D4: textured footprints are sensor-gain shimmer; a flat field removes them                |
+| `2026-11-11-flat-field-default.md` | online flat field as the default (#330)                                                   |
+| `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
+| `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
+| `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |

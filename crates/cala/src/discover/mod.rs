@@ -51,7 +51,7 @@
 //!      noise would (0.5 per frame for a non-negative coefficient, variance
 //!      1.25 per frame) by `accept_z` standard deviations. χ² is measured in
 //!      units of the variance the current model leaves per pixel (at least
-//!      the noise), because undetected dim cells and neuropil inflate it;
+//!      the noise), because undetected dim cells and diffuse light inflate it;
 //!      both arms also get a free Gaussian background term (σ = one cell
 //!      diameter) at the candidate, so broad local light does not count,
 //!      and the first and second spatial derivatives of the two nearest
@@ -111,7 +111,7 @@
 //!   visit, the tile's model is solved on it with and without the cell, both
 //!   with the add test's free local bump. The probe *passes* when the cell
 //!   lowers χ² by `keep_z` σ of the noise-column null. It *fails* when the
-//!   bump explains the signal as well (diffuse light, neuropil, a halo)
+//!   bump explains the signal as well (diffuse light, leftover light, a halo)
 //!   although the cell's light on the probe, had it been shaped like the
 //!   footprint, would have passed by `keep_z` σ. When it would not have
 //!   (a weak transient), the probe is *inconclusive* and counts neither
@@ -152,18 +152,18 @@
 //!
 //! * **Running footprint statistics** (`fpstats.rs`). Every fitting frame
 //!   updates, per cell, the centred covariance of its own-signal residual
-//!   with a trace of the cell on a disk wider than its support. That trace
-//!   is cross-fitted ([`CrossFit`]): measured in the neighbouring frames
-//!   and on the other block parity's pixels, so a pixel's noise never
-//!   regresses on itself. The footprint from all frames so far is the
-//!   instrumental-variable ratio of the covariances; its
+//!   with a trace of the cell on a disk wider than its support: by default
+//!   the fast loop's trace of the same frame ([`CrossFit`] is an opt-in
+//!   leave-one-out instrument that measured no gain, S1.2). The footprint
+//!   from all frames so far is the ratio of the covariances; its
 //!   standard error falls as frames come in. A cell is refined from it
 //!   when the estimate disagrees with the current footprint beyond its own
 //!   noise (a χ² test) *and* the change lowers held-out χ² (paired z ≥
 //!   `refine_z`). Converged footprints stop being proposed. The reservoir's
 //!   noisier estimate is used only for young cells.
 //! * **Joint sufficient statistics** (`suffstats.rs`, opt-in
-//!   [`FootprintStats::Joint`]; S1.7, nothing reads them yet). The same
+//!   [`FootprintStats::Joint`]; S1.7). No decision reads them: reading them
+//!   (#332, not merged) did not make footprints converge faster. The same
 //!   regions keep data sums and the neighbours' trace cross-moments per
 //!   block group instead of residual sums, so a footprint is estimated
 //!   under the neighbours' *current* columns: a neighbour's change reaches
@@ -343,8 +343,10 @@ impl CoreTest {
 /// length, not the cell (model review, root cause B).
 ///
 /// Off by default: on the workshop recording `ParityLoo` did not remove
-/// the textured components (their split-half reproducibility stayed high,
-/// so their texture is in the data, not a noise fixed point), and on the
+/// the textured components (they reproduce in both halves because they are
+/// the sensor's gain pattern moved by registration, D4, which the flat
+/// field now removes: tools/cala-eval/results/2026-11-11-d4-flat-field.md),
+/// and on the
 /// minisim arms it traded precision on `halo` for precision on `motion`
 /// (tools/cala-eval/results/2026-11-11-s12-crossfit.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

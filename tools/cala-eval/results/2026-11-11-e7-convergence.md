@@ -2,7 +2,7 @@
 
 Binary: this branch on main a8a333d (`--slow-seed 1 --batch 8 --budget 30000000`).
 Runs: `static_s5` and `motion_s5` (9600 frames), and the real workshop recording
-(18000 frames, `--motion --no-pass2`). One run each, so the numbers show the
+(18000 frames, `--motion`). One run each, so the numbers show the
 size of the effect, not a comparison.
 
 ## What is measured

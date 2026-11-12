@@ -46,7 +46,7 @@ pub enum DeleteReason {
     Silent,
     /// On held-out frames where the fast loop says it fired, a smooth local
     /// background explains the signal about as well as its footprint does
-    /// (diffuse light, neuropil, a neighbour's halo, a noise pattern).
+    /// (diffuse light, a neighbour's leftover light or halo, a noise pattern).
     Unsupported,
     /// No compact, soma-sized core in the transient band that is
     /// significant on held-out block groups and stands out of the

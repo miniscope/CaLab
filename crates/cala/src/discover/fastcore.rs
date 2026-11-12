@@ -25,9 +25,10 @@
 //!   end of an elongated one, is masked instead of counted as texture
 //!   ([`search_cores`]).
 //!
-//! Texture components (textured, coreless "cells" in dim regions) are a
-//! noise-feedback fixed point: the trace is fitted from the footprint's own
-//! pixels, so any noise pattern reproduces itself in every group. Group
+//! Texture components (textured, coreless "cells" in dim regions)
+//! reproduce in every group: on real data they are the sensor's gain
+//! pattern moved by registration (D4), which the flat field removes
+//! upstream; a noise-feedback fixed point would reproduce the same way. Group
 //! spread cannot reject them; only their shape (no core that stands out of
 //! their own texture) does.
 

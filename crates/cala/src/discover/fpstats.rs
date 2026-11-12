@@ -18,7 +18,8 @@
 //! The noise of `h` falls as `1 / sqrt(frames)`, so successive estimates
 //! converge and the refinements they drive die out.
 //!
-//! **Cross-fitting** ([`super::CrossFit`]). With `z = x = c_t`, the trace
+//! **Cross-fitting** ([`super::CrossFit`]; opt-in, off by default: no
+//! measured gain, S1.2). With `z = x = c_t`, the trace
 //! the fast loop fitted from the same pixels in the same frame, a pixel's
 //! noise multiplies itself: `E[h] ∝ s h + Σ ã / ãᵀΣã` (`s` the trace's
 //! per-frame SNR², `ã` the current column, `Σ` the pixel noise covariance),
@@ -27,19 +28,20 @@
 //! correlation length, and the pull does not shrink with more frames. The
 //! cross-fitted estimator is an instrumental-variable regression:
 //!
-//! * the instrument `z` of a pixel is the ledger's unclamped coordinate of
-//!   the *previous* frame, `u_{t−1}` (`ParityLag`: measured on the pixels
-//!   of the other block parity only), so its noise is independent of
-//!   frame `t`'s noise at the pixel;
+//! * the instrument `z` of a pixel is the mean of the ledger's unclamped
+//!   coordinates of the neighbouring frames, `(u_{t−1} + u_{t+1}) / 2`
+//!   (`Loo`; `ParityLoo`: measured on the pixels of the other block parity
+//!   only), so its noise is independent of frame `t`'s noise at the pixel;
 //! * the regressor `x = u_t` is the unclamped coordinate of the frame
 //!   itself (unit gain on the cell's trace), used only through `cov(x, z)`,
 //!   whose noise terms are independent too.
 //!
-//! Then `cov(r(p), z) = h(p) cov(c_t, c_{t−1})` and `cov(x, z) = cov(c_t,
-//! c_{t−1})` (times the same gain of the instrument), so `h` is unbiased
+//! Then `cov(r(p), z) = h(p) cov(c_t, c̄_t)` and `cov(x, z) = cov(c_t, c̄_t)`
+//! with `c̄_t = (c_{t−1} + c_{t+1}) / 2` (times the same gain of the
+//! instrument), so `h` is unbiased
 //! whatever the noise's spatial correlation, as long as the noise is
-//! uncorrelated from one frame to the next (`Lag`), or between pixels a
-//! block apart (`ParityLag`). The trace's lag-1 autocorrelation (≳ 0.9 for
+//! uncorrelated from one frame to the next (`Loo`), or between pixels a
+//! block apart (`ParityLoo`). The trace's lag-1 autocorrelation (≳ 0.9 for
 //! calcium at 20 fps) and the noise of the instrument cost precision, which
 //! the standard error reports: it is the regression's `1 / sqrt(n_eff
 //! var(z))` divided by `λ = cov(x, z) / var(z)`. The moments are kept per

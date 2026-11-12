@@ -58,7 +58,7 @@ library size.
 Base: main 74016a3. New: `--flat-field auto:3000` (binary built before the dark-level margin fix in this PR,
 which moved the real-data dark estimate from 7.2 to 3.7 grey levels; the real `auto` rows above use the final
 code). `--batch 8 --budget 30000000 --slow-seed 1 --core-test report --dump`, 600 px, 9600 frames. The fpn arm
-has seeds 5–7; the motion arm 6–7 (seed 5's base run was still queued behind other agents' jobs).
+and the motion arm both have seeds 5–7.
 
 | arm    | metric                | base   | new    | d (95 % t-CI)  | signs +/−/0 |
 | ------ | --------------------- | ------ | ------ | -------------- | ----------- |
@@ -68,15 +68,16 @@ has seeds 5–7; the motion arm 6–7 (seed 5's base run was still queued behind
 | fpn    | r_fp (TP footprint r) | .942   | .947   | +.005 ± .003   | 3/0/0       |
 | fpn    | r_tr (TP trace r)     | .958   | .961   | +.002 ± .002   | 3/0/0       |
 | fpn    | auc_hoz               | .850   | .899   | +.049 ± .058   | 3/0/0       |
-| motion | **P8**                | .918   | .924   | +.006 ± .005   | 2/0/0       |
-| motion | R8                    | .737   | .749   | +.013 ± .142   | 2/0/0       |
-| motion | S8                    | 33 231 | 33 120 | −111 ± 134     | 0/2/0       |
+| motion | **P8**                | .920   | .926   | +.006 ± .002   | 3/0/0       |
+| motion | R8                    | .742   | .756   | +.014 ± .028   | 3/0/0       |
+| motion | S8                    | 36 683 | 36 321 | −362 ± 1 079   | 0/3/0       |
 
 - The fpn arm does **not** reproduce the textured false cells: 2, 0 and 2 texture-flagged cells per run on base
   (two `noise` FPs, one `partial`, one TP), against 28 on the real recording. So it cannot show the main effect.
 - With the flat field, footprints and traces of true cells match ground truth better on fpn (3/3 seeds) and
   the held-out score rises 29 %; P8 and R8 do not move.
-- On the motion arm (no sensor pattern in the sim) the estimate has nothing to remove and nothing changes.
+- On the motion arm (no sensor pattern in the sim) the estimate has nothing to remove. S8 does not move; P8 is
+  +.006 ± .002 (3/0 seeds), below the per-run binomial SE of precision (about .012), so not a claim.
 
 ## Caveats
 
