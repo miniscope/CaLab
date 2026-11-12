@@ -41,11 +41,15 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
-- `src/components/VideoPanel.tsx`: raw, preprocessed or motion-corrected (or
-  background-removed) video with the cell overlay and the residual map;
-  `StatusBar.tsx`: progress and throughput; `DetailsTabs.tsx`: the detail tabs,
-  including the live motion and flicker traces (`MotionTrace.tsx`,
-  `FlickerTrace.tsx`).
+- `src/components/FovPanel.tsx`: the field of view, one image (raw,
+  preprocessed, motion-corrected, background-removed or the model residual)
+  with zoom, pan, a minimap and the cell overlay (contours or full-extent
+  footprints, `lib/cell-overlay.ts`; zoom math in `lib/fov-layout.ts` and
+  `lib/fov-view.ts`). The right-hand column (`SidePanel.tsx`): `RunPanel.tsx`
+  (pass progress and convergence metrics on one time axis, run controls,
+  export), `CellsPanel.tsx` (the selected cell) and `DetailsTabs.tsx` (the
+  detail tabs, including the live motion and flicker traces, `MotionTrace.tsx`
+  and `FlickerTrace.tsx`).
 - `src/__tests__/`: frame source tests on synthetic AVIs (`synth-avi.ts`), and
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
@@ -110,7 +114,7 @@ so cells found late have traces from frame 0.
   back half is a deterministic function of the corrected frames in order, so
   replaying from frame 0 rebuilds the state pass 1 had at every frame. No
   checkpoints are needed while the whole recording is replayed.
-- **Finish pass 1 now** ends the stream at the frames read so far (the slow
+- **End pass 1** ends the stream at the frames read so far (the slow
   loop publishes its final library and pass 2 covers those frames). Pass 2 runs
   automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
   and frames/s, and the UI stays live (the work is in workers).
