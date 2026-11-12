@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Footprint labelling</title>
+    <style>
+      :root {
+        --bg: #121315;
+        --panel: #1b1d20;
+        --line: #2c2f34;
+        --fg: #d8dadd;
+        --dim: #8a8f98;
+        --cell: #3fb26b;
+        --not: #d9534f;
+        --unsure: #d6a931;
+        --flag: #5b9bd5;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.4 system-ui,
+          sans-serif;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header,
+      footer {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        padding: 10px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+      }
+      footer {
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+        margin-top: auto;
+        flex-wrap: wrap;
+        color: var(--dim);
+      }
+      kbd {
+        background: #2a2d32;
+        border: 1px solid #3a3e44;
+        border-radius: 4px;
+        padding: 0 6px;
+        color: var(--fg);
+        font:
+          12px ui-monospace,
+          monospace;
+      }
+      #bar {
+        flex: 1;
+        height: 6px;
+        background: var(--line);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      #bar i {
+        display: block;
+        height: 100%;
+        background: var(--cell);
+        width: 0;
+      }
+      .badge {
+        padding: 2px 10px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        color: var(--dim);
+      }
+      .badge.on {
+        color: #fff;
+        background: var(--flag);
+        border-color: var(--flag);
+      }
+      #current {
+        min-width: 130px;
+        text-align: right;
+        font-weight: 600;
+      }
+      main {
+        display: flex;
+        gap: 20px;
+        padding: 16px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      section {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      figure {
+        margin: 0;
+      }
+      figcaption {
+        color: var(--dim);
+        font-size: 12px;
+        margin-bottom: 3px;
+      }
+      canvas {
+        display: block;
+        background: #000;
+        image-rendering: pixelated;
+        border: 1px solid var(--line);
+      }
+      canvas.plot {
+        image-rendering: auto;
+        background: var(--panel);
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.82);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-size: 18px;
+        line-height: 2;
+      }
+      #overlay.on {
+        display: flex;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b id="count">0 / 0</b>
+      <div id="bar"><i></i></div>
+      <span class="badge" id="b-merged">m merged (2+ cells)</span>
+      <span class="badge" id="b-edge">e FOV/lens edge</span>
+      <span class="badge" id="b-part">p part of another cell</span>
+      <span id="current"></span>
+    </header>
+    <main>
+      <section>
+        <figure>
+          <figcaption id="cap-mean">max projection + contour</figcaption>
+          <canvas id="mean" width="168" height="168"></canvas>
+        </figure>
+        <figure>
+          <figcaption>footprint (peak = 1)</figcaption>
+          <canvas id="fp" width="168" height="168"></canvas>
+        </figure>
+        <figure>
+          <figcaption>event average minus baseline</figcaption>
+          <canvas id="eta" width="168" height="168"></canvas>
+        </figure>
+      </section>
+      <section>
+        <figure>
+          <figcaption id="cap-video"></figcaption>
+          <canvas id="video" width="480" height="480"></canvas>
+        </figure>
+      </section>
+      <section>
+        <figure>
+          <figcaption>trace, full recording (fixed scale); shaded = clip shown</figcaption>
+          <canvas class="plot" id="full" width="560" height="150"></canvas>
+        </figure>
+        <figure>
+          <figcaption id="cap-zoom">
+            current event, 9 s before to 13 s after (same scale)
+          </figcaption>
+          <canvas class="plot" id="zoom" width="560" height="250"></canvas>
+        </figure>
+      </section>
+    </main>
+    <footer>
+      <span><kbd>c</kbd> cell</span>
+      <span><kbd>n</kbd> not a cell</span>
+      <span><kbd>u</kbd> unsure</span>
+      <span><kbd>m</kbd> merged (2+ cells)</span>
+      <span><kbd>e</kbd> FOV/lens edge</span>
+      <span><kbd>p</kbd> part of another cell (fragment, adjacent piece, halo)</span>
+      <span><kbd>z</kbd> undo</span>
+      <span><kbd>space</kbd> pause</span>
+      <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> event</span>
+      <span><kbd>x</kbd> max / mean</span>
+      <span><kbd>k</kbd> contour</span>
+      <span><kbd>r</kbd> raw / processed</span>
+      <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> browse</span>
+      <span><kbd>+</kbd><kbd>-</kbd> speed</span>
+    </footer>
+    <div id="overlay"></div>
+
+    <script>
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+      const SESSION = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
+      const PENDING_KEY = 'calalabel.pending';
+      let items = null;
+      let order = [];
+      const labels = new Map(); // cid -> latest record
+      const history = []; // {cid, prev}
+      const cache = new Map(); // cid -> Promise<data>
+      let idx = 0;
+      let flags = { merged: false, edge: false, part: false };
+      let shownAt = 0;
+      let state = {
+        contour: true,
+        raw: false,
+        maxproj: true,
+        playing: true,
+        speed: 2,
+        step: 0,
+        event: null,
+      };
+      let data = null;
+      let timer = null;
+
+      function loadImage(url) {
+        return new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = () => rej(new Error('image ' + url));
+          im.src = url;
+        });
+      }
+
+      function fetchCandidate(cid) {
+        if (!cache.has(cid)) {
+          const base = `/c/${cid}/`;
+          const v = `?v=${items.built}`;
+          const names = ['snip', 'raw', 'mean', 'mean_raw', 'max', 'max_raw', 'fp', 'eta'];
+          const p = Promise.all([
+            ...names.map((n) => loadImage(base + n + '.png' + v)),
+            fetch(base + 'trace.json' + v).then((r) => r.json()),
+          ]).then((v) => {
+            const d = { trace: v[names.length] };
+            names.forEach((n, i) => (d[n] = v[i]));
+            d.contour = contourSegments(d.fp, items.crop);
+            return d;
+          });
+          cache.set(cid, p);
+          if (cache.size > 12) cache.delete(cache.keys().next().value);
+        }
+        return cache.get(cid);
+      }
+
+      function preload() {
+        for (const k of [1, 2, 3, -1]) {
+          const j = idx + k;
+          if (j >= 0 && j < order.length)
+            fetchCandidate(order[j]).catch(() => cache.delete(order[j]));
+        }
+      }
+
+      // Pixel-edge outline of {footprint >= 20 % of its peak}, in crop pixel units.
+      function contourSegments(img, n) {
+        const c = document.createElement('canvas');
+        c.width = c.height = n;
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        const px = g.getImageData(0, 0, n, n).data;
+        const on = (y, x) => y >= 0 && x >= 0 && y < n && x < n && px[(y * n + x) * 4] >= 0.2 * 255;
+        const segs = [];
+        for (let y = 0; y < n; y++)
+          for (let x = 0; x < n; x++) {
+            if (!on(y, x)) continue;
+            if (!on(y - 1, x)) segs.push([x, y, x + 1, y]);
+            if (!on(y + 1, x)) segs.push([x, y + 1, x + 1, y + 1]);
+            if (!on(y, x - 1)) segs.push([x, y, x, y + 1]);
+            if (!on(y, x + 1)) segs.push([x + 1, y, x + 1, y + 1]);
+          }
+        return segs;
+      }
+
+      function drawImg(canvas, img, sx, sy, n) {
+        const g = canvas.getContext('2d');
+        g.imageSmoothingEnabled = false;
+        g.clearRect(0, 0, canvas.width, canvas.height);
+        g.drawImage(img, sx, sy, n, n, 0, 0, canvas.width, canvas.height);
+      }
+
+      function drawContour(canvas, segs, n) {
+        if (!state.contour) return;
+        const g = canvas.getContext('2d');
+        const s = canvas.width / n;
+        g.strokeStyle = 'rgba(255,214,64,0.9)';
+        g.lineWidth = 1;
+        g.beginPath();
+        for (const [x0, y0, x1, y1] of segs) {
+          g.moveTo(x0 * s, y0 * s);
+          g.lineTo(x1 * s, y1 * s);
+        }
+        g.stroke();
+      }
+
+      // Fixed y-range for every candidate (items.trace_range); nothing rescales.
+      function plot(canvas, ys, x0, x1, marks, cursor) {
+        const g = canvas.getContext('2d');
+        const [lo, hi] = items.trace_range;
+        const W = canvas.width;
+        const H = canvas.height;
+        const L = 40;
+        const X = (i) => L + ((i - x0) / (x1 - x0)) * (W - L - 4);
+        const Y = (v) => H - 14 - ((Math.min(Math.max(v, lo), hi) - lo) / (hi - lo)) * (H - 22);
+        g.clearRect(0, 0, W, H);
+        g.fillStyle = '#1b1d20';
+        g.fillRect(0, 0, W, H);
+        for (const m of marks) {
+          g.fillStyle = m.color;
+          g.fillRect(X(m.a), 0, Math.max(X(m.b) - X(m.a), 1), H - 14);
+        }
+        g.strokeStyle = '#2c2f34';
+        g.fillStyle = '#8a8f98';
+        g.font = '11px ui-monospace, monospace';
+        for (const v of [lo, (lo + hi) / 2, hi]) {
+          g.beginPath();
+          g.moveTo(L, Y(v));
+          g.lineTo(W, Y(v));
+          g.stroke();
+          g.fillText(v.toFixed(0), 2, Y(v) + 4);
+        }
+        g.strokeStyle = '#7fb4ff';
+        g.lineWidth = 1;
+        g.beginPath();
+        ys.forEach((v, i) => (i ? g.lineTo(X(i + x0), Y(v)) : g.moveTo(X(x0), Y(v))));
+        g.stroke();
+        if (cursor != null) {
+          g.strokeStyle = '#ffd640';
+          g.beginPath();
+          g.moveTo(X(cursor), 0);
+          g.lineTo(X(cursor), H - 14);
+          g.stroke();
+        }
+      }
+
+      function frameIndex() {
+        const span = items.span;
+        const e = state.event != null ? state.event : Math.floor(state.step / span) % items.events;
+        const f = state.event != null ? state.step % span : state.step % span;
+        return { e, f };
+      }
+
+      function render() {
+        if (!data) return;
+        const n = items.crop;
+        const span = items.span;
+        const { e, f } = frameIndex();
+        const sheet = state.raw ? data.raw : data.snip;
+        drawImg($('video'), sheet, f * n, e * n, n);
+        drawContour($('video'), data.contour, n);
+        const g = $('video').getContext('2d');
+        if (f === items.pre) {
+          g.strokeStyle = 'rgba(255,255,255,0.8)';
+          g.lineWidth = 3;
+          g.strokeRect(1, 1, $('video').width - 2, $('video').height - 2);
+        }
+        $('cap-video').textContent =
+          `${state.raw ? 'raw registered' : 'processed'} - event ${e + 1}/${items.events}, frame ${f + 1}/${span}` +
+          ` (${((f - items.pre) / items.fps).toFixed(1)} s)${state.playing ? '' : ' - paused'} - ${state.speed}x (${(items.fps * state.speed).toFixed(0)} fps)`;
+        const t = data.trace;
+        const ev = t.events[e];
+        const abs = ev - items.pre + f;
+        const marks = t.events.map((q, k) => ({
+          a: (q - items.pre) / t.step,
+          b: (q + (span - 1 - items.pre)) / t.step,
+          color: k === e ? 'rgba(255,214,64,0.3)' : 'rgba(255,255,255,0.12)',
+        }));
+        plot($('full'), t.full, 0, t.full.length - 1, marks, abs / t.step);
+        plot($('zoom'), t.windows[e], 0, span - 1, [], f);
+      }
+
+      function setCandidate() {
+        const cid = order[idx];
+        const rec = labels.get(cid);
+        flags = {
+          merged: !!(rec && rec.merged),
+          edge: !!(rec && rec.edge),
+          part: !!(rec && rec.part),
+        };
+        data = null;
+        state.step = 0;
+        state.event = null;
+        fetchCandidate(cid)
+          .then((d) => {
+            if (order[idx] !== cid) return;
+            data = d;
+            const n = items.crop;
+            drawImg($('fp'), d.fp, 0, 0, n);
+            drawImg($('eta'), d.eta, 0, 0, n);
+            drawMean();
+            shownAt = performance.now();
+            render();
+          })
+          .catch(() => {
+            cache.delete(cid);
+            $('cap-video').textContent = 'could not load this candidate - press the right arrow';
+          });
+        updateChrome();
+        preload();
+      }
+
+      function drawMean() {
+        if (!data) return;
+        const kind = state.maxproj ? 'max' : 'mean';
+        drawImg($('mean'), data[state.raw ? kind + '_raw' : kind], 0, 0, items.crop);
+        drawContour($('mean'), data.contour, items.crop);
+        $('cap-mean').textContent =
+          `${kind === 'max' ? 'max projection' : 'mean image'} (${state.raw ? 'raw' : 'processed'}) + contour`;
+      }
+
+      function updateChrome() {
+        const done = [...labels.values()].filter((r) => r.label).length;
+        $('count').textContent = `${done} / ${order.length}`;
+        $('bar').firstElementChild.style.width = `${(100 * done) / order.length}%`;
+        $('b-merged').classList.toggle('on', flags.merged);
+        $('b-edge').classList.toggle('on', flags.edge);
+        $('b-part').classList.toggle('on', flags.part);
+        const rec = labels.get(order[idx]);
+        const cur = $('current');
+        cur.textContent = rec && rec.label ? `labelled: ${rec.label}` : `item ${idx + 1}`;
+        cur.style.color = rec && rec.label ? `var(--${rec.label})` : 'var(--dim)';
+        $('overlay').classList.remove('on');
+      }
+
+      // ---- saving: POST each label, keep unsent ones in localStorage and replay them.
+      function pending() {
+        try {
+          return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+        } catch {
+          return [];
+        }
+      }
+      function setPending(list) {
+        try {
+          localStorage.setItem(PENDING_KEY, JSON.stringify(list));
+        } catch {}
+      }
+      // Resolves when the server has the record or will never take it (4xx: unknown id).
+      async function post(rec) {
+        const r = await fetch('/label', { method: 'POST', body: JSON.stringify(rec) });
+        if (!r.ok && r.status >= 500) throw new Error('save failed ' + r.status);
+      }
+      async function flush() {
+        let list = pending();
+        while (list.length) {
+          try {
+            await post(list[0]);
+          } catch {
+            return false;
+          }
+          list = list.slice(1);
+          setPending(list);
+        }
+        return true;
+      }
+      async function save(rec) {
+        setPending([...pending(), rec]);
+        const ok = await flush();
+        $('current').title = ok
+          ? ''
+          : 'server not reachable - labels are kept in the browser and resent';
+      }
+
+      function record(cid, label) {
+        return {
+          cid,
+          label,
+          merged: flags.merged,
+          edge: flags.edge,
+          part: flags.part,
+          ms: Math.round(performance.now() - shownAt),
+          session: SESSION,
+        };
+      }
+
+      function label(l) {
+        if (!data) return;
+        const cid = order[idx];
+        history.push({ cid, prev: labels.get(cid) || null });
+        const rec = record(cid, l);
+        labels.set(cid, rec);
+        save(rec);
+        go(idx + 1);
+      }
+
+      function undo() {
+        const h = history.pop();
+        if (!h) return;
+        if (h.prev) labels.set(h.cid, h.prev);
+        else labels.delete(h.cid);
+        save({
+          cid: h.cid,
+          label: h.prev ? h.prev.label : null,
+          merged: h.prev ? h.prev.merged : false,
+          edge: h.prev ? h.prev.edge : false,
+          part: h.prev ? !!h.prev.part : false,
+          ms: 0,
+          session: SESSION,
+        });
+        go(order.indexOf(h.cid));
+      }
+
+      function go(j) {
+        if (j >= order.length) {
+          idx = order.length - 1;
+          setCandidate();
+          const left = order.filter((c) => !labels.has(c)).length;
+          $('overlay').innerHTML = left
+            ? `End of the list. ${left} candidate(s) skipped.<br>Press the left arrow to go back to them.`
+            : `All ${order.length} candidates labelled.<br>Thank you.`;
+          $('overlay').classList.add('on');
+          return;
+        }
+        idx = Math.max(0, j);
+        setCandidate();
+      }
+
+      function tick() {
+        clearTimeout(timer);
+        timer = setTimeout(tick, 1000 / (items.fps * state.speed));
+        if (state.playing && data) {
+          state.step += 1;
+          if (state.event != null) state.step %= items.span;
+          render();
+        }
+      }
+
+      document.addEventListener('keydown', (ev) => {
+        if (ev.metaKey || ev.ctrlKey || ev.altKey || !items) return;
+        const k = ev.key;
+        if (k === 'c') label('cell');
+        else if (k === 'n') label('not');
+        else if (k === 'u') label('unsure');
+        else if (k === 'm') ((flags.merged = !flags.merged), updateChrome());
+        else if (k === 'e') ((flags.edge = !flags.edge), updateChrome());
+        else if (k === 'p') ((flags.part = !flags.part), updateChrome());
+        else if (k === 'z') undo();
+        else if (k === ' ') ((state.playing = !state.playing), render(), ev.preventDefault());
+        else if (k === 'x') ((state.maxproj = !state.maxproj), drawMean());
+        else if (k === 'k') ((state.contour = !state.contour), drawMean(), render());
+        else if (k === 'r') ((state.raw = !state.raw), drawMean(), render());
+        else if (k === '1' || k === '2' || k === '3')
+          ((state.event = Number(k) - 1), (state.step = 0), render());
+        else if (k === '0') ((state.event = null), render());
+        else if (k === 'ArrowRight') go(idx + 1);
+        else if (k === 'ArrowLeft') go(idx - 1);
+        else if (k === '+' || k === '=') ((state.speed = Math.min(state.speed * 2, 4)), render());
+        else if (k === '-') ((state.speed = Math.max(state.speed / 2, 1)), render());
+      });
+
+      async function init() {
+        items = await (await fetch('/items.json')).json();
+        order = items.order;
+        try {
+          for (const r of await (await fetch('/api/labels')).json())
+            if (r.label) labels.set(r.cid, r);
+        } catch {}
+        // Replay anything this browser could not send last time, then show it as labelled.
+        const known = new Set(order);
+        setPending(pending().filter((r) => known.has(r.cid)));
+        for (const r of pending()) r.label ? labels.set(r.cid, r) : labels.delete(r.cid);
+        await flush();
+        const first = order.findIndex((c) => !labels.has(c));
+        go(first < 0 ? 0 : first);
+        if (first < 0) go(order.length);
+        tick();
+      }
+      init();
+    </script>
+  </body>
+</html>

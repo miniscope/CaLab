@@ -44,6 +44,21 @@
   white-space: nowrap;
 }
 
+.cala-backend-badge {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.cala-backend-badge--gpu {
+  border-color: var(--success);
+  color: var(--success);
+}
+
 .cala-contrast {
   font-size: 0.85rem;
   color: var(--text-secondary);
@@ -219,8 +234,13 @@
   gap: var(--space-sm);
 }
 
-.cala-statusbar__error {
+.cala-statusbar__error,
+.cala-statusbar__warning {
   flex-basis: 100%;
+}
+
+.cala-block {
+  display: block;
 }
 
 /* Video: two panes, each fitted to the space left over */
@@ -483,7 +503,7 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: var(--space-md);
 }
 
@@ -720,4 +740,86 @@
 
 .cala-demix__table {
   width: auto;
+}
+
+/* Fixed display range control (lo / hi / re-fit) */
+.cala-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.cala-range__input {
+  width: 4.5rem;
+  padding: 1px 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+
+/* Live source row on the open screen. */
+.cala-live-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.cala-live-open__url {
+  width: 16rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85rem;
+}
+
+/* Sensor flat field panel */
+
+.cala-flat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.cala-flat__image {
+  flex: 0 0 auto;
+  width: min(100%, 260px);
+}
+
+.cala-flat__canvas {
+  width: 100%;
+  height: auto;
+  background: #000;
+}
+
+.cala-flat__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.cala-flat__ramp {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #000, #fff);
+}
+
+.cala-flat__text {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.cala-flat__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.9rem;
 }

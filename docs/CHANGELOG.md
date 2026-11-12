@@ -5,6 +5,96 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-11-12
+
+Web apps `v2.13.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala is new, as a beta: a streaming, in-browser pipeline (Rust and
+WebAssembly, WebGPU where available) that turns raw 1-photon Miniscope video
+into somatic cell footprints and traces. It reads a Miniscope AVI folder in
+place, finds and prunes cells while the recording streams by, and re-solves
+every frame with the final cells in a second pass. It appears on the landing
+page as Beta, with a user guide at `apps/cala/USER_GUIDE.md` (#335). No
+breaking changes to the Python, WASM or bridge APIs of the existing apps.
+
+### Added
+
+- **Cala app** (#272 foundations; #277, #280 live preprocessing). Opens a
+  Miniscope AVI folder from disk frame by frame (never uploaded, never loaded
+  whole); frame rate from `timeStamps.csv` or `metaData.json`, not the AVI
+  header.
+- **Preprocessing and motion correction** (#273, #274, #279, #280). Hot
+  pixels, global flicker, glow, line removal, background and noise maps; rigid
+  motion correction with a motion trace. WebGPU motion correction (#297) with
+  a CPU fallback; the status bar says which is in use. The browser WASM is
+  built with SIMD (#306).
+- **Online sensor flat field** (#327, #330). Estimated from the recording's
+  own motion (first map after about 150 s, then refined about every 60 s), on
+  by default, cached per device in IndexedDB. Removes the textured footprints
+  caused by fixed sensor pixel gain moving with registration (on the workshop
+  recording: textured cells 28 to 2–5, seed-to-seed agreement .63 to .68). A
+  "trace follows motion" QC flag marks cells whose trace tracks the frame
+  shift.
+- **Streaming cell discovery and pruning** (#281, #282, #283, #286, #288). A
+  slow loop finds cells with an evidence ledger, keep tests, splits, merges
+  and pruning; a fast loop extracts traces (#278) and is never blocked by the
+  slow loop. Tile visits run in parallel across workers (#304); the pipeline
+  stages are spread over workers (#296).
+- **Full-extent footprints with a modelled moat** (#314), and per-frame
+  validity treated as missing data (#322).
+- **Quality control** (#284, #289, #301). Online QC metrics; a convergence
+  strip (stability plus churn); a cell table with pass/fail and flags;
+  overlays and a residual map.
+- **Pass 2 and export** (#298). Replays the recording with the final library
+  so late-found cells have traces from frame 0; exports a self-describing
+  NumPy `.npz` (traces, footprints, motion, flicker, QC, provenance) and a
+  CaDecon-ready `.npz`.
+- **Long recordings** (#290, #305, #308). Pass-2 traces stream to the
+  browser's origin private file system, the export streams (ZIP64 for entries
+  of 4 GiB or more), per-cell trace history shares a fixed budget, and
+  long-run displays and metric histories are bounded.
+- **Live source (experimental)** (#311). Streams frames from a WebSocket,
+  with a simulator and export of live traces.
+
+### Changed
+
+- Display ranges are fixed, not auto-contrast (#300).
+- The slow loop is frozen: experimental switches became configuration, off by
+  default, with dead paths deleted (#318).
+- Cross-fitted footprint statistics (#326) and the joint statistics store
+  (#329, #331) are in the library, opt-in.
+
+### Fixed
+
+- Pass-1 pauses of 50–90 ms every half second: a library install now copies
+  the solver's precomputed terms instead of rebuilding them (62 ms to 3.5 ms
+  at about 400 cells; traces bit-identical) (#334).
+- NaN-safe QC event scan and a ring self-term fix for a hang on halo
+  simulations (#321).
+- Slow-loop reservoir by frames per tile: fixes 0 cells at 2 MPix (#309).
+- Keep-test failures counted only when the probe could have passed (#299).
+- Pass 2 and the export fall back to memory when the origin private file
+  system exists but cannot be written (WebKit) (#335).
+
+### Developer tooling
+
+- `cala-eval`: paired multi-seed evaluation harness, held-out score,
+  footprint convergence metric, churn log, baseline reference numbers (#319,
+  #323, #324, #328, #333).
+- `cala-label`: blind labelling tool for candidate footprints (#317).
+- Simulation arms with halo and out-of-focus cells (#320).
+
+### Known limitations
+
+- Beta. On a 20-minute recording a small share of footprints (up to about 1
+  in 10) is still changing at the end of pass 1; the slow loop's decision
+  rule is being reworked to settle them.
+- Cell counts vary between runs and browsers (parallel scheduling in the slow
+  loop); seed-to-seed agreement on the workshop recording is about .68.
+- Somatic footprints only; no dendrites or neuropil.
+- The cell library grows with recording length; gain stability across days
+  is untested, and the flat-field cache assumes it.
+- Safari has not been tested directly (Playwright WebKit only).
+
 ## [2.12.0] - 2026-11-06
 
 Web apps `v2.12.0`; Python package `calab` `py/v0.5.0`. CaDecon counts spikes

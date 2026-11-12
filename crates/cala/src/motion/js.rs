@@ -7,6 +7,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use super::filter::{box_sizes, gaussian_kernel};
 use super::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, MotionError, MotionRecord,
     NonRigidConfig, Warper,
@@ -294,6 +295,55 @@ impl JsMotionCorrector {
                 g.roi.width as u32,
             ]
         })
+    }
+
+    /// Parameters of the prefilter for an external (GPU) implementation:
+    /// `[extY0, extX0, extH, extW, roiY0, roiX0, roiH, roiW, median,
+    /// sigmaSmall, sigmaLarge, kernelLen, kernel..., box0, box1, box2]`
+    /// (the boxes are the three box-blur widths of the large sigma; empty
+    /// before initialisation).
+    #[wasm_bindgen(js_name = prefilterParams)]
+    pub fn prefilter_params(&self) -> Vec<f32> {
+        let Some(p) = self.inner.prefilter_params() else {
+            return Vec::new();
+        };
+        let mut v = vec![
+            p.ext.y0 as f32,
+            p.ext.x0 as f32,
+            p.ext.height as f32,
+            p.ext.width as f32,
+            p.roi.y0 as f32,
+            p.roi.x0 as f32,
+            p.roi.height as f32,
+            p.roi.width as f32,
+            if p.median { 1.0 } else { 0.0 },
+            p.sigma_small,
+            p.sigma_large,
+        ];
+        let k = if p.sigma_small > 0.0 {
+            gaussian_kernel(p.sigma_small)
+        } else {
+            vec![1.0]
+        };
+        v.push(k.len() as f32);
+        v.extend(k);
+        v.extend(box_sizes(p.sigma_large, 3).into_iter().map(|b| b as f32));
+        v
+    }
+
+    /// Estimate the motion of a batch of float frames whose band-passed
+    /// extended regions were computed elsewhere (`filtered`, back to back);
+    /// writes the flat records only. Pair with a GPU prefilter and warp.
+    #[wasm_bindgen(js_name = estimateF32Prefiltered)]
+    pub fn estimate_f32_prefiltered(
+        &mut self,
+        frames: &[f32],
+        filtered: &[f32],
+        records: &mut [f32],
+    ) -> Result<(), JsError> {
+        self.inner
+            .estimate_batch_prefiltered(frames, filtered, records)
+            .map_err(|e| js_err("estimateF32Prefiltered", e))
     }
 
     /// Patch-centre rows (frame px) of the residual grid.

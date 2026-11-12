@@ -208,8 +208,11 @@ pub fn trace_stats(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut k = 0;
         let mut events = 0u32;
+        // `!(v > lo)`, not `v <= lo`: a NaN sample (a non-finite trace, or
+        // a NaN `lo`) is no run, so the scan always advances. With `<=` a NaN
+        // passed both tests, the run below was empty and `k` never moved.
         while k < n {
-            if sm[k] <= lo {
+            if !(sm[k] > lo) {
                 k += 1;
                 continue;
             }

@@ -4,6 +4,8 @@
  * never used: real 20 fps files declare 60.
  */
 
+import type { DeviceIdentity } from './flat-field.ts';
+
 export interface MiniscopeMetadata {
   /** Nominal frame rate from `frameRate` (`"20FPS"` or a number), if present. */
   frameRate: number | null;
@@ -29,6 +31,41 @@ export function parseMetadata(text: string): MiniscopeMetadata | null {
     framesPerFile: positiveNumber(o.framesPerFile),
     deviceType,
   };
+}
+
+/** Metadata keys that name one physical sensor (a Miniscope file has none by default). */
+const SERIAL_KEYS = ['serial', 'serialNumber', 'serial_number', 'deviceSerial', 'sensorId', 'uid'];
+
+/**
+ * What `metaData.json` says about the device, for the flat-field cache key
+ * (`flatFieldKey`): a serial-like field when the file has one, plus the model
+ * (`deviceType`), `deviceName` and `deviceID`. Miniscope writes no serial and
+ * `deviceID` is the camera index on the DAQ, so by default the identity does
+ * not name a single sensor. Null when the text is not a JSON object.
+ */
+export function parseDeviceIdentity(text: string): DeviceIdentity | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) return null;
+  const o = json as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => {
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+  };
+  const serial = SERIAL_KEYS.map((k) => str(o[k])).find((v) => v !== undefined);
+  const out: DeviceIdentity = {};
+  if (serial) out.serial = serial;
+  const type = str(o.deviceType);
+  if (type) out.deviceType = type;
+  const name = str(o.deviceName);
+  if (name) out.deviceName = name;
+  const id = str(o.deviceID);
+  if (id) out.deviceId = id;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function positiveNumber(v: unknown): number | null {

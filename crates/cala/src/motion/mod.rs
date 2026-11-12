@@ -75,10 +75,11 @@ use std::fmt;
 
 pub use corrector::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionGeometry, MotionRecord, NonRigidConfig,
-    Roi, TemplateStrategy, FLAG_ANOMALOUS, FLAG_BOOTSTRAP, FLAG_HELD, FLAG_TEMPLATE_UPDATED,
+    PrefilterParams, Roi, TemplateStrategy, FLAG_ANOMALOUS, FLAG_BOOTSTRAP, FLAG_HELD,
+    FLAG_TEMPLATE_UPDATED,
 };
 pub use fft2d::Fft2d;
-pub use warp::{Interpolation, Warper};
+pub use warp::{Interpolation, SourceMask, Warper};
 pub use xcorr::{Correlator, Peak};
 
 /// Error returned by every fallible motion-correction entry point.

@@ -1,6 +1,8 @@
 import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
+import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
 export interface CellsSettings {
@@ -10,16 +12,33 @@ export interface CellsSettings {
   discover: boolean;
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
+  /** Pass 2: solve every frame with this library (`TraceLibrary.toBytes()`), no discovery. */
+  library?: Uint8Array;
+  /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
+  forwardBuffers?: number;
 }
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
   | { type: 'open'; id: number; entries: FolderEntry[] }
+  /** Connect to a live source (`lib/live-source.ts`) at a WebSocket URL. */
+  | { type: 'open-live'; id: number; url: string }
   /** `count` consecutive frames from global index `start` (one for a single frame). */
   | { type: 'read'; id: number; start: number; count: number }
   /** Set up the preprocess + motion pipeline over the open recording (replaces any running one). */
-  | { type: 'pipeline-start'; id: number; options: PipelineOptions; cells?: CellsSettings }
+  | {
+      type: 'pipeline-start';
+      id: number;
+      options: PipelineOptions;
+      cells?: CellsSettings;
+      /** Pass 2: replay the recorded flicker and motion (pipelined workers only). */
+      replay?: ReplayInput;
+      /** Pass 1 flat field: a stored map of this sensor, in force from the first processed frame and seeding the estimator. */
+      flat?: { seed?: FlatFieldMap };
+    }
+  /** Stop reading at the current position: the next step reports the end of the recording. */
+  | { type: 'pipeline-truncate'; id: number }
   /**
    * Run one pipeline step and answer with its result. The main thread keeps
    * at most a couple of these outstanding, which is the backpressure: the
@@ -31,7 +50,11 @@ export type FrameRequest =
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
-  | { type: 'set-discovery'; id: number; on: boolean };
+  | { type: 'set-discovery'; id: number; on: boolean }
+  /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
+  | { type: 'link'; id: number; down: MessagePort }
+  /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */
+  | { type: 'link-flat'; id: number; port: MessagePort };
 
 /** A request before the client stamps it with an `id` (distributes over the union). */
 export type FrameRequestBody = FrameRequest extends infer R

@@ -11,7 +11,7 @@
 
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
-use crate::trace::{support_disk, Footprint, LibraryConfig};
+use crate::trace::{moat_blocks, moat_geometry, support_disk, Footprint, LibraryConfig, Support};
 
 /// A rectangle of the frame (rows `y0..y0 + h`, columns `x0..x0 + w`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +95,15 @@ impl LocalFilter {
         }
     }
 
+    /// Block side and reach of the moat grid ([`moat_geometry`]).
+    pub fn moat(&self) -> Option<(usize, f32)> {
+        moat_geometry(self.sigma)
+    }
+
+    pub fn sigma(&self) -> f32 {
+        self.sigma
+    }
+
     pub fn blur(&mut self, h: usize, w: usize, a: &[f32], out: &mut [f32]) {
         let dims = Dims {
             width: w,
@@ -162,6 +171,19 @@ impl LocalFilter {
     }
 }
 
+/// Where a new footprint's support ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Extent {
+    /// Keep every non-zero value (a footprint given from outside).
+    Given,
+    /// The seed rule ([`LibraryConfig::seed_radius`]): a candidate whose
+    /// extent has not been measured yet.
+    Seed,
+    /// A measured radius around the half-max centroid (at least the seed
+    /// rule's).
+    Radius(f32),
+}
+
 /// A footprint in the slow loop's working set, on its library support disk.
 #[derive(Debug, Clone)]
 pub(crate) struct Cell {
@@ -176,15 +198,20 @@ pub(crate) struct Cell {
     pub raw: Vec<f32>,
     /// Filtered values `(H a)` on the support (unwhitened).
     pub filt: Vec<f32>,
+    /// The moat: global grid blocks (ascending) and the block means of the
+    /// low-pass `L a` there. Off the support the filtered column is
+    /// `−low(B(p))` (see [`crate::trace::Library::lowpass`]).
+    pub low_blk: Vec<u32>,
+    pub low: Vec<f32>,
     /// Frame at which the cell entered the working set (seeded: 0).
     pub born: u64,
 }
 
 impl Cell {
-    /// From unfiltered values `a` on canvas `rect`: the library's support
-    /// rule (2.5 half-widths around the half-max centroid), the values cut to
-    /// that disk, and the filtered column. `None` when the footprint is
-    /// empty or its support leaves the FOV or the canvas.
+    /// From unfiltered values `a` on canvas `rect`: the values cut to the
+    /// support disk `extent` gives (around the half-max centroid) and to the
+    /// FOV, and the filtered column. `None` when the footprint is empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_canvas(
         id: u64,
         rect: Rect,
@@ -192,6 +219,7 @@ impl Cell {
         dims: Dims,
         fov: &[u8],
         cfg: &LibraryConfig,
+        extent: Extent,
         filter: &mut LocalFilter,
     ) -> Option<Cell> {
         let peak = a.iter().copied().fold(0.0f32, f32::max);
@@ -206,7 +234,18 @@ impl Cell {
             width: rect.w,
             values: a.to_vec(),
         };
-        let (cy, cx, r) = support_disk(&fp, dims, cfg).ok()?;
+        let Support {
+            center: (cy, cx),
+            radius: own,
+            hwhm,
+        } = support_disk(&fp, dims).ok()?;
+        let r = match extent {
+            Extent::Given => own,
+            Extent::Seed => cfg.seed_radius(hwhm),
+            // Never tighter than the seed rule: a dim cell's tail is not
+            // significant ring by ring, but it is still the cell's light.
+            Extent::Radius(r) => r.max(cfg.seed_radius(hwhm)),
+        };
         let bbox = Rect::around(cy, cx, r, dims);
         let mut canvas = vec![0.0f32; bbox.len()];
         let mut inside = vec![false; bbox.len()];
@@ -217,8 +256,9 @@ impl Cell {
                 let (dy, dx) = (gy as f32 - cy, gx as f32 - cx);
                 if dy * dy + dx * dx <= r * r {
                     let g = gy * dims.width + gx;
+                    // Clipped at the lens edge (the filtered data is 0 there).
                     if fov[g] == 0 {
-                        return None;
+                        continue;
                     }
                     inside[y * bbox.w + x] = true;
                     pix.push(g as u32);
@@ -228,19 +268,16 @@ impl Cell {
                 }
             }
         }
-        let mut hf = vec![0.0f32; bbox.len()];
-        filter.apply(bbox.h, bbox.w, &canvas, &mut hf);
         let mut raw = Vec::with_capacity(pix.len());
-        let mut filt = Vec::with_capacity(pix.len());
         for p in 0..bbox.len() {
             if inside[p] {
                 raw.push(canvas[p]);
-                filt.push(hf[p]);
             }
         }
         if !(raw.iter().copied().fold(0.0f32, f32::max) > 0.0) {
             return None;
         }
+        let (filt, low_blk, low) = moat_column(&pix, &raw, (cy, cx), r, bbox, dims, fov, filter);
         Some(Cell {
             id,
             center: (cy, cx),
@@ -249,8 +286,24 @@ impl Cell {
             pix,
             raw,
             filt,
+            low_blk,
+            low,
             born: 0,
         })
+    }
+
+    /// The cell's filtered column at the global pixel `g`: `filt` on the
+    /// support, `−low` of its block off it (0 beyond the moat).
+    pub fn column_at(&self, g: u32, width: usize, block: usize) -> f32 {
+        if let Ok(k) = self.pix.binary_search(&g) {
+            return self.filt[k];
+        }
+        if block == 0 {
+            return 0.0;
+        }
+        let (y, x) = (g as usize / width, g as usize % width);
+        let b = ((y / block) * width.div_ceil(block) + x / block) as u32;
+        self.low_blk.binary_search(&b).map_or(0.0, |k| -self.low[k])
     }
 
     /// The footprint as the library builder takes it (zero off the support).
@@ -270,6 +323,73 @@ impl Cell {
             values,
         }
     }
+}
+
+/// The filtered column of the unfiltered values `raw` on the support `pix`
+/// (centre, radius, bounding box `bbox`): `H a` on the support, and the
+/// block means of `L a` on the moat grid out to its reach (FOV only), from
+/// one blur on a canvas that holds all of the moat's blocks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn moat_column(
+    pix: &[u32],
+    raw: &[f32],
+    center: (f32, f32),
+    radius: f32,
+    bbox: Rect,
+    dims: Dims,
+    fov: &[u8],
+    filter: &mut LocalFilter,
+) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
+    let w = dims.width;
+    let Some((b, reach)) = filter.moat() else {
+        return (raw.to_vec(), Vec::new(), Vec::new());
+    };
+    let blks = moat_blocks(center, radius, b, reach, dims);
+    let gw = w.div_ceil(b);
+    let mut canvas = bbox;
+    for &bq in &blks {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        let r = Rect {
+            y0: by * b,
+            x0: bx * b,
+            h: ((by + 1) * b).min(dims.height) - by * b,
+            w: ((bx + 1) * b).min(dims.width) - bx * b,
+        };
+        canvas = canvas.union(&r);
+    }
+    let mut a = vec![0.0f32; canvas.len()];
+    for (&g, &v) in pix.iter().zip(raw) {
+        let l = canvas
+            .local(g as usize / w, g as usize % w)
+            .expect("inside");
+        a[l] = v;
+    }
+    let mut lo = vec![0.0f32; canvas.len()];
+    filter.blur(canvas.h, canvas.w, &a, &mut lo);
+    let filt = pix
+        .iter()
+        .zip(raw)
+        .map(|(&g, &v)| {
+            v - lo[canvas
+                .local(g as usize / w, g as usize % w)
+                .expect("inside")]
+        })
+        .collect();
+    let mut low = Vec::with_capacity(blks.len());
+    for &bq in &blks {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        let (mut s, mut m) = (0.0f64, 0usize);
+        for y in by * b..((by + 1) * b).min(dims.height) {
+            for x in bx * b..((bx + 1) * b).min(dims.width) {
+                if fov[y * w + x] != 0 {
+                    s += f64::from(lo[canvas.local(y, x).expect("inside")]);
+                    m += 1;
+                }
+            }
+        }
+        low.push(if m > 0 { (s / m as f64) as f32 } else { 0.0 });
+    }
+    (filt, blks, low)
 }
 
 /// Smooth local background on a patch: a 3 x 3 grid of Gaussian bumps
@@ -409,31 +529,273 @@ pub(crate) fn invert(a: &[f64], k: usize) -> Option<Vec<f64>> {
     Some(inv)
 }
 
+/// The moat grid ([`crate::trace::moat_geometry`]) on one patch, with the
+/// patch's whitening: what a column's block-constant moat needs.
+#[derive(Debug)]
+pub(crate) struct PatchGrid {
+    pub rect: Rect,
+    /// Block side, px, and the global grid's width in blocks.
+    block: usize,
+    gw: usize,
+    /// Global block coordinates of the patch's first block, and the patch's
+    /// width in blocks.
+    by0: usize,
+    bx0: usize,
+    bw: usize,
+    /// Local block of every patch pixel.
+    pub of: Vec<u32>,
+    /// Inverse noise σ of every patch pixel (0 outside the FOV).
+    pub s: Vec<f32>,
+    /// Σ s² over each block.
+    pub v: Vec<f64>,
+    /// Patch pixels of each block: `px[start[b]..start[b + 1]]`.
+    start: Vec<usize>,
+    px: Vec<u32>,
+}
+
+impl PatchGrid {
+    pub fn new(rect: Rect, dims: Dims, inv_sigma: &[f32], fov: &[u8], block: usize) -> PatchGrid {
+        let w = dims.width;
+        let b = block.max(1);
+        let (by0, bx0) = (rect.y0 / b, rect.x0 / b);
+        let bw = (rect.x0 + rect.w).div_ceil(b) - bx0;
+        let bh = (rect.y0 + rect.h).div_ceil(b) - by0;
+        let nb = bw * bh;
+        let mut of = vec![0u32; rect.len()];
+        let mut s = vec![0.0f32; rect.len()];
+        let mut v = vec![0.0f64; nb];
+        let mut count = vec![0usize; nb + 1];
+        for y in 0..rect.h {
+            for x in 0..rect.w {
+                let (gy, gx) = (rect.y0 + y, rect.x0 + x);
+                let lb = (gy / b - by0) * bw + (gx / b - bx0);
+                let p = y * rect.w + x;
+                of[p] = lb as u32;
+                let g = gy * w + gx;
+                s[p] = if fov[g] != 0 { inv_sigma[g] } else { 0.0 };
+                v[lb] += f64::from(s[p]) * f64::from(s[p]);
+                count[lb + 1] += 1;
+            }
+        }
+        for k in 0..nb {
+            count[k + 1] += count[k];
+        }
+        let start = count.clone();
+        let mut px = vec![0u32; rect.len()];
+        let mut at = count;
+        for (p, &lb) in of.iter().enumerate() {
+            px[at[lb as usize]] = p as u32;
+            at[lb as usize] += 1;
+        }
+        PatchGrid {
+            rect,
+            block,
+            gw: w.div_ceil(b),
+            by0,
+            bx0,
+            bw,
+            of,
+            s,
+            v,
+            start,
+            px,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.v.len()
+    }
+
+    /// Local block of the global block `bq`, if it meets the patch.
+    fn local(&self, bq: u32) -> Option<u32> {
+        let (by, bx) = (bq as usize / self.gw, bq as usize % self.gw);
+        let bh = self.v.len() / self.bw.max(1);
+        (by >= self.by0 && by < self.by0 + bh && bx >= self.bx0 && bx < self.bx0 + self.bw)
+            .then(|| ((by - self.by0) * self.bw + (bx - self.bx0)) as u32)
+    }
+
+    #[inline]
+    fn block_px(&self, b: u32) -> &[u32] {
+        &self.px[self.start[b as usize]..self.start[b as usize + 1]]
+    }
+
+    /// `Σ_{p ∈ B} s_p y_p` for every block.
+    pub fn sums(&self, y: &[f32]) -> Vec<f64> {
+        let mut z = vec![0.0f64; self.v.len()];
+        let (w, b) = (self.rect.w, self.block.max(1));
+        // Row segments that lie in one block.
+        let first = (b - self.rect.x0 % b).min(w);
+        for (yy, (row, srow)) in y.chunks(w).zip(self.s.chunks(w)).enumerate() {
+            let base = ((self.rect.y0 + yy) / b - self.by0) * self.bw;
+            let mut x = 0;
+            let mut k = 0;
+            while x < w {
+                let len = if x == 0 { first } else { b.min(w - x) };
+                let acc: f32 = row[x..x + len]
+                    .iter()
+                    .zip(&srow[x..x + len])
+                    .map(|(&v, &s)| v * s)
+                    .sum();
+                z[base + k] += f64::from(acc);
+                x += len;
+                k += 1;
+            }
+        }
+        z
+    }
+}
+
 /// One column of a patch problem: patch-local pixels and whitened values.
+///
+/// With a moat grid the whitened column is `val` on the support pixels
+/// `pix` minus `s_p low(B(p))` on every pixel of the blocks `blk`; `val`
+/// holds `(filtered + low(B(p))) s_p`, so on the support the column is the
+/// exact filtered footprint.
 #[derive(Debug, Clone)]
 pub(crate) struct Column {
     pub id: u64,
     pub pix: Vec<u32>,
     pub val: Vec<f32>,
+    pub grid: Option<std::sync::Arc<PatchGrid>>,
+    /// Local blocks of the moat and its low-pass block means (unwhitened).
+    pub blk: Vec<u32>,
+    pub low: Vec<f32>,
 }
 
 impl Column {
-    /// The part of `cell`'s filtered footprint inside `rect`, divided by σ.
-    pub fn of(cell: &Cell, rect: Rect, width: usize, inv_sigma: &[f32]) -> Column {
+    /// The part of `cell`'s filtered column (moat included) inside the
+    /// grid's patch, whitened.
+    pub fn of(cell: &Cell, grid: &std::sync::Arc<PatchGrid>, width: usize) -> Column {
+        let rect = grid.rect;
+        let mut blk = Vec::new();
+        let mut low = Vec::new();
+        let mut gl: Vec<(u32, f32)> = Vec::new();
+        if grid.block > 0 {
+            for (&bq, &l) in cell.low_blk.iter().zip(&cell.low) {
+                if let Some(lb) = grid.local(bq) {
+                    blk.push(lb);
+                    low.push(l);
+                    gl.push((bq, l));
+                }
+            }
+        }
         let mut pix = Vec::new();
         let mut val = Vec::new();
         for (&g, &v) in cell.pix.iter().zip(&cell.filt) {
             let (gy, gx) = (g as usize / width, g as usize % width);
             if let Some(l) = rect.local(gy, gx) {
+                let mut u = v;
+                if let (Some(by), Some(bx)) =
+                    (gy.checked_div(grid.block), gx.checked_div(grid.block))
+                {
+                    let bq = (by * grid.gw + bx) as u32;
+                    if let Ok(k) = gl.binary_search_by_key(&bq, |e| e.0) {
+                        u += gl[k].1;
+                    }
+                }
                 pix.push(l as u32);
-                val.push(v * inv_sigma[g as usize]);
+                val.push(u * grid.s[l]);
             }
         }
         Column {
             id: cell.id,
             pix,
             val,
+            grid: (grid.block > 0 && !blk.is_empty()).then(|| grid.clone()),
+            blk,
+            low,
         }
+    }
+
+    /// A column with no moat.
+    #[cfg(test)]
+    pub fn plain(id: u64, pix: Vec<u32>, val: Vec<f32>) -> Column {
+        Column {
+            id,
+            pix,
+            val,
+            grid: None,
+            blk: Vec::new(),
+            low: Vec::new(),
+        }
+    }
+
+    /// `out += c h̃` on the patch.
+    pub fn add_to(&self, out: &mut [f32], c: f32) {
+        for (&p, &v) in self.pix.iter().zip(&self.val) {
+            out[p as usize] += v * c;
+        }
+        if let Some(g) = &self.grid {
+            for (&b, &l) in self.blk.iter().zip(&self.low) {
+                let lc = l * c;
+                for &p in g.block_px(b) {
+                    out[p as usize] -= lc * g.s[p as usize];
+                }
+            }
+        }
+    }
+
+    /// The whole column as a dense patch.
+    pub fn dense(&self, n: usize) -> Vec<f32> {
+        let mut d = vec![0.0f32; n];
+        self.add_to(&mut d, 1.0);
+        d
+    }
+
+    /// The column's values on its support pixels (moat included).
+    pub fn on_support(&self) -> Vec<f32> {
+        match &self.grid {
+            None => self.val.clone(),
+            Some(g) => {
+                let mut lo = vec![0.0f32; g.len()];
+                for (&b, &l) in self.blk.iter().zip(&self.low) {
+                    lo[b as usize] = l;
+                }
+                self.pix
+                    .iter()
+                    .zip(&self.val)
+                    .map(|(&p, &v)| v - lo[g.of[p as usize] as usize] * g.s[p as usize])
+                    .collect()
+            }
+        }
+    }
+
+    /// `h̃ᵀ y` for a dense patch `y`.
+    pub fn dot(&self, y: &[f32]) -> f32 {
+        let mut s: f64 = self
+            .pix
+            .iter()
+            .zip(&self.val)
+            .map(|(&p, &v)| f64::from(v * y[p as usize]))
+            .sum();
+        if let Some(g) = &self.grid {
+            for (&b, &l) in self.blk.iter().zip(&self.low) {
+                let z: f64 = g
+                    .block_px(b)
+                    .iter()
+                    .map(|&p| f64::from(g.s[p as usize] * y[p as usize]))
+                    .sum();
+                s -= f64::from(l) * z;
+            }
+        }
+        s as f32
+    }
+
+    /// `h̃ᵀ h̃`.
+    pub fn norm2(&self) -> f32 {
+        let mut s: f64 = self.val.iter().map(|&v| f64::from(v * v)).sum();
+        if let Some(g) = &self.grid {
+            let mut lo = vec![0.0f64; g.len()];
+            for (&b, &l) in self.blk.iter().zip(&self.low) {
+                lo[b as usize] = f64::from(l);
+                s += f64::from(l) * f64::from(l) * g.v[b as usize];
+            }
+            for (&p, &v) in self.pix.iter().zip(&self.val) {
+                s -=
+                    2.0 * f64::from(v) * lo[g.of[p as usize] as usize] * f64::from(g.s[p as usize]);
+            }
+        }
+        s.max(0.0) as f32
     }
 }
 
@@ -459,6 +821,11 @@ pub(crate) struct Problem {
     /// `G_bc` (k x n), for the background coefficients.
     gbc: Vec<f64>,
     bg_inv: Vec<f64>,
+    /// The background the problem was built with (the per-frame solve with
+    /// missing pixels takes their rows out of its Gram).
+    bg: BgBasis,
+    /// The moat grid of the patch (when any column has a moat).
+    grid: Option<std::sync::Arc<PatchGrid>>,
 }
 
 impl Problem {
@@ -476,27 +843,83 @@ impl Problem {
             .iter()
             .map(|c| c.pix.iter().copied().max().unwrap_or(0))
             .collect();
+        let grid = cols.iter().find_map(|c| c.grid.clone());
+        let nb = grid.as_ref().map_or(0, |g| g.len());
+        // Per column: its moat as a dense block vector, and its support
+        // part summed per block (`Σ_{p∈S∩B} val_p s_p`).
+        let mut lo_i = vec![0.0f64; nb];
+        let mut cs_i = vec![0.0f64; nb];
+        let cs: Vec<Vec<(u32, f64)>> = match &grid {
+            Some(g) => cols
+                .iter()
+                .map(|c| {
+                    let mut m: Vec<(u32, f64)> = Vec::new();
+                    for (&p, &v) in c.pix.iter().zip(&c.val) {
+                        let b = g.of[p as usize];
+                        let x = f64::from(v * g.s[p as usize]);
+                        match m.iter_mut().rev().find(|e| e.0 == b) {
+                            Some(e) => e.1 += x,
+                            None => m.push((b, x)),
+                        }
+                    }
+                    *work += c.pix.len() as u64;
+                    m
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         for i in 0..n {
             for (&p, &v) in cols[i].pix.iter().zip(&cols[i].val) {
                 buf[p as usize] = v;
             }
-            for j in i..n {
-                if cols[j].pix.is_empty() || lo[j] > hi[i] || hi[j] < lo[i] {
-                    continue;
+            if grid.is_some() {
+                for (&b, &l) in cols[i].blk.iter().zip(&cols[i].low) {
+                    lo_i[b as usize] = f64::from(l);
                 }
-                let d: f64 = cols[j]
-                    .pix
-                    .iter()
-                    .zip(&cols[j].val)
-                    .map(|(&p, &v)| f64::from(buf[p as usize] * v))
-                    .sum();
-                *work += cols[j].pix.len() as u64;
+                for &(b, x) in &cs[i] {
+                    cs_i[b as usize] = x;
+                }
+            }
+            for j in i..n {
+                let mut d = 0.0f64;
+                if !(cols[j].pix.is_empty() || lo[j] > hi[i] || hi[j] < lo[i]) {
+                    d += cols[j]
+                        .pix
+                        .iter()
+                        .zip(&cols[j].val)
+                        .map(|(&p, &v)| f64::from(buf[p as usize] * v))
+                        .sum::<f64>();
+                    *work += cols[j].pix.len() as u64;
+                }
+                if let Some(g) = &grid {
+                    // − Σ_{S_j} val_j s low_i − Σ_{B_j} low_j cs_i + Σ low_i low_j V.
+                    if !cols[i].blk.is_empty() {
+                        for &(b, x) in &cs[j] {
+                            d -= x * lo_i[b as usize];
+                        }
+                    }
+                    for (&b, &l) in cols[j].blk.iter().zip(&cols[j].low) {
+                        let b = b as usize;
+                        d += f64::from(l) * (lo_i[b] * g.v[b] - cs_i[b]);
+                    }
+                    *work += (cs[j].len() + cols[j].blk.len()) as u64;
+                }
                 gcc[i * n + j] = d;
                 gcc[j * n + i] = d;
             }
             for &p in &cols[i].pix {
                 buf[p as usize] = 0.0;
             }
+            lo_i.iter_mut().for_each(|v| *v = 0.0);
+            cs_i.iter_mut().for_each(|v| *v = 0.0);
+        }
+        // Background maps summed per block with the whitening.
+        let mb: Vec<Vec<f64>> = match &grid {
+            Some(g) => bg.maps.iter().map(|m| g.sums(m)).collect(),
+            None => Vec::new(),
+        };
+        if grid.is_some() {
+            *work += (k * n_px) as u64;
         }
         let mut gbc = vec![0.0f64; k * n];
         for (i, c) in cols.iter().enumerate() {
@@ -508,6 +931,11 @@ impl Problem {
                     .zip(&c.val)
                     .map(|(&p, &v)| f64::from(m[p as usize] * v))
                     .sum();
+                if let Some(z) = mb.get(a) {
+                    for (&b, &l) in c.blk.iter().zip(&c.low) {
+                        gbc[a * n + i] -= f64::from(l) * z[b as usize];
+                    }
+                }
             }
             *work += (k * c.pix.len()) as u64;
         }
@@ -534,6 +962,8 @@ impl Problem {
             q,
             gbc,
             bg_inv: bg.inv.clone(),
+            bg: bg.clone(),
+            grid,
         }
     }
 
@@ -549,25 +979,164 @@ impl Problem {
     /// Solve one whitened patch `y` given its background projections and
     /// energy (from [`BgBasis::project`]).
     pub fn solve(&self, y: &[f32], qb: &[f64], yy: f64, work: &mut u64) -> Fit {
+        let s = self.column_dots(y, work);
+        self.finish(&self.t, &self.q, &self.gbc, &self.bg_inv, &s, qb, yy, work)
+    }
+
+    /// `h̃_iᵀ y` per column.
+    fn column_dots(&self, y: &[f32], work: &mut u64) -> Vec<f64> {
+        let z = self.grid.as_ref().map(|g| {
+            *work += y.len() as u64;
+            g.sums(y)
+        });
+        self.cols
+            .iter()
+            .map(|col| {
+                let mut s: f64 = col
+                    .pix
+                    .iter()
+                    .zip(&col.val)
+                    .map(|(&px, &v)| f64::from(v * y[px as usize]))
+                    .sum();
+                if let Some(z) = &z {
+                    for (&b, &l) in col.blk.iter().zip(&col.low) {
+                        s -= f64::from(l) * z[b as usize];
+                    }
+                }
+                *work += (col.pix.len() + col.blk.len()) as u64;
+                s
+            })
+            .collect()
+    }
+
+    /// [`Problem::solve`] on a frame some of whose pixels are missing
+    /// (`miss`: sorted patch pixels, zero in `y`, and so in `qb` and `yy`):
+    /// those pixels have zero weight. Zero weight is the whitening factor
+    /// `s_p = 0` for that frame, i.e. the frame's normal equations are the
+    /// full ones minus the missing pixels' design rows `a_p = (e_i(p), g_a(p))`
+    /// (the column values, moat included, and the background maps):
+    /// `G_t = G - Σ_p a_p a_pᵀ`. `y`, `qb`, `yy` already omit them, so only
+    /// the Gram changes; the reduced Gram, `T` and the background inverse
+    /// are re-derived for this frame (`k + n` is small).
+    pub fn solve_missing(
+        &self,
+        y: &[f32],
+        qb: &[f64],
+        yy: f64,
+        miss: &[u32],
+        work: &mut u64,
+    ) -> Fit {
+        if miss.is_empty() {
+            return self.solve(y, qb, yy, work);
+        }
+        let (n, k) = (self.n, self.k);
+        let d = n + k;
+        // Design rows of the missing pixels.
+        let mut a = vec![0.0f64; miss.len() * d];
+        for (i, col) in self.cols.iter().enumerate() {
+            for (&px, &v) in col.pix.iter().zip(&col.val) {
+                if let Ok(j) = miss.binary_search(&px) {
+                    a[j * d + i] += f64::from(v);
+                }
+            }
+            if let Some(g) = &col.grid {
+                for (j, &px) in miss.iter().enumerate() {
+                    let b = g.of[px as usize];
+                    if let Some(m) = col.blk.iter().position(|&x| x == b) {
+                        a[j * d + i] -= f64::from(col.low[m]) * f64::from(g.s[px as usize]);
+                    }
+                }
+            }
+        }
+        for (j, &px) in miss.iter().enumerate() {
+            for (b, m) in self.bg.maps.iter().enumerate() {
+                a[j * d + n + b] = f64::from(m[px as usize]);
+            }
+        }
+        *work += (miss.len() * (d * d + d)) as u64;
+        // G_cc, G_bc, G_bb of the frame.
+        let mut gcc = self.q.clone();
+        for i in 0..n {
+            for j in 0..n {
+                gcc[i * n + j] += (0..k)
+                    .map(|b| self.t[i * k + b] * self.gbc[b * n + j])
+                    .sum::<f64>();
+            }
+        }
+        let mut gbc = self.gbc.clone();
+        let mut gbb = self.bg.gram.clone();
+        for row in a.chunks_exact(d) {
+            for i in 0..n {
+                for j in 0..n {
+                    gcc[i * n + j] -= row[i] * row[j];
+                }
+                for b in 0..k {
+                    gbc[b * n + i] -= row[n + b] * row[i];
+                }
+            }
+            for b in 0..k {
+                for c in 0..k {
+                    gbb[b * k + c] -= row[n + b] * row[n + c];
+                }
+            }
+        }
+        let tr = (0..k).map(|b| gbb[b * k + b]).sum::<f64>() / k.max(1) as f64;
+        for b in 0..k {
+            gbb[b * k + b] += 1e-9 * tr.max(0.0);
+        }
+        let Some(inv) = invert(&gbb, k) else {
+            // The missing pixels took the background basis apart (a patch
+            // that is mostly missing): no usable solution for the frame.
+            return Fit {
+                c: vec![0.0; n],
+                beta: vec![0.0; k],
+                chi2: yy,
+            };
+        };
+        let mut t = vec![0.0f64; n * k];
+        for i in 0..n {
+            for b in 0..k {
+                t[i * k + b] = (0..k).map(|c| gbc[c * n + i] * inv[c * k + b]).sum();
+            }
+        }
+        let mut q = gcc;
+        for i in 0..n {
+            for j in 0..n {
+                q[i * n + j] -= (0..k).map(|b| t[i * k + b] * gbc[b * n + j]).sum::<f64>();
+            }
+        }
+        *work += (n * n * k + k * k * k) as u64;
+        let s = self.column_dots(y, work);
+        self.finish(&t, &q, &gbc, &inv, &s, qb, yy, work)
+    }
+
+    /// Non-negative solve from the column dots `s_i = h̃_iᵀ y`, the
+    /// background projections `qb` and the energy `yy`, with the given
+    /// Gram terms.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &self,
+        t: &[f64],
+        q_gram: &[f64],
+        gbc: &[f64],
+        bg_inv: &[f64],
+        s: &[f64],
+        qb: &[f64],
+        yy: f64,
+        work: &mut u64,
+    ) -> Fit {
         let (n, k) = (self.n, self.k);
         let mut p = vec![0.0f64; n];
-        for (i, col) in self.cols.iter().enumerate() {
-            let s: f64 = col
-                .pix
-                .iter()
-                .zip(&col.val)
-                .map(|(&px, &v)| f64::from(v * y[px as usize]))
-                .sum();
-            *work += col.pix.len() as u64;
-            let tb: f64 = (0..k).map(|a| self.t[i * k + a] * qb[a]).sum();
-            p[i] = s - tb;
+        for i in 0..n {
+            let tb: f64 = (0..k).map(|a| t[i * k + a] * qb[a]).sum();
+            p[i] = s[i] - tb;
         }
         let mut c = vec![0.0f64; n];
         let mut qc = vec![0.0f64; n];
         for _sweep in 0..100 {
             let mut worst = 0.0f64;
             for i in 0..n {
-                let d_ii = self.q[i * n + i];
+                let d_ii = q_gram[i * n + i];
                 if d_ii <= 0.0 {
                     continue;
                 }
@@ -575,7 +1144,7 @@ impl Problem {
                 let d = new - c[i];
                 if d != 0.0 {
                     c[i] = new;
-                    let row = &self.q[i * n..(i + 1) * n];
+                    let row = &q_gram[i * n..(i + 1) * n];
                     for (q, &r) in qc.iter_mut().zip(row) {
                         *q += r * d;
                     }
@@ -591,7 +1160,7 @@ impl Problem {
         let mut bb = 0.0f64;
         for a in 0..k {
             for b in 0..k {
-                bb += qb[a] * self.bg_inv[a * k + b] * qb[b];
+                bb += qb[a] * bg_inv[a * k + b] * qb[b];
             }
         }
         let pc: f64 = p.iter().zip(&c).map(|(a, b)| a * b).sum();
@@ -600,10 +1169,10 @@ impl Problem {
         // β = G_bb⁻¹ (q_b − G_bc c).
         let mut beta = vec![0.0f64; k];
         let r: Vec<f64> = (0..k)
-            .map(|a| qb[a] - (0..n).map(|i| self.gbc[a * n + i] * c[i]).sum::<f64>())
+            .map(|a| qb[a] - (0..n).map(|i| gbc[a * n + i] * c[i]).sum::<f64>())
             .collect();
         for a in 0..k {
-            beta[a] = (0..k).map(|b| self.bg_inv[a * k + b] * r[b]).sum();
+            beta[a] = (0..k).map(|b| bg_inv[a * k + b] * r[b]).sum();
         }
         Fit {
             c: c.iter().map(|&v| v as f32).collect(),
@@ -623,12 +1192,24 @@ impl Problem {
                 }
             }
         }
+        let mut field = self.grid.as_ref().map(|g| vec![0.0f32; g.len()]);
         for (col, &ci) in self.cols.iter().zip(&fit.c) {
             if ci != 0.0 {
                 for (&p, &v) in col.pix.iter().zip(&col.val) {
                     out[p as usize] -= v * ci;
                 }
+                if let Some(f) = field.as_mut() {
+                    for (&b, &l) in col.blk.iter().zip(&col.low) {
+                        f[b as usize] += l * ci;
+                    }
+                }
             }
+        }
+        if let (Some(g), Some(f)) = (&self.grid, &field) {
+            for ((o, &b), &s) in out.iter_mut().zip(&g.of).zip(&g.s) {
+                *o += f[b as usize] * s;
+            }
+            *work += y.len() as u64;
         }
         *work += (y.len() * (bg.k + 1)) as u64;
     }
@@ -637,13 +1218,22 @@ impl Problem {
 /// Alternating rank-1 fit on the pixels `dom` of residual frames `r`:
 /// `r_t[dom] ≈ h c_t` with `c ≥ 0`, starting from `c` (updated in place).
 /// Returns `h` on `dom`. `fixed_c` keeps the traces and does one `h` step.
+///
+/// With `cls` (the block parity of each pixel of `dom`), the fit is
+/// cross-fitted ([`rank1_crossfit`]); without, it is plain alternation,
+/// which is power iteration on the residual: with no cell present it
+/// returns the top singular vector of the structured residual.
 pub(crate) fn rank1(
     r: &[&[f32]],
     dom: &[u32],
     c: &mut [f32],
     iters: usize,
     fixed_c: bool,
+    cls: Option<&[u8]>,
 ) -> Vec<f32> {
+    if let Some(cls) = cls.filter(|_| !fixed_c && iters > 1) {
+        return rank1_crossfit(r, dom, c, iters, cls);
+    }
     let mut h = vec![0.0f32; dom.len()];
     for it in 0..iters.max(1) {
         let cc: f64 = c.iter().map(|&v| f64::from(v * v)).sum();
@@ -676,6 +1266,77 @@ pub(crate) fn rank1(
                 .sum();
             *ct = ((d / hh) as f32).max(0.0);
         }
+    }
+    h
+}
+
+/// Cross-fitted alternating rank-1 fit (see [`rank1`]): one trace per
+/// block parity, `c_k = h_kᵀ r_k / h_kᵀ h_k` measured on the pixels of
+/// parity `k` only (unclamped), and the footprint of a parity-`k` pixel
+/// regressed on the *other* parity's trace,
+/// `h(p) = Σ_t r_t(p) c_{1−k,t} / Σ_t c_{0,t} c_{1,t}`.
+///
+/// A pixel's noise then never multiplies itself, so noise whose
+/// correlation length is shorter than a block has no fixed point; the
+/// normaliser `Σ c₀ c₁` is the trace energy without either trace's noise
+/// (an instrumental-variable estimate, unbiased in scale). The first step
+/// uses the given `c` for both parities, so both start on one scale, which
+/// the iteration keeps. On return `c` is `max(0, (c₀ + c₁) / 2)`. When the
+/// traces do not co-vary (`Σ c₀ c₁ ≤ 0`, no reproducible signal), `h` is 0.
+pub(crate) fn rank1_crossfit(
+    r: &[&[f32]],
+    dom: &[u32],
+    c: &mut [f32],
+    iters: usize,
+    cls: &[u8],
+) -> Vec<f32> {
+    let mut h = vec![0.0f32; dom.len()];
+    let mut cp = [c.to_vec(), c.to_vec()];
+    for it in 0..iters.max(1) {
+        let d: f64 = cp[0]
+            .iter()
+            .zip(&cp[1])
+            .map(|(&a, &b)| f64::from(a) * f64::from(b))
+            .sum();
+        if !(d > 0.0) {
+            h.iter_mut().for_each(|v| *v = 0.0);
+            return h;
+        }
+        let mut acc = vec![0.0f64; dom.len()];
+        for (t, rt) in r.iter().enumerate() {
+            let other = [cp[1][t], cp[0][t]];
+            for ((a, &p), &k) in acc.iter_mut().zip(dom).zip(cls) {
+                *a += f64::from(rt[p as usize] * other[k as usize]);
+            }
+        }
+        for (hv, a) in h.iter_mut().zip(&acc) {
+            *hv = (a / d) as f32;
+        }
+        if it + 1 == iters {
+            break;
+        }
+        let mut hh = [0.0f64; 2];
+        for (&v, &k) in h.iter().zip(cls) {
+            hh[k as usize] += f64::from(v * v);
+        }
+        if !(hh[0] > 0.0 || hh[1] > 0.0) {
+            return h;
+        }
+        for (t, rt) in r.iter().enumerate() {
+            let mut dk = [0.0f64; 2];
+            for ((&hv, &p), &k) in h.iter().zip(dom).zip(cls) {
+                dk[k as usize] += f64::from(hv * rt[p as usize]);
+            }
+            for k in 0..2 {
+                // A parity without footprint (a degenerate domain) takes
+                // the other's trace.
+                let j = if hh[k] > 0.0 { k } else { 1 - k };
+                cp[k][t] = (dk[j] / hh[j]) as f32;
+            }
+        }
+    }
+    for (t, ct) in c.iter_mut().enumerate() {
+        *ct = (0.5 * (cp[0][t] + cp[1][t])).max(0.0);
     }
     h
 }
@@ -802,7 +1463,9 @@ pub(crate) fn rank2_split(
         .iter()
         .map(|v| (dot(h0, v) / dot(h0, h0).max(1e-30)).max(0.0) as f32)
         .collect();
-    let h1 = rank1(&refs, &local, &mut c1, 10, false);
+    // Plain alternation: the rank-2 fit it is compared with is not
+    // cross-fitted either.
+    let h1 = rank1(&refs, &local, &mut c1, 10, false, None);
     let mut sse1 = 0.0f64;
     for t in 0..nt {
         for k in 0..np {
@@ -871,6 +1534,92 @@ mod tests {
     }
 
     #[test]
+    fn moat_columns_solve_exact_mixtures_with_their_moats() {
+        // Two cells' full filtered columns (support plus block-mean moat),
+        // whitened by a non-uniform noise map, on a patch that clips one
+        // moat: the solve recovers the mixture and its χ² is ~0.
+        let dims = Dims {
+            width: 100,
+            height: 100,
+        };
+        let fov = vec![1u8; 10_000];
+        let inv: Vec<f32> = (0..10_000).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
+        let mut filter = LocalFilter::new(20.0);
+        let cfg = LibraryConfig::default();
+        let mk = |id, cy: f32, cx: f32, filter: &mut LocalFilter| {
+            let rect = Rect {
+                y0: 0,
+                x0: 0,
+                h: 100,
+                w: 100,
+            };
+            let a: Vec<f32> = (0..10_000)
+                .map(|i| {
+                    let (dy, dx) = ((i / 100) as f32 - cy, (i % 100) as f32 - cx);
+                    let r2 = dy * dy + dx * dx;
+                    if r2 < 100.0 {
+                        (-r2 / 18.0).exp()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter).unwrap()
+        };
+        let c1 = mk(1, 40.0, 40.0, &mut filter);
+        let c2 = mk(2, 48.0, 52.0, &mut filter);
+        assert!(!c1.low.is_empty());
+        let rect = Rect {
+            y0: 16,
+            x0: 16,
+            h: 64,
+            w: 64,
+        };
+        let grid = std::sync::Arc::new(PatchGrid::new(rect, dims, &inv, &fov, 8));
+        let cols = vec![Column::of(&c1, &grid, 100), Column::of(&c2, &grid, 100)];
+        let dense: Vec<Vec<f32>> = cols.iter().map(|c| c.dense(rect.len())).collect();
+        // The dense columns are the cells' filtered columns, whitened.
+        for (c, d) in [&c1, &c2].iter().zip(&dense) {
+            for y in 0..rect.h {
+                for x in 0..rect.w {
+                    let g = ((rect.y0 + y) * 100 + rect.x0 + x) as u32;
+                    let want = c.column_at(g, 100, 8) * inv[g as usize];
+                    assert!((d[y * rect.w + x] - want).abs() < 1e-5);
+                }
+            }
+        }
+        let bg = BgBasis::new(rect);
+        let mut work = 0;
+        let pr = Problem::new(cols, &bg, rect.len(), &mut work);
+        let y: Vec<f32> = (0..rect.len())
+            .map(|p| 3.0 * dense[0][p] + 1.5 * dense[1][p] + 0.7 * bg.maps[4][p])
+            .collect();
+        let (qb, yy) = bg.project(&y);
+        let fit = pr.solve(&y, &qb, yy, &mut work);
+        assert!(
+            (fit.c[0] - 3.0).abs() < 1e-2 && (fit.c[1] - 1.5).abs() < 1e-2,
+            "{:?}",
+            fit.c
+        );
+        assert!(fit.chi2.abs() < 1e-2, "chi2 {}", fit.chi2);
+        let mut r = vec![0.0f32; rect.len()];
+        pr.residual(&y, &fit, &bg, &mut r, &mut work);
+        let rr: f32 = r.iter().map(|v| v * v).sum();
+        assert!(rr < 1e-2, "residual energy {rr}");
+        assert!(
+            (pr.cols[0].dot(&dense[1])
+                - dense[0]
+                    .iter()
+                    .zip(&dense[1])
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>())
+            .abs()
+                < 1e-3
+        );
+        assert!((pr.cols[0].norm2() - dense[0].iter().map(|a| a * a).sum::<f32>()).abs() < 1e-3);
+    }
+
+    #[test]
     fn problem_solves_exact_mixtures() {
         let rect = Rect {
             y0: 0,
@@ -892,7 +1641,7 @@ mod tests {
                     }
                 }
             }
-            Column { id, pix, val }
+            Column::plain(id, pix, val)
         };
         let cols = vec![mk(15.0, 15.0, 1), mk(20.0, 22.0, 2)];
         let mut y = vec![0.0f32; 1600];
@@ -914,5 +1663,143 @@ mod tests {
             fit.c
         );
         assert!(fit.chi2.abs() < 1e-3, "chi2 {}", fit.chi2);
+    }
+
+    /// Missing pixels have zero weight: the per-frame Gram correction gives
+    /// the least-squares solution on the valid pixels only (columns with
+    /// moats, a non-uniform noise map, noise in the data), and the solve
+    /// that ignores the problem (y = 0 there, full Gram) does not.
+    #[test]
+    fn patch_solve_with_missing_pixels_matches_full_solve_on_valid_pixels() {
+        let dims = Dims {
+            width: 100,
+            height: 100,
+        };
+        let fov = vec![1u8; 10_000];
+        let inv: Vec<f32> = (0..10_000).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
+        let mut filter = LocalFilter::new(20.0);
+        let cfg = LibraryConfig::default();
+        let mk = |id, cy: f32, cx: f32, filter: &mut LocalFilter| {
+            let rect = Rect {
+                y0: 0,
+                x0: 0,
+                h: 100,
+                w: 100,
+            };
+            let a: Vec<f32> = (0..10_000)
+                .map(|i| {
+                    let (dy, dx) = ((i / 100) as f32 - cy, (i % 100) as f32 - cx);
+                    let r2 = dy * dy + dx * dx;
+                    if r2 < 100.0 {
+                        (-r2 / 18.0).exp()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter).unwrap()
+        };
+        let c1 = mk(1, 40.0, 40.0, &mut filter);
+        let c2 = mk(2, 48.0, 52.0, &mut filter);
+        let rect = Rect {
+            y0: 16,
+            x0: 16,
+            h: 64,
+            w: 64,
+        };
+        let grid = std::sync::Arc::new(PatchGrid::new(rect, dims, &inv, &fov, 8));
+        let cols = vec![Column::of(&c1, &grid, 100), Column::of(&c2, &grid, 100)];
+        let dense: Vec<Vec<f32>> = cols.iter().map(|c| c.dense(rect.len())).collect();
+        let bg = BgBasis::new(rect);
+        let n_px = rect.len();
+        let mut work = 0;
+        let pr = Problem::new(cols, &bg, n_px, &mut work);
+        // Data: the mixture plus noise (deterministic).
+        let mut seed = 12345u64;
+        let mut noise = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (((seed >> 40) as f32) / (1u64 << 24) as f32 - 0.5) * 1.5
+        };
+        let y_full: Vec<f32> = (0..n_px)
+            .map(|p| 3.0 * dense[0][p] + 1.5 * dense[1][p] + 0.7 * bg.maps[4][p] + noise())
+            .collect();
+        // Missing: a band across both cells' flanks plus a few scattered
+        // pixels (sorted).
+        let miss: Vec<u32> = (0..n_px as u32)
+            .filter(|&p| {
+                let (y, x) = (p as usize / rect.w, p as usize % rect.w);
+                ((20..44).contains(&y) && (30..33).contains(&x)) || p % 211 == 5
+            })
+            .collect();
+        assert!(miss.len() > 60);
+        let mut y = y_full.clone();
+        for &p in &miss {
+            y[p as usize] = 0.0;
+        }
+        let (qb, yy) = bg.project(&y);
+        let got = pr.solve_missing(&y, &qb, yy, &miss, &mut work);
+        // Reference: dense least squares on the valid pixels, columns and
+        // background maps as they are (the ridge is negligible).
+        let valid: Vec<usize> = (0..n_px)
+            .filter(|p| miss.binary_search(&(*p as u32)).is_err())
+            .collect();
+        let design: Vec<&[f32]> = dense
+            .iter()
+            .map(|d| d.as_slice())
+            .chain(bg.maps.iter().map(|m| m.as_slice()))
+            .collect();
+        let d = design.len();
+        let mut g = vec![0.0f64; d * d];
+        let mut b = vec![0.0f64; d];
+        for a in 0..d {
+            for c in 0..d {
+                g[a * d + c] = valid
+                    .iter()
+                    .map(|&p| f64::from(design[a][p]) * f64::from(design[c][p]))
+                    .sum();
+            }
+            b[a] = valid
+                .iter()
+                .map(|&p| f64::from(design[a][p]) * f64::from(y[p]))
+                .sum();
+        }
+        let ginv = invert(&g, d).unwrap();
+        let theta: Vec<f64> = (0..d)
+            .map(|a| (0..d).map(|c| ginv[a * d + c] * b[c]).sum())
+            .collect();
+        let chi2: f64 = valid
+            .iter()
+            .map(|&p| {
+                let m: f64 = (0..d).map(|a| theta[a] * f64::from(design[a][p])).sum();
+                (f64::from(y[p]) - m).powi(2)
+            })
+            .sum();
+        for i in 0..2 {
+            assert!(
+                (f64::from(got.c[i]) - theta[i]).abs() < 1e-3 * theta[i].abs().max(1.0),
+                "cell {i}: {} vs {}",
+                got.c[i],
+                theta[i]
+            );
+        }
+        assert!(
+            (got.chi2 - chi2).abs() < 1e-3 * chi2.max(1.0),
+            "{} vs {chi2}",
+            got.chi2
+        );
+        // Without the correction (zeros, full Gram) the band drags the
+        // amplitudes: the corrected solve is much closer.
+        let plain = pr.solve(&y, &qb, yy, &mut work);
+        let e_fix: f64 = (0..2).map(|i| (f64::from(got.c[i]) - theta[i]).abs()).sum();
+        let e_plain: f64 = (0..2)
+            .map(|i| (f64::from(plain.c[i]) - theta[i]).abs())
+            .sum();
+        assert!(e_fix < 0.05 * e_plain, "fixed {e_fix} vs plain {e_plain}");
+        // No missing pixels: the plain solve exactly.
+        let (qf, yf) = bg.project(&y_full);
+        let none = pr.solve_missing(&y_full, &qf, yf, &[], &mut work);
+        assert_eq!(none.c, pr.solve(&y_full, &qf, yf, &mut work).c);
     }
 }

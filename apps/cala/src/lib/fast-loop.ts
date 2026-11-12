@@ -6,8 +6,10 @@
  *
  * The slow worker answers on its own schedule. `handleSlow` only records what
  * arrived (a returned buffer, the newest library's bytes); the library is
- * rebuilt and swapped at the start of the next `process` call, so a swap
- * always happens between frames, and warm starts follow cell ids.
+ * read back and swapped at the start of the next `process` call, so a swap
+ * always happens between frames, and warm starts follow cell ids. The bytes
+ * carry the solver's precomputed terms, so the swap is a copy (a few ms at
+ * hundreds of cells), not a rebuild.
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import { ForwardPool } from './forward-pool.ts';
@@ -31,6 +33,14 @@ export interface TraceEngineLike {
 export interface QcMonitorLike {
   /** Solves the batch with `engine` (same result as `engine.processFrames`) and observes it. */
   processFrames(engine: TraceEngineLike, frames: Float32Array, count: number): Float32Array;
+  /** As `processFrames`, with each frame's rigid shift (feeds `motion_r2`); absent: shifts are not used. */
+  processFramesShifted?(
+    engine: TraceEngineLike,
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+  ): Float32Array;
   setNoise(noise: Float32Array): void;
   cellMetrics(): Float64Array;
   globalMetrics(): Float64Array;
@@ -89,6 +99,8 @@ export interface FastLoopOptions {
   fps?: number;
   /** Wall time between QC snapshots sent to the main thread, ms. */
   qcEveryMs?: number;
+  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
+  initialLibrary?: Uint8Array;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -131,7 +143,7 @@ export interface CellsBatch {
 const now = (): number => performance.now();
 
 export class FastLoop {
-  private readonly o: Required<FastLoopOptions>;
+  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary'>>;
   private readonly px: number;
   private readonly port: PortLike<FastToSlow> | null;
   private readonly backend: TraceBackend;
@@ -153,7 +165,9 @@ export class FastLoop {
   private disposed = false;
 
   constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
-    this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...options };
+    const { initialLibrary, ...rest } = options;
+    this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
+    this.pendingLibrary = initialLibrary ?? null;
     if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
     this.px = options.width * options.height;
     this.port = port;
@@ -200,6 +214,7 @@ export class FastLoop {
     start: number,
     count: number,
     calibration: CalibrationSource,
+    shifts?: { dy: Float32Array; dx: Float32Array },
   ): CellsBatch {
     const t0 = now();
     this.applyPendingLibrary();
@@ -212,7 +227,9 @@ export class FastLoop {
       const qc = this.qcMonitor(start, calibration);
       qcOn = qc !== null;
       traces = qc
-        ? qc.processFrames(this.engine, batch, count)
+        ? shifts && qc.processFramesShifted
+          ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
+          : qc.processFrames(this.engine, batch, count)
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
     }

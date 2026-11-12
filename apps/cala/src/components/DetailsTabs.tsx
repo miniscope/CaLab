@@ -5,6 +5,7 @@ import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { ViewerStore } from '../lib/viewer-store.ts';
 import { CellCountPlot, LagPlot, TimingText } from './CellsPanel.tsx';
+import { FlatFieldPanel } from './FlatFieldPanel.tsx';
 import { FlickerTrace } from './FlickerTrace.tsx';
 import { FrameViewer } from './FrameViewer.tsx';
 import { InfoPanel } from './InfoPanel.tsx';
@@ -35,11 +36,23 @@ export function DetailsTabs(props: {
     { id: 'motion', label: 'Motion', content: <MotionTrace store={props.store} /> },
     { id: 'flicker', label: 'Flicker', content: <FlickerTrace store={props.store} /> },
     {
+      id: 'flatfield',
+      label: 'Flat field',
+      content: (
+        <FlatFieldPanel store={props.store} width={props.info.width} height={props.info.height} />
+      ),
+    },
+    {
       id: 'timing',
       label: 'Timing',
       content: <TimingText store={props.store} cells={props.cells} />,
     },
-    { id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> },
+    // A live stream has no file to scrub through (the recording is opened once
+    // per mount, so this is read once on purpose).
+    // eslint-disable-next-line solid/reactivity
+    ...(props.info.live
+      ? []
+      : [{ id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> }]),
     { id: 'recording', label: 'Recording', content: <InfoPanel info={props.info} /> },
   ];
   const [active, setActive] = createSignal('qc');

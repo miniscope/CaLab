@@ -7,13 +7,21 @@ import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
-import { createSlowClient } from './lib/slow-client.ts';
+import { createPass2Store } from './lib/pass2-store.ts';
+import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
+import {
+  createSlowClient,
+  PARALLEL_FORWARD_BUFFERS,
+  RESERVED_THREADS,
+  visitWorkerCount,
+} from './lib/slow-client.ts';
 import { StatusBar } from './components/StatusBar.tsx';
 import { VideoPanel } from './components/VideoPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
+import { Pass2Bar } from './components/Pass2Bar.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -24,18 +32,58 @@ const App: Component = () => {
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   // The worker (and the files it holds) lives as long as the app.
-  const client = createFrameClient();
+  // `?pipeline=0`: the old single-worker path (to compare frame rates).
+  const params = new URLSearchParams(window.location.search);
+  const client = createFrameClient(undefined, {
+    pipelined: params.get('pipeline') !== '0',
+    // `?gpu=0`: WASM motion correction (to compare with WebGPU).
+    gpu: params.get('gpu') !== '0',
+  });
   const store = createViewerStore(client);
   const cells = createCellStore();
-  // Cell discovery runs in a worker of its own, fed directly by the frame worker.
-  createSlowClient(client, (msg) => cells.onSlowMessage(msg));
-  const params = new URLSearchParams(window.location.search);
+  // Cell discovery runs in a worker of its own, fed directly by the frame
+  // worker, with its tile visits spread over the spare cores.
+  // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
+  const visits = params.get('visits');
+  const slow = createSlowClient(
+    client,
+    (msg) => cells.onSlowMessage(msg),
+    undefined,
+    visits !== null && visits !== ''
+      ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
+      : visitWorkerCount(navigator.hardwareConcurrency),
+  );
   // `?noqc`: run without online quality control (to measure its cost).
-  const pipeline = createPipelineStore(client, {}, undefined, cells, !params.has('noqc'));
+  // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
+  const pipeline = createPipelineStore(
+    client,
+    params.get('flatfield') === '0' ? { flatField: false } : {},
+    undefined,
+    cells,
+    !params.has('noqc'),
+    slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
+    {
+      // The sensor flat field is stored per device in this browser (IndexedDB).
+      cache: createIndexedDbFlatFieldCache(),
+      identity: () => {
+        const i = store.info();
+        if (!i) return null;
+        return {
+          width: i.width,
+          height: i.height,
+          ...(i.device ? { device: i.device } : {}),
+          ...(i.live ? { live: true } : {}),
+          ...(i.live?.name ? { liveName: i.live.name } : {}),
+          folder: store.label(),
+        };
+      },
+    },
+  );
+  const pass2 = createPass2Store(client, pipeline, cells);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline };
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2 };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -44,6 +92,14 @@ const App: Component = () => {
     await store.openFiles(files, label);
     if (store.info()) void pipeline.start();
   }
+  // So does connecting to a live source (`?live=<url>` connects on load).
+  async function openLive(url: string) {
+    pipeline.stop();
+    await store.openLive(url);
+    if (store.info()) void pipeline.start();
+  }
+  const liveParam = params.get('live');
+  if (liveParam) void openLive(liveParam);
 
   return (
     <Show
@@ -53,6 +109,8 @@ const App: Component = () => {
           loading={store.loading()}
           error={store.error()}
           onOpen={(files, label) => void open(files, label)}
+          onOpenLive={(url) => void openLive(url)}
+          liveUrl={liveParam ?? undefined}
         />
       }
     >
@@ -70,7 +128,9 @@ const App: Component = () => {
                     {info().width} x {info().height}
                   </span>
                   <span class="compact-header__sep">&middot;</span>
-                  <span>{info().frameCount.toLocaleString()} frames</span>
+                  <span>
+                    {info().live ? 'live' : `${info().frameCount.toLocaleString()} frames`}
+                  </span>
                 </>
               }
               actions={
@@ -82,7 +142,7 @@ const App: Component = () => {
                       store.close();
                     }}
                   >
-                    Open another folder
+                    {info().live ? 'Open another source' : 'Open another folder'}
                   </button>
                   <FeedbackMenu appId={__APP_ID__} />
                   <CommunityAuthMenu />
@@ -102,6 +162,16 @@ const App: Component = () => {
               )}
             </Show>
             <StatusBar store={pipeline} cells={cells} />
+            <Pass2Bar
+              pipeline={pipeline}
+              pass2={pass2}
+              cells={cells}
+              live={info().live !== undefined}
+              label={store.label()}
+              width={info().width}
+              height={info().height}
+              fps={info().fps ?? 0}
+            />
             <ConvergenceStrip cells={cells} />
             <div class="cala-body">
               <div class="cala-body__left">

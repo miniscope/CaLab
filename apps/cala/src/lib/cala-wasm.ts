@@ -13,6 +13,7 @@ import init, {
   aviIdx1PayloadLen,
   aviIsAvixContinuation,
   cala_version,
+  FlatFieldEstimator,
   MotionCorrector,
   MotionOptions,
   PreprocessConfig,
@@ -23,6 +24,7 @@ import init, {
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
+  VisitWorker,
 } from '../../../../crates/cala/pkg/calab_cala.js';
 
 export {
@@ -30,6 +32,7 @@ export {
   aviIdx1PayloadLen,
   aviIsAvixContinuation,
   cala_version,
+  FlatFieldEstimator,
   MotionCorrector,
   MotionOptions,
   PreprocessConfig,
@@ -40,6 +43,7 @@ export {
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
+  VisitWorker,
 };
 
 let ready: Promise<void> | null = null;

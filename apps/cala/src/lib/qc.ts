@@ -13,6 +13,8 @@
  *     validated scores without a threshold;
  *   - fp_error has no threshold that separates good from bad footprints and is
  *     only a colour scale;
+ *   - motion_r2 (trace follows motion) is flagged above 0.2 but never fails a
+ *     cell: display only;
  *   - shape metrics (rise/decay, skew, slow share, zero share, event rate,
  *     footprint size and stability) are descriptive only, never a failure.
  */
@@ -22,6 +24,16 @@ export const FLAG_LOW_SNR = 1;
 export const FLAG_CORRELATED_PAIR = 2;
 export const FLAG_LIKELY_DUPLICATE = 4;
 export const FLAG_UNMEASURED = 8;
+/** Trace follows the frame's rigid shift (motion_r2 above MOTION_R2_FLAG). Display only, not in `pass`. */
+export const FLAG_FOLLOWS_MOTION = 16;
+
+/** `motion_r2` above which a cell is flagged "follows motion" (sensor-gain shimmer or motion artifact). */
+export const MOTION_R2_FLAG = 0.2;
+
+/** True when the cell's trace follows motion (from the value, so old wire formats without the flag bit work too). */
+export function followsMotion(r: Pick<CellQcRow, 'motionR2' | 'flags'>): boolean {
+  return (r.flags & FLAG_FOLLOWS_MOTION) !== 0 || r.motionR2 > MOTION_R2_FLAG;
+}
 
 /** Peak SNR below which a cell fails (the Rust `PassRule.min_snr`). */
 export const MIN_SNR = 5;
@@ -72,6 +84,11 @@ export interface CellQcRow {
   /** -1 when none. */
   maxNeighbourId: number;
   fpError: number;
+  /**
+   * Cross-validated R² of the trace on a quadratic of the rigid shift (NaN
+   * without motion data or before enough frames; negative values kept).
+   */
+  motionR2: number;
   nNeighbours: number;
   /** Descriptive only. */
   fpLastR: number;
@@ -103,6 +120,15 @@ export interface GlobalQcRow {
   snrMedian: number;
   passFrac: number;
   pairFrac: number;
+  /**
+   * Existing-cell stability against each cell's state 1-2 min ago: cells
+   * compared, median footprint cosine, median relative change of the trace
+   * noise, share stable (NaN before the first comparison).
+   */
+  stableCells: number;
+  fpStability: number;
+  traceSigmaChange: number;
+  stableFrac: number;
 }
 
 export interface ResidualMap {
@@ -153,6 +179,7 @@ export function parseQc(w: QcWire): QcSnapshot {
       maxNeighbourR: get(s, 'max_neighbour_r'),
       maxNeighbourId: get(s, 'max_neighbour_id'),
       fpError: get(s, 'fp_error'),
+      motionR2: get(s, 'motion_r2'),
       nNeighbours: get(s, 'n_neighbours'),
       fpLastR: get(s, 'fp_last_r'),
       slowFrac: get(s, 'slow_frac'),
@@ -192,6 +219,10 @@ export function parseQc(w: QcWire): QcSnapshot {
       snrMedian: gv('snr_median'),
       passFrac: gv('pass_frac'),
       pairFrac: gv('pair_frac'),
+      stableCells: gv('stable_cells'),
+      fpStability: gv('fp_stability'),
+      traceSigmaChange: gv('trace_sigma_change'),
+      stableFrac: gv('stable_frac'),
     },
     residual: {
       blocksWide: w.residualDims[0] ?? 0,
@@ -277,6 +308,7 @@ export type SortKey =
   | 'vif'
   | 'maxNeighbourR'
   | 'fpError'
+  | 'motionR2'
   | 'eventRate'
   | 'ageFrames';
 
@@ -379,6 +411,27 @@ export interface EditTotals {
   merges: number;
   splits: number;
   deletes: number;
+  /** Add classification: see `SlowCounters`. */
+  newAdds: number;
+  reAdds: number;
+  churned: number;
+  establishedRemovals: number;
+}
+
+export const EDIT_KEYS = [
+  'adds',
+  'merges',
+  'splits',
+  'deletes',
+  'newAdds',
+  'reAdds',
+  'churned',
+  'establishedRemovals',
+] as const satisfies readonly (keyof EditTotals)[];
+
+/** Churn of the library: re-adds, adds removed again soon, removals of established cells. */
+export function churnPerMin(e: EditTotals): number {
+  return e.reAdds + e.churned + e.establishedRemovals;
 }
 
 /** One point of the convergence history (one per QC snapshot). */
@@ -390,6 +443,11 @@ export interface ConvergencePoint {
   residualExcess: number;
   snrMedian: number;
   passFrac: number;
+  /** Existing-cell stability (`GlobalQcRow`). */
+  stableCells: number;
+  fpStability: number;
+  traceSigmaChange: number;
+  stableFrac: number;
   /** Library adds and removes per minute (QC, from library versions). */
   addsPerMin: number;
   removesPerMin: number;
@@ -446,12 +504,12 @@ export class EditRates {
   rates(): EditTotals {
     const a = this.samples[0];
     const b = this.samples.at(-1);
-    if (!a || !b || b.minutes <= a.minutes) {
-      return { adds: NaN, merges: NaN, splits: NaN, deletes: NaN };
+    const dt = a && b ? b.minutes - a.minutes : 0;
+    const out = {} as EditTotals;
+    for (const k of EDIT_KEYS) {
+      out[k] = a && b && dt > 0 ? Math.max(0, (b.totals[k] ?? 0) - (a.totals[k] ?? 0)) / dt : NaN;
     }
-    const dt = b.minutes - a.minutes;
-    const r = (k: keyof EditTotals) => Math.max(0, b.totals[k] - a.totals[k]) / dt;
-    return { adds: r('adds'), merges: r('merges'), splits: r('splits'), deletes: r('deletes') };
+    return out;
   }
 
   clear(): void {
@@ -468,35 +526,34 @@ export interface ConvergenceStatus {
 }
 
 /**
- * Thresholds of the convergence rule. They read the curves that tracked true
- * recall in validation (explained fraction, residual excess, library adds per
- * minute; PR #284), plus library churn, over the last `windowMin` minutes.
+ * Thresholds of the convergence rule. Cell discovery never stops on long
+ * recordings (batch tools find nearly twice the cells in 30-120 min as in
+ * 10-30 min), so converged means that the cells already found stopped
+ * changing and spurious churn died out, not that adds stopped: new-cell adds
+ * are shown as their own slowly declining curve and never block it.
+ * Validated against minisim ground truth (PR body: the rule says converged
+ * once GT precision has plateaued).
  */
 export const CONVERGENCE_RULE = {
   /** Minutes of history the rule looks back over. */
   windowMin: 2,
-  /** Discovering: explained rose by more than this over the window... */
-  discoverExplained: 0.05,
-  /** ...or the library grew by more than this share... */
-  discoverCells: 0.1,
-  /** ...or adds per minute exceed this share of the library. */
-  discoverAdds: 0.05,
-  /** Converged: explained moved less than this over the window, */
-  flatExplained: 0.02,
-  /** residual excess changed by less than this share (of max(value, 0.05)), */
-  flatResidual: 0.1,
-  /** the library size by less than this share, */
-  flatCells: 0.03,
-  /** and adds + removes per minute stay under this share of the library. */
-  flatChurn: 0.02,
+  /** Discovering until this share of the cells is old enough to compare with 1-2 min ago. */
+  minCompared: 0.5,
+  /** Converged: at least this share of the compared cells is stable... */
+  stableFrac: 0.85,
+  /** ...and churn (re-adds + adds removed again + removals of established cells) per minute stays under this share of the library. */
+  churn: 0.035,
 } as const;
 
+const pct = (v: number) => `${(100 * v).toFixed(1)}%`;
+
 /**
- * Where the run stands: "discovering" while the model is still finding
- * signal (explained rising, library growing, many adds), "converged" when
- * cells, explained fraction, residual excess and churn are all flat over the
- * last two minutes of recording, "settling" in between. Says nothing about
- * ground truth: a converged run can still miss cells the slow loop cannot see.
+ * Where the run stands. "discovering" while most cells are too young to be
+ * judged, "settling" while existing cells still change (footprint or trace
+ * noise vs 1-2 min ago) or churn is high, "converged" when both are low over
+ * the last two minutes of recording. The new-cell rate is reported, never
+ * judged. Says nothing about ground truth: a converged run can still miss
+ * cells the slow loop cannot see.
  */
 export function convergenceStatus(
   points: readonly ConvergencePoint[],
@@ -507,51 +564,43 @@ export function convergenceStatus(
     return { state: 'waiting', reason: 'waiting for the first cells and residuals' };
   }
   const from = last.minutes - rule.windowMin;
-  const first = points.find((p) => p.minutes >= from && Number.isFinite(p.explained));
-  const cells = Math.max(1, last.cells);
-  const churn = (last.addsPerMin + last.removesPerMin) / cells;
-  const enough = points[0].minutes <= from && first !== undefined;
-  if (!enough || !first) {
+  const win = points.filter((p) => p.minutes >= from);
+  const newRate = Number.isFinite(last.edits.newAdds)
+    ? `; finding ${last.edits.newAdds.toFixed(1)} new cells/min`
+    : '';
+  if (points[0].minutes > from || win.length === 0) {
     return { state: 'discovering', reason: `needs ${rule.windowMin} min of history` };
   }
-  const dExplained = last.explained - first.explained;
-  const dCells = (last.cells - first.cells) / Math.max(1, first.cells);
-  const adds = last.addsPerMin / cells;
-  if (dExplained > rule.discoverExplained) {
+  const compared = last.stableCells / last.cells;
+  if (!Number.isFinite(last.stableFrac) || !(compared >= rule.minCompared)) {
     return {
       state: 'discovering',
-      reason: `explained signal up ${(100 * dExplained).toFixed(0)} pts in ${rule.windowMin} min`,
+      reason: `most cells are under a minute old${newRate}`,
     };
   }
-  if (dCells > rule.discoverCells) {
-    return {
-      state: 'discovering',
-      reason: `library grew ${(100 * dCells).toFixed(0)}% in ${rule.windowMin} min`,
-    };
+  const churns = win
+    .map((p) => churnPerMin(p.edits) / Math.max(1, p.cells))
+    .filter(Number.isFinite);
+  if (churns.length === 0) {
+    return { state: 'discovering', reason: 'waiting for slow-loop counts' };
   }
-  if (adds > rule.discoverAdds) {
-    return { state: 'discovering', reason: `${last.addsPerMin.toFixed(1)} cells added per min` };
-  }
-  const dRes =
-    Math.abs(last.residualExcess - first.residualExcess) /
-    Math.max(Math.abs(first.residualExcess), 0.05);
-  const flat = {
-    explained: Math.abs(dExplained) < rule.flatExplained,
-    residual: dRes < rule.flatResidual,
-    cells: Math.abs(dCells) < rule.flatCells,
-    churn: churn < rule.flatChurn,
-  };
-  if (flat.explained && flat.residual && flat.cells && flat.churn) {
+  const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+  const churn = mean(churns);
+  // Averaged over the window: each cell is compared with a snapshot 1-2 min
+  // old, so single readings saw-tooth with the snapshot's age.
+  const fracs = win.map((p) => p.stableFrac).filter(Number.isFinite);
+  const stableFrac = mean(fracs);
+  const stable = stableFrac >= rule.stableFrac;
+  const calm = churn < rule.churn;
+  if (stable && calm) {
     return {
       state: 'converged',
-      reason: `cells, explained, residual and churn flat over ${rule.windowMin} min`,
+      reason: `${pct(stableFrac)} of cells stable, churn ${pct(churn)}/min${newRate}`,
     };
   }
   const moving = [
-    !flat.explained && 'explained',
-    !flat.residual && 'residual',
-    !flat.cells && 'cell count',
-    !flat.churn && 'churn',
+    !stable && `${pct(1 - stableFrac)} of cells still changing`,
+    !calm && `churn ${pct(churn)} of cells/min`,
   ].filter(Boolean);
-  return { state: 'settling', reason: `still moving: ${moving.join(', ')}` };
+  return { state: 'settling', reason: `${moving.join(', ')}${newRate}` };
 }

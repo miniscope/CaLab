@@ -268,6 +268,14 @@ export function CellCountPlot(props: { cells: CellStore }): JSX.Element {
               {st().counters.rejects} &middot; versions {changes().versions} (+{changes().added} / -
               {changes().removed} cells) &middot; dropped {dropPct().toFixed(0)}% of frames &middot;
               reservoir {(st().reservoirBytes / 1048576).toFixed(0)} MB
+              <Show when={st().framesPerTile > 0}>, {st().framesPerTile} frames per tile</Show>
+              <Show when={st().reservoirWarning}>
+                {(w) => (
+                  <span class="cala-warning cala-block" data-testid="reservoir-warning">
+                    {w()}
+                  </span>
+                )}
+              </Show>
             </>
           )}
         </Show>
@@ -317,11 +325,17 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
       <p class="cala-muted" data-testid="pipeline-stages">
         Pipeline ms/frame: read {s().stageMs().readMs.toFixed(1)}, preprocess{' '}
         {s().stageMs().preprocessMs.toFixed(1)}, motion {s().stageMs().motionMs.toFixed(1)}
+        <Show when={s().stageBusy().length > 0}>
+          {' '}
+          | pipelined stage busy ms/frame: frame+preprocess {s().stageBusy()[0].toFixed(1)}, motion{' '}
+          {s().stageBusy()[1].toFixed(1)}, trace {s().stageBusy()[2].toFixed(1)};{' '}
+          {s().fps().toFixed(1)} fps
+        </Show>
       </p>
       <p class="cala-muted" data-testid="fast-timing">
-        Fast loop per frame (mean / p99 / max), discovery on: {fmt(timing().on)}; off:{' '}
-        {fmt(timing().off)}. Trace solve per frame, on: {fmt(timing().solveOn)}; off:{' '}
-        {fmt(timing().solveOff)}.
+        Over recent batches (mean / p99 / max): fast loop per frame, discovery on:{' '}
+        {fmt(timing().on)}; off: {fmt(timing().off)}. Trace solve per frame, on:{' '}
+        {fmt(timing().solveOn)}; off: {fmt(timing().solveOff)}.
       </p>
       <p class="cala-muted" data-testid="qc-timing">
         Trace solve per frame with online QC: {fmt(timing().solveQc)}; without:{' '}
@@ -330,6 +344,15 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
           {' '}
           Slow loop per batch: {fmt(timing().slowBatch)}; longest step per batch:{' '}
           {fmt(timing().slowStep)}.
+        </Show>
+        <Show when={(c().status()?.visitWorkers ?? 0) > 0 ? c().status() : undefined}>
+          {(st) => (
+            <span data-testid="visit-timing">
+              {' '}
+              Tile visits on {st().visitWorkers} workers: {st().jobs} so far, {st().jobsInFlight}{' '}
+              out now, {st().visitMs.toFixed(0)} ms each (latest).
+            </span>
+          )}
         </Show>
       </p>
     </div>

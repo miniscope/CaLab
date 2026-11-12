@@ -20,12 +20,19 @@ pybindings = ["pyo3"]
 
 [dependencies]
 # FFTs for motion registration (same crates and versions as crates/solver).
+# `wasm_simd` lets rustfft's planner pick its SIMD kernels in the `+simd128`
+# browser build (.cargo/config.toml); the output is bit-identical.
 realfft = "3"
-rustfft = "6"
+rustfft = { version = "6", features = ["wasm_simd"] }
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"], optional = true }
+
+# Unit tests of the slow loop are numerically heavy: optimised test builds
+# run them in seconds instead of minutes (debug assertions stay on).
+[profile.test]
+opt-level = 2
 
 [profile.release]
 opt-level = 3

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell, renderOverlay } from '../lib/cell-overlay.ts';
-import { summarize } from '../lib/cell-store.ts';
+import { CellMetrics, pushRecent, summarize } from '../lib/cell-store.ts';
 import {
   FastLoop,
   type TraceBackend,
@@ -135,7 +135,8 @@ describe('TraceHistory', () => {
     expect(h.bytes).toBe(4096 * 4);
   });
 
-  it('stops growing at the byte budget and rings at its current size', () => {
+  it('splits the byte budget evenly: late cells get as long a trace as early ones', () => {
+    // 9 KB = 2304 frames of f32 for all cells together.
     const h = new TraceHistory(1 << 17, 10, 9 * 1024);
     for (let f = 0; f < 5000; f += 100) {
       h.push(
@@ -145,17 +146,42 @@ describe('TraceHistory', () => {
         new Array(200).fill(1).map((_, k) => f + (k >> 1)),
       );
     }
-    // Both start at 1024 frames (8 KB); growing one to 1536 would pass 10 KB.
-    expect(h.bytes).toBe(2 * 1024 * 4);
-    expect(h.get(1).frames.length).toBe(1024);
-    expect(h.get(1).values[1023]).toBe(4999);
-    // A third cell does not fit at all; dropping one frees its share.
+    // Two cells share 2304 frames: 1152 each.
+    expect(h.bytes).toBe(2 * 1152 * 4);
+    expect(h.get(1).frames.length).toBe(1152);
+    expect(h.get(1).values[1151]).toBe(4999);
+    // A third cell found late is tracked; every ring is cut back to its share (768).
     h.push(5000, 1, [1, 2, 7], [1, 2, 3]);
-    expect(h.has(7)).toBe(false);
-    h.retain([1]);
-    expect(h.bytes).toBe(1024 * 4);
-    h.push(5001, 1, [1, 7], [1, 3]);
     expect(h.has(7)).toBe(true);
+    expect(h.get(1).frames.length).toBe(768);
+    expect(h.get(1).values[767]).toBe(1);
+    expect(h.get(1).frames[0]).toBe(5001 - 768);
+    expect(h.get(7).values).toEqual([3]);
+    expect(h.bytes).toBeLessThanOrEqual(9 * 1024);
+    // Dropping a cell frees its share; the others may grow back when linear.
+    h.retain([1]);
+    expect(h.bytes).toBe(768 * 4);
+  });
+
+  it('tracks every cell of a large library within the budget, late ones included', () => {
+    const cells = 4000;
+    const budget = 64 * 1048576;
+    const h = new TraceHistory(1 << 17, 100_000, budget);
+    const ids = Array.from({ length: cells }, (_, i) => i);
+    // The first 1000 cells exist from the start; the rest appear one batch each.
+    let frame = 0;
+    for (; frame < 400; frame += 8) {
+      const active = ids.slice(0, Math.min(cells, 1000 + frame * 8));
+      h.push(frame, 8, active, new Float32Array(8 * active.length).fill(1));
+    }
+    expect(h.cellCount).toBe(cells);
+    // Equal rings: 64 MB / 4000 cells / 4 B = 4194 frames each; every cell has data.
+    expect(h.bytes).toBeLessThanOrEqual(budget);
+    expect(h.get(cells - 1).frames.length).toBeGreaterThan(0);
+    expect(h.span(0)!.end).toBe(h.span(cells - 1)!.end);
+    // Once the library has stopped growing, long-lived cells are cut to the same ring as new ones.
+    const sizes = new Set(ids.map((i) => h.get(i).frames.length).filter((n) => n > 8));
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(Math.floor(budget / 4 / cells));
   });
 
   it('lays a trace out densely on stream frames with NaN where it has none', () => {
@@ -510,6 +536,8 @@ function runner(publishAt: Set<number>) {
     setNoise: vi.fn(),
     cellCount: 3,
     reservoirBytes: 1024,
+    framesPerTile: 40,
+    reservoirWarning: 'capped',
     stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
     cellStatus: () => Float64Array.of(1, 1, 3, 2, 0, 0),
     free: vi.fn(),
@@ -566,6 +594,8 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     const [status] = t.toMain.of('status');
     expect(status.status).toMatchObject({ frame: 43, observed: 3, cells: 3, version: 102 });
     expect(status.status.counters).toMatchObject({ adds: 3, deletes: 9, splits: 10, absorbs: 11 });
+    // The reservoir's size and its memory-cap warning reach the UI.
+    expect(status.status).toMatchObject({ framesPerTile: 40, reservoirWarning: 'capped' });
     // Evidence status rides along (the first status of a run always carries it).
     expect(Array.from(status.status.cellStatus!.ids)).toEqual([1, 2]);
     expect(Array.from(status.status.cellStatus!.established)).toEqual([1, 0]);
@@ -670,6 +700,32 @@ describe('summarize', () => {
     const v = Array.from({ length: 200 }, (_, i) => i + 1);
     expect(summarize(v)).toEqual({ n: 200, mean: 100.5, p99: 198, max: 200 });
     expect(summarize([])).toEqual({ n: 0, mean: 0, p99: 0, max: 0 });
+  });
+});
+
+describe('bounded per-batch histories', () => {
+  it('pushRecent keeps the newest cap..2cap samples', () => {
+    const s: number[] = [];
+    for (let i = 0; i < 100; i++) pushRecent(s, i, 8);
+    expect(s.length).toBeGreaterThanOrEqual(8);
+    expect(s.length).toBeLessThan(16);
+    expect(s.at(-1)).toBe(99);
+    // contiguous newest samples, in order
+    expect(s).toEqual(Array.from({ length: s.length }, (_, k) => 100 - s.length + k));
+  });
+
+  it('CellMetrics thins every series together and keeps the newest point', () => {
+    const m = new CellMetrics(8);
+    for (let i = 0; i < 1000; i++) m.push(8 * (i + 1), i, i % 3 ? i : null, i, i, i / 10, i / 20);
+    expect(m.length).toBeLessThanOrEqual(8);
+    for (const s of [m.cells, m.working, m.lag, m.version, m.fastMs, m.solveMs])
+      expect(s.length).toBe(m.length);
+    expect(m.frame.at(-1)).toBe(8000);
+    expect(m.lag.at(-1)).toBe(999);
+    // the series stay aligned: cells[i] was pushed with frame[i]
+    m.frame.forEach((f, i) => expect(m.cells[i]).toBe(f / 8 - 1));
+    // frames stay increasing
+    for (let i = 1; i < m.length; i++) expect(m.frame[i]).toBeGreaterThan(m.frame[i - 1]);
   });
 });
 
