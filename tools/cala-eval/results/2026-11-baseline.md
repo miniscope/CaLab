@@ -9,7 +9,7 @@ Reference numbers for the Step 1 PRs. Compare a candidate against `main1x` below
 - Run flags: `-- --batch 8 --budget 30000000 --slow-seed 1` (`--motion` is added by `arms.py` for motion, halo, oof). Arms static, motion, halo, oof; seeds 5-9; 1x budget. Plus motion at `--budget-mult 4`.
 - Sims: every recording's `spec.json` is byte-identical to what `gen_sims.py` would write (checked by `gen_sims.py --reuse`, nothing regenerated). static/motion seeds 5-7 from `scratchpad/churn/sims`, 8-9 from `scratchpad/e1/sims`; halo/oof from `scratchpad/e3/sims`. Symlinked into `scratchpad/e6/sims`.
 - Second reference column `e1base`: the E1 base runs (`scratchpad/e1/runs/base`, harness main 18bffa1, same flags). Its binary predates #322. Static and motion only.
-- Runs directories (usable as `--base`), all under `/private/tmp/claude-503/-Users-daharoni-Projects-CaLab/afa6e515-3c3e-4cc7-af38-91dc1bbfaf4b/scratchpad/e6/`: `runs/x1/base` (1x, 20 runs), `runs/x4/base` (motion 4x, 5 runs), `real/seed1`, `real/seed2`; binary `bin/81f041c`.
+- Runs directories (usable as `--base`), all under `scratchpad/e6/` (session scratch, not in the repo): `runs/x1/base` (1x, 20 runs), `runs/x4/base` (motion 4x, 5 runs), `real/seed1`, `real/seed2`; binary `bin/81f041c`.
 - Cost: 1x runs 187 s (static), 285 s (motion), 306 s (halo), 328 s (oof) wall, 4 in parallel; 4x motion 735 s; max RSS 1.25 GB per sim run.
 
 Cells are mean +- sample sd over the 5 seeds (n in brackets). The seed spread is large against most effects: the E1 null comparison gave a P8 paired CI half-width of .024 on motion and .013 on static.
@@ -158,7 +158,7 @@ More compute still buys recall (R8 .747 -> .806, AUC_R +.085) and costs precisio
 
 ## Real data: workshop recording, 18000 frames, motion, 2 slow seeds
 
-`qc_eval real <workshop raw> <out> --motion --frames 18000 --no-pass2 --checkpoints 15 --batch 8 --budget 30000000 --slow-seed S` (recipe of `fullextent-diag3/real.sh` without `--dump`), binary 81f041c. About 560 s and 1.05 GB per run, two at once.
+`qc_eval real <workshop raw> <out> --motion --frames 18000 --batch 8 --budget 30000000 --slow-seed S` (recipe of `fullextent-diag3/real.sh` without `--dump`; the recipe also passed `--no-pass2 --checkpoints 15`, which `qc_eval` does not have and ignored, so checkpoints were every 300 frames), binary 81f041c. About 560 s and 1.05 GB per run, two at once.
 
 | slow seed | cells at 18000 | explained | residual | snr median | adds/min |
 | --------- | -------------- | --------- | -------- | ---------- | -------- |

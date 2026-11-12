@@ -41,9 +41,11 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
-- `src/components/PipelinePanel.tsx`: raw or preprocessed vs motion-corrected
-  (or background-removed) video, progress, throughput, and the live motion
-  and flicker traces (`MotionTrace.tsx`, `FlickerTrace.tsx`).
+- `src/components/VideoPanel.tsx`: raw, preprocessed or motion-corrected (or
+  background-removed) video with the cell overlay and the residual map;
+  `StatusBar.tsx`: progress and throughput; `DetailsTabs.tsx`: the detail tabs,
+  including the live motion and flicker traces (`MotionTrace.tsx`,
+  `FlickerTrace.tsx`).
 - `src/__tests__/`: frame source tests on synthetic AVIs (`synth-avi.ts`), and
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
@@ -200,8 +202,8 @@ What changes in a live run:
   past beyond the traces the fast loop solved as the frames came in. The
   export (`src/lib/live-export.ts`) takes those: the cells of the final
   library over every frame, NaN before a cell was found and for frames the
-  bounded trace history no longer holds. (Keeping the past without the file
-  is what the compression branch adds.)
+  bounded trace history no longer holds. A live run does not re-extract old
+  traces; the raw video saved by the acquisition is re-read downstream.
 
 ### Measured: the synthetic 5-min session streamed at 20 fps
 

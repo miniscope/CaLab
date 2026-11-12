@@ -9,8 +9,9 @@ minutes 12 to 15, and no age group settles. What causes those changes?
 - Binary: `feat/cala-churn-log` (this PR, on main 6b1debf) merged locally with
   `origin/feat/cala-flat-field-default` 3c1a269 (#330, not yet on main, so the
   online flat field is on), built with `--features diagnostics`.
-- Runs: real recording, 18000 frames (15 min at 20 Hz), `--motion --no-pass2
---checkpoints 15 --batch 8 --budget 30000000 --via-jobs --churn-log`,
+- Runs: real recording, 18000 frames (15 min at 20 Hz), `--motion --batch 8
+--budget 30000000 --via-jobs --churn-log` (the run also passed `--no-pass2
+--checkpoints 15`, which `qc_eval` ignores; checkpoints were every 300 frames),
   default `Residual` footprint statistics, slow seeds 1 and 2. Peak RSS
   1.2 GB, 9.5 min each.
 - The logging changes no decision: the seed-1 `edits.tsv` is byte-identical

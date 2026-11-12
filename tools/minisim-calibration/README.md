@@ -6,7 +6,7 @@ here rather than under `crates/cala/tests/fixtures/` because it is Python with i
 venv, not test data; the committed fixture (`crates/cala/tests/fixtures/motion_small`)
 only needs its output.
 
-- Pinned minisim commit: `e33edad` (main, includes the realistic-motion PR #33).
+- Pinned minisim commit: `01a9ce2` (main). The scripts need at least `c243dca` (scatter-halo PR #34: `make_trace_sim.py` uses `observed_halo_fraction`); `01a9ce2` reproduces recordings made with the earlier pin `e33edad` byte for byte.
 - `ca1_workshop_calibrated.spec.json`: the calibrated 600 px spec (focal depth pinned at 180 um).
 - `ca1_workshop_v2.spec.json`: v1 plus realistic activity (event rate, burst size and long events, giving real peak SNR), cell density, bleaching and neuropil (see `CALIBRATION.md`, "v2"). Use it to validate cell discovery and QC; the motion fixtures stay on v1.
 - `ca1_workshop_v2_fpn.spec.json`: v2 plus a `sensor_defects` step (PRNU 2.4 %, column offsets 1.0 ADU, default hot pixels). It reproduces the workshop data's sensor-fixed pixel pattern: 2.4 grey levels SD, 2.7 % of brightness, which motion correction turns into a slow pixel-scale shimmer. See `tools/cala-diagnostics/PIXEL_NOISE.md`. On the GT sims tested so far the pattern does not hurt discovery. Use this spec when testing anything that is sensitive to pixel-scale texture.
@@ -61,7 +61,7 @@ Display and statistics check against the real recording (`tools/cala-diagnostics
 
 ```sh
 uv venv --python 3.12
-uv pip install "minisim @ git+https://github.com/miniscope/minisim@e33edad"
+uv pip install "minisim @ git+https://github.com/miniscope/minisim@01a9ce2"
 uv pip install scipy zarr  # extra deps of the scripts
 ```
 
