@@ -88,6 +88,25 @@ deviations from the plan: the `qc::heldout` module docs.
 run's final library, or another pipeline's footprints converted to `CALAFP01`)
 with no slow loop; its `final.tsv` carries each cell's `ho_marginal_z`.
 
+Footprint convergence (E7, `calab_cala::qc::convergence`; `qc_eval sim` and
+`qc_eval real` write `convergence.tsv`, one row per checkpoint and lag k = 1
+and 4 checkpoints):
+
+| name                         | source            | meaning                                                                                         |
+| ---------------------------- | ----------------- | ----------------------------------------------------------------------------------------------- |
+| `conv_med1`, `conv_med4`     | `convergence.tsv` | median `‖a_v − a_{v−k}‖ / ‖a_v‖` over cells present at both checkpoints, last checkpoint        |
+| `conv_share1`, `conv_share4` | `convergence.tsv` | share of those cells whose change exceeds their own split-half footprint noise, last checkpoint |
+
+The noise level is the split-half noise of the cell's running footprint
+statistics (`SlowLoop::footprint_noise`: half the difference of the two
+halves, over the footprint norm, on the cell's support): it is already kept
+for the slow loop, needs no extra pass and is scale free. It is conservative,
+because the footprint at `v - k` shares most of its data with the one at `v`.
+Rows also carry the share of cells that moved by more than 0.1 %, the median change among them, the share that changed by more than 10 %, the median shape-only change (unit-norm footprints) and, per
+age bin (frames since birth: <1200, 1200-3000, 3000-6000, >=6000), the cells
+counted, the share changing and the median change. The curve over checkpoints:
+`summarize.py --convergence <run dir>...`.
+
 FP classes (`qc_eval` `label_rows`): `noise` r < .5 with every GT unit and no GT
 centroid within 10 px; `adjacent` r < .5 but a centroid within 10 px; `partial`
 r .5 to .7 with a GT unit no other cell matched; `dup` r >= .5 with a unit
