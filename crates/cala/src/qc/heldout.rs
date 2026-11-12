@@ -648,7 +648,19 @@ impl HeldOutScore {
             .background(lib.background_model().clone())
             .reuse(lib.clone());
         self.occupied.iter_mut().for_each(|v| *v = 0);
-        let mut fps: Vec<(Footprint, (f32, f32), f32)> = Vec::with_capacity(k);
+        // Each column with its skirt (the cells exactly as in `lib`).
+        type Col = (Footprint, (f32, f32), f32, Vec<(u32, f32)>);
+        let skirt_of = |slot: usize| -> Vec<(u32, f32)> {
+            let (sb, sv) = lib.skirt(slot);
+            sb.iter().copied().zip(sv.iter().copied()).collect()
+        };
+        let bpx = lib.block_px();
+        let (gw, gh) = if bpx > 0 {
+            (w.div_ceil(bpx) as i32, dims.height.div_ceil(bpx) as i32)
+        } else {
+            (0, 0)
+        };
+        let mut fps: Vec<Col> = Vec::with_capacity(k);
         for slot in 0..k {
             let (pix, raw) = lib.unfiltered(slot);
             let (center, radius) = lib.support(slot);
@@ -662,6 +674,7 @@ impl HeldOutScore {
                 patch(lib.ids()[slot], pix, raw, (0, 0), dims),
                 center,
                 radius,
+                skirt_of(slot),
             ));
         }
         // Which cells get a placebo: a random `placebo_share` of them.
@@ -672,7 +685,7 @@ impl HeldOutScore {
             order.swap(i, j);
         }
         let d = self.cfg.cell_diameter_px;
-        let mut placed: Vec<(Footprint, (f32, f32), f32)> = Vec::new();
+        let mut placed: Vec<Col> = Vec::new();
         for &slot in order.iter().take(n_pl) {
             let (pix, raw) = lib.unfiltered(slot);
             let energy: f32 = raw.iter().map(|v| v * v).sum();
@@ -680,12 +693,16 @@ impl HeldOutScore {
                 continue;
             }
             let (center, radius) = lib.support(slot);
+            // A placebo of a cell with a skirt carries the skirt too, so it
+            // moves by whole moat blocks (its block field moves exactly).
+            let skirt = skirt_of(slot);
+            let unit = if skirt.is_empty() { 1.0 } else { bpx as f32 };
             let dir0 = (self.rand() % 4) as usize;
             let mut found = None;
             'dirs: for dd in 0..4 {
                 let (uy, ux) = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)][(dir0 + dd) % 4];
                 for step in 2..=self.cfg.max_steps.max(2) {
-                    let s = (step as f32 * d).round() as i32;
+                    let s = ((step as f32 * d / unit).round() * unit) as i32;
                     let (sy, sx) = (uy * s, ux * s);
                     let mut over = 0.0f32;
                     let mut inside = 0.0f32;
@@ -731,13 +748,21 @@ impl HeldOutScore {
                 }
             }
             let c = (center.0 + sy as f32, center.1 + sx as f32);
-            placed.push((fp, c, radius));
+            let skirt: Vec<(u32, f32)> = skirt
+                .into_iter()
+                .filter_map(|(bq, v)| {
+                    let by = (bq as usize / gw as usize) as i32 + sy / unit as i32;
+                    let bx = (bq as usize % gw as usize) as i32 + sx / unit as i32;
+                    (by >= 0 && bx >= 0 && by < gh && bx < gw).then(|| ((by * gw + bx) as u32, v))
+                })
+                .collect();
+            placed.push((fp, c, radius, skirt));
         }
         self.placebo_counts.0 += n_pl as u64;
         self.placebo_counts.1 += placed.len() as u64;
         let centers: Vec<(f32, f32)> = placed.iter().map(|p| p.1).collect();
-        for (fp, c, r) in fps.into_iter().chain(placed) {
-            b.push_disk(fp, c, r);
+        for (fp, c, r, skirt) in fps.into_iter().chain(placed) {
+            b.push_disk_skirt(fp, c, r, skirt);
         }
         let plib = Arc::new(b.build(filter)?);
         let engine = match self.placebos.take() {

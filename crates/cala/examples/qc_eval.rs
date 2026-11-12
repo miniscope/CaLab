@@ -2122,6 +2122,76 @@ fn write_library(
     }
 }
 
+/// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
+/// |trace|) and, at the first frames that hit the sweep cap or go
+/// non-finite, the library bytes, the frame and the warm start.
+struct DivergeProbe {
+    dir: PathBuf,
+    log: BufWriter<File>,
+    dumps: usize,
+    last_ver: u64,
+}
+
+impl DivergeProbe {
+    fn new(dir: PathBuf) -> DivergeProbe {
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = BufWriter::new(File::create(dir.join("solver.tsv")).unwrap());
+        writeln!(log, "t\tlib\tcells\tsweeps\tmax_abs\tnonfinite").unwrap();
+        DivergeProbe {
+            dir,
+            log,
+            dumps: 0,
+            last_ver: u64::MAX,
+        }
+    }
+    fn frame(
+        &mut self,
+        t: usize,
+        y: &[f32],
+        engine: &TraceEngine,
+        warm: &calab_cala::trace::TraceState,
+        tr: &FrameTraces,
+    ) {
+        let lib = engine.library();
+        let mx = tr.traces.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let nf = tr.traces.iter().filter(|v| !v.is_finite()).count();
+        writeln!(
+            self.log,
+            "{t}\t{}\t{}\t{}\t{mx:e}\t{nf}",
+            lib.version(),
+            lib.len(),
+            tr.sweeps
+        )
+        .unwrap();
+        let at = std::env::var("CALA_DIVERGE_AT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            == Some(t);
+        let bad = mx > 1e6 || nf > 0 || at;
+        if bad && self.dumps < 6 && lib.version() != self.last_ver {
+            self.last_ver = lib.version();
+            self.dumps += 1;
+            let d = self.dir.join(format!("dump_t{t}_v{}", lib.version()));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("library.bin"), lib.to_bytes()).unwrap();
+            let mut b = Vec::with_capacity(y.len() * 4);
+            y.iter().for_each(|v| b.extend_from_slice(&v.to_le_bytes()));
+            std::fs::write(d.join("frame.f32"), b).unwrap();
+            let mut w = String::new();
+            for (id, v) in warm.ids.iter().zip(&warm.traces) {
+                let _ = writeln!(w, "{id}\t{v:e}");
+            }
+            std::fs::write(d.join("warm.tsv"), w).unwrap();
+            let mut o = String::new();
+            for (id, v) in lib.ids().iter().zip(&tr.traces) {
+                let _ = writeln!(o, "{id}\t{v:e}");
+            }
+            std::fs::write(d.join("out.tsv"), o).unwrap();
+            self.log.flush().unwrap();
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -2376,6 +2446,7 @@ fn main() {
         .build(&mut flat)
         .unwrap();
     let mut engine = TraceEngine::new(Arc::new(empty), SolverConfig::default()).unwrap();
+    let mut diverge = std::env::var_os("CALA_DIVERGE_DIR").map(|d| DivergeProbe::new(d.into()));
     let mut slow: Option<SlowLoop> = None;
     let mut timed: Option<Timed> = None;
     let mut timed_noise: Option<Vec<f32>> = None;
@@ -2588,7 +2659,11 @@ fn main() {
                         engine.set_library(l).unwrap();
                     }
                 }
+                let warm = diverge.as_ref().map(|_| engine.state());
                 let tr = engine.process(&y).unwrap();
+                if let (Some(dv), Some(warm)) = (diverge.as_mut(), warm) {
+                    dv.frame(t, &y, &engine, &warm, &tr);
+                }
                 let Some(q) = qc.as_mut() else { continue };
                 let lib = engine.library().clone();
                 if let Some(h) = ho.as_mut() {

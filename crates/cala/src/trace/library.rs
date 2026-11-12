@@ -104,12 +104,83 @@ pub(crate) fn merge_blocks(blks: &mut Vec<u32>, skirt: &[(u32, f32)]) {
     blks.dedup();
 }
 
-/// Fold a skirt into a column: the column takes the block-constant field
-/// `skirt_b` on the complement of the support `S = {raw > 0}`, so that it
-/// equals the measured light per block there. Off the support disk the
-/// column is `−low_b`, so `low_b ← low_b − skirt_b`; on disk pixels outside
-/// `S` (`raw = 0`, FOV only) `filt ← filt + skirt_b`; on `S` nothing
-/// changes. `blks` must hold every skirt block.
+/// Radius of the disk around `center` that holds the support disk
+/// (`radius`) and every skirt block (side `block`) whole: the moat of a
+/// footprint with a skirt is [`moat_blocks`] of this radius, so it reaches
+/// as far beyond the skirt as beyond the support. Without a skirt it is
+/// `radius`.
+pub(crate) fn skirt_radius(
+    center: (f32, f32),
+    radius: f32,
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+) -> f32 {
+    if block == 0 {
+        return radius;
+    }
+    let gw = dims.width.div_ceil(block);
+    skirt.iter().fold(radius, |r, &(bq, _)| {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        let y1 = ((by + 1) * block).min(dims.height);
+        let x1 = ((bx + 1) * block).min(dims.width);
+        let (cy, cx) = (
+            0.5 * ((by * block) as f32 + y1 as f32) - 0.5,
+            0.5 * ((bx * block) as f32 + x1 as f32) - 0.5,
+        );
+        let (dy, dx) = (cy - center.0, cx - center.1);
+        r.max((dy * dy + dx * dx).sqrt() + 0.7072 * block as f32)
+    })
+}
+
+/// The skirt as unfiltered light: `(pixel, skirt_b)` on every FOV pixel of
+/// a skirt block outside the support `S` (the support disk pixels `pix`
+/// with `raw ≠ 0`, as in [`apply_skirt`]). The column of a footprint with a
+/// skirt is the filter applied to the support values plus this field, so
+/// it carries the skirt's own low-pass (its negative lobe in the moat) and
+/// sums to about zero like any filtered footprint.
+pub(crate) fn skirt_field(
+    pix: &[u32],
+    raw: &[f32],
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+    fov: &[u8],
+) -> Vec<(u32, f32)> {
+    if skirt.is_empty() || block == 0 {
+        return Vec::new();
+    }
+    let on_s: std::collections::HashSet<u32> = pix
+        .iter()
+        .zip(raw)
+        .filter(|&(_, &v)| v != 0.0)
+        .map(|(&g, _)| g)
+        .collect();
+    let (w, h) = (dims.width, dims.height);
+    let gw = w.div_ceil(block);
+    let mut out = Vec::new();
+    for &(bq, s) in skirt {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        for y in by * block..((by + 1) * block).min(h) {
+            for x in bx * block..((bx + 1) * block).min(w) {
+                let g = (y * w + x) as u32;
+                if fov[g as usize] != 0 && !on_s.contains(&g) {
+                    out.push((g, s));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fold a skirt into a column whose low-pass (`filt = raw − L f`, `low_b`
+/// the block means of `L f`) was taken of the whole footprint `f`, support
+/// values plus [`skirt_field`]: the column `f − L f` takes the
+/// block-constant field `skirt_b` on the complement of the support
+/// `S = {raw > 0}`. Off the support disk the column is `−low_b`, so
+/// `low_b ← low_b − skirt_b`; on disk pixels outside `S` (`raw = 0`, FOV
+/// only) `filt ← filt + skirt_b`; on `S` nothing changes. `blks` must hold
+/// every skirt block.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_skirt(
     pix: &[u32],
@@ -404,7 +475,8 @@ impl LibraryBuilder {
             col_start.push(pix.len());
             let skirt = &self.skirts[ids.len() - 1];
             if let Some((b, reach)) = geom {
-                let mut blks = moat_blocks((cy, cx), r, b, reach, dims);
+                let rm = skirt_radius((cy, cx), r, skirt, b, dims);
+                let mut blks = moat_blocks((cy, cx), rm, b, reach, dims);
                 merge_blocks(&mut blks, skirt);
                 low_blk.extend(blks);
                 skirt_blk.extend(skirt.iter().map(|s| s.0));
@@ -445,12 +517,33 @@ impl LibraryBuilder {
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
+        // A footprint with a skirt is its support values plus the skirt
+        // field, which reaches past the support disk.
+        let fields: Vec<Vec<(u32, f32)>> = (0..n)
+            .map(|i| match geom {
+                Some((b, _)) if !done[i] => skirt_field(
+                    &pix[col_start[i]..col_start[i + 1]],
+                    &raw[col_start[i]..col_start[i + 1]],
+                    &self.skirts[i],
+                    b,
+                    dims,
+                    &fov,
+                ),
+                _ => Vec::new(),
+            })
+            .collect();
+        let extent: Vec<f32> = (0..n)
+            .map(|i| match geom {
+                Some((b, _)) => skirt_radius(centers[i], radii[i], &self.skirts[i], b, dims),
+                None => radii[i],
+            })
+            .collect();
         let mut canvases: Vec<Vec<usize>> = Vec::new();
         for i in (0..n).filter(|&i| !done[i]) {
             let fits = |members: &Vec<usize>| {
                 members.iter().all(|&j| {
                     let (dy, dx) = (centers[i].0 - centers[j].0, centers[i].1 - centers[j].1);
-                    let need = reach + radii[i] + radii[j] + 2.0;
+                    let need = reach + extent[i] + extent[j] + 2.0;
                     dy * dy + dx * dx >= need * need
                 })
             };
@@ -468,11 +561,23 @@ impl LibraryBuilder {
                     img[pix[k] as usize] = raw[k];
                     src[pix[k] as usize] = raw[k];
                 }
+                for &(g, u) in &fields[i] {
+                    img[g as usize] = u;
+                    src[g as usize] = u;
+                }
             }
             filter.apply(&mut img)?;
             for &i in members {
-                for k in col_start[i]..col_start[i + 1] {
-                    val[k] = img[pix[k] as usize];
+                if fields[i].is_empty() {
+                    for k in col_start[i]..col_start[i + 1] {
+                        val[k] = img[pix[k] as usize];
+                    }
+                } else {
+                    // `raw − L f` (the skirt itself is added below).
+                    for k in col_start[i]..col_start[i + 1] {
+                        let q = pix[k] as usize;
+                        val[k] = raw[k] - (src[q] - img[q]);
+                    }
                 }
                 // Moat: block means of the low-pass `a − H a` (FOV only).
                 if let Some((b, _)) = geom {
@@ -518,6 +623,9 @@ impl LibraryBuilder {
             for &i in members {
                 for k in col_start[i]..col_start[i + 1] {
                     src[pix[k] as usize] = 0.0;
+                }
+                for &(g, _) in &fields[i] {
+                    src[g as usize] = 0.0;
                 }
             }
         }

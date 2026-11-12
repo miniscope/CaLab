@@ -3254,13 +3254,18 @@ impl SlowLoop {
         cell
     }
 
-    /// The skirt (S2.1 section 4.2): per moat-grid block, the measured
-    /// light above the moat model, `h + L a`, summed over the disk's pixels
-    /// outside the support `S = {a > 0}` and outside the other significant
-    /// light `x`, over the block's FOV pixels outside `S` (unmeasured
-    /// pixels add nothing but count), divided by `peak`. Blocks without a
-    /// measured pixel get no entry. No threshold: a block mean is an
-    /// unbiased measurement.
+    /// The skirt (S2.1 section 4.2): per moat-grid block, the unfiltered
+    /// light `u_b` outside the support `S = {a > 0}` whose column matches
+    /// the measured light there. The filtered light of the footprint
+    /// `f = a + u` is `h = f − L f`, so on the disk's measured pixels
+    /// outside `S` and outside the other significant light `x`,
+    /// `u = h + L a + L u`. Per block, averaged over the block's FOV pixels
+    /// outside `S` (unmeasured pixels add nothing but count):
+    /// `u_b = c_b + Σ_c K_bc u_c`, `c_b` the block mean of `h + L a` and
+    /// `K_bc` that of the low-pass of block `c`'s skirt pixels, solved
+    /// exactly (`K` is non-negative with row sums below 1). Divided by
+    /// `peak`. Blocks without a measured pixel get no entry. No threshold:
+    /// a block mean is an unbiased measurement.
     fn skirt_blocks(
         &mut self,
         canvas: Rect,
@@ -3278,33 +3283,85 @@ impl SlowLoop {
         self.work += (canvas.len() * 30) as u64;
         let (w, hgt) = (self.dims.width, self.dims.height);
         let gw = w.div_ceil(b);
-        let mut sums: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
+        // Measured pixels (canvas-local) and the sum of `h + L a`, per block.
+        let mut meas: std::collections::BTreeMap<u32, (Vec<usize>, f64)> =
+            std::collections::BTreeMap::new();
         for p in 0..canvas.len() {
             if !mask[p] || a[p] > 0.0 || x[p] {
                 continue;
             }
             let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
             let bq = ((gy / b) * gw + gx / b) as u32;
-            *sums.entry(bq).or_insert(0.0) += f64::from(h[p] + low[p]);
+            let e = meas.entry(bq).or_default();
+            e.0.push(p);
+            e.1 += f64::from(h[p] + low[p]);
         }
-        let mut out = Vec::with_capacity(sums.len());
-        for (bq, sum) in sums {
+        let in_s = |y: usize, xx: usize| canvas.local(y, xx).is_some_and(|l| a[l] > 0.0);
+        let block_rect = |bq: u32| {
             let (by, bx) = (bq as usize / gw, bq as usize % gw);
+            Rect {
+                y0: by * b,
+                x0: bx * b,
+                h: ((by + 1) * b).min(hgt) - by * b,
+                w: ((bx + 1) * b).min(w) - bx * b,
+            }
+        };
+        let mut blks: Vec<(u32, Vec<usize>, f64, usize)> = Vec::with_capacity(meas.len());
+        let mut ext = canvas;
+        for (bq, (pts, sum)) in meas {
+            let r = block_rect(bq);
             let mut nb = 0usize;
-            for y in by * b..((by + 1) * b).min(hgt) {
-                for xx in bx * b..((bx + 1) * b).min(w) {
-                    if self.fov[y * w + xx] == 0 {
-                        continue;
-                    }
-                    let inside = canvas.local(y, xx).is_some_and(|l| a[l] > 0.0);
-                    nb += usize::from(!inside);
+            for y in r.y0..r.y0 + r.h {
+                for xx in r.x0..r.x0 + r.w {
+                    nb += usize::from(self.fov[y * w + xx] != 0 && !in_s(y, xx));
                 }
             }
             if nb > 0 {
-                out.push((bq, (sum / nb as f64 / f64::from(peak)) as f32));
+                ext = ext.union(&r);
+                blks.push((bq, pts, sum, nb));
             }
         }
-        out
+        let m = blks.len();
+        if m == 0 {
+            return Vec::new();
+        }
+        // `K` from one blur per skirt block on a canvas that holds them all.
+        let to_ext = |p: usize| {
+            let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
+            ext.local(gy, gx).expect("inside")
+        };
+        let mut kmat = vec![0.0f64; m * m];
+        let mut chi = vec![0.0f32; ext.len()];
+        let mut lchi = vec![0.0f32; ext.len()];
+        for (c, (bq, ..)) in blks.iter().enumerate() {
+            chi.iter_mut().for_each(|v| *v = 0.0);
+            let r = block_rect(*bq);
+            for y in r.y0..r.y0 + r.h {
+                for xx in r.x0..r.x0 + r.w {
+                    if self.fov[y * w + xx] != 0 && !in_s(y, xx) {
+                        chi[ext.local(y, xx).expect("inside")] = 1.0;
+                    }
+                }
+            }
+            self.filter.blur(ext.h, ext.w, &chi, &mut lchi);
+            self.work += (ext.len() * 30) as u64;
+            for (r_, (_, pts, _, nb)) in blks.iter().enumerate() {
+                let s: f64 = pts.iter().map(|&p| f64::from(lchi[to_ext(p)])).sum();
+                kmat[r_ * m + c] = s / *nb as f64;
+            }
+        }
+        // (I − K) u = c.
+        let mut sys: Vec<f64> = (0..m * m)
+            .map(|k| f64::from(u8::from(k / m == k % m)) - kmat[k])
+            .collect();
+        let mut u: Vec<f64> = blks.iter().map(|e| e.2 / e.3 as f64).collect();
+        if !solve_dense(&mut sys, &mut u, m) {
+            return Vec::new();
+        }
+        blks.iter()
+            .zip(&u)
+            .map(|(e, &v)| (e.0, (v / f64::from(peak)) as f32))
+            .collect()
     }
 
     /// [`Self::basin_trim_from`] seeded at the peak
@@ -5053,6 +5110,39 @@ fn corr(a: &[f32], b: &[f32]) -> f32 {
     } else {
         (sab / (saa * sbb).sqrt()) as f32
     }
+}
+
+/// Solve `a x = b` in place (`a` row major `n x n`, `b` becomes `x`) by
+/// Gaussian elimination with partial pivoting; false when `a` is singular.
+fn solve_dense(a: &mut [f64], b: &mut [f64], n: usize) -> bool {
+    for k in 0..n {
+        let p = (k..n)
+            .max_by(|&i, &j| a[i * n + k].abs().total_cmp(&a[j * n + k].abs()))
+            .unwrap_or(k);
+        if !(a[p * n + k].abs() > 0.0) {
+            return false;
+        }
+        if p != k {
+            for j in 0..n {
+                a.swap(k * n + j, p * n + j);
+            }
+            b.swap(k, p);
+        }
+        for i in k + 1..n {
+            let f = a[i * n + k] / a[k * n + k];
+            if f != 0.0 {
+                for j in k..n {
+                    a[i * n + j] -= f * a[k * n + j];
+                }
+                b[i] -= f * b[k];
+            }
+        }
+    }
+    for k in (0..n).rev() {
+        let s: f64 = (k + 1..n).map(|j| a[k * n + j] * b[j]).sum();
+        b[k] = (b[k] - s) / a[k * n + k];
+    }
+    b.iter().all(|v| v.is_finite())
 }
 
 #[cfg(test)]

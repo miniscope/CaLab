@@ -1472,25 +1472,48 @@ fn library_skirt_matches_slow_loop_column() {
         .filter(|(_, &v)| v > 0.0)
         .map(|(&g, _)| g)
         .collect();
+    // The skirt as unfiltered light `u` (block-constant outside `S`); the
+    // column of the footprint with a skirt is `H (a + u)`, so the skirt
+    // adds `u − L u`: on the disk exactly, off it at block resolution.
+    let field: Vec<f32> = (0..(N * N) as u32)
+        .map(|g| {
+            let (y, x) = (g / N as u32, g % N as u32);
+            if in_s.contains(&g) {
+                0.0
+            } else {
+                skirt.iter().find(|s| s.0 == blk(y, x)).map_or(0.0, |s| s.1)
+            }
+        })
+        .collect();
+    let mut lu = vec![0.0f32; N * N];
+    LocalFilter::new(flattener().sigma()).blur(N, N, &field, &mut lu);
+    // The library is built with the flattener, which matches the local
+    // filter in the FOV interior only; this 96 px frame (σ = 20 px) has no
+    // interior, so the plain column's own gap bounds the skirt's.
+    let gap = (0..(N * N) as u32)
+        .map(|g| (lib_column_at(&lp, 0, g) - plain.column_at(g, N, b)).abs())
+        .fold(0.0f32, f32::max);
     let (mut on_zero, mut off_disk) = (0, 0);
     for g in 0..(N * N) as u32 {
         let (y, x) = (g / N as u32, g % N as u32);
-        let want = if in_s.contains(&g) {
-            0.0
-        } else {
-            skirt.iter().find(|s| s.0 == blk(y, x)).map_or(0.0, |s| s.1)
-        };
         let d_cell = cell.column_at(g, N, b) - plain.column_at(g, N, b);
         let d_lib = lib_column_at(&ls, 0, g) - lib_column_at(&lp, 0, g);
         let d_back = lib_column_at(&back, 0, g) - lib_column_at(&lp, 0, g);
-        for (what, d) in [("cell", d_cell), ("library", d_lib), ("bytes", d_back)] {
+        assert_eq!(d_back.to_bits(), d_lib.to_bits(), "bytes at ({y}, {x})");
+        assert!(
+            (d_lib - d_cell).abs() <= gap,
+            "library at ({y}, {x}): {d_lib} vs cell {d_cell} (gap {gap})"
+        );
+        let on_disk = cell.pix.binary_search(&g).is_ok();
+        if on_disk {
+            let want = field[g as usize] - lu[g as usize];
             assert!(
-                (d - want).abs() < 1e-6,
-                "{what} at ({y}, {x}): {d} vs {want}"
+                (d_cell - want).abs() < 1e-5,
+                "disk ({y}, {x}): {d_cell} vs {want}"
             );
         }
-        if want != 0.0 {
-            if cell.pix.binary_search(&g).is_ok() {
+        if field[g as usize] != 0.0 {
+            if on_disk {
                 on_zero += 1;
             } else {
                 off_disk += 1;
