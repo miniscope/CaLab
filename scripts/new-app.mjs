@@ -144,8 +144,8 @@ Next steps:
   npm test -w apps/${id}           # unit tests (src/__tests__/App.test.tsx)
   npm run build:apps && node scripts/combine-dist.mjs   # landing page + apps.json in dist/
 
-  - Fill in description, longDescription, features and screenshot in
-    apps/${id}/package.json (the landing-page card).
+  - Fill in description, longDescription, features, pipeline and screenshot
+    in apps/${id}/package.json (the landing-page card and workflow panel).
   - Add a browser smoke test at e2e/${id}.spec.ts (see e2e/README.md,
     "Adding a spec for a new app"); e2e/landing.spec.ts already covers the card.
   - Commit apps/${id} and the package-lock.json change.${opts['no-install'] ? '\n  - Run `npm install` to link the workspace.' : ''}

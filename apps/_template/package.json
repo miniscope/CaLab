@@ -9,6 +9,10 @@
     "description": "",
     "longDescription": "",
     "features": [],
+    "pipeline": {
+      "input": "",
+      "output": ""
+    },
     "status": "coming-soon",
     "hidden": true,
     "screenshot": ""

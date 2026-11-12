@@ -4,12 +4,20 @@
  * has an apps.json that lists exactly the non-hidden apps, each with a built
  * index.html under its path. The Python bridge reads this file from the
  * deployed site to learn app URLs, so a missing or stale manifest is a bug.
+ * Also fails on a malformed optional `calab.pipeline` in any app.
  *
  * Usage: node scripts/combine-dist.mjs && node scripts/check-apps-manifest.mjs
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { MANIFEST_FILE, MANIFEST_VERSION, discoverApps, repoRoot, siteDir } from './lib/apps.mjs';
+import {
+  MANIFEST_FILE,
+  MANIFEST_VERSION,
+  discoverApps,
+  pipelineErrors,
+  repoRoot,
+  siteDir,
+} from './lib/apps.mjs';
 
 const site = siteDir();
 const file = join(site, MANIFEST_FILE);
@@ -28,6 +36,12 @@ if (manifest.manifest_version !== MANIFEST_VERSION) {
 if (typeof manifest.release !== 'string' || manifest.release === '') fail('release is empty');
 if (Number.isNaN(Date.parse(manifest.generated_at))) fail('generated_at is not a date');
 if (!Array.isArray(manifest.apps)) fail('apps is not an array');
+
+// The landing page reads optional `calab` fields too; a malformed one is
+// dropped there silently, so fail on it here.
+for (const app of discoverApps()) {
+  for (const msg of pipelineErrors(app.meta.pipeline)) fail(`apps/${app.dir}: calab.${msg}`);
+}
 
 const expected = discoverApps().filter((app) => !app.hidden);
 const listed = Array.isArray(manifest.apps) ? manifest.apps : [];

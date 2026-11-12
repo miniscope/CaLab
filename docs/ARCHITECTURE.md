@@ -252,8 +252,9 @@ needs no migration or edge-function change.
 `scripts/combine-dist.mjs` and `scripts/check-apps-manifest.mjs`. combine-dist
 copies each app's `dist/` to `dist/<repo>/<displayName>/`, renders the landing
 page from the metadata with `scripts/lib/landing.mjs` (non-hidden apps, ordered stable →
-beta → coming-soon; released apps as screenshot cards, coming-soon ones under "In
-development"; colours and type from `packages/ui/src/styles/tokens.css`), and
+beta → coming-soon; released apps as screenshot cards, coming-soon ones unlinked
+under "In development", and a workflow panel from the optional `calab.pipeline`;
+colours and type from `packages/ui/src/styles/tokens.css`), and
 writes `dist/<repo>/apps.json` (`manifest_version`, `release`, `commit`,
 `generated_at`, and `id` / `displayName` / `path` / `description` / `status` per
 non-hidden app). The Python bridge reads that manifest from the deployed site (see

@@ -61,6 +61,39 @@ export function siteDir(env = process.env) {
 }
 
 /**
+ * `calab.pipeline` (optional): where the app sits in the analysis chain, as
+ * `{ "input": "Raw Miniscope video", "output": "cell footprints and traces" }`.
+ * The landing page's "How the apps fit together" panel lists every released
+ * app that sets it, in landing order. Absent, null, or both strings empty (the
+ * template's placeholder) leaves the app out of the panel.
+ */
+function pipelineOf(value) {
+  if (value == null) return null;
+  const input = value.input.trim();
+  const output = value.output.trim();
+  return input === '' && output === '' ? null : { input, output };
+}
+
+/** Problems with a `calab.pipeline` value; [] when it is valid or absent. */
+export function pipelineErrors(value) {
+  if (value == null) return [];
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return ['pipeline must be an object { input, output }'];
+  }
+  const errors = [];
+  for (const key of Object.keys(value)) {
+    if (key !== 'input' && key !== 'output') errors.push(`pipeline has unknown key "${key}"`);
+  }
+  for (const key of ['input', 'output']) {
+    if (typeof value[key] !== 'string') errors.push(`pipeline.${key} must be a string`);
+  }
+  if (errors.length > 0) return errors;
+  const blank = ['input', 'output'].filter((k) => value[k].trim() === '');
+  if (blank.length === 1) errors.push(`pipeline.${blank[0]} is empty (set both, or neither)`);
+  return errors;
+}
+
+/**
  * Every app with a `calab.displayName`, hidden ones included, in landing order.
  * `path` is the URL segment the app is deployed under (its displayName).
  */
@@ -79,6 +112,7 @@ export function discoverApps() {
       return [
         {
           dir,
+          meta,
           id: meta.id ?? dir,
           displayName: meta.displayName,
           path: meta.displayName,
@@ -88,6 +122,7 @@ export function discoverApps() {
           status: meta.status ?? 'coming-soon',
           hidden: meta.hidden ?? false,
           screenshot: meta.screenshot ?? '',
+          pipeline: pipelineErrors(meta.pipeline).length === 0 ? pipelineOf(meta.pipeline) : null,
         },
       ];
     })

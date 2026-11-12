@@ -4,12 +4,15 @@
  * It is plain HTML with inline CSS: no bundle, so it loads before any app.
  * Its colours, type, spacing and radii come from the apps' own design tokens,
  * packages/ui/src/styles/tokens.css, inlined at build time, so the page tracks
- * CaTune, CaDecon and Cala instead of keeping a copy of their values.
+ * the apps instead of keeping a copy of their values.
  *
- * Apps come from discoverApps() (scripts/lib/apps.mjs). Released apps
- * (stable, beta) get a card with a screenshot; coming-soon apps get a short
- * row under "In development". The grid fills by width, so it takes more apps
- * without layout changes.
+ * Everything about an app comes from its `calab` block (discoverApps() in
+ * scripts/lib/apps.mjs); nothing here names an app. Released apps (stable,
+ * beta) get a card: screenshot, description, and a Details disclosure with
+ * longDescription and features. Coming-soon apps get an unlinked row under
+ * "In development". Apps that set `calab.pipeline` appear in the "How the apps
+ * fit together" panel. The grid fills by width, so it takes more apps without
+ * layout changes.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,16 +27,6 @@ const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`;
 const MINISCOPE_URL = 'https://github.com/miniscope';
 
 const STATUS_LABEL = { stable: 'Stable', beta: 'Beta', 'coming-soon': 'Coming soon' };
-
-/**
- * How the apps chain, keyed by `calab.id`. A step is shown only while its app
- * is listed and released, so removing or hiding an app drops its line.
- */
-const WORKFLOW = [
-  { app: 'cala', input: 'Raw Miniscope video', output: 'cell footprints and traces' },
-  { app: 'cadecon', input: 'Traces', output: 'calcium kernel and spikes, estimated automatically' },
-  { app: 'catune', input: 'Traces', output: 'deconvolution parameters, tuned by eye' },
-];
 
 /** Escape a string for safe embedding in HTML content/attributes. */
 export function escapeHtml(str) {
@@ -57,43 +50,69 @@ function badge(status) {
 
 function renderCard(app) {
   const href = `${escapeHtml(app.path)}/`;
+  const name = escapeHtml(app.displayName);
   const thumb = app.screenshotFile
     ? `<img src="${escapeHtml(app.screenshotFile)}" alt="" decoding="async" />`
     : '';
+  // The details toggle is rendered hidden and revealed by the page script, so
+  // without JavaScript the card is just the link.
+  const detailsId = `details-${escapeHtml(app.id)}`;
+  const about = app.longDescription
+    ? `\n            <p>${escapeHtml(app.longDescription)}</p>`
+    : '';
+  const features = app.features.length
+    ? `\n            <ul>\n${app.features.map((f) => `              <li>${escapeHtml(f)}</li>`).join('\n')}\n            </ul>`
+    : '';
+  const details =
+    about || features
+      ? `
+            <button type="button" class="card__toggle" aria-expanded="false" aria-controls="${detailsId}" hidden>
+              Details<span class="sr-only"> about ${name}</span><span class="card__chevron" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="card__details" id="${detailsId}" hidden>${about}${features}
+          </div>`
+      : `
+          </div>`;
+  // The main link is the card for keyboard and screen-reader users. The
+  // "Open" link in the footer repeats it for the pointer, so it is hidden
+  // from assistive tech and the tab order.
   return `        <li>
-          <a class="card" href="${href}">
-            <div class="card__thumb">${thumb}</div>
-            <div class="card__body">
-              <div class="card__title">
-                <h2>${escapeHtml(app.displayName)}</h2>
-                ${badge(app.status)}
+          <article class="card">
+            <a class="card__main" href="${href}">
+              <div class="card__thumb">${thumb}</div>
+              <div class="card__body">
+                <div class="card__title">
+                  <h2>${name}</h2>
+                  ${badge(app.status)}
+                </div>
+                <p class="card__desc">${escapeHtml(app.description)}</p>
               </div>
-              <p class="card__desc">${escapeHtml(app.description)}</p>
-              <span class="card__cta">Open ${escapeHtml(app.displayName)} <span aria-hidden="true">&rarr;</span></span>
-            </div>
-          </a>
+            </a>
+            <div class="card__foot">
+              <a class="card__cta" href="${href}" tabindex="-1" aria-hidden="true">Open ${name} &rarr;</a>${details}
+          </article>
         </li>`;
 }
 
 function renderUpcoming(app) {
-  return `        <li>
-          <a class="upcoming__item" href="${escapeHtml(app.path)}/">
-            <h3>${escapeHtml(app.displayName)}</h3>
-            ${badge(app.status)}
-            <span class="upcoming__desc">${escapeHtml(app.description)}</span>
-          </a>
+  return `        <li class="upcoming__item">
+          <h3>${escapeHtml(app.displayName)}</h3>
+          ${badge(app.status)}
+          <span class="upcoming__desc">${escapeHtml(app.description)}</span>
         </li>`;
 }
 
+/** One line per released app with a `calab.pipeline`, in landing order. */
 function renderWorkflow(released) {
-  const byId = new Map(released.map((a) => [a.id, a]));
-  const steps = WORKFLOW.filter((s) => byId.has(s.app)).map((s) => {
-    const app = byId.get(s.app);
-    return `          <li>
+  const steps = released
+    .filter((app) => app.pipeline)
+    .map(
+      (app) => `          <li>
             <a href="${escapeHtml(app.path)}/">${escapeHtml(app.displayName)}</a>
-            <span class="flow__io">${escapeHtml(s.input)} <span aria-hidden="true">&rarr;</span><span class="sr-only">in,</span> ${escapeHtml(s.output)}<span class="sr-only"> out</span></span>
-          </li>`;
-  });
+            <span class="flow__io">${escapeHtml(app.pipeline.input)} <span aria-hidden="true">&rarr;</span><span class="sr-only">in,</span> ${escapeHtml(app.pipeline.output)}<span class="sr-only"> out</span></span>
+          </li>`,
+    );
   if (steps.length === 0) return '';
   return `      <section class="flow" aria-labelledby="flow-heading">
         <h2 id="flow-heading">How the apps fit together</h2>
@@ -239,16 +258,19 @@ ${designTokens()}
     .cards {
       list-style: none; display: grid; gap: var(--space-md);
       grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+      /* An expanded card grows alone instead of stretching its row */
+      align-items: start;
     }
     .card {
-      height: 100%; display: flex; flex-direction: column;
+      display: flex; flex-direction: column;
       background: var(--bg-primary); border: 1px solid var(--border-subtle);
       border-radius: var(--radius-lg); overflow: hidden;
-      color: inherit; text-decoration: none;
       transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
     }
-    .card:hover, .card:focus-visible { border-color: var(--accent); box-shadow: var(--shadow-elevated); color: inherit; }
-    .card:focus-visible { outline-offset: 3px; }
+    .card:hover, .card:focus-within { border-color: var(--accent); box-shadow: var(--shadow-elevated); }
+    .card__main { display: block; color: inherit; text-decoration: none; }
+    .card__main:hover { color: inherit; }
+    .card__main:focus-visible { outline-offset: -3px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
     .card__thumb {
       aspect-ratio: 16 / 9; background: var(--bg-inset);
       border-bottom: 1px solid var(--border-subtle); overflow: hidden;
@@ -258,17 +280,44 @@ ${designTokens()}
       object-fit: cover; object-position: left top;
     }
     .card__body {
-      flex: 1; display: flex; flex-direction: column; gap: var(--space-xs);
-      padding: var(--space-md);
+      display: flex; flex-direction: column; gap: var(--space-xs);
+      padding: var(--space-md) var(--space-md) 0;
     }
     .card__title { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); }
     .card__title h2 { font-size: 1.15rem; font-weight: var(--font-weight-semibold); letter-spacing: -0.01em; }
-    .card__desc { color: var(--text-secondary); font-size: 0.95rem; }
+    /* Two lines reserved, so collapsed cards in a row line up */
+    .card__desc { color: var(--text-secondary); font-size: 0.95rem; min-height: 3em; }
+    .card__foot {
+      display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
+      padding: var(--space-sm) var(--space-md) var(--space-md);
+    }
     .card__cta {
-      margin-top: auto; padding-top: var(--space-sm);
-      color: var(--accent); font-weight: var(--font-weight-medium); font-size: 0.9rem;
+      color: var(--accent); font-weight: var(--font-weight-medium); font-size: 0.9rem; text-decoration: none;
     }
     .card:hover .card__cta { color: var(--accent-hover); text-decoration: underline; }
+    .card__toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      font: inherit; font-size: 0.85rem; color: var(--text-secondary);
+      background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+      padding: 2px 6px; margin-right: -6px; cursor: pointer;
+      transition: color var(--transition-fast), border-color var(--transition-fast);
+    }
+    .card__toggle[hidden] { display: none; }
+    .card__toggle:hover { color: var(--accent); border-color: var(--border-default); }
+    .card__chevron {
+      width: 7px; height: 7px; margin-top: -3px;
+      border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg); transition: transform var(--transition-normal);
+    }
+    .card__toggle[aria-expanded='true'] .card__chevron { transform: rotate(225deg); margin-top: 3px; }
+    .card__details {
+      margin: 0 var(--space-md) var(--space-md); padding-top: var(--space-sm);
+      border-top: 1px solid var(--border-subtle);
+      font-size: 0.85rem; color: var(--text-secondary);
+      display: flex; flex-direction: column; gap: var(--space-sm);
+    }
+    .card__details ul { padding-left: 1.1em; display: flex; flex-direction: column; gap: var(--space-xs); }
+    .card__details[hidden] { display: none; }
 
     .badge {
       font-size: 0.72rem; font-weight: var(--font-weight-medium);
@@ -287,10 +336,7 @@ ${designTokens()}
       display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-sm);
       padding: var(--space-sm) var(--space-md);
       background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
-      color: inherit; text-decoration: none;
-      transition: border-color var(--transition-normal);
     }
-    .upcoming__item:hover { border-color: var(--accent); color: inherit; }
     .upcoming__item h3 { font-size: 1rem; font-weight: var(--font-weight-semibold); }
     .upcoming__desc { color: var(--text-secondary); font-size: 0.9rem; }
 
@@ -414,6 +460,19 @@ ${released.map(renderCard).join('\n')}
       </ul>
     </div>
   </footer>
+  <script>
+    // Card "Details" disclosures: shown only when this script runs.
+    for (const btn of document.querySelectorAll('.card__toggle')) {
+      const panel = document.getElementById(btn.getAttribute('aria-controls'));
+      if (!panel) continue;
+      btn.hidden = false;
+      btn.addEventListener('click', () => {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        panel.hidden = !open;
+      });
+    }
+  </script>
   ${authEnabled ? authScript(supabaseUrl, supabaseAnonKey) : ''}
 </body>
 </html>
