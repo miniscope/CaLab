@@ -37,7 +37,15 @@ METRICS = [
     "fp_noise", "fp_adjacent", "fp_partial", "fp_dup", "fp_nondet", "fp_edge10",
     "r_fp", "r_tr", "adds_pm", "deletes_pm", "readds_pm",
     "S8", "AUC_S", "rho_S_TP", "Sf8", "rho_Sf_TP", "auc_hoz",
+    "conv_med1", "conv_share1", "conv_med4", "conv_share4", "conv_big1", "conv_big4",
 ]  # fmt: skip
+# Footprint convergence (E7, `qc::convergence`, `convergence.tsv`) at the last
+# checkpoint: `conv_med<k>` the median relative footprint change
+# `|a_v - a_(v-k)| / |a_v|` over cells present at both checkpoints, lag k = 1
+# or 4 checkpoints; `conv_share<k>` the share of cells whose change exceeds
+# their own split-half noise.
+# `conv_big<k>`: share of all cells that changed by more than 10 % of their norm.
+CONV_METRICS = {"conv_med1", "conv_share1", "conv_med4", "conv_share4", "conv_big1", "conv_big4"}
 # Ground-truth-free held-out score (E2, `qc::heldout`): `S8` = `ho_score` at
 # the last checkpoint (penalised held-out gain per held-out frame, units of
 # s^2, over the window since the previous checkpoint), `AUC_S` its mean over
@@ -153,9 +161,52 @@ def ho_metrics(run: Path, cps: list[tuple], cell_rows: list[dict], shift: float)
     return out
 
 
+def convergence_rows(run: Path, k: int) -> list[dict]:
+    """`convergence.tsv` rows of lag `k`, in frame order."""
+    rows = [r for r in read_tsv(run / "convergence.tsv") if num(r.get("k")) == k]
+    return sorted(rows, key=lambda r: num(r["frame"]))
+
+
+def convergence_metrics(run: Path) -> dict[str, float]:
+    """Final-checkpoint convergence metrics (NaN without `convergence.tsv`)."""
+    out = {m: math.nan for m in CONV_METRICS}
+    for k in (1, 4):
+        rows = convergence_rows(run, k)
+        if rows:
+            out[f"conv_med{k}"] = num(rows[-1]["median_change"])
+            out[f"conv_share{k}"] = num(rows[-1]["share_changing"])
+            out[f"conv_big{k}"] = num(rows[-1].get("share_big"))
+    return out
+
+
+def convergence_curve(run: Path, k: int, step: int = 1200) -> str:
+    """Markdown table of the convergence curve of one run: every `step`
+    frames, the share of cells that moved by more than 0.1 %, the median change among
+    them, the share that changed by more than 10 %, the median split-half
+    noise, the share changing more than their noise, and that share per age
+    bin (frames since birth; n in brackets)."""
+    rows = [r for r in convergence_rows(run, k) if int(num(r["frame"])) % step == 0]
+    edges = ["<1200", "1200-3000", "3000-6000", ">=6000"]
+    head = "| frame | cells | share moved | median if moved | share >10% | median noise | share > noise | " + " | ".join(
+        f"age {e}" for e in edges
+    ) + " |"
+    lines = [head, "|" + "---|" * (7 + len(edges))]
+    for r in rows:
+        bins = " | ".join(
+            f"{fmt(num(r[f'share_b{b}']), 2)} ({int(num(r[f'n_b{b}']))})" for b in range(len(edges))
+        )
+        lines.append(
+            f"| {int(num(r['frame']))} | {int(num(r['pairs']))} | {fmt(num(r['share_moved']), 2)} | "
+            f"{fmt(num(r['median_moved']))} | {fmt(num(r['share_big']), 2)} | "
+            f"{fmt(num(r['median_noise']))} | {fmt(num(r['share_changing']), 2)} | {bins} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def run_metrics(run: Path) -> dict[str, float]:
     """All per-run metrics of one `qc_eval sim` output directory."""
     out = {m: math.nan for m in METRICS}
+    out.update(convergence_metrics(run))
     cps = []  # (frame, P, R, true_r) at GT checkpoints
     for r in read_tsv(run / "global.tsv"):
         p = num(r.get("gt_precision"))
@@ -284,6 +335,8 @@ def report(base, new, arms, primary, claim_arms) -> str:
                 nd = 1
             if m == "Sf8":
                 nd = 4
+            if m in CONV_METRICS:
+                nd = 3
             if m in ("cells",) or m.startswith("fp_") or m.endswith("_pm"):
                 nd = 1
             se = ""
@@ -322,12 +375,21 @@ def report(base, new, arms, primary, claim_arms) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--base", required=True, type=Path)
-    ap.add_argument("--new", required=True, type=Path)
-    ap.add_argument("--primary", required=True, choices=METRICS)
+    ap.add_argument("--convergence", nargs="+", type=Path, metavar="RUN",
+                    help="print the footprint convergence curves of these run directories and exit")
+    ap.add_argument("--base", type=Path)
+    ap.add_argument("--new", type=Path)
+    ap.add_argument("--primary", choices=METRICS)
     ap.add_argument("--arms", default=None, help="comma list (default: every arm in both trees)")
     ap.add_argument("--claim-arms", default=None, help="arms the claim is made on (default: --arms)")
     a = ap.parse_args()
+    if a.convergence:
+        for run in a.convergence:
+            for k in (1, 4):
+                sys.stdout.write(f"### {run.name}, lag {k} checkpoint(s)\n\n{convergence_curve(run, k)}\n")
+        return 0
+    if not (a.base and a.new and a.primary):
+        ap.error("--base, --new and --primary are required (or use --convergence)")
     arms = a.arms.split(",") if a.arms else None
     base, new = collect(a.base, arms), collect(a.new, arms)
     arm_list = arms or sorted(set(base) & set(new))

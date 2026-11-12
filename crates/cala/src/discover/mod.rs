@@ -1196,6 +1196,27 @@ impl SlowLoop {
         self.plan
     }
 
+    /// Split-half noise of cell `id`'s footprint estimate, relative to its
+    /// size, on the pixels of `support`: `‖h_A − h_B‖ / 2 / ‖(h_A + h_B) / 2‖`
+    /// (the two halves of the running statistics are independent, each with
+    /// twice the variance of the full estimate, so half their difference is
+    /// the noise of the full estimate). `None` without usable halves or
+    /// overlap. Scale free, so it compares with a relative footprint change.
+    pub fn footprint_noise(&self, id: u64, support: &[u32]) -> Option<f64> {
+        let st = self.fpstats.get(&id)?;
+        let (ha, hb, _, _) = st.halves()?;
+        let want: std::collections::HashSet<u32> = support.iter().copied().collect();
+        let (mut d2, mut m2) = (0.0f64, 0.0f64);
+        for (i, p) in st.pix.iter().enumerate() {
+            if want.contains(p) {
+                let (a, b) = (f64::from(ha[i]), f64::from(hb[i]));
+                d2 += (a - b) * (a - b);
+                m2 += (0.5 * (a + b)) * (0.5 * (a + b));
+            }
+        }
+        (m2 > 0.0 && d2.is_finite()).then(|| 0.5 * (d2 / m2).sqrt())
+    }
+
     /// `(id, frame it entered the working set)` of every working-set cell.
     pub fn births(&self) -> Vec<(u64, u64)> {
         self.cells.iter().map(|c| (c.id, c.born)).collect()
