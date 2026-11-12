@@ -40,6 +40,8 @@
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
+//!   --stats-half-life F  half-life (frames) of the footprint statistics
+//!                      (default 6000).
 //!   --footprint-stats M  residual (default) | joint: also keep the joint
 //!                      sufficient statistics (S1.7; no decision reads them
 //!                      yet) and print their size and cost
@@ -2217,6 +2219,9 @@ fn main() {
             "joint" => FootprintStats::Joint,
             other => panic!("--footprint-stats: residual|joint, not {other}"),
         };
+    }
+    if let Some(v) = arg_value(&args, "--stats-half-life") {
+        scfg.stats_half_life_frames = v.parse().unwrap();
     }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
