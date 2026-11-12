@@ -182,6 +182,9 @@
 //!   overlapping by less than half, the weaker part with at least
 //!   `merge_refit_min_share` of the energy), so duplicates still merge.
 //!   A young cell merged back marks its spot like a rejection.
+//!   Optionally (`merge_history_corr`, off by default) an accepted merge
+//!   is refused when the two cells' fast-loop traces over the whole
+//!   session correlate below a threshold (`tracehist.rs`).
 //!
 //! [`SlowLoop::take_edit_log`] lists every structural edit with the cells
 //! involved and its held-out margin.
@@ -221,6 +224,7 @@ mod local;
 mod noisecorr;
 mod reservoir;
 mod shard;
+mod tracehist;
 mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
@@ -441,6 +445,13 @@ pub struct SlowLoopConfig {
     /// carries at least this share of the stronger one's fitted energy
     /// (and the two supports overlap by less than half).
     pub merge_refit_min_share: f32,
+    /// Merge veto from the session history: a merge of two cells whose
+    /// supports do not largely coincide is refused when their fast-loop
+    /// traces, over all the frames both were in the library (at least 600),
+    /// correlate below this. The merge test itself sees only the tile's
+    /// reservoir, a short event-biased sample in which two neighbours that
+    /// fired together look like one cell (`tracehist.rs`). Off by default.
+    pub merge_history_corr: Option<f32>,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
     /// sub-pixel motion correction resamples the noise, and a test that
@@ -522,6 +533,7 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
+            merge_history_corr: None,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
@@ -577,6 +589,7 @@ impl SlowLoopConfig {
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
             && self.merge_z.is_finite()
+            && self.merge_history_corr.is_none_or(f32::is_finite)
             && self.churn.is_valid();
         if ok {
             Ok(())
@@ -653,6 +666,9 @@ pub struct SlowStats {
     pub pretest_rejects: u64,
     /// Merge tests that kept the two cells apart.
     pub merge_rejects: u64,
+    /// Of those, merges the test accepted and the session history refused
+    /// (`merge_history_corr`).
+    pub merge_vetoes: u64,
     /// Work spent loading frames, refining, merging and adding.
     pub work_load: u64,
     pub work_refine: u64,
@@ -745,6 +761,12 @@ pub struct SlowLoop {
     /// Pairs the keep tests found redundant, to be merge-tested regardless
     /// of their trace correlation.
     forced: Vec<(u64, u64)>,
+    /// The cells' traces over the session (`merge_history_corr`; empty when
+    /// off, and in a `VisitRunner`).
+    trace_hist: tracehist::TraceHistory,
+    /// Pairs near the tile being visited whose session traces differ, from
+    /// `trace_hist` at the start of the visit: their merge is refused.
+    long_distinct: Vec<(u64, u64)>,
     /// Which structural edits visits may make ([`SlowLoop::set_edit_scope`]).
     scope: EditScope,
     // observe() buffers
@@ -1060,6 +1082,8 @@ impl SlowLoop {
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
             merge_rejected: Vec::new(),
+            trace_hist: tracehist::TraceHistory::default(),
+            long_distinct: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
             model: vec![0.0; n_px],
@@ -1487,6 +1511,9 @@ impl SlowLoop {
             self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
         }
         self.update_ledger(frame, lib, traces);
+        if self.cfg.merge_history_corr.is_some() {
+            self.trace_hist.push(self.frames, lib.ids(), &traces.traces);
+        }
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
         self.update_fpstats(frame, lib, traces, !test);
@@ -2065,6 +2092,10 @@ impl SlowLoop {
             b.push_disk(c.footprint(self.dims), c.center, c.radius);
         }
         let lib = b.build(&mut self.flattener)?;
+        if self.cfg.merge_history_corr.is_some() {
+            let alive: std::collections::HashSet<u64> = self.cells.iter().map(|c| c.id).collect();
+            self.trace_hist.retain(|id| alive.contains(&id));
+        }
         // The working set takes the exact filtered columns.
         let w = self.dims.width;
         let mut cells = Vec::with_capacity(lib.len());
@@ -2235,7 +2266,31 @@ impl SlowLoop {
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
         self.visit_begin(ti);
+        let (near, _) = self.zone(ti);
+        self.long_distinct = self.distinct_pairs(&near);
         self.visit_body(ti)
+    }
+
+    /// Pairs among the cells `idx` (indices into `cells`) that a merge test
+    /// could pick (discs that touch) and whose session traces differ
+    /// (`merge_history_corr`), as `(lower id, higher id)`.
+    fn distinct_pairs(&self, idx: &[usize]) -> Vec<(u64, u64)> {
+        let Some(below) = self.cfg.merge_history_corr else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (k, &i) in idx.iter().enumerate() {
+            let a = &self.cells[i];
+            for &j in &idx[k + 1..] {
+                let b = &self.cells[j];
+                let dist =
+                    ((a.center.0 - b.center.0).powi(2) + (a.center.1 - b.center.1).powi(2)).sqrt();
+                if dist < a.radius + b.radius && self.trace_hist.distinct(a.id, b.id, below) {
+                    out.push((a.id.min(b.id), a.id.max(b.id)));
+                }
+            }
+        }
+        out
     }
 
     /// The bookkeeping of a visit (on the slow loop that owns the tile).
@@ -3955,9 +4010,18 @@ impl SlowLoop {
                 let b: Vec<f32> = sep.iter().map(|f| f.c[j]).collect();
                 corr(&a, &b) >= self.cfg.merge_corr
             };
-            let accept = best_arm
+            let mut accept = best_arm
                 .as_ref()
                 .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.merge_z) * s);
+            // The session history overrules the reservoir's short sample:
+            // two cells whose traces differed all along are not one cell.
+            // Not for supports that largely coincide (a duplicate takes no
+            // signal in the fast loop's fit, so its trace follows nothing)
+            // nor for pairs the keep tests found redundant.
+            if accept && ovl < 0.5 && !was_forced && self.long_distinct.contains(&pair) {
+                accept = false;
+                self.stats.merge_vetoes += 1;
+            }
             #[cfg(feature = "diagnostics")]
             self.log_test(
                 EditKind::Merge,

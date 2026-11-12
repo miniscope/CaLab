@@ -44,6 +44,7 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
+//!   --merge-history R  refuse a merge of two cells whose session traces correlate below R
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -2215,6 +2216,9 @@ fn main() {
     }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
+    }
+    if let Some(v) = arg_value(&args, "--merge-history") {
+        scfg.merge_history_corr = Some(v.parse().unwrap());
     }
     if let Some(v) = arg_value(&args, "--stats-half-life") {
         scfg.stats_half_life_frames = v.parse().unwrap();

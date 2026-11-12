@@ -842,9 +842,20 @@ fn new_loop(cfg: &SlowLoopConfig) -> SlowLoop {
 
 #[test]
 fn visits_run_as_jobs_match_step_exactly() {
+    jobs_match_step(shard_config());
+}
+
+#[test]
+fn visits_run_as_jobs_match_step_exactly_with_the_merge_veto() {
+    jobs_match_step(SlowLoopConfig {
+        merge_history_corr: Some(0.3),
+        ..shard_config()
+    });
+}
+
+fn jobs_match_step(cfg: SlowLoopConfig) {
     let t = 1500;
     let (m, seed) = busy_movie(t);
-    let cfg = shard_config();
     let n_px = N * N;
     let (mut a, mut ea) = start(cfg.clone(), &seed);
     let (mut b, mut eb) = start(cfg.clone(), &seed);
@@ -914,6 +925,84 @@ fn visits_run_as_jobs_match_step_exactly() {
     assert_eq!(strip(a.take_edit_log()), strip(b.take_edit_log()));
     // (Bytes 8..16: the version, from a process-wide counter.)
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+// ---- merge veto from the session history (tracehist.rs) ---------------------
+
+/// One cell seeded as two halves. Merges are held back for `hold` frames
+/// (refinements only), so the halves have that much session history when
+/// the merge is tested. With `via_jobs` the visits run in a `VisitRunner`.
+/// Returns the cells left and the counters.
+fn halves_run(veto: Option<f32>, hold: usize, via_jobs: bool) -> (usize, SlowStats) {
+    let t = 1600;
+    let n_px = N * N;
+    let mut rng = Lcg(97);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 99);
+    let seed = [blob_w(1, 47.0, 45.0, 1.5), blob_w(2, 47.0, 49.0, 1.5)];
+    let cfg = SlowLoopConfig {
+        merge_history_corr: veto,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg.clone(), &seed);
+    let runner = |scope: EditScope| {
+        let mut l = new_loop(&cfg);
+        l.set_edit_scope(scope);
+        VisitRunner::new(l)
+    };
+    let (mut held, mut free) = (runner(EditScope::Refine), runner(EditScope::All));
+    slow.set_edit_scope(EditScope::Refine);
+    for k in 0..t {
+        if k == hold {
+            slow.set_edit_scope(EditScope::All);
+        }
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        slow.observe(f, &lib, &tr).unwrap();
+        let new = if via_jobs {
+            let r = if k < hold { &mut held } else { &mut free };
+            slow.step_via(5_000_000, r).unwrap()
+        } else {
+            slow.step(5_000_000).unwrap()
+        };
+        if let Some(l) = new {
+            eng.set_library(l).unwrap();
+        }
+    }
+    (slow.finalize().unwrap().len(), slow.stats())
+}
+
+#[test]
+fn halves_of_one_cell_are_still_merged_with_the_merge_veto() {
+    // The halves' traces follow each other over the session (r > 0.9), so
+    // the history has no objection.
+    for via_jobs in [false, true] {
+        let (n, s) = halves_run(Some(0.3), 800, via_jobs);
+        assert_eq!((n, s.merges, s.merge_vetoes), (1, 1, 0), "{s:?}");
+    }
+}
+
+#[test]
+fn the_merge_veto_refuses_a_pair_whose_history_is_distinct() {
+    // A threshold above 1 calls every pair with enough common history
+    // distinct: the merge the test accepts is refused, here and in a job.
+    for via_jobs in [false, true] {
+        let (n, s) = halves_run(Some(2.0), 800, via_jobs);
+        assert_eq!((n, s.merges, s.merge_vetoes), (2, 0, 1), "{s:?}");
+        assert_eq!(s.merge_rejects, 1);
+    }
+    // Without the switch the same pair is merged.
+    let (n, s) = halves_run(None, 800, false);
+    assert_eq!((n, s.merges, s.merge_vetoes), (1, 1, 0), "{s:?}");
+}
+
+#[test]
+fn the_merge_veto_waits_for_enough_common_history() {
+    // Merged within the first frames: under 600 common frames decide
+    // nothing, whatever the threshold.
+    let (n, s) = halves_run(Some(2.0), 0, false);
+    assert_eq!((n, s.merges, s.merge_vetoes), (1, 1, 0), "{s:?}");
 }
 
 #[test]
@@ -1238,6 +1327,7 @@ fn config_defaults_have_no_trim_and_no_core_test() {
     assert!(!cfg.core_test.collects() && !cfg.core_test.trims());
     assert!(!cfg.basin_trim);
     assert!(!cfg.joint_neighbours);
+    assert!(cfg.merge_history_corr.is_none());
     cfg.validate().unwrap();
     assert!(CoreTest::Report.collects() && !CoreTest::Report.trims());
     assert!(CoreTest::Trim.trims() && CoreTest::Delete.trims());

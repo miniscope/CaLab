@@ -110,6 +110,8 @@ pub struct VisitJob {
     fpstats: Vec<(u64, FpStats)>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
+    /// Pairs whose session traces differ (`SlowLoop::distinct_pairs`).
+    long_distinct: Vec<(u64, u64)>,
 }
 
 /// What a visit did, for [`SlowLoop::apply_job`].
@@ -190,6 +192,11 @@ impl VisitJob {
             w.u64(a);
             w.u64(b);
         }
+        w.usize(self.long_distinct.len());
+        for &(a, b) in &self.long_distinct {
+            w.u64(a);
+            w.u64(b);
+        }
         w.buf
     }
 
@@ -233,6 +240,10 @@ impl VisitJob {
         let forced = (0..n)
             .map(|_| Some((r.u64()?, r.u64()?)))
             .collect::<Option<_>>()?;
+        let n = r.count(16)?;
+        let long_distinct = (0..n)
+            .map(|_| Some((r.u64()?, r.u64()?)))
+            .collect::<Option<_>>()?;
         r.done().then_some(VisitJob {
             seq,
             ti,
@@ -249,6 +260,7 @@ impl VisitJob {
             fpstats,
             merge_rejected,
             forced,
+            long_distinct,
         })
     }
 }
@@ -484,7 +496,7 @@ impl SlowLoop {
     }
 
     /// The cells a visit of tile `ti` may read or edit, and its zone.
-    fn zone(&self, ti: usize) -> (Vec<usize>, Rect) {
+    pub(super) fn zone(&self, ti: usize) -> (Vec<usize>, Rect) {
         let wide = grow(self.tiles[ti].rect, self.reach_px(), self.dims);
         let mut zone = wide;
         let mut idx = Vec::new();
@@ -548,6 +560,7 @@ impl SlowLoop {
     fn make_job(&mut self, ti: usize, slots: bool) -> VisitJob {
         self.visit_begin(ti);
         let (idx, zone) = self.zone(ti);
+        let long_distinct = self.distinct_pairs(&idx);
         let probes = std::mem::take(&mut self.tiles[ti].probes);
         let t = &self.tiles[ti];
         let mut tile = Tile::new(t.core, t.rect);
@@ -602,6 +615,7 @@ impl SlowLoop {
             fpstats,
             merge_rejected: self.merge_rejected.clone(),
             forced: self.forced.clone(),
+            long_distinct,
         }
     }
 
@@ -885,6 +899,7 @@ impl VisitRunner {
         s.fpstats = job.fpstats.into_iter().collect::<HashMap<_, _>>();
         s.merge_rejected = job.merge_rejected;
         s.forced = job.forced;
+        s.long_distinct = job.long_distinct;
         s.stats = SlowStats::default();
         s.edits = EditCounts::default();
         s.edit_log.clear();
