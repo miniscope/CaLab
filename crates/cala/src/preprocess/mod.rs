@@ -48,6 +48,7 @@
 
 pub mod background;
 mod codec;
+pub mod flatfield;
 pub mod flatten;
 pub mod flicker;
 pub mod fov;
