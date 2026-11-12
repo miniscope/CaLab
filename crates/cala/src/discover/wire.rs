@@ -10,7 +10,7 @@ use super::SlowStats;
 use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5335; // "VIS5"
+pub(crate) const MAGIC: u32 = 0x5649_5336; // "VIS6"
 
 #[derive(Default)]
 pub(crate) struct Writer {
@@ -103,6 +103,8 @@ impl Writer {
         self.f32s(&c.filt);
         self.u32s(&c.low_blk);
         self.f32s(&c.low);
+        self.u32s(&c.skirt_blk);
+        self.f32s(&c.skirt);
         self.u64(c.born);
     }
     pub fn slot(&mut self, s: &Slot) {
@@ -331,8 +333,11 @@ impl<'a> Reader<'a> {
             filt: self.f32s()?,
             low_blk: self.u32s()?,
             low: self.f32s()?,
+            skirt_blk: self.u32s()?,
+            skirt: self.f32s()?,
             born: self.u64()?,
         })
+        .filter(|c| c.skirt_blk.len() == c.skirt.len())
     }
     pub fn slot(&mut self) -> Option<Slot> {
         Some(Slot {

@@ -68,7 +68,7 @@ use std::fmt;
 
 pub use background::{BackgroundFit, BackgroundLearner, BackgroundModel};
 pub use extract::{extract_preprocessed, extract_span, ReplayRegistrar};
-pub(crate) use library::{moat_blocks, support_disk, BgTerms, Support};
+pub(crate) use library::{apply_skirt, merge_blocks, moat_blocks, support_disk, BgTerms, Support};
 pub use library::{
     moat_geometry, Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };

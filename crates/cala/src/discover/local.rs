@@ -11,7 +11,10 @@
 
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
-use crate::trace::{moat_blocks, moat_geometry, support_disk, Footprint, LibraryConfig, Support};
+use crate::trace::{
+    apply_skirt, merge_blocks, moat_blocks, moat_geometry, support_disk, Footprint, LibraryConfig,
+    Support,
+};
 
 /// A rectangle of the frame (rows `y0..y0 + h`, columns `x0..x0 + w`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +206,12 @@ pub(crate) struct Cell {
     /// `−low(B(p))` (see [`crate::trace::Library::lowpass`]).
     pub low_blk: Vec<u32>,
     pub low: Vec<f32>,
+    /// The skirt: global grid blocks (ascending) and the block means of the
+    /// measured light outside the support that the moat carries (see
+    /// [`apply_skirt`]); empty under the ring support rule. Already folded
+    /// into `filt` and `low`; kept so the library can rebuild the column.
+    pub skirt_blk: Vec<u32>,
+    pub skirt: Vec<f32>,
     /// Frame at which the cell entered the working set (seeded: 0).
     pub born: u64,
 }
@@ -221,6 +230,7 @@ impl Cell {
         cfg: &LibraryConfig,
         extent: Extent,
         filter: &mut LocalFilter,
+        skirt: &[(u32, f32)],
     ) -> Option<Cell> {
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) || !peak.is_finite() {
@@ -277,7 +287,8 @@ impl Cell {
         if !(raw.iter().copied().fold(0.0f32, f32::max) > 0.0) {
             return None;
         }
-        let (filt, low_blk, low) = moat_column(&pix, &raw, (cy, cx), r, bbox, dims, fov, filter);
+        let (filt, low_blk, low) =
+            moat_column(&pix, &raw, (cy, cx), r, bbox, dims, fov, filter, skirt);
         Some(Cell {
             id,
             center: (cy, cx),
@@ -288,6 +299,8 @@ impl Cell {
             filt,
             low_blk,
             low,
+            skirt_blk: skirt.iter().map(|s| s.0).collect(),
+            skirt: skirt.iter().map(|s| s.1).collect(),
             born: 0,
         })
     }
@@ -328,7 +341,9 @@ impl Cell {
 /// The filtered column of the unfiltered values `raw` on the support `pix`
 /// (centre, radius, bounding box `bbox`): `H a` on the support, and the
 /// block means of `L a` on the moat grid out to its reach (FOV only), from
-/// one blur on a canvas that holds all of the moat's blocks.
+/// one blur on a canvas that holds all of the moat's blocks. With a
+/// `skirt` (ascending global blocks and block means), the column also
+/// carries it ([`apply_skirt`]); its blocks join the moat's.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn moat_column(
     pix: &[u32],
@@ -339,12 +354,14 @@ pub(crate) fn moat_column(
     dims: Dims,
     fov: &[u8],
     filter: &mut LocalFilter,
+    skirt: &[(u32, f32)],
 ) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
     let w = dims.width;
     let Some((b, reach)) = filter.moat() else {
         return (raw.to_vec(), Vec::new(), Vec::new());
     };
-    let blks = moat_blocks(center, radius, b, reach, dims);
+    let mut blks = moat_blocks(center, radius, b, reach, dims);
+    merge_blocks(&mut blks, skirt);
     let gw = w.div_ceil(b);
     let mut canvas = bbox;
     for &bq in &blks {
@@ -366,7 +383,7 @@ pub(crate) fn moat_column(
     }
     let mut lo = vec![0.0f32; canvas.len()];
     filter.blur(canvas.h, canvas.w, &a, &mut lo);
-    let filt = pix
+    let mut filt: Vec<f32> = pix
         .iter()
         .zip(raw)
         .map(|(&g, &v)| {
@@ -389,6 +406,7 @@ pub(crate) fn moat_column(
         }
         low.push(if m > 0 { (s / m as f64) as f32 } else { 0.0 });
     }
+    apply_skirt(pix, raw, &mut filt, &blks, &mut low, skirt, b, dims, fov);
     (filt, blks, low)
 }
 
@@ -1486,7 +1504,7 @@ mod tests {
                     }
                 })
                 .collect();
-            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter).unwrap()
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter, &[]).unwrap()
         };
         let c1 = mk(1, 40.0, 40.0, &mut filter);
         let c2 = mk(2, 48.0, 52.0, &mut filter);
@@ -1619,7 +1637,7 @@ mod tests {
                     }
                 })
                 .collect();
-            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter).unwrap()
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter, &[]).unwrap()
         };
         let c1 = mk(1, 40.0, 40.0, &mut filter);
         let c2 = mk(2, 48.0, 52.0, &mut filter);

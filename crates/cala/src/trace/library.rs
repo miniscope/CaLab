@@ -92,6 +92,58 @@ pub fn moat_blocks(center: (f32, f32), radius: f32, b: usize, reach: f32, dims: 
     out
 }
 
+/// Add the skirt's blocks to the ascending block list `blks` (a skirt
+/// block is normally a moat block already: the statistics disk lies well
+/// inside the moat's reach).
+pub(crate) fn merge_blocks(blks: &mut Vec<u32>, skirt: &[(u32, f32)]) {
+    if skirt.iter().all(|s| blks.binary_search(&s.0).is_ok()) {
+        return;
+    }
+    blks.extend(skirt.iter().map(|s| s.0));
+    blks.sort_unstable();
+    blks.dedup();
+}
+
+/// Fold a skirt into a column: the column takes the block-constant field
+/// `skirt_b` on the complement of the support `S = {raw > 0}`, so that it
+/// equals the measured light per block there. Off the support disk the
+/// column is `−low_b`, so `low_b ← low_b − skirt_b`; on disk pixels outside
+/// `S` (`raw = 0`, FOV only) `filt ← filt + skirt_b`; on `S` nothing
+/// changes. `blks` must hold every skirt block.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_skirt(
+    pix: &[u32],
+    raw: &[f32],
+    filt: &mut [f32],
+    blks: &[u32],
+    low: &mut [f32],
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+    fov: &[u8],
+) {
+    if skirt.is_empty() || block == 0 {
+        return;
+    }
+    for &(bq, s) in skirt {
+        if let Ok(k) = blks.binary_search(&bq) {
+            low[k] -= s;
+        }
+    }
+    let w = dims.width;
+    let gw = w.div_ceil(block);
+    for (k, (&g, &v)) in pix.iter().zip(raw).enumerate() {
+        if v != 0.0 || fov[g as usize] == 0 {
+            continue;
+        }
+        let (y, x) = (g as usize / w, g as usize % w);
+        let bq = ((y / block) * gw + x / block) as u32;
+        if let Ok(j) = skirt.binary_search_by_key(&bq, |s| s.0) {
+            filt[k] += skirt[j].1;
+        }
+    }
+}
+
 impl LinearFilter for GlowFlattener {
     fn dims(&self) -> Dims {
         GlowFlattener::dims(self)
@@ -179,6 +231,8 @@ pub struct LibraryBuilder {
     footprints: Vec<Footprint>,
     /// Explicit support disks (`push_disk`), one per footprint.
     disks: Vec<Option<((f32, f32), f32)>>,
+    /// Skirts (`push_disk_skirt`), one per footprint (empty: none).
+    skirts: Vec<Vec<(u32, f32)>>,
     fov: Option<Vec<u8>>,
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
@@ -192,6 +246,7 @@ impl LibraryBuilder {
             dims,
             footprints: Vec::new(),
             disks: Vec::new(),
+            skirts: Vec::new(),
             fov: None,
             noise: None,
             background: BackgroundModel::None,
@@ -237,6 +292,7 @@ impl LibraryBuilder {
     pub fn push(&mut self, fp: Footprint) {
         self.footprints.push(fp);
         self.disks.push(None);
+        self.skirts.push(Vec::new());
     }
 
     /// `fp` on an explicit support disk (centre `(y, x)`, radius): its
@@ -244,8 +300,22 @@ impl LibraryBuilder {
     /// publishes its cells' supports exactly, so a footprint whose outer
     /// ring is zero keeps the room to grow into it).
     pub fn push_disk(&mut self, fp: Footprint, center: (f32, f32), radius: f32) {
+        self.push_disk_skirt(fp, center, radius, Vec::new());
+    }
+
+    /// [`Self::push_disk`] with a skirt: block means (ascending global
+    /// blocks of the moat grid) of the measured light outside the support
+    /// that the column carries at block resolution (see [`apply_skirt`]).
+    pub fn push_disk_skirt(
+        &mut self,
+        fp: Footprint,
+        center: (f32, f32),
+        radius: f32,
+        skirt: Vec<(u32, f32)>,
+    ) {
         self.footprints.push(fp);
         self.disks.push(Some((center, radius)));
+        self.skirts.push(skirt);
     }
 
     pub fn footprint(mut self, fp: Footprint) -> LibraryBuilder {
@@ -293,6 +363,9 @@ impl LibraryBuilder {
         let geom = moat_geometry(filter.lowpass_sigma_px());
         let mut low_start = vec![0usize];
         let mut low_blk: Vec<u32> = Vec::new();
+        let mut skirt_start = vec![0usize];
+        let mut skirt_blk: Vec<u32> = Vec::new();
+        let mut skirt_val: Vec<f32> = Vec::new();
         for (fp, disk) in self.footprints.iter().zip(&self.disks) {
             if index_of.insert(fp.id, ids.len()).is_some() {
                 return Err(TraceError::InvalidFootprint(format!(
@@ -329,10 +402,16 @@ impl LibraryBuilder {
                 }
             }
             col_start.push(pix.len());
+            let skirt = &self.skirts[ids.len() - 1];
             if let Some((b, reach)) = geom {
-                low_blk.extend(moat_blocks((cy, cx), r, b, reach, dims));
+                let mut blks = moat_blocks((cy, cx), r, b, reach, dims);
+                merge_blocks(&mut blks, skirt);
+                low_blk.extend(blks);
+                skirt_blk.extend(skirt.iter().map(|s| s.0));
+                skirt_val.extend(skirt.iter().map(|s| s.1));
             }
             low_start.push(low_blk.len());
+            skirt_start.push(skirt_blk.len());
         }
         let n = ids.len();
         let mut val = vec![0.0f32; pix.len()];
@@ -349,10 +428,12 @@ impl LibraryBuilder {
                     let (pp, pr) = prev.unfiltered(slot);
                     let (lb, lv) = prev.lowpass(slot);
                     let (la, lz) = (low_start[i], low_start[i + 1]);
+                    let (sa, sz) = (skirt_start[i], skirt_start[i + 1]);
                     if pp == &pix[a..b]
                         && pr == &raw[a..b]
                         && prev.core.block == geom.map_or(0, |g| g.0)
                         && lb == &low_blk[la..lz]
+                        && prev.skirt(slot) == (&skirt_blk[sa..sz], &skirt_val[sa..sz])
                     {
                         val[a..b].copy_from_slice(prev.filtered(slot).1);
                         low_val[la..lz].copy_from_slice(lv);
@@ -410,6 +491,27 @@ impl LibraryBuilder {
                         }
                         low_val[k] = if m > 0 { (s / m as f64) as f32 } else { 0.0 };
                     }
+                    let (sa, sz) = (skirt_start[i], skirt_start[i + 1]);
+                    if sz > sa {
+                        let skirt: Vec<(u32, f32)> = skirt_blk[sa..sz]
+                            .iter()
+                            .copied()
+                            .zip(skirt_val[sa..sz].iter().copied())
+                            .collect();
+                        let (ca, cz) = (col_start[i], col_start[i + 1]);
+                        let (la, lz) = (low_start[i], low_start[i + 1]);
+                        apply_skirt(
+                            &pix[ca..cz],
+                            &raw[ca..cz],
+                            &mut val[ca..cz],
+                            &low_blk[la..lz],
+                            &mut low_val[la..lz],
+                            &skirt,
+                            b,
+                            dims,
+                            &fov,
+                        );
+                    }
                 }
             }
             img.iter_mut().for_each(|v| *v = 0.0);
@@ -424,6 +526,9 @@ impl LibraryBuilder {
             low_start,
             low_blk,
             low_val,
+            skirt_start,
+            skirt_blk,
+            skirt_val,
             vc: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
@@ -535,6 +640,14 @@ struct Core {
     low_start: Vec<usize>,
     low_blk: Vec<u32>,
     low_val: Vec<f32>,
+    /// Skirt of cell `i`: blocks `skirt_blk[skirt_start[i]..skirt_start[i
+    /// + 1]]` (ascending, a subset of its moat blocks) with the measured
+    /// block means `skirt_val` it carries ([`apply_skirt`]; already folded
+    /// into `val` and `low_val`). Empty for every cell under the ring
+    /// support rule.
+    skirt_start: Vec<usize>,
+    skirt_blk: Vec<u32>,
+    skirt_val: Vec<f32>,
     /// Derived ([`Core::finish`]): `val + low(B(p))` on the support, so the
     /// column is `vc · 1_S − P low` (P: block-constant expansion, FOV only).
     vc: Vec<f32>,
@@ -1073,6 +1186,13 @@ impl Library {
         self.core.low(slot)
     }
 
+    /// The skirt of the cell in `slot`: grid blocks (ascending) and the
+    /// measured block means its column carries outside the support (see
+    /// [`LibraryBuilder::push_disk_skirt`]); empty without one.
+    pub fn skirt(&self, slot: usize) -> (&[u32], &[f32]) {
+        self.core.skirt(slot)
+    }
+
     /// Side of the moat grid's blocks, px (0: no moat, unfiltered data).
     pub fn block_px(&self) -> usize {
         self.core.block
@@ -1252,6 +1372,9 @@ impl Library {
 /// Magic of [`Library::to_bytes`]: the footprints and the solver's
 /// precomputed terms.
 const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB3";
+/// [`LIBRARY_MAGIC`] with the cells' skirts (written only when a cell has
+/// one, so a library without skirts keeps the old bytes).
+const LIBRARY_SKIRT_MAGIC: &[u8; 8] = b"CALALIB4";
 /// Magic of the footprints-only layout (no precomputed terms), which
 /// [`Library::from_bytes`] still reads (and assembles).
 pub(crate) const CORE_MAGIC: &[u8; 8] = b"CALALIB2";
@@ -1365,7 +1488,12 @@ impl Library {
     /// grows faster than the cell count), and the copy solves
     /// bit-identically.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = self.core_bytes(LIBRARY_MAGIC);
+        let magic = if self.core.skirt_blk.is_empty() {
+            LIBRARY_MAGIC
+        } else {
+            LIBRARY_SKIRT_MAGIC
+        };
+        let mut out = self.core_bytes(magic);
         put_csr(&mut out, &self.gram);
         put_f32s(&mut out, &self.gram_diag);
         put_f32s(&mut out, &self.mdiag);
@@ -1448,6 +1576,12 @@ impl Library {
         put_u32s(&mut out, c.low_start.iter().map(|&v| v as u32));
         put_u32s(&mut out, c.low_blk.iter().copied());
         put_f32s(&mut out, &c.low_val);
+        if magic == LIBRARY_SKIRT_MAGIC {
+            put_u32s(&mut out, [c.skirt_blk.len() as u32]);
+            put_u32s(&mut out, c.skirt_start.iter().map(|&v| v as u32));
+            put_u32s(&mut out, c.skirt_blk.iter().copied());
+            put_f32s(&mut out, &c.skirt_val);
+        }
         out
     }
 
@@ -1458,10 +1592,12 @@ impl Library {
         let bad = bytes_err;
         let mut r = ByteReader { buf: bytes, at: 0 };
         let magic = r.take(8)?;
-        let with_terms = if magic == LIBRARY_MAGIC {
-            true
+        let (with_terms, with_skirt) = if magic == LIBRARY_MAGIC {
+            (true, false)
+        } else if magic == LIBRARY_SKIRT_MAGIC {
+            (true, true)
         } else if magic == CORE_MAGIC {
-            false
+            (false, false)
         } else {
             return Err(bad("not a cala library"));
         };
@@ -1533,6 +1669,32 @@ impl Library {
                 return Err(bad("moat block outside the grid"));
             }
         }
+        let (skirt_start, skirt_blk, skirt_val) = if with_skirt {
+            let ns = r.u32()? as usize;
+            let start: Vec<usize> = r.u32s(n + 1)?.into_iter().map(|v| v as usize).collect();
+            if start[0] != 0 || start[n] != ns || start.windows(2).any(|w| w[0] > w[1]) {
+                return Err(bad("skirt offsets"));
+            }
+            let blk = r.u32s(ns)?;
+            let val = r.f32s(ns)?;
+            if val.iter().any(|v| !v.is_finite()) {
+                return Err(bad("non-finite values"));
+            }
+            for i in 0..n {
+                let (a, z) = (start[i], start[i + 1]);
+                let (la, lz) = (low_start[i], low_start[i + 1]);
+                if blk[a..z].windows(2).any(|w| w[0] >= w[1])
+                    || blk[a..z]
+                        .iter()
+                        .any(|b| low_blk[la..lz].binary_search(b).is_err())
+                {
+                    return Err(bad("skirt block outside the moat"));
+                }
+            }
+            (start, blk, val)
+        } else {
+            (vec![0; n + 1], Vec::new(), Vec::new())
+        };
         let terms = if with_terms {
             Some(Terms::read(&mut r, n, n_px, &model)?)
         } else {
@@ -1572,6 +1734,9 @@ impl Library {
             low_start,
             low_blk,
             low_val,
+            skirt_start,
+            skirt_blk,
+            skirt_val,
             vc: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
@@ -1724,6 +1889,12 @@ impl Core {
     fn low(&self, i: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.low_start[i], self.low_start[i + 1]);
         (&self.low_blk[a..b], &self.low_val[a..b])
+    }
+
+    #[inline]
+    fn skirt(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.skirt_start[i], self.skirt_start[i + 1]);
+        (&self.skirt_blk[a..b], &self.skirt_val[a..b])
     }
 
     /// Moat grid width (blocks per row); 0 without a moat.

@@ -1461,6 +1461,7 @@ impl SlowLoop {
                 &self.cfg.library,
                 Extent::Given,
                 &mut self.filter,
+                &[],
             ) {
                 self.next_id = self.next_id.max(fp.id + 1);
                 self.cells.push(c);
@@ -2055,14 +2056,21 @@ impl SlowLoop {
                 .cells
                 .iter()
                 .filter(|c| {
-                    prev.slot(c.id)
-                        .is_none_or(|s| prev.unfiltered(s).1 != c.raw.as_slice())
+                    prev.slot(c.id).is_none_or(|s| {
+                        prev.unfiltered(s).1 != c.raw.as_slice()
+                            || prev.skirt(s) != (c.skirt_blk.as_slice(), c.skirt.as_slice())
+                    })
                 })
                 .count();
         }
         let support: usize = self.cells.iter().map(|c| c.pix.len()).sum();
         for c in &self.cells {
-            b.push_disk(c.footprint(self.dims), c.center, c.radius);
+            if c.skirt_blk.is_empty() {
+                b.push_disk(c.footprint(self.dims), c.center, c.radius);
+            } else {
+                let skirt = c.skirt_blk.iter().copied().zip(c.skirt.iter().copied());
+                b.push_disk_skirt(c.footprint(self.dims), c.center, c.radius, skirt.collect());
+            }
         }
         let lib = b.build(&mut self.flattener)?;
         // The working set takes the exact filtered columns.
@@ -2075,6 +2083,7 @@ impl SlowLoop {
             let (pix, raw) = lib.unfiltered(slot);
             let (_, filt) = lib.filtered(slot);
             let (low_blk, low) = lib.lowpass(slot);
+            let (skirt_blk, skirt) = lib.skirt(slot);
             let bbox = Rect::around(center.0, center.1, radius, self.dims);
             debug_assert!(pix
                 .iter()
@@ -2089,6 +2098,8 @@ impl SlowLoop {
                 filt: filt.to_vec(),
                 low_blk: low_blk.to_vec(),
                 low: low.to_vec(),
+                skirt_blk: skirt_blk.to_vec(),
+                skirt: skirt.to_vec(),
                 born: born.get(&lib.ids()[slot]).copied().unwrap_or(0),
             });
         }
@@ -2889,6 +2900,7 @@ impl SlowLoop {
             &self.cfg.library,
             extent,
             &mut self.filter,
+            &[],
         )
     }
 
