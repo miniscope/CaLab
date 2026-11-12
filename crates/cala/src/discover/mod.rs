@@ -1238,6 +1238,118 @@ impl SlowLoop {
         (m2 > 0.0 && d2.is_finite()).then(|| 0.5 * (d2 / m2).sqrt())
     }
 
+    /// DIAG (S2.0b, `CALA_STATS_AUDIT`): how much evidence each statistics
+    /// store holds for cell `id` on its published support (`support`,
+    /// values `val`), and the split-half noise it shows. Tab-separated, no
+    /// newline; columns in [`Self::STATS_AUDIT_HEADER`]. Per store
+    /// (`res_`: residual `fpstats`, `j_`: joint store): `sumw` = `Σ w` in
+    /// units of the current frame's weight (decay-counted frames), `neff` =
+    /// `(Σ w)² / Σ w²`; split-half noise `rel` (= [`Self::footprint_noise`]
+    /// on the full support), `rel_core` (pixels ≥ half the support's peak),
+    /// `sd` = whitened per-pixel sd of the full estimate (half the rms
+    /// whitened half difference), `wse` = its white standard error. Joint:
+    /// per support pixel (its class) median and min `n_eff`, share of
+    /// support pixels whose class counts ≥ 90 % of the store's whole
+    /// history, restarted pixels so far.
+    #[cfg(feature = "diagnostics")]
+    pub fn stats_audit(&self, lib: &Library, id: u64, support: &[u32], val: &[f32]) -> String {
+        let nan = f64::NAN;
+        let sw = f64::from(self.stats_w);
+        let peak = val.iter().copied().fold(0.0f32, f32::max);
+        let want: HashMap<u32, bool> = support
+            .iter()
+            .zip(val)
+            .map(|(&p, &v)| (p, v >= 0.5 * peak))
+            .collect();
+        // (rel, rel_core, sd) of two half estimates on `pix`.
+        let split = |pix: &[u32], ha: &[f32], hb: &[f32]| -> [f64; 3] {
+            let (mut d2, mut m2, mut d2c, mut m2c, mut w2, mut n) =
+                (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0usize);
+            for (i, p) in pix.iter().enumerate() {
+                let Some(&core) = want.get(p) else { continue };
+                let (a, b) = (f64::from(ha[i]), f64::from(hb[i]));
+                if !(a.is_finite() && b.is_finite()) {
+                    continue;
+                }
+                let (dd, mm) = ((a - b) * (a - b), 0.25 * (a + b) * (a + b));
+                d2 += dd;
+                m2 += mm;
+                if core {
+                    d2c += dd;
+                    m2c += mm;
+                }
+                let is = f64::from(self.inv_sigma.get(*p as usize).copied().unwrap_or(f32::NAN));
+                w2 += dd * is * is;
+                n += 1;
+            }
+            let rel = |d: f64, m: f64| if m > 0.0 { 0.5 * (d / m).sqrt() } else { nan };
+            let sd = if n > 0 {
+                0.5 * (w2 / n as f64).sqrt()
+            } else {
+                nan
+            };
+            [rel(d2, m2), rel(d2c, m2c), sd]
+        };
+        let mut r = [nan; 8];
+        let mut rk = 0u64;
+        if let Some(st) = self.fpstats.get(&id) {
+            rk = st.k;
+            let c = if st.m[0][0] >= st.m[1][0] { 0 } else { 1 };
+            let (n, n2) = (st.m[c][0], st.m[c][1]);
+            r[0] = n / sw;
+            r[1] = if n2 > 0.0 { n * n / n2 } else { nan };
+            if let Some((ha, hb, sa, sb)) = st.halves() {
+                let [a, b, s] = split(&st.pix, &ha, &hb);
+                r[2] = a;
+                r[3] = b;
+                r[4] = s;
+                r[5] = sa * sb / (sa * sa + sb * sb).sqrt();
+            }
+        }
+        let mut j = [nan; 9];
+        let mut jr = 0u64;
+        if let Some(st) = self.suff.get(&id) {
+            jr = st.restarts;
+            let tot: f64 = st.tot.iter().sum();
+            let (mut ne, mut sums, mut full) = (Vec::new(), Vec::new(), 0usize);
+            for (i, p) in st.pix.iter().enumerate() {
+                if !want.contains_key(p) {
+                    continue;
+                }
+                let (n, n2) = st.pixel_weights(i);
+                sums.push(n / sw);
+                ne.push(if n2 > 0.0 { n * n / n2 } else { 0.0 });
+                if n >= 0.9 * tot {
+                    full += 1;
+                }
+            }
+            if !ne.is_empty() {
+                let k = ne.len();
+                j[2] = ne.iter().copied().fold(f64::INFINITY, f64::min);
+                j[0] = fpstats::median_finite(sums);
+                j[1] = fpstats::median_finite(ne);
+                j[3] = full as f64 / k as f64;
+            }
+            let ha = store_estimate(lib, st, suffstats::HALVES[0]);
+            let hb = store_estimate(lib, st, suffstats::HALVES[1]);
+            if let (Some(ha), Some(hb)) = (ha, hb) {
+                let [a, b, s] = split(&st.pix, &ha, &hb);
+                j[4] = a;
+                j[5] = b;
+                j[6] = s;
+            }
+            j[7] = st.std_err(suffstats::ALL_GROUPS);
+        }
+        format!(
+            "{rk}\t{:.1}\t{:.1}\t{:.5}\t{:.5}\t{:.4}\t{:.4}\t{:.1}\t{:.1}\t{:.1}\t{:.3}\t{:.5}\t{:.5}\t{:.4}\t{:.4}\t{jr}\t{sw:.4}",
+            r[0], r[1], r[2], r[3], r[4], r[5], j[0], j[1], j[2], j[3], j[4], j[5], j[6], j[7]
+        )
+    }
+
+    /// Column names of [`Self::stats_audit`].
+    #[cfg(feature = "diagnostics")]
+    pub const STATS_AUDIT_HEADER: &'static str = "res_k\tres_sumw\tres_neff\tres_rel\tres_rel_core\tres_sd\tres_wse\tj_sumw\tj_neff_med\tj_neff_min\tj_full\tj_rel\tj_rel_core\tj_sd\tj_wse\tj_restarts\tstats_w";
+
     /// `(id, frame it entered the working set)` of every working-set cell.
     pub fn births(&self) -> Vec<(u64, u64)> {
         self.cells.iter().map(|c| (c.id, c.born)).collect()

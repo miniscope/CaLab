@@ -230,6 +230,17 @@ impl CellStats {
         stride(self.n_near())
     }
 
+    /// DIAG: `(Σ w, Σ w²)` over every group of pixel `i`'s class (the frames
+    /// its sums count since its epoch began).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn pixel_weights(&self, i: usize) -> (f64, f64) {
+        let st = self.stride();
+        let m = &self.mom[self.cls[i] as usize];
+        (0..self.groups).fold((0.0, 0.0), |(a, b), g| {
+            (a + m[g * st + N], b + m[g * st + N2])
+        })
+    }
+
     fn far_stride(&self) -> usize {
         FAR_HEAD + 2 * (self.nb.len() - self.n_near())
     }

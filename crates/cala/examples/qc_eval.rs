@@ -1800,6 +1800,11 @@ fn label_bundle(
     println!("label bundle pass 2: crops written to {out_dir:?}");
 }
 
+/// DIAG: the `CALA_STATS_AUDIT` file and, per cell, `(hash of its published
+/// column, frame of its last change)`.
+#[cfg(feature = "diagnostics")]
+type StatsAudit = (BufWriter<File>, HashMap<u64, (u64, u64)>);
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -2038,6 +2043,19 @@ fn main() {
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
     let mut conv = calab_cala::qc::convergence::Tracker::new();
     let mut conv_out = calab_cala::qc::convergence::header();
+    // DIAG (S2.0b, `CALA_STATS_AUDIT=<file>`, diagnostics feature): per cell
+    // and checkpoint, the evidence each statistics store holds.
+    #[cfg(feature = "diagnostics")]
+    let mut stats_audit: Option<StatsAudit> = std::env::var("CALA_STATS_AUDIT").ok().map(|p| {
+        let mut f = BufWriter::new(File::create(p).unwrap());
+        writeln!(
+            f,
+            "t\tid\tborn\tlast_change\tn_px\t{}",
+            calab_cala::discover::SlowLoop::STATS_AUDIT_HEADER
+        )
+        .unwrap();
+        (f, HashMap::new())
+    });
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -2333,6 +2351,31 @@ fn main() {
                         }
                     })
                     .collect();
+                #[cfg(feature = "diagnostics")]
+                if let (Some((f, last)), Some(sl)) = (stats_audit.as_mut(), slow.as_ref()) {
+                    for slot in 0..lib.len() {
+                        let (pix, val) = lib.filtered(slot);
+                        let id = lib.ids()[slot];
+                        let mut hsh = 0xcbf29ce484222325u64;
+                        for (&p, &v) in pix.iter().zip(val) {
+                            for x in [u64::from(p), u64::from(v.to_bits())] {
+                                hsh = (hsh ^ x).wrapping_mul(0x100000001b3);
+                            }
+                        }
+                        let e = last.entry(id).or_insert((hsh, t_end as u64));
+                        if e.0 != hsh {
+                            *e = (hsh, t_end as u64);
+                        }
+                        let _ = writeln!(
+                            f,
+                            "{t_end}\t{id}\t{}\t{}\t{}\t{}",
+                            births.get(&id).copied().unwrap_or(0),
+                            e.1,
+                            pix.len(),
+                            sl.stats_audit(&lib, id, pix, val)
+                        );
+                    }
+                }
                 for row in conv.checkpoint(t_end as u64, snaps) {
                     conv_out.push_str(&row.to_line());
                 }
@@ -2469,6 +2512,10 @@ fn main() {
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
+    #[cfg(feature = "diagnostics")]
+    if let Some((mut f, _)) = stats_audit.take() {
+        f.flush().unwrap();
+    }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
         if sl.config().core_test != CoreTest::Off {
