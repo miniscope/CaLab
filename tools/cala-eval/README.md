@@ -19,7 +19,9 @@ sections 3.2 to 3.5 of the overhaul plan.
 - `split_passes.py`: cuts a `qc_eval --passes N` run (repeated pass 1, S2.3;
   frames are virtual, `pass * frames + t`) into one run directory per pass
   (`<run>_pass<k>`), which `summarize.py` reads as ordinary runs. The held-out
-  score is held out in pass 1 only.
+  score is held out in pass 1 only. `qc_eval --later-passes MODE` (`refine`,
+  `refine-prune`, `refine-merge`; default `all`) restricts the slow loop's
+  edits in passes ≥ 2 (S2.3b, `results/2026-11-12-refine-only-passes.md`).
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
