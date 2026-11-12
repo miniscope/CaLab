@@ -12,8 +12,8 @@
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
 use crate::trace::{
-    apply_skirt, merge_blocks, moat_blocks, moat_geometry, support_disk, Footprint, LibraryConfig,
-    Support,
+    apply_skirt, merge_blocks, moat_blocks, moat_geometry, skirt_field, skirt_radius, support_disk,
+    Footprint, LibraryConfig, Support,
 };
 
 /// A rectangle of the frame (rows `y0..y0 + h`, columns `x0..x0 + w`).
@@ -342,8 +342,10 @@ impl Cell {
 /// (centre, radius, bounding box `bbox`): `H a` on the support, and the
 /// block means of `L a` on the moat grid out to its reach (FOV only), from
 /// one blur on a canvas that holds all of the moat's blocks. With a
-/// `skirt` (ascending global blocks and block means), the column also
-/// carries it ([`apply_skirt`]); its blocks join the moat's.
+/// `skirt` (ascending global blocks and block means), the column is that
+/// of the support values plus the skirt field ([`skirt_field`],
+/// [`apply_skirt`]), and the moat reaches as far beyond the skirt blocks
+/// as beyond the support ([`skirt_radius`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn moat_column(
     pix: &[u32],
@@ -360,7 +362,13 @@ pub(crate) fn moat_column(
     let Some((b, reach)) = filter.moat() else {
         return (raw.to_vec(), Vec::new(), Vec::new());
     };
-    let mut blks = moat_blocks(center, radius, b, reach, dims);
+    let mut blks = moat_blocks(
+        center,
+        skirt_radius(center, radius, skirt, b, dims),
+        b,
+        reach,
+        dims,
+    );
     merge_blocks(&mut blks, skirt);
     let gw = w.div_ceil(b);
     let mut canvas = bbox;
@@ -380,6 +388,14 @@ pub(crate) fn moat_column(
             .local(g as usize / w, g as usize % w)
             .expect("inside");
         a[l] = v;
+    }
+    // The skirt as unfiltered light, so `lo` is the low-pass of the whole
+    // footprint.
+    for (g, u) in skirt_field(pix, raw, skirt, b, dims, fov) {
+        let l = canvas
+            .local(g as usize / w, g as usize % w)
+            .expect("inside");
+        a[l] = u;
     }
     let mut lo = vec![0.0f32; canvas.len()];
     filter.blur(canvas.h, canvas.w, &a, &mut lo);
@@ -1471,6 +1487,89 @@ mod tests {
             .map(|(x, y)| (x - y).abs())
             .fold(0.0f32, f32::max);
         assert!(err < 0.03, "max error {err}");
+    }
+
+    #[test]
+    fn skirt_column_carries_its_own_low_pass() {
+        // A skirt is unfiltered light outside the support, so the column
+        // takes its low-pass too: in the FOV interior the skirt adds about
+        // as little DC as the support does (the moat's reach truncates the
+        // low-pass of both), not its own mass.
+        let n = 256usize;
+        let dims = Dims {
+            width: n,
+            height: n,
+        };
+        let fov = vec![1u8; n * n];
+        let mut filter = LocalFilter::new(20.0);
+        let b = filter.moat().unwrap().0;
+        let gw = n.div_ceil(b);
+        let (cy, cx) = (128.0f32, 128.0f32);
+        let rect = Rect {
+            y0: 100,
+            x0: 100,
+            h: 56,
+            w: 56,
+        };
+        let a: Vec<f32> = (0..rect.len())
+            .map(|i| {
+                let (dy, dx) = (
+                    (rect.y0 + i / rect.w) as f32 - cy,
+                    (rect.x0 + i % rect.w) as f32 - cx,
+                );
+                let r2 = dy * dy + dx * dx;
+                if r2 < 49.0 {
+                    (-r2 / 18.0).exp()
+                } else if r2 < 100.0 {
+                    1e-6
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        // Every block whose centre lies 10–24 px from the cell's centre.
+        let mut skirt = Vec::new();
+        for by in 0..gw {
+            for bx in 0..gw {
+                let (dy, dx) = (
+                    (by * b) as f32 + 0.5 * b as f32 - 0.5 - cy,
+                    (bx * b) as f32 + 0.5 * b as f32 - 0.5 - cx,
+                );
+                let d = (dy * dy + dx * dx).sqrt();
+                if (10.0..24.0).contains(&d) {
+                    skirt.push(((by * gw + bx) as u32, 0.05f32));
+                }
+            }
+        }
+        let cfg = LibraryConfig::default();
+        let mut mk = |sk: &[(u32, f32)]| {
+            Cell::from_canvas(
+                1,
+                rect,
+                &a,
+                dims,
+                &fov,
+                &cfg,
+                Extent::Given,
+                &mut filter,
+                sk,
+            )
+            .unwrap()
+        };
+        let (plain, with) = (mk(&[]), mk(&skirt));
+        let sum = |c: &Cell| -> f64 {
+            (0..(n * n) as u32)
+                .map(|g| f64::from(c.column_at(g, n, b)))
+                .sum()
+        };
+        let mass_a: f64 = plain.raw.iter().map(|&v| f64::from(v)).sum();
+        let field = crate::trace::skirt_field(&with.pix, &with.raw, &skirt, b, dims, &fov);
+        let mass_u: f64 = field.iter().map(|f| f64::from(f.1)).sum();
+        let dc_a = sum(&plain) / mass_a;
+        let dc_u = (sum(&with) - sum(&plain)) / mass_u;
+        println!("DC share: support {dc_a:.3}, skirt {dc_u:.3}");
+        assert!(mass_u > 0.5 * mass_a, "a skirt worth testing");
+        assert!(dc_u.abs() <= dc_a.abs() + 0.05, "skirt DC {dc_u} vs {dc_a}");
     }
 
     #[test]

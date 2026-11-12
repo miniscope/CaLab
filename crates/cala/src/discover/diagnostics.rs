@@ -481,7 +481,7 @@ fn support_audit() -> Option<&'static Mutex<BufWriter<File>>> {
 }
 
 /// Header of the support audit: `C` rows, then the `L` rows' columns.
-const SUPPORT_AUDIT_HEADER: &str = "#C\tframe\tid\trule\tN\tse\tphi\tz_fw\tn_S\tradius\tr_h\tr_u\tn_X\tsecond\tmass_S\tn_beyond_rh\tmass_beyond_rh\tn_skirt_blocks\tskirt_mass\tleftover_med_z\tleftover_share_z3\tn_leftover_blocks\n#L\tframe\tid\tn_pos\tradius\tn_skirt_blocks\n";
+const SUPPORT_AUDIT_HEADER: &str = "#C\tframe\tid\trule\tN\tse\tphi\tz_fw\tn_S\tradius\tr_h\tr_u\tn_X\tsecond\tmass_S\tn_beyond_rh\tmass_beyond_rh\tn_skirt_blocks\tskirt_mass\tleftover_med_z\tleftover_share_z3\tn_leftover_blocks\tn_whole_blocks\tleftover_share_z3_whole\tleftover_share_z3_partial\n#L\tframe\tid\tn_pos\tradius\tn_skirt_blocks\n";
 
 pub(super) fn support_audit_on() -> bool {
     support_audit().is_some()
@@ -579,7 +579,13 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
     let x = i.ms.map(|m| m.x.as_slice());
     let in_x = |p: usize| x.is_some_and(|x| x[p]);
     // Leftover per moat-grid block over the measured pixels outside S and X.
+    // Whole blocks: every FOV pixel of the block outside S is measured and
+    // outside X, so the skirt is the block mean of exactly these pixels;
+    // partial blocks (cut by the disk edge, or holding X) count the rest as
+    // zero light, so their leftover on the measured pixels is positive by
+    // construction.
     let (mut lo_z, mut n_blk) = (Vec::new(), 0usize);
+    let (mut z_whole, mut z_part) = (Vec::new(), Vec::new());
     if i.block > 0 {
         let b = i.block;
         let gw = w.div_ceil(b);
@@ -610,8 +616,31 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
             r.sort_by(f64::total_cmp);
             (r[r.len() / 2] / 0.4549).max(1.0).sqrt()
         });
-        for e in blk.values().filter(|e| e[1] > 0.0) {
-            lo_z.push(e[0] / (phi_blk * i.se * e[1].sqrt()));
+        for (&bq, e) in blk.iter().filter(|(_, e)| e[1] > 0.0) {
+            let z = e[0] / (phi_blk * i.se * e[1].sqrt());
+            lo_z.push(z);
+            let (by, bx) = (bq / gw, bq % gw);
+            let mut whole = true;
+            'px: for y in by * b..((by + 1) * b).min(slow.dims.height) {
+                for xx in bx * b..((bx + 1) * b).min(w) {
+                    if slow.fov[y * w + xx] == 0 {
+                        continue;
+                    }
+                    match canvas.local(y, xx) {
+                        Some(l) if in_s[l] => {}
+                        Some(l) if i.mask[l] && !in_x(l) => {}
+                        _ => {
+                            whole = false;
+                            break 'px;
+                        }
+                    }
+                }
+            }
+            if whole {
+                z_whole.push(z);
+            } else {
+                z_part.push(z);
+            }
         }
     }
     lo_z.retain(|v| v.is_finite());
@@ -626,6 +655,15 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
     } else {
         lo_z.iter().filter(|v| v.abs() > 3.0).count() as f64 / lo_z.len() as f64
     };
+    let share = |v: &[f64]| {
+        let v: Vec<f64> = v.iter().copied().filter(|z| z.is_finite()).collect();
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v.iter().filter(|z| z.abs() > 3.0).count() as f64 / v.len() as f64
+        }
+    };
+    let (n_whole, share_whole, share_part) = (z_whole.len(), share(&z_whole), share(&z_part));
     // Skirt mass in the footprint's normalised units: block value times the
     // block's FOV pixels outside the published support.
     let mut skirt_mass = 0.0f64;
@@ -663,7 +701,7 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
     });
     let mass_s = mass;
     support_row(&format!(
-        "C\t{}\t{}\t{}\t{}\t{:.6e}\t{:.4}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\n",
+        "C\t{}\t{}\t{}\t{}\t{:.6e}\t{:.4}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{:.4}\n",
         slow.frames,
         i.cell.id,
         i.rule,
@@ -685,6 +723,9 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
         med_z,
         share3,
         n_blk,
+        n_whole,
+        share_whole,
+        share_part,
     ));
 }
 

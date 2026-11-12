@@ -154,17 +154,26 @@ measures a footprint's pixel support (`SlowLoopConfig::support_rule`, default
 pixels where the PSF-smoothed measured light is significant (family-wise
 `--support-alpha`, default 0.05, per footprint; standard error measured from
 the split halves) in the single-peaked basin of the cell's peak; `basin-skirt`
-also lets the moat's 8 px blocks carry the measured block-mean light of the
-rest of the statistics disk.
+also gives the footprint a skirt: unfiltered light per 8 px moat block on the
+rest of the statistics disk, solved so that the column (the filter of support
+plus skirt, whose low-pass reaches the moat) matches the measured light there.
 
 With a binary built with `--features diagnostics`,
 `CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
 the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
 support size and radius, the s20 radii `r_h` and `r_u`, `n_X`, second peak,
 mass beyond `r_h`, skirt blocks and mass, and the median and `|z| > 3` share
-of the block leftover `h − column` outside the support) and one `L` row per
-published cell at each publish (`n_pos`, radius, skirt blocks). The header
-lines start with `#`.
+of the block leftover `h − column` outside the support, overall and split into
+whole blocks (every FOV pixel outside the support measured and outside `X`) and
+partial ones) and one `L` row per published cell at each publish (`n_pos`,
+radius, skirt blocks). The header lines start with `#`.
+
+`CALA_DIVERGE_DIR=<dir>` (any build) writes `solver.tsv` (per frame: library
+version, cells, solver sweeps, largest |trace|, non-finite traces) and, at the
+first frames of up to six library versions where a trace exceeds 1e6 or is
+non-finite (or at frame `CALA_DIVERGE_AT`), a `dump_t<frame>_v<version>`
+directory with the library bytes (`Library::to_bytes`), the frame and the warm
+start, so the solve can be replayed offline.
 
 ## Validation (E1)
 
