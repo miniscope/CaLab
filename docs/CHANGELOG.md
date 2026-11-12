@@ -5,6 +5,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala: `npm run sim-stream -- <path>` streams a recording over the live-source
+  WebSocket, so the live source can be tested without hardware. It takes a
+  Miniscope AVI folder or a minisim recording (the sim directory, its `daq/` or
+  its `daq/Miniscope/`), and has `--fps`, `--loop`, `--start`, `--frames` and
+  `--port`; it prints the `ws://` address to paste into the start page. It is the
+  existing `live-sim.mjs`, extended; its WebSocket framing now lives in
+  `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
+  USER_GUIDE section, "Testing with a simulated stream".
+
 ## [2.14.0] - 2026-11-12
 
 Web apps `v2.14.0`; the Python package `calab` is unchanged (`py/v0.5.0`).

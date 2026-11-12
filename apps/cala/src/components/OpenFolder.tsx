@@ -16,10 +16,14 @@ interface OpenFolderProps {
 
 /**
  * Example address shown in the empty live-source field. The field starts
- * empty: a live source is optional (the simulator, `scripts/live-sim.mjs`,
+ * empty: a live source is optional (the simulator, `npm run sim-stream`,
  * listens on ws://localhost:8765).
  */
 export const LIVE_URL_PLACEHOLDER = 'ws://host:port';
+
+/** Where the simulated stream (`npm run sim-stream`) is documented. */
+export const LIVE_HELP_URL =
+  'https://github.com/miniscope/CaLab/blob/main/apps/cala/USER_GUIDE.md#testing-with-a-simulated-stream';
 
 /** The folder name for the header: the picked directory, else the first file's name. */
 function labelFor(entries: FolderEntry[]): string {
@@ -144,7 +148,10 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           </label>{' '}
           <button type="submit" class="btn-secondary btn-small" data-testid="live-connect">
             Connect
-          </button>
+          </button>{' '}
+          <a href={LIVE_HELP_URL} target="_blank" rel="noopener" data-testid="live-help">
+            How to test with a simulated stream
+          </a>
         </form>
       </Show>
 
