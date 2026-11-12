@@ -326,11 +326,6 @@ impl DitherFlatField {
         self.frames
     }
 
-    /// Effective (forgetting-weighted) frames per shift bin.
-    pub fn bin_frames(&self) -> Vec<f64> {
-        self.counts.iter().map(|&c| c / self.wscale).collect()
-    }
-
     /// Frames binned per shift bin since the last call; resets the counts.
     pub fn take_recent(&mut self) -> Vec<u64> {
         std::mem::replace(&mut self.recent, vec![0; self.counts.len()])
@@ -707,8 +702,6 @@ pub const REFINE_EVERY_S: f32 = 60.0;
 /// runs it (on by default).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OnlineFlatFieldConfig {
-    /// Estimate and apply the flat field at all.
-    pub enabled: bool,
     /// The estimator (half-lives in frames).
     pub estimator: FlatFieldConfig,
     /// Frames before the first solve.
@@ -736,7 +729,6 @@ impl OnlineFlatFieldConfig {
         };
         let frames = |s: f32| (s * fps).round().max(1.0);
         OnlineFlatFieldConfig {
-            enabled: true,
             estimator: FlatFieldConfig {
                 half_life_frames: f64::from(frames(GAIN_HALF_LIFE_S)),
                 offset_half_life_frames: f64::from(frames(OFFSET_HALF_LIFE_S)),
@@ -925,7 +917,7 @@ impl OnlineFlatField {
 
     /// Whether [`Self::refine`] should run now.
     pub fn due(&self) -> bool {
-        self.cfg.enabled && self.est.frames() >= self.next_at
+        self.est.frames() >= self.next_at
     }
 
     /// Solve for a new map (the expensive step). On success the new map is
@@ -1260,7 +1252,6 @@ mod tests {
 
     fn online_cfg(half_life: f64, offsets: f64) -> OnlineFlatFieldConfig {
         OnlineFlatFieldConfig {
-            enabled: true,
             estimator: FlatFieldConfig {
                 min_bin_frames: 2,
                 half_life_frames: half_life,

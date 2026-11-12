@@ -2,6 +2,8 @@
 
 Real workshop recording, default online flat field (gain half-life 2 h, offset half-life 120 s), seeds s1/s2. Base is no flat field, auto3 is the #327 offline pre-pass.
 
+The standalone example `flatfield_eval.rs` was removed after a64cd09, along with `qc_eval --ff-dump-maps` and `--no-flat-field` (use `--flat-field off`): reproduce at a64cd09.
+
 ## Real data
 
 | metric                  | base        | auto3       | online      |

@@ -5,6 +5,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Removed
+
+- Cala: code of settled experiments, all opt-in and off by default, so the
+  default pipeline is unchanged (byte-identical `qc_eval` output). The joint
+  sufficient-statistics store (#329, #331: no measured gain; reading it made
+  convergence worse), with `qc_eval --footprint-stats` and `--joint-shadow`;
+  visit jobs no longer carry it (wire format `VIS5`). Cross-fitted footprint
+  statistics and rank-1 fits (#326: no measured gain), with
+  `qc_eval --crossfit`. `OnlineFlatFieldConfig::enabled` (the app turns the
+  flat field off itself), six functions without callers, the `flatfield_eval` and
+  `texture_eval` examples, and `qc_eval --ff-dump-maps` and `--no-flat-field`
+  (use `--flat-field off`). Reproduce the removed experiments at a64cd09.
+
 ## [2.13.0] - 2026-11-12
 
 Web apps `v2.13.0`; the Python package `calab` is unchanged (`py/v0.5.0`).

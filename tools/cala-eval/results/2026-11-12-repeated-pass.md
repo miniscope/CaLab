@@ -123,6 +123,8 @@ within the pass. The late rates are per minute over the pass's last 4 minutes.
   texture 2 / 5, Minian 503 / 412 for seed 1 and a seed-to-seed Jaccard of
   .677. Pass 1 here gives S8 21883 / 22485, texture 2 / 5, Minian 503 / 410
   and Jaccard .678.
+  The joint statistics store that S1.7 built on (#329, #331, with
+  `qc_eval --footprint-stats`) was removed after a64cd09: reproduce at a64cd09.
 - **Minian is a reference with missing and wrong cells.** Its rows show
   agreement, not recall.
 

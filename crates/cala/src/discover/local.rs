@@ -1219,21 +1219,16 @@ impl Problem {
 /// `r_t[dom] ≈ h c_t` with `c ≥ 0`, starting from `c` (updated in place).
 /// Returns `h` on `dom`. `fixed_c` keeps the traces and does one `h` step.
 ///
-/// With `cls` (the block parity of each pixel of `dom`), the fit is
-/// cross-fitted ([`rank1_crossfit`]); without, it is plain alternation,
-/// which is power iteration on the residual: with no cell present it
-/// returns the top singular vector of the structured residual.
+/// Plain alternation, which is power iteration on the residual: with no
+/// cell present it returns the top singular vector of the structured
+/// residual.
 pub(crate) fn rank1(
     r: &[&[f32]],
     dom: &[u32],
     c: &mut [f32],
     iters: usize,
     fixed_c: bool,
-    cls: Option<&[u8]>,
 ) -> Vec<f32> {
-    if let Some(cls) = cls.filter(|_| !fixed_c && iters > 1) {
-        return rank1_crossfit(r, dom, c, iters, cls);
-    }
     let mut h = vec![0.0f32; dom.len()];
     for it in 0..iters.max(1) {
         let cc: f64 = c.iter().map(|&v| f64::from(v * v)).sum();
@@ -1266,77 +1261,6 @@ pub(crate) fn rank1(
                 .sum();
             *ct = ((d / hh) as f32).max(0.0);
         }
-    }
-    h
-}
-
-/// Cross-fitted alternating rank-1 fit (see [`rank1`]): one trace per
-/// block parity, `c_k = h_kᵀ r_k / h_kᵀ h_k` measured on the pixels of
-/// parity `k` only (unclamped), and the footprint of a parity-`k` pixel
-/// regressed on the *other* parity's trace,
-/// `h(p) = Σ_t r_t(p) c_{1−k,t} / Σ_t c_{0,t} c_{1,t}`.
-///
-/// A pixel's noise then never multiplies itself, so noise whose
-/// correlation length is shorter than a block has no fixed point; the
-/// normaliser `Σ c₀ c₁` is the trace energy without either trace's noise
-/// (an instrumental-variable estimate, unbiased in scale). The first step
-/// uses the given `c` for both parities, so both start on one scale, which
-/// the iteration keeps. On return `c` is `max(0, (c₀ + c₁) / 2)`. When the
-/// traces do not co-vary (`Σ c₀ c₁ ≤ 0`, no reproducible signal), `h` is 0.
-pub(crate) fn rank1_crossfit(
-    r: &[&[f32]],
-    dom: &[u32],
-    c: &mut [f32],
-    iters: usize,
-    cls: &[u8],
-) -> Vec<f32> {
-    let mut h = vec![0.0f32; dom.len()];
-    let mut cp = [c.to_vec(), c.to_vec()];
-    for it in 0..iters.max(1) {
-        let d: f64 = cp[0]
-            .iter()
-            .zip(&cp[1])
-            .map(|(&a, &b)| f64::from(a) * f64::from(b))
-            .sum();
-        if !(d > 0.0) {
-            h.iter_mut().for_each(|v| *v = 0.0);
-            return h;
-        }
-        let mut acc = vec![0.0f64; dom.len()];
-        for (t, rt) in r.iter().enumerate() {
-            let other = [cp[1][t], cp[0][t]];
-            for ((a, &p), &k) in acc.iter_mut().zip(dom).zip(cls) {
-                *a += f64::from(rt[p as usize] * other[k as usize]);
-            }
-        }
-        for (hv, a) in h.iter_mut().zip(&acc) {
-            *hv = (a / d) as f32;
-        }
-        if it + 1 == iters {
-            break;
-        }
-        let mut hh = [0.0f64; 2];
-        for (&v, &k) in h.iter().zip(cls) {
-            hh[k as usize] += f64::from(v * v);
-        }
-        if !(hh[0] > 0.0 || hh[1] > 0.0) {
-            return h;
-        }
-        for (t, rt) in r.iter().enumerate() {
-            let mut dk = [0.0f64; 2];
-            for ((&hv, &p), &k) in h.iter().zip(dom).zip(cls) {
-                dk[k as usize] += f64::from(hv * rt[p as usize]);
-            }
-            for k in 0..2 {
-                // A parity without footprint (a degenerate domain) takes
-                // the other's trace.
-                let j = if hh[k] > 0.0 { k } else { 1 - k };
-                cp[k][t] = (dk[j] / hh[j]) as f32;
-            }
-        }
-    }
-    for (t, ct) in c.iter_mut().enumerate() {
-        *ct = (0.5 * (cp[0][t] + cp[1][t])).max(0.0);
     }
     h
 }
@@ -1463,9 +1387,7 @@ pub(crate) fn rank2_split(
         .iter()
         .map(|v| (dot(h0, v) / dot(h0, h0).max(1e-30)).max(0.0) as f32)
         .collect();
-    // Plain alternation: the rank-2 fit it is compared with is not
-    // cross-fitted either.
-    let h1 = rank1(&refs, &local, &mut c1, 10, false, None);
+    let h1 = rank1(&refs, &local, &mut c1, 10, false);
     let mut sse1 = 0.0f64;
     for t in 0..nt {
         for k in 0..np {
