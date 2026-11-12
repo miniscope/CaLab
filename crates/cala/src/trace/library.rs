@@ -640,11 +640,11 @@ struct Core {
     low_start: Vec<usize>,
     low_blk: Vec<u32>,
     low_val: Vec<f32>,
-    /// Skirt of cell `i`: blocks `skirt_blk[skirt_start[i]..skirt_start[i
-    /// + 1]]` (ascending, a subset of its moat blocks) with the measured
-    /// block means `skirt_val` it carries ([`apply_skirt`]; already folded
-    /// into `val` and `low_val`). Empty for every cell under the ring
-    /// support rule.
+    /// Skirt of cell `i`: blocks
+    /// `skirt_blk[skirt_start[i]..skirt_start[i + 1]]` (ascending, a subset
+    /// of its moat blocks) with the measured block means `skirt_val` it
+    /// carries ([`apply_skirt`]; already folded into `val` and `low_val`).
+    /// Empty for every cell under the ring support rule.
     skirt_start: Vec<usize>,
     skirt_blk: Vec<u32>,
     skirt_val: Vec<f32>,

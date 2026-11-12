@@ -1130,6 +1130,55 @@ mod fast_tests {
         }
     }
 
+    /// Pixels new to a moved disk start at the current model: after
+    /// `moved` and `seed_new`, the estimate and both split halves equal the
+    /// column there (with and without per-pixel moments), and the shared
+    /// pixels keep their estimate.
+    #[test]
+    fn moved_seeds_new_pixels_at_the_model() {
+        for missing in [false, true] {
+            let mut st = FpStats::new((8.0, 8.0), 3.0, 17, 17, &[1u8; 289], false, 5);
+            let m = st.pix.len();
+            for t in 0..1300u64 {
+                let r: Vec<f32> = (0..m)
+                    .map(|i| {
+                        if missing && (i + t as usize).is_multiple_of(7) {
+                            f32::NAN
+                        } else {
+                            i as f32 * 0.1 + u(t * 77 + i as u64)
+                        }
+                    })
+                    .collect();
+                push1(&mut st, &r, u(t) + 1.0, 1.0);
+            }
+            assert_eq!(st.pm.is_some(), missing);
+            let before = st.estimate().unwrap();
+            let old = st.pix.clone();
+            let mut big = st.moved((8.0, 8.0), 6.0, 17, 17, &[1u8; 289]);
+            big.col = big.pix.iter().map(|&p| 0.25 + 0.01 * p as f32).collect();
+            big.seed_new(&old);
+            let est = big.estimate().unwrap();
+            let (ha, hb, _, _) = big.halves().unwrap();
+            let mut new = 0;
+            for (i, p) in big.pix.iter().enumerate() {
+                match old.binary_search(p) {
+                    Ok(j) => assert!((est[i] - before[j]).abs() < 1e-4, "shared {p}"),
+                    Err(_) => {
+                        new += 1;
+                        let want = big.col[i];
+                        for (what, v) in [("all", est[i]), ("A", ha[i]), ("B", hb[i])] {
+                            assert!(
+                                (v - want).abs() < 1e-3 * want.abs().max(1.0),
+                                "{what} {p}: {v} vs {want} (missing {missing})"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(new > 50);
+        }
+    }
+
     /// A visit in another worker sees the same transient-band estimate.
     #[test]
     fn fast_sums_cross_the_wire() {

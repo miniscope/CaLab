@@ -864,6 +864,8 @@ struct LedgerProj {
 }
 
 /// What a residual candidate became.
+// (Short-lived, one per candidate: boxing the cells buys nothing.)
+#[allow(clippy::large_enum_variant)]
 enum Outcome {
     Add(Cell, f32),
     /// The candidate, the existing cell re-estimated to take it up, margin.

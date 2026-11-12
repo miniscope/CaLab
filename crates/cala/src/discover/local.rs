@@ -1475,9 +1475,10 @@ mod tests {
 
     #[test]
     fn moat_columns_solve_exact_mixtures_with_their_moats() {
-        // Two cells' full filtered columns (support plus block-mean moat),
-        // whitened by a non-uniform noise map, on a patch that clips one
-        // moat: the solve recovers the mixture and its χ² is ~0.
+        // Two cells' full filtered columns (support plus block-mean moat,
+        // one with a skirt), whitened by a non-uniform noise map, on a patch
+        // that clips one moat: the solve recovers the mixture and its χ² is
+        // ~0.
         let dims = Dims {
             width: 100,
             height: 100,
@@ -1486,7 +1487,7 @@ mod tests {
         let inv: Vec<f32> = (0..10_000).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
         let mut filter = LocalFilter::new(20.0);
         let cfg = LibraryConfig::default();
-        let mk = |id, cy: f32, cx: f32, filter: &mut LocalFilter| {
+        let mk = |id, cy: f32, cx: f32, filter: &mut LocalFilter, skirt: &[(u32, f32)]| {
             let rect = Rect {
                 y0: 0,
                 x0: 0,
@@ -1504,11 +1505,13 @@ mod tests {
                     }
                 })
                 .collect();
-            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter, &[]).unwrap()
+            Cell::from_canvas(id, rect, &a, dims, &fov, &cfg, Extent::Given, filter, skirt).unwrap()
         };
-        let c1 = mk(1, 40.0, 40.0, &mut filter);
-        let c2 = mk(2, 48.0, 52.0, &mut filter);
-        assert!(!c1.low.is_empty());
+        // Blocks of 8 px on a 13-wide grid: around (40, 40).
+        let skirt = [(4 * 13 + 3, 0.02), (4 * 13 + 6, 0.03), (6 * 13 + 5, -0.01)];
+        let c1 = mk(1, 40.0, 40.0, &mut filter, &skirt);
+        let c2 = mk(2, 48.0, 52.0, &mut filter, &[]);
+        assert!(!c1.low.is_empty() && c1.skirt_blk.len() == 3);
         let rect = Rect {
             y0: 16,
             x0: 16,
