@@ -18,7 +18,8 @@
     ],
     "pipeline": {
       "input": "Raw Miniscope video",
-      "output": "cell footprints and traces"
+      "output": "cell footprints and traces",
+      "step": 1
     },
     "status": "beta",
     "screenshot": "screenshot.png"

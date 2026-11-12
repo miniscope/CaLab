@@ -79,18 +79,20 @@ registered.
 | `description`     | Card tagline and `apps.json` `description`.                                                                                |
 | `longDescription` | One paragraph about the app, shown when the card's Details is expanded.                                                    |
 | `features`        | Bullet list of what the app does, shown under Details after `longDescription`.                                             |
-| `pipeline`        | Optional `{ "input": ..., "output": ... }`: the app's line in "How the apps fit together" (released apps only).            |
+| `pipeline`        | Optional `{ "input": ..., "output": ..., "step": n }`: the app's line in "How the apps fit together" (released apps only). |
 | `status`          | Badge and order: `stable`, then `beta`, then `coming-soon`. Coming-soon apps are listed, unlinked, under "In development". |
 | `hidden`          | `true`: still built and deployed at its URL, but no landing card and no `apps.json` entry (so no bridge use).              |
 | `screenshot`      | Image file in the app directory for the card thumbnail, or `""`.                                                           |
 
 The landing page is built only from these fields (`scripts/lib/landing.mjs`
 names no app). `pipeline` reads as `input → output`, e.g.
-`{ "input": "Raw Miniscope video", "output": "cell footprints and traces" }`;
-leave both strings empty (the template's placeholder) or drop the field to
+`{ "input": "Raw Miniscope video", "output": "cell footprints and traces", "step": 1 }`.
+The optional numeric `step` orders the panel by data flow (lower is earlier;
+ties and a missing step fall back to the card order).
+Leave both strings empty (the template's placeholder) or drop the field to
 stay out of the panel. `npm run check:apps-manifest` fails on a malformed
-`pipeline` (not an object, unknown keys, non-strings, or only one of the two
-set).
+`pipeline` (not an object, unknown keys, non-strings, only one of the two
+set, or a `step` that is not a number).
 
 `apps/_template` itself is `hidden: true` and is never built or deployed: its
 `calab.id` is the `__APP_ID__` placeholder, which `@calab/vite-config` accepts

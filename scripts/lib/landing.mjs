@@ -103,10 +103,16 @@ function renderUpcoming(app) {
         </li>`;
 }
 
-/** One line per released app with a `calab.pipeline`, in landing order. */
+/**
+ * One line per released app with a `calab.pipeline`, in data-flow order:
+ * `pipeline.step` ascending, then landing order (the sort is stable) for ties
+ * or a missing step.
+ */
 function renderWorkflow(released) {
+  const order = (app) => app.pipeline.step ?? Infinity;
   const steps = released
     .filter((app) => app.pipeline)
+    .sort((a, b) => order(a) - order(b))
     .map(
       (app) => `          <li>
             <a href="${escapeHtml(app.path)}/">${escapeHtml(app.displayName)}</a>

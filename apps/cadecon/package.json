@@ -16,7 +16,8 @@
     ],
     "pipeline": {
       "input": "Traces",
-      "output": "calcium kernel and spikes, estimated automatically"
+      "output": "calcium kernel and spikes, estimated automatically",
+      "step": 2
     },
     "status": "stable",
     "screenshot": "screenshot.png"

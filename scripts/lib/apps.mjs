@@ -62,16 +62,18 @@ export function siteDir(env = process.env) {
 
 /**
  * `calab.pipeline` (optional): where the app sits in the analysis chain, as
- * `{ "input": "Raw Miniscope video", "output": "cell footprints and traces" }`.
+ * `{ "input": "Raw Miniscope video", "output": "cell footprints and traces", "step": 1 }`.
  * The landing page's "How the apps fit together" panel lists every released
- * app that sets it, in landing order. Absent, null, or both strings empty (the
+ * app that sets it, in data-flow order: by `step` (optional number, lower is
+ * earlier), then landing order for ties or a missing step. Absent, null, or both strings empty (the
  * template's placeholder) leaves the app out of the panel.
  */
 function pipelineOf(value) {
   if (value == null) return null;
   const input = value.input.trim();
   const output = value.output.trim();
-  return input === '' && output === '' ? null : { input, output };
+  if (input === '' && output === '') return null;
+  return { input, output, step: typeof value.step === 'number' ? value.step : null };
 }
 
 /** Problems with a `calab.pipeline` value; [] when it is valid or absent. */
@@ -82,10 +84,15 @@ export function pipelineErrors(value) {
   }
   const errors = [];
   for (const key of Object.keys(value)) {
-    if (key !== 'input' && key !== 'output') errors.push(`pipeline has unknown key "${key}"`);
+    if (!['input', 'output', 'step'].includes(key)) {
+      errors.push(`pipeline has unknown key "${key}"`);
+    }
   }
   for (const key of ['input', 'output']) {
     if (typeof value[key] !== 'string') errors.push(`pipeline.${key} must be a string`);
+  }
+  if (value.step != null && !(typeof value.step === 'number' && Number.isFinite(value.step))) {
+    errors.push('pipeline.step must be a number (or null)');
   }
   if (errors.length > 0) return errors;
   const blank = ['input', 'output'].filter((k) => value[k].trim() === '');

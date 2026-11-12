@@ -11,7 +11,8 @@
     "features": [],
     "pipeline": {
       "input": "",
-      "output": ""
+      "output": "",
+      "step": null
     },
     "status": "coming-soon",
     "hidden": true,

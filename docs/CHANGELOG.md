@@ -17,8 +17,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   header links docs, the Python package, the changelog and GitHub; the footer
   links the release, citation and licence. The page is built only from each
   app's `calab` block, rendered by the new `scripts/lib/landing.mjs`.
-- New optional `calab.pipeline` field (`{ input, output }`): the app's line in
-  the landing page's workflow panel. Set for Cala, CaDecon and CaTune, with an
+- New optional `calab.pipeline` field (`{ input, output, step }`): the app's
+  line in the landing page's workflow panel, ordered by `step` (data flow). Set for Cala, CaDecon and CaTune, with an
   empty placeholder in `apps/_template`; `check:apps-manifest` validates it.
 - Cala's landing image is now a single clean footprint from a real run on the
   workshop recording (cell 398, QC pass), not a full-interface screenshot.
