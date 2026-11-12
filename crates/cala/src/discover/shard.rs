@@ -843,7 +843,16 @@ impl SlowLoop {
             self.count_job(&job, bytes.len());
             let job = VisitJob::from_bytes(&bytes)?;
             let res = runner.run(job)?;
-            let res = VisitResult::from_bytes(&res.to_bytes())?;
+            // The test log is not on the wire; this in-process round trip
+            // keeps it.
+            #[cfg(feature = "diagnostics")]
+            let tests = res.tests.clone();
+            #[allow(unused_mut)]
+            let mut res = VisitResult::from_bytes(&res.to_bytes())?;
+            #[cfg(feature = "diagnostics")]
+            {
+                res.tests = tests;
+            }
             let w = res.work;
             self.apply_job(res)?;
             self.credit -= w as i64;
