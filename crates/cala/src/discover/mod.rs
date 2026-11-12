@@ -163,7 +163,7 @@
 //!   `refine_z`). Converged footprints stop being proposed. The reservoir's
 //!   noisier estimate is used only for young cells.
 //! * **Joint sufficient statistics** (`suffstats.rs`, opt-in
-//!   [`FootprintStats::Joint`]; S1.7, nothing reads them yet). The same
+//!   [`FootprintStats::Joint`]; S1.7). The same
 //!   regions keep data sums and the neighbours' trace cross-moments per
 //!   block group instead of residual sums, so a footprint is estimated
 //!   under the neighbours' *current* columns: a neighbour's change reaches
@@ -171,7 +171,12 @@
 //!   Neighbours that reach a region only through their moat or the ring
 //!   keep their cross-moments per cell rather than per pixel class (an
 //!   approximation with a derived error, `suffstats.rs`), and visit jobs
-//!   carry the stores summed to the two halves of the block groups.
+//!   carry the stores summed to the two halves of the block groups. With
+//!   `Joint` the visits' footprint estimates (refinement, the add's
+//!   re-estimated alternatives, split proposals) come from the store under
+//!   the working set's current columns, with the store's own standard
+//!   error; a job also carries the stores' neighbours outside its zone
+//!   (halo, columns only) and the published ring coupling.
 //! * **Add vs absorb vs merge-in.** A residual candidate competes with the
 //!   overlapping cells re-estimated to take it up: from their statistics,
 //!   grown into the candidate's disk with their trace fixed, or (when the

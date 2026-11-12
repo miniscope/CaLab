@@ -38,9 +38,9 @@
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
-//!   --footprint-stats M  residual (default) | joint: also keep the joint
-//!                      sufficient statistics (S1.7; no decision reads them
-//!                      yet) and print their size and cost
+//!   --footprint-stats M  residual (default) | joint: keep the joint
+//!                      sufficient statistics (S1.7) and estimate footprints
+//!                      from them; print their size and cost
 //!   --joint-shadow     with joint: also keep the exact store (every
 //!                      neighbour near) and print the far neighbours'
 //!                      approximation error against it (doubles the store)
