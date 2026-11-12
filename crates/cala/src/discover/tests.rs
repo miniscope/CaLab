@@ -1338,6 +1338,39 @@ fn missing_samples_round_trip_through_the_reservoir() {
     assert_eq!(back[7], MISSING);
 }
 
+#[test]
+fn a_refine_only_scope_freezes_the_cell_set() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let (mut slow, mut eng) = start(shard_config(), &seed);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let before = slow.stats();
+    let ids: Vec<u64> = slow.cell_infos().iter().map(|c| c.id).collect();
+    // A second pass over the same movie that may only refine.
+    slow.set_edit_scope(EditScope::Refine);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let after = slow.stats();
+    let ids_after: Vec<u64> = slow.cell_infos().iter().map(|c| c.id).collect();
+    assert_eq!(ids, ids_after);
+    let structural = |s: &SlowStats| {
+        (
+            s.adds,
+            s.absorbs,
+            s.merges,
+            s.splits,
+            s.deletes,
+            s.keep_tests,
+        )
+    };
+    assert_eq!(structural(&before), structural(&after), "{after:?}");
+    // Visits go on, and so do the refinement tests.
+    assert!(
+        after.visits > before.visits && after.work_refine > before.work_refine,
+        "{before:?} -> {after:?}"
+    );
+}
+
 /// S1.7 PR-1: the joint sufficient statistics kept beside `fpstats`.
 #[path = "joint_tests.rs"]
 mod joint;

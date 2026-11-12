@@ -291,6 +291,39 @@ pub enum CoreTest {
     Delete,
 }
 
+/// Which structural edits the slow loop may make (S2.3b: refinement-only
+/// later passes). Refinements of existing footprints are always allowed;
+/// the default allows everything. A visit that may only refine skips the
+/// add proposals (and with them absorbs and re-adds), splits and merges;
+/// [`EditScope::Refine`] also skips the keep tests and every deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditScope {
+    /// Every edit (adds, absorbs, splits, merges, keep tests, deletions).
+    #[default]
+    All,
+    /// Refinements only: the cell set is frozen.
+    Refine,
+    /// Refinements, keep tests and deletions (pruning).
+    RefinePrune,
+    /// Refinements, keep tests, deletions and merges.
+    RefineMerge,
+}
+
+impl EditScope {
+    /// Whether new cells may appear (adds, absorbs, splits).
+    pub fn grows(self) -> bool {
+        self == EditScope::All
+    }
+    /// Whether cells may be removed by the keep tests and probation.
+    pub fn prunes(self) -> bool {
+        self != EditScope::Refine
+    }
+    /// Whether pairs may be merged.
+    pub fn merges(self) -> bool {
+        matches!(self, EditScope::All | EditScope::RefineMerge)
+    }
+}
+
 impl CoreTest {
     /// Whether the transient-band statistics are collected.
     pub fn collects(self) -> bool {
@@ -793,6 +826,8 @@ pub struct SlowLoop {
     /// Pairs the keep tests found redundant, to be merge-tested regardless
     /// of their trace correlation.
     forced: Vec<(u64, u64)>,
+    /// Which structural edits visits may make ([`SlowLoop::set_edit_scope`]).
+    scope: EditScope,
     // observe() buffers
     model: Vec<f32>,
     z: Vec<f32>,
@@ -1115,6 +1150,7 @@ impl SlowLoop {
             suff_own: SuffOwner::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
+            scope: EditScope::All,
             model: vec![0.0; n_px],
             z: vec![0.0; n_px],
             qrow: Vec::new(),
@@ -1138,6 +1174,13 @@ impl SlowLoop {
     }
 
     /// Replace the noise map (σ per pixel). New patches are whitened with it.
+    /// Restrict the structural edits from now on (default
+    /// [`EditScope::All`]). Applies to visits run by [`SlowLoop::step`];
+    /// a [`VisitRunner`] keeps the scope it was built with.
+    pub fn set_edit_scope(&mut self, scope: EditScope) {
+        self.scope = scope;
+    }
+
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
         crate::trace::check_len("noise map", self.dims.pixels(), noise.len())?;
         if noise.iter().any(|v| !v.is_finite() || *v < 0.0) {
@@ -2405,6 +2448,9 @@ impl SlowLoop {
     ///   its spot);
     /// * mostly redundant with one neighbour: the pair is merge-tested.
     fn prune(&mut self) {
+        if !self.scope.prunes() {
+            return;
+        }
         let cfg = &self.cfg;
         let mut doomed = Vec::new();
         for c in &self.cells {
@@ -2818,8 +2864,11 @@ impl SlowLoop {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
+        let scope = self.scope;
         let w0 = self.work;
-        self.keep_tests(ti);
+        if scope.prunes() {
+            self.keep_tests(ti);
+        }
         self.stats.work_keep += self.work - w0;
         let w0 = self.work;
         let fit_fr = self.load(ti, false);
@@ -2830,13 +2879,18 @@ impl SlowLoop {
         }
         let refine = self.cfg.refine_every_visits > 0
             && self.tile_visits[ti].is_multiple_of(self.cfg.refine_every_visits);
+        if !refine && !scope.merges() && !scope.grows() {
+            // Nothing this visit would use the tile's solve for.
+            return Ok(());
+        }
         // One solve of the tile's model serves all three edits; refinements
         // and merges made on this visit leave its residual slightly stale for
         // the add proposals, but every edit is tested on the current model.
         let w0 = self.work;
         let mut solved = self.solve_tile(ti, &fit_fr);
         self.stats.work_load += self.work - w0;
-        let split = self.cfg.split_every_visits > 0
+        let split = scope.grows()
+            && self.cfg.split_every_visits > 0
             && self.tile_visits[ti].is_multiple_of(self.cfg.split_every_visits);
         if split {
             let w0 = self.work;
@@ -2850,13 +2904,17 @@ impl SlowLoop {
             self.refine(ti, &solved, &test_fr);
             self.stats.work_refine += self.work - w0;
         }
-        let w0 = self.work;
-        self.merge(ti, &fit_fr, &test_fr);
-        self.stats.work_merge += self.work - w0;
-        let w0 = self.work;
-        let Solved { base, fits, resid } = solved;
-        self.add(ti, resid, &base, &fits, &test_fr);
-        self.stats.work_add += self.work - w0;
+        if scope.merges() {
+            let w0 = self.work;
+            self.merge(ti, &fit_fr, &test_fr);
+            self.stats.work_merge += self.work - w0;
+        }
+        if scope.grows() {
+            let w0 = self.work;
+            let Solved { base, fits, resid } = solved;
+            self.add(ti, resid, &base, &fits, &test_fr);
+            self.stats.work_add += self.work - w0;
+        }
         Ok(())
     }
 
