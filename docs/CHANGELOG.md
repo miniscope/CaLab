@@ -5,6 +5,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-11-12
+
+Web apps `v2.15.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala gains a History view of how a run evolves, from 5 minutes to 5 days, and
+a simulated live stream for testing the live source. Cala's pipeline and
+results are unchanged.
+
 ### Added
 
 - Cala: a **History** view of how the run evolves, for runs from 5 minutes to
@@ -15,7 +22,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   clock time, click to pin a time, brush and zoom on a shared time window; an
   event lane (flat-field maps, pauses, gaps, warnings, range steps). It
   replaces the Motion, Flicker, Cells and Lag tabs and the Run panel's
-  sparkline rows.
+  sparkline rows (#352).
 - Cala: noise σ and background (FOV medians), registration quality, the share
   of flagged frames, flat-field updates, processing rate and live drops are now
   tracked over the whole run.
@@ -32,7 +39,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `--port`; it prints the `ws://` address to paste into the start page. It is the
   existing `live-sim.mjs`, extended; its WebSocket framing now lives in
   `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
-  USER_GUIDE section, "Testing with a simulated stream".
+  USER_GUIDE section, "Testing with a simulated stream" (#349).
 
 ### Changed
 
@@ -40,7 +47,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   not wall time; the convergence history no longer drops spikes by thinning;
   the live counters no longer stop silently after 100k batches.
 - `@calab/ui`: `sparkRange` takes a declared range only; the 98th-percentile
-  auto-range is gone.
+  auto-range is gone. History chips keep a fixed width while values change.
+
+### Developer tooling
+
+- Simulations at the real recording's cell size and blur (v3: about 10 px
+  cells, edge blur about 1.4 px) plus 6 px and 16 px cell-size arms, with the
+  calibration evidence (#351).
 
 ## [2.14.0] - 2026-11-12
 
