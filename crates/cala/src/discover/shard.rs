@@ -44,7 +44,7 @@ use super::fpstats::FpStats;
 use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
 use super::reservoir::{SharedFrames, Tile};
-use super::suffstats::CellStats;
+use super::suffstats::{CellStats, HALVES};
 use super::wire::{Reader, Writer, MAGIC};
 use super::{SlowLoop, SlowStats};
 use crate::trace::{Library, TraceError};
@@ -107,7 +107,8 @@ pub struct VisitJob {
     ledger: Vec<u64>,
     lives: Vec<(u64, u32)>,
     fpstats: Vec<(u64, FpStats)>,
-    /// Joint statistics of the zone's cells (`FootprintStats::Joint` only).
+    /// Joint statistics of the zone's cells (`FootprintStats::Joint` only),
+    /// summed to the two halves of the block groups (`HALVES`).
     suff: Vec<(u64, CellStats)>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
@@ -617,7 +618,7 @@ impl SlowLoop {
             .collect();
         let suff = ids
             .iter()
-            .filter_map(|id| self.suff.get(id).map(|s| (*id, s.clone())))
+            .filter_map(|id| self.suff.get(id).map(|s| (*id, s.reduced(&HALVES))))
             .collect();
         self.job_seq += 1;
         let seq = self.job_seq;

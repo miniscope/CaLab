@@ -2,7 +2,7 @@
 //! `fpstats` by the owner, end to end through the fast loop.
 
 use super::*;
-use crate::discover::suffstats::ALL_GROUPS;
+use crate::discover::suffstats::{ALL_GROUPS, HALVES};
 
 fn joint_cfg() -> SlowLoopConfig {
     SlowLoopConfig {
@@ -295,6 +295,8 @@ fn keeping_the_store_changes_no_decision() {
     let n_px = N * N;
     let (mut a, mut ea) = start(base, &seed);
     let (mut b, mut eb) = start(cfg.clone(), &seed);
+    // With the exact shadow store too (it must change nothing either).
+    b.enable_joint_shadow();
     // The joint run's visits go through the byte encoding.
     let mut runner = VisitRunner::new(new_loop(&cfg));
     for k in 0..t {
@@ -321,6 +323,9 @@ fn keeping_the_store_changes_no_decision() {
     assert_eq!(d.cells, b.fpstats.len());
     assert!(d.births > 0 && d.restarted_px > 0, "{d:?}");
     eprintln!("store after the busy run: {d:?}");
+    let e = b.joint_shadow_error(&eb.library().clone()).unwrap();
+    eprintln!("far approximation after the busy run: {e:?}");
+    assert!(e.cells > 0, "{e:?}");
 }
 
 #[test]
@@ -339,13 +344,31 @@ fn a_job_carries_the_zone_stores_through_the_wire() {
         let lib = eng.library().clone();
         s.observe(f, &lib, &tr).unwrap();
     }
-    let mut jobs = 0;
+    let lib = eng.library().clone();
+    let (mut jobs, mut checked) = (0, 0);
     while let Some(job) = s.take_job() {
         let bytes = job.to_bytes();
         let back = VisitJob::from_bytes(&bytes).unwrap();
         assert_eq!(job.suff(), back.suff());
+        // Reduced to the halves: each half's estimate is the full store's
+        // over that half's groups.
         for (id, st) in back.suff() {
-            assert_eq!(st, &s.suff[id]);
+            assert_eq!(st, &s.suff[id].reduced(&HALVES));
+            assert_eq!(st.groups, 2);
+            if lib.slot(*id).is_none() {
+                continue;
+            }
+            for (h, &mask) in HALVES.iter().enumerate() {
+                let (Some(a), Some(b)) = (
+                    store_estimate(&lib, st, 1 << h),
+                    store_estimate(&lib, &s.suff[id], mask),
+                ) else {
+                    continue;
+                };
+                let rel = max_diff(&a, &b) / max_abs(&b).max(1e-6);
+                assert!(rel < 1e-4, "cell {id} half {h}: {rel}");
+                checked += 1;
+            }
         }
         if !job.suff().is_empty() {
             jobs += 1;
@@ -353,5 +376,5 @@ fn a_job_carries_the_zone_stores_through_the_wire() {
         // A truncated buffer is an error, not a panic.
         assert!(VisitJob::from_bytes(&bytes[..bytes.len() - 9]).is_err());
     }
-    assert!(jobs > 0);
+    assert!(jobs > 0 && checked > 0, "{jobs} {checked}");
 }
