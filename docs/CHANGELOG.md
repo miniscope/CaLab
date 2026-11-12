@@ -5,6 +5,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-11-12
+
+Web apps `v2.13.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A refreshed landing page built from each app's manifest, and a cleanup after
+the Cala beta. No behaviour change in any app; Cala's default pipeline is
+byte-identical to 2.13.0.
+
 ### Changed
 
 - Landing page refresh. It now takes its colours, type and spacing from the
@@ -16,7 +23,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   Coming-soon apps move to a compact, unlinked "In development" list. The
   header links docs, the Python package, the changelog and GitHub; the footer
   links the release, citation and licence. The page is built only from each
-  app's `calab` block, rendered by the new `scripts/lib/landing.mjs`.
+  app's `calab` block, rendered by the new `scripts/lib/landing.mjs` (#345).
 - New optional `calab.pipeline` field (`{ input, output, step }`): the app's
   line in the landing page's workflow panel. `step` is a coarse stage of use;
   apps with equal steps are shown together as alternatives (Cala 1; CaDecon
@@ -36,7 +43,22 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `qc_eval --crossfit`. `OnlineFlatFieldConfig::enabled` (the app turns the
   flat field off itself), six functions without callers, the `flatfield_eval` and
   `texture_eval` examples, and `qc_eval --ff-dump-maps` and `--no-flat-field`
-  (use `--flat-field off`). Reproduce the removed experiments at a64cd09.
+  (use `--flat-field off`). Reproduce the removed experiments at a64cd09
+  (#343).
+
+### Fixed
+
+- Docs: Cala user guide and README match the app (button names, Safari
+  untested, turning the flat field off); `cala-eval` README lists every script
+  and results note, and notes show the flags that actually ran; minisim pin
+  updated to a version that reproduces the evaluation sims (#342).
+
+### Developer tooling
+
+- `qc_eval --passes N`, `--later-passes` and `--stats-half-life` for the
+  repeated-pass and statistics-window probes, with results notes (#337, #339,
+  #340).
+- Dependency updates (#266, #336).
 
 ## [2.13.0] - 2026-11-12
 
