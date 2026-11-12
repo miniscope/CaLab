@@ -276,6 +276,25 @@ pub enum CoreTest {
     Delete,
 }
 
+/// How a footprint estimated from its running statistics gets its pixel
+/// support (S2.1). Only the statistics path (`stats_proposal`) measures an
+/// extent; every other constructor keeps the seed rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SupportRule {
+    /// 1 px rings around the half-max centroid, outward while the ring's
+    /// light `h + L a` is `support_z` white standard errors above zero.
+    #[default]
+    Rings,
+    /// The pixels where the PSF-smoothed measured light `h` alone is
+    /// significant (family-wise `support_alpha` per footprint, standard
+    /// error measured from the split halves), in the single-peaked basin
+    /// of the cell's peak. The moat is the plain `−L a` of that support.
+    Basin,
+    /// [`SupportRule::Basin`], and the moat blocks carry the measured
+    /// block-mean light of the rest of the statistics disk (the skirt).
+    BasinSkirt,
+}
+
 /// Which structural edits the slow loop may make (S2.3b: refinement-only
 /// later passes). Refinements of existing footprints are always allowed;
 /// the default allows everything. A visit that may only refine skips the
@@ -410,6 +429,14 @@ pub struct SlowLoopConfig {
     /// seed rule, so bright cells take their full extent as the frames
     /// accumulate and dim ones keep at least their 2.5 half-widths).
     pub support_z: f32,
+    /// How the statistics path measures a support (see [`SupportRule`]);
+    /// `Rings` (the default) is the rule above.
+    pub support_rule: SupportRule,
+    /// Family-wise error rate of one support construction under the basin
+    /// rules: the probability that it admits at least one pixel without
+    /// light (Bonferroni over the tested pixels). Edits of the cell set
+    /// keep their own rates.
+    pub support_alpha: f32,
     /// A refinement is accepted when its per-frame held-out χ² gains are
     /// positive with a paired z (mean over standard error) above this...
     pub refine_z: f32,
@@ -514,6 +541,8 @@ impl Default for SlowLoopConfig {
             stats_margin_cells: 0.4,
             stats_min_snr: 4.0,
             support_z: 2.0,
+            support_rule: SupportRule::Rings,
+            support_alpha: 0.05,
             refine_z: 3.0,
             absorb_z: 3.0,
             absorb_share: 0.8,
@@ -572,6 +601,10 @@ impl SlowLoopConfig {
             && self.stats_margin_cells >= 0.0
             && self.stats_min_snr.is_finite()
             && self.support_z.is_finite()
+            && self.support_alpha > 0.0
+            && self.support_alpha < 1.0
+            && (self.support_rule == SupportRule::Rings
+                || (self.core_test == CoreTest::Off && !self.basin_trim))
             && self.refine_z.is_finite()
             && self.absorb_z.is_finite()
             && self.absorb_share.is_finite()
@@ -1701,12 +1734,24 @@ impl SlowLoop {
                     parity_block(self.cfg.cell_diameter_px),
                 )
             });
-            if !st.covers(center, radius) {
-                *st = st.moved(center, want, width, height, &self.fov);
+            // Under the basin rules the disk also shrinks with the support
+            // (one margin of slack), and pixels new to a moved disk start
+            // at the current model rather than at zero.
+            let basin = self.cfg.support_rule != SupportRule::Rings;
+            let mut old_pix = None;
+            if !st.covers(center, radius) || (basin && st.radius > radius + 2.0 * margin) {
+                let moved = st.moved(center, want, width, height, &self.fov);
+                let old = std::mem::replace(st, moved);
+                if basin {
+                    old_pix = Some(old.pix);
+                }
             }
-            if st.version != version {
+            if st.version != version || old_pix.is_some() {
                 st.col = column_on(lib, slot, &st.pix);
                 st.version = version;
+            }
+            if let Some(old) = &old_pix {
+                st.seed_new(old);
             }
             let c = traces.traces[slot];
             let level = if ring { traces.background[slot] } else { 0.0 };

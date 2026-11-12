@@ -59,15 +59,16 @@ pub(crate) struct FpStats {
     /// filtered column on `pix` (moat included).
     pub version: u64,
     pub col: Vec<f32>,
-    /// DIAG split-half: the same sums over alternate 256-frame blocks only
-    /// (`rc`, `r`, the class moments), and the frame counter.
+    /// Split-half: the same sums over alternate 256-frame blocks only
+    /// (`rc`, `r`, the class moments), and the frame counter. The support
+    /// rule measures its standard error from them ([`FpStats::halves`]).
     pub half: (Vec<f32>, Vec<f32>, [Mom; 2]),
     pub k: u64,
     /// Per-pixel moments over the frames in which the pixel was valid:
     /// `None` until a missing pixel has been pushed (a disk away from the
     /// FOV edge never needs them, and keeps the class moments above).
     pub pm: Option<PixMoments>,
-    /// The split-half sums' per-pixel moments (owner only; not on the wire).
+    /// The split-half sums' per-pixel moments.
     pub half_pm: Option<PixMoments>,
     /// Transient-band statistics in interleaved block groups (`None` when
     /// [`super::CoreTest`] is `Off`).
@@ -473,6 +474,46 @@ impl FpStats {
     }
 
     /// Whether the support disk `(center, radius)` lies inside this disk.
+    /// Start the pixels of this disk that are not in `old_pix` (sorted; the
+    /// disk before [`FpStats::moved`]) at the current model: after `col` is
+    /// set, their sums are made so that [`FpStats::estimate`] and both
+    /// [`FpStats::halves`] return exactly `col` there (a new pixel otherwise
+    /// starts at zero sums under the full trace moments, which dilutes its
+    /// estimate toward 0 for about a half-life). Real frames then pull it
+    /// toward the truth. A class without a usable `λ` is left alone.
+    pub fn seed_new(&mut self, old_pix: &[u32]) {
+        if self.col.len() != self.pix.len() {
+            return;
+        }
+        let lam = [0, 1].map(|c| lambda(&self.m[c]));
+        let mut j = 0;
+        for i in 0..self.pix.len() {
+            let p = self.pix[i];
+            while j < old_pix.len() && old_pix[j] < p {
+                j += 1;
+            }
+            if j < old_pix.len() && old_pix[j] == p {
+                continue;
+            }
+            let c = self.cls[i] as usize;
+            let Some(l) = lam[c] else {
+                continue;
+            };
+            let v = f64::from(self.col[i]) * l;
+            let (full, half) = match (&self.pm, &self.half_pm) {
+                (Some(pm), Some(hpm)) => ([pm.s1[i], pm.s2[i]], [hpm.s1[i], hpm.s2[i]]),
+                _ => (
+                    [self.m[c][2], self.m[c][3]],
+                    [self.half.2[c][2], self.half.2[c][3]],
+                ),
+            };
+            self.r[i] = (v * full[0]) as f32;
+            self.rc[i] = (v * full[1]) as f32;
+            self.half.1[i] = (v * half[0]) as f32;
+            self.half.0[i] = (v * half[1]) as f32;
+        }
+    }
+
     pub fn covers(&self, center: (f32, f32), radius: f32) -> bool {
         let d = ((center.0 - self.center.0).powi(2) + (center.1 - self.center.1).powi(2)).sqrt();
         d + radius <= self.radius + 0.5
