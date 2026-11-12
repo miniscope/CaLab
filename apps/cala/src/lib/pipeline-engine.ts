@@ -10,6 +10,7 @@
  */
 import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
+import type { FlatFieldApplied } from './flat-field.ts';
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
 import {
   isUnbounded,
@@ -146,6 +147,8 @@ export type PipelineStepResult =
       cells?: CellsBatch;
       /** The live source's counters after this batch (live runs only). */
       live?: LiveBatchInfo;
+      /** A flat-field map took effect at this batch (pipelined runs only). */
+      flatField?: FlatFieldApplied;
     }
   | { kind: 'done' };
 
@@ -175,6 +178,16 @@ const now = (): number => performance.now();
 /** Numbers per frame returned by `Preprocessor.frontFrames`; the last two are the flicker offset and gain. */
 const FRONT_RECORD_STRIDE = 6;
 
+/**
+ * The single-worker pipeline: the `?pipeline=0` fallback and the tests (the app
+ * runs the pipelined stages of `pipeline-stages.ts`).
+ *
+ * It has NO sensor flat field (`PipelineOptions.flatField` is ignored here):
+ * the estimator needs each batch's raw frames together with the shifts motion
+ * correction finds for them, and pushing them and running the solve inside
+ * `step()` would put the estimator's cost (about 0.3 s a minute natively, more
+ * in WASM) on the frame path. The pipelined path hands them to a worker.
+ */
 export class PipelineEngine {
   readonly plan: PipelinePlan;
   private readonly cursor: PipelineCursor;
@@ -346,7 +359,7 @@ export class PipelineEngine {
     // Pixels the shift moved in from outside the FOV mask are missing data.
     pre.backFramesRegistered(corrected, s.count, dy, dx);
     const t5 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre);
+    const cells = this.fast?.process(corrected, s.start, s.count, pre, { dy, dx });
     const t5b = now();
 
     const quality = new Float32Array(s.count);

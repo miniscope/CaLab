@@ -275,10 +275,21 @@ pub struct Preprocessor {
     /// the current frame's validity (see [`Preprocessor::back_masked`]).
     src_mask: Option<SourceMask>,
     valid: Vec<u8>,
-    /// Optional sensor flat field: per-pixel `1 / gain` (PRNU), applied to
-    /// the raw frame in sensor coordinates before anything else. Off (None)
-    /// unless set with [`Preprocessor::set_flat_field`].
-    inv_gain: Option<Vec<f32>>,
+    /// Optional sensor flat field, applied to the raw frame in sensor
+    /// coordinates before anything else. Off (None) unless set with
+    /// [`Preprocessor::set_flat_field`] or [`Preprocessor::set_flat_field_map`].
+    flat: Option<FlatApply>,
+}
+
+/// A flat-field map as [`Preprocessor::set_flat_field_map`] takes it: gain, optional offset, level.
+pub type FlatFieldMap<'a> = (&'a [f32], Option<&'a [f32]>, f32);
+
+/// A flat field as the front half applies it: `(raw − offset) · inv_gain + level`.
+#[derive(Debug, Clone)]
+struct FlatApply {
+    inv_gain: Vec<f32>,
+    offset: Option<Vec<f32>>,
+    level: f32,
 }
 
 impl Preprocessor {
@@ -299,7 +310,7 @@ impl Preprocessor {
             next_frame: 0,
             src_mask: None,
             valid: Vec::new(),
-            inv_gain: None,
+            flat: None,
         })
     }
 
@@ -310,24 +321,53 @@ impl Preprocessor {
     /// shift, and a cell whose trace correlates with motion picks it up as
     /// footprint texture. `None` turns the correction off.
     pub fn set_flat_field(&mut self, gain: Option<&[f32]>) -> Result<(), PreprocessError> {
-        self.inv_gain = match gain {
-            None => None,
-            Some(g) => {
-                self.dims().check("flat field", g.len())?;
-                Some(
-                    g.iter()
-                        .map(|&v| {
-                            if v.is_finite() && v > 0.0 {
-                                1.0 / v
-                            } else {
-                                1.0
-                            }
-                        })
-                        .collect(),
-                )
-            }
+        self.set_flat_field_map(gain.map(|g| (g, None, 0.0)))
+    }
+
+    /// [`Self::set_flat_field`] with a fixed-pattern dark offset: every raw
+    /// frame becomes `(raw − offset) / gain + level` (`offset` per pixel,
+    /// e.g. the sensor's column offsets; `level` puts the mean dark level
+    /// back so later stages see the same grey scale). `offset: None` divides
+    /// only. [`super::flatfield::FlatField::apply`] sets a solved map.
+    /// `None` turns the correction off.
+    pub fn set_flat_field_map(
+        &mut self,
+        map: Option<FlatFieldMap<'_>>,
+    ) -> Result<(), PreprocessError> {
+        let Some((g, off, level)) = map else {
+            self.flat = None;
+            return Ok(());
         };
+        self.dims().check("flat field", g.len())?;
+        if let Some(o) = off {
+            self.dims().check("flat-field offset", o.len())?;
+        }
+        let inv_gain = g
+            .iter()
+            .map(|&v| {
+                if v.is_finite() && v > 0.0 {
+                    1.0 / v
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+        let offset = off.map(|o| {
+            o.iter()
+                .map(|&v| if v.is_finite() { v } else { 0.0 })
+                .collect()
+        });
+        self.flat = Some(FlatApply {
+            inv_gain,
+            offset,
+            level: if level.is_finite() { level } else { 0.0 },
+        });
         Ok(())
+    }
+
+    /// Whether a flat field is set.
+    pub fn has_flat_field(&self) -> bool {
+        self.flat.is_some()
     }
 
     pub fn dims(&self) -> Dims {
@@ -383,9 +423,18 @@ impl Preprocessor {
             let v = r.to_f32();
             *o = if v.is_finite() { v } else { 0.0 };
         }
-        if let Some(ig) = &self.inv_gain {
-            for (o, &k) in out.iter_mut().zip(ig) {
-                *o *= k;
+        if let Some(f) = &self.flat {
+            match &f.offset {
+                None => {
+                    for (o, &k) in out.iter_mut().zip(&f.inv_gain) {
+                        *o *= k;
+                    }
+                }
+                Some(off) => {
+                    for ((o, &k), &d) in out.iter_mut().zip(&f.inv_gain).zip(off) {
+                        *o = (*o - d) * k + f.level;
+                    }
+                }
             }
         }
         self.calib.hot.apply(out)

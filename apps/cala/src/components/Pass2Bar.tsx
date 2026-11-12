@@ -141,6 +141,7 @@ export function Pass2Bar(props: Pass2BarProps): JSX.Element {
       fps: props.fps,
       result: r,
       run: props.pipeline.record().snapshot(),
+      flatField: props.pipeline.record().flatFieldApplied,
       qc: props.cells.qc(),
       firstSeen: props.cells.firstSeen,
       version: import.meta.env.VITE_APP_VERSION || 'dev',

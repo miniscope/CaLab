@@ -9,7 +9,7 @@ import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { jobTransferables, MotionStage } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { FrameResponse } from './frame-types.ts';
-import type { StageFree, StageLink, StageMsg } from './stage-types.ts';
+import type { StageFree, StageLink, StageMsg, StageShifts } from './stage-types.ts';
 
 /** Registered-frame buffers between this stage and the trace stage. */
 const OUT_BUFFERS = 3;
@@ -25,6 +25,8 @@ let stage: MotionStage | null = null;
 let pool: StagePool | null = null;
 let epoch = 0;
 let useGpu = true;
+// Pass 1 only: stage A needs the shifts for the flat-field estimator (pass 2 replays them).
+let sendShifts = false;
 // Finished jobs leave in arrival order; the GPU warp readback of one overlaps the next job's estimate.
 let outChain: Promise<void> = Promise.resolve();
 // Messages are handled one at a time, in arrival order.
@@ -49,6 +51,7 @@ async function handle(msg: StageMsg): Promise<void> {
       );
       pool = p;
       stage = new MotionStage(msg.setup, () => p.acquire(), useGpu);
+      sendShifts = !msg.setup.replay;
       down?.postMessage(msg);
       break;
     }
@@ -67,6 +70,20 @@ async function handle(msg: StageMsg): Promise<void> {
         .then(() => staged.finish)
         .then(
           (done) => {
+            if (sendShifts && done.step.phase === 'process' && done.dy && done.dx) {
+              // Copies: the job's own arrays go on to the trace stage.
+              const shifts: StageShifts = {
+                type: 'shifts',
+                epoch: msg.epoch,
+                start: done.step.start,
+                dy: done.dy.slice(),
+                dx: done.dx.slice(),
+              };
+              up?.postMessage(shifts, [
+                shifts.dy.buffer as ArrayBuffer,
+                shifts.dx.buffer as ArrayBuffer,
+              ]);
+            }
             down?.postMessage({ ...msg, job: done } satisfies StageMsg, jobTransferables(done));
           },
           (err: unknown) => {

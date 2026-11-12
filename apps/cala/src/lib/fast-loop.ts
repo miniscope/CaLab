@@ -31,6 +31,14 @@ export interface TraceEngineLike {
 export interface QcMonitorLike {
   /** Solves the batch with `engine` (same result as `engine.processFrames`) and observes it. */
   processFrames(engine: TraceEngineLike, frames: Float32Array, count: number): Float32Array;
+  /** As `processFrames`, with each frame's rigid shift (feeds `motion_r2`); absent: shifts are not used. */
+  processFramesShifted?(
+    engine: TraceEngineLike,
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+  ): Float32Array;
   setNoise(noise: Float32Array): void;
   cellMetrics(): Float64Array;
   globalMetrics(): Float64Array;
@@ -204,6 +212,7 @@ export class FastLoop {
     start: number,
     count: number,
     calibration: CalibrationSource,
+    shifts?: { dy: Float32Array; dx: Float32Array },
   ): CellsBatch {
     const t0 = now();
     this.applyPendingLibrary();
@@ -216,7 +225,9 @@ export class FastLoop {
       const qc = this.qcMonitor(start, calibration);
       qcOn = qc !== null;
       traces = qc
-        ? qc.processFrames(this.engine, batch, count)
+        ? shifts && qc.processFramesShifted
+          ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
+          : qc.processFrames(this.engine, batch, count)
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
     }

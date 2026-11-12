@@ -775,3 +775,51 @@
   font-family: var(--font-mono, monospace);
   font-size: 0.85rem;
 }
+
+/* Sensor flat field panel */
+
+.cala-flat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.cala-flat__image {
+  flex: 0 0 auto;
+  width: min(100%, 260px);
+}
+
+.cala-flat__canvas {
+  width: 100%;
+  height: auto;
+  background: #000;
+}
+
+.cala-flat__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.cala-flat__ramp {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #000, #fff);
+}
+
+.cala-flat__text {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.cala-flat__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.9rem;
+}
