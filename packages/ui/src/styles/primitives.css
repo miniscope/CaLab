@@ -1,0 +1,246 @@
+/* Shared UI primitives: panel label, tab strip, segmented control, progress bar, metric tile. */
+
+/* ========================
+   Progress Bar
+   ======================== */
+.progress-bar {
+  margin-top: var(--space-xs);
+}
+
+.progress-bar__label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.progress-bar__pct {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.progress-bar__track {
+  height: 8px;
+  background: var(--border-default);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+@keyframes progress-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px var(--accent-muted);
+  }
+  50% {
+    box-shadow: 0 0 10px var(--accent-muted);
+  }
+}
+
+.progress-bar__track--running {
+  animation: progress-pulse 2s ease-in-out infinite;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar__fill--paused {
+  background: var(--text-tertiary);
+}
+
+.progress-bar__fill--complete {
+  background: var(--success, #4caf50);
+}
+
+.progress-bar__fill--error {
+  background: var(--error);
+}
+
+.progress-bar__phase {
+  font-size: 0.65rem;
+  color: var(--accent);
+  margin-top: 2px;
+  font-style: italic;
+}
+
+.progress-bar__status {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ========================
+   Panel label
+   ======================== */
+.panel-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin: 0 0 2px;
+  font-weight: var(--font-weight-medium);
+}
+
+/* ========================
+   Tab strip
+   ======================== */
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+}
+
+.tab-strip__trailing {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tab-strip--underline {
+  border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
+}
+
+.tab-strip--underline .tab-strip__tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  padding: var(--space-xs) var(--space-md);
+  font-size: 0.85rem;
+  font-family: var(--font-body);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab-strip--underline .tab-strip__tab:hover {
+  color: var(--text-primary);
+}
+
+.tab-strip--underline .tab-strip__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+.tab-strip--caps {
+  flex-shrink: 0;
+}
+
+.tab-strip--caps .tab-strip__tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.tab-strip--caps .tab-strip__tab:hover {
+  color: var(--text-primary);
+}
+
+.tab-strip--caps .tab-strip__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Tabs wrapper: lays out as if its bar and panels were direct children. */
+.tabs {
+  display: contents;
+}
+
+/* ========================
+   Segmented control
+   ======================== */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.segmented__option {
+  border: none;
+  border-left: 1px solid var(--border-default);
+  background: transparent;
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  font-family: var(--font-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmented__option:first-child {
+  border-left: none;
+}
+
+.segmented__option:hover {
+  color: var(--text-primary);
+}
+
+.segmented__option--active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+.segmented__option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.segmented--sm .segmented__option {
+  padding: 1px 8px;
+  font-size: 0.75rem;
+}
+
+.segmented__option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ========================
+   Metric tile
+   ======================== */
+.metric-tile {
+  min-width: 0;
+}
+
+.metric-tile__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.metric-tile__title {
+  color: var(--text-secondary);
+}
+
+.metric-tile__value {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metric-tile__plot {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border-bottom: 1px solid var(--border-subtle);
+}

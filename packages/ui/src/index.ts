@@ -21,3 +21,12 @@ export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
 
 export { TraceLegend } from './TraceLegend.tsx';
 export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
+
+export { TabStrip, Tabs } from './Tabs.tsx';
+export type { TabStripItem, TabStripProps, TabItem, TabsProps } from './Tabs.tsx';
+export { SegmentedControl } from './SegmentedControl.tsx';
+export type { SegmentedOption, SegmentedControlProps } from './SegmentedControl.tsx';
+export { ProgressBar } from './ProgressBar.tsx';
+export type { ProgressBarProps, ProgressState } from './ProgressBar.tsx';
+export { MetricTile, sparkRange, sparkPath } from './MetricTile.tsx';
+export type { SparkLine, MetricTileProps } from './MetricTile.tsx';

@@ -1,4 +1,5 @@
 import { Show, type JSX } from 'solid-js';
+import { ProgressBar as SharedProgressBar } from '@calab/ui';
 import {
   runState,
   currentIteration,
@@ -40,37 +41,20 @@ function phaseLabel(phase: RunPhase): string | null {
 }
 
 export function ProgressBar(): JSX.Element {
-  const pct = () => Math.round(progress() * 100);
-
   return (
     <Show when={runState() !== 'idle'}>
-      <div class="progress-bar">
-        <div class="progress-bar__label">
-          <span>
+      <SharedProgressBar
+        fraction={progress()}
+        state={runState()}
+        label={
+          <>
             Iteration {currentIteration()} of {maxIterations()}
-          </span>
-          <span class="progress-bar__pct">{pct()}%</span>
-        </div>
-        <div
-          class="progress-bar__track"
-          classList={{ 'progress-bar__track--running': runState() === 'running' }}
-        >
-          <div
-            class="progress-bar__fill"
-            classList={{
-              'progress-bar__fill--paused': runState() === 'paused',
-              'progress-bar__fill--complete': runState() === 'complete',
-            }}
-            style={{ width: `${pct()}%` }}
-          />
-        </div>
-        <Show when={phaseLabel(runPhase())}>
-          {(label) => <p class="progress-bar__phase">{label()}</p>}
-        </Show>
-        <Show when={statusLabel(runState())}>
-          {(label) => <p class="progress-bar__status">{label()}</p>}
-        </Show>
-      </div>
+          </>
+        }
+        phase={phaseLabel(runPhase())}
+        status={statusLabel(runState())}
+        aria-label="Run progress"
+      />
     </Show>
   );
 }
