@@ -334,6 +334,46 @@
   color: var(--accent);
 }
 
+/* The chevron sits in a small bordered button so the panels read as
+   collapsible: it points down when open and right when collapsed. */
+.cala-side-panel__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.cala-side-panel__chev-icon {
+  transition: transform var(--transition-fast);
+}
+
+.cala-side-panel--closed .cala-side-panel__chev-icon {
+  transform: rotate(-90deg);
+}
+
+.cala-side-panel__toggle:hover .cala-side-panel__chev,
+.cala-side-panel__toggle:focus-visible .cala-side-panel__chev {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* A collapsed panel says so, and its whole header is the target. */
+.cala-side-panel--closed .cala-side-panel__title::after {
+  content: ' · collapsed';
+  font-weight: var(--font-weight-normal, 400);
+  color: var(--text-tertiary);
+}
+
 .cala-side-panel__title {
   margin: 0;
   font-weight: var(--font-weight-semibold);
