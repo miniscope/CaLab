@@ -1,10 +1,10 @@
 # Cala
 
 A streaming, in-browser pipeline from raw 1-photon Miniscope video to per-cell
-footprints and traces (Rust compiled to WebAssembly, WebGPU later). So far it
+footprints and traces (Rust compiled to WebAssembly, with WebGPU motion correction where available). So far it
 reads Miniscope AVI folders, plays them back, and runs preprocessing and
-motion correction, cell discovery, demixed trace extraction, and online quality control live on the opened recording. The app is hidden from the landing page
-(`calab.hidden`) but built at `/CaLab/Cala/`.
+motion correction, cell discovery, demixed trace extraction, and online quality control live on the opened recording. The app is a beta (`calab.status`),
+listed on the landing page and built at `/CaLab/Cala/`. For using it, see the [user guide](USER_GUIDE.md).
 
 ```sh
 npm run dev cala          # Vite dev server (builds crates/*/pkg first if needed)

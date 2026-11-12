@@ -76,7 +76,7 @@ import {
 import { verdict, type QcSnapshot } from './qc.ts';
 import type { Pass2Result } from './pass2-store.ts';
 import type { TraceFile } from './trace-file.ts';
-import { opfsAvailable, OpfsWriterClient } from './opfs-writer.ts';
+import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
 import type { RunSpan } from './run-record.ts';
 
@@ -529,7 +529,7 @@ export async function saveExport(
     }
     return 'picker';
   }
-  if (opfsAvailable()) {
+  if (await opfsUsable()) {
     const client = OpfsWriterClient.shared();
     const file = `cala-export-${Date.now().toString(36)}.npz`;
     // The previous export's file has been handed to the browser by now.
