@@ -361,6 +361,18 @@ pub struct SlowLoopConfig {
     /// Sampling rate of the recording (frames per second); used only to
     /// turn `holdout_block_s` into frames.
     pub fps: f32,
+    /// Folds of blocks. 1: the split above, a fixed third of the blocks is
+    /// held out and never fitted on. 2: every block belongs to one of two
+    /// folds (a hash of the block), each fold keeps its own running
+    /// footprint statistics, and visits alternate which fold is tested: a
+    /// visit tests fold `k` against footprints estimated from the other fold
+    /// only, so every block is held-out evidence at some visit and no
+    /// evidence is used for the footprint it tests. A cell whose
+    /// transients all fall in one fold's blocks is still testable.
+    /// Note that the published library's footprints have seen earlier
+    /// visits' frames; keep tests on the current footprint are therefore
+    /// partly in-sample for the fold fitted last.
+    pub holdout_folds: u32,
     /// Distinct held-out blocks a tile's held-out slots must span before a
     /// visit tests anything.
     pub min_test_blocks: usize,
@@ -511,6 +523,7 @@ impl Default for SlowLoopConfig {
             holdout_block_s: 6.4,
             fps: 20.0,
             min_test_blocks: 3,
+            holdout_folds: 1,
             accept_z: 5.0,
             event_z: 4.0,
             min_events: 2,
@@ -570,8 +583,19 @@ impl SlowLoopConfig {
     /// the QC score agree. Public so evaluation code can score exactly the
     /// frames the slow loop never fitted on.
     pub fn is_test(&self, frame: u64) -> bool {
-        mix(self.holdout_block(frame) ^ self.seed.rotate_left(17))
-            .is_multiple_of(u64::from(self.holdout_every))
+        self.fold(frame) == 1
+    }
+
+    /// Fold of `frame` (0 or 1), the same for every frame of a block. With
+    /// one fold, 1 is the held-out third and 0 the fitted rest; with two
+    /// folds, a fair coin per block.
+    pub fn fold(&self, frame: u64) -> u8 {
+        let h = mix(self.holdout_block(frame) ^ self.seed.rotate_left(17));
+        if self.holdout_folds == 2 {
+            ((h >> 32) & 1) as u8
+        } else {
+            u8::from(h.is_multiple_of(u64::from(self.holdout_every)))
+        }
     }
 
     /// Hold-out block id of `frame`: blocks are `holdout_block_s * fps`
@@ -595,6 +619,7 @@ impl SlowLoopConfig {
             && self.fps.is_finite()
             && self.fps > 0.0
             && self.min_test_blocks >= 1
+            && (1..=2).contains(&self.holdout_folds)
             && self.accept_z.is_finite()
             && self.event_z.is_finite()
             && self.merge_corr.is_finite()
@@ -775,6 +800,8 @@ pub struct SlowLoop {
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
     fpstats: HashMap<u64, FpStats>,
+    /// Fold 1's running statistics (two folds only; `fpstats` holds fold 0's).
+    fpstats_b: HashMap<u64, FpStats>,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
@@ -1101,6 +1128,7 @@ impl SlowLoop {
             deleted: Vec::new(),
             edit_log: Vec::new(),
             fpstats: HashMap::new(),
+            fpstats_b: HashMap::new(),
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
@@ -1483,7 +1511,7 @@ impl SlowLoop {
         self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
-        self.update_fpstats(frame, lib, traces, !test);
+        self.update_fpstats(frame, lib, traces, self.cfg.fold(frame_idx));
         // Random slots: one uniform sample for every tile.
         self.rng = mix(self.rng);
         let w = self.dims.width;
@@ -1506,7 +1534,7 @@ impl SlowLoop {
                 tile.set_random(j, frame_idx, test);
             }
         }
-        if test {
+        if test || self.cfg.holdout_folds == 2 {
             self.take_probes(lib, frame_idx);
         }
         self.frames += 1;
@@ -1679,20 +1707,19 @@ impl SlowLoop {
     /// residual is accumulated (with cross-fitting, one frame later, when
     /// the next frame's coordinate is known); every frame completes the
     /// previous fitting frame's.
-    fn update_fpstats(
-        &mut self,
-        frame: &[f32],
-        lib: &Library,
-        traces: &FrameTraces,
-        fitting: bool,
-    ) {
+    fn update_fpstats(&mut self, frame: &[f32], lib: &Library, traces: &FrameTraces, fold: u8) {
         let cross = self.cfg.crossfit != CrossFit::Off;
+        let two = self.cfg.holdout_folds == 2;
+        // One fold: only fold 0 (the fitted frames) accumulates. Two folds:
+        // each frame goes to its own fold's statistics.
+        let fitting = two || fold == 0;
         if !fitting && !cross {
             return;
         }
-        if self.fpstats.len() > lib.len() {
+        if self.fpstats.len() > lib.len() || self.fpstats_b.len() > lib.len() {
             let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
             self.fpstats.retain(|id, _| ids.contains(id));
+            self.fpstats_b.retain(|id, _| ids.contains(id));
             self.fast_checked.retain(|id, _| ids.contains(id));
             self.fast_strikes.retain(|id, _| ids.contains(id));
         }
@@ -1704,12 +1731,32 @@ impl SlowLoop {
             }
             return;
         }
+        // The other fold's pending frame is completed by this frame's
+        // coordinate (cross-fitting only).
+        if two && cross {
+            let other = if fold == 0 {
+                &mut self.fpstats_b
+            } else {
+                &mut self.fpstats
+            };
+            for &id in lib.ids() {
+                if let Some(st) = other.get_mut(&id) {
+                    Self::flush_pending(st, self.xu.get(&id), self.cfg.crossfit);
+                }
+            }
+        }
         self.stats_w /= self.stats_gamma;
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
+            self.fpstats_b.values_mut().for_each(|s| s.scale(f));
             self.stats_w = 1.0;
         }
+        let mut map = std::mem::take(if two && fold == 1 {
+            &mut self.fpstats_b
+        } else {
+            &mut self.fpstats
+        });
         let w = self.stats_w;
         let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
             && traces.background.len() == lib.len();
@@ -1720,7 +1767,7 @@ impl SlowLoop {
         for (slot, &id) in lib.ids().iter().enumerate() {
             let (center, radius) = lib.support(slot);
             let want = radius + margin;
-            let st = self.fpstats.entry(id).or_insert_with(|| {
+            let st = map.entry(id).or_insert_with(|| {
                 FpStats::new(
                     center,
                     want,
@@ -1787,8 +1834,29 @@ impl SlowLoop {
             }
             work += st.pix.len() as u64 * 3;
         }
+        *(if two && fold == 1 {
+            &mut self.fpstats_b
+        } else {
+            &mut self.fpstats
+        }) = map;
         self.work += work;
         self.stats.work_stats += work;
+    }
+
+    /// The fold a visit to tile `ti` tests (after `visit_begin`): alternates
+    /// with two folds; the held-out fold (1) with one.
+    fn test_fold(&self, ti: usize) -> u8 {
+        if self.cfg.holdout_folds == 2 {
+            (self.tile_visits[ti] & 1) as u8
+        } else {
+            1
+        }
+    }
+
+    /// Forget the running statistics of cell `id` (both folds).
+    fn forget_stats(&mut self, id: u64) {
+        self.fpstats.remove(&id);
+        self.fpstats_b.remove(&id);
     }
 
     /// Push `st`'s pending residual (frame `t − 1`) with the cross-fitted
@@ -2343,7 +2411,17 @@ impl SlowLoop {
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
         self.visit_begin(ti);
-        self.visit_body(ti)
+        // Footprints are tested on the fold they were not fitted on: the
+        // visit sees the fitting fold's statistics as `fpstats`.
+        let swap = self.test_fold(ti) == 0;
+        if swap {
+            std::mem::swap(&mut self.fpstats, &mut self.fpstats_b);
+        }
+        let out = self.visit_body(ti);
+        if swap {
+            std::mem::swap(&mut self.fpstats, &mut self.fpstats_b);
+        }
+        out
     }
 
     /// The bookkeeping of a visit (on the slow loop that owns the tile).
@@ -2367,8 +2445,10 @@ impl SlowLoop {
         self.keep_tests(ti);
         self.stats.work_keep += self.work - w0;
         let w0 = self.work;
-        let fit_fr = self.load(ti, false);
-        let test_fr = self.load(ti, true);
+        // Slots store their fold; fold 1 is the `test` flag.
+        let test_fold = self.test_fold(ti);
+        let fit_fr = self.load(ti, test_fold == 0);
+        let test_fr = self.load(ti, test_fold == 1);
         self.stats.work_load += self.work - w0;
         let n_blocks = {
             let mut b: Vec<u64> = test_fr.idx.iter().map(|&f| self.holdout_block(f)).collect();
@@ -4120,7 +4200,7 @@ impl SlowLoop {
                 let mut new = match merged {
                     Some(m) => {
                         // A new footprint: its running statistics start over.
-                        self.fpstats.remove(&kept_id);
+                        self.forget_stats(kept_id);
                         journal!(self, Op::FpRemove(kept_id));
                         m
                     }
@@ -4151,7 +4231,7 @@ impl SlowLoop {
                 }
                 journal!(self, Op::LedgerAbsorb(kept_id, gone));
                 self.lives.remove(&gone);
-                self.fpstats.remove(&gone);
+                self.forget_stats(gone);
                 journal!(self, Op::Replace(kept_id, new.clone()));
                 journal!(self, Op::Remove(gone));
                 self.cells[stay] = new;
@@ -4351,7 +4431,7 @@ impl SlowLoop {
                 ((gain - m) / sd) as f32,
             );
             self.churn.on_split(self.frames, new_id);
-            self.fpstats.remove(&id);
+            self.forget_stats(id);
             journal!(self, Op::ChurnSplit(new_id));
             journal!(self, Op::FpRemove(id));
             journal!(self, Op::Replace(id, a.clone()));

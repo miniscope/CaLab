@@ -861,9 +861,20 @@ fn new_loop(cfg: &SlowLoopConfig) -> SlowLoop {
 
 #[test]
 fn visits_run_as_jobs_match_step_exactly() {
+    jobs_match_step(shard_config());
+}
+
+#[test]
+fn visits_run_as_jobs_match_step_exactly_with_two_folds() {
+    jobs_match_step(SlowLoopConfig {
+        holdout_folds: 2,
+        ..shard_config()
+    });
+}
+
+fn jobs_match_step(cfg: SlowLoopConfig) {
     let t = 1500;
     let (m, seed) = busy_movie(t);
-    let cfg = shard_config();
     let n_px = N * N;
     let (mut a, mut ea) = start(cfg.clone(), &seed);
     let (mut b, mut eb) = start(cfg.clone(), &seed);
@@ -1441,4 +1452,52 @@ fn visit_waits_for_three_held_out_blocks() {
     assert_eq!(slow.stats().proposals, 0, "tested with fewer than 3 blocks");
     drive(&m, third_starts..t, &mut slow, &mut eng, &mut deleted);
     assert!(slow.stats().proposals > 0, "never tested after 3 blocks");
+}
+
+fn two_folds() -> SlowLoopConfig {
+    SlowLoopConfig {
+        holdout_folds: 2,
+        ..config()
+    }
+}
+
+#[test]
+fn two_folds_split_blocks_in_halves() {
+    let slow = new_loop(&SlowLoopConfig {
+        holdout_block_s: 6.4,
+        holdout_folds: 2,
+        ..SlowLoopConfig::default()
+    });
+    let block = 128u64;
+    let mut ones = 0;
+    for b in 0..400u64 {
+        let f = slow.cfg.fold(b * block);
+        assert!((b * block..(b + 1) * block).all(|x| slow.cfg.fold(x) == f));
+        assert_eq!(slow.is_test(b * block), f == 1);
+        ones += u64::from(f);
+    }
+    assert!((ones as f64 / 400.0 - 0.5).abs() < 0.08, "{ones}");
+}
+
+#[test]
+fn with_two_folds_a_cell_is_discovered_and_the_other_fold_never_fits_it() {
+    let t = 1500;
+    let mut rng = Lcg(3);
+    let cells = vec![(blob(0, 47.0, 51.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 11);
+    let (mut slow, mut eng) = start(two_folds(), &[]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    let c = centres(&lib);
+    assert_eq!(c.len(), 1, "cells {c:?}, stats {:?}", slow.stats());
+    // Both folds accumulated statistics, from their own frames only.
+    assert!(!slow.fpstats.is_empty() || !slow.fpstats_b.is_empty());
+    // Every slot's stored fold is the fold of its frame.
+    for ti in 0..slow.tiles.len() {
+        for s in slow.tiles[ti].slots() {
+            let slot = slow.tiles[ti].slot(s);
+            assert_eq!(u8::from(slot.test), slow.cfg.fold(slot.frame));
+        }
+    }
 }

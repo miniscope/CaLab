@@ -1849,6 +1849,9 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
+    if let Some(v) = arg_value(&args, "--holdout-folds") {
+        scfg.holdout_folds = v.parse().unwrap();
+    }
     if let Some(v) = arg_value(&args, "--holdout-block-s") {
         scfg.holdout_block_s = v.parse().unwrap();
     }

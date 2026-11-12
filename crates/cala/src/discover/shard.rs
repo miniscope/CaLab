@@ -577,9 +577,15 @@ impl SlowLoop {
             .iter()
             .filter_map(|id| self.lives.get(id).map(|&n| (*id, n)))
             .collect();
+        // The fitting fold's statistics (see `SlowLoop::visit`).
+        let fit_stats = if self.test_fold(ti) == 0 {
+            &self.fpstats_b
+        } else {
+            &self.fpstats
+        };
         let fpstats = ids
             .iter()
-            .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
+            .filter_map(|id| fit_stats.get(id).map(|s| (*id, s.clone())))
             .collect();
         self.job_seq += 1;
         let seq = self.job_seq;
@@ -677,7 +683,7 @@ impl SlowLoop {
                             .absorb(&ev);
                     }
                     self.lives.remove(&gone);
-                    self.fpstats.remove(&gone);
+                    self.forget_stats(gone);
                 }
                 Op::ClearRedundant(id) => {
                     if let Some(ev) = self.ledger.get_mut(&map(id)) {
@@ -689,7 +695,7 @@ impl SlowLoop {
                     self.lives.insert(map(id), n);
                 }
                 Op::FpRemove(id) => {
-                    self.fpstats.remove(&map(id));
+                    self.forget_stats(map(id));
                 }
                 Op::MergeRejected(a, b, u) => {
                     let (a, b) = (map(a), map(b));
