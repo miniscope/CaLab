@@ -172,6 +172,26 @@ estimates the pattern from the recording's own motion:
   different frame size.
 - Pass 2 uses pass 1's newest map from frame 0.
 
+## Testing with a simulated stream
+
+To try the live source without an acquisition board, replay a recording as if
+it were arriving live. From a CaLab checkout (Node 22.18 or newer):
+
+```sh
+npm run sim-stream -- /path/to/recording
+```
+
+The path can be a Miniscope AVI folder (replays real data as if live) or a
+minisim recording (the sim directory, or its `daq/` folder). The command prints
+a `ws://localhost:8765` address. Paste it into the start page's live-source
+field and press Connect (or open the app with `?live=ws://localhost:8765`).
+
+Useful options: `--fps 30` (default: the rate in the recording's metadata),
+`--loop` (start over at the end, for as long as you like), `--start 2000`
+(begin at that frame), `--frames 1000` (stop after that many) and `--port`
+if 8765 is taken. Press Ctrl+C to stop the stream. The recording is only read,
+never changed. See the README for the protocol and the full option list.
+
 ## Known limitations
 
 - **Beta.** Expect rough edges, and check the results against your own data.
@@ -186,6 +206,8 @@ estimates the pattern from the recording's own motion:
   frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Pass 2 repeats
   the walk, so a long recording takes a while.
 - **Live acquisition is experimental.** The live-source field on the start page
-  streams frames from a WebSocket (see the README). It is not covered by this guide.
+  streams frames from a WebSocket (see the README). Apart from
+  [testing with a simulated stream](#testing-with-a-simulated-stream), it is not
+  covered by this guide.
 - **Everything stays in the tab.** Closing the page discards a run that was not
   exported.
