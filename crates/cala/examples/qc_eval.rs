@@ -1955,6 +1955,8 @@ fn main() {
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
+    let mut conv = calab_cala::qc::convergence::Tracker::new();
+    let mut conv_out = calab_cala::qc::convergence::header();
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -2219,6 +2221,36 @@ fn main() {
                     summary = vec![f64::NAN; 3];
                 }
             }
+            if cp {
+                // Footprint convergence: change since 1 and 4 checkpoints ago
+                // against each cell's split-half noise.
+                let births: HashMap<u64, u64> = slow
+                    .as_ref()
+                    .map(|sl| {
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        sl.births()
+                            .into_iter()
+                            .map(|(id, b)| (id, u64::from(rf(b))))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let snaps: Vec<calab_cala::qc::convergence::CellSnap> = (0..lib.len())
+                    .map(|slot| {
+                        let (pix, val) = lib.filtered(slot);
+                        let id = lib.ids()[slot];
+                        calab_cala::qc::convergence::CellSnap {
+                            id,
+                            pix: pix.to_vec(),
+                            val: val.to_vec(),
+                            born: births.get(&id).copied().unwrap_or(0),
+                            noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
+                        }
+                    })
+                    .collect();
+                for row in conv.checkpoint(t_end as u64, snaps) {
+                    conv_out.push_str(&row.to_line());
+                }
+            }
             if t_end.is_multiple_of(100) || cp {
                 let g = q.global();
                 let extra = if cp {
@@ -2347,6 +2379,7 @@ fn main() {
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
+    std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
