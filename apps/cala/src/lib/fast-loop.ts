@@ -6,8 +6,10 @@
  *
  * The slow worker answers on its own schedule. `handleSlow` only records what
  * arrived (a returned buffer, the newest library's bytes); the library is
- * rebuilt and swapped at the start of the next `process` call, so a swap
- * always happens between frames, and warm starts follow cell ids.
+ * read back and swapped at the start of the next `process` call, so a swap
+ * always happens between frames, and warm starts follow cell ids. The bytes
+ * carry the solver's precomputed terms, so the swap is a copy (a few ms at
+ * hundreds of cells), not a rebuild.
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import { ForwardPool } from './forward-pool.ts';
