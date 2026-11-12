@@ -175,8 +175,9 @@ impl JsTraceLibrary {
         self.inner.to_bytes()
     }
 
-    /// A library from `toBytes` (same version; footprints are not filtered
-    /// again, only the solver's precomputed terms are rebuilt).
+    /// A library from `toBytes` (same version). The bytes carry the
+    /// solver's precomputed terms too, so this is a copy (a few ms), not a
+    /// rebuild: the fast loop calls it between frames.
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<JsTraceLibrary, JsError> {
         console_error_panic_hook::set_once();

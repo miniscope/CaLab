@@ -1259,8 +1259,12 @@ impl Library {
     }
 }
 
-/// Magic of [`Library::to_bytes`].
-const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB2";
+/// Magic of [`Library::to_bytes`]: the footprints and the solver's
+/// precomputed terms.
+const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB3";
+/// Magic of the footprints-only layout (no precomputed terms), which
+/// [`Library::from_bytes`] still reads (and assembles).
+pub(crate) const CORE_MAGIC: &[u8; 8] = b"CALALIB2";
 
 /// Little-endian reader over a byte buffer, for [`Library::from_bytes`].
 struct ByteReader<'a> {
@@ -1311,6 +1315,40 @@ impl ByteReader<'_> {
     fn f32s(&mut self, n: usize) -> Result<Vec<f32>, TraceError> {
         Ok(self.u32s(n)?.into_iter().map(f32::from_bits).collect())
     }
+
+    /// `n + 1` ascending offsets from 0 (the last is the total).
+    fn offsets(&mut self, n: usize) -> Result<Vec<usize>, TraceError> {
+        let len = n
+            .checked_add(1)
+            .ok_or_else(|| bytes_err("length overflow"))?;
+        let s: Vec<usize> = self.u32s(len)?.into_iter().map(|v| v as usize).collect();
+        if s[0] != 0 || s.windows(2).any(|w| w[0] > w[1]) {
+            return Err(bytes_err("offsets"));
+        }
+        Ok(s)
+    }
+
+    /// A [`Csr`] of `n` rows whose columns are below `cols`.
+    fn csr(&mut self, n: usize, cols: usize) -> Result<Csr, TraceError> {
+        let start = self.offsets(n)?;
+        let nnz = start[n];
+        let col = self.u32s(nnz)?;
+        if col.iter().any(|&c| c as usize >= cols) {
+            return Err(bytes_err("matrix column out of range"));
+        }
+        let val = self.f32s(nnz)?;
+        Ok(Csr { start, col, val })
+    }
+}
+
+fn bytes_err(m: &str) -> TraceError {
+    TraceError::InvalidConfig(format!("library bytes: {m}"))
+}
+
+fn put_csr(out: &mut Vec<u8>, m: &Csr) {
+    put_u32s(out, m.start.iter().map(|&v| v as u32));
+    put_u32s(out, m.col.iter().copied());
+    put_f32s(out, &m.val);
 }
 
 fn put_u32s(out: &mut Vec<u8>, v: impl IntoIterator<Item = u32>) {
@@ -1329,15 +1367,56 @@ fn put_f32s(out: &mut Vec<u8>, v: &[f32]) {
 impl Library {
     /// The library as bytes: version, frame size, background model, and per
     /// cell its id, support centre and radius, support pixels with filtered
-    /// and unfiltered values; then the FOV mask and the noise map. The
-    /// solver's precomputed terms are rebuilt by [`Library::from_bytes`]
-    /// (no filtering), and the result solves identically.
+    /// and unfiltered values; then the FOV mask and the noise map; then the
+    /// solver's precomputed terms (Gram, curvatures, trace noise, overlap
+    /// groups, background terms). [`Library::from_bytes`] takes those terms
+    /// as they are, so installing a library costs a copy rather than a
+    /// rebuild (the fast loop installs one between frames, and a rebuild
+    /// grows faster than the cell count), and the copy solves
+    /// bit-identically.
     pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = self.core_bytes(LIBRARY_MAGIC);
+        put_csr(&mut out, &self.gram);
+        put_f32s(&mut out, &self.gram_diag);
+        put_f32s(&mut out, &self.mdiag);
+        put_f32s(&mut out, &self.trace_noise);
+        put_u32s(&mut out, self.group_of.iter().copied());
+        match &self.bg {
+            BgTerms::None => put_u32s(&mut out, [0]),
+            BgTerms::Basis { k, p, x, w, .. } => {
+                put_u32s(&mut out, [1, *k as u32]);
+                put_u32s(
+                    &mut out,
+                    p.iter()
+                        .flat_map(|v| [v.to_bits() as u32, (v.to_bits() >> 32) as u32]),
+                );
+                put_f32s(&mut out, x);
+                put_f32s(&mut out, w);
+            }
+            BgTerms::Ring {
+                ring_start,
+                ring_pix,
+                s,
+                q,
+            } => {
+                put_u32s(&mut out, [2]);
+                put_u32s(&mut out, ring_start.iter().map(|&v| v as u32));
+                put_u32s(&mut out, ring_pix.iter().copied());
+                put_f32s(&mut out, s);
+                put_csr(&mut out, q);
+            }
+        }
+        out
+    }
+
+    /// The footprints-only layout under `magic`: [`Library::from_bytes`]
+    /// rebuilds the precomputed terms of a [`CORE_MAGIC`] buffer.
+    pub(crate) fn core_bytes(&self, magic: &[u8; 8]) -> Vec<u8> {
         let c = &self.core;
         let n = c.ids.len();
         let nnz = c.pix.len();
         let mut out = Vec::with_capacity(64 + n * 24 + nnz * 12 + c.fov.len() * 5);
-        out.extend_from_slice(LIBRARY_MAGIC);
+        out.extend_from_slice(magic);
         put_u32s(
             &mut out,
             [
@@ -1382,13 +1461,20 @@ impl Library {
         out
     }
 
-    /// Inverse of [`Library::to_bytes`] (keeps the version number).
+    /// Inverse of [`Library::to_bytes`] (keeps the version number). Also
+    /// reads the footprints-only layout, whose precomputed terms it
+    /// rebuilds.
     pub fn from_bytes(bytes: &[u8]) -> Result<Library, TraceError> {
-        let bad = |m: &str| TraceError::InvalidConfig(format!("library bytes: {m}"));
+        let bad = bytes_err;
         let mut r = ByteReader { buf: bytes, at: 0 };
-        if r.take(8)? != LIBRARY_MAGIC {
+        let magic = r.take(8)?;
+        let with_terms = if magic == LIBRARY_MAGIC {
+            true
+        } else if magic == CORE_MAGIC {
+            false
+        } else {
             return Err(bad("not a cala library"));
-        }
+        };
         let version = r.u64()?;
         let width = r.u32()? as usize;
         let height = r.u32()? as usize;
@@ -1457,6 +1543,11 @@ impl Library {
                 return Err(bad("moat block outside the grid"));
             }
         }
+        let terms = if with_terms {
+            Some(Terms::read(&mut r, n, n_px, &model)?)
+        } else {
+            None
+        };
         if r.at != bytes.len() {
             return Err(bad("trailing bytes"));
         }
@@ -1495,7 +1586,133 @@ impl Library {
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
         };
-        Library::assemble(core.finish(), model, version)
+        let Some(t) = terms else {
+            return Library::assemble(core.finish(), model, version);
+        };
+        // The overlap groups, numbered in order of their first cell, as
+        // `assemble` numbers them.
+        let mut groups: Vec<Vec<u32>> = Vec::new();
+        for (i, &g) in t.group_of.iter().enumerate() {
+            let g = g as usize;
+            if g == groups.len() {
+                groups.push(Vec::new());
+            } else if g > groups.len() {
+                return Err(bad("group numbering"));
+            }
+            groups[g].push(i as u32);
+        }
+        let bg = match t.bg {
+            BgRead::None => BgTerms::None,
+            BgRead::Basis { k, p, x, w } => BgTerms::Basis {
+                k,
+                maps: match &model {
+                    BackgroundModel::Basis(maps) => maps.concat(),
+                    _ => unreachable!("Terms::read checks the model"),
+                },
+                p,
+                x,
+                w,
+            },
+            BgRead::Ring(ring) => ring,
+        };
+        Ok(Library {
+            version,
+            core: core.finish(),
+            model,
+            gram: t.gram,
+            gram_diag: t.gram_diag,
+            mdiag: t.mdiag,
+            trace_noise: t.trace_noise,
+            groups,
+            group_of: t.group_of,
+            bg,
+        })
+    }
+}
+
+/// The precomputed terms of a [`Library::to_bytes`] buffer.
+struct Terms {
+    gram: Csr,
+    gram_diag: Vec<f32>,
+    mdiag: Vec<f32>,
+    trace_noise: Vec<f32>,
+    group_of: Vec<u32>,
+    bg: BgRead,
+}
+
+/// Background terms as read (the basis maps come from the model).
+enum BgRead {
+    None,
+    Basis {
+        k: usize,
+        p: Vec<f64>,
+        x: Vec<f32>,
+        w: Vec<f32>,
+    },
+    Ring(BgTerms),
+}
+
+impl Terms {
+    /// Read the terms of an `n`-cell library of `n_px` pixels with
+    /// background `model` (which they must match).
+    fn read(
+        r: &mut ByteReader,
+        n: usize,
+        n_px: usize,
+        model: &BackgroundModel,
+    ) -> Result<Terms, TraceError> {
+        let gram = r.csr(n, n)?;
+        let gram_diag = r.f32s(n)?;
+        let mdiag = r.f32s(n)?;
+        let trace_noise = r.f32s(n)?;
+        let group_of = r.u32s(n)?;
+        let bg = match (r.u32()?, model) {
+            (0, BackgroundModel::None) => BgRead::None,
+            (0, BackgroundModel::Basis(maps)) if maps.is_empty() => BgRead::None,
+            (1, BackgroundModel::Basis(maps)) => {
+                let k = r.u32()? as usize;
+                if k == 0 || k != maps.len() {
+                    return Err(bytes_err("background terms"));
+                }
+                let p = r
+                    .u32s(2 * k * k)?
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|h| f64::from_bits(u64::from(h[0]) | (u64::from(h[1]) << 32)))
+                    .collect();
+                let nk = n
+                    .checked_mul(k)
+                    .ok_or_else(|| bytes_err("length overflow"))?;
+                let x = r.f32s(nk)?;
+                let w = r.f32s(nk)?;
+                BgRead::Basis { k, p, x, w }
+            }
+            (2, BackgroundModel::Ring { .. }) => {
+                let ring_start = r.offsets(n)?;
+                let ring_pix = r.u32s(ring_start[n])?;
+                if ring_pix.iter().any(|&q| q as usize >= n_px) {
+                    return Err(bytes_err("ring pixel outside the frame"));
+                }
+                let s = r.f32s(n)?;
+                let q = r.csr(n, n)?;
+                BgRead::Ring(BgTerms::Ring {
+                    ring_start,
+                    ring_pix,
+                    s,
+                    q,
+                })
+            }
+            _ => return Err(bytes_err("background terms do not match the model")),
+        };
+        Ok(Terms {
+            gram,
+            gram_diag,
+            mdiag,
+            trace_noise,
+            group_of,
+            bg,
+        })
     }
 }
 
