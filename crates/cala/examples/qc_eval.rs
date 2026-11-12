@@ -49,12 +49,6 @@
 //!   --basin-trim       trim refined footprints to their significant basin
 //!   --stats-half-life F  half-life (frames) of the footprint statistics
 //!                      (default 6000).
-//!   --footprint-stats M  residual (default) | joint: also keep the joint
-//!                      sufficient statistics (S1.7; no decision reads them
-//!                      yet) and print their size and cost
-//!   --joint-shadow     with joint: also keep the exact store (every
-//!                      neighbour near) and print the far neighbours'
-//!                      approximation error against it (doubles the store)
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -83,11 +77,9 @@
 //!                      --ff-offset-half-life s (0: no offset model);
 //!                      --ff-seed G [--ff-seed-frames N] starts from a stored
 //!                      gain map; writes `flat_field_updates.tsv`, the final
-//!                      `flat_field.f32` (+ `_offset`), and with --ff-dump-maps
-//!                      every map); `auto[:N]` estimates once from a first pass
+//!                      `flat_field.f32` (+ `_offset`)); `auto[:N]` estimates once from a first pass
 //!                      over frames 0..N (3000) and corrects from frame 0; a
 //!                      file path divides by that gain map (f32 LE per pixel)
-//!   --no-flat-field    same as `--flat-field off`
 //!   --inject-drift gain=A,offset=B  add a synthetic sensor drift growing
 //!                      linearly over the run (pixel gain ±A, column offset
 //!                      ±B grey levels; patterns written to `drift_*.f32`)
@@ -185,8 +177,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, CrossFit, EditScope, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult,
-    VisitRunner,
+    CoreTest, EditScope, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -2222,23 +2213,8 @@ fn main() {
     if args.iter().any(|a| a == "--basin-trim") {
         scfg.basin_trim = true;
     }
-    if let Some(v) = arg_value(&args, "--crossfit") {
-        scfg.crossfit = match v.as_str() {
-            "off" => CrossFit::Off,
-            "loo" => CrossFit::Loo,
-            "parity-loo" => CrossFit::ParityLoo,
-            other => panic!("--crossfit: off|loo|parity-loo, not {other}"),
-        };
-    }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
-    }
-    if let Some(v) = arg_value(&args, "--footprint-stats") {
-        scfg.footprint_stats = match v.as_str() {
-            "residual" => FootprintStats::Residual,
-            "joint" => FootprintStats::Joint,
-            other => panic!("--footprint-stats: residual|joint, not {other}"),
-        };
     }
     if let Some(v) = arg_value(&args, "--stats-half-life") {
         scfg.stats_half_life_frames = v.parse().unwrap();
@@ -2272,14 +2248,13 @@ fn main() {
         let mut o = BufWriter::new(File::create(out_dir.join("drift_columns.f32")).unwrap());
         write_f32s(&mut o, &d.c);
     }
-    let ff_dump = args.iter().any(|a| a == "--ff-dump-maps");
     let mut ff_log = String::from(
         "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n",
     );
     // Default: the online flat field (what the app runs) with motion, off without.
     let ff_mode = arg_value(&args, "--flat-field")
         .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
-    if args.iter().any(|a| a == "--no-flat-field") || ff_mode == "off" {
+    if ff_mode == "off" {
         println!("flat field: off");
     } else if ff_mode == "online" {
         assert!(motion, "--flat-field online needs --motion");
@@ -2490,19 +2465,6 @@ fn main() {
                                     ff.bins_used, ff.gain_sd, u.change_p99
                                 );
                                 }
-                                if ff_dump {
-                                    let name = format!("ff_log_gain_{t:07}.f32");
-                                    let mut w =
-                                        BufWriter::new(File::create(out_dir.join(name)).unwrap());
-                                    write_f32s(&mut w, &ff.log_gain);
-                                    if let Some(off) = &ff.offset {
-                                        let name = format!("ff_offset_{t:07}.f32");
-                                        let mut w = BufWriter::new(
-                                            File::create(out_dir.join(name)).unwrap(),
-                                        );
-                                        write_f32s(&mut w, off);
-                                    }
-                                }
                             }
                             RefineOutcome::Skipped(m) => {
                                 let _ = writeln!(
@@ -2565,11 +2527,6 @@ fn main() {
                             .unwrap()
                         };
                         slow = Some(mk());
-                        if args.iter().any(|a| a == "--joint-shadow") {
-                            if let Some(s) = slow.as_mut() {
-                                s.enable_joint_shadow();
-                            }
-                        }
                         if let Some(s) = &slow {
                             let p = s.reservoir_plan();
                             println!(
@@ -3036,48 +2993,6 @@ fn main() {
             println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
             std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
             std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
-        }
-        if sl.config().footprint_stats == FootprintStats::Joint {
-            let d = sl.joint_stats_diag();
-            let c = d.cells.max(1) as f64;
-            println!(
-                "joint stats: {} cells, {:.1} MB ({:.1} KB/cell, residual stats {:.1} MB), \
-                 {:.0} px/cell, {:.1} neighbours/cell, {:.2} classes/cell, {} births, \
-                 {} px restarted, {} reach joins, work {} (residual stats {}), \
-                 {} jobs {:.0} KB/job of which stores {:.0} KB; \
-                 {:.1} near neighbours/cell, {} promotions",
-                d.cells,
-                d.bytes as f64 / 1e6,
-                d.bytes as f64 / c / 1e3,
-                d.residual_bytes as f64 / 1e6,
-                d.pixels as f64 / c,
-                d.neighbours as f64 / c,
-                d.classes as f64 / c,
-                d.births,
-                d.restarted_px,
-                d.reach_joins,
-                d.work,
-                sl.stats().work_stats,
-                d.jobs,
-                d.job_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
-                d.job_suff_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
-                d.near as f64 / c,
-                d.promotions,
-            );
-            if let Some(e) = sl.joint_shadow_error(&engine.library().clone()) {
-                println!(
-                    "joint far approximation vs exact store ({} cells): max|diff|/max|est| \
-                     median {:.2e} p95 {:.2e} max {:.2e}; rms diff / rms SE median {:.3} \
-                     p95 {:.3} max {:.3}",
-                    e.cells,
-                    e.rel_max[0],
-                    e.rel_max[1],
-                    e.rel_max[2],
-                    e.rms_per_se[0],
-                    e.rms_per_se[1],
-                    e.rms_per_se[2],
-                );
-            }
         }
         if sl.config().basin_trim {
             let (c, f, s2) = sl.basin_diag;

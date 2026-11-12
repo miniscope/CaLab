@@ -1,7 +1,7 @@
 # D4: textured footprints are sensor-gain shimmer; dither flat field (`--flat-field auto`)
 
 Real data: workshop CA1 recording, 18 000 frames, `--motion --batch 8 --core-test report`, slow seeds 1 and 2.
-Diagnostics: `crates/cala/examples/texture_eval.rs` plus analysis scripts in the session scratchpad (`texture/`).
+Diagnostics: `crates/cala/examples/texture_eval.rs` (removed after a64cd09; reproduce at a64cd09) plus analysis scripts in the session scratchpad (`texture/`).
 
 ## Diagnosis
 

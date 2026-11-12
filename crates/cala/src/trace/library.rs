@@ -1093,16 +1093,6 @@ impl Library {
         self.core.core_col(slot)
     }
 
-    /// Ring coupling of the cell in `slot`: the slots `j` and `q_ij` (ring
-    /// mean of column `j` over this cell's ring) with which the fast loop's
-    /// level is `β_i = ρ_i − Σ_j q_ij c_j`; empty without a ring model.
-    pub(crate) fn ring_row(&self, slot: usize) -> (&[u32], &[f32]) {
-        match &self.bg {
-            BgTerms::Ring { q, .. } => q.row(slot),
-            _ => (&[], &[]),
-        }
-    }
-
     /// Pixel indices and unfiltered values of the cell in `slot`.
     pub fn unfiltered(&self, slot: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.core.col_start[slot], self.core.col_start[slot + 1]);

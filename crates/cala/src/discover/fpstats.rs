@@ -18,44 +18,24 @@
 //! The noise of `h` falls as `1 / sqrt(frames)`, so successive estimates
 //! converge and the refinements they drive die out.
 //!
-//! **Cross-fitting** ([`super::CrossFit`]). With `z = x = c_t`, the trace
-//! the fast loop fitted from the same pixels in the same frame, a pixel's
-//! noise multiplies itself: `E[h] ∝ s h + Σ ã / ãᵀΣã` (`s` the trace's
-//! per-frame SNR², `ã` the current column, `Σ` the pixel noise covariance),
-//! one step of power iteration on `Σ` per refinement. With spatially
-//! correlated noise the fixed point is a textured blob at the noise's
-//! correlation length, and the pull does not shrink with more frames. The
-//! cross-fitted estimator is an instrumental-variable regression:
-//!
-//! * the instrument `z` of a pixel is the ledger's unclamped coordinate of
-//!   the *previous* frame, `u_{t−1}` (`ParityLag`: measured on the pixels
-//!   of the other block parity only), so its noise is independent of
-//!   frame `t`'s noise at the pixel;
-//! * the regressor `x = u_t` is the unclamped coordinate of the frame
-//!   itself (unit gain on the cell's trace), used only through `cov(x, z)`,
-//!   whose noise terms are independent too.
-//!
-//! Then `cov(r(p), z) = h(p) cov(c_t, c_{t−1})` and `cov(x, z) = cov(c_t,
-//! c_{t−1})` (times the same gain of the instrument), so `h` is unbiased
-//! whatever the noise's spatial correlation, as long as the noise is
-//! uncorrelated from one frame to the next (`Lag`), or between pixels a
-//! block apart (`ParityLag`). The trace's lag-1 autocorrelation (≳ 0.9 for
-//! calcium at 20 fps) and the noise of the instrument cost precision, which
-//! the standard error reports: it is the regression's `1 / sqrt(n_eff
-//! var(z))` divided by `λ = cov(x, z) / var(z)`. The moments are kept per
-//! pixel class (block parity), each class with its own instrument.
+//! The moments are kept per pixel class (block parity) with a separate
+//! instrument `z` and regressor `x`, `h = cov(r, z) / cov(x, z)` scaled by
+//! `λ = cov(x, z) / var(z)` in the standard error. Both are the fast loop's
+//! trace `c_t` (`λ = 1`), so a pixel's noise enters its own estimate through
+//! the trace. Cross-fitted instruments (leave one frame out, other parity)
+//! were measured in S1.2 and gave no gain
+//! (`tools/cala-eval/results/2026-11-11-s12-crossfit.md`); they were removed
+//! after a64cd09.
 //!
 //! The own-signal term `h_t c_t` uses the column the fast loop had at frame
 //! `t`, so it cancels that frame's own model exactly whatever the footprint
 //! was then. Old frames are forgotten with a half-life, because the other
 //! cells' footprints (and so the residual) keep improving. Held-out frames
-//! are never accumulated: the slow loop's tests stay out of sample. (A
-//! held-out frame's coordinate can be the next fitting frame's instrument:
-//! it is one scalar per cell and parity, the fast loop's own output.)
+//! are never accumulated: the slow loop's tests stay out of sample.
 
 /// Trace moments of one pixel class over the frames that pushed it:
 /// `[Σ w, Σ w², Σ w z, Σ w z², Σ w x, Σ w x z]` (`z` the instrument, `x`
-/// the regressor; without cross-fitting both are the fast loop's trace).
+/// the regressor; both are the fast loop's trace).
 pub(crate) type Mom = [f64; 6];
 
 /// Statistics of one cell on a disk around its support.
@@ -92,10 +72,6 @@ pub(crate) struct FpStats {
     /// Transient-band statistics in interleaved block groups (`None` when
     /// [`super::CoreTest`] is `Off`).
     pub fast: Option<Fast>,
-    /// Cross-fitting: the last fitting frame's residual on `pix` and its
-    /// weight (NaN: none), pushed once the next frame's coordinate is
-    /// known (owner only; not on the wire).
-    pub pending: (Vec<f32>, f32),
 }
 
 /// A pixel is trusted only when it was valid in at least this share of the
@@ -120,7 +96,7 @@ pub(crate) fn parity_block(cell_diameter_px: f32) -> u32 {
 
 /// `λ = cov(x, z) / var(z)` of class moments (`None` when the instrument
 /// has no variance or does not follow the regressor). Exactly 1 when the
-/// regressor is the instrument (no cross-fitting).
+/// regressor is the instrument (as the slow loop pushes).
 fn lambda(m: &Mom) -> Option<f64> {
     let [n, _, s1, s2, sx, sxz] = *m;
     if !(n > 0.0) {
@@ -250,11 +226,9 @@ pub(crate) const FAST_BLOCK: u64 = 256;
 /// measured from the spread of the group estimates (all spatial and
 /// temporal correlation included) instead of being assumed white.
 ///
-/// With cross-fitting, `c` is each pixel class's instrument (the band's
-/// trace sums are per class) and the estimates are divided by the all-band
-/// `λ` of the class, so they are on the all-band estimate's scale (the
-/// band's own lag-1 autocorrelation is somewhat lower, so they are slightly
-/// smaller; they are used through noise ratios).
+/// `c` is each pixel class's instrument (the band's trace sums are per
+/// class) and the estimates are divided by the all-band `λ` of the class,
+/// so they are on the all-band estimate's scale.
 #[derive(Debug, Clone)]
 pub(crate) struct Fast {
     pub alpha: f32,
@@ -419,7 +393,6 @@ impl FpStats {
             pm: None,
             half_pm: None,
             fast: fast.then(|| Fast::new(n, 1.0 / FAST_TAU_FRAMES)),
-            pending: (Vec::new(), f32::NAN),
         }
     }
 
@@ -538,7 +511,6 @@ impl FpStats {
         for m in self.m.iter_mut().chain(self.half.2.iter_mut()) {
             scale_mom(m, ff);
         }
-        self.pending.1 *= f;
     }
 
     /// `λ` of each pixel class (1 for a class without a usable one, whose
@@ -588,7 +560,7 @@ impl FpStats {
     /// class `c` (NaN: the class is not updated this frame), the regressor
     /// `x`, weight `w`. A NaN in `r` is a missing sample: it has zero
     /// weight in that pixel's moments (see [`PixMoments`]) rather than a
-    /// value. Without cross-fitting, `z = [c, c]` and `x = c`.
+    /// value. The slow loop passes `z = [c, c]` and `x = c`.
     pub fn push(&mut self, r: &[f32], z: [f32; 2], x: f32, w: f32) {
         if x.is_nan() || z.iter().all(|v| v.is_nan()) {
             return;
@@ -898,7 +870,7 @@ pub(crate) fn disk_pixels(
 mod fast_tests {
     use super::*;
 
-    /// Push without cross-fitting: the trace is instrument and regressor.
+    /// Push as the slow loop does: the trace is instrument and regressor.
     fn push1(st: &mut FpStats, r: &[f32], c: f32, w: f32) {
         st.push(r, [c, c], c, w);
     }
@@ -1145,13 +1117,10 @@ mod fast_tests {
     }
 }
 
-/// Cross-fitting (model review, root cause B): on spatially correlated
-/// noise, the same-pixel, same-frame estimator has a noise fixed point;
-/// the cross-fitted one does not.
+/// The per-class moments with one trace for both classes.
 #[cfg(test)]
-mod crossfit_tests {
+mod parity_tests {
     use super::*;
-    use crate::discover::local::rank1;
 
     /// Standard normal-ish (sum of 4 uniforms, unit variance) from a counter.
     fn g(k: u64) -> f32 {
@@ -1161,307 +1130,10 @@ mod crossfit_tests {
         (u(0) + u(1) + u(2) + u(3)) * 3f32.sqrt()
     }
 
-    /// White noise blurred by a Gaussian of σ `sb` px, unit variance per
-    /// pixel, on a `side`² grid (frame `t`).
-    fn blurred(t: u64, side: usize, sb: f32) -> Vec<f32> {
-        let rad = (3.0 * sb).ceil() as i64;
-        let k: Vec<f32> = (-rad..=rad)
-            .map(|d| (-(d * d) as f32 / (2.0 * sb * sb)).exp())
-            .collect();
-        let k2: f32 = k.iter().map(|v| v * v).sum();
-        let big = side + 2 * rad as usize;
-        let white: Vec<f32> = (0..big * big)
-            .map(|i| g(t * 1_000_003 + i as u64))
-            .collect();
-        let mut tmp = vec![0.0f32; big * side];
-        for y in 0..big {
-            for x in 0..side {
-                tmp[y * side + x] = (0..k.len()).map(|j| k[j] * white[y * big + x + j]).sum();
-            }
-        }
-        let mut out = vec![0.0f32; side * side];
-        for y in 0..side {
-            for x in 0..side {
-                out[y * side + x] = (0..k.len())
-                    .map(|j| k[j] * tmp[(y + j) * side + x])
-                    .sum::<f32>()
-                    / k2;
-            }
-        }
-        out
-    }
-
-    fn corr(a: &[f32], b: &[f32]) -> f64 {
-        let n = a.len() as f64;
-        let ma = a.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
-        let mb = b.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
-        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
-        for (&x, &y) in a.iter().zip(b) {
-            let (x, y) = (f64::from(x) - ma, f64::from(y) - mb);
-            ab += x * y;
-            aa += x * x;
-            bb += y * y;
-        }
-        ab / (aa * bb).sqrt().max(1e-30)
-    }
-
-    /// The fast/slow loop on one cell, emulated: each frame the trace is the
-    /// projection of the frame on the current column (`u`, per parity
-    /// `u_k`), the statistics are pushed (cross-fitted: one frame later,
-    /// with the neighbouring frames' other-parity coordinates), and every
-    /// 300 frames the column becomes the estimate. Returns the final
-    /// estimate's correlation with the true footprint on the disk, and the
-    /// trace's per-frame SNR² against the projected noise.
-    fn converge(crossfit: bool, frames: u64, amp: f32) -> (f64, f64) {
-        let side = 33usize;
-        let (cy, cx, sig) = (16.0f32, 16.0f32, 2.5f32);
-        let fov = vec![1u8; side * side];
-        let blk = parity_block(10.0);
-        let mut st = FpStats::new((cy, cx + 1.5), 10.0, side, side, &fov, false, blk);
-        let pix = st.pix.clone();
-        let foot = |p: u32, dx: f32| {
-            let (y, x) = ((p as usize / side) as f32, (p as usize % side) as f32);
-            (-((y - cy).powi(2) + (x - cx - dx).powi(2)) / (2.0 * sig * sig)).exp()
-        };
-        let truth: Vec<f32> = pix.iter().map(|&p| foot(p, 0.0)).collect();
-        // Start displaced by 3 px.
-        let mut col: Vec<f32> = pix.iter().map(|&p| foot(p, 3.0)).collect();
-        let mut c = 0.0f32;
-        // `[u, u_0, u_1]` per frame since the last column change, and the
-        // buffered residual.
-        let mut hist: Vec<[f32; 3]> = Vec::new();
-        let mut pending: Option<Vec<f32>> = None;
-        let (mut cs, mut cs2, mut ns2) = (0.0f64, 0.0f64, 0.0f64);
-        let hh: f32 = truth.iter().map(|v| v * v).sum();
-        for t in 0..frames {
-            let kick = if g(t * 31 + 7) > 1.6 { amp } else { 0.0 };
-            c = 0.9 * c + kick;
-            let noise = blurred(t, side, 1.5);
-            let y: Vec<f32> = pix
-                .iter()
-                .zip(&truth)
-                .map(|(&p, &h)| h * c + noise[p as usize])
-                .collect();
-            let pn: f32 = pix
-                .iter()
-                .zip(&truth)
-                .map(|(&p, &h)| h * noise[p as usize])
-                .sum::<f32>()
-                / hh;
-            cs += f64::from(c);
-            cs2 += f64::from(c * c);
-            ns2 += f64::from(pn * pn);
-            let (mut num, mut den) = ([0.0f32; 3], [0.0f32; 3]);
-            for ((&a, &v), &k) in col.iter().zip(&y).zip(&st.cls) {
-                let a = a.max(0.0);
-                for j in [0, 1 + k as usize] {
-                    num[j] += a * v;
-                    den[j] += a * a;
-                }
-            }
-            let u = [0, 1, 2].map(|j| {
-                if den[j] > 0.0 {
-                    num[j] / den[j]
-                } else {
-                    f32::NAN
-                }
-            });
-            hist.push(u);
-            if crossfit {
-                if let (Some(r), true) = (pending.take(), hist.len() >= 3) {
-                    let n = hist.len();
-                    let (old, mid, now) = (hist[n - 3], hist[n - 2], hist[n - 1]);
-                    let z = [0, 1].map(|k| 0.5 * (old[2 - k] + now[2 - k]));
-                    st.push(&r, z, mid[0], 1.0);
-                }
-                pending = Some(y);
-            } else {
-                let cf = u[0].max(0.0);
-                st.push(&y, [cf, cf], cf, 1.0);
-            }
-            if (t + 1) % 300 == 0 {
-                if let Some(h) = st.estimate() {
-                    col = h;
-                    // A new column: earlier coordinates are on another scale.
-                    hist.clear();
-                    pending = None;
-                }
-            }
-        }
-        let n = frames as f64;
-        let snr = (cs2 / n - (cs / n).powi(2)) / (ns2 / n);
-        (corr(&st.estimate().unwrap(), &truth), snr)
-    }
-
-    /// A dim cell (per-frame trace SNR² about 0.3 against the correlated
-    /// noise) on Gaussian-blurred noise (σ 1.5 px), started from a footprint
-    /// displaced by 3 px: the cross-fitted statistics converge to the true
-    /// footprint; the same-frame ones settle on a noise-shaped blob.
+    /// The class sums are the scalar ones: both classes see the same
+    /// trace, so splitting changes nothing.
     #[test]
-    fn fpstats_converges_to_oracle_from_a_wrong_start() {
-        let (off, snr) = converge(false, 3000, 1.1);
-        let (on, _) = converge(true, 3000, 1.1);
-        eprintln!("snr {snr:.3}; corr with oracle: off {off:.3}, parity-loo {on:.3}");
-        assert!(on >= 0.95, "cross-fitted {on}");
-        assert!(off <= 0.88, "same-frame {off}");
-    }
-
-    /// Residual with a fixed spatial structure and no cell: a static
-    /// texture `T(p)` (log-normal, blurred σ 2 px) modulating noise that is
-    /// correlated over 1.5 px and white in time, `n_t(p) = T(p) ξ_t(p) +
-    /// 0.3 ε_t(p)`: its covariance is the same in every frame, as for
-    /// shimmer behind a fixed pattern of pixel gains.
-    fn textured(tex: u64, t: u64, side: usize) -> Vec<f32> {
-        let tt = blurred(tex * 7_919 + 999_999, side, 2.0);
-        let xi = blurred(tex * 1_000_000 + t, side, 1.5);
-        (0..side * side)
-            .map(|i| tt[i].exp() * xi[i] + 0.3 * g(tex * 77_777_777 + t * 4096 + i as u64))
-            .collect()
-    }
-
-    /// Structured noise only, no cell: the rank-1 fit's footprint on two
-    /// independent sets of 40 frames. Plain alternation is power iteration
-    /// on the residual and returns the residual covariance's leading
-    /// pattern both times; the cross-fitted fit has no such fixed point
-    /// (its covariance between the parities is short-ranged).
-    #[test]
-    fn rank1_on_noise_only_does_not_return_the_noise_pattern() {
-        let side = 24usize;
-        let blk = parity_block(10.0);
-        let dom: Vec<u32> = (0..(side * side) as u32)
-            .filter(|&p| {
-                let (y, x) = (
-                    (p as usize / side) as f32 - 11.5,
-                    (p as usize % side) as f32 - 11.5,
-                );
-                y * y + x * x <= 7.5 * 7.5
-            })
-            .collect();
-        let cls: Vec<u8> = dom.iter().map(|&p| parity(p, side, blk)).collect();
-        let fit = |tex: u64, half: u64, cross: bool| {
-            let frames: Vec<Vec<f32>> = (0..40)
-                .map(|t| textured(tex, half * 1000 + t, side))
-                .collect();
-            let refs: Vec<&[f32]> = frames.iter().map(|f| f.as_slice()).collect();
-            // A start trace as a patch solve would give (positive).
-            let mut c: Vec<f32> = (0..40).map(|t| g(tex * 77 + half * 7 + t).abs()).collect();
-            rank1(
-                &refs,
-                &dom,
-                &mut c,
-                10,
-                false,
-                cross.then_some(cls.as_slice()),
-            )
-        };
-        let mut rs = [Vec::new(), Vec::new()];
-        for tex in 0..8u64 {
-            for (i, cross) in [false, true].into_iter().enumerate() {
-                let a = fit(tex, 1, cross);
-                let b = fit(tex, 2, cross);
-                rs[i].push(corr(&a, &b).abs());
-            }
-        }
-        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
-        let (plain, cross) = (mean(&rs[0]), mean(&rs[1]));
-        eprintln!(
-            "|r_split| plain {plain:.3} {:?}, cross-fitted {cross:.3} {:?}",
-            rs[0], rs[1]
-        );
-        // Half of the cross-fitted fits find no co-varying traces at all
-        // (h = 0); the others still reproduce part of the texture, whose
-        // hot spots straddle the block boundaries. Parity alone halves the
-        // reproducibility; reservoir frames have no time order for a
-        // leave-one-out.
-        assert!(cross < 0.5 * plain, "cross-fitted {cross} vs plain {plain}");
-        assert!(plain > 0.6, "plain {plain}");
-    }
-
-    /// A published column that is a replicated texture (the plain rank-1
-    /// fit to the structured noise of `textured`, no cell), refined by the
-    /// running statistics: the same-frame statistics reproduce it, as a
-    /// significant footprint; the cross-fitted ones do not (the noise is
-    /// white in time, so its leave-one-out instrument does not follow it).
-    #[test]
-    fn replicated_texture_column_decays() {
-        let side = 24usize;
-        let blk = parity_block(10.0);
-        let fov = vec![1u8; side * side];
-        let tex = 3u64;
-        let proto = FpStats::new((11.5, 11.5), 7.5, side, side, &fov, false, blk);
-        let dom = proto.pix.clone();
-        let frames: Vec<Vec<f32>> = (0..40).map(|t| textured(tex, t, side)).collect();
-        let refs: Vec<&[f32]> = frames.iter().map(|f| f.as_slice()).collect();
-        let mut c: Vec<f32> = (0..40).map(|t| g(tex * 77 + t).abs()).collect();
-        let col = rank1(&refs, &dom, &mut c, 10, false, None);
-        // Pixel noise sd (for the whitened significance of the estimate).
-        let tt = blurred(tex * 7_919 + 999_999, side, 2.0);
-        let sd: Vec<f32> = dom
-            .iter()
-            .map(|&p| (tt[p as usize].exp().powi(2) + 0.09).sqrt())
-            .collect();
-        let run = |cross: bool| {
-            let mut st = proto.clone();
-            let mut hist: Vec<[f32; 3]> = Vec::new();
-            let mut pending: Option<Vec<f32>> = None;
-            for t in 0..3000u64 {
-                let full = textured(tex, 100_000 + t, side);
-                let y: Vec<f32> = dom.iter().map(|&p| full[p as usize]).collect();
-                let (mut num, mut den) = ([0.0f32; 3], [0.0f32; 3]);
-                for ((&a, &v), (&k, &s)) in col.iter().zip(&y).zip(st.cls.iter().zip(&sd)) {
-                    let w = a / (s * s);
-                    for j in [0, 1 + k as usize] {
-                        num[j] += w * v;
-                        den[j] += w * a;
-                    }
-                }
-                let u = [0, 1, 2].map(|j| {
-                    if den[j] > 0.0 {
-                        num[j] / den[j]
-                    } else {
-                        f32::NAN
-                    }
-                });
-                hist.push(u);
-                if cross {
-                    if let (Some(r), true) = (pending.take(), hist.len() >= 3) {
-                        let n = hist.len();
-                        let (old, mid, now) = (hist[n - 3], hist[n - 2], hist[n - 1]);
-                        let z = [0, 1].map(|k| 0.5 * (old[2 - k] + now[2 - k]));
-                        st.push(&r, z, mid[0], 1.0);
-                    }
-                    pending = Some(y);
-                } else {
-                    let cf = u[0].max(0.0);
-                    st.push(&y, [cf, cf], cf, 1.0);
-                }
-            }
-            // `stats_estimate`'s gate: whitened peak in standard errors.
-            st.estimate().map(|h| {
-                let se = st.std_err();
-                let peak = h
-                    .iter()
-                    .zip(&sd)
-                    .map(|(&v, &s)| v / s)
-                    .fold(0.0f32, f32::max);
-                (corr(&h, &col), f64::from(peak) / se)
-            })
-        };
-        let off = run(false).expect("same-frame estimate");
-        let on = run(true);
-        eprintln!("texture column: same-frame (r, peak z) {off:?}, cross-fitted {on:?}");
-        assert!(off.0 > 0.8 && off.1 > 4.0, "same-frame {off:?}");
-        let default_min_snr = 4.0;
-        assert!(
-            on.is_none_or(|(r, z)| r < 0.3 || z < default_min_snr),
-            "cross-fitted {on:?}"
-        );
-    }
-
-    /// Without cross-fitting the class sums are the scalar ones: both
-    /// classes see the same trace, so splitting changes nothing.
-    #[test]
-    fn fpstats_push_parity_sums_equal_full_sums_without_crossfit() {
+    fn fpstats_push_parity_sums_equal_full_sums() {
         let mut a = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], true, 1000);
         let mut b = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], true, 3);
         assert!(a.cls.iter().all(|&c| c == 0));

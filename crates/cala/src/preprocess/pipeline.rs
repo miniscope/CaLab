@@ -617,11 +617,6 @@ impl Preprocessor {
         &self.flicker
     }
 
-    /// The last frame's glow low-pass (0 outside the FOV).
-    pub fn last_lowpass(&self) -> Vec<f32> {
-        self.flatten.lowpass()
-    }
-
     /// Capture config, calibration and running state.
     pub fn state(&self) -> PreprocessState {
         PreprocessState {

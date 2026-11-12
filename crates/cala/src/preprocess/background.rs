@@ -488,10 +488,6 @@ impl RunningMinBackground {
         self.frozen = true;
     }
 
-    pub fn is_frozen(&self) -> bool {
-        self.frozen
-    }
-
     /// The current floor (after the last frame): the "final" estimate when
     /// called at the end of pass 1.
     pub fn final_estimate(&self) -> &[f32] {
@@ -528,11 +524,6 @@ impl RunningMinBackground {
             .iter()
             .rev()
             .find(|s| s.state.frames <= frames)
-    }
-
-    /// Drop stored snapshots (they can be large).
-    pub fn clear_snapshots(&mut self) {
-        self.snapshots.clear();
     }
 }
 

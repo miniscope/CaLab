@@ -1370,7 +1370,3 @@ fn a_refine_only_scope_freezes_the_cell_set() {
         "{before:?} -> {after:?}"
     );
 }
-
-/// S1.7 PR-1: the joint sufficient statistics kept beside `fpstats`.
-#[path = "joint_tests.rs"]
-mod joint;
