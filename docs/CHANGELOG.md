@@ -5,6 +5,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Landing page refresh. It now takes its colours, type and spacing from the
+  apps' shared tokens (`packages/ui/src/styles/tokens.css`, inlined at build
+  time), opens with a one-line statement of what CaLab is and a short "how the
+  apps fit together" panel (Cala, CaDecon, CaTune, the Python package), and
+  lists released apps as screenshot cards in a grid that fills by width, so
+  more apps need no layout change. Coming-soon apps move to a compact "In
+  development" list instead of an empty card. The header links docs, the
+  Python package, the changelog and GitHub; the footer links the release,
+  citation and licence. Cards no longer show the `features` bullets. The page
+  is rendered by the new `scripts/lib/landing.mjs`.
+
 ### Removed
 
 - Cala: code of settled experiments, all opt-in and off by default, so the

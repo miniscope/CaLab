@@ -35,12 +35,13 @@ test('landing page links a card to every listed app and none to hidden ones', as
   await expect(page).toHaveTitle('CaLab');
   await expect(page.getByRole('heading', { level: 1, name: /^CaLab/ })).toBeVisible();
 
-  // Each app card is a link wrapping the app's h2.
-  const cards = page.getByRole('link').filter({ has: page.getByRole('heading', { level: 2 }) });
+  // Each app card is a link wrapping a heading with the app's name (h2 for
+  // released apps, h3 under "In development" for coming-soon ones).
+  const cards = page.getByRole('link').filter({ has: page.getByRole('heading') });
   await expect(cards).toHaveCount(listed.length);
   for (const app of listed) {
     const card = page.getByRole('link').filter({
-      has: page.getByRole('heading', { level: 2, name: app.displayName, exact: true }),
+      has: page.getByRole('heading', { name: app.displayName, exact: true }),
     });
     await expect(card).toHaveAttribute('href', `${app.displayName}/`);
   }
@@ -54,7 +55,7 @@ for (const app of listed) {
     await page.goto('./');
     await page
       .getByRole('link')
-      .filter({ has: page.getByRole('heading', { level: 2, name: app.displayName, exact: true }) })
+      .filter({ has: page.getByRole('heading', { name: app.displayName, exact: true }) })
       .click();
     await expect(page).toHaveURL(new RegExp(`/CaLab/${app.displayName}/$`));
     await expect(page).toHaveTitle(new RegExp(app.displayName));
@@ -77,9 +78,9 @@ test('apps.json is served and lists the same apps as the landing cards', async (
   expect(Number.isNaN(Date.parse(manifest.body.generated_at))).toBe(false);
 
   const entries: { displayName: string; path: string }[] = manifest.body.apps;
-  const cards = page.getByRole('link').filter({ has: page.getByRole('heading', { level: 2 }) });
+  const cards = page.getByRole('link').filter({ has: page.getByRole('heading') });
   const cardHrefs = await cards.evaluateAll((els) => els.map((el) => el.getAttribute('href')));
-  const cardNames = await cards.getByRole('heading', { level: 2 }).allTextContents();
+  const cardNames = await cards.getByRole('heading').allTextContents();
   // Same apps, in the same order as the cards.
   expect(entries.map((e) => `${e.path}/`)).toEqual(cardHrefs);
   expect(entries.map((e) => e.displayName)).toEqual(cardNames);

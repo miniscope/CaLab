@@ -72,16 +72,16 @@ thread, which needs no WASM plugin.
 The `calab` block in the app's `package.json` is the only place an app is
 registered.
 
-| Field             | Effect                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `id`              | App identity (see above). The build fails on anything not matching the slug pattern.                          |
-| `displayName`     | Card title, page title, URL path and `apps.json` `path`.                                                      |
-| `description`     | Card tagline and `apps.json` `description`.                                                                   |
-| `longDescription` | One paragraph about the app.                                                                                  |
-| `features`        | Bullet list on the card.                                                                                      |
-| `status`          | Badge and order: `stable`, then `beta`, then `coming-soon`. Every card links to its app.                      |
-| `hidden`          | `true`: still built and deployed at its URL, but no landing card and no `apps.json` entry (so no bridge use). |
-| `screenshot`      | Image file in the app directory for the card thumbnail, or `""`.                                              |
+| Field             | Effect                                                                                                           |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `id`              | App identity (see above). The build fails on anything not matching the slug pattern.                             |
+| `displayName`     | Card title, page title, URL path and `apps.json` `path`.                                                         |
+| `description`     | Card tagline and `apps.json` `description`.                                                                      |
+| `longDescription` | One paragraph about the app (not shown on the landing page).                                                     |
+| `features`        | Bullet list of what the app does (not shown on the landing page).                                                |
+| `status`          | Badge and order: `stable`, then `beta`, then `coming-soon` (listed under "In development"). All link to the app. |
+| `hidden`          | `true`: still built and deployed at its URL, but no landing card and no `apps.json` entry (so no bridge use).    |
+| `screenshot`      | Image file in the app directory for the card thumbnail, or `""`.                                                 |
 
 `apps/_template` itself is `hidden: true` and is never built or deployed: its
 `calab.id` is the `__APP_ID__` placeholder, which `@calab/vite-config` accepts
