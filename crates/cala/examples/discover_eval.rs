@@ -11,6 +11,10 @@
 //!   --checkpoints K   full library snapshots matched against GT (default 10)
 //!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
+//!   --factors-out DIR compress pass 1's preprocessed frames in 600-frame
+//!                     windows and write every window's factors to
+//!                     `DIR/w<start>.fac` (`CALAFAC1`), the input of
+//!                     tools/cala-diagnostics/history_wholetest.py
 //!   --compress-window N[,M...]   after pass 2, compress the frames in
 //!                     windows of N (crate::compress) at three points of the
 //!                     chain (raw, after the front half, the fast loop's
@@ -1247,6 +1251,47 @@ fn compress_report(
     std::fs::write(out_dir.join("compress.tsv"), report).unwrap();
 }
 
+/// `--factors-out`: compresses the preprocessed frames window by window and
+/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+struct FactorDump {
+    dir: PathBuf,
+    tile: usize,
+    wc: WindowCompressor,
+}
+
+impl FactorDump {
+    fn new(dir: &Path, dims: Dims) -> FactorDump {
+        std::fs::create_dir_all(dir).unwrap();
+        let cfg = CompressConfig {
+            window: 600,
+            ..CompressConfig::default()
+        };
+        FactorDump {
+            dir: dir.to_path_buf(),
+            tile: cfg.tile,
+            wc: WindowCompressor::new(dims, cfg),
+        }
+    }
+
+    fn write(&self, wf: WindowFactors) {
+        let name = format!("w{:07}.fac", wf.start);
+        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+    }
+
+    fn push(&mut self, frame: &[f32]) {
+        if let Some(wf) = self.wc.push(frame) {
+            self.write(wf);
+        }
+    }
+
+    /// Write the last, shorter window.
+    fn finish(&mut self) {
+        if let Some(wf) = self.wc.flush() {
+            self.write(wf);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | real").clone();
@@ -1469,6 +1514,9 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
     let mut flog = std::io::BufWriter::new(File::create(out_dir.join("frames1.tsv")).unwrap());
     writeln!(flog, "frame\tdy\tdx\tnr_rms\tdvar\trho_x\trho_y\trho_xy").unwrap();
     let mut yprev = vec![0.0f32; n_px];
+    // `--factors-out`: the compressed history of pass 1.
+    let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
+    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -1523,6 +1571,9 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
             // Spatial diagnostics are recorded separately from fast-loop time.
             let t1b = Instant::now();
+            if let Some(fd) = factors.as_mut() {
+                fd.push(&y);
+            }
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
             t_pre += (t1 - t0).as_secs_f64();
@@ -1640,6 +1691,9 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
         }
         s += cnt;
+    }
+    if let Some(fd) = factors.as_mut() {
+        fd.finish();
     }
     let mut sl = slow.expect("slow loop started");
     let finalize_start = Instant::now();
