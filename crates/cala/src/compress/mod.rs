@@ -28,6 +28,7 @@
 //! the eigenvectors of `B Bᵀ`) and the autocorrelations run in float64.
 
 mod linalg;
+pub mod review;
 
 #[cfg(feature = "jsbindings")]
 mod js;

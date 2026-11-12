@@ -550,4 +550,5 @@ stats_list!(
     split_tests,
     work_split,
     work_stats,
+    review_adds,
 );

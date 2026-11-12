@@ -1,11 +1,31 @@
-# Whole-history scan on the compressed factors
+# History review on the compressed factors
 
 Can the compressed session history (`crates/cala/src/compress`) show cells the slow loop
 missed? The add test judges a candidate on the few frames a tile's reservoir holds; a dim
-cell is invisible there but repeats over minutes. This is an offline probe of a review that
-uses the whole history instead. Nothing here changes discovery.
+cell is invisible there but repeats over minutes. The history review tests every spot on
+the whole history instead and adds the cells it finds.
 
-## Inputs → outputs
+## In cala
+
+- `calab_cala::compress::review`: the test, computed on the factors without rebuilding a
+  frame. `review(windows, cells, dims, cfg)` returns the candidates with their footprints.
+- `SlowLoop::add_reviewed`: adds them as new cells on probation (the keep tests still
+  apply); candidates on an existing cell or on a recently deleted spot are skipped.
+- `discover_eval --history-review N`: reviews the history every N windows (600 frames
+  each) during the run and adds what it finds; `history_review.tsv` has one row per review.
+- `cargo run --release --example history_review -- RUN`: the review of a finished run
+  (`footprints.bin` and `factors/`).
+
+On the real V4 history below, the Rust review gives the same 72 candidates at the same
+spots as the offline scan (statistics equal to about 1e-6), in 29 s on 8 threads for 620
+cells and 20 min of 600 x 600 frames; the offline scan takes about 10 min.
+
+The browser app does not run the review yet: there the factors live in the compress
+worker and the slow loop in another.
+
+## Offline scan (the reference the review was ported from)
+
+### Inputs → outputs
 
 ```sh
 # 1. a run that also writes the factors (600-frame windows, CALAFAC1)
@@ -72,6 +92,6 @@ Wireless sessions (200 x 200): 0 to 2 candidates.
 
 ## Not covered
 
-- The review is not in the slow loop: candidates are not added to the library and their
-  traces are not back-filled.
-- Cost of the scan in the browser.
+- What becomes of the added cells: whether the keep tests retain them, and precision and
+  recall with the review on.
+- The review in the browser app, and its cost there.
