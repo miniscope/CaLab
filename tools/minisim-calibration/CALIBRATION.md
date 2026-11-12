@@ -229,15 +229,15 @@ optics to the real values. `make_v3_specs.py` writes the three JSONs from v2; it
 comments give every change and why. Measurements are in
 `tools/cala-eval/results/2026-11-12-sim-v3-scales.md`.
 
-| parameter | v2 | v3 | why |
-|---|---|---|---|
-| `tissue.scatter_blur_per_um` | 0.05 | 0.010 | scatter sigma (0.05 x 180 um = 9 um = 5.4 px) is most of v2's blur |
-| `place_neurons` cytosolic `soma_radius_um` | 5.0 | 8.3 (size6 4.6, size16 13.1) | with less blur the cells measure 6.9 px at 5 um; 8.3 um gives 10.1 px |
-| `place_neurons` cytosolic `density_per_mm3` | 33750 | 50625 (size6 50625, size16 32737) | holds ~640 detectable cells per 600 px frame |
-| `place_neurons` cytosolic `depth_range_um` | 140-160 | 172-188 | a layer straddling the focal depth (180 um) |
-| `optics.field_curvature_radius_um` | 2500 | none (flat) | see below |
-| `neuropil.amplitude` | 0.25 | 1.5 (size6 1.5, size16 1.65) | holds the mean grey level (64) |
-| `sensor.photons_per_unit` | 6500 | 1800 | holds the per-cell peak SNR (and the detectable flag) |
+| parameter                                   | v2      | v3                                | why                                                                   |
+| ------------------------------------------- | ------- | --------------------------------- | --------------------------------------------------------------------- |
+| `tissue.scatter_blur_per_um`                | 0.05    | 0.010                             | scatter sigma (0.05 x 180 um = 9 um = 5.4 px) is most of v2's blur    |
+| `place_neurons` cytosolic `soma_radius_um`  | 5.0     | 8.3 (size6 4.6, size16 13.1)      | with less blur the cells measure 6.9 px at 5 um; 8.3 um gives 10.1 px |
+| `place_neurons` cytosolic `density_per_mm3` | 33750   | 50625 (size6 50625, size16 32737) | holds ~640 detectable cells per 600 px frame                          |
+| `place_neurons` cytosolic `depth_range_um`  | 140-160 | 172-188                           | a layer straddling the focal depth (180 um)                           |
+| `optics.field_curvature_radius_um`          | 2500    | none (flat)                       | see below                                                             |
+| `neuropil.amplitude`                        | 0.25    | 1.5 (size6 1.5, size16 1.65)      | holds the mean grey level (64)                                        |
+| `sensor.photons_per_unit`                   | 6500    | 1800                              | holds the per-cell peak SNR (and the detectable flag)                 |
 
 The pixel size (4.8 um / 2.9 = 1.655 um) is unchanged, so vessels, neuropil field,
 illumination, leakage, motion, activity and the frame stay as in v2 in pixels. Changing
@@ -268,4 +268,3 @@ against v2's 116 (mean over the frame matches: 63 against 64); detectable cells 
 uniform over the frame (3 x 3 min/max 0.5 against 0.7, from the illumination falloff);
 the peak SNR proxy is 20 % higher; the edge blur is 1.37 px against about 1.5; the
 cell layer is thinner (16 um).
-

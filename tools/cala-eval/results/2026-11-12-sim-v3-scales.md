@@ -21,30 +21,30 @@ Same as on the real data, on the detectable units of `oracle.bin` (`tools/cala-e
 
 ## Result (seeds 5-9, 480 s, 600 px; median over detectable units, mean over seeds, range in brackets)
 
-| arm | d, px | edge sigma, px | detectable cells | units placed |
-|---|---|---|---|---|
-| real, cala footprints (S2.4: 3 runs) | 9.8-10.2 | 1.65-1.9 raw, about 1.5 after removing cala's smoothing | (700 cala cells) | |
-| v2 static | 14.54 (14.41-14.67) | 3.86 (3.83-3.88) | 639 (635-642) | 666 |
-| v2 motion | 14.44 (14.32-14.58) | 3.86 (3.82-3.90) | 679 (671-686) | 722 |
-| **v3 static** | **10.16** (10.16-10.16) | **1.38** (1.37-1.39) | 649 (632-657) | 829 |
-| **v3 motion** | **10.11** (10.09-10.16) | **1.37** (1.36-1.38) | 692 (666-711) | 902 |
-| size6 static | 6.01 (5.97-6.08) | 1.36 (1.36-1.37) | 634 (618-650) | 799 |
-| size6 motion | 5.99 (5.97-6.08) | 1.36 (1.35-1.38) | 674 (654-701) | 864 |
-| size16 static | 15.94 (15.92-15.96) | 1.37 (1.35-1.38) | 677 (660-697) | 846 |
-| size16 motion | 15.90 (15.84-15.96) | 1.36 (1.35-1.38) | 711 (680-745) | 923 |
+| arm                                  | d, px                   | edge sigma, px                                          | detectable cells | units placed |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------- | ---------------- | ------------ |
+| real, cala footprints (S2.4: 3 runs) | 9.8-10.2                | 1.65-1.9 raw, about 1.5 after removing cala's smoothing | (700 cala cells) |              |
+| v2 static                            | 14.54 (14.41-14.67)     | 3.86 (3.83-3.88)                                        | 639 (635-642)    | 666          |
+| v2 motion                            | 14.44 (14.32-14.58)     | 3.86 (3.82-3.90)                                        | 679 (671-686)    | 722          |
+| **v3 static**                        | **10.16** (10.16-10.16) | **1.38** (1.37-1.39)                                    | 649 (632-657)    | 829          |
+| **v3 motion**                        | **10.11** (10.09-10.16) | **1.37** (1.36-1.38)                                    | 692 (666-711)    | 902          |
+| size6 static                         | 6.01 (5.97-6.08)        | 1.36 (1.36-1.37)                                        | 634 (618-650)    | 799          |
+| size6 motion                         | 5.99 (5.97-6.08)        | 1.36 (1.35-1.38)                                        | 674 (654-701)    | 864          |
+| size16 static                        | 15.94 (15.92-15.96)     | 1.37 (1.35-1.38)                                        | 677 (660-697)    | 846          |
+| size16 motion                        | 15.90 (15.84-15.96)     | 1.36 (1.35-1.38)                                        | 711 (680-745)    | 923          |
 
 Recovered footprints of cala on `static_s5` (`qc_eval`, below): median `d` 13.5 px on v2 and
 9.5 px on v3, against 9.9 px on the real recording.
 
 ## What was held, what moved (static_s5; `tools/cala-eval/sim_stats.py`)
 
-| property | v2 | v3 | size6 | size16 |
-|---|---|---|---|---|
-| mean grey over the recording (200 frames) | 64.5 | 63.3 | 73.1 | 72.9 |
-| centre 200 x 200 px grey | 116 | 102 | 112 | 115 |
-| detectable cells | 635 | 632 | 635 | 660 |
-| peak-SNR proxy, median (relative, see below) | 2.91 | 3.50 | 3.03 | 3.59 |
-| detectable per 3 x 3 grid cell, min / max | 0.70 | 0.51 | 0.52 | 0.51 |
+| property                                     | v2   | v3   | size6 | size16 |
+| -------------------------------------------- | ---- | ---- | ----- | ------ |
+| mean grey over the recording (200 frames)    | 64.5 | 63.3 | 73.1  | 72.9   |
+| centre 200 x 200 px grey                     | 116  | 102  | 112   | 115    |
+| detectable cells                             | 635  | 632  | 635   | 660    |
+| peak-SNR proxy, median (relative, see below) | 2.91 | 3.50 | 3.03  | 3.59   |
+| detectable per 3 x 3 grid cell, min / max    | 0.70 | 0.51 | 0.52  | 0.51   |
 
 - The SNR proxy is `footprint peak x (C p99.5 - median) / pixel noise` (MAD of frame
   differences) over the first 48 s, for the detectable units; a relative measure only.
@@ -74,15 +74,15 @@ Recovered footprints of cala on `static_s5` (`qc_eval`, below): median `d` 13.5 
 
 ## Sanity check: `qc_eval` on `static_s5` (main 8a086ae, `--batch 8 --budget 30000000 --slow-seed 1`)
 
-| | v2 `static_s5` | v3 `v3_static_s5` |
-|---|---|---|
-| ground truth loads (oracle.bin, `gt.tsv`) | yes | yes |
-| GT detectable cells | 635 | 632 |
-| cala cells at 9600 | 486 | 722 |
-| P8 / R8 | 0.979 / 0.785 | 0.824 / 0.960 |
-| P8x (non-detectable matches left out) | 0.979 | 0.982 |
-| measured `d`: GT footprints / cala footprints, px | 14.45 / 13.49 | 10.16 / 9.51 |
-| wall, peak RSS | 218 s, 0.98 GB | 218 s, 0.88 GB |
+|                                                   | v2 `static_s5` | v3 `v3_static_s5` |
+| ------------------------------------------------- | -------------- | ----------------- |
+| ground truth loads (oracle.bin, `gt.tsv`)         | yes            | yes               |
+| GT detectable cells                               | 635            | 632               |
+| cala cells at 9600                                | 486            | 722               |
+| P8 / R8                                           | 0.979 / 0.785  | 0.824 / 0.960     |
+| P8x (non-detectable matches left out)             | 0.979          | 0.982             |
+| measured `d`: GT footprints / cala footprints, px | 14.45 / 13.49  | 10.16 / 9.51      |
+| wall, peak RSS                                    | 218 s, 0.98 GB | 218 s, 0.88 GB    |
 
 On v3 cala finds more cells than there are detectable ground-truth cells, and the
 extra matches are cells minisim does not flag as detectable (P8 0.82 against P8x 0.98).
@@ -95,4 +95,4 @@ on v3 by construction; use P8x or the flag-free counts when comparing the two. S
   `size6_static`, `size6_motion`, `size16_static`, `size16_motion`, seeds 5-9 (30 recordings,
   3.4 GB each, 102 GB, 2.4-2.8 GB peak RSS to generate). `sims.env`: `SIMV3_<ARM>_S<seed>`.
 - Regenerate: `$MINISIM_PY tools/cala-eval/gen_sims.py --sims ~/Projects/cala-data/sims-v3 --arms
-  v3_static,v3_motion,size6_static,size6_motion,size16_static,size16_motion --seeds 5-9 --parallel 1`.
+v3_static,v3_motion,size6_static,size6_motion,size16_static,size16_motion --seeds 5-9 --parallel 1`.
