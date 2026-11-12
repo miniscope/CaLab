@@ -2,8 +2,8 @@
 
 Each arm names a minisim spec (relative to `tools/minisim-calibration/`), the
 `make_trace_sim.py` flags that distinguish it and whether `qc_eval` needs
-`--motion`. An arm whose spec file is not committed yet (halo, oof: task E3) is
-listed but reported as unavailable instead of failing.
+`--motion`. An arm whose spec file is missing is listed but reported as
+unavailable instead of failing.
 """
 
 from pathlib import Path
@@ -22,7 +22,6 @@ FPS = 20.0
 ARMS = {
     "static": {"spec": "ca1_workshop_v2.spec.json", "motion": False, "halo": 0.0},
     "motion": {"spec": "ca1_workshop_v2.spec.json", "motion": True, "halo": 0.0},
-    # E3 commits the specs of the next two; until then they are unavailable.
     "halo": {"spec": "ca1_workshop_v2_halo.spec.json", "motion": True, "halo": 0.0},
     "oof": {"spec": "ca1_workshop_v2_oof.spec.json", "motion": True, "halo": 0.0},
     "fpn": {"spec": "ca1_workshop_v2_fpn.spec.json", "motion": True, "halo": 0.0},
