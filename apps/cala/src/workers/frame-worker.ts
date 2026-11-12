@@ -12,6 +12,8 @@
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
+import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
+import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { LiveSource, type SocketLike } from '../lib/live-source.ts';
 import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
@@ -19,7 +21,8 @@ import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
-import type { StageFree, StageMsg } from './stage-types.ts';
+import type { FlatFieldDown, FlatFieldUp } from './flat-field-types.ts';
+import type { StageFree, StageMsg, StageShifts } from './stage-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 
 let source: FrameSource | null = null;
@@ -37,6 +40,48 @@ let frontPool: StagePool | null = null;
 let epoch = 0;
 /** Preprocessed-frame buffers between this stage and the motion stage. */
 const FRONT_BUFFERS = 3;
+
+// Online flat field: raw batches + shifts go to the flat-field worker over `flatPort`
+// (never waited for: see `PortSink`), its maps come back and are applied by stage A.
+let flatPort: MessagePort | null = null;
+let flatSink: PortSink | null = null;
+let flatSession = 0;
+
+/** The flat-field worker as stage A's sink: at most `FLAT_FIELD_MAX_QUEUE` batches unanswered. */
+class PortSink implements FlatFieldSink {
+  private outstanding = 0;
+
+  constructor(
+    private readonly port: MessagePort,
+    readonly session: number,
+  ) {}
+
+  start(msg: FlatFieldStart): void {
+    this.outstanding = 0;
+    this.port.postMessage({ type: 'start', ...msg } satisfies FlatFieldDown, [msg.fovMask.buffer]);
+  }
+
+  ready(): boolean {
+    return this.outstanding < FLAT_FIELD_MAX_QUEUE;
+  }
+
+  push(msg: FlatFieldBatch): void {
+    this.outstanding++;
+    this.port.postMessage({ type: 'batch', ...msg } satisfies FlatFieldDown, [
+      msg.raw.buffer as ArrayBuffer,
+      msg.dy.buffer as ArrayBuffer,
+      msg.dx.buffer as ArrayBuffer,
+    ]);
+  }
+
+  stop(): void {
+    this.port.postMessage({ type: 'stop' } satisfies FlatFieldDown);
+  }
+
+  acked(): void {
+    if (this.outstanding > 0) this.outstanding--;
+  }
+}
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -78,6 +123,7 @@ function stopPipeline(): void {
     front.dispose();
     front = null;
     frontPool = null;
+    flatSink = null;
     down?.postMessage({ type: 'stop', epoch } satisfies StageMsg);
   }
 }
@@ -128,12 +174,23 @@ async function handle(req: FrameRequest): Promise<void> {
         if (down) {
           epoch++;
           // The stage asks for buffers only from its first `next()`, after the pool exists.
+          // Pass 1 estimates the flat field in the flat-field worker; pass 2 replays pass 1's map.
+          flatSession = req.cells?.session ?? 0;
+          flatSink =
+            flatPort && !req.replay && req.options.flatField !== false
+              ? new PortSink(flatPort, flatSession)
+              : null;
           const stage = new FrontStage(
             src,
             req.options,
             () => frontPool!.acquire(),
             undefined,
             req.replay,
+            {
+              session: flatSession,
+              ...(flatSink ? { sink: flatSink } : {}),
+              ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
+            },
           );
           live?.setRetainFrames(
             Math.max(stage.plan.calibrationFrames, stage.plan.motionWarmupFrames),
@@ -209,8 +266,22 @@ async function handle(req: FrameRequest): Promise<void> {
       case 'link': {
         down?.close();
         down = req.down;
-        down.onmessage = (e: MessageEvent<StageFree>) => {
-          if (e.data.epoch === epoch) frontPool?.release(e.data.buffer);
+        down.onmessage = (e: MessageEvent<StageFree | StageShifts>) => {
+          if (e.data.epoch !== epoch) return;
+          if (e.data.type === 'free') frontPool?.release(e.data.buffer);
+          else front?.onShifts(e.data.start, e.data.dy, e.data.dx);
+        };
+        post({ type: 'ok', id: req.id });
+        break;
+      }
+      case 'link-flat': {
+        flatPort?.close();
+        flatPort = req.port;
+        flatPort.onmessage = (e: MessageEvent<FlatFieldUp>) => {
+          const m = e.data;
+          if (m.session !== flatSession) return;
+          if (m.type === 'ack') flatSink?.acked();
+          else front?.offerFlatField(m.seq, m.map);
         };
         post({ type: 'ok', id: req.id });
         break;

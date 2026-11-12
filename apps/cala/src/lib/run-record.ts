@@ -7,10 +7,17 @@
  * 24,000-frame recording takes 0.4 MB and a multi-hour one of a million frames
  * 17 MB, so unlike traces it needs no bound.
  *
+ * It also lists the sensor flat-field maps that took effect (frame index of
+ * the batch each one first corrected, see `FlatFieldApplied`): the first is the
+ * one-time switch from uncorrected frames, so pass 2 and exports know which
+ * frames pass 1 saw uncorrected.
+ *
  * Batches must arrive in order starting at frame 0. A gap (a restarted or
  * truncated stream, a dropped batch) marks the record incomplete rather than
  * silently shifting later frames onto earlier indices.
  */
+
+import type { FlatFieldApplied } from './flat-field.ts';
 
 export const RUN_RECORD_BYTES_PER_FRAME = 17;
 
@@ -32,6 +39,7 @@ export class RunRecord {
   private gainBuf: Float32Array;
   private n = 0;
   private gap = false;
+  private readonly flatApplied: FlatFieldApplied[] = [];
 
   constructor(capacity = 4096) {
     this.cap = Math.max(1, Math.floor(capacity));
@@ -40,6 +48,16 @@ export class RunRecord {
     this.flagBuf = new Uint8Array(this.cap);
     this.offBuf = new Float32Array(this.cap);
     this.gainBuf = new Float32Array(this.cap);
+  }
+
+  /** Flat-field maps in the order they took effect. */
+  get flatFieldApplied(): readonly FlatFieldApplied[] {
+    return this.flatApplied;
+  }
+
+  /** Note that a flat-field map took effect (at `applied.frame`). */
+  noteFlatField(applied: FlatFieldApplied): void {
+    this.flatApplied.push(applied);
   }
 
   /** Frames recorded from frame 0 without a gap. */

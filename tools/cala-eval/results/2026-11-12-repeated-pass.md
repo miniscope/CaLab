@@ -33,10 +33,12 @@ is S2.1, `m(n_looks)`). The numbers show the raw effect.
 - **Pass 1 is unchanged.** With `--passes 3`, the pass-1 slice is byte-identical
   to a `--passes 1` run (`global.tsv`, `cells.tsv`, `convergence.tsv`).
 - **Binary.** Experiments used `origin/main` 6b1debf plus a local merge of
-  `origin/feat/cala-flat-field-default` 3c1a269. **#330 was not merged**, and it
-  is the online flat field that `qc_eval` uses by default with `--motion`. The PR
-  branch carries the same patch on `main`. If #330 lands first, the rebase must
-  keep the online flat field on pass 1 only.
+  `origin/feat/cala-flat-field-default` 3c1a269 (#330, the online flat field
+  that `qc_eval` uses by default with `--motion`; it was not merged then). The
+  `--passes` code is the same as the code now in this PR on `main` 9bf3e56,
+  where #330 has since landed. The PR was re-checked on that base: the pass-1
+  slice is byte-identical to `--passes 1`, including the flat-field update
+  log, and the flat field makes no updates after pass 1.
 - **Run settings.** `--batch 8 --budget 30000000 --slow-seed 1`. Sims: `motion`
   and `static` arms, seeds 5–9, 9600 frames. Real data: the workshop recording,
   `--motion --frames 18000`, slow seeds 1 and 2.

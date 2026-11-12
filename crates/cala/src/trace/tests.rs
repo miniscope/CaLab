@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use super::library::CORE_MAGIC;
 use super::*;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
@@ -551,6 +552,90 @@ fn library_bytes_round_trip_solves_identically() {
     let mut wrong = bytes.clone();
     wrong[0] = b'X';
     assert!(Library::from_bytes(&wrong).is_err());
+}
+
+/// The fast loop installs a published library from its bytes between
+/// frames. The bytes carry the precomputed terms, so the install is a copy;
+/// a library rebuilt from the footprints alone (the footprints-only layout,
+/// the install before the terms travelled) must solve bit-identically when
+/// installed at the same frame, missing pixels (the EM refill) included.
+#[test]
+fn library_install_from_terms_matches_full_rebuild_at_the_same_frame() {
+    let t = 30;
+    let c = traces(6, t, 31);
+    let mut frames = filtered_frames(&c, 0.1, 32);
+    // Missing pixels (registration moved them in from outside the FOV) on
+    // some frames, over a cell.
+    for f in frames.iter_mut().skip(3).step_by(4) {
+        for y in 10..14 {
+            for x in 0..6 {
+                f[y * W + x] = f32::NAN;
+            }
+        }
+    }
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let lib1 = Arc::new(library(&[0, 1, 2, 3], model.clone(), 50));
+        let libs = [
+            library(&[1, 2, 3, 4, 5], model.clone(), 51),
+            library(&[0, 2, 4, 5], model.clone(), 52),
+        ];
+        let installs = [9usize, 20];
+        let mut full = TraceEngine::new(lib1.clone(), SolverConfig::default()).unwrap();
+        let mut fast = TraceEngine::new(lib1, SolverConfig::default()).unwrap();
+        for (s, f) in frames.iter().enumerate() {
+            if let Some(k) = installs.iter().position(|&i| i == s) {
+                let rebuilt = Library::from_bytes(&libs[k].core_bytes(CORE_MAGIC)).unwrap();
+                let copied = Library::from_bytes(&libs[k].to_bytes()).unwrap();
+                // Same terms, bit for bit (the bytes carry all of them).
+                assert_eq!(copied.to_bytes(), rebuilt.to_bytes());
+                assert_eq!(copied.groups, rebuilt.groups);
+                full.set_library(Arc::new(rebuilt)).unwrap();
+                fast.set_library(Arc::new(copied)).unwrap();
+            }
+            let a = full.process(f).unwrap();
+            let b = fast.process(f).unwrap();
+            assert_eq!(a.library_version, b.library_version);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.traces), bits(&b.traces), "frame {s}");
+            assert_eq!(bits(&a.background), bits(&b.background), "frame {s}");
+        }
+        assert_eq!(full.state().traces, fast.state().traces);
+    }
+}
+
+#[test]
+fn library_bytes_with_damaged_terms_are_refused() {
+    let lib = library(
+        &[0, 1, 2],
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        60,
+    );
+    let core = lib.core_bytes(CORE_MAGIC);
+    let bytes = lib.to_bytes();
+    assert!(bytes.len() > core.len());
+    // Terms cut short, or a model tag that does not match the model.
+    assert!(Library::from_bytes(&bytes[..bytes.len() - 4]).is_err());
+    let mut retag = core.clone();
+    retag[..8].copy_from_slice(b"CALALIB3");
+    assert!(Library::from_bytes(&retag).is_err());
+    // A Gram column out of range.
+    let mut bad = bytes.clone();
+    let gram_start = core.len();
+    let nnz = lib.gram.start[3];
+    assert!(nnz > 0);
+    let col_at = gram_start + 4 * 4;
+    bad[col_at..col_at + 4].copy_from_slice(&99u32.to_le_bytes());
+    assert!(Library::from_bytes(&bad).is_err());
 }
 
 /// One Gaussian cell (sigma 3 px, support radius 8) on a 64 x 64 field of view.

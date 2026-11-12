@@ -8,6 +8,7 @@ import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts'
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { createPass2Store } from './lib/pass2-store.ts';
+import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
 import {
   createSlowClient,
   PARALLEL_FORWARD_BUFFERS,
@@ -53,13 +54,30 @@ const App: Component = () => {
       : visitWorkerCount(navigator.hardwareConcurrency),
   );
   // `?noqc`: run without online quality control (to measure its cost).
+  // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
-    {},
+    params.get('flatfield') === '0' ? { flatField: false } : {},
     undefined,
     cells,
     !params.has('noqc'),
     slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
+    {
+      // The sensor flat field is stored per device in this browser (IndexedDB).
+      cache: createIndexedDbFlatFieldCache(),
+      identity: () => {
+        const i = store.info();
+        if (!i) return null;
+        return {
+          width: i.width,
+          height: i.height,
+          ...(i.device ? { device: i.device } : {}),
+          ...(i.live ? { live: true } : {}),
+          ...(i.live?.name ? { liveName: i.live.name } : {}),
+          folder: store.label(),
+        };
+      },
+    },
   );
   const pass2 = createPass2Store(client, pipeline, cells);
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));

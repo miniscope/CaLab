@@ -25,6 +25,12 @@ export interface PipelineOptions {
   motionWarmupFrames?: number;
   /** Longest side of the preview images sent to the UI, px. */
   previewMaxSide?: number;
+  /**
+   * Divide out the sensor gain map estimated online from the recording's own
+   * motion (default on). Pipelined workers only: the single-worker
+   * `PipelineEngine` ignores it (see the note there).
+   */
+  flatField?: boolean;
 }
 
 export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
@@ -34,6 +40,7 @@ export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
   // cropped inside WASM until the template is built, never as full f32 frames.
   motionWarmupFrames: 200,
   previewMaxSide: 320,
+  flatField: true,
 };
 
 export type PipelinePhase = 'calibrate' | 'motion-warmup' | 'process';

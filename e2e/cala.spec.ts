@@ -5,11 +5,26 @@ import { test, expect } from './fixtures.ts';
 import { buildAvi, pixelAt } from '../apps/cala/src/__tests__/synth-avi.ts';
 
 /**
- * Cala is hidden from the landing page but built at /CaLab/Cala/. This drives
+ * Cala is a beta app: a landing card, built at /CaLab/Cala/. This drives
  * the real path: a folder of synthetic AVIs picked through the directory input,
  * parsed by the wasm AviHeader inside the frame worker, frames transferred
  * back and drawn on the canvas.
  */
+test('Cala: the landing page lists it as a beta and its start page loads cleanly', async ({
+  page,
+}) => {
+  await page.goto('./');
+  const card = page
+    .getByRole('link')
+    .filter({ has: page.getByRole('heading', { level: 2, name: 'Cala', exact: true }) });
+  await expect(card).toContainText('Beta');
+  await card.click();
+  await expect(page).toHaveURL(/\/CaLab\/Cala\/$/);
+  // The start page: the folder picker, no run state (console errors fail the test via fixtures).
+  await expect(page.getByRole('button', { name: 'Open a Miniscope folder' })).toBeVisible();
+  await expect(page.getByTestId('folder-input')).toBeAttached();
+});
+
 test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async ({ page }) => {
   await page.goto('Cala/');
   await expect(page.getByRole('heading', { level: 1, name: 'Cala' })).toBeVisible();

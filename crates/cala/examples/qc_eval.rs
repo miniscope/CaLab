@@ -65,11 +65,23 @@
 //!                      and result together (encode, copy, decode), ms; a
 //!                      worker also spends it on top of the visit's work
 //!   --visit-depth D    visits a worker may hold at once (1)
-//!   --flat-field G     divide every raw frame by the sensor gain map `G`
-//!                      (f32 LE, one value per pixel) before preprocessing;
-//!                      `auto[:N]` (with --motion) estimates it first from the
-//!                      motion dither of frames 0..N (3000) and writes
-//!                      `flat_field.f32` ([`calab_cala::preprocess::flatfield`])
+//!   --flat-field M     sensor flat field ([`calab_cala::preprocess::flatfield`]),
+//!                      default `online` with --motion, `off` without:
+//!                      `online` runs what the app runs (uncorrected until the
+//!                      first map after --ff-first s, a warm-started refinement
+//!                      every --ff-refine s, forgetting with half-life
+//!                      --ff-gain-half-life s, column dark offsets tracked with
+//!                      --ff-offset-half-life s (0: no offset model);
+//!                      --ff-seed G [--ff-seed-frames N] starts from a stored
+//!                      gain map; writes `flat_field_updates.tsv`, the final
+//!                      `flat_field.f32` (+ `_offset`), and with --ff-dump-maps
+//!                      every map); `auto[:N]` estimates once from a first pass
+//!                      over frames 0..N (3000) and corrects from frame 0; a
+//!                      file path divides by that gain map (f32 LE per pixel)
+//!   --no-flat-field    same as `--flat-field off`
+//!   --inject-drift gain=A,offset=B  add a synthetic sensor drift growing
+//!                      linearly over the run (pixel gain ±A, column offset
+//!                      ±B grey levels; patterns written to `drift_*.f32`)
 //!   --no-heldout       skip the ground-truth-free held-out score
 //!   --library F        a fixed library (`footprints.bin` of an earlier run,
 //!                      `CALAFP01`) from `--start` on, no slow loop: scores
@@ -107,7 +119,10 @@
 //! `cells.tsv` rows carry `fp_class` (`tp`, or the FP class: `noise`,
 //! `adjacent`, `partial`, `dup`, `nondetectable` for a match to a GT unit
 //! that is not detectable) and `edge_px` (distance of the centroid to the
-//! sensor-mask edge, capped at 40).
+//! sensor-mask edge, capped at 40). With `--motion` the QC monitor also gets
+//! each frame's rigid shift and `motion_r2` is the cross-validated R² of the
+//! trace on a quadratic of that shift ([`calab_cala::qc::motion`]; flag bit
+//! 16 above 0.2, display only, never part of `pass`); NaN without motion.
 //!
 //! Repeated passes (`--passes N`, offline only): after the last frame the
 //! loop restarts at frame 0 and runs the recording again. Carried over: the
@@ -117,8 +132,8 @@
 //! time), the QC monitor, the held-out score and the convergence tracker.
 //! Fixed after pass 1: the calibration and FOV mask, the motion corrector
 //! (later passes replay pass 1's motion records, no re-registration) and the
-//! flat field. The preprocessor's running state (noise, background)
-//! continues. Frames in the output files are *virtual*: pass `k` (0-based)
+//! online flat field (its last pass-1 map stays applied; no more updates).
+//! The preprocessor's running state (noise, background) continues. Frames in the output files are *virtual*: pass `k` (0-based)
 //! frame `t` is written as `k * frames + t` (`global.tsv`, `cells.tsv`,
 //! `convergence.tsv`, `adds.tsv`/`removals.tsv` `recording_frame`,
 //! `ho_cells.tsv`), so the curves continue across passes;
@@ -142,6 +157,15 @@
 //! tells a distant unit's light from signal no GT unit made), and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
 //! order) and `cells_pass2.tsv` (QC of the re-extracted traces).
+//!
+//! `--churn-log` (attribution of footprint changes) adds `edits.tsv` (every
+//! structural edit of the slow loop: add, merge, split, delete, refine,
+//! absorb, with the cells involved and the decision's margin),
+//! `fp_history.bin` (every cell's filtered and unfiltered footprint and
+//! split-half noise at every checkpoint; `CALAFH01`, see
+//! [`write_fp_history`]) and, built with `--features diagnostics`,
+//! `tests.tsv` (every held-out refine / merge / split / absorb test,
+//! accepted or not).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -157,7 +181,11 @@ use calab_cala::discover::{
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
 };
-use calab_cala::preprocess::flatfield::{DitherFlatField, FlatFieldConfig};
+use calab_cala::preprocess::flatfield::{
+    DitherFlatField, FlatField, FlatFieldConfig, FlatFieldSeed, OnlineFlatField,
+    OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S, OFFSET_HALF_LIFE_S,
+    REFINE_EVERY_S,
+};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
@@ -381,6 +409,79 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+fn read_f32_file(f: &str) -> Vec<f32> {
+    let b = std::fs::read(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// `--inject-drift gain=A,offset=B`: a synthetic sensor drift added to the
+/// raw frames, growing linearly from 0 at frame 0 to full at the last frame:
+/// a pixel gain pattern `1 + A·(t/T)·P(x)` (P = ±1, pseudo-random per pixel)
+/// and a column offset `B·(t/T)·C(col)` (C = ±1 per column, grey levels).
+struct Drift {
+    gain: f32,
+    offset: f32,
+    p: Vec<f32>,
+    c: Vec<f32>,
+    width: usize,
+    total: f32,
+}
+
+impl Drift {
+    fn parse(spec: &str, dims: Dims, total: u32) -> Drift {
+        let (mut gain, mut offset) = (0.0, 0.0);
+        for kv in spec.split(',') {
+            let (k, v) = kv.split_once('=').expect("--inject-drift gain=A,offset=B");
+            match k {
+                "gain" => gain = v.parse().unwrap(),
+                "offset" => offset = v.parse().unwrap(),
+                _ => panic!("--inject-drift: unknown {k}"),
+            }
+        }
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let mut sign = move || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            if (st >> 40) & 1 == 1 {
+                1.0f32
+            } else {
+                -1.0
+            }
+        };
+        let p = (0..dims.pixels()).map(|_| sign()).collect();
+        let c = (0..dims.width).map(|_| sign()).collect();
+        Drift {
+            gain,
+            offset,
+            p,
+            c,
+            width: dims.width,
+            total: total.max(2) as f32 - 1.0,
+        }
+    }
+
+    fn apply(&self, frame: &mut [u8], t: usize) {
+        let a = t as f32 / self.total;
+        // Deterministic sub-grey dither so the u8 rounding does not quantise
+        // the small injected changes away.
+        let mut h = (t as u32).wrapping_mul(2654435761);
+        for (i, v) in frame.iter_mut().enumerate() {
+            h ^= h << 13;
+            h ^= h >> 17;
+            h ^= h << 5;
+            let dith = (h >> 8) as f32 / (1u32 << 24) as f32;
+            let x = f32::from(*v) * (1.0 + self.gain * a * self.p[i])
+                + self.offset * a * self.c[i % self.width];
+            *v = (x + dith).floor().clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 fn write_f32s(f: &mut impl Write, v: &[f32]) {
@@ -1584,6 +1685,82 @@ fn write_logs(
     }
 }
 
+/// Move the slow loop's structural edits (and, with `diagnostics`, its
+/// held-out edit tests) into the `--churn-log` TSV buffers.
+fn write_churn_logs(
+    sl: &mut SlowLoop,
+    rf: &dyn Fn(u64) -> u32,
+    edit_log: &mut String,
+    test_log: &mut String,
+) {
+    for e in sl.take_edit_log() {
+        let _ = writeln!(
+            edit_log,
+            "{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            e.center.0,
+            e.center.1,
+            e.margin
+        );
+    }
+    #[cfg(feature = "diagnostics")]
+    for e in sl.take_test_log() {
+        let _ = writeln!(
+            test_log,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            u8::from(e.accepted),
+            e.z
+        );
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = test_log;
+}
+
+/// Append one checkpoint to `fp_history.bin` (`--churn-log`): `CALAFH01`
+/// once, then per checkpoint the recording frame (u64) and cell count
+/// (u32), and per cell its id (u64), birth (recording frame, u64),
+/// split-half noise (f64, NaN when none), then the filtered footprint
+/// (pixel count u32, pixels u32, values f32) and the unfiltered one (the
+/// same layout). Little endian.
+fn write_fp_history(
+    out: &mut BufWriter<File>,
+    frame: u64,
+    lib: &calab_cala::trace::Library,
+    births: &HashMap<u64, u64>,
+    noise: &dyn Fn(u64, &[u32]) -> Option<f64>,
+) {
+    out.write_all(&frame.to_le_bytes()).unwrap();
+    out.write_all(&(lib.len() as u32).to_le_bytes()).unwrap();
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        let (fpix, fval) = lib.filtered(slot);
+        let (rpix, rval) = lib.unfiltered(slot);
+        out.write_all(&id.to_le_bytes()).unwrap();
+        out.write_all(&births.get(&id).copied().unwrap_or(0).to_le_bytes())
+            .unwrap();
+        out.write_all(&noise(id, fpix).unwrap_or(f64::NAN).to_le_bytes())
+            .unwrap();
+        for (pix, val) in [(fpix, fval), (rpix, rval)] {
+            out.write_all(&(pix.len() as u32).to_le_bytes()).unwrap();
+            for &p in pix {
+                out.write_all(&p.to_le_bytes()).unwrap();
+            }
+            for &v in val {
+                out.write_all(&v.to_le_bytes()).unwrap();
+            }
+        }
+    }
+}
+
 /// A fixed library from a `footprints.bin` (`CALAFP01`: height, width, n;
 /// per cell id, pixel count, pixels, unfiltered values, filtered values),
 /// built with this run's filter, noise map and background.
@@ -1976,6 +2153,7 @@ fn main() {
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
     let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
     assert!(passes >= 1, "--passes must be at least 1");
+    let churn_log = args.iter().any(|a| a == "--churn-log");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
         fixed_lib.is_none() || !oracle_mode,
@@ -2061,7 +2239,50 @@ fn main() {
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
     let fov = cal.fov().mask().to_vec();
     let mut pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
-    if let Some(f) = arg_value(&args, "--flat-field") {
+    let mut online_ff: Option<OnlineFlatField> = None;
+    let drift = arg_value(&args, "--inject-drift").map(|d| Drift::parse(&d, dims, frames));
+    if let Some(d) = &drift {
+        let mut o = BufWriter::new(File::create(out_dir.join("drift_pattern.f32")).unwrap());
+        write_f32s(&mut o, &d.p);
+        let mut o = BufWriter::new(File::create(out_dir.join("drift_columns.f32")).unwrap());
+        write_f32s(&mut o, &d.c);
+    }
+    let ff_dump = args.iter().any(|a| a == "--ff-dump-maps");
+    let mut ff_log = String::from(
+        "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n",
+    );
+    // Default: the online flat field (what the app runs) with motion, off without.
+    let ff_mode = arg_value(&args, "--flat-field")
+        .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
+    if args.iter().any(|a| a == "--no-flat-field") || ff_mode == "off" {
+        println!("flat field: off");
+    } else if ff_mode == "online" {
+        assert!(motion, "--flat-field online needs --motion");
+        let secs = |k: &str, d: f32| arg_value(&args, k).map_or(d, |s| s.parse().unwrap());
+        let mut c = OnlineFlatFieldConfig::for_fps(20.0);
+        let fr = |s: f32| (s * 20.0).round();
+        c.estimator.half_life_frames = f64::from(fr(secs("--ff-gain-half-life", GAIN_HALF_LIFE_S)));
+        c.estimator.offset_half_life_frames =
+            f64::from(fr(secs("--ff-offset-half-life", OFFSET_HALF_LIFE_S)));
+        c.first_frames = fr(secs("--ff-first", FIRST_MAP_S)).max(1.0) as u64;
+        c.refine_every_frames = fr(secs("--ff-refine", REFINE_EVERY_S)).max(1.0) as u64;
+        let seed = arg_value(&args, "--ff-seed").map(|f| FlatFieldSeed {
+            gain: read_f32_file(&f),
+            offset: None,
+            dark: 0.0,
+            frames: arg_value(&args, "--ff-seed-frames").map_or(3000.0, |s| s.parse().unwrap()),
+        });
+        if let Some(sd) = &seed {
+            FlatField {
+                gain: sd.gain.clone(),
+                ..FlatField::identity(dims)
+            }
+            .apply(&mut pre0)
+            .unwrap();
+        }
+        println!("flat field: online {c:?}, seed {}", seed.is_some());
+        online_ff = Some(OnlineFlatField::new(dims, &fov, c, seed).unwrap());
+    } else if let Some(f) = Some(ff_mode.clone()) {
         let g: Vec<f32> = if let Some(k) = f.strip_prefix("auto") {
             // Dither flat field from a first pass over the opening frames.
             assert!(motion, "--flat-field auto needs --motion");
@@ -2085,15 +2306,7 @@ fn main() {
                 Ok(ff) => ff,
                 Err(e) => {
                     println!("flat field auto: {e}; running without");
-                    calab_cala::preprocess::flatfield::FlatField {
-                        gain: vec![1.0; n_px],
-                        bins_used: 0,
-                        frames_used: 0,
-                        gain_sd: 0.0,
-                        tissue_sd: 0.0,
-                        residual: f64::NAN,
-                        dark: 0.0,
-                    }
+                    FlatField::identity(dims)
                 }
             };
             println!(
@@ -2110,12 +2323,7 @@ fn main() {
             write_f32s(&mut o, &ff.gain);
             ff.gain
         } else {
-            let b = std::fs::read(&f).unwrap_or_else(|e| panic!("{f}: {e}"));
-            b.as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect()
+            read_f32_file(&f)
         };
         pre0.set_flat_field(Some(&g)).unwrap();
         println!("flat field {f}: {} px", g.len());
@@ -2179,6 +2387,13 @@ fn main() {
     let mut rem_log = String::from(
         "frame\trecording_frame\tid\tkind\tcy\tcx\tborn\tborn_recording\tclass\tchurned\n",
     );
+    let mut edit_log = String::from("frame\trecording_frame\tkind\tid\tother\tcy\tcx\tmargin\n");
+    let mut test_log = String::from("frame\trecording_frame\tkind\tid\tother\taccepted\tz\n");
+    let mut fp_hist: Option<BufWriter<File>> = churn_log.then(|| {
+        let mut f = BufWriter::new(File::create(out_dir.join("fp_history.bin")).unwrap());
+        f.write_all(b"CALAFH01").unwrap();
+        f
+    });
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
@@ -2196,17 +2411,77 @@ fn main() {
         let mut s = 0u32;
         while s < frames {
             let cnt = 64.min(frames - s);
-            let raw = rec.read(s, cnt);
+            let mut raw = rec.read(s, cnt);
+            if let Some(d) = &drift {
+                for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(f, s as usize + k);
+                }
+            }
             for (k, f) in raw.chunks_exact(n_px).enumerate() {
                 // `t_rec`: recording frame; `t`: virtual frame (continues across
                 // passes).
                 let t_rec = s as usize + k;
                 let t = off + t_rec;
                 let last = t_rec + 1 == t_len;
-                if pass == 0 {
-                    pipe.frame(f, &mut y);
+                let shift = if pass == 0 {
+                    pipe.frame(f, &mut y)
                 } else {
-                    pipe.frame_replay(f, &mut y, t_rec);
+                    pipe.frame_replay(f, &mut y, t_rec)
+                };
+                // The online flat field learns in pass 1 only; its last map
+                // stays applied.
+                if let (Some(o), Some(d), 0) = (online_ff.as_mut(), shift, pass) {
+                    o.push(f, d).unwrap();
+                    if o.due() {
+                        let t0 = Instant::now();
+                        let out = o.refine();
+                        let dt = t0.elapsed().as_secs_f64();
+                        match &out {
+                            RefineOutcome::Updated(u) => {
+                                let ff = o.current().unwrap();
+                                ff.apply(&mut pipe.pre).unwrap();
+                                let _ = writeln!(
+                                ff_log,
+                                "{t}\tupdated\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.3e}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{dt:.2}",
+                                u8::from(u.first),
+                                ff.bins_used,
+                                ff.frames_used,
+                                ff.gain_sd,
+                                ff.tissue_sd,
+                                ff.residual,
+                                ff.dark,
+                                u.change_median,
+                                u.change_p99,
+                                u.change_max
+                            );
+                                if u.first {
+                                    println!(
+                                    "flat field: first map at frame {t} ({} bins, gain sd {:.4}, change p99 {:.2} sigma; {dt:.1} s)",
+                                    ff.bins_used, ff.gain_sd, u.change_p99
+                                );
+                                }
+                                if ff_dump {
+                                    let name = format!("ff_log_gain_{t:07}.f32");
+                                    let mut w =
+                                        BufWriter::new(File::create(out_dir.join(name)).unwrap());
+                                    write_f32s(&mut w, &ff.log_gain);
+                                    if let Some(off) = &ff.offset {
+                                        let name = format!("ff_offset_{t:07}.f32");
+                                        let mut w = BufWriter::new(
+                                            File::create(out_dir.join(name)).unwrap(),
+                                        );
+                                        write_f32s(&mut w, off);
+                                    }
+                                }
+                            }
+                            RefineOutcome::Skipped(m) => {
+                                let _ = writeln!(
+                                    ff_log,
+                                    "{t}\tskipped: {m}\t\t\t\t\t\t\t\t\t\t\t{dt:.2}"
+                                );
+                            }
+                        }
+                    }
                 }
                 if t == start {
                     let noise = pipe.pre.noise().sigma();
@@ -2331,7 +2606,7 @@ fn main() {
                 }
                 hist.push(t, lib.ids(), &tr.traces);
                 let a = Instant::now();
-                q.observe(&y, &lib, &tr).unwrap();
+                q.observe_shifted(&y, &lib, &tr, shift).unwrap();
                 qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
                 if t.is_multiple_of(200) {
                     q.set_noise(pipe.pre.noise().sigma()).unwrap();
@@ -2357,6 +2632,9 @@ fn main() {
                         tm.advance(now, sl, &mut slow_rec);
                         let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                         write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
                     }
                 } else if let Some(sl) = slow.as_mut() {
                     if t.is_multiple_of(200) {
@@ -2433,6 +2711,9 @@ fn main() {
                         }
                         let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                         write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
                     }
                 }
                 let t_end = t + 1;
@@ -2507,6 +2788,12 @@ fn main() {
                             }
                         })
                         .collect();
+                    if let Some(f) = fp_hist.as_mut() {
+                        let noise = |id: u64, pix: &[u32]| {
+                            slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix))
+                        };
+                        write_fp_history(f, t_end as u64, &lib, &births, &noise);
+                    }
                     for row in conv.checkpoint(t_end as u64, snaps) {
                         conv_out.push_str(&row.to_line());
                     }
@@ -2688,8 +2975,30 @@ fn main() {
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
+    if let Some(o) = &online_ff {
+        std::fs::write(out_dir.join("flat_field_updates.tsv"), &ff_log).unwrap();
+        if let Some(ff) = o.current() {
+            let mut w = BufWriter::new(File::create(out_dir.join("flat_field.f32")).unwrap());
+            write_f32s(&mut w, &ff.gain);
+            if let Some(off) = &ff.offset {
+                let mut w =
+                    BufWriter::new(File::create(out_dir.join("flat_field_offset.f32")).unwrap());
+                write_f32s(&mut w, off);
+            }
+        }
+        println!("flat field: {} updates", o.updates());
+    }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
+    if churn_log {
+        std::fs::write(out_dir.join("edits.tsv"), &edit_log).unwrap();
+        if cfg!(feature = "diagnostics") {
+            std::fs::write(out_dir.join("tests.tsv"), &test_log).unwrap();
+        }
+        if let Some(mut f) = fp_hist.take() {
+            f.flush().unwrap();
+        }
+    }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
         if sl.config().core_test != CoreTest::Off {
@@ -2820,7 +3129,13 @@ fn main() {
     // Pass 2: re-extract with the final library; per cell the trace, its ring
     // background, and the footprint projection ã_iᵀ y / ã_iᵀ ã_i of the frame
     // before and after the floor.
-    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    // Online flat field: pass 2 corrects from frame 0 with the final map, as the
+    // app does (pass 1 only had it from the first map on).
+    let mut pre2 = pre0.clone();
+    if let Some(ff) = online_ff.as_ref().and_then(|o| o.current()) {
+        ff.apply(&mut pre2).unwrap();
+    }
+    let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
     let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
     let mut q2 = QcMonitor::new(
         dims,
@@ -2844,7 +3159,12 @@ fn main() {
     let mut s = 0u32;
     while s < frames {
         let cnt = 64.min(frames - s);
-        let raw = rec.read(s, cnt);
+        let mut raw = rec.read(s, cnt);
+        if let Some(d) = &drift {
+            for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                d.apply(f, s as usize + k);
+            }
+        }
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let t = s as usize + k;
             pipe.frame_split(f, &mut pre, &mut y);

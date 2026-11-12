@@ -25,6 +25,24 @@ export function opfsAvailable(): boolean {
   );
 }
 
+let usable: Promise<boolean> | null = null;
+
+/**
+ * Whether files can really be written: `opfsAvailable()` plus a test write
+ * through a synchronous access handle (once per page). Browsers in private or
+ * ephemeral storage modes expose the API but fail on first use; callers then
+ * take their in-memory path instead of stopping with an opaque error.
+ */
+export function opfsUsable(): Promise<boolean> {
+  if (!opfsAvailable()) return Promise.resolve(false);
+  return (usable ??= OpfsWriterClient.shared()
+    .probe()
+    .then(
+      () => true,
+      () => false,
+    ));
+}
+
 /** An error raised in the worker, rebuilt with its original `name` (e.g. QuotaExceededError). */
 function rebuild(res: Extract<OpfsResponse, { ok: false }>): Error {
   const err = new Error(res.message);
@@ -111,6 +129,11 @@ export class OpfsWriterClient {
       if (!res.ok) throw rebuild(res);
       return res;
     });
+  }
+
+  /** Open, write, close and delete a scratch file; rejects when OPFS cannot be used. */
+  async probe(): Promise<void> {
+    await this.call({ op: 'probe' });
   }
 
   /** Create (or truncate) `name` and keep a write handle on it. */

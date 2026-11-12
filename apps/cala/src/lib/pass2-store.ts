@@ -12,6 +12,11 @@
  * same order, which gives the same state pass 1 had at each frame: that is why
  * no checkpoints are needed when the whole recording is replayed.
  *
+ * The one deliberate difference is the sensor flat field: pass 1 switched from
+ * uncorrected to corrected frames when its first map arrived (and refined it
+ * after); pass 2 applies pass 1's newest map from frame 0, so the whole
+ * recording is corrected the same way. Nothing is estimated in pass 2.
+ *
  * Traces go straight to a `TraceFile` (trace-file.ts): frame-major (frames x
  * cells) because batches arrive in frame order, in a file in the origin
  * private file system, so memory stays at a few batches whatever the
@@ -204,6 +209,7 @@ export function createPass2Store(
     const library = use?.library ?? cells.library()!;
     const bytes = use?.bytes ?? cells.libraryBytes()!;
     const frames = rec.frames;
+    const flatMap = pipeline.flatFieldMap();
     const cellCount = library.ids.length;
     setTotal(frames);
     let traces: TraceFile;
@@ -245,7 +251,12 @@ export function createPass2Store(
           previewMaxSide: plan1.previewMaxSide,
         },
         { session: 0, discover: false, qc: false, library: bytes },
-        { frameCount: frames, ...rec.snapshot() },
+        {
+          frameCount: frames,
+          ...rec.snapshot(),
+          // The whole recording is corrected with pass 1's newest map, from frame 0.
+          ...(flatMap ? { flatField: flatMap } : {}),
+        },
       );
       if (gen !== generation) return;
       ctx.t0 = clock();

@@ -239,7 +239,7 @@ mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
-    CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind,
+    CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
 pub use shard::{VisitJob, VisitResult, VisitRunner};
 
@@ -774,6 +774,9 @@ pub struct SlowLoop {
     deleted: Vec<DeletedCell>,
     /// Structural edits since the last `take_edit_log` (bounded).
     edit_log: Vec<EditEvent>,
+    /// Held-out edit tests since the last `take_test_log` (bounded).
+    #[cfg(feature = "diagnostics")]
+    test_log: Vec<TestEvent>,
     /// Running footprint statistics per published cell, by id, and the
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
@@ -1102,6 +1105,8 @@ impl SlowLoop {
             xu: HashMap::new(),
             deleted: Vec::new(),
             edit_log: Vec::new(),
+            #[cfg(feature = "diagnostics")]
+            test_log: Vec::new(),
             fpstats: HashMap::new(),
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
@@ -1393,6 +1398,28 @@ impl SlowLoop {
     /// with the cells involved and the held-out margin of each decision.
     pub fn take_edit_log(&mut self) -> Vec<EditEvent> {
         std::mem::take(&mut self.edit_log)
+    }
+
+    /// Held-out edit tests (refine, merge, split, absorb) since the last
+    /// call, accepted or not (at most the latest 200 000).
+    #[cfg(feature = "diagnostics")]
+    pub fn take_test_log(&mut self) -> Vec<TestEvent> {
+        std::mem::take(&mut self.test_log)
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn log_test(&mut self, kind: EditKind, id: u64, other: u64, accepted: bool, z: f64) {
+        if self.test_log.len() >= 200_000 {
+            self.test_log.drain(..100_000);
+        }
+        self.test_log.push(TestEvent {
+            frame: self.frames,
+            kind,
+            id,
+            other,
+            accepted,
+            z: z as f32,
+        });
     }
 
     fn log(&mut self, kind: EditKind, id: u64, other: u64, center: (f32, f32), margin: f32) {
@@ -2983,6 +3010,14 @@ impl SlowLoop {
                     // The best of several alternatives, chosen on these
                     // frames: it needs a larger paired z than a single
                     // refinement does.
+                    #[cfg(feature = "diagnostics")]
+                    self.log_test(
+                        EditKind::Absorb,
+                        alts[k].id,
+                        0,
+                        g > 0.0 && z > f64::from(self.cfg.absorb_z),
+                        z,
+                    );
                     if g > 0.0 && z > f64::from(self.cfg.absorb_z) {
                         let alt = alts.swap_remove(k);
                         outcome = Outcome::Absorb(cell, alt, kinds[k], z as f32);
@@ -4532,6 +4567,14 @@ impl SlowLoop {
             let accept = best_arm
                 .as_ref()
                 .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.merge_z) * s);
+            #[cfg(feature = "diagnostics")]
+            self.log_test(
+                EditKind::Merge,
+                pair.0,
+                pair.1,
+                accept,
+                best_arm.as_ref().map_or(f64::NAN, |b| (mu - b.0) / s),
+            );
             if let (true, Some((loss, merged, stay, go))) = (accept, best_arm) {
                 self.stats.merges += 1;
                 self.edits.merges += 1;
@@ -4698,6 +4741,8 @@ impl SlowLoop {
             let gain = (chi1 - Self::total_chi2(&f2)) / s2;
             let (m, sd) = self.null(test_fr.len());
             if gain <= m + f64::from(self.cfg.accept_z) * sd {
+                #[cfg(feature = "diagnostics")]
+                self.log_test(EditKind::Split, id, 0, false, (gain - m) / sd);
                 continue;
             }
             // Two columns also fit an imperfect single footprint better
@@ -4721,12 +4766,16 @@ impl SlowLoop {
                 best_single = best_single.max((chi1 - Self::total_chi2(&f)) / s2);
             }
             if gain - best_single <= m + f64::from(self.cfg.accept_z) * sd {
+                #[cfg(feature = "diagnostics")]
+                self.log_test(EditKind::Split, id, 0, false, (gain - m) / sd);
                 continue;
             }
             let (ka, kb) = (two.len() - 2, two.len() - 1);
             let ta: Vec<f32> = f2.iter().map(|f| f.c[ka]).collect();
             let tb: Vec<f32> = f2.iter().map(|f| f.c[kb]).collect();
             if corr(&ta, &tb) >= self.cfg.merge_corr {
+                #[cfg(feature = "diagnostics")]
+                self.log_test(EditKind::Split, id, 0, false, (gain - m) / sd);
                 continue;
             }
             let events = |t: &[f32], k: usize| {
@@ -4739,6 +4788,8 @@ impl SlowLoop {
                     .count() as u32
             };
             if events(&ta, ka) < self.cfg.min_events || events(&tb, kb) < self.cfg.min_events {
+                #[cfg(feature = "diagnostics")]
+                self.log_test(EditKind::Split, id, 0, false, (gain - m) / sd);
                 continue;
             }
             // Each part is a cell by the add test's rules: its held-out
@@ -4759,9 +4810,13 @@ impl SlowLoop {
                 })
             };
             if follows(&ta, a.center, a.radius) || follows(&tb, b.center, b.radius) {
+                #[cfg(feature = "diagnostics")]
+                self.log_test(EditKind::Split, id, 0, false, (gain - m) / sd);
                 continue;
             }
             // Accepted.
+            #[cfg(feature = "diagnostics")]
+            self.log_test(EditKind::Split, id, new_id, true, (gain - m) / sd);
             self.next_id += 1;
             self.stats.splits += 1;
             self.edits.splits += 1;
@@ -4901,7 +4956,16 @@ impl SlowLoop {
             } else {
                 self.cfg.absorb_z
             };
-            if gain > 0.0 && z > f64::from(need) {
+            let accepted = gain > 0.0 && z > f64::from(need);
+            #[cfg(feature = "diagnostics")]
+            self.log_test(
+                EditKind::Refine,
+                id,
+                if from_stats { 1 } else { 2 },
+                accepted,
+                z,
+            );
+            if accepted {
                 updates.push((id, new, z as f32, if from_stats { 1 } else { 2 }));
             }
         }
