@@ -219,3 +219,53 @@ None of these got a minisim PR. Each is a candidate if it turns out to matter.
 
 The mean grey is still set mostly by the random neuropil field (50-63 for v2 seeds 0
 and 1). It falls in the later session's range rather than the first minute's.
+
+# v3: cell size and optical blur (`ca1_workshop_v3*.spec.json`, 12 Nov 2026)
+
+The v2 ground-truth footprints measure 14.4 px as half-max equivalent diameter
+(`d = 2 sqrt(A_half / pi)`) and 3.3-3.8 px of edge blur; cala's footprints on the workshop
+recording measure 9.8-10.2 px and about 1.5 px. v3 recalibrates the cells and the
+optics to the real values. `make_v3_specs.py` writes the three JSONs from v2; its
+comments give every change and why. Measurements are in
+`tools/cala-eval/results/2026-11-12-sim-v3-scales.md`.
+
+| parameter | v2 | v3 | why |
+|---|---|---|---|
+| `tissue.scatter_blur_per_um` | 0.05 | 0.010 | scatter sigma (0.05 x 180 um = 9 um = 5.4 px) is most of v2's blur |
+| `place_neurons` cytosolic `soma_radius_um` | 5.0 | 8.3 (size6 4.6, size16 13.1) | with less blur the cells measure 6.9 px at 5 um; 8.3 um gives 10.1 px |
+| `place_neurons` cytosolic `density_per_mm3` | 33750 | 50625 (size6 50625, size16 32737) | holds ~640 detectable cells per 600 px frame |
+| `place_neurons` cytosolic `depth_range_um` | 140-160 | 172-188 | a layer straddling the focal depth (180 um) |
+| `optics.field_curvature_radius_um` | 2500 | none (flat) | see below |
+| `neuropil.amplitude` | 0.25 | 1.5 (size6 1.5, size16 1.65) | holds the mean grey level (64) |
+| `sensor.photons_per_unit` | 6500 | 1800 | holds the per-cell peak SNR (and the detectable flag) |
+
+The pixel size (4.8 um / 2.9 = 1.655 um) is unchanged, so vessels, neuropil field,
+illumination, leakage, motion, activity and the frame stay as in v2 in pixels. Changing
+the pixel pitch instead would rescale all of them and needs `--npx` changes to keep the
+field.
+
+Things learned while calibrating (all measured by short generations):
+
+- **Detectability is a point-source test.** `detectable` uses `sigma_0^2 / sigma_tot^2`
+  (`sigma_0` = diffraction + scatter), which collapses once defocus exceeds the scatter
+  blur, and `photons_per_unit`; it does not depend on the cell's size. With v2's wide
+  scatter blur nearly all cells pass; with a sharp PSF only cells within a few um of the
+  focal surface do. With the 2500 um field curvature that surface is a bowl, so
+  detectable cells formed a ring (13 in the centre cell of a 3 x 3 grid, 130 at the edges).
+  v3 therefore uses a flat field and a layer centred on the focal depth.
+- **The grey level and the detectable count depend on the recording length** (the
+  neuropil envelope draws differ with the number of frames), so v3 was tuned at the full
+  480 s, not on short runs.
+- **The haze sets the grey level.** The mean grey is mostly the neuropil field, which scales
+  with `photons_per_unit x amplitude`. Bigger cells add haze, so the larger the cell the
+  more the amplitude must rise to hold the mean.
+- A sharper, bigger cell concentrates its light: at `photons_per_unit` 6500 the median
+  peak SNR would be 4x v2's. 1800 brings it to 1.2x (3.5 against 2.9 on the proxy of the
+  results note); lower values lose detectable cells at the frame edge.
+
+Residual differences from v2 (documented, not hidden): the mean-image centre is 102
+against v2's 116 (mean over the frame matches: 63 against 64); detectable cells are less
+uniform over the frame (3 x 3 min/max 0.5 against 0.7, from the illumination falloff);
+the peak SNR proxy is 20 % higher; the edge blur is 1.37 px against about 1.5; the
+cell layer is thinner (16 um).
+
