@@ -37,3 +37,19 @@ export { TraceOverview, ROW_HEIGHT, ROW_DURATION_S } from './TraceOverview.tsx';
 export type { TraceOverviewProps, HighlightZone } from './TraceOverview.tsx';
 export { ZoomWindow } from './ZoomWindow.tsx';
 export type { ZoomWindowProps } from './ZoomWindow.tsx';
+export { chooseTimeStep, timeTicks, formatElapsed, formatClock } from './time-axis-format.ts';
+export type { TimeTick } from './time-axis-format.ts';
+export { createTimeWindow, windowPresets } from './time-window.ts';
+export type { TimeWindow, TimeWindowState, TimeWindowMode, WindowPreset } from './time-window.ts';
+export {
+  normalise,
+  expansionMarks,
+  rangeText,
+  formatTick,
+  binDisplayValue,
+} from './history-geometry.ts';
+export type { ExpansionMark } from './history-geometry.ts';
+export { HistoryPlot } from './HistoryPlot.tsx';
+export type { HistoryPlotProps, HistoryEvent } from './HistoryPlot.tsx';
+export { WholeRunStrip } from './WholeRunStrip.tsx';
+export type { WholeRunStripProps } from './WholeRunStrip.tsx';
