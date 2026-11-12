@@ -162,6 +162,12 @@
 //!   noise (a χ² test) *and* the change lowers held-out χ² (paired z ≥
 //!   `refine_z`). Converged footprints stop being proposed. The reservoir's
 //!   noisier estimate is used only for young cells.
+//! * **Joint sufficient statistics** (`suffstats.rs`, opt-in
+//!   [`FootprintStats::Joint`]; S1.7, nothing reads them yet). The same
+//!   regions keep data sums and the neighbours' trace cross-moments per
+//!   block group instead of residual sums, so a footprint is estimated
+//!   under the neighbours' *current* columns: a neighbour's change reaches
+//!   it at once instead of fading in with the forgetting half-life.
 //! * **Add vs absorb vs merge-in.** A residual candidate competes with the
 //!   overlapping cells re-estimated to take it up: from their statistics,
 //!   grown into the candidate's disk with their trace fixed, or (when the
@@ -224,6 +230,7 @@ mod local;
 mod noisecorr;
 mod reservoir;
 mod shard;
+mod suffstats;
 mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
@@ -239,7 +246,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use churn::Churn;
-use fpstats::{parity, parity_block, FpStats, FAST_BLOCK};
+use fpstats::{disk_pixels, parity, parity_block, FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
     rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, PatchGrid, Problem, Rect,
@@ -247,6 +254,7 @@ use local::{
 use noisecorr::NoiseCorr;
 use reservoir::{mix, SharedFrames, Slot, Tile};
 use shard::{InFlight, Op};
+use suffstats::{CellStats, GroupMask, GROUPS};
 
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::gaussian::RecursiveGaussian;
@@ -318,6 +326,23 @@ pub enum CrossFit {
     /// across blocks to feed back. `rank1` fits are cross-fitted by parity
     /// likewise.
     ParityLoo,
+}
+
+/// Which running statistics the owner keeps for the footprints.
+///
+/// `Residual` is `fpstats.rs`: sums of each cell's residual under the
+/// neighbours' columns of each frame (a neighbour's change fades out with
+/// the forgetting half-life). `Joint` also keeps the joint sufficient
+/// statistics of `suffstats.rs` (data sums per cell region, neighbour trace
+/// cross-moments, ring scalars, per block group), from which a footprint is
+/// estimated under the neighbours' *current* columns (S1.7). With `Joint`
+/// the store is maintained and shipped with visit jobs alongside `fpstats`;
+/// no decision reads it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FootprintStats {
+    #[default]
+    Residual,
+    Joint,
 }
 
 /// Settings of the slow loop. Pixel sizes follow the expected cell diameter.
@@ -473,6 +498,9 @@ pub struct SlowLoopConfig {
     /// Cross-fitting of the footprint statistics and rank-1 fits (see
     /// [`CrossFit`]).
     pub crossfit: CrossFit,
+    /// Footprint statistics kept by the owner (see [`FootprintStats`]).
+    /// `Joint` needs `core_test` `Off` (the store has no transient band).
+    pub footprint_stats: FootprintStats,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -532,6 +560,7 @@ impl Default for SlowLoopConfig {
             core_test: CoreTest::Off,
             basin_trim: false,
             crossfit: CrossFit::Off,
+            footprint_stats: FootprintStats::Residual,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -581,7 +610,9 @@ impl SlowLoopConfig {
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
             && self.merge_z.is_finite()
-            && self.churn.is_valid();
+            && self.churn.is_valid()
+            && (self.footprint_stats == FootprintStats::Residual
+                || self.core_test == CoreTest::Off);
         if ok {
             Ok(())
         } else {
@@ -746,6 +777,10 @@ pub struct SlowLoop {
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
+    /// Joint sufficient statistics per published cell (`suffstats.rs`;
+    /// only with [`FootprintStats::Joint`]), and the owner's bookkeeping.
+    suff: HashMap<u64, CellStats>,
+    suff_own: SuffOwner,
     /// Pairs whose merge was rejected: `(id, id, until_frame)`.
     merge_rejected: Vec<(u64, u64, u64)>,
     /// Pairs the keep tests found redundant, to be merge-tested regardless
@@ -1067,6 +1102,8 @@ impl SlowLoop {
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
+            suff: HashMap::new(),
+            suff_own: SuffOwner::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             model: vec![0.0; n_px],
@@ -1447,6 +1484,9 @@ impl SlowLoop {
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
         self.update_fpstats(frame, lib, traces, !test);
+        if self.cfg.footprint_stats == FootprintStats::Joint && !test {
+            self.update_suffstats(frame, lib, traces, frame_idx);
+        }
         // Random slots: one uniform sample for every tile.
         self.rng = mix(self.rng);
         let w = self.dims.width;
@@ -1671,6 +1711,7 @@ impl SlowLoop {
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
+            self.suff.values_mut().for_each(|s| s.scale(f));
             self.stats_w = 1.0;
         }
         let w = self.stats_w;
@@ -1701,22 +1742,7 @@ impl SlowLoop {
                 *st = st.moved(center, want, width, height, &self.fov);
             }
             if st.version != version {
-                // The column the fast loop used: exact on the support, the
-                // moat's block means off it.
-                let (spix, sval) = lib.filtered(slot);
-                let (lb, lv) = lib.lowpass(slot);
-                st.col = st
-                    .pix
-                    .iter()
-                    .map(|p| match spix.binary_search(p) {
-                        Ok(k) => sval[k],
-                        Err(_) if lib.block_px() > 0 => {
-                            let b = lib.block_of(*p) as u32;
-                            lb.binary_search(&b).map_or(0.0, |k| -lv[k])
-                        }
-                        Err(_) => 0.0,
-                    })
-                    .collect();
+                st.col = column_on(lib, slot, &st.pix);
                 st.version = version;
             }
             let c = traces.traces[slot];
@@ -1752,6 +1778,312 @@ impl SlowLoop {
         }
         self.work += work;
         self.stats.work_stats += work;
+    }
+
+    /// Joint sufficient statistics (`suffstats.rs`, [`FootprintStats::Joint`]):
+    /// a fitting frame's data on every cell's region, the traces of the
+    /// cell's neighbours and its raw ring mean, into block group
+    /// `(frame / FAST_BLOCK) mod GROUPS`. (With the per-frame hold-out of
+    /// `is_test` only fitting frames are pushed; with block hold-out the
+    /// held-out blocks would feed their own groups.)
+    fn update_suffstats(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        frame_idx: u64,
+    ) {
+        self.suff_sync(lib);
+        let g = ((frame_idx / FAST_BLOCK) % GROUPS as u64) as usize;
+        let w = self.stats_w;
+        let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
+            && traces.background.len() == lib.len();
+        let basis = matches!(lib.background_model(), BackgroundModel::Basis(_));
+        let own = &mut self.suff_own;
+        if basis {
+            // The basis background's maps are fixed: take it out of the
+            // data (its coefficients are the fast loop's, like the traces).
+            let zeros = vec![0.0f32; lib.len()];
+            own.bgimg.resize(frame.len(), 0.0);
+            if lib
+                .render(&zeros, Some(&traces.background), &mut own.bgimg)
+                .is_err()
+            {
+                return;
+            }
+        }
+        let mut work = 0u64;
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            let Some(st) = self.suff.get_mut(&id) else {
+                continue;
+            };
+            let nbs = &own.nb_slot[slot];
+            own.cbuf.clear();
+            own.cbuf
+                .extend(nbs.iter().map(|&s| traces.traces[s as usize]));
+            let rho = if ring {
+                traces.background[slot]
+                    + own.qrow[slot]
+                        .iter()
+                        .map(|&(k, q)| q * own.cbuf[k])
+                        .sum::<f32>()
+            } else {
+                0.0
+            };
+            own.xbuf.clear();
+            if basis {
+                own.xbuf.extend(
+                    st.pix
+                        .iter()
+                        .map(|&p| frame[p as usize] - own.bgimg[p as usize]),
+                );
+            } else {
+                own.xbuf.extend(st.pix.iter().map(|&p| frame[p as usize]));
+            }
+            st.push(&own.xbuf, g, w, &own.cbuf, rho);
+            work += (st.pix.len() * 2 + nbs.len() * 2 * st.classes()) as u64;
+        }
+        // Counted apart from `self.work` (which paces the visits), so that
+        // keeping the store changes no decision.
+        own.work += work;
+    }
+
+    /// Bring the joint statistics up to library `lib` (once per version):
+    /// new cells get a store, moved regions keep their shared pixels,
+    /// neighbour lists follow the columns that reach each region. Epochs:
+    /// pixels under a newborn's support (a new cell, or a merge or split
+    /// result, whose old frames had no such column) start over, and so do
+    /// pixels reached by an existing column that newly reaches the region
+    /// (its trace history with the cell was not kept).
+    fn suff_sync(&mut self, lib: &Library) {
+        let version = lib.version();
+        if self.suff_own.version == version {
+            return;
+        }
+        self.suff_own.version = version;
+        let ids = lib.ids();
+        let present: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        self.suff.retain(|id, _| present.contains(id));
+        let mut born: std::collections::HashSet<u64> = ids
+            .iter()
+            .copied()
+            .filter(|id| !self.suff_own.seen.contains(id))
+            .collect();
+        // Merge and split results whose new column this library carries.
+        let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.suff_own.reborn)
+            .into_iter()
+            .partition(|&(_, v)| version > v || v == u64::MAX);
+        self.suff_own.reborn = wait;
+        for (id, _) in ready {
+            if present.contains(&id) {
+                born.insert(id);
+                self.suff.remove(&id);
+            }
+        }
+        self.suff_own.births += born.len() as u64;
+        self.suff_own.seen.extend(ids.iter().copied());
+        let n = lib.len();
+        let margin = self.cfg.stats_margin_cells * self.cfg.cell_diameter_px;
+        // How far beyond its support a column reaches: the moat's blocks
+        // (centres within `radius + reach + b/√2`) cover up to `b/√2`
+        // further.
+        let extra = self
+            .filter
+            .moat()
+            .map_or(0.0, |(b, reach)| reach + 1.42 * b as f32);
+        let (width, height) = (self.dims.width, self.dims.height);
+        let sup: Vec<((f32, f32), f32)> = (0..n).map(|s| lib.support(s)).collect();
+        let max_r = sup.iter().map(|s| s.1).fold(0.0f32, f32::max);
+        // Uniform grid of support centres for the neighbour search.
+        let side = (max_r + margin + max_r + extra).max(1.0);
+        let gw = (width as f32 / side).ceil().max(1.0) as usize;
+        let gh = (height as f32 / side).ceil().max(1.0) as usize;
+        let cell_of = |c: (f32, f32)| {
+            let gy = ((c.0 / side).max(0.0) as usize).min(gh - 1);
+            let gx = ((c.1 / side).max(0.0) as usize).min(gw - 1);
+            (gy, gx)
+        };
+        let mut grid: Vec<Vec<u32>> = vec![Vec::new(); gw * gh];
+        for (s, &(c, _)) in sup.iter().enumerate() {
+            let (gy, gx) = cell_of(c);
+            grid[gy * gw + gx].push(s as u32);
+        }
+        let mut work = 0u64;
+        self.suff_own.nb_slot.resize(n, Vec::new());
+        self.suff_own.qrow.resize(n, Vec::new());
+        for (slot, &id) in ids.iter().enumerate() {
+            let (center, radius) = sup[slot];
+            let want = radius + margin;
+            let fresh = !self.suff.contains_key(&id);
+            let fov = &self.fov;
+            let st = self.suff.entry(id).or_insert_with(|| {
+                CellStats::new(
+                    id,
+                    center,
+                    want,
+                    disk_pixels(center, want, width, height, fov),
+                )
+            });
+            if !st.covers(center, radius) {
+                let pix = disk_pixels(center, want, width, height, fov);
+                work += pix.len() as u64 * 2;
+                *st = st.moved(center, want, pix);
+            }
+            // Columns that can reach the region: support plus moat, and the
+            // ring's coupling (the level's columns).
+            let (gy, gx) = cell_of(center);
+            let mut cand: Vec<u64> = Vec::new();
+            for yy in gy.saturating_sub(1)..(gy + 2).min(gh) {
+                for xx in gx.saturating_sub(1)..(gx + 2).min(gw) {
+                    for &j in &grid[yy * gw + xx] {
+                        let j = j as usize;
+                        if j == slot {
+                            continue;
+                        }
+                        let (cj, rj) = sup[j];
+                        let d2 = (cj.0 - st.center.0).powi(2) + (cj.1 - st.center.1).powi(2);
+                        let lim = st.radius + rj + extra;
+                        if d2 <= lim * lim {
+                            cand.push(ids[j]);
+                        }
+                    }
+                }
+            }
+            work += cand.len() as u64;
+            let (qcols, _) = lib.ring_row(slot);
+            cand.extend(qcols.iter().map(|&j| ids[j as usize]).filter(|&j| j != id));
+            cand.sort_unstable();
+            cand.dedup();
+            let mut nb = Vec::with_capacity(cand.len() + 1);
+            nb.push(id);
+            nb.extend(cand);
+            // Epochs.
+            let mut restart = vec![false; st.pix.len()];
+            let mut reset = Vec::new();
+            if !fresh {
+                for &j in &nb[1..] {
+                    let Some(sj) = lib.slot(j) else { continue };
+                    let known = st.nb.contains(&j);
+                    if born.contains(&j) {
+                        // No column before: the pixels under its support.
+                        let (spix, _) = lib.filtered(sj);
+                        mark(&st.pix, spix, &mut restart);
+                        if known {
+                            reset.push(j);
+                        }
+                    } else if !known {
+                        // An existing column newly in reach: wherever it is
+                        // non-zero.
+                        let col = column_on(lib, sj, &st.pix);
+                        for (r, &v) in restart.iter_mut().zip(&col) {
+                            *r |= v != 0.0;
+                        }
+                        work += st.pix.len() as u64;
+                        self.suff_own.reach_joins += 1;
+                    }
+                }
+            }
+            st.set_neighbours(&nb);
+            for j in reset {
+                if let Some(k) = st.nb.iter().position(|&o| o == j) {
+                    st.zero_neighbour(k);
+                }
+            }
+            let idx: Vec<usize> = (0..restart.len()).filter(|&i| restart[i]).collect();
+            self.suff_own.restarted += idx.len() as u64;
+            st.restart(&idx);
+            self.suff_own.nb_slot[slot] = st
+                .nb
+                .iter()
+                .map(|&j| lib.slot(j).expect("neighbour in library") as u32)
+                .collect();
+            let (qc, qv) = lib.ring_row(slot);
+            self.suff_own.qrow[slot] = qc
+                .iter()
+                .zip(qv)
+                .filter_map(|(&j, &q)| {
+                    let jid = ids[j as usize];
+                    st.nb.iter().position(|&o| o == jid).map(|k| (k, q))
+                })
+                .collect();
+        }
+        self.suff_own.work += work;
+    }
+
+    /// The cell `id`'s running statistics start over with its next column
+    /// (a merge or split replaced it): in the joint store it is a birth.
+    fn stats_forget(&mut self, id: u64) {
+        self.fpstats.remove(&id);
+        if self.cfg.footprint_stats == FootprintStats::Joint {
+            let v = self.published.as_ref().map_or(u64::MAX, |l| l.version());
+            self.suff_own.reborn.push((id, v));
+        }
+    }
+
+    /// The joint-statistics estimate (S1.7, `suffstats.rs`) of cell `id`'s
+    /// filtered column on its region, from the frames of the block groups
+    /// in `mask`, under `lib`'s current columns and ring coupling: the
+    /// region's pixels and the estimate.
+    pub(crate) fn joint_estimate(
+        &self,
+        lib: &Library,
+        id: u64,
+        mask: GroupMask,
+    ) -> Option<(Vec<u32>, Vec<f32>)> {
+        let st = self.suff.get(&id)?;
+        let slot = lib.slot(id)?;
+        let cols: Vec<Vec<f32>> = st
+            .nb
+            .iter()
+            .enumerate()
+            .map(|(k, &j)| match (k, lib.slot(j)) {
+                (0, _) | (_, None) => Vec::new(),
+                (_, Some(s)) => column_on(lib, s, &st.pix),
+            })
+            .collect();
+        let refs: Vec<&[f32]> = cols.iter().map(Vec::as_slice).collect();
+        let (qc, qv) = lib.ring_row(slot);
+        let ids = lib.ids();
+        let q: Vec<(usize, f32)> = qc
+            .iter()
+            .zip(qv)
+            .filter_map(|(&j, &v)| {
+                let jid = ids[j as usize];
+                st.nb.iter().position(|&o| o == jid).map(|k| (k, v))
+            })
+            .collect();
+        Some((st.pix.clone(), st.estimate(mask, &refs, &q)?))
+    }
+
+    /// The residual-statistics estimate (`fpstats.rs`) of cell `id`: its
+    /// disk's pixels and the estimate.
+    pub(crate) fn residual_estimate(&self, id: u64) -> Option<(Vec<u32>, Vec<f32>)> {
+        let st = self.fpstats.get(&id)?;
+        Some((st.pix.clone(), st.estimate()?))
+    }
+
+    /// Size and cost of the joint statistics (diagnostic; zeros with
+    /// [`FootprintStats::Residual`]).
+    pub fn joint_stats_diag(&self) -> JointStatsDiag {
+        let mut d = JointStatsDiag {
+            cells: self.suff.len(),
+            work: self.suff_own.work,
+            births: self.suff_own.births,
+            reach_joins: self.suff_own.reach_joins,
+            restarted_px: self.suff_own.restarted,
+            jobs: self.suff_own.jobs,
+            job_bytes: self.suff_own.job_bytes,
+            job_suff_bytes: self.suff_own.job_suff_bytes,
+            ..JointStatsDiag::default()
+        };
+        for st in self.suff.values() {
+            d.bytes += st.bytes();
+            d.pixels += st.pix.len();
+            d.neighbours += st.nb.len() - 1;
+            d.classes += st.classes();
+        }
+        d.residual_bytes = self.fpstats.values().map(fpstats_bytes).sum();
+        d
     }
 
     /// Push `st`'s pending residual (frame `t − 1`) with the cross-fitted
@@ -4070,7 +4402,7 @@ impl SlowLoop {
                 let mut new = match merged {
                     Some(m) => {
                         // A new footprint: its running statistics start over.
-                        self.fpstats.remove(&kept_id);
+                        self.stats_forget(kept_id);
                         journal!(self, Op::FpRemove(kept_id));
                         m
                     }
@@ -4301,7 +4633,7 @@ impl SlowLoop {
                 ((gain - m) / sd) as f32,
             );
             self.churn.on_split(self.frames, new_id);
-            self.fpstats.remove(&id);
+            self.stats_forget(id);
             journal!(self, Op::ChurnSplit(new_id));
             journal!(self, Op::FpRemove(id));
             journal!(self, Op::Replace(id, a.clone()));
@@ -4452,6 +4784,108 @@ impl SlowLoop {
 }
 
 /// Intersection of two rectangles (empty when disjoint).
+/// Owner-side bookkeeping of the joint statistics.
+#[derive(Debug, Clone, Default)]
+struct SuffOwner {
+    /// Library version the neighbour lists below belong to.
+    version: u64,
+    /// Every id seen in a library (a new one is a birth).
+    seen: std::collections::HashSet<u64>,
+    /// Merge and split results `(id, published version when marked)`:
+    /// births once a later library carries them.
+    reborn: Vec<(u64, u64)>,
+    /// Per slot: the library slots of the store's neighbours (`nb`), and
+    /// the ring coupling as `(index into nb, q)`.
+    nb_slot: Vec<Vec<u32>>,
+    qrow: Vec<Vec<(usize, f32)>>,
+    xbuf: Vec<f32>,
+    cbuf: Vec<f32>,
+    bgimg: Vec<f32>,
+    work: u64,
+    births: u64,
+    reach_joins: u64,
+    restarted: u64,
+    jobs: u64,
+    job_bytes: u64,
+    job_suff_bytes: u64,
+}
+
+/// Size and cost of the joint statistics ([`SlowLoop::joint_stats_diag`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct JointStatsDiag {
+    /// Cells with a store, their bytes, region pixels, neighbours and
+    /// classes (summed over cells).
+    pub cells: usize,
+    pub bytes: usize,
+    pub pixels: usize,
+    pub neighbours: usize,
+    pub classes: usize,
+    /// Pixels started over (epochs, cumulative), births seen, and existing
+    /// columns that newly reached a region.
+    pub restarted_px: u64,
+    pub births: u64,
+    pub reach_joins: u64,
+    /// Owner work units spent on the store.
+    pub work: u64,
+    /// Bytes of the residual statistics (`fpstats`), for comparison.
+    pub residual_bytes: usize,
+    /// Visit jobs encoded, their bytes, and the bytes of the joint stores
+    /// in them.
+    pub jobs: u64,
+    pub job_bytes: u64,
+    pub job_suff_bytes: u64,
+}
+
+/// Bytes held by one cell's residual statistics (diagnostic).
+fn fpstats_bytes(s: &FpStats) -> usize {
+    let n = s.pix.len();
+    let mut b = n * (4 + 1 + 4 * 5) + std::mem::size_of::<FpStats>();
+    if s.pm.is_some() {
+        b += n * 32;
+    }
+    if s.half_pm.is_some() {
+        b += n * 32;
+    }
+    if let Some(f) = &s.fast {
+        b += n * 4 * (1 + f.rc.len());
+        if f.wp.is_some() {
+            b += n * 16 * f.rc.len();
+        }
+    }
+    b + s.pending.0.len() * 4
+}
+
+/// The filtered column of the cell in `slot` on the sorted pixels `pix`, as
+/// the fast loop models it: exact on the support, the moat's block means
+/// off it, 0 beyond.
+fn column_on(lib: &Library, slot: usize, pix: &[u32]) -> Vec<f32> {
+    let (spix, sval) = lib.filtered(slot);
+    let (lb, lv) = lib.lowpass(slot);
+    pix.iter()
+        .map(|p| match spix.binary_search(p) {
+            Ok(k) => sval[k],
+            Err(_) if lib.block_px() > 0 => {
+                let b = lib.block_of(*p) as u32;
+                lb.binary_search(&b).map_or(0.0, |k| -lv[k])
+            }
+            Err(_) => 0.0,
+        })
+        .collect()
+}
+
+/// Set `out[i]` for every `pix[i]` in `sub` (both sorted).
+fn mark(pix: &[u32], sub: &[u32], out: &mut [bool]) {
+    let mut j = 0;
+    for (i, &p) in pix.iter().enumerate() {
+        while j < sub.len() && sub[j] < p {
+            j += 1;
+        }
+        if j < sub.len() && sub[j] == p {
+            out[i] = true;
+        }
+    }
+}
+
 fn clip(a: Rect, b: Rect) -> Rect {
     let y0 = a.y0.max(b.y0);
     let x0 = a.x0.max(b.x0);

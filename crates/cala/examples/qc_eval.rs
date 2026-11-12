@@ -38,6 +38,9 @@
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
+//!   --footprint-stats M  residual (default) | joint: also keep the joint
+//!                      sufficient statistics (S1.7; no decision reads them
+//!                      yet) and print their size and cost
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -122,7 +125,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, CrossFit, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+    CoreTest, CrossFit, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::flatfield::{DitherFlatField, FlatFieldConfig};
@@ -1881,6 +1884,13 @@ fn main() {
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
+    if let Some(v) = arg_value(&args, "--footprint-stats") {
+        scfg.footprint_stats = match v.as_str() {
+            "residual" => FootprintStats::Residual,
+            "joint" => FootprintStats::Joint,
+            other => panic!("--footprint-stats: residual|joint, not {other}"),
+        };
+    }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
     }
@@ -2425,6 +2435,31 @@ fn main() {
             println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
             std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
             std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().footprint_stats == FootprintStats::Joint {
+            let d = sl.joint_stats_diag();
+            let c = d.cells.max(1) as f64;
+            println!(
+                "joint stats: {} cells, {:.1} MB ({:.1} KB/cell, residual stats {:.1} MB), \
+                 {:.0} px/cell, {:.1} neighbours/cell, {:.2} classes/cell, {} births, \
+                 {} px restarted, {} reach joins, work {} (residual stats {}), \
+                 {} jobs {:.0} KB/job of which stores {:.0} KB",
+                d.cells,
+                d.bytes as f64 / 1e6,
+                d.bytes as f64 / c / 1e3,
+                d.residual_bytes as f64 / 1e6,
+                d.pixels as f64 / c,
+                d.neighbours as f64 / c,
+                d.classes as f64 / c,
+                d.births,
+                d.restarted_px,
+                d.reach_joins,
+                d.work,
+                sl.stats().work_stats,
+                d.jobs,
+                d.job_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
+                d.job_suff_bytes as f64 / d.jobs.max(1) as f64 / 1e3,
+            );
         }
         if sl.config().basin_trim {
             let (c, f, s2) = sl.basin_diag;
