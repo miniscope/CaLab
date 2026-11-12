@@ -55,6 +55,7 @@ import {
   takeResidualPreview,
   type PreviewImage,
 } from './preview.ts';
+import { ImagingSampler } from './imaging-stats.ts';
 import type { RunSpan } from './run-record.ts';
 
 const now = (): number => performance.now();
@@ -752,6 +753,8 @@ export class MotionStage {
 /** Stage C: the preprocessing back half and the fast loop. */
 export class BackStage {
   private pre: Preprocessor | null = null;
+  private fovMask: Uint8Array | null = null;
+  private readonly imaging = new ImagingSampler(() => this.fovMask);
   private readonly px: number;
   private readonly factor: number;
 
@@ -769,6 +772,7 @@ export class BackStage {
     if (job.calib) {
       this.pre?.free();
       this.pre = Preprocessor.fromState(job.calib.preState);
+      this.fovMask = job.calib.fovMask;
     }
     const s = job.step;
     const t = job.timings;
@@ -794,6 +798,7 @@ export class BackStage {
       dy: job.dy!,
       dx: job.dx!,
     });
+    const imaging = this.imaging.sample(pre, s.start, s.count);
     const t2 = now();
     const output = downsampleFrame(
       corrected,
@@ -833,6 +838,7 @@ export class BackStage {
       ...(cells ? { cells } : {}),
       ...(job.live ? { live: job.live } : {}),
       ...(job.flatField ? { flatField: job.flatField } : {}),
+      ...(imaging ? { imaging } : {}),
     };
   }
 

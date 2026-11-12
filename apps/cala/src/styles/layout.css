@@ -420,6 +420,10 @@
   min-height: 130px;
 }
 
+.cala-details--grow:not(.cala-side-panel--closed) {
+  flex: 1 1 240px;
+}
+
 .cala-details > .cala-side-panel__body {
   flex: 1;
   margin-top: 0;
@@ -474,16 +478,6 @@
   min-width: 0;
 }
 
-.cala-run__reason {
-  font-size: 0.72rem;
-  line-height: 1.2;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
 .cala-run .cala-conv-chip {
   flex: none;
   font-size: 0.75rem;
@@ -515,118 +509,139 @@
 }
 
 .cala-run__timeline {
-  position: relative;
-  display: grid;
-  grid-template-columns: 7.5rem minmax(0, 1fr) 4.6rem;
-  column-gap: var(--space-sm);
-  row-gap: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   margin: var(--space-xs) 0;
 }
 
-.cala-run__row {
-  display: contents;
+.cala-run__window {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
 }
 
-.cala-run__label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  align-self: center;
+.cala-run__timeline .progress-bar {
+  margin: 2px 0 0;
 }
 
-.cala-run__row--pass .cala-run__label {
-  color: var(--text-primary);
+/* Icon-only run controls (their names are aria-labels and titles). */
+.cala-icon-btn {
+  min-width: 1.9rem;
+  padding-inline: 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1;
 }
 
-.cala-run__row--pass .progress-bar {
-  margin: 0;
-  align-self: center;
-}
-
-/* The bar ends exactly at the now line. */
-.cala-run__timeline .progress-bar__fill {
-  transition: none;
-}
-
-.cala-run__track-empty {
-  align-self: center;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--border-subtle);
-}
-
-.cala-run__live {
-  align-self: center;
+/* The inspected time: violet (UI state), click to return to now. */
+.cala-inspected {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--text-tertiary);
-}
-
-.cala-run__plot {
-  display: block;
-  width: 100%;
-  height: 18px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-}
-
-.cala-run__value {
-  justify-self: end;
-  align-self: center;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  cursor: pointer;
   white-space: nowrap;
+}
+
+.cala-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
-.cala-run__value--muted {
-  color: var(--text-tertiary);
+/* ---- History tab and the expanded History ---- */
+.cala-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
 }
 
-.cala-run__axis {
-  position: relative;
-  height: 14px;
+.cala-details__fov {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
-.cala-run__tick {
-  position: absolute;
-  top: 0;
-  transform: translateX(-50%);
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: var(--text-tertiary);
+.cala-history__plot {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.cala-run__tick:first-child {
-  transform: none;
+.cala-history__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
 }
 
-.cala-run__tick:last-child {
-  transform: translateX(-100%);
+/* Something to look at in a group: a range stepped up, or a warning. */
+.cala-history__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--warning);
+  vertical-align: middle;
 }
 
-/* The "now" line runs down the plot column through every row. */
-/* Out of flow, so it never takes a grid cell: its box is column 2, full height. */
-.cala-run__now {
-  position: absolute;
-  grid-column: 2;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  pointer-events: none;
+.cala-history__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.8rem;
 }
 
-.cala-run__now::after {
-  content: '';
-  position: absolute;
-  top: -2px;
-  bottom: 0;
-  left: var(--cala-now, 0%);
-  border-left: 1.5px dashed var(--warning);
+.cala-history-x {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-primary);
+}
+
+.cala-history-x__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.cala-history-x__head .cala-readout {
+  margin-left: auto;
+}
+
+.cala-history-x__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-md);
+}
+
+.cala-history-x__col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.cala-history-x__group h3 {
+  margin: 0 0 2px;
 }
 
 .cala-run__tiles {

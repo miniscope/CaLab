@@ -287,13 +287,20 @@ describe('convergenceStatus', () => {
 });
 
 describe('bounded histories', () => {
-  it('ConvergenceHistory halves its resolution past maxPoints and keeps the newest', () => {
-    const h = new ConvergenceHistory(8);
-    for (let i = 0; i < 100; i++) h.push(point(i));
-    expect(h.points.length).toBeLessThanOrEqual(8);
-    expect(h.points.at(-1)!.minutes).toBe(99);
-    for (let i = 1; i < h.points.length; i++)
-      expect(h.points[i].minutes).toBeGreaterThan(h.points[i - 1].minutes);
+  it('ConvergenceHistory keeps every recent point and one older one, never thinning', () => {
+    const h = new ConvergenceHistory(4);
+    // One point per second of stream for 100 minutes.
+    for (let i = 0; i < 6000; i++) h.push(point(i / 60));
+    const pts = h.points;
+    expect(pts.at(-1)!.minutes).toBeCloseTo(99.983, 3);
+    // Bounded by the window (plus the batched drop), not by the run.
+    expect(pts.length).toBeLessThan(4 * 60 * 2 + 70);
+    // The oldest point is at or before the window start, so the rule sees enough history.
+    expect(pts[0].minutes).toBeLessThanOrEqual(pts.at(-1)!.minutes - 4);
+    // No thinning: consecutive points stay one second apart.
+    for (let i = 1; i < pts.length; i++)
+      expect(pts[i].minutes - pts[i - 1].minutes).toBeCloseTo(1 / 60, 6);
+    expect(convergenceStatus(pts).state).not.toBe('waiting');
   });
   it('EditRates: per-minute rates over the last minute of recording', () => {
     const r = new EditRates(1);

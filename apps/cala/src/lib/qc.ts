@@ -455,20 +455,27 @@ export interface ConvergencePoint {
   edits: EditTotals;
 }
 
-/** Bounded series: past `maxPoints`, every other point is dropped (time resolution halves). */
+/**
+ * The recent convergence points the status rule reads: those within
+ * `keepMin` minutes of stream of the newest, plus one older point (the rule
+ * needs to know the history reaches back past its window). Older points are
+ * dropped whole, never thinned; the History view keeps the whole run in
+ * `RunHistory` instead.
+ */
 export class ConvergenceHistory {
-  readonly maxPoints: number;
+  readonly keepMin: number;
   points: ConvergencePoint[] = [];
 
-  constructor(maxPoints = 2000) {
-    this.maxPoints = Math.max(4, maxPoints);
+  constructor(keepMin = 2 * CONVERGENCE_RULE.windowMin) {
+    this.keepMin = Math.max(CONVERGENCE_RULE.windowMin, keepMin);
   }
 
   push(p: ConvergencePoint): void {
     this.points.push(p);
-    if (this.points.length > this.maxPoints) {
-      this.points = this.points.filter((_, i) => i % 2 === 1 || i === this.points.length - 1);
-    }
+    const from = p.minutes - this.keepMin;
+    let drop = 0;
+    while (drop + 1 < this.points.length && this.points[drop + 1].minutes <= from) drop++;
+    if (drop > 64 || (drop > 0 && drop * 2 > this.points.length)) this.points.splice(0, drop);
   }
 
   clear(): void {
