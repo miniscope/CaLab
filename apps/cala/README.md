@@ -176,15 +176,26 @@ that is a file source with a delay, and it would couple the app to the DAQ's
 file format, which is left as is). The socket lives in the frame worker, so
 frames go straight into the pipeline; steps wait for frames instead of
 reading them, which is the only backpressure a live source has. For now the
-acquisition side is simulated: `scripts/live-sim.mjs` streams a Miniscope AVI
-folder at its frame rate over that protocol (`--fps`, `--drop i,j` to skip
-frames, `--buffer` to drop when the client is not reading).
+acquisition side is simulated: `scripts/live-sim.mjs` (`npm run sim-stream`)
+streams a recording over that protocol, as the board would push it.
 
 ```sh
-node apps/cala/scripts/live-sim.mjs ~/data/session/raw      # ws://localhost:8765
-# then open the app on it: the "stream from a live source" field, or
-#   http://localhost:5173/?live=ws://localhost:8765
+npm run sim-stream -- ~/data/session/raw              # a Miniscope AVI folder
+npm run sim-stream -- $SIM_MOTION_S5 --fps 30 --loop  # a minisim recording
+# prints ws://localhost:8765; paste it into the start page's live-source
+# field, or open the app on  ?live=ws://localhost:8765
 ```
+
+The path is a Miniscope AVI folder (AVIs with `metaData.json` and
+`timeStamps.csv`) or a minisim recording: the sim directory, its `daq/` or its
+`daq/Miniscope/`. Options: `--fps` (default: the recording's metadata, else
+20), `--start N` (first recording frame), `--frames N` (stop after N), `--loop`
+(wrap from the last frame to the first until stopped; the frame index the app
+sees keeps counting), `--port` (default 8765), `--drop i,j` (skip those frames,
+as a camera drop would) and `--buffer N` (drop frames when the client is not
+reading). Frames are paced on a fixed schedule, and every connection gets the
+recording from its start. The framing lives in `src/lib/live-sim-protocol.ts`
+(unit-tested), the receiving side in `src/lib/live-source.ts`.
 
 What changes in a live run:
 
