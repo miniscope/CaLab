@@ -14,6 +14,13 @@
 //!   --slow-seed S      slow-loop seed (held-out split, random slots)
 //!   --passes N         run pass 1 N times over the same recording (S2.3,
 //!                      repeated pass 1; default 1). See "Repeated passes".
+//!   --later-passes M   edits the slow loop may make in passes >= 2 (S2.3b):
+//!                      `all` (default), `refine` (refine footprints only: no
+//!                      adds, absorbs, splits, merges, keep tests or
+//!                      deletions), `refine-prune` (also keep tests and
+//!                      deletions), `refine-merge` (also merges). Pass 1 is
+//!                      unchanged. Not with `--via-jobs`, `--visit-workers`
+//!                      or `--offered-fps`.
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
@@ -176,7 +183,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, CrossFit, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+    CoreTest, CrossFit, EditScope, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult,
+    VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -2153,6 +2161,18 @@ fn main() {
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
     let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
     assert!(passes >= 1, "--passes must be at least 1");
+    let later_scope = match arg_value(&args, "--later-passes").as_deref() {
+        None | Some("all") => EditScope::All,
+        Some("refine") => EditScope::Refine,
+        Some("refine-prune") => EditScope::RefinePrune,
+        Some("refine-merge") => EditScope::RefineMerge,
+        Some(m) => panic!("--later-passes: unknown mode {m}"),
+    };
+    // A `VisitRunner` keeps the scope it was built with.
+    assert!(
+        later_scope == EditScope::All || !via_jobs && visit_workers == 0 && offered_fps.is_none(),
+        "--later-passes needs in-process visits (no --via-jobs, --visit-workers, --offered-fps)"
+    );
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
@@ -2407,6 +2427,11 @@ fn main() {
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
+        if pass > 0 {
+            if let Some(sl) = slow.as_mut() {
+                sl.set_edit_scope(later_scope);
+            }
+        }
         let t_pass = Instant::now();
         let mut s = 0u32;
         while s < frames {
