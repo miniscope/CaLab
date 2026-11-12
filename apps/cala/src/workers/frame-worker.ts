@@ -221,6 +221,7 @@ async function handle(req: FrameRequest): Promise<void> {
               session: cells?.session ?? 0,
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
+              residual: cells?.residual ?? false,
               ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
@@ -297,6 +298,11 @@ async function handle(req: FrameRequest): Promise<void> {
       }
       case 'set-discovery': {
         pipeline?.fastLoop?.setDiscovery(req.on && slowPort !== null);
+        post({ type: 'ok', id: req.id });
+        break;
+      }
+      case 'set-residual': {
+        pipeline?.fastLoop?.setResidual(req.on);
         post({ type: 'ok', id: req.id });
         break;
       }

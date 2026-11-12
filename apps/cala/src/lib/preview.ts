@@ -44,3 +44,19 @@ export function downsampleFrame(
   for (let i = 0; i < sum.length; i++) sum[i] = cnt[i] > 0 ? sum[i] / cnt[i] : 0;
   return { width: ow, height: oh, data: sum };
 }
+
+/**
+ * Take the fast loop's full-frame residual off a batch result (it must not
+ * travel to the main thread at full size) and return it as a preview.
+ */
+export function takeResidualPreview(
+  cells: { residual?: Float32Array } | undefined,
+  width: number,
+  height: number,
+  factor: number,
+): PreviewImage | undefined {
+  const r = cells?.residual;
+  if (!cells || !r) return undefined;
+  delete cells.residual;
+  return downsampleFrame(r, 0, width, height, factor);
+}

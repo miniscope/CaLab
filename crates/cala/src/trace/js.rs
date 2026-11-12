@@ -308,6 +308,22 @@ impl JsTraceEngine {
         Ok(out)
     }
 
+    /// Residual of the last solved frame: `frame` (that frame, as passed to
+    /// `processFrames`) minus the model the solve drew (see
+    /// `Library::residual`). Empty before the first frame or after a library
+    /// swap with no frame solved since.
+    #[wasm_bindgen(js_name = residualOfLast)]
+    pub fn residual_of_last(&self, frame: &[f32]) -> Result<Vec<f32>, JsError> {
+        let lib = self.inner.library();
+        if self.out.traces.len() != lib.len() || self.out.library_version != lib.version() {
+            return Ok(Vec::new());
+        }
+        let mut out = vec![0.0f32; lib.dims().pixels()];
+        lib.residual(frame, &self.out, &mut out)
+            .map_err(|e| js_err("residualOfLast", e))?;
+        Ok(out)
+    }
+
     #[wasm_bindgen(getter, js_name = nextFrame)]
     pub fn next_frame(&self) -> f64 {
         self.inner.next_frame() as f64
