@@ -25,6 +25,14 @@ ARMS = {
     "halo": {"spec": "ca1_workshop_v2_halo.spec.json", "motion": True, "halo": 0.0},
     "oof": {"spec": "ca1_workshop_v2_oof.spec.json", "motion": True, "halo": 0.0},
     "fpn": {"spec": "ca1_workshop_v2_fpn.spec.json", "motion": True, "halo": 0.0},
+    # v3: the real recording's cell size (10 px) and edge blur (~1.5 px); size6 and
+    # size16 change only the cell size (6 and 16 px). Same 600 px frame, 480 s.
+    "v3_static": {"spec": "ca1_workshop_v3.spec.json", "motion": False, "halo": 0.0},
+    "v3_motion": {"spec": "ca1_workshop_v3.spec.json", "motion": True, "halo": 0.0},
+    "size6_static": {"spec": "ca1_workshop_v3_size6.spec.json", "motion": False, "halo": 0.0},
+    "size6_motion": {"spec": "ca1_workshop_v3_size6.spec.json", "motion": True, "halo": 0.0},
+    "size16_static": {"spec": "ca1_workshop_v3_size16.spec.json", "motion": False, "halo": 0.0},
+    "size16_motion": {"spec": "ca1_workshop_v3_size16.spec.json", "motion": True, "halo": 0.0},
 }
 
 
