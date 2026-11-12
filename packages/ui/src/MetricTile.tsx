@@ -10,24 +10,12 @@ export interface SparkLine {
 }
 
 /**
- * Y range of a sparkline: the fixed `range` if given, else from min(0, lowest)
- * to the 98th percentile of the finite values (one early spike must not flatten
- * the rest). hi <= lo becomes lo + 1.
+ * Y range of a sparkline: always the declared `range` (from physics or the
+ * caller's registry), never from the data, so a spike cannot rescale or be
+ * clipped silently. hi <= lo becomes lo + 1.
  */
-export function sparkRange(
-  lines: SparkLine[],
-  range?: [number, number],
-): { lo: number; hi: number } {
-  if (range) return { lo: range[0], hi: range[1] > range[0] ? range[1] : range[0] + 1 };
-  let lo = 0;
-  let hi = -Infinity;
-  const v = lines.flatMap((l) => l.values.filter(Number.isFinite)).sort((a, b) => a - b);
-  if (v.length > 0) {
-    lo = Math.min(0, v[0]);
-    hi = v[Math.floor(0.98 * (v.length - 1))];
-  }
-  if (!Number.isFinite(hi) || hi <= lo) hi = lo + 1;
-  return { lo, hi };
+export function sparkRange(range: [number, number]): { lo: number; hi: number } {
+  return { lo: range[0], hi: range[1] > range[0] ? range[1] : range[0] + 1 };
 }
 
 /** SVG path of `values` against `x` (0..x1) scaled into a w by h box; gaps at non-finite values. */
@@ -63,7 +51,7 @@ export interface MetricTileProps {
   hint?: string;
   x?: number[];
   lines?: SparkLine[];
-  /** Fixed y range (else from 0 to the data's 98th percentile). */
+  /** Fixed y range of the lines (required with `lines`: never from the data). */
   range?: [number, number];
   /** x value at the right edge (default: the last x). */
   xMax?: number;
@@ -75,7 +63,7 @@ export interface MetricTileProps {
 export function MetricTile(p: MetricTileProps): JSX.Element {
   const box = createMemo(() => ({
     x1: p.xMax ?? p.x?.at(-1) ?? 0,
-    ...sparkRange(p.lines ?? [], p.range),
+    ...sparkRange(p.range ?? [0, 1]),
   }));
   return (
     <div class={`metric-tile${p.class ? ' ' + p.class : ''}`} title={p.hint} data-testid={p.testid}>

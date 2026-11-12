@@ -59,8 +59,14 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // Opening also runs preprocessing and motion correction in the worker.
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
-  await page.getByRole('tab', { name: 'Motion' }).click();
-  await expect(page.getByTestId('motion-trace')).toBeVisible();
+  await page.getByRole('tab', { name: 'History' }).click();
+  await page.getByTestId('history-group').getByRole('radio', { name: 'Motion' }).click();
+  await expect(page.getByTestId('history-motion')).toBeVisible();
+  // Expanding swaps History into the large area; one click restores the field of view.
+  await page.getByTestId('history-expand').click();
+  await expect(page.getByTestId('history-expanded')).toBeVisible();
+  await page.getByTestId('history-expand').first().click();
+  await expect(page.getByTestId('history-expanded')).toHaveCount(0);
   // The cells panel is up; six frames are too few for the slow loop to start.
   await expect(page.getByTestId('cells-view')).toBeVisible();
   await expect(page.getByTestId('cells-readout')).toContainText('0 cells');

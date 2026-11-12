@@ -50,6 +50,18 @@
  *   sampling_rate_hz    float32 [1]      frame rate (0: unknown)
  *   meta_json           uint8   [bytes]  UTF-8 JSON: provenance and the cell table
  *
+ * Run history (format version 2; optional to readers, absent when the run kept none):
+ *
+ *   history_L{k}        float32 [S, n_k, 4]   level-k bins of every series over stream time:
+ *                                           min, max, mean, last (NaN: empty bin)
+ *   history_band_L{k}   float32 [Sb, n_k, 2]  lo, hi of the band series (when any)
+ *   run_events_json     uint8   [bytes]       UTF-8 JSON array of the run's events
+ *
+ * `meta_json.history` gives the layout: the time base (stream seconds =
+ * frame / sampling rate), each level's bin width, first bin time and count,
+ * and each series' key, label, unit, kind, group, initial and final display
+ * range (see `StreamHistory.toExport`).
+ *
  * QC comes from the last online snapshot of pass 1 (cells added after it are
  * "not measured"); first-seen is the frame count when the library that first
  * held the cell arrived.
@@ -79,8 +91,9 @@ import type { TraceFile } from './trace-file.ts';
 import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
 import type { RunSpan } from './run-record.ts';
+import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 1;
+export const EXPORT_FORMAT_VERSION = 2;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -108,6 +121,8 @@ export interface ExportInput {
   qc: QcSnapshot | null;
   /** Frame at which a cell was first seen. */
   firstSeen: (id: number) => number | undefined;
+  /** The run's history and event log (omit: none written). */
+  history?: { bins: HistoryExport; eventsJson: string };
   /** App version string. */
   version: string;
   /** ISO timestamp. */
@@ -224,6 +239,24 @@ export async function* traceChunks(
 }
 
 /** Approximate size of a cala export, bytes (the trace matrix plus a few MB of metadata). */
+/** The `history_*` and `run_events_json` entries of an export. */
+function historyEntries(h: ExportInput['history']): Record<string, Uint8Array> {
+  if (!h) return {};
+  const out: Record<string, Uint8Array> = {};
+  const series = (h.bins.meta.series as unknown[] | undefined)?.length ?? 0;
+  const bands = (h.bins.meta.series as { band_index?: number | null }[] | undefined)?.filter(
+    (x) => x.band_index !== null && x.band_index !== undefined,
+  ).length;
+  for (const l of h.bins.levels) out[`history_L${l.k}.npy`] = npy(l.data, [series, l.n, 4]);
+  for (const b of h.bins.bands ?? []) {
+    const n = h.bins.levels.find((l) => l.k === b.k)?.n ?? 0;
+    out[`history_band_L${b.k}.npy`] = npy(b.data, [bands ?? 0, n, 2]);
+  }
+  const ev = new TextEncoder().encode(h.eventsJson);
+  out['run_events_json.npy'] = npy(ev, [ev.length]);
+  return out;
+}
+
 export function calaExportBytes(input: ExportInput): number {
   const { result } = input;
   const nnz = result.library.pixels.length;
@@ -232,6 +265,10 @@ export function calaExportBytes(input: ExportInput): number {
     8 * nnz +
     17 * result.frames +
     1000 * result.ids.length +
+    (input.history
+      ? input.history.bins.levels.reduce((a, l) => a + l.data.byteLength, 0) +
+        input.history.eventsJson.length
+      : 0) +
     4096
   );
 }
@@ -288,6 +325,7 @@ export async function writeCalaExport(
           },
         }
       : {}),
+    ...(input.history ? { history: input.history.bins.meta } : {}),
     cell_table: cellTable(input),
   };
   const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
@@ -309,6 +347,7 @@ export async function writeCalaExport(
     'qc_flags.npy': npy(flags, [n]),
     'sampling_rate_hz.npy': npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
     'meta_json.npy': npy(metaBytes, [metaBytes.length]),
+    ...historyEntries(input.history),
   };
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
   await addTraces(zip, 'traces.npy', result.traces, null, options);

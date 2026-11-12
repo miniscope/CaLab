@@ -7,6 +7,24 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: a **History** view of how the run evolves, for runs from 5 minutes to
+  5 days. One overlaid plot per group (Convergence in the Run panel; Scales,
+  Imaging, Motion and Throughput in a new History tab, which can expand into
+  the large area), each series on its own fixed range that steps up visibly
+  and never shrinks; chips as legend, readout and selector; hover readout with
+  clock time, click to pin a time, brush and zoom on a shared time window; an
+  event lane (flat-field maps, pauses, gaps, warnings, range steps). It
+  replaces the Motion, Flicker, Cells and Lag tabs and the Run panel's
+  sparkline rows.
+- Cala: noise σ and background (FOV medians), registration quality, the share
+  of flagged frames, flat-field updates, processing rate and live drops are now
+  tracked over the whole run.
+- Cala: the `.npz` export (format version 2) adds `history_L{k}`,
+  `history_band_L{k}` and `run_events_json`, with a Python reading example in
+  the USER_GUIDE.
+- `@calab/compute`: `StreamHistory`, a bounded multi-resolution history over
+  stream time (min/max preserved at every level; about 9 MB for 5 days).
+
 - Cala: `npm run sim-stream -- <path>` streams a recording over the live-source
   WebSocket, so the live source can be tested without hardware. It takes a
   Miniscope AVI folder or a minisim recording (the sim directory, its `daq/` or
@@ -15,6 +33,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   existing `live-sim.mjs`, extended; its WebSocket framing now lives in
   `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
   USER_GUIDE section, "Testing with a simulated stream".
+
+### Changed
+
+- Cala: QC snapshots are paced by stream time (once per second of recording),
+  not wall time; the convergence history no longer drops spikes by thinning;
+  the live counters no longer stop silently after 100k batches.
+- `@calab/ui`: `sparkRange` takes a declared range only; the 98th-percentile
+  auto-range is gone.
 
 ## [2.14.0] - 2026-11-12
 

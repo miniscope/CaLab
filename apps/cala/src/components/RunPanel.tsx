@@ -1,11 +1,13 @@
-import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 'solid-js';
-import { MetricTile, ProgressBar, sparkPath, sparkRange, type SparkLine } from '@calab/ui';
-import { OKABE_ITO } from '@calab/ui/chart';
+import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
+import { MetricTile, ProgressBar, SegmentedControl } from '@calab/ui';
+import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
-import type { ConvergencePoint, ConvergenceState } from '../lib/qc.ts';
+import type { ConvergenceState } from '../lib/qc.ts';
+import { groupKeys } from '../lib/run-history.ts';
+import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
 import {
   cadeconCells,
@@ -46,64 +48,6 @@ const STATE_LABEL: Record<ConvergenceState, string> = {
   converged: 'Converged',
 };
 
-/** The three kinds of churn, each its own line. */
-const CHURN = [
-  { key: 'reAdds', label: 'r', name: 're-adds', color: OKABE_ITO.orange },
-  { key: 'churned', label: 'c', name: 'adds removed again', color: OKABE_ITO.vermillion },
-  {
-    key: 'establishedRemovals',
-    label: 'e',
-    name: 'established cells merged or deleted',
-    color: OKABE_ITO.blue,
-  },
-] as const;
-
-const fmt = (v: number | undefined, digits = 2) =>
-  v === undefined || !Number.isFinite(v) ? 'n/a' : v.toFixed(digits);
-
-/** One convergence metric: a row of the timeline (wide) or a tile (narrow). */
-interface Metric {
-  title: string;
-  value: JSX.Element;
-  hint: string;
-  lines: SparkLine[];
-  range?: [number, number];
-  testid: string;
-}
-
-const PLOT_W = 1000;
-const PLOT_H = 18;
-
-/** A metric row on the shared time axis: label, curve, current value. */
-function MetricRow(props: { metric: Metric; x: number[]; x1: number }): JSX.Element {
-  const box = createMemo(() => sparkRange(props.metric.lines, props.metric.range));
-  return (
-    <div class="cala-run__row" title={props.metric.hint} data-testid={props.metric.testid}>
-      <span class="cala-run__label">{props.metric.title}</span>
-      <svg
-        class="cala-run__plot"
-        viewBox={`0 0 ${PLOT_W} ${PLOT_H}`}
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <For each={props.metric.lines}>
-          {(l) => (
-            <path
-              d={sparkPath(props.x, l.values, props.x1, box().lo, box().hi, PLOT_W, PLOT_H)}
-              fill="none"
-              stroke={l.color}
-              stroke-width="1.4"
-              stroke-dasharray={l.dash}
-              vector-effect="non-scaling-stroke"
-            />
-          )}
-        </For>
-      </svg>
-      <span class="cala-run__value">{props.metric.value}</span>
-    </div>
-  );
-}
-
 type StepState = 'done' | 'active' | 'pending';
 
 /** Narrow windows: the passes as a horizontal stepper. */
@@ -141,6 +85,8 @@ export interface RunPanelProps {
   fps: number;
   /** Narrow window: a stepper and metric tiles instead of the timeline. */
   narrow?: boolean;
+  /** The run's history views (shared time window and cursor). */
+  ui: HistoryUi;
 }
 
 /**
@@ -335,89 +281,66 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return input ? cadeconCells(input, passOnly()).length : 0;
   };
 
-  // ---- convergence metrics on the shared axis ----
-  const pts = createMemo(() => c().convergenceHistory().slice());
-  const x = () => pts().map((q) => q.minutes);
-  const col = (k: keyof Omit<ConvergencePoint, 'edits'>) => pts().map((q) => q[k]);
-  const edit = (k: keyof ConvergencePoint['edits']) => pts().map((q) => q.edits[k]);
-  const last = () => pts().at(-1);
+  // ---- convergence over the shared time window ----
   const conv = () => c().convergence();
-  /** Minutes the axis spans: the recording, or (live) what has been read. */
-  const axisMinutes = () => {
-    const fps = props.fps > 0 ? props.fps : (c().fps() ?? 20);
-    if (!unbounded() && total() > 0) return total() / fps / 60;
-    return Math.max(last()?.minutes ?? 0, s().processed() / fps / 60, 1e-6);
+  const h = () => props.ui.run;
+  const win = () => props.ui.window;
+  const presets = () => windowPresets(props.ui.axisEnd());
+  const windowValue = () => {
+    const st = win().state;
+    if (st.mode === 'last') return `last-${st.lastS}`;
+    return st.mode;
   };
-  /** Where the "now" line is, 0..1 of the axis. */
-  const nowFraction = () => {
-    if (p().status() === 'running') return pass2Fraction();
-    if (unbounded()) return 1;
-    return fraction();
-  };
-
-  const metrics = (): Metric[] => [
-    {
-      title: 'Cells',
-      value: fmt(last()?.cells, 0),
-      hint: 'Cells in the library the fast loop solves.',
-      lines: [{ values: col('cells'), color: OKABE_ITO.blue }],
-      testid: 'spark-cells',
-    },
-    {
-      title: 'New / min',
-      value: fmt(last()?.edits.newAdds, 1),
-      hint: 'Discovery: cells added at a spot where nothing was just removed. It slows over a recording but never has to reach zero (long recordings keep revealing cells), so it does not hold up the status.',
-      lines: [{ values: edit('newAdds'), color: OKABE_ITO.bluishGreen }],
-      testid: 'spark-discovery',
-    },
-    {
-      title: 'Churn / min',
-      value: (
-        <For each={CHURN}>
-          {(k) => (
-            <span style={{ color: k.color }} title={k.name}>
-              {' '}
-              {k.label}
-              {fmt(last()?.edits[k.key], 0)}
-            </span>
-          )}
-        </For>
-      ),
-      hint: 'Spurious edits per minute of recording: r = re-adds (a cell added where one was removed in the last 2 min, orange), c = adds merged or deleted again within 2 min (red), e = established cells merged or deleted (blue). Should die out; it feeds the status.',
-      lines: CHURN.map((k) => ({ values: edit(k.key), color: k.color })),
-      testid: 'spark-churn',
-    },
-    {
-      title: 'Stable',
-      value: fmt(last()?.stableFrac),
-      hint: 'Share of cells older than 2 min whose footprint (cosine >= 0.95) and trace noise (within 10%) match 1-2 min ago; dashed: median footprint cosine. Should rise to a plateau; it feeds the status.',
-      lines: [
-        { values: col('stableFrac'), color: OKABE_ITO.reddishPurple },
-        { values: col('fpStability'), color: OKABE_ITO.reddishPurple, dash: '3 2' },
-      ],
-      range: [0, 1],
-      testid: 'spark-stability',
-    },
-    {
-      title: 'Explained',
-      value: fmt(last()?.explained),
-      hint: 'Share of the signal variance (above noise) the model explains. Rises to an asymptote as cells are found (tracked true recall in validation).',
-      lines: [{ values: col('explained'), color: OKABE_ITO.bluishGreen }],
-      range: [0, 1],
-      testid: 'spark-explained',
-    },
-    {
-      title: 'Residual excess',
-      value: fmt(last()?.residualExcess),
-      hint: 'Residual variance above noise, averaged over the field of view. Falls to an asymptote as the model explains more.',
-      lines: [{ values: col('residualExcess'), color: OKABE_ITO.vermillion }],
-      testid: 'spark-residual',
-    },
+  const windowOptions = () => [
+    { value: 'run', label: 'Run', title: 'The whole run (a file: to its end; live: to now)' },
+    ...presets().map((p) => ({
+      value: `last-${p.s}`,
+      label: p.label,
+      title: `The last ${p.label}, following now`,
+    })),
+    ...(win().state.mode === 'brush'
+      ? [{ value: 'brush', label: 'Brush', title: 'A range brushed on the strip or a plot' }]
+      : []),
   ];
-
-  const ticks = () => {
-    const t = axisMinutes();
-    return [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, label: (f * t).toFixed(t < 2 ? 1 : 0) }));
+  const setWindow = (v: string) => {
+    if (v === 'run') win().setRun();
+    else if (v.startsWith('last-')) win().setLast(Number(v.slice(5)));
+  };
+  const inspectedText = () => {
+    const t = win().inspected();
+    if (t === null) return null;
+    const clock = h().clockAt(t);
+    const span = props.ui.span();
+    return `${formatElapsed(t, span.t1 - span.t0)}${clock !== null ? ` · ${formatClock(clock)}` : ''} · frame ${Math.round(t * h().fps()).toLocaleString()}`;
+  };
+  /** Narrow tiles: each convergence series over the window, on its fixed range. */
+  const tiles = () => {
+    h().tick();
+    const store = h().history();
+    const { t0, t1 } = props.ui.span();
+    return groupKeys('convergence', false).map((key) => {
+      const spec = store.spec(key)!;
+      const v = store.view(key, t0, t1, 60);
+      const x: number[] = [];
+      const y: number[] = [];
+      if (v)
+        for (let i = 0; i < v.n; i++) {
+          x.push(v.t0 + (i + 0.5) * v.binS - t0);
+          y.push(v.mean[i]);
+        }
+      const r = store.displayRange(key);
+      const latest = store.latest(key);
+      return {
+        key,
+        title: spec.short ?? spec.label,
+        value: Number.isFinite(latest) ? latest.toFixed(spec.digits) : 'n/a',
+        hint: `${spec.label}: ${spec.hint ?? ''} Range ${r.lo}–${r.hi} ${spec.unit}`.trim(),
+        x,
+        x1: t1 - t0,
+        lines: [{ values: y, color: spec.color }],
+        range: [r.lo, r.hi] as [number, number],
+      };
+    });
   };
 
   const steps = (): { label: string; sub: string; state: StepState }[] => {
@@ -458,41 +381,50 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       class="cala-run"
       open={metricsOpen()}
       onToggle={setMetricsOpen}
-      toggleLabel={(open) => (open ? 'Hide the metric rows' : 'Show the metric rows')}
+      toggleLabel={(open) => (open ? 'Hide the convergence plot' : 'Show the convergence plot')}
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
           <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
             {STATE_LABEL[conv().state]}
           </span>
-          <span class="cala-muted cala-run__reason">{conv().reason}</span>
+          <span class="cala-visually-hidden">{conv().reason}</span>
         </div>
       }
       actions={
         <>
           <button
             type="button"
-            class="btn-secondary btn-small"
+            class="btn-secondary btn-small cala-icon-btn"
             disabled={!pass1Busy()}
+            aria-label={s().status() === 'paused' ? 'Resume' : 'Pause'}
+            title={s().status() === 'paused' ? 'Resume' : 'Pause'}
             onClick={() => s().togglePause()}
           >
-            {s().status() === 'paused' ? 'Resume' : 'Pause'}
+            {s().status() === 'paused' ? '▶' : '⏸'}
           </button>
-          <button type="button" class="btn-secondary btn-small" onClick={() => void s().start()}>
-            Restart
+          <button
+            type="button"
+            class="btn-secondary btn-small cala-icon-btn"
+            aria-label="Restart"
+            title="Restart pass 1 from frame 0 (a new run)"
+            onClick={() => void s().start()}
+          >
+            ↻
           </button>
           <Show when={pass1Busy()}>
             <button
               type="button"
-              class="btn-secondary btn-small"
+              class="btn-secondary btn-small cala-icon-btn"
               data-testid="pass2-finish"
+              aria-label={props.live ? 'Stop the live run' : 'End pass 1'}
               title={
                 props.live
-                  ? 'End the live run here: the cells found so far become the final library.'
-                  : 'Stop reading here: the cells found so far become the final library, then pass 2 runs over the frames read.'
+                  ? 'Stop the live run: the cells found so far become the final library.'
+                  : 'End pass 1 here: the cells found so far become the final library, then pass 2 runs over the frames read.'
               }
               onClick={() => void s().finishEarly()}
             >
-              {props.live ? 'Stop the live run' : 'End pass 1'}
+              ■
             </button>
           </Show>
         </>
@@ -505,9 +437,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           {statusText()}
         </span>
         <span class="cala-readout" data-testid="pipeline-readout">
+          <Show when={!unbounded() && total() > 0} fallback={props.live ? 'live · ' : ''}>
+            {Math.floor(100 * fraction())}% &middot;{' '}
+          </Show>
           frame {s().processed().toLocaleString()}
           <Show when={!unbounded()}> / {total().toLocaleString()}</Show>
-          <Show when={s().fps() > 0}> &middot; {s().fps().toFixed(1)} frames/s</Show>
+          <Show when={s().fps() > 0}> &middot; {s().fps().toFixed(1)} fps</Show>
         </span>
         <Show when={backend()}>
           {(b) => (
@@ -520,6 +455,19 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             >
               {b().text}
             </span>
+          )}
+        </Show>
+        <Show when={inspectedText()}>
+          {(text) => (
+            <button
+              type="button"
+              class="cala-inspected"
+              data-testid="inspected-time"
+              title="The inspected time (click a plot to pin one; Esc or this button returns to now)"
+              onClick={() => win().clearInspected()}
+            >
+              ◉ {text()} ✕
+            </button>
           )}
         </Show>
       </div>
@@ -563,17 +511,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             </Show>
             <Show when={metricsOpen()}>
               <div class="cala-run__tiles">
-                <For each={metrics()}>
+                <For each={tiles()}>
                   {(m) => (
                     <MetricTile
                       title={m.title}
                       value={m.value}
                       hint={m.hint}
-                      x={x()}
-                      xMax={axisMinutes()}
+                      x={m.x}
+                      xMax={m.x1}
                       lines={m.lines}
                       range={m.range}
-                      testid={m.testid}
+                      testid={`tile-${m.key}`}
                     />
                   )}
                 </For>
@@ -582,52 +530,30 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </>
         }
       >
-        <div
-          class="cala-run__timeline"
-          style={{ '--cala-now': `${(100 * Math.min(1, Math.max(0, nowFraction()))).toFixed(2)}%` }}
-        >
-          <div class="cala-run__row cala-run__row--pass">
-            <span class="cala-run__label">
-              <strong>Pass 1</strong> discover
-            </span>
-            <Show
-              when={!unbounded()}
-              fallback={<span class="cala-run__live">live: the axis grows as frames arrive</span>}
-            >
-              <ProgressBar fraction={fraction()} state={pass1State()} aria-label="Pass 1" />
-            </Show>
-            <span class="cala-run__value">
-              {unbounded() ? 'live' : `${Math.round(100 * fraction())}%`}
-            </span>
+        <div class="cala-run__timeline">
+          <div class="cala-run__window">
+            <SegmentedControl
+              options={windowOptions()}
+              value={windowValue()}
+              onChange={setWindow}
+              aria-label="Time window"
+              size="sm"
+              testid="time-window"
+            />
           </div>
-          <Show when={!props.live}>
-            <div class="cala-run__row cala-run__row--pass">
-              <span class="cala-run__label">
-                <strong>Pass 2</strong> re-extract
-              </span>
-              <Show when={pass2Shown()} fallback={<span class="cala-run__track-empty" />}>
-                <ProgressBar fraction={pass2Fraction()} state={pass2State()} aria-label="Pass 2" />
-              </Show>
-              <span class="cala-run__value cala-run__value--muted">{pass2Value()}</span>
-            </div>
+          <RunStrip ui={props.ui} />
+          {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
+          <Show when={metricsOpen() && !props.ui.expanded()}>
+            <GroupPlot ui={props.ui} group="convergence" height={130} compact />
           </Show>
-          <Show when={metricsOpen()}>
-            <For each={metrics()}>{(m) => <MetricRow metric={m} x={x()} x1={axisMinutes()} />}</For>
-            <div class="cala-run__row cala-run__row--axis" aria-hidden="true">
-              <span class="cala-run__label" />
-              <span class="cala-run__axis">
-                <For each={ticks()}>
-                  {(t) => (
-                    <span class="cala-run__tick" style={{ left: `${t.f * 100}%` }}>
-                      {t.label}
-                    </span>
-                  )}
-                </For>
-              </span>
-              <span class="cala-run__value cala-run__value--muted">min</span>
-            </div>
+          <Show when={!props.live && pass2Shown()}>
+            <ProgressBar
+              fraction={pass2Fraction()}
+              state={pass2State()}
+              label="Pass 2"
+              aria-label="Pass 2"
+            />
           </Show>
-          <div class="cala-run__now" aria-hidden="true" />
         </div>
       </Show>
 
