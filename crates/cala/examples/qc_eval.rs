@@ -57,6 +57,11 @@
 //!                      and result together (encode, copy, decode), ms; a
 //!                      worker also spends it on top of the visit's work
 //!   --visit-depth D    visits a worker may hold at once (1)
+//!   --flat-field G     divide every raw frame by the sensor gain map `G`
+//!                      (f32 LE, one value per pixel) before preprocessing;
+//!                      `auto[:N]` (with --motion) estimates it first from the
+//!                      motion dither of frames 0..N (3000) and writes
+//!                      `flat_field.f32` ([`calab_cala::preprocess::flatfield`])
 //!   --no-heldout       skip the ground-truth-free held-out score
 //!   --library F        a fixed library (`footprints.bin` of an earlier run,
 //!                      `CALAFP01`) from `--start` on, no slow loop: scores
@@ -120,6 +125,7 @@ use calab_cala::discover::{
     CoreTest, CrossFit, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
+use calab_cala::preprocess::flatfield::{DitherFlatField, FlatFieldConfig};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
@@ -408,7 +414,8 @@ impl Pipeline {
         }
     }
 
-    fn frame(&mut self, raw: &[u8], out: &mut [f32]) {
+    /// Returns the rigid shift of the frame (motion runs).
+    fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> Option<(f32, f32)> {
         self.pre.front(raw, &mut self.buf).unwrap();
         match &mut self.mc {
             Some(mc) => {
@@ -416,10 +423,12 @@ impl Pipeline {
                 let m = self.src.as_ref().unwrap();
                 mc.validity(&rec, m, &mut self.valid).unwrap();
                 self.pre.back_masked(out, &self.valid).unwrap();
+                Some((rec.dy, rec.dx))
             }
             None => {
                 out.copy_from_slice(&self.buf);
                 self.pre.back(out).unwrap();
+                None
             }
         }
     }
@@ -1892,7 +1901,66 @@ fn main() {
     drop(warm);
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
     let fov = cal.fov().mask().to_vec();
-    let pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
+    let mut pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
+    if let Some(f) = arg_value(&args, "--flat-field") {
+        let g: Vec<f32> = if let Some(k) = f.strip_prefix("auto") {
+            // Dither flat field from a first pass over the opening frames.
+            assert!(motion, "--flat-field auto needs --motion");
+            let k: u32 = k.strip_prefix(':').map_or(3000, |s| s.parse().unwrap());
+            let k = k.min(frames);
+            let t0 = Instant::now();
+            let mut est = DitherFlatField::new(dims, &fov, FlatFieldConfig::default()).unwrap();
+            let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, true, 200);
+            let mut out = vec![0.0f32; n_px];
+            let mut s = 0u32;
+            while s < k {
+                let cnt = 64.min(k - s);
+                let raw = rec.read(s, cnt);
+                for f in raw.chunks_exact(n_px) {
+                    let d = pipe.frame(f, &mut out).unwrap();
+                    est.push(f, d).unwrap();
+                }
+                s += cnt;
+            }
+            let ff = match est.solve() {
+                Ok(ff) => ff,
+                Err(e) => {
+                    println!("flat field auto: {e}; running without");
+                    calab_cala::preprocess::flatfield::FlatField {
+                        gain: vec![1.0; n_px],
+                        bins_used: 0,
+                        frames_used: 0,
+                        gain_sd: 0.0,
+                        tissue_sd: 0.0,
+                        residual: f64::NAN,
+                        dark: 0.0,
+                    }
+                }
+            };
+            println!(
+                "flat field auto: {k} frames, {} bins ({} frames), gain sd {:.4}, tissue sd {:.4}, misfit {:.2e}, dark {:.2}; {:.1} s",
+                ff.bins_used,
+                ff.frames_used,
+                ff.gain_sd,
+                ff.tissue_sd,
+                ff.residual,
+                ff.dark,
+                t0.elapsed().as_secs_f64()
+            );
+            let mut o = BufWriter::new(File::create(out_dir.join("flat_field.f32")).unwrap());
+            write_f32s(&mut o, &ff.gain);
+            ff.gain
+        } else {
+            let b = std::fs::read(&f).unwrap_or_else(|e| panic!("{f}: {e}"));
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        };
+        pre0.set_flat_field(Some(&g)).unwrap();
+        println!("flat field {f}: {} px", g.len());
+    }
     if let Some(c) = arg_value(&args, "--label-bundle") {
         assert!(mode == "real", "--label-bundle needs the real mode");
         let crop = arg_value(&args, "--crop").map_or(60, |s| s.parse().unwrap());
