@@ -355,7 +355,7 @@ pub struct SlowLoopConfig {
     /// motion excursion or a slow transient spans many frames; a per-frame
     /// split interleaves fitting and held-out frames inside it and the held-out
     /// frames are then not out of sample for structured residual). Converted
-    /// once with `fps`; at least one frame. Default 12.8 s = 256 frames at
+    /// once with `fps`; at least one frame. Default 6.4 s = 128 frames at
     /// 20 fps.
     pub holdout_block_s: f32,
     /// Sampling rate of the recording (frames per second); used only to
@@ -508,7 +508,7 @@ impl Default for SlowLoopConfig {
             random_share: 0.3,
             event_half_life_frames: 2000.0,
             holdout_every: 3,
-            holdout_block_s: 12.8,
+            holdout_block_s: 6.4,
             fps: 20.0,
             min_test_blocks: 3,
             accept_z: 5.0,

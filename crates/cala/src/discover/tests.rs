@@ -1362,7 +1362,7 @@ fn missing_samples_round_trip_through_the_reservoir() {
 #[test]
 fn holdout_is_blockwise() {
     let slow = new_loop(&SlowLoopConfig::default());
-    let block = 256u64;
+    let block = 128u64;
     let n_blocks = 300u64;
     let mut held = 0;
     for b in 0..n_blocks {
