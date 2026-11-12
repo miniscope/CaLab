@@ -348,8 +348,8 @@ pub enum CrossFit {
 /// the slow loop's footprint estimates (refinement, the add's competing
 /// re-estimates, split proposals; `SlowLoop::stats_estimate`) come from the
 /// store, under the working set's current columns, with the store's own
-/// standard error; `fpstats` is still kept for the split-half diagnostics
-/// (`footprint_noise`, E7).
+/// standard error, and `footprint_noise` (E7) is the store's own split-half
+/// noise; `fpstats` is still kept (the residual estimate, diagnostics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FootprintStats {
     #[default]
@@ -1223,12 +1223,25 @@ impl SlowLoop {
     /// twice the variance of the full estimate, so half their difference is
     /// the noise of the full estimate). `None` without usable halves or
     /// overlap. Scale free, so it compares with a relative footprint change.
-    pub fn footprint_noise(&self, id: u64, support: &[u32]) -> Option<f64> {
-        let st = self.fpstats.get(&id)?;
-        let (ha, hb, _, _) = st.halves()?;
+    /// The halves are those of the statistics that publish the estimate:
+    /// `fpstats`'s with [`FootprintStats::Residual`], the joint store's even
+    /// and odd block groups under `lib`'s current columns with `Joint`.
+    pub fn footprint_noise(&self, lib: &Library, id: u64, support: &[u32]) -> Option<f64> {
         let want: std::collections::HashSet<u32> = support.iter().copied().collect();
+        let (pix, ha, hb) = if self.cfg.footprint_stats == FootprintStats::Joint {
+            // The published estimate's own halves: the joint store's even
+            // and odd block groups under the current columns.
+            let st = self.suff.get(&id)?;
+            let ha = store_estimate(lib, st, suffstats::HALVES[0])?;
+            let hb = store_estimate(lib, st, suffstats::HALVES[1])?;
+            (st.pix.as_slice(), ha, hb)
+        } else {
+            let st = self.fpstats.get(&id)?;
+            let (ha, hb, _, _) = st.halves()?;
+            (st.pix.as_slice(), ha, hb)
+        };
         let (mut d2, mut m2) = (0.0f64, 0.0f64);
-        for (i, p) in st.pix.iter().enumerate() {
+        for (i, p) in pix.iter().enumerate() {
             if want.contains(p) {
                 let (a, b) = (f64::from(ha[i]), f64::from(hb[i]));
                 d2 += (a - b) * (a - b);

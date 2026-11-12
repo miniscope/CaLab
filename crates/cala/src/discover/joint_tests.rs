@@ -451,3 +451,47 @@ fn a_visit_estimate_reads_the_neighbours_current_columns() {
     assert!(rr < rj - 0.05, "residual {rr} vs joint {rj}");
     assert!(se.is_finite() && se > 0.0);
 }
+
+/// With `Joint`, `footprint_noise` is the split-half noise of the published
+/// estimate: the joint store's even and odd block groups under the current
+/// columns, not the residual store's halves.
+#[test]
+fn footprint_noise_reads_the_joint_halves() {
+    let (t, tb) = (2500, 1000);
+    let mut rng = Lcg(5);
+    let ci = trace(&mut rng, t, 0.03, 6.0);
+    let cj = cofiring(&mut rng, &ci, 0.8);
+    let (fi, fj) = (blob(1, 48.0, 44.0), blob(2, 48.0, 50.0));
+    let m = movie(&[(fi.clone(), ci), (fj.clone(), cj)], t, 13);
+    let (mut slow, mut eng) = start(joint_cfg(), std::slice::from_ref(&fi));
+    let mut log = Vec::new();
+    observe(&m, 0..tb, &mut slow, &mut eng, &mut log);
+    let (mut other, _) = start(joint_cfg(), &[fi.clone(), fj.clone()]);
+    eng.set_library(other.finalize().unwrap()).unwrap();
+    observe(&m, tb..t, &mut slow, &mut eng, &mut log);
+    let lib = eng.library().clone();
+    let (pix, _) = lib.filtered(lib.slot(1).unwrap());
+    let noise = slow.footprint_noise(&lib, 1, pix).unwrap();
+    let st = &slow.suff[&1];
+    let (ha, hb) = (
+        store_estimate(&lib, st, HALVES[0]).unwrap(),
+        store_estimate(&lib, st, HALVES[1]).unwrap(),
+    );
+    let want: std::collections::HashSet<u32> = pix.iter().copied().collect();
+    let (mut d2, mut m2) = (0.0f64, 0.0f64);
+    for (k, p) in st.pix.iter().enumerate() {
+        if want.contains(p) {
+            let (a, b) = (f64::from(ha[k]), f64::from(hb[k]));
+            d2 += (a - b) * (a - b);
+            m2 += 0.25 * (a + b) * (a + b);
+        }
+    }
+    assert_eq!(noise, 0.5 * (d2 / m2).sqrt());
+    assert!(noise.is_finite() && noise > 0.0);
+    // The residual store's halves give another number (they hold the
+    // newborn's light from before its birth).
+    slow.cfg.footprint_stats = FootprintStats::Residual;
+    let rn = slow.footprint_noise(&lib, 1, pix).unwrap();
+    eprintln!("footprint noise: joint {noise:.4}, residual store {rn:.4}");
+    assert_ne!(noise.to_bits(), rn.to_bits());
+}

@@ -2347,7 +2347,9 @@ fn main() {
                             pix: pix.to_vec(),
                             val: val.to_vec(),
                             born: births.get(&id).copied().unwrap_or(0),
-                            noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
+                            noise: slow
+                                .as_ref()
+                                .and_then(|sl| sl.footprint_noise(&lib, id, pix)),
                         }
                     })
                     .collect();
