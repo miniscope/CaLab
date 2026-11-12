@@ -2358,6 +2358,19 @@ fn main() {
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
+        let st = sl.stats();
+        println!(
+            "keep tests: {} ({} fails, {} inconclusive); in-sample probes {}: in-sample footprint passes {}, other-fold footprint passes {}, one-sided {}",
+            st.keep_tests,
+            st.keep_fails,
+            st.keep_inconclusive,
+            st.keep_in_sample,
+            st.keep_in_sample_pass,
+            st.keep_out_pass,
+            st.keep_one_sided
+        );
+    }
+    if let Some(sl) = &slow {
         if sl.config().core_test != CoreTest::Off {
             let (fp, ff, fd) = sl.fast_diag;
             println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");

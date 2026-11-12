@@ -1501,3 +1501,40 @@ fn with_two_folds_a_cell_is_discovered_and_the_other_fold_never_fits_it() {
         }
     }
 }
+
+#[test]
+fn with_two_folds_keep_tests_are_out_of_sample() {
+    // Footprints record the fold they were estimated from; with two folds
+    // the keep tests that would be in-sample (a probe of that fold) are
+    // re-routed to the other fold's estimate or made one-sided, and with
+    // one fold no keep test is ever in-sample.
+    let t = 1500;
+    let (m, _) = busy_movie(t);
+    let run = |folds: u32| {
+        let cfg = SlowLoopConfig {
+            holdout_folds: folds,
+            ..shard_config()
+        };
+        let (mut slow, mut eng) = start(cfg, &[]);
+        let mut deleted = Vec::new();
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        slow
+    };
+    let two = run(2);
+    let st = two.stats();
+    assert!(!two.cells.is_empty(), "{st:?}");
+    for c in &two.cells {
+        assert!(
+            c.fit_folds == 1 || c.fit_folds == 2,
+            "cell {} folds {}",
+            c.id,
+            c.fit_folds
+        );
+    }
+    assert!(st.keep_in_sample > 0, "{st:?}");
+    assert!(st.keep_out_pass <= st.keep_in_sample, "{st:?}");
+    assert!(st.keep_one_sided <= st.keep_in_sample, "{st:?}");
+    let one = run(1);
+    assert!(one.cells.iter().all(|c| c.fit_folds == 1));
+    assert_eq!(one.stats().keep_in_sample, 0);
+}

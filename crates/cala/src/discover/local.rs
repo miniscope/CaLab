@@ -205,6 +205,11 @@ pub(crate) struct Cell {
     pub low: Vec<f32>,
     /// Frame at which the cell entered the working set (seeded: 0).
     pub born: u64,
+    /// Hold-out folds whose frames this footprint was estimated from (bit
+    /// `k` = fold `k`, see `SlowLoopConfig::holdout_folds`; seeded: none).
+    /// A keep test on a probe of such a fold is in-sample for this
+    /// footprint.
+    pub fit_folds: u8,
 }
 
 impl Cell {
@@ -289,6 +294,7 @@ impl Cell {
             low_blk,
             low,
             born: 0,
+            fit_folds: 0,
         })
     }
 

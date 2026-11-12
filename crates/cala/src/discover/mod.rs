@@ -246,7 +246,7 @@ use local::{
     rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, PatchGrid, Problem, Rect,
 };
 use noisecorr::NoiseCorr;
-use reservoir::{mix, SharedFrames, Slot, Tile};
+use reservoir::{mix, Probe, SharedFrames, Slot, Tile};
 use shard::{InFlight, Op};
 
 use crate::preprocess::flatten::GlowFlattener;
@@ -733,6 +733,14 @@ pub struct SlowStats {
     pub split_tests: u64,
     pub work_split: u64,
     pub work_stats: u64,
+    /// Keep tests on probes from a fold the tested footprint was estimated
+    /// from (two folds), how many of those the in-sample footprint would
+    /// pass, how many the other fold's re-estimate passes (the verdict
+    /// used), and how many had no other-fold estimate (only a fail counts).
+    pub keep_in_sample: u64,
+    pub keep_in_sample_pass: u64,
+    pub keep_out_pass: u64,
+    pub keep_one_sided: u64,
 }
 
 /// The slow loop. See the module docs.
@@ -801,7 +809,13 @@ pub struct SlowLoop {
     /// factor; renormalised).
     fpstats: HashMap<u64, FpStats>,
     /// Fold 1's running statistics (two folds only; `fpstats` holds fold 0's).
+    /// During a visit the two are swapped so that `fpstats` is always the
+    /// fitting fold's (`fit_fold`) and `fpstats_b` the tested fold's.
     fpstats_b: HashMap<u64, FpStats>,
+    /// The fold whose frames the current visit fits on (the statistics in
+    /// `fpstats`); every footprint estimated now records it in
+    /// [`Cell::fit_folds`].
+    fit_fold: u8,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
@@ -951,6 +965,16 @@ fn whiten(
             crow[cw - 1] += t;
         }
     }
+}
+
+/// Outcomes of a cell's keep tests on one visit.
+#[derive(Debug, Default)]
+struct KeepTally {
+    pass: u32,
+    fail: u32,
+    redundant: u32,
+    inconclusive: u32,
+    partner: Option<u64>,
 }
 
 /// Hold-out block length in frames (`holdout_block_s` at `fps`, >= 1).
@@ -1129,6 +1153,7 @@ impl SlowLoop {
             edit_log: Vec::new(),
             fpstats: HashMap::new(),
             fpstats_b: HashMap::new(),
+            fit_fold: 0,
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
@@ -2244,8 +2269,11 @@ impl SlowLoop {
         // The working set takes the exact filtered columns.
         let w = self.dims.width;
         let mut cells = Vec::with_capacity(lib.len());
-        let born: std::collections::HashMap<u64, u64> =
-            self.cells.iter().map(|c| (c.id, c.born)).collect();
+        let born: std::collections::HashMap<u64, (u64, u8)> = self
+            .cells
+            .iter()
+            .map(|c| (c.id, (c.born, c.fit_folds)))
+            .collect();
         for slot in 0..lib.len() {
             let (center, radius) = lib.support(slot);
             let (pix, raw) = lib.unfiltered(slot);
@@ -2265,7 +2293,8 @@ impl SlowLoop {
                 filt: filt.to_vec(),
                 low_blk: low_blk.to_vec(),
                 low: low.to_vec(),
-                born: born.get(&lib.ids()[slot]).copied().unwrap_or(0),
+                born: born.get(&lib.ids()[slot]).map_or(0, |b| b.0),
+                fit_folds: born.get(&lib.ids()[slot]).map_or(0, |b| b.1),
             });
         }
         // Filtering the edited cells (full-frame passes, many cells per
@@ -2438,6 +2467,7 @@ impl SlowLoop {
 
     /// The tests and edits of a visit (here, or in a [`VisitRunner`]).
     fn visit_body(&mut self, ti: usize) -> Result<(), TraceError> {
+        self.fit_fold = 1 - self.test_fold(ti);
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
@@ -3070,7 +3100,7 @@ impl SlowLoop {
             return None;
         }
         a.iter_mut().for_each(|v| *v /= peak);
-        Cell::from_canvas(
+        let mut cell = Cell::from_canvas(
             id,
             canvas,
             &a,
@@ -3079,7 +3109,11 @@ impl SlowLoop {
             &self.cfg.library,
             extent,
             &mut self.filter,
-        )
+        )?;
+        // Every footprint estimate is made from the fitting fold's frames
+        // (its reservoir slots or its running statistics).
+        cell.fit_folds = 1 << self.fit_fold;
+        Some(cell)
     }
 
     /// [`Self::basin_trim_from`] seeded at the peak
@@ -3443,6 +3477,14 @@ impl SlowLoop {
     /// transient, or none of the cell's light on the frame) the probe is
     /// inconclusive and counts neither way, so absence of evidence never
     /// accumulates as evidence against a cell.
+    ///
+    /// Out of sample (two hold-out folds): a probe from a fold the cell's
+    /// footprint was estimated from ([`Cell::fit_folds`]) would test the
+    /// footprint on frames that shaped it, and a footprint fitted to noise
+    /// passes there. Such a probe tests instead the footprint re-estimated
+    /// from the *other* fold's running statistics only. When the other fold
+    /// has no estimate yet, the probe is in-sample and biased towards a
+    /// pass: a fail still counts, a pass counts as inconclusive.
     fn keep_tests(&mut self, ti: usize) {
         let probes = std::mem::take(&mut self.tiles[ti].probes);
         if probes.is_empty() {
@@ -3451,168 +3493,251 @@ impl SlowLoop {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
-        let rect = self.tiles[ti].rect;
         let mut ids: Vec<u64> = probes
             .iter()
             .flat_map(|p| p.cells.iter().copied())
             .collect();
         ids.sort_unstable();
         ids.dedup();
-        let n_px = self.fov_px(rect) as f64;
-        let (m, sd) = self.null(1);
-        let pass_at = m + f64::from(self.cfg.keep_z) * sd;
-        // Noise σ of √(χ² gain) of one column (the noise inflation ρ).
-        let sd_unit = f64::from(self.rho).sqrt();
         for id in ids {
-            let Some(cell) = self.cells.iter().find(|c| c.id == id) else {
+            let Some(cell) = self.cells.iter().find(|c| c.id == id).cloned() else {
                 continue;
             };
-            let center = cell.center;
-            let mut ys = Vec::new();
-            let mut proj = Vec::new();
-            let mut ymiss = Vec::new();
-            {
-                let bg = self.bgs[ti].as_ref().expect("basis");
-                for p in probes.iter().filter(|p| p.cells.contains(&id)) {
-                    let mut v = Vec::new();
-                    p.slot.values(&mut v);
-                    ymiss.push(reservoir::take_missing(&mut v));
-                    proj.push(bg.project(&v));
-                    ys.push(v);
-                }
-                self.work += (ys.len() * rect.len() * (bg.k + 1)) as u64;
-            }
-            // The cell's amplitude on each probe without the bump: the light
-            // a fail claims is not shaped like the cell.
-            let plain = {
-                let mut work = 0;
-                let pr = Problem::new(
-                    self.columns(rect, &[], &[]),
-                    self.bgs[ti].as_ref().expect("basis"),
-                    rect.len(),
-                    &mut work,
-                );
-                self.work += work + (rect.len() * ys.len()) as u64;
-                let k0 = pr.cols.iter().position(|c| c.id == id);
-                let fits = self.solve_with(&pr, &ys, &proj, &ymiss);
-                k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
-            };
-            let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
-            let mut work = 0;
-            let full = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
-            let red = Problem::new(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
-            self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
-            let f = self.solve_with(&full, &ys, &proj, &ymiss);
-            let r = self.solve_with(&red, &ys, &proj, &ymiss);
-            let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
-            // Overlap of every other column with this cell's, normalised
-            // by the cell's own energy: how much of the cell's signal an
-            // increase of that neighbour's coefficient reproduces.
-            let Some(ki) = full.cols.iter().position(|c| c.id == id) else {
-                continue;
-            };
-            let dense = full.cols[ki].dense(rect.len());
-            let ee: f32 = full.cols[ki].norm2().max(1e-12);
-            let share: Vec<f32> = red.cols.iter().map(|c| c.dot(&dense) / ee).collect();
-            #[cfg(feature = "diagnostics")]
-            let diagnostic_before = self.ledger.get(&id).cloned();
-            #[cfg(feature = "diagnostics")]
-            let mut diagnostic_outcomes = Vec::new();
-            let (mut pass, mut fail, mut redundant, mut inconclusive) = (0, 0, 0, 0);
-            let mut partner: Option<(u64, f32)> = None;
-            // χ² gain per unit amplitude² with the bump (the cell's energy
-            // the bump and background cannot reproduce).
-            let q_ii = full.q[ki * full.len() + ki].max(0.0);
-            let power_at = pass_at.max(0.0).sqrt() + f64::from(self.cfg.keep_z) * sd_unit;
-            for (j, (ff, rr)) in f.iter().zip(&r).enumerate() {
-                let s2 = (ff.chi2 / dof).max(1.0);
-                if (rr.chi2 - ff.chi2) / s2 > pass_at {
-                    pass += 1;
-                    #[cfg(feature = "diagnostics")]
-                    diagnostic_outcomes.push(diagnostics::Outcome {
-                        kind: "pass",
-                        partner: 0,
-                        took: 0.0,
-                    });
+            let mut tally = KeepTally::default();
+            for k in 0..2u8 {
+                let group: Vec<Probe> = probes
+                    .iter()
+                    .filter(|p| p.cells.contains(&id) && self.cfg.fold(p.slot.frame) == k)
+                    .cloned()
+                    .collect();
+                if group.is_empty() {
                     continue;
                 }
-                // Not needed: did a neighbour take over at least half of
-                // the cell's fitted signal?
-                let ci = ff.c[ki];
-                let mut best: Option<(u64, f32)> = None;
-                for (j, c) in red.cols.iter().enumerate() {
-                    let jf = full
-                        .cols
-                        .iter()
-                        .position(|x| x.id == c.id)
-                        .expect("same cells");
-                    let took = (rr.c[j] - ff.c[jf]) * share[j];
-                    if took > 0.5 * ci && best.is_none_or(|b| took > b.1) {
-                        best = Some((c.id, took));
-                    }
+                if cell.fit_folds & (1 << k) == 0 {
+                    self.keep_probes(ti, &cell, None, &group, false, &mut tally);
+                    continue;
                 }
-                // Would a real cell with the light the probe shows (without
-                // the bump) have passed? If not, the probe cannot tell.
-                let c0 = plain.as_ref().map_or(0.0, |c| c[j].max(0.0));
-                let powered = (c0 * c0 * q_ii / s2).sqrt() >= power_at;
-                match best {
-                    Some(b) if ci > 0.0 => {
-                        redundant += 1;
-                        partner = Some(b);
-                        #[cfg(feature = "diagnostics")]
-                        diagnostic_outcomes.push(diagnostics::Outcome {
-                            kind: "redundant",
-                            partner: b.0,
-                            took: b.1,
-                        });
+                let n = group.len() as u64;
+                // The verdicts the in-sample footprint would give
+                // (diagnostic only: no work, no ledger).
+                let (w, st) = (self.work, self.stats);
+                let mut dry = KeepTally::default();
+                self.keep_probes(ti, &cell, None, &group, true, &mut dry);
+                (self.work, self.stats) = (w, st);
+                self.stats.keep_in_sample += n;
+                self.stats.keep_in_sample_pass += u64::from(dry.pass);
+                match self.other_fold_estimate(&cell, k) {
+                    Some(clean) => {
+                        let before = tally.pass;
+                        self.keep_probes(ti, &cell, Some(&clean), &group, false, &mut tally);
+                        self.stats.keep_out_pass += u64::from(tally.pass - before);
                     }
-                    _ if !powered => {
-                        inconclusive += 1;
-                        #[cfg(feature = "diagnostics")]
-                        diagnostic_outcomes.push(diagnostics::Outcome {
-                            kind: "inconclusive",
-                            partner: best.map_or(0, |b| b.0),
-                            took: best.map_or(0.0, |b| b.1),
-                        });
-                    }
-                    _ => {
-                        fail += 1;
-                        #[cfg(feature = "diagnostics")]
-                        diagnostic_outcomes.push(diagnostics::Outcome {
-                            kind: "fail",
-                            partner: best.map_or(0, |b| b.0),
-                            took: best.map_or(0.0, |b| b.1),
-                        });
+                    None => {
+                        self.stats.keep_one_sided += n;
+                        tally.fail += dry.fail;
+                        tally.redundant += dry.redundant;
+                        tally.inconclusive += dry.inconclusive + dry.pass;
+                        tally.partner = dry.partner.or(tally.partner);
                     }
                 }
             }
-            self.stats.keep_tests += (pass + fail + redundant + inconclusive) as u64;
-            self.stats.keep_fails += fail as u64;
-            self.stats.keep_inconclusive += inconclusive as u64;
+            self.stats.keep_tests +=
+                u64::from(tally.pass + tally.fail + tally.redundant + tally.inconclusive);
+            self.stats.keep_fails += u64::from(tally.fail);
+            self.stats.keep_inconclusive += u64::from(tally.inconclusive);
             if let Some(ev) = self.ledger.get_mut(&id) {
-                ev.passes += pass;
-                ev.fails += fail;
-                ev.redundant += redundant;
-                if let Some(p) = partner {
-                    ev.partner = Some(p.0);
+                ev.passes += tally.pass;
+                ev.fails += tally.fail;
+                ev.redundant += tally.redundant;
+                if let Some(p) = tally.partner {
+                    ev.partner = Some(p);
                 }
                 journal!(
                     self,
                     Op::Keep {
                         id,
-                        pass,
-                        fail,
-                        redundant,
-                        partner: partner.map(|p| p.0),
+                        pass: tally.pass,
+                        fail: tally.fail,
+                        redundant: tally.redundant,
+                        partner: tally.partner,
                     }
                 );
             }
-            #[cfg(feature = "diagnostics")]
+        }
+    }
+
+    /// The footprint of `cell` re-estimated from the running statistics of
+    /// the fold other than `k` (none while that fold's estimate is below
+    /// `stats_min_snr`).
+    fn other_fold_estimate(&mut self, cell: &Cell, k: u8) -> Option<Cell> {
+        let want = 1 - k;
+        let fit_fold = self.fit_fold;
+        let swap = want != fit_fold;
+        if swap {
+            std::mem::swap(&mut self.fpstats, &mut self.fpstats_b);
+            self.fit_fold = want;
+        }
+        let out = self.stats_proposal(cell, false);
+        if swap {
+            std::mem::swap(&mut self.fpstats, &mut self.fpstats_b);
+            self.fit_fold = fit_fold;
+        }
+        out
+    }
+
+    /// The keep tests of `cell` on `probes` (see [`Self::keep_tests`]),
+    /// with `sub` in place of the cell's current footprint when given;
+    /// outcomes added to `tally`. `dry`: a diagnostic re-run (no
+    /// diagnostics dump).
+    fn keep_probes(
+        &mut self,
+        ti: usize,
+        cell: &Cell,
+        sub: Option<&Cell>,
+        probes: &[Probe],
+        dry: bool,
+        tally: &mut KeepTally,
+    ) {
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = dry;
+        let id = cell.id;
+        let center = cell.center;
+        let rect = self.tiles[ti].rect;
+        let n_px = self.fov_px(rect) as f64;
+        let (m, sd) = self.null(1);
+        let pass_at = m + f64::from(self.cfg.keep_z) * sd;
+        // Noise σ of √(χ² gain) of one column (the noise inflation ρ).
+        let sd_unit = f64::from(self.rho).sqrt();
+        let skip: Vec<u64> = if sub.is_some() { vec![id] } else { Vec::new() };
+        let extra: Vec<&Cell> = sub.into_iter().collect();
+        let mut ys = Vec::new();
+        let mut proj = Vec::new();
+        let mut ymiss = Vec::new();
+        {
+            let bg = self.bgs[ti].as_ref().expect("basis");
+            for p in probes {
+                let mut v = Vec::new();
+                p.slot.values(&mut v);
+                ymiss.push(reservoir::take_missing(&mut v));
+                proj.push(bg.project(&v));
+                ys.push(v);
+            }
+            self.work += (ys.len() * rect.len() * (bg.k + 1)) as u64;
+        }
+        // The cell's amplitude on each probe without the bump: the light
+        // a fail claims is not shaped like the cell.
+        let plain = {
+            let mut work = 0;
+            let pr = Problem::new(
+                self.columns(rect, &skip, &extra),
+                self.bgs[ti].as_ref().expect("basis"),
+                rect.len(),
+                &mut work,
+            );
+            self.work += work + (rect.len() * ys.len()) as u64;
+            let k0 = pr.cols.iter().position(|c| c.id == id);
+            let fits = self.solve_with(&pr, &ys, &proj, &ymiss);
+            k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
+        };
+        let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
+        let mut work = 0;
+        let full = Problem::new(
+            self.columns(rect, &skip, &extra),
+            &bg,
+            rect.len(),
+            &mut work,
+        );
+        let red = Problem::new(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
+        self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
+        let f = self.solve_with(&full, &ys, &proj, &ymiss);
+        let r = self.solve_with(&red, &ys, &proj, &ymiss);
+        let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
+        // Overlap of every other column with this cell's, normalised
+        // by the cell's own energy: how much of the cell's signal an
+        // increase of that neighbour's coefficient reproduces.
+        let Some(ki) = full.cols.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let dense = full.cols[ki].dense(rect.len());
+        let ee: f32 = full.cols[ki].norm2().max(1e-12);
+        let share: Vec<f32> = red.cols.iter().map(|c| c.dot(&dense) / ee).collect();
+        #[cfg(feature = "diagnostics")]
+        let diagnostic_before = self.ledger.get(&id).cloned();
+        #[cfg(feature = "diagnostics")]
+        let mut diagnostic_outcomes = Vec::new();
+        // χ² gain per unit amplitude² with the bump (the cell's energy
+        // the bump and background cannot reproduce).
+        let q_ii = full.q[ki * full.len() + ki].max(0.0);
+        let power_at = pass_at.max(0.0).sqrt() + f64::from(self.cfg.keep_z) * sd_unit;
+        for (j, (ff, rr)) in f.iter().zip(&r).enumerate() {
+            let s2 = (ff.chi2 / dof).max(1.0);
+            if (rr.chi2 - ff.chi2) / s2 > pass_at {
+                tally.pass += 1;
+                #[cfg(feature = "diagnostics")]
+                diagnostic_outcomes.push(diagnostics::Outcome {
+                    kind: "pass",
+                    partner: 0,
+                    took: 0.0,
+                });
+                continue;
+            }
+            // Not needed: did a neighbour take over at least half of
+            // the cell's fitted signal?
+            let ci = ff.c[ki];
+            let mut best: Option<(u64, f32)> = None;
+            for (j, c) in red.cols.iter().enumerate() {
+                let jf = full
+                    .cols
+                    .iter()
+                    .position(|x| x.id == c.id)
+                    .expect("same cells");
+                let took = (rr.c[j] - ff.c[jf]) * share[j];
+                if took > 0.5 * ci && best.is_none_or(|b| took > b.1) {
+                    best = Some((c.id, took));
+                }
+            }
+            // Would a real cell with the light the probe shows (without
+            // the bump) have passed? If not, the probe cannot tell.
+            let c0 = plain.as_ref().map_or(0.0, |c| c[j].max(0.0));
+            let powered = (c0 * c0 * q_ii / s2).sqrt() >= power_at;
+            match best {
+                Some(b) if ci > 0.0 => {
+                    tally.redundant += 1;
+                    tally.partner = Some(b.0);
+                    #[cfg(feature = "diagnostics")]
+                    diagnostic_outcomes.push(diagnostics::Outcome {
+                        kind: "redundant",
+                        partner: b.0,
+                        took: b.1,
+                    });
+                }
+                _ if !powered => {
+                    tally.inconclusive += 1;
+                    #[cfg(feature = "diagnostics")]
+                    diagnostic_outcomes.push(diagnostics::Outcome {
+                        kind: "inconclusive",
+                        partner: best.map_or(0, |b| b.0),
+                        took: best.map_or(0.0, |b| b.1),
+                    });
+                }
+                _ => {
+                    tally.fail += 1;
+                    #[cfg(feature = "diagnostics")]
+                    diagnostic_outcomes.push(diagnostics::Outcome {
+                        kind: "fail",
+                        partner: best.map_or(0, |b| b.0),
+                        took: best.map_or(0.0, |b| b.1),
+                    });
+                }
+            }
+        }
+        #[cfg(feature = "diagnostics")]
+        if !dry {
             diagnostics::keep(
                 self,
                 id,
                 ti,
-                &probes,
+                probes,
                 &ys,
                 &proj,
                 &bg,

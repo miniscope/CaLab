@@ -105,7 +105,10 @@ pub struct VisitJob {
     /// Cells with an evidence record (the visit only needs to know which).
     ledger: Vec<u64>,
     lives: Vec<(u64, u32)>,
+    /// The fitting fold's running statistics, and (two folds) the tested
+    /// fold's (keep tests of footprints fitted on the tested fold).
     fpstats: Vec<(u64, FpStats)>,
+    fpstats_b: Vec<(u64, FpStats)>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
 }
@@ -174,10 +177,12 @@ impl VisitJob {
             w.u64(id);
             w.u32(n);
         }
-        w.usize(self.fpstats.len());
-        for (id, s) in &self.fpstats {
-            w.u64(*id);
-            w.fpstats(s);
+        for stats in [&self.fpstats, &self.fpstats_b] {
+            w.usize(stats.len());
+            for (id, s) in stats {
+                w.u64(*id);
+                w.fpstats(s);
+            }
         }
         w.usize(self.merge_rejected.len());
         for &(a, b, u) in &self.merge_rejected {
@@ -225,6 +230,10 @@ impl VisitJob {
         let fpstats = (0..n)
             .map(|_| Some((r.u64()?, r.fpstats()?)))
             .collect::<Option<_>>()?;
+        let n = r.count(40)?;
+        let fpstats_b = (0..n)
+            .map(|_| Some((r.u64()?, r.fpstats()?)))
+            .collect::<Option<_>>()?;
         let n = r.count(24)?;
         let merge_rejected = (0..n)
             .map(|_| Some((r.u64()?, r.u64()?, r.u64()?)))
@@ -247,6 +256,7 @@ impl VisitJob {
             ledger,
             lives,
             fpstats,
+            fpstats_b,
             merge_rejected,
             forced,
         })
@@ -577,16 +587,24 @@ impl SlowLoop {
             .iter()
             .filter_map(|id| self.lives.get(id).map(|&n| (*id, n)))
             .collect();
-        // The fitting fold's statistics (see `SlowLoop::visit`).
-        let fit_stats = if self.test_fold(ti) == 0 {
-            &self.fpstats_b
+        // The fitting fold's statistics, then the tested fold's (see
+        // `SlowLoop::visit`).
+        let (fit_stats, test_stats) = if self.test_fold(ti) == 0 {
+            (&self.fpstats_b, &self.fpstats)
         } else {
-            &self.fpstats
+            (&self.fpstats, &self.fpstats_b)
         };
         let fpstats = ids
             .iter()
             .filter_map(|id| fit_stats.get(id).map(|s| (*id, s.clone())))
             .collect();
+        let fpstats_b = if self.cfg.holdout_folds == 2 {
+            ids.iter()
+                .filter_map(|id| test_stats.get(id).map(|s| (*id, s.clone())))
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.job_seq += 1;
         let seq = self.job_seq;
         self.inflight.push(InFlight { seq, ti, zone, ids });
@@ -604,6 +622,7 @@ impl SlowLoop {
             ledger,
             lives,
             fpstats,
+            fpstats_b,
             merge_rejected: self.merge_rejected.clone(),
             forced: self.forced.clone(),
         }
@@ -871,6 +890,7 @@ impl VisitRunner {
         s.ledger = job.ledger.iter().map(|&id| (id, Evidence::new())).collect();
         s.lives = job.lives.iter().copied().collect::<HashMap<_, _>>();
         s.fpstats = job.fpstats.into_iter().collect::<HashMap<_, _>>();
+        s.fpstats_b = job.fpstats_b.into_iter().collect::<HashMap<_, _>>();
         s.merge_rejected = job.merge_rejected;
         s.forced = job.forced;
         s.stats = SlowStats::default();
@@ -913,6 +933,7 @@ impl VisitRunner {
         // Drop the copies (the next job brings its own).
         s.cells.clear();
         s.fpstats.clear();
+        s.fpstats_b.clear();
         s.ledger.clear();
         Ok(res)
     }

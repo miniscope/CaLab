@@ -104,6 +104,7 @@ impl Writer {
         self.u32s(&c.low_blk);
         self.f32s(&c.low);
         self.u64(c.born);
+        self.u32(u32::from(c.fit_folds));
     }
     pub fn slot(&mut self, s: &Slot) {
         self.slot_with(s, &s.data);
@@ -332,6 +333,7 @@ impl<'a> Reader<'a> {
             low_blk: self.u32s()?,
             low: self.f32s()?,
             born: self.u64()?,
+            fit_folds: self.u32()? as u8,
         })
     }
     pub fn slot(&mut self) -> Option<Slot> {
@@ -551,4 +553,8 @@ stats_list!(
     split_tests,
     work_split,
     work_stats,
+    keep_in_sample,
+    keep_in_sample_pass,
+    keep_out_pass,
+    keep_one_sided,
 );
