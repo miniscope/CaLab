@@ -5,6 +5,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: a footprint's pixel support is now measured where its own light is
+  significant, in the single-peaked basin around its peak, with a skirt that
+  carries the measured light on the rest of the statistics disk
+  (`SupportRule::BasinSkirt`, #344). It replaces the ring rule as the default
+  in the app and in `qc_eval`/`discover_eval`. In repeated refine-only passes
+  footprints no longer run away (largest after 3 passes about 1.2k px instead
+  of up to 320k px), and real-data texture stays at 0. `--support-rule rings`
+  keeps the old rule for comparisons (`tools/cala-eval/results/2026-11-12-skirt-stability.md`).
+
 ## [2.15.0] - 2026-11-12
 
 Web apps `v2.15.0`; the Python package `calab` is unchanged (`py/v0.5.0`).

@@ -10,7 +10,8 @@
 
 ## Verdict
 
-**Do not flip the default yet.** `BasinSkirt` delivers the boundedness that was the point of the change: no runaway footprints, and no texture on real data across passes. It also keeps recall and precision within margins at 1×. But two primary gates fail, and one of the failures is a new defect:
+**Do not flip the default yet.** (Superseded: the divergence was fixed in `2026-11-12-skirt-stability.md`, and
+`BasinSkirt` became the default after the PI accepted that note's gate redefinitions.) `BasinSkirt` delivers the boundedness that was the point of the change: no runaway footprints, and no texture on real data across passes. It also keeps recall and precision within margins at 1×. But two primary gates fail, and one of the failures is a new defect:
 
 - **The fast loop diverges in 2 of 10 refine-only `skirt` runs.** In `motion_s8` and `static_s7` the explained variance goes to `-inf` and traces reach about 1e20 in pass 2. `basin` (0/10), R1, R2, R3, R5, R6 and R7 never diverged. The cause is specific to the skirt: the skirt columns put positive block light into the neighbours' ring background. The likely mechanism is the ring model's coupled coordinate updates becoming unstable (compare `ring_self_curvature`, which already guards the self term). This is a hypothesis; it was not traced.
 - **Median support still creeps.** On sims, pass 3 over pass 1 is 1.15 against a gate of ≤ 1.10, and `basin` gives the same. On real data refine-only gives 1.63. p99 is flat everywhere, so the large cells are bounded and it is the small cells that grow toward their limit. The falsifier did not fire: 2 of 10 runs rise more than 5 % from pass 2 to pass 3 (the falsifier needs 5).

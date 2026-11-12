@@ -47,6 +47,11 @@
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
+//!                      (needs --support-rule rings, as does --core-test)
+//!   --support-rule R   how the footprint statistics measure a support:
+//!                      basin-skirt (default) | basin | rings (the rule
+//!                      before S2.1)
+//!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --stats-half-life F  half-life (frames) of the footprint statistics
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
@@ -2294,6 +2299,11 @@ fn main() {
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
     }
+    assert!(
+        scfg.support_rule == SupportRule::Rings
+            || (scfg.core_test == CoreTest::Off && !scfg.basin_trim),
+        "--core-test and --basin-trim need --support-rule rings"
+    );
     if scfg.support_rule != SupportRule::Rings {
         println!(
             "support rule: {:?}, alpha {}",
