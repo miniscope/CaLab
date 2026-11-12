@@ -35,6 +35,7 @@ import type {
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 import { RunRecord } from './run-record.ts';
+import type { RunHistory } from './run-history.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -49,57 +50,12 @@ export interface LivePoint extends LiveBatchInfo {
   t: number;
 }
 
-/** Live points kept (one per batch: 100k = 800k frames, 11 h at 20 fps). */
-const MAX_LIVE_POINTS = 100_000;
-
-/** Maximum full-resolution motion/flicker samples retained for the live charts. */
-export const SHIFT_TRACE_CAPACITY = 32768;
-
-/** Recent rigid shifts and global flicker, bounded independently of recording length. */
-export class ShiftTrace {
-  /** All samples processed, including those no longer retained for display. */
-  totalFrames = 0;
-
-  constructor(readonly capacity = SHIFT_TRACE_CAPACITY) {
-    if (!Number.isSafeInteger(capacity) || capacity < 1)
-      throw new RangeError('ShiftTrace capacity must be a positive safe integer.');
-  }
-
-  readonly frame: number[] = [];
-  readonly dy: number[] = [];
-  readonly dx: number[] = [];
-  /** Flicker offset `a_t`, grey levels. */
-  readonly offset: number[] = [];
-  /** Flicker gain `m_t`, percent. */
-  readonly gainPct: number[] = [];
-
-  push(
-    start: number,
-    dy: ArrayLike<number>,
-    dx: ArrayLike<number>,
-    offset?: ArrayLike<number>,
-    gain?: ArrayLike<number>,
-  ): void {
-    this.totalFrames += dy.length;
-    // Trim before appending, including when a single batch exceeds capacity.
-    // Both storage and chart copies stay bounded; never subsample away spikes.
-    const first = Math.max(0, dy.length - this.capacity);
-    const remove = Math.max(0, this.length + dy.length - first - this.capacity);
-    for (const values of [this.frame, this.dy, this.dx, this.offset, this.gainPct])
-      values.splice(0, remove);
-    for (let i = first; i < dy.length; i++) {
-      this.frame.push(start + i);
-      this.dy.push(dy[i]);
-      this.dx.push(dx[i]);
-      this.offset.push(offset ? offset[i] : 0);
-      this.gainPct.push(gain ? 100 * gain[i] : 0);
-    }
-  }
-
-  get length(): number {
-    return this.frame.length;
-  }
-}
+/**
+ * Live points kept for measurement scripts (`?debug`): the newest
+ * `MAX_LIVE_POINTS` batches, oldest dropped first. The History view does not
+ * use them; it reads the bounded `RunHistory` store, which covers the whole run.
+ */
+const MAX_LIVE_POINTS = 8192;
 
 /** Frames per second over a sliding window of batch arrivals. */
 export class ThroughputMeter {
@@ -178,6 +134,8 @@ export function createPipelineStore(
   forwardBuffers?: number,
   /** The per-device flat-field cache and the recording's identity (optional). */
   flat: FlatFieldStoreOptions = {},
+  /** The run's history over stream time (the History view, the export). */
+  runHistory?: RunHistory,
   /** Feed the compress worker; its store is reset with each run. */
   compress?: Pick<CompressStore, 'reset'>,
 ) {
@@ -186,7 +144,6 @@ export function createPipelineStore(
   const [setup, setSetup] = createSignal<SetupProgress | null>(null);
   const [processed, setProcessed] = createSignal(0);
   const [previews, setPreviews] = createSignal<BatchPreviews | null>(null);
-  const [traceVersion, setTraceVersion] = createSignal(0);
   const [fps, setFps] = createSignal(0);
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
@@ -256,6 +213,7 @@ export function createPipelineStore(
         return;
       case 'map':
         flatLatest = e.map;
+        if (e.change) runHistory?.flatMap(e.change.median);
         setFlatField((s) => ({
           ...s,
           map: e.map,
@@ -269,7 +227,8 @@ export function createPipelineStore(
   }
   client.subscribeFlatField?.(onFlatEvent);
 
-  let trace = new ShiftTrace();
+  /** Frames processed this run (the denominator of the per-frame timing means). */
+  let framesDone = 0;
   /** Pass 1's per-frame motion and flicker, kept in full for pass 2 and the export. */
   let record = new RunRecord();
   let meter = new ThroughputMeter();
@@ -282,6 +241,14 @@ export function createPipelineStore(
   /** A flat-field map took effect at a batch boundary: keep the frame in the run record. */
   function noteFlatFieldApplied(applied: FlatFieldApplied): void {
     record.noteFlatField(applied);
+    runHistory?.log({
+      frame: applied.frame,
+      kind: 'flatfield',
+      detail: applied.first ? 'Flat field on' : `Flat-field map ${applied.seq}`,
+      // The switch from uncorrected frames is what a replay must know.
+      replay: applied.first,
+      data: { seq: applied.seq, source: applied.source, first: applied.first },
+    });
     if (applied.first) patchFlat({ firstFrame: applied.frame });
   }
 
@@ -292,13 +259,28 @@ export function createPipelineStore(
         return;
       case 'batch': {
         if (step.flatField) noteFlatFieldApplied(step.flatField);
-        trace.push(step.start, step.dy, step.dx, step.flickerOffset, step.flickerGain);
+        const wasComplete = record.complete;
         record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
-        setTraceVersion((v) => v + 1);
+        if (wasComplete && !record.complete)
+          runHistory?.log({
+            frame: step.start,
+            kind: 'gap',
+            detail: 'A batch arrived out of order: the run record is incomplete',
+          });
         setPreviews(step.previews);
         setProcessed(step.start + step.count);
-        setFps(meter.record(clock(), step.count));
+        const rate = meter.record(clock(), step.count);
+        setFps(rate);
         const t = step.timings;
+        framesDone += step.count;
+        if (runHistory) {
+          const end = step.start + step.count;
+          const lag =
+            step.cells && step.cells.discovering ? Math.max(0, end - step.cells.slowFrame) : null;
+          const perFrame =
+            (t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs) / step.count;
+          runHistory.batch(step, rate, perFrame, lag);
+        }
         if (step.cells && cells) cells.onBatch(step.start, step.count, step.cells, t);
         totals = {
           readMs: totals.readMs + t.readMs,
@@ -307,7 +289,7 @@ export function createPipelineStore(
           otherMs: totals.otherMs + t.otherMs,
           traceMs: totals.traceMs + t.traceMs,
         };
-        const n = trace.totalFrames;
+        const n = framesDone;
         setMotionBackend(step.motionBackend ?? null);
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
@@ -328,7 +310,10 @@ export function createPipelineStore(
             lagFrames: Math.max(0, step.live.received - step.live.dropped - end),
             t: clock(),
           };
-          if (livePoints.length < MAX_LIVE_POINTS) livePoints.push(point);
+          livePoints.push(point);
+          if (livePoints.length >= 2 * MAX_LIVE_POINTS)
+            livePoints.splice(0, livePoints.length - MAX_LIVE_POINTS);
+          runHistory?.liveCounters(point);
           setLive(point);
         }
         return;
@@ -358,8 +343,10 @@ export function createPipelineStore(
         })
         .catch((err: unknown) => {
           if (gen !== generation) return;
-          setError(err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
           setStatus('error');
+          runHistory?.log({ frame: processed(), kind: 'error', detail: message });
         })
         .finally(() => {
           if (gen !== generation) return;
@@ -382,7 +369,7 @@ export function createPipelineStore(
     generation++;
     inFlight = 0;
     exhausted = false;
-    trace = new ShiftTrace();
+    framesDone = 0;
     record = new RunRecord();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
@@ -390,7 +377,6 @@ export function createPipelineStore(
     setSetup(null);
     setProcessed(0);
     setPreviews(null);
-    setTraceVersion((v) => v + 1);
     setFps(0);
     setStageMs(ZERO_TIMINGS);
     busyTotals = [];
@@ -449,6 +435,11 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
+      runHistory?.reset({
+        fps: cells?.fps() ?? 0,
+        live: flat.identity?.()?.live === true,
+        frameCount: p.frameCount,
+      });
       setStatus('running');
       pump();
     } catch (err) {
@@ -459,13 +450,16 @@ export function createPipelineStore(
   }
 
   function pause(): void {
-    if (status() === 'running') setStatus('paused');
+    if (status() !== 'running') return;
+    setStatus('paused');
+    runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
   }
 
   function resume(): void {
     if (status() !== 'paused') return;
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
+    runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
     pump();
   }
 
@@ -513,6 +507,16 @@ export function createPipelineStore(
 
   /** Turn cell discovery on or off (applies to the running pipeline at once). */
   function setDiscover(on: boolean): void {
+    if (on !== discover() && (status() === 'running' || status() === 'paused'))
+      runHistory?.log({
+        frame: processed(),
+        kind: 'setting',
+        key: 'discover',
+        from: discover() ? 'on' : 'off',
+        to: on ? 'on' : 'off',
+        detail: `Discovery ${on ? 'on' : 'off'}`,
+        replay: false,
+      });
     setDiscoverSignal(on);
     void client.setDiscovery?.(on).catch(() => {});
   }
@@ -533,12 +537,11 @@ export function createPipelineStore(
     stageBusy,
     motionBackend,
     error,
-    /** The live source's counters after the newest batch, and all of them this run. */
+    /** The live source's counters after the newest batch, and the newest batches' (measurement scripts). */
     live,
     livePoints: () => livePoints,
-    /** Changes whenever `trace()` gained frames. */
-    traceVersion,
-    trace: () => trace,
+    /** The run's history over stream time (absent in tests that do not pass one). */
+    runHistory: () => runHistory ?? null,
     /** The online sensor flat field: the setting (applies at the next start), status, and newest map. */
     flatEnabled,
     setFlatEnabled,

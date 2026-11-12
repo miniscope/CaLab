@@ -1,3 +1,5 @@
+import { StreamHistory } from '@calab/compute';
+import { RunEvents } from '../lib/run-events.ts';
 import { describe, expect, it } from 'vitest';
 import { parseNpz, processNpyResult, traceCandidates } from '@calab/io';
 import type { CellQcRow, QcSnapshot } from '../lib/qc.ts';
@@ -148,6 +150,40 @@ describe('export', () => {
     const px = a.footprint_pixels.data;
     const st = a.footprint_starts.data;
     expect([...px.slice(st[1], st[2])]).toEqual([2 * W + 3, 2 * W + 4, 3 * W + 3, 3 * W + 4]);
+  });
+
+  it('writes the run history and event log when given', async () => {
+    const h = new StreamHistory();
+    h.define({
+      key: 'shift_dy',
+      label: 'Shift dy',
+      unit: 'px',
+      group: 'motion',
+      kind: 'value',
+      range: [-10, 10],
+      rangeRule: 'ladder125',
+      color: '#000',
+      digits: 2,
+    });
+    for (let t = 0; t < 5; t += 0.5) h.push('shift_dy', t, t === 2 ? 15 : 1);
+    const ev = new RunEvents();
+    ev.push({ frame: 40, t: 2, kind: 'range', key: 'shift_dy', from: '±10', to: '±20' });
+    const z = parseNpz(
+      await buildCalaExport({
+        ...(await input()),
+        history: { bins: h.toExport(), eventsJson: ev.toJSON() },
+      }),
+    );
+    const a = z.arrays;
+    expect(a.history_L0.shape[0]).toBe(1);
+    expect(a.history_L0.shape[2]).toBe(4);
+    // Bin 2 (t = 2..3 s): max 15 kept.
+    expect(a.history_L0.data[2 * 4 + 1]).toBe(15);
+    const events = JSON.parse(new TextDecoder().decode(a.run_events_json.data as Uint8Array));
+    expect(events[0]).toMatchObject({ kind: 'range', key: 'shift_dy' });
+    const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
+    expect(meta.format_version).toBe(2);
+    expect(meta.history.series[0]).toMatchObject({ key: 'shift_dy', range_final: [-20, 20] });
   });
 
   it('writes the same archive with ZIP64 records forced', async () => {

@@ -1,0 +1,146 @@
+/* HistoryPlot / WholeRunStrip. Colours come from the app tokens (--text-*, --accent,
+   --warning, --border-*); violet (--accent) marks UI state only. */
+
+.history-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 3px 40px;
+  align-items: center;
+}
+
+.history-chip {
+  --c: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--bg-primary);
+  font: 11.5px var(--font-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.history-chip:hover {
+  opacity: 1;
+}
+
+.history-chip__sw {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+.history-chip__val {
+  display: inline-block;
+  font: 500 11.5px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text-primary);
+}
+
+.history-chip__val--insp {
+  color: var(--accent);
+}
+
+.history-chip--on {
+  border-color: var(--c);
+  box-shadow: inset 0 0 0 1px var(--c);
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+.history-chip--on .history-chip__sw {
+  height: 4px;
+}
+
+.history-help {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: 600 11px var(--font-body);
+  cursor: pointer;
+}
+
+.history-help:hover,
+.history-help[aria-expanded='true'] {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.history-legend {
+  position: absolute;
+  z-index: 20;
+  top: 26px;
+  left: 40px;
+  padding: 6px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 4px);
+  box-shadow: var(--shadow-elevated, 0 2px 8px rgba(0, 0, 0, 0.12));
+  font: 11px var(--font-body);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.history-legend__glyph {
+  display: inline-block;
+  width: 16px;
+  font-weight: 700;
+}
+
+.history-legend__hint {
+  color: var(--text-tertiary);
+}
+
+.history-wrap {
+  position: relative;
+  outline: none;
+}
+
+.history-wrap:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.history-canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+.history-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font: 11px var(--font-mono);
+  padding: 3px 6px;
+  border-radius: 3px;
+  white-space: pre;
+}
+
+.history-strip {
+  position: relative;
+  min-width: 0;
+}
+
+.history-strip__canvas {
+  display: block;
+  cursor: crosshair;
+}

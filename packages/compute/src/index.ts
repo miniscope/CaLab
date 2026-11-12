@@ -83,3 +83,16 @@ export {
   gpuParticipationVerdict,
 } from './calibration.ts';
 export type { CalibrationStore, AdapterLike } from './calibration.ts';
+export { StreamHistory } from './stream-history.ts';
+export type {
+  SeriesKind,
+  RangeRule,
+  SeriesSpec,
+  StreamHistoryOptions,
+  BinView,
+  BinValue,
+  RangeExpansion,
+  DisplayRange,
+  LevelInfo,
+  HistoryExport,
+} from './stream-history.ts';

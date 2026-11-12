@@ -313,7 +313,7 @@ describe('FastLoop online QC', () => {
     return { ...backend, calls };
   }
 
-  it('solves through the monitor and sends a snapshot at most once per qcEveryMs', () => {
+  it('solves through the monitor and sends a snapshot at most once per qcEveryS of stream', () => {
     const t = fakeQc();
     t.libs.set(4, [7, 8]);
     let clock = 0;
@@ -326,7 +326,9 @@ describe('FastLoop online QC', () => {
         session: 1,
         cellDiameterPx: 10,
         flattenSigmaPx: 0,
-        qcEveryMs: 1000,
+        // 4 frames of stream between snapshots.
+        fps: 20,
+        qcEveryS: 0.2,
         noiseEvery: 6,
       },
       null,
@@ -849,7 +851,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
         // Plenty of budget per frame for a 64 x 64 movie.
         budget: 1e8,
         // A QC snapshot after every batch.
-        qcEveryMs: 0,
+        qcEveryS: 0,
       },
       { postMessage: (msg) => toSlow.push({ msg }) },
       {

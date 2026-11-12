@@ -247,25 +247,10 @@ describe('ProgressBar', () => {
 });
 
 describe('sparkRange', () => {
-  it('uses a fixed range when given, widening a degenerate one', () => {
-    expect(sparkRange([], [0, 1])).toEqual({ lo: 0, hi: 1 });
-    expect(sparkRange([], [2, 2])).toEqual({ lo: 2, hi: 3 });
-  });
-
-  it('runs from min(0, lowest) to the 98th percentile of finite values', () => {
-    const values = Array.from({ length: 100 }, (_, i) => i + 1); // 1..100
-    values.push(NaN, Infinity);
-    const { lo, hi } = sparkRange([{ values, color: 'red' }]);
-    expect(lo).toBe(0);
-    // 100 finite values sorted: index floor(0.98 * 99) = 97 -> 98
-    expect(hi).toBe(98);
-    expect(sparkRange([{ values: [-5, 1, 2], color: 'red' }]).lo).toBe(-5);
-  });
-
-  it('falls back to lo + 1 with no data or a flat series', () => {
-    expect(sparkRange([])).toEqual({ lo: 0, hi: 1 });
-    expect(sparkRange([{ values: [0, 0], color: 'red' }])).toEqual({ lo: 0, hi: 1 });
-    expect(sparkRange([{ values: [NaN], color: 'red' }])).toEqual({ lo: 0, hi: 1 });
+  it('is the declared range, never the data, widening a degenerate one', () => {
+    expect(sparkRange([0, 1])).toEqual({ lo: 0, hi: 1 });
+    expect(sparkRange([2, 2])).toEqual({ lo: 2, hi: 3 });
+    expect(sparkRange([-10, 10])).toEqual({ lo: -10, hi: 10 });
   });
 });
 

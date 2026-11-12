@@ -1,7 +1,6 @@
 import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
 import { SegmentedControl, Tabs } from '@calab/ui';
-import { OKABE_ITO, TracePanel, viridisRGB } from '@calab/ui/chart';
-import type uPlot from 'uplot';
+import { viridisRGB } from '@calab/ui/chart';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
@@ -192,16 +191,6 @@ function FootprintEvolution(props: {
   );
 }
 
-const COUNT_SERIES: uPlot.Series[] = [
-  {},
-  { label: 'fast-loop library', stroke: OKABE_ITO.blue, width: 1.5 },
-  { label: 'slow-loop working set', stroke: OKABE_ITO.bluishGreen, width: 1, dash: [4, 3] },
-];
-const LAG_SERIES: uPlot.Series[] = [
-  {},
-  { label: 'lag (frames)', stroke: OKABE_ITO.orange, width: 1.25 },
-];
-
 function SelectedCell(props: {
   cells: CellStore;
   id: number;
@@ -280,8 +269,20 @@ function SelectedCell(props: {
 }
 
 /** The clicked cell: footprint, facts, QC and trace (right-hand column). */
-export function SelectedCellPanel(props: { cells: CellStore; fps: number }): JSX.Element {
+export function SelectedCellPanel(props: {
+  cells: CellStore;
+  fps: number;
+  /** Fold to its header line (while the History tab is open); unfolds when this turns false. */
+  folded?: boolean;
+}): JSX.Element {
   const [scale, setScale] = createSignal<FootprintScale>('linear');
+  const [open, setOpen] = createSignal(true);
+  createEffect(
+    on(
+      () => props.folded === true,
+      (f) => setOpen(!f),
+    ),
+  );
   /** The cell before or after the selected one, by id. */
   const step = (dir: 1 | -1) => {
     const ids = Array.from(props.cells.library()?.ids ?? []).sort((a, b) => a - b);
@@ -297,6 +298,8 @@ export function SelectedCellPanel(props: { cells: CellStore; fps: number }): JSX
   return (
     <SidePanel
       id="cell"
+      open={open()}
+      onToggle={setOpen}
       class="cala-cell-panel"
       title={
         <Show when={props.cells.selected()} fallback="Cell">
@@ -361,14 +364,9 @@ export function SelectedCellPanel(props: { cells: CellStore; fps: number }): JSX
   );
 }
 
-/** Library size against frames read, and the slow loop's counters. */
-export function CellCountPlot(props: { cells: CellStore }): JSX.Element {
+/** The slow loop's counters as text (kept from the old Cells tab). */
+function SlowCounters(props: { cells: CellStore }): JSX.Element {
   const c = () => props.cells;
-  const counts = createMemo((): [number[], ...number[][]] => {
-    c().tick();
-    const m = c().metrics();
-    return [m.frame.slice(), m.cells.slice(), m.working.slice() as number[]];
-  });
   const changes = () => {
     const ev = c().events();
     let added = 0;
@@ -386,62 +384,27 @@ export function CellCountPlot(props: { cells: CellStore }): JSX.Element {
     return all > 0 ? (100 * b.droppedFrames) / all : 0;
   };
   return (
-    <div data-testid="cells-metrics">
-      <div class="cala-trace-head">
-        <h3 class="panel-label">Cells vs frames read</h3>
-        <span class="cala-legend">
-          <span class="cala-legend__swatch" style={{ background: OKABE_ITO.blue }} />
-          fast-loop library
-          <span class="cala-legend__swatch" style={{ background: OKABE_ITO.bluishGreen }} />
-          slow-loop working set
-        </span>
-      </div>
-      <TracePanel
-        data={counts}
-        series={COUNT_SERIES}
-        height={130}
-        syncKey="cala-cells"
-        xLabel="Frame"
-      />
-      <p class="cala-muted cala-tab-note" data-testid="cells-counters">
-        <Show when={c().status()} fallback="The slow loop starts after frame 50.">
-          {(st) => (
-            <>
-              working set {st().cells} &middot; adds {st().counters.adds}, merges{' '}
-              {st().counters.merges}, refines {st().counters.refines}, rejects{' '}
-              {st().counters.rejects} &middot; versions {changes().versions} (+{changes().added} / -
-              {changes().removed} cells) &middot; dropped {dropPct().toFixed(0)}% of frames &middot;
-              reservoir {(st().reservoirBytes / 1048576).toFixed(0)} MB
-              <Show when={st().framesPerTile > 0}>, {st().framesPerTile} frames per tile</Show>
-              <Show when={st().reservoirWarning}>
-                {(w) => (
-                  <span class="cala-warning cala-block" data-testid="reservoir-warning">
-                    {w()}
-                  </span>
-                )}
-              </Show>
-            </>
-          )}
-        </Show>
-      </p>
-    </div>
-  );
-}
-
-/** How far the slow loop is behind the fast loop. */
-export function LagPlot(props: { cells: CellStore }): JSX.Element {
-  const lag = createMemo((): [number[], ...number[][]] => {
-    props.cells.tick();
-    const m = props.cells.metrics();
-    return [m.frame.slice(), m.lag.slice() as number[]];
-  });
-  return (
-    <div data-testid="lag-metrics">
-      <div class="cala-trace-head">
-        <h3 class="panel-label">Slow-loop lag (frames behind the fast loop)</h3>
-      </div>
-      <TracePanel data={lag} series={LAG_SERIES} height={130} syncKey="cala-cells" xLabel="Frame" />
-    </div>
+    <p class="cala-muted cala-tab-note" data-testid="cells-counters">
+      <Show when={c().status()} fallback="The slow loop starts after frame 50.">
+        {(st) => (
+          <>
+            working set {st().cells} &middot; adds {st().counters.adds}, merges{' '}
+            {st().counters.merges}, refines {st().counters.refines}, rejects {st().counters.rejects}{' '}
+            &middot; versions {changes().versions} (+{changes().added} / -{changes().removed} cells)
+            &middot; dropped {dropPct().toFixed(0)}% of frames &middot; reservoir{' '}
+            {(st().reservoirBytes / 1048576).toFixed(0)} MB
+            <Show when={st().framesPerTile > 0}>, {st().framesPerTile} frames per tile</Show>
+            <Show when={st().reservoirWarning}>
+              {(w) => (
+                <span class="cala-warning cala-block" data-testid="reservoir-warning">
+                  {w()}
+                </span>
+              )}
+            </Show>
+          </>
+        )}
+      </Show>
+    </p>
   );
 }
 
@@ -466,6 +429,7 @@ export function TimingText(props: { store: PipelineStore; cells: CellStore }): J
   });
   return (
     <div class="cala-timing">
+      <SlowCounters cells={props.cells} />
       <p class="cala-muted" data-testid="pipeline-stages">
         Pipeline ms/frame: read {s().stageMs().readMs.toFixed(1)}, preprocess{' '}
         {s().stageMs().preprocessMs.toFixed(1)}, motion {s().stageMs().motionMs.toFixed(1)}

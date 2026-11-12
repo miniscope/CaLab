@@ -80,15 +80,15 @@ portrait window, the column moves under the image and the page scrolls.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run panel.** Pass 1 (discover) and pass 2 (re-extract) progress and the convergence
-metrics share one time axis, in minutes of the recording, with a dashed line at the
-frame being read now. So you can read how far a pass has got and whether the cell set
-had settled by that point. The header has the convergence status and **Pause**,
-**Restart** and **End pass 1**. Collapsing the panel folds the metric rows away and
-keeps the pass bars. Below the timeline: frame, frames/s and lag readouts, **Discover
-cells**, **Pass 2 after pass 1**, **Run pass 2** and the **Export** menu. In a narrow
-window the passes show as a stepper (Calibrate, Pass 1, Pass 2, Export) and the
-metrics as small tiles.
+**Run panel.** One status line (percent read, frame, frames per second) and the
+convergence status, with icon buttons to pause (⏸), restart (↻) and end pass 1 or
+stop the live run (■). Below it: the time-window control (**Run** and, when the run is
+long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
+overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
+explained, residual). Collapsing the panel folds the plot away. Below the plot:
+pass 2 progress, **Discover cells**, **Pass 2 after pass 1**, **Run pass 2** and the
+**Export** menu. In a narrow window the passes show as a stepper (Calibrate, Pass 1,
+Pass 2, Export) and the metrics as small tiles on the same fixed ranges.
 
 **Cell panel.** The selected cell's footprint over its full extent (its own peak = 1,
 no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
@@ -99,8 +99,46 @@ overview with a live detail window; **Demixing** shows the overlapping neighbour
 arrows step through the cells by id.
 
 **Details panel.** Tabs: **Cell QC** (the cell table: click a row to select the cell),
-**Cells**, **Lag**, **Motion**, **Flicker**, **Flat field**, **Timing**, **Raw file**
-(scrub the recording as read from disk) and **Recording**.
+**History** (see below), **Flat field**, **Timing** (per-stage times and the slow
+loop's counters), **Raw file** (scrub the recording as read from disk) and
+**Recording**.
+
+## The History view: how the run evolves
+
+Every quantity the run tracks is kept over the whole run, from a 5-minute file to a
+5-day live stream, and drawn on one time axis (elapsed stream time: `m:ss`, then
+`h:mm`, then days `d0`…`d5`).
+
+- **Groups.** The Run panel shows **Convergence**. The **History** tab shows one group
+  at a time: **Scales** (cell diameter, PSF and flatten σ, once the scale estimator
+  lands), **Imaging** (noise σ and background, both the median over the field of
+  view; flicker gain and offset; flat-field updates as stems), **Motion** (dy, dx,
+  share of frames flagged, registration quality) and **Throughput** (processing rate,
+  slow-loop lag, and for a live stream frames dropped per minute and live lag). The
+  Cell panel folds to one line while History is open.
+- **One plot per group.** Every series is drawn against its own fixed range, so they
+  share one plot. The chips above it are the legend and the readout: click a chip (or
+  a line, or use the arrow keys) to select a series. The selected one is drawn in
+  full with its min/max envelope, and the y axis shows its units and range; the
+  others are dimmed. Hover a chip for its full name, range and unit.
+- **Hover** shows every series' value at that time, with the clock time. **Click**
+  pins the time: the chips show the values then, in violet, and the Run panel shows
+  a violet pill; **Esc** or the pill returns to now.
+- **Zoom.** Drag on the whole-run strip, or drag or scroll inside a plot, to choose a
+  window; double-click returns to the whole run. The window and the pinned time are
+  shared by every plot.
+- **Fixed ranges.** Ranges come from physics and biology, never from the data, and
+  they never shrink. When a value goes past one, it steps up once along 1, 2, 5 x 10ⁿ
+  (or doubles): the old limit stays as an amber dashed line, a ⇡ marks the step, the
+  event goes into the log, and the group tab gets an amber dot.
+- **Events.** The lane above each plot marks flat-field maps, pauses, gaps and
+  warnings, and range steps; the **?** button explains the icons.
+- **Expand.** The ⤢ button swaps History into the large area, with every group at once;
+  the field of view moves into the History tab and stays live. ⤡ restores it.
+- **Old periods are coarser.** The newest hour is kept at 1 s resolution, older
+  periods at 4 s, 16 s, 64 s and 256 s bins; each bin keeps its minimum and maximum,
+  so a spike is never lost. About 9 MB covers 5 days. The per-frame motion and
+  flicker are in the export at full resolution regardless.
 
 ## How a run works
 
@@ -119,11 +157,13 @@ arrows step through the cells by id.
    and a JSON block with the run's provenance. **Export for CaDecon (N cells)** writes just
    the traces of the cells that pass QC (untick **QC-passing cells only** to include
    every cell), for CaDecon. Python:
-   `np.load("<folder>_cala.npz")["traces"]`.
+   `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds the run's history
+   (`history_L0` … `history_L4`) and event log (`run_events_json`); see
+   [Reading the run history in Python](#reading-the-run-history-in-python).
 
 ## Reading the quality-control indicators
 
-**Convergence status** (Run panel header, with the metric rows below it). Cell discovery does not stop on long
+**Convergence status** (Run panel header, with the convergence plot below it). Cell discovery does not stop on long
 recordings, so "converged" means the cells already found stopped changing, not that
 no new cells appear.
 
@@ -211,3 +251,37 @@ never changed. See the README for the protocol and the full option list.
   covered by this guide.
 - **Everything stays in the tab.** Closing the page discards a run that was not
   exported.
+
+## Reading the run history in Python
+
+The `.npz` export (format version 2) holds the History view's bins and the run's
+event log. `meta_json["history"]` describes the layout: for each level `k` its bin
+width `bin_s` and first bin time `t0_s` (stream seconds, frame / sampling rate), and
+for each series its `key`, `label`, `unit`, and initial and final display range.
+
+```python
+import json
+import numpy as np
+
+z = np.load("<folder>_cala.npz")
+meta = json.loads(z["meta_json"].tobytes())
+hist = meta["history"]
+keys = [s["key"] for s in hist["series"]]
+
+def series(key, level=None):
+    """Bin start times (s) and (min, max, mean, last) of one series; NaN = empty bin."""
+    levels = hist["levels"]
+    lv = levels[-1] if level is None else next(l for l in levels if l["k"] == level)
+    bins = z[f"history_L{lv['k']}"][keys.index(key)]  # [n, 4]
+    t = lv["t0_s"] + lv["bin_s"] * np.arange(bins.shape[0])
+    return t, bins
+
+t, b = series("shift_dy")            # the coarsest level covers the whole run
+peak = np.nanmax(b[:, 1])            # extrema survive every level
+events = json.loads(z["run_events_json"].tobytes())
+ranges = [e for e in events if e["kind"] == "range"]
+```
+
+The finest level (`history_L0`, 1 s bins) covers the newest 68 minutes; each coarser
+level (4x wider bins) reaches further back, and the coarsest always covers the whole
+run.

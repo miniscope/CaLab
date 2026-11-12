@@ -177,7 +177,7 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="frame-readout"]')?.textContent).toContain('26 / 50');
   });
 
-  it('runs the pipeline on open and shows progress and the motion trace', async () => {
+  it('runs the pipeline on open and shows progress and the history', async () => {
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
@@ -192,8 +192,13 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
       'motion 0.1',
     );
-    expect(root.querySelector('[data-testid="motion-trace"]')).not.toBeNull();
-    expect(root.querySelector('[data-testid="flicker-trace"]')).not.toBeNull();
+    // The Run panel's convergence plot (tiles in a narrow window, as jsdom's is) and the
+    // History tab (one group shown) are up.
+    expect(
+      root.querySelector('[data-testid="history-convergence"], [data-testid="tile-cells"]'),
+    ).not.toBeNull();
+    expect(root.querySelector('[data-testid="history-tab"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
     expect(root.querySelectorAll('[data-testid="cells-view"]')).toHaveLength(1);
 
     // Opening another folder stops the worker-side pipeline.
