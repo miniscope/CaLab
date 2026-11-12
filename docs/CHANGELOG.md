@@ -16,6 +16,44 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
   USER_GUIDE section, "Testing with a simulated stream".
 
+## [2.14.0] - 2026-11-12
+
+Web apps `v2.14.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A redesigned Cala screen: one large, zoomable field of view and a single
+right-hand column for the run, the selected cell and the pipeline details.
+Cala's pipeline and results are unchanged; CaTune and CaDecon look the same.
+
+### Changed
+
+- **Cala layout** (#347). One square field of view at full height (about
+  750 px at 1440×900, against two panes of about 280 px before), with a view
+  selector (Raw, Preprocessed, Motion-corrected, Bg removed, Residual), each
+  with its own fixed display range and Re-fit. The right column holds three
+  collapsible panels: Run (pass 1 and pass 2 progress and the convergence
+  metrics on one time axis), Cell (the single-cell viewer) and Details (cell
+  table, motion, flicker, flat field, timing and the other tabs). Narrow
+  windows get a horizontal pass stepper. Cala has its own violet accent.
+- The start page's live-source field starts empty and is marked optional.
+
+### Added
+
+- Zoom and pan on the field of view while it plays (wheel, +/−, Fit, 1:1,
+  drag), with a minimap when zoomed in; zooming adds no pipeline work.
+- Overlay modes Off, Contours (default), Footprints (filled full extent,
+  opacity = value over the cell's peak, no threshold) and Both, with every
+  colour-by mode and a fixed-scale legend. The residual heat map stays as an
+  option.
+- A full-frame Residual view (frame minus footprints times traces), computed
+  only while it is shown.
+- Shared UI components in `packages/ui`: tabs, segmented control, a generic
+  progress bar, metric tile with sparkline and one `.panel-label`; CaDecon's
+  progress bar and analysis tabs use them.
+
+### Fixed
+
+- Cala's raw-file frame controls wrap instead of collapsing to zero width in
+  the narrower column.
+
 ## [2.13.1] - 2026-11-12
 
 Web apps `v2.13.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
