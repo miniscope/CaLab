@@ -542,7 +542,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             />
           </div>
           <RunStrip ui={props.ui} />
-          <Show when={metricsOpen()}>
+          {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
+          <Show when={metricsOpen() && !props.ui.expanded()}>
             <GroupPlot ui={props.ui} group="convergence" height={130} compact />
           </Show>
           <Show when={!props.live && pass2Shown()}>
