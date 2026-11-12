@@ -42,7 +42,10 @@
 //!   the same high-pass the preprocessing applies (`a − G_σ * a`, exact away
 //!   from the lens edge), normalised to peak 1, cut to a seed support of 2.5
 //!   half-widths (no upper bound; the running statistics later grow it to
-//!   wherever the cell's light is significant, `support_z`); the target is
+//!   wherever the cell's light is significant: `support_z` rings under
+//!   [`SupportRule::Rings`], the default, or the significant single-peaked
+//!   basin of the PSF-smoothed measured light under the basin rules, see
+//!   [`SupportRule`]); the target is
 //!   first smoothed at a tenth of a cell diameter (the
 //!   optics' scale), which removes the pixel noise of a footprint estimated
 //!   from a few dozen frames. The candidate is accepted when, on the
@@ -295,6 +298,25 @@ pub enum SupportRule {
     BasinSkirt,
 }
 
+/// The split halves of a cell's running statistics on its disk pixels:
+/// `(pix, h_A, h_B, s_A, s_B)` ([`fpstats::FpStats::halves`]).
+type SplitHalves = (Vec<u32>, Vec<f32>, Vec<f32>, f64, f64);
+
+/// The measured support of one footprint construction (S2.1, basin
+/// rules), on the construction's canvas.
+pub(crate) struct MeasuredSupport {
+    /// The basin `S0` and the other significant light `X`.
+    pub s0: Vec<bool>,
+    pub x: Vec<bool>,
+    /// A local maximum of the light inside `X` (a second soma).
+    pub second: bool,
+    /// Measured SE inflation, family-wise z and the number of tested
+    /// pixels.
+    pub phi: f64,
+    pub z_fw: f64,
+    pub n: usize,
+}
+
 /// Which structural edits the slow loop may make (S2.3b: refinement-only
 /// later passes). Refinements of existing footprints are always allowed;
 /// the default allows everything. A visit that may only refine skips the
@@ -427,7 +449,8 @@ pub struct SlowLoopConfig {
     /// centre belongs to it while the ring's mean light is this many
     /// standard errors above zero (no size cap; never tighter than the
     /// seed rule, so bright cells take their full extent as the frames
-    /// accumulate and dim ones keep at least their 2.5 half-widths).
+    /// accumulate and dim ones keep at least their 2.5 half-widths). Used
+    /// by [`SupportRule::Rings`] (and the optional basin trim) only.
     pub support_z: f32,
     /// How the statistics path measures a support (see [`SupportRule`]);
     /// `Rings` (the default) is the rule above.
@@ -705,6 +728,9 @@ pub struct SlowStats {
     pub split_tests: u64,
     pub work_split: u64,
     pub work_stats: u64,
+    /// Statistics proposals not made under a basin support rule because
+    /// the split halves gave no measured standard error.
+    pub support_no_se: u64,
 }
 
 /// The slow loop. See the module docs.
@@ -726,6 +752,10 @@ pub struct SlowLoop {
     /// measured standard error and the held-out core (if one passed) for
     /// the next `finish_cell`.
     fast_tmp: Option<(Vec<f32>, f64, Option<(f32, f32)>)>,
+    /// The statistics' split halves (disk pixels, `h_A`, `h_B`, `s_A`,
+    /// `s_B`) for the next `finish_cell` (the basin support rules, and the
+    /// support audit).
+    support_tmp: Option<SplitHalves>,
     /// Last core check per cell (frame) and consecutive failed checks;
     /// counters: proposals with a passing core, without one, cells deleted.
     fast_checked: HashMap<u64, u64>,
@@ -1055,6 +1085,7 @@ impl SlowLoop {
             psf: LocalFilter::new(PSF_SIGMA_PX),
             basin_diag: (0, 0.0, 0),
             fast_tmp: None,
+            support_tmp: None,
             fast_checked: HashMap::new(),
             fast_strikes: HashMap::new(),
             fast_diag: (0, 0, 0),
@@ -2153,6 +2184,8 @@ impl SlowLoop {
         self.work +=
             (self.dims.pixels() * 40) as u64 * (1 + changed as u64 / 50) + support as u64 * 40;
         self.cells = cells;
+        #[cfg(feature = "diagnostics")]
+        diagnostics::support_library(self);
         let lib = Arc::new(lib);
         self.published = Some(lib.clone());
         self.pending = false;
@@ -2885,6 +2918,11 @@ impl SlowLoop {
                 / a.iter().map(|v| v * v).sum::<f32>().max(1e-12);
             a.iter_mut().for_each(|v| *v *= s.max(0.0));
         }
+        if self.cfg.support_rule != SupportRule::Rings {
+            if let (Some(se), Some(h)) = (se, &unsmoothed) {
+                return self.finish_basin(id, canvas, &target, &mask, a, start, se, h);
+            }
+        }
         self.filter
             .invert(canvas.h, canvas.w, &mask, &target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
@@ -2936,7 +2974,7 @@ impl SlowLoop {
             return None;
         }
         a.iter_mut().for_each(|v| *v /= peak);
-        Cell::from_canvas(
+        let cell = Cell::from_canvas(
             id,
             canvas,
             &a,
@@ -2946,7 +2984,325 @@ impl SlowLoop {
             extent,
             &mut self.filter,
             &[],
-        )
+        );
+        #[cfg(feature = "diagnostics")]
+        if let (Some(se), Some(h), Some(c)) = (se, &unsmoothed, &cell) {
+            if diagnostics::support_audit_on() {
+                let halves = self.halves_on(canvas);
+                let ms = halves
+                    .as_ref()
+                    .and_then(|hv| self.measured_support(canvas, h, &mask, hv, se, start));
+                self.audit_construction(
+                    canvas,
+                    h,
+                    &mask,
+                    se,
+                    halves.as_ref(),
+                    ms.as_ref(),
+                    c,
+                    peak,
+                );
+            }
+        }
+        cell
+    }
+
+    /// DIAG (`CALA_SUPPORT_AUDIT`): one `C` row for a footprint construction
+    /// on the statistics path (see `diagnostics::support_construction`).
+    #[cfg(feature = "diagnostics")]
+    #[allow(clippy::too_many_arguments)]
+    fn audit_construction(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        se: f64,
+        halves: Option<&(Vec<f32>, Vec<f32>, f64, f64)>,
+        ms: Option<&MeasuredSupport>,
+        cell: &Cell,
+        peak: f32,
+    ) {
+        let w = self.dims.width;
+        // The published footprint (data units) on the canvas, and its
+        // low-pass.
+        let mut a = vec![0.0f32; canvas.len()];
+        for (&g, &v) in cell.pix.iter().zip(&cell.raw) {
+            if let Some(l) = canvas.local(g as usize / w, g as usize % w) {
+                a[l] = v * peak;
+            }
+        }
+        let mut low = vec![0.0f32; canvas.len()];
+        self.filter.blur(canvas.h, canvas.w, &a, &mut low);
+        let block = self.filter.moat().map_or(0, |m| m.0);
+        let col: Vec<f32> = (0..canvas.len())
+            .map(|p| {
+                let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
+                cell.column_at((gy * w + gx) as u32, w, block) * peak
+            })
+            .collect();
+        let rule = match self.cfg.support_rule {
+            SupportRule::Rings => "rings",
+            SupportRule::Basin => "basin",
+            SupportRule::BasinSkirt => "basin-skirt",
+        };
+        diagnostics::support_construction(
+            self,
+            &diagnostics::SupportInput {
+                rule,
+                canvas,
+                h,
+                mask,
+                a: &a,
+                low: &low,
+                col: &col,
+                se,
+                halves,
+                ms,
+                cell,
+                block,
+            },
+        );
+    }
+
+    /// The split halves of `support_tmp` on `canvas` (zero off the disk):
+    /// `(h_A, h_B, s_A, s_B)`.
+    fn halves_on(&self, canvas: Rect) -> Option<(Vec<f32>, Vec<f32>, f64, f64)> {
+        let (pix, ha, hb, sa, sb) = self.support_tmp.as_ref()?;
+        let w = self.dims.width;
+        let (mut ca, mut cb) = (vec![0.0f32; canvas.len()], vec![0.0f32; canvas.len()]);
+        for (k, &g) in pix.iter().enumerate() {
+            if let Some(l) = canvas.local(g as usize / w, g as usize % w) {
+                ca[l] = ha[k];
+                cb[l] = hb[k];
+            }
+        }
+        Some((ca, cb, *sa, *sb))
+    }
+
+    /// PSF-smoothed light on the mask, `K * (v m) / K * m` (NaN where the
+    /// mask's weight is negligible), and the normaliser `K * m`.
+    fn psf_light(&mut self, canvas: Rect, v: &[f32], mask: &[bool]) -> (Vec<f32>, Vec<f32>) {
+        let n = canvas.len();
+        let m: Vec<f32> = mask.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
+        let vm: Vec<f32> = (0..n).map(|p| if mask[p] { v[p] } else { 0.0 }).collect();
+        let (mut bv, mut bm) = (vec![0.0f32; n], vec![0.0f32; n]);
+        self.psf.blur(canvas.h, canvas.w, &vm, &mut bv);
+        self.psf.blur(canvas.h, canvas.w, &m, &mut bm);
+        let q = (0..n)
+            .map(|p| {
+                if mask[p] && bm[p] > 1e-3 {
+                    bv[p] / bm[p]
+                } else {
+                    f32::NAN
+                }
+            })
+            .collect();
+        self.work += (n * 20) as u64;
+        (q, bm)
+    }
+
+    /// The support rule of S2.1 on one construction's canvas: the light
+    /// `q = K_psf * h` (measured light only; no `L a` add-back), its
+    /// standard error `φ se σ_p sqrt(k² / K * m)` with the inflation `φ ≥ 1`
+    /// measured from the split halves smoothed the same way, the
+    /// family-wise threshold `z_fw = Φ⁻¹(1 − α / N)` over the `N` tested
+    /// pixels, and the single-peaked basin of significant light from the
+    /// cell's peak ([`basin`]). `None` when the peak is not significant.
+    fn measured_support(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        halves: &(Vec<f32>, Vec<f32>, f64, f64),
+        se: f64,
+        start: Option<&Cell>,
+    ) -> Option<MeasuredSupport> {
+        let n = canvas.len();
+        let (ch, cw) = (canvas.h, canvas.w);
+        let (q, bm) = self.psf_light(canvas, h, mask);
+        let (qa, _) = self.psf_light(canvas, &halves.0, mask);
+        let (qb, _) = self.psf_light(canvas, &halves.1, mask);
+        let sp = f64::from(self.psf.sigma());
+        let k2 = 1.0 / (4.0 * std::f64::consts::PI * sp * sp);
+        let w = self.dims.width;
+        // White standard error per pixel of the smoothed light, per unit se.
+        let white: Vec<f64> = (0..n)
+            .map(|p| {
+                if q[p].is_finite() {
+                    let (gy, gx) = (canvas.y0 + p / cw, canvas.x0 + p % cw);
+                    f64::from(self.noise[gy * w + gx]) * (k2 / f64::from(bm[p]).max(k2)).sqrt()
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        let vab = halves.2 * halves.2 + halves.3 * halves.3;
+        let mut ratios: Vec<f64> = (0..n)
+            .filter(|&p| q[p].is_finite() && white[p] > 0.0)
+            .map(|p| {
+                let d = f64::from(qa[p] - qb[p]);
+                d * d / (vab * white[p] * white[p])
+            })
+            .filter(|r| r.is_finite())
+            .collect();
+        let n_test = (0..n).filter(|&p| q[p].is_finite()).count();
+        if ratios.is_empty() || n_test == 0 || !(se > 0.0) || !se.is_finite() {
+            return None;
+        }
+        ratios.sort_by(f64::total_cmp);
+        // 0.4549: the median of chi-squared with one degree of freedom.
+        let phi = (ratios[ratios.len() / 2] / 0.4549).max(1.0).sqrt();
+        let alpha = f64::from(self.cfg.support_alpha);
+        let z_fw = norm_quantile(1.0 - alpha / n_test as f64);
+        let tol: Vec<f32> = (0..n)
+            .map(|p| {
+                if q[p].is_finite() {
+                    (z_fw * phi * se * white[p]) as f32
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        // Seed: the brightest light on the current cell's positive pixels
+        // (on the whole disk without one).
+        let mut seeds: Vec<usize> = Vec::new();
+        if let Some(c) = start {
+            for (&g, &v) in c.pix.iter().zip(&c.raw) {
+                if v > 0.0 {
+                    if let Some(l) = canvas.local(g as usize / w, g as usize % w) {
+                        if q[l].is_finite() {
+                            seeds.push(l);
+                        }
+                    }
+                }
+            }
+        }
+        if seeds.is_empty() {
+            seeds = (0..n).filter(|&p| q[p].is_finite()).collect();
+        }
+        let p0 = seeds.into_iter().max_by(|&i, &j| q[i].total_cmp(&q[j]))?;
+        if !(q[p0] > tol[p0]) {
+            return None;
+        }
+        let s0 = basin(&q, &tol, mask, ch, cw, p0);
+        let x: Vec<bool> = (0..n)
+            .map(|p| !s0[p] && q[p].is_finite() && q[p] > tol[p])
+            .collect();
+        let second = (0..n).any(|p| x[p] && local_max(&q, ch, cw, p));
+        Some(MeasuredSupport {
+            s0,
+            x,
+            second,
+            phi,
+            z_fw,
+            n: n_test,
+        })
+    }
+
+    /// `finish_cell` under a basin support rule: the support is the
+    /// measured basin `S0` ([`Self::measured_support`]); the high-pass is
+    /// inverted on it alone, and under [`SupportRule::BasinSkirt`] the moat
+    /// blocks carry the measured block-mean light of the rest of the disk.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_basin(
+        &mut self,
+        id: u64,
+        canvas: Rect,
+        target: &[f32],
+        mask: &[bool],
+        mut a: Vec<f32>,
+        start: Option<&Cell>,
+        se: f64,
+        h: &[f32],
+    ) -> Option<Cell> {
+        let halves = self.halves_on(canvas)?;
+        let ms = self.measured_support(canvas, h, mask, &halves, se, start)?;
+        self.basin_diag.0 += 1;
+        self.basin_diag.2 += u64::from(ms.second);
+        self.filter
+            .invert(canvas.h, canvas.w, &ms.s0, target, &mut a, 40);
+        self.work += (canvas.len() * 40 * 60) as u64;
+        let peak = a.iter().copied().fold(0.0f32, f32::max);
+        if !(peak > 0.0) {
+            return None;
+        }
+        let skirt = if self.cfg.support_rule == SupportRule::BasinSkirt {
+            self.skirt_blocks(canvas, h, mask, &a, &ms.x, peak)
+        } else {
+            Vec::new()
+        };
+        a.iter_mut().for_each(|v| *v /= peak);
+        let cell = Cell::from_canvas(
+            id,
+            canvas,
+            &a,
+            self.dims,
+            &self.fov,
+            &self.cfg.library,
+            Extent::Given,
+            &mut self.filter,
+            &skirt,
+        );
+        #[cfg(feature = "diagnostics")]
+        if let Some(c) = &cell {
+            if diagnostics::support_audit_on() {
+                self.audit_construction(canvas, h, mask, se, Some(&halves), Some(&ms), c, peak);
+            }
+        }
+        cell
+    }
+
+    /// The skirt (S2.1 section 4.2): per moat-grid block, the measured
+    /// light above the moat model, `h + L a`, summed over the disk's pixels
+    /// outside the support `S = {a > 0}` and outside the other significant
+    /// light `x`, over the block's FOV pixels outside `S` (unmeasured
+    /// pixels add nothing but count), divided by `peak`. Blocks without a
+    /// measured pixel get no entry. No threshold: a block mean is an
+    /// unbiased measurement.
+    fn skirt_blocks(
+        &mut self,
+        canvas: Rect,
+        h: &[f32],
+        mask: &[bool],
+        a: &[f32],
+        x: &[bool],
+        peak: f32,
+    ) -> Vec<(u32, f32)> {
+        let Some((b, _)) = self.filter.moat() else {
+            return Vec::new();
+        };
+        let mut low = vec![0.0f32; canvas.len()];
+        self.filter.blur(canvas.h, canvas.w, a, &mut low);
+        self.work += (canvas.len() * 30) as u64;
+        let (w, hgt) = (self.dims.width, self.dims.height);
+        let gw = w.div_ceil(b);
+        let mut sums: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
+        for p in 0..canvas.len() {
+            if !mask[p] || a[p] > 0.0 || x[p] {
+                continue;
+            }
+            let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
+            let bq = ((gy / b) * gw + gx / b) as u32;
+            *sums.entry(bq).or_insert(0.0) += f64::from(h[p] + low[p]);
+        }
+        let mut out = Vec::with_capacity(sums.len());
+        for (bq, sum) in sums {
+            let (by, bx) = (bq as usize / gw, bq as usize % gw);
+            let mut nb = 0usize;
+            for y in by * b..((by + 1) * b).min(hgt) {
+                for xx in bx * b..((bx + 1) * b).min(w) {
+                    if self.fov[y * w + xx] == 0 {
+                        continue;
+                    }
+                    let inside = canvas.local(y, xx).is_some_and(|l| a[l] > 0.0);
+                    nb += usize::from(!inside);
+                }
+            }
+            if nb > 0 {
+                out.push((bq, (sum / nb as f64 / f64::from(peak)) as f32));
+            }
+        }
+        out
     }
 
     /// [`Self::basin_trim_from`] seeded at the peak
@@ -3019,32 +3375,7 @@ impl SlowLoop {
                 .max_by(|&i, &j| a[i].total_cmp(&a[j]))
         });
         let Some(p0) = p0 else { return };
-        let mut inb = vec![false; n];
-        let mut floor = vec![f32::NEG_INFINITY; n];
-        let mut heap = std::collections::BinaryHeap::new();
-        let key = |v: f32| (v * 1e6) as i64;
-        inb[p0] = true;
-        floor[p0] = u[p0];
-        heap.push((key(u[p0]), p0));
-        while let Some((_, p)) = heap.pop() {
-            let (y, x) = (p / cw, p % cw);
-            let nb = [
-                (y > 0).then(|| p - cw),
-                (y + 1 < ch).then(|| p + cw),
-                (x > 0).then(|| p - 1),
-                (x + 1 < cw).then(|| p + 1),
-            ];
-            for q in nb.into_iter().flatten() {
-                if inb[q] || !mask[q] || !u[q].is_finite() {
-                    continue;
-                }
-                if u[q] > tol[q] && u[q] <= floor[p] + tol[q] {
-                    inb[q] = true;
-                    floor[q] = floor[p].min(u[q]);
-                    heap.push((key(u[q]), q));
-                }
-            }
-        }
+        let inb = basin(&u, &tol, mask, ch, cw, p0);
         let tot: f64 = a.iter().map(|&v| f64::from(v.max(0.0))).sum();
         let mut cut = 0.0f64;
         // a second significant peak outside the basin: a local max of u that is significant
@@ -3747,8 +4078,28 @@ impl SlowLoop {
             let sef = fi.se_white * fi.f_ring.max(0.0).sqrt();
             self.fast_tmp = Some((fi.h, sef, ok.then_some(fi.core)));
         }
+        self.support_tmp = None;
+        let basin = self.cfg.support_rule != SupportRule::Rings;
+        #[cfg(feature = "diagnostics")]
+        let want_halves = basin || diagnostics::support_audit_on();
+        #[cfg(not(feature = "diagnostics"))]
+        let want_halves = basin;
+        if want_halves {
+            let halves = self.fpstats.get(&cell.id).and_then(|st| {
+                let (ha, hb, sa, sb) = st.halves()?;
+                Some((st.pix.clone(), ha, hb, sa, sb))
+            });
+            if halves.is_none() && basin {
+                // No measured standard error: no proposal, the cell keeps
+                // its footprint.
+                self.stats.support_no_se += 1;
+                return None;
+            }
+            self.support_tmp = halves;
+        }
         let new = self.make_cell_global(cell.id, &pix, &h, Some(cell), se);
         self.fast_tmp = None;
+        self.support_tmp = None;
         let mut new = new?;
         new.born = cell.born;
         if changed && self.change(cell, &new) < self.cfg.refine_min_change {
@@ -4463,6 +4814,124 @@ fn mark(pix: &[u32], sub: &[u32], out: &mut [bool]) {
         if j < sub.len() && sub[j] == p {
             out[i] = true;
         }
+    }
+}
+
+/// The single-peaked basin of the light `q` from `seed` (S1.6): a pixel
+/// `r` joins when a 4-neighbour `p` is in the basin, `q(r) > tol(r)` (it is
+/// significant) and `q(r) ≤ floor(p) + tol(r)` (it does not rise
+/// significantly above the lowest light on its way from the seed);
+/// `floor(r) = min(floor(p), q(r))`. Pixels join in order of decreasing
+/// `q`. Pixels off `mask` or with a non-finite `q` never join.
+fn basin(q: &[f32], tol: &[f32], mask: &[bool], ch: usize, cw: usize, seed: usize) -> Vec<bool> {
+    let n = ch * cw;
+    let mut inb = vec![false; n];
+    let mut floor = vec![f32::NEG_INFINITY; n];
+    let mut heap = std::collections::BinaryHeap::new();
+    let key = |v: f32| (v * 1e6) as i64;
+    inb[seed] = true;
+    floor[seed] = q[seed];
+    heap.push((key(q[seed]), seed));
+    while let Some((_, p)) = heap.pop() {
+        let (y, x) = (p / cw, p % cw);
+        let nb = [
+            (y > 0).then(|| p - cw),
+            (y + 1 < ch).then(|| p + cw),
+            (x > 0).then(|| p - 1),
+            (x + 1 < cw).then(|| p + 1),
+        ];
+        for r in nb.into_iter().flatten() {
+            if inb[r] || !mask[r] || !q[r].is_finite() {
+                continue;
+            }
+            if q[r] > tol[r] && q[r] <= floor[p] + tol[r] {
+                inb[r] = true;
+                floor[r] = floor[p].min(q[r]);
+                heap.push((key(q[r]), r));
+            }
+        }
+    }
+    inb
+}
+
+/// Whether `q[p]` is not below any of its 8 neighbours (non-finite
+/// neighbours ignored).
+fn local_max(q: &[f32], ch: usize, cw: usize, p: usize) -> bool {
+    let (y, x) = (p / cw, p % cw);
+    for (dy, dx) in [
+        (-1i64, 0i64),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (1, 1),
+        (-1, 1),
+        (1, -1),
+    ] {
+        let (yy, xx) = (y as i64 + dy, x as i64 + dx);
+        if yy >= 0 && xx >= 0 && (yy as usize) < ch && (xx as usize) < cw {
+            let v = q[yy as usize * cw + xx as usize];
+            if v.is_finite() && v > q[p] {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Inverse of the standard normal CDF, `Φ⁻¹(p)` for `0 < p < 1` (Acklam's
+/// rational approximation, relative error below 1.2e-9).
+pub(crate) fn norm_quantile(p: f64) -> f64 {
+    if !(p > 0.0 && p < 1.0) {
+        return if p >= 1.0 {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        };
+    }
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    const C: [f64; 6] = [
+        -7.784_894_002_430_293e-3,
+        -3.223_964_580_411_365e-1,
+        -2.400_758_277_161_838,
+        -2.549_732_539_343_734,
+        4.374_664_141_464_968,
+        2.938_163_982_698_783,
+    ];
+    const D: [f64; 4] = [
+        7.784_695_709_041_462e-3,
+        3.224_671_290_700_398e-1,
+        2.445_134_137_142_996,
+        3.754_408_661_907_416,
+    ];
+    let lo = 0.02425;
+    if p < lo {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else if p <= 1.0 - lo {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    } else {
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     }
 }
 

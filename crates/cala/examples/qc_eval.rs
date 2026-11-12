@@ -177,7 +177,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+    CoreTest, EditScope, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -2213,6 +2213,23 @@ fn main() {
     if args.iter().any(|a| a == "--basin-trim") {
         scfg.basin_trim = true;
     }
+    if let Some(v) = arg_value(&args, "--support-rule") {
+        scfg.support_rule = match v.as_str() {
+            "rings" => SupportRule::Rings,
+            "basin" => SupportRule::Basin,
+            "basin-skirt" => SupportRule::BasinSkirt,
+            other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
+        };
+    }
+    if let Some(v) = arg_value(&args, "--support-alpha") {
+        scfg.support_alpha = v.parse().unwrap();
+    }
+    if scfg.support_rule != SupportRule::Rings {
+        println!(
+            "support rule: {:?}, alpha {}",
+            scfg.support_rule, scfg.support_alpha
+        );
+    }
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
@@ -2994,7 +3011,7 @@ fn main() {
             std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
             std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
         }
-        if sl.config().basin_trim {
+        if sl.config().basin_trim || sl.config().support_rule != SupportRule::Rings {
             let (c, f, s2) = sl.basin_diag;
             println!(
                 "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",

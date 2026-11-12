@@ -1,7 +1,9 @@
-//! Opt-in, target-only frozen inputs for keep-test diagnosis.
+//! Opt-in, target-only frozen inputs for keep-test diagnosis, and the
+//! support audit (S2.1).
 //!
-//! Compiled only with `diagnostics`; inactive unless both CALA_TRACE_CELL and
-//! CALA_TRACE_DIR are set. This module writes observations and never solves,
+//! Compiled only with `diagnostics`; the keep-test capture is inactive unless
+//! both CALA_TRACE_CELL and CALA_TRACE_DIR are set, the support audit unless
+//! CALA_SUPPORT_AUDIT is. This module writes observations and never solves,
 //! mutates loop state, spends work credit, or advances the loop RNG.
 use super::ledger::Evidence;
 use super::local::{BgBasis, Cell, Column, Fit, Problem, Rect};
@@ -10,7 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 struct Config {
     target: u64,
@@ -456,6 +458,254 @@ pub(super) fn delete(slow: &SlowLoop, target: &Cell, reason: &str) {
     meta.flush().unwrap();
     drop(meta);
     event(sequence, &path, slow, "delete", target.id, tile);
+}
+
+// ---- support audit (S2.1) -------------------------------------------------
+
+/// `CALA_SUPPORT_AUDIT=<file>`: one tab-separated row per footprint
+/// construction on the statistics path (`C`, every support rule) and per
+/// published cell at each publish (`L`). Columns are in
+/// [`SUPPORT_AUDIT_HEADER`]. Independent of `CALA_TRACE_CELL`; it only
+/// writes observations.
+fn support_audit() -> Option<&'static Mutex<BufWriter<File>>> {
+    static AUDIT: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
+    AUDIT
+        .get_or_init(|| {
+            let path = std::env::var("CALA_SUPPORT_AUDIT").ok()?;
+            let mut f =
+                BufWriter::new(File::create(&path).expect("create CALA_SUPPORT_AUDIT file"));
+            f.write_all(SUPPORT_AUDIT_HEADER.as_bytes()).unwrap();
+            Some(Mutex::new(f))
+        })
+        .as_ref()
+}
+
+/// Header of the support audit: `C` rows, then the `L` rows' columns.
+const SUPPORT_AUDIT_HEADER: &str = "#C\tframe\tid\trule\tN\tse\tphi\tz_fw\tn_S\tradius\tr_h\tr_u\tn_X\tsecond\tmass_S\tn_beyond_rh\tmass_beyond_rh\tn_skirt_blocks\tskirt_mass\tleftover_med_z\tleftover_share_z3\tn_leftover_blocks\n#L\tframe\tid\tn_pos\tradius\tn_skirt_blocks\n";
+
+pub(super) fn support_audit_on() -> bool {
+    support_audit().is_some()
+}
+
+fn support_row(line: &str) {
+    if let Some(m) = support_audit() {
+        let mut f = m.lock().unwrap_or_else(|e| e.into_inner());
+        f.write_all(line.as_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+}
+
+/// Inputs of one `C` row, on the construction's canvas: the measured
+/// (unsmoothed) light `h`, the disk `mask`, the published footprint `a` in
+/// data units and its low-pass `low`, the published column `col` in data
+/// units, the white standard error `se` per unit pixel noise, the split
+/// halves on the canvas, and the measured support (basin rules; also
+/// computed for the audit under the ring rule).
+pub(super) struct SupportInput<'a> {
+    pub rule: &'a str,
+    pub canvas: Rect,
+    pub h: &'a [f32],
+    pub mask: &'a [bool],
+    pub a: &'a [f32],
+    pub low: &'a [f32],
+    pub col: &'a [f32],
+    pub se: f64,
+    pub halves: Option<&'a (Vec<f32>, Vec<f32>, f64, f64)>,
+    pub ms: Option<&'a super::MeasuredSupport>,
+    pub cell: &'a Cell,
+    pub block: usize,
+}
+
+/// Radius (whole rings of 1 px around `c`) out to which the ring sums of
+/// `light` stay `z` white standard errors above zero (the s20 `r_h`/`r_u`).
+fn ring_radius(
+    slow: &SlowLoop,
+    canvas: Rect,
+    light: &[f32],
+    mask: &[bool],
+    c: (f32, f32),
+    se: f64,
+    z: f64,
+) -> usize {
+    let w = slow.dims.width;
+    let (mut sum, mut var): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    for p in 0..canvas.len() {
+        if !mask[p] {
+            continue;
+        }
+        let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
+        let k = ((gy as f32 - c.0).powi(2) + (gx as f32 - c.1).powi(2)).sqrt() as usize;
+        if k >= sum.len() {
+            sum.resize(k + 1, 0.0);
+            var.resize(k + 1, 0.0);
+        }
+        sum[k] += f64::from(light[p]);
+        let sd = se * f64::from(slow.noise[gy * w + gx]);
+        var[k] += sd * sd;
+    }
+    sum.iter()
+        .zip(&var)
+        .take_while(|(&s, &v)| v > 0.0 && s > z * v.sqrt())
+        .count()
+}
+
+pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
+    let (canvas, w) = (i.canvas, slow.dims.width);
+    let n = canvas.len();
+    let z = f64::from(slow.cfg.support_z);
+    let c = i.cell.center;
+    let r_h = ring_radius(slow, canvas, i.h, i.mask, c, i.se, z);
+    let u: Vec<f32> = (0..n).map(|p| i.h[p] + i.low[p]).collect();
+    let r_u = ring_radius(slow, canvas, &u, i.mask, c, i.se, z);
+    // The support S (published positive pixels) and the mass beyond r_h.
+    let mut in_s = vec![false; n];
+    let (mut n_s, mut mass, mut n_beyond, mut mass_beyond) = (0usize, 0.0f64, 0usize, 0.0f64);
+    for (&g, &v) in i.cell.pix.iter().zip(&i.cell.raw) {
+        if v <= 0.0 {
+            continue;
+        }
+        n_s += 1;
+        mass += f64::from(v);
+        let (gy, gx) = (g as usize / w, g as usize % w);
+        if let Some(l) = canvas.local(gy, gx) {
+            in_s[l] = true;
+        }
+        let d = ((gy as f32 - c.0).powi(2) + (gx as f32 - c.1).powi(2)).sqrt() as usize;
+        if d >= r_h {
+            n_beyond += 1;
+            mass_beyond += f64::from(v);
+        }
+    }
+    let x = i.ms.map(|m| m.x.as_slice());
+    let in_x = |p: usize| x.is_some_and(|x| x[p]);
+    // Leftover per moat-grid block over the measured pixels outside S and X.
+    let (mut lo_z, mut n_blk) = (Vec::new(), 0usize);
+    if i.block > 0 {
+        let b = i.block;
+        let gw = w.div_ceil(b);
+        let mut blk: std::collections::BTreeMap<usize, [f64; 3]> = Default::default();
+        for p in 0..n {
+            if !i.mask[p] || in_s[p] || in_x(p) {
+                continue;
+            }
+            let (gy, gx) = (canvas.y0 + p / canvas.w, canvas.x0 + p % canvas.w);
+            let e = blk.entry((gy / b) * gw + gx / b).or_insert([0.0; 3]);
+            let s = f64::from(slow.noise[gy * w + gx]);
+            e[0] += f64::from(i.h[p] - i.col[p]);
+            e[1] += s * s;
+            e[2] += i.halves.map_or(0.0, |hv| f64::from(hv.0[p] - hv.1[p]));
+        }
+        n_blk = blk.len();
+        // Block-scale inflation from the halves' block sums.
+        let phi_blk = i.halves.map_or(f64::NAN, |hv| {
+            let vab = hv.2 * hv.2 + hv.3 * hv.3;
+            let mut r: Vec<f64> = blk
+                .values()
+                .filter(|e| e[1] > 0.0)
+                .map(|e| e[2] * e[2] / (vab * e[1]))
+                .collect();
+            if r.is_empty() {
+                return f64::NAN;
+            }
+            r.sort_by(f64::total_cmp);
+            (r[r.len() / 2] / 0.4549).max(1.0).sqrt()
+        });
+        for e in blk.values().filter(|e| e[1] > 0.0) {
+            lo_z.push(e[0] / (phi_blk * i.se * e[1].sqrt()));
+        }
+    }
+    lo_z.retain(|v| v.is_finite());
+    lo_z.sort_by(f64::total_cmp);
+    let med_z = if lo_z.is_empty() {
+        f64::NAN
+    } else {
+        lo_z[lo_z.len() / 2]
+    };
+    let share3 = if lo_z.is_empty() {
+        f64::NAN
+    } else {
+        lo_z.iter().filter(|v| v.abs() > 3.0).count() as f64 / lo_z.len() as f64
+    };
+    // Skirt mass in the footprint's normalised units: block value times the
+    // block's FOV pixels outside the published support.
+    let mut skirt_mass = 0.0f64;
+    if i.block > 0 {
+        let b = i.block;
+        let gw = w.div_ceil(b);
+        let on_s: std::collections::HashSet<u32> = i
+            .cell
+            .pix
+            .iter()
+            .zip(&i.cell.raw)
+            .filter(|(_, &v)| v > 0.0)
+            .map(|(&g, _)| g)
+            .collect();
+        for (&bq, &sv) in i.cell.skirt_blk.iter().zip(&i.cell.skirt) {
+            let (by, bx) = (bq as usize / gw, bq as usize % gw);
+            let mut nb = 0usize;
+            for y in by * b..((by + 1) * b).min(slow.dims.height) {
+                for xx in bx * b..((bx + 1) * b).min(w) {
+                    let g = y * w + xx;
+                    nb += usize::from(slow.fov[g] != 0 && !on_s.contains(&(g as u32)));
+                }
+            }
+            skirt_mass += f64::from(sv) * nb as f64;
+        }
+    }
+    let (n_test, phi, z_fw, n_x, second) = i.ms.map_or((0, f64::NAN, f64::NAN, 0, false), |m| {
+        (
+            m.n,
+            m.phi,
+            m.z_fw,
+            m.x.iter().filter(|&&v| v).count(),
+            m.second,
+        )
+    });
+    let mass_s = mass;
+    support_row(&format!(
+        "C\t{}\t{}\t{}\t{}\t{:.6e}\t{:.4}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\n",
+        slow.frames,
+        i.cell.id,
+        i.rule,
+        n_test,
+        i.se,
+        phi,
+        z_fw,
+        n_s,
+        i.cell.radius,
+        r_h,
+        r_u,
+        n_x,
+        u8::from(second),
+        mass_s,
+        n_beyond,
+        if mass > 0.0 { mass_beyond / mass } else { 0.0 },
+        i.cell.skirt_blk.len(),
+        skirt_mass,
+        med_z,
+        share3,
+        n_blk,
+    ));
+}
+
+/// `L` rows: every working-set cell after a publish.
+pub(super) fn support_library(slow: &SlowLoop) {
+    if !support_audit_on() {
+        return;
+    }
+    let mut out = String::new();
+    for c in &slow.cells {
+        let n_pos = c.raw.iter().filter(|&&v| v > 0.0).count();
+        out.push_str(&format!(
+            "L\t{}\t{}\t{}\t{:.2}\t{}\n",
+            slow.frames,
+            c.id,
+            n_pos,
+            c.radius,
+            c.skirt_blk.len()
+        ));
+    }
+    support_row(&out);
 }
 
 const FORMAT: &str = r#"Target-only keep evidence, enabled with cargo feature diagnostics and CALA_TRACE_CELL=<id>, CALA_TRACE_DIR=<dir>. Default builds contain no hooks. CALA_TRACE_DIR must be absent or empty: initialization rejects a nonempty directory and never deletes or overwrites an earlier capture. Choose a new directory for every run. Separate event directories are bounded to 10000 events. All integers/floats are little-endian, flat arrays row-major, zero-based tile-local sparse pixel indices.

@@ -143,6 +143,26 @@ precision without them.
 `edge_px` is a chamfer distance to the nearest pixel outside the FOV mask,
 capped at 40.
 
+## Support rule (S2.1)
+
+`qc_eval --support-rule rings|basin|basin-skirt` picks how the statistics path
+measures a footprint's pixel support (`SlowLoopConfig::support_rule`, default
+`rings`, which is byte-identical to the rule before S2.1). `basin` keeps the
+pixels where the PSF-smoothed measured light is significant (family-wise
+`--support-alpha`, default 0.05, per footprint; standard error measured from
+the split halves) in the single-peaked basin of the cell's peak; `basin-skirt`
+also lets the moat's 8 px blocks carry the measured block-mean light of the
+rest of the statistics disk.
+
+With a binary built with `--features diagnostics`,
+`CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
+the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
+support size and radius, the s20 radii `r_h` and `r_u`, `n_X`, second peak,
+mass beyond `r_h`, skirt blocks and mass, and the median and `|z| > 3` share
+of the block leftover `h − column` outside the support) and one `L` row per
+published cell at each publish (`n_pos`, radius, skirt blocks). The header
+lines start with `#`.
+
 ## Validation (E1)
 
 - Reproduction of `tools/cala-diagnostics/COMPUTE_VS_PRECISION.md`: the main binary of that table
