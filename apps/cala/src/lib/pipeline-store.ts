@@ -194,6 +194,7 @@ export function createPipelineStore(
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
+  const [residual, setResidualSignal] = createSignal(false);
   /** The live source's counters after the newest batch (null on a file source). */
   const [live, setLive] = createSignal<LivePoint | null>(null);
   let livePoints: LivePoint[] = [];
@@ -435,6 +436,7 @@ export function createPipelineStore(
           session,
           discover: discover(),
           qc,
+          residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
         },
         undefined,
@@ -497,6 +499,13 @@ export function createPipelineStore(
     // Not mid-run: the run keeps what it started with. The panel says so.
   }
 
+  /** Ask for the residual preview or stop (applies to the running pipeline at once). */
+  function setResidual(on: boolean): void {
+    if (on === residual()) return;
+    setResidualSignal(on);
+    void client.setResidual?.(on).catch(() => {});
+  }
+
   /** Turn cell discovery on or off (applies to the running pipeline at once). */
   function setDiscover(on: boolean): void {
     setDiscoverSignal(on);
@@ -507,6 +516,9 @@ export function createPipelineStore(
     status,
     discover,
     setDiscover,
+    /** The residual preview is being produced (the residual view is shown). */
+    residual,
+    setResidual,
     plan,
     setup,
     processed,

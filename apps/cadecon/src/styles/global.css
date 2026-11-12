@@ -153,13 +153,6 @@
   }
 }
 
-.panel-label {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin: 0 0 2px;
-  font-weight: var(--font-weight-medium);
-}
-
 /* ========================
    Responsive
    ======================== */

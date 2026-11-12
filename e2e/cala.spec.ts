@@ -71,6 +71,30 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await page.getByTestId('color-mode').selectOption('peakSnr');
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
   await page.getByTestId('residual-toggle').check();
+  // One field of view: overlay modes, views, zoom with a minimap, back to Fit.
+  const overlay = page.getByTestId('overlay-mode');
+  await expect(overlay.getByRole('radio', { name: 'Contours' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  await overlay.getByRole('radio', { name: 'Footprints' }).click();
+  await expect(overlay.getByRole('radio', { name: 'Footprints' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  const views = page.getByTestId('view-select');
+  await views.getByRole('radio', { name: 'Raw' }).click();
+  await expect(page.getByTestId('fov-hud')).toContainText('Raw');
+  await views.getByRole('radio', { name: 'Residual' }).click();
+  await expect(page.getByTestId('fov-hud')).toContainText('Residual');
+  await views.getByRole('radio', { name: 'Bg removed' }).click();
+  await expect(page.getByTestId('fov-minimap')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(page.getByTestId('fov-zoom')).toHaveText('150%');
+  await expect(page.getByTestId('fov-minimap')).toBeVisible();
+  await page.getByRole('button', { name: 'Fit', exact: true }).click();
+  await expect(page.getByTestId('fov-zoom')).toHaveText('100%');
+  await expect(page.getByTestId('fov-minimap')).toHaveCount(0);
 
   // Raw gray levels: fitted range off (full scale), scrub to global frame 4 (file 1).
   await page.getByRole('tab', { name: 'Raw file' }).click();

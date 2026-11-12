@@ -10,6 +10,7 @@
  */
 
 import { createEffect, createSignal, For, on, type JSX } from 'solid-js';
+import { TabStrip } from '@calab/ui';
 import { AsymptoteTrends } from './AsymptoteTrends.tsx';
 import { KernelConvergence } from './KernelConvergence.tsx';
 import { ResultsPanel } from '../distributions/ResultsPanel.tsx';
@@ -42,21 +43,13 @@ export function AnalysisPanel(): JSX.Element {
 
   return (
     <div class="analysis-panel" data-tutorial="kernel-convergence">
-      <div class="analysis-panel__tabs" role="tablist">
-        <For each={TABS}>
-          {(tab) => (
-            <button
-              class="analysis-panel__tab"
-              classList={{ 'analysis-panel__tab--active': activeTab() === tab.id }}
-              role="tab"
-              aria-selected={activeTab() === tab.id}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          )}
-        </For>
-      </div>
+      <TabStrip
+        class="analysis-panel__tabs"
+        variant="caps"
+        tabs={TABS}
+        active={activeTab()}
+        onSelect={(id) => setActiveTab(id as AnalysisTab)}
+      />
       <For each={TABS}>
         {(tab) => (
           <div

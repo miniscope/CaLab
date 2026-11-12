@@ -43,6 +43,7 @@ function handle(msg: StageMsg): void {
           session: cells?.session ?? 0,
           discover: (cells?.discover ?? true) && port !== null,
           qc: cells?.qc ?? true,
+          residual: cells?.residual ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
@@ -102,6 +103,9 @@ workerScope.onmessage = (e) => {
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'set-discovery') {
     stage?.fast?.setDiscovery(data.on && slowPort !== null);
+    workerScope.postMessage({ type: 'ok', id: data.id });
+  } else if (data.type === 'set-residual') {
+    stage?.fast?.setResidual(data.on);
     workerScope.postMessage({ type: 'ok', id: data.id });
   }
 };

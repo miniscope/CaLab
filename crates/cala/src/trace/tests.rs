@@ -835,3 +835,42 @@ fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
 fn lib_noise(e: &TraceEngine) -> f32 {
     e.library().trace_noise()[0]
 }
+
+#[test]
+fn residual_is_zero_when_the_model_is_exact_and_keeps_missing_pixels() {
+    let t = 5;
+    let c = traces(6, t, 3);
+    let mut frames = unfiltered_frames(&c);
+    let mut b = LibraryBuilder::new(dims())
+        .background(BackgroundModel::Basis(vec![global_map()]))
+        .version(4);
+    for (i, &centre) in CENTRES.iter().enumerate() {
+        b.push(footprint(i as u64, centre));
+    }
+    let lib = Arc::new(b.build(&mut IdentityFilter(dims())).unwrap());
+    let mut e = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let last = frames.last_mut().unwrap();
+    last[3] = f32::NAN;
+    let mut r = None;
+    for f in &frames {
+        r = Some(e.process(f).unwrap());
+    }
+    let r = r.unwrap();
+    let mut out = vec![0.0; dims().pixels()];
+    lib.residual(frames.last().unwrap(), &r, &mut out).unwrap();
+    assert!(out[3].is_nan());
+    let worst = out
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(worst < 1e-2, "worst residual {worst}");
+    // A frame with extra light: the residual is that light.
+    let mut bright = frames.last().unwrap().clone();
+    bright[0] += 5.0;
+    lib.residual(&bright, &r, &mut out).unwrap();
+    assert!((out[0] - 5.0).abs() < 1e-2);
+    // Traces from another library version are refused.
+    let mut stale = r.clone();
+    stale.library_version += 1;
+    assert!(lib.residual(&bright, &stale, &mut out).is_err());
+}

@@ -22,6 +22,9 @@ export interface CellShape {
   x1: number;
   /** Peak of the unfiltered footprint. */
   peak: number;
+  /** The full support (every pixel the footprint has), and each pixel's value over the peak (0..1). */
+  support: Uint32Array;
+  rel: Float32Array;
 }
 
 export interface CellGeometry {
@@ -59,6 +62,9 @@ export function buildGeometry(view: LibraryView, level = CONTOUR_LEVEL): CellGeo
     }
     const inSet = new Set<number>();
     const inside: number[] = [];
+    const support = view.pixels.slice(a, b);
+    const rel = new Float32Array(b - a);
+    if (peak > 0) for (let k = a; k < b; k++) rel[k - a] = Math.max(0, view.values[k] / peak);
     if (peak > 0) {
       for (let k = a; k < b; k++) {
         const rel = view.values[k] / peak;
@@ -97,6 +103,8 @@ export function buildGeometry(view: LibraryView, level = CONTOUR_LEVEL): CellGeo
       y1: b > a ? y1 : 0,
       x1: b > a ? x1 : 0,
       peak,
+      support,
+      rel,
     });
   }
   return { version: view.version, width, height, shapes, label };
@@ -113,15 +121,28 @@ export function pickCell(g: CellGeometry, x: number, y: number): number | null {
 
 export type Rgb = [number, number, number];
 
+/**
+ * What the overlay draws: nothing (the selected cell only), the outlines,
+ * the footprints filled over their full extent (opacity = value over the
+ * cell's peak, no threshold), or both.
+ */
+export type OverlayMode = 'off' | 'contours' | 'footprints' | 'both';
+
+export const OVERLAY_MODES: readonly OverlayMode[] = ['off', 'contours', 'footprints', 'both'];
+
 export interface OverlayStyle {
   /** Outline colour of a cell. */
   color(id: number): Rgb;
   /** Fill opacity 0..1 of a cell (0 = outline only), e.g. new cells. */
   fill(id: number): number;
   selected: number | null;
+  /** Default `contours`. */
+  mode?: OverlayMode;
 }
 
 const SELECTED: Rgb = [255, 255, 255];
+/** Opacity of a footprint fill at the cell's peak. */
+export const FOOTPRINT_ALPHA = 0.6;
 
 /** RGBA overlay (`width * height * 4`), transparent outside the cells. */
 export function renderOverlay(g: CellGeometry, style: OverlayStyle, out?: Uint8ClampedArray) {
@@ -137,12 +158,34 @@ export function renderOverlay(g: CellGeometry, style: OverlayStyle, out?: Uint8C
     rgba[o + 2] = c[2];
     rgba[o + 3] = Math.round(255 * a);
   };
+  const mode = style.mode ?? 'contours';
+  const outlines = mode === 'contours' || mode === 'both';
   let sel: CellShape | null = null;
+  if (mode === 'footprints' || mode === 'both') {
+    // Full extent: where footprints overlap, the one brighter there (relative
+    // to its own peak) shows.
+    for (const shape of g.shapes) {
+      if (shape.id === style.selected) continue;
+      const c = style.color(shape.id);
+      const { support, rel } = shape;
+      for (let k = 0; k < support.length; k++) {
+        const a = Math.round(255 * FOOTPRINT_ALPHA * Math.min(1, rel[k]));
+        const o = support[k] * 4;
+        if (a > rgba[o + 3]) {
+          rgba[o] = c[0];
+          rgba[o + 1] = c[1];
+          rgba[o + 2] = c[2];
+          rgba[o + 3] = a;
+        }
+      }
+    }
+  }
   for (const shape of g.shapes) {
     if (shape.id === style.selected) {
       sel = shape;
       continue;
     }
+    if (!outlines) continue;
     const c = style.color(shape.id);
     const f = style.fill(shape.id);
     if (f > 0) for (const p of shape.inside) put(p, c, f);

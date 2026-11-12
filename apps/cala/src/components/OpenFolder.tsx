@@ -14,14 +14,23 @@ interface OpenFolderProps {
   liveUrl?: string;
 }
 
-/** Where the simulator (`scripts/live-sim.mjs`) listens by default. */
-export const DEFAULT_LIVE_URL = 'ws://localhost:8765';
+/**
+ * Example address shown in the empty live-source field. The field starts
+ * empty: a live source is optional (the simulator, `scripts/live-sim.mjs`,
+ * listens on ws://localhost:8765).
+ */
+export const LIVE_URL_PLACEHOLDER = 'ws://host:port';
 
 /** The folder name for the header: the picked directory, else the first file's name. */
 function labelFor(entries: FolderEntry[]): string {
   const rel = entries[0].relPath;
   if (rel.includes('/')) return rel.split('/')[0];
-  return entries.length === 1 ? entries[0].file.name : `${entries.length} files`;
+  // Files picked one by one: name the recording by its first video.
+  const video = entries.find((e) => e.file.name.toLowerCase().endsWith('.avi')) ?? entries[0];
+  const others = entries.length - 1;
+  return others > 0
+    ? `${video.file.name} + ${others} file${others > 1 ? 's' : ''}`
+    : video.file.name;
 }
 
 /** First screen: pick or drop a Miniscope recording folder. */
@@ -29,7 +38,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   const [dragging, setDragging] = createSignal(false);
   // The offered URL seeds the field once; the user edits it from there.
   // eslint-disable-next-line solid/reactivity
-  const [liveUrl, setLiveUrl] = createSignal(props.liveUrl ?? DEFAULT_LIVE_URL);
+  const [liveUrl, setLiveUrl] = createSignal(props.liveUrl ?? '');
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
 
@@ -122,14 +131,14 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           }}
         >
           <label>
-            Or stream from a live source{' '}
+            Optional: stream from a live source{' '}
             <input
               type="text"
               class="cala-live-open__url"
               data-testid="live-url"
               value={liveUrl()}
               onInput={(e) => setLiveUrl(e.currentTarget.value)}
-              placeholder={DEFAULT_LIVE_URL}
+              placeholder={LIVE_URL_PLACEHOLDER}
               spellcheck={false}
             />
           </label>{' '}

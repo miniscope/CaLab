@@ -26,6 +26,8 @@ export interface TraceLibraryLike {
 export interface TraceEngineLike {
   setLibrary(lib: TraceLibraryLike): void;
   processFrames(frames: Float32Array, count: number): Float32Array;
+  /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
+  residualOfLast?(frame: Float32Array): Float32Array;
   free(): void;
 }
 
@@ -101,6 +103,8 @@ export interface FastLoopOptions {
   qcEveryMs?: number;
   /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
   initialLibrary?: Uint8Array;
+  /** Return the model residual of each batch's last frame (the app's residual view). */
+  residual?: boolean;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -113,6 +117,7 @@ export const FAST_LOOP_DEFAULTS = {
   qc: true,
   fps: 20,
   qcEveryMs: 1000,
+  residual: false,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -138,6 +143,12 @@ export interface CellsBatch {
   qcOn: boolean;
   /** A QC snapshot, about once per `qcEveryMs` of wall time. */
   qc?: QcWire;
+  /**
+   * Full-frame model residual of the batch's last frame (with `residual` on
+   * and cells in the library). The worker turns it into a preview and drops
+   * it before the batch is posted.
+   */
+  residual?: Float32Array;
 }
 
 const now = (): number => performance.now();
@@ -193,6 +204,11 @@ export class FastLoop {
     this.o.discover = on;
   }
 
+  /** Return the residual of each batch's last frame (see `CellsBatch.residual`), or stop. */
+  setResidual(on: boolean): void {
+    this.o.residual = on;
+  }
+
   /** A message from the slow worker. Records it; never calls into WASM. */
   handleSlow(msg: SlowToFast): void {
     if (msg.session !== this.o.session || this.disposed) return;
@@ -233,6 +249,11 @@ export class FastLoop {
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
     }
+    // One frame per batch, only while the residual view is shown.
+    const residual =
+      this.o.residual && this.engine?.residualOfLast && this.ids.length > 0 && count > 0
+        ? this.engine.residualOfLast(batch.subarray((count - 1) * this.px, count * this.px))
+        : null;
     const t2 = now();
     this.forward(batch, start, count, traces, calibration);
     const t3 = now();
@@ -250,6 +271,7 @@ export class FastLoop {
       slowFrame: this.slowFrame,
       qcOn,
       ...(qc ? { qc } : {}),
+      ...(residual && residual.length === this.px ? { residual } : {}),
     };
   }
 

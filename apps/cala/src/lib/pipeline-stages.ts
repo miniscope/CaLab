@@ -49,7 +49,12 @@ import {
   type PipelineStep,
 } from './pipeline-plan.ts';
 import { GpuMotion } from './gpu-motion.ts';
-import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import {
+  downsampleFrame,
+  previewFactor,
+  takeResidualPreview,
+  type PreviewImage,
+} from './preview.ts';
 import type { RunSpan } from './run-record.ts';
 
 const now = (): number => performance.now();
@@ -809,6 +814,8 @@ export class BackStage {
       corrected: job.before!,
       output,
     };
+    const residual = takeResidualPreview(cells, this.setup.width, this.setup.height, this.factor);
+    if (residual) previews.residual = residual;
     return {
       kind: 'batch',
       start: s.start,

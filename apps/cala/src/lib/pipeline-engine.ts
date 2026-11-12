@@ -21,7 +21,12 @@ import {
   type PipelinePlan,
   type PipelineStep,
 } from './pipeline-plan.ts';
-import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import {
+  downsampleFrame,
+  previewFactor,
+  takeResidualPreview,
+  type PreviewImage,
+} from './preview.ts';
 import type { CellsBatch, FastLoop } from './fast-loop.ts';
 import { qcTransferables } from './qc.ts';
 
@@ -104,6 +109,8 @@ export interface BatchPreviews {
   corrected: PreviewImage;
   /** Final output: motion-corrected with the background floor removed. */
   output: PreviewImage;
+  /** What the cell model leaves unexplained in `output` (only while asked for; see `FastLoop.setResidual`). */
+  residual?: PreviewImage;
 }
 
 /**
@@ -379,6 +386,8 @@ export class PipelineEngine {
       corrected: before,
       output: downsampleFrame(corrected, last, this.width, this.height, this.factor),
     };
+    const residual = takeResidualPreview(cells, this.width, this.height, this.factor);
+    if (residual) previews.residual = residual;
     const t6 = now();
     timings.preprocessMs = t2 - t1 + (t5 - t4);
     timings.motionMs = t3 - t2;

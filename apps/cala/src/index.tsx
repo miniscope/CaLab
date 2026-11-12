@@ -5,6 +5,7 @@ import App from './App.tsx';
 import '@calab/ui/styles/base.css';
 import '@calab/ui/styles/app-global.css';
 import './styles/global.css';
+import './styles/layout.css';
 
 // Per-app localStorage key for tutorial progress. Bump the suffix when a
 // tutorial change should reset everyone's progress.
