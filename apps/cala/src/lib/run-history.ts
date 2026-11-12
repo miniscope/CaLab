@@ -147,11 +147,12 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       short: 'Background',
       unit: 'grey',
       kind: 'value',
-      range: [0, 100],
+      // The floor is estimated after flattening, so it sits near zero and can go below it.
+      range: [-50, 50],
       rangeRule: 'ladder125',
       color: C.orange,
       digits: 1,
-      hint: 'Background floor removed by preprocessing, median over the FOV.',
+      hint: 'Background floor removed by preprocessing (after flattening), median over the FOV.',
     },
     {
       key: 'flicker_gain',
@@ -179,15 +180,15 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
     },
     {
       key: 'flat_change',
-      label: 'Flat-field update (change)',
+      label: 'Flat-field update (median change)',
       short: 'Flat field',
-      unit: '%',
+      unit: 'σ',
       kind: 'stem',
-      range: [0, 5],
+      range: [0, 2],
       rangeRule: 'ladder125',
       color: C.black,
       digits: 2,
-      hint: 'Change of the sensor flat field at each new map (median relative change).',
+      hint: 'How much the sensor flat field moved at each new map: the median change in units of its own uncertainty.',
     },
   ],
   motion: [
@@ -413,8 +414,15 @@ export interface HistoryBatch {
   imaging?: { frame: number; noiseSigma: number; background: number };
 }
 
+/** An empty store with every series registered. */
+function freshStore(): StreamHistory {
+  const h = new StreamHistory();
+  for (const s of allSeries()) h.define(s);
+  return h;
+}
+
 export function createRunHistory(clock: () => number = () => Date.now()) {
-  let history = new StreamHistory();
+  let history = freshStore();
   let events = new RunEvents();
   let fps = 20;
   let live = false;
@@ -431,8 +439,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   const bump = () => setTick((v) => v + 1);
 
   function flag(group: string): void {
-    if (attention().has(group)) return;
-    setAttention(new Set([...attention(), group]));
+    setAttention((cur) => (cur.has(group) ? cur : new Set([...cur, group])));
   }
 
   /** A new pass-1 run: empty store and log at this frame rate. */
@@ -444,9 +451,8 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
-    history = new StreamHistory();
+    history = freshStore();
     events = new RunEvents();
-    for (const s of allSeries()) history.define(s);
     history.onRangeStep = (key, e) => {
       const spec = history.spec(key);
       const fmt = (r: [number, number]) => (r[0] === -r[1] ? `±${r[1]}` : `${r[0]}–${r[1]}`);
@@ -552,9 +558,9 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     if (working !== null) history.push('working_set', t, working);
   }
 
-  /** A new flat-field map came out of the estimator (`change`: relative, 0..1). */
+  /** A new flat-field map came out of the estimator (`change`: median change, σ). */
   function flatMap(change: number): void {
-    if (Number.isFinite(change)) history.push('flat_change', processedS, 100 * change);
+    if (Number.isFinite(change)) history.push('flat_change', processedS, change);
   }
 
   return {

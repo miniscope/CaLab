@@ -474,13 +474,23 @@ export function HistoryPlot(props: HistoryPlotProps) {
       clipTop.length = 0;
       clipBot.length = 0;
     };
+    // The line bridges empty bins: a series sampled sparser than the bins
+    // (QC once per second of stream, 1 s bins) must read as one line. Pauses
+    // and gaps are shown in the event lane, not as breaks.
     const line = (arr: Float32Array) => {
       ctx.beginPath();
-      segments(arr, n, (s, e) => {
-        ctx.moveTo(xc(s), yOf(arr[s], xc(s)));
-        for (let i = s + 1; i <= e; i++) ctx.lineTo(xc(i), yOf(arr[i], xc(i)));
-        if (s === e) ctx.lineTo(xc(s) + 0.5, yOf(arr[s], 0));
-      });
+      let first = -1;
+      let count = 0;
+      for (let i = 0; i < n; i++) {
+        const v = arr[i];
+        if (v !== v) continue;
+        if (first < 0) {
+          first = i;
+          ctx.moveTo(xc(i), yOf(v, xc(i)));
+        } else ctx.lineTo(xc(i), yOf(v, xc(i)));
+        count++;
+      }
+      if (count === 1) ctx.lineTo(xc(first) + 0.5, yOf(arr[first], 0));
       ctx.stroke();
     };
 

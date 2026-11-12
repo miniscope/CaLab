@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { createEffect, Show } from 'solid-js';
+import { createEffect, createSignal, on, Show } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
@@ -21,6 +21,8 @@ import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { RunPanel } from './components/RunPanel.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
+import { createRunHistory } from './lib/run-history.ts';
+import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -39,7 +41,10 @@ const App: Component = () => {
     gpu: params.get('gpu') !== '0',
   });
   const store = createViewerStore(client);
-  const cells = createCellStore();
+  // The run's history over stream time: fed by the cell and pipeline stores, read by the History views.
+  const runHistory = createRunHistory();
+  const historyUi = createHistoryUi(runHistory);
+  const cells = createCellStore(undefined, undefined, runHistory);
   // Cell discovery runs in a worker of its own, fed directly by the frame
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
@@ -77,12 +82,22 @@ const App: Component = () => {
         };
       },
     },
+    runHistory,
   );
   const pass2 = createPass2Store(client, pipeline, cells);
+  // Slow-loop warnings (the reservoir filling up) go into the run's event log.
+  createEffect(
+    on(
+      () => cells.status()?.reservoirWarning ?? null,
+      (w) => {
+        if (w) runHistory.log({ frame: pipeline.processed(), kind: 'warning', detail: w });
+      },
+    ),
+  );
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2 };
+    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, runHistory, historyUi };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -110,6 +125,23 @@ const App: Component = () => {
       () => main,
       () => ({ width: lp.info.width, height: lp.info.height }),
     );
+    const [tab, setTab] = createSignal('qc');
+    const expanded = () => historyUi.expanded() && !layout().narrow;
+    // Expanding swaps History into the large area and shows the FOV in the History tab.
+    createEffect(
+      on(historyUi.expanded, (x) => {
+        if (x) setTab('history');
+      }),
+    );
+    const fov = () => (
+      <FovPanel
+        store={pipeline}
+        cells={cells}
+        width={lp.info.width}
+        height={lp.info.height}
+        fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+      />
+    );
     return (
       <div
         ref={main}
@@ -125,13 +157,9 @@ const App: Component = () => {
           )}
         </Show>
         <div class="cala-main__fov">
-          <FovPanel
-            store={pipeline}
-            cells={cells}
-            width={lp.info.width}
-            height={lp.info.height}
-            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
-          />
+          <Show when={expanded()} fallback={fov()}>
+            <HistoryExpanded ui={historyUi} />
+          </Show>
         </div>
         <div class="cala-main__side">
           <RunPanel
@@ -144,9 +172,23 @@ const App: Component = () => {
             height={lp.info.height}
             fps={lp.info.fps ?? 0}
             narrow={layout().narrow}
+            ui={historyUi}
           />
-          <SelectedCellPanel cells={cells} fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS} />
-          <DetailsTabs store={pipeline} cells={cells} viewer={store} info={lp.info} />
+          <SelectedCellPanel
+            cells={cells}
+            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+            folded={tab() === 'history'}
+          />
+          <DetailsTabs
+            store={pipeline}
+            cells={cells}
+            viewer={store}
+            info={lp.info}
+            ui={historyUi}
+            active={tab()}
+            onActive={setTab}
+            fov={() => (expanded() ? fov() : null)}
+          />
         </div>
       </div>
     );
