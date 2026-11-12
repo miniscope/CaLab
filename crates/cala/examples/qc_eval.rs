@@ -12,6 +12,8 @@
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
 //!   --seed S           oracle: perturbation seed
 //!   --slow-seed S      slow-loop seed (held-out split, random slots)
+//!   --passes N         run pass 1 N times over the same recording (S2.3,
+//!                      repeated pass 1; default 1). See "Repeated passes".
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
@@ -122,6 +124,28 @@
 //! trace on a quadratic of that shift ([`calab_cala::qc::motion`]; flag bit
 //! 16 above 0.2, display only, never part of `pass`); NaN without motion.
 //!
+//! Repeated passes (`--passes N`, offline only): after the last frame the
+//! loop restarts at frame 0 and runs the recording again. Carried over: the
+//! fast loop's library and trace engine state (traces continue across the
+//! wrap), the whole slow loop (footprints, fpstats, ledger, probation, frame
+//! counter: running statistics with half-lives see a later pass as more
+//! time), the QC monitor, the held-out score and the convergence tracker.
+//! Fixed after pass 1: the calibration and FOV mask, the motion corrector
+//! (later passes replay pass 1's motion records, no re-registration) and the
+//! online flat field (its last pass-1 map stays applied; no more updates).
+//! The preprocessor's running state (noise, background) continues. Frames in the output files are *virtual*: pass `k` (0-based)
+//! frame `t` is written as `k * frames + t` (`global.tsv`, `cells.tsv`,
+//! `convergence.tsv`, `adds.tsv`/`removals.tsv` `recording_frame`,
+//! `ho_cells.tsv`), so the curves continue across passes;
+//! `tools/cala-eval/split_passes.py` cuts a run into one directory per pass.
+//! GT trace correlations use the current pass's frames only. The held-out
+//! score is held out in pass 1 only: later passes score frames the slow loop
+//! has already fitted on. At each pass end `passes.tsv` gets a row (cells,
+//! cumulative adds / merges / deletes / splits, wall time) and
+//! `footprints_pass{k}.bin` / `final_pass{k}.tsv` hold the library at that
+//! point (the fast loop's current library; the final `footprints.bin` is
+//! after `SlowLoop::finalize`).
+//!
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
 //! every 100 frames, GT precision / recall / trace r at checkpoints, and the
 //! slow loop's cumulative add classification), `adds.tsv` / `removals.tsv`
@@ -154,7 +178,9 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, CrossFit, FootprintStats, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
 };
-use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
+use calab_cala::motion::{
+    Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
+};
 use calab_cala::preprocess::flatfield::{
     DitherFlatField, FlatField, FlatFieldConfig, FlatFieldSeed, OnlineFlatField,
     OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S, OFFSET_HALF_LIFE_S,
@@ -473,6 +499,10 @@ struct Pipeline {
     /// per-frame validity (samples moved in from outside the mask are missing).
     src: Option<calab_cala::motion::SourceMask>,
     valid: Vec<u8>,
+    /// Motion records of every frame processed, kept when `keep_records`
+    /// (repeated passes replay them).
+    keep_records: bool,
+    records: Vec<MotionRecord>,
 }
 
 impl Pipeline {
@@ -518,6 +548,29 @@ impl Pipeline {
             buf: vec![0.0; n_px],
             src,
             valid: vec![0; n_px],
+            keep_records: false,
+            records: Vec::new(),
+        }
+    }
+
+    /// Like `frame`, but a motion run warps by the stored record of frame
+    /// `t` (no estimation, the corrector's state is unchanged).
+    fn frame_replay(&mut self, raw: &[u8], out: &mut [f32], t: usize) -> Option<(f32, f32)> {
+        self.pre.front(raw, &mut self.buf).unwrap();
+        match &mut self.mc {
+            Some(mc) => {
+                let rec = &self.records[t];
+                mc.apply(Frame::F32(&self.buf), rec, out, None).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
+                Some((rec.dy, rec.dx))
+            }
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+                None
+            }
         }
     }
 
@@ -530,7 +583,11 @@ impl Pipeline {
                 let m = self.src.as_ref().unwrap();
                 mc.validity(&rec, m, &mut self.valid).unwrap();
                 self.pre.back_masked(out, &self.valid).unwrap();
-                Some((rec.dy, rec.dx))
+                let shift = Some((rec.dy, rec.dx));
+                if self.keep_records {
+                    self.records.push(rec);
+                }
+                shift
             }
             None => {
                 out.copy_from_slice(&self.buf);
@@ -1061,9 +1118,14 @@ const LABELS: &str =
 
 /// Per-cell labels of `lib`'s cells at frame `t_end`. `own` maps a cell to
 /// its GT units when known (oracle); otherwise footprints are matched.
+///
+/// `t_end` is the (virtual) checkpoint frame, `rec_off` the virtual frame of
+/// the current pass's recording frame 0 (0 without repeated passes): trace
+/// correlations with GT use the current pass's frames only.
 #[allow(clippy::too_many_arguments)]
 fn label_rows(
     t_end: usize,
+    rec_off: usize,
     lib: &Library,
     qc: &QcMonitor,
     hist: &History,
@@ -1087,7 +1149,7 @@ fn label_rows(
     for (s, q) in qc.cells().enumerate() {
         let id = lib.ids()[s];
         let row = q.to_row();
-        let len = q.frames as usize;
+        let len = (q.frames as usize).min(t_end - rec_off);
         let (units, perturb): (Vec<usize>, u32) = match own {
             Some(m) => m.get(&id).cloned().unwrap_or((Vec::new(), 0)),
             None => (mt[s].map(|m| vec![m.0]).unwrap_or_default(), 0),
@@ -1125,6 +1187,7 @@ fn label_rows(
         let mut vals = [f64::NAN; 8];
         if len >= qc.config().min_frames {
             if let Some((t0, w)) = hist.window(id, len, t_end) {
+                let (t0, t_end) = (t0 - rec_off, t_end - rec_off);
                 let ctr = centroid(&det[s], dims.width);
                 if matched {
                     // Own unit: the best-correlated of the cell's units.
@@ -1977,6 +2040,87 @@ fn label_bundle(
     println!("label bundle pass 2: crops written to {out_dir:?}");
 }
 
+/// `final{suffix}.tsv` (each cell: centroid, footprint match, the slow
+/// loop's evidence record, held-out marginal) and `footprints{suffix}.bin`
+/// (`CALAFP01`) of `lib`.
+fn write_library(
+    out_dir: &Path,
+    suffix: &str,
+    lib: &Library,
+    dims: Dims,
+    gt: Option<&Gt>,
+    ho: Option<&HeldOutScore>,
+    slow: Option<&SlowLoop>,
+) {
+    {
+        // Final cells: centroid and footprint match (GT runs).
+        let det = columns(lib, dims, (0, 0));
+        let mut t = String::from(
+            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\tho_marginal\tho_frames\tho_marginal_z\n",
+        );
+        let (mt, best) = match gt {
+            Some(g) => match_cells(&det, &g.cols, dims, 0.7),
+            None => (
+                vec![None; det.len()],
+                vec![(usize::MAX, f64::NAN); det.len()],
+            ),
+        };
+        let hc = ho.map(|h| h.cells(lib.ids()));
+        for s in 0..lib.len() {
+            let c = centroid(&det[s], dims.width);
+            let hs = hc.as_ref().map_or("nan\t0\tnan".to_string(), |v| {
+                format!(
+                    "{:.4}\t{}\t{:.3}",
+                    v[s].marginal, v[s].frames, v[s].marginal_z
+                )
+            });
+            let (bg, br) = mt[s].unwrap_or(best[s]);
+            let info = slow.and_then(|sl| sl.cell_info(lib.ids()[s]));
+            let ev = info.map_or("na\t-1\t-1\t-1\t-1\tnan".to_string(), |i| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{:.2}",
+                    i.status.as_str(),
+                    i.transients,
+                    i.passes,
+                    i.fails,
+                    i.redundant,
+                    i.peak_z
+                )
+            });
+            let _ = writeln!(
+                t,
+                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}\t{hs}",
+                lib.ids()[s],
+                c.0,
+                c.1,
+                u8::from(mt[s].is_some()),
+                if bg == usize::MAX { -1 } else { bg as i64 },
+                br
+            );
+        }
+        std::fs::write(out_dir.join(format!("final{suffix}.tsv")), t).unwrap();
+    }
+    {
+        let mut f =
+            BufWriter::new(File::create(out_dir.join(format!("footprints{suffix}.bin"))).unwrap());
+        f.write_all(b"CALAFP01").unwrap();
+        for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
+            f.write_all(&v.to_le_bytes()).unwrap();
+        }
+        for s in 0..lib.len() {
+            let (p, a) = lib.unfiltered(s);
+            let (_, h) = lib.filtered(s);
+            f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
+            f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
+            for q in p {
+                f.write_all(&q.to_le_bytes()).unwrap();
+            }
+            write_f32s(&mut f, a);
+            write_f32s(&mut f, h);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -2007,6 +2151,8 @@ fn main() {
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
+    let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
+    assert!(passes >= 1, "--passes must be at least 1");
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
@@ -2206,6 +2352,7 @@ fn main() {
     );
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    pipe.keep_records = passes > 1;
     let empty = LibraryBuilder::new(dims)
         .fov(fov.clone())
         .background(scfg.background.clone())
@@ -2253,30 +2400,47 @@ fn main() {
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
     let mut conv = calab_cala::qc::convergence::Tracker::new();
     let mut conv_out = calab_cala::qc::convergence::header();
-    let mut s = 0u32;
     let t_all = Instant::now();
-    while s < frames {
-        let cnt = 64.min(frames - s);
-        let mut raw = rec.read(s, cnt);
-        if let Some(d) = &drift {
-            for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
-                d.apply(f, s as usize + k);
+    let mut passes_out = String::from(
+        "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
+    );
+    for pass in 0..passes {
+        // Virtual frame of this pass's recording frame 0.
+        let off = pass * t_len;
+        let t_pass = Instant::now();
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let mut raw = rec.read(s, cnt);
+            if let Some(d) = &drift {
+                for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(f, s as usize + k);
+                }
             }
-        }
-        for (k, f) in raw.chunks_exact(n_px).enumerate() {
-            let t = s as usize + k;
-            let shift = pipe.frame(f, &mut y);
-            if let (Some(o), Some(d)) = (online_ff.as_mut(), shift) {
-                o.push(f, d).unwrap();
-                if o.due() {
-                    let t0 = Instant::now();
-                    let out = o.refine();
-                    let dt = t0.elapsed().as_secs_f64();
-                    match &out {
-                        RefineOutcome::Updated(u) => {
-                            let ff = o.current().unwrap();
-                            ff.apply(&mut pipe.pre).unwrap();
-                            let _ = writeln!(
+            for (k, f) in raw.chunks_exact(n_px).enumerate() {
+                // `t_rec`: recording frame; `t`: virtual frame (continues across
+                // passes).
+                let t_rec = s as usize + k;
+                let t = off + t_rec;
+                let last = t_rec + 1 == t_len;
+                let shift = if pass == 0 {
+                    pipe.frame(f, &mut y)
+                } else {
+                    pipe.frame_replay(f, &mut y, t_rec)
+                };
+                // The online flat field learns in pass 1 only; its last map
+                // stays applied.
+                if let (Some(o), Some(d), 0) = (online_ff.as_mut(), shift, pass) {
+                    o.push(f, d).unwrap();
+                    if o.due() {
+                        let t0 = Instant::now();
+                        let out = o.refine();
+                        let dt = t0.elapsed().as_secs_f64();
+                        match &out {
+                            RefineOutcome::Updated(u) => {
+                                let ff = o.current().unwrap();
+                                ff.apply(&mut pipe.pre).unwrap();
+                                let _ = writeln!(
                                 ff_log,
                                 "{t}\tupdated\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.3e}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{dt:.2}",
                                 u8::from(u.first),
@@ -2290,84 +2454,95 @@ fn main() {
                                 u.change_p99,
                                 u.change_max
                             );
-                            if u.first {
-                                println!(
+                                if u.first {
+                                    println!(
                                     "flat field: first map at frame {t} ({} bins, gain sd {:.4}, change p99 {:.2} sigma; {dt:.1} s)",
                                     ff.bins_used, ff.gain_sd, u.change_p99
                                 );
-                            }
-                            if ff_dump {
-                                let name = format!("ff_log_gain_{t:07}.f32");
-                                let mut w =
-                                    BufWriter::new(File::create(out_dir.join(name)).unwrap());
-                                write_f32s(&mut w, &ff.log_gain);
-                                if let Some(off) = &ff.offset {
-                                    let name = format!("ff_offset_{t:07}.f32");
+                                }
+                                if ff_dump {
+                                    let name = format!("ff_log_gain_{t:07}.f32");
                                     let mut w =
                                         BufWriter::new(File::create(out_dir.join(name)).unwrap());
-                                    write_f32s(&mut w, off);
+                                    write_f32s(&mut w, &ff.log_gain);
+                                    if let Some(off) = &ff.offset {
+                                        let name = format!("ff_offset_{t:07}.f32");
+                                        let mut w = BufWriter::new(
+                                            File::create(out_dir.join(name)).unwrap(),
+                                        );
+                                        write_f32s(&mut w, off);
+                                    }
                                 }
                             }
-                        }
-                        RefineOutcome::Skipped(m) => {
-                            let _ =
-                                writeln!(ff_log, "{t}\tskipped: {m}\t\t\t\t\t\t\t\t\t\t\t{dt:.2}");
+                            RefineOutcome::Skipped(m) => {
+                                let _ = writeln!(
+                                    ff_log,
+                                    "{t}\tskipped: {m}\t\t\t\t\t\t\t\t\t\t\t{dt:.2}"
+                                );
+                            }
                         }
                     }
                 }
-            }
-            if t == start {
-                let noise = pipe.pre.noise().sigma();
-                if let Some(o) = &oracle {
-                    let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
-                    let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\n");
-                    for j in 0..g.kept.len() {
-                        let _ = writeln!(
-                            t,
-                            "{j}\t{:.2}\t{:.2}\t{}\t{:.3}",
-                            g.centers[j].0,
-                            g.centers[j].1,
-                            u8::from(g.detectable[j]),
-                            g.snr[j]
+                if t == start {
+                    let noise = pipe.pre.noise().sigma();
+                    if let Some(o) = &oracle {
+                        let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
+                        let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\n");
+                        for j in 0..g.kept.len() {
+                            let _ = writeln!(
+                                t,
+                                "{j}\t{:.2}\t{:.2}\t{}\t{:.3}",
+                                g.centers[j].0,
+                                g.centers[j].1,
+                                u8::from(g.detectable[j]),
+                                g.snr[j]
+                            );
+                        }
+                        std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
+                        if oracle_mode {
+                            let (lib, m) =
+                                oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
+                            println!("oracle library: {} cells", lib.len());
+                            engine.set_library(Arc::new(lib)).unwrap();
+                            own = Some(m);
+                        }
+                        gt = Some(g);
+                    }
+                    if let Some(path) = &fixed_lib {
+                        let lib = read_footprints(path, dims, &fov, &noise, &scfg, &mut flat);
+                        println!("fixed library: {} cells from {}", lib.len(), path.display());
+                        engine.set_library(Arc::new(lib)).unwrap();
+                    }
+                    if heldout_on {
+                        let hcfg = HeldOutConfig {
+                            cell_diameter_px: scfg.cell_diameter_px,
+                            seed: scfg.seed ^ 0x5eed,
+                            ..HeldOutConfig::default()
+                        };
+                        ho = Some(
+                            HeldOutScore::new(dims, fov.clone(), noise.clone(), hcfg).unwrap(),
                         );
                     }
-                    std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
-                    if oracle_mode {
-                        let (lib, m) =
-                            oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
-                        println!("oracle library: {} cells", lib.len());
-                        engine.set_library(Arc::new(lib)).unwrap();
-                        own = Some(m);
-                    }
-                    gt = Some(g);
-                }
-                if let Some(path) = &fixed_lib {
-                    let lib = read_footprints(path, dims, &fov, &noise, &scfg, &mut flat);
-                    println!("fixed library: {} cells from {}", lib.len(), path.display());
-                    engine.set_library(Arc::new(lib)).unwrap();
-                }
-                if heldout_on {
-                    let hcfg = HeldOutConfig {
-                        cell_diameter_px: scfg.cell_diameter_px,
-                        seed: scfg.seed ^ 0x5eed,
-                        ..HeldOutConfig::default()
-                    };
-                    ho = Some(HeldOutScore::new(dims, fov.clone(), noise.clone(), hcfg).unwrap());
-                }
-                if !oracle_mode && fixed_lib.is_none() {
-                    let mk = || {
-                        SlowLoop::new(dims, fov.clone(), noise.clone(), flat.clone(), scfg.clone())
+                    if !oracle_mode && fixed_lib.is_none() {
+                        let mk = || {
+                            SlowLoop::new(
+                                dims,
+                                fov.clone(),
+                                noise.clone(),
+                                flat.clone(),
+                                scfg.clone(),
+                            )
                             .unwrap()
-                    };
-                    slow = Some(mk());
-                    if args.iter().any(|a| a == "--joint-shadow") {
-                        if let Some(s) = slow.as_mut() {
-                            s.enable_joint_shadow();
+                        };
+                        slow = Some(mk());
+                        if args.iter().any(|a| a == "--joint-shadow") {
+                            if let Some(s) = slow.as_mut() {
+                                s.enable_joint_shadow();
+                            }
                         }
-                    }
-                    if let Some(s) = &slow {
-                        let p = s.reservoir_plan();
-                        println!(
+                        if let Some(s) = &slow {
+                            let p = s.reservoir_plan();
+                            println!(
                             "reservoir: {} frames/tile ({} event + {} random, target {}), capacity {:.0} MB of {:.0} MB",
                             p.frames_per_tile,
                             p.event_slots,
@@ -2376,313 +2551,357 @@ fn main() {
                             p.capacity_bytes as f64 / 1048576.0,
                             p.max_bytes as f64 / 1048576.0
                         );
-                        if let Some(w) = p.warning() {
-                            println!("reservoir warning: {w}");
-                        }
-                    }
-                    if via_jobs {
-                        via = Some(VisitRunner::new(mk()));
-                    }
-                    if let Some(fps) = offered_fps {
-                        let runners = (0..visit_workers).map(|_| VisitRunner::new(mk())).collect();
-                        timed = Some(Timed::new(
-                            fps,
-                            units_per_ms,
-                            observe_ms,
-                            job_ms,
-                            pool,
-                            budget,
-                            runners,
-                            depth,
-                        ));
-                    }
-                }
-                qc = Some(QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap());
-            }
-            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
-                let now = tm.at(t);
-                tm.advance(now, sl, &mut slow_rec);
-                if let Some(l) = tm.library(now) {
-                    engine.set_library(l).unwrap();
-                }
-            }
-            let tr = engine.process(&y).unwrap();
-            let Some(q) = qc.as_mut() else { continue };
-            let lib = engine.library().clone();
-            if let Some(h) = ho.as_mut() {
-                if t.is_multiple_of(200) {
-                    h.set_noise(pipe.pre.noise().sigma()).unwrap();
-                }
-                // The slow-loop index this frame will get when forwarded
-                // (exact with every batch forwarded; `--slow-keep` < 1 and
-                // `--offered-fps` drop batches, which shifts it).
-                let idx = match (&slow, &fixed_lib) {
-                    (Some(sl), _) => Some(sl.frames() + pending.len() as u64),
-                    (None, Some(_)) => Some((t - start) as u64),
-                    _ => None,
-                };
-                if idx.is_some_and(|i| scfg.is_test(i)) {
-                    h.frame(t as u64, &y, &lib, &tr, &mut engine, &mut flat)
-                        .unwrap();
-                }
-            }
-            hist.push(t, lib.ids(), &tr.traces);
-            let a = Instant::now();
-            q.observe_shifted(&y, &lib, &tr, shift).unwrap();
-            qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
-            if t.is_multiple_of(200) {
-                q.set_noise(pipe.pre.noise().sigma()).unwrap();
-            }
-            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
-                if t.is_multiple_of(200) {
-                    timed_noise = Some(pipe.pre.noise().sigma());
-                }
-                pending.push((y.clone(), tr.clone(), lib.clone(), t));
-                if pending.len() >= batch_n || t + 1 == t_len {
-                    n_batches += 1;
-                    let now = tm.at(t + 1);
-                    let n = pending.len() as u64;
-                    if tm.has_buffer(now) {
-                        let batch = (std::mem::take(&mut pending), timed_noise.take());
-                        tm.forward(now, batch);
-                        n_fwd += 1;
-                        fwd_frames += n;
-                    } else {
-                        pending.clear();
-                        tm.dropped += n;
-                    }
-                    tm.advance(now, sl, &mut slow_rec);
-                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
-                    if churn_log {
-                        write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
-                    }
-                }
-            } else if let Some(sl) = slow.as_mut() {
-                if t.is_multiple_of(200) {
-                    sl.set_noise(pipe.pre.noise().sigma()).unwrap();
-                    if let Some(r) = via.as_mut() {
-                        r.set_noise(pipe.pre.noise().sigma()).unwrap();
-                    }
-                }
-                pending.push((y.clone(), tr.clone(), lib.clone(), t));
-                if pending.len() >= batch_n || t + 1 == t_len {
-                    n_batches += 1;
-                    let forward = if keep >= 1.0 {
-                        true
-                    } else if score_mode {
-                        // Residual excursions above 4 σ, per tile the
-                        // largest in the batch, summed over tiles.
-                        let mut best: Vec<f32> = Vec::new();
-                        for (yy, tt, ll, _) in &pending {
-                            let sc = sl.tile_scores(yy, ll, tt).unwrap();
-                            if best.is_empty() {
-                                best = sc;
-                            } else {
-                                for (b, v) in best.iter_mut().zip(sc) {
-                                    *b = b.max(v);
-                                }
+                            if let Some(w) = p.warning() {
+                                println!("reservoir warning: {w}");
                             }
                         }
-                        let score: f32 = best.iter().map(|v| (v - 4.0).max(0.0)).sum();
-                        let mut v: Vec<f32> = recent_scores.iter().copied().collect();
-                        let busy = if v.len() < 16 {
-                            true
-                        } else {
-                            v.sort_by(f32::total_cmp);
-                            let k = ((1.0 - keep) * (v.len() - 1) as f64).round() as usize;
-                            score > v[k] || score >= v[v.len() - 1]
-                        };
-                        // Capacity: `keep` batches' worth per batch, at most
-                        // 4 banked. A busy batch goes whenever there is
-                        // capacity; a quiet one only when capacity would
-                        // otherwise go unused.
-                        tokens = (tokens + keep).min(4.0);
-                        let fwd = tokens >= 1.0 && (busy || tokens >= 3.0);
-                        if fwd {
-                            tokens -= 1.0;
+                        if via_jobs {
+                            via = Some(VisitRunner::new(mk()));
                         }
-                        recent_scores.push_back(score);
-                        if recent_scores.len() > 256 {
-                            recent_scores.pop_front();
-                        }
-                        fwd
-                    } else {
-                        // Evenly spaced: the k-th batch goes when the share
-                        // forwarded so far falls behind `keep`.
-                        (n_fwd as f64) < keep * n_batches as f64
-                    };
-                    if forward {
-                        n_fwd += 1;
-                    }
-                    for (yy, tt, ll, tf) in pending.drain(..) {
-                        if forward {
-                            sl.observe(&yy, &ll, &tt).unwrap();
-                            slow_rec.push(tf as u32);
-                            fwd_frames += 1;
-                        } else if !drop_step {
-                            continue;
-                        }
-                        let published = match via.as_mut() {
-                            Some(r) => sl.step_via(budget, r).unwrap(),
-                            None => sl.step(budget).unwrap(),
-                        };
-                        if let Some(l) = published {
-                            engine.set_library(l).unwrap();
+                        if let Some(fps) = offered_fps {
+                            let runners =
+                                (0..visit_workers).map(|_| VisitRunner::new(mk())).collect();
+                            timed = Some(Timed::new(
+                                fps,
+                                units_per_ms,
+                                observe_ms,
+                                job_ms,
+                                pool,
+                                budget,
+                                runners,
+                                depth,
+                            ));
                         }
                     }
-                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
-                    if churn_log {
-                        write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                    qc = Some(
+                        QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap(),
+                    );
+                }
+                if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                    let now = tm.at(t);
+                    tm.advance(now, sl, &mut slow_rec);
+                    if let Some(l) = tm.library(now) {
+                        engine.set_library(l).unwrap();
                     }
                 }
-            }
-            let t_end = t + 1;
-            let cp = t_end.is_multiple_of(every) || t_end == t_len;
-            let ho_win: Option<HeldOutWindow> = if cp {
-                ho.as_mut().map(|h| {
-                    for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {
-                        let _ = writeln!(
-                            ho_cells_out,
-                            "{t_end}\t{sl_}\t{}\t{:.4}\t{}\t{:.3}",
-                            c.id, c.marginal, c.frames, c.marginal_z
-                        );
+                let tr = engine.process(&y).unwrap();
+                let Some(q) = qc.as_mut() else { continue };
+                let lib = engine.library().clone();
+                if let Some(h) = ho.as_mut() {
+                    if t.is_multiple_of(200) {
+                        h.set_noise(pipe.pre.noise().sigma()).unwrap();
                     }
-                    h.take_window()
-                })
-            } else {
-                None
-            };
-            if cp {
-                if let (Some(g), Some(o)) = (&gt, &oracle) {
-                    label_rows(
-                        t_end,
-                        &lib,
-                        q,
-                        &hist,
-                        g,
-                        o,
-                        dims,
-                        own.as_ref(),
-                        &mut cells_out,
-                        &mut summary,
-                    );
+                    // The slow-loop index this frame will get when forwarded
+                    // (exact with every batch forwarded; `--slow-keep` < 1 and
+                    // `--offered-fps` drop batches, which shifts it).
+                    let idx = match (&slow, &fixed_lib) {
+                        (Some(sl), _) => Some(sl.frames() + pending.len() as u64),
+                        (None, Some(_)) => Some((t - start) as u64),
+                        _ => None,
+                    };
+                    if idx.is_some_and(|i| scfg.is_test(i)) {
+                        h.frame(t as u64, &y, &lib, &tr, &mut engine, &mut flat)
+                            .unwrap();
+                    }
+                }
+                hist.push(t, lib.ids(), &tr.traces);
+                let a = Instant::now();
+                q.observe_shifted(&y, &lib, &tr, shift).unwrap();
+                qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
+                if t.is_multiple_of(200) {
+                    q.set_noise(pipe.pre.noise().sigma()).unwrap();
+                }
+                if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                    if t.is_multiple_of(200) {
+                        timed_noise = Some(pipe.pre.noise().sigma());
+                    }
+                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    if pending.len() >= batch_n || last {
+                        n_batches += 1;
+                        let now = tm.at(t + 1);
+                        let n = pending.len() as u64;
+                        if tm.has_buffer(now) {
+                            let batch = (std::mem::take(&mut pending), timed_noise.take());
+                            tm.forward(now, batch);
+                            n_fwd += 1;
+                            fwd_frames += n;
+                        } else {
+                            pending.clear();
+                            tm.dropped += n;
+                        }
+                        tm.advance(now, sl, &mut slow_rec);
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
+                    }
+                } else if let Some(sl) = slow.as_mut() {
+                    if t.is_multiple_of(200) {
+                        sl.set_noise(pipe.pre.noise().sigma()).unwrap();
+                        if let Some(r) = via.as_mut() {
+                            r.set_noise(pipe.pre.noise().sigma()).unwrap();
+                        }
+                    }
+                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    if pending.len() >= batch_n || last {
+                        n_batches += 1;
+                        let forward = if keep >= 1.0 {
+                            true
+                        } else if score_mode {
+                            // Residual excursions above 4 σ, per tile the
+                            // largest in the batch, summed over tiles.
+                            let mut best: Vec<f32> = Vec::new();
+                            for (yy, tt, ll, _) in &pending {
+                                let sc = sl.tile_scores(yy, ll, tt).unwrap();
+                                if best.is_empty() {
+                                    best = sc;
+                                } else {
+                                    for (b, v) in best.iter_mut().zip(sc) {
+                                        *b = b.max(v);
+                                    }
+                                }
+                            }
+                            let score: f32 = best.iter().map(|v| (v - 4.0).max(0.0)).sum();
+                            let mut v: Vec<f32> = recent_scores.iter().copied().collect();
+                            let busy = if v.len() < 16 {
+                                true
+                            } else {
+                                v.sort_by(f32::total_cmp);
+                                let k = ((1.0 - keep) * (v.len() - 1) as f64).round() as usize;
+                                score > v[k] || score >= v[v.len() - 1]
+                            };
+                            // Capacity: `keep` batches' worth per batch, at most
+                            // 4 banked. A busy batch goes whenever there is
+                            // capacity; a quiet one only when capacity would
+                            // otherwise go unused.
+                            tokens = (tokens + keep).min(4.0);
+                            let fwd = tokens >= 1.0 && (busy || tokens >= 3.0);
+                            if fwd {
+                                tokens -= 1.0;
+                            }
+                            recent_scores.push_back(score);
+                            if recent_scores.len() > 256 {
+                                recent_scores.pop_front();
+                            }
+                            fwd
+                        } else {
+                            // Evenly spaced: the k-th batch goes when the share
+                            // forwarded so far falls behind `keep`.
+                            (n_fwd as f64) < keep * n_batches as f64
+                        };
+                        if forward {
+                            n_fwd += 1;
+                        }
+                        for (yy, tt, ll, tf) in pending.drain(..) {
+                            if forward {
+                                sl.observe(&yy, &ll, &tt).unwrap();
+                                slow_rec.push(tf as u32);
+                                fwd_frames += 1;
+                            } else if !drop_step {
+                                continue;
+                            }
+                            let published = match via.as_mut() {
+                                Some(r) => sl.step_via(budget, r).unwrap(),
+                                None => sl.step(budget).unwrap(),
+                            };
+                            if let Some(l) = published {
+                                engine.set_library(l).unwrap();
+                            }
+                        }
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
+                    }
+                }
+                let t_end = t + 1;
+                let cp = t_end.is_multiple_of(every) || last;
+                let ho_win: Option<HeldOutWindow> = if cp {
+                    ho.as_mut().map(|h| {
+                        for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {
+                            let _ = writeln!(
+                                ho_cells_out,
+                                "{t_end}\t{sl_}\t{}\t{:.4}\t{}\t{:.3}",
+                                c.id, c.marginal, c.frames, c.marginal_z
+                            );
+                        }
+                        h.take_window()
+                    })
                 } else {
-                    // No GT: metrics only.
-                    for (sl_, c) in q.cells().enumerate() {
-                        let _ = write!(
+                    None
+                };
+                if cp {
+                    if let (Some(g), Some(o)) = (&gt, &oracle) {
+                        label_rows(
+                            t_end,
+                            off,
+                            &lib,
+                            q,
+                            &hist,
+                            g,
+                            o,
+                            dims,
+                            own.as_ref(),
+                            &mut cells_out,
+                            &mut summary,
+                        );
+                    } else {
+                        // No GT: metrics only.
+                        for (sl_, c) in q.cells().enumerate() {
+                            let _ = write!(
                             cells_out,
                             "{t_end}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0\t-\tnan"
                         );
-                        for v in c.to_row() {
-                            let _ = write!(cells_out, "\t{v:.5}");
+                            for v in c.to_row() {
+                                let _ = write!(cells_out, "\t{v:.5}");
+                            }
+                            cells_out.push('\n');
                         }
-                        cells_out.push('\n');
+                        summary = vec![f64::NAN; 3];
                     }
-                    summary = vec![f64::NAN; 3];
                 }
-            }
-            if cp {
-                // Footprint convergence: change since 1 and 4 checkpoints ago
-                // against each cell's split-half noise.
-                let births: HashMap<u64, u64> = slow
-                    .as_ref()
-                    .map(|sl| {
-                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                        sl.births()
-                            .into_iter()
-                            .map(|(id, b)| (id, u64::from(rf(b))))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let snaps: Vec<calab_cala::qc::convergence::CellSnap> = (0..lib.len())
-                    .map(|slot| {
-                        let (pix, val) = lib.filtered(slot);
-                        let id = lib.ids()[slot];
-                        calab_cala::qc::convergence::CellSnap {
-                            id,
-                            pix: pix.to_vec(),
-                            val: val.to_vec(),
-                            born: births.get(&id).copied().unwrap_or(0),
-                            noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
-                        }
-                    })
-                    .collect();
-                if let Some(f) = fp_hist.as_mut() {
-                    let noise = |id: u64, pix: &[u32]| {
-                        slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix))
+                if cp {
+                    // Footprint convergence: change since 1 and 4 checkpoints ago
+                    // against each cell's split-half noise.
+                    let births: HashMap<u64, u64> = slow
+                        .as_ref()
+                        .map(|sl| {
+                            let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                            sl.births()
+                                .into_iter()
+                                .map(|(id, b)| (id, u64::from(rf(b))))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let snaps: Vec<calab_cala::qc::convergence::CellSnap> = (0..lib.len())
+                        .map(|slot| {
+                            let (pix, val) = lib.filtered(slot);
+                            let id = lib.ids()[slot];
+                            calab_cala::qc::convergence::CellSnap {
+                                id,
+                                pix: pix.to_vec(),
+                                val: val.to_vec(),
+                                born: births.get(&id).copied().unwrap_or(0),
+                                noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
+                            }
+                        })
+                        .collect();
+                    if let Some(f) = fp_hist.as_mut() {
+                        let noise = |id: u64, pix: &[u32]| {
+                            slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix))
+                        };
+                        write_fp_history(f, t_end as u64, &lib, &births, &noise);
+                    }
+                    for row in conv.checkpoint(t_end as u64, snaps) {
+                        conv_out.push_str(&row.to_line());
+                    }
+                }
+                if t_end.is_multiple_of(100) || cp {
+                    let g = q.global();
+                    let extra = if cp {
+                        summary.clone()
+                    } else {
+                        vec![f64::NAN; 3]
                     };
-                    write_fp_history(f, t_end as u64, &lib, &births, &noise);
-                }
-                for row in conv.checkpoint(t_end as u64, snaps) {
-                    conv_out.push_str(&row.to_line());
-                }
-            }
-            if t_end.is_multiple_of(100) || cp {
-                let g = q.global();
-                let extra = if cp {
-                    summary.clone()
-                } else {
-                    vec![f64::NAN; 3]
-                };
-                let mut extra = extra;
-                let (cc, st, sf, sn) = slow
-                    .as_ref()
-                    .map_or((Default::default(), Default::default(), 0, 0), |sl| {
-                        (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
-                    });
-                let (dropped, jobs, vms) = timed
-                    .as_ref()
-                    .map_or((0, 0, 0.0), |tm| (tm.dropped, tm.jobs, tm.at(t_end)));
-                extra.extend(
-                    [
-                        cc.adds_new,
-                        cc.adds_readd,
-                        cc.churned,
-                        cc.churned_readd,
-                        cc.established_removals,
-                        st.adds,
-                        st.merges,
-                        st.deletes,
-                        st.splits,
-                        sf,
-                        sn as u64,
-                        fwd_frames,
-                        dropped,
-                        st.visits,
-                        jobs,
-                    ]
-                    .map(|v| v as f64),
-                );
-                extra.push(vms);
-                match &ho_win {
-                    Some(w) => extra.extend([
-                        w.frames as f64,
-                        w.gain_per_frame,
-                        w.cells,
-                        w.placebos,
-                        w.mu,
-                        w.penalty,
-                        w.score,
-                        w.penalty_ci,
-                        w.signal,
-                        w.score_frac,
-                    ]),
-                    None => extra.extend([f64::NAN; 10]),
-                }
-                global.push_str(&global_line(&g, &extra));
-                if t_end.is_multiple_of(1200) || t_end == t_len {
-                    println!(
+                    let mut extra = extra;
+                    let (cc, st, sf, sn) = slow
+                        .as_ref()
+                        .map_or((Default::default(), Default::default(), 0, 0), |sl| {
+                            (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
+                        });
+                    let (dropped, jobs, vms) = timed
+                        .as_ref()
+                        .map_or((0, 0, 0.0), |tm| (tm.dropped, tm.jobs, tm.at(t_end)));
+                    extra.extend(
+                        [
+                            cc.adds_new,
+                            cc.adds_readd,
+                            cc.churned,
+                            cc.churned_readd,
+                            cc.established_removals,
+                            st.adds,
+                            st.merges,
+                            st.deletes,
+                            st.splits,
+                            sf,
+                            sn as u64,
+                            fwd_frames,
+                            dropped,
+                            st.visits,
+                            jobs,
+                        ]
+                        .map(|v| v as f64),
+                    );
+                    extra.push(vms);
+                    match &ho_win {
+                        Some(w) => extra.extend([
+                            w.frames as f64,
+                            w.gain_per_frame,
+                            w.cells,
+                            w.placebos,
+                            w.mu,
+                            w.penalty,
+                            w.score,
+                            w.penalty_ci,
+                            w.signal,
+                            w.score_frac,
+                        ]),
+                        None => extra.extend([f64::NAN; 10]),
+                    }
+                    global.push_str(&global_line(&g, &extra));
+                    if t_end.is_multiple_of(1200) || last {
+                        println!(
                         "  frame {t_end}: {} cells, explained {:.3}, residual {:.3}, snr median {:.1}, pass {:.2}, adds/min {:.0}; GT {:?}; {:.0} s",
                         g.cells, g.explained, g.residual_excess, g.snr_median, g.pass_frac, g.adds_per_min, extra,
                         t_all.elapsed().as_secs_f64()
                     );
+                    }
                 }
             }
+            s += cnt;
         }
-        s += cnt;
+        {
+            let lib = engine.library().clone();
+            let (st, sf, sn) = slow.as_ref().map_or((Default::default(), 0, 0), |sl| {
+                (sl.stats(), sl.frames(), sl.len())
+            });
+            let wall = t_pass.elapsed().as_secs_f64();
+            let _ = writeln!(
+                passes_out,
+                "{}\t{}\t{}\t{sn}\t{}\t{}\t{}\t{}\t{sf}\t{wall:.1}",
+                pass + 1,
+                off + t_len,
+                lib.len(),
+                st.adds,
+                st.merges,
+                st.deletes,
+                st.splits
+            );
+            println!(
+            "pass {} done: {} cells, adds {} merges {} deletes {} splits {} (cumulative); {wall:.0} s",
+            pass + 1,
+            lib.len(),
+            st.adds,
+            st.merges,
+            st.deletes,
+            st.splits
+        );
+            if passes > 1 {
+                write_library(
+                    &out_dir,
+                    &format!("_pass{}", pass + 1),
+                    &lib,
+                    dims,
+                    gt.as_ref(),
+                    ho.as_ref(),
+                    slow.as_ref(),
+                );
+            }
+        }
     }
+    std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;
         tm.advance(f64::INFINITY, sl, &mut slow_rec);
@@ -2716,12 +2935,19 @@ fn main() {
             let Some((t0, w)) = hist.map.get(&id) else {
                 continue;
             };
+            // The last pass's frames only (recording frames from `t0`).
+            let off = (passes - 1) * t_len;
+            let (t0, w) = if *t0 < off {
+                (0, w.get(off - t0..).unwrap_or(&[]))
+            } else {
+                (t0 - off, &w[..])
+            };
             if w.len() < 200 || t0 + w.len() > g.t_gt {
                 continue;
             }
             let (mut bj, mut br) = (usize::MAX, f64::NEG_INFINITY);
             for j in 0..g.kept.len() {
-                let r = pearson(w, &g.c(o, j)[*t0..t0 + w.len()]);
+                let r = pearson(w, &g.c(o, j)[t0..t0 + w.len()]);
                 if r > br {
                     (bj, br) = (j, r);
                 }
@@ -2888,72 +3114,15 @@ fn main() {
         Some(sl) => sl.finalize().unwrap(),
         None => engine.library().clone(),
     };
-    {
-        // Final cells: centroid and footprint match (GT runs).
-        let det = columns(&lib, dims, (0, 0));
-        let mut t = String::from(
-            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\tho_marginal\tho_frames\tho_marginal_z\n",
-        );
-        let (mt, best) = match &gt {
-            Some(g) => match_cells(&det, &g.cols, dims, 0.7),
-            None => (
-                vec![None; det.len()],
-                vec![(usize::MAX, f64::NAN); det.len()],
-            ),
-        };
-        let hc = ho.as_ref().map(|h| h.cells(lib.ids()));
-        for s in 0..lib.len() {
-            let c = centroid(&det[s], dims.width);
-            let hs = hc.as_ref().map_or("nan\t0\tnan".to_string(), |v| {
-                format!(
-                    "{:.4}\t{}\t{:.3}",
-                    v[s].marginal, v[s].frames, v[s].marginal_z
-                )
-            });
-            let (bg, br) = mt[s].unwrap_or(best[s]);
-            let info = slow.as_ref().and_then(|sl| sl.cell_info(lib.ids()[s]));
-            let ev = info.map_or("na\t-1\t-1\t-1\t-1\tnan".to_string(), |i| {
-                format!(
-                    "{}\t{}\t{}\t{}\t{}\t{:.2}",
-                    i.status.as_str(),
-                    i.transients,
-                    i.passes,
-                    i.fails,
-                    i.redundant,
-                    i.peak_z
-                )
-            });
-            let _ = writeln!(
-                t,
-                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}\t{hs}",
-                lib.ids()[s],
-                c.0,
-                c.1,
-                u8::from(mt[s].is_some()),
-                if bg == usize::MAX { -1 } else { bg as i64 },
-                br
-            );
-        }
-        std::fs::write(out_dir.join("final.tsv"), t).unwrap();
-    }
-    {
-        let mut f = BufWriter::new(File::create(out_dir.join("footprints.bin")).unwrap());
-        f.write_all(b"CALAFP01").unwrap();
-        for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
-            f.write_all(&v.to_le_bytes()).unwrap();
-        }
-        for s in 0..lib.len() {
-            let (p, a) = lib.unfiltered(s);
-            let (_, h) = lib.filtered(s);
-            f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
-            f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
-            for q in p {
-                f.write_all(&q.to_le_bytes()).unwrap();
-            }
-            write_f32s(&mut f, a);
-            write_f32s(&mut f, h);
-        }
-    }
+    write_library(
+        &out_dir,
+        "",
+        &lib,
+        dims,
+        gt.as_ref(),
+        ho.as_ref(),
+        slow.as_ref(),
+    );
     if !dump {
         return;
     }
@@ -3022,6 +3191,7 @@ fn main() {
     if let (Some(g), Some(o)) = (&gt, &oracle) {
         label_rows(
             t_len,
+            0,
             &lib,
             &q2,
             &hist2,

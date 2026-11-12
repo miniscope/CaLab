@@ -16,6 +16,10 @@ sections 3.2 to 3.5 of the overhaul plan.
   start while free memory is below 5 GB, each run under `/usr/bin/time -l`
   (wall time and max RSS in `run.json`). Finished runs are skipped.
 - `summarize.py`: the paired report (Markdown). Standard library only.
+- `split_passes.py`: cuts a `qc_eval --passes N` run (repeated pass 1, S2.3;
+  frames are virtual, `pass * frames + t`) into one run directory per pass
+  (`<run>_pass<k>`), which `summarize.py` reads as ordinary runs. The held-out
+  score is held out in pass 1 only.
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
