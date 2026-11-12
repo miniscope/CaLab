@@ -111,7 +111,10 @@
 //! `cells.tsv` rows carry `fp_class` (`tp`, or the FP class: `noise`,
 //! `adjacent`, `partial`, `dup`, `nondetectable` for a match to a GT unit
 //! that is not detectable) and `edge_px` (distance of the centroid to the
-//! sensor-mask edge, capped at 40).
+//! sensor-mask edge, capped at 40). With `--motion` the QC monitor also gets
+//! each frame's rigid shift and `motion_r2` is the cross-validated R² of the
+//! trace on a quadratic of that shift ([`calab_cala::qc::motion`]; flag bit
+//! 16 above 0.2, display only, never part of `pass`); NaN without motion.
 //!
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
 //! every 100 frames, GT precision / recall / trace r at checkpoints, and the
@@ -2312,7 +2315,7 @@ fn main() {
             }
             hist.push(t, lib.ids(), &tr.traces);
             let a = Instant::now();
-            q.observe(&y, &lib, &tr).unwrap();
+            q.observe_shifted(&y, &lib, &tr, shift).unwrap();
             qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
             if t.is_multiple_of(200) {
                 q.set_noise(pipe.pre.noise().sigma()).unwrap();

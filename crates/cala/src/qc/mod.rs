@@ -84,6 +84,9 @@ use crate::preprocess::Dims;
 use crate::trace::{check_len, BgTerms, FrameTraces, Library, TraceError};
 pub use stats::{trace_stats, TraceStats};
 
+pub mod motion;
+use motion::{MotionAcc, ShiftRef};
+
 /// Settings of the QC monitor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QcConfig {
@@ -128,6 +131,15 @@ pub struct QcConfig {
     pub stable_sigma: f32,
     /// Thresholds of [`CellQc::pass`].
     pub pass: PassRule,
+    /// "Trace follows motion" ([`motion`]): frames of burn-in before the
+    /// reference shift is fixed and cells start accumulating.
+    pub motion_burn_in_frames: usize,
+    /// Length of the alternating cross-validation blocks, frames.
+    pub motion_block_frames: usize,
+    /// Frames each fold needs before `motion_r2` is reported.
+    pub motion_min_fold_frames: usize,
+    /// `motion_r2` above this sets [`FLAG_FOLLOWS_MOTION`] (display only).
+    pub motion_r2_flag: f32,
 }
 
 /// Thresholds of the per-cell pass/fail call (validated in
@@ -149,6 +161,9 @@ pub const FLAG_CORRELATED_PAIR: u32 = 2;
 pub const FLAG_LIKELY_DUPLICATE: u32 = 4;
 /// Not enough history yet.
 pub const FLAG_UNMEASURED: u32 = 8;
+/// `motion_r2` above `motion_r2_flag`: the trace follows the frame's shift
+/// (sensor-gain shimmer or motion artifact). Not part of the pass rule.
+pub const FLAG_FOLLOWS_MOTION: u32 = 16;
 
 impl Default for QcConfig {
     fn default() -> QcConfig {
@@ -174,6 +189,10 @@ impl Default for QcConfig {
                 min_snr: 5.0,
                 pair_r: 0.8,
             },
+            motion_burn_in_frames: 300,
+            motion_block_frames: 500,
+            motion_min_fold_frames: 100,
+            motion_r2_flag: 0.2,
         }
     }
 }
@@ -186,6 +205,8 @@ impl QcConfig {
             && self.refresh_frames >= 1
             && self.min_frames >= 16
             && self.min_frames <= self.window_frames
+            && self.motion_block_frames >= 1
+            && self.motion_r2_flag.is_finite()
             && self.event_z.is_finite()
             && self.slow_window_s.is_finite()
             && self.slow_window_s >= 0.0
@@ -260,6 +281,10 @@ pub struct CellQc {
     /// Footprint mismatch: √(residual_active − residual_rest) / peak SNR,
     /// the residual a cell leaves when it fires relative to its signal.
     pub fp_error: f32,
+    /// Cross-validated R² of the trace on a quadratic of the rigid shift
+    /// ([`motion`]); NaN without shifts or before enough frames. Negative
+    /// values are reported as they are.
+    pub motion_r2: f32,
     /// `FLAG_*` bits.
     pub flags: u32,
     /// Measured, SNR ≥ `min_snr`, and not the weaker member of a correlated
@@ -289,6 +314,7 @@ impl CellQc {
             max_neighbour_r: f32::NAN,
             max_neighbour_id: u64::MAX,
             fp_error: f32::NAN,
+            motion_r2: f32::NAN,
             flags: FLAG_UNMEASURED,
             residual_rest: f32::NAN,
             residual_active: f32::NAN,
@@ -298,7 +324,7 @@ impl CellQc {
     }
 
     /// Field names of [`CellQc::to_row`], in order.
-    pub const FIELDS: [&'static str; 34] = [
+    pub const FIELDS: [&'static str; 35] = [
         "id",
         "age_frames",
         "frames",
@@ -331,13 +357,14 @@ impl CellQc {
         "residual_active",
         "proj_r",
         "fp_error",
+        "motion_r2",
         "flags",
         "pass",
     ];
 
     /// The metrics as numbers, in [`CellQc::FIELDS`] order (ids as f64 are
     /// exact below 2⁵³; no neighbour = -1).
-    pub fn to_row(&self) -> [f64; 34] {
+    pub fn to_row(&self) -> [f64; 35] {
         let t = &self.trace;
         let f = |v: f32| f64::from(v);
         [
@@ -377,6 +404,7 @@ impl CellQc {
             f(self.residual_active),
             f(self.proj_r),
             f(self.fp_error),
+            f(self.motion_r2),
             f64::from(self.flags),
             if self.pass { 1.0 } else { 0.0 },
         ]
@@ -484,6 +512,8 @@ struct CellState {
     res: [ResAvg; 2],
     /// Running means of (p, c, p², c², pc) for `proj_r`.
     pc: [ResAvg; 5],
+    /// Normal equations of the trace on the shift ([`motion`]).
+    mo: MotionAcc,
 }
 
 /// A cell's state at a stability snapshot.
@@ -567,6 +597,10 @@ pub struct QcMonitor {
     scratch: Vec<f32>,
     scratch2: Vec<f32>,
     img: Vec<f32>,
+    /// Shifts of the burn-in, then the fixed reference (`Some(None)`: no
+    /// motion in the burn-in, the metric stays NaN).
+    shift_burn: Vec<(f32, f32)>,
+    shift_ref: Option<Option<ShiftRef>>,
 }
 
 impl QcMonitor {
@@ -622,6 +656,8 @@ impl QcMonitor {
             scratch: Vec::new(),
             scratch2: Vec::new(),
             img: vec![0.0; n_px],
+            shift_burn: Vec::new(),
+            shift_ref: None,
         };
         m.set_noise(noise)?;
         Ok(m)
@@ -678,6 +714,7 @@ impl QcMonitor {
                     + 8 * c.nb.len()
                     + 4 * c.nb_r.len()
                     + std::mem::size_of::<CellState>()
+                    + if c.mo.is_started() { 2 * 600 } else { 0 }
             })
             .sum();
         let snaps: usize = self
@@ -777,6 +814,18 @@ impl QcMonitor {
         lib: &Library,
         tr: &FrameTraces,
     ) -> Result<(), TraceError> {
+        self.observe_shifted(y, lib, tr, None)
+    }
+
+    /// [`Self::observe`] with the frame's rigid registration shift
+    /// `(dy, dx)` in px, which feeds `motion_r2`.
+    pub fn observe_shifted(
+        &mut self,
+        y: &[f32],
+        lib: &Library,
+        tr: &FrameTraces,
+        shift: Option<(f32, f32)>,
+    ) -> Result<(), TraceError> {
         check_len("frame", self.dims.pixels(), y.len())?;
         if lib.dims() != self.dims {
             return Err(TraceError::Incompatible(format!(
@@ -794,6 +843,27 @@ impl QcMonitor {
         for (c, &v) in self.cells.iter_mut().zip(&tr.traces) {
             c.hist[pos] = v;
             c.valid = (c.valid + 1).min(w);
+        }
+        if let Some((dy, dx)) = shift.filter(|s| s.0.is_finite() && s.1.is_finite()) {
+            let burn = self.cfg.motion_burn_in_frames as u64;
+            if self.shift_ref.is_none() {
+                if self.frames < burn {
+                    self.shift_burn.push((dy, dx));
+                } else {
+                    self.shift_ref = Some(ShiftRef::from_burn_in(&self.shift_burn));
+                    self.shift_burn = Vec::new();
+                }
+            }
+            if let Some(Some(r)) = self.shift_ref {
+                if self.frames >= burn {
+                    let fold =
+                        ((self.frames - burn) / self.cfg.motion_block_frames as u64 % 2) as usize;
+                    let x = r.features(dy, dx);
+                    for (c, &v) in self.cells.iter_mut().zip(&tr.traces) {
+                        c.mo.push(fold, &x, v);
+                    }
+                }
+            }
         }
         self.frames += 1;
         self.snapshot();
@@ -840,6 +910,7 @@ impl QcMonitor {
                     nb_r: Vec::new(),
                     res: [ResAvg::default(); 2],
                     pc: [ResAvg::default(); 5],
+                    mo: MotionAcc::default(),
                 }
             });
             let (pix, val) = lib.unfiltered(s);
@@ -1055,8 +1126,12 @@ impl QcMonitor {
         } else {
             f32::NAN
         };
+        c.qc.motion_r2 = c.mo.r2(self.cfg.motion_min_fold_frames as f64);
         let q = &c.qc;
         let mut flags = 0u32;
+        if q.motion_r2 > self.cfg.motion_r2_flag {
+            flags |= FLAG_FOLLOWS_MOTION;
+        }
         if !(q.trace.peak_snr >= pass.min_snr) {
             flags |= FLAG_LOW_SNR;
         }

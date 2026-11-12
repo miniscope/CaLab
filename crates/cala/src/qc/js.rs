@@ -66,6 +66,21 @@ impl JsQcMonitor {
         frames: &[f32],
         count: u32,
     ) -> Result<Vec<f32>, JsError> {
+        self.process_frames_shifted(engine, frames, count, &[], &[])
+    }
+
+    /// [`Self::process_frames`] with each frame's rigid registration shift
+    /// (`dy`, `dx`, px; empty = unknown), which feeds `motion_r2`.
+    #[wasm_bindgen(js_name = processFramesShifted)]
+    pub fn process_frames_shifted(
+        &mut self,
+        engine: &mut JsTraceEngine,
+        frames: &[f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<Vec<f32>, JsError> {
+        let have = dy.len() == count as usize && dx.len() == count as usize;
         let n = engine.inner.library().dims().pixels();
         if frames.len() != n * count as usize {
             return Err(js_err(
@@ -78,14 +93,14 @@ impl JsQcMonitor {
             ));
         }
         let mut out = Vec::with_capacity(count as usize * engine.inner.library().len());
-        for f in frames.chunks_exact(n) {
+        for (k, f) in frames.chunks_exact(n).enumerate() {
             engine
                 .inner
                 .process_into(f, &mut engine.out)
                 .map_err(|e| js_err("processFrames", e))?;
             let lib = engine.inner.library().clone();
             self.inner
-                .observe(f, &lib, &engine.out)
+                .observe_shifted(f, &lib, &engine.out, have.then(|| (dy[k], dx[k])))
                 .map_err(|e| js_err("processFrames", e))?;
             out.extend_from_slice(&engine.out.traces);
         }

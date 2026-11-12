@@ -434,3 +434,27 @@ fn stability_compares_old_cells_with_their_earlier_state() {
     assert_eq!(seen[3].stable_frac, 1.0);
     assert!(seen[2].trace_sigma_change.is_finite());
 }
+
+#[test]
+fn motion_r2_is_reported_with_shifts_and_does_not_change_pass() {
+    let (fps, cs) = scene();
+    let lib = Arc::new(library(&fps, 1));
+    let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut with = monitor();
+    let mut without = monitor();
+    let mut rng = Lcg(3);
+    for t in 0..1500 {
+        let y = frame(&fps, &cs, t, &mut rng);
+        let tr = eng.process(&y).unwrap();
+        let s = (rng.normal() * 0.5, rng.normal() * 0.5);
+        with.observe_shifted(&y, &lib, &tr, Some(s)).unwrap();
+        without.observe(&y, &lib, &tr).unwrap();
+    }
+    for (a, b) in with.cells().zip(without.cells()) {
+        assert!(b.motion_r2.is_nan());
+        // Traces unrelated to the shifts: no motion flag, same verdict.
+        assert!(a.motion_r2.is_finite() && a.motion_r2 < 0.2, "{a:?}");
+        assert_eq!(a.flags & FLAG_FOLLOWS_MOTION, 0);
+        assert_eq!(a.pass, b.pass);
+    }
+}

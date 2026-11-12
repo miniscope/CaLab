@@ -359,7 +359,7 @@ export class PipelineEngine {
     // Pixels the shift moved in from outside the FOV mask are missing data.
     pre.backFramesRegistered(corrected, s.count, dy, dx);
     const t5 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre);
+    const cells = this.fast?.process(corrected, s.start, s.count, pre, { dy, dx });
     const t5b = now();
 
     const quality = new Float32Array(s.count);

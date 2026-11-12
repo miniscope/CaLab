@@ -785,7 +785,10 @@ export class BackStage {
     // they stay out of the noise map and background (see backFramesRegistered).
     pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
     const t1 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre);
+    const cells = this.fast?.process(corrected, s.start, s.count, pre, {
+      dy: job.dy!,
+      dx: job.dx!,
+    });
     const t2 = now();
     const output = downsampleFrame(
       corrected,
