@@ -264,7 +264,6 @@ fn build(
         ..SlowLoopConfig::default()
     };
     let empty = LibraryBuilder::new(dims)
-        .config(cfg.library)
         .fov(fov.to_vec())
         .noise(noise.to_vec())
         .background(cfg.background.clone())

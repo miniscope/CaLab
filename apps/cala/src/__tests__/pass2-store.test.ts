@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
+import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
@@ -51,7 +52,9 @@ function batch(start: number, count: number, ids = IDS): PipelineStepResult {
   };
 }
 
-function setup(opts: { final?: boolean; frames?: number; status?: string } = {}) {
+function setup(
+  opts: { final?: boolean; frames?: number; status?: string; flatMap?: FlatFieldMap | null } = {},
+) {
   const rec = new RunRecord();
   const frames = opts.frames ?? 8;
   for (let t = 0; t < frames; t++) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
@@ -72,6 +75,7 @@ function setup(opts: { final?: boolean; frames?: number; status?: string } = {})
     status: () => opts.status ?? 'done',
     record: () => rec,
     plan: () => PLAN,
+    flatFieldMap: () => opts.flatMap ?? null,
   } as unknown as PipelineStore;
   const cells = {
     library: () => view,
@@ -104,6 +108,26 @@ describe('pass 2 store', () => {
     // Frame-major: frame f, cell c at f * 2 + c.
     expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
     expect(store.processed()).toBe(8);
+  });
+
+  it('replays with the flat-field map of pass 1 (applied from frame 0), or none', async () => {
+    const map: FlatFieldMap = {
+      gain: new Float32Array(4).fill(1.02),
+      offset: new Float32Array(0),
+      dark: 1,
+      binsUsed: 3,
+      framesUsed: 500,
+      gainSd: 0.04,
+    };
+    const withMap = setup({ flatMap: map });
+    await withMap.store.run();
+    await settle();
+    const replay = withMap.started[0].replay as { flatField?: FlatFieldMap };
+    expect(replay.flatField).toBe(map);
+    const without = setup();
+    await without.store.run();
+    await settle();
+    expect('flatField' in (without.started[0].replay as object)).toBe(false);
   });
 
   it('says why it cannot run', () => {

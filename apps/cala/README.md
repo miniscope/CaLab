@@ -1,10 +1,10 @@
 # Cala
 
 A streaming, in-browser pipeline from raw 1-photon Miniscope video to per-cell
-footprints and traces (Rust compiled to WebAssembly, WebGPU later). So far it
+footprints and traces (Rust compiled to WebAssembly, with WebGPU motion correction where available). So far it
 reads Miniscope AVI folders, plays them back, and runs preprocessing and
-motion correction, cell discovery, demixed trace extraction, and online quality control live on the opened recording. The app is hidden from the landing page
-(`calab.hidden`) but built at `/CaLab/Cala/`.
+motion correction, cell discovery, demixed trace extraction, and online quality control live on the opened recording. The app is a beta (`calab.status`),
+listed on the landing page and built at `/CaLab/Cala/`. For using it, see the [user guide](USER_GUIDE.md).
 
 ```sh
 npm run dev cala          # Vite dev server (builds crates/*/pkg first if needed)
@@ -41,9 +41,15 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
-- `src/components/PipelinePanel.tsx`: raw or preprocessed vs motion-corrected
-  (or background-removed) video, progress, throughput, and the live motion
-  and flicker traces (`MotionTrace.tsx`, `FlickerTrace.tsx`).
+- `src/components/FovPanel.tsx`: the field of view, one image (raw,
+  preprocessed, motion-corrected, background-removed or the model residual)
+  with zoom, pan, a minimap and the cell overlay (contours or full-extent
+  footprints, `lib/cell-overlay.ts`; zoom math in `lib/fov-layout.ts` and
+  `lib/fov-view.ts`). The right-hand column (`SidePanel.tsx`): `RunPanel.tsx`
+  (pass progress and convergence metrics on one time axis, run controls,
+  export), `CellsPanel.tsx` (the selected cell) and `DetailsTabs.tsx` (the
+  detail tabs, including the live motion and flicker traces, `MotionTrace.tsx`
+  and `FlickerTrace.tsx`).
 - `src/__tests__/`: frame source tests on synthetic AVIs (`synth-avi.ts`), and
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
@@ -51,6 +57,42 @@ What is here:
   (not run in CI); also runs the pipeline headless on the first frames
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
+
+## Sensor flat field (on by default)
+
+Sensor pixel gain (about 5% SD, fixed to the sensor) rides over the tissue as
+registration moves it, and motion-correlated traces pick it up as footprint
+texture. The pipelined path divides it out of the raw frames, with a gain map
+estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/cala):
+
+- **Off the frame path.** Stage A (frame worker) keeps one copy of each process
+  batch's raw frames until stage B returns that batch's shifts (a `shifts`
+  message up the A<-B link), then transfers raw + shifts to
+  `src/workers/flat-field-worker.ts`. At most four batches wait there; beyond
+  that stage A drops frames for the estimator, it never waits. The worker pushes
+  frames and, when due (first map after 150 s of frames, then every 60 s), runs
+  the expensive `refine()` and posts the map to stage A and to the main thread.
+- **Applied at batch boundaries.** Stage A calls `Preprocessor.setFlatField`
+  before the next batch's front half, never mid-batch. The first map is a
+  one-time switch from uncorrected to corrected frames; its frame is in the run
+  record (`RunRecord.flatFieldApplied`), the status panel, and the export's
+  `meta_json` (`flat_field`). Later refinements are small and applied as they come.
+  The motion template and the calibration come from the first frames, so they
+  are built before any estimated map exists (a stored map is applied before the
+  motion warm-up, so then the template is built on corrected frames).
+- **Per-device cache** (`src/lib/flat-field-cache.ts`, IndexedDB `cala-flatfield`):
+  written at most once a minute and at the run end, read at run start; a map of
+  another frame size is never reused. The key is a device serial from
+  `metaData.json` / the live hello when there is one (`serial`, `serialNumber`,
+  ...), else the live source name, else the recording folder name. Miniscope
+  `metaData.json` has no serial (`deviceID` is a camera index), so folders are
+  keyed by name. See `flatFieldKey` in `src/lib/flat-field.ts`.
+- **Pass 2** applies pass 1's newest map from frame 0 and estimates nothing.
+- **Single-worker `PipelineEngine`** (`?pipeline=0`) has no flat field: estimating
+  there would put the solve on the frame path.
+- The Flat field tab shows the gain map at a fixed 0.9 to 1.1 range (no
+  auto-contrast), the status, the last update's change, and the on/off setting
+  (`PipelineOptions.flatField`, applied at the next start of pass 1).
 
 ## Pass 2 and export
 
@@ -72,7 +114,7 @@ so cells found late have traces from frame 0.
   back half is a deterministic function of the corrected frames in order, so
   replaying from frame 0 rebuilds the state pass 1 had at every frame. No
   checkpoints are needed while the whole recording is replayed.
-- **Finish pass 1 now** ends the stream at the frames read so far (the slow
+- **End pass 1** ends the stream at the frames read so far (the slow
   loop publishes its final library and pass 2 covers those frames). Pass 2 runs
   automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
   and frames/s, and the UI stays live (the work is in workers).
@@ -134,15 +176,26 @@ that is a file source with a delay, and it would couple the app to the DAQ's
 file format, which is left as is). The socket lives in the frame worker, so
 frames go straight into the pipeline; steps wait for frames instead of
 reading them, which is the only backpressure a live source has. For now the
-acquisition side is simulated: `scripts/live-sim.mjs` streams a Miniscope AVI
-folder at its frame rate over that protocol (`--fps`, `--drop i,j` to skip
-frames, `--buffer` to drop when the client is not reading).
+acquisition side is simulated: `scripts/live-sim.mjs` (`npm run sim-stream`)
+streams a recording over that protocol, as the board would push it.
 
 ```sh
-node apps/cala/scripts/live-sim.mjs ~/data/session/raw      # ws://localhost:8765
-# then open the app on it: the "stream from a live source" field, or
-#   http://localhost:5173/?live=ws://localhost:8765
+npm run sim-stream -- ~/data/session/raw              # a Miniscope AVI folder
+npm run sim-stream -- $SIM_MOTION_S5 --fps 30 --loop  # a minisim recording
+# prints ws://localhost:8765; paste it into the start page's live-source
+# field, or open the app on  ?live=ws://localhost:8765
 ```
+
+The path is a Miniscope AVI folder (AVIs with `metaData.json` and
+`timeStamps.csv`) or a minisim recording: the sim directory, its `daq/` or its
+`daq/Miniscope/`. Options: `--fps` (default: the recording's metadata, else
+20), `--start N` (first recording frame), `--frames N` (stop after N), `--loop`
+(wrap from the last frame to the first until stopped; the frame index the app
+sees keeps counting), `--port` (default 8765), `--drop i,j` (skip those frames,
+as a camera drop would) and `--buffer N` (drop frames when the client is not
+reading). Frames are paced on a fixed schedule, and every connection gets the
+recording from its start. The framing lives in `src/lib/live-sim-protocol.ts`
+(unit-tested), the receiving side in `src/lib/live-source.ts`.
 
 What changes in a live run:
 
@@ -164,8 +217,8 @@ What changes in a live run:
   past beyond the traces the fast loop solved as the frames came in. The
   export (`src/lib/live-export.ts`) takes those: the cells of the final
   library over every frame, NaN before a cell was found and for frames the
-  bounded trace history no longer holds. (Keeping the past without the file
-  is what the compression branch adds.)
+  bounded trace history no longer holds. A live run does not re-extract old
+  traces; the raw video saved by the acquisition is re-read downstream.
 
 ### Measured: the synthetic 5-min session streamed at 20 fps
 

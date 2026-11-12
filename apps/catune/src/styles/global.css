@@ -119,6 +119,7 @@
   font-size: 0.85rem;
 }
 
+/* Deliberately overrides the shared .panel-label (packages/ui primitives.css); loaded after base.css. */
 .panel-label {
   font-size: 0.85rem;
   color: var(--text-secondary);

@@ -12,9 +12,24 @@
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
 //!   --seed S           oracle: perturbation seed
 //!   --slow-seed S      slow-loop seed (held-out split, random slots)
+//!   --passes N         run pass 1 N times over the same recording (S2.3,
+//!                      repeated pass 1; default 1). See "Repeated passes".
+//!   --later-passes M   edits the slow loop may make in passes >= 2 (S2.3b):
+//!                      `all` (default), `refine` (refine footprints only: no
+//!                      adds, absorbs, splits, merges, keep tests or
+//!                      deletions), `refine-prune` (also keep tests and
+//!                      deletions), `refine-merge` (also merges). Pass 1 is
+//!                      unchanged. Not with `--via-jobs`, `--visit-workers`
+//!                      or `--offered-fps`.
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
+//!   --label-bundle C   `real` only, standalone: read candidate footprints from
+//!                      `C` (tsv: cid, cy, cx) and its sidecar `C.bin` (the
+//!                      `footprints.bin` format), run the preprocessing only and
+//!                      write the raw material of the blind labelling bundle
+//!                      (see `tools/cala-label`); no library is built
+//!   --crop N           with --label-bundle: crop side in pixels (60)
 //!   --batch B          forward frames to the slow loop in batches of B (the
 //!                      app uses 8); library swaps land between batches (1)
 //!   --slow-keep F      forward only a share F of the batches to the slow loop
@@ -28,6 +43,12 @@
 //!                      only when capacity would otherwise go unused
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
+//!   --joint            add test with the joint neighbour-trace check
+//!   --core-test M      transient-band core test: off (default) | report
+//!                      (also writes fast.tsv, split.tsv) | trim | delete
+//!   --basin-trim       trim refined footprints to their significant basin
+//!   --stats-half-life F  half-life (frames) of the footprint statistics
+//!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -47,7 +68,39 @@
 //!                      and result together (encode, copy, decode), ms; a
 //!                      worker also spends it on top of the visit's work
 //!   --visit-depth D    visits a worker may hold at once (1)
+//!   --flat-field M     sensor flat field ([`calab_cala::preprocess::flatfield`]),
+//!                      default `online` with --motion, `off` without:
+//!                      `online` runs what the app runs (uncorrected until the
+//!                      first map after --ff-first s, a warm-started refinement
+//!                      every --ff-refine s, forgetting with half-life
+//!                      --ff-gain-half-life s, column dark offsets tracked with
+//!                      --ff-offset-half-life s (0: no offset model);
+//!                      --ff-seed G [--ff-seed-frames N] starts from a stored
+//!                      gain map; writes `flat_field_updates.tsv`, the final
+//!                      `flat_field.f32` (+ `_offset`)); `auto[:N]` estimates once from a first pass
+//!                      over frames 0..N (3000) and corrects from frame 0; a
+//!                      file path divides by that gain map (f32 LE per pixel)
+//!   --inject-drift gain=A,offset=B  add a synthetic sensor drift growing
+//!                      linearly over the run (pixel gain ±A, column offset
+//!                      ±B grey levels; patterns written to `drift_*.f32`)
+//!   --no-heldout       skip the ground-truth-free held-out score
+//!   --library F        a fixed library (`footprints.bin` of an earlier run,
+//!                      `CALAFP01`) from `--start` on, no slow loop: scores
+//!                      a given cell set (held-out frames: the split the
+//!                      slow loop would use with `--slow-seed`)
 //! ```
+//!
+//! **Held-out score** ([`calab_cala::qc::heldout`], on unless
+//! `--no-heldout`): every frame the slow loop holds out is scored with the
+//! library the fast loop used for it, against placebo columns (displaced
+//! copies of a quarter of the cells). Checkpoint rows of `global.tsv` get
+//! `ho_frames`, `ho_gain_per_frame`, `ho_cells`, `ho_placebos`, `ho_mu`,
+//! `ho_penalty`, `ho_score` (S, per held-out frame, units of
+//! s²), `ho_penalty_ci`, `ho_signal` (held-out light above noise) and
+//! `ho_score_frac` (S / signal) over the window since the previous checkpoint;
+//! `ho_cells.tsv` holds per checkpoint and cell `ho_marginal`, `ho_frames`,
+//! `ho_marginal_z` (also columns of `final.tsv`), `heldout.tsv` one row per
+//! library version, and `cost.txt` the score's share of the wall time.
 //!
 //! * `sim`: the merged fast and slow loops on a minisim recording, from an
 //!   empty library, with a [`QcMonitor`] on the fast loop. At every
@@ -64,13 +117,56 @@
 //! * `real`: no ground truth; QC time course and final per-cell metrics, plus
 //!   `footprints.bin` for matching to another pipeline's cells.
 //!
+//! `cells.tsv` rows carry `fp_class` (`tp`, or the FP class: `noise`,
+//! `adjacent`, `partial`, `dup`, `nondetectable` for a match to a GT unit
+//! that is not detectable) and `edge_px` (distance of the centroid to the
+//! sensor-mask edge, capped at 40). With `--motion` the QC monitor also gets
+//! each frame's rigid shift and `motion_r2` is the cross-validated R² of the
+//! trace on a quadratic of that shift ([`calab_cala::qc::motion`]; flag bit
+//! 16 above 0.2, display only, never part of `pass`); NaN without motion.
+//!
+//! Repeated passes (`--passes N`, offline only): after the last frame the
+//! loop restarts at frame 0 and runs the recording again. Carried over: the
+//! fast loop's library and trace engine state (traces continue across the
+//! wrap), the whole slow loop (footprints, fpstats, ledger, probation, frame
+//! counter: running statistics with half-lives see a later pass as more
+//! time), the QC monitor, the held-out score and the convergence tracker.
+//! Fixed after pass 1: the calibration and FOV mask, the motion corrector
+//! (later passes replay pass 1's motion records, no re-registration) and the
+//! online flat field (its last pass-1 map stays applied; no more updates).
+//! The preprocessor's running state (noise, background) continues. Frames in the output files are *virtual*: pass `k` (0-based)
+//! frame `t` is written as `k * frames + t` (`global.tsv`, `cells.tsv`,
+//! `convergence.tsv`, `adds.tsv`/`removals.tsv` `recording_frame`,
+//! `ho_cells.tsv`), so the curves continue across passes;
+//! `tools/cala-eval/split_passes.py` cuts a run into one directory per pass.
+//! GT trace correlations use the current pass's frames only. The held-out
+//! score is held out in pass 1 only: later passes score frames the slow loop
+//! has already fitted on. At each pass end `passes.tsv` gets a row (cells,
+//! cumulative adds / merges / deletes / splits, wall time) and
+//! `footprints_pass{k}.bin` / `final_pass{k}.tsv` hold the library at that
+//! point (the fast loop's current library; the final `footprints.bin` is
+//! after `SlowLoop::finalize`).
+//!
 //! Outputs: `cells.tsv` (one row per cell per checkpoint), `global.tsv` (QC
 //! every 100 frames, GT precision / recall / trace r at checkpoints, and the
 //! slow loop's cumulative add classification), `adds.tsv` / `removals.tsv`
-//! (every add with its class, every removal with its age; recording frames)
-//! and, with
+//! (every add with its class, every removal with its age; recording frames),
+//! `final.tsv` (each cell of the final library: centroid, footprint match,
+//! and the slow loop's evidence record) and, with GT, `gt.tsv` (GT units:
+//! centroid, detectable, peak SNR) and `traces_gt.tsv` (each final cell's
+//! best trace correlation with *any* GT unit and that unit's distance, which
+//! tells a distant unit's light from signal no GT unit made), and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
 //! order) and `cells_pass2.tsv` (QC of the re-extracted traces).
+//!
+//! `--churn-log` (attribution of footprint changes) adds `edits.tsv` (every
+//! structural edit of the slow loop: add, merge, split, delete, refine,
+//! absorb, with the cells involved and the decision's margin),
+//! `fp_history.bin` (every cell's filtered and unfiltered footprint and
+//! split-half noise at every checkpoint; `CALAFH01`, see
+//! [`write_fp_history`]) and, built with `--features diagnostics`,
+//! `tests.tsv` (every held-out refine / merge / split / absorb test,
+//! accepted or not).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -80,11 +176,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{SlowLoop, SlowLoopConfig, VisitResult, VisitRunner};
-use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
+use calab_cala::discover::{
+    CoreTest, EditScope, SlowLoop, SlowLoopConfig, VisitResult, VisitRunner,
+};
+use calab_cala::motion::{
+    Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
+};
+use calab_cala::preprocess::flatfield::{
+    DitherFlatField, FlatField, FlatFieldConfig, FlatFieldSeed, OnlineFlatField,
+    OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S, OFFSET_HALF_LIFE_S,
+    REFINE_EVERY_S,
+};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::qc::heldout::{HeldOutConfig, HeldOutScore, HeldOutWindow};
 use calab_cala::qc::{CellQc, GlobalQc, QcConfig, QcMonitor};
 use calab_cala::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
@@ -306,6 +412,79 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
+fn read_f32_file(f: &str) -> Vec<f32> {
+    let b = std::fs::read(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// `--inject-drift gain=A,offset=B`: a synthetic sensor drift added to the
+/// raw frames, growing linearly from 0 at frame 0 to full at the last frame:
+/// a pixel gain pattern `1 + A·(t/T)·P(x)` (P = ±1, pseudo-random per pixel)
+/// and a column offset `B·(t/T)·C(col)` (C = ±1 per column, grey levels).
+struct Drift {
+    gain: f32,
+    offset: f32,
+    p: Vec<f32>,
+    c: Vec<f32>,
+    width: usize,
+    total: f32,
+}
+
+impl Drift {
+    fn parse(spec: &str, dims: Dims, total: u32) -> Drift {
+        let (mut gain, mut offset) = (0.0, 0.0);
+        for kv in spec.split(',') {
+            let (k, v) = kv.split_once('=').expect("--inject-drift gain=A,offset=B");
+            match k {
+                "gain" => gain = v.parse().unwrap(),
+                "offset" => offset = v.parse().unwrap(),
+                _ => panic!("--inject-drift: unknown {k}"),
+            }
+        }
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let mut sign = move || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            if (st >> 40) & 1 == 1 {
+                1.0f32
+            } else {
+                -1.0
+            }
+        };
+        let p = (0..dims.pixels()).map(|_| sign()).collect();
+        let c = (0..dims.width).map(|_| sign()).collect();
+        Drift {
+            gain,
+            offset,
+            p,
+            c,
+            width: dims.width,
+            total: total.max(2) as f32 - 1.0,
+        }
+    }
+
+    fn apply(&self, frame: &mut [u8], t: usize) {
+        let a = t as f32 / self.total;
+        // Deterministic sub-grey dither so the u8 rounding does not quantise
+        // the small injected changes away.
+        let mut h = (t as u32).wrapping_mul(2654435761);
+        for (i, v) in frame.iter_mut().enumerate() {
+            h ^= h << 13;
+            h ^= h >> 17;
+            h ^= h << 5;
+            let dith = (h >> 8) as f32 / (1u32 << 24) as f32;
+            let x = f32::from(*v) * (1.0 + self.gain * a * self.p[i])
+                + self.offset * a * self.c[i % self.width];
+            *v = (x + dith).floor().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 fn write_f32s(f: &mut impl Write, v: &[f32]) {
     for x in v {
         f.write_all(&x.to_le_bytes()).unwrap();
@@ -317,6 +496,14 @@ struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
     buf: Vec<f32>,
+    /// Registered frames: the sensor FOV mask as the warp's source, and the
+    /// per-frame validity (samples moved in from outside the mask are missing).
+    src: Option<calab_cala::motion::SourceMask>,
+    valid: Vec<u8>,
+    /// Motion records of every frame processed, kept when `keep_records`
+    /// (repeated passes replay them).
+    keep_records: bool,
+    records: Vec<MotionRecord>,
 }
 
 impl Pipeline {
@@ -347,22 +534,68 @@ impl Pipeline {
         } else {
             None
         };
+        let src = mc.as_ref().map(|_| {
+            calab_cala::motion::SourceMask::new(
+                dims.height,
+                dims.width,
+                cal.fov().mask(),
+                calab_cala::motion::Interpolation::Bicubic,
+            )
+            .unwrap()
+        });
         Pipeline {
             pre,
             mc,
             buf: vec![0.0; n_px],
+            src,
+            valid: vec![0; n_px],
+            keep_records: false,
+            records: Vec::new(),
         }
     }
 
-    fn frame(&mut self, raw: &[u8], out: &mut [f32]) {
+    /// Like `frame`, but a motion run warps by the stored record of frame
+    /// `t` (no estimation, the corrector's state is unchanged).
+    fn frame_replay(&mut self, raw: &[u8], out: &mut [f32], t: usize) -> Option<(f32, f32)> {
         self.pre.front(raw, &mut self.buf).unwrap();
         match &mut self.mc {
             Some(mc) => {
-                mc.process(Frame::F32(&self.buf), out).unwrap();
+                let rec = &self.records[t];
+                mc.apply(Frame::F32(&self.buf), rec, out, None).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
+                Some((rec.dy, rec.dx))
             }
-            None => out.copy_from_slice(&self.buf),
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+                None
+            }
         }
-        self.pre.back(out).unwrap();
+    }
+
+    /// Returns the rigid shift of the frame (motion runs).
+    fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> Option<(f32, f32)> {
+        self.pre.front(raw, &mut self.buf).unwrap();
+        match &mut self.mc {
+            Some(mc) => {
+                let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
+                let m = self.src.as_ref().unwrap();
+                mc.validity(&rec, m, &mut self.valid).unwrap();
+                self.pre.back_masked(out, &self.valid).unwrap();
+                let shift = Some((rec.dy, rec.dx));
+                if self.keep_records {
+                    self.records.push(rec);
+                }
+                shift
+            }
+            None => {
+                out.copy_from_slice(&self.buf);
+                self.pre.back(out).unwrap();
+                None
+            }
+        }
     }
 }
 
@@ -754,6 +987,57 @@ struct Gt {
     detectable: Vec<bool>,
     snr: Vec<f64>,
     t_gt: usize,
+    /// Distance in px from each pixel to the nearest masked-out pixel (or
+    /// the image border), capped at [`EDGE_CAP`].
+    edge: Vec<f32>,
+}
+
+/// Cap of the edge-distance map (px).
+const EDGE_CAP: f32 = 40.0;
+
+/// Distance from every pixel to the nearest pixel outside the sensor mask
+/// (the image border counts as outside), capped at [`EDGE_CAP`]. Two-pass
+/// chamfer (3-4) transform: within a few percent of the Euclidean distance,
+/// which is plenty against a 10 px threshold.
+fn edge_distance(fov: &[u8], dims: Dims) -> Vec<f32> {
+    let (h, w) = (dims.height as i32, dims.width as i32);
+    let at = |d: &Vec<f32>, y: i32, x: i32| -> f32 {
+        if y < 0 || x < 0 || y >= h || x >= w {
+            0.0
+        } else {
+            d[(y * w + x) as usize]
+        }
+    };
+    let mut d: Vec<f32> = fov
+        .iter()
+        .map(|&m| if m != 0 { EDGE_CAP + 10.0 } else { 0.0 })
+        .collect();
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let v = d[i]
+                .min(at(&d, y - 1, x) + 1.0)
+                .min(at(&d, y, x - 1) + 1.0)
+                .min(at(&d, y - 1, x - 1) + std::f32::consts::SQRT_2)
+                .min(at(&d, y - 1, x + 1) + std::f32::consts::SQRT_2);
+            d[i] = v;
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            let i = (y * w + x) as usize;
+            let v = d[i]
+                .min(at(&d, y + 1, x) + 1.0)
+                .min(at(&d, y, x + 1) + 1.0)
+                .min(at(&d, y + 1, x + 1) + std::f32::consts::SQRT_2)
+                .min(at(&d, y + 1, x - 1) + std::f32::consts::SQRT_2);
+            d[i] = v;
+        }
+    }
+    for v in &mut d {
+        *v = v.min(EDGE_CAP);
+    }
+    d
 }
 
 impl Gt {
@@ -824,19 +1108,25 @@ fn build_gt(
             detectable,
             snr,
             t_gt: o.n_frames,
+            edge: edge_distance(fov, dims),
         },
         lib,
     )
 }
 
 const LABELS: &str =
-    "frame\tslot\tmatched\ttp\tdup\tfp_r\tgt\tgt_snr\ttrue_r\ttrue_r_any\txt_var\txt_rel\txt_r\tperturb";
+    "frame\tslot\tmatched\ttp\tdup\tfp_r\tgt\tgt_snr\ttrue_r\ttrue_r_any\txt_var\txt_rel\txt_r\tperturb\tfp_class\tedge_px";
 
 /// Per-cell labels of `lib`'s cells at frame `t_end`. `own` maps a cell to
 /// its GT units when known (oracle); otherwise footprints are matched.
+///
+/// `t_end` is the (virtual) checkpoint frame, `rec_off` the virtual frame of
+/// the current pass's recording frame 0 (0 without repeated passes): trace
+/// correlations with GT use the current pass's frames only.
 #[allow(clippy::too_many_arguments)]
 fn label_rows(
     t_end: usize,
+    rec_off: usize,
     lib: &Library,
     qc: &QcMonitor,
     hist: &History,
@@ -860,7 +1150,7 @@ fn label_rows(
     for (s, q) in qc.cells().enumerate() {
         let id = lib.ids()[s];
         let row = q.to_row();
-        let len = q.frames as usize;
+        let len = (q.frames as usize).min(t_end - rec_off);
         let (units, perturb): (Vec<usize>, u32) = match own {
             Some(m) => m.get(&id).cloned().unwrap_or((Vec::new(), 0)),
             None => (mt[s].map(|m| vec![m.0]).unwrap_or_default(), 0),
@@ -872,9 +1162,33 @@ fn label_rows(
         }
         let dup = !matched && best[s].0 != usize::MAX && best[s].1 >= 0.5 && gt_hit[best[s].0];
         let fp_r = mt[s].map_or(best[s].1, |m| m.1);
+        let ctr0 = centroid(&det[s], dims.width);
+        let fp_class = if tp {
+            "tp"
+        } else if matched {
+            // Matched only non-detectable GT units: not a real error of the
+            // pipeline, reported apart from the other FP classes.
+            "nondetectable"
+        } else if dup {
+            "dup"
+        } else if best[s].0 != usize::MAX && best[s].1 >= 0.5 {
+            "partial"
+        } else if !gt.near(ctr0, 10.0, &[]).is_empty() {
+            "adjacent"
+        } else {
+            "noise"
+        };
+        let edge_px = {
+            let (cy, cx) = (
+                (ctr0.0.round() as i64).clamp(0, dims.height as i64 - 1) as usize,
+                (ctr0.1.round() as i64).clamp(0, dims.width as i64 - 1) as usize,
+            );
+            gt.edge[cy * dims.width + cx]
+        };
         let mut vals = [f64::NAN; 8];
         if len >= qc.config().min_frames {
             if let Some((t0, w)) = hist.window(id, len, t_end) {
+                let (t0, t_end) = (t0 - rec_off, t_end - rec_off);
                 let ctr = centroid(&det[s], dims.width);
                 if matched {
                     // Own unit: the best-correlated of the cell's units.
@@ -916,7 +1230,7 @@ fn label_rows(
         }
         let _ = write!(
             out,
-            "{t_end}\t{s}\t{}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{perturb}",
+            "{t_end}\t{s}\t{}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{perturb}\t{fp_class}\t{edge_px:.1}",
             u8::from(matched),
             u8::from(tp),
             u8::from(dup),
@@ -1372,6 +1686,442 @@ fn write_logs(
     }
 }
 
+/// Move the slow loop's structural edits (and, with `diagnostics`, its
+/// held-out edit tests) into the `--churn-log` TSV buffers.
+fn write_churn_logs(
+    sl: &mut SlowLoop,
+    rf: &dyn Fn(u64) -> u32,
+    edit_log: &mut String,
+    test_log: &mut String,
+) {
+    for e in sl.take_edit_log() {
+        let _ = writeln!(
+            edit_log,
+            "{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            e.center.0,
+            e.center.1,
+            e.margin
+        );
+    }
+    #[cfg(feature = "diagnostics")]
+    for e in sl.take_test_log() {
+        let _ = writeln!(
+            test_log,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.3}",
+            e.frame,
+            rf(e.frame),
+            e.kind.as_str(),
+            e.id,
+            e.other,
+            u8::from(e.accepted),
+            e.z
+        );
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = test_log;
+}
+
+/// Append one checkpoint to `fp_history.bin` (`--churn-log`): `CALAFH01`
+/// once, then per checkpoint the recording frame (u64) and cell count
+/// (u32), and per cell its id (u64), birth (recording frame, u64),
+/// split-half noise (f64, NaN when none), then the filtered footprint
+/// (pixel count u32, pixels u32, values f32) and the unfiltered one (the
+/// same layout). Little endian.
+fn write_fp_history(
+    out: &mut BufWriter<File>,
+    frame: u64,
+    lib: &calab_cala::trace::Library,
+    births: &HashMap<u64, u64>,
+    noise: &dyn Fn(u64, &[u32]) -> Option<f64>,
+) {
+    out.write_all(&frame.to_le_bytes()).unwrap();
+    out.write_all(&(lib.len() as u32).to_le_bytes()).unwrap();
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        let (fpix, fval) = lib.filtered(slot);
+        let (rpix, rval) = lib.unfiltered(slot);
+        out.write_all(&id.to_le_bytes()).unwrap();
+        out.write_all(&births.get(&id).copied().unwrap_or(0).to_le_bytes())
+            .unwrap();
+        out.write_all(&noise(id, fpix).unwrap_or(f64::NAN).to_le_bytes())
+            .unwrap();
+        for (pix, val) in [(fpix, fval), (rpix, rval)] {
+            out.write_all(&(pix.len() as u32).to_le_bytes()).unwrap();
+            for &p in pix {
+                out.write_all(&p.to_le_bytes()).unwrap();
+            }
+            for &v in val {
+                out.write_all(&v.to_le_bytes()).unwrap();
+            }
+        }
+    }
+}
+
+/// A fixed library from a `footprints.bin` (`CALAFP01`: height, width, n;
+/// per cell id, pixel count, pixels, unfiltered values, filtered values),
+/// built with this run's filter, noise map and background.
+fn read_footprints(
+    path: &Path,
+    dims: Dims,
+    fov: &[u8],
+    noise: &[f32],
+    scfg: &SlowLoopConfig,
+    flat: &mut GlowFlattener,
+) -> Library {
+    let mut f = BufReader::new(File::open(path).unwrap());
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic).unwrap();
+    assert_eq!(
+        &magic,
+        b"CALAFP01",
+        "{}: not a footprints.bin",
+        path.display()
+    );
+    let (h, w, n) = (read_u32(&mut f), read_u32(&mut f), read_u32(&mut f));
+    assert_eq!((h as usize, w as usize), (dims.height, dims.width));
+    let mut b = LibraryBuilder::new(dims)
+        .fov(fov.to_vec())
+        .noise(noise.to_vec())
+        .background(scfg.background.clone());
+    let wd = dims.width;
+    for _ in 0..n {
+        let id = u64::from(read_u32(&mut f));
+        let np = read_u32(&mut f) as usize;
+        let pix: Vec<u32> = (0..np).map(|_| read_u32(&mut f)).collect();
+        let a = read_f32s(&mut f, np);
+        let _ = read_f32s(&mut f, np);
+        if !a.iter().any(|&v| v > 0.0) {
+            continue;
+        }
+        let y0 = pix.iter().map(|&q| q as usize / wd).min().unwrap();
+        let y1 = pix.iter().map(|&q| q as usize / wd).max().unwrap();
+        let x0 = pix.iter().map(|&q| q as usize % wd).min().unwrap();
+        let x1 = pix.iter().map(|&q| q as usize % wd).max().unwrap();
+        let (fh, fw) = (y1 - y0 + 1, x1 - x0 + 1);
+        let mut values = vec![0.0f32; fh * fw];
+        for (&q, &v) in pix.iter().zip(&a) {
+            values[(q as usize / wd - y0) * fw + (q as usize % wd - x0)] = v.max(0.0);
+        }
+        b.push(Footprint {
+            id,
+            y0,
+            x0,
+            height: fh,
+            width: fw,
+            values,
+        });
+    }
+    b.build(flat).unwrap()
+}
+
+/// Candidate footprints for `--label-bundle`: `(cy, cx)` per tsv row and the
+/// sparse footprint (pixel, weight) of the same row in the sidecar `.bin`.
+type Candidates = (Vec<(f32, f32)>, Vec<(Vec<u32>, Vec<f32>)>);
+
+fn read_candidates(tsv: &Path) -> Candidates {
+    let text = std::fs::read_to_string(tsv).unwrap_or_else(|e| panic!("{tsv:?}: {e}"));
+    let centres: Vec<(f32, f32)> = text
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[1].parse().unwrap(), f[2].parse().unwrap())
+        })
+        .collect();
+    let bin = tsv.with_extension("bin");
+    let mut r = BufReader::new(File::open(&bin).unwrap_or_else(|e| panic!("{bin:?}: {e}")));
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"CALAFP01");
+    let _h = read_u32(&mut r);
+    let _w = read_u32(&mut r);
+    let n = read_u32(&mut r) as usize;
+    assert_eq!(n, centres.len(), "candidates tsv and bin disagree");
+    let mut fps = Vec::with_capacity(n);
+    for _ in 0..n {
+        let _id = read_u32(&mut r);
+        let m = read_u32(&mut r) as usize;
+        let px: Vec<u32> = (0..m).map(|_| read_u32(&mut r)).collect();
+        let a = read_f32s(&mut r, m);
+        let _filtered = read_f32s(&mut r, m);
+        fps.push((px, a));
+    }
+    (centres, fps)
+}
+
+fn f32_le_bytes(src: &[f32], dst: &mut [u8]) {
+    for (v, b) in src.iter().zip(dst.chunks_mut(4)) {
+        b.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Raw material of the blind labelling bundle (`tools/cala-label`).
+///
+/// Pass 1 runs the preprocessing (and motion correction) over the recording
+/// and projects every candidate footprint on the floored frame, `aᵀy / aᵀa`,
+/// the same trace for every candidate whatever its origin; the three highest
+/// peaks, a window apart (22 s), are its events. Pass 2 runs the preprocessing
+/// again and cuts a `crop`-pixel window around the candidate centroid out of
+/// the registered frame before the floor (`pre`) and after it (`y`) for the 441
+/// frames around each event (180 before the peak, 260 after), plus the whole-recording mean of both. Outputs in
+/// `out_dir`: `peaks.tsv`, `crops.tsv`, `traces.f32` (`[cand][t]`),
+/// `snip_y.f32` / `snip_pre.f32` (`[cand][event][441][crop][crop]`) and
+/// `mean_y.f32` / `mean_pre.f32` (`[cand][crop][crop]`). Nothing is rescaled:
+/// the values are the grey levels the model sees.
+#[allow(clippy::too_many_arguments)]
+fn label_bundle(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    cand_tsv: &Path,
+    crop: usize,
+    frames: u32,
+    out_dir: &Path,
+) {
+    use std::os::unix::fs::FileExt;
+    const PRE: usize = 180;
+    const POST: usize = 260;
+    const EVENTS: usize = 3;
+    const SPAN: usize = PRE + POST + 1;
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let t_len = frames as usize;
+    let (centres, fps) = read_candidates(cand_tsv);
+    let n = centres.len();
+    let norms: Vec<f32> = fps
+        .iter()
+        .map(|(_, a)| a.iter().map(|v| v * v).sum::<f32>().max(1e-12))
+        .collect();
+    let mut y = vec![0.0f32; n_px];
+    let mut pre = vec![0.0f32; n_px];
+
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut traces = vec![0.0f32; n * t_len];
+    let mut s = 0u32;
+    while s < frames {
+        let cnt = 64.min(frames - s);
+        let raw = rec.read(s, cnt);
+        for (k, f) in raw.chunks_exact(n_px).enumerate() {
+            let t = s as usize + k;
+            pipe.frame_split(f, &mut pre, &mut y);
+            for (i, (px, a)) in fps.iter().enumerate() {
+                let d: f32 = px.iter().zip(a).map(|(&q, &w)| w * y[q as usize]).sum();
+                traces[i * t_len + t] = d / norms[i];
+            }
+        }
+        s += cnt;
+    }
+    println!("label bundle pass 1: {n} candidates x {t_len} frames");
+
+    // Events: highest peaks of the 5-frame running mean, a window apart.
+    let mut peaks = vec![[usize::MAX; EVENTS]; n];
+    for (i, found) in peaks.iter_mut().enumerate() {
+        let tr = &traces[i * t_len..(i + 1) * t_len];
+        let sm: Vec<f32> = (0..t_len)
+            .map(|t| {
+                let (a, b) = (t.saturating_sub(2), (t + 3).min(t_len));
+                tr[a..b].iter().sum::<f32>() / (b - a) as f32
+            })
+            .collect();
+        let mut taken: Vec<bool> = (0..t_len).map(|t| t < PRE || t + POST >= t_len).collect();
+        for slot in found.iter_mut() {
+            let best = (0..t_len)
+                .filter(|&t| !taken[t])
+                .max_by(|&a, &b| sm[a].total_cmp(&sm[b]));
+            let Some(t) = best else { break };
+            *slot = t;
+            taken[t.saturating_sub(SPAN - 1)..(t + SPAN).min(t_len)].fill(true);
+        }
+        found.sort_unstable();
+    }
+    let mut pk = String::from("cand\tevent\tframe\n");
+    for (i, p) in peaks.iter().enumerate() {
+        for (e, &t) in p.iter().enumerate() {
+            let t = if t == usize::MAX { -1 } else { t as i64 };
+            let _ = writeln!(pk, "{i}\t{e}\t{t}");
+        }
+    }
+    std::fs::write(out_dir.join("peaks.tsv"), pk).unwrap();
+    {
+        let mut f = BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
+        write_f32s(&mut f, &traces);
+    }
+
+    // Crop origins (top-left, may lie outside the image; outside reads as 0).
+    let origin: Vec<(i64, i64)> = centres
+        .iter()
+        .map(|&(cy, cx)| {
+            (
+                cy.round() as i64 - (crop / 2) as i64,
+                cx.round() as i64 - (crop / 2) as i64,
+            )
+        })
+        .collect();
+    let mut cr = String::from("cand\ty0\tx0\tcrop\n");
+    for (i, (y0, x0)) in origin.iter().enumerate() {
+        let _ = writeln!(cr, "{i}\t{y0}\t{x0}\t{crop}");
+    }
+    std::fs::write(out_dir.join("crops.tsv"), cr).unwrap();
+
+    // Event windows by frame: the (candidate, event, offset) that want it.
+    let mut wants: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+    for (i, p) in peaks.iter().enumerate() {
+        for (e, &t) in p.iter().enumerate() {
+            if t == usize::MAX {
+                continue;
+            }
+            for off in 0..SPAN {
+                wants.entry(t + off - PRE).or_default().push((i, e, off));
+            }
+        }
+    }
+    let cc = crop * crop;
+    let size = (n * EVENTS * SPAN * cc * 4) as u64;
+    let f_y = File::create(out_dir.join("snip_y.f32")).unwrap();
+    let f_pre = File::create(out_dir.join("snip_pre.f32")).unwrap();
+    f_y.set_len(size).unwrap();
+    f_pre.set_len(size).unwrap();
+    let mut sum_y = vec![0.0f64; n * cc];
+    let mut sum_pre = vec![0.0f64; n * cc];
+    let mut buf_y = vec![0.0f32; cc];
+    let mut buf_pre = vec![0.0f32; cc];
+    let mut bytes = vec![0u8; cc * 4];
+    let (h, w) = (dims.height as i64, dims.width as i64);
+    let cut = |src: &[f32], o: (i64, i64), dst: &mut [f32]| {
+        for r in 0..crop {
+            for c in 0..crop {
+                let (yy, xx) = (o.0 + r as i64, o.1 + c as i64);
+                dst[r * crop + c] = if yy >= 0 && xx >= 0 && yy < h && xx < w {
+                    src[(yy * w + xx) as usize]
+                } else {
+                    0.0
+                };
+            }
+        }
+    };
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut s = 0u32;
+    while s < frames {
+        let cnt = 64.min(frames - s);
+        let raw = rec.read(s, cnt);
+        for (k, f) in raw.chunks_exact(n_px).enumerate() {
+            let t = s as usize + k;
+            pipe.frame_split(f, &mut pre, &mut y);
+            for i in 0..n {
+                cut(&y, origin[i], &mut buf_y);
+                cut(&pre, origin[i], &mut buf_pre);
+                for j in 0..cc {
+                    sum_y[i * cc + j] += f64::from(buf_y[j]);
+                    sum_pre[i * cc + j] += f64::from(buf_pre[j]);
+                }
+                let Some(wv) = wants.get(&t) else { continue };
+                for &(_, e, off) in wv.iter().filter(|x| x.0 == i) {
+                    let pos = (((i * EVENTS + e) * SPAN + off) * cc * 4) as u64;
+                    f32_le_bytes(&buf_y, &mut bytes);
+                    f_y.write_all_at(&bytes, pos).unwrap();
+                    f32_le_bytes(&buf_pre, &mut bytes);
+                    f_pre.write_all_at(&bytes, pos).unwrap();
+                }
+            }
+        }
+        s += cnt;
+    }
+    for (name, sum) in [("mean_y.f32", &sum_y), ("mean_pre.f32", &sum_pre)] {
+        let mut f = BufWriter::new(File::create(out_dir.join(name)).unwrap());
+        let m: Vec<f32> = sum.iter().map(|v| (v / t_len as f64) as f32).collect();
+        write_f32s(&mut f, &m);
+    }
+    println!("label bundle pass 2: crops written to {out_dir:?}");
+}
+
+/// `final{suffix}.tsv` (each cell: centroid, footprint match, the slow
+/// loop's evidence record, held-out marginal) and `footprints{suffix}.bin`
+/// (`CALAFP01`) of `lib`.
+fn write_library(
+    out_dir: &Path,
+    suffix: &str,
+    lib: &Library,
+    dims: Dims,
+    gt: Option<&Gt>,
+    ho: Option<&HeldOutScore>,
+    slow: Option<&SlowLoop>,
+) {
+    {
+        // Final cells: centroid and footprint match (GT runs).
+        let det = columns(lib, dims, (0, 0));
+        let mut t = String::from(
+            "slot\tid\tcy\tcx\tmatched\tbest_gt\tbest_r\tstatus\ttransients\tpasses\tfails\tredundant\tpeak_z\tho_marginal\tho_frames\tho_marginal_z\n",
+        );
+        let (mt, best) = match gt {
+            Some(g) => match_cells(&det, &g.cols, dims, 0.7),
+            None => (
+                vec![None; det.len()],
+                vec![(usize::MAX, f64::NAN); det.len()],
+            ),
+        };
+        let hc = ho.map(|h| h.cells(lib.ids()));
+        for s in 0..lib.len() {
+            let c = centroid(&det[s], dims.width);
+            let hs = hc.as_ref().map_or("nan\t0\tnan".to_string(), |v| {
+                format!(
+                    "{:.4}\t{}\t{:.3}",
+                    v[s].marginal, v[s].frames, v[s].marginal_z
+                )
+            });
+            let (bg, br) = mt[s].unwrap_or(best[s]);
+            let info = slow.and_then(|sl| sl.cell_info(lib.ids()[s]));
+            let ev = info.map_or("na\t-1\t-1\t-1\t-1\tnan".to_string(), |i| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{:.2}",
+                    i.status.as_str(),
+                    i.transients,
+                    i.passes,
+                    i.fails,
+                    i.redundant,
+                    i.peak_z
+                )
+            });
+            let _ = writeln!(
+                t,
+                "{s}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{:.4}\t{ev}\t{hs}",
+                lib.ids()[s],
+                c.0,
+                c.1,
+                u8::from(mt[s].is_some()),
+                if bg == usize::MAX { -1 } else { bg as i64 },
+                br
+            );
+        }
+        std::fs::write(out_dir.join(format!("final{suffix}.tsv")), t).unwrap();
+    }
+    {
+        let mut f =
+            BufWriter::new(File::create(out_dir.join(format!("footprints{suffix}.bin"))).unwrap());
+        f.write_all(b"CALAFP01").unwrap();
+        for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
+            f.write_all(&v.to_le_bytes()).unwrap();
+        }
+        for s in 0..lib.len() {
+            let (p, a) = lib.unfiltered(s);
+            let (_, h) = lib.filtered(s);
+            f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
+            f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
+            for q in p {
+                f.write_all(&q.to_le_bytes()).unwrap();
+            }
+            write_f32s(&mut f, a);
+            write_f32s(&mut f, h);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -1401,6 +2151,27 @@ fn main() {
     let depth: usize = arg_value(&args, "--visit-depth").map_or(1, |s| s.parse().unwrap());
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
+    let heldout_on = !args.iter().any(|a| a == "--no-heldout");
+    let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
+    assert!(passes >= 1, "--passes must be at least 1");
+    let later_scope = match arg_value(&args, "--later-passes").as_deref() {
+        None | Some("all") => EditScope::All,
+        Some("refine") => EditScope::Refine,
+        Some("refine-prune") => EditScope::RefinePrune,
+        Some("refine-merge") => EditScope::RefineMerge,
+        Some(m) => panic!("--later-passes: unknown mode {m}"),
+    };
+    // A `VisitRunner` keeps the scope it was built with.
+    assert!(
+        later_scope == EditScope::All || !via_jobs && visit_workers == 0 && offered_fps.is_none(),
+        "--later-passes needs in-process visits (no --via-jobs, --visit-workers, --offered-fps)"
+    );
+    let churn_log = args.iter().any(|a| a == "--churn-log");
+    let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
+    assert!(
+        fixed_lib.is_none() || !oracle_mode,
+        "--library and oracle mode both set the library"
+    );
     assert!(batch_n >= 1 && keep > 0.0 && keep <= 1.0);
 
     let avi_dir = if has_gt {
@@ -1430,6 +2201,24 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
+    if let Some(v) = arg_value(&args, "--core-test") {
+        scfg.core_test = match v.as_str() {
+            "off" => CoreTest::Off,
+            "report" => CoreTest::Report,
+            "trim" => CoreTest::Trim,
+            "delete" => CoreTest::Delete,
+            other => panic!("--core-test: off|report|trim|delete, not {other}"),
+        };
+    }
+    if args.iter().any(|a| a == "--basin-trim") {
+        scfg.basin_trim = true;
+    }
+    if args.iter().any(|a| a == "--joint") {
+        scfg.joint_neighbours = true;
+    }
+    if let Some(v) = arg_value(&args, "--stats-half-life") {
+        scfg.stats_half_life_frames = v.parse().unwrap();
+    }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
     }
@@ -1450,7 +2239,110 @@ fn main() {
     drop(warm);
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
     let fov = cal.fov().mask().to_vec();
-    let pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
+    let mut pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
+    let mut online_ff: Option<OnlineFlatField> = None;
+    let drift = arg_value(&args, "--inject-drift").map(|d| Drift::parse(&d, dims, frames));
+    if let Some(d) = &drift {
+        let mut o = BufWriter::new(File::create(out_dir.join("drift_pattern.f32")).unwrap());
+        write_f32s(&mut o, &d.p);
+        let mut o = BufWriter::new(File::create(out_dir.join("drift_columns.f32")).unwrap());
+        write_f32s(&mut o, &d.c);
+    }
+    let mut ff_log = String::from(
+        "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n",
+    );
+    // Default: the online flat field (what the app runs) with motion, off without.
+    let ff_mode = arg_value(&args, "--flat-field")
+        .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
+    if ff_mode == "off" {
+        println!("flat field: off");
+    } else if ff_mode == "online" {
+        assert!(motion, "--flat-field online needs --motion");
+        let secs = |k: &str, d: f32| arg_value(&args, k).map_or(d, |s| s.parse().unwrap());
+        let mut c = OnlineFlatFieldConfig::for_fps(20.0);
+        let fr = |s: f32| (s * 20.0).round();
+        c.estimator.half_life_frames = f64::from(fr(secs("--ff-gain-half-life", GAIN_HALF_LIFE_S)));
+        c.estimator.offset_half_life_frames =
+            f64::from(fr(secs("--ff-offset-half-life", OFFSET_HALF_LIFE_S)));
+        c.first_frames = fr(secs("--ff-first", FIRST_MAP_S)).max(1.0) as u64;
+        c.refine_every_frames = fr(secs("--ff-refine", REFINE_EVERY_S)).max(1.0) as u64;
+        let seed = arg_value(&args, "--ff-seed").map(|f| FlatFieldSeed {
+            gain: read_f32_file(&f),
+            offset: None,
+            dark: 0.0,
+            frames: arg_value(&args, "--ff-seed-frames").map_or(3000.0, |s| s.parse().unwrap()),
+        });
+        if let Some(sd) = &seed {
+            FlatField {
+                gain: sd.gain.clone(),
+                ..FlatField::identity(dims)
+            }
+            .apply(&mut pre0)
+            .unwrap();
+        }
+        println!("flat field: online {c:?}, seed {}", seed.is_some());
+        online_ff = Some(OnlineFlatField::new(dims, &fov, c, seed).unwrap());
+    } else if let Some(f) = Some(ff_mode.clone()) {
+        let g: Vec<f32> = if let Some(k) = f.strip_prefix("auto") {
+            // Dither flat field from a first pass over the opening frames.
+            assert!(motion, "--flat-field auto needs --motion");
+            let k: u32 = k.strip_prefix(':').map_or(3000, |s| s.parse().unwrap());
+            let k = k.min(frames);
+            let t0 = Instant::now();
+            let mut est = DitherFlatField::new(dims, &fov, FlatFieldConfig::default()).unwrap();
+            let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, true, 200);
+            let mut out = vec![0.0f32; n_px];
+            let mut s = 0u32;
+            while s < k {
+                let cnt = 64.min(k - s);
+                let raw = rec.read(s, cnt);
+                for f in raw.chunks_exact(n_px) {
+                    let d = pipe.frame(f, &mut out).unwrap();
+                    est.push(f, d).unwrap();
+                }
+                s += cnt;
+            }
+            let ff = match est.solve() {
+                Ok(ff) => ff,
+                Err(e) => {
+                    println!("flat field auto: {e}; running without");
+                    FlatField::identity(dims)
+                }
+            };
+            println!(
+                "flat field auto: {k} frames, {} bins ({} frames), gain sd {:.4}, tissue sd {:.4}, misfit {:.2e}, dark {:.2}; {:.1} s",
+                ff.bins_used,
+                ff.frames_used,
+                ff.gain_sd,
+                ff.tissue_sd,
+                ff.residual,
+                ff.dark,
+                t0.elapsed().as_secs_f64()
+            );
+            let mut o = BufWriter::new(File::create(out_dir.join("flat_field.f32")).unwrap());
+            write_f32s(&mut o, &ff.gain);
+            ff.gain
+        } else {
+            read_f32_file(&f)
+        };
+        pre0.set_flat_field(Some(&g)).unwrap();
+        println!("flat field {f}: {} px", g.len());
+    }
+    if let Some(c) = arg_value(&args, "--label-bundle") {
+        assert!(mode == "real", "--label-bundle needs the real mode");
+        let crop = arg_value(&args, "--crop").map_or(60, |s| s.parse().unwrap());
+        label_bundle(
+            &mut rec,
+            &pre0,
+            &cal,
+            motion,
+            Path::new(&c),
+            crop,
+            frames,
+            &out_dir,
+        );
+        return;
+    }
     let mut flat = GlowFlattener::new(cal.fov(), &cfg.flatten).unwrap();
     println!(
         "{mode} {}: {}x{}, {t_len} frames, motion {motion}",
@@ -1460,6 +2352,7 @@ fn main() {
     );
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    pipe.keep_records = passes > 1;
     let empty = LibraryBuilder::new(dims)
         .fov(fov.clone())
         .background(scfg.background.clone())
@@ -1482,7 +2375,7 @@ fn main() {
         let _ = write!(global, "{f}\t");
     }
     global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
-    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\n");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
     // Batches waiting to be forwarded: (frame, traces, library, recording frame).
     let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
     let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
@@ -1494,38 +2387,149 @@ fn main() {
     let mut rem_log = String::from(
         "frame\trecording_frame\tid\tkind\tcy\tcx\tborn\tborn_recording\tclass\tchurned\n",
     );
+    let mut edit_log = String::from("frame\trecording_frame\tkind\tid\tother\tcy\tcx\tmargin\n");
+    let mut test_log = String::from("frame\trecording_frame\tkind\tid\tother\taccepted\tz\n");
+    let mut fp_hist: Option<BufWriter<File>> = churn_log.then(|| {
+        let mut f = BufWriter::new(File::create(out_dir.join("fp_history.bin")).unwrap());
+        f.write_all(b"CALAFH01").unwrap();
+        f
+    });
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
     let mut summary = Vec::new();
-    let mut s = 0u32;
+    let mut ho: Option<HeldOutScore> = None;
+    let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
+    let mut conv = calab_cala::qc::convergence::Tracker::new();
+    let mut conv_out = calab_cala::qc::convergence::header();
     let t_all = Instant::now();
-    while s < frames {
-        let cnt = 64.min(frames - s);
-        let raw = rec.read(s, cnt);
-        for (k, f) in raw.chunks_exact(n_px).enumerate() {
-            let t = s as usize + k;
-            pipe.frame(f, &mut y);
-            if t == start {
-                let noise = pipe.pre.noise().sigma();
-                if let Some(o) = &oracle {
-                    let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
-                    if oracle_mode {
-                        let (lib, m) =
-                            oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
-                        println!("oracle library: {} cells", lib.len());
-                        engine.set_library(Arc::new(lib)).unwrap();
-                        own = Some(m);
-                    }
-                    gt = Some(g);
+    let mut passes_out = String::from(
+        "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
+    );
+    for pass in 0..passes {
+        // Virtual frame of this pass's recording frame 0.
+        let off = pass * t_len;
+        if pass > 0 {
+            if let Some(sl) = slow.as_mut() {
+                sl.set_edit_scope(later_scope);
+            }
+        }
+        let t_pass = Instant::now();
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let mut raw = rec.read(s, cnt);
+            if let Some(d) = &drift {
+                for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(f, s as usize + k);
                 }
-                if !oracle_mode {
-                    let mk = || {
-                        SlowLoop::new(dims, fov.clone(), noise.clone(), flat.clone(), scfg.clone())
+            }
+            for (k, f) in raw.chunks_exact(n_px).enumerate() {
+                // `t_rec`: recording frame; `t`: virtual frame (continues across
+                // passes).
+                let t_rec = s as usize + k;
+                let t = off + t_rec;
+                let last = t_rec + 1 == t_len;
+                let shift = if pass == 0 {
+                    pipe.frame(f, &mut y)
+                } else {
+                    pipe.frame_replay(f, &mut y, t_rec)
+                };
+                // The online flat field learns in pass 1 only; its last map
+                // stays applied.
+                if let (Some(o), Some(d), 0) = (online_ff.as_mut(), shift, pass) {
+                    o.push(f, d).unwrap();
+                    if o.due() {
+                        let t0 = Instant::now();
+                        let out = o.refine();
+                        let dt = t0.elapsed().as_secs_f64();
+                        match &out {
+                            RefineOutcome::Updated(u) => {
+                                let ff = o.current().unwrap();
+                                ff.apply(&mut pipe.pre).unwrap();
+                                let _ = writeln!(
+                                ff_log,
+                                "{t}\tupdated\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.3e}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{dt:.2}",
+                                u8::from(u.first),
+                                ff.bins_used,
+                                ff.frames_used,
+                                ff.gain_sd,
+                                ff.tissue_sd,
+                                ff.residual,
+                                ff.dark,
+                                u.change_median,
+                                u.change_p99,
+                                u.change_max
+                            );
+                                if u.first {
+                                    println!(
+                                    "flat field: first map at frame {t} ({} bins, gain sd {:.4}, change p99 {:.2} sigma; {dt:.1} s)",
+                                    ff.bins_used, ff.gain_sd, u.change_p99
+                                );
+                                }
+                            }
+                            RefineOutcome::Skipped(m) => {
+                                let _ = writeln!(
+                                    ff_log,
+                                    "{t}\tskipped: {m}\t\t\t\t\t\t\t\t\t\t\t{dt:.2}"
+                                );
+                            }
+                        }
+                    }
+                }
+                if t == start {
+                    let noise = pipe.pre.noise().sigma();
+                    if let Some(o) = &oracle {
+                        let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
+                        let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\n");
+                        for j in 0..g.kept.len() {
+                            let _ = writeln!(
+                                t,
+                                "{j}\t{:.2}\t{:.2}\t{}\t{:.3}",
+                                g.centers[j].0,
+                                g.centers[j].1,
+                                u8::from(g.detectable[j]),
+                                g.snr[j]
+                            );
+                        }
+                        std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
+                        if oracle_mode {
+                            let (lib, m) =
+                                oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
+                            println!("oracle library: {} cells", lib.len());
+                            engine.set_library(Arc::new(lib)).unwrap();
+                            own = Some(m);
+                        }
+                        gt = Some(g);
+                    }
+                    if let Some(path) = &fixed_lib {
+                        let lib = read_footprints(path, dims, &fov, &noise, &scfg, &mut flat);
+                        println!("fixed library: {} cells from {}", lib.len(), path.display());
+                        engine.set_library(Arc::new(lib)).unwrap();
+                    }
+                    if heldout_on {
+                        let hcfg = HeldOutConfig {
+                            cell_diameter_px: scfg.cell_diameter_px,
+                            seed: scfg.seed ^ 0x5eed,
+                            ..HeldOutConfig::default()
+                        };
+                        ho = Some(
+                            HeldOutScore::new(dims, fov.clone(), noise.clone(), hcfg).unwrap(),
+                        );
+                    }
+                    if !oracle_mode && fixed_lib.is_none() {
+                        let mk = || {
+                            SlowLoop::new(
+                                dims,
+                                fov.clone(),
+                                noise.clone(),
+                                flat.clone(),
+                                scfg.clone(),
+                            )
                             .unwrap()
-                    };
-                    slow = Some(mk());
-                    if let Some(s) = &slow {
-                        let p = s.reservoir_plan();
-                        println!(
+                        };
+                        slow = Some(mk());
+                        if let Some(s) = &slow {
+                            let p = s.reservoir_plan();
+                            println!(
                             "reservoir: {} frames/tile ({} event + {} random, target {}), capacity {:.0} MB of {:.0} MB",
                             p.frames_per_tile,
                             p.event_slots,
@@ -1534,225 +2538,357 @@ fn main() {
                             p.capacity_bytes as f64 / 1048576.0,
                             p.max_bytes as f64 / 1048576.0
                         );
-                        if let Some(w) = p.warning() {
-                            println!("reservoir warning: {w}");
-                        }
-                    }
-                    if via_jobs {
-                        via = Some(VisitRunner::new(mk()));
-                    }
-                    if let Some(fps) = offered_fps {
-                        let runners = (0..visit_workers).map(|_| VisitRunner::new(mk())).collect();
-                        timed = Some(Timed::new(
-                            fps,
-                            units_per_ms,
-                            observe_ms,
-                            job_ms,
-                            pool,
-                            budget,
-                            runners,
-                            depth,
-                        ));
-                    }
-                }
-                qc = Some(QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap());
-            }
-            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
-                let now = tm.at(t);
-                tm.advance(now, sl, &mut slow_rec);
-                if let Some(l) = tm.library(now) {
-                    engine.set_library(l).unwrap();
-                }
-            }
-            let tr = engine.process(&y).unwrap();
-            let Some(q) = qc.as_mut() else { continue };
-            let lib = engine.library().clone();
-            hist.push(t, lib.ids(), &tr.traces);
-            let a = Instant::now();
-            q.observe(&y, &lib, &tr).unwrap();
-            qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
-            if t.is_multiple_of(200) {
-                q.set_noise(pipe.pre.noise().sigma()).unwrap();
-            }
-            if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
-                if t.is_multiple_of(200) {
-                    timed_noise = Some(pipe.pre.noise().sigma());
-                }
-                pending.push((y.clone(), tr.clone(), lib.clone(), t));
-                if pending.len() >= batch_n || t + 1 == t_len {
-                    n_batches += 1;
-                    let now = tm.at(t + 1);
-                    let n = pending.len() as u64;
-                    if tm.has_buffer(now) {
-                        let batch = (std::mem::take(&mut pending), timed_noise.take());
-                        tm.forward(now, batch);
-                        n_fwd += 1;
-                        fwd_frames += n;
-                    } else {
-                        pending.clear();
-                        tm.dropped += n;
-                    }
-                    tm.advance(now, sl, &mut slow_rec);
-                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
-                }
-            } else if let Some(sl) = slow.as_mut() {
-                if t.is_multiple_of(200) {
-                    sl.set_noise(pipe.pre.noise().sigma()).unwrap();
-                    if let Some(r) = via.as_mut() {
-                        r.set_noise(pipe.pre.noise().sigma()).unwrap();
-                    }
-                }
-                pending.push((y.clone(), tr.clone(), lib.clone(), t));
-                if pending.len() >= batch_n || t + 1 == t_len {
-                    n_batches += 1;
-                    let forward = if keep >= 1.0 {
-                        true
-                    } else if score_mode {
-                        // Residual excursions above 4 σ, per tile the
-                        // largest in the batch, summed over tiles.
-                        let mut best: Vec<f32> = Vec::new();
-                        for (yy, tt, ll, _) in &pending {
-                            let sc = sl.tile_scores(yy, ll, tt).unwrap();
-                            if best.is_empty() {
-                                best = sc;
-                            } else {
-                                for (b, v) in best.iter_mut().zip(sc) {
-                                    *b = b.max(v);
-                                }
+                            if let Some(w) = p.warning() {
+                                println!("reservoir warning: {w}");
                             }
                         }
-                        let score: f32 = best.iter().map(|v| (v - 4.0).max(0.0)).sum();
-                        let mut v: Vec<f32> = recent_scores.iter().copied().collect();
-                        let busy = if v.len() < 16 {
-                            true
-                        } else {
-                            v.sort_by(f32::total_cmp);
-                            let k = ((1.0 - keep) * (v.len() - 1) as f64).round() as usize;
-                            score > v[k] || score >= v[v.len() - 1]
-                        };
-                        // Capacity: `keep` batches' worth per batch, at most
-                        // 4 banked. A busy batch goes whenever there is
-                        // capacity; a quiet one only when capacity would
-                        // otherwise go unused.
-                        tokens = (tokens + keep).min(4.0);
-                        let fwd = tokens >= 1.0 && (busy || tokens >= 3.0);
-                        if fwd {
-                            tokens -= 1.0;
+                        if via_jobs {
+                            via = Some(VisitRunner::new(mk()));
                         }
-                        recent_scores.push_back(score);
-                        if recent_scores.len() > 256 {
-                            recent_scores.pop_front();
-                        }
-                        fwd
-                    } else {
-                        // Evenly spaced: the k-th batch goes when the share
-                        // forwarded so far falls behind `keep`.
-                        (n_fwd as f64) < keep * n_batches as f64
-                    };
-                    if forward {
-                        n_fwd += 1;
-                    }
-                    for (yy, tt, ll, tf) in pending.drain(..) {
-                        if forward {
-                            sl.observe(&yy, &ll, &tt).unwrap();
-                            slow_rec.push(tf as u32);
-                            fwd_frames += 1;
-                        } else if !drop_step {
-                            continue;
-                        }
-                        let published = match via.as_mut() {
-                            Some(r) => sl.step_via(budget, r).unwrap(),
-                            None => sl.step(budget).unwrap(),
-                        };
-                        if let Some(l) = published {
-                            engine.set_library(l).unwrap();
+                        if let Some(fps) = offered_fps {
+                            let runners =
+                                (0..visit_workers).map(|_| VisitRunner::new(mk())).collect();
+                            timed = Some(Timed::new(
+                                fps,
+                                units_per_ms,
+                                observe_ms,
+                                job_ms,
+                                pool,
+                                budget,
+                                runners,
+                                depth,
+                            ));
                         }
                     }
-                    let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
-                    write_logs(sl, &rf, &mut add_log, &mut rem_log);
-                }
-            }
-            let t_end = t + 1;
-            let cp = t_end.is_multiple_of(every) || t_end == t_len;
-            if cp {
-                if let (Some(g), Some(o)) = (&gt, &oracle) {
-                    label_rows(
-                        t_end,
-                        &lib,
-                        q,
-                        &hist,
-                        g,
-                        o,
-                        dims,
-                        own.as_ref(),
-                        &mut cells_out,
-                        &mut summary,
+                    qc = Some(
+                        QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap(),
                     );
-                } else {
-                    // No GT: metrics only.
-                    for (sl_, c) in q.cells().enumerate() {
-                        let _ = write!(
-                            cells_out,
-                            "{t_end}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0"
-                        );
-                        for v in c.to_row() {
-                            let _ = write!(cells_out, "\t{v:.5}");
-                        }
-                        cells_out.push('\n');
-                    }
-                    summary = vec![f64::NAN; 3];
                 }
-            }
-            if t_end.is_multiple_of(100) || cp {
-                let g = q.global();
-                let extra = if cp {
-                    summary.clone()
+                if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                    let now = tm.at(t);
+                    tm.advance(now, sl, &mut slow_rec);
+                    if let Some(l) = tm.library(now) {
+                        engine.set_library(l).unwrap();
+                    }
+                }
+                let tr = engine.process(&y).unwrap();
+                let Some(q) = qc.as_mut() else { continue };
+                let lib = engine.library().clone();
+                if let Some(h) = ho.as_mut() {
+                    if t.is_multiple_of(200) {
+                        h.set_noise(pipe.pre.noise().sigma()).unwrap();
+                    }
+                    // The slow-loop index this frame will get when forwarded
+                    // (exact with every batch forwarded; `--slow-keep` < 1 and
+                    // `--offered-fps` drop batches, which shifts it).
+                    let idx = match (&slow, &fixed_lib) {
+                        (Some(sl), _) => Some(sl.frames() + pending.len() as u64),
+                        (None, Some(_)) => Some((t - start) as u64),
+                        _ => None,
+                    };
+                    if idx.is_some_and(|i| scfg.is_test(i)) {
+                        h.frame(t as u64, &y, &lib, &tr, &mut engine, &mut flat)
+                            .unwrap();
+                    }
+                }
+                hist.push(t, lib.ids(), &tr.traces);
+                let a = Instant::now();
+                q.observe_shifted(&y, &lib, &tr, shift).unwrap();
+                qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
+                if t.is_multiple_of(200) {
+                    q.set_noise(pipe.pre.noise().sigma()).unwrap();
+                }
+                if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
+                    if t.is_multiple_of(200) {
+                        timed_noise = Some(pipe.pre.noise().sigma());
+                    }
+                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    if pending.len() >= batch_n || last {
+                        n_batches += 1;
+                        let now = tm.at(t + 1);
+                        let n = pending.len() as u64;
+                        if tm.has_buffer(now) {
+                            let batch = (std::mem::take(&mut pending), timed_noise.take());
+                            tm.forward(now, batch);
+                            n_fwd += 1;
+                            fwd_frames += n;
+                        } else {
+                            pending.clear();
+                            tm.dropped += n;
+                        }
+                        tm.advance(now, sl, &mut slow_rec);
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
+                    }
+                } else if let Some(sl) = slow.as_mut() {
+                    if t.is_multiple_of(200) {
+                        sl.set_noise(pipe.pre.noise().sigma()).unwrap();
+                        if let Some(r) = via.as_mut() {
+                            r.set_noise(pipe.pre.noise().sigma()).unwrap();
+                        }
+                    }
+                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    if pending.len() >= batch_n || last {
+                        n_batches += 1;
+                        let forward = if keep >= 1.0 {
+                            true
+                        } else if score_mode {
+                            // Residual excursions above 4 σ, per tile the
+                            // largest in the batch, summed over tiles.
+                            let mut best: Vec<f32> = Vec::new();
+                            for (yy, tt, ll, _) in &pending {
+                                let sc = sl.tile_scores(yy, ll, tt).unwrap();
+                                if best.is_empty() {
+                                    best = sc;
+                                } else {
+                                    for (b, v) in best.iter_mut().zip(sc) {
+                                        *b = b.max(v);
+                                    }
+                                }
+                            }
+                            let score: f32 = best.iter().map(|v| (v - 4.0).max(0.0)).sum();
+                            let mut v: Vec<f32> = recent_scores.iter().copied().collect();
+                            let busy = if v.len() < 16 {
+                                true
+                            } else {
+                                v.sort_by(f32::total_cmp);
+                                let k = ((1.0 - keep) * (v.len() - 1) as f64).round() as usize;
+                                score > v[k] || score >= v[v.len() - 1]
+                            };
+                            // Capacity: `keep` batches' worth per batch, at most
+                            // 4 banked. A busy batch goes whenever there is
+                            // capacity; a quiet one only when capacity would
+                            // otherwise go unused.
+                            tokens = (tokens + keep).min(4.0);
+                            let fwd = tokens >= 1.0 && (busy || tokens >= 3.0);
+                            if fwd {
+                                tokens -= 1.0;
+                            }
+                            recent_scores.push_back(score);
+                            if recent_scores.len() > 256 {
+                                recent_scores.pop_front();
+                            }
+                            fwd
+                        } else {
+                            // Evenly spaced: the k-th batch goes when the share
+                            // forwarded so far falls behind `keep`.
+                            (n_fwd as f64) < keep * n_batches as f64
+                        };
+                        if forward {
+                            n_fwd += 1;
+                        }
+                        for (yy, tt, ll, tf) in pending.drain(..) {
+                            if forward {
+                                sl.observe(&yy, &ll, &tt).unwrap();
+                                slow_rec.push(tf as u32);
+                                fwd_frames += 1;
+                            } else if !drop_step {
+                                continue;
+                            }
+                            let published = match via.as_mut() {
+                                Some(r) => sl.step_via(budget, r).unwrap(),
+                                None => sl.step(budget).unwrap(),
+                            };
+                            if let Some(l) = published {
+                                engine.set_library(l).unwrap();
+                            }
+                        }
+                        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                        write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        if churn_log {
+                            write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
+                        }
+                    }
+                }
+                let t_end = t + 1;
+                let cp = t_end.is_multiple_of(every) || last;
+                let ho_win: Option<HeldOutWindow> = if cp {
+                    ho.as_mut().map(|h| {
+                        for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {
+                            let _ = writeln!(
+                                ho_cells_out,
+                                "{t_end}\t{sl_}\t{}\t{:.4}\t{}\t{:.3}",
+                                c.id, c.marginal, c.frames, c.marginal_z
+                            );
+                        }
+                        h.take_window()
+                    })
                 } else {
-                    vec![f64::NAN; 3]
+                    None
                 };
-                let mut extra = extra;
-                let (cc, st, sf, sn) = slow
-                    .as_ref()
-                    .map_or((Default::default(), Default::default(), 0, 0), |sl| {
-                        (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
-                    });
-                let (dropped, jobs, vms) = timed
-                    .as_ref()
-                    .map_or((0, 0, 0.0), |tm| (tm.dropped, tm.jobs, tm.at(t_end)));
-                extra.extend(
-                    [
-                        cc.adds_new,
-                        cc.adds_readd,
-                        cc.churned,
-                        cc.churned_readd,
-                        cc.established_removals,
-                        st.adds,
-                        st.merges,
-                        st.deletes,
-                        st.splits,
-                        sf,
-                        sn as u64,
-                        fwd_frames,
-                        dropped,
-                        st.visits,
-                        jobs,
-                    ]
-                    .map(|v| v as f64),
-                );
-                extra.push(vms);
-                global.push_str(&global_line(&g, &extra));
-                if t_end.is_multiple_of(1200) || t_end == t_len {
-                    println!(
+                if cp {
+                    if let (Some(g), Some(o)) = (&gt, &oracle) {
+                        label_rows(
+                            t_end,
+                            off,
+                            &lib,
+                            q,
+                            &hist,
+                            g,
+                            o,
+                            dims,
+                            own.as_ref(),
+                            &mut cells_out,
+                            &mut summary,
+                        );
+                    } else {
+                        // No GT: metrics only.
+                        for (sl_, c) in q.cells().enumerate() {
+                            let _ = write!(
+                            cells_out,
+                            "{t_end}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0\t-\tnan"
+                        );
+                            for v in c.to_row() {
+                                let _ = write!(cells_out, "\t{v:.5}");
+                            }
+                            cells_out.push('\n');
+                        }
+                        summary = vec![f64::NAN; 3];
+                    }
+                }
+                if cp {
+                    // Footprint convergence: change since 1 and 4 checkpoints ago
+                    // against each cell's split-half noise.
+                    let births: HashMap<u64, u64> = slow
+                        .as_ref()
+                        .map(|sl| {
+                            let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
+                            sl.births()
+                                .into_iter()
+                                .map(|(id, b)| (id, u64::from(rf(b))))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let snaps: Vec<calab_cala::qc::convergence::CellSnap> = (0..lib.len())
+                        .map(|slot| {
+                            let (pix, val) = lib.filtered(slot);
+                            let id = lib.ids()[slot];
+                            calab_cala::qc::convergence::CellSnap {
+                                id,
+                                pix: pix.to_vec(),
+                                val: val.to_vec(),
+                                born: births.get(&id).copied().unwrap_or(0),
+                                noise: slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix)),
+                            }
+                        })
+                        .collect();
+                    if let Some(f) = fp_hist.as_mut() {
+                        let noise = |id: u64, pix: &[u32]| {
+                            slow.as_ref().and_then(|sl| sl.footprint_noise(id, pix))
+                        };
+                        write_fp_history(f, t_end as u64, &lib, &births, &noise);
+                    }
+                    for row in conv.checkpoint(t_end as u64, snaps) {
+                        conv_out.push_str(&row.to_line());
+                    }
+                }
+                if t_end.is_multiple_of(100) || cp {
+                    let g = q.global();
+                    let extra = if cp {
+                        summary.clone()
+                    } else {
+                        vec![f64::NAN; 3]
+                    };
+                    let mut extra = extra;
+                    let (cc, st, sf, sn) = slow
+                        .as_ref()
+                        .map_or((Default::default(), Default::default(), 0, 0), |sl| {
+                            (sl.churn_counts(), sl.stats(), sl.frames(), sl.len())
+                        });
+                    let (dropped, jobs, vms) = timed
+                        .as_ref()
+                        .map_or((0, 0, 0.0), |tm| (tm.dropped, tm.jobs, tm.at(t_end)));
+                    extra.extend(
+                        [
+                            cc.adds_new,
+                            cc.adds_readd,
+                            cc.churned,
+                            cc.churned_readd,
+                            cc.established_removals,
+                            st.adds,
+                            st.merges,
+                            st.deletes,
+                            st.splits,
+                            sf,
+                            sn as u64,
+                            fwd_frames,
+                            dropped,
+                            st.visits,
+                            jobs,
+                        ]
+                        .map(|v| v as f64),
+                    );
+                    extra.push(vms);
+                    match &ho_win {
+                        Some(w) => extra.extend([
+                            w.frames as f64,
+                            w.gain_per_frame,
+                            w.cells,
+                            w.placebos,
+                            w.mu,
+                            w.penalty,
+                            w.score,
+                            w.penalty_ci,
+                            w.signal,
+                            w.score_frac,
+                        ]),
+                        None => extra.extend([f64::NAN; 10]),
+                    }
+                    global.push_str(&global_line(&g, &extra));
+                    if t_end.is_multiple_of(1200) || last {
+                        println!(
                         "  frame {t_end}: {} cells, explained {:.3}, residual {:.3}, snr median {:.1}, pass {:.2}, adds/min {:.0}; GT {:?}; {:.0} s",
                         g.cells, g.explained, g.residual_excess, g.snr_median, g.pass_frac, g.adds_per_min, extra,
                         t_all.elapsed().as_secs_f64()
                     );
+                    }
                 }
             }
+            s += cnt;
         }
-        s += cnt;
+        {
+            let lib = engine.library().clone();
+            let (st, sf, sn) = slow.as_ref().map_or((Default::default(), 0, 0), |sl| {
+                (sl.stats(), sl.frames(), sl.len())
+            });
+            let wall = t_pass.elapsed().as_secs_f64();
+            let _ = writeln!(
+                passes_out,
+                "{}\t{}\t{}\t{sn}\t{}\t{}\t{}\t{}\t{sf}\t{wall:.1}",
+                pass + 1,
+                off + t_len,
+                lib.len(),
+                st.adds,
+                st.merges,
+                st.deletes,
+                st.splits
+            );
+            println!(
+            "pass {} done: {} cells, adds {} merges {} deletes {} splits {} (cumulative); {wall:.0} s",
+            pass + 1,
+            lib.len(),
+            st.adds,
+            st.merges,
+            st.deletes,
+            st.splits
+        );
+            if passes > 1 {
+                write_library(
+                    &out_dir,
+                    &format!("_pass{}", pass + 1),
+                    &lib,
+                    dims,
+                    gt.as_ref(),
+                    ho.as_ref(),
+                    slow.as_ref(),
+                );
+            }
+        }
     }
+    std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;
         tm.advance(f64::INFINITY, sl, &mut slow_rec);
@@ -1775,11 +2911,97 @@ fn main() {
         print!("{msg}");
         std::fs::write(out_dir.join("timed.txt"), &msg).unwrap();
     }
+    // Each cell's best trace correlation with any GT unit (over its whole
+    // life), wherever that unit is: tells light from a distant unit (a
+    // dendrite, an out-of-focus blur) from signal no GT unit made.
+    if let (Some(g), Some(o)) = (&gt, &oracle) {
+        let lib = engine.library().clone();
+        let det = columns(&lib, dims, (0, 0));
+        let mut t = String::from("id\tcy\tcx\tgr\tgr_gt\tgr_dist\tgr_detectable\n");
+        for (&id, col) in lib.ids().iter().zip(&det) {
+            let Some((t0, w)) = hist.map.get(&id) else {
+                continue;
+            };
+            // The last pass's frames only (recording frames from `t0`).
+            let off = (passes - 1) * t_len;
+            let (t0, w) = if *t0 < off {
+                (0, w.get(off - t0..).unwrap_or(&[]))
+            } else {
+                (t0 - off, &w[..])
+            };
+            if w.len() < 200 || t0 + w.len() > g.t_gt {
+                continue;
+            }
+            let (mut bj, mut br) = (usize::MAX, f64::NEG_INFINITY);
+            for j in 0..g.kept.len() {
+                let r = pearson(w, &g.c(o, j)[t0..t0 + w.len()]);
+                if r > br {
+                    (bj, br) = (j, r);
+                }
+            }
+            let c = centroid(col, dims.width);
+            let (d, det_j) = if bj == usize::MAX {
+                (f32::NAN, 0)
+            } else {
+                let gc = g.centers[bj];
+                (
+                    ((gc.0 - c.0).powi(2) + (gc.1 - c.1).powi(2)).sqrt(),
+                    u8::from(g.detectable[bj]),
+                )
+            };
+            let _ = writeln!(
+                t,
+                "{id}\t{:.2}\t{:.2}\t{br:.4}\t{}\t{d:.1}\t{det_j}",
+                c.0,
+                c.1,
+                if bj == usize::MAX { -1 } else { bj as i64 }
+            );
+        }
+        std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
+    }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
+    std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
+    if let Some(o) = &online_ff {
+        std::fs::write(out_dir.join("flat_field_updates.tsv"), &ff_log).unwrap();
+        if let Some(ff) = o.current() {
+            let mut w = BufWriter::new(File::create(out_dir.join("flat_field.f32")).unwrap());
+            write_f32s(&mut w, &ff.gain);
+            if let Some(off) = &ff.offset {
+                let mut w =
+                    BufWriter::new(File::create(out_dir.join("flat_field_offset.f32")).unwrap());
+                write_f32s(&mut w, off);
+            }
+        }
+        println!("flat field: {} updates", o.updates());
+    }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
+    if churn_log {
+        std::fs::write(out_dir.join("edits.tsv"), &edit_log).unwrap();
+        if cfg!(feature = "diagnostics") {
+            std::fs::write(out_dir.join("tests.tsv"), &test_log).unwrap();
+        }
+        if let Some(mut f) = fp_hist.take() {
+            f.flush().unwrap();
+        }
+    }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
+    if let Some(sl) = &slow {
+        if sl.config().core_test != CoreTest::Off {
+            let (fp, ff, fd) = sl.fast_diag;
+            println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
+            std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
+            std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().basin_trim {
+            let (c, f, s2) = sl.basin_diag;
+            println!(
+                "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",
+                if c > 0 { f / c as f64 } else { 0.0 }
+            );
+        }
+    }
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();
     sorted.sort_by(f64::total_cmp);
@@ -1793,6 +3015,42 @@ fn main() {
         q.state_bytes() as f64 / 1048576.0,
         engine.library().len()
     );
+    let mut msg = msg;
+    if let Some(h) = &ho {
+        let wall = t_all.elapsed().as_secs_f64();
+        let (asked, placed) = h.placebo_counts;
+        let _ = writeln!(
+            msg,
+            "held-out score: {:.1} s of {:.1} s wall ({:.1} %), {} held-out frames, placebos placed {placed} of {asked}; stages (gain, drop-one, placebo builds, placebo solve, placebo gains) {:.1?} s",
+            h.seconds,
+            wall,
+            100.0 * h.seconds / wall,
+            h.scored(),
+            h.split
+        );
+        let mut t = String::from("version\tfirst\tlast\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
+        for v in h.versions(true) {
+            let _ = writeln!(
+                t,
+                "{}\t{}\t{}\t{}\t{:.4}\t{:.1}\t{:.1}\t{:.5}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.5}",
+                v.version,
+                v.first,
+                v.last,
+                v.frames,
+                v.gain_per_frame,
+                v.cells,
+                v.placebos,
+                v.mu,
+                v.penalty,
+                v.score,
+                v.penalty_ci,
+                v.signal,
+                v.score_frac
+            );
+        }
+        std::fs::write(out_dir.join("heldout.tsv"), t).unwrap();
+        std::fs::write(out_dir.join("ho_cells.tsv"), &ho_cells_out).unwrap();
+    }
     print!("{msg}");
     std::fs::write(out_dir.join("cost.txt"), &msg).unwrap();
 
@@ -1801,31 +3059,28 @@ fn main() {
         Some(sl) => sl.finalize().unwrap(),
         None => engine.library().clone(),
     };
-    {
-        let mut f = BufWriter::new(File::create(out_dir.join("footprints.bin")).unwrap());
-        f.write_all(b"CALAFP01").unwrap();
-        for v in [dims.height as u32, dims.width as u32, lib.len() as u32] {
-            f.write_all(&v.to_le_bytes()).unwrap();
-        }
-        for s in 0..lib.len() {
-            let (p, a) = lib.unfiltered(s);
-            let (_, h) = lib.filtered(s);
-            f.write_all(&(lib.ids()[s] as u32).to_le_bytes()).unwrap();
-            f.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
-            for q in p {
-                f.write_all(&q.to_le_bytes()).unwrap();
-            }
-            write_f32s(&mut f, a);
-            write_f32s(&mut f, h);
-        }
-    }
+    write_library(
+        &out_dir,
+        "",
+        &lib,
+        dims,
+        gt.as_ref(),
+        ho.as_ref(),
+        slow.as_ref(),
+    );
     if !dump {
         return;
     }
     // Pass 2: re-extract with the final library; per cell the trace, its ring
     // background, and the footprint projection ã_iᵀ y / ã_iᵀ ã_i of the frame
     // before and after the floor.
-    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    // Online flat field: pass 2 corrects from frame 0 with the final map, as the
+    // app does (pass 1 only had it from the first map on).
+    let mut pre2 = pre0.clone();
+    if let Some(ff) = online_ff.as_ref().and_then(|o| o.current()) {
+        ff.apply(&mut pre2).unwrap();
+    }
+    let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
     let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
     let mut q2 = QcMonitor::new(
         dims,
@@ -1849,7 +3104,12 @@ fn main() {
     let mut s = 0u32;
     while s < frames {
         let cnt = 64.min(frames - s);
-        let raw = rec.read(s, cnt);
+        let mut raw = rec.read(s, cnt);
+        if let Some(d) = &drift {
+            for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                d.apply(f, s as usize + k);
+            }
+        }
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let t = s as usize + k;
             pipe.frame_split(f, &mut pre, &mut y);
@@ -1876,6 +3136,7 @@ fn main() {
     if let (Some(g), Some(o)) = (&gt, &oracle) {
         label_rows(
             t_len,
+            0,
             &lib,
             &q2,
             &hist2,
@@ -1890,7 +3151,7 @@ fn main() {
         for (sl_, c) in q2.cells().enumerate() {
             let _ = write!(
                 out,
-                "{t_len}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0"
+                "{t_len}\t{sl_}\t-1\t-1\t-1\tnan\t-1\tnan\tnan\tnan\tnan\tnan\tnan\t0\t-\tnan"
             );
             for v in c.to_row() {
                 let _ = write!(out, "\t{v:.5}");

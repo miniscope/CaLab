@@ -5,6 +5,200 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala: `npm run sim-stream -- <path>` streams a recording over the live-source
+  WebSocket, so the live source can be tested without hardware. It takes a
+  Miniscope AVI folder or a minisim recording (the sim directory, its `daq/` or
+  its `daq/Miniscope/`), and has `--fps`, `--loop`, `--start`, `--frames` and
+  `--port`; it prints the `ws://` address to paste into the start page. It is the
+  existing `live-sim.mjs`, extended; its WebSocket framing now lives in
+  `src/lib/live-sim-protocol.ts` with unit tests. The start page links to a new
+  USER_GUIDE section, "Testing with a simulated stream".
+
+## [2.14.0] - 2026-11-12
+
+Web apps `v2.14.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A redesigned Cala screen: one large, zoomable field of view and a single
+right-hand column for the run, the selected cell and the pipeline details.
+Cala's pipeline and results are unchanged; CaTune and CaDecon look the same.
+
+### Changed
+
+- **Cala layout** (#347). One square field of view at full height (about
+  750 px at 1440×900, against two panes of about 280 px before), with a view
+  selector (Raw, Preprocessed, Motion-corrected, Bg removed, Residual), each
+  with its own fixed display range and Re-fit. The right column holds three
+  collapsible panels: Run (pass 1 and pass 2 progress and the convergence
+  metrics on one time axis), Cell (the single-cell viewer) and Details (cell
+  table, motion, flicker, flat field, timing and the other tabs). Narrow
+  windows get a horizontal pass stepper. Cala has its own violet accent.
+- The start page's live-source field starts empty and is marked optional.
+
+### Added
+
+- Zoom and pan on the field of view while it plays (wheel, +/−, Fit, 1:1,
+  drag), with a minimap when zoomed in; zooming adds no pipeline work.
+- Overlay modes Off, Contours (default), Footprints (filled full extent,
+  opacity = value over the cell's peak, no threshold) and Both, with every
+  colour-by mode and a fixed-scale legend. The residual heat map stays as an
+  option.
+- A full-frame Residual view (frame minus footprints times traces), computed
+  only while it is shown.
+- Shared UI components in `packages/ui`: tabs, segmented control, a generic
+  progress bar, metric tile with sparkline and one `.panel-label`; CaDecon's
+  progress bar and analysis tabs use them.
+
+### Fixed
+
+- Cala's raw-file frame controls wrap instead of collapsing to zero width in
+  the narrower column.
+
+## [2.13.1] - 2026-11-12
+
+Web apps `v2.13.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+A refreshed landing page built from each app's manifest, and a cleanup after
+the Cala beta. No behaviour change in any app; Cala's default pipeline is
+byte-identical to 2.13.0.
+
+### Changed
+
+- Landing page refresh. It now takes its colours, type and spacing from the
+  apps' shared tokens (`packages/ui/src/styles/tokens.css`, inlined at build
+  time), opens with a one-line statement of what CaLab is and a short "how the
+  apps fit together" panel, and lists released apps as screenshot cards in a
+  grid that fills by width, so more apps need no layout change. Each card has
+  a Details button that expands its `longDescription` and `features`.
+  Coming-soon apps move to a compact, unlinked "In development" list. The
+  header links docs, the Python package, the changelog and GitHub; the footer
+  links the release, citation and licence. The page is built only from each
+  app's `calab` block, rendered by the new `scripts/lib/landing.mjs` (#345).
+- New optional `calab.pipeline` field (`{ input, output, step }`): the app's
+  line in the landing page's workflow panel. `step` is a coarse stage of use;
+  apps with equal steps are shown together as alternatives (Cala 1; CaDecon
+  and CaTune 2). Set for Cala, CaDecon and CaTune, with an
+  empty placeholder in `apps/_template`; `check:apps-manifest` validates it.
+- Cala's landing image is now a single clean footprint from a real run on the
+  workshop recording (cell 168, QC pass), not a full-interface screenshot.
+
+### Removed
+
+- Cala: code of settled experiments, all opt-in and off by default, so the
+  default pipeline is unchanged (byte-identical `qc_eval` output). The joint
+  sufficient-statistics store (#329, #331: no measured gain; reading it made
+  convergence worse), with `qc_eval --footprint-stats` and `--joint-shadow`;
+  visit jobs no longer carry it (wire format `VIS5`). Cross-fitted footprint
+  statistics and rank-1 fits (#326: no measured gain), with
+  `qc_eval --crossfit`. `OnlineFlatFieldConfig::enabled` (the app turns the
+  flat field off itself), six functions without callers, the `flatfield_eval` and
+  `texture_eval` examples, and `qc_eval --ff-dump-maps` and `--no-flat-field`
+  (use `--flat-field off`). Reproduce the removed experiments at a64cd09
+  (#343).
+
+### Fixed
+
+- Docs: Cala user guide and README match the app (button names, Safari
+  untested, turning the flat field off); `cala-eval` README lists every script
+  and results note, and notes show the flags that actually ran; minisim pin
+  updated to a version that reproduces the evaluation sims (#342).
+
+### Developer tooling
+
+- `qc_eval --passes N`, `--later-passes` and `--stats-half-life` for the
+  repeated-pass and statistics-window probes, with results notes (#337, #339,
+  #340).
+- Dependency updates (#266, #336).
+
+## [2.13.0] - 2026-11-12
+
+Web apps `v2.13.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala is new, as a beta: a streaming, in-browser pipeline (Rust and
+WebAssembly, WebGPU where available) that turns raw 1-photon Miniscope video
+into somatic cell footprints and traces. It reads a Miniscope AVI folder in
+place, finds and prunes cells while the recording streams by, and re-solves
+every frame with the final cells in a second pass. It appears on the landing
+page as Beta, with a user guide at `apps/cala/USER_GUIDE.md` (#335). No
+breaking changes to the Python, WASM or bridge APIs of the existing apps.
+
+### Added
+
+- **Cala app** (#272 foundations; #277, #280 live preprocessing). Opens a
+  Miniscope AVI folder from disk frame by frame (never uploaded, never loaded
+  whole); frame rate from `timeStamps.csv` or `metaData.json`, not the AVI
+  header.
+- **Preprocessing and motion correction** (#273, #274, #279, #280). Hot
+  pixels, global flicker, glow, line removal, background and noise maps; rigid
+  motion correction with a motion trace. WebGPU motion correction (#297) with
+  a CPU fallback; the status bar says which is in use. The browser WASM is
+  built with SIMD (#306).
+- **Online sensor flat field** (#327, #330). Estimated from the recording's
+  own motion (first map after about 150 s, then refined about every 60 s), on
+  by default, cached per device in IndexedDB. Removes the textured footprints
+  caused by fixed sensor pixel gain moving with registration (on the workshop
+  recording: textured cells 28 to 2–5, seed-to-seed agreement .63 to .68). A
+  "trace follows motion" QC flag marks cells whose trace tracks the frame
+  shift.
+- **Streaming cell discovery and pruning** (#281, #282, #283, #286, #288). A
+  slow loop finds cells with an evidence ledger, keep tests, splits, merges
+  and pruning; a fast loop extracts traces (#278) and is never blocked by the
+  slow loop. Tile visits run in parallel across workers (#304); the pipeline
+  stages are spread over workers (#296).
+- **Full-extent footprints with a modelled moat** (#314), and per-frame
+  validity treated as missing data (#322).
+- **Quality control** (#284, #289, #301). Online QC metrics; a convergence
+  strip (stability plus churn); a cell table with pass/fail and flags;
+  overlays and a residual map.
+- **Pass 2 and export** (#298). Replays the recording with the final library
+  so late-found cells have traces from frame 0; exports a self-describing
+  NumPy `.npz` (traces, footprints, motion, flicker, QC, provenance) and a
+  CaDecon-ready `.npz`.
+- **Long recordings** (#290, #305, #308). Pass-2 traces stream to the
+  browser's origin private file system, the export streams (ZIP64 for entries
+  of 4 GiB or more), per-cell trace history shares a fixed budget, and
+  long-run displays and metric histories are bounded.
+- **Live source (experimental)** (#311). Streams frames from a WebSocket,
+  with a simulator and export of live traces.
+
+### Changed
+
+- Display ranges are fixed, not auto-contrast (#300).
+- The slow loop is frozen: experimental switches became configuration, off by
+  default, with dead paths deleted (#318).
+- Cross-fitted footprint statistics (#326) and the joint statistics store
+  (#329, #331) are in the library, opt-in.
+
+### Fixed
+
+- Pass-1 pauses of 50–90 ms every half second: a library install now copies
+  the solver's precomputed terms instead of rebuilding them (62 ms to 3.5 ms
+  at about 400 cells; traces bit-identical) (#334).
+- NaN-safe QC event scan and a ring self-term fix for a hang on halo
+  simulations (#321).
+- Slow-loop reservoir by frames per tile: fixes 0 cells at 2 MPix (#309).
+- Keep-test failures counted only when the probe could have passed (#299).
+- Pass 2 and the export fall back to memory when the origin private file
+  system exists but cannot be written (WebKit) (#335).
+
+### Developer tooling
+
+- `cala-eval`: paired multi-seed evaluation harness, held-out score,
+  footprint convergence metric, churn log, baseline reference numbers (#319,
+  #323, #324, #328, #333).
+- `cala-label`: blind labelling tool for candidate footprints (#317).
+- Simulation arms with halo and out-of-focus cells (#320).
+
+### Known limitations
+
+- Beta. On a 20-minute recording a small share of footprints (up to about 1
+  in 10) is still changing at the end of pass 1; the slow loop's decision
+  rule is being reworked to settle them.
+- Cell counts vary between runs and browsers (parallel scheduling in the slow
+  loop); seed-to-seed agreement on the workshop recording is about .68.
+- Somatic footprints only; no dendrites or neuropil.
+- The cell library grows with recording length; gain stability across days
+  is untested, and the flat-field cache assumes it.
+- Safari has not been tested directly (Playwright WebKit only).
+
 ## [2.12.0] - 2026-11-06
 
 Web apps `v2.12.0`; Python package `calab` `py/v0.5.0`. CaDecon counts spikes

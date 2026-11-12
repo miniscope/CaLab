@@ -85,11 +85,6 @@ impl Fft2d {
         self.width
     }
 
-    /// Number of horizontal frequencies kept, `width / 2 + 1`.
-    pub fn spectrum_cols(&self) -> usize {
-        self.cols
-    }
-
     /// Length of a spectrum buffer, `height * (width / 2 + 1)`.
     pub fn spectrum_len(&self) -> usize {
         self.height * self.cols

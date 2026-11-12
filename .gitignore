@@ -29,3 +29,10 @@ coverage/
 playwright-report/
 test-results/
 blob-report/
+
+# Python bytecode caches — never committed.
+__pycache__/
+*.pyc
+
+# Per-user Claude Code settings.
+.claude/settings.local.json

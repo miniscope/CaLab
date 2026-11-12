@@ -1,15 +1,68 @@
 import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
-import { DashboardPanel } from '@calab/ui';
+import { SegmentedControl, Tabs } from '@calab/ui';
 import { OKABE_ITO, TracePanel, viridisRGB } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
 import { CellQcSummary, DemixView } from './CellQcView.tsx';
+import { SidePanel } from './SidePanel.tsx';
 
 function fmt(s: Summary): string {
   if (s.n === 0) return 'n/a';
   return `${s.mean.toFixed(1)} / ${s.p99.toFixed(1)} / ${s.max.toFixed(1)} ms (${s.n} batches)`;
+}
+
+export type FootprintScale = 'linear' | 'log';
+
+/** Side of the footprint view, CSS px (the crop is drawn at an integer upscale near it). */
+const FOOTPRINT_VIEW_PX = 160;
+const LUT = Array.from({ length: 256 }, (_, v) => viridisRGB(v / 255));
+/** Decades the log scale spans: the 8-bit snapshot's smallest step (1/255 of the peak) to the peak. */
+const LOG_DECADES = Math.log10(255);
+
+/** Colour level 0..255 of a snapshot value `q` (1..255 of the peak) on a linear or log scale. */
+export function footprintLevel(q: number, log: boolean): number {
+  if (q <= 0) return 0;
+  if (!log) return q;
+  const t = 1 + Math.log10(q / 255) / LOG_DECADES;
+  return Math.max(0, Math.min(255, Math.round(255 * t)));
+}
+
+/** Stroke the boundary of `mask` (w x h) between pixels, at `k` canvas px per pixel. */
+function strokeEdges(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  k: number,
+  color: string,
+): void {
+  ctx.beginPath();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      if (x === 0 || !mask[y * w + x - 1]) {
+        ctx.moveTo(x * k, y * k);
+        ctx.lineTo(x * k, (y + 1) * k);
+      }
+      if (x === w - 1 || !mask[y * w + x + 1]) {
+        ctx.moveTo((x + 1) * k, y * k);
+        ctx.lineTo((x + 1) * k, (y + 1) * k);
+      }
+      if (y === 0 || !mask[(y - 1) * w + x]) {
+        ctx.moveTo(x * k, y * k);
+        ctx.lineTo((x + 1) * k, y * k);
+      }
+      if (y === h - 1 || !mask[(y + 1) * w + x]) {
+        ctx.moveTo(x * k, (y + 1) * k);
+        ctx.lineTo((x + 1) * k, (y + 1) * k);
+      }
+    }
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, Math.min(2, k / 3));
+  ctx.stroke();
 }
 
 /**
@@ -21,6 +74,7 @@ function fmt(s: Summary): string {
 function FootprintEvolution(props: {
   cells: CellStore;
   id: number;
+  scale: FootprintScale;
   /** The frame of the snapshot shown, for the marker on the trace. */
   onFrame?: (frame: number | null) => void;
 }): JSX.Element {
@@ -49,6 +103,8 @@ function FootprintEvolution(props: {
   createEffect(() => {
     const all = snaps();
     const snap = current();
+    const g = props.cells.geometry();
+    const log = props.scale === 'log';
     const ctx = canvas.getContext('2d');
     if (!snap || !ctx) return;
     let x0 = Infinity;
@@ -64,19 +120,44 @@ function FootprintEvolution(props: {
     const w = x1 - x0;
     const h = y1 - y0;
     if (w <= 0 || h <= 0) return;
-    canvas.width = w;
-    canvas.height = h;
-    const img = ctx.createImageData(w, h);
-    const lut = Array.from({ length: 256 }, (_, v) => viridisRGB(v / 255));
-    const bg = lut[0];
+    // Drawn at an integer upscale so the outlines fall between pixels.
+    const k = Math.max(1, Math.floor(FOOTPRINT_VIEW_PX / Math.max(w, h)));
+    canvas.width = w * k;
+    canvas.height = h * k;
+    const img = new ImageData(w, h);
+    const bg = LUT[0];
     for (let i = 0; i < w * h; i++) img.data.set([bg[0], bg[1], bg[2], 255], i * 4);
+    const inSupport = new Uint8Array(w * h);
     for (let y = 0; y < snap.h; y++) {
       for (let x = 0; x < snap.w; x++) {
-        const c = lut[snap.data[y * snap.w + x]];
-        img.data.set([c[0], c[1], c[2], 255], ((snap.y0 - y0 + y) * w + snap.x0 - x0 + x) * 4);
+        const q = snap.data[y * snap.w + x];
+        if (q === 0) continue;
+        const o = (snap.y0 - y0 + y) * w + snap.x0 - x0 + x;
+        inSupport[o] = 1;
+        const c = LUT[footprintLevel(q, log)];
+        img.data.set([c[0], c[1], c[2], 255], o * 4);
       }
     }
-    ctx.putImageData(img, 0, 0);
+    const off = new OffscreenCanvas(w, h);
+    off.getContext('2d')?.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, 0, 0, w * k, h * k);
+    // Neighbours (grey, their outline at the overlay's level), then this
+    // cell's full support (white).
+    if (g) {
+      for (const shape of g.shapes) {
+        if (shape.id === props.id) continue;
+        if (shape.x1 <= x0 || shape.x0 >= x1 || shape.y1 <= y0 || shape.y0 >= y1) continue;
+        const mask = new Uint8Array(w * h);
+        for (const p of shape.inside) {
+          const y = Math.floor(p / g.width) - y0;
+          const x = (p % g.width) - x0;
+          if (x >= 0 && y >= 0 && x < w && y < h) mask[y * w + x] = 1;
+        }
+        strokeEdges(ctx, mask, w, h, k, 'rgba(190, 190, 190, 0.85)');
+      }
+    }
+    strokeEdges(ctx, inSupport, w, h, k, '#ffffff');
   });
 
   return (
@@ -121,9 +202,13 @@ const LAG_SERIES: uPlot.Series[] = [
   { label: 'lag (frames)', stroke: OKABE_ITO.orange, width: 1.25 },
 ];
 
-function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX.Element {
+function SelectedCell(props: {
+  cells: CellStore;
+  id: number;
+  fps: number;
+  scale: FootprintScale;
+}): JSX.Element {
   const c = () => props.cells;
-  const [view, setView] = createSignal<'trace' | 'demix'>('trace');
   const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
   const inLibrary = () => c().library()?.ids.includes(props.id) ?? false;
   const info = () => {
@@ -138,82 +223,141 @@ function SelectedCell(props: { cells: CellStore; id: number; fps: number }): JSX
   };
   return (
     <div class="cala-selected" data-testid="selected-cell">
-      <div class="cala-trace-head">
-        <h2 class="panel-label">Cell {props.id}</h2>
-        <button type="button" class="btn-secondary btn-small" onClick={() => c().select(null)}>
-          Clear
-        </button>
-      </div>
       <div class="cala-selected__body">
-        <FootprintEvolution cells={c()} id={props.id} onFrame={setMarkerFrame} />
-        <div class="cala-muted cala-selected__facts">
-          <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
-            {(i) => (
+        <FootprintEvolution
+          cells={c()}
+          id={props.id}
+          scale={props.scale}
+          onFrame={setMarkerFrame}
+        />
+        <div class="cala-selected__side">
+          <CellQcSummary cells={c()} id={props.id} />
+          <div class="cala-muted cala-selected__facts">
+            <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
+              {(i) => (
+                <div>
+                  centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px, support r {i().r.toFixed(1)}{' '}
+                  px &middot; found after frame {c().firstSeen(props.id)?.toLocaleString() ?? '?'}
+                </div>
+              )}
+            </Show>
+            <Show when={inLibrary()}>
               <div>
-                centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px, support r {i().r.toFixed(1)} px
+                Footprint: full extent, its own peak = 1, no threshold ({props.scale}). White = its
+                support, grey = neighbours. The slider steps through its versions.
               </div>
-            )}
-          </Show>
-          <div>found after frame {c().firstSeen(props.id)?.toLocaleString() ?? '?'}</div>
-          <Show when={inLibrary()}>
-            <div>
-              footprint: unfiltered, its own peak = 1; the slider steps through its versions
-            </div>
-          </Show>
+            </Show>
+          </div>
         </div>
       </div>
-      <CellQcSummary cells={c()} id={props.id} />
-      <div class="cala-subtabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view() === 'trace'}
-          class="cala-tabs__tab"
-          classList={{ 'cala-tabs__tab--active': view() === 'trace' }}
-          onClick={() => setView('trace')}
-        >
-          Trace
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view() === 'demix'}
-          class="cala-tabs__tab"
-          classList={{ 'cala-tabs__tab--active': view() === 'demix' }}
-          onClick={() => setView('demix')}
-          data-testid="demix-tab"
-        >
-          Demixing
-        </button>
-      </div>
-      <Show
-        when={view() === 'demix'}
-        fallback={
-          <CellTraceViewer cells={c()} id={props.id} fps={props.fps} markerFrame={markerFrame()} />
-        }
-      >
-        <DemixView cells={c()} id={props.id} />
-      </Show>
+      <Tabs
+        class="cala-selected__tabs"
+        aria-label="Cell views"
+        tabs={[
+          {
+            id: 'trace',
+            label: 'Trace',
+            content: (
+              <CellTraceViewer
+                cells={c()}
+                id={props.id}
+                fps={props.fps}
+                markerFrame={markerFrame()}
+              />
+            ),
+          },
+          {
+            id: 'demix',
+            label: 'Demixing',
+            testid: 'demix-tab',
+            content: () => <DemixView cells={c()} id={props.id} />,
+          },
+        ]}
+        keepMounted={false}
+      />
     </div>
   );
 }
 
-/** The clicked cell: footprint, facts and trace (right-hand column). */
+/** The clicked cell: footprint, facts, QC and trace (right-hand column). */
 export function SelectedCellPanel(props: { cells: CellStore; fps: number }): JSX.Element {
+  const [scale, setScale] = createSignal<FootprintScale>('linear');
+  /** The cell before or after the selected one, by id. */
+  const step = (dir: 1 | -1) => {
+    const ids = Array.from(props.cells.library()?.ids ?? []).sort((a, b) => a - b);
+    if (ids.length === 0) return;
+    const cur = props.cells.selected();
+    if (cur === null) {
+      props.cells.select(dir > 0 ? ids[0] : ids[ids.length - 1]);
+      return;
+    }
+    const next = dir > 0 ? ids.find((i) => i > cur) : [...ids].reverse().find((i) => i < cur);
+    props.cells.select(next ?? (dir > 0 ? ids[0] : ids[ids.length - 1]));
+  };
   return (
-    <DashboardPanel id="cell" variant="data" class="cala-cell-panel">
+    <SidePanel
+      id="cell"
+      class="cala-cell-panel"
+      title={
+        <Show when={props.cells.selected()} fallback="Cell">
+          {(id) => <>Cell {id()}</>}
+        </Show>
+      }
+      actions={
+        <>
+          <SegmentedControl
+            options={[
+              { value: 'linear', label: 'linear', title: 'Linear footprint scale' },
+              { value: 'log', label: 'log', title: 'Log footprint scale (2.4 decades)' },
+            ]}
+            value={scale()}
+            onChange={setScale}
+            aria-label="Footprint scale"
+            size="sm"
+            testid="footprint-scale"
+          />
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            aria-label="Previous cell"
+            title="Previous cell (by id)"
+            onClick={() => step(-1)}
+          >
+            &#9664;
+          </button>
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            aria-label="Next cell"
+            title="Next cell (by id)"
+            onClick={() => step(1)}
+          >
+            &#9654;
+          </button>
+          <Show when={props.cells.selected() !== null}>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              onClick={() => props.cells.select(null)}
+            >
+              Clear
+            </button>
+          </Show>
+        </>
+      }
+    >
       <Show
         when={props.cells.selected()}
         fallback={
-          <>
-            <h2 class="panel-label">Selected cell</h2>
-            <p class="cala-muted">Click a cell outline to see its footprint and trace.</p>
-          </>
+          <p class="cala-muted">
+            Click a cell in the field of view (or a row of the cell table) to see its footprint and
+            trace.
+          </p>
         }
       >
-        {(id) => <SelectedCell cells={props.cells} id={id()} fps={props.fps} />}
+        {(id) => <SelectedCell cells={props.cells} id={id()} fps={props.fps} scale={scale()} />}
       </Show>
-    </DashboardPanel>
+    </SidePanel>
   );
 }
 

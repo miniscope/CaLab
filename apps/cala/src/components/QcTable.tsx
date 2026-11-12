@@ -5,6 +5,8 @@ import {
   FLAG_LIKELY_DUPLICATE,
   FLAG_LOW_SNR,
   FLAG_UNMEASURED,
+  followsMotion,
+  MOTION_R2_FLAG,
   sortRows,
   verdict,
   type CellQcRow,
@@ -49,6 +51,12 @@ const COLUMNS: Column[] = [
     key: 'fpError',
     label: 'fp err',
     title: 'Footprint mismatch (relative; no threshold separates good from bad)',
+    desc: true,
+  },
+  {
+    key: 'motionR2',
+    label: 'motion R²',
+    title: `Cross-validated R² of the trace on a quadratic of the frame's rigid shift. Above ${MOTION_R2_FLAG} the trace follows motion: sensor-gain shimmer or a motion artifact, not calcium. Flag only, it does not change pass/fail. Negative = no relation.`,
     desc: true,
   },
   { key: 'eventRate', label: 'ev/min', title: 'Events per minute (descriptive)', desc: true },
@@ -182,6 +190,19 @@ export function QcTable(props: { cells: CellStore }): JSX.Element {
                     </Show>
                   </td>
                   <td>{num(r().fpError)}</td>
+                  <td data-testid="qc-motion-r2">
+                    {num(r().motionR2)}
+                    <Show when={followsMotion(r())}>
+                      <span
+                        class="cala-qc-badge cala-qc-badge--warn"
+                        title={`Trace follows motion (motion R² > ${MOTION_R2_FLAG}): sensor-gain shimmer or motion artifact. Flag only; pass/fail is unchanged.`}
+                        data-testid="qc-motion-flag"
+                      >
+                        {' '}
+                        motion
+                      </span>
+                    </Show>
+                  </td>
                   <td>{num(r().eventRate, 1)}</td>
                   <td>{num(r().ageFrames / fps() / 60, 1)}</td>
                   <td class="cala-muted">

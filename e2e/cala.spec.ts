@@ -5,11 +5,26 @@ import { test, expect } from './fixtures.ts';
 import { buildAvi, pixelAt } from '../apps/cala/src/__tests__/synth-avi.ts';
 
 /**
- * Cala is hidden from the landing page but built at /CaLab/Cala/. This drives
+ * Cala is a beta app: a landing card, built at /CaLab/Cala/. This drives
  * the real path: a folder of synthetic AVIs picked through the directory input,
  * parsed by the wasm AviHeader inside the frame worker, frames transferred
  * back and drawn on the canvas.
  */
+test('Cala: the landing page lists it as a beta and its start page loads cleanly', async ({
+  page,
+}) => {
+  await page.goto('./');
+  const card = page
+    .getByRole('link')
+    .filter({ has: page.getByRole('heading', { level: 2, name: 'Cala', exact: true }) });
+  await expect(card).toContainText('Beta');
+  await card.click();
+  await expect(page).toHaveURL(/\/CaLab\/Cala\/$/);
+  // The start page: the folder picker, no run state (console errors fail the test via fixtures).
+  await expect(page.getByRole('button', { name: 'Open a Miniscope folder' })).toBeVisible();
+  await expect(page.getByTestId('folder-input')).toBeAttached();
+});
+
 test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async ({ page }) => {
   await page.goto('Cala/');
   await expect(page.getByRole('heading', { level: 1, name: 'Cala' })).toBeVisible();
@@ -56,6 +71,30 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await page.getByTestId('color-mode').selectOption('peakSnr');
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
   await page.getByTestId('residual-toggle').check();
+  // One field of view: overlay modes, views, zoom with a minimap, back to Fit.
+  const overlay = page.getByTestId('overlay-mode');
+  await expect(overlay.getByRole('radio', { name: 'Contours' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  await overlay.getByRole('radio', { name: 'Footprints' }).click();
+  await expect(overlay.getByRole('radio', { name: 'Footprints' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  const views = page.getByTestId('view-select');
+  await views.getByRole('radio', { name: 'Raw' }).click();
+  await expect(page.getByTestId('fov-hud')).toContainText('Raw');
+  await views.getByRole('radio', { name: 'Residual' }).click();
+  await expect(page.getByTestId('fov-hud')).toContainText('Residual');
+  await views.getByRole('radio', { name: 'Bg removed' }).click();
+  await expect(page.getByTestId('fov-minimap')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(page.getByTestId('fov-zoom')).toHaveText('150%');
+  await expect(page.getByTestId('fov-minimap')).toBeVisible();
+  await page.getByRole('button', { name: 'Fit', exact: true }).click();
+  await expect(page.getByTestId('fov-zoom')).toHaveText('100%');
+  await expect(page.getByTestId('fov-minimap')).toHaveCount(0);
 
   // Raw gray levels: fitted range off (full scale), scrub to global frame 4 (file 1).
   await page.getByRole('tab', { name: 'Raw file' }).click();

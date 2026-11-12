@@ -66,6 +66,7 @@ file.
 ├── e2e/                           # Playwright smoke specs + build/serve helpers
 ├── scripts/
 │   ├── lib/apps.mjs               # App discovery + apps.json manifest shape
+│   ├── lib/landing.mjs            # Landing page HTML (inlines packages/ui tokens.css)
 │   ├── dev.mjs                    # npm run dev [app]
 │   ├── build-apps.mjs             # Build every app with a build script
 │   ├── combine-dist.mjs           # Landing page + apps.json + app dists
@@ -250,7 +251,10 @@ needs no migration or edge-function change.
 (`npm run dev [app]`, matching directory, id or display name),
 `scripts/combine-dist.mjs` and `scripts/check-apps-manifest.mjs`. combine-dist
 copies each app's `dist/` to `dist/<repo>/<displayName>/`, renders the landing
-page from the metadata (non-hidden apps, ordered stable → beta → coming-soon), and
+page from the metadata with `scripts/lib/landing.mjs` (non-hidden apps, ordered stable →
+beta → coming-soon; released apps as screenshot cards, coming-soon ones unlinked
+under "In development", and a workflow panel from the optional `calab.pipeline`;
+colours and type from `packages/ui/src/styles/tokens.css`), and
 writes `dist/<repo>/apps.json` (`manifest_version`, `release`, `commit`,
 `generated_at`, and `id` / `displayName` / `path` / `description` / `status` per
 non-hidden app). The Python bridge reads that manifest from the deployed site (see

@@ -46,8 +46,12 @@ pub enum DeleteReason {
     Silent,
     /// On held-out frames where the fast loop says it fired, a smooth local
     /// background explains the signal about as well as its footprint does
-    /// (diffuse light, neuropil, a neighbour's halo, a noise pattern).
+    /// (diffuse light, a neighbour's leftover light or halo, a noise pattern).
     Unsupported,
+    /// No compact, soma-sized core in the transient band that is
+    /// significant on held-out block groups and stands out of the
+    /// footprint's own texture (`fastcore.rs`).
+    NoCore,
 }
 
 impl DeleteReason {
@@ -55,6 +59,7 @@ impl DeleteReason {
         match self {
             DeleteReason::Silent => "silent",
             DeleteReason::Unsupported => "unsupported",
+            DeleteReason::NoCore => "nocore",
         }
     }
 }
@@ -154,6 +159,29 @@ pub struct EditEvent {
     /// Held-out evidence of the decision, in χ² units of the noise-column
     /// null's standard deviation (the margin by which it won).
     pub margin: f32,
+}
+
+/// One held-out test of a footprint edit, accepted or not, for measuring
+/// how often edits are tried and taken (`diagnostics` feature only:
+/// [`SlowLoop::take_test_log`](super::SlowLoop::take_test_log)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TestEvent {
+    /// Frames observed when the test was made.
+    pub frame: u64,
+    /// `Refine` (a running-statistics or reservoir re-estimate), `Merge`
+    /// (a pair tested), `Split` (a rank-2 factorisation tested on held-out
+    /// frames) or `Absorb` (a residual candidate whose best alternative was
+    /// growing an existing cell).
+    pub kind: EditKind,
+    /// The cell tested (merge: the lower id of the pair).
+    pub id: u64,
+    /// Merge: the other cell of the pair; refine: the source (1 statistics,
+    /// 2 reservoir); otherwise 0.
+    pub other: u64,
+    pub accepted: bool,
+    /// The test statistic (refine / absorb: paired z; merge / split:
+    /// margin in null sd), NaN when the test stopped before computing it.
+    pub z: f32,
 }
 
 /// Running evidence of one published cell.

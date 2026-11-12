@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
-import { buildGeometry, pickCell, renderOverlay } from '../lib/cell-overlay.ts';
+import {
+  buildGeometry,
+  FOOTPRINT_ALPHA,
+  pickCell,
+  renderOverlay,
+  type Rgb,
+} from '../lib/cell-overlay.ts';
 import { CellMetrics, pushRecent, summarize } from '../lib/cell-store.ts';
 import {
   FastLoop,
@@ -475,6 +481,34 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     expect(fl.process(frames, 9, 3, calibration).version).toBe(6);
   });
 
+  it('returns the residual of the last frame only while asked, and only with cells', () => {
+    const port = recorder<FastToSlow>();
+    const fake = fakeBackend();
+    fake.libs.set(3, [11]);
+    const seen: number[][] = [];
+    const newEngine = fake.backend.newEngine;
+    fake.backend.newEngine = (l) => ({
+      ...newEngine(l),
+      residualOfLast(f) {
+        seen.push(Array.from(f));
+        return f.map((v) => v - 1);
+      },
+    });
+    const fl = fastLoop(port, fake.backend);
+    const frames = Float32Array.from({ length: 12 }, (_, i) => i);
+    fl.setResidual(true);
+    // No library yet: nothing to subtract.
+    expect(fl.process(frames, 0, 3, calibration).residual).toBeUndefined();
+    fl.handleSlow({ type: 'library', session: 5, version: 3, bytes: Uint8Array.of(3) });
+    const out = fl.process(frames, 3, 3, calibration);
+    // The batch's last frame (pixels 8..11 of a 2 x 2 frame).
+    expect(seen).toEqual([[8, 9, 10, 11]]);
+    expect(Array.from(out.residual!)).toEqual([7, 8, 9, 10]);
+    fl.setResidual(false);
+    expect(fl.process(frames, 6, 3, calibration).residual).toBeUndefined();
+    expect(seen).toHaveLength(1);
+  });
+
   it('forwards nothing with discovery off, and tells the slow worker on dispose', () => {
     const port = recorder<FastToSlow>();
     const fl = fastLoop(port, fakeBackend().backend);
@@ -692,6 +726,33 @@ describe('cell overlay geometry', () => {
     expect(px(6)).toEqual([1, 2, 3, 242]);
     expect(px(16)).toEqual([255, 255, 255, 255]);
     expect(px(0)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('keeps every support pixel with its value over the peak', () => {
+    const g = buildGeometry(view);
+    expect(Array.from(g.shapes[0].support)).toEqual([6, 7, 8, 12, 13, 14, 18, 19, 20]);
+    expect(g.shapes[0].rel[4]).toBe(1);
+    expect(g.shapes[0].rel[8]).toBeCloseTo(0.1);
+    expect(Array.from(g.shapes[1].rel)).toEqual([1]);
+  });
+
+  it('fills footprints over their full extent, below the contour level too', () => {
+    const g = buildGeometry(view);
+    const style = { selected: null, color: (): Rgb => [9, 8, 7], fill: () => 0 };
+    const px = (rgba: Uint8ClampedArray, p: number) => Array.from(rgba.slice(p * 4, p * 4 + 4));
+    const fp = renderOverlay(g, { ...style, mode: 'footprints' });
+    // Pixel 20 is at 0.1 of the peak: under the outline level, still drawn.
+    expect(px(fp, 20)).toEqual([9, 8, 7, Math.round(255 * FOOTPRINT_ALPHA * 0.1)]);
+    expect(px(fp, 13)).toEqual([9, 8, 7, Math.round(255 * FOOTPRINT_ALPHA)]);
+    // No outlines in this mode: an edge pixel has its fill opacity.
+    expect(px(fp, 6)[3]).toBe(Math.round(255 * FOOTPRINT_ALPHA * 0.5));
+    const both = renderOverlay(g, { ...style, mode: 'both' });
+    expect(px(both, 6)).toEqual([9, 8, 7, 242]);
+    expect(px(both, 20)[3]).toBe(Math.round(255 * FOOTPRINT_ALPHA * 0.1));
+    // Off: only the selected cell.
+    const off = renderOverlay(g, { ...style, selected: 20, mode: 'off' });
+    expect(px(off, 6)).toEqual([0, 0, 0, 0]);
+    expect(px(off, 16)).toEqual([255, 255, 255, 255]);
   });
 });
 

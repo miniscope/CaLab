@@ -37,8 +37,10 @@
 //!                     apps/cala/scripts/compress-bench.mjs
 //!   --accept-z Z / --merge-corr R / --frames-per-tile N / --reservoir-max-mb M
 //!                     slow-loop settings
-//!   --no-prune / --no-pretest / --probation N / --keep-z Z   slow loop v2
-//!   --v1              all v2 additions off (prune, pre-test)
+//!   --probation N / --keep-z Z   slow loop probation and keep test
+//!   --joint           add test with the joint neighbour-trace check
+//!   --core-test off|report|trim|delete   transient-band core test (default off)
+//!   --basin-trim      trim refined footprints to their significant basin
 //!   --no-merge-refit  merge test against the pair's current footprints only
 //!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
 //!                     nuisance terms in the add test
@@ -922,7 +924,6 @@ fn drain_edits(
 fn with_background(
     lib: &Arc<Library>,
     model: BackgroundModel,
-    scfg: &SlowLoopConfig,
     fov: &[u8],
     noise: Vec<f32>,
     flat: &mut GlowFlattener,
@@ -930,7 +931,6 @@ fn with_background(
     let dims = lib.dims();
     let w = dims.width;
     let mut b = LibraryBuilder::new(dims)
-        .config(scfg.library)
         .fov(fov.to_vec())
         .noise(noise)
         .background(model)
@@ -1016,8 +1016,7 @@ fn background_arms(
             "ring" => scfg.background.clone(),
             "maps" => BackgroundModel::Basis(maps[..k.min(maps.len())].to_vec()),
             "learn" => {
-                let mut cur =
-                    with_background(lib, BackgroundModel::None, scfg, fov, noise.clone(), flat);
+                let mut cur = with_background(lib, BackgroundModel::None, fov, noise.clone(), flat);
                 let mut model_buf = vec![0.0f32; n_px];
                 let mut resid = vec![0.0f32; n_px];
                 let mut fit_maps = Vec::new();
@@ -1041,7 +1040,6 @@ fn background_arms(
                     cur = with_background(
                         lib,
                         BackgroundModel::Basis(fit_maps.clone()),
-                        scfg,
                         fov,
                         noise.clone(),
                         flat,
@@ -1051,7 +1049,7 @@ fn background_arms(
             }
             _ => panic!("unknown background arm {arm}"),
         };
-        let l = with_background(lib, model, scfg, fov, noise.clone(), flat);
+        let l = with_background(lib, model, fov, noise.clone(), flat);
         let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
         let mut eng = TraceEngine::new(l.clone(), SolverConfig::default()).unwrap();
         let mut traces = vec![0.0f32; t_len * n];
@@ -1317,6 +1315,9 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
+    if args.iter().any(|a| a == "--joint") {
+        scfg.joint_neighbours = true;
+    }
     if let Some(v) = arg_value(&args, "--frames-per-tile") {
         scfg.frames_per_tile = v.parse().unwrap();
     }
@@ -1326,24 +1327,23 @@ fn main() {
     if let Some(v) = arg_value(&args, "--merge-corr") {
         scfg.merge_corr = v.parse().unwrap();
     }
-    let v1 = args.iter().any(|a| a == "--v1");
-    if v1 || args.iter().any(|a| a == "--no-prune") {
-        scfg.prune = false;
+    if let Some(v) = arg_value(&args, "--core-test") {
+        scfg.core_test = match v.as_str() {
+            "off" => calab_cala::discover::CoreTest::Off,
+            "report" => calab_cala::discover::CoreTest::Report,
+            "trim" => calab_cala::discover::CoreTest::Trim,
+            "delete" => calab_cala::discover::CoreTest::Delete,
+            other => panic!("--core-test: off|report|trim|delete, not {other}"),
+        };
     }
-    if v1 || args.iter().any(|a| a == "--no-pretest") {
-        scfg.pretest = false;
+    if args.iter().any(|a| a == "--basin-trim") {
+        scfg.basin_trim = true;
     }
     if let Some(v) = arg_value(&args, "--probation") {
         scfg.probation_frames = v.parse().unwrap();
     }
     if let Some(v) = arg_value(&args, "--keep-z") {
         scfg.keep_z = v.parse().unwrap();
-    }
-    if args.iter().any(|a| a == "--no-compare") {
-        scfg.compare = false;
-    }
-    if args.iter().any(|a| a == "--no-stats") {
-        scfg.stats_half_life_frames = 0.0;
     }
     if let Some(v) = arg_value(&args, "--split-every") {
         scfg.split_every_visits = v.parse().unwrap();
@@ -1368,9 +1368,6 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--merge-z") {
         scfg.merge_z = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--weak-share") {
-        scfg.merge_weak_share = v.parse().unwrap();
     }
 
     let avi_dir = if sim {

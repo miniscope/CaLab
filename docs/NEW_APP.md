@@ -72,16 +72,30 @@ thread, which needs no WASM plugin.
 The `calab` block in the app's `package.json` is the only place an app is
 registered.
 
-| Field             | Effect                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `id`              | App identity (see above). The build fails on anything not matching the slug pattern.                          |
-| `displayName`     | Card title, page title, URL path and `apps.json` `path`.                                                      |
-| `description`     | Card tagline and `apps.json` `description`.                                                                   |
-| `longDescription` | One paragraph about the app.                                                                                  |
-| `features`        | Bullet list on the card.                                                                                      |
-| `status`          | Badge and order: `stable`, then `beta`, then `coming-soon`. Every card links to its app.                      |
-| `hidden`          | `true`: still built and deployed at its URL, but no landing card and no `apps.json` entry (so no bridge use). |
-| `screenshot`      | Image file in the app directory for the card thumbnail, or `""`.                                              |
+| Field             | Effect                                                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`              | App identity (see above). The build fails on anything not matching the slug pattern.                                       |
+| `displayName`     | Card title, page title, URL path and `apps.json` `path`.                                                                   |
+| `description`     | Card tagline and `apps.json` `description`.                                                                                |
+| `longDescription` | One paragraph about the app, shown when the card's Details is expanded.                                                    |
+| `features`        | Bullet list of what the app does, shown under Details after `longDescription`.                                             |
+| `pipeline`        | Optional `{ "input": ..., "output": ..., "step": n }`: the app's line in "How the apps fit together" (released apps only). |
+| `status`          | Badge and order: `stable`, then `beta`, then `coming-soon`. Coming-soon apps are listed, unlinked, under "In development". |
+| `hidden`          | `true`: still built and deployed at its URL, but no landing card and no `apps.json` entry (so no bridge use).              |
+| `screenshot`      | Image file in the app directory for the card thumbnail, or `""`.                                                           |
+
+The landing page is built only from these fields (`scripts/lib/landing.mjs`
+names no app). `pipeline` reads as `input → output`, e.g.
+`{ "input": "Raw Miniscope video", "output": "cell footprints and traces", "step": 1 }`.
+The optional numeric `step` is the app's rough stage of use, not a strict
+chain: lower stages come first, and apps with equal steps are alternatives,
+shown together as one bracketed stage (CaDecon and CaTune are both 2: automated
+and by-hand deconvolution). Within a stage, and for apps without a step, the
+card order holds.
+Leave both strings empty (the template's placeholder) or drop the field to
+stay out of the panel. `npm run check:apps-manifest` fails on a malformed
+`pipeline` (not an object, unknown keys, non-strings, only one of the two
+set, or a `step` that is not a number).
 
 `apps/_template` itself is `hidden: true` and is never built or deployed: its
 `calab.id` is the `__APP_ID__` placeholder, which `@calab/vite-config` accepts

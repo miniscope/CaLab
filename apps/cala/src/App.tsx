@@ -10,19 +10,19 @@ import { createCellStore } from './lib/cell-store.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
 import { createPass2Store } from './lib/pass2-store.ts';
+import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
 import {
   createSlowClient,
   PARALLEL_FORWARD_BUFFERS,
   RESERVED_THREADS,
   visitWorkerCount,
 } from './lib/slow-client.ts';
-import { StatusBar } from './components/StatusBar.tsx';
-import { VideoPanel } from './components/VideoPanel.tsx';
+import { FovPanel } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { ConvergenceStrip } from './components/ConvergenceStrip.tsx';
-import { Pass2Bar } from './components/Pass2Bar.tsx';
+import { RunPanel } from './components/RunPanel.tsx';
+import { createFovLayout } from './lib/fov-layout.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -61,13 +61,30 @@ const App: Component = () => {
   const compressClient = compress
     ? createCompressClient(client, (msg) => compress.onMessage(msg))
     : undefined;
+  // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
-    {},
+    params.get('flatfield') === '0' ? { flatField: false } : {},
     undefined,
     cells,
     !params.has('noqc'),
     slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
+    {
+      // The sensor flat field is stored per device in this browser (IndexedDB).
+      cache: createIndexedDbFlatFieldCache(),
+      identity: () => {
+        const i = store.info();
+        if (!i) return null;
+        return {
+          width: i.width,
+          height: i.height,
+          ...(i.device ? { device: i.device } : {}),
+          ...(i.live ? { live: true } : {}),
+          ...(i.live?.name ? { liveName: i.live.name } : {}),
+          folder: store.label(),
+        };
+      },
+    },
     compress,
   );
   const pass2 = createPass2Store(client, pipeline, cells);
@@ -99,6 +116,60 @@ const App: Component = () => {
     if (store.info()) void pipeline.start();
   }
   const liveParam = params.get('live');
+
+  /**
+   * One screen, no page scroll: the field of view, square-ish and as tall as
+   * the window, on the left; Run, Cell and the details tabs in one column on
+   * the right. Narrow windows stack the column under the image and scroll.
+   */
+  function Layout(lp: { info: NonNullable<ReturnType<typeof store.info>> }) {
+    let main!: HTMLDivElement;
+    const layout = createFovLayout(
+      () => main,
+      () => ({ width: lp.info.width, height: lp.info.height }),
+    );
+    return (
+      <div
+        ref={main}
+        class="cala-main"
+        classList={{ 'cala-main--narrow': layout().narrow }}
+        style={layout().narrow ? {} : { '--cala-fov-w': `${layout().fovWidth}px` }}
+      >
+        <Show when={store.error()}>
+          {(message) => (
+            <div class="error-card cala-main__error" role="alert">
+              <span>{message()}</span>
+            </div>
+          )}
+        </Show>
+        <div class="cala-main__fov">
+          <FovPanel
+            store={pipeline}
+            cells={cells}
+            width={lp.info.width}
+            height={lp.info.height}
+            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+          />
+        </div>
+        <div class="cala-main__side">
+          <RunPanel
+            pipeline={pipeline}
+            pass2={pass2}
+            cells={cells}
+            live={lp.info.live !== undefined}
+            label={store.label()}
+            width={lp.info.width}
+            height={lp.info.height}
+            fps={lp.info.fps ?? 0}
+            narrow={layout().narrow}
+            compress={compress}
+          />
+          <SelectedCellPanel cells={cells} fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS} />
+          <DetailsTabs store={pipeline} cells={cells} viewer={store} info={lp.info} />
+        </div>
+      </div>
+    );
+  }
   if (liveParam) void openLive(liveParam);
 
   return (
@@ -151,41 +222,7 @@ const App: Component = () => {
             />
           }
         >
-          {/* One screen, no page scroll: status strip on top; video and
-              tabbed plots on the left; the selected cell on the right. */}
-          <div class="cala-main">
-            <Show when={store.error()}>
-              {(message) => (
-                <div class="error-card" role="alert">
-                  <span>{message()}</span>
-                </div>
-              )}
-            </Show>
-            <StatusBar store={pipeline} cells={cells} compress={compress} />
-            <Pass2Bar
-              pipeline={pipeline}
-              pass2={pass2}
-              cells={cells}
-              live={info().live !== undefined}
-              label={store.label()}
-              width={info().width}
-              height={info().height}
-              fps={info().fps ?? 0}
-            />
-            <ConvergenceStrip cells={cells} />
-            <div class="cala-body">
-              <div class="cala-body__left">
-                <VideoPanel
-                  store={pipeline}
-                  cells={cells}
-                  width={info().width}
-                  height={info().height}
-                />
-                <DetailsTabs store={pipeline} cells={cells} viewer={store} info={info()} />
-              </div>
-              <SelectedCellPanel cells={cells} fps={info().fps ?? FALLBACK_PLAYBACK_FPS} />
-            </div>
-          </div>
+          <Layout info={info()} />
         </DashboardShell>
       )}
     </Show>

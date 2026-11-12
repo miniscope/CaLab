@@ -12,6 +12,8 @@ export const traceBackend: TraceBackend = {
     return {
       processFrames: (engine, frames, count) =>
         qc.processFrames(engine as TraceEngine, frames, count),
+      processFramesShifted: (engine, frames, count, dy, dx) =>
+        qc.processFramesShifted(engine as TraceEngine, frames, count, dy, dx),
       setNoise: (noise) => qc.setNoise(noise),
       cellMetrics: () => qc.cellMetrics(),
       globalMetrics: () => qc.globalMetrics(),

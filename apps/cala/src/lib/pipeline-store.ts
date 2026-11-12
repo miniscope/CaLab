@@ -9,6 +9,22 @@
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
+import {
+  flatFieldKey,
+  initialFlatFieldState,
+  type DeviceIdentity,
+  type FlatFieldApplied,
+  type FlatFieldEvent,
+  type FlatFieldKey,
+  type FlatFieldMap,
+  type FlatFieldState,
+} from './flat-field.ts';
+import {
+  mapFromRecord,
+  recordFromMap,
+  recordFits,
+  type FlatFieldCache,
+} from './flat-field-cache.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type {
   BatchPreviews,
@@ -126,6 +142,28 @@ const ZERO_TIMINGS: StageTimings = {
   traceMs: 0,
 };
 
+/** What the pipeline store needs for the per-device flat-field cache. */
+export interface FlatFieldStoreOptions {
+  cache?: FlatFieldCache;
+  /** What the open recording says about its sensor (null before one is open). */
+  identity?: () => {
+    width: number;
+    height: number;
+    device?: DeviceIdentity;
+    liveName?: string;
+    /** A live stream (its maps are neither read from nor written to the cache). */
+    live?: boolean;
+    folder: string;
+  } | null;
+  /** Minimum time between cache writes, ms (default one minute; the run end always writes). */
+  writeIntervalMs?: number;
+  /** Wall clock, ms (tests). */
+  now?: () => number;
+}
+
+/** Cache writes at most this often while a run goes on. */
+const FLAT_FIELD_WRITE_INTERVAL_MS = 60_000;
+
 /** Pipeline sessions, so late messages of a stopped run are told apart. */
 let nextSession = 1;
 
@@ -138,6 +176,8 @@ export function createPipelineStore(
   qc = true,
   /** Batches in flight to the slow worker (default: the fast loop's). */
   forwardBuffers?: number,
+  /** The per-device flat-field cache and the recording's identity (optional). */
+  flat: FlatFieldStoreOptions = {},
   /** Feed the compress worker; its store is reset with each run. */
   compress?: Pick<CompressStore, 'reset'>,
 ) {
@@ -157,9 +197,77 @@ export function createPipelineStore(
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
+  const [residual, setResidualSignal] = createSignal(false);
   /** The live source's counters after the newest batch (null on a file source). */
   const [live, setLive] = createSignal<LivePoint | null>(null);
   let livePoints: LivePoint[] = [];
+  // Online sensor flat field: the setting, the estimator's status, the maps.
+  const [flatEnabled, setFlatEnabledSignal] = createSignal(options.flatField !== false);
+  const [flatField, setFlatField] = createSignal<FlatFieldState>({
+    ...initialFlatFieldState(),
+    supported: client.subscribeFlatField !== undefined,
+  });
+  const patchFlat = (p: Partial<FlatFieldState>): void => {
+    setFlatField((s) => ({ ...s, ...p }));
+  };
+  /** The session whose estimator events count (0: none yet). */
+  let flatSessionId = 0;
+  let flatKey: FlatFieldKey | null = null;
+  let flatDims = { width: 0, height: 0 };
+  let flatLatest: FlatFieldMap | null = null;
+  let flatDirty = false;
+  let flatLastWrite = -Infinity;
+  let flatTimer: ReturnType<typeof setTimeout> | null = null;
+  const wallNow = flat.now ?? (() => Date.now());
+  const writeInterval = flat.writeIntervalMs ?? FLAT_FIELD_WRITE_INTERVAL_MS;
+
+  /** Write the newest map to the cache (never throws: the cache is an optimisation). */
+  function flushFlatField(): void {
+    if (flatTimer !== null) clearTimeout(flatTimer);
+    flatTimer = null;
+    if (!flatDirty || !flatLatest || !flatKey || !flat.cache) return;
+    flatDirty = false;
+    flatLastWrite = wallNow();
+    void flat.cache
+      .put(recordFromMap(flatKey, flatDims.width, flatDims.height, flatLatest, flatLastWrite))
+      .catch(() => {});
+  }
+
+  function scheduleFlatWrite(): void {
+    flatDirty = true;
+    const wait = flatLastWrite + writeInterval - wallNow();
+    if (wait <= 0) flushFlatField();
+    else flatTimer ??= setTimeout(flushFlatField, wait);
+  }
+
+  function onFlatEvent(e: FlatFieldEvent): void {
+    if (e.type === 'error') {
+      // A crashed estimator (session -1) or this run's: reported, the run goes on uncorrected.
+      if (e.session === -1 || e.session === flatSessionId) patchFlat({ error: e.message });
+      return;
+    }
+    if (e.session !== flatSessionId) return;
+    switch (e.type) {
+      case 'progress':
+        patchFlat({ frames: e.frames, fps: e.fps });
+        return;
+      case 'skipped':
+        patchFlat({ skipped: e.message });
+        return;
+      case 'map':
+        flatLatest = e.map;
+        setFlatField((s) => ({
+          ...s,
+          map: e.map,
+          updates: s.updates + 1,
+          lastChange: e.change,
+          skipped: null,
+        }));
+        scheduleFlatWrite();
+        return;
+    }
+  }
+  client.subscribeFlatField?.(onFlatEvent);
 
   let trace = new ShiftTrace();
   /** Pass 1's per-frame motion and flicker, kept in full for pass 2 and the export. */
@@ -171,12 +279,19 @@ export function createPipelineStore(
   let exhausted = false;
   let generation = 0; // bumps on start/stop, so late answers are dropped
 
+  /** A flat-field map took effect at a batch boundary: keep the frame in the run record. */
+  function noteFlatFieldApplied(applied: FlatFieldApplied): void {
+    record.noteFlatField(applied);
+    if (applied.first) patchFlat({ firstFrame: applied.frame });
+  }
+
   function handle(step: PipelineStepResult): void {
     switch (step.kind) {
       case 'setup':
         setSetup({ phase: step.phase, done: step.done, total: step.total });
         return;
       case 'batch': {
+        if (step.flatField) noteFlatFieldApplied(step.flatField);
         trace.push(step.start, step.dy, step.dx, step.flickerOffset, step.flickerGain);
         record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
         setTraceVersion((v) => v + 1);
@@ -221,6 +336,7 @@ export function createPipelineStore(
       case 'done':
         if (!exhausted) {
           exhausted = true;
+          flushFlatField();
           setStatus('done');
         }
         return;
@@ -254,6 +370,15 @@ export function createPipelineStore(
   }
 
   function reset(): void {
+    flushFlatField();
+    flatSessionId = 0;
+    flatLatest = null;
+    flatDirty = false;
+    setFlatField((s) => ({
+      ...initialFlatFieldState(),
+      supported: s.supported,
+      enabled: flatEnabled(),
+    }));
     generation++;
     inFlight = 0;
     exhausted = false;
@@ -286,13 +411,42 @@ export function createPipelineStore(
     cells?.reset(session);
     compress?.reset(session);
     try {
-      const p = await client.startPipeline(options, {
-        session,
-        discover: discover(),
-        qc,
-        ...(forwardBuffers ? { forwardBuffers } : {}),
-        ...(compress ? { compress: true } : {}),
+      // Flat field: a stored map of this device (if any) is in force from the first processed frame.
+      const useFlat = flatEnabled() && client.subscribeFlatField !== undefined;
+      flatSessionId = session;
+      flatKey = null;
+      let seed: FlatFieldMap | undefined;
+      const id = useFlat ? (flat.identity?.() ?? null) : null;
+      // A live stream (including an auto-connected `?live=` one) neither reads nor writes
+      // the cache: a stored map is never applied silently to a stream, and a stream
+      // cannot overwrite a map cached for a file or device. It estimates fresh.
+      if (id && !id.live) {
+        flatKey = flatFieldKey(id);
+        flatDims = { width: id.width, height: id.height };
+        const rec = flat.cache ? await flat.cache.get(flatKey.key, id.width, id.height) : null;
+        if (gen !== generation) return;
+        if (recordFits(rec, id.width, id.height) && rec) seed = mapFromRecord(rec);
+      }
+      flatLatest = seed ?? null;
+      patchFlat({
+        enabled: flatEnabled(),
+        key: flatKey,
+        reused: seed !== undefined,
+        map: seed ?? null,
       });
+      const p = await client.startPipeline(
+        { ...options, flatField: useFlat },
+        {
+          session,
+          discover: discover(),
+          qc,
+          residual: residual(),
+          ...(forwardBuffers ? { forwardBuffers } : {}),
+          ...(compress ? { compress: true } : {}),
+        },
+        undefined,
+        seed ? { seed } : undefined,
+      );
       if (gen !== generation) return;
       setPlan(p);
       setStatus('running');
@@ -344,6 +498,19 @@ export function createPipelineStore(
     pump();
   }
 
+  /** Turn the online flat field on or off (takes effect at the next start of pass 1). */
+  function setFlatEnabled(on: boolean): void {
+    setFlatEnabledSignal(on);
+    // Not mid-run: the run keeps what it started with. The panel says so.
+  }
+
+  /** Ask for the residual preview or stop (applies to the running pipeline at once). */
+  function setResidual(on: boolean): void {
+    if (on === residual()) return;
+    setResidualSignal(on);
+    void client.setResidual?.(on).catch(() => {});
+  }
+
   /** Turn cell discovery on or off (applies to the running pipeline at once). */
   function setDiscover(on: boolean): void {
     setDiscoverSignal(on);
@@ -354,6 +521,9 @@ export function createPipelineStore(
     status,
     discover,
     setDiscover,
+    /** The residual preview is being produced (the residual view is shown). */
+    residual,
+    setResidual,
     plan,
     setup,
     processed,
@@ -369,6 +539,13 @@ export function createPipelineStore(
     /** Changes whenever `trace()` gained frames. */
     traceVersion,
     trace: () => trace,
+    /** The online sensor flat field: the setting (applies at the next start), status, and newest map. */
+    flatEnabled,
+    setFlatEnabled,
+    flatField,
+    flatFieldMap: () => flatLatest,
+    /** Write the newest map to the per-device cache now (the run end does it too). */
+    flushFlatField,
     /** What pass 1 recorded per frame (motion shifts and flicker) so far. */
     record: () => record,
     finishEarly,

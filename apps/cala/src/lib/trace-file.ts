@@ -22,7 +22,7 @@
  * run starts, so an abandoned tab never leaves a multi-GB file behind for
  * long.
  */
-import { OpfsWriterClient, opfsAvailable, sweepOpfs } from './opfs-writer.ts';
+import { OpfsWriterClient, opfsUsable, sweepOpfs } from './opfs-writer.ts';
 
 /** The largest trace matrix held in memory when OPFS is unavailable, bytes. */
 export const MAX_MEMORY_TRACE_BYTES = 1_500_000_000;
@@ -262,7 +262,7 @@ export async function createTraceFile(
   options: { forceMemory?: boolean } = {},
 ): Promise<TraceFile> {
   const bytes = frames * cells * 4;
-  if (!options.forceMemory && opfsAvailable()) {
+  if (!options.forceMemory && (await opfsUsable())) {
     await sweepOpfs();
     const short = await storageShortfall(bytes);
     if (short) {

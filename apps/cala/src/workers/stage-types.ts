@@ -32,6 +32,19 @@ export interface StageFree {
   buffer: Float32Array;
 }
 
+/**
+ * Upstream, B -> A: the rigid shifts stage B found for the process batch that
+ * starts at `start`. Stage A keeps that batch's raw frames until they arrive
+ * and sends both to the flat-field estimator (`lib/flat-field-runner.ts`).
+ */
+export interface StageShifts {
+  type: 'shifts';
+  epoch: number;
+  start: number;
+  dy: Float32Array;
+  dx: Float32Array;
+}
+
 /** Main thread -> motion / trace worker: their ports. */
 export interface StageLink {
   type: 'stage-link';

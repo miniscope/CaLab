@@ -175,8 +175,9 @@ impl JsTraceLibrary {
         self.inner.to_bytes()
     }
 
-    /// A library from `toBytes` (same version; footprints are not filtered
-    /// again, only the solver's precomputed terms are rebuilt).
+    /// A library from `toBytes` (same version). The bytes carry the
+    /// solver's precomputed terms too, so this is a copy (a few ms), not a
+    /// rebuild: the fast loop calls it between frames.
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<JsTraceLibrary, JsError> {
         console_error_panic_hook::set_once();
@@ -304,6 +305,22 @@ impl JsTraceEngine {
                 .map_err(|e| js_err("processFrames", e))?;
             out.extend_from_slice(&self.out.traces);
         }
+        Ok(out)
+    }
+
+    /// Residual of the last solved frame: `frame` (that frame, as passed to
+    /// `processFrames`) minus the model the solve drew (see
+    /// `Library::residual`). Empty before the first frame or after a library
+    /// swap with no frame solved since.
+    #[wasm_bindgen(js_name = residualOfLast)]
+    pub fn residual_of_last(&self, frame: &[f32]) -> Result<Vec<f32>, JsError> {
+        let lib = self.inner.library();
+        if self.out.traces.len() != lib.len() || self.out.library_version != lib.version() {
+            return Ok(Vec::new());
+        }
+        let mut out = vec![0.0f32; lib.dims().pixels()];
+        lib.residual(frame, &self.out, &mut out)
+            .map_err(|e| js_err("residualOfLast", e))?;
         Ok(out)
     }
 

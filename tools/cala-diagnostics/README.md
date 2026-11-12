@@ -4,9 +4,8 @@ These tools inspect `discover_eval` runs without changing discovery algorithms.
 Run from the repository root. Python 3.10+ and NumPy are required for trajectory
 analysis; Matplotlib is optional for PNG/PDF plots; Zarr is optional for the Minian
 comparison. The small benchmark additionally needs the pinned Minisim environment
-described in `tools/minisim-calibration/README.md`. Its legacy e33edad pin is
-outdated for the current scatter exporter. The validated benchmark used Minisim
-01a9ce2 (exporter needs c243+); preserve the actual installed revision.
+described in `tools/minisim-calibration/README.md` (pinned at 01a9ce2, the
+revision the validated benchmark used; the exporter needs c243dca or later).
 
 ```sh
 cargo build --manifest-path crates/cala/Cargo.toml --release --example discover_eval
@@ -238,3 +237,12 @@ the footprint mask; this experiment does not change the production detector.
 apparent waves, measured with `crates/cala/examples/pixnoise_eval.rs`. It
 also has the ground-truth tests of spatial pre-filters and a flat field
 (`CALA_PREFILTER`, `CALA_FLATFIELD` in `discover_eval` / `trace_eval`).
+
+## Leftover light vs neuropil
+
+`residual_after_cells.py` measures the residual a footprint set leaves, on real
+data (Minian `A.zarr` or a cala `footprints.bin`) or on a minisim recording (GT
+units or a cala library), the same way on both: spatial band powers in noise
+units, autocorrelation, and coupling to the population drive. It needs NumPy,
+SciPy, OpenCV and (for Minian) Zarr. `LEFTOVER_LIGHT.md` has the results and the
+joint neighbour-trace check they led to.

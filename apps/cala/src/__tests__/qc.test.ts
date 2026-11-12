@@ -8,7 +8,9 @@ import {
   correlation,
   demixVerdict,
   EditRates,
+  followsMotion,
   FLAG_CORRELATED_PAIR,
+  FLAG_FOLLOWS_MOTION,
   FLAG_LIKELY_DUPLICATE,
   FLAG_LOW_SNR,
   FLAG_UNMEASURED,
@@ -52,11 +54,52 @@ function row(over: Partial<CellQcRow>): CellQcRow {
     zeroFrac: 0.2,
     diffSkew: 1,
     fpRadiusPx: 4,
+    motionR2: 0.01,
     flags: 0,
     pass: true,
     ...over,
   };
 }
+
+describe('motion R2 (trace follows motion)', () => {
+  it('flags above 0.2 by value or by flag bit, never negative or NaN', () => {
+    expect(followsMotion(row({ motionR2: 0.35 }))).toBe(true);
+    expect(followsMotion(row({ motionR2: 0.2 }))).toBe(false);
+    expect(followsMotion(row({ motionR2: -0.05 }))).toBe(false);
+    expect(followsMotion(row({ motionR2: NaN }))).toBe(false);
+    expect(followsMotion(row({ motionR2: NaN, flags: FLAG_FOLLOWS_MOTION }))).toBe(true);
+  });
+
+  it('is parsed by name and does not touch the verdict', () => {
+    const wire: QcWire = {
+      frame: 1,
+      version: 1,
+      cellFields: ['id', 'motion_r2', 'flags', 'pass'],
+      globalFields: [],
+      cells: Float64Array.of(1, 0.4, FLAG_FOLLOWS_MOTION, 1, 2, -0.1, 0, 1),
+      global: new Float64Array(0),
+      nbStarts: Uint32Array.of(0, 0, 0),
+      nb: new Float32Array(0),
+      residualDims: Uint32Array.of(0, 0, 8),
+      residual: new Float32Array(0),
+      buildMs: 0,
+    };
+    const s = parseQc(wire);
+    expect(s.rows[0].motionR2).toBeCloseTo(0.4);
+    expect(s.rows[1].motionR2).toBeCloseTo(-0.1);
+    expect(s.rows.map(followsMotion)).toEqual([true, false]);
+    expect(verdict(s.rows[0]).kind).toBe('pass');
+  });
+
+  it('sorts by value with NaN last', () => {
+    const rows = [
+      row({ id: 1, motionR2: NaN }),
+      row({ id: 2, motionR2: 0.1 }),
+      row({ id: 3, motionR2: 0.5 }),
+    ];
+    expect(sortRows(rows, 'motionR2', -1).map((r) => r.id)).toEqual([3, 2, 1]);
+  });
+});
 
 describe('parseQc', () => {
   it('reads fields by name, so a reordered or extended row still parses', () => {

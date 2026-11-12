@@ -13,6 +13,8 @@
  *     validated scores without a threshold;
  *   - fp_error has no threshold that separates good from bad footprints and is
  *     only a colour scale;
+ *   - motion_r2 (trace follows motion) is flagged above 0.2 but never fails a
+ *     cell: display only;
  *   - shape metrics (rise/decay, skew, slow share, zero share, event rate,
  *     footprint size and stability) are descriptive only, never a failure.
  */
@@ -22,6 +24,16 @@ export const FLAG_LOW_SNR = 1;
 export const FLAG_CORRELATED_PAIR = 2;
 export const FLAG_LIKELY_DUPLICATE = 4;
 export const FLAG_UNMEASURED = 8;
+/** Trace follows the frame's rigid shift (motion_r2 above MOTION_R2_FLAG). Display only, not in `pass`. */
+export const FLAG_FOLLOWS_MOTION = 16;
+
+/** `motion_r2` above which a cell is flagged "follows motion" (sensor-gain shimmer or motion artifact). */
+export const MOTION_R2_FLAG = 0.2;
+
+/** True when the cell's trace follows motion (from the value, so old wire formats without the flag bit work too). */
+export function followsMotion(r: Pick<CellQcRow, 'motionR2' | 'flags'>): boolean {
+  return (r.flags & FLAG_FOLLOWS_MOTION) !== 0 || r.motionR2 > MOTION_R2_FLAG;
+}
 
 /** Peak SNR below which a cell fails (the Rust `PassRule.min_snr`). */
 export const MIN_SNR = 5;
@@ -72,6 +84,11 @@ export interface CellQcRow {
   /** -1 when none. */
   maxNeighbourId: number;
   fpError: number;
+  /**
+   * Cross-validated R² of the trace on a quadratic of the rigid shift (NaN
+   * without motion data or before enough frames; negative values kept).
+   */
+  motionR2: number;
   nNeighbours: number;
   /** Descriptive only. */
   fpLastR: number;
@@ -162,6 +179,7 @@ export function parseQc(w: QcWire): QcSnapshot {
       maxNeighbourR: get(s, 'max_neighbour_r'),
       maxNeighbourId: get(s, 'max_neighbour_id'),
       fpError: get(s, 'fp_error'),
+      motionR2: get(s, 'motion_r2'),
       nNeighbours: get(s, 'n_neighbours'),
       fpLastR: get(s, 'fp_last_r'),
       slowFrac: get(s, 'slow_frac'),
@@ -290,6 +308,7 @@ export type SortKey =
   | 'vif'
   | 'maxNeighbourR'
   | 'fpError'
+  | 'motionR2'
   | 'eventRate'
   | 'ageFrames';
 

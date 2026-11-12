@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use super::library::CORE_MAGIC;
 use super::*;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
@@ -179,12 +180,7 @@ fn recovers_traces_exactly_when_the_model_is_exact() {
     let t = 30;
     let c = traces(6, t, 1);
     let frames = unfiltered_frames(&c);
-    let wide = LibraryConfig {
-        support_per_hwhm: 4.0,
-        ..LibraryConfig::default()
-    };
     let mut b = LibraryBuilder::new(dims())
-        .config(wide)
         .background(BackgroundModel::Basis(vec![global_map()]))
         .version(1);
     for (i, &centre) in CENTRES.iter().enumerate() {
@@ -211,9 +207,8 @@ fn recovers_traces_exactly_when_the_model_is_exact() {
 
 #[test]
 fn recovers_traces_through_the_high_pass() {
-    // High-passed data, filtered footprints on tight supports. What is not
-    // modelled are the neighbours' filtered tails and negative lobes outside
-    // their own supports, a few percent of a neighbour's amplitude.
+    // High-passed data, filtered footprints on their full windows plus the
+    // high-pass moat around them.
     let t = 30;
     let c = traces(6, t, 1);
     let frames = filtered_frames(&c, 0.0, 2);
@@ -222,7 +217,9 @@ fn recovers_traces_through_the_high_pass() {
         BackgroundModel::Basis(vec![global_map()]),
         1,
     ));
-    assert_eq!(lib.groups().len(), 4, "two overlapping pairs, two singles");
+    // Full-extent supports (every value of the 19 px windows) couple
+    // neighbours into overlap groups.
+    assert!(lib.groups().len() < 6, "overlapping cells share a group");
     let mut e = TraceEngine::new(lib, tight()).unwrap();
     let peak = c.iter().flatten().fold(0.0f32, |m, &v| m.max(v));
     let mut worst = 0.0f32;
@@ -232,7 +229,9 @@ fn recovers_traces_through_the_high_pass() {
             worst = worst.max((r.traces[i] - c[i][s]).abs());
         }
     }
-    assert!(worst < 0.02 * peak, "worst error {worst}, peak {peak}");
+    // With the moat modelled (block means of `L a` out to 2σ) the model is
+    // all but exact: 0.05 % of the peak (1.1 % with the moat dropped).
+    assert!(worst < 0.002 * peak, "worst error {worst}, peak {peak}");
     // Clipping the filtered footprints at zero (the tempting shortcut) is
     // measurably worse on the same data.
     let mut clipped =
@@ -402,7 +401,9 @@ fn invalid_input_is_an_error_not_a_panic() {
     ));
     let mut nan = vec![0.0f32; W * H];
     nan[(CENTRES[0].0 as usize) * W + CENTRES[0].1 as usize] = f32::NAN;
-    assert!(e.process(&nan).is_err());
+    // A non-finite pixel is a missing sample (zero weight), not an error.
+    let r = e.process(&nan).unwrap();
+    assert!(r.traces.iter().all(|v| v.is_finite()));
     assert!(SolverConfig {
         relax: 2.0,
         ..SolverConfig::default()
@@ -551,4 +552,325 @@ fn library_bytes_round_trip_solves_identically() {
     let mut wrong = bytes.clone();
     wrong[0] = b'X';
     assert!(Library::from_bytes(&wrong).is_err());
+}
+
+/// The fast loop installs a published library from its bytes between
+/// frames. The bytes carry the precomputed terms, so the install is a copy;
+/// a library rebuilt from the footprints alone (the footprints-only layout,
+/// the install before the terms travelled) must solve bit-identically when
+/// installed at the same frame, missing pixels (the EM refill) included.
+#[test]
+fn library_install_from_terms_matches_full_rebuild_at_the_same_frame() {
+    let t = 30;
+    let c = traces(6, t, 31);
+    let mut frames = filtered_frames(&c, 0.1, 32);
+    // Missing pixels (registration moved them in from outside the FOV) on
+    // some frames, over a cell.
+    for f in frames.iter_mut().skip(3).step_by(4) {
+        for y in 10..14 {
+            for x in 0..6 {
+                f[y * W + x] = f32::NAN;
+            }
+        }
+    }
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let lib1 = Arc::new(library(&[0, 1, 2, 3], model.clone(), 50));
+        let libs = [
+            library(&[1, 2, 3, 4, 5], model.clone(), 51),
+            library(&[0, 2, 4, 5], model.clone(), 52),
+        ];
+        let installs = [9usize, 20];
+        let mut full = TraceEngine::new(lib1.clone(), SolverConfig::default()).unwrap();
+        let mut fast = TraceEngine::new(lib1, SolverConfig::default()).unwrap();
+        for (s, f) in frames.iter().enumerate() {
+            if let Some(k) = installs.iter().position(|&i| i == s) {
+                let rebuilt = Library::from_bytes(&libs[k].core_bytes(CORE_MAGIC)).unwrap();
+                let copied = Library::from_bytes(&libs[k].to_bytes()).unwrap();
+                // Same terms, bit for bit (the bytes carry all of them).
+                assert_eq!(copied.to_bytes(), rebuilt.to_bytes());
+                assert_eq!(copied.groups, rebuilt.groups);
+                full.set_library(Arc::new(rebuilt)).unwrap();
+                fast.set_library(Arc::new(copied)).unwrap();
+            }
+            let a = full.process(f).unwrap();
+            let b = fast.process(f).unwrap();
+            assert_eq!(a.library_version, b.library_version);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.traces), bits(&b.traces), "frame {s}");
+            assert_eq!(bits(&a.background), bits(&b.background), "frame {s}");
+        }
+        assert_eq!(full.state().traces, fast.state().traces);
+    }
+}
+
+#[test]
+fn library_bytes_with_damaged_terms_are_refused() {
+    let lib = library(
+        &[0, 1, 2],
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        60,
+    );
+    let core = lib.core_bytes(CORE_MAGIC);
+    let bytes = lib.to_bytes();
+    assert!(bytes.len() > core.len());
+    // Terms cut short, or a model tag that does not match the model.
+    assert!(Library::from_bytes(&bytes[..bytes.len() - 4]).is_err());
+    let mut retag = core.clone();
+    retag[..8].copy_from_slice(b"CALALIB3");
+    assert!(Library::from_bytes(&retag).is_err());
+    // A Gram column out of range.
+    let mut bad = bytes.clone();
+    let gram_start = core.len();
+    let nnz = lib.gram.start[3];
+    assert!(nnz > 0);
+    let col_at = gram_start + 4 * 4;
+    bad[col_at..col_at + 4].copy_from_slice(&99u32.to_le_bytes());
+    assert!(Library::from_bytes(&bad).is_err());
+}
+
+/// One Gaussian cell (sigma 3 px, support radius 8) on a 64 x 64 field of view.
+fn ring_probe_footprint() -> Footprint {
+    let (cy, cx, r) = (32usize, 32usize, 8usize);
+    let mut values = Vec::new();
+    for y in 0..2 * r + 1 {
+        for x in 0..2 * r + 1 {
+            let (dy, dx) = (y as f32 - r as f32, x as f32 - r as f32);
+            values.push((-(dy * dy + dx * dx) / (2.0 * 3.0 * 3.0)).exp());
+        }
+    }
+    Footprint {
+        id: 0,
+        y0: cy - r,
+        x0: cx - r,
+        height: 2 * r + 1,
+        width: 2 * r + 1,
+        values,
+    }
+}
+
+#[test]
+fn ring_level_is_not_absorbed_into_the_trace() {
+    // Ring background + high-pass + a background offset: with `s_i` summed
+    // over the support only (not the whole column, moat included) the ring
+    // level leaks into the trace by (s_support - s_full) * beta / |h|^2.
+    let d = Dims::new(64, 64).unwrap();
+    let mk_flat = || {
+        let cfg = FlattenConfig {
+            cell_diameter_px: 6.0,
+            ..FlattenConfig::default()
+        };
+        GlowFlattener::new(&FovMask::full(d), &cfg).unwrap()
+    };
+    let fp = ring_probe_footprint();
+    let mut dense_fp = vec![0.0f32; 64 * 64];
+    for y in 0..fp.height {
+        for x in 0..fp.width {
+            dense_fp[(fp.y0 + y) * 64 + fp.x0 + x] = fp.values[y * fp.width + x];
+        }
+    }
+    let mut lib_builder = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    lib_builder.push(fp);
+    let lib = Arc::new(lib_builder.build(&mut mk_flat()).unwrap());
+
+    let beta = 5.0f32;
+    let c = 3.0f32;
+    // `H(a c)` plus a flat offset: the offset is what the ring must carry.
+    let frame = |level: f32| {
+        let mut f: Vec<f32> = dense_fp.iter().map(|&a| a * level).collect();
+        mk_flat().apply(&mut f).unwrap();
+        for v in &mut f {
+            *v += beta;
+        }
+        f
+    };
+    let mut e = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let r = e.process(&frame(c)).unwrap();
+    assert!(
+        (r.traces[0] - c).abs() < 1e-3 * c,
+        "trace {} vs {c}",
+        r.traces[0]
+    );
+    assert!(
+        (r.background[0] - beta).abs() < 1e-3 * beta,
+        "background {} vs {beta}",
+        r.background[0]
+    );
+    // The same offset with no light: the trace stays at zero.
+    let mut e = TraceEngine::new(lib, tight()).unwrap();
+    let r = e.process(&frame(0.0)).unwrap();
+    assert!(r.traces[0].abs() < 1e-3 * c, "trace {}", r.traces[0]);
+    assert!((r.background[0] - beta).abs() < 1e-3 * beta);
+}
+
+#[test]
+fn missing_pixels_get_zero_weight() {
+    // A band of NaN pixels (data moved in from outside the FOV mask) cuts
+    // through cells 0 and 1. Filled with the warm start's prediction, the
+    // solve follows the valid pixels: exact once the traces are steady, and
+    // far closer to the full-frame solve than filling the band with 0.
+    let t = 40;
+    let mut c = traces(6, t, 3);
+    for ci in c.iter_mut() {
+        for v in ci[20..].iter_mut() {
+            *v = 2.0;
+        }
+    }
+    let frames = filtered_frames(&c, 0.0, 4);
+    let lib = Arc::new(library(
+        &[0, 1, 2, 3, 4, 5],
+        BackgroundModel::Basis(vec![global_map()]),
+        1,
+    ));
+    // Three columns on the flank of cell 0 (2-4 px from its centre), as the
+    // edge band cuts a cell near the lens edge.
+    let band = |p: usize| (10..13).contains(&(p % W)) && p / W < 30;
+    let mut full = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let mut nan = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let mut zero = TraceEngine::new(lib, tight()).unwrap();
+    let peak = c.iter().flatten().fold(0.0f32, |m, &v| m.max(v));
+    let (mut err_nan, mut err_zero) = (0.0f32, 0.0f32);
+    for f in &frames {
+        let want = full.process(f).unwrap();
+        let mut f_nan = f.clone();
+        let mut f_zero = f.clone();
+        for p in 0..W * H {
+            if band(p) {
+                f_nan[p] = f32::NAN;
+                f_zero[p] = 0.0;
+            }
+        }
+        let got = nan.process(&f_nan).unwrap();
+        let got0 = zero.process(&f_zero).unwrap();
+        for i in 0..6 {
+            err_nan = err_nan.max((got.traces[i] - want.traces[i]).abs());
+            err_zero = err_zero.max((got0.traces[i] - want.traces[i]).abs());
+        }
+    }
+    // Every frame, bursts included: the support part is exact, only the
+    // small moat block means on the band lag one frame.
+    assert!(err_nan < 0.03 * peak, "worst {err_nan}, peak {peak}");
+    assert!(
+        err_nan < 0.2 * err_zero,
+        "nan fill {err_nan} vs zero fill {err_zero}"
+    );
+}
+
+#[test]
+fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
+    // halo_s5: a large footprint at the FOV edge, its ring clipped to a few
+    // pixels that its own moat fills, had `ã_iᵀã_i − s_i q_ii < 0`. The
+    // curvature was floored at 1e-3 `ã_iᵀã_i`, so each SOR step was ~1000x
+    // too long with the wrong sign: traces ran to 1e37, then inf, which
+    // hung the QC event scan downstream. Reproduce the degenerate terms on
+    // the ring probe by scaling `s_0` until the self term exceeds the Gram.
+    let d = Dims::new(64, 64).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 6.0,
+        ..FlattenConfig::default()
+    };
+    let mut flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    let mut b = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    b.push(ring_probe_footprint());
+    let mut lib = b.build(&mut flat).unwrap();
+    let gd = lib.gram_diag[0];
+    let BgTerms::Ring { s, q, .. } = &mut lib.bg else {
+        panic!("ring model expected");
+    };
+    let (cols, vals) = q.row(0);
+    let qii = vals[cols.binary_search(&0).expect("self term in the ring")];
+    assert!(qii != 0.0);
+    // `ã_0ᵀã_0 − s_0 q_00 = −0.5 ã_0ᵀã_0`.
+    s[0] = 1.5 * gd / qii;
+    let mut mdiag = lib.gram_diag.clone();
+    library::ring_self_curvature(&lib.gram_diag, s, q, &mut mdiag);
+    lib.mdiag = mdiag;
+    let lib = Arc::new(lib);
+
+    let mut fp = vec![0.0f32; 64 * 64];
+    let p = ring_probe_footprint();
+    for y in 0..p.height {
+        for x in 0..p.width {
+            fp[(p.y0 + y) * 64 + p.x0 + x] = 3.0 * p.values[y * p.width + x];
+        }
+    }
+    flat.apply(&mut fp).unwrap();
+    fp.iter_mut().for_each(|v| *v += 5.0);
+    let cfg = SolverConfig::default();
+    let mut e = TraceEngine::new(lib, cfg).unwrap();
+    let first = e.process(&fp).unwrap();
+    assert!(first.traces[0].is_finite(), "{first:?}");
+    assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
+    // The same frame again from the warm start: the same fixed point.
+    for _ in 0..3 {
+        let r = e.process(&fp).unwrap();
+        assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+        let tol = cfg.tol * lib_noise(&e) * 2.0;
+        assert!(
+            (r.traces[0] - first.traces[0]).abs() <= tol,
+            "{r:?} vs {first:?}"
+        );
+    }
+}
+
+fn lib_noise(e: &TraceEngine) -> f32 {
+    e.library().trace_noise()[0]
+}
+
+#[test]
+fn residual_is_zero_when_the_model_is_exact_and_keeps_missing_pixels() {
+    let t = 5;
+    let c = traces(6, t, 3);
+    let mut frames = unfiltered_frames(&c);
+    let mut b = LibraryBuilder::new(dims())
+        .background(BackgroundModel::Basis(vec![global_map()]))
+        .version(4);
+    for (i, &centre) in CENTRES.iter().enumerate() {
+        b.push(footprint(i as u64, centre));
+    }
+    let lib = Arc::new(b.build(&mut IdentityFilter(dims())).unwrap());
+    let mut e = TraceEngine::new(lib.clone(), tight()).unwrap();
+    let last = frames.last_mut().unwrap();
+    last[3] = f32::NAN;
+    let mut r = None;
+    for f in &frames {
+        r = Some(e.process(f).unwrap());
+    }
+    let r = r.unwrap();
+    let mut out = vec![0.0; dims().pixels()];
+    lib.residual(frames.last().unwrap(), &r, &mut out).unwrap();
+    assert!(out[3].is_nan());
+    let worst = out
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(worst < 1e-2, "worst residual {worst}");
+    // A frame with extra light: the residual is that light.
+    let mut bright = frames.last().unwrap().clone();
+    bright[0] += 5.0;
+    lib.residual(&bright, &r, &mut out).unwrap();
+    assert!((out[0] - 5.0).abs() < 1e-2);
+    // Traces from another library version are refused.
+    let mut stale = r.clone();
+    stale.library_version += 1;
+    assert!(lib.residual(&bright, &stale, &mut out).is_err());
 }

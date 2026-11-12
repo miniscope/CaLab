@@ -12,6 +12,9 @@
 
 use wasm_bindgen::prelude::*;
 
+use super::flatfield::{
+    FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome,
+};
 use super::flicker::{FlickerMode, FlickerRecord};
 use super::lines::LineMode;
 use super::warmup::WarmupAccumulator;
@@ -428,6 +431,44 @@ impl JsPreprocessor {
         Ok(rec)
     }
 
+    /// [`Self::back_frames`] for frames motion-corrected by the rigid shifts
+    /// `dy[i]`, `dx[i]` (bicubic): pixels the shift moved in from outside the
+    /// sensor's FOV mask are missing, so they do not enter the noise map or
+    /// the background, and come out at their recent level (NaN before their
+    /// first valid sample; see `Preprocessor::back_masked`).
+    #[wasm_bindgen(js_name = backFramesRegistered)]
+    pub fn back_frames_registered(
+        &mut self,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<Vec<f64>, JsError> {
+        let n = self.inner.dims().pixels();
+        let count = check_batch("backFramesRegistered", frames.len(), count, n)?;
+        if dy.len() < count || dx.len() < count {
+            return Err(JsError::new(&format!(
+                "backFramesRegistered: {count} frames but {} / {} shifts",
+                dy.len(),
+                dx.len()
+            )));
+        }
+        let mut rec = Vec::with_capacity(count * HALF_RECORD_STRIDE);
+        for (i, f) in frames.chunks_exact_mut(n).take(count).enumerate() {
+            let r = self
+                .inner
+                .back_rigid(f, (dy[i], dx[i]))
+                .map_err(|e| js_err("backFramesRegistered", e))?;
+            rec.extend_from_slice(&[
+                r.frame_index as f64,
+                f64::from(r.floor_mean),
+                f64::from(r.floor_lowered_fraction),
+                f64::from(u8::from(r.snapshot)),
+            ]);
+        }
+        Ok(rec)
+    }
+
     /// Serialized config, calibration and running state.
     pub fn state(&self) -> Vec<u8> {
         self.inner.state().to_bytes()
@@ -490,5 +531,251 @@ impl JsPreprocessor {
     #[wasm_bindgen(js_name = noiseSigma)]
     pub fn noise_sigma(&self) -> Vec<f32> {
         self.inner.noise().sigma()
+    }
+}
+
+#[wasm_bindgen(js_class = Preprocessor)]
+impl JsPreprocessor {
+    /// Set the sensor flat field applied to every raw frame from now on:
+    /// `(raw − offset) / gain + level` (`offset` undefined: `raw / gain`;
+    /// `gain` undefined: off). See `FlatFieldEstimator`.
+    #[wasm_bindgen(js_name = setFlatField)]
+    pub fn set_flat_field(
+        &mut self,
+        gain: Option<Vec<f32>>,
+        offset: Option<Vec<f32>>,
+        level: f32,
+    ) -> Result<(), JsError> {
+        let map = gain.as_deref().map(|g| (g, offset.as_deref(), level));
+        self.inner
+            .set_flat_field_map(map)
+            .map_err(|e| js_err("setFlatField", e))
+    }
+
+    /// Whether a flat field is set.
+    #[wasm_bindgen(getter, js_name = hasFlatField)]
+    pub fn has_flat_field(&self) -> bool {
+        self.inner.has_flat_field()
+    }
+}
+
+/// The online sensor flat field ([`super::flatfield::OnlineFlatField`]):
+/// push raw frames with their rigid shifts (cheap), call `refine()` when
+/// `due` (the expensive solve: run it in a worker), read the map.
+#[wasm_bindgen(js_name = FlatFieldEstimator)]
+pub struct JsFlatFieldEstimator {
+    inner: OnlineFlatField,
+    last: Option<FlatFieldUpdate>,
+    message: String,
+}
+
+#[wasm_bindgen(js_class = FlatFieldEstimator)]
+impl JsFlatFieldEstimator {
+    /// `fovMask`: the calibration's (1 inside). `fps` converts the default
+    /// half-lives and schedule (seconds). Optional overrides, seconds
+    /// (negative or NaN: default): gain half-life, offset half-life (0: no
+    /// offset model), first map, refinement period. A seed (`seedGain`,
+    /// optional `seedOffset`, `seedDark`, `seedFrames`) is a stored map of
+    /// the same sensor: in force from the first frame and blended into
+    /// every solve by its weight, which decays with the gain half-life.
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        width: u32,
+        height: u32,
+        fov_mask: &[u8],
+        fps: f32,
+        gain_half_life_s: f32,
+        offset_half_life_s: f32,
+        first_s: f32,
+        refine_s: f32,
+        seed_gain: Option<Vec<f32>>,
+        seed_offset: Option<Vec<f32>>,
+        seed_dark: f32,
+        seed_frames: f64,
+    ) -> Result<JsFlatFieldEstimator, JsError> {
+        console_error_panic_hook::set_once();
+        let dims = Dims::new(width as usize, height as usize)
+            .map_err(|e| js_err("FlatFieldEstimator", e))?;
+        let mut cfg = OnlineFlatFieldConfig::for_fps(fps);
+        let rate = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            20.0
+        };
+        let set = |s: f32| (s.is_finite() && s >= 0.0).then(|| (s * rate).round());
+        if let Some(v) = set(gain_half_life_s) {
+            cfg.estimator.half_life_frames = f64::from(v);
+        }
+        if let Some(v) = set(offset_half_life_s) {
+            cfg.estimator.offset_half_life_frames = f64::from(v);
+        }
+        if let Some(v) = set(first_s) {
+            cfg.first_frames = (v as u64).max(1);
+        }
+        if let Some(v) = set(refine_s) {
+            cfg.refine_every_frames = (v as u64).max(1);
+        }
+        let seed = seed_gain.map(|gain| FlatFieldSeed {
+            gain,
+            offset: seed_offset,
+            dark: seed_dark,
+            frames: seed_frames,
+        });
+        let inner = OnlineFlatField::new(dims, fov_mask, cfg, seed)
+            .map_err(|e| js_err("FlatFieldEstimator", e))?;
+        Ok(JsFlatFieldEstimator {
+            inner,
+            last: None,
+            message: String::new(),
+        })
+    }
+
+    /// Add `count` 8-bit raw frames and their rigid shifts (`dy`, `dx`).
+    #[wasm_bindgen(js_name = pushFrames)]
+    pub fn push_frames(
+        &mut self,
+        frames: &[u8],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<(), JsError> {
+        self.push(frames, count, dy, dx)
+    }
+
+    /// Add `count` 16-bit raw frames and their rigid shifts.
+    #[wasm_bindgen(js_name = pushFrames16)]
+    pub fn push_frames16(
+        &mut self,
+        frames: &[u16],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<(), JsError> {
+        self.push(frames, count, dy, dx)
+    }
+
+    fn push<T: RawPixel>(
+        &mut self,
+        frames: &[T],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<(), JsError> {
+        let n = self.inner.estimator().dims().pixels();
+        let count = check_batch("FlatFieldEstimator.pushFrames", frames.len(), count, n)?;
+        if dy.len() < count || dx.len() < count {
+            return Err(JsError::new(
+                "FlatFieldEstimator.pushFrames: fewer shifts than frames",
+            ));
+        }
+        for (i, f) in frames.chunks_exact(n).enumerate() {
+            self.inner
+                .push(f, (dy[i], dx[i]))
+                .map_err(|e| js_err("FlatFieldEstimator.pushFrames", e))?;
+        }
+        Ok(())
+    }
+
+    /// Whether `refine()` should run now.
+    #[wasm_bindgen(getter)]
+    pub fn due(&self) -> bool {
+        self.inner.due()
+    }
+
+    /// Frames pushed.
+    #[wasm_bindgen(getter)]
+    pub fn frames(&self) -> f64 {
+        self.inner.frames() as f64
+    }
+
+    /// Solve for a new map. Returns true when it produced one (then `gain`,
+    /// `offset` and the stats describe it); false when it was skipped
+    /// (`message` says why; the current map stays).
+    pub fn refine(&mut self) -> bool {
+        match self.inner.refine() {
+            RefineOutcome::Updated(u) => {
+                self.message.clear();
+                self.last = Some(u);
+                true
+            }
+            RefineOutcome::Skipped(m) => {
+                self.message = m;
+                false
+            }
+        }
+    }
+
+    /// Why the last `refine()` was skipped (empty after an update).
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+
+    /// Whether a map is in force (a seed or a solve).
+    #[wasm_bindgen(getter, js_name = hasMap)]
+    pub fn has_map(&self) -> bool {
+        self.inner.current().is_some()
+    }
+
+    /// Solves that produced a map.
+    #[wasm_bindgen(getter)]
+    pub fn updates(&self) -> u32 {
+        self.inner.updates()
+    }
+
+    /// The current gain map (1 = nominal; empty without a map).
+    pub fn gain(&self) -> Vec<f32> {
+        self.inner
+            .current()
+            .map_or_else(Vec::new, |c| c.gain.clone())
+    }
+
+    /// The current per-pixel dark offset (empty without the offset model).
+    pub fn offset(&self) -> Vec<f32> {
+        self.inner
+            .current()
+            .and_then(|c| c.offset.clone())
+            .unwrap_or_default()
+    }
+
+    /// The dark level added back after the correction.
+    #[wasm_bindgen(getter)]
+    pub fn dark(&self) -> f64 {
+        self.inner.current().map_or(0.0, |c| c.dark)
+    }
+
+    /// Shift bins and effective frames behind the current map.
+    #[wasm_bindgen(getter, js_name = binsUsed)]
+    pub fn bins_used(&self) -> u32 {
+        self.inner.current().map_or(0, |c| c.bins_used as u32)
+    }
+
+    #[wasm_bindgen(getter, js_name = framesUsed)]
+    pub fn frames_used(&self) -> f64 {
+        self.inner.current().map_or(0.0, |c| c.frames_used as f64)
+    }
+
+    /// SD of the log gain in the FOV.
+    #[wasm_bindgen(getter, js_name = gainSd)]
+    pub fn gain_sd(&self) -> f64 {
+        self.inner.current().map_or(0.0, |c| c.gain_sd)
+    }
+
+    /// The last update's change of the corrected mean image, in noise
+    /// units: median, 99th percentile, maximum (NaN before any update).
+    #[wasm_bindgen(getter, js_name = changeMedian)]
+    pub fn change_median(&self) -> f64 {
+        self.last.as_ref().map_or(f64::NAN, |u| u.change_median)
+    }
+
+    #[wasm_bindgen(getter, js_name = changeP99)]
+    pub fn change_p99(&self) -> f64 {
+        self.last.as_ref().map_or(f64::NAN, |u| u.change_p99)
+    }
+
+    #[wasm_bindgen(getter, js_name = changeMax)]
+    pub fn change_max(&self) -> f64 {
+        self.last.as_ref().map_or(f64::NAN, |u| u.change_max)
     }
 }

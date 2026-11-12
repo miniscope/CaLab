@@ -10,6 +10,7 @@
  */
 import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
+import type { FlatFieldApplied } from './flat-field.ts';
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
 import {
   isUnbounded,
@@ -20,7 +21,12 @@ import {
   type PipelinePlan,
   type PipelineStep,
 } from './pipeline-plan.ts';
-import { downsampleFrame, previewFactor, type PreviewImage } from './preview.ts';
+import {
+  downsampleFrame,
+  previewFactor,
+  takeResidualPreview,
+  type PreviewImage,
+} from './preview.ts';
 import type { CellsBatch, FastLoop } from './fast-loop.ts';
 import { qcTransferables } from './qc.ts';
 
@@ -103,6 +109,8 @@ export interface BatchPreviews {
   corrected: PreviewImage;
   /** Final output: motion-corrected with the background floor removed. */
   output: PreviewImage;
+  /** What the cell model leaves unexplained in `output` (only while asked for; see `FastLoop.setResidual`). */
+  residual?: PreviewImage;
 }
 
 /**
@@ -146,6 +154,8 @@ export type PipelineStepResult =
       cells?: CellsBatch;
       /** The live source's counters after this batch (live runs only). */
       live?: LiveBatchInfo;
+      /** A flat-field map took effect at this batch (pipelined runs only). */
+      flatField?: FlatFieldApplied;
     }
   | { kind: 'done' };
 
@@ -175,6 +185,16 @@ const now = (): number => performance.now();
 /** Numbers per frame returned by `Preprocessor.frontFrames`; the last two are the flicker offset and gain. */
 const FRONT_RECORD_STRIDE = 6;
 
+/**
+ * The single-worker pipeline: the `?pipeline=0` fallback and the tests (the app
+ * runs the pipelined stages of `pipeline-stages.ts`).
+ *
+ * It has NO sensor flat field (`PipelineOptions.flatField` is ignored here):
+ * the estimator needs each batch's raw frames together with the shifts motion
+ * correction finds for them, and pushing them and running the solve inside
+ * `step()` would put the estimator's cost (about 0.3 s a minute natively, more
+ * in WASM) on the frame path. The pipelined path hands them to a worker.
+ */
 export class PipelineEngine {
   readonly plan: PipelinePlan;
   private readonly cursor: PipelineCursor;
@@ -336,14 +356,19 @@ export class PipelineEngine {
     const t3 = now();
     const last = s.count - 1;
     const before = downsampleFrame(corrected, last, this.width, this.height, this.factor);
-    const t4 = now();
-    pre.backFrames(corrected, s.count);
-    const t5 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre);
-    const t5b = now();
-
     const dy = new Float32Array(s.count);
     const dx = new Float32Array(s.count);
+    for (let i = 0; i < s.count; i++) {
+      dy[i] = records[i * len];
+      dx[i] = records[i * len + 1];
+    }
+    const t4 = now();
+    // Pixels the shift moved in from outside the FOV mask are missing data.
+    pre.backFramesRegistered(corrected, s.count, dy, dx);
+    const t5 = now();
+    const cells = this.fast?.process(corrected, s.start, s.count, pre, { dy, dx });
+    const t5b = now();
+
     const quality = new Float32Array(s.count);
     const flags = new Uint32Array(s.count);
     const flickerOffset = new Float32Array(s.count);
@@ -351,8 +376,6 @@ export class PipelineEngine {
     for (let i = 0; i < s.count; i++) {
       flickerOffset[i] = frontRec[i * FRONT_RECORD_STRIDE + 4];
       flickerGain[i] = frontRec[i * FRONT_RECORD_STRIDE + 5];
-      dy[i] = records[i * len];
-      dx[i] = records[i * len + 1];
       quality[i] = records[i * len + 2];
       flags[i] = records[i * len + 3];
     }
@@ -363,6 +386,8 @@ export class PipelineEngine {
       corrected: before,
       output: downsampleFrame(corrected, last, this.width, this.height, this.factor),
     };
+    const residual = takeResidualPreview(cells, this.width, this.height, this.factor);
+    if (residual) previews.residual = residual;
     const t6 = now();
     timings.preprocessMs = t2 - t1 + (t5 - t4);
     timings.motionMs = t3 - t2;

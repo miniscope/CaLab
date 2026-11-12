@@ -1,0 +1,777 @@
+/* ========================
+   Layout C: the field of view sized by the window height on the left; Run,
+   Cell and the details tabs in one column on the right. One screen, no page
+   scroll; narrow or portrait windows stack and scroll.
+   ======================== */
+.cala-main {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--cala-fov-w, 60%) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--space-sm);
+  height: 100%;
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+  overflow: hidden;
+}
+
+.cala-main .dashboard-panel {
+  padding: var(--space-sm) var(--space-md);
+}
+
+.cala-main__error {
+  position: absolute;
+  z-index: 5;
+  top: var(--space-sm);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.cala-main__fov,
+.cala-main__side {
+  min-width: 0;
+  min-height: 0;
+}
+
+.cala-main__fov {
+  display: flex;
+  flex-direction: column;
+}
+
+.cala-main__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  overflow-y: auto;
+}
+
+.cala-main--narrow {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  overflow-y: auto;
+}
+
+.cala-main--narrow .cala-main__fov,
+.cala-main--narrow .cala-main__side {
+  min-height: auto;
+  overflow: visible;
+}
+
+/* Stacked: the image keeps the window's height in view. */
+.cala-main--narrow .cala-fov__stage {
+  max-width: calc((100vh - 140px) * var(--cala-aspect, 1));
+  margin: 0 auto;
+}
+
+/* ---- Field of view ---- */
+.cala-fov-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cala-fov__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  min-height: 26px;
+}
+
+.cala-fov__area {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.cala-main--narrow .cala-fov__area {
+  flex: none;
+  container-type: normal;
+}
+
+.cala-fov__stage {
+  position: relative;
+  width: min(100cqw, calc(100cqh * var(--cala-aspect, 1)));
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+}
+
+.cala-main--narrow .cala-fov__stage {
+  width: 100%;
+}
+
+.cala-main--narrow {
+  align-content: start;
+}
+
+.cala-fov__stage--zoomed {
+  cursor: grab;
+}
+
+.cala-fov__stage--zoomed:active {
+  cursor: grabbing;
+}
+
+.cala-fov__world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.cala-fov__layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.cala-fov__empty {
+  position: absolute;
+  inset: 40% 10% auto;
+  margin: 0;
+  text-align: center;
+  color: #ddd;
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+/* Overlay card, zoom bar, HUD and minimap float on the image. */
+.cala-fov__card,
+.cala-fov__zoom,
+.cala-fov__hud {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+}
+
+.cala-fov__card {
+  top: var(--space-sm);
+  left: var(--space-sm);
+  max-width: min(330px, calc(100% - 2 * var(--space-sm)));
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  cursor: default;
+}
+
+.cala-fov__card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.cala-fov__card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cala-fov__card-body[hidden] {
+  display: none;
+}
+
+.cala-fov__card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.75rem;
+}
+
+.cala-fov__card-label {
+  color: var(--text-secondary);
+}
+
+.cala-icon-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.cala-icon-btn:hover {
+  color: var(--text-primary);
+}
+
+.cala-fov__zoom {
+  right: var(--space-sm);
+  bottom: var(--space-sm);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  cursor: default;
+}
+
+.cala-fov__zoom button {
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.cala-fov__zoom button:first-child {
+  border-left: none;
+}
+
+.cala-fov__zoom button:hover:not(:disabled) {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.cala-fov__zoom button:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.cala-fov__zoom-level {
+  min-width: 3.4em;
+  padding: 0 4px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.cala-fov__hud {
+  left: var(--space-sm);
+  bottom: var(--space-sm);
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  pointer-events: none;
+}
+
+.cala-fov__minimap {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  width: 120px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: #000;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.cala-fov__minimap-box {
+  position: absolute;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.cala-heat-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.cala-heat-layer[hidden] {
+  display: none;
+}
+
+.cala-cells-overlay {
+  pointer-events: none;
+}
+
+.cala-legend__break {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-basis: 100%;
+}
+
+/* ---- Right-hand column: collapsible panels ---- */
+.cala-side-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cala-side-panel__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  min-height: 26px;
+}
+
+.cala-side-panel__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.cala-side-panel__toggle:hover .panel-label {
+  color: var(--accent);
+}
+
+/* The chevron sits in a small bordered button so the panels read as
+   collapsible: it points down when open and right when collapsed. */
+.cala-side-panel__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.cala-side-panel__chev-icon {
+  transition: transform var(--transition-fast);
+}
+
+.cala-side-panel--closed .cala-side-panel__chev-icon {
+  transform: rotate(-90deg);
+}
+
+.cala-side-panel__toggle:hover .cala-side-panel__chev,
+.cala-side-panel__toggle:focus-visible .cala-side-panel__chev {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* A collapsed panel says so, and its whole header is the target. */
+.cala-side-panel--closed .cala-side-panel__title::after {
+  content: ' · collapsed';
+  font-weight: var(--font-weight-normal, 400);
+  color: var(--text-tertiary);
+}
+
+.cala-side-panel__title {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.cala-side-panel__extra {
+  min-width: 0;
+  flex: 1 1 10rem;
+}
+
+.cala-side-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+.cala-side-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-height: 0;
+  margin-top: var(--space-xs);
+}
+
+.cala-side-panel__body[hidden] {
+  display: none;
+}
+
+/* The cell viewer takes what Run and the details leave; the details get a share. */
+.cala-cell-panel:not(.cala-side-panel--closed) {
+  flex: 1 1 0;
+  min-height: 200px;
+}
+
+.cala-cell-panel > .cala-side-panel__body {
+  overflow-y: auto;
+}
+
+.cala-details:not(.cala-side-panel--closed) {
+  flex: 0 1 240px;
+  min-height: 130px;
+}
+
+.cala-details > .cala-side-panel__body {
+  flex: 1;
+  margin-top: 0;
+}
+
+.cala-details__panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: var(--space-sm);
+}
+
+.cala-details__panel .panel-label,
+.cala-selected .panel-label {
+  margin: 0;
+}
+
+.cala-main--narrow .cala-details:not(.cala-side-panel--closed) {
+  flex-basis: auto;
+}
+
+.cala-main--narrow .cala-details__panel {
+  max-height: 360px;
+}
+
+.cala-tab-note {
+  margin: var(--space-xs) 0 0;
+}
+
+.cala-timing p {
+  margin: 0 0 var(--space-sm);
+}
+
+.cala-block {
+  display: block;
+}
+
+.cala-wrap {
+  white-space: normal;
+}
+
+.cala-status {
+  font-size: 0.85rem;
+  font-weight: var(--font-weight-medium, 500);
+}
+
+/* ---- Run panel ---- */
+.cala-run__conv {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.cala-run__reason {
+  font-size: 0.72rem;
+  line-height: 1.2;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.cala-run .cala-conv-chip {
+  flex: none;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.cala-run__status,
+.cala-run__footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px var(--space-sm);
+}
+
+.cala-run__status .cala-readout,
+.cala-run__footer .cala-readout,
+.cala-run__line {
+  font-size: 0.78rem;
+}
+
+.cala-run__line {
+  margin: 0;
+}
+
+.cala-run__pass2 {
+  font-weight: var(--font-weight-normal);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.cala-run__timeline {
+  position: relative;
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr) 4.6rem;
+  column-gap: var(--space-sm);
+  row-gap: 2px;
+  margin: var(--space-xs) 0;
+}
+
+.cala-run__row {
+  display: contents;
+}
+
+.cala-run__label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: center;
+}
+
+.cala-run__row--pass .cala-run__label {
+  color: var(--text-primary);
+}
+
+.cala-run__row--pass .progress-bar {
+  margin: 0;
+  align-self: center;
+}
+
+/* The bar ends exactly at the now line. */
+.cala-run__timeline .progress-bar__fill {
+  transition: none;
+}
+
+.cala-run__track-empty {
+  align-self: center;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border-subtle);
+}
+
+.cala-run__live {
+  align-self: center;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
+.cala-run__plot {
+  display: block;
+  width: 100%;
+  height: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-inset);
+}
+
+.cala-run__value {
+  justify-self: end;
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.cala-run__value--muted {
+  color: var(--text-tertiary);
+}
+
+.cala-run__axis {
+  position: relative;
+  height: 14px;
+}
+
+.cala-run__tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+}
+
+.cala-run__tick:first-child {
+  transform: none;
+}
+
+.cala-run__tick:last-child {
+  transform: translateX(-100%);
+}
+
+/* The "now" line runs down the plot column through every row. */
+/* Out of flow, so it never takes a grid cell: its box is column 2, full height. */
+.cala-run__now {
+  position: absolute;
+  grid-column: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.cala-run__now::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: 0;
+  left: var(--cala-now, 0%);
+  border-left: 1.5px dashed var(--warning);
+}
+
+.cala-run__tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin: var(--space-xs) 0;
+}
+
+.cala-stepper {
+  display: flex;
+  gap: var(--space-xs);
+  margin: var(--space-xs) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cala-stepper__step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+.cala-stepper__step--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.cala-stepper__dot {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  background: var(--border-default);
+  color: var(--text-primary);
+}
+
+.cala-stepper__step--active .cala-stepper__dot {
+  background: var(--accent);
+  color: #fff;
+}
+
+.cala-stepper__step--done .cala-stepper__dot {
+  background: var(--success);
+  color: #fff;
+}
+
+.cala-stepper__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cala-stepper__label {
+  font-size: 0.8rem;
+  font-weight: var(--font-weight-medium);
+}
+
+.cala-stepper__sub {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Export menu */
+.cala-menu {
+  position: relative;
+}
+
+.cala-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.cala-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cala-menu > summary[aria-disabled='true'] {
+  color: var(--text-tertiary);
+}
+
+.cala-menu__body {
+  position: absolute;
+  z-index: 10;
+  bottom: calc(100% + 4px);
+  left: 0;
+  width: 18rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+}
+
+/* ---- Selected cell ---- */
+.cala-selected__body {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-start;
+}
+
+.cala-selected__side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cala-selected__facts {
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.cala-footprint-zoom {
+  width: 150px;
+  height: 150px;
+  flex: none;
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--radius-sm);
+  image-rendering: pixelated;
+}
+
+.cala-footprint {
+  width: 150px;
+}
+
+/* Stacked: every panel takes its natural height; the page scrolls. */
+.cala-main--narrow .cala-side-panel:not(.cala-side-panel--closed) {
+  flex: none;
+}

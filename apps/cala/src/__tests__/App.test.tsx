@@ -194,7 +194,7 @@ describe('App', () => {
     );
     expect(root.querySelector('[data-testid="motion-trace"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="flicker-trace"]')).not.toBeNull();
-    expect(root.querySelectorAll('.cala-preview')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-testid="cells-view"]')).toHaveLength(1);
 
     // Opening another folder stops the worker-side pipeline.
     root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();

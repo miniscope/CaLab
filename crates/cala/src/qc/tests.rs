@@ -44,6 +44,39 @@ fn calcium(n: usize, every: usize, amp: f32, tau: f32, phase: usize) -> Vec<f32>
 }
 
 #[test]
+fn non_finite_trace_samples_do_not_stall_the_event_scan() {
+    // A diverged trace (halo_s5: the fast loop returned 1e37, then inf):
+    // the running mean turns NaN once `inf - inf` enters its sum, and the
+    // event scan used to spin on the first NaN sample forever. Run it on a
+    // thread so a regression fails here instead of hanging the suite.
+    let mut rng = Lcg(3);
+    let mut x: Vec<f32> = calcium(600, 97, 10.0, 12.0, 20)
+        .iter()
+        .map(|&c| c + rng.normal())
+        .collect();
+    x[300..310].iter_mut().for_each(|v| *v = f32::INFINITY);
+    x[400] = f32::NAN;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut sc = Vec::new();
+        let _ = tx.send(trace_stats(
+            &x,
+            4.0,
+            100,
+            5,
+            f32::NEG_INFINITY,
+            1.0,
+            &mut sc,
+        ));
+    });
+    let st = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("trace_stats did not return on a trace with inf / NaN samples");
+    // The finite transients before the bad stretch still count.
+    assert!(st.events >= 2, "{st:?}");
+}
+
+#[test]
 fn calcium_transients_read_as_calcium() {
     let mut rng = Lcg(7);
     let n = 1200;
@@ -400,4 +433,28 @@ fn stability_compares_old_cells_with_their_earlier_state() {
     );
     assert_eq!(seen[3].stable_frac, 1.0);
     assert!(seen[2].trace_sigma_change.is_finite());
+}
+
+#[test]
+fn motion_r2_is_reported_with_shifts_and_does_not_change_pass() {
+    let (fps, cs) = scene();
+    let lib = Arc::new(library(&fps, 1));
+    let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut with = monitor();
+    let mut without = monitor();
+    let mut rng = Lcg(3);
+    for t in 0..1500 {
+        let y = frame(&fps, &cs, t, &mut rng);
+        let tr = eng.process(&y).unwrap();
+        let s = (rng.normal() * 0.5, rng.normal() * 0.5);
+        with.observe_shifted(&y, &lib, &tr, Some(s)).unwrap();
+        without.observe(&y, &lib, &tr).unwrap();
+    }
+    for (a, b) in with.cells().zip(without.cells()) {
+        assert!(b.motion_r2.is_nan());
+        // Traces unrelated to the shifts: no motion flag, same verdict.
+        assert!(a.motion_r2.is_finite() && a.motion_r2 < 0.2, "{a:?}");
+        assert_eq!(a.flags & FLAG_FOLLOWS_MOTION, 0);
+        assert_eq!(a.pass, b.pass);
+    }
 }

@@ -18,10 +18,14 @@
 //!   ([`LinearFilter`]). It has negative lobes and is never clipped: fitting
 //!   `max(H a, 0)` or a footprint estimated non-negative in filtered space
 //!   leaks 3-11 % of each neighbour into a trace (experiments for milestone 3).
-//! * Each footprint lives on a tight disk-shaped support, about 2.5 core
-//!   half-widths (~15 px for a 12 px soma, [`LibraryConfig`]). A wider support
-//!   lets the scatter halo and background pull on the trace; truncating at a
-//!   percentage of the peak instead adds crosstalk.
+//! * Each footprint keeps its full extent: its support is the disk that holds
+//!   all of its values (no size cap; the slow loop grows it to wherever the
+//!   cell's light is significant). Off the support the filtered column is the
+//!   high-pass moat `−L a_i` (the negative ring the flattener leaves around
+//!   every cell, out to 2σ of the low-pass), modelled as block means on a
+//!   coarse grid ([`moat_geometry`]): a footprint truncated in filtered space
+//!   leaves that ring in the residual, where the slow loop turned it into
+//!   false cells (`tools/cala-diagnostics/FULL_EXTENT.md`).
 //! * The background `Σ_k g_k β_k` is either nothing, a global mode (one fixed
 //!   spatial map, one scalar per frame: the common-mode flicker and gain of
 //!   1-photon data), the global mode plus a few smooth low-rank components
@@ -64,9 +68,9 @@ use std::fmt;
 
 pub use background::{BackgroundFit, BackgroundLearner, BackgroundModel};
 pub use extract::{extract_preprocessed, extract_span, ReplayRegistrar};
-pub(crate) use library::{support_disk, BgTerms};
+pub(crate) use library::{moat_blocks, support_disk, BgTerms, Support};
 pub use library::{
-    Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
+    moat_geometry, Footprint, IdentityFilter, Library, LibraryBuilder, LibraryConfig, LinearFilter,
 };
 pub use solver::{FrameTraces, SolverConfig, TraceEngine, TraceState};
 
