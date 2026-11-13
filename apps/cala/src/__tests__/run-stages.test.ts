@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   createStageLog,
+  EXTRACT_AFTER_DISCOVER_DEFAULT,
   footprintChange,
   LIVE_NOTE,
+  NEXT_STEP_HINT,
   perMinute,
   refineComparison,
+  showNextStepHint,
   stageAvailability,
   type StageInput,
   type StageRun,
@@ -201,5 +204,33 @@ describe('Refine readout', () => {
     ])!;
     expect(mixed.previous?.stage).toBe('discover');
     expect(mixed.ratio).toBeCloseTo(0.4);
+  });
+});
+
+describe('Extract after Discover default and the next-step hint', () => {
+  const HINT_IN = {
+    live: false,
+    discover: 'done',
+    refine: 'idle',
+    extract: 'idle',
+    refineRuns: 0,
+  } as const;
+
+  it('is off by default for recordings', () => {
+    expect(EXTRACT_AFTER_DISCOVER_DEFAULT).toBe(false);
+  });
+
+  it('shows the hint after Discover, before any Refine or Extract', () => {
+    expect(NEXT_STEP_HINT).toBe('Refine to let footprints settle, then Extract final traces.');
+    expect(showNextStepHint(HINT_IN)).toBe(true);
+  });
+
+  it('hides the hint for live streams, during Discover, and once Refine or Extract has run', () => {
+    expect(showNextStepHint({ ...HINT_IN, live: true })).toBe(false);
+    expect(showNextStepHint({ ...HINT_IN, discover: 'running' })).toBe(false);
+    expect(showNextStepHint({ ...HINT_IN, refine: 'running' })).toBe(false);
+    expect(showNextStepHint({ ...HINT_IN, refineRuns: 1 })).toBe(false);
+    expect(showNextStepHint({ ...HINT_IN, extract: 'running' })).toBe(false);
+    expect(showNextStepHint({ ...HINT_IN, extract: 'done' })).toBe(false);
   });
 });

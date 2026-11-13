@@ -21,9 +21,13 @@ run's event log and these docs.
 - A Refine run after an Extract discards the Extract result, because its
   traces no longer match the footprints. The panel says so and asks for
   Extract again.
-- **Extract after Discover** (on by default) starts Extract when Discover
-  finishes, but not after a Refine run: run Extract once the footprints are
-  settled.
+- **Extract after Discover** (off by default for recordings) starts Extract
+  when Discover finishes, but never after a Refine run. It is off so that a
+  Discover, Refine, Extract flow does not waste an Extract run that Refine
+  would discard. After Discover the panel shows the Refine and Extract buttons
+  with the hint "Refine to let footprints settle, then Extract final traces."
+  Turn the option on to extract straight away. The option is not saved
+  between sessions.
 - A new Discover run (Restart) starts the stage log over.
 - **Streaming runs Discover only.** A live source has no file to replay, and
   cala does no live re-processing. Save the stream and load it later as a
