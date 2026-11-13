@@ -229,19 +229,20 @@ start, so the solve can be replayed offline.
 under `/private/tmp`; they are not in the repo and macOS may delete them. The
 sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 
-| note                               | what it settles                                                                           |
-| ---------------------------------- | ----------------------------------------------------------------------------------------- |
-| `2026-11-baseline.md`              | E6 reference numbers at 81f041c (sims and real, seed Jaccard)                             |
-| `2026-11-11-e1-null.md`            | E1 null: same binary, slow seed 1 vs 2; primary CIs cover 0                               |
-| `2026-11-11-e1-core-test-trim.md`  | E1 demo: `--core-test trim` vs off                                                        |
-| `2026-11-11-e2-heldout-score.md`   | E2: ground-truth-free held-out score                                                      |
-| `2026-11-11-e7-convergence.md`     | E7: footprint convergence metric                                                          |
-| `2026-11-11-s12-crossfit.md`       | S1.2: cross-fitted statistics give no gain; the texture is in the data                    |
-| `2026-11-11-d4-flat-field.md`      | D4: textured footprints are sensor-gain shimmer; a flat field removes them                |
-| `2026-11-12-support-rule.md`       | S2.1: measured basin support rule (rings / basin / basin-skirt)                           |
-| `2026-11-12-skirt-stability.md`    | S2.1b: stable skirt, PI's gate redefinitions; `basin-skirt` becomes the default           |
-| `2026-11-11-flat-field-default.md` | online flat field as the default (#330)                                                   |
-| `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
-| `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
-| `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |
-| `2026-11-12-refine-gate.md`        | S2.1c minimal option: split-half refine gate cuts late real refines 37 %; the default     |
+| note                                  | what it settles                                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `2026-11-baseline.md`                 | E6 reference numbers at 81f041c (sims and real, seed Jaccard)                                            |
+| `2026-11-11-e1-null.md`               | E1 null: same binary, slow seed 1 vs 2; primary CIs cover 0                                              |
+| `2026-11-11-e1-core-test-trim.md`     | E1 demo: `--core-test trim` vs off                                                                       |
+| `2026-11-11-e2-heldout-score.md`      | E2: ground-truth-free held-out score                                                                     |
+| `2026-11-11-e7-convergence.md`        | E7: footprint convergence metric                                                                         |
+| `2026-11-11-s12-crossfit.md`          | S1.2: cross-fitted statistics give no gain; the texture is in the data                                   |
+| `2026-11-11-d4-flat-field.md`         | D4: textured footprints are sensor-gain shimmer; a flat field removes them                               |
+| `2026-11-12-support-rule.md`          | S2.1: measured basin support rule (rings / basin / basin-skirt)                                          |
+| `2026-11-12-skirt-stability.md`       | S2.1b: stable skirt, PI's gate redefinitions; `basin-skirt` becomes the default                          |
+| `2026-11-11-flat-field-default.md`    | online flat field as the default (#330)                                                                  |
+| `2026-11-12-churn-attribution.md`     | late footprint changes are the cells' own refines, merges and absorbs                                    |
+| `2026-11-12-repeated-pass.md`         | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget                      |
+| `2026-11-12-refine-only-passes.md`    | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all`                |
+| `2026-11-12-refine-gate.md`           | S2.1c minimal option: split-half refine gate cuts late real refines 37 %; the default                    |
+| `2026-11-13-app-background-levels.md` | the app's slow loop without the ring-background levels: within noise; fixed so the app matches `qc_eval` |
