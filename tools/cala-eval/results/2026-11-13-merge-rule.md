@@ -5,7 +5,7 @@
 
 ## Verdict
 
-The split-half rule passes every pre-declared gate on static 1× sims and on real data.
+The split-half rule passes every pre-declared gate on static 1× sims and on real data. The same gates also hold on static 4× (3 seeds, reported only).
 
 - Distinct-unit merges fall 64 %.
 - 90 % of true-duplicate merges are kept.
@@ -85,7 +85,7 @@ Settings and controls:
 - Controls are the Phase 1 logged runs.
 - d = paired arm − control, mean ± 95 % t-CI over seeds.
 
-**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main 1d1629a (#370): see the end of this note.
+**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main 1d1629a (#370) and #371, and still holds: see after the 4× table.
 
 ### Static 1× (5 seeds)
 
@@ -126,7 +126,25 @@ Two pairs are merged under both rules and are worth showing the PI:
 
 ### Static 4× (seeds 5–7)
 
-X4_TABLE
+Reported only; the gates are declared on 1×. Same flags with `--budget 120000000`, same paired statistics, n = 3, so the CIs are wide.
+
+| metric | control | split-half | d ± CI | signs +/− |
+|---|---|---|---|---|
+| merges / run | 96.0 | 61.3 | −34.7 ± 41.9 | 0/3 |
+| distinct-unit merges / run | 56.7 | 27.3 | −29.3 ± 31.6 | 0/3 |
+| same-unit merges / run | 16.7 | 20.7 | +4.0 ± 5.0 | 3/0 |
+| P8 | .904 | .911 | +.007 ± .018 | 3/0 |
+| R8 | .822 | .838 | +.017 ± .021 | 3/0 |
+| R2 | .680 | .686 | +.006 ± .028 | 2/1 |
+| r_fp | .973 | .971 | −.002 ± .005 | 0/3 |
+| fp_dup | 5.3 | 6.7 | +1.3 ± 2.9 | 2/0 |
+| fp_adjacent / fp_partial | 7.7 / 16.0 | 11.0 / 12.0 | +3.3 ± 5.2 / −4.0 ± 8.6 | 3/0, 0/2 |
+| fp_noise | 24.7 | 20.7 | −4.0 ± 9.9 | 0/2 |
+| cells | 560 | 567 | +7.0 ± 7.5 | 3/0 |
+| conv_big4 | .146 | .131 | −.015 ± .015 | 0/3 |
+| late merges / min (last 4 min) | 12.4 | 6.4 | −6.0 ± 4.9 | 0/3 |
+
+Summed over seeds: distinct-unit merges 170 → 82 (−52 %). Same-unit merges went 50 → 62, more than the control had: duplicates the vetoes keep apart early merge later, once their footprints coincide. The 1× gates also hold at 4× (P8 and R8 rise in all three seeds). fp_dup again rises slightly (+1.3, CI covers 0), and fp_adjacent rises +3.3 in 3 of 3 seeds (CI covers 0).
 
 ## Gates (pre-declared in the run log before Phase 2)
 
@@ -139,6 +157,8 @@ X4_TABLE
 | r_fp ≥ −.010 | −.002 | pass |
 | real texture ≤ control + 2 | 1 → 1, 1 → 2 | pass |
 | real Jaccard ≥ control − .01 | .711 → .757 | pass |
+
+**Identity after merging main.** After merging origin/main 1d1629a (#370) and d475447 (#371, TypeScript only), the identity was repeated with the plain PR binary (default Legacy) against main 1d1629a on static_s5. All seven outputs are again byte-identical.
 
 ## Not done / caveats
 
