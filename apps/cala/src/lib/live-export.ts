@@ -43,5 +43,15 @@ export async function liveTraceResult(
     file.append(f, block);
   }
   await file.finish();
-  return { ids, traces: file, frames, cells: n, version: library.version, library, seconds };
+  // The live history keeps the non-negative traces only (no signed ones).
+  return {
+    ids,
+    traces: file,
+    signed: null,
+    frames,
+    cells: n,
+    version: library.version,
+    library,
+    seconds,
+  };
 }

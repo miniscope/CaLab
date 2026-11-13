@@ -75,6 +75,12 @@ next batch only once the slow loop has taken all but one of the batches sent.
 A file can wait; Discover on a live stream cannot, so Discover drops frames
 when the slow loop is busy.
 
+With visit workers, a Refine visit that would not refine (a tile refines on
+every other visit, and Refine has no adds, merges or keep tests) is made by
+the slow worker when it is due, not shipped to a visit worker with the tile's
+whole reservoir. That is about half a Refine run's visits. The footprints are
+the same with and without this (a Rust test checks it, bit for bit).
+
 ## Per-stage readout
 
 The stage log (`createStageLog`) records each run: stage, index, start and end

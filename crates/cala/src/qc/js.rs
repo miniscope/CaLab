@@ -104,6 +104,7 @@ impl JsQcMonitor {
         }
         let mut out = Vec::with_capacity(count as usize * engine.inner.library().len());
         engine.batch_background.clear();
+        engine.batch_signed.clear();
         for (k, f) in frames.chunks_exact(n).enumerate() {
             engine
                 .inner
@@ -117,6 +118,7 @@ impl JsQcMonitor {
             engine
                 .batch_background
                 .extend_from_slice(&engine.out.background);
+            engine.batch_signed.extend_from_slice(&engine.out.signed);
         }
         Ok(out)
     }
