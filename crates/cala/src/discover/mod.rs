@@ -323,12 +323,12 @@ pub enum RefineGate {
 /// Which merge tests may merge (S2.1c merge redesign).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
-    /// The default. The held-out test alone: a single column (merged
-    /// footprint, or either cell dropped) explains the tile's held-out
-    /// frames within `merge_z` of the pair, or the `one` shortcut.
-    #[default]
+    /// The held-out test alone: a single column (merged footprint, or
+    /// either cell dropped) explains the tile's held-out frames within
+    /// `merge_z` of the pair, or the `one` shortcut (the rule before
+    /// S2.1c).
     Legacy,
-    /// The held-out test, and a pair whose footprints do not largely
+    /// The default. The held-out test, and a pair whose footprints do not largely
     /// coincide (overlap below ½, the bound of the `one` shortcut) must
     /// also have the same measured shape: on the union of their supports
     /// the cells' running-statistics estimates, best scaled onto each
@@ -337,6 +337,7 @@ pub enum MergeRule {
     /// both ways (whitened; the refine gate's statistic for a pair). A
     /// pair either cell of which has no split halves yet (a young cell)
     /// falls back to [`MergeRule::Legacy`].
+    #[default]
     SplitHalf,
 }
 
@@ -658,7 +659,7 @@ impl Default for SlowLoopConfig {
             absorb_share: 0.8,
             refine_min_change: 0.03,
             refine_gate: RefineGate::SplitHalf,
-            merge_rule: MergeRule::Legacy,
+            merge_rule: MergeRule::SplitHalf,
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_refit_pair: true,

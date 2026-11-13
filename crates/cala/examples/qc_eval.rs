@@ -80,9 +80,11 @@
 //!                      estimate's split-half noise, Î > 0) | legacy (χ²
 //!                      disagreement and refine_min_change, the rule
 //!                      before S2.1c)
-//!   --merge-rule M     which merge tests may merge: legacy (default; the
-//!                      held-out test alone) | split-half (also one soma by
-//!                      the cells' split-half measured light)
+//!   --merge-rule M     which merge tests may merge: split-half (default;
+//!                      a pair overlapping less than ½ must also be one
+//!                      soma by the cells' split-half measured light) |
+//!                      legacy (the held-out test alone, the rule before
+//!                      S2.1c)
 //!   --merge-log        DIAG (`--features diagnostics`): one JSON line per
 //!                      merge test (`merges.jsonl` in the output directory;
 //!                      `CALA_MERGE_LOG=<file>` does the same): the current
@@ -2795,7 +2797,7 @@ fn main() {
             other => panic!("--merge-rule: legacy|split-half, not {other}"),
         };
     }
-    if scfg.merge_rule != MergeRule::Legacy {
+    if scfg.merge_rule != MergeRule::SplitHalf {
         println!("merge rule: {:?}", scfg.merge_rule);
     }
     if scfg.refine_gate != RefineGate::SplitHalf {

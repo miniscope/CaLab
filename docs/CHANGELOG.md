@@ -7,8 +7,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
-- Cala: a split-half merge rule, opt-in (`MergeRule::SplitHalf`,
-  `qc_eval --merge-rule split-half`; the default stays `Legacy`). A pair of
+- Cala: a split-half merge rule (`MergeRule::SplitHalf`,
+  `qc_eval --merge-rule legacy|split-half`). A pair of
   cells whose footprints overlap less than half merges only when the
   held-out test accepts it _and_ the two cells' running footprint estimates
   have the same shape within their own split-half noise (the refine gate's
@@ -16,8 +16,9 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   distinct-cell merges fall 64 % while 90 % of true-duplicate merges are
   kept, with P8, R8 and r_fp flat. On real data merges fall about 70 %,
   late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
-  (`tools/cala-eval/results/2026-11-13-merge-rule.md`). Diagnostics:
-  `qc_eval --merge-log` writes one JSON line per merge test.
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`); it is now the
+  default (see Changed). Diagnostics: `qc_eval --merge-log` writes one JSON
+  line per merge test.
 - Cala: multi-session runs. Pick a parent folder and every recording folder in
   it (any depth; Miniscope V4 `date/time/My_V4_Miniscope/` and `msCam` layouts)
   becomes a session; **Multi-session run** and **Add session** build the list by
@@ -57,6 +58,16 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: the split-half merge rule is the default (`MergeRule::SplitHalf`).
+  Two cells whose footprints overlap less than half now merge only when the
+  held-out test accepts the merge and their measured shapes agree within
+  their own split-half noise; a pair with a young cell (no split halves yet)
+  is decided by the held-out test alone, as before. Distinct-cell merges fall
+  64 % (static sims), 52 % (4× budget) and 67 % (motion), true duplicates are
+  kept, and real seed-to-seed footprint agreement rises (Jaccard .711 →
+  .757); false duplicate cells rise slightly (+1.3 to +2.4 per sim run, within
+  noise). `qc_eval --merge-rule legacy` keeps the old rule
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`).
 - Cala: for recordings, "Extract after Discover" is now off by default, so a Discover, Refine, Extract flow no longer wastes an Extract run that Refine discards. After Discover the panel shows the Refine and Extract buttons with the hint "Refine to let footprints settle, then Extract final traces." Turning the option on keeps the old behaviour. Live streams are unchanged.
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
 
