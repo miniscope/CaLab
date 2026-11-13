@@ -1,6 +1,7 @@
 /**
- * Pass 2, on the main thread: with the final cell library, re-extract the
- * traces of every frame from the recording on disk.
+ * The Extract stage (docs/stages.md; "pass 2" in the code's older names), on
+ * the main thread: with the final cell library, extract the traces of every
+ * frame from the recording on disk, footprints frozen.
  *
  * The recording is walked again through the same three workers as pass 1, but
  * nothing is estimated: the frame worker replays the flicker pass 1 recorded
@@ -33,6 +34,20 @@ import type { LibraryView } from '../workers/slow-types.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
+/**
+ * Why Discover's record cannot be replayed by Refine or Extract (null: it can):
+ * no frames, a gap in the motion record, or too short for the calibration.
+ */
+export function replayBlocked(pipeline: Pick<PipelineStore, 'record' | 'plan'>): string | null {
+  const rec = pipeline.record();
+  const plan = pipeline.plan();
+  if (!plan || rec.frames < 1) return 'Discover recorded no frames.';
+  if (!rec.complete) return 'Discover has a gap in its motion record.';
+  if (rec.frames < Math.max(plan.calibrationFrames, plan.motionWarmupFrames))
+    return 'Discover stopped before the calibration frames; let it run longer.';
+  return null;
+}
+
 /** What pass 2 produced. */
 export interface Pass2Result {
   /** Cell ids in column order of `traces`. */
@@ -53,6 +68,8 @@ export function createPass2Store(
   pipeline: PipelineStore,
   cells: CellStore,
   clock: () => number = () => performance.now(),
+  /** Another stage's reason to wait (a Refine run going on), checked after Discover's. */
+  blocked?: () => string | null,
 ) {
   const [status, setStatus] = createSignal<Pass2Status>('idle');
   const [processed, setProcessed] = createSignal(0);
@@ -78,18 +95,17 @@ export function createPass2Store(
   let inFlight = 0;
   let exhausted = false;
 
-  /** Why pass 2 cannot run now (null: it can). */
+  /** Why Extract cannot run now (null: it can). */
   function blockedReason(): string | null {
-    if (status() === 'running') return 'Pass 2 is running.';
+    if (status() === 'running') return 'Extract is running.';
     const st = pipeline.status();
-    if (st === 'running' || st === 'paused' || st === 'starting') return 'Pass 1 is still running.';
-    if (st !== 'done') return 'Run pass 1 first.';
-    const rec = pipeline.record();
-    const plan = pipeline.plan();
-    if (!plan || rec.frames < 1) return 'Pass 1 recorded no frames.';
-    if (!rec.complete) return 'Pass 1 has a gap in its motion record.';
-    if (rec.frames < Math.max(plan.calibrationFrames, plan.motionWarmupFrames))
-      return 'Pass 1 stopped before the calibration frames; let it run longer.';
+    if (st === 'running' || st === 'paused' || st === 'starting')
+      return 'Extract runs after Discover finishes.';
+    if (st !== 'done') return 'Extract runs after Discover finishes.';
+    const other = blocked?.();
+    if (other) return other;
+    const replay = replayBlocked(pipeline);
+    if (replay) return replay;
     if (!cells.library() || !cells.libraryBytes()) return 'No cells were found.';
     if ((cells.library()?.ids.length ?? 0) === 0) return 'No cells were found.';
     if (!cells.status()?.final) return 'Waiting for the final library.';
@@ -107,7 +123,7 @@ export function createPass2Store(
       case 'batch': {
         const c = step.cells;
         if (!c || c.ids.length !== ctx.cellCount || c.ids.some((id, i) => id !== ctx.ids[i]))
-          throw new Error('Pass 2 got no traces for the final library.');
+          throw new Error('Extract got no traces for the final library.');
         ctx.traces.append(step.start, c.traces);
         ctx.done = step.start + step.count;
         setProcessed(ctx.done);
@@ -125,7 +141,7 @@ export function createPass2Store(
         if (exhausted) return;
         exhausted = true;
         if (ctx.done !== ctx.frames)
-          throw new Error(`Pass 2 ended after ${ctx.done} of ${ctx.frames} frames.`);
+          throw new Error(`Extract ended after ${ctx.done} of ${ctx.frames} frames.`);
         await ctx.traces.finish();
         if (gen !== generation) return;
         setResult({
@@ -276,7 +292,7 @@ export function createPass2Store(
     inFlight = 0;
     setStatus('cancelled');
     void discard();
-    void client.stopPipeline().catch(() => {});
+    void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
   /** Forget the result (pass 1 restarted, or another recording opened). */

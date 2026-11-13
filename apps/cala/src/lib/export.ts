@@ -1,5 +1,5 @@
 /**
- * Export of a finished cala run (pass 2): the footprints, the full-length
+ * Export of a finished cala run (after Extract): the footprints, the full-length
  * traces and the per-frame motion and flicker, as one self-describing `.npz`
  * (`writeCalaExport`), and the traces alone in the layout CaDecon already
  * imports (`writeCaDeconExport`).
@@ -13,8 +13,8 @@
  *
  * Streaming. The archive is written incrementally (`ZipStreamWriter` in
  * `@calab/io`, ZIP64-capable) to a `ByteSink`, so nothing the size of the
- * trace matrix is ever in memory: the matrix is read from the pass-2
- * `TraceFile` in blocks of about 16 MB and written as it goes. The pass-2 file
+ * trace matrix is ever in memory: the matrix is read from Extract's
+ * `TraceFile` in blocks of about 16 MB and written as it goes. That file
  * is frame-major, which is byte for byte the layout of a Fortran-order `.npy`
  * of shape (N, T), so `traces.npy` is written with `fortran_order: True` and
  * needs no transpose. `np.load` returns the same (N, T) array a C-order file
@@ -29,7 +29,7 @@
  * dtypes and shapes are unchanged from format version 1; only the memory order
  * of `traces` differs (Fortran, see above):
  *
- *   traces              float32 [N, T]   pass-2 traces, one row per cell (preprocessed grey levels);
+ *   traces              float32 [N, T]   Extract's traces, one row per cell (preprocessed grey levels);
  *                                        stored Fortran-order (column per frame)
  *   cell_ids            uint32  [N]      library ids, row order of `traces`
  *   centroids_yx        float32 [N, 2]   footprint centre, (row, column) in pixels
@@ -62,7 +62,16 @@
  * and each series' key, label, unit, kind, group, initial and final display
  * range (see `StreamHistory.toExport`).
  *
- * QC comes from the last online snapshot of pass 1 (cells added after it are
+ * Run stages (format version 3): `meta_json.stages` lists the runs of the
+ * stages (docs/stages.md) since Discover started, in order: `stage`
+ * (discover, refine, extract), `index` (1-based per stage), `started_at`,
+ * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and the
+ * stage's counts (Discover: refines, adds, merges, deletes, splits; Refine:
+ * refines, refines_per_min, footprints_refined, median_footprint_change).
+ * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
+ * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
+ *
+ * QC comes from the last online snapshot of Discover (cells added after it are
  * "not measured"); first-seen is the frame count when the library that first
  * held the cell arrived.
  *
@@ -91,9 +100,10 @@ import type { TraceFile } from './trace-file.ts';
 import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
 import type { RunSpan } from './run-record.ts';
+import type { StageRun } from './run-stages.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 2;
+export const EXPORT_FORMAT_VERSION = 3;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -109,14 +119,16 @@ export interface ExportInput {
   /** Frame rate, Hz (0 or undefined: unknown). */
   fps: number;
   result: Pass2Result;
-  /** Pass 1's per-frame motion and flicker (at least `result.frames` long). */
+  /** Discover's per-frame motion and flicker (at least `result.frames` long). */
   run: RunSpan;
   /**
-   * The sensor flat field of pass 1 (omit: none): the maps that took effect and
-   * the frame each did. Pass 2 (the traces here) corrected every frame with the
-   * last map, from frame 0.
+   * The sensor flat field of Discover (omit: none): the maps that took effect
+   * and the frame each did. Extract (the traces here) corrected every frame
+   * with the last map, from frame 0.
    */
   flatField?: readonly FlatFieldApplied[];
+  /** The runs of the stages since Discover started (omit: none recorded). */
+  stages?: readonly StageRun[];
   /** The last QC snapshot, if any. */
   qc: QcSnapshot | null;
   /** Frame at which a cell was first seen. */
@@ -137,6 +149,32 @@ export interface ExportWriteOptions {
   cadeconMemoryBytes?: number;
   /** Called as trace bytes are written. */
   onProgress?: (doneBytes: number, totalBytes: number) => void;
+}
+
+/** One stage run in `meta_json.stages` (snake_case; absent counts omitted). */
+export function stageMeta(r: StageRun): Record<string, string | number | null> {
+  const out: Record<string, string | number | null> = {
+    stage: r.stage,
+    index: r.index,
+    started_at: r.startedAt,
+    ended_at: r.endedAt,
+    outcome: r.outcome,
+    frames: r.frames,
+    cells: r.cells,
+    library_version: r.libraryVersion,
+  };
+  const counts: [string, number | null | undefined][] = [
+    ['refines', r.refines],
+    ['refines_per_min', r.refinesPerMin],
+    ['adds', r.adds],
+    ['merges', r.merges],
+    ['deletes', r.deletes],
+    ['splits', r.splits],
+    ['footprints_refined', r.footprintsRefined],
+    ['median_footprint_change', r.medianFootprintChange],
+  ];
+  for (const [k, v] of counts) if (v !== undefined) out[k] = v;
+  return out;
 }
 
 /** One cell's row in `meta_json`. */
@@ -312,12 +350,13 @@ export async function writeCalaExport(
       'preprocessed grey levels (flicker removed, flattened, background floor subtracted)',
     traces_layout: 'cells x frames, float32 (stored in Fortran order)',
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
-    pass2_seconds: result.seconds,
+    extract_seconds: result.seconds,
+    stages: (input.stages ?? []).map(stageMeta),
     ...(input.flatField && input.flatField.length > 0
       ? {
           flat_field: {
-            pass2: 'every frame divided by the last map of pass 1, from frame 0',
-            pass1_maps: input.flatField.map((a) => ({
+            extract: 'every frame divided by the last map of Discover, from frame 0',
+            discover_maps: input.flatField.map((a) => ({
               frame: a.frame,
               source: a.source,
               first: a.first,

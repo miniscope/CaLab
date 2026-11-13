@@ -252,7 +252,7 @@ describe('pass 2', () => {
           undefined,
           replayOf(rec, FRAMES + 1),
         ),
-    ).toThrow(/Pass 2 replays/);
+    ).toThrow(/The replay \(Refine, Extract\) covers/);
     expect(
       () =>
         new FrontStage(
