@@ -306,3 +306,37 @@ describe('top-level coarsening', () => {
     expect(h.view('b', 0, h.end(), 16)!.lo).toBeDefined();
   });
 });
+
+describe('fromExport', () => {
+  it('reads back what toExport wrote, across levels, bands and range steps', () => {
+    const h = new StreamHistory({ binsPerLevel: 16, factor: 4, chunk: 4 });
+    h.define(spec('a', 'value', [0, 1]));
+    h.define(spec('b', 'band', [-10, 10]));
+    for (let t = 0; t < 100; t++) {
+      h.push('a', t + 0.5, t === 50 ? 7 : Math.sin(t) * 0.5 + 0.5);
+      h.push('b', t + 0.5, t % 5, [(t % 5) - 1, (t % 5) + 1]);
+    }
+    h.advance(100);
+    const ex = h.toExport();
+    const back = StreamHistory.fromExport(ex, [spec('a', 'value', [0, 1]), spec('c')], 100);
+    expect(back.levels()).toEqual(h.levels());
+    expect(back.displayRange('a')).toMatchObject({ lo: h.displayRange('a').lo, hi: 10 });
+    expect(back.displayRange('a').expansions).toHaveLength(1);
+    expect(back.end()).toBe(100);
+    const v0 = h.view('a', 0, 100, 50)!;
+    const v1 = back.view('a', 0, 100, 50)!;
+    expect(Array.from(v1.max)).toEqual(Array.from(v0.max));
+    expect(Array.from(back.view('b', 0, 100, 200)!.hi!)).toEqual(
+      Array.from(h.view('b', 0, 100, 200)!.hi!),
+    );
+    // A spec the export lacks is defined, empty; a saved series keeps its key.
+    expect(back.has('c')).toBe(true);
+    expect(back.specs().map((s) => s.key)).toEqual(['a', 'b', 'c']);
+    // Round trip again: the same bins for the saved series (c, empty, follows them).
+    const ex2 = back.toExport();
+    const saved = ex.levels[1].data.length;
+    expect(Array.from(ex2.levels[1].data.subarray(0, saved))).toEqual(
+      Array.from(ex.levels[1].data),
+    );
+  });
+});
