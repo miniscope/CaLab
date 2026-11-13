@@ -3,11 +3,19 @@
 //! The worker keeps a window of frames as `Int16Array` (`quantizeFrames`),
 //! cuts it into tiles and hands each tile to `TileCompressor.compress`, so
 //! only one tile at a time is copied into the WASM heap.
+//!
+//! `HistoryReview` (see `review.rs`) keeps the factors of every window and
+//! scans them a few grid rows per call, so its worker can read messages
+//! between calls.
 
 use wasm_bindgen::prelude::*;
 
+use super::review::{
+    candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
+};
 use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
+use crate::trace::Library;
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -233,5 +241,157 @@ impl JsFactorWindow {
         }
         self.inner.reconstruct_range(t0, count, out);
         Ok(())
+    }
+}
+
+/// A review in progress: the library's cells, the grid rows and the spots
+/// scanned so far.
+struct ReviewRun {
+    cells: Vec<(Vec<u32>, Vec<f32>)>,
+    rows: Vec<usize>,
+    next: usize,
+    stats: Vec<SpotStats>,
+}
+
+fn known(cells: &[(Vec<u32>, Vec<f32>)]) -> Vec<KnownCell<'_>> {
+    cells
+        .iter()
+        .map(|(pix, val)| KnownCell { pix, val })
+        .collect()
+}
+
+/// The history review (`compress::review`) for a Web Worker: holds the
+/// factors of every compressed window of the session and looks for cells the
+/// library lacks. One review is `begin`, `scan` until it returns 0, `finish`.
+#[wasm_bindgen(js_name = HistoryReview)]
+pub struct JsHistoryReview {
+    dims: Dims,
+    cfg: ReviewConfig,
+    windows: Vec<WindowFactors>,
+    run: Option<ReviewRun>,
+}
+
+#[wasm_bindgen(js_class = HistoryReview)]
+impl JsHistoryReview {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> Result<JsHistoryReview, JsError> {
+        console_error_panic_hook::set_once();
+        let dims =
+            Dims::new(width as usize, height as usize).map_err(|e| js_err("HistoryReview", e))?;
+        Ok(JsHistoryReview {
+            dims,
+            cfg: ReviewConfig::default(),
+            windows: Vec::new(),
+            run: None,
+        })
+    }
+
+    /// Add the next window, in stream order: a whole factor file
+    /// (`CALAFAC1`). Not while a review runs. Returns the windows held.
+    #[wasm_bindgen(js_name = addWindow)]
+    pub fn add_window(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
+        if self.run.is_some() {
+            return Err(js_err("addWindow", "a review is running"));
+        }
+        let w = WindowFactors::from_bytes(bytes)
+            .ok_or_else(|| js_err("addWindow", "truncated or corrupt factor file"))?;
+        if w.dims != self.dims {
+            return Err(js_err("addWindow", "window of another frame size"));
+        }
+        self.windows.push(w);
+        Ok(self.windows.len() as u32)
+    }
+
+    /// Forget the oldest window (to bound the memory of a long session).
+    /// Not while a review runs.
+    #[wasm_bindgen(js_name = dropOldest)]
+    pub fn drop_oldest(&mut self) -> Result<(), JsError> {
+        if self.run.is_some() {
+            return Err(js_err("dropOldest", "a review is running"));
+        }
+        if !self.windows.is_empty() {
+            self.windows.remove(0);
+        }
+        Ok(())
+    }
+
+    /// Windows held.
+    #[wasm_bindgen(getter)]
+    pub fn windows(&self) -> u32 {
+        self.windows.len() as u32
+    }
+
+    /// Bytes of the factors held.
+    #[wasm_bindgen(getter, js_name = factorBytes)]
+    pub fn factor_bytes(&self) -> f64 {
+        let values: usize = self
+            .windows
+            .iter()
+            .flat_map(|w| &w.tiles)
+            .map(|t| t.spatial.len() + t.temporal.len() + t.mean.len())
+            .sum();
+        (4 * values) as f64
+    }
+
+    /// Start a review against `library` (`TraceLibrary.toBytes()`; empty: no
+    /// cells yet), whose cells are regressed out. Returns the grid rows to
+    /// scan: 0 when the history is too short to review, and no review is
+    /// then started.
+    pub fn begin(&mut self, library: &[u8]) -> Result<u32, JsError> {
+        let mut cells = Vec::new();
+        if !library.is_empty() {
+            let lib = Library::from_bytes(library).map_err(|e| js_err("begin", e))?;
+            if lib.dims() != self.dims {
+                return Err(js_err("begin", "library of another frame size"));
+            }
+            for slot in 0..lib.len() {
+                let (pix, val) = lib.unfiltered(slot);
+                cells.push((pix.to_vec(), val.to_vec()));
+            }
+        }
+        let rows = scan_rows(&self.windows, self.dims, &self.cfg);
+        let n = rows.len() as u32;
+        self.run = (n > 0).then_some(ReviewRun {
+            cells,
+            rows,
+            next: 0,
+            stats: Vec::new(),
+        });
+        Ok(n)
+    }
+
+    /// Scan the next `rows` grid rows of the review; returns the rows left.
+    pub fn scan(&mut self, rows: u32) -> Result<u32, JsError> {
+        let Some(run) = self.run.as_mut() else {
+            return Err(js_err("scan", "no review is running"));
+        };
+        let end = run.rows.len().min(run.next + rows.max(1) as usize);
+        let band = scan_band(
+            &self.windows,
+            &known(&run.cells),
+            self.dims,
+            &self.cfg,
+            &run.rows[run.next..end],
+        );
+        run.stats.extend(band);
+        run.next = end;
+        Ok((run.rows.len() - end) as u32)
+    }
+
+    /// End the review: the candidates of the spots scanned, per candidate
+    /// `[y0, x0, height, width, gain_z, events_z]` then its footprint's
+    /// `height * width` values (peak 1). `SlowLoop.addReviewed` takes this
+    /// array.
+    pub fn finish(&mut self) -> Result<Vec<f32>, JsError> {
+        let Some(run) = self.run.take() else {
+            return Err(js_err("finish", "no review is running"));
+        };
+        let found = candidates(&run.stats, &known(&run.cells), self.dims, &self.cfg);
+        Ok(candidates_to_wire(&found))
+    }
+
+    /// Drop a review in progress.
+    pub fn cancel(&mut self) {
+        self.run = None;
     }
 }

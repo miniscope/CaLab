@@ -85,8 +85,11 @@ export type CompressToMain =
 
 /** Main thread -> compress worker. */
 export type MainToCompress =
-  /** The port to the fast worker. */
-  | { type: 'connect'; port: MessagePort }
+  /**
+   * The port to the fast worker and, with the history review on, the port to
+   * the review worker and the closed windows between two reviews.
+   */
+  | { type: 'connect'; port: MessagePort; review?: { port: MessagePort; every: number } }
   /**
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.

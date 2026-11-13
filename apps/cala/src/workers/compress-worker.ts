@@ -3,7 +3,8 @@
  * (`CompressRunner`), in its own thread. Batches of frames arrive from the
  * fast worker over the port the main thread connects; windows and factors
  * are files in the origin private file system; status goes to the main
- * thread.
+ * thread. With the history review on, each window's factors also go to the
+ * review worker over a second port.
  */
 import {
   FactorWindow,
@@ -16,6 +17,7 @@ import {
 import { CompressRunner } from '../lib/compress-runner.ts';
 import { opfsStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress, MainToCompress } from './compress-types.ts';
+import type { CompressToReview } from './review-types.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: CompressToMain, transfer?: Transferable[]): void;
@@ -23,6 +25,7 @@ const workerScope = globalThis as unknown as {
 };
 
 let port: MessagePort | null = null;
+let reviewPort: MessagePort | null = null;
 let runner: CompressRunner | null = null;
 // Messages are handled one at a time, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
@@ -45,7 +48,10 @@ workerScope.onmessage = (e) => {
     return;
   }
   port?.close();
+  reviewPort?.close();
   port = data.port;
+  reviewPort = data.review?.port ?? null;
+  const toReview = reviewPort;
   const r = new CompressRunner({
     store,
     quantize: quantizeTiles,
@@ -68,6 +74,14 @@ workerScope.onmessage = (e) => {
     },
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
+    ...(toReview && data.review
+      ? {
+          review: {
+            port: { postMessage: (m: CompressToReview, t) => toReview.postMessage(m, t ?? []) },
+            every: data.review.every,
+          },
+        }
+      : {}),
   });
   runner = r;
   port.onmessage = (ev: MessageEvent<FastToCompress>) => {

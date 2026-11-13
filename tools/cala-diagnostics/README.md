@@ -246,3 +246,11 @@ units or a cala library), the same way on both: spatial band powers in noise
 units, autocorrelation, and coupling to the population drive. It needs NumPy,
 SciPy, OpenCV and (for Minian) Zarr. `LEFTOVER_LIGHT.md` has the results and the
 joint neighbour-trace check they led to.
+
+## Whole-history scan on the compressed factors
+
+`history_wholetest.py` tests, on the factors written by `discover_eval --factors-out`
+(or `qc_eval --factors-out`), whether a cell-shaped pattern repeats over the whole
+session at spots the library does not explain; `history_review_score.py` turns the
+scan into candidates and scores them against ground truth or other pipelines' units.
+Both need NumPy. `HISTORY_SCAN.md` has the method and the results.
