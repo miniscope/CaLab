@@ -567,7 +567,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </span>
         <Show when={props.compress}>
           {(compress) => (
-            <span class="cala-readout" data-testid="compress-readout">
+            <span class="cala-readout cala-wrap" data-testid="compress-readout">
               {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
             </span>
           )}
