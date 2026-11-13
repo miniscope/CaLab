@@ -165,7 +165,8 @@
 //! record plus the sim's true rigid shift (`<sim>/shifts.npy`, written by
 //! `make_trace_sim.py` or `tools/cala-eval/export_gt_motion.py`; a motion
 //! run stops if it is missing, unless `--gt-offset none`). Every GT
-//! footprint and centre is moved by it (bicubic, sub-pixel) before anything
+//! footprint is moved by it (bicubic, sub-pixel; its centre is the moved
+//! core's peak inside the frame, as in `make_trace_sim.py`) before anything
 //! is scored, so matching, P/R, `fp_r`, the FP classes, crosstalk, the
 //! oracle library and `traces_gt.tsv` all use the moved GT.
 //! `motion_offset.tsv` holds the applied estimate, the same estimate over
@@ -1023,7 +1024,10 @@ fn translate_footprint(fp: &Footprint, dy: f64, dx: f64, dims: Dims) -> Footprin
 
 impl Oracle {
     /// The GT moved into a frame offset by `off` (footprints and centres;
-    /// traces unchanged).
+    /// traces unchanged). A centre is the peak of the moved core footprint
+    /// clipped to the frame, `make_trace_sim.py`'s definition, so a cell
+    /// cut by the frame edge keeps its centre on the edge as in a static
+    /// sim (moving the old centre would push such cells out of the GT).
     fn translate(&mut self, off: &FrameOffset) {
         if off.is_zero() {
             return;
@@ -1032,7 +1036,17 @@ impl Oracle {
         for u in &mut self.units {
             u.full = translate_footprint(&u.full, off.dy, off.dx, dims);
             u.core = translate_footprint(&u.core, off.dy, off.dx, dims);
-            u.center = (u.center.0 + off.dy as f32, u.center.1 + off.dx as f32);
+            let c = &u.core;
+            u.center = match c
+                .values
+                .iter()
+                .enumerate()
+                .filter(|e| *e.1 > 0.0)
+                .max_by(|a, b| a.1.total_cmp(b.1))
+            {
+                Some((k, _)) => ((c.y0 + k / c.width) as f32, (c.x0 + k % c.width) as f32),
+                None => (-1.0, -1.0),
+            };
         }
     }
 }
@@ -3961,7 +3975,8 @@ mod tests {
             .collect();
         let est = FrameOffset::estimate(&records(c, &truth, &mut rng), &truth);
         o.translate(&est);
-        assert!((f64::from(o.units[0].center.0) - (30.0 + c.0)).abs() < 0.05);
+        // Centres: the moved core's peak pixel.
+        assert_eq!(o.units[0].center, (27.0, 29.0));
         assert_eq!(score(&o), 1.0);
         let gt: Vec<_> = o.units.iter().map(|u| col(&u.full, dims)).collect();
         let (m, _) = match_cells(&det, &gt, dims, 0.8);
