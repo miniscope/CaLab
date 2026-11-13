@@ -214,11 +214,11 @@ export class FrontStage {
     const frameCount = replay ? replay.frameCount : recorded;
     if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
       throw new RangeError(
-        `Pass 2 replays ${replay.frameCount} frames of a recording of ${recorded}.`,
+        `The replay (Refine, Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
       );
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
-        throw new RangeError(`Pass 2: the recorded ${k} has fewer values than frames.`);
+        throw new RangeError(`Replay: the recorded ${k} has fewer values than frames.`);
     this.flatOn = options.flatField !== false;
     this.flatSink = this.flatOn && !replay ? flat?.sink : undefined;
     this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
@@ -577,7 +577,7 @@ export class MotionStage {
     const n = s.count * this.px;
     const len = motion.recordLen;
     if (len !== 4 || !job.dy || !job.dx || !job.flags)
-      throw new Error('Pass 2 replays rigid shifts only.');
+      throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
     const records = new Float32Array(s.count * len);
     for (let i = 0; i < s.count; i++) {
       records[i * len] = job.dy[i];
@@ -847,8 +847,9 @@ export class BackStage {
     this.fast?.end();
   }
 
-  dispose(): void {
-    this.fast?.dispose();
+  /** `keepSlow`: see `FastLoop.dispose`. */
+  dispose(keepSlow = false): void {
+    this.fast?.dispose(keepSlow);
     this.pre?.free();
     this.pre = null;
   }

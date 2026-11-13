@@ -2,6 +2,7 @@ import { createSignal, Show, type JSX } from 'solid-js';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
+import { pickDirectory, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 
 interface OpenFolderProps {
   loading: boolean;
@@ -46,8 +47,28 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
 
+  const [pickError, setPickError] = createSignal<string | null>(null);
+
   const submit = (entries: FolderEntry[]) => {
     if (entries.length > 0) props.onOpen(entries, labelFor(entries));
+  };
+
+  // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
+  // the hidden webkitdirectory input, whose prompt says "upload".
+  const openFolder = () => {
+    setPickError(null);
+    if (!supportsDirectoryPicker()) {
+      folderInput.click();
+      return;
+    }
+    pickDirectory().then(
+      (entries) => {
+        if (entries) submit(entries);
+      },
+      (err: unknown) => {
+        setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
+      },
+    );
   };
 
   return (
@@ -66,11 +87,11 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           role="button"
           tabindex="0"
           aria-label="Open a Miniscope folder"
-          onClick={() => folderInput.click()}
+          onClick={openFolder}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              folderInput.click();
+              openFolder();
             }
           }}
           onDragOver={(e) => {
@@ -124,6 +145,9 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           Choose individual files
         </button>
       </p>
+      <p class="file-info" data-testid="local-note">
+        Files are read locally and never leave your computer.
+      </p>
 
       <Show when={props.onOpenLive}>
         <form
@@ -160,7 +184,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           Opening...
         </p>
       </Show>
-      <Show when={props.error}>
+      <Show when={pickError() ?? props.error}>
         {(message) => (
           <div class="error-card" role="alert">
             <span>{message()}</span>

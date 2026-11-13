@@ -8,6 +8,14 @@
  * of the old session are dropped.
  */
 
+/**
+ * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
+ * engine's `EditScope` names). Discover runs with `all`, Refine with `refine`;
+ * the others exist in the engine (qc_eval's `--later-passes`) but no stage
+ * uses them yet (docs/stages.md).
+ */
+export type EditScopeName = 'all' | 'refine' | 'refine-prune' | 'refine-merge';
+
 /** Settings and calibration the slow loop starts from. */
 export interface SlowInit {
   width: number;
@@ -48,6 +56,13 @@ export type FastToSlow =
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
+  /**
+   * Another run over the recording from frame 0 into the same slow loop (all
+   * its state kept), with `scope` from now on: the Refine stage (`refine`).
+   * The slow loop must have published its final library. A "Discover again"
+   * stage would send `all` (not offered: it counts the same frames twice).
+   */
+  | { type: 'replay'; session: number; scope: EditScopeName }
   /** Pipeline stopped or restarted: drop the slow loop. */
   | { type: 'reset'; session: number };
 
@@ -103,6 +118,8 @@ export interface CellStatusView {
 export interface SlowStatus {
   /** Stream index after the last observed frame. */
   frame: number;
+  /** Stream index after the last batch received, observed or not (a Refine run's backpressure). */
+  consumed?: number;
   /** Frames observed so far, and frames received but not observed. */
   observed: number;
   skipped: number;
@@ -137,6 +154,10 @@ export interface SlowStatus {
   work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
+  /** Runs over the recording into this slow loop: 1 = Discover, 2 = the first Refine, ... */
+  run: number;
+  /** The current run's edit scope. */
+  editScope: EditScopeName;
   /** Probation/established per cell, about once a second. */
   cellStatus?: CellStatusView;
 }

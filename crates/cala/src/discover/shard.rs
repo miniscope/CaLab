@@ -47,7 +47,7 @@ use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
 use super::reservoir::{SharedFrames, Tile};
 use super::wire::{Reader, Writer, MAGIC};
-use super::{SlowLoop, SlowStats};
+use super::{EditScope, SlowLoop, SlowStats};
 use crate::trace::{Library, TraceError};
 
 /// One edit a visit made, replayed by the owner in order.
@@ -100,6 +100,8 @@ pub struct VisitJob {
     visits: u32,
     id_base: u64,
     noise_gen: u64,
+    /// The owner's edit scope when the job was made.
+    scope: EditScope,
     tile: Tile,
     /// Rejected spots and tombstones of the other tiles the zone reaches.
     others: Vec<(usize, Vec<(f32, f32, u64, u32)>, Vec<(f32, f32, u64, u32)>)>,
@@ -157,6 +159,7 @@ impl VisitJob {
         w.u32(self.visits);
         w.u64(self.id_base);
         w.u64(self.noise_gen);
+        w.u8(self.scope.code());
         w.tile(&self.tile, slots, shared);
         w.usize(self.others.len());
         for (ti, rej, tombs) in &self.others {
@@ -209,6 +212,7 @@ impl VisitJob {
         let visits = r.u32()?;
         let id_base = r.u64()?;
         let noise_gen = r.u64()?;
+        let scope = EditScope::from_code(r.u8()?)?;
         let tile = r.tile()?;
         let n = r.count(24)?;
         let others = (0..n)
@@ -241,6 +245,7 @@ impl VisitJob {
             visits,
             id_base,
             noise_gen,
+            scope,
             tile,
             others,
             cells,
@@ -594,6 +599,7 @@ impl SlowLoop {
             visits: self.tile_visits[ti],
             id_base: self.next_id,
             noise_gen: self.noise_gen,
+            scope: self.scope,
             tile,
             others,
             cells,
@@ -877,6 +883,7 @@ impl VisitRunner {
         self.dirty.push(ti);
         s.tile_visits[ti] = job.visits;
         s.frames = job.frames;
+        s.scope = job.scope;
         s.rho = job.rho;
         s.next_id = job.id_base;
         s.cells = job.cells;
