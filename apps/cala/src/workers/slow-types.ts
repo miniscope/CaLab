@@ -89,6 +89,8 @@ export interface SlowCounters {
   reAdds: number;
   churned: number;
   establishedRemovals: number;
+  /** Of the adds, cells that came from the history review. */
+  reviewAdds: number;
 }
 
 /** Evidence status of the working-set cells (`SlowLoop.cellStatus()`). */
@@ -177,6 +179,18 @@ export interface SlowConnect {
   port: MessagePort;
   visits?: MessagePort[];
 }
+
+/**
+ * Main thread -> slow worker: what a history review found
+ * (`HistoryReview.finish`), to add as new cells on probation. Transferred.
+ */
+export interface SlowReviewed {
+  type: 'reviewed';
+  session: number;
+  candidates: Float32Array;
+}
+
+export type MainToSlow = SlowConnect | SlowReviewed;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

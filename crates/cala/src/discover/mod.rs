@@ -712,6 +712,8 @@ pub struct SlowStats {
     pub pretest_rejects: u64,
     /// Merge tests that kept the two cells apart.
     pub merge_rejects: u64,
+    /// Of `adds`, cells added by the history review (`add_reviewed`).
+    pub review_adds: u64,
     /// Work spent loading frames, refining, merging and adding.
     pub work_load: u64,
     pub work_refine: u64,
@@ -1539,6 +1541,76 @@ impl SlowLoop {
         }
         self.pending = true;
         Ok(kept)
+    }
+
+    /// Add cells found by the history review
+    /// ([`crate::compress::review`]): the session's compressed history shows
+    /// them, the add test on a tile's reservoir did not. Each gets a new id
+    /// and starts on probation like any add, so the keep tests still apply.
+    /// A candidate on an existing cell, or on a spot where a cell was
+    /// deleted and the cooldown has not run out, is skipped. Returns how
+    /// many were added; published with the next commit.
+    pub fn add_reviewed(&mut self, footprints: &[Footprint]) -> Result<usize, TraceError> {
+        let d = self.cfg.cell_diameter_px;
+        let quiet = self.cfg.reject_cooldown_frames;
+        let now = self.frames;
+        let mut added = 0;
+        for fp in footprints {
+            crate::trace::check_len("footprint values", fp.height * fp.width, fp.values.len())?;
+            if fp.y0 + fp.height > self.dims.height || fp.x0 + fp.width > self.dims.width {
+                return Err(TraceError::InvalidFootprint(
+                    "reviewed candidate outside the frame".into(),
+                ));
+            }
+            let rect = Rect {
+                y0: fp.y0,
+                x0: fp.x0,
+                h: fp.height,
+                w: fp.width,
+            };
+            let Some(mut cell) = Cell::from_canvas(
+                self.next_id,
+                rect,
+                &fp.values,
+                self.dims,
+                &self.fov,
+                &self.cfg.library,
+                Extent::Given,
+                &mut self.filter,
+                &[],
+            ) else {
+                continue;
+            };
+            let (cy, cx) = cell.center;
+            let close = |y: f32, x: f32| (y - cy).powi(2) + (x - cx).powi(2) <= (0.5 * d).powi(2);
+            let taken = self.cells.iter().any(|c| close(c.center.0, c.center.1));
+            let entombed = self.tile_of(cy, cx).is_some_and(|ti| {
+                self.tiles[ti]
+                    .tombs
+                    .iter()
+                    .any(|r| r.2 + quiet * (1u64 << (2 * r.3.min(6))) > now && close(r.0, r.1))
+            });
+            if taken || entombed {
+                continue;
+            }
+            cell.born = now;
+            self.edits.adds += 1;
+            self.stats.adds += 1;
+            self.stats.review_adds += 1;
+            let nb = self.nearest(cy, cx, cell.id);
+            self.log(EditKind::Add, cell.id, nb, cell.center, 0.0);
+            self.churn
+                .on_add(now, cell.id, cell.center, &cell.pix, &cell.filt);
+            self.next_id += 1;
+            let bbox = cell.bbox;
+            self.cells.push(cell);
+            self.touch(bbox);
+            added += 1;
+        }
+        if added > 0 {
+            self.pending = true;
+        }
+        Ok(added)
     }
 
     /// Feed one preprocessed frame and the fast loop's result for it.

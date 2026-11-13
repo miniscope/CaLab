@@ -22,14 +22,20 @@ export function createCompressClient(
   onMessage: (msg: CompressToMain) => void,
   makeWorker: () => CompressWorkerLike = () =>
     new Worker(new URL('../workers/compress-worker.ts', import.meta.url), { type: 'module' }),
+  /** History review: the port to the review worker and the windows between two reviews. */
+  review?: { port: MessagePort; every: number },
 ): CompressClient {
   const worker = makeWorker();
   const channel = new MessageChannel();
   const fail = (message: string): void => onMessage({ type: 'error', session: -1, message });
   worker.onmessage = (e: MessageEvent<CompressToMain>) => onMessage(e.data);
   worker.onerror = (e) => fail(e.message || 'The compress worker crashed.');
-  const connect: MainToCompress = { type: 'connect', port: channel.port2 };
-  worker.postMessage(connect, [channel.port2]);
+  const connect: MainToCompress = {
+    type: 'connect',
+    port: channel.port2,
+    ...(review ? { review } : {}),
+  };
+  worker.postMessage(connect, [channel.port2, ...(review ? [review.port] : [])]);
   void frames
     .connectCompress?.(channel.port1)
     .catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)));

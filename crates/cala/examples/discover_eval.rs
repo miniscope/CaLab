@@ -11,6 +11,14 @@
 //!   --checkpoints K   full library snapshots matched against GT (default 10)
 //!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
+//!   --factors-out DIR compress pass 1's preprocessed frames in 600-frame
+//!                     windows and write every window's factors to
+//!                     `DIR/w<start>.fac` (`CALAFAC1`), the input of
+//!                     tools/cala-diagnostics/history_wholetest.py
+//!   --history-review N  every N compressed windows (600 frames each), review
+//!                     the history so far ([`calab_cala::compress::review`])
+//!                     and add the cells it shows to the slow loop
+//!                     (`history_review.tsv`: one row per review)
 //!   --compress-window N[,M...]   after pass 2, compress the frames in
 //!                     windows of N (crate::compress) at three points of the
 //!                     chain (raw, after the front half, the fast loop's
@@ -84,6 +92,7 @@ use std::time::Instant;
 mod prefilter;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::review::{review, KnownCell, ReviewConfig};
 use calab_cala::compress::{quantize, CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig, SupportRule};
 use calab_cala::motion::{
@@ -1250,6 +1259,66 @@ fn compress_report(
     std::fs::write(out_dir.join("compress.tsv"), report).unwrap();
 }
 
+/// The compressed history of pass 1 (`--factors-out`, `--history-review`):
+/// the preprocessed frames compressed window by window. With `dir` every
+/// window's factors (`CALAFAC1`) are written to `dir/w<start frame>.fac`;
+/// with `keep` they stay in memory for the review.
+struct History {
+    dir: Option<PathBuf>,
+    keep: bool,
+    tile: usize,
+    wc: WindowCompressor,
+    windows: Vec<WindowFactors>,
+}
+
+impl History {
+    fn new(dir: Option<&Path>, keep: bool, dims: Dims, threads: usize) -> History {
+        if let Some(d) = dir {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let cfg = CompressConfig {
+            window: 600,
+            threads,
+            ..CompressConfig::default()
+        };
+        History {
+            dir: dir.map(Path::to_path_buf),
+            keep,
+            tile: cfg.tile,
+            wc: WindowCompressor::new(dims, cfg),
+            windows: Vec::new(),
+        }
+    }
+
+    fn take(&mut self, wf: WindowFactors) {
+        if let Some(d) = &self.dir {
+            let name = format!("w{:07}.fac", wf.start);
+            std::fs::write(d.join(name), wf.to_bytes(self.tile)).unwrap();
+        }
+        if self.keep {
+            self.windows.push(wf);
+        }
+    }
+
+    /// Add a frame; whether it closed a window.
+    fn push(&mut self, frame: &[f32]) -> bool {
+        match self.wc.push(frame) {
+            Some(wf) => {
+                self.take(wf);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Write the last, shorter window.
+    fn finish(&mut self) {
+        if let Some(wf) = self.wc.flush() {
+            self.take(wf);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | real").clone();
@@ -1485,6 +1554,25 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
     let mut flog = std::io::BufWriter::new(File::create(out_dir.join("frames1.tsv")).unwrap());
     writeln!(flog, "frame\tdy\tdx\tnr_rms\tdvar\trho_x\trho_y\trho_xy").unwrap();
     let mut yprev = vec![0.0f32; n_px];
+    // `--factors-out`: the compressed history of pass 1.
+    let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
+    // `--history-review N`: every N windows, review the history so far and
+    // add the cells it shows to the slow loop.
+    let review_every: usize =
+        arg_value(&args, "--history-review").map_or(0, |s| s.parse().unwrap());
+    let review_cfg = ReviewConfig {
+        threads: compress_threads,
+        ..ReviewConfig::default()
+    };
+    let mut review_log = String::from("frame\twindows\tcells\tcandidates\tadded\tseconds\n");
+    let mut factors = (factors_out.is_some() || review_every > 0).then(|| {
+        History::new(
+            factors_out.as_deref(),
+            review_every > 0,
+            dims,
+            compress_threads,
+        )
+    });
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -1539,6 +1627,7 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
             // Spatial diagnostics are recorded separately from fast-loop time.
             let t1b = Instant::now();
+            let window_closed = factors.as_mut().is_some_and(|h| h.push(&y));
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
             t_pre += (t1 - t0).as_secs_f64();
@@ -1561,6 +1650,35 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             let mut profile = [0.0f64; 5];
             let mut work_delta = [0u64; 7];
             if let Some(sl) = slow.as_mut() {
+                if let Some(h) = factors.as_ref().filter(|h| {
+                    window_closed && review_every > 0 && h.windows.len() % review_every == 0
+                }) {
+                    let lib = engine.library().clone();
+                    let cells: Vec<KnownCell> = (0..lib.len())
+                        .map(|slot| {
+                            let (pix, val) = lib.unfiltered(slot);
+                            KnownCell { pix, val }
+                        })
+                        .collect();
+                    let t_review = Instant::now();
+                    let found = review(&h.windows, &cells, dims, &review_cfg);
+                    let fps: Vec<Footprint> = found.iter().map(|c| c.footprint.clone()).collect();
+                    let added = sl.add_reviewed(&fps).unwrap();
+                    let secs = t_review.elapsed().as_secs_f64();
+                    println!(
+                        "frame {}: history review of {} windows, {} candidates, {added} added, {secs:.1} s",
+                        t + 1,
+                        h.windows.len(),
+                        found.len()
+                    );
+                    review_log.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{added}\t{secs:.1}\n",
+                        t + 1,
+                        h.windows.len(),
+                        lib.len(),
+                        found.len()
+                    ));
+                }
                 if t == seed_at as usize && !seed_fps.is_empty() {
                     let kept = sl.seed(&seed_fps).unwrap();
                     println!("frame {t}: seeded {kept} of {} footprints", seed_fps.len());
@@ -1656,6 +1774,12 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
         }
         s += cnt;
+    }
+    if let Some(h) = factors.as_mut() {
+        h.finish();
+    }
+    if review_every > 0 {
+        std::fs::write(out_dir.join("history_review.tsv"), &review_log).unwrap();
     }
     let mut sl = slow.expect("slow loop started");
     let finalize_start = Instant::now();

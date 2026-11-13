@@ -287,6 +287,29 @@ the first frame on, and the trace viewer shows the back-filled traces.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
+### History review (`?compress&review`)
+
+With `&review` as well (`review=N`: every N windows, default 8), the run looks
+through its compressed history for cells the slow loop missed
+(`crates/cala/src/compress/review.rs`; not the History tab, which plots a
+run's metrics). It needs `?compress` and is off without it.
+
+- `src/lib/compress-runner.ts`: after compressing a window, sends its factor
+  file to the review worker and, every N windows, the newest library with the
+  request to review.
+- `src/workers/review-worker.ts` + `src/lib/review-runner.ts`: keep the factors
+  of every window in memory (`HistoryReview`) and scan them a few grid rows at
+  a time. One review at a time: one that comes due meanwhile is skipped. A
+  review takes seconds to minutes, which is why it has a worker to itself;
+  one core is left free for it when the visit workers are counted.
+- `src/lib/review-store.ts`: passes the candidates to the slow worker
+  (`SlowClient.addReviewed`) and makes the Run panel's readout (reviews,
+  candidates, cells added, seconds of the last review).
+- `src/lib/slow-runner.ts`: adds the candidates (`SlowLoop.addReviewed`, on
+  probation like any add) once no tile visit is out.
+
+Beyond 3 GB of factors the review worker drops its oldest windows.
+
 A window waits on disk (432 MB at 600 x 600) until it is compressed, so a
 replay faster than the compressor (about 8 ms per frame) queues windows there.
 A short last window keeps fewer components (the rank cut's white-noise test is
