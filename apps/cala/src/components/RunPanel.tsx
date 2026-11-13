@@ -9,8 +9,11 @@ import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RefineStore } from '../lib/refine-store.ts';
 import {
+  EXTRACT_AFTER_DISCOVER_DEFAULT,
   LIVE_NOTE,
+  NEXT_STEP_HINT,
   refineComparison,
+  showNextStepHint,
   STAGE_LABEL,
   type StageLog,
   type StageName,
@@ -126,9 +129,9 @@ function runName(r: StageRun): string {
  * The run: the stages (docs/stages.md) Discover, Refine (recordings only,
  * repeatable) and Extract (recordings only), with Discover's convergence
  * metrics on one time axis (minutes of the recording) and a "now" line, the
- * run controls, the Refine readout and the export. Extract follows Discover on
- * its own unless turned off (not after a Refine: run it when the footprints
- * are settled).
+ * run controls, the Refine readout and the export. Extract follows Discover only if
+ * "Extract after Discover" is turned on (off by default; never after a Refine: run
+ * it when the footprints are settled).
  */
 export function RunPanel(props: RunPanelProps): JSX.Element {
   const s = () => props.pipeline;
@@ -193,7 +196,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
 
   // ---- Extract and export ----
-  const [auto, setAuto] = createSignal(true);
+  const [auto, setAuto] = createSignal(EXTRACT_AFTER_DISCOVER_DEFAULT);
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
@@ -755,6 +758,19 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 : (refineText() ?? '')}
           </span>
         </div>
+        <Show
+          when={showNextStepHint({
+            live: props.live === true,
+            discover: s().status() === 'done' ? 'done' : 'running',
+            refine: r().status() === 'idle' ? 'idle' : 'running',
+            extract: p().status(),
+            refineRuns: refineRuns().length,
+          })}
+        >
+          <p class="cala-muted cala-run__line" data-testid="next-step-hint">
+            {NEXT_STEP_HINT}
+          </p>
+        </Show>
         <Show when={!refineBusy() && comparison()?.settled}>
           <p class="cala-muted cala-run__line" data-testid="refine-settled">
             Looks settled: the refine rate has stopped falling. More Refine runs are unlikely to

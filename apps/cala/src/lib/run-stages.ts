@@ -54,6 +54,33 @@ export interface StageInput {
 export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Refine or Extract.';
 
+/**
+ * "Extract after Discover" default for recordings: off, so a Discover then
+ * Refine then Extract flow does not waste an Extract run that Refine would
+ * discard. Turning it on keeps the old behaviour. (Nothing persists the
+ * option, so there is no saved value to respect.)
+ */
+export const EXTRACT_AFTER_DISCOVER_DEFAULT = false;
+
+export const NEXT_STEP_HINT = 'Refine to let footprints settle, then Extract final traces.';
+
+/** Show the next-step hint: a recording whose Discover is done, before any Refine or Extract. */
+export function showNextStepHint(i: {
+  live: boolean;
+  discover: StageActivity;
+  refine: StageActivity;
+  extract: StageActivity;
+  refineRuns: number;
+}): boolean {
+  return (
+    !i.live &&
+    i.discover === 'done' &&
+    i.refine === 'idle' &&
+    i.refineRuns === 0 &&
+    i.extract === 'idle'
+  );
+}
+
 /** Why each stage cannot start now (null: it can). */
 export function stageAvailability(i: StageInput): Record<StageName, string | null> {
   const busy =
