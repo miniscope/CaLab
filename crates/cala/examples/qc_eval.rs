@@ -52,6 +52,10 @@
 //!                      basin-skirt (default) | basin | rings (the rule
 //!                      before S2.1)
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
+//!   --refine-gate G    when the statistics path proposes a refinement:
+//!                      legacy (default; χ² disagreement and
+//!                      refine_min_change) | split-half (the change exceeds
+//!                      the estimate's split-half noise, Î > 0)
 //!   --stats-half-life F  half-life (frames) of the footprint statistics
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
@@ -182,7 +186,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner,
+    CoreTest, EditScope, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
+    VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -2298,6 +2303,16 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--refine-gate") {
+        scfg.refine_gate = match v.as_str() {
+            "legacy" => RefineGate::Legacy,
+            "split-half" => RefineGate::SplitHalf,
+            other => panic!("--refine-gate: legacy|split-half, not {other}"),
+        };
+    }
+    if scfg.refine_gate != RefineGate::Legacy {
+        println!("refine gate: {:?}", scfg.refine_gate);
     }
     assert!(
         scfg.support_rule == SupportRule::Rings
