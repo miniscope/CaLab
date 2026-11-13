@@ -24,10 +24,16 @@ const HISTORY_PLOT_MIN_PX = 140;
  * is expanded into the large area, its tab holds the field of view instead.
  */
 export function DetailsTabs(props: {
-  store: PipelineStore;
+  /** The live pipeline (absent: a saved result; give `flatField` and `recording`). */
+  store?: PipelineStore;
   cells: CellStore;
-  viewer: ViewerStore;
-  info: FrameSourceInfo;
+  /** The open recording, for the Raw file tab (absent: no such tab). */
+  viewer?: ViewerStore;
+  /** The open recording's facts (absent: give `recording`). */
+  info?: FrameSourceInfo;
+  /** Contents of the Flat field and Recording tabs instead of the live ones (a saved result). */
+  flatField?: () => JSX.Element;
+  recording?: () => JSX.Element;
   ui: HistoryUi;
   active: string;
   onActive: (id: string) => void;
@@ -35,6 +41,8 @@ export function DetailsTabs(props: {
   fov: () => JSX.Element;
 }): JSX.Element {
   const attention = () => props.ui.run.attention().size > 0;
+  // The tabs are built once per mount: the live pipeline or one saved result.
+  /* eslint-disable solid/reactivity */
   const tabs: TabItem[] = [
     { id: 'qc', label: 'Cell QC', content: <QcTable cells={props.cells} /> },
     {
@@ -60,23 +68,38 @@ export function DetailsTabs(props: {
     {
       id: 'flatfield',
       label: 'Flat field',
-      content: (
-        <FlatFieldPanel store={props.store} width={props.info.width} height={props.info.height} />
+      content: props.store ? (
+        <FlatFieldPanel
+          store={props.store}
+          width={props.info?.width ?? 0}
+          height={props.info?.height ?? 0}
+        />
+      ) : (
+        props.flatField?.()
       ),
     },
-    {
-      id: 'timing',
-      label: 'Timing',
-      content: <TimingText store={props.store} cells={props.cells} />,
-    },
+    // A saved result has no timings and no file to scrub through.
+    ...(props.store
+      ? [
+          {
+            id: 'timing',
+            label: 'Timing',
+            content: <TimingText store={props.store} cells={props.cells} />,
+          },
+        ]
+      : []),
     // A live stream has no file to scrub through (the recording is opened once
     // per mount, so this is read once on purpose).
-    // eslint-disable-next-line solid/reactivity
-    ...(props.info.live
+    ...(props.info?.live || !props.viewer
       ? []
       : [{ id: 'raw', label: 'Raw file', content: <FrameViewer store={props.viewer} /> }]),
-    { id: 'recording', label: 'Recording', content: <InfoPanel info={props.info} /> },
+    {
+      id: 'recording',
+      label: 'Recording',
+      content: props.info ? <InfoPanel info={props.info} /> : props.recording?.(),
+    },
   ];
+  /* eslint-enable solid/reactivity */
   return (
     <SidePanel
       id="details"

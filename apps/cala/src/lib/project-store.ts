@@ -27,6 +27,7 @@ import {
   idSpaceFor,
   RUNS_DIR,
   type ProjectIndex,
+  type ProjectResult,
   type ProjectRun,
   type ProjectRunSession,
   type ResultsFile,
@@ -36,6 +37,8 @@ import {
 } from './project-index.ts';
 import {
   existingDir,
+  fileAt,
+  fileInEntries,
   projectRunSink,
   projectZipSink,
   readResultsFiles,
@@ -162,6 +165,18 @@ export function createProjectStore(deps: ProjectDeps) {
       return dir ? readResultsFiles(dir) : [];
     }
     return resultsFilesFromEntries(o.entries, o.rootName);
+  }
+
+  /** The export file of a result (for View results). */
+  async function resultFile(r: Pick<ProjectResult, 'export_path'>): Promise<File> {
+    const o = opened();
+    if (!o) throw new Error('No project is open.');
+    if (o.handle) {
+      const dir = await resultsDirForRead();
+      if (!dir) throw new Error('The results folder is gone.');
+      return fileAt(dir, r.export_path);
+    }
+    return fileInEntries(o.entries, o.rootName, r.export_path);
   }
 
   function scanned(): ScannedSession[] {
@@ -567,6 +582,7 @@ export function createProjectStore(deps: ProjectDeps) {
     useResultsFolder,
     close,
     grant,
+    resultFile,
   };
 }
 

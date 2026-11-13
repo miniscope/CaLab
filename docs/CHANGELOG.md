@@ -19,6 +19,23 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   session's file of a multi-session run, and **Export for CaDecon** writes
   the signed traces. Live runs (no Extract) keep the clipped traces only.
   `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
+- Cala: **View results**. Any session in a project's table with a result gets
+  **View results** (on its current result, and on every result under
+  **Results**): the saved export opens read-only in the normal viewer, with the
+  footprints and contours over the field of view, the QC table and colours, the
+  selected cell's footprint and Extract trace, the History plots and event log,
+  the stages that ran and the flat field. There are no stage controls; **Back
+  to project** returns to the table. Exports of every format version open;
+  parts an older one lacks say "not in this export". The file is read lazily
+  (`ZipArchive` in `@calab/io`, ZIP64-aware), so a large export opens without
+  being read whole. See `apps/cala/docs/projects.md`.
+- Cala: export format 5. `fov_mean` (mean of the registered, preprocessed
+  frames before background removal) and `fov_max` (max of the frames with the
+  background floor removed), float32 [H, W], kept by Extract over every frame
+  of the export's span (each session of a Joint run gets its own), and
+  `flat_field_gain`, the gain map Extract divided out. `meta_json.fov_images`
+  stores each image's fixed display range (from the bit depth, never from the
+  pixels; see `apps/cala/src/lib/fov-display.ts`).
 
 - Cala: animal projects. **Open animal project** opens an animal's folder of
   sessions as a project: a session table with each session's date, length,
@@ -75,6 +92,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: exports now hold the run's History bins and event log
+  (`history_L{k}`, `run_events_json`). The writer supported them since format
+  2, but neither the Export button nor the multi-session and project runs
+  passed them in.
 - Cala: the app's slow loop now gets the fast loop's per-cell ring-background
   levels with each frame's traces, in Discover and in Refine. Before, the slow
   worker observed the traces only, so the ledger and the footprint statistics
