@@ -17,6 +17,11 @@
  * to the main thread. A cell found late in the recording so gets its trace
  * from the first frame on, without the raw video being read again.
  *
+ * History review (`review`): each compressed window's factor file also goes
+ * to the review worker, and after every `every` windows the newest library
+ * with the request to review (see `review-runner.ts`). The review itself
+ * never runs here: it would hold up the writes of the incoming batches.
+ *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
  * Factor file `f<index>.bin`: `CALAFAC1`, u32 width, height, tile, frames,
  * tiles, f64 stream index of the first frame, then per tile u32 byte length
@@ -28,6 +33,7 @@ import type {
   CompressToMain,
   FastToCompress,
 } from '../workers/compress-types.ts';
+import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
 
@@ -74,6 +80,8 @@ export interface CompressRunnerDeps {
   engine?(library: Uint8Array): BackfillEngineLike;
   factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
+  /** The review worker, and the compressed windows between two reviews (absent: no review). */
+  review?: { port: PortLike<CompressToReview>; every: number };
   /** Lets queued messages run (default: a macrotask). */
   yieldNow?: () => Promise<void>;
   now?: () => number;
@@ -154,11 +162,18 @@ export class CompressRunner {
       this.session = msg.session;
       this.init = msg;
       this.tiles = tileGrid(msg.width, msg.height, msg.tile);
+      this.deps.review?.port.postMessage({
+        type: 'init',
+        session: msg.session,
+        width: msg.width,
+        height: msg.height,
+      });
       return;
     }
     if (msg.session !== this.session || !this.init) return;
     if (msg.type === 'reset') {
       await this.clear();
+      this.deps.review?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
     } else if (msg.type === 'library') {
@@ -397,6 +412,30 @@ export class CompressRunner {
     } finally {
       close();
     }
+    await this.feedReview(job.index, epoch);
+  }
+
+  /**
+   * Hand window `index`'s factors to the review worker and, every `every`
+   * windows, ask for a review against the newest library. Not after the end
+   * of the recording: the slow loop takes no more cells then.
+   */
+  private async feedReview(index: number, epoch: number): Promise<void> {
+    const review = this.deps.review;
+    if (!review || this.final) return;
+    const file = await this.deps.store.open(factorName(index));
+    const bytes = new Uint8Array(file.size());
+    file.read(bytes, 0);
+    file.close();
+    if (epoch !== this.epoch) return;
+    const session = this.session;
+    review.port.postMessage({ type: 'window', session, bytes }, [bytes.buffer as ArrayBuffer]);
+    if (this.done.length % Math.max(1, review.every) !== 0) return;
+    const library = this.library?.bytes.slice() ?? null;
+    review.port.postMessage(
+      { type: 'review', session, version: this.library?.version ?? 0, library },
+      library ? [library.buffer as ArrayBuffer] : [],
+    );
   }
 
   private post(): void {

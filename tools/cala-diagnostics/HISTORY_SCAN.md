@@ -20,8 +20,18 @@ On the real V4 history below, the Rust review gives the same 72 candidates at th
 spots as the offline scan (statistics equal to about 1e-6), in 29 s on 8 threads for 620
 cells and 20 min of 600 x 600 frames; the offline scan takes about 10 min.
 
-The browser app does not run the review yet: there the factors live in the compress
-worker and the slow loop in another.
+### In the browser app
+
+Off by default; `?compress&review` turns it on (`?review=N`: every N windows, default 8).
+The compress worker hands each window's factors to a review worker, which keeps them all
+in memory. Every N compressed windows it reviews them against the newest library, a few
+grid rows at a time. The candidates go through the main thread to the slow worker, which
+adds them (`SlowLoop.addReviewed`) once no tile visit is out. One review runs at a time;
+a review that comes due meanwhile is skipped. Nothing runs on the fast loop's thread.
+The Run panel shows reviews, candidates, cells added and the last review's seconds.
+
+The scan is single-threaded there, so a review takes longer than natively and longer the
+more history there is. Beyond 3 GB of factors the oldest windows are dropped.
 
 ## Offline scan (the reference the review was ported from)
 
@@ -94,4 +104,3 @@ Wireless sessions (200 x 200): 0 to 2 candidates.
 
 - What becomes of the added cells: whether the keep tests retain them, and precision and
   recall with the review on.
-- The review in the browser app, and its cost there.

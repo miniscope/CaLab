@@ -4,15 +4,15 @@
  * over the port the main thread connects; published libraries go back over
  * that port, and status plus drawable footprints go to the main thread.
  * With visit workers (one port each), tile visits run there (see
- * `SlowRunner`).
+ * `SlowRunner`). Cells a history review found arrive from the main thread.
  */
 import { initCalaWasm, SlowLoop } from '../lib/cala-wasm.ts';
 import { SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
-import type { FastToSlow, SlowConnect, SlowToMain, VisitToOwner } from './slow-types.ts';
+import type { FastToSlow, MainToSlow, SlowToMain, VisitToOwner } from './slow-types.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: SlowToMain, transfer?: Transferable[]): void;
-  onmessage: ((e: MessageEvent<SlowConnect>) => void) | null;
+  onmessage: ((e: MessageEvent<MainToSlow>) => void) | null;
 };
 
 let port: MessagePort | null = null;
@@ -31,11 +31,19 @@ function report(session: number, err: unknown): void {
 }
 
 workerScope.onmessage = (e) => {
-  if (e.data.type !== 'connect') return;
+  const data = e.data;
+  if (data.type === 'reviewed') {
+    const r = runner;
+    queue = queue
+      .then(() => r?.handleReviewed(data))
+      .catch((err: unknown) => report(data.session, err));
+    return;
+  }
+  if (data.type !== 'connect') return;
   port?.close();
   for (const v of visits) v.close();
-  port = e.data.port;
-  visits = e.data.visits ?? [];
+  port = data.port;
+  visits = data.visits ?? [];
   const toFast = port;
   runner = new SlowRunner({
     create: (init) =>

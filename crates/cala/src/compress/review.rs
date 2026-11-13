@@ -50,6 +50,8 @@ use crate::trace::Footprint;
 const BG_ORDER: usize = 2;
 /// Power iterations for a half's leading pattern.
 const POWER_ITERATIONS: usize = 60;
+/// Values before a candidate's footprint in the wire format.
+const WIRE_HEADER: usize = 6;
 
 /// Settings of the review. Pixel sizes suit somata of about 10 px.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +167,32 @@ pub fn scan(
     dims: Dims,
     cfg: &ReviewConfig,
 ) -> Vec<SpotStats> {
+    let rows = scan_rows(windows, dims, cfg);
+    let threads = if cfg!(target_arch = "wasm32") {
+        1
+    } else {
+        cfg.threads.clamp(1, rows.len().max(1))
+    };
+    if threads == 1 {
+        return scan_band(windows, cells, dims, cfg, &rows);
+    }
+    // Contiguous bands of rows, so a thread's tile-group cache keeps hitting.
+    let per = rows.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let hs: Vec<_> = rows
+            .chunks(per)
+            .map(|c| s.spawn(move || scan_band(windows, cells, dims, cfg, c)))
+            .collect();
+        hs.into_iter()
+            .flat_map(|h| h.join().expect("review thread"))
+            .collect()
+    })
+}
+
+/// The grid rows [`scan`] visits, top to bottom. Empty when the history
+/// cannot be reviewed: fewer than `min_windows` windows, a frame smaller
+/// than a patch, or windows with different tiles.
+pub fn scan_rows(windows: &[WindowFactors], dims: Dims, cfg: &ReviewConfig) -> Vec<usize> {
     let size = 2 * cfg.patch_half + 1;
     if windows.len() < cfg.min_windows.max(4)
         || dims.height < size
@@ -173,39 +201,85 @@ pub fn scan(
     {
         return Vec::new();
     }
+    (0..dims.height).step_by(cfg.stride.max(1)).collect()
+}
+
+/// The part of [`scan`] on the grid rows `rows` (some of [`scan_rows`]).
+/// Bands scanned one after the other, in order, give the statistics of
+/// `scan`; a caller that must not block for a whole review scans a few rows
+/// at a time.
+pub fn scan_band(
+    windows: &[WindowFactors],
+    cells: &[KnownCell],
+    dims: Dims,
+    cfg: &ReviewConfig,
+    rows: &[usize],
+) -> Vec<SpotStats> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let ctx = Context::new(windows, cells, dims, cfg);
     let (cy, cx) = (dims.height as f32 / 2.0, dims.width as f32 / 2.0);
     let radius = cfg.fov_share * dims.height.min(dims.width) as f32;
-    let stride = cfg.stride.max(1);
-    let rows: Vec<usize> = (0..dims.height).step_by(stride).collect();
-    let run = |rows: &[usize]| -> Vec<SpotStats> {
-        let mut cache = GroupCache::default();
-        let mut out = Vec::new();
-        for &y in rows {
-            for x in (0..dims.width).step_by(stride) {
-                if (y as f32 - cy).hypot(x as f32 - cx) <= radius {
-                    out.push(ctx.spot(y, x, &mut cache));
-                }
+    let mut cache = GroupCache::default();
+    let mut out = Vec::new();
+    for &y in rows {
+        for x in (0..dims.width).step_by(cfg.stride.max(1)) {
+            if (y as f32 - cy).hypot(x as f32 - cx) <= radius {
+                out.push(ctx.spot(y, x, &mut cache));
             }
         }
-        out
-    };
-    let threads = if cfg!(target_arch = "wasm32") {
-        1
-    } else {
-        cfg.threads.clamp(1, rows.len().max(1))
-    };
-    if threads == 1 {
-        return run(&rows);
     }
-    // Contiguous bands of rows, so a thread's tile-group cache keeps hitting.
-    let per = rows.len().div_ceil(threads);
-    std::thread::scope(|s| {
-        let hs: Vec<_> = rows.chunks(per).map(|c| s.spawn(move || run(c))).collect();
-        hs.into_iter()
-            .flat_map(|h| h.join().expect("review thread"))
-            .collect()
-    })
+    out
+}
+
+/// Candidates as one `f32` array, for a message between workers: per
+/// candidate `[y0, x0, height, width, gain_z, events_z]`, then the
+/// footprint's `height * width` values.
+pub fn candidates_to_wire(found: &[Candidate]) -> Vec<f32> {
+    let mut out = Vec::new();
+    for c in found {
+        let fp = &c.footprint;
+        out.extend([
+            fp.y0 as f32,
+            fp.x0 as f32,
+            fp.height as f32,
+            fp.width as f32,
+            c.gain_z,
+            c.events_z,
+        ]);
+        out.extend_from_slice(&fp.values);
+    }
+    out
+}
+
+/// The footprints (id 0) in [`candidates_to_wire`] data; `None` when it is
+/// cut short or a header is not a whole, non-negative number.
+pub fn footprints_from_wire(wire: &[f32]) -> Option<Vec<Footprint>> {
+    let whole = |v: f32| (v >= 0.0 && v.fract() == 0.0 && v < 16_777_216.0).then_some(v as usize);
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < wire.len() {
+        let head = wire.get(at..at + WIRE_HEADER)?;
+        let (y0, x0, height, width) = (
+            whole(head[0])?,
+            whole(head[1])?,
+            whole(head[2])?,
+            whole(head[3])?,
+        );
+        at += WIRE_HEADER;
+        let values = wire.get(at..at + height * width)?.to_vec();
+        at += height * width;
+        out.push(Footprint {
+            id: 0,
+            y0,
+            x0,
+            height,
+            width,
+            values,
+        });
+    }
+    Some(out)
 }
 
 /// The candidates among scanned spots: shape rule, `gain` and `events` in
@@ -1116,6 +1190,53 @@ mod tests {
         for (a, b) in one.iter().zip(&four) {
             assert_eq!((a.y, a.x, a.gain, a.events), (b.y, b.x, b.gain, b.events));
         }
+    }
+
+    #[test]
+    fn bands_of_rows_give_the_scan() {
+        let (windows, cells) = movie(6);
+        let dims = Dims::new(N, N).unwrap();
+        let cfg = ReviewConfig::default();
+        let whole = scan(&windows, &known(&cells[..1]), dims, &cfg);
+        let rows = scan_rows(&windows, dims, &cfg);
+        assert_eq!(rows.len(), N.div_ceil(cfg.stride));
+        let banded: Vec<SpotStats> = rows
+            .chunks(5)
+            .flat_map(|band| scan_band(&windows, &known(&cells[..1]), dims, &cfg, band))
+            .collect();
+        assert_eq!(whole.len(), banded.len());
+        for (a, b) in whole.iter().zip(&banded) {
+            assert_eq!((a.y, a.x, a.gain, a.events), (b.y, b.x, b.gain, b.events));
+            assert_eq!(a.pattern, b.pattern);
+        }
+    }
+
+    #[test]
+    fn candidates_survive_the_wire() {
+        let (windows, cells) = movie(8);
+        let dims = Dims::new(N, N).unwrap();
+        let found = review(
+            &windows,
+            &known(&cells[..1]),
+            dims,
+            &ReviewConfig::default(),
+        );
+        let wire = candidates_to_wire(&found);
+        let back = footprints_from_wire(&wire).unwrap();
+        assert_eq!(back.len(), found.len());
+        for (fp, c) in back.iter().zip(&found) {
+            let want = &c.footprint;
+            assert_eq!(
+                (fp.id, fp.y0, fp.x0, fp.height, fp.width),
+                (0, want.y0, want.x0, want.height, want.width)
+            );
+            assert_eq!(fp.values, want.values);
+        }
+        assert_eq!(wire[4], found[0].gain_z);
+        assert!(footprints_from_wire(&[]).unwrap().is_empty());
+        // Cut short, or a header that is no pixel count.
+        assert!(footprints_from_wire(&wire[..wire.len() - 1]).is_none());
+        assert!(footprints_from_wire(&[0.0, 0.0, 2.5, 2.0, 0.0, 0.0]).is_none());
     }
 
     #[test]
