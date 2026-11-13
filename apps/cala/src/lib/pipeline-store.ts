@@ -8,6 +8,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
+import type { CompressStore } from './compress-store.ts';
 import {
   flatFieldKey,
   initialFlatFieldState,
@@ -135,6 +136,8 @@ export function createPipelineStore(
   flat: FlatFieldStoreOptions = {},
   /** The run's history over stream time (the History view, the export). */
   runHistory?: RunHistory,
+  /** Feed the compress worker; its store is reset with each run. */
+  compress?: Pick<CompressStore, 'reset'>,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -392,6 +395,7 @@ export function createPipelineStore(
     setStatus('starting');
     const session = nextSession++;
     cells?.reset(session);
+    compress?.reset(session);
     try {
       // Flat field: a stored map of this device (if any) is in force from the first processed frame.
       const useFlat = flatEnabled() && client.subscribeFlatField !== undefined;
@@ -424,6 +428,7 @@ export function createPipelineStore(
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
+          ...(compress ? { compress: true } : {}),
         },
         undefined,
         seed ? { seed } : undefined,

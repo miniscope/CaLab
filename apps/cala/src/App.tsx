@@ -7,6 +7,8 @@ import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
+import { createCompressClient } from './lib/compress-client.ts';
+import { createCompressStore } from './lib/compress-store.ts';
 import { createPass2Store } from './lib/pass2-store.ts';
 import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
 import {
@@ -58,6 +60,12 @@ const App: Component = () => {
       : visitWorkerCount(navigator.hardwareConcurrency),
   );
   // `?noqc`: run without online quality control (to measure its cost).
+  // `?compress`: also compress the preprocessed frames into low-rank factors, window by
+  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
+  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  const compressClient = compress
+    ? createCompressClient(client, (msg) => compress.onMessage(msg))
+    : undefined;
   // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
@@ -83,6 +91,7 @@ const App: Component = () => {
       },
     },
     runHistory,
+    compress,
   );
   const pass2 = createPass2Store(client, pipeline, cells);
   // Slow-loop warnings (the reservoir filling up) go into the run's event log.
@@ -95,9 +104,25 @@ const App: Component = () => {
     ),
   );
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
+  // Recording read, final library out, every window compressed: solve the
+  // traces of the whole recording again from the factors, with that library.
+  createEffect(() => {
+    const slow = cells.status();
+    const done = pipeline.status() === 'done';
+    if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
+      compressClient?.backfill(cells.session(), slow?.version ?? 0);
+    }
+  });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, runHistory, historyUi };
+    (globalThis as { __cala?: unknown }).__cala = {
+      cells,
+      pipeline,
+      pass2,
+      runHistory,
+      historyUi,
+      compress,
+    };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -173,6 +198,7 @@ const App: Component = () => {
             fps={lp.info.fps ?? 0}
             narrow={layout().narrow}
             ui={historyUi}
+            compress={compress}
           />
           <SelectedCellPanel
             cells={cells}
