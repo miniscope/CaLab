@@ -59,15 +59,16 @@ pub(crate) struct FpStats {
     /// filtered column on `pix` (moat included).
     pub version: u64,
     pub col: Vec<f32>,
-    /// DIAG split-half: the same sums over alternate 256-frame blocks only
-    /// (`rc`, `r`, the class moments), and the frame counter.
+    /// Split-half: the same sums over alternate 256-frame blocks only
+    /// (`rc`, `r`, the class moments), and the frame counter. The support
+    /// rule measures its standard error from them ([`FpStats::halves`]).
     pub half: (Vec<f32>, Vec<f32>, [Mom; 2]),
     pub k: u64,
     /// Per-pixel moments over the frames in which the pixel was valid:
     /// `None` until a missing pixel has been pushed (a disk away from the
     /// FOV edge never needs them, and keeps the class moments above).
     pub pm: Option<PixMoments>,
-    /// The split-half sums' per-pixel moments (owner only; not on the wire).
+    /// The split-half sums' per-pixel moments.
     pub half_pm: Option<PixMoments>,
     /// Transient-band statistics in interleaved block groups (`None` when
     /// [`super::CoreTest`] is `Off`).
@@ -473,6 +474,46 @@ impl FpStats {
     }
 
     /// Whether the support disk `(center, radius)` lies inside this disk.
+    /// Start the pixels of this disk that are not in `old_pix` (sorted; the
+    /// disk before [`FpStats::moved`]) at the current model: after `col` is
+    /// set, their sums are made so that [`FpStats::estimate`] and both
+    /// [`FpStats::halves`] return exactly `col` there (a new pixel otherwise
+    /// starts at zero sums under the full trace moments, which dilutes its
+    /// estimate toward 0 for about a half-life). Real frames then pull it
+    /// toward the truth. A class without a usable `λ` is left alone.
+    pub fn seed_new(&mut self, old_pix: &[u32]) {
+        if self.col.len() != self.pix.len() {
+            return;
+        }
+        let lam = [0, 1].map(|c| lambda(&self.m[c]));
+        let mut j = 0;
+        for i in 0..self.pix.len() {
+            let p = self.pix[i];
+            while j < old_pix.len() && old_pix[j] < p {
+                j += 1;
+            }
+            if j < old_pix.len() && old_pix[j] == p {
+                continue;
+            }
+            let c = self.cls[i] as usize;
+            let Some(l) = lam[c] else {
+                continue;
+            };
+            let v = f64::from(self.col[i]) * l;
+            let (full, half) = match (&self.pm, &self.half_pm) {
+                (Some(pm), Some(hpm)) => ([pm.s1[i], pm.s2[i]], [hpm.s1[i], hpm.s2[i]]),
+                _ => (
+                    [self.m[c][2], self.m[c][3]],
+                    [self.half.2[c][2], self.half.2[c][3]],
+                ),
+            };
+            self.r[i] = (v * full[0]) as f32;
+            self.rc[i] = (v * full[1]) as f32;
+            self.half.1[i] = (v * half[0]) as f32;
+            self.half.0[i] = (v * half[1]) as f32;
+        }
+    }
+
     pub fn covers(&self, center: (f32, f32), radius: f32) -> bool {
         let d = ((center.0 - self.center.0).powi(2) + (center.1 - self.center.1).powi(2)).sqrt();
         d + radius <= self.radius + 0.5
@@ -1086,6 +1127,55 @@ mod fast_tests {
         let (e1, e2) = (st.estimate().unwrap(), s2.estimate().unwrap());
         for (x, y) in e1.iter().zip(&e2) {
             assert!((x - y).abs() < 1e-3 * x.abs().max(1.0));
+        }
+    }
+
+    /// Pixels new to a moved disk start at the current model: after
+    /// `moved` and `seed_new`, the estimate and both split halves equal the
+    /// column there (with and without per-pixel moments), and the shared
+    /// pixels keep their estimate.
+    #[test]
+    fn moved_seeds_new_pixels_at_the_model() {
+        for missing in [false, true] {
+            let mut st = FpStats::new((8.0, 8.0), 3.0, 17, 17, &[1u8; 289], false, 5);
+            let m = st.pix.len();
+            for t in 0..1300u64 {
+                let r: Vec<f32> = (0..m)
+                    .map(|i| {
+                        if missing && (i + t as usize).is_multiple_of(7) {
+                            f32::NAN
+                        } else {
+                            i as f32 * 0.1 + u(t * 77 + i as u64)
+                        }
+                    })
+                    .collect();
+                push1(&mut st, &r, u(t) + 1.0, 1.0);
+            }
+            assert_eq!(st.pm.is_some(), missing);
+            let before = st.estimate().unwrap();
+            let old = st.pix.clone();
+            let mut big = st.moved((8.0, 8.0), 6.0, 17, 17, &[1u8; 289]);
+            big.col = big.pix.iter().map(|&p| 0.25 + 0.01 * p as f32).collect();
+            big.seed_new(&old);
+            let est = big.estimate().unwrap();
+            let (ha, hb, _, _) = big.halves().unwrap();
+            let mut new = 0;
+            for (i, p) in big.pix.iter().enumerate() {
+                match old.binary_search(p) {
+                    Ok(j) => assert!((est[i] - before[j]).abs() < 1e-4, "shared {p}"),
+                    Err(_) => {
+                        new += 1;
+                        let want = big.col[i];
+                        for (what, v) in [("all", est[i]), ("A", ha[i]), ("B", hb[i])] {
+                            assert!(
+                                (v - want).abs() < 1e-3 * want.abs().max(1.0),
+                                "{what} {p}: {v} vs {want} (missing {missing})"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(new > 50);
         }
     }
 

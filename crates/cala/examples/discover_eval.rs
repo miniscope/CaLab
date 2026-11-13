@@ -49,6 +49,9 @@
 //!   --joint           add test with the joint neighbour-trace check
 //!   --core-test off|report|trim|delete   transient-band core test (default off)
 //!   --basin-trim      trim refined footprints to their significant basin
+//!                     (needs --support-rule rings, as does --core-test)
+//!   --support-rule basin-skirt|basin|rings   footprint support rule of the
+//!                     statistics path (default basin-skirt)
 //!   --no-merge-refit  merge test against the pair's current footprints only
 //!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
 //!                     nuisance terms in the add test
@@ -91,7 +94,7 @@ mod prefilter;
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::compress::review::{review, KnownCell, ReviewConfig};
 use calab_cala::compress::{quantize, CompressConfig, WindowCompressor, WindowFactors};
-use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
+use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig, SupportRule};
 use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, NonRigidConfig, Warper,
 };
@@ -1408,6 +1411,19 @@ fn main() {
     if args.iter().any(|a| a == "--basin-trim") {
         scfg.basin_trim = true;
     }
+    if let Some(v) = arg_value(&args, "--support-rule") {
+        scfg.support_rule = match v.as_str() {
+            "rings" => SupportRule::Rings,
+            "basin" => SupportRule::Basin,
+            "basin-skirt" => SupportRule::BasinSkirt,
+            other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
+        };
+    }
+    assert!(
+        scfg.support_rule == SupportRule::Rings
+            || (scfg.core_test == calab_cala::discover::CoreTest::Off && !scfg.basin_trim),
+        "--core-test and --basin-trim need --support-rule rings"
+    );
     if let Some(v) = arg_value(&args, "--probation") {
         scfg.probation_frames = v.parse().unwrap();
     }

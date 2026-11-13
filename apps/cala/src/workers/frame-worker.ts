@@ -10,7 +10,7 @@
  * to the slow worker (cell discovery) over a `MessagePort`. The fast loop
  * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
  */
-import { initCalaWasm, quantizeTiles } from '../lib/cala-wasm.ts';
+import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
@@ -233,7 +233,6 @@ async function handle(req: FrameRequest): Promise<void> {
               ? new CompressFeed(
                   { width: setup.width, height: setup.height, session: cells.session },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
-                  quantizeTiles,
                 )
               : null,
           );

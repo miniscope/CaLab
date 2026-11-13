@@ -1,22 +1,12 @@
 /**
  * The fast worker's side of the compression: cuts the stream of preprocessed
- * frames into windows, quantizes each batch in tile order and transfers it to
- * the compress worker. Pure apart from the injected quantizer and port, so
- * the window bookkeeping is unit-tested without WASM or workers.
+ * frames into windows and transfers a copy of each batch to the compress
+ * worker. The copy is all the fast loop pays; quantizing is the compress
+ * worker's work. Pure apart from the injected port, so the window bookkeeping
+ * is unit-tested without workers.
  */
 import type { FastToCompress } from '../workers/compress-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
-
-/** `quantizeTiles` of the WASM module. */
-export type QuantizeTiles = (
-  frames: Float32Array,
-  count: number,
-  width: number,
-  height: number,
-  tile: number,
-  quant: number,
-  out: Int16Array,
-) => void;
 
 export interface CompressFeedOptions {
   width: number;
@@ -55,7 +45,6 @@ export class CompressFeed implements CompressFeedLike {
   constructor(
     options: CompressFeedOptions,
     private readonly port: PortLike<FastToCompress>,
-    private readonly quantize: QuantizeTiles,
   ) {
     this.o = { ...COMPRESS_DEFAULTS, ...options };
     if (!(this.o.window >= 2) || !(this.o.tile >= 1) || !(this.o.quant > 0)) {
@@ -77,16 +66,7 @@ export class CompressFeed implements CompressFeedLike {
     let done = 0;
     while (done < count) {
       const n = Math.min(count - done, window - this.filled);
-      const data = new Int16Array(n * this.px);
-      this.quantize(
-        batch.subarray(done * this.px, (done + n) * this.px),
-        n,
-        width,
-        height,
-        tile,
-        quant,
-        data,
-      );
+      const data = batch.slice(done * this.px, (done + n) * this.px);
       this.filled += n;
       const last = this.filled >= window;
       this.port.postMessage(

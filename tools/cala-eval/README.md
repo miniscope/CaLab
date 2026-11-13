@@ -10,6 +10,7 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `v3_{static,motion}`, `size6_*` and `size16_*` use the `ca1_workshop_v3*.spec.json` specs
   (cells of 10, 6 and 16 px at the real recording's edge blur; `make_v3_specs.py`).
 - `gt_scales.py`: half-max diameter and edge sigma of the ground-truth footprints in `oracle.bin`.
+- `recovery_vs_snr.py SIM RUN OUT.tsv`: per GT unit, minisim's matched-filter detection SNR (minisim >= 1.1) and whether a qc_eval run recovered it; the calibration data behind minisim's `DETECT_SNR_THRESHOLD` (`results/2026-11-12-matched-filter-detectable.md`).
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
   would write are symlinked (`--reuse <dir>`) instead of regenerated. At most 2
@@ -34,6 +35,9 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
   `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
   built with `--features diagnostics`, `tests.tsv`. Needs numpy.
+- `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
+  (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
+  50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
@@ -146,6 +150,38 @@ precision without them.
 `edge_px` is a chamfer distance to the nearest pixel outside the FOV mask,
 capped at 40.
 
+## Support rule (S2.1)
+
+`qc_eval --support-rule basin-skirt|basin|rings` picks how the statistics path
+measures a footprint's pixel support (`SlowLoopConfig::support_rule`, default
+`basin-skirt` since the S2.1 default flip; `rings` is byte-identical to the
+rule before S2.1 and stays selectable for comparisons, and is the rule
+`--core-test` and `--basin-trim` need). `discover_eval` takes the same flag.
+Runs before the flip that did not pass the flag used `rings`. `basin` keeps the
+pixels where the PSF-smoothed measured light is significant (family-wise
+`--support-alpha`, default 0.05, per footprint; standard error measured from
+the split halves) in the single-peaked basin of the cell's peak; `basin-skirt`
+also gives the footprint a skirt: unfiltered light per 8 px moat block on the
+rest of the statistics disk, solved so that the column (the filter of support
+plus skirt, whose low-pass reaches the moat) matches the measured light there.
+
+With a binary built with `--features diagnostics`,
+`CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
+the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
+support size and radius, the s20 radii `r_h` and `r_u`, `n_X`, second peak,
+mass beyond `r_h`, skirt blocks and mass, and the median and `|z| > 3` share
+of the block leftover `h − column` outside the support, overall and split into
+whole blocks (every FOV pixel outside the support measured and outside `X`) and
+partial ones) and one `L` row per published cell at each publish (`n_pos`,
+radius, skirt blocks). The header lines start with `#`.
+
+`CALA_DIVERGE_DIR=<dir>` (any build) writes `solver.tsv` (per frame: library
+version, cells, solver sweeps, largest |trace|, non-finite traces) and, at the
+first frames of up to six library versions where a trace exceeds 1e6 or is
+non-finite (or at frame `CALA_DIVERGE_AT`), a `dump_t<frame>_v<version>`
+directory with the library bytes (`Library::to_bytes`), the frame and the warm
+start, so the solve can be replayed offline.
+
 ## Validation (E1)
 
 - Reproduction of `tools/cala-diagnostics/COMPUTE_VS_PRECISION.md`: the main binary of that table
@@ -176,6 +212,8 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-11-e7-convergence.md`     | E7: footprint convergence metric                                                          |
 | `2026-11-11-s12-crossfit.md`       | S1.2: cross-fitted statistics give no gain; the texture is in the data                    |
 | `2026-11-11-d4-flat-field.md`      | D4: textured footprints are sensor-gain shimmer; a flat field removes them                |
+| `2026-11-12-support-rule.md`       | S2.1: measured basin support rule (rings / basin / basin-skirt)                           |
+| `2026-11-12-skirt-stability.md`    | S2.1b: stable skirt, PI's gate redefinitions; `basin-skirt` becomes the default           |
 | `2026-11-11-flat-field-default.md` | online flat field as the default (#330)                                                   |
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |

@@ -1,6 +1,6 @@
 /**
  * Compress worker: windowed low-rank compression of the preprocessed frames
- * (`CompressRunner`), in its own thread. Quantized batches arrive from the
+ * (`CompressRunner`), in its own thread. Batches of frames arrive from the
  * fast worker over the port the main thread connects; windows and factors
  * are files in the origin private file system; status goes to the main
  * thread. With the history review on, each window's factors also go to the
@@ -9,6 +9,7 @@
 import {
   FactorWindow,
   initCalaWasm,
+  quantizeTiles,
   TileCompressor,
   TraceEngine,
   TraceLibrary,
@@ -53,6 +54,7 @@ workerScope.onmessage = (e) => {
   const toReview = reviewPort;
   const r = new CompressRunner({
     store,
+    quantize: quantizeTiles,
     create: (quant) => new TileCompressor(quant),
     engine: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);

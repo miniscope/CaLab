@@ -570,7 +570,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </span>
         <Show when={props.compress}>
           {(compress) => (
-            <span class="cala-readout" data-testid="compress-readout">
+            <span class="cala-readout cala-wrap" data-testid="compress-readout">
               {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
             </span>
           )}
@@ -578,7 +578,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         <Show when={props.review}>
           {(review) => (
             <span
-              class="cala-readout"
+              class="cala-readout cala-wrap"
               data-testid="review-readout"
               title="History review: cells the slow loop missed, looked for in the compressed history."
             >

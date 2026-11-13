@@ -267,13 +267,13 @@ describe('CompressRunner feeding the review worker', () => {
     const feed = new CompressFeed(
       { width: W, height: H, session: 7, tile: 16, window: 10, quant: 64 },
       { postMessage: (m) => sent.push(m) },
-      quantizeTiles,
     );
     const toReview: CompressToReview[] = [];
     const toMain: CompressToMain[] = [];
     const store = memoryStore();
     const r = new CompressRunner({
       store,
+      quantize: quantizeTiles,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: (m) => toMain.push(m) },
       review: { port: { postMessage: (m) => toReview.push(m) }, every },
@@ -634,7 +634,6 @@ describe('history review on real factors (WASM)', () => {
     const feed = new CompressFeed(
       { width: N, height: N, session: 1, tile: 64, window: WINDOW, quant: 64 },
       { postMessage: (m) => sent.push(m) },
-      quantizeTiles,
     );
     const BATCH = 50;
     const buf = new Float32Array(BATCH * N * N);
@@ -664,6 +663,7 @@ describe('history review on real factors (WASM)', () => {
     });
     const compress = new CompressRunner({
       store: memoryStore(),
+      quantize: quantizeTiles,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: () => {} },
       review: { port: { postMessage: (m) => review.handle(m) }, every: WINDOWS },

@@ -144,7 +144,7 @@ export interface CellsBatch {
   qcOn: boolean;
   /** A QC snapshot, about once per `qcEveryS` of stream time. */
   qc?: QcWire;
-  /** Wall time of quantizing and sending the batch to the compress worker, ms (compression on). */
+  /** Wall time of copying and sending the batch to the compress worker, ms (compression on). */
   compressMs?: number;
   /**
    * Full-frame model residual of the batch's last frame (with `residual` on

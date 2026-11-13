@@ -492,13 +492,20 @@ pub fn quantize_tiles(
 }
 
 /// `round(v * quant)` in `i16`; non-finite values count as 0.
+///
+/// Rounds half away from zero like `f32::round`, written out with `trunc`:
+/// on wasm `round` is a libm call per pixel, `trunc` an instruction the
+/// loop over a frame vectorizes with.
 #[inline]
 pub fn quantize(v: f32, quant: f32) -> i16 {
-    if v.is_finite() {
-        (v * quant).round().clamp(-32767.0, 32767.0) as i16
+    let s = if v.is_finite() { v * quant } else { 0.0 };
+    let t = s.trunc();
+    let r = if (s - t).abs() >= 0.5 {
+        t + 1.0f32.copysign(s)
     } else {
-        0
-    }
+        t
+    };
+    r.clamp(-32767.0, 32767.0) as i32 as i16
 }
 
 // ---------------------------------------------------------------------------
@@ -829,6 +836,46 @@ mod tests {
 
     fn quantized(y: &[f32]) -> Vec<i16> {
         y.iter().map(|&v| quantize(v, QUANT)).collect()
+    }
+
+    #[test]
+    fn quantize_rounds_like_f32_round() {
+        let reference = |v: f32, q: f32| -> i16 {
+            if v.is_finite() {
+                (v * q).round().clamp(-32767.0, 32767.0) as i16
+            } else {
+                0
+            }
+        };
+        let mut values = vec![
+            0.0,
+            -0.0,
+            0.5 / QUANT,
+            -0.5 / QUANT,
+            1.5 / QUANT,
+            -2.5 / QUANT,
+            0.499_999_97 / QUANT,
+            511.99,
+            -511.99,
+            512.0,
+            -600.0,
+            1e30,
+            -1e30,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        let mut noise = Normals::new(3);
+        values.extend((0..20_000).map(|_| 40.0 * noise.next()));
+        // Every half step in range, both signs.
+        values.extend((-4000..4000).map(|k| (k as f32 + 0.5) / QUANT));
+        for v in values {
+            for q in [QUANT, 1.0, 7.3] {
+                assert_eq!(quantize(v, q), reference(v, q), "v = {v}, quant = {q}");
+            }
+        }
     }
 
     /// `n_cells` Gaussian blobs with calcium-like (AR(1)) traces plus white

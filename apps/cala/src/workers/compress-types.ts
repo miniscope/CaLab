@@ -2,10 +2,10 @@
  * Messages between the fast worker (the one that runs the fast loop), the
  * compress worker and the main thread.
  *
- * The fast worker quantizes every batch of preprocessed frames in tile order
- * and transfers it; the compress worker writes the batches of a window to a
- * file (OPFS), compresses the window tile by tile from that file and keeps
- * the factors in a second file. Unlike the feed to the slow worker, nothing
+ * The fast worker transfers a copy of every batch of preprocessed frames;
+ * the compress worker quantizes it in tile order, writes the batches of a
+ * window to a file (OPFS), compresses the window tile by tile from that file
+ * and keeps the factors in a second file. Unlike the feed to the slow worker, nothing
  * is dropped: a window with a missing frame could not be replayed.
  */
 
@@ -34,8 +34,8 @@ export type FastToCompress =
       count: number;
       /** The window is complete with this chunk. */
       last: boolean;
-      /** `count * width * height` values in tile order (`quantizeTiles`). Transferred. */
-      data: Int16Array;
+      /** `count * width * height` values, frame after frame. Transferred. */
+      data: Float32Array;
     }
   /** The newest footprint library (`TraceLibrary.toBytes()`), for the back-fill. Transferred. */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
@@ -53,7 +53,7 @@ export interface CompressStatus {
   pendingFrames: number;
   /** Mean kept rank per tile of the last window. */
   meanRank: number;
-  /** Compute time of the last window per frame, ms. */
+  /** Compute time of the last window per frame (quantizing and compressing), ms. */
   msPerFrame: number;
   /** Bytes of all factor files. */
   factorBytes: number;

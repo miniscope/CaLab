@@ -6,7 +6,7 @@
  * switch in a pipelined run. It never waits for the slow worker (see
  * `FastLoop`). See `lib/pipeline-stages.ts`.
  */
-import { initCalaWasm, quantizeTiles } from '../lib/cala-wasm.ts';
+import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { transferablesOf } from '../lib/pipeline-engine.ts';
@@ -56,7 +56,6 @@ function handle(msg: StageMsg): void {
           ? new CompressFeed(
               { width: msg.fast.width, height: msg.fast.height, session: cells.session },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
-              quantizeTiles,
             )
           : null,
       );
