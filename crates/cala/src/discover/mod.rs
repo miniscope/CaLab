@@ -307,12 +307,12 @@ pub enum RefineGate {
     /// null (`n + 3 sqrt(2 n)` standard errors) and the proposal turns the
     /// whitened column by at least `refine_min_change` (the rule before
     /// S2.1c).
-    #[default]
     Legacy,
-    /// The change exceeds the estimate's own split-half noise:
+    /// The default. The change exceeds the estimate's own split-half noise:
     /// `Î = ‖h/a − cur‖² − ½‖(h_A − h_B)/a‖² > 0` (whitened, in units of
     /// the current column, `a` the estimate's fit scale on it). A cell
     /// without split halves falls back to [`RefineGate::Legacy`].
+    #[default]
     SplitHalf,
 }
 
@@ -597,7 +597,7 @@ impl Default for SlowLoopConfig {
             absorb_z: 3.0,
             absorb_share: 0.8,
             refine_min_change: 0.03,
-            refine_gate: RefineGate::Legacy,
+            refine_gate: RefineGate::SplitHalf,
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_refit_pair: true,

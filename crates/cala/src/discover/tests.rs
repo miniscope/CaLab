@@ -2058,31 +2058,35 @@ fn support_shrinks_when_light_goes() {
 
 /// Under the ring rule the basin settings change nothing: the same run
 /// with another `support_alpha` gives byte-identical libraries, written as
-/// CALALIB3 with no skirt. (Identity with the code before S2.1 is checked
-/// end to end with `qc_eval`; see the results note.)
+/// CALALIB3 with no skirt, under either refine gate. (Identity with the
+/// code before S2.1 is `SupportRule::Rings` with `RefineGate::Legacy`,
+/// checked end to end with `qc_eval`; see the results notes.)
 #[test]
 fn rule_off_is_byte_identical() {
     let t = 1200;
     let (m, seed) = busy_movie(t);
-    let run_with = |alpha: f32| {
-        let cfg = SlowLoopConfig {
-            support_rule: SupportRule::Rings,
-            support_alpha: alpha,
-            ..shard_config()
+    for gate in [RefineGate::Legacy, RefineGate::SplitHalf] {
+        let run_with = |alpha: f32| {
+            let cfg = SlowLoopConfig {
+                support_rule: SupportRule::Rings,
+                support_alpha: alpha,
+                refine_gate: gate,
+                ..shard_config()
+            };
+            let (mut slow, mut eng) = start(cfg, &seed);
+            let mut deleted = Vec::new();
+            drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+            (slow.finalize().unwrap(), slow.stats())
         };
-        let (mut slow, mut eng) = start(cfg, &seed);
-        let mut deleted = Vec::new();
-        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-        (slow.finalize().unwrap(), slow.stats())
-    };
-    let (a, sa) = run_with(0.05);
-    let (b, sb) = run_with(0.5);
-    assert!(sa.refines > 0, "{sa:?}");
-    assert_eq!(sa, sb);
-    assert_eq!(sa.support_no_se, 0);
-    assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
-    assert!(a.to_bytes()[16..] == b.to_bytes()[16..]);
-    assert!((0..a.len()).all(|s| a.skirt(s).0.is_empty()));
+        let (a, sa) = run_with(0.05);
+        let (b, sb) = run_with(0.5);
+        assert!(sa.refines > 0, "{gate:?} {sa:?}");
+        assert_eq!(sa, sb, "{gate:?}");
+        assert_eq!(sa.support_no_se, 0, "{gate:?}");
+        assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
+        assert!(a.to_bytes()[16..] == b.to_bytes()[16..], "{gate:?}");
+        assert!((0..a.len()).all(|s| a.skirt(s).0.is_empty()), "{gate:?}");
+    }
 }
 
 /// Visits run as jobs under the skirt rule give the same libraries as
