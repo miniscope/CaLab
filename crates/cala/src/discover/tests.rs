@@ -770,6 +770,23 @@ fn a_cell_on_diffuse_light_is_still_deleted() {
     assert_eq!(n, 1, "{stats:?}");
 }
 
+// ---- history review (compress/review.rs) -------------------------------------
+
+#[test]
+fn reviewed_candidates_are_added_as_new_cells_on_free_spots() {
+    let (mut slow, _eng) = start(v2_config(), &[blob(1, 30.0, 30.0)]);
+    // One candidate on empty tissue, one on the seeded cell.
+    let added = slow
+        .add_reviewed(&[blob(0, 60.0, 60.0), blob(0, 31.0, 30.0)])
+        .unwrap();
+    assert_eq!(added, 1);
+    assert_eq!(slow.stats().review_adds, 1);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 2);
+    assert!(lib.ids().contains(&1) && lib.ids().iter().all(|&id| id >= 1));
+    assert!(centres(&lib).iter().any(|&c| near(c, 60.0, 60.0)));
+}
+
 // ---- parallel visits (shard.rs) ---------------------------------------------
 
 /// A movie with something for every edit: cells to add, a duplicate pair

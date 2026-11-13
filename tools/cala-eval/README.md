@@ -9,7 +9,15 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   in `tools/minisim-calibration/`; an arm whose spec file is missing is skipped.
   `v3_{static,motion}`, `size6_*` and `size16_*` use the `ca1_workshop_v3*.spec.json` specs
   (cells of 10, 6 and 16 px at the real recording's edge blur; `make_v3_specs.py`).
-- `gt_scales.py`: half-max diameter and edge sigma of the ground-truth footprints in `oracle.bin`.
+- `gt_scales.py`: half-max diameter and edge sigma (gradient and ring statistics) of the ground-truth
+  footprints in `oracle.bin`. `arms.py` `GT_SCALES` holds the per-arm values and `SCALE_ARMS` the S2.4
+  M0 one-at-a-time scale flags (`qc_eval --cell-diameter`, `--psf-sigma`, `--flatten-sigma`,
+  `--tile-px`, `--margin-px`; `--bin K` bins a real recording).
+- `fp_scales.py`: the S2.4 estimators D1 (median half-max diameter, order-statistic CI) and P1
+  (radial-profile edge sigma per cell, population bound) on a run's `footprints.bin`; with
+  `--final` and `--gt`, per matched cell against its ground-truth unit. Needs numpy.
+- `probe_scale.py`: offline prototype of the S2.4 scale probe D0 (scale-normalised LoG on the
+  first 400 frames of a recording). Needs numpy, scipy, OpenCV (the minisim venv has them).
 - `recovery_vs_snr.py SIM RUN OUT.tsv`: per GT unit, minisim's matched-filter detection SNR (minisim >= 1.1) and whether a qc_eval run recovered it; the calibration data behind minisim's `DETECT_SNR_THRESHOLD` (`results/2026-11-12-matched-filter-detectable.md`).
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator

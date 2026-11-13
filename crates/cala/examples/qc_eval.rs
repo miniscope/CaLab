@@ -44,6 +44,10 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
+//!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
+//!                      windows ([`calab_cala::compress`]) and write every
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      input of tools/cala-diagnostics/history_wholetest.py
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -56,6 +60,15 @@
 //!                      legacy (default; χ² disagreement and
 //!                      refine_min_change) | split-half (the change exceeds
 //!                      the estimate's split-half noise, Î > 0)
+//!   --cell-diameter D  expected soma diameter, px (default 10): every scale
+//!                      that follows it (detection, seed disk, statistics
+//!                      margin, held-out placebos, and the flatten σ = 2 D
+//!                      unless `--flatten-sigma` is given)
+//!   --psf-sigma S      the slow loop's PSF smoothing σ, px (default 1.5)
+//!   --flatten-sigma S  the glow flattener's σ, px (default 2 × the diameter)
+//!   --tile-px T / --margin-px M  slow-loop tile side and margin (64 / 24)
+//!   --bin K            `real` only: mean of each K × K pixel block, rounded
+//!                      to u8 (a recording at 1/K the resolution)
 //!   --stats-half-life F  half-life (frames) of the footprint statistics
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
@@ -259,10 +272,14 @@ struct Recording {
     starts: Vec<u32>,
     dims: Dims,
     total: u32,
+    /// Frames are binned `bin` × `bin` (1 = as recorded); `dims` is binned.
+    bin: usize,
+    raw_dims: Dims,
 }
 
 impl Recording {
-    fn open(dir: &Path) -> Recording {
+    fn open(dir: &Path, bin: usize) -> Recording {
+        assert!(bin >= 1, "--bin must be at least 1");
         let mut files = Vec::new();
         for i in 0.. {
             let p = dir.join(format!("{i}.avi"));
@@ -279,17 +296,20 @@ impl Recording {
             total += f.header.frame_count();
         }
         let info = files[0].header.info();
-        let dims = Dims::new(info.width as usize, info.height as usize).unwrap();
+        let raw_dims = Dims::new(info.width as usize, info.height as usize).unwrap();
+        let dims = Dims::new(raw_dims.width / bin, raw_dims.height / bin).unwrap();
         Recording {
             files,
             starts,
             dims,
             total,
+            bin,
+            raw_dims,
         }
     }
 
     fn read(&mut self, start: u32, count: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(count as usize * self.dims.pixels());
+        let mut out = Vec::with_capacity(count as usize * self.raw_dims.pixels());
         let mut s = start;
         while s < start + count {
             let k = self.starts.partition_point(|&x| x <= s) - 1;
@@ -298,7 +318,27 @@ impl Recording {
             self.files[k].read(local, n, &mut out);
             s += n;
         }
-        out
+        if self.bin == 1 {
+            return out;
+        }
+        // Mean of each bin x bin block, rounded; a partial last row or column is dropped.
+        let (b, rw) = (self.bin, self.raw_dims.width);
+        let (h, w) = (self.dims.height, self.dims.width);
+        let mut binned = Vec::with_capacity(count as usize * h * w);
+        for f in out.chunks_exact(self.raw_dims.pixels()) {
+            for y in 0..h {
+                for x in 0..w {
+                    let mut sum = 0u32;
+                    for dy in 0..b {
+                        let row = (y * b + dy) * rw + x * b;
+                        sum += f[row..row + b].iter().map(|&v| u32::from(v)).sum::<u32>();
+                    }
+                    let n = (b * b) as u32;
+                    binned.push(((sum + n / 2) / n) as u8);
+                }
+            }
+        }
+        binned
     }
 }
 
@@ -2132,6 +2172,47 @@ fn write_library(
     }
 }
 
+/// `--factors-out`: compresses the preprocessed frames window by window and
+/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+struct FactorDump {
+    dir: PathBuf,
+    tile: usize,
+    wc: calab_cala::compress::WindowCompressor,
+}
+
+impl FactorDump {
+    fn new(dir: &Path, dims: Dims) -> FactorDump {
+        std::fs::create_dir_all(dir).unwrap();
+        let cfg = calab_cala::compress::CompressConfig {
+            window: 600,
+            ..calab_cala::compress::CompressConfig::default()
+        };
+        FactorDump {
+            dir: dir.to_path_buf(),
+            tile: cfg.tile,
+            wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+        }
+    }
+
+    fn write(&self, wf: calab_cala::compress::WindowFactors) {
+        let name = format!("w{:07}.fac", wf.start);
+        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+    }
+
+    fn push(&mut self, frame: &[f32]) {
+        if let Some(wf) = self.wc.push(frame) {
+            self.write(wf);
+        }
+    }
+
+    /// Write the last, shorter window.
+    fn finish(&mut self) {
+        if let Some(wf) = self.wc.flush() {
+            self.write(wf);
+        }
+    }
+}
+
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
 /// |trace|) and, at the first frames that hit the sweep cap or go
 /// non-finite, the library bytes, the frame and the warm start.
@@ -2259,7 +2340,15 @@ fn main() {
     } else {
         input.clone()
     };
-    let mut rec = Recording::open(&avi_dir);
+    let bin: usize = arg_value(&args, "--bin").map_or(1, |s| s.parse().unwrap());
+    assert!(bin == 1 || mode == "real", "--bin is for `real` only");
+    let mut rec = Recording::open(&avi_dir, bin);
+    if bin > 1 {
+        println!(
+            "binned {bin}x{bin}: {}x{} px",
+            rec.dims.width, rec.dims.height
+        );
+    }
     let dims = rec.dims;
     let n_px = dims.pixels();
     let oracle = has_gt.then(|| read_oracle(&input.join("oracle.bin")));
@@ -2270,11 +2359,45 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
-    let cfg = PreprocessConfig::for_fps(20.0);
+    let mut cfg = PreprocessConfig::for_fps(20.0);
+    if let Some(v) = arg_value(&args, "--cell-diameter") {
+        cfg.flatten.cell_diameter_px = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--flatten-sigma") {
+        cfg.flatten.sigma_px = Some(v.parse().unwrap());
+    }
     let mut scfg = SlowLoopConfig {
         cell_diameter_px: cfg.flatten.cell_diameter_px,
         ..SlowLoopConfig::default()
     };
+    if let Some(v) = arg_value(&args, "--psf-sigma") {
+        scfg.psf_sigma_px = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--tile-px") {
+        scfg.tile_px = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--margin-px") {
+        scfg.margin_px = v.parse().unwrap();
+    }
+    let scales_set = [
+        "--cell-diameter",
+        "--flatten-sigma",
+        "--psf-sigma",
+        "--tile-px",
+        "--margin-px",
+    ]
+    .iter()
+    .any(|f| args.iter().any(|a| a == f));
+    if scales_set {
+        println!(
+            "scales: cell diameter {} px, flatten sigma {} px, psf sigma {} px, tile {} / margin {} px",
+            scfg.cell_diameter_px,
+            cfg.flatten.sigma(),
+            scfg.psf_sigma_px,
+            scfg.tile_px,
+            scfg.margin_px
+        );
+    }
     if let Some(v) = arg_value(&args, "--slow-seed") {
         scfg.seed = v.parse().unwrap();
     }
@@ -2517,6 +2640,9 @@ fn main() {
     let mut passes_out = String::from(
         "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
     );
+    // `--factors-out`: the compressed history of pass 1.
+    let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
+    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
@@ -2683,6 +2809,9 @@ fn main() {
                     if let Some(l) = tm.library(now) {
                         engine.set_library(l).unwrap();
                     }
+                }
+                if let (Some(fd), 0) = (factors.as_mut(), pass) {
+                    fd.push(&y);
                 }
                 let warm = diverge.as_ref().map(|_| engine.state());
                 let tr = engine.process(&y).unwrap();
@@ -3075,6 +3204,9 @@ fn main() {
             );
         }
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
+    }
+    if let Some(fd) = factors.as_mut() {
+        fd.finish();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();

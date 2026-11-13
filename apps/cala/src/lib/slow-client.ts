@@ -5,11 +5,13 @@
  * its status and libraries to a listener.
  */
 import type { FrameClient } from './frame-client.ts';
-import type { SlowConnect, SlowToMain, VisitConnect } from '../workers/slow-types.ts';
+import type { SlowConnect, SlowReviewed, SlowToMain, VisitConnect } from '../workers/slow-types.ts';
 
 export interface SlowClient {
   /** Visit workers running the slow loop's tile visits. */
   readonly visitWorkers: number;
+  /** Pass what a history review found to the slow loop (the array is transferred). */
+  addReviewed(session: number, candidates: Float32Array): void;
   dispose(): void;
 }
 
@@ -82,6 +84,10 @@ export function createSlowClient(
   );
   return {
     visitWorkers,
+    addReviewed(session, candidates) {
+      const msg: SlowReviewed = { type: 'reviewed', session, candidates };
+      worker.postMessage(msg, [candidates.buffer as ArrayBuffer]);
+    },
     dispose() {
       worker.terminate();
       for (const v of helpers) v.terminate();
