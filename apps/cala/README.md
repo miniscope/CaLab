@@ -47,7 +47,10 @@ What is here:
   is the significant single-peaked basin around its peak plus a measured skirt
   (`SupportRule::BasinSkirt`, see `tools/cala-eval/README.md`), and the
   statistics path refines a footprint only when the change exceeds the
-  estimate's own split-half noise (`RefineGate::SplitHalf`).
+  estimate's own split-half noise (`RefineGate::SplitHalf`). Two cells whose
+  footprints overlap less than half merge only when the held-out test accepts
+  the merge and their measured shapes agree within their own split-half noise
+  (`MergeRule::SplitHalf`).
 - `src/components/FovPanel.tsx`: the field of view, one image (raw,
   preprocessed, motion-corrected, background-removed or the model residual)
   with zoom, pan, a minimap and the cell overlay (contours or full-extent

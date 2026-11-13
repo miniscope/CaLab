@@ -1,7 +1,8 @@
 # Split-half merge rule (S2.1c merge redesign)
 
 13 Nov 2026. Branch `feat/cala-merge-splithalf`. `SlowLoopConfig::merge_rule: MergeRule::{Legacy, SplitHalf}`,
-`qc_eval --merge-rule legacy|split-half`. **Legacy stays the default** in this PR.
+`qc_eval --merge-rule legacy|split-half`. Legacy stayed the default in this PR (#376); split-half became the default
+in a follow-up (see Decision).
 
 ## Verdict
 
@@ -195,6 +196,19 @@ Summed over seeds: distinct-unit merges 135 → 44 (−67 %); same-unit merges 5
 - after merging 1a21b6d (#372–#375), against main 1a21b6d.
 
 Both times, all seven outputs are byte-identical.
+
+## Decision (PI, 13 Nov 2026): made the default
+
+The PI approved the split-half rule as the default (`MergeRule::SplitHalf`; `--merge-rule legacy` keeps the old rule).
+Distinct-cell merges fall 64 % on static 1×, 52 % on static 4× and 67 % on motion, true duplicates are kept, and real
+seed-to-seed Jaccard rises from .711 to .757. With the default flipped, a run with no flag reproduces the split-half arm
+above byte for byte (static_s5).
+
+- Watch item: fp_dup rises by about +1.3 to +2.4 per run (static 4× and motion). Every CI covers 0, but it is the
+  cost to keep an eye on.
+- Next lever: require split halves before any non-overlapping merge. 28 of the 65 remaining distinct-unit merges
+  involve a young cell, where the held-out test decides alone. Its effect on early duplicate cleanup (14 of the 35
+  kept same-unit merges have no halves) needs its own A/B.
 
 ## Not done / caveats
 
