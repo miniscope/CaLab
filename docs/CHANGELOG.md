@@ -5,6 +5,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala: a split-half merge rule, opt-in (`MergeRule::SplitHalf`,
+  `qc_eval --merge-rule split-half`; the default stays `Legacy`). A pair of
+  cells whose footprints overlap less than half merges only when the
+  held-out test accepts it *and* the two cells' running footprint estimates
+  have the same shape within their own split-half noise (the refine gate's
+  `Î ≤ 0`, applied both ways on the union support). On static sims
+  distinct-cell merges fall 64 % while 90 % of true-duplicate merges are
+  kept, with P8, R8 and r_fp flat. On real data merges fall about 70 %,
+  late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`). Diagnostics:
+  `qc_eval --merge-log` writes one JSON line per merge test.
+
 ### Changed
 
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
