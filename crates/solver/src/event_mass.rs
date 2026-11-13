@@ -88,7 +88,7 @@ use crate::threshold::{interior_pve, threshold_grid, NoiseModel};
 /// peakier than early-stopped FISTA, which costs bursting slow-indicator
 /// cells F1). The event-span floor fixes bursts but loses on fast
 /// indicators. A better floor is worth investigating later.
-pub(crate) const DEFAULT_MODE: u8 = 3;
+pub(crate) const DEFAULT_MODE: u8 = 6;
 
 #[cfg(test)]
 thread_local! {
@@ -99,6 +99,11 @@ thread_local! {
 #[cfg(test)]
 pub(crate) static GLOBAL_MODE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(DEFAULT_MODE);
+
+/// Whether the split-sum pick (and with it the chain correction of the relaxed masses) is in effect.
+pub(crate) fn split_sum_active() -> bool {
+    mode() == 6
+}
 
 fn mode() -> u8 {
     #[cfg(test)]
@@ -335,6 +340,27 @@ pub(crate) fn event_mass_search(
         };
     }
     let frame_max = x[lo..hi].iter().fold(0.0_f64, |m, &v| m.max(v as f64));
+    // Mode 6: the split-sum size when the data identify one, else the cap convention (mode 3) below.
+    let mode = || if mode() == 6 { 3 } else { mode() };
+    if self::mode() == 6 {
+        if let Some(nm) = noise {
+            if let Some(r) = split_sum_pick(
+                x,
+                &events,
+                scorer,
+                banded,
+                pad,
+                lo,
+                hi,
+                cap,
+                nm,
+                frame_max / cap as f64,
+                a_max,
+            ) {
+                return r;
+            }
+        }
+    }
     let a_floor = if matches!(mode(), 1 | 2 | 5) {
         // Every event fits its own span at `cap` spikes per frame.
         events
@@ -434,6 +460,259 @@ pub(crate) fn event_mass_search(
         error: errors[pick],
         diag,
     }
+}
+
+// ------------------------------------------------------------------ mode 6: split-sum marginal + discreteness BF
+/// Search settings of the split-sum pick (the in-pipeline profile; see `split_sum::select_alpha`).
+const SS_UNITS: usize = 25;
+const SS_NULL_MULTS: [f64; 4] = [1.0, 4.0, 16.0, 64.0];
+const SS_ITERS: usize = 40;
+const SS_TOL: f64 = 1e-6;
+/// Pieces separated by at most this many empty frames are one piece (as in the offline evaluation).
+const SS_GAP: usize = 2;
+
+/// The noise of one piece's mass, sigma_x = sigma_k / (a_rel sqrt(E_k)): sigma_k is the matched-filter noise read on
+/// quiet windows of the working trace (frames where the fit of resolved events stays below sigma over the kernel span),
+/// with the kernel made orthogonal to a local linear trend; the frame sigma when too few windows exist or the
+/// resolved events carry under 75% of the fit's energy, and never below it. Ported unchanged from the build whose
+/// dumps the method was evaluated on.
+#[allow(clippy::too_many_arguments)]
+fn split_sigma_x(
+    x: &[f32],
+    events: &[Event],
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    pad: usize,
+    lo: usize,
+    hi: usize,
+    nm: NoiseModel,
+) -> (f64, usize) {
+    let n = scorer.target().len();
+    let mut conv = vec![0.0_f32; n];
+    let mut prof = vec![0.0_f32; n];
+    relaxed_profile(x, lo, hi, &mut prof);
+    let (_, a_rel, _) = scorer.score(&prof, banded, pad, f64::INFINITY, &mut conv);
+    let mut imp = vec![0.0_f32; n];
+    imp[n / 2] = 1.0;
+    let mut out = vec![0.0_f32; n];
+    banded.convolve_forward(&imp, &mut out);
+    let e_k: f64 = out.iter().map(|&v| (v as f64) * (v as f64)).sum();
+    let peak = out.iter().fold(0.0_f32, |m, &v| m.max(v.abs())) as f64;
+    let t_pk = out[n / 2..]
+        .iter()
+        .enumerate()
+        .fold(
+            (0usize, 0.0_f32),
+            |b, (j, &v)| if v > b.1 { (j, v) } else { b },
+        )
+        .0
+        .max(1);
+    let l_k = out
+        .iter()
+        .rposition(|&v| v.abs() as f64 > 1e-3 * peak)
+        .map_or(1, |j| j.saturating_sub(n / 2) + 1)
+        .max(1);
+    const SIGMA_K_CUT: f64 = 2.5;
+    const SIGMA_K_ENERGY: f64 = 0.75;
+    let mut big = vec![0.0_f32; n];
+    let (mut e_big, mut e_all) = (0.0_f64, 0.0_f64);
+    for ev in events {
+        e_all += ev.mass * ev.mass;
+        if a_rel * ev.mass * peak > SIGMA_K_CUT * nm.sigma {
+            let end = ev.end.min(n);
+            big[ev.start..end].copy_from_slice(&prof[ev.start..end]);
+            e_big += ev.mass * ev.mass;
+        }
+    }
+    let trusted = e_big >= SIGMA_K_ENERGY * e_all && e_all > 0.0;
+    let sigma_k = if !trusted || n <= l_k {
+        nm.sigma
+    } else {
+        let mut conv_big = vec![0.0_f32; n];
+        let (_, a_big, _) = scorer.score(&big, banded, pad, f64::INFINITY, &mut conv_big);
+        let idle: Vec<bool> = conv_big
+            .iter()
+            .map(|&c| a_big * c as f64 <= nm.sigma)
+            .collect();
+        let kv: Vec<f64> = (0..l_k)
+            .map(|j| out[(n / 2 + j).min(n - 1)] as f64)
+            .collect();
+        let m = l_k as f64;
+        let sx = (0..l_k).map(|j| j as f64).sum::<f64>();
+        let sxx = (0..l_k).map(|j| (j * j) as f64).sum::<f64>();
+        let sy = kv.iter().sum::<f64>();
+        let sxy = kv
+            .iter()
+            .enumerate()
+            .map(|(j, &v)| j as f64 * v)
+            .sum::<f64>();
+        let b = (m * sxy - sx * sy) / (m * sxx - sx * sx).max(1e-12);
+        let a = (sy - b * sx) / m;
+        let kt: Vec<f64> = kv
+            .iter()
+            .enumerate()
+            .map(|(j, &v)| v - a - b * j as f64)
+            .collect();
+        let e_t = kt.iter().map(|v| v * v).sum::<f64>();
+        let y = scorer.target();
+        let mut v: Vec<f64> = (lo..hi.saturating_sub(l_k))
+            .filter(|&t| idle[t..t + l_k].iter().all(|&b| b))
+            .map(|t| {
+                kt.iter()
+                    .enumerate()
+                    .map(|(j, &w)| w * y[t + j] as f64)
+                    .sum::<f64>()
+            })
+            .collect();
+        if v.len() < (4 * l_k).max(32) || e_t <= 0.0 {
+            nm.sigma
+        } else {
+            v.sort_by(|a, b| a.total_cmp(b));
+            let med = v[v.len() / 2];
+            let mut dev: Vec<f64> = v.iter().map(|x| (x - med).abs()).collect();
+            dev.sort_by(|a, b| a.total_cmp(b));
+            (1.4826 * dev[dev.len() / 2] / e_t.sqrt()).max(nm.sigma)
+        }
+    };
+    (sigma_k / (a_rel * e_k.sqrt()).max(1e-12), t_pk)
+}
+
+/// Positive runs merged across at most `gap` empty frames.
+fn merge_runs(x: &[f32], events: &[Event], gap: usize) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::new();
+    for e in events {
+        if let Some(last) = out.last_mut() {
+            if e.start - last.end <= gap {
+                last.end = e.end;
+                continue;
+            }
+        }
+        out.push(*e);
+    }
+    for e in out.iter_mut() {
+        let (mut mass, mut moment, mut peak) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for j in e.start..e.end {
+            let v = x[j].max(0.0) as f64;
+            mass += v;
+            moment += j as f64 * v;
+            peak = peak.max(v);
+        }
+        e.mass = mass;
+        e.centre = if mass > 0.0 {
+            moment / mass
+        } else {
+            (e.start + e.end) as f64 / 2.0
+        };
+        e.peak = peak;
+    }
+    out
+}
+
+/// Mode 6: the spike size from the split-sum marginal over how the relaxed solve's pieces group into spikes, chosen by
+/// the discreteness Bayes factor with the null scale integrated out; counts are each most-probable segment's most
+/// probable count (0 = noise), placed as every other mode places them.
+#[allow(clippy::too_many_arguments)]
+fn split_sum_pick(
+    x: &[f32],
+    events: &[Event],
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    pad: usize,
+    lo: usize,
+    hi: usize,
+    cap: usize,
+    nm: NoiseModel,
+    a_floor: f64,
+    a_max: f64,
+) -> Option<EventMassResult> {
+    use crate::split_sum::{select_alpha, Opts, Pieces};
+    let n = scorer.target().len();
+    let (sigma_x, t_pk) = split_sigma_x(x, events, scorer, banded, pad, lo, hi, nm);
+    let pieces = merge_runs(x, events, SS_GAP);
+    let m: Vec<f64> = pieces.iter().map(|e| e.mass).collect();
+    let c: Vec<f64> = pieces.iter().map(|e| e.centre).collect();
+    let st: Vec<f64> = pieces.iter().map(|e| e.start as f64).collect();
+    let en: Vec<f64> = pieces.iter().map(|e| e.end as f64).collect();
+    let pc = Pieces::new(&m, &c, &st, &en, 4 * t_pk, None, None, false);
+    let (u_lo, u_hi) = (a_floor.max(a_max * 1e-6).min(a_max), a_max);
+    let us: Vec<f64> = (0..SS_UNITS)
+        .map(|i| (u_lo.ln() + (u_hi.ln() - u_lo.ln()) * i as f64 / (SS_UNITS - 1) as f64).exp())
+        .collect();
+    let o = Opts {
+        positions: false,
+        norm_split: true,
+        fix_pi: None,
+        fit_sn: false,
+        null2: false,
+        fix_pos: false,
+        iters: SS_ITERS,
+        tol: SS_TOL,
+    };
+    let pick = select_alpha(&pc, sigma_x.max(1e-12), &us, &SS_NULL_MULTS, &o);
+    // The gate. log BF compares "a lattice at this unit" with "no lattice" for ONE unit, but the search took the best
+    // over a range of units. A lattice of unit u puts mass M at phase M/u, so two units are distinguishable over masses
+    // up to M* when M* (1/u - 1/u') >= 1 cycle: the range [u_lo, u_hi] holds N = M* (1/u_lo - 1/u_hi) distinguishable
+    // lattices, with M* the largest event mass (the longest lever arm). With even prior odds between "some lattice"
+    // (spread evenly over those N) and "none", the best lattice beats "none" only when BF > N. Below that the data do
+    // not identify a spike size, and the size falls back to the cap convention.
+    let n_units = (a_max / u_lo - a_max / u_hi).max(1.0);
+    if pick.log_bf <= n_units.ln() {
+        return None;
+    }
+    let mut s = vec![0.0_f32; n];
+    let (mut requested, mut placed) = (0usize, 0usize);
+    for &(i, j, cnt) in &pick.segments {
+        if cnt == 0 {
+            continue;
+        }
+        let (start, end) = (pieces[i].start, pieces[j].end);
+        let (mut mass, mut moment, mut peak) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for f in start..end {
+            let v = x[f].max(0.0) as f64;
+            mass += v;
+            moment += f as f64 * v;
+            peak = peak.max(v);
+        }
+        let ev = Event {
+            mass,
+            centre: if mass > 0.0 {
+                moment / mass
+            } else {
+                start as f64
+            },
+            start,
+            end,
+            peak,
+        };
+        requested += cnt;
+        placed += place_event(&ev, x, cnt, cap as f32, &mut s);
+    }
+    let mut conv = vec![0.0_f32; n];
+    let mut prof = vec![0.0_f32; n];
+    relaxed_profile(x, lo, hi, &mut prof);
+    let (e_relaxed, _, _) = scorer.score(&prof, banded, pad, f64::INFINITY, &mut conv);
+    let (error, alpha, baseline) = scorer.score(&s, banded, pad, f64::INFINITY, &mut conv);
+    let pve = interior_pve(scorer.target(), &conv, alpha, baseline, pad);
+    let diag = EventMassDiag {
+        e_relaxed,
+        std_error: nm.std_error(hi - lo),
+        e_pick: error,
+        a_pick: pick.alpha,
+        a_floor,
+        a_max,
+        count_pick: placed as f64,
+        dropped_spikes: (requested - placed) as u32,
+        peak_outlier_ratio: peak_outlier_ratio(events),
+        ..Default::default()
+    };
+    Some(EventMassResult {
+        counts: s,
+        alpha,
+        baseline,
+        pve,
+        error,
+        diag,
+    })
 }
 
 /// Largest event peak over the second largest (see
@@ -653,6 +932,8 @@ mod tests {
 
     #[test]
     fn a_trace_the_sizes_cannot_fit_reports_no_size_fit_and_takes_the_best_fit() {
+        // Tests the busiest-frame search (mode 3), which mode 6 does not use.
+        FLOOR_MODE.with(|m| m.set(3));
         // Masses that no whole-spike size reproduces within one SE of a tiny
         // noise level: two events whose masses are not commensurate.
         let n = 400;
@@ -702,6 +983,8 @@ mod tests {
     /// spikes per frame and a bandpass filter.
     #[test]
     fn nested_scoring_matches_from_scratch_chain_scoring() {
+        // Tests the busiest-frame search (mode 3), which mode 6 does not use.
+        FLOOR_MODE.with(|m| m.set(3));
         let (fs, n) = (30.0, 3000);
         let banded = BandedAR2::new(0.05, 0.4, fs);
         let window = crate::baseline::baseline_window(0.4, fs);

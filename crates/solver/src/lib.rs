@@ -16,6 +16,7 @@ pub(crate) mod overview;
 pub(crate) mod peak_seed;
 pub(crate) mod simulate;
 pub(crate) mod snr;
+pub(crate) mod split_sum;
 pub(crate) mod threshold;
 pub(crate) mod validate;
 
