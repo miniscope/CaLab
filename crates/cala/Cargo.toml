@@ -31,6 +31,11 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"], optional = true }
 
+# qc_eval's unit tests (GT frame alignment) run with `cargo test`.
+[[example]]
+name = "qc_eval"
+test = true
+
 # Unit tests of the slow loop are numerically heavy: optimised test builds
 # run them in seconds instead of minutes (debug assertions stay on).
 [profile.test]

@@ -18,11 +18,45 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
   (`tools/cala-eval/results/2026-11-13-merge-rule.md`). Diagnostics:
   `qc_eval --merge-log` writes one JSON line per merge test.
+- Cala: recordings named `msCam0.avi, msCam1.avi, ...` (older Miniscope DAQ
+  software), zero-padded (`msCam001.avi`) or with another prefix now open, not only
+  `0.avi, 1.avi, ...`. Videos are grouped into numbered series per folder; a
+  `behavCam` series beside `msCam` is skipped automatically, and when several
+  plausible series remain the open screen lists them to pick from. Numbering
+  warnings use the real file names. Files chosen individually open in natural order
+  even when not numbered. `metaData.json` and `timeStamps.csv` are still read from
+  the chosen series' folder.
+
+### Fixed
+
+- Cala: the app's slow loop now gets the fast loop's per-cell ring-background
+  levels with each frame's traces, in Discover and in Refine. Before, the slow
+  worker observed the traces only, so the ledger and the footprint statistics
+  kept each cell's local background, and the app did not run the slow loop that
+  `qc_eval` evaluates. `TraceEngine.lastBackground()` is new, and
+  `SlowLoop.observe` takes an optional `background`. The measured effect of the
+  mismatch is within run-to-run noise (`qc_eval --no-bg-levels`,
+  `tools/cala-eval/results/2026-11-13-app-background-levels.md`).
 
 ### Changed
 
 - Cala: for recordings, "Extract after Discover" is now off by default, so a Discover, Refine, Extract flow no longer wastes an Extract run that Refine discards. After Discover the panel shows the Refine and Extract buttons with the hint "Refine to let footprints settle, then Extract final traces." Turning the option on keeps the old behaviour. Live streams are unchanged.
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
+
+### Developer tooling
+
+- cala-eval: `qc_eval` scores motion runs against ground truth in cala's
+  registered frame. cala registers to its warm-up template, which sits 1 to
+  3.3 px from the sim's tissue frame on the motion sims, and the GT was never
+  moved. The offset is measured from cala's rigid records against the sim's
+  true shifts (`<sim>/shifts.npy`, `export_gt_motion.py`; reported in
+  `motion_offset.tsv`), and the GT footprints are moved by it before scoring.
+  `size6_motion` P8/R8 go from .17/.18 to .89/.94; 10–14 px arms change by
+  under .02 in P8/R8 and gain about .024 in `r_fp`. Rescored, no earlier
+  paired conclusion changes (support rule, refine gate, merge veto). Also
+  `--gt-offset none`, `--rescore RUN` (rescore a `--churn-log` run offline) and
+  a `unit` column in `gt.tsv`
+  (`tools/cala-eval/results/2026-11-13-motion-offset.md`).
 
 ## [2.17.0] - 2026-11-13
 

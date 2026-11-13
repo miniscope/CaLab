@@ -459,6 +459,41 @@
   font-size: 0.85rem;
 }
 
+/* Video series chooser on the open screen. */
+.cala-series-chooser {
+  max-width: 34rem;
+  margin: var(--space-lg, 1rem) auto;
+  padding: var(--space-lg, 1rem);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  text-align: left;
+}
+.cala-series-chooser__title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+.cala-series-chooser__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.cala-series-chooser__option {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.cala-series-chooser__dir {
+  display: block;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
 /* Sensor flat field panel */
 
 .cala-flat {

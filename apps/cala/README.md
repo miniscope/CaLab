@@ -14,7 +14,8 @@ npm test -w apps/cala     # Vitest
 What is here:
 
 - `src/lib/frame-source.ts`: the frame source. Given the files of a Miniscope
-  folder it sorts `N.avi` naturally, parses each header from a 64 KB prefix and
+  folder it finds the numbered `.avi` series (`0.avi` or `msCam0.avi`, optionally
+  zero-padded; `src/lib/video-series.ts` groups, ranks and sorts them), parses each header from a 64 KB prefix and
   the `idx1` region with the wasm `AviHeader` (`crates/cala/src/avi.rs`), and
   exposes `readFrame(globalIndex)` using `File.slice`; a whole video is never
   loaded. The frame rate comes from `timeStamps.csv`, else `metaData.json`,
