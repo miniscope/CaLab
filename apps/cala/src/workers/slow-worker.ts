@@ -22,6 +22,17 @@ let runner: SlowRunner | null = null;
 // in arrival order, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
 
+/** Give way to the messages waiting (a macrotask, without setTimeout's clamping). */
+const yieldChannel = new MessageChannel();
+const yieldWaiters: (() => void)[] = [];
+yieldChannel.port1.onmessage = () => yieldWaiters.shift()?.();
+function pause(): Promise<void> {
+  return new Promise((resolve) => {
+    yieldWaiters.push(resolve);
+    yieldChannel.port2.postMessage(0);
+  });
+}
+
 function report(session: number, err: unknown): void {
   workerScope.postMessage({
     type: 'error',
@@ -63,14 +74,19 @@ workerScope.onmessage = (e) => {
   toFast.onmessage = (ev: MessageEvent<FastToSlow>) => {
     queue = queue
       .then(() => initCalaWasm())
-      .then(() => r.handle(ev.data))
+      .then(() => r.handleAsync(ev.data, pause))
       .catch((err: unknown) => report('session' in ev.data ? ev.data.session : -1, err));
   };
+  // Visit results do not queue behind batches of frames: a batch gives way
+  // between frames while visits are out (`SlowRunner.handleAsync`). A visit
+  // is only handed out once the module is ready, so its result needs no wait.
   visits.forEach((v, i) => {
     v.onmessage = (ev: MessageEvent<VisitToOwner>) => {
-      queue = queue
-        .then(() => r.handleVisit(i, ev.data))
-        .catch((err: unknown) => report(ev.data.session, err));
+      try {
+        r.handleVisit(i, ev.data);
+      } catch (err) {
+        report(ev.data.session, err);
+      }
     };
   });
 };

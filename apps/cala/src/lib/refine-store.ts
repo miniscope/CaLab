@@ -10,8 +10,10 @@
  * final library from frame 0. The difference is that the frames go to the
  * slow loop (`CellsSettings.refine`). The slow loop keeps the newest noise
  * map of Discover. Unlike Discover, no frame is dropped for the slow loop: the
- * next batch is asked for only once the slow loop has taken all but one of
- * the batches sent (a file can wait; a live stream could not).
+ * next batch is asked for only while the slow loop has at most
+ * `REFINE_SLOW_LEAD - 1` batches left to take (a file can wait; a live stream
+ * could not), and the fast loop's forward pool never drops (`ForwardPool`
+ * lossless).
  *
  * The engine path is the same as qc_eval's `--later-passes refine`
  * (`SlowLoop.setEditScope('refine')`, then the recording again).
@@ -22,12 +24,25 @@ import type { PipelineClient } from './frame-client.ts';
 import type { PipelinePlan } from './pipeline-plan.ts';
 import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-store.ts';
 import { footprintChange, perMinute, type StageLog, type StageRun } from './run-stages.ts';
+import { RefineTracker, type RefineSample } from './refine-metrics.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
 export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' | 'cancelled';
 
 /** How often to look again while waiting for the slow loop, ms. */
 const WAIT_MS = 10;
+
+/**
+ * Batches sent that the slow loop may not have taken yet: the fast pipeline's
+ * `MAX_IN_FLIGHT` plus two waiting at the slow worker (one being observed,
+ * one queued), so neither side idles while the other works. With one (the
+ * first version) the three pipeline stages ran one batch at a time: Refine
+ * ran at the sum of their costs instead of the slowest one's, about half
+ * Extract's frame rate.
+ */
+export const REFINE_SLOW_LEAD = MAX_IN_FLIGHT + 2;
+/** Forward buffers for Refine: the lead plus one for an ack the trace worker has not read yet. */
+export const REFINE_FORWARD_BUFFERS = REFINE_SLOW_LEAD + 1;
 
 export function createRefineStore(
   client: PipelineClient,
@@ -43,6 +58,11 @@ export function createRefineStore(
   const [total, setTotal] = createSignal(0);
   const [fps, setFps] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
+  /** The current (or last) run's series over its replay; bumped as samples arrive. */
+  const [series, setSeries] = createSignal<{
+    samples: readonly RefineSample[];
+    end: number;
+  } | null>(null);
 
   let generation = 0;
   let inFlight = 0;
@@ -57,6 +77,7 @@ export function createRefineStore(
     refines0: number;
     meter: ThroughputMeter;
     done: number;
+    tracker: RefineTracker;
   }
 
   /** Frames of this replay the slow loop has taken (0 until its status says it is on this run). */
@@ -65,8 +86,20 @@ export function createRefineStore(
     return st && st.run === ctx.run ? (st.consumed ?? st.frame) : 0;
   }
 
+  /** Feed the run's series from the slow loop's newest status and library. */
+  function sample(ctx: Ctx): void {
+    const st = cells.status();
+    if (!st || st.run !== ctx.run) return;
+    const frame = st.frame;
+    const lib = cells.library();
+    if (lib) ctx.tracker.library(lib, frame);
+    ctx.tracker.status(frame, Math.max(0, st.counters.refines - ctx.refines0));
+    setSeries({ samples: ctx.tracker.samples().slice(), end: ctx.tracker.time(ctx.frames) });
+  }
+
   /** Close the run in the log with what the slow loop published. */
   function record(ctx: Ctx, outcome: 'done' | 'cancelled' | 'error'): void {
+    sample(ctx);
     const after = cells.library();
     const st = cells.status();
     const refines = Math.max(0, (st?.counters.refines ?? ctx.refines0) - ctx.refines0);
@@ -79,6 +112,9 @@ export function createRefineStore(
       refinesPerMin: perMinute(refines, ctx.done, cells.fps()),
       footprintsRefined: change.refined,
       medianFootprintChange: change.median,
+      changeP90: ctx.tracker.summary().changeP90,
+      refinedShare: ctx.tracker.summary().refinedShare,
+      series: ctx.tracker.samples().slice(),
     };
     log.end('refine', outcome, data);
   }
@@ -110,8 +146,8 @@ export function createRefineStore(
 
   function pump(gen: number, ctx: Ctx): void {
     while (gen === generation && status() === 'running' && !exhausted && inFlight < MAX_IN_FLIGHT) {
-      // Never more than one batch ahead of the slow loop (nothing is dropped).
-      if (ctx.done + inFlight * ctx.batch - slowTaken(ctx) > ctx.batch) {
+      // At most REFINE_SLOW_LEAD batches ahead of the slow loop (nothing is dropped).
+      if (ctx.done + (inFlight + 1) * ctx.batch - slowTaken(ctx) > REFINE_SLOW_LEAD * ctx.batch) {
         if (inFlight === 0) setTimeout(() => pump(gen, ctx), WAIT_MS);
         return;
       }
@@ -122,6 +158,7 @@ export function createRefineStore(
           if (gen !== generation) return;
           if (step.kind === 'batch') {
             ctx.done = step.start + step.count;
+            sample(ctx);
             setProcessed(ctx.done);
             setFps(ctx.meter.record(clock(), step.count));
           } else if (step.kind === 'done' && !exhausted) {
@@ -177,9 +214,11 @@ export function createRefineStore(
       refines0: st.counters.refines,
       meter: new ThroughputMeter(),
       done: 0,
+      tracker: new RefineTracker(before, cells.fps()),
     };
     current = ctx;
     setTotal(ctx.frames);
+    setSeries({ samples: [], end: ctx.tracker.time(ctx.frames) });
     log.begin('refine');
     try {
       await client.startPipeline(
@@ -189,7 +228,14 @@ export function createRefineStore(
           motionWarmupFrames: plan1.motionWarmupFrames,
           previewMaxSide: plan1.previewMaxSide,
         },
-        { session: cells.session(), discover: true, qc: false, library: bytes, refine: true },
+        {
+          session: cells.session(),
+          discover: true,
+          qc: false,
+          library: bytes,
+          refine: true,
+          forwardBuffers: REFINE_FORWARD_BUFFERS,
+        },
         { frameCount: ctx.frames, ...rec.snapshot(), ...(flatMap ? { flatField: flatMap } : {}) },
       );
       if (gen !== generation) return;
@@ -219,9 +265,10 @@ export function createRefineStore(
     setProcessed(0);
     setTotal(0);
     setFps(0);
+    setSeries(null);
   }
 
-  return { status, processed, total, fps, error, run, cancel, clear };
+  return { status, processed, total, fps, error, series, run, cancel, clear };
 }
 
 export type RefineStore = ReturnType<typeof createRefineStore>;

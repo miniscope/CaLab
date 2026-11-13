@@ -34,7 +34,32 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   session's file of a multi-session run, and **Export for CaDecon** writes
   the signed traces. Live runs (no Extract) keep the clipped traces only.
   `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
+- Cala: **View results**. Any session in a project's table with a result gets
+  **View results** (on its current result, and on every result under
+  **Results**): the saved export opens read-only in the normal viewer, with the
+  footprints and contours over the field of view, the QC table and colours, the
+  selected cell's footprint and Extract trace, the History plots and event log,
+  the stages that ran and the flat field. There are no stage controls; **Back
+  to project** returns to the table. Exports of every format version open;
+  parts an older one lacks say "not in this export". The file is read lazily
+  (`ZipArchive` in `@calab/io`, ZIP64-aware), so a large export opens without
+  being read whole. See `apps/cala/docs/projects.md`.
+- Cala: export format 5. `fov_mean` (mean of the registered, preprocessed
+  frames before background removal) and `fov_max` (max of the frames with the
+  background floor removed), float32 [H, W], kept by Extract over every frame
+  of the export's span (each session of a Joint run gets its own), and
+  `flat_field_gain`, the gain map Extract divided out. `meta_json.fov_images`
+  stores each image's fixed display range (from the bit depth, never from the
+  pixels; see `apps/cala/src/lib/fov-display.ts`).
 
+- Cala: Refine plots in the Run panel. The current or last Refine run is
+  plotted over its replay: refines per minute, the median and 90th
+  percentile of the footprint changes at each publish, and the share of
+  cells refined so far. A comparison across runs shows refines per minute
+  (Discover, Refine 1, 2, ...) and the median change per run, with the
+  "Looks settled" hint under it. Ranges are declared and anchored at 0, as
+  in the History plots. Each Refine run's `meta_json.stages` entry adds
+  `change_p90`, `refined_share` and the `series` columns.
 - Cala: animal projects. **Open animal project** opens an animal's folder of
   sessions as a project: a session table with each session's date, length,
   Discover / Refine / Extract status, shared cell ids and current result, and
@@ -90,6 +115,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: exports now hold the run's History bins and event log
+  (`history_L{k}`, `run_events_json`). The writer supported them since format
+  2, but neither the Export button nor the multi-session and project runs
+  passed them in.
 - Cala: the app's slow loop now gets the fast loop's per-cell ring-background
   levels with each frame's traces, in Discover and in Refine. Before, the slow
   worker observed the traces only, so the ledger and the footprint statistics
@@ -98,9 +127,35 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `SlowLoop.observe` takes an optional `background`. The measured effect of the
   mismatch is within run-to-run noise (`qc_eval --no-bg-levels`,
   `tools/cala-eval/results/2026-11-13-app-background-levels.md`).
+- Cala: QC after Extract. Refine and Extract run no QC monitor, so the app
+  showed and exported the QC of Discover's last minute: a clean cell that was
+  quiet then failed on a low peak SNR, and in a Joint run every session's
+  export carried the same QC (the end of the last session). After Extract the
+  trace statistics (peak SNR, events, the low-SNR flag) are now recomputed on
+  the extracted traces over the **whole session** (each session's own span in
+  a multi-session export), with the monitor's own function; the pass rule
+  (peak SNR ≥ 5, no likely duplicate) is unchanged. Every QC duration is now
+  seconds × the recording's frame rate (`QcConfig::for_fps`; identical at
+  20 Hz). On real data the whole-session SNR passes 70 of 71 cells that failed
+  on Discover's last minute and ranks cells against Minian far better (AUC
+  .64 → .80); see `tools/cala-eval/results/2026-11-13-qc-snr.md`.
 
 ### Changed
 
+- Cala: Refine replays the recording pipelined. It used to keep at most one
+  batch ahead of the slow loop, so the three pipeline workers ran one batch at
+  a time (Refine at about half Extract's frame rate). It now keeps up to four
+  batches ahead (`REFINE_SLOW_LEAD`); the forward pool of a Refine run never
+  drops a batch (lossless `ForwardPool`), so the slow loop still observes
+  every frame in order. In a Refine run with visit workers, a batch also gives
+  way between frames while a visit is out, so visit results are applied and
+  new visits handed out without waiting for the batch. Refine on the 600 x 600
+  sim (2000 frames, M-series, Metal): 139–146 fps before, 152–165 after (with
+  the idle-visit change, 177–180). Visits per frame are compute-dependent in
+  the app; with this change a Refine run makes about 20–35 % more visits per
+  frame than before (and more refines per run). Refine's per-run work thus
+  depends on machine speed, as Discover's does (PI decision, 13 Nov 2026).
+  Discover is unchanged.
 - Cala: in a Refine run with visit workers, the tile visits that would not
   refine (every other visit of a tile: Refine makes no adds, merges or keep
   tests) are made by the slow worker when they are due instead of being

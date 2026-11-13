@@ -186,6 +186,8 @@ export function createCellStore(
   const [established, setEstablished] = createSignal<Map<number, boolean>>(new Map());
   const [convergence, setConvergence] = createSignal<ConvergenceStatus>(convergenceStatus([]));
   const [fps, setFps] = createSignal(20);
+  /** Showing a saved result (`loadResult`), not a run. */
+  const [saved, setSaved] = createSignal(false);
 
   let session = -1;
   /** Newest published library as `TraceLibrary.toBytes()` (pass 2 solves with it). */
@@ -224,6 +226,7 @@ export function createCellStore(
     setVersion(0);
     setBatch(null);
     setError(null);
+    setSaved(false);
     setTick((v) => v + 1);
   }
 
@@ -371,6 +374,38 @@ export function createCellStore(
     setTick((v) => v + 1);
   }
 
+  /**
+   * Show a saved result (read-only viewer, `result-file.ts`): its library,
+   * when each cell was first seen, its QC, at the end of its `frames`. The
+   * traces follow with `onBackfill`. Messages of any pipeline session are
+   * ignored until the next `reset`.
+   */
+  function loadResult(o: {
+    library: LibraryView;
+    firstSeen: ReadonlyMap<number, number>;
+    qc: QcSnapshot | null;
+    frames: number;
+    fps: number;
+  }): void {
+    reset(-2);
+    firstSeen = new Map(o.firstSeen);
+    footprints.record(o.library);
+    events.push({
+      version: o.library.version,
+      frame: o.frames,
+      cells: o.library.ids.length,
+      added: o.library.ids.length,
+      removed: 0,
+    });
+    setFps(o.fps > 0 ? o.fps : 20);
+    setFrame(o.frames);
+    setVersion(o.library.version);
+    setLibrary(o.library);
+    setGeometry(buildGeometry(o.library));
+    setQc(o.qc);
+    setSaved(true);
+  }
+
   /** Frames since `id` was first seen (Infinity when unknown). */
   function age(id: number): number {
     const f = firstSeen.get(id);
@@ -383,6 +418,9 @@ export function createCellStore(
     onSlowMessage,
     onBackfill,
     onBatch,
+    loadResult,
+    /** A saved result is shown (read-only), not a run. */
+    saved,
     library,
     /** Bytes of `library()` for the trace solver (null before the first publish). */
     libraryBytes: () => latestBytes,
@@ -412,6 +450,12 @@ export function createCellStore(
     timing: () => timing,
     /** Newest QC snapshot (null until the fast loop has cells and a snapshot). */
     qc,
+    /**
+     * Replace the QC snapshot with the QC of the extracted traces
+     * (`extract-qc.ts`): Refine and Extract run no monitor, so without it
+     * the last minute of Discover would stay on show.
+     */
+    replaceQc: (snap: QcSnapshot) => setQc(snap),
     /** Probation/established by cell id (from the slow loop). */
     established,
     /** Convergence history, one point per QC snapshot (tracks `qc()`). */

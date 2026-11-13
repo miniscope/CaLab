@@ -10,6 +10,7 @@ import { createEffect, createSignal, on, untrack } from 'solid-js';
 import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
+import type { QcSnapshot } from './qc.ts';
 import { sessionBoundaries } from './frame-source.ts';
 import type { StageActivity, StageName, StageRun } from './run-stages.ts';
 import {
@@ -98,6 +99,12 @@ export interface MultiRunDeps {
   runExtract(): void;
   /** The export of the current result, all frames (null: no result). */
   exportInput(): ExportInput | null;
+  /**
+   * The trace QC of the extracted traces over frames `range` at `fps`
+   * (`extract-qc.ts`), so each session's export carries its own QC rather
+   * than the last snapshot of the run (omit: the export's `qc` as is).
+   */
+  sessionQc?(range: { start: number; end: number }, fps: number): Promise<QcSnapshot | null>;
   /** The open recording. */
   info(): FrameSourceInfo | null;
   version: string;
@@ -213,10 +220,16 @@ export function createMultiRun(deps: MultiRunDeps) {
     const which = joint ? records() : records().filter((r) => r.index === current());
     const runs = deps.stages().runs;
     for (const r of which) {
+      const fps = r.fps ?? base.fps;
+      const range = joint
+        ? { start: r.startFrame, end: r.startFrame + r.frames }
+        : { start: 0, end: base.result.frames };
+      const qc = deps.sessionQc ? await deps.sessionQc(range, fps) : base.qc;
       const input: ExportInput = {
         ...base,
         label: r.name,
-        fps: r.fps ?? base.fps,
+        fps,
+        qc,
         ...(joint ? { frameRange: { start: r.startFrame, end: r.startFrame + r.frames } } : {}),
         session: exportSessionBlock(r, p.settings.mode, p.sessions.length),
       };

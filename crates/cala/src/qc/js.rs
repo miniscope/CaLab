@@ -16,6 +16,17 @@ fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
 }
 
+/// Field names of `QcMonitor.spanStats`.
+const SPAN_FIELDS: [&str; 7] = [
+    "peak_snr",
+    "sigma",
+    "baseline",
+    "events",
+    "event_rate",
+    "zero_frac",
+    "low_snr",
+];
+
 /// Online quality control alongside a `TraceEngine`.
 #[wasm_bindgen(js_name = QcMonitor)]
 pub struct JsQcMonitor {
@@ -25,7 +36,8 @@ pub struct JsQcMonitor {
 #[wasm_bindgen(js_class = QcMonitor)]
 impl JsQcMonitor {
     /// `fov` (0/1 per pixel) and `noise` (σ per pixel) of the preprocessing;
-    /// `fps` the frame rate; `window_frames` the trace history (0 = default).
+    /// `fps` the frame rate (every QC duration follows it); `window_frames`
+    /// the trace history (0 = the default 60 s at `fps`).
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
@@ -38,10 +50,8 @@ impl JsQcMonitor {
         console_error_panic_hook::set_once();
         let dims =
             Dims::new(width as usize, height as usize).map_err(|e| js_err("QcMonitor", e))?;
-        let mut cfg = QcConfig {
-            fps,
-            ..QcConfig::default()
-        };
+        // Every QC duration at the recording's frame rate.
+        let mut cfg = QcConfig::for_fps(fps);
         if window_frames > 0 {
             cfg.window_frames = window_frames as usize;
         }
@@ -111,6 +121,42 @@ impl JsQcMonitor {
             engine.batch_signed.extend_from_slice(&engine.out.signed);
         }
         Ok(out)
+    }
+
+    /// Comma-separated names of [`Self::span_stats`]' values.
+    #[wasm_bindgen(js_name = spanStatsFields)]
+    pub fn span_stats_fields() -> String {
+        SPAN_FIELDS.join(",")
+    }
+
+    /// The monitor's trace statistics of one cell, on any span of its trace
+    /// (chronological), at frame rate `fps`: `QcConfig::trace_stats` with
+    /// `QcConfig::for_fps(fps)`. After Extract the app calls it on each
+    /// session's frames (the whole span, or its last window). `modelSigma`:
+    /// the cell's model trace noise, or NaN when unknown (exact zeros count
+    /// as zero, no fallback σ). Values in `spanStatsFields` order.
+    #[wasm_bindgen(js_name = spanStats)]
+    pub fn span_stats(trace: &[f32], model_sigma: f32, fps: f32) -> Result<Vec<f64>, JsError> {
+        let cfg = QcConfig::for_fps(fps);
+        cfg.validate().map_err(|e| js_err("spanStats", e))?;
+        let st = cfg.trace_stats(trace, model_sigma, &mut Vec::new());
+        let f = |v: f32| f64::from(v);
+        let minutes = trace.len() as f64 / f64::from(fps) / 60.0;
+        Ok(vec![
+            f(st.peak_snr),
+            f(st.sigma),
+            f(st.baseline),
+            f64::from(st.events),
+            f64::from(st.events) / minutes,
+            f(st.zero_frac),
+            f64::from(u8::from(cfg.pass.low_snr(&st))),
+        ])
+    }
+
+    /// The window the monitor reads at frame rate `fps`, frames.
+    #[wasm_bindgen(js_name = windowFrames)]
+    pub fn window_frames(fps: f32) -> u32 {
+        QcConfig::for_fps(fps).window_frames as u32
     }
 
     /// Comma-separated names of the per-cell fields.
