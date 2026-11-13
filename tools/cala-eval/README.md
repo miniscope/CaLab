@@ -19,6 +19,15 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 - `probe_scale.py`: offline prototype of the S2.4 scale probe D0 (scale-normalised LoG on the
   first 400 frames of a recording). Needs numpy, scipy, OpenCV (the minisim venv has them).
 - `recovery_vs_snr.py SIM RUN OUT.tsv`: per GT unit, minisim's matched-filter detection SNR (minisim >= 1.1) and whether a qc_eval run recovered it; the calibration data behind minisim's `DETECT_SNR_THRESHOLD` (`results/2026-11-12-matched-filter-detectable.md`).
+- `export_gt_motion.py SIM...`: writes `<sim>/shifts.npy`, the sim's true rigid motion
+  (`make_trace_sim.py` writes it for new recordings). `qc_eval sim|oracle --motion` needs it: cala
+  registers to its warm-up template, which sits 1 to 3 px from the sim's tissue frame on the motion
+  arms, so qc_eval measures that offset (cala's rigid records against the true shifts, frames
+  `0..=--start`) and moves the GT footprints into cala's frame before scoring. The estimate is in
+  `motion_offset.tsv`; `--gt-offset none` scores against the tissue frame (motion-arm numbers before
+  13 Nov 2026). `qc_eval sim ... --rescore RUN` rescores an earlier `--churn-log` run's checkpoint
+  footprints both ways (`rescore.tsv`) without running the loops
+  (`results/2026-11-13-motion-offset.md`).
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
   would write are symlinked (`--reuse <dir>`) instead of regenerated. At most 2
