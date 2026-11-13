@@ -85,7 +85,7 @@ Settings and controls:
 - Controls are the Phase 1 logged runs.
 - d = paired arm − control, mean ± 95 % t-CI over seeds.
 
-**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main 1d1629a (#370–#375) and still holds: see after the motion table.
+**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main up to 1a21b6d (#370–#375) and still holds: see after the motion table.
 
 ### Static 1× (5 seeds)
 
