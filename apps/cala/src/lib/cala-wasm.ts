@@ -13,14 +13,18 @@ import init, {
   aviIdx1PayloadLen,
   aviIsAvixContinuation,
   cala_version,
+  FactorWindow,
   FlatFieldEstimator,
+  HistoryReview,
   MotionCorrector,
   MotionOptions,
   PreprocessConfig,
   Preprocessor,
   PreprocessWarmup,
   QcMonitor,
+  quantizeTiles,
   SlowLoop,
+  TileCompressor,
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
@@ -32,14 +36,18 @@ export {
   aviIdx1PayloadLen,
   aviIsAvixContinuation,
   cala_version,
+  FactorWindow,
   FlatFieldEstimator,
+  HistoryReview,
   MotionCorrector,
   MotionOptions,
   PreprocessConfig,
   Preprocessor,
   PreprocessWarmup,
   QcMonitor,
+  quantizeTiles,
   SlowLoop,
+  TileCompressor,
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
@@ -47,6 +55,12 @@ export {
 };
 
 let ready: Promise<void> | null = null;
+let memory: WebAssembly.Memory | null = null;
+
+/** Bytes of this thread's WASM heap (0 before `initCalaWasm`). */
+export function calaWasmHeapBytes(): number {
+  return memory?.buffer.byteLength ?? 0;
+}
 
 /**
  * Initialize the WASM module. In the browser, call it with no argument. Tests
@@ -55,7 +69,9 @@ let ready: Promise<void> | null = null;
 export function initCalaWasm(wasmBytes?: BufferSource): Promise<void> {
   if (!ready) {
     ready = init(wasmBytes ? { module_or_path: wasmBytes } : undefined)
-      .then(() => {})
+      .then((wasm) => {
+        memory = wasm.memory;
+      })
       .catch((err) => {
         // Let a later call retry instead of staying stuck on a rejection.
         ready = null;

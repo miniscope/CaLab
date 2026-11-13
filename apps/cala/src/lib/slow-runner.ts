@@ -12,6 +12,10 @@
  * never touch the same cells (see `discover/shard.rs`). This worker then
  * only observes, so it keeps up with the fast loop.
  *
+ * Cells a history review found (`handleReviewed`) are added while no visit
+ * is out, as a visit in flight does not know them: no new visit is handed
+ * out until the ones out are back and the cells are in.
+ *
  * Its stalls (a tile visit or a library rebuild can take 50-160 ms) only
  * delay this worker; the fast worker drops batches for it instead of waiting
  * (see `ForwardPool`).
@@ -24,6 +28,7 @@ import type {
   PortLike,
   SlowCounters,
   SlowInit,
+  SlowReviewed,
   SlowStatus,
   SlowToFast,
   SlowToMain,
@@ -54,6 +59,8 @@ export interface SlowLoopLike {
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
   housekeep?(): PublishedLibrary | undefined;
+  /** Adds the candidates of a history review; returns how many (absent in older fakes). */
+  addReviewed?(candidates: Float32Array): number;
   readonly cellCount: number;
   readonly reservoirBytes: number;
   /** Frames stored per tile, and why that is below target (absent in older fakes). */
@@ -93,6 +100,7 @@ function counters(s: ArrayLike<number>): SlowCounters {
     reAdds: s[12] ?? 0,
     churned: s[13] ?? 0,
     establishedRemovals: s[15] ?? 0,
+    reviewAdds: s[16] ?? 0,
   };
 }
 
@@ -132,6 +140,8 @@ export class SlowRunner {
   private visitMs = 0;
   /** Wall time this worker spent handing out and applying visits, ms. */
   private jobOwnerMs = 0;
+  /** History-review candidates waiting for the visits out to come back. */
+  private reviewed: Float32Array[] = [];
 
   constructor(deps: SlowRunnerDeps) {
     this.deps = deps;
@@ -171,6 +181,25 @@ export class SlowRunner {
     }
   }
 
+  /** What a history review found, from the main thread. */
+  handleReviewed(msg: SlowReviewed): void {
+    if (msg.session !== this.session || !this.loop || this.ending || this.final) return;
+    try {
+      this.reviewed.push(msg.candidates);
+      this.addReviewed();
+      this.dispatch();
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  /** Add the waiting history-review candidates, once no visit is out. */
+  private addReviewed(): void {
+    const loop = this.loop;
+    if (!loop || this.reviewed.length === 0 || this.busy.some((b) => b)) return;
+    for (const candidates of this.reviewed.splice(0)) loop.addReviewed?.(candidates);
+  }
+
   /** A message from visit worker `i`. */
   handleVisit(i: number, msg: VisitToOwner): void {
     if (msg.session !== this.session || !this.loop) return;
@@ -186,7 +215,10 @@ export class SlowRunner {
       this.housekeep();
       if (this.ending) {
         if (!this.busy.some((b) => b)) this.finish();
-      } else this.dispatch();
+      } else {
+        this.addReviewed();
+        this.dispatch();
+      }
     } catch (err) {
       this.fail(err);
     }
@@ -264,7 +296,8 @@ export class SlowRunner {
   /** A tile visit to every idle visit worker, while any is due. */
   private dispatch(): void {
     const loop = this.loop;
-    if (!loop || this.ending) return;
+    // Reviewed cells wait for the visits out: hand out no new one meanwhile.
+    if (!loop || this.ending || this.reviewed.length > 0) return;
     for (let i = 0; i < this.visits.length; i++) {
       if (this.busy[i]) continue;
       const t0 = this.now();
@@ -382,5 +415,6 @@ export class SlowRunner {
     this.visitMsN = 0;
     this.visitMs = 0;
     this.jobOwnerMs = 0;
+    this.reviewed = [];
   }
 }

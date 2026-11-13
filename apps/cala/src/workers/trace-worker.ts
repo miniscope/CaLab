@@ -7,10 +7,12 @@
  * `FastLoop`). See `lib/pipeline-stages.ts`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
+import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { transferablesOf } from '../lib/pipeline-engine.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
+import type { FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 import type { StageFree, StageLink, StageMsg } from './stage-types.ts';
@@ -22,6 +24,7 @@ const workerScope = globalThis as unknown as {
 
 let up: MessagePort | null = null;
 let slowPort: MessagePort | null = null;
+let compressPort: MessagePort | null = null;
 let stage: BackStage | null = null;
 let queue: Promise<void> = Promise.resolve();
 
@@ -49,6 +52,12 @@ function handle(msg: StageMsg): void {
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,
+        cells?.compress && compressPort
+          ? new CompressFeed(
+              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
+              compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
+            )
+          : null,
       );
       stage = new BackStage(msg.setup, fast);
       break;
@@ -100,6 +109,10 @@ workerScope.onmessage = (e) => {
     slowPort = data.port;
     // Slow-worker answers only record state; they are applied between batches.
     slowPort.onmessage = (ev: MessageEvent<SlowToFast>) => stage?.fast?.handleSlow(ev.data);
+    workerScope.postMessage({ type: 'ok', id: data.id });
+  } else if (data.type === 'connect-compress') {
+    compressPort?.close();
+    compressPort = data.port;
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'set-discovery') {
     stage?.fast?.setDiscovery(data.on && slowPort !== null);
