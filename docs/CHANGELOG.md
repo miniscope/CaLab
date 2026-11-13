@@ -5,6 +5,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Fixed
+
+- Cala: the app's slow loop now gets the fast loop's per-cell ring-background
+  levels with each frame's traces, in Discover and in Refine. Before, the slow
+  worker observed the traces only, so the ledger and the footprint statistics
+  kept each cell's local background, and the app did not run the slow loop that
+  `qc_eval` evaluates. `TraceEngine.lastBackground()` is new, and
+  `SlowLoop.observe` takes an optional `background`. The measured effect of the
+  mismatch is within run-to-run noise (`qc_eval --no-bg-levels`,
+  `tools/cala-eval/results/2026-11-13-app-background-levels.md`).
+
 ### Changed
 
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
