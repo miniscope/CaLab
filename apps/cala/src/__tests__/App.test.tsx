@@ -282,3 +282,65 @@ describe('App open-folder control', () => {
     }
   });
 });
+
+describe('App: video series chooser', () => {
+  const avis = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) => makeFile(`${prefix}${i}.avi`, new Uint8Array(4), 'rec'));
+
+  async function pickNoWait(root: HTMLElement, files: File[]): Promise<void> {
+    const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  it('opens msCam without asking when a behavCam series sits beside it', async () => {
+    fake.open.mockResolvedValue(INFO);
+    const root = mount();
+    const files = [...avis('behavCam', 2), ...avis('msCam', 3)];
+    await pick(root, files);
+    expect(root.querySelector('[data-testid="series-chooser"]')).toBeNull();
+    expect(fake.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks which series to open when two are ambiguous, then opens the pick', async () => {
+    fake.open.mockResolvedValue(INFO);
+    const root = mount();
+    const a = avis('camA', 2);
+    const b = avis('camB', 5);
+    await pickNoWait(root, [...a, ...b]);
+    const chooser = await vi.waitFor(() => {
+      const el = root.querySelector('[data-testid="series-chooser"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(fake.open).not.toHaveBeenCalled();
+    const options = [
+      ...chooser.querySelectorAll<HTMLButtonElement>('[data-testid="series-option"]'),
+    ];
+    expect(options.map((o) => o.textContent)).toEqual([
+      expect.stringContaining('camB*.avi'),
+      expect.stringContaining('camA*.avi'),
+    ]);
+    expect(options[0].textContent).toContain('5 files');
+    expect(options[0].textContent).toContain('rec');
+    // Native buttons: keyboard-operable (Tab, Enter, Space) without extra handlers.
+    expect(options.every((o) => o.tagName === 'BUTTON' && o.type === 'button')).toBe(true);
+
+    options[1].click();
+    await vi.waitFor(() => expect(fake.open).toHaveBeenCalled());
+    const opened = fake.open.mock.calls[0][0] as { relPath: string }[];
+    expect(opened.map((e) => e.relPath)).toEqual(a.map((f) => `rec/${f.name}`));
+    expect(root.querySelector('[data-testid="series-chooser"]')).toBeNull();
+  });
+
+  it('cancel leaves the chooser without opening', async () => {
+    const root = mount();
+    await pickNoWait(root, [...avis('camA', 2), ...avis('camB', 2)]);
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="series-chooser"]')).not.toBeNull(),
+    );
+    root.querySelector<HTMLButtonElement>('[data-testid="series-cancel"]')!.click();
+    await vi.waitFor(() => expect(root.querySelector('[data-testid="series-chooser"]')).toBeNull());
+    expect(fake.open).not.toHaveBeenCalled();
+  });
+});

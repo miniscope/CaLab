@@ -5,6 +5,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala: recordings named `msCam0.avi, msCam1.avi, ...` (older Miniscope DAQ
+  software), zero-padded (`msCam001.avi`) or with another prefix now open, not only
+  `0.avi, 1.avi, ...`. Videos are grouped into numbered series per folder; a
+  `behavCam` series beside `msCam` is skipped automatically, and when several
+  plausible series remain the open screen lists them to pick from. Numbering
+  warnings use the real file names. Files chosen individually open in natural order
+  even when not numbered. `metaData.json` and `timeStamps.csv` are still read from
+  the chosen series' folder.
+
 ### Fixed
 
 - Cala: the app's slow loop now gets the fast loop's per-cell ring-background

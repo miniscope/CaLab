@@ -1,7 +1,14 @@
-import { createSignal, Show, type JSX } from 'solid-js';
+import { createSignal, For, Show, type JSX } from 'solid-js';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
+import {
+  chooseSeries,
+  detectSeries,
+  entriesForSeries,
+  seriesLabel,
+  type VideoSeries,
+} from '../lib/video-series.ts';
 import { pickDirectory, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 
 interface OpenFolderProps {
@@ -49,8 +56,32 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
 
   const [pickError, setPickError] = createSignal<string | null>(null);
 
+  // Several plausible video series in the selection: ask which one to open.
+  const [pending, setPending] = createSignal<{
+    entries: FolderEntry[];
+    series: VideoSeries<FolderEntry>[];
+    candidates: VideoSeries<FolderEntry>[];
+  } | null>(null);
+  let chooserHeading: HTMLHeadingElement | undefined;
+
   const submit = (entries: FolderEntry[]) => {
-    if (entries.length > 0) props.onOpen(entries, labelFor(entries));
+    if (entries.length === 0) return;
+    const series = detectSeries(entries);
+    const { chosen, candidates } = chooseSeries(series);
+    if (chosen || candidates.length === 0) {
+      setPending(null);
+      props.onOpen(entries, labelFor(entries));
+      return;
+    }
+    setPending({ entries, series, candidates });
+    queueMicrotask(() => chooserHeading?.focus());
+  };
+
+  const choose = (picked: VideoSeries<FolderEntry>) => {
+    const p = pending();
+    if (!p) return;
+    setPending(null);
+    props.onOpen(entriesForSeries(p.entries, p.series, picked), labelFor(p.entries));
   };
 
   // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
@@ -62,6 +93,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       return;
     }
     pickDirectory().then(
+      // eslint-disable-next-line solid/reactivity -- a one-off promise callback, not a tracked scope
       (entries) => {
         if (entries) submit(entries);
       },
@@ -109,8 +141,9 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             <strong>Open a Miniscope folder</strong> or drop it here
           </p>
           <p class="drop-zone__subtext">
-            The folder with 0.avi, 1.avi, ... (and metaData.json, timeStamps.csv). Videos are read
-            frame by frame from disk, never loaded whole, and never uploaded.
+            The folder with the numbered videos (0.avi, 1.avi, ... or msCam0.avi, msCam1.avi, ...)
+            and metaData.json, timeStamps.csv. Videos are read frame by frame from disk, never
+            loaded whole, and never uploaded.
           </p>
         </div>
         <input
@@ -177,6 +210,53 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             How to test with a simulated stream
           </a>
         </form>
+      </Show>
+
+      <Show when={pending()}>
+        {(p) => (
+          <section
+            class="cala-series-chooser"
+            data-testid="series-chooser"
+            aria-labelledby="series-chooser-title"
+          >
+            <h2
+              id="series-chooser-title"
+              class="cala-series-chooser__title"
+              tabindex="-1"
+              ref={chooserHeading}
+            >
+              More than one video series found. Which is the Miniscope recording?
+            </h2>
+            <ul class="cala-series-chooser__list">
+              <For each={p().candidates}>
+                {(s) => (
+                  <li>
+                    <button
+                      type="button"
+                      class="btn-secondary cala-series-chooser__option"
+                      data-testid="series-option"
+                      onClick={() => choose(s)}
+                    >
+                      <strong>{seriesLabel(s)}</strong> {'\u2014'} {s.files.length}{' '}
+                      {s.files.length === 1 ? 'file' : 'files'}
+                      <span class="cala-series-chooser__dir">
+                        {s.dir === '' ? '(selected files)' : s.dir}
+                      </span>
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="series-cancel"
+              onClick={() => setPending(null)}
+            >
+              Cancel
+            </button>
+          </section>
+        )}
       </Show>
 
       <Show when={props.loading}>

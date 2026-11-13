@@ -22,8 +22,19 @@ bottom. Developer notes are in [README.md](README.md).
 
 ## What you need
 
-A **Miniscope V4 recording folder**: `0.avi`, `1.avi`, ... (sorted by number), plus
-the sidecars `metaData.json` and `timeStamps.csv` if you have them.
+A **Miniscope recording folder**: a numbered series of `.avi` files, plus the sidecars
+`metaData.json` and `timeStamps.csv` if you have them.
+
+- Video names are `<prefix><number>.avi`: `0.avi, 1.avi, ...` (Miniscope V4 software),
+  `msCam0.avi, msCam1.avi, ...` (older DAQ software), or another prefix of your own
+  (letters, `_`, `-` or spaces). Zero-padded numbers (`msCam001.avi`) work, and files
+  are sorted by number, not alphabetically. Gaps, repeated numbers and a series that
+  does not start at 0 give a warning and still open.
+- If the folder (or its subfolders) holds several series, such as `msCam*.avi` next to
+  a `behavCam*.avi` behaviour camera, Cala picks the Miniscope one: it skips `behav*`
+  prefixes and prefers `msCam` and unprefixed names. When it still cannot tell, it lists
+  the series (name, file count, folder) and you pick one.
+- `metaData.json` and `timeStamps.csv` are read from the folder of the chosen series.
 
 - The frame rate comes from `timeStamps.csv`, else from `metaData.json`. The frame
   rate in the AVI header is ignored (real 20 fps files declare 60). The Recording tab
@@ -33,7 +44,8 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
   Keep the metadata with your recordings.
 - Files with a prefix (`neural_metaData.json`, `neural_timestamp.csv`) are recognised.
 - Open the folder with the picker, or drop it on the page. **Choose individual files**
-  is there for odd layouts. Files are read locally and never leave your computer. In
+  is there for odd layouts: those files open in natural order (`clip 2` before `clip 10`)
+  even when their names are not numbered like a series. Files are read locally and never leave your computer. In
   Chrome and Edge the picker asks permission to "view files" in the folder (read-only).
   Firefox and Safari show their own upload-worded confirmation, which is misleading:
   nothing is uploaded.
