@@ -532,18 +532,36 @@ impl SlowLoop {
             .map(|(i, _)| i)
     }
 
+    /// [`SlowLoop::next_free_tile`], after making here every due visit
+    /// that would do nothing ([`SlowLoop::idle_visit`]: half the visits of
+    /// a Refine run). Such a visit only counts as made; shipping the tile's
+    /// reservoir to a worker for it cost the owner as much as a real one.
+    /// The footprints are the same: the visit would have edited nothing,
+    /// and the reservoir projections it would have cached are computed by
+    /// the tile's next job instead.
+    fn next_job_tile(&mut self) -> Option<usize> {
+        loop {
+            let ti = self.next_free_tile()?;
+            if !(self.skip_unused && self.idle_visit(ti)) {
+                return Some(ti);
+            }
+            // (Sets the tile's fresh count to 0: it is not due again.)
+            self.visit_begin(ti);
+        }
+    }
+
     /// Hand out the next tile visit that conflicts with none in flight, or
     /// `None` (nothing due, or everything due is blocked). The tile counts
     /// as visited now; apply the result with [`SlowLoop::apply_job`].
     pub fn take_job(&mut self) -> Option<VisitJob> {
-        let ti = self.next_free_tile()?;
+        let ti = self.next_job_tile()?;
         Some(self.make_job(ti, true))
     }
 
     /// [`SlowLoop::take_job`] as bytes ([`VisitJob::to_bytes`]), without
     /// copying the tile's reservoir twice.
     pub fn take_job_bytes(&mut self) -> Option<Vec<u8>> {
-        let ti = self.next_free_tile()?;
+        let ti = self.next_job_tile()?;
         let job = self.make_job(ti, false);
         Some(job.encode(&self.tiles[ti], &self.shared))
     }

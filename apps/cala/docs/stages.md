@@ -71,9 +71,27 @@ With `--later-passes refine`, qc_eval now publishes the final library at each
 wrap and solves the next pass with it, as the app does at the end of a stage.
 
 Refine does not drop frames for the slow loop. The main thread asks for the
-next batch only once the slow loop has taken all but one of the batches sent.
-A file can wait; Discover on a live stream cannot, so Discover drops frames
+next batch only while the slow loop has fewer than `REFINE_SLOW_LEAD` (four)
+batches sent and not yet taken: two in the pipeline workers, one being
+observed, one waiting. The forward pool of a Refine run never drops a batch
+(a lossless `ForwardPool`), so the slow loop observes every frame in order. A
+file can wait; Discover on a live stream cannot, so Discover drops frames
 when the slow loop is busy.
+
+With visit workers, a Refine batch gives way to the slow worker's messages
+between frames while a visit is out (`SlowRunner.handleAsync`): visit results
+are applied, and the next visits handed out, without waiting for the rest of
+the batch. Without that, once frames came as fast as the slow worker could
+observe them, its visit workers sat idle and a run made a few times fewer
+visits per frame. How many visits a run makes per frame, and so how much refining
+a run does, depends on the machine's speed, in Refine as in Discover (PI
+decision, 13 Nov 2026).
+
+With visit workers, a Refine visit that would not refine (a tile refines on
+every other visit, and Refine has no adds, merges or keep tests) is made by
+the slow worker when it is due, not shipped to a visit worker with the tile's
+whole reservoir. That is about half a Refine run's visits. The footprints are
+the same with and without this (a Rust test checks it, bit for bit).
 
 ## Per-stage readout
 

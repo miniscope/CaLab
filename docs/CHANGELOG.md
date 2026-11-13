@@ -7,6 +7,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
+  cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
+  bandpass and rolling baseline turn into fake humps and spurious spikes.
+  Extract now also returns each trace plus the residual's projection on the
+  cell (`c + g/m` at the converged solution, CNMF's `C + YrA`): a zero
+  baseline with symmetric noise, equal to the trace where the solve does not
+  clip. The solve and the non-negative traces are unchanged bit for bit
+  (`TraceEngine::set_signed`; JS `setSigned` / `lastSigned`). The export
+  (format version 4) adds `traces_signed` next to `traces`, also in each
+  session's file of a multi-session run, and **Export for CaDecon** writes
+  the signed traces. Live runs (no Extract) keep the clipped traces only.
+  `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
+
 - Cala: Refine plots in the Run panel. The current or last Refine run is
   plotted over its replay: refines per minute, the median and 90th
   percentile of the footprint changes at each publish, and the share of
@@ -81,6 +94,27 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: Refine replays the recording pipelined. It used to keep at most one
+  batch ahead of the slow loop, so the three pipeline workers ran one batch at
+  a time (Refine at about half Extract's frame rate). It now keeps up to four
+  batches ahead (`REFINE_SLOW_LEAD`); the forward pool of a Refine run never
+  drops a batch (lossless `ForwardPool`), so the slow loop still observes
+  every frame in order. In a Refine run with visit workers, a batch also gives
+  way between frames while a visit is out, so visit results are applied and
+  new visits handed out without waiting for the batch. Refine on the 600 x 600
+  sim (2000 frames, M-series, Metal): 139–146 fps before, 152–165 after (with
+  the idle-visit change, 177–180). Visits per frame are compute-dependent in
+  the app; with this change a Refine run makes about 20–35 % more visits per
+  frame than before (and more refines per run). Refine's per-run work thus
+  depends on machine speed, as Discover's does (PI decision, 13 Nov 2026).
+  Discover is unchanged.
+- Cala: in a Refine run with visit workers, the tile visits that would not
+  refine (every other visit of a tile: Refine makes no adds, merges or keep
+  tests) are made by the slow worker when they are due instead of being
+  shipped to a visit worker with the tile's whole reservoir. About half the
+  jobs of a Refine run, and the slow worker's time to hand them out and apply
+  them, are gone. The footprints are the same, bit for bit
+  (`refine_makes_idle_visits_at_hand_out_without_changing_footprints`).
 - Cala: the split-half merge rule is the default (`MergeRule::SplitHalf`).
   Two cells whose footprints overlap less than half now merge only when the
   held-out test accepts the merge and their measured shapes agree within

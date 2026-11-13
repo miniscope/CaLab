@@ -2434,6 +2434,69 @@ fn refine_scope_travels_with_visit_jobs() {
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }
 
+/// With visit workers, Refine makes the visits that would not refine at
+/// hand-out instead of as jobs (`SlowLoop::skip_unused`). The footprints
+/// are the same, bit for bit, with and without the skip (one worker whose
+/// results come back at once), and about half the visits go out as jobs.
+#[test]
+fn refine_makes_idle_visits_at_hand_out_without_changing_footprints() {
+    let t = 2400;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    // Discover, then two Refine runs with every visit through `take_job_bytes`.
+    let run = |skip: bool| -> (Vec<Vec<u8>>, u64, u64) {
+        let (mut s, mut eng) = start(cfg.clone(), &seed);
+        drive(&m, 0..t, &mut s, &mut eng, &mut Vec::new());
+        let lib = s.finalize().unwrap();
+        let mut out = vec![lib.to_bytes()[16..].to_vec()];
+        eng.set_library(lib).unwrap();
+        s.skip_unused = skip;
+        s.set_edit_scope(EditScope::Refine);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        let (visits0, mut jobs) = (s.stats().visits, 0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                let lib = eng.library().clone();
+                s.observe(f, &lib, &tr).unwrap();
+                while let Some(b) = s.take_job_bytes() {
+                    let r = runner.run(VisitJob::from_bytes(&b).unwrap()).unwrap();
+                    s.apply_job(VisitResult::from_bytes(&r.to_bytes()).unwrap())
+                        .unwrap();
+                    jobs += 1;
+                }
+                if let Some(l) = s.housekeep().unwrap() {
+                    out.push(l.to_bytes()[16..].to_vec());
+                    eng.set_library(l).unwrap();
+                }
+            }
+            let l = s.finalize().unwrap();
+            out.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        (out, jobs, s.stats().visits - visits0)
+    };
+    let (a, jobs_a, visits_a) = run(true);
+    let (b, jobs_b, visits_b) = run(false);
+    assert!(a.len() > 3, "{} libraries", a.len());
+    assert!(
+        a[1..].iter().any(|x| *x != a[0]),
+        "Refine changed no footprint"
+    );
+    assert_eq!(a.len(), b.len());
+    for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+        assert!(x == y, "library {k} differs with the skip");
+    }
+    assert_eq!(visits_a, visits_b);
+    assert_eq!(jobs_b, visits_b);
+    assert!(
+        jobs_a * 3 < jobs_b * 2,
+        "{jobs_a} of {jobs_b} visits went out as jobs"
+    );
+}
+
 /// Under the split-half merge rule a duplicate of an established cell is
 /// still merged (its light and the cell's form one basin).
 #[test]

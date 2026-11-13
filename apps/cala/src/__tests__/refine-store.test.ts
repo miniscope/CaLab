@@ -4,7 +4,11 @@ import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import { createRefineStore } from '../lib/refine-store.ts';
+import {
+  createRefineStore,
+  REFINE_FORWARD_BUFFERS,
+  REFINE_SLOW_LEAD,
+} from '../lib/refine-store.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import { createStageLog } from '../lib/run-stages.ts';
 import type { LibraryView, SlowStatus } from '../workers/slow-types.ts';
@@ -55,14 +59,15 @@ function lib(version: number, values: number[]): LibraryView {
  * slow loop: it takes the forwarded batches when `consume` says so (at once
  * by default), and publishes `after` with 6 more refines at the end.
  */
-function setup(opts: { lagging?: boolean } = {}) {
+function setup(opts: { lagging?: boolean; batches?: number } = {}) {
+  const frames = 4 * (opts.batches ?? 3);
   const rec = new RunRecord();
-  for (let t = 0; t < 12; t++) rec.push(t, [0], [0], [0], [0], [0]);
+  for (let t = 0; t < frames; t++) rec.push(t, [0], [0], [0], [0], [0]);
   let slow = {
     run: 1,
     final: true,
-    frame: 12,
-    consumed: 12,
+    frame: frames,
+    consumed: frames,
     counters: { refines: 10 },
   } as unknown as SlowStatus;
   const before = lib(5, [1, 1, 1, 1]);
@@ -70,7 +75,10 @@ function setup(opts: { lagging?: boolean } = {}) {
   let current = before;
   let forwarded = 0;
   const ahead: number[] = [];
-  const steps: PipelineStepResult[] = [batch(0, 4), batch(4, 4), batch(8, 4), { kind: 'done' }];
+  const steps: PipelineStepResult[] = [
+    ...Array.from({ length: frames / 4 }, (_, i) => batch(4 * i, 4)),
+    { kind: 'done' },
+  ];
   const started: { cells: unknown; replay: unknown }[] = [];
   const stops: unknown[] = [];
   const consume = (to: number) => {
@@ -103,7 +111,7 @@ function setup(opts: { lagging?: boolean } = {}) {
     }),
   };
   const pipeline = {
-    plan: () => PLAN,
+    plan: () => ({ ...PLAN, frameCount: frames }),
     record: () => rec,
     flatFieldMap: () => null,
   } as unknown as PipelineStore;
@@ -179,17 +187,22 @@ describe('Refine store', () => {
     await until(() => t.store.status() === 'done');
   });
 
-  it('never gets more than one batch ahead of the slow loop (nothing is dropped)', async () => {
-    const t = setup({ lagging: true });
+  it('stays at most REFINE_SLOW_LEAD batches ahead of the slow loop (nothing is dropped)', async () => {
+    const t = setup({ lagging: true, batches: 8 });
     await t.store.run();
+    expect(t.started[0].cells).toMatchObject({ forwardBuffers: REFINE_FORWARD_BUFFERS });
+    expect(REFINE_FORWARD_BUFFERS).toBeGreaterThan(REFINE_SLOW_LEAD);
     await wait(30);
-    // Two batches out (the forward pool), then it waits for the slow loop.
-    expect(t.forwarded()).toBe(8);
+    // The lead's batches out, then it waits for the slow loop.
+    expect(t.forwarded()).toBe(4 * REFINE_SLOW_LEAD);
     t.consume(4);
-    await until(() => t.forwarded() === 12);
-    t.consume(12);
+    await until(() => t.forwarded() === 4 * REFINE_SLOW_LEAD + 4);
+    await wait(30);
+    expect(t.forwarded()).toBe(4 * REFINE_SLOW_LEAD + 4);
+    t.consume(32);
     await until(() => t.store.status() === 'done');
-    expect(Math.max(...t.ahead)).toBeLessThanOrEqual(8);
+    expect(t.store.processed()).toBe(32);
+    expect(Math.max(...t.ahead)).toBeLessThanOrEqual(4 * REFINE_SLOW_LEAD);
   });
 
   it('cancels keeping the slow loop (it publishes what it refined) and logs the run', async () => {

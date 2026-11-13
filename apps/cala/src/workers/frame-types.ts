@@ -34,6 +34,8 @@ export interface CellsSettings {
   compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
+  /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */
+  signed?: boolean;
 }
 
 /** A probed session: its info, or the error opening it. */
