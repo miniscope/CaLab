@@ -54,12 +54,11 @@ function batch(start: number, count: number): Float32Array {
 }
 
 /** A feed whose messages are collected instead of posted. */
-function collectingFeed(window: number, quantize = quantizeTiles) {
+function collectingFeed(window: number) {
   const sent: FastToCompress[] = [];
   const feed = new CompressFeed(
     { width: W, height: H, session: 7, tile: TILE, window, quant: QUANT },
     { postMessage: (m) => sent.push(m) },
-    quantize,
   );
   return { feed, sent };
 }
@@ -68,6 +67,7 @@ function runner(store = memoryStore()) {
   const toMain: CompressToMain[] = [];
   const r = new CompressRunner({
     store,
+    quantize: quantizeTiles,
     create: (quant) => new TileCompressor(quant),
     engine: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
@@ -122,13 +122,11 @@ function readFactors(bytes: Uint8Array) {
 
 describe('CompressFeed', () => {
   it('cuts the stream into windows and marks the chunk that completes one', () => {
-    const calls: number[] = [];
-    const { feed, sent } = collectingFeed(5, (_f, count, _w, _h, _t, _q, out) => {
-      calls.push(count);
-      out.fill(count);
-    });
-    feed.push(new Float32Array(3 * PX), 0, 3);
-    feed.push(new Float32Array(4 * PX), 3, 4); // 2 complete window 0, 2 open window 1
+    const { feed, sent } = collectingFeed(5);
+    const first = batch(0, 3);
+    const second = batch(3, 4);
+    feed.push(first, 0, 3);
+    feed.push(second, 3, 4); // 2 complete window 0, 2 open window 1
     feed.end();
     expect(sent.map((m) => m.type)).toEqual(['init', 'chunk', 'chunk', 'chunk', 'close']);
     const chunks = sent.filter((m) => m.type === 'chunk');
@@ -137,13 +135,17 @@ describe('CompressFeed', () => {
       [0, 3, 2, true],
       [1, 5, 2, false],
     ]);
+    // Copies of the frames (the batch buffer is reused by the pipeline), in stream order.
     expect(chunks.map((c) => c.data.length)).toEqual([3 * PX, 2 * PX, 2 * PX]);
-    expect(calls).toEqual([3, 2, 2]);
+    expect(chunks[0].data).toEqual(first);
+    expect(chunks[0].data.buffer).not.toBe(first.buffer);
+    expect(chunks[1].data).toEqual(second.subarray(0, 2 * PX));
+    expect(chunks[2].data).toEqual(second.subarray(2 * PX));
     expect(sent[4]).toEqual({ type: 'close', session: 7, final: true });
   });
 
   it('closes the open window at a gap in the stream', () => {
-    const { feed, sent } = collectingFeed(10, (_f, _c, _w, _h, _t, _q, out) => out.fill(0));
+    const { feed, sent } = collectingFeed(10);
     feed.push(new Float32Array(2 * PX), 0, 2);
     feed.push(new Float32Array(2 * PX), 8, 2);
     const kinds = sent.map((m) => (m.type === 'chunk' ? `chunk${m.window}` : m.type));

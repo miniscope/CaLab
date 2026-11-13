@@ -1,10 +1,10 @@
 /**
- * The compress worker's logic: writes the incoming batches of a window to a
- * file, and compresses closed windows tile by tile from their file into a
- * factor file. Two things run interleaved on the worker's one thread:
+ * The compress worker's logic: quantizes the incoming batches of a window in
+ * tile order and writes them to a file, and compresses closed windows tile by
+ * tile from their file into a factor file. Two things run interleaved on the worker's one thread:
  *
- * - `handle` (one message at a time): a chunk is one write, so the port's
- *   queue never holds more than a few batches;
+ * - `handle` (one message at a time): a chunk is one quantize and one write,
+ *   so the port's queue never holds more than a few batches;
  * - the compress loop, which yields to the event loop after every tile so
  *   that chunks arriving during a window's compression are written at once.
  *
@@ -30,6 +30,17 @@ import type {
 } from '../workers/compress-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
+
+/** `quantizeTiles` of the WASM module: `count` frames into `out`, in tile order. */
+export type QuantizeTiles = (
+  frames: Float32Array,
+  count: number,
+  width: number,
+  height: number,
+  tile: number,
+  quant: number,
+  out: Int16Array,
+) => void;
 
 /** What the runner needs of the WASM `TileFactors` and `TileCompressor`. */
 export interface TileFactorsLike {
@@ -69,6 +80,7 @@ const BACKFILL_BATCH = 16;
 
 export interface CompressRunnerDeps {
   store: WindowStore;
+  quantize: QuantizeTiles;
   create(quant: number): TileCompressorLike;
   /** For the back-fill (absent: `backfill` does nothing). */
   engine?(library: Uint8Array): BackfillEngineLike;
@@ -95,6 +107,8 @@ interface WindowJob {
   frames: number;
   /** Frames of each chunk, in file order. */
   chunks: number[];
+  /** Time spent quantizing its chunks, ms. */
+  quantMs: number;
 }
 
 /** Tiles of a frame, row by row (as `tile_grid` in crates/cala). */
@@ -126,6 +140,8 @@ export class CompressRunner {
   private tiles: Tile[] = [];
   private compressor: TileCompressorLike | null = null;
   private open: (WindowJob & { file: StoreFile; bytes: number }) | null = null;
+  /** The quantized chunk being written (reused; a write is synchronous). */
+  private scratch = new Int16Array(0);
   private pending: WindowJob[] = [];
   private loop: Promise<void> | null = null;
   /** Bumps on reset, so a running loop stops at its next yield. */
@@ -172,12 +188,19 @@ export class CompressRunner {
         start: msg.start,
         frames: 0,
         chunks: [],
+        quantMs: 0,
         file: await this.deps.store.open(windowName(msg.window)),
         bytes: 0,
       };
       const w = this.open;
-      w.file.write(msg.data, w.bytes);
-      w.bytes += msg.data.byteLength;
+      const { width, height, tile, quant } = this.init;
+      if (this.scratch.length < msg.data.length) this.scratch = new Int16Array(msg.data.length);
+      const data = this.scratch.subarray(0, msg.data.length);
+      const t0 = this.now();
+      this.deps.quantize(msg.data, msg.count, width, height, tile, quant, data);
+      w.quantMs += this.now() - t0;
+      w.file.write(data, w.bytes);
+      w.bytes += data.byteLength;
       w.frames += msg.count;
       w.chunks.push(msg.count);
       if (msg.last) this.closeOpen();
@@ -210,7 +233,13 @@ export class CompressRunner {
     if (!w) return;
     this.open = null;
     w.file.close();
-    this.pending.push({ index: w.index, start: w.start, frames: w.frames, chunks: w.chunks });
+    this.pending.push({
+      index: w.index,
+      start: w.start,
+      frames: w.frames,
+      chunks: w.chunks,
+      quantMs: w.quantMs,
+    });
     this.kick();
   }
 
@@ -393,7 +422,7 @@ export class CompressRunner {
       this.frames += job.frames;
       this.factorBytes += at;
       this.meanRank = rank / Math.max(1, this.tiles.length);
-      this.msPerFrame = ms / job.frames;
+      this.msPerFrame = (ms + job.quantMs) / job.frames;
     } finally {
       close();
     }
