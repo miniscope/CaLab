@@ -1,7 +1,7 @@
 /**
- * RunEvents: the bounded log of discrete changes in a run (pass, scale, flat-field map,
+ * RunEvents: the bounded log of discrete changes in a run (stage, scale, flat-field map,
  * setting, pause/resume, range expansion, warning, gap, error, restart). It is the single
- * source for the chart's event lane and for what pass 2 must replay.
+ * source for the chart's event lane and for what Refine and Extract must replay.
  *
  * Kept sorted by stream time. Bounded: past `maxEvents`, old display-only flat-field events
  * fold into hourly summaries; events with `replay: true` and every non-flat-field event are
@@ -10,7 +10,8 @@
  */
 
 export type RunEventKind =
-  | 'pass'
+  /** A run stage started or ended (Discover, Refine, Extract; docs/stages.md). */
+  | 'stage'
   | 'scale'
   | 'flatfield'
   | 'setting'

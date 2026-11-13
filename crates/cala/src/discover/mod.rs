@@ -366,6 +366,40 @@ impl EditScope {
     pub fn merges(self) -> bool {
         matches!(self, EditScope::All | EditScope::RefineMerge)
     }
+
+    /// Every scope, in wire order.
+    pub const ALL: [EditScope; 4] = [
+        EditScope::All,
+        EditScope::Refine,
+        EditScope::RefinePrune,
+        EditScope::RefineMerge,
+    ];
+
+    /// The scope's name: `all`, `refine`, `refine-prune` or `refine-merge`
+    /// (qc_eval's `--later-passes` values and the app's
+    /// `SlowLoop.setEditScope` argument; the app's Refine stage is `refine`).
+    pub fn name(self) -> &'static str {
+        match self {
+            EditScope::All => "all",
+            EditScope::Refine => "refine",
+            EditScope::RefinePrune => "refine-prune",
+            EditScope::RefineMerge => "refine-merge",
+        }
+    }
+
+    /// The scope with [`EditScope::name`] `name`.
+    pub fn from_name(name: &str) -> Option<EditScope> {
+        Self::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The wire code (a visit job carries its loop's scope).
+    pub(crate) fn code(self) -> u8 {
+        Self::ALL.iter().position(|&s| s == self).unwrap() as u8
+    }
+
+    pub(crate) fn from_code(code: u8) -> Option<EditScope> {
+        Self::ALL.get(code as usize).copied()
+    }
 }
 
 impl CoreTest {
@@ -1182,14 +1216,22 @@ impl SlowLoop {
         Ok(s)
     }
 
-    /// Replace the noise map (σ per pixel). New patches are whitened with it.
     /// Restrict the structural edits from now on (default
-    /// [`EditScope::All`]). Applies to visits run by [`SlowLoop::step`];
-    /// a [`VisitRunner`] keeps the scope it was built with.
+    /// [`EditScope::All`]). Applies to visits run by [`SlowLoop::step`] and
+    /// to the visits handed out from now on (a [`VisitJob`] carries the
+    /// scope, so a [`VisitRunner`] follows it). A refine replay (the app's
+    /// Refine stage, qc_eval's `--later-passes refine`) sets
+    /// [`EditScope::Refine`] and feeds the recording again from frame 0.
     pub fn set_edit_scope(&mut self, scope: EditScope) {
         self.scope = scope;
     }
 
+    /// The structural edits allowed now ([`SlowLoop::set_edit_scope`]).
+    pub fn edit_scope(&self) -> EditScope {
+        self.scope
+    }
+
+    /// Replace the noise map (σ per pixel). New patches are whitened with it.
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
         crate::trace::check_len("noise map", self.dims.pixels(), noise.len())?;
         if noise.iter().any(|v| !v.is_finite() || *v < 0.0) {

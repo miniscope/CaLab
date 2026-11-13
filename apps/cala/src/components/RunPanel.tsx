@@ -7,6 +7,15 @@ import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
+import type { RefineStore } from '../lib/refine-store.ts';
+import {
+  LIVE_NOTE,
+  refineComparison,
+  STAGE_LABEL,
+  type StageLog,
+  type StageName,
+  type StageRun,
+} from '../lib/run-stages.ts';
 import type { ConvergenceState } from '../lib/qc.ts';
 import { groupKeys } from '../lib/run-history.ts';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
@@ -52,7 +61,7 @@ const STATE_LABEL: Record<ConvergenceState, string> = {
 
 type StepState = 'done' | 'active' | 'pending';
 
-/** Narrow windows: the passes as a horizontal stepper. */
+/** Narrow windows: the stages as a horizontal stepper. */
 function PassStepper(props: {
   steps: { label: string; sub: string; state: StepState }[];
 }): JSX.Element {
@@ -75,9 +84,17 @@ function PassStepper(props: {
 
 export interface RunPanelProps {
   pipeline: PipelineStore;
+  /** The Extract stage (its store keeps the older name). */
   pass2: Pass2Store;
+  refine: RefineStore;
+  /** The runs of the stages since Discover started. */
+  stages: StageLog;
+  /** Why each stage cannot start now (null: it can). */
+  availability: Record<StageName, string | null>;
+  /** Start a Refine run (discards an Extract result first). */
+  onRefine: () => void;
   cells: CellStore;
-  /** A live source: no file to re-read, so pass 2 cannot run; the stop button ends the stream and the export takes the live traces. */
+  /** A live source: Discover only (no file to replay); the stop button ends the stream and the export takes the live traces. */
   live?: boolean;
   /** Recording label (the folder name). */
   label: string;
@@ -95,18 +112,51 @@ export interface RunPanelProps {
   review?: ReviewStore;
 }
 
+/** `0.0123` -> `1.2%`. */
+function percent(v: number | null | undefined): string {
+  return v === null || v === undefined ? 'n/a' : `${(100 * v).toFixed(1)}%`;
+}
+
+/** A run's name in the readouts: `Discover`, `Refine 2`. */
+function runName(r: StageRun): string {
+  return r.stage === 'discover' ? STAGE_LABEL.discover : `${STAGE_LABEL[r.stage]} ${r.index}`;
+}
+
 /**
- * The run: pass 1 (discover) and pass 2 (re-extract) progress and the
- * convergence metrics on one time axis (minutes of the recording) with a
- * "now" line, the run controls, and the export. Pass 2 follows pass 1 on
- * its own unless turned off.
+ * The run: the stages (docs/stages.md) Discover, Refine (recordings only,
+ * repeatable) and Extract (recordings only), with Discover's convergence
+ * metrics on one time axis (minutes of the recording) and a "now" line, the
+ * run controls, the Refine readout and the export. Extract follows Discover on
+ * its own unless turned off (not after a Refine: run it when the footprints
+ * are settled).
  */
 export function RunPanel(props: RunPanelProps): JSX.Element {
   const s = () => props.pipeline;
   const c = () => props.cells;
   const p = () => props.pass2;
+  const r = () => props.refine;
+  const refineBusy = () => r().status() === 'running' || r().status() === 'finishing';
+  const refineRuns = () => props.stages.runs().filter((x) => x.stage === 'refine');
+  const comparison = () => refineComparison(props.stages.runs());
+  /** The newest Refine run's readout. */
+  const refineText = () => {
+    const last = refineRuns().at(-1);
+    if (!last) return null;
+    if (last.outcome === 'running') return null;
+    const cmp = comparison();
+    const rate =
+      last.refinesPerMin === null || last.refinesPerMin === undefined
+        ? `${last.refines ?? 0} refines`
+        : `${last.refinesPerMin.toFixed(1)} refines/min`;
+    const vs =
+      cmp && cmp.run === last && cmp.previous && cmp.ratio !== null
+        ? ` (${cmp.ratio.toFixed(2)}× ${runName(cmp.previous)})`
+        : '';
+    const end = last.outcome === 'done' ? '' : ` (${last.outcome})`;
+    return `${runName(last)}${end}: ${last.footprintsRefined ?? 0} of ${last.cells} footprints refined · median change of those ${percent(last.medianFootprintChange)} · ${rate}${vs}`;
+  };
 
-  // ---- pass 1 ----
+  // ---- Discover ----
   const total = () => s().plan()?.frameCount ?? 0;
   const unbounded = () => !Number.isFinite(total());
   const fraction = () => (total() > 0 && !unbounded() ? s().processed() / total() : 0);
@@ -128,6 +178,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return { key: b, text: MOTION_BACKEND[b][0], title: MOTION_BACKEND[b][1] };
   };
   const pass1Busy = () => s().status() === 'running' || s().status() === 'paused';
+  const replayBusy = () => refineBusy() || p().status() === 'running';
   const lagNow = () => {
     c().tick();
     const v = c().metrics().lag.at(-1);
@@ -141,7 +192,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return st === 'running' ? ('running' as const) : ('idle' as const);
   };
 
-  // ---- pass 2 and export ----
+  // ---- Extract and export ----
   const [auto, setAuto] = createSignal(true);
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
@@ -185,7 +236,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   }
 
-  // A new pass 1 invalidates pass 2's result.
+  // A new Discover run invalidates Extract's result.
   createEffect(
     on(
       () => s().status(),
@@ -194,13 +245,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       },
     ),
   );
-  // Pass 2 follows pass 1 once the final library is out.
+  // Extract follows Discover once the final library is out (not a Refine run:
+  // Extract when the footprints are settled).
   createEffect(() => {
     if (
       auto() &&
       !props.live &&
       s().status() === 'done' &&
       p().status() === 'idle' &&
+      props.stages.runs().every((x) => x.stage === 'discover') &&
       p().blockedReason() === null
     )
       void p().run();
@@ -209,17 +262,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const pass2Text = () => {
     switch (p().status()) {
       case 'running':
-        return 'Pass 2: re-extracting traces with the final library';
+        return 'Extract: solving the traces of every frame with the final footprints';
       case 'done': {
-        const r = p().result();
-        return r
-          ? `Pass 2 done: ${r.cells} cells x ${r.frames.toLocaleString()} frames in ${r.seconds.toFixed(1)} s (${(r.frames / r.seconds).toFixed(0)} frames/s)`
-          : 'Pass 2 done';
+        const res = p().result();
+        return res
+          ? `Extract done: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          : 'Extract done';
       }
       case 'error':
-        return `Pass 2 stopped: ${p().error() ?? 'error'}`;
+        return `Extract stopped: ${p().error() ?? 'error'}`;
       case 'cancelled':
-        return 'Pass 2 cancelled';
+        return 'Extract cancelled';
       default:
         if (props.live) {
           if (pass1Busy()) return 'Live: the traces are solved as the frames come in';
@@ -228,14 +281,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             ? `Live run ended: ${r.cells} cells x ${r.frames.toLocaleString()} frames of live traces to export`
             : 'Live run ended';
         }
+        if (refineBusy()) return 'Extract after Refine (or Refine again)';
         return pass1Busy()
-          ? 'Pass 2 starts when pass 1 finishes'
-          : (p().blockedReason() ?? 'Ready for pass 2');
+          ? auto()
+            ? 'Extract starts when Discover finishes'
+            : 'Extract runs after Discover finishes'
+          : (props.availability.extract ?? 'Ready to Extract');
     }
   };
   const pass2Shown = () => p().status() === 'running' || p().status() === 'done';
   const pass2Fraction = () => {
-    // On the recording's axis: pass 2 re-reads the frames pass 1 read.
+    // On the recording's axis: Extract re-reads the frames Discover read.
     const all = Number.isFinite(total()) && total() > 0 ? total() : p().total();
     return all > 0 ? p().processed() / all : 0;
   };
@@ -277,6 +333,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       result: r,
       run: s().record().snapshot(),
       flatField: s().record().flatFieldApplied,
+      stages: props.stages.runs(),
       qc: c().qc(),
       firstSeen: c().firstSeen,
       version: import.meta.env.VITE_APP_VERSION || 'dev',
@@ -361,15 +418,36 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         state: calibrating ? 'active' : s().processed() > 0 || st === 'done' ? 'done' : 'pending',
       },
       {
-        label: 'Pass 1',
-        sub: props.live ? 'discover (live)' : `discover ${Math.round(100 * fraction())}%`,
+        label: STAGE_LABEL.discover,
+        sub: props.live ? 'live' : `${Math.round(100 * fraction())}%`,
         state: st === 'done' ? 'done' : !calibrating && pass1Busy() ? 'active' : 'pending',
       },
-      {
-        label: 'Pass 2',
-        sub: props.live ? 'not for live' : `re-extract ${pass2Value()}`,
-        state: p2 === 'done' ? 'done' : p2 === 'running' ? 'active' : 'pending',
-      },
+      ...(props.live
+        ? []
+        : [
+            {
+              label: STAGE_LABEL.refine,
+              sub: refineBusy()
+                ? `${Math.round(100 * (r().total() > 0 ? r().processed() / r().total() : 0))}%`
+                : refineRuns().length > 0
+                  ? `x${refineRuns().length}`
+                  : 'optional',
+              state: (refineBusy()
+                ? 'active'
+                : refineRuns().length > 0
+                  ? 'done'
+                  : 'pending') as StepState,
+            },
+            {
+              label: STAGE_LABEL.extract,
+              sub: pass2Value(),
+              state: (p2 === 'done'
+                ? 'done'
+                : p2 === 'running'
+                  ? 'active'
+                  : 'pending') as StepState,
+            },
+          ]),
       {
         label: 'Export',
         sub: exportResult() ? 'ready' : '',
@@ -412,7 +490,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             type="button"
             class="btn-secondary btn-small cala-icon-btn"
             aria-label="Restart"
-            title="Restart pass 1 from frame 0 (a new run)"
+            title="Start Discover again from frame 0 (a new run: Refine and Extract start over)"
             onClick={() => void s().start()}
           >
             ↻
@@ -422,11 +500,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               type="button"
               class="btn-secondary btn-small cala-icon-btn"
               data-testid="pass2-finish"
-              aria-label={props.live ? 'Stop the live run' : 'End pass 1'}
+              aria-label={props.live ? 'Stop the live run' : 'End Discover'}
               title={
                 props.live
                   ? 'Stop the live run: the cells found so far become the final library.'
-                  : 'End pass 1 here: the cells found so far become the final library, then pass 2 runs over the frames read.'
+                  : 'End Discover here: the cells found so far become the final library; Refine and Extract then run over the frames read.'
               }
               onClick={() => void s().finishEarly()}
             >
@@ -503,16 +581,24 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <ProgressBar
                 fraction={fraction()}
                 state={pass1State()}
-                label="Pass 1: discover"
-                aria-label="Pass 1"
+                label="Discover"
+                aria-label="Discover"
+              />
+            </Show>
+            <Show when={refineBusy()}>
+              <ProgressBar
+                fraction={r().total() > 0 ? r().processed() / r().total() : 0}
+                state="running"
+                label={`Refine ${refineRuns().length}`}
+                aria-label="Refine"
               />
             </Show>
             <Show when={pass2Shown()}>
               <ProgressBar
                 fraction={p().total() > 0 ? p().processed() / p().total() : 0}
                 state={pass2State()}
-                label="Pass 2: re-extract"
-                aria-label="Pass 2"
+                label="Extract"
+                aria-label="Extract"
               />
             </Show>
             <Show when={metricsOpen()}>
@@ -552,12 +638,20 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           <Show when={metricsOpen() && !props.ui.expanded()}>
             <GroupPlot ui={props.ui} group="convergence" height={130} compact />
           </Show>
+          <Show when={!props.live && refineBusy()}>
+            <ProgressBar
+              fraction={r().total() > 0 ? r().processed() / r().total() : 0}
+              state="running"
+              label={`Refine ${refineRuns().length}`}
+              aria-label="Refine"
+            />
+          </Show>
           <Show when={!props.live && pass2Shown()}>
             <ProgressBar
               fraction={pass2Fraction()}
               state={pass2State()}
-              label="Pass 2"
-              aria-label="Pass 2"
+              label="Extract"
+              aria-label="Extract"
             />
           </Show>
         </div>
@@ -594,22 +688,86 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         <label class="cala-check" title="Run cell discovery on the frames as they are read.">
           <input
             type="checkbox"
+            disabled={replayBusy()}
             checked={s().discover()}
             onChange={(e) => s().setDiscover(e.currentTarget.checked)}
           />
           Discover cells
         </label>
         <Show when={!props.live}>
-          <label class="cala-check" title="Start pass 2 as soon as pass 1 has its final library.">
+          <label
+            class="cala-check"
+            title="Start Extract as soon as Discover has its final library (not after a Refine run)."
+          >
             <input
               type="checkbox"
               checked={auto()}
               onChange={(e) => setAuto(e.currentTarget.checked)}
             />
-            Pass 2 after pass 1
+            Extract after Discover
           </label>
         </Show>
       </div>
+      <Show when={props.live}>
+        <p class="cala-muted cala-run__line" data-testid="live-stage-note">
+          {LIVE_NOTE}
+        </p>
+      </Show>
+      <Show when={!props.live}>
+        <div class="cala-run__footer">
+          <Show
+            when={!refineBusy()}
+            fallback={
+              <button
+                type="button"
+                class="btn-secondary btn-small"
+                data-testid="refine-cancel"
+                title="Stop this Refine run: the footprints refined so far are kept."
+                onClick={() => r().cancel()}
+              >
+                Cancel Refine
+              </button>
+            }
+          >
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="refine-run"
+              disabled={props.availability.refine !== null}
+              title={
+                props.availability.refine ??
+                'Replay the recording from frame 0: footprints keep converging; no cells are added, merged, split or deleted. Repeatable.'
+              }
+              onClick={() => props.onRefine()}
+            >
+              {refineRuns().length > 0 ? 'Refine again' : 'Refine'}
+            </button>
+          </Show>
+          <span
+            class="cala-readout cala-wrap"
+            data-testid="refine-readout"
+            data-runs={refineRuns().length}
+          >
+            {refineBusy()
+              ? `Refine ${refineRuns().length}: frame ${r().processed().toLocaleString()} / ${r().total().toLocaleString()}${r().fps() > 0 ? ` · ${r().fps().toFixed(1)} frames/s` : ''}${r().status() === 'finishing' ? ' · publishing' : ''}`
+              : r().status() === 'error'
+                ? `Refine stopped: ${r().error() ?? 'error'}`
+                : (refineText() ?? '')}
+          </span>
+        </div>
+        <Show when={!refineBusy() && comparison()?.settled}>
+          <p class="cala-muted cala-run__line" data-testid="refine-settled">
+            Looks settled: the refine rate has stopped falling. More Refine runs are unlikely to
+            change the footprints much; Extract when ready.
+          </p>
+        </Show>
+        <Show when={props.stages.extractInvalidated() && p().status() !== 'running'}>
+          <p class="cala-warning" role="status" data-testid="extract-invalidated">
+            Refine changed the footprints, so the earlier Extract result was discarded. Run Extract
+            again for traces with the refined footprints.
+          </p>
+        </Show>
+      </Show>
       <div class="cala-run__footer">
         <span
           class="cala-status cala-run__pass2"
@@ -635,7 +793,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           fallback={
             <Show when={!props.live}>
               <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
-                Cancel pass 2
+                Cancel Extract
               </button>
             </Show>
           }
@@ -645,10 +803,13 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="btn-secondary btn-small"
             data-testid="pass2-run"
             disabled={p().blockedReason() !== null}
-            title={p().blockedReason() ?? 'Re-extract every frame with the final library.'}
+            title={
+              p().blockedReason() ??
+              'Extract: solve the traces of every frame with the final footprints, frozen.'
+            }
             onClick={() => void p().run()}
           >
-            Run pass 2
+            {p().status() === 'done' ? 'Extract again' : 'Extract'}
           </button>
         </Show>
         <details class="cala-menu" data-testid="export-menu">
@@ -664,7 +825,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               title={
                 props.live
                   ? 'Footprints, the live traces, motion, flicker and cell metadata (NumPy .npz).'
-                  : 'Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz).'
+                  : "Footprints, Extract's traces, motion, flicker, the stages run and cell metadata (NumPy .npz)."
               }
               onClick={() => {
                 const input = exportInput();
@@ -709,7 +870,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <span class="cala-muted">
                 {props.live
                   ? 'Available when the live run has ended.'
-                  : 'Available when pass 2 is done.'}
+                  : 'Available when Extract is done.'}
               </span>
             </Show>
             <Show

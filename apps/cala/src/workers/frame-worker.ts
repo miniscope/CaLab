@@ -119,7 +119,8 @@ function openLive(url: string): Promise<LiveSource> {
   return LiveSource.open(new WebSocket(url) as unknown as SocketLike, url);
 }
 
-function stopPipeline(): void {
+/** `keepSlow`: a replay stage follows (or one is stopped): the slow loop stays. */
+function stopPipeline(keepSlow = false): void {
   pipeline?.dispose();
   pipeline = null;
   if (front) {
@@ -127,8 +128,8 @@ function stopPipeline(): void {
     front = null;
     frontPool = null;
     flatSink = null;
-    down?.postMessage({ type: 'stop', epoch } satisfies StageMsg);
   }
+  down?.postMessage({ type: 'stop', epoch, keepSlow } satisfies StageMsg);
 }
 
 async function handle(req: FrameRequest): Promise<void> {
@@ -164,7 +165,8 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-start': {
-        stopPipeline();
+        // A replay stage (Refine, Extract) keeps the slow loop of the Discover run.
+        stopPipeline(req.cells?.library !== undefined);
         // A live stream cannot be rewound: a restart (or a run after the stream
         // ended) connects again, and the source streams from where it is now.
         if (live && liveUrl && (live.used || live.stats().ended)) {
@@ -173,7 +175,10 @@ async function handle(req: FrameRequest): Promise<void> {
           live = await openLive(liveUrl);
         }
         const src = reader();
-        if (live && req.replay) throw new Error('Pass 2 needs the recording on disk.');
+        if (live && req.replay)
+          throw new Error(
+            'Refine and Extract need the recording on disk (save the stream and open it as a recording).',
+          );
         if (down) {
           epoch++;
           // The stage asks for buffers only from its first `next()`, after the pool exists.
@@ -214,7 +219,7 @@ async function handle(req: FrameRequest): Promise<void> {
           post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
           break;
         }
-        if (req.replay) throw new Error('Pass 2 needs the pipelined workers.');
+        if (req.replay) throw new Error('Refine and Extract need the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
         pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
@@ -269,7 +274,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-stop': {
-        stopPipeline();
+        stopPipeline(req.keepSlow === true);
         post({ type: 'pipeline-stopped', id: req.id });
         break;
       }

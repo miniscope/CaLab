@@ -9,7 +9,17 @@ import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
-import { createPass2Store } from './lib/pass2-store.ts';
+import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
+import { createRefineStore } from './lib/refine-store.ts';
+import {
+  createStageLog,
+  perMinute,
+  STAGE_LABEL,
+  stageAvailability,
+  type StageActivity,
+  type StageName,
+  type StageRun,
+} from './lib/run-stages.ts';
 import { createReviewClient } from './lib/review-client.ts';
 import { createReviewStore, reviewEvery } from './lib/review-store.ts';
 import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
@@ -119,7 +129,121 @@ const App: Component = () => {
         }
       : compress,
   );
-  const pass2 = createPass2Store(client, pipeline, cells);
+  // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
+  const stageLog = createStageLog();
+  const discoverActivity = (): StageActivity => {
+    const st = pipeline.status();
+    return st === 'starting' || st === 'paused' ? 'running' : st;
+  };
+  const stageInput = () => ({
+    live: store.info()?.live !== undefined,
+    discover: discoverActivity(),
+    refine: ((st) => (st === 'finishing' ? 'running' : st))(refine.status()) as StageActivity,
+    extract: pass2.status(),
+    finalLibrary: cells.status()?.final ?? false,
+    cells: cells.library()?.ids.length ?? 0,
+    replayBlocked: replayBlocked(pipeline),
+  });
+  const availability = () => stageAvailability(stageInput());
+  const pass2 = createPass2Store(client, pipeline, cells, undefined, () =>
+    refine.status() === 'running' || refine.status() === 'finishing' ? 'Refine is running.' : null,
+  );
+  const refine = createRefineStore(client, pipeline, cells, stageLog, () => availability().refine);
+  /** Log a stage event on the run's timeline (at the end of what Discover read). */
+  const logStage = (stage: StageName, detail: string) =>
+    runHistory.log({
+      frame: pipeline.processed(),
+      kind: 'stage',
+      to: stage,
+      detail,
+      replay: false,
+    });
+  /** Refine: a result of an earlier Extract no longer matches the footprints, so it goes. */
+  function runRefine(): void {
+    if (availability().refine !== null) return;
+    if (pass2.result()) {
+      pass2.clear();
+      stageLog.invalidateExtract();
+    }
+    void refine.run();
+  }
+  // Discover: a new run starts the stage log over; it ends with the final library.
+  createEffect(
+    on(
+      () => pipeline.status(),
+      (st) => {
+        if (st === 'starting') {
+          stageLog.reset();
+          refine.clear();
+          stageLog.begin('discover');
+        } else if (st === 'error') {
+          stageLog.end('discover', 'error', { frames: pipeline.processed() });
+        }
+      },
+    ),
+  );
+  createEffect(() => {
+    const slow = cells.status();
+    const run = stageLog.last('discover');
+    if (pipeline.status() !== 'done' || run?.outcome !== 'running') return;
+    if (slow && !slow.final && slow.run <= 1) return;
+    const c = slow?.counters;
+    const frames = pipeline.processed();
+    const data: Partial<StageRun> = {
+      frames,
+      cells: cells.library()?.ids.length ?? 0,
+      libraryVersion: cells.library()?.version ?? 0,
+      refines: c?.refines ?? 0,
+      refinesPerMin: perMinute(c?.refines ?? 0, frames, cells.fps()),
+      adds: c?.adds ?? 0,
+      merges: c?.merges ?? 0,
+      deletes: c?.deletes ?? 0,
+      splits: c?.splits ?? 0,
+    };
+    stageLog.end('discover', 'done', data);
+    logStage('discover', `Discover done: ${data.cells} cells`);
+  });
+  // Extract: its store's status, into the stage log.
+  createEffect(
+    on(
+      () => pass2.status(),
+      (st) => {
+        if (st === 'running') {
+          stageLog.begin('extract');
+          logStage('extract', 'Extract started');
+        } else if (st === 'done') {
+          const r = pass2.result();
+          stageLog.end('extract', 'done', {
+            frames: r?.frames ?? 0,
+            cells: r?.cells ?? 0,
+            libraryVersion: r?.version ?? 0,
+          });
+          logStage('extract', 'Extract done');
+        } else if (st === 'error' || st === 'cancelled') {
+          stageLog.end('extract', st, { frames: pass2.processed() });
+          logStage('extract', `Extract ${st === 'error' ? 'stopped by an error' : 'cancelled'}`);
+        }
+      },
+    ),
+  );
+  // Refine: the store logs its runs; the timeline gets the start and the end.
+  createEffect(
+    on(
+      () => refine.status(),
+      (st) => {
+        if (st === 'running') logStage('refine', `${STAGE_LABEL.refine} started`);
+        else if (st === 'done' || st === 'cancelled' || st === 'error') {
+          const r = stageLog.last('refine');
+          logStage(
+            'refine',
+            `${STAGE_LABEL.refine} ${r?.index ?? ''} ${st === 'done' ? 'done' : st}${
+              r?.refines !== undefined ? `: ${r.refines} refines` : ''
+            }`,
+          );
+        }
+      },
+    ),
+  );
   // Slow-loop warnings (the reservoir filling up) go into the run's event log.
   createEffect(
     on(
@@ -145,6 +269,8 @@ const App: Component = () => {
       cells,
       pipeline,
       pass2,
+      refine,
+      stageLog,
       runHistory,
       historyUi,
       compress,
@@ -217,6 +343,10 @@ const App: Component = () => {
           <RunPanel
             pipeline={pipeline}
             pass2={pass2}
+            refine={refine}
+            stages={stageLog}
+            availability={availability()}
+            onRefine={runRefine}
             cells={cells}
             live={lp.info.live !== undefined}
             label={store.label()}

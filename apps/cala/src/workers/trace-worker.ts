@@ -27,19 +27,32 @@ let slowPort: MessagePort | null = null;
 let compressPort: MessagePort | null = null;
 let stage: BackStage | null = null;
 let queue: Promise<void> = Promise.resolve();
+/** Session of the slow loop the last Discover run started (-1: none). */
+let slowSession = -1;
 
-function stopStage(): void {
-  stage?.dispose();
+/**
+ * Stop the running stage. `keepSlow`: a replay stage follows or is stopped,
+ * so the slow loop stays (a stopped Refine run is told to publish what it
+ * has); otherwise it is dropped, also when the stage was an Extract run,
+ * which never talks to it.
+ */
+function stopStage(keepSlow = false): void {
+  stage?.dispose(keepSlow);
   stage = null;
+  if (!keepSlow && slowSession >= 0) {
+    slowPort?.postMessage({ type: 'reset', session: slowSession } satisfies FastToSlow);
+    slowSession = -1;
+  }
 }
 
 function handle(msg: StageMsg): void {
   switch (msg.type) {
     case 'start': {
-      stopStage();
       const cells = msg.cells;
-      // Pass 2 (a library is given) is not connected to the slow loop.
-      const port = cells?.library ? null : slowPort;
+      // A replay stage keeps the slow loop; Extract (a library, no refine) is not connected to it.
+      stopStage(cells?.library !== undefined);
+      const port = cells?.library && !cells.refine ? null : slowPort;
+      if (port && !cells?.library && (cells?.discover ?? true)) slowSession = cells?.session ?? 0;
       const fast = new FastLoop(
         {
           ...msg.fast,
@@ -48,6 +61,7 @@ function handle(msg: StageMsg): void {
           qc: cells?.qc ?? true,
           residual: cells?.residual ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
+          ...(cells?.refine ? { refine: true } : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
@@ -79,7 +93,7 @@ function handle(msg: StageMsg): void {
       workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step: { kind: 'done' } });
       break;
     case 'stop':
-      stopStage();
+      stopStage(msg.keepSlow === true);
       break;
   }
 }
