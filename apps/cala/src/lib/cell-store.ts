@@ -371,6 +371,37 @@ export function createCellStore(
     setTick((v) => v + 1);
   }
 
+  /**
+   * Show a saved result (read-only viewer, `result-file.ts`): its library,
+   * when each cell was first seen, its QC, at the end of its `frames`. The
+   * traces follow with `onBackfill`. Messages of any pipeline session are
+   * ignored until the next `reset`.
+   */
+  function loadResult(o: {
+    library: LibraryView;
+    firstSeen: ReadonlyMap<number, number>;
+    qc: QcSnapshot | null;
+    frames: number;
+    fps: number;
+  }): void {
+    reset(-2);
+    firstSeen = new Map(o.firstSeen);
+    footprints.record(o.library);
+    events.push({
+      version: o.library.version,
+      frame: o.frames,
+      cells: o.library.ids.length,
+      added: o.library.ids.length,
+      removed: 0,
+    });
+    setFps(o.fps > 0 ? o.fps : 20);
+    setFrame(o.frames);
+    setVersion(o.library.version);
+    setLibrary(o.library);
+    setGeometry(buildGeometry(o.library));
+    setQc(o.qc);
+  }
+
   /** Frames since `id` was first seen (Infinity when unknown). */
   function age(id: number): number {
     const f = firstSeen.get(id);
@@ -383,6 +414,7 @@ export function createCellStore(
     onSlowMessage,
     onBackfill,
     onBatch,
+    loadResult,
     library,
     /** Bytes of `library()` for the trace solver (null before the first publish). */
     libraryBytes: () => latestBytes,

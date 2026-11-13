@@ -29,7 +29,7 @@ import {
   RESERVED_THREADS,
   visitWorkerCount,
 } from './lib/slow-client.ts';
-import { FovPanel } from './components/FovPanel.tsx';
+import { FovPanel, pipelineFovSource } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
@@ -57,6 +57,9 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
 import type { ExportInput } from './lib/export.ts';
+import type { ProjectResult } from './lib/project-index.ts';
+import { openResult, type LoadedResult } from './lib/result-file.ts';
+import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -352,9 +355,15 @@ const App: Component = () => {
         result: r,
         run: pipeline.record().snapshot(),
         flatField: pipeline.record().flatFieldApplied,
+        flatFieldMap: pipeline.flatFieldMap(),
+        bitDepth: i.bitDepth,
         stages: stageLog.runs(),
         qc: cells.qc(),
         firstSeen: cells.firstSeen,
+        history: {
+          bins: runHistory.history().toExport(),
+          eventsJson: runHistory.events().toJSON(),
+        },
         version,
       };
     },
@@ -373,6 +382,38 @@ const App: Component = () => {
     recent: recentStore,
     version,
   });
+  // ---- View results (docs/projects.md): a saved export, read-only ----
+  const [viewing, setViewing] = createSignal<{
+    result: LoadedResult;
+    origin: ResultOrigin;
+  } | null>(null);
+  const [viewState, setViewState] = createSignal<{ busy: boolean; error: string | null }>({
+    busy: false,
+    error: null,
+  });
+  async function viewResult(r: ProjectResult): Promise<void> {
+    setViewState({ busy: true, error: null });
+    try {
+      const file = await project.resultFile(r);
+      const result = await openResult(file, r.session);
+      setViewing({
+        result,
+        origin: {
+          session: r.session,
+          run: r.run,
+          path: `${project.location().label}/${r.export_path}`,
+          created: r.created,
+        },
+      });
+      setViewState({ busy: false, error: null });
+    } catch (err) {
+      setViewState({
+        busy: false,
+        error: `This result could not be opened: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   /** From the viewer back to the open project (a running plan stops). */
   function backToProject(): void {
     pipeline.stop();
@@ -518,7 +559,7 @@ const App: Component = () => {
     );
     const fov = () => (
       <FovPanel
-        store={pipeline}
+        source={pipelineFovSource(pipeline)}
         cells={cells}
         width={lp.info.width}
         height={lp.info.height}
@@ -558,6 +599,7 @@ const App: Component = () => {
             width={lp.info.width}
             height={lp.info.height}
             fps={lp.info.fps ?? 0}
+            bitDepth={lp.info.bitDepth}
             narrow={layout().narrow}
             ui={historyUi}
             compress={compress}
@@ -586,123 +628,187 @@ const App: Component = () => {
   }
   if (liveParam) void openLive(liveParam);
 
-  return (
-    <Show
-      when={store.info()}
-      fallback={
-        <Show
-          when={screen() === 'sessions' || screen() === 'project'}
-          fallback={
-            <OpenFolder
-              onProject={(o) => {
-                setScreen('project');
-                void project.open(o).then(loadRecent);
-              }}
-              onAnimals={(handles) =>
-                void (async () => {
-                  for (const h of handles) await rememberProject(recentStore, h, null, new Date());
-                  loadRecent();
-                })()
-              }
-              recent={supportsDirectoryPicker() ? recent() : []}
-              onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
-              loading={store.loading()}
-              error={store.error()}
-              onOpen={(files, label) => void open(files, label)}
-              onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
-              liveUrl={liveParam ?? undefined}
-              addMode={screen() === 'add'}
-              onCancel={() => setScreen('sessions')}
-              onSessions={(found, handle) => {
-                setScreen('sessions');
-                void sessionList.add(found, handle);
-              }}
-            />
+  /** A saved result in the viewer (read-only), with Back to project. */
+  const resultScreen = (v: { result: LoadedResult; origin: ResultOrigin }) => (
+    <DashboardShell
+      header={
+        <CompactHeader
+          title="Cala"
+          version={`CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`}
+          info={
+            <>
+              <span class="compact-header__file">{v.result.label}</span>
+              <span class="compact-header__sep">&middot;</span>
+              <span>
+                {v.result.width} x {v.result.height}
+              </span>
+              <span class="compact-header__sep">&middot;</span>
+              <span>{v.result.frames.toLocaleString()} frames</span>
+              <span class="compact-header__sep">&middot;</span>
+              <span data-testid="result-badge">saved result, read-only</span>
+            </>
           }
-        >
-          <Show
-            when={screen() === 'project'}
-            fallback={
-              <SessionSetup
-                list={sessionList}
-                onAdd={() => setScreen('add')}
-                onCancel={() => {
-                  sessionList.clear();
-                  setScreen('open');
+          actions={
+            <>
+              <button
+                class="btn-secondary btn-small"
+                data-testid="back-to-project"
+                title="Back to the project's session table"
+                onClick={() => {
+                  setViewing(null);
+                  void project.refresh();
                 }}
-                grant={grantResults}
-                onStart={startSessions}
+              >
+                Back to project
+              </button>
+              <FeedbackMenu appId={__APP_ID__} />
+              <CommunityAuthMenu />
+            </>
+          }
+        />
+      }
+    >
+      <ResultView result={v.result} origin={v.origin} />
+    </DashboardShell>
+  );
+
+  return (
+    <Show when={viewing()} keyed fallback={mainScreen()}>
+      {(v) => resultScreen(v)}
+    </Show>
+  );
+
+  function mainScreen() {
+    return (
+      <Show
+        when={store.info()}
+        fallback={
+          <Show
+            when={screen() === 'sessions' || screen() === 'project'}
+            fallback={
+              <OpenFolder
+                onProject={(o) => {
+                  setScreen('project');
+                  void project.open(o).then(loadRecent);
+                }}
+                onAnimals={(handles) =>
+                  void (async () => {
+                    for (const h of handles)
+                      await rememberProject(recentStore, h, null, new Date());
+                    loadRecent();
+                  })()
+                }
+                recent={supportsDirectoryPicker() ? recent() : []}
+                onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
+                loading={store.loading()}
+                error={store.error()}
+                onOpen={(files, label) => void open(files, label)}
+                onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
+                liveUrl={liveParam ?? undefined}
+                addMode={screen() === 'add'}
+                onCancel={() => setScreen('sessions')}
+                onSessions={(found, handle) => {
+                  setScreen('sessions');
+                  void sessionList.add(found, handle);
+                }}
               />
             }
           >
-            <ProjectView
-              project={project}
-              onClose={() => {
-                project.close();
-                setScreen('open');
-                loadRecent();
-              }}
-            />
-          </Show>
-        </Show>
-      }
-    >
-      {(info) => (
-        <DashboardShell
-          header={
-            <CompactHeader
-              title="Cala"
-              version={`CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`}
-              info={
-                <>
-                  <span class="compact-header__file">{store.label()}</span>
-                  <span class="compact-header__sep">&middot;</span>
-                  <span>
-                    {info().width} x {info().height}
-                  </span>
-                  <span class="compact-header__sep">&middot;</span>
-                  <span>
-                    {info().live ? 'live' : `${info().frameCount.toLocaleString()} frames`}
-                  </span>
-                </>
+            <Show
+              when={screen() === 'project'}
+              fallback={
+                <SessionSetup
+                  list={sessionList}
+                  onAdd={() => setScreen('add')}
+                  onCancel={() => {
+                    sessionList.clear();
+                    setScreen('open');
+                  }}
+                  grant={grantResults}
+                  onStart={startSessions}
+                />
               }
-              actions={
-                <>
-                  <Show when={project.opened()}>
+            >
+              <Show when={viewState().busy || viewState().error}>
+                <div
+                  class={viewState().error ? 'error-card' : 'cala-muted'}
+                  role={viewState().error ? 'alert' : 'status'}
+                  data-testid="view-status"
+                >
+                  {viewState().error ?? 'Opening the result...'}
+                </div>
+              </Show>
+              <ProjectView
+                project={project}
+                onView={(r) => void viewResult(r)}
+                onClose={() => {
+                  setViewState({ busy: false, error: null });
+                  project.close();
+                  setScreen('open');
+                  loadRecent();
+                }}
+              />
+            </Show>
+          </Show>
+        }
+      >
+        {(info) => (
+          <DashboardShell
+            header={
+              <CompactHeader
+                title="Cala"
+                version={`CaLab ${import.meta.env.VITE_APP_VERSION || 'dev'}`}
+                info={
+                  <>
+                    <span class="compact-header__file">{store.label()}</span>
+                    <span class="compact-header__sep">&middot;</span>
+                    <span>
+                      {info().width} x {info().height}
+                    </span>
+                    <span class="compact-header__sep">&middot;</span>
+                    <span>
+                      {info().live ? 'live' : `${info().frameCount.toLocaleString()} frames`}
+                    </span>
+                  </>
+                }
+                actions={
+                  <>
+                    <Show when={project.opened()}>
+                      <button
+                        class="btn-secondary btn-small"
+                        data-testid="back-to-project"
+                        title="Back to the project's session table (a running plan stops)"
+                        onClick={backToProject}
+                      >
+                        Back to project
+                      </button>
+                    </Show>
                     <button
                       class="btn-secondary btn-small"
-                      data-testid="back-to-project"
-                      title="Back to the project's session table (a running plan stops)"
-                      onClick={backToProject}
+                      onClick={() => {
+                        pipeline.stop();
+                        multiRun.stop();
+                        sessionList.clear();
+                        project.close();
+                        setScreen('open');
+                        store.close();
+                      }}
                     >
-                      Back to project
+                      {info().live ? 'Open another source' : 'Open another folder'}
                     </button>
-                  </Show>
-                  <button
-                    class="btn-secondary btn-small"
-                    onClick={() => {
-                      pipeline.stop();
-                      multiRun.stop();
-                      sessionList.clear();
-                      project.close();
-                      setScreen('open');
-                      store.close();
-                    }}
-                  >
-                    {info().live ? 'Open another source' : 'Open another folder'}
-                  </button>
-                  <FeedbackMenu appId={__APP_ID__} />
-                  <CommunityAuthMenu />
-                </>
-              }
-            />
-          }
-        >
-          <Layout info={info()} />
-        </DashboardShell>
-      )}
-    </Show>
-  );
+                    <FeedbackMenu appId={__APP_ID__} />
+                    <CommunityAuthMenu />
+                  </>
+                }
+              />
+            }
+          >
+            <Layout info={info()} />
+          </DashboardShell>
+        )}
+      </Show>
+    );
+  }
 };
 
 export default App;

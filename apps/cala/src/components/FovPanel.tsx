@@ -25,6 +25,8 @@ import {
   type FovView,
 } from '../lib/fov-view.ts';
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
+import type { PreviewImage } from '../lib/preview.ts';
+import type { DisplayRange } from '../lib/frame-display.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import {
   COLOR_MODES,
@@ -45,7 +47,7 @@ import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.ts
 
 export type FovViewName = keyof Omit<BatchPreviews, 'frame'>;
 
-const VIEWS: { value: FovViewName; label: string; title: string }[] = [
+const VIEWS: FovViewOption[] = [
   { value: 'raw', label: 'Raw', title: 'The frame as recorded.' },
   {
     value: 'preprocessed',
@@ -65,10 +67,47 @@ const VIEWS: { value: FovViewName; label: string; title: string }[] = [
       'What the cell model leaves unexplained in the background-removed frame (the frame minus every footprint times its trace). Light without a cell shows here.',
   },
 ];
-const VIEW_LABEL = Object.fromEntries(VIEWS.map((v) => [v.value, v.label])) as Record<
-  FovViewName,
-  string
->;
+
+/** A view the FOV toolbar offers. */
+export interface FovViewOption {
+  value: string;
+  label: string;
+  title: string;
+}
+
+/**
+ * What the field of view shows: the live pipeline's previews
+ * (`pipelineFovSource`), or a saved result's images (the result viewer).
+ */
+export interface FovSource {
+  views: readonly FovViewOption[];
+  initial: string;
+  /** The image of a view (reactive; null: none yet). */
+  image(view: string): PreviewImage | null;
+  /** Frame the images show, for the readout (null: none, or not one frame). */
+  frame(): number | null;
+  /** A fixed display range per view; absent or null: fit to the first images, then held. */
+  fixedRange?(view: string): DisplayRange | null;
+  /** Ask for the residual frame while that view is shown (the live pipeline). */
+  setResidual?(on: boolean): void;
+  /** Text over a view without an image. */
+  emptyText?(view: string): string | null;
+}
+
+/** The live pipeline's previews as an FOV source. */
+export function pipelineFovSource(store: PipelineStore): FovSource {
+  return {
+    views: VIEWS,
+    initial: 'output',
+    image: (v) => store.previews()?.[v as FovViewName] ?? null,
+    frame: () => store.previews()?.frame ?? null,
+    setResidual: (on) => store.setResidual(on),
+    emptyText: (v) =>
+      v === 'residual'
+        ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
+        : null,
+  };
+}
 
 const OVERLAYS: { value: OverlayMode; label: string; title: string }[] = [
   { value: 'off', label: 'Off', title: 'No cells drawn (the selected cell keeps its outline).' },
@@ -170,27 +209,39 @@ function ColorLegend(props: { cells: CellStore; mode: ColorMode; residual: boole
  * preview or library arrives, as before.
  */
 export function FovPanel(props: {
-  store: PipelineStore;
+  source: FovSource;
   cells: CellStore;
   width: number;
   height: number;
   fps: number;
 }): JSX.Element {
-  const [view, setView] = createSignal<FovViewName>('output');
+  // The source is fixed for the panel's life (the live pipeline, or one saved result).
+  // eslint-disable-next-line solid/reactivity
+  const src = props.source;
+  const label = (v: string) => src.views.find((x) => x.value === v)?.label ?? v;
+  const [view, setView] = createSignal<string>(src.initial);
   const [overlay, setOverlay] = createSignal<OverlayMode>('contours');
   const [mode, setMode] = createSignal<ColorMode>('pass');
   const [residualMap, setResidualMap] = createSignal(false);
   const [card, setCard] = createSignal(true);
   const [fov, setFov] = createSignal<FovView>(FIT_VIEW);
-  // One fixed display range per view: switching views never re-fits.
-  const held = Object.fromEntries(VIEWS.map((v) => [v.value, createHeldRange()])) as Record<
-    FovViewName,
+  // One fixed display range per view: switching views never re-fits. A source
+  // with a fixed range per view (a saved result) is drawn with it, never fitted.
+  const held = Object.fromEntries(src.views.map((v) => [v.value, createHeldRange()])) as Record<
+    string,
     HeldRange
   >;
+  const applyFixed = () => {
+    for (const v of src.views) {
+      const r = src.fixedRange?.(v.value);
+      if (r) held[v.value].setManual(r);
+    }
+  };
+  applyFixed();
 
   // The residual frame is computed in the worker only while it is shown.
-  createEffect(() => props.store.setResidual(view() === 'residual'));
-  onCleanup(() => props.store.setResidual(false));
+  createEffect(() => src.setResidual?.(view() === 'residual'));
+  onCleanup(() => src.setResidual?.(false));
 
   let stage!: HTMLDivElement;
   let video!: HTMLCanvasElement;
@@ -198,21 +249,21 @@ export function FovPanel(props: {
   let heat!: HTMLCanvasElement;
   let minimap!: HTMLCanvasElement;
 
-  const image = () => props.store.previews()?.[view()] ?? null;
+  const image = () => src.image(view());
   const zoomed = () => fov().zoom > 1.0001;
 
   // Video layer: the picked view, with its own held range.
   createEffect(() => {
-    const previews = props.store.previews();
+    const frame = src.frame();
     const v = view();
     const h = held[v];
     h.revision();
-    if (!previews) {
+    const img = src.image(v);
+    if (frame === null && !img) {
       // A new run: every view fits afresh.
       for (const r of Object.values(held)) r.reset();
-      return;
+      applyFixed();
     }
-    const img = previews[v];
     const ctx = video.getContext('2d');
     if (!ctx) return;
     if (!img) {
@@ -368,8 +419,8 @@ export function FovPanel(props: {
   };
 
   const minutes = () => {
-    const f = props.store.previews()?.frame;
-    if (f === undefined || !(props.fps > 0)) return null;
+    const f = src.frame();
+    if (f === null || !(props.fps > 0)) return null;
     return (f + 1) / props.fps / 60;
   };
 
@@ -377,14 +428,14 @@ export function FovPanel(props: {
     <DashboardPanel id="video" variant="data" class="cala-fov-panel">
       <div class="cala-fov__toolbar">
         <SegmentedControl
-          options={VIEWS}
+          options={[...src.views]}
           value={view()}
           onChange={setView}
           aria-label="View"
           size="sm"
           testid="view-select"
         />
-        <RangeControl held={held[view()]} label={VIEW_LABEL[view()]} />
+        <RangeControl held={held[view()]} label={label(view())} />
       </div>
       <div class="cala-fov__area">
         <div
@@ -402,7 +453,7 @@ export function FovPanel(props: {
           onPointerCancel={() => (press = null)}
         >
           <div class="cala-fov__world" style={{ transform: viewTransform(fov()) }}>
-            <canvas ref={video} class="cala-fov__layer" aria-label={VIEW_LABEL[view()]} />
+            <canvas ref={video} class="cala-fov__layer" aria-label={label(view())} />
             <canvas
               ref={heat}
               class="cala-heat-layer"
@@ -418,11 +469,8 @@ export function FovPanel(props: {
               data-testid="cells-overlay"
             />
           </div>
-          <Show when={view() === 'residual' && !image()}>
-            <p class="cala-fov__empty">
-              The residual comes with the frames processed while the model has cells: it shows from
-              the next batch of a running pass.
-            </p>
+          <Show when={!image() && src.emptyText?.(view())}>
+            {(text) => <p class="cala-fov__empty">{text()}</p>}
           </Show>
           <div
             class="cala-fov__card"
@@ -506,9 +554,9 @@ export function FovPanel(props: {
             </div>
           </Show>
           <div class="cala-fov__hud" data-testid="fov-hud">
-            {VIEW_LABEL[view()]}
-            <Show when={props.store.previews()}>
-              {(p) => <> &middot; frame {(p().frame + 1).toLocaleString()}</>}
+            {label(view())}
+            <Show when={src.frame() !== null}>
+              <> &middot; frame {((src.frame() ?? 0) + 1).toLocaleString()}</>
             </Show>
             <Show when={minutes()}>{(m) => <> &middot; {m().toFixed(1)} min</>}</Show>
           </div>

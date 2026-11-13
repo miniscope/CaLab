@@ -31,6 +31,7 @@ import type { PipelinePlan } from './pipeline-plan.ts';
 import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-store.ts';
 import { createTraceFile, type TraceFile } from './trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
+import type { FovProjections } from './fov-projection.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -61,6 +62,8 @@ export interface Pass2Result {
   library: LibraryView;
   /** Wall time of the whole pass, s. */
   seconds: number;
+  /** Mean and max projections of every frame (absent: the workers kept none). */
+  projection?: FovProjections;
 }
 
 export function createPass2Store(
@@ -152,6 +155,7 @@ export function createPass2Store(
           version: ctx.library.version,
           library: ctx.library,
           seconds: (clock() - ctx.t0) / 1000,
+          ...(step.projection ? { projection: step.projection } : {}),
         });
         setStatus('done');
         return;
@@ -266,7 +270,7 @@ export function createPass2Store(
           motionWarmupFrames: plan1.motionWarmupFrames,
           previewMaxSide: plan1.previewMaxSide,
         },
-        { session: 0, discover: false, qc: false, library: bytes },
+        { session: 0, discover: false, qc: false, library: bytes, projection: true },
         {
           frameCount: frames,
           ...rec.snapshot(),

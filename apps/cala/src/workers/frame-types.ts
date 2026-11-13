@@ -34,6 +34,11 @@ export interface CellsSettings {
   compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
+  /**
+   * Keep the mean and max projections of every frame and return them with the
+   * `done` step (Extract, for the export; pipelined workers only).
+   */
+  projection?: boolean;
 }
 
 /** A probed session: its info, or the error opening it. */
