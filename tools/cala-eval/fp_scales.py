@@ -258,13 +258,19 @@ def main() -> None:
 
             gt = gt_scales.measure_units(args.gt)
             fin = read_final(args.final)
-            # `best_gt` indexes qc_eval's kept units (`gt.tsv` beside final.tsv, footprint
-            # centroids); map each to the nearest oracle unit centre.
+            # `best_gt` indexes qc_eval's kept units (`gt.tsv` beside final.tsv). Its `unit`
+            # column is the oracle index; older runs lack it: map each footprint centroid to
+            # the nearest oracle unit centre (wrong on motion runs, whose GT centroids are
+            # moved into cala's registered frame).
             gt_rows = list(csv.DictReader(open(Path(args.final).with_name("gt.tsv")), delimiter="\t"))
             units = list(gt.values())
             uc = np.array([[v["cy"], v["cx"]] for v in units])
             kept = {}
             for g in gt_rows:
+                if "unit" in g:
+                    if int(g["unit"]) in gt:
+                        kept[int(g["gt"])] = gt[int(g["unit"])]
+                    continue
                 dist = np.hypot(uc[:, 0] - float(g["cy"]), uc[:, 1] - float(g["cx"]))
                 j = int(np.argmin(dist))
                 if dist[j] <= 3.0:

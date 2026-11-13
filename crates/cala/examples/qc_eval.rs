@@ -6,6 +6,15 @@
 //! cargo run --release --example qc_eval -- real   <avi dir> <out dir> [options]
 //!   --frames N         first N frames (default all)
 //!   --motion           run the motion corrector upstream
+//!   --rescore RUN      `sim` only, standalone: score an earlier run's
+//!                      checkpoint footprints (`RUN/fp_history.bin`, from
+//!                      `--churn-log`) against the GT in the tissue frame and
+//!                      in cala's frame (`rescore.tsv`: P, R, median matched r
+//!                      per checkpoint). Pass the run's `--motion` and scale
+//!                      flags; the loops do not run
+//!   --gt-offset M      motion runs with GT: `auto` (default) moves the GT
+//!                      into cala's registered frame (see "GT frame");
+//!                      `none` scores against the tissue frame as before
 //!   --budget U         slow-loop work units per frame (default 3e7)
 //!   --start N          frame at which the slow loop / oracle library starts (50)
 //!   --every K          checkpoint every K frames (default 300)
@@ -158,6 +167,24 @@
 //! trace on a quadratic of that shift ([`calab_cala::qc::motion`]; flag bit
 //! 16 above 0.2, display only, never part of `pass`); NaN without motion.
 //!
+//! GT frame (`sim` / `oracle` with `--motion`): cala registers every frame
+//! onto its warm-up template, which sits wherever the tissue was in the
+//! first frames, not at the sim's tissue frame; on the motion sims that is
+//! 1 to 3 px off. The offset is measured from what the sim and cala did
+//! ([`FrameOffset`]): the median over frames `0..=--start` of cala's rigid
+//! record plus the sim's true rigid shift (`<sim>/shifts.npy`, written by
+//! `make_trace_sim.py` or `tools/cala-eval/export_gt_motion.py`; a motion
+//! run stops if it is missing, unless `--gt-offset none`). Every GT
+//! footprint is moved by it (bicubic, sub-pixel; its centre is the moved
+//! core's peak inside the frame, as in `make_trace_sim.py`) before anything
+//! is scored, so matching, P/R, `fp_r`, the FP classes, crosstalk, the
+//! oracle library and `traces_gt.tsv` all use the moved GT.
+//! `motion_offset.tsv` holds the applied estimate, the same estimate over
+//! the whole run and per 1200-frame block (constancy check; robust sd =
+//! registration error), and `motion.tsv` cala's rigid shift of every frame.
+//! The non-rigid part of the template's position (the sim's patch field
+//! averaged over the warm-up, a few tenths of a px) is not modelled.
+//!
 //! Repeated passes (`--passes N`, offline only; with `--later-passes refine`
 //! these are the app's Refine runs, see `apps/cala/docs/stages.md`): after the last frame the
 //! loop restarts at frame 0 and runs the recording again. Carried over: the
@@ -187,7 +214,7 @@
 //! (every add with its class, every removal with its age; recording frames),
 //! `final.tsv` (each cell of the final library: centroid, footprint match,
 //! and the slow loop's evidence record) and, with GT, `gt.tsv` (GT units:
-//! centroid, detectable, peak SNR) and `traces_gt.tsv` (each final cell's
+//! centroid in cala's frame, detectable, peak SNR, `unit` = `oracle.bin` index) and `traces_gt.tsv` (each final cell's
 //! best trace correlation with *any* GT unit and that unit's distance, which
 //! tells a distant unit's light from signal no GT unit made), and, with
 //! `--dump`, `dump_{trace,ring,pre,post}.f32` (frames x cells, final library
@@ -231,6 +258,10 @@ use calab_cala::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
 };
 use std::fmt::Write as _;
+
+#[path = "../tests/common/npy.rs"]
+mod npy;
+use npy::Npy;
 
 struct Avi {
     file: File,
@@ -848,38 +879,314 @@ fn match_cells(det: &[Vec<(u32, f32)>], gt: &[Vec<(u32, f32)>], dims: Dims, thr:
     (out, best)
 }
 
-/// Integer shift (dy, dx) of the detected footprints onto the GT ones that
-/// maximises the overlap of their summed images (motion runs register to the
-/// warm-up template, not to the simulator's canvas).
-fn best_offset(det: &Library, gt: &Library, dims: Dims, max: i32) -> (i32, i32) {
-    let img = |lib: &Library| {
-        let mut m = vec![0.0f32; dims.pixels()];
-        for s in 0..lib.len() {
-            let (p, v) = lib.filtered(s);
-            for (&q, &a) in p.iter().zip(v) {
-                m[q as usize] += a.max(0.0);
-            }
-        }
-        m
+/// Offset of cala's registered frame from the simulator's tissue frame,
+/// estimated from what both did: cala's rigid motion records `s_t` against
+/// the sim's true rigid content motion `m_t` (minisim `shifts`).
+///
+/// A record registers its frame onto the template, `corrected(p) =
+/// frame(p - s)`, and the frame shows the tissue moved by `m`, so the
+/// registered frame is the tissue moved by `s_t + m_t`. That sum is the same
+/// for every frame (the template's position: the warm-up template is the
+/// mean of the first frames, wherever the tissue sat then, and the running
+/// template is pinned to it) up to registration error, so its per-axis
+/// median is the offset and its spread is the registration error. GT
+/// footprints moved by the offset are in cala's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FrameOffset {
+    /// Frames used.
+    n: usize,
+    dy: f64,
+    dx: f64,
+    /// Robust sd (1.4826 MAD) of `s_t + m_t` per axis.
+    sd_dy: f64,
+    sd_dx: f64,
+}
+
+impl FrameOffset {
+    const ZERO: FrameOffset = FrameOffset {
+        n: 0,
+        dy: 0.0,
+        dx: 0.0,
+        sd_dy: 0.0,
+        sd_dx: 0.0,
     };
-    let (a, b) = (img(det), img(gt));
-    let (w, h) = (dims.width as i32, dims.height as i32);
-    let mut best = ((0, 0), f64::MIN);
-    for dy in -max..=max {
-        for dx in -max..=max {
-            let mut s = 0.0f64;
-            for y in max..h - max {
-                for x in max..w - max {
-                    s += f64::from(a[(y * w + x) as usize])
-                        * f64::from(b[((y + dy) * w + x + dx) as usize]);
-                }
-            }
-            if s > best.1 {
-                best = ((dy, dx), s);
-            }
+
+    /// From records `rec[t]` and true content shifts `truth[t]` of the same
+    /// frames (the shorter length is used).
+    fn estimate(rec: &[(f32, f32)], truth: &[(f64, f64)]) -> FrameOffset {
+        let n = rec.len().min(truth.len());
+        if n == 0 {
+            return FrameOffset::ZERO;
+        }
+        let axis = |k: usize| {
+            let v: Vec<f64> = rec[..n]
+                .iter()
+                .zip(&truth[..n])
+                .map(|(r, m)| {
+                    if k == 0 {
+                        f64::from(r.0) + m.0
+                    } else {
+                        f64::from(r.1) + m.1
+                    }
+                })
+                .collect();
+            let med = quantile(&v, 0.5);
+            let dev: Vec<f64> = v.iter().map(|x| (x - med).abs()).collect();
+            (med, 1.4826 * quantile(&dev, 0.5))
+        };
+        let ((dy, sd_dy), (dx, sd_dx)) = (axis(0), axis(1));
+        FrameOffset {
+            n,
+            dy,
+            dx,
+            sd_dy,
+            sd_dx,
         }
     }
-    best.0
+
+    fn is_zero(&self) -> bool {
+        self.dy == 0.0 && self.dx == 0.0
+    }
+}
+
+/// Keys cubic convolution kernel (a = -0.5), the bicubic of the warp.
+fn keys(t: f64) -> f64 {
+    let t = t.abs();
+    if t < 1.0 {
+        (1.5 * t - 2.5) * t * t + 1.0
+    } else if t < 2.0 {
+        ((-0.5 * t + 2.5) * t - 4.0) * t + 2.0
+    } else {
+        0.0
+    }
+}
+
+/// `fp` with its content moved by `(dy, dx)` px (bicubic, sub-pixel):
+/// `out(p) = fp(p - d)`, zero outside the patch, clipped to `dims` and to
+/// non-negative values (light; the kernel's lobes undershoot at edges).
+fn translate_footprint(fp: &Footprint, dy: f64, dx: f64, dims: Dims) -> Footprint {
+    if fp.values.is_empty() || (dy == 0.0 && dx == 0.0) {
+        return fp.clone();
+    }
+    let (h, w) = (fp.height as i64, fp.width as i64);
+    let at = |y: i64, x: i64| -> f64 {
+        if y < 0 || x < 0 || y >= h || x >= w {
+            0.0
+        } else {
+            f64::from(fp.values[(y * w + x) as usize])
+        }
+    };
+    // Output window: the moved patch plus the kernel's 2 px reach.
+    let lo = |o: usize, d: f64| ((o as f64 + d).floor() as i64 - 2).max(0);
+    let hi = |o: usize, n: i64, d: f64, lim: usize| {
+        ((o as f64 + (n - 1) as f64 + d).ceil() as i64 + 2).min(lim as i64 - 1)
+    };
+    let (y0, y1) = (lo(fp.y0, dy), hi(fp.y0, h, dy, dims.height));
+    let (x0, x1) = (lo(fp.x0, dx), hi(fp.x0, w, dx, dims.width));
+    if y1 < y0 || x1 < x0 {
+        return Footprint {
+            id: fp.id,
+            y0: 0,
+            x0: 0,
+            height: 0,
+            width: 0,
+            values: Vec::new(),
+        };
+    }
+    // The shift is the same everywhere: one set of 4 taps per axis.
+    let taps = |d: f64| {
+        // Source coordinate of output pixel u (patch coords): u - d.
+        let base = (-d).floor();
+        let t = -d - base;
+        (
+            base as i64,
+            [keys(t + 1.0), keys(t), keys(1.0 - t), keys(2.0 - t)],
+        )
+    };
+    let ((by, wy), (bx, wx)) = (taps(dy), taps(dx));
+    let (oh, ow) = ((y1 - y0 + 1) as usize, (x1 - x0 + 1) as usize);
+    let mut values = vec![0.0f32; oh * ow];
+    for oy in 0..oh {
+        // Output row in patch coordinates of `fp`.
+        let py = y0 + oy as i64 - fp.y0 as i64 + by;
+        for ox in 0..ow {
+            let px = x0 + ox as i64 - fp.x0 as i64 + bx;
+            let mut v = 0.0f64;
+            for (i, &cy) in wy.iter().enumerate() {
+                let row: f64 = wx
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &cx)| cx * at(py - 1 + i as i64, px - 1 + j as i64))
+                    .sum();
+                v += cy * row;
+            }
+            values[oy * ow + ox] = v.max(0.0) as f32;
+        }
+    }
+    Footprint {
+        id: fp.id,
+        y0: y0 as usize,
+        x0: x0 as usize,
+        height: oh,
+        width: ow,
+        values,
+    }
+}
+
+impl Oracle {
+    /// The GT moved into a frame offset by `off` (footprints and centres;
+    /// traces unchanged). A centre is the peak of the moved core footprint
+    /// clipped to the frame, `make_trace_sim.py`'s definition, so a cell
+    /// cut by the frame edge keeps its centre on the edge as in a static
+    /// sim (moving the old centre would push such cells out of the GT).
+    fn translate(&mut self, off: &FrameOffset) {
+        if off.is_zero() {
+            return;
+        }
+        let dims = self.dims;
+        for u in &mut self.units {
+            u.full = translate_footprint(&u.full, off.dy, off.dx, dims);
+            u.core = translate_footprint(&u.core, off.dy, off.dx, dims);
+            let c = &u.core;
+            u.center = match c
+                .values
+                .iter()
+                .enumerate()
+                .filter(|e| *e.1 > 0.0)
+                .max_by(|a, b| a.1.total_cmp(b.1))
+            {
+                Some((k, _)) => ((c.y0 + k / c.width) as f32, (c.x0 + k % c.width) as f32),
+                None => (-1.0, -1.0),
+            };
+        }
+    }
+}
+
+/// The sim's true rigid content motion: `<sim>/shifts.npy`, `(frames, 2)`
+/// f64 (dy, dx) px, minisim's ground-truth `shifts`
+/// (`tools/cala-eval/export_gt_motion.py`; `make_trace_sim.py` writes it).
+fn read_gt_shifts(path: &Path) -> Vec<(f64, f64)> {
+    let npy = Npy::read(path).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        npy.shape.len() == 2 && npy.shape[1] == 2,
+        "{path:?}: shape {:?}, want (frames, 2)",
+        npy.shape
+    );
+    npy.into_f64()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[y, x]| (y, x))
+        .collect()
+}
+
+/// P / R / median matched r of footprint columns `det` against `g`
+/// (`match_cells` at r >= 0.7, true positives = matches to detectable units;
+/// the numbers of `global.tsv` and `summarize.py`'s `r_fp`).
+fn score(det: &[Vec<(u32, f32)>], g: &Gt, dims: Dims) -> (f64, f64, f64) {
+    let (mt, _) = match_cells(det, &g.cols, dims, 0.7);
+    let r: Vec<f64> = mt
+        .iter()
+        .flatten()
+        .filter(|m| g.detectable[m.0])
+        .map(|m| m.1)
+        .collect();
+    let n_det = g.detectable.iter().filter(|&&d| d).count();
+    (
+        r.len() as f64 / det.len().max(1) as f64,
+        r.len() as f64 / n_det.max(1) as f64,
+        quantile(&r, 0.5),
+    )
+}
+
+/// `--rescore RUN`: score an earlier run's checkpoint footprints
+/// (`RUN/fp_history.bin`, `--churn-log`) against the GT in the tissue frame
+/// and moved into cala's frame, without running the loops. Motion runs
+/// re-register frames `0..=start` to measure the offset (the records are a
+/// function of the video and the motion settings only). Writes
+/// `rescore.tsv` and `motion_offset.tsv`.
+#[allow(clippy::too_many_arguments)]
+fn rescore(
+    run: &Path,
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    start: usize,
+    mut o: Oracle,
+    shifts: Option<&[(f64, f64)]>,
+    flat: &mut GlowFlattener,
+    out_dir: &Path,
+) {
+    let dims = rec.dims;
+    let fov = cal.fov().mask().to_vec();
+    let noise = vec![1.0f32; dims.pixels()];
+    let mut off = FrameOffset::ZERO;
+    if let (true, Some(m)) = (motion, shifts) {
+        let mut pipe = Pipeline::new(rec, pre0.clone(), cal, true, 200);
+        let mut y = vec![0.0f32; dims.pixels()];
+        let raw = rec.read(0, start as u32 + 1);
+        let rigid: Vec<(f32, f32)> = raw
+            .chunks_exact(dims.pixels())
+            .map(|f| pipe.frame(f, &mut y).unwrap())
+            .collect();
+        off = FrameOffset::estimate(&rigid, m);
+        std::fs::write(
+            out_dir.join("motion_offset.tsv"),
+            format!(
+                "window\tframe0\tframe1\tn\tdy\tdx\tsd_dy\tsd_dx\napplied\t0\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\n",
+                off.n, off.n, off.dy, off.dx, off.sd_dy, off.sd_dx
+            ),
+        )
+        .unwrap();
+    }
+    let (g0, _) = build_gt(&o, dims, &fov, &noise, flat);
+    o.translate(&off);
+    let (g1, _) = build_gt(&o, dims, &fov, &noise, flat);
+    println!(
+        "rescore {}: offset ({:.3}, {:.3}) px from {} frames",
+        run.display(),
+        off.dy,
+        off.dx,
+        off.n
+    );
+    let path = run.join("fp_history.bin");
+    let mut r = BufReader::new(File::open(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")));
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"CALAFH01");
+    let mut t = String::from("frame\tcells\tP_tissue\tR_tissue\tr_fp_tissue\tP\tR\tr_fp\n");
+    let mut b8 = [0u8; 8];
+    while r.read_exact(&mut b8).is_ok() {
+        let frame = u64::from_le_bytes(b8);
+        let n = read_u32(&mut r) as usize;
+        let mut det = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut skip = [0u8; 24]; // id, birth, noise
+            r.read_exact(&mut skip).unwrap();
+            for k in 0..2 {
+                let c = read_u32(&mut r) as usize;
+                let mut pb = vec![0u8; 4 * c];
+                r.read_exact(&mut pb).unwrap();
+                let v = read_f32s(&mut r, c);
+                if k == 0 {
+                    let pix = pb.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes(*b));
+                    det.push(pix.zip(v).collect::<Vec<_>>());
+                }
+            }
+        }
+        let (a, b) = (score(&det, &g0, dims), score(&det, &g1, dims));
+        let _ = writeln!(
+            t,
+            "{frame}\t{n}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+            a.0, a.1, a.2, b.0, b.1, b.2
+        );
+    }
+    print!(
+        "{}",
+        t.lines().last().map_or(String::new(), |l| format!("{l}\n"))
+    );
+    std::fs::write(out_dir.join("rescore.tsv"), t).unwrap();
 }
 
 impl Pipeline {
@@ -2358,7 +2665,30 @@ fn main() {
     }
     let dims = rec.dims;
     let n_px = dims.pixels();
-    let oracle = has_gt.then(|| read_oracle(&input.join("oracle.bin")));
+    let mut oracle = has_gt.then(|| read_oracle(&input.join("oracle.bin")));
+    // GT frame alignment (motion runs): cala registers to its warm-up
+    // template, not to the sim's tissue frame; see [`FrameOffset`].
+    let gt_offset = arg_value(&args, "--gt-offset").unwrap_or_else(|| "auto".into());
+    assert!(
+        gt_offset == "auto" || gt_offset == "none",
+        "--gt-offset auto | none"
+    );
+    let gt_shifts: Option<Vec<(f64, f64)>> = (has_gt && motion)
+        .then(|| input.join("shifts.npy"))
+        .and_then(|p| {
+            if p.exists() {
+                Some(read_gt_shifts(&p))
+            } else {
+                assert!(
+                    gt_offset == "none",
+                    "{p:?} missing: a motion run needs the sim's true shifts to put the GT \
+                     in cala's registered frame (python tools/cala-eval/export_gt_motion.py \
+                     <sim dir>), or --gt-offset none to score without it"
+                );
+                None
+            }
+        });
+    let mut gt_offset_applied = FrameOffset::ZERO;
     let mut frames = arg_value(&args, "--frames")
         .map_or(rec.total, |s| s.parse().unwrap())
         .min(rec.total);
@@ -2586,6 +2916,22 @@ fn main() {
         return;
     }
     let mut flat = GlowFlattener::new(cal.fov(), &cfg.flatten).unwrap();
+    if let Some(run) = arg_value(&args, "--rescore") {
+        let o = oracle.take().expect("--rescore needs `sim` (GT)");
+        rescore(
+            Path::new(&run),
+            &mut rec,
+            &pre0,
+            &cal,
+            motion,
+            start,
+            o,
+            gt_shifts.as_deref(),
+            &mut flat,
+            &out_dir,
+        );
+        return;
+    }
     println!(
         "{mode} {}: {}x{}, {t_len} frames, motion {motion}",
         input.display(),
@@ -2595,6 +2941,8 @@ fn main() {
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
     pipe.keep_records = passes > 1;
+    // Pass 1's rigid shift of every frame (motion runs).
+    let mut rigid: Vec<(f32, f32)> = Vec::new();
     let empty = LibraryBuilder::new(dims)
         .fov(fov.clone())
         .background(scfg.background.clone())
@@ -2687,6 +3035,9 @@ fn main() {
                 } else {
                     pipe.frame_replay(f, &mut y, t_rec)
                 };
+                if let (Some(d), 0) = (shift, pass) {
+                    rigid.push(d);
+                }
                 // The online flat field learns in pass 1 only; its last map
                 // stays applied.
                 if let (Some(o), Some(d), 0) = (online_ff.as_mut(), shift, pass) {
@@ -2731,17 +3082,31 @@ fn main() {
                 }
                 if t == start {
                     let noise = pipe.pre.noise().sigma();
+                    if let (Some(o), Some(m), "auto") =
+                        (oracle.as_mut(), &gt_shifts, gt_offset.as_str())
+                    {
+                        // Frames 0..=start: the offset is the template's
+                        // position, fixed from the warm-up on.
+                        gt_offset_applied = FrameOffset::estimate(&rigid, m);
+                        o.translate(&gt_offset_applied);
+                        let g = &gt_offset_applied;
+                        println!(
+                            "GT offset into the registered frame: ({:.3}, {:.3}) px from {} frames (sd {:.3}, {:.3})",
+                            g.dy, g.dx, g.n, g.sd_dy, g.sd_dx
+                        );
+                    }
                     if let Some(o) = &oracle {
                         let (g, _) = build_gt(o, dims, &fov, &noise, &mut flat);
-                        let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\n");
+                        let mut t = String::from("gt\tcy\tcx\tdetectable\tsnr\tunit\n");
                         for j in 0..g.kept.len() {
                             let _ = writeln!(
                                 t,
-                                "{j}\t{:.2}\t{:.2}\t{}\t{:.3}",
+                                "{j}\t{:.2}\t{:.2}\t{}\t{:.3}\t{}",
                                 g.centers[j].0,
                                 g.centers[j].1,
                                 u8::from(g.detectable[j]),
-                                g.snr[j]
+                                g.snr[j],
+                                g.kept[j]
                             );
                         }
                         std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
@@ -3234,6 +3599,48 @@ fn main() {
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
+    if motion {
+        let mut t = String::from("frame\tdy\tdx\n");
+        for (k, d) in rigid.iter().enumerate() {
+            let _ = writeln!(t, "{k}\t{:.4}\t{:.4}", d.0, d.1);
+        }
+        std::fs::write(out_dir.join("motion.tsv"), t).unwrap();
+    }
+    if let Some(m) = &gt_shifts {
+        // The offset applied to the GT, the same estimate over the whole run
+        // and per 1200-frame block (constancy check), and the true-shift
+        // spread for scale.
+        let mut t = String::from("window\tframe0\tframe1\tn\tdy\tdx\tsd_dy\tsd_dx\n");
+        let row = |t: &mut String, name: &str, a: usize, b: usize, g: &FrameOffset| {
+            let _ = writeln!(
+                t,
+                "{name}\t{a}\t{b}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+                g.n, g.dy, g.dx, g.sd_dy, g.sd_dx
+            );
+        };
+        let n = rigid.len().min(m.len());
+        row(
+            &mut t,
+            "applied",
+            0,
+            gt_offset_applied.n,
+            &gt_offset_applied,
+        );
+        row(&mut t, "run", 0, n, &FrameOffset::estimate(&rigid, m));
+        for a in (0..n).step_by(1200) {
+            let b = (a + 1200).min(n);
+            row(
+                &mut t,
+                "block",
+                a,
+                b,
+                &FrameOffset::estimate(&rigid[a..b], &m[a..b]),
+            );
+        }
+        let zero = vec![(0.0f32, 0.0f32); n];
+        row(&mut t, "truth", 0, n, &FrameOffset::estimate(&zero, m));
+        std::fs::write(out_dir.join("motion_offset.tsv"), t).unwrap();
+    }
     if let Some(o) = &online_ff {
         std::fs::write(out_dir.join("flat_field_updates.tsv"), &ff_log).unwrap();
         if let Some(ff) = o.current() {
@@ -3433,4 +3840,172 @@ fn main() {
     }
     std::fs::write(out_dir.join("cells_pass2.tsv"), out).unwrap();
     println!("pass 2 dump: {n} cells x {t_len} frames");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Gaussian blob of sd `sd` centred at `(cy, cx)` (sub-pixel), on a
+    /// patch reaching 4 sd.
+    fn blob(id: u64, cy: f64, cx: f64, sd: f64, dims: Dims) -> Footprint {
+        let r = (4.0 * sd).ceil() as i64;
+        let (y0, x0) = (
+            (cy.round() as i64 - r).max(0),
+            (cx.round() as i64 - r).max(0),
+        );
+        let y1 = (cy.round() as i64 + r).min(dims.height as i64 - 1);
+        let x1 = (cx.round() as i64 + r).min(dims.width as i64 - 1);
+        let (h, w) = ((y1 - y0 + 1) as usize, (x1 - x0 + 1) as usize);
+        let mut values = vec![0.0f32; h * w];
+        for y in 0..h {
+            for x in 0..w {
+                let (py, px) = ((y0 + y as i64) as f64, (x0 + x as i64) as f64);
+                let d2 = (py - cy).powi(2) + (px - cx).powi(2);
+                values[y * w + x] = (-d2 / (2.0 * sd * sd)).exp() as f32;
+            }
+        }
+        Footprint {
+            id,
+            y0: y0 as usize,
+            x0: x0 as usize,
+            height: h,
+            width: w,
+            values,
+        }
+    }
+
+    fn col(fp: &Footprint, dims: Dims) -> Vec<(u32, f32)> {
+        let mut v = Vec::new();
+        for y in 0..fp.height {
+            for x in 0..fp.width {
+                let a = fp.values[y * fp.width + x];
+                if a > 0.0 {
+                    v.push((((fp.y0 + y) * dims.width + fp.x0 + x) as u32, a));
+                }
+            }
+        }
+        v
+    }
+
+    fn corr(a: &Footprint, b: &Footprint, dims: Dims) -> f64 {
+        let mut scratch = vec![0.0f32; dims.pixels()];
+        sparse_corr(&col(a, dims), &col(b, dims), &mut scratch)
+    }
+
+    #[test]
+    fn translate_footprint_moves_content_sub_pixel() {
+        let dims = Dims::new(120, 100).unwrap();
+        let fp = blob(1, 40.3, 55.6, 1.5, dims);
+        // Zero shift: unchanged. Integer shift: the same values, moved.
+        assert_eq!(translate_footprint(&fp, 0.0, 0.0, dims).values, fp.values);
+        let int = translate_footprint(&fp, 3.0, -2.0, dims);
+        assert!(corr(&int, &blob(1, 43.3, 53.6, 1.5, dims), dims) > 0.9999);
+        // Sub-pixel: against the blob rendered at the moved centre.
+        for &(dy, dx) in &[(-3.07, -0.76), (1.0, -0.69), (0.5, 0.5), (-0.25, 2.8)] {
+            let moved = translate_footprint(&fp, dy, dx, dims);
+            let want = blob(1, 40.3 + dy, 55.6 + dx, 1.5, dims);
+            let r = corr(&moved, &want, dims);
+            assert!(r > 0.999, "({dy}, {dx}): r {r}");
+            let (cy, cx) = centroid(&col(&moved, dims), dims.width);
+            assert!((f64::from(cy) - (40.3 + dy)).abs() < 0.02, "cy {cy}");
+            assert!((f64::from(cx) - (55.6 + dx)).abs() < 0.02, "cx {cx}");
+            assert!(moved.values.iter().all(|&v| v >= 0.0));
+        }
+        // Clipped at the image border.
+        let edge = translate_footprint(&blob(2, 3.0, 3.0, 1.5, dims), -2.5, -2.5, dims);
+        assert_eq!((edge.y0, edge.x0), (0, 0));
+    }
+
+    /// Rigid records of a run whose template sits at `c` in the tissue
+    /// frame: `s_t = c - m_t` plus registration noise and a few outliers.
+    fn records(c: (f64, f64), truth: &[(f64, f64)], rng: &mut Rng) -> Vec<(f32, f32)> {
+        truth
+            .iter()
+            .enumerate()
+            .map(|(t, m)| {
+                let mut e = (0.2 * (rng.unit() - 0.5), 0.2 * (rng.unit() - 0.5));
+                if t % 17 == 0 {
+                    e = (4.0, -5.0);
+                }
+                ((c.0 - m.0 + e.0) as f32, (c.1 - m.1 + e.1) as f32)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn frame_offset_recovers_template_position() {
+        let mut rng = Rng(7);
+        let (mut y, mut x) = (0.0, 0.0);
+        let truth: Vec<(f64, f64)> = (0..400)
+            .map(|_| {
+                y += rng.unit() - 0.5;
+                x += rng.unit() - 0.5;
+                (y, x)
+            })
+            .collect();
+        let c = (-3.07, 0.69);
+        let est = FrameOffset::estimate(&records(c, &truth, &mut rng), &truth);
+        assert_eq!(est.n, 400);
+        assert!((est.dy - c.0).abs() < 0.03, "{est:?}");
+        assert!((est.dx - c.1).abs() < 0.03, "{est:?}");
+        assert!(est.sd_dy < 0.2 && est.sd_dx < 0.2, "{est:?}");
+        // Shorter of the two, and nothing.
+        assert_eq!(FrameOffset::estimate(&[(0.0, 0.0); 3], &truth).n, 3);
+        assert_eq!(FrameOffset::estimate(&[], &truth), FrameOffset::ZERO);
+    }
+
+    /// End to end: 6 px cells, cala's frame offset from the tissue by a
+    /// sub-pixel shift. Unaligned GT scores the offset; aligned GT recovers
+    /// every cell.
+    #[test]
+    fn aligned_gt_scores_an_offset_run() {
+        let dims = Dims::new(200, 200).unwrap();
+        let sd = 6.0 / 2.355; // 6 px half-max diameter
+        let c = (-3.07, -0.76);
+        let mut units = Vec::new();
+        let mut det = Vec::new();
+        for (k, (cy, cx)) in (0..6)
+            .flat_map(|i| (0..6).map(move |j| (30.0 + 25.0 * i as f64, 30.0 + 25.0 * j as f64)))
+            .enumerate()
+        {
+            let fp = blob(k as u64, cy, cx, sd, dims);
+            units.push(Unit {
+                detectable: true,
+                in_focus: true,
+                center: (cy as f32, cx as f32),
+                full: fp.clone(),
+                core: fp,
+            });
+            det.push(col(&blob(k as u64, cy + c.0, cx + c.1, sd, dims), dims));
+        }
+        let mut o = Oracle {
+            dims,
+            units,
+            n_frames: 0,
+            c: Vec::new(),
+        };
+        let score = |o: &Oracle| {
+            let gt: Vec<_> = o.units.iter().map(|u| col(&u.full, dims)).collect();
+            let (m, _) = match_cells(&det, &gt, dims, 0.8);
+            m.iter().filter(|x| x.is_some()).count() as f64 / det.len() as f64
+        };
+        assert!(score(&o) < 0.1, "unaligned P8 {}", score(&o));
+        let mut rng = Rng(11);
+        let truth: Vec<(f64, f64)> = (0..51)
+            .map(|_| (4.0 * (rng.unit() - 0.5), 4.0 * (rng.unit() - 0.5)))
+            .collect();
+        let est = FrameOffset::estimate(&records(c, &truth, &mut rng), &truth);
+        o.translate(&est);
+        // Centres: the moved core's peak pixel.
+        assert_eq!(o.units[0].center, (27.0, 29.0));
+        assert_eq!(score(&o), 1.0);
+        let gt: Vec<_> = o.units.iter().map(|u| col(&u.full, dims)).collect();
+        let (m, _) = match_cells(&det, &gt, dims, 0.8);
+        for (i, x) in m.iter().enumerate() {
+            let (j, r) = x.unwrap();
+            assert_eq!(i, j);
+            assert!(r > 0.99, "cell {i}: r {r}");
+        }
+    }
 }
