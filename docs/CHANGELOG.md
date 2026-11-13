@@ -7,6 +7,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
+  cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
+  bandpass and rolling baseline turn into fake humps and spurious spikes.
+  Extract now also returns each trace plus the residual's projection on the
+  cell (`c + g/m` at the converged solution, CNMF's `C + YrA`): a zero
+  baseline with symmetric noise, equal to the trace where the solve does not
+  clip. The solve and the non-negative traces are unchanged bit for bit
+  (`TraceEngine::set_signed`; JS `setSigned` / `lastSigned`). The export
+  (format version 4) adds `traces_signed` next to `traces`, also in each
+  session's file of a multi-session run, and **Export for CaDecon** writes
+  the signed traces. Live runs (no Extract) keep the clipped traces only.
+  `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
+
 - Cala: animal projects. **Open animal project** opens an animal's folder of
   sessions as a project: a session table with each session's date, length,
   Discover / Refine / Extract status, shared cell ids and current result, and

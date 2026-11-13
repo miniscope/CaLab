@@ -874,3 +874,149 @@ fn residual_is_zero_when_the_model_is_exact_and_keeps_missing_pixels() {
     stale.library_version += 1;
     assert!(lib.residual(&bright, &stale, &mut out).is_err());
 }
+
+/// Quiet cells: the non-negative trace is clipped at 0 (half-rectified
+/// noise); the signed trace `c + g/m` is centred on 0 with symmetric noise
+/// of the trace-noise scale, and active cells keep their trace.
+#[test]
+fn signed_traces_are_centred_and_symmetric_on_quiet_cells() {
+    let t = 1500;
+    let sigma = 0.5;
+    let mut c = traces(6, t, 21);
+    // Cell 5 is isolated, cell 1 overlaps an active neighbour (cell 0).
+    let quiet = [1usize, 5];
+    for &q in &quiet {
+        c[q].iter_mut().for_each(|v| *v = 0.0);
+    }
+    let frames = filtered_frames(&c, sigma, 22);
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        // Without a background model the global term is unmodelled light.
+        let frames: Vec<Vec<f32>> = if matches!(model, BackgroundModel::None) {
+            filtered_frames(&c, sigma, 22)
+                .into_iter()
+                .zip(0..)
+                .map(|(mut f, s)| {
+                    let st = 3.0 * (s as f32 * 0.9).sin();
+                    for (o, &gv) in f.iter_mut().zip(&global_map()) {
+                        *o -= gv * st;
+                    }
+                    f
+                })
+                .collect()
+        } else {
+            frames.clone()
+        };
+        let mut b = LibraryBuilder::new(dims())
+            .noise(vec![sigma; W * H])
+            .background(model.clone());
+        for (i, &centre) in CENTRES.iter().enumerate() {
+            b.push(footprint(i as u64, centre));
+        }
+        let lib = Arc::new(b.build(&mut flattener()).unwrap());
+        let mut e = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        e.set_signed(true);
+        let mut clipped = vec![Vec::new(); 6];
+        let mut signed = vec![Vec::new(); 6];
+        for f in &frames {
+            let r = e.process(f).unwrap();
+            assert_eq!(r.signed.len(), 6);
+            for i in 0..6 {
+                clipped[i].push(f64::from(r.traces[i]));
+                signed[i].push(f64::from(r.signed[i]));
+            }
+        }
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        for &q in &quiet {
+            let sd_noise = f64::from(lib.trace_noise()[q]);
+            let (cm, sm) = (mean(&clipped[q]), mean(&signed[q]));
+            let sd = (signed[q].iter().map(|v| (v - sm).powi(2)).sum::<f64>() / t as f64).sqrt();
+            let skew = signed[q]
+                .iter()
+                .map(|v| ((v - sm) / sd).powi(3))
+                .sum::<f64>()
+                / t as f64;
+            let neg = signed[q].iter().filter(|&&v| v < 0.0).count() as f64 / t as f64;
+            let zeros = clipped[q].iter().filter(|&&v| v == 0.0).count() as f64 / t as f64;
+            let msg = format!(
+                "{model:?} cell {q}: clipped mean {cm:.4} zeros {zeros:.2}; signed mean {sm:.4} \
+                 sd {sd:.4} (trace noise {sd_noise:.4}) skew {skew:.3} negative {neg:.2}"
+            );
+            // The clipped trace is half-rectified noise: biased up, often exactly 0.
+            assert!(clipped[q].iter().all(|&v| v >= 0.0), "{msg}");
+            assert!(zeros > 0.3 && cm > 0.2 * sd, "{msg}");
+            // The signed trace is centred on 0 with symmetric noise of the
+            // trace-noise scale.
+            assert!(sm.abs() < 0.1 * sd, "{msg}");
+            assert!((0.4..0.6).contains(&neg), "{msg}");
+            assert!(skew.abs() < 0.25, "{msg}");
+            assert!(sd > 0.7 * sd_noise && sd < 1.6 * sd_noise, "{msg}");
+        }
+        // Where the solve is not clipping, the signed trace is the trace to
+        // within the solver's tolerance (a fraction of the trace noise).
+        for i in 0..6 {
+            let sd_noise = f64::from(lib.trace_noise()[i]);
+            for (s, (&a, &b)) in clipped[i].iter().zip(&signed[i]).enumerate() {
+                if a > 0.0 {
+                    assert!(
+                        (a - b).abs() < 0.5 * sd_noise,
+                        "{model:?} cell {i} frame {s}: {a} vs {b} (noise {sd_noise})"
+                    );
+                } else {
+                    // Clipped: the unconstrained minimum is at or below 0.
+                    assert!(b <= 0.5 * sd_noise, "{model:?} cell {i} frame {s}: {b}");
+                }
+            }
+        }
+    }
+}
+
+/// The signed traces are read off the solution: turning them on changes
+/// neither the traces nor the background, bit for bit (missing pixels and
+/// their refill passes included); off, `signed` is empty.
+#[test]
+fn signed_traces_leave_the_solve_bit_identical() {
+    let t = 80;
+    let c = traces(6, t, 31);
+    let mut frames = filtered_frames(&c, 0.5, 32);
+    // A band of missing pixels on some frames (the EM refill path).
+    for (s, f) in frames.iter_mut().enumerate() {
+        if s % 3 == 0 {
+            for y in 0..H {
+                for x in 0..3 + s % 4 {
+                    f[y * W + x] = f32::NAN;
+                }
+            }
+        }
+    }
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        let lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model.clone(), 4));
+        let mut off = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        let mut on = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        on.set_signed(true);
+        assert!(on.signed() && !off.signed());
+        for f in &frames {
+            let a = off.process(f).unwrap();
+            let b = on.process(f).unwrap();
+            assert!(a.signed.is_empty());
+            assert_eq!(b.signed.len(), 6);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.traces), bits(&b.traces), "{model:?}");
+            assert_eq!(bits(&a.background), bits(&b.background), "{model:?}");
+            assert_eq!(a.sweeps, b.sweeps);
+        }
+    }
+}

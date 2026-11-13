@@ -259,9 +259,11 @@ export async function storageShortfall(bytes: number): Promise<{ free: number } 
 export async function createTraceFile(
   frames: number,
   cells: number,
-  options: { forceMemory?: boolean } = {},
+  /** `extraBytes`: more that will be stored next to it (Extract's signed traces), checked with it. */
+  options: { forceMemory?: boolean; extraBytes?: number } = {},
 ): Promise<TraceFile> {
-  const bytes = frames * cells * 4;
+  const own = frames * cells * 4;
+  const bytes = own + (options.extraBytes ?? 0);
   if (!options.forceMemory && (await opfsUsable())) {
     await sweepOpfs();
     const short = await storageShortfall(bytes);
@@ -278,7 +280,7 @@ export async function createTraceFile(
       `${cells} cells x ${frames.toLocaleString()} frames (${gb(bytes)}) is more traces than fit in memory, and this browser has no file storage for them (OPFS). Use a current Chrome, Edge, Firefox or Safari.`,
     );
   }
-  return new TraceFile(frames, cells, new MemoryBackend(bytes), 'memory');
+  return new TraceFile(frames, cells, new MemoryBackend(own), 'memory');
 }
 
 /** A memory-backed file holding frame-major `traces` (tests, small data). */
