@@ -412,6 +412,12 @@ export function createCellStore(
     timing: () => timing,
     /** Newest QC snapshot (null until the fast loop has cells and a snapshot). */
     qc,
+    /**
+     * Replace the QC snapshot with the QC of the extracted traces
+     * (`extract-qc.ts`): Refine and Extract run no monitor, so without it
+     * the last minute of Discover would stay on show.
+     */
+    replaceQc: (snap: QcSnapshot) => setQc(snap),
     /** Probation/established by cell id (from the slow loop). */
     established,
     /** Convergence history, one point per QC snapshot (tracks `qc()`). */

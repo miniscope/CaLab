@@ -91,7 +91,9 @@ use motion::{MotionAcc, ShiftRef};
 /// Settings of the QC monitor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QcConfig {
-    /// Frame rate, Hz (event rates per minute, slow-share window).
+    /// Frame rate, Hz (event rates per minute, slow-share window). The
+    /// frame counts below are durations at this rate: build the config with
+    /// [`QcConfig::for_fps`] so they follow it ([`durations`]).
     pub fps: f32,
     /// Trace history per cell, frames.
     pub window_frames: usize,
@@ -166,22 +168,71 @@ pub const FLAG_UNMEASURED: u32 = 8;
 /// (sensor-gain shimmer or motion artifact). Not part of the pass rule.
 pub const FLAG_FOLLOWS_MOTION: u32 = 16;
 
+/// Durations of the QC settings, seconds. [`QcConfig::for_fps`] turns them
+/// into frame counts at the recording's frame rate (10-60 Hz on miniscopes),
+/// so a window means the same time at any rate; at 20 Hz they give the frame
+/// counts these settings were validated with (1200, 100, ...).
+pub mod durations {
+    /// Trace history per cell (`window_frames`).
+    pub const WINDOW_S: f32 = 60.0;
+    /// Longest gap between two refreshes of a cell (`refresh_frames`).
+    pub const REFRESH_S: f32 = 5.0;
+    /// History before a cell's statistics are reported (`min_frames`).
+    pub const MIN_HISTORY_S: f32 = 5.0;
+    /// Time constant of the residual averages (`residual_tau_frames`).
+    pub const RESIDUAL_TAU_S: f32 = 30.0;
+    /// Window of the churn rates (`churn_window_frames`).
+    pub const CHURN_WINDOW_S: f32 = 60.0;
+    /// `motion_r2` burn-in before the reference shift is fixed.
+    pub const MOTION_BURN_IN_S: f32 = 15.0;
+    /// Length of `motion_r2`'s alternating cross-validation blocks.
+    pub const MOTION_BLOCK_S: f32 = 25.0;
+    /// Frames each `motion_r2` fold needs before it is reported.
+    pub const MOTION_MIN_FOLD_S: f32 = 5.0;
+}
+
+/// The frame rate [`QcConfig::default`] assumes (the rate the settings were
+/// validated at). Callers that know the recording's rate use
+/// [`QcConfig::for_fps`].
+pub const DEFAULT_FPS: f32 = 20.0;
+
 impl Default for QcConfig {
     fn default() -> QcConfig {
+        QcConfig::for_fps(DEFAULT_FPS)
+    }
+}
+
+impl QcConfig {
+    /// The default settings at frame rate `fps` (Hz): every duration in
+    /// [`durations`] becomes `round(seconds · fps)` frames. Settings that are
+    /// counts of samples, not times (`residual_every`, a compute cadence;
+    /// `event_z`, thresholds, neighbour counts) do not change. An invalid
+    /// `fps` (not positive and finite) gives a config that fails
+    /// [`QcConfig::validate`].
+    pub fn for_fps(fps: f32) -> QcConfig {
+        use durations::*;
+        let fr = |s: f32| {
+            let v = (s * fps).round();
+            if v.is_finite() && v >= 1.0 {
+                v as usize
+            } else {
+                0
+            }
+        };
         QcConfig {
-            fps: 20.0,
-            window_frames: 1200,
-            refresh_frames: 100,
-            min_frames: 100,
+            fps,
+            window_frames: fr(WINDOW_S),
+            refresh_frames: fr(REFRESH_S),
+            min_frames: fr(MIN_HISTORY_S),
             event_z: 4.0,
             slow_window_s: 5.0,
             smooth_s: 0.25,
             residual_every: 8,
-            residual_tau_frames: 600.0,
+            residual_tau_frames: fr(RESIDUAL_TAU_S) as f32,
             block_px: 8,
             max_neighbours: 8,
             min_overlap: 0.02,
-            churn_window_frames: 1200,
+            churn_window_frames: fr(CHURN_WINDOW_S) as u64,
             stability_lag_s: 60.0,
             stable_min_age_s: 120.0,
             stable_cos: 0.95,
@@ -190,11 +241,40 @@ impl Default for QcConfig {
                 min_snr: 5.0,
                 pair_r: 0.8,
             },
-            motion_burn_in_frames: 300,
-            motion_block_frames: 500,
-            motion_min_fold_frames: 100,
+            motion_burn_in_frames: fr(MOTION_BURN_IN_S),
+            motion_block_frames: fr(MOTION_BLOCK_S),
+            motion_min_fold_frames: fr(MOTION_MIN_FOLD_S),
             motion_r2_flag: 0.2,
         }
+    }
+
+    /// The trace statistics the monitor reports for a cell, computed on any
+    /// span of its trace `x` (chronological) with this config's settings.
+    /// The monitor calls it on its window (the last `window_frames`); after
+    /// Extract it can be called on a cell's whole-session trace
+    /// (`QcMonitor.sessionStats` in the app), which is the span the
+    /// shipped CaLab SNR convention reads (see `stats`).
+    ///
+    /// `model_sigma` is the cell's model trace noise: the zero level is 1 %
+    /// of it and it stands in for σ when the trace is too flat to measure.
+    /// Non-finite: only exact zeros count as zero (the solver clips to 0.0)
+    /// and there is no fallback.
+    pub fn trace_stats(&self, x: &[f32], model_sigma: f32, scratch: &mut Vec<f32>) -> TraceStats {
+        let slow = (self.slow_window_s * self.fps).round() as usize;
+        let smooth = (self.smooth_s * self.fps).round() as usize;
+        let (tol, fallback) = if model_sigma.is_finite() {
+            (0.01 * model_sigma, model_sigma)
+        } else {
+            (0.0, f32::NAN)
+        };
+        trace_stats(x, self.event_z, slow, smooth, tol, fallback, scratch)
+    }
+}
+
+impl PassRule {
+    /// Peak SNR below `min_snr` (or undefined): [`FLAG_LOW_SNR`].
+    pub fn low_snr(&self, st: &TraceStats) -> bool {
+        !(st.peak_snr >= self.min_snr)
     }
 }
 
@@ -1061,6 +1141,15 @@ impl QcMonitor {
         }
     }
 
+    /// Refresh every cell now (tests: the round-robin otherwise leaves each
+    /// cell's statistics up to `refresh_frames` old).
+    #[cfg(test)]
+    pub(crate) fn refresh_all(&mut self, lib: &Library) {
+        for s in 0..self.n_cells {
+            self.refresh(s, lib);
+        }
+    }
+
     /// Recompute the window statistics and correlations of slot `s`.
     fn refresh(&mut self, s: usize, lib: &Library) {
         let len = self.cells[s].valid;
@@ -1073,17 +1162,7 @@ impl QcMonitor {
         let mut x = std::mem::take(&mut self.scratch2);
         self.window(s, len, &mut x);
         let ms = lib.trace_noise()[s];
-        let slow = (self.cfg.slow_window_s * self.cfg.fps).round() as usize;
-        let smooth = (self.cfg.smooth_s * self.cfg.fps).round() as usize;
-        let st = trace_stats(
-            &x,
-            self.cfg.event_z,
-            slow,
-            smooth,
-            0.01 * ms,
-            ms,
-            &mut self.scratch,
-        );
+        let st = self.cfg.trace_stats(&x, ms, &mut self.scratch);
         // Neighbour and control correlations over the shared window, on the
         // rings directly (both cells' samples of a frame share a ring slot).
         let nb: Vec<u32> = self.cells[s].nb.iter().map(|e| e.0).collect();
@@ -1133,7 +1212,7 @@ impl QcMonitor {
         if q.motion_r2 > self.cfg.motion_r2_flag {
             flags |= FLAG_FOLLOWS_MOTION;
         }
-        if !(q.trace.peak_snr >= pass.min_snr) {
+        if pass.low_snr(&q.trace) {
             flags |= FLAG_LOW_SNR;
         }
         if q.max_neighbour_r > pass.pair_r {
