@@ -20,6 +20,8 @@
 
 pub(crate) const TAIL: f64 = 80.0;
 pub(crate) const EPS: f64 = 1e-3;
+/// Log terms this far below the largest are dropped from a sum (relative size e^-40 = 4e-18, under f64 rounding).
+const SKIP: f64 = 40.0;
 const LN_2PI: f64 = 1.8378770664093453; // ln(2 pi)
 
 #[inline]
@@ -39,7 +41,15 @@ fn logsumexp(v: &[f64]) -> f64 {
     if !m.is_finite() {
         return m;
     }
-    m + v.iter().map(|x| (x - m).exp()).sum::<f64>().ln()
+    // Terms more than SKIP below the largest are left out: each is under e^-SKIP (4e-18) of the sum.
+    let cut = m - SKIP;
+    let mut acc = 0.0;
+    for &x in v {
+        if x > cut {
+            acc += (x - m).exp();
+        }
+    }
+    m + acc.ln()
 }
 
 // ------------------------------------------------------------------ lattice (exact)
@@ -112,6 +122,75 @@ impl Lat {
         let j_max = jrange(m, self.u, self.sx, self.s1, self.rho);
         let l0 = self.parts(m, w, j_max, buf);
         logaddexp(l0, logsumexp(buf))
+    }
+}
+
+/// A [`Lat`] with the terms that are the same for every segment worked out once. Every value is computed by the same
+/// expression as in [`Lat::parts`] / [`jrange`], so results are bit-identical.
+pub(crate) struct LatK {
+    l: Lat,
+    hn_c: f64,
+    hn_s2: f64,
+    tail_j: f64,
+}
+
+impl LatK {
+    pub fn new(l: Lat) -> Self {
+        let dec = -(l.rho.max(1e-300)).ln() + l.u * l.u / (2.0 * (l.s1 * l.s1).max(1e-300));
+        LatK {
+            l,
+            hn_c: -0.5 * (std::f64::consts::PI / 2.0 * l.sn * l.sn).ln(),
+            hn_s2: l.sn * l.sn,
+            tail_j: (TAIL / dec.max(1e-4)).ceil(),
+        }
+    }
+    #[inline]
+    pub fn jmax(&self, m: f64) -> usize {
+        let l = &self.l;
+        let sd = (l.sx * l.sx + (m / l.u).max(1.0) * l.s1 * l.s1).sqrt();
+        let hi = (m / l.u).floor() + (12.0 * sd / l.u).ceil() + self.tail_j + 3.0;
+        (hi as i64).min(40000).max(1) as usize
+    }
+    /// As [`Lat::parts`].
+    pub fn parts(&self, m: f64, w: f64, j_max: usize, buf: &mut Vec<f64>) -> f64 {
+        let l = &self.l;
+        let lp0 = -l.lam * w;
+        let ln0 = if l.eta <= 0.0 {
+            self.hn_c - 0.5 * m * m / self.hn_s2
+        } else {
+            logaddexp(
+                (-l.eta).ln_1p() + log_hn(m, l.sn),
+                l.eta.ln() + log_hn(m, l.sw),
+            )
+        };
+        let l0 = lp0 + ln0;
+        let lr = (-(lp0.exp_m1())).max(1e-300).ln();
+        JTAB.with(|t| {
+            let mut t = t.borrow_mut();
+            let key = [l.sx.to_bits(), l.s1.to_bits(), l.rho.to_bits()];
+            if t.0 != key {
+                t.0 = key;
+                t.1.clear();
+                t.2.clear();
+            }
+            if t.1.len() < j_max {
+                let lrho = l.rho.max(1e-300).ln();
+                let l1r = (-l.rho).ln_1p();
+                while t.1.len() < j_max {
+                    let j = (t.1.len() + 1) as f64;
+                    let var = l.sx * l.sx + j * l.s1 * l.s1;
+                    t.1.push(l1r + (j - 1.0) * lrho - 0.5 * (LN_2PI + var.ln()));
+                    t.2.push(0.5 / var);
+                }
+            }
+            buf.clear();
+            let (c, h) = (&t.1[..j_max], &t.2[..j_max]);
+            for jj in 0..j_max {
+                let d = m - (jj + 1) as f64 * l.u;
+                buf.push(lr + c[jj] - d * d * h[jj]);
+            }
+        });
+        l0
     }
 }
 
@@ -261,6 +340,20 @@ impl Pieces {
         positions: bool,
         norm_split: bool,
     ) -> Vec<f64> {
+        self.seg_terms_lt(sx, sn, u, th, positions, norm_split).0
+    }
+
+    /// [`Pieces::seg_terms`], also returning each valid segment's log lattice density (what `Lat::logp` gives), which
+    /// the E-step needs again.
+    pub fn seg_terms_lt(
+        &self,
+        sx: f64,
+        sn: f64,
+        u: f64,
+        th: &Theta,
+        positions: bool,
+        norm_split: bool,
+    ) -> (Vec<f64>, Vec<f64>) {
         let (snf, sw, eta) = th.null_parts(sn);
         let lat = Lat {
             sx,
@@ -282,8 +375,10 @@ impl Pieces {
                 }
             })
             .collect();
+        let lat = LatK::new(lat);
         let mut buf = Vec::new();
         let mut s_out = vec![f64::NEG_INFINITY; self.n * self.k];
+        let mut tot_out = vec![f64::NEG_INFINITY; self.n * self.k];
         for i in 0..self.n {
             for a in 0..self.k {
                 let s = i * self.k + a;
@@ -292,7 +387,9 @@ impl Pieces {
                 }
                 let mm = self.ms[s];
                 let na = self.na[s] as f64;
-                let mut v = lat.logp(mm, self.ws[s], &mut buf);
+                let l0 = lat.parts(mm, self.ws[s], lat.jmax(mm), &mut buf);
+                let mut v = logaddexp(l0, logsumexp(&buf));
+                tot_out[s] = v;
                 let lm = mm.max(1e-300).ln();
                 if norm_split {
                     v += self.lf[self.na[s] + 1] - na * lm;
@@ -309,7 +406,7 @@ impl Pieces {
                 s_out[s] = v;
             }
         }
-        s_out
+        (s_out, tot_out)
     }
 }
 
@@ -356,12 +453,13 @@ impl Theta {
 
 pub(crate) fn with_prior(s: &[f64], k: usize, pi: f64) -> Vec<f64> {
     let l1p = (-pi).ln_1p();
+    let lpi = pi.ln();
     s.iter()
         .enumerate()
         .map(|(idx, &v)| {
             let a = (idx % k) as f64;
             let pr = if pi > 0.0 {
-                a * pi.ln()
+                a * lpi
             } else if a > 0.0 {
                 f64::NEG_INFINITY
             } else {
@@ -555,7 +653,7 @@ pub(crate) fn em(pc: &Pieces, sx: f64, sn: f64, u: f64, th0: &Theta, o: &Opts) -
     let mut buf = Vec::new();
     for it in 0..=o.iters {
         let sn_cur = if o.fit_sn { th.sn.unwrap() } else { sn };
-        let s = pc.seg_terms(sx, sn_cur, u, &th, o.positions, o.norm_split);
+        let (s, tots) = pc.seg_terms_lt(sx, sn_cur, u, &th, o.positions, o.norm_split);
         let (snf, sw_cur, eta_cur) = th.null_parts(sn_cur);
         let (lz, p) = fwd_bwd(&with_prior(&s, k, th.pi), n, k);
         trace.push(lz + log_prior(&th, o.positions));
@@ -573,7 +671,7 @@ pub(crate) fn em(pc: &Pieces, sx: f64, sn: f64, u: f64, th0: &Theta, o: &Opts) -
             .map(|&s| pc.ms[s])
             .fold(f64::NEG_INFINITY, f64::max);
         let jn = jrange(mmax, u, sx, th.s1, th.rho);
-        let lat = Lat {
+        let lat = LatK::new(Lat {
             sx,
             sn: snf,
             lam: th.lam,
@@ -582,18 +680,22 @@ pub(crate) fn em(pc: &Pieces, sx: f64, sn: f64, u: f64, th0: &Theta, o: &Opts) -
             rho: th.rho,
             sw: sw_cur,
             eta: eta_cur,
-        };
+        });
         let ns = sel.len();
         let (mut r0, mut p1) = (vec![0.0; ns], vec![0.0; ns]);
         let (mut jw, mut r2w) = (vec![0.0; jn], vec![0.0; jn]);
         for (r, &s) in sel.iter().enumerate() {
             let (mm, w, wg) = (pc.ms[s], pc.ws[s], p[s]);
             // per-segment range, as in logp (terms beyond it are below e^-TAIL)
-            let l0 = lat.parts(mm, w, jrange(mm, u, sx, th.s1, th.rho).min(jn), &mut buf);
-            let tot = logaddexp(l0, logsumexp(&buf));
+            let l0 = lat.parts(mm, w, lat.jmax(mm).min(jn), &mut buf);
+            let tot = tots[s]; // the same sum seg_terms formed over the same terms
             r0[r] = (l0 - tot).exp();
             let mut s1sum = 0.0;
+            let cut = tot - SKIP;
             for (jj, &lv) in buf.iter().enumerate() {
+                if lv <= cut {
+                    continue; // responsibility under e^-SKIP
+                }
                 let rj = (lv - tot).exp();
                 s1sum += rj;
                 let wr = wg * rj;
@@ -603,7 +705,6 @@ pub(crate) fn em(pc: &Pieces, sx: f64, sn: f64, u: f64, th0: &Theta, o: &Opts) -
             }
             p1[r] = s1sum;
         }
-        // lam
         let (mut lo, mut hi) = (1e-12f64, 1e3f64);
         // the score depends on a segment only through its width: pool the weights per distinct width first
         let mut by_w: std::collections::BTreeMap<u64, (f64, f64)> =
@@ -619,6 +720,12 @@ pub(crate) fn em(pc: &Pieces, sx: f64, sn: f64, u: f64, th0: &Theta, o: &Opts) -
             .collect();
         for _ in 0..80 {
             let mid = (lo * hi).sqrt();
+            if mid == lo || mid == hi {
+                // the bracket is down to neighbouring floats: every later step returns this same midpoint
+                lo = mid;
+                hi = mid;
+                break;
+            }
             let d: f64 = by_w
                 .iter()
                 .map(|&(w, a0, a1)| -a0 * w + a1 * w / (mid * w).exp_m1().max(1e-300))
@@ -803,6 +910,7 @@ pub(crate) fn counts(pc: &Pieces, sx: f64, sn: f64, u: f64, th: &Theta, o: &Opts
 // ------------------------------------------------------------------ normal CDF (log domain), for the smoothed lattice
 const SQRT_PI: f64 = 1.7724538509055159;
 
+#[cfg(test)]
 /// erf(x) for 0 <= x < 3 by the all-positive series erf(x) = 2x/sqrt(pi) e^{-x^2} sum_n (2x^2)^n / (1*3*...*(2n+1)).
 fn erf_series(x: f64) -> f64 {
     let x2 = x * x;
@@ -845,10 +953,121 @@ fn ln_erfc_cf(x: f64) -> f64 {
     }
     -x * x - SQRT_PI.ln() - f.ln()
 }
-/// ln erfc(x), x >= 0.
-fn ln_erfc_pos(x: f64) -> f64 {
+#[cfg(test)]
+/// ln erfc(x), x >= 0, by the series below 2.5 and the continued fraction above (the reference the fast version is
+/// checked against).
+fn ln_erfc_ref(x: f64) -> f64 {
     if x < 2.5 {
         (1.0 - erf_series(x)).ln()
+    } else {
+        ln_erfc_cf(x)
+    }
+}
+
+#[inline]
+fn poly(z: f64, c: &[f64]) -> f64 {
+    c.iter().rev().fold(0.0, |acc, &v| acc * z + v)
+}
+
+/// ln erfc(x), x >= 0: the rational approximations of fdlibm's `erfc` (Sun Microsystems, s_erf.c; error under 1 ulp
+/// in erfc), taken in the log domain above 1.25 so that nothing underflows; the continued fraction beyond their range.
+// The coefficients are written with the digits fdlibm publishes.
+#[allow(clippy::excessive_precision)]
+fn ln_erfc_pos(x: f64) -> f64 {
+    const ERX: f64 = 8.45062911510467529297e-01;
+    const PP: [f64; 5] = [
+        1.28379167095512558561e-01,
+        -3.25042107247001499370e-01,
+        -2.84817495755985104766e-02,
+        -5.77027029648944159157e-03,
+        -2.37630166566501626084e-05,
+    ];
+    const QQ: [f64; 6] = [
+        1.0,
+        3.97917223959155352819e-01,
+        6.50222499887672944485e-02,
+        5.08130628187576562776e-03,
+        1.32494738004321644526e-04,
+        -3.96022827877536812320e-06,
+    ];
+    const PA: [f64; 7] = [
+        -2.36211856075265944077e-03,
+        4.14856118683748331666e-01,
+        -3.72207876035701323847e-01,
+        3.18346619901161753674e-01,
+        -1.10894694282396677476e-01,
+        3.54783043256182359371e-02,
+        -2.16637559486879084300e-03,
+    ];
+    const QA: [f64; 7] = [
+        1.0,
+        1.06420880400844228286e-01,
+        5.40397917702171048937e-01,
+        7.18286544141962662868e-02,
+        1.26171219808761642112e-01,
+        1.36370839120290507362e-02,
+        1.19844998467991074170e-02,
+    ];
+    const RA: [f64; 8] = [
+        -9.86494403484714822705e-03,
+        -6.93858572707181764372e-01,
+        -1.05586262253232909814e+01,
+        -6.23753324503260060396e+01,
+        -1.62396669462573470355e+02,
+        -1.84605092906711035994e+02,
+        -8.12874355063065934246e+01,
+        -9.81432934416914548592e+00,
+    ];
+    const SA: [f64; 9] = [
+        1.0,
+        1.96512716674392571292e+01,
+        1.37657754143519042600e+02,
+        4.34565877475229228821e+02,
+        6.45387271733267880336e+02,
+        4.29008140027567833386e+02,
+        1.08635005541779435134e+02,
+        6.57024977031928170135e+00,
+        -6.04244152148580987438e-02,
+    ];
+    const RB: [f64; 7] = [
+        -9.86494292470009928597e-03,
+        -7.99283237680523006574e-01,
+        -1.77579549177547519889e+01,
+        -1.60636384855821916062e+02,
+        -6.37566443368389627722e+02,
+        -1.02509513161107724954e+03,
+        -4.83519191608651397019e+02,
+    ];
+    const SB: [f64; 8] = [
+        1.0,
+        3.03380607434824582924e+01,
+        3.25792512996573918826e+02,
+        1.53672958608443695994e+03,
+        3.19985821950859553908e+03,
+        2.55305040643316442583e+03,
+        4.74528541206955367215e+02,
+        -2.24409524465858183362e+01,
+    ];
+    if x < 0.84375 {
+        let z = x * x;
+        let y = poly(z, &PP) / poly(z, &QQ);
+        let v = if x < 0.25 {
+            1.0 - (x + x * y)
+        } else {
+            0.5 - (x * y + (x - 0.5))
+        };
+        v.ln()
+    } else if x < 1.25 {
+        let s = x - 1.0;
+        (1.0 - ERX - poly(s, &PA) / poly(s, &QA)).ln()
+    } else if x < 28.0 {
+        let s = 1.0 / (x * x);
+        let rs = if x < 1.0 / 0.35 {
+            poly(s, &RA) / poly(s, &SA)
+        } else {
+            poly(s, &RB) / poly(s, &SB)
+        };
+        -x * x - 0.5625 + rs - x.ln()
     } else {
         ln_erfc_cf(x)
     }
@@ -1223,6 +1442,20 @@ pub(crate) fn select_alpha(pc: &Pieces, sx: f64, us: &[f64], mults: &[f64], o: &
 #[cfg(test)]
 mod pick_tests {
     use super::*;
+    /// The fast ln erfc agrees with the series / continued-fraction reference over the whole range in use.
+    #[test]
+    fn ln_erfc_matches_the_reference() {
+        let mut worst = 0.0f64;
+        for i in 0..40000 {
+            let x = i as f64 * 0.001;
+            let (a, b) = (ln_erfc_pos(x), ln_erfc_ref(x));
+            // the reference forms 1 - erf below 2.5, so its own error there is about 1e-16 / erfc(x)
+            let tol = 1e-13_f64.max(4e-16 / b.exp().max(1e-300)).min(1e-11) * b.abs().max(1.0);
+            assert!((a - b).abs() <= tol, "x {x}: {a} vs {b}");
+            worst = worst.max((a - b).abs() / b.abs().max(1.0));
+        }
+        eprintln!("ln erfc worst relative difference {worst:.2e}");
+    }
     /// Viterbi returns the single best partition: equal to brute force over all partitions on small inputs.
     #[test]
     fn viterbi_is_the_best_partition() {
