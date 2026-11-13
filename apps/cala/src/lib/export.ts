@@ -75,6 +75,26 @@
  * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
  * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
  *
+ * Field-of-view images (format version 5; optional to readers, absent when the
+ * run kept none). Both are projections over Extract's frames (every frame of
+ * the export's span, with the final flat field and Discover's motion; see
+ * `fov-projection.ts`), at full resolution in preprocessed grey levels, NaN
+ * where a pixel never had data:
+ *
+ *   fov_mean            float32 [H, W]   mean of the registered, preprocessed frames, before the
+ *                                        background floor is removed (anatomy; the glow is
+ *                                        already flattened, so it sits near 0)
+ *   fov_max             float32 [H, W]   max of the same frames with the background floor removed
+ *                                        (every cell that fired)
+ *   flat_field_gain     float32 [H, W]   the sensor gain map Extract divided out (1 = nominal);
+ *                                        present when a flat field was applied
+ *
+ * `meta_json.fov_images` describes them: per image its `key`, `domain`,
+ * `frames` and `display_range` [lo, hi] (the fixed transfer the viewer
+ * draws it with; see `fov-display.ts`), and `full_scale` (2^bit depth - 1).
+ * `meta_json.flat_field.map` names the gain array, with `gain_sd` (SD of the
+ * log gain inside the FOV) and its `display_range`.
+ *
  * QC comes from the last online snapshot of Discover (cells added after it are
  * "not measured"); first-seen is the frame count when the library that first
  * held the cell arrived.
@@ -115,13 +135,19 @@ import { verdict, type QcSnapshot } from './qc.ts';
 import type { Pass2Result } from './pass2-store.ts';
 import type { TraceFile } from './trace-file.ts';
 import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
-import type { FlatFieldApplied } from './flat-field.ts';
+import {
+  FLAT_FIELD_DISPLAY_RANGE,
+  type FlatFieldApplied,
+  type FlatFieldMap,
+} from './flat-field.ts';
+import { projectionFor } from './fov-projection.ts';
+import { fovDisplayRanges } from './fov-display.ts';
 import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
 import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 4;
+export const EXPORT_FORMAT_VERSION = 5;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -145,6 +171,10 @@ export interface ExportInput {
    * with the last map, from frame 0.
    */
   flatField?: readonly FlatFieldApplied[];
+  /** The flat-field map Extract applied (omit: none; written as `flat_field_gain`). */
+  flatFieldMap?: FlatFieldMap | null;
+  /** Bits per pixel of the recording (sets the FOV images' display ranges; default 8). */
+  bitDepth?: number;
   /** The runs of the stages since Discover started (omit: none recorded). */
   stages?: readonly StageRun[];
   /** The last QC snapshot, if any. */
@@ -333,6 +363,7 @@ export function calaExportBytes(input: ExportInput): number {
     8 * nnz +
     17 * result.frames +
     1000 * result.ids.length +
+    12 * input.width * input.height +
     (input.history
       ? input.history.bins.levels.reduce((a, l) => a + l.data.byteLength, 0) +
         input.history.eventsJson.length
@@ -368,6 +399,12 @@ export async function writeCalaExport(
   const seen = new Int32Array(n);
   for (let i = 0; i < n; i++) seen[i] = input.firstSeen(ids[i]) ?? -1;
   const { snr, pass, flags } = qcColumns(ids, input.qc);
+  const fovImages = projectionFor(result.projection, range);
+  const gain =
+    input.flatFieldMap && input.flatFieldMap.gain.length === width * height
+      ? input.flatFieldMap
+      : null;
+  const ranges = fovDisplayRanges(input.bitDepth ?? 8);
   const meta = {
     format: 'cala-export',
     format_version: EXPORT_FORMAT_VERSION,
@@ -402,9 +439,39 @@ export async function writeCalaExport(
               source: a.source,
               first: a.first,
             })),
+            ...(gain
+              ? {
+                  map: 'flat_field_gain',
+                  gain_sd: gain.gainSd,
+                  display_range: [...FLAT_FIELD_DISPLAY_RANGE],
+                }
+              : {}),
           },
         }
       : {}),
+    ...(fovImages
+      ? {
+          fov_images: {
+            full_scale: ranges.fullScale,
+            images: [
+              {
+                key: 'fov_mean',
+                domain:
+                  'mean of the registered, preprocessed frames before the background floor is removed',
+                frames: fovImages.frames,
+                display_range: ranges.mean,
+              },
+              {
+                key: 'fov_max',
+                domain: 'max of the registered frames with the background floor removed',
+                frames: fovImages.frames,
+                display_range: ranges.max,
+              },
+            ],
+          },
+        }
+      : {}),
+    bit_depth: input.bitDepth ?? null,
     ...(input.history ? { history: input.history.bins.meta } : {}),
     ...(input.session ? { session: input.session } : {}),
     cell_table: cellTable(input),
@@ -429,6 +496,13 @@ export async function writeCalaExport(
     'sampling_rate_hz.npy': npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
     'meta_json.npy': npy(metaBytes, [metaBytes.length]),
     ...historyEntries(input.history),
+    ...(fovImages
+      ? {
+          'fov_mean.npy': npy(fovImages.mean, [height, width]),
+          'fov_max.npy': npy(fovImages.max, [height, width]),
+        }
+      : {}),
+    ...(gain ? { 'flat_field_gain.npy': npy(gain.gain, [height, width]) } : {}),
   };
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
   const matrices: [string, TraceFile][] = [['traces.npy', result.traces]];

@@ -4,7 +4,13 @@ import type { StageRun } from '../lib/run-stages.ts';
 import { describe, expect, it } from 'vitest';
 import { parseNpz, processNpyResult, traceCandidates } from '@calab/io';
 import type { CellQcRow, QcSnapshot } from '../lib/qc.ts';
-import { buildCaDeconExport, buildCalaExport, cadeconCells, fileStem } from '../lib/export.ts';
+import {
+  buildCaDeconExport,
+  buildCalaExport,
+  cadeconCells,
+  EXPORT_FORMAT_VERSION,
+  fileStem,
+} from '../lib/export.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
@@ -153,7 +159,7 @@ describe('export', () => {
     expect(a.sampling_rate_hz.data[0]).toBe(20);
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
     expect(meta.format).toBe('cala-export');
-    expect(meta.format_version).toBe(4);
+    expect(meta.format_version).toBe(EXPORT_FORMAT_VERSION);
     expect(meta.traces_signed).toBeTypeOf('string');
     expect(meta.cell_table).toHaveLength(3);
     expect(meta.cell_table[1]).toMatchObject({
@@ -232,7 +238,7 @@ describe('export', () => {
     const events = JSON.parse(new TextDecoder().decode(a.run_events_json.data as Uint8Array));
     expect(events[0]).toMatchObject({ kind: 'range', key: 'shift_dy' });
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
-    expect(meta.format_version).toBe(4);
+    expect(meta.format_version).toBe(EXPORT_FORMAT_VERSION);
     expect(meta.history.series[0]).toMatchObject({ key: 'shift_dy', range_final: [-20, 20] });
   });
 
