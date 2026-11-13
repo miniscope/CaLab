@@ -5,7 +5,7 @@
 
 ## Verdict
 
-The split-half rule passes every pre-declared gate on static 1× sims and on real data. The same gates also hold on static 4× (3 seeds, reported only).
+The split-half rule passes every pre-declared gate on static 1× sims and on real data. The same gates also hold on static 4× (3 seeds, reported only) and on motion 1× (5 seeds, scored with the #374 GT offset).
 
 - Distinct-unit merges fall 64 %.
 - 90 % of true-duplicate merges are kept.
@@ -13,7 +13,7 @@ The split-half rule passes every pre-declared gate on static 1× sims and on rea
 - On real data, merges fall about 70 % and late merges about 80 %.
 - Real cells rise by about 90. Seed-to-seed Jaccard rises from .711 to .757, and texture holds.
 
-Recommendation: make it the default in a follow-up PR, once the motion arm has been checked after the GT-offset fix (see "Not done").
+Recommendation: make it the default in a follow-up PR.
 
 ## The problem
 
@@ -85,7 +85,7 @@ Settings and controls:
 - Controls are the Phase 1 logged runs.
 - d = paired arm − control, mean ± 95 % t-CI over seeds.
 
-**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main 1d1629a (#370) and #371, and still holds: see after the 4× table.
+**Identity.** The PR binary with the default (Legacy) and no diagnostics, against origin/main a09d984 on static_s5, is byte-identical in `final.tsv`, `cells.tsv`, `edits.tsv`, `removals.tsv`, `adds.tsv`, `footprints.bin` and `global.tsv`. The diagnostics-logged controls are identical to it as well. The identity was repeated after merging main 1d1629a (#370–#375) and still holds: see after the motion table.
 
 ### Static 1× (5 seeds)
 
@@ -155,15 +155,44 @@ Summed over seeds: distinct-unit merges 170 → 82 (−52 %). Same-unit merges w
 | fp_dup not up beyond CI noise | +1.4 ± 2.9 (CI covers 0; signs 4/1) | pass, watch |
 | P8 / R8 ≥ −.02 | −.005 / +.010 | pass |
 | r_fp ≥ −.010 | −.002 | pass |
+| motion 1×: distinct ≥ −50 % / same kept ≥ 80 % | −67 % / 114 % | pass |
+| motion 1×: fp_dup / P8 / R8 / r_fp | +2.4 ± 3.0 / −.007 / +.012 / −.001 | pass (fp_dup: watch) |
 | real texture ≤ control + 2 | 1 → 1, 1 → 2 | pass |
 | real Jaccard ≥ control − .01 | .711 → .757 | pass |
 
-**Identity after merging main.** After merging origin/main 1d1629a (#370) and d475447 (#371, TypeScript only), the identity was repeated with the plain PR binary (default Legacy) against main 1d1629a on static_s5. All seven outputs are again byte-identical.
+### Motion 1× (seeds 5–9)
+
+Settings and scoring:
+- Same flags as static 1×, plus `--motion`.
+- Scored against GT moved into cala's registered frame. This is the #374 fix: `motion_offset.tsv`; on motion_s5 the offset applied is (+0.11, −1.49) px.
+- The control and the arm were both run with the same diagnostics binary: this branch merged with #374, whose `crates/` are identical to this PR's head.
+
+| metric | control | split-half | d ± CI | signs +/− |
+|---|---|---|---|---|
+| merges / run | 47.0 | 23.8 | −23.2 ± 12.2 | 0/5 |
+| distinct-unit merges / run | 27.0 | 8.8 | −18.2 ± 6.4 | 0/5 |
+| same-unit merges / run | 11.2 | 12.8 | +1.6 ± 4.2 | 3/1 |
+| P8 | .934 | .927 | −.007 ± .016 | 1/4 |
+| R8 | .769 | .781 | +.012 ± .004 | 5/0 |
+| R2 | .562 | .560 | −.002 ± .005 | 1/3 |
+| r_fp | .966 | .965 | −.001 ± .003 | 3/2 |
+| fp_dup | 3.6 | 6.0 | +2.4 ± 3.0 | 4/1 |
+| fp_adjacent / fp_partial | 11.2 / 14.8 | 11.6 / 16.6 | +0.4 ± 3.6 / +1.8 ± 8.8 | |
+| cells | 527 | 539 | +11.8 ± 7.6 | 5/0 |
+| conv_big4 | .115 | .114 | −.002 ± .021 | |
+| late merges / min (last 4 min) | 7.0 | 3.2 | −3.8 ± 2.6 | 0/5 |
+
+Summed over seeds: distinct-unit merges 135 → 44 (−67 %); same-unit merges 56 → 64 (114 %). The rule vetoed 22 distinct-unit merges, 0.2 same-unit merges and 5.4 low-match merges per run. fp_dup rises again (+2.4, CI covers 0, signs 4/1); this is the largest fp_dup rise of the three sim arms.
+
+**Identity after merging main.** The identity check was repeated with the plain PR binary (default Legacy) on static_s5, after each merge of main:
+- after merging 1d1629a (#370) and d475447 (#371), against main 1d1629a;
+- after merging 1a21b6d (#372–#375), against main 1a21b6d.
+
+Both times, all seven outputs are byte-identical.
 
 ## Not done / caveats
 
-- **Motion 1× is not evaluated.** The GT-offset fix for motion-arm scoring had not landed when this ran, so merge labels on motion arms are not yet trustworthy. Run `qc_eval sim motion_s{5..9} --merge-rule split-half --merge-log` against controls once the fix is merged, before switching the default.
-- fp_dup rises in 4 of 5 seeds (+1.4 per run). The PI's "tolerate early mistakes" principle applies: a duplicate kept apart is re-tested after its cooldown, and once its halves agree, or its footprints come to coincide, it merges. A per-pair evidence accumulator (plan 4.2 `PairEvidence`) would make that explicit.
+- fp_dup rises in 4 of 5 seeds: +1.4 per run on static and +2.4 on motion, with every CI covering 0. The PI's "tolerate early mistakes" principle applies: a duplicate kept apart is re-tested after its cooldown, and once its halves agree, or its footprints come to coincide, it merges. A per-pair evidence accumulator (plan 4.2 `PairEvidence`) would make that explicit.
 - The 65 distinct-unit merges that remain break down as follows:
   - 32 have overlap ≥ ½ and are exempt. In the sims, cells can overlap in projection.
   - 28 involve a cell without split halves (a young cell), so the held-out test decided alone.
