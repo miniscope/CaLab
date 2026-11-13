@@ -253,6 +253,9 @@ folder's handle, or among the files of a folder picked through a file input).
   - Cells: footprints from the CSR arrays, QC from `qc_peak_snr`, `qc_pass`
     and `qc_flags` (the export holds no other QC metric, so the rest of the QC
     table reads n/a; there is no residual map and no demixing neighbours).
+    These are the QC recomputed after Extract on that session's own traces,
+    over the whole session (`src/lib/extract-qc.ts`), not Discover's last
+    minute.
   - Traces: Extract's traces (the live viewer shows Discover's online traces).
   - History and event log: `history_L{k}` and `run_events_json`, read back with
     `StreamHistory.fromExport`. A Joint run's sessions each hold the whole

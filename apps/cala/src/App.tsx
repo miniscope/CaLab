@@ -7,6 +7,10 @@ import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
+import { extractQc, QC_SCOPE_DEFAULT } from './lib/extract-qc.ts';
+import { loadSpanStats } from './lib/extract-qc-wasm.ts';
+import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
+import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
@@ -226,12 +230,26 @@ const App: Component = () => {
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
   });
+  // Extract's QC: the trace statistics recomputed on the extracted traces
+  // (extract-qc.ts). Discover's last snapshot supplies the other metrics.
+  let qcBase: QcSnapshot | null = null;
+  async function extractQcFor(
+    range: { start: number; end: number },
+    fps: number,
+  ): Promise<QcSnapshot | null> {
+    const r = pass2.result();
+    if (!r) return null;
+    const backend = await loadSpanStats();
+    const rate = fps > 0 ? fps : ASSUMED_FPS;
+    return extractQc(r.traces, r.ids, range, rate, QC_SCOPE_DEFAULT, qcBase, backend);
+  }
   // Extract: its store's status, into the stage log.
   createEffect(
     on(
       () => pass2.status(),
       (st) => {
         if (st === 'running') {
+          qcBase = cells.qc();
           stageLog.begin('extract');
           logStage('extract', 'Extract started');
         } else if (st === 'done') {
@@ -242,6 +260,13 @@ const App: Component = () => {
             libraryVersion: r?.version ?? 0,
           });
           logStage('extract', 'Extract done');
+          const result = r;
+          if (result)
+            void extractQcFor({ start: 0, end: result.frames }, store.info()?.fps ?? 0)
+              .then((snap) => {
+                if (snap && pass2.result() === result) cells.replaceQc(snap);
+              })
+              .catch((err: unknown) => console.warn('Extract QC failed:', err));
         } else if (st === 'error' || st === 'cancelled') {
           stageLog.end('extract', st, { frames: pass2.processed() });
           logStage('extract', `Extract ${st === 'error' ? 'stopped by an error' : 'cancelled'}`);
@@ -343,6 +368,7 @@ const App: Component = () => {
     }),
     runRefine,
     runExtract: () => void pass2.run(),
+    sessionQc: (range, fps) => extractQcFor(range, fps),
     exportInput: (): ExportInput | null => {
       const r = pass2.result();
       const i = store.info();

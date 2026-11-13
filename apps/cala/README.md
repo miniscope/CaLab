@@ -159,7 +159,9 @@ Extract's file, no transpose): `np.load` still returns the (cells, frames) array
   flat pixel index `row * W + column`) with `fov_shape`, per-frame
   `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
   `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
-  `qc_flags`, `sampling_rate_hz`, `meta_json` (UTF-8 JSON: provenance and the
+  `qc_flags` (trace statistics recomputed on the extracted traces over all of the
+  file's own frames, the whole session; `src/lib/extract-qc.ts`),
+  `sampling_rate_hz`, `meta_json` (UTF-8 JSON: provenance and the
   cell table), the run's History bins and event log, and (format 5) `fov_mean` /
   `fov_max` (mean and max projections over Extract's frames, `src/lib/fov-projection.ts`)
   and `flat_field_gain`. The full layout is the header of `src/lib/export.ts`.
