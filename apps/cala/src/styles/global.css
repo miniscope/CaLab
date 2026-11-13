@@ -767,3 +767,10 @@
 .cala-project__row--ids5 td:first-child {
   box-shadow: inset 4px 0 #0e7490;
 }
+
+/* A saved result in the viewer (ResultView): the stages that ran. */
+.cala-result__stages {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+}

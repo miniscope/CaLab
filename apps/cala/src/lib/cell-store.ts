@@ -186,6 +186,8 @@ export function createCellStore(
   const [established, setEstablished] = createSignal<Map<number, boolean>>(new Map());
   const [convergence, setConvergence] = createSignal<ConvergenceStatus>(convergenceStatus([]));
   const [fps, setFps] = createSignal(20);
+  /** Showing a saved result (`loadResult`), not a run. */
+  const [saved, setSaved] = createSignal(false);
 
   let session = -1;
   /** Newest published library as `TraceLibrary.toBytes()` (pass 2 solves with it). */
@@ -224,6 +226,7 @@ export function createCellStore(
     setVersion(0);
     setBatch(null);
     setError(null);
+    setSaved(false);
     setTick((v) => v + 1);
   }
 
@@ -400,6 +403,7 @@ export function createCellStore(
     setLibrary(o.library);
     setGeometry(buildGeometry(o.library));
     setQc(o.qc);
+    setSaved(true);
   }
 
   /** Frames since `id` was first seen (Infinity when unknown). */
@@ -415,6 +419,8 @@ export function createCellStore(
     onBackfill,
     onBatch,
     loadResult,
+    /** A saved result is shown (read-only), not a run. */
+    saved,
     library,
     /** Bytes of `library()` for the trace solver (null before the first publish). */
     libraryBytes: () => latestBytes,

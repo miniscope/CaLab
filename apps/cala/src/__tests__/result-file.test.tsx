@@ -234,7 +234,8 @@ describe('export format 4 and the result reader', () => {
     expect(mean.data[1]).toBeCloseTo(7);
     expect(max.data[1]).toBe(90);
     const ranges = fovDisplayRanges(8);
-    expect(mean.range).toEqual({ lo: 0, hi: 255 });
+    expect(mean.range).toEqual({ lo: ranges.mean[0], hi: ranges.mean[1] });
+    expect(ranges.mean).toEqual([-255 / 32, 255 / 8]);
     expect(max.range).toEqual({ lo: ranges.max[0], hi: ranges.max[1] });
     expect(r.flatField?.data[0]).toBeCloseTo(1.05);
     expect(r.flatField?.gainSd).toBeCloseTo(0.03);

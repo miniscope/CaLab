@@ -183,7 +183,9 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    and a JSON block with the run's provenance and the stages that ran. **Export for CaDecon (N cells)** writes just
    the traces of the cells that pass QC (untick **QC-passing cells only** to include
    every cell), for CaDecon. Python:
-   `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds the run's history
+   `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds a mean and a max
+   image of the field of view (`fov_mean`, `fov_max`), the flat-field gain map
+   (`flat_field_gain`, when one was applied), the run's history
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
@@ -215,6 +217,13 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   the table.
 - **Current result.** A session's newest result is its current one. Older results are
   kept; **Set current** in its results makes an older one current again.
+- **View results.** Opens a result in the viewer as it looked right after its run:
+  the cells over the field of view (**Mean** or **Max** image), the QC table, a
+  clicked cell's footprint and trace, the History plots and event log, the stages that
+  ran and the flat field. It is read-only: to Discover or Refine again, start a new run
+  from the table. **Back to project** returns to the table. Results saved by older
+  versions open too; what they lack (the images, the History) says "not in this
+  export".
 - **Where results go.** Each run gets its own folder, `cala-results/runs/<date>_<time>/`,
   laid out like a multi-session run's results, and `cala-results/cala-project.json`
   indexes them. Raw data folders are only read. **Choose another folder...** saves the
@@ -226,8 +235,8 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   (and a permission prompt) reopens one. Other browsers pick the folder again; there each
   run downloads a zip of its run folder, to unpack into the animal folder.
 
-Saved libraries (applying one session's cells to another), matching cells across Separate
-runs, and opening a saved result in the viewer come in later versions. Details:
+Saved libraries (applying one session's cells to another) and matching cells across
+Separate runs come in later versions. Details:
 [docs/projects.md](docs/projects.md).
 
 ## Several sessions of one animal

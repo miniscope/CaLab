@@ -35,8 +35,8 @@ const LOAD_BYTES = 16 * 1048576;
 
 export const PART_LABEL: Record<ResultPart, string> = {
   fov: 'field-of-view images (export format 4)',
-  flatfield: 'flat-field map (format 4)',
-  history: 'History plots and event log (format 2)',
+  flatfield: 'flat-field map',
+  history: 'History plots and event log',
   stages: 'stage list (format 3)',
   qc: 'QC columns',
 };
@@ -111,10 +111,14 @@ function ResultFlatField(props: { result: LoadedResult }): JSX.Element {
         when={ff()}
         fallback={
           <p class="cala-muted">
-            {NOT_IN_EXPORT}: the flat-field map came with export format 4
-            {maps().length > 0
-              ? `; this run applied ${maps().length} map${maps().length > 1 ? 's' : ''} (the metadata lists them).`
-              : '.'}
+            {NOT_IN_EXPORT}:{' '}
+            {props.result.formatVersion >= 4
+              ? 'this run applied no flat field.'
+              : `the flat-field map came with export format 4${
+                  maps().length > 0
+                    ? `; this run applied ${maps().length} map${maps().length > 1 ? 's' : ''} (the metadata lists them).`
+                    : '.'
+                }`}
           </p>
         }
       >

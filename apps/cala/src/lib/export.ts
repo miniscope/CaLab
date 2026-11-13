@@ -78,7 +78,8 @@
  * where a pixel never had data:
  *
  *   fov_mean            float32 [H, W]   mean of the registered, preprocessed frames, before the
- *                                        background floor is removed (anatomy: vessels, glow)
+ *                                        background floor is removed (anatomy; the glow is
+ *                                        already flattened, so it sits near 0)
  *   fov_max             float32 [H, W]   max of the same frames with the background floor removed
  *                                        (every cell that fired)
  *   flat_field_gain     float32 [H, W]   the sensor gain map Extract divided out (1 = nominal);
