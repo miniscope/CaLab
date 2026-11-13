@@ -95,6 +95,8 @@ async function run(
     /** Replace the library by this one when batch `at` starts (a slow-loop publish). */
     swap?: { at: number; bytes: Uint8Array; version: number };
     replay?: ReplayInput;
+    /** Also return the signed traces (as Extract does). */
+    signed?: boolean;
   },
   onBatch?: (b: Batch) => void,
 ): Promise<Batch[]> {
@@ -116,6 +118,7 @@ async function run(
       discover: false,
       qc: false,
       initialLibrary: options.library,
+      signed: options.signed ?? false,
     },
     null,
     traceBackend,
@@ -238,6 +241,35 @@ describe('pass 2', () => {
     console.info(
       `pass 1 vs pass 2 after a swap: max |diff| ${worst.toExponential(2)} of scale ${scale.toFixed(2)} over ${frames} frames`,
     );
+  });
+
+  it('returns signed traces with Extract, leaving the traces bit for bit the same', async () => {
+    const plain = await run({ library: libA.bytes });
+    const withSigned = await run({ library: libA.bytes, signed: true });
+    expect(withSigned.length).toBe(plain.length);
+    let clipped = 0;
+    let negative = 0;
+    let worstActive = 0;
+    for (let i = 0; i < plain.length; i++) {
+      const a = plain[i].cells!;
+      const b = withSigned[i].cells!;
+      expect(a.signed).toBeUndefined();
+      expect(b.traces, `traces of batch ${i}`).toEqual(a.traces);
+      const s = b.signed!;
+      expect(s.length).toBe(b.traces.length);
+      for (let k = 0; k < s.length; k++) {
+        if (b.traces[k] === 0) {
+          clipped++;
+          if (s[k] < 0) negative++;
+        } else {
+          worstActive = Math.max(worstActive, Math.abs(s[k] - b.traces[k]) / b.traces[k]);
+        }
+      }
+    }
+    // The clipped samples come back as (mostly) negative values; active ones barely move.
+    expect(clipped).toBeGreaterThan(0);
+    expect(negative / clipped).toBeGreaterThan(0.7);
+    expect(worstActive).toBeLessThan(0.1);
   });
 
   it('refuses a replay longer than the recording or a short record', () => {

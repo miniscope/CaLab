@@ -18,10 +18,12 @@ const PLAN: PipelinePlan = {
 };
 const IDS = Uint32Array.of(3, 8);
 
-function batch(start: number, count: number, ids = IDS): PipelineStepResult {
+function batch(start: number, count: number, ids = IDS, withSigned = true): PipelineStepResult {
   const traces = new Float32Array(count * ids.length);
   for (let f = 0; f < count; f++)
     for (let c = 0; c < ids.length; c++) traces[f * ids.length + c] = 10 * (start + f) + c;
+  // Signed: the traces minus 1000 (made-up values; only where they land matters).
+  const signed = withSigned ? traces.map((v) => v - 1000) : undefined;
   const z = new Float32Array(count);
   return {
     kind: 'batch',
@@ -40,6 +42,7 @@ function batch(start: number, count: number, ids = IDS): PipelineStepResult {
       version: 5,
       ids,
       traces,
+      ...(signed ? { signed } : {}),
       swapMs: 0,
       solveMs: 0,
       forwardMs: 0,
@@ -53,13 +56,23 @@ function batch(start: number, count: number, ids = IDS): PipelineStepResult {
 }
 
 function setup(
-  opts: { final?: boolean; frames?: number; status?: string; flatMap?: FlatFieldMap | null } = {},
+  opts: {
+    final?: boolean;
+    frames?: number;
+    status?: string;
+    flatMap?: FlatFieldMap | null;
+    noSigned?: boolean;
+  } = {},
 ) {
   const rec = new RunRecord();
   const frames = opts.frames ?? 8;
   for (let t = 0; t < frames; t++) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
   const started: { options: unknown; cells: unknown; replay: unknown }[] = [];
-  const steps: PipelineStepResult[] = [batch(0, 4), batch(4, 4), { kind: 'done' }];
+  const steps: PipelineStepResult[] = [
+    batch(0, 4, IDS, !opts.noSigned),
+    batch(4, 4, IDS, !opts.noSigned),
+    { kind: 'done' },
+  ];
   const client: PipelineClient = {
     async startPipeline(options, cells, replay) {
       started.push({ options, cells, replay });
@@ -97,7 +110,7 @@ describe('Extract (pass 2) store', () => {
     await settle();
     expect(store.status()).toBe('done');
     expect(started).toHaveLength(1);
-    expect(started[0].cells).toMatchObject({ discover: false, qc: false });
+    expect(started[0].cells).toMatchObject({ discover: false, qc: false, signed: true });
     expect(started[0].options).toMatchObject({ batchSize: 4, calibrationFrames: 4 });
     const replay = started[0].replay as { frameCount: number; dx: Float32Array };
     expect(replay.frameCount).toBe(8);
@@ -107,7 +120,20 @@ describe('Extract (pass 2) store', () => {
     expect(r.cells).toBe(2);
     // Frame-major: frame f, cell c at f * 2 + c.
     expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
+    // The signed traces, in a file of their own with the same layout.
+    expect(r.signed).not.toBeNull();
+    expect([...(await r.signed!.readFrames(5, 6))]).toEqual([-950, -949]);
     expect(store.processed()).toBe(8);
+  });
+
+  it('keeps the clipped traces only when the solver returns no signed ones', async () => {
+    const { store } = setup({ noSigned: true });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    const r = store.result()!;
+    expect(r.signed).toBeNull();
+    expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
   });
 
   it('replays with the flat-field map of pass 1 (applied from frame 0), or none', async () => {

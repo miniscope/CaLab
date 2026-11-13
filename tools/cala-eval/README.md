@@ -191,6 +191,19 @@ since 13 Nov 2026). `legacy` is the χ² disagreement test plus
 current column exceeds the estimate's own split-half noise. The reservoir path,
 absorbs and merges are the same under both.
 
+## Merge rule (S2.1c)
+
+`qc_eval --merge-rule legacy|split-half` picks which merge tests may merge
+(`SlowLoopConfig::merge_rule`, default `split-half` since 13 Nov 2026).
+`legacy` is the held-out test alone (a single column explains the tile's
+held-out frames within `merge_z` of the pair, or the overlap ≥ ½ shortcut), the
+rule before S2.1c. Under `split-half` a pair whose footprints overlap less than
+half must also have the same measured shape: on the union support the two
+cells' running estimates, best scaled onto each other, differ by no more than
+their own split-half noise (`Î ≤ 0` both ways). A pair with a young cell (no
+split halves yet) falls back to `legacy`. With a diagnostics build,
+`--merge-log` writes one JSON line per merge test (`merges.jsonl`).
+
 With a binary built with `--features diagnostics`,
 `CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
 the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
@@ -245,4 +258,5 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-repeated-pass.md`         | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget                      |
 | `2026-11-12-refine-only-passes.md`    | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all`                |
 | `2026-11-12-refine-gate.md`           | S2.1c minimal option: split-half refine gate cuts late real refines 37 %; the default                    |
+| `2026-11-13-merge-rule.md`            | S2.1c merge redesign: split-half merge rule cuts distinct-cell merges 52–67 %; the default               |
 | `2026-11-13-app-background-levels.md` | the app's slow loop without the ring-background levels: within noise; fixed so the app matches `qc_eval` |

@@ -20,7 +20,7 @@ export interface HistoryEvent {
   t: number;
   /** Span end for 'pause' events (grey shading). */
   t1?: number;
-  /** 'scale' | 'ff' | 'warn' | 'range' | 'pause' (others are ignored). */
+  /** 'scale' | 'ff' | 'warn' | 'range' | 'pause' | 'session' (others are ignored). */
   kind: string;
   label: string;
 }
@@ -258,6 +258,20 @@ export function HistoryPlot(props: HistoryPlotProps) {
         }
       }
     }
+    // Session boundaries (a multi-session run): a solid line through the plot.
+    ctx.strokeStyle = C.ink;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const e of events) {
+      if (e.kind !== 'session') continue;
+      const x = Math.round(X(e.t)) + 0.5;
+      if (x < AX || x > W) continue;
+      ctx.moveTo(x, plotTop);
+      ctx.lineTo(x, plotTop + plotH);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
     if (props.scaleGuides) {
       ctx.strokeStyle = C.muted;
       ctx.lineWidth = 1;
@@ -666,6 +680,9 @@ export function HistoryPlot(props: HistoryPlotProps) {
         ctx.fillText('⇡', x, 9);
         ctx.textAlign = 'left';
         ctx.font = '10px system-ui, sans-serif';
+      } else if (e.kind === 'session') {
+        ctx.fillStyle = C.ink;
+        ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_H);
       } else if (e.kind === 'pause') {
         ctx.fillStyle = C.secondary;
         ctx.fillRect(x - 3, 1, 2, 7);

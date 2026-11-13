@@ -22,7 +22,7 @@ import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
 import type { FastToCompress } from './compress-types.ts';
-import type { FrameRequest, FrameResponse } from './frame-types.ts';
+import type { FrameRequest, FrameResponse, SessionProbeResult } from './frame-types.ts';
 import type { FlatFieldDown, FlatFieldUp } from './flat-field-types.ts';
 import type { StageFree, StageMsg, StageShifts } from './stage-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
@@ -142,6 +142,30 @@ async function handle(req: FrameRequest): Promise<void> {
         liveUrl = null;
         source = await FrameSource.open(req.entries);
         post({ type: 'opened', id: req.id, info: source.info });
+        break;
+      }
+      case 'open-sessions': {
+        await initCalaWasm();
+        stopPipeline();
+        closeSources();
+        liveUrl = null;
+        source = await FrameSource.openSessions(req.sessions);
+        post({ type: 'opened', id: req.id, info: source.info });
+        break;
+      }
+      case 'probe': {
+        await initCalaWasm();
+        const results: SessionProbeResult[] = [];
+        for (const s of req.sessions) {
+          try {
+            const probed = await FrameSource.open(s.entries);
+            results.push({ info: probed.info });
+            probed.dispose();
+          } catch (err) {
+            results.push({ error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        post({ type: 'probed', id: req.id, results });
         break;
       }
       case 'open-live': {

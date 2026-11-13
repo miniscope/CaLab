@@ -1,4 +1,9 @@
-import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-source.ts';
+import type {
+  FolderEntry,
+  FrameSourceInfo,
+  FramePixels,
+  SessionInput,
+} from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
@@ -29,12 +34,21 @@ export interface CellsSettings {
   compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
+  /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */
+  signed?: boolean;
 }
+
+/** A probed session: its info, or the error opening it. */
+export type SessionProbeResult = { info: FrameSourceInfo } | { error: string };
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
   | { type: 'open'; id: number; entries: FolderEntry[] }
+  /** Open several sessions as one recording, in order (a Joint run; `FrameSource.openSessions`). */
+  | { type: 'open-sessions'; id: number; sessions: SessionInput[] }
+  /** Read each session's headers and sidecars for the session list, without keeping any open. */
+  | { type: 'probe'; id: number; sessions: SessionInput[] }
   /** Connect to a live source (`lib/live-source.ts`) at a WebSocket URL. */
   | { type: 'open-live'; id: number; url: string }
   /** `count` consecutive frames from global index `start` (one for a single frame). */
@@ -87,6 +101,8 @@ export type FrameRequestBody = FrameRequest extends infer R
 /** Frame worker -> main thread. */
 export type FrameResponse =
   | { type: 'opened'; id: number; info: FrameSourceInfo }
+  /** One entry per probed session: its info, or why it could not be opened. */
+  | { type: 'probed'; id: number; results: SessionProbeResult[] }
   | {
       type: 'frames';
       id: number;

@@ -2058,34 +2058,44 @@ fn support_shrinks_when_light_goes() {
 
 /// Under the ring rule the basin settings change nothing: the same run
 /// with another `support_alpha` gives byte-identical libraries, written as
-/// CALALIB3 with no skirt, under either refine gate. (Identity with the
-/// code before S2.1 is `SupportRule::Rings` with `RefineGate::Legacy`,
-/// checked end to end with `qc_eval`; see the results notes.)
+/// CALALIB3 with no skirt, under either refine gate and either merge rule.
+/// (Identity with the code before S2.1 is `SupportRule::Rings` with
+/// `RefineGate::Legacy` and `MergeRule::Legacy`, checked end to end with
+/// `qc_eval`; see the results notes.)
 #[test]
 fn rule_off_is_byte_identical() {
     let t = 1200;
     let (m, seed) = busy_movie(t);
     for gate in [RefineGate::Legacy, RefineGate::SplitHalf] {
-        let run_with = |alpha: f32| {
-            let cfg = SlowLoopConfig {
-                support_rule: SupportRule::Rings,
-                support_alpha: alpha,
-                refine_gate: gate,
-                ..shard_config()
+        for rule in [MergeRule::Legacy, MergeRule::SplitHalf] {
+            let run_with = |alpha: f32| {
+                let cfg = SlowLoopConfig {
+                    support_rule: SupportRule::Rings,
+                    support_alpha: alpha,
+                    refine_gate: gate,
+                    merge_rule: rule,
+                    ..shard_config()
+                };
+                let (mut slow, mut eng) = start(cfg, &seed);
+                let mut deleted = Vec::new();
+                drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+                (slow.finalize().unwrap(), slow.stats())
             };
-            let (mut slow, mut eng) = start(cfg, &seed);
-            let mut deleted = Vec::new();
-            drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-            (slow.finalize().unwrap(), slow.stats())
-        };
-        let (a, sa) = run_with(0.05);
-        let (b, sb) = run_with(0.5);
-        assert!(sa.refines > 0, "{gate:?} {sa:?}");
-        assert_eq!(sa, sb, "{gate:?}");
-        assert_eq!(sa.support_no_se, 0, "{gate:?}");
-        assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
-        assert!(a.to_bytes()[16..] == b.to_bytes()[16..], "{gate:?}");
-        assert!((0..a.len()).all(|s| a.skirt(s).0.is_empty()), "{gate:?}");
+            let (a, sa) = run_with(0.05);
+            let (b, sb) = run_with(0.5);
+            assert!(sa.refines > 0, "{gate:?} {rule:?} {sa:?}");
+            assert_eq!(sa, sb, "{gate:?} {rule:?}");
+            assert_eq!(sa.support_no_se, 0, "{gate:?} {rule:?}");
+            assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
+            assert!(
+                a.to_bytes()[16..] == b.to_bytes()[16..],
+                "{gate:?} {rule:?}"
+            );
+            assert!(
+                (0..a.len()).all(|s| a.skirt(s).0.is_empty()),
+                "{gate:?} {rule:?}"
+            );
+        }
     }
 }
 
@@ -2422,4 +2432,157 @@ fn refine_scope_travels_with_visit_jobs() {
     assert_eq!(b.cell_infos().iter().map(|c| c.id).collect::<Vec<_>>(), ids);
     assert!(b.stats().refines > 0);
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// With visit workers, Refine makes the visits that would not refine at
+/// hand-out instead of as jobs (`SlowLoop::skip_unused`). The footprints
+/// are the same, bit for bit, with and without the skip (one worker whose
+/// results come back at once), and about half the visits go out as jobs.
+#[test]
+fn refine_makes_idle_visits_at_hand_out_without_changing_footprints() {
+    let t = 2400;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    // Discover, then two Refine runs with every visit through `take_job_bytes`.
+    let run = |skip: bool| -> (Vec<Vec<u8>>, u64, u64) {
+        let (mut s, mut eng) = start(cfg.clone(), &seed);
+        drive(&m, 0..t, &mut s, &mut eng, &mut Vec::new());
+        let lib = s.finalize().unwrap();
+        let mut out = vec![lib.to_bytes()[16..].to_vec()];
+        eng.set_library(lib).unwrap();
+        s.skip_unused = skip;
+        s.set_edit_scope(EditScope::Refine);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        let (visits0, mut jobs) = (s.stats().visits, 0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                let lib = eng.library().clone();
+                s.observe(f, &lib, &tr).unwrap();
+                while let Some(b) = s.take_job_bytes() {
+                    let r = runner.run(VisitJob::from_bytes(&b).unwrap()).unwrap();
+                    s.apply_job(VisitResult::from_bytes(&r.to_bytes()).unwrap())
+                        .unwrap();
+                    jobs += 1;
+                }
+                if let Some(l) = s.housekeep().unwrap() {
+                    out.push(l.to_bytes()[16..].to_vec());
+                    eng.set_library(l).unwrap();
+                }
+            }
+            let l = s.finalize().unwrap();
+            out.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        (out, jobs, s.stats().visits - visits0)
+    };
+    let (a, jobs_a, visits_a) = run(true);
+    let (b, jobs_b, visits_b) = run(false);
+    assert!(a.len() > 3, "{} libraries", a.len());
+    assert!(
+        a[1..].iter().any(|x| *x != a[0]),
+        "Refine changed no footprint"
+    );
+    assert_eq!(a.len(), b.len());
+    for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+        assert!(x == y, "library {k} differs with the skip");
+    }
+    assert_eq!(visits_a, visits_b);
+    assert_eq!(jobs_b, visits_b);
+    assert!(
+        jobs_a * 3 < jobs_b * 2,
+        "{jobs_a} of {jobs_b} visits went out as jobs"
+    );
+}
+
+/// Under the split-half merge rule a duplicate of an established cell is
+/// still merged (its light and the cell's form one basin).
+#[test]
+fn split_half_merge_rule_still_merges_a_duplicate() {
+    let t = 1200;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
+    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
+    assert!(slow.stats().merges >= 1);
+}
+
+/// The split-half merge statistic: two independent neighbours (supports
+/// overlapping, 7 px apart) have measured shapes that differ far beyond
+/// their split-half noise (`Î > 0`, the rule keeps them apart), while a
+/// cell compared with itself is within its noise (`Î ≤ 0`).
+#[test]
+fn merge_shape_excess_tells_neighbours_from_one_cell() {
+    let t = 2000;
+    let mut rng = Lcg(71);
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 49.0, 50.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 73);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 45.0, 44.0), blob(2, 49.0, 50.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.stats().merges, 0, "stats {:?}", slow.stats());
+    let a = slow.cells.iter().find(|c| c.id == 1).unwrap().clone();
+    let b = slow.cells.iter().find(|c| c.id == 2).unwrap().clone();
+    let two = slow.merge_shape_excess(&a, &b).expect("split halves");
+    assert!(two > 0.0, "neighbours: {two}");
+    let one = slow.merge_shape_excess(&a, &a).expect("split halves");
+    assert!(one <= 0.0, "a cell against itself: {one}");
+}
+
+/// Either merge rule runs identically as jobs and in `step` (the default,
+/// `MergeRule::SplitHalf`, and `MergeRule::Legacy`).
+#[test]
+fn merge_rules_match_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    for rule in [MergeRule::Legacy, MergeRule::SplitHalf] {
+        let cfg = SlowLoopConfig {
+            merge_rule: rule,
+            ..shard_config()
+        };
+        let n_px = N * N;
+        let (mut a, mut ea) = start(cfg.clone(), &seed);
+        let (mut b, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            a.observe(f, &la, &ta).unwrap();
+            b.observe(f, &lb, &tb).unwrap();
+            let pa = a.step(5_000_000).unwrap();
+            let pb = b.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "{rule:?} frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(
+                    la.to_bytes()[16..] == lb.to_bytes()[16..],
+                    "{rule:?} frame {k}"
+                );
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let s = a.stats();
+        assert!(s.merge_tests > 0, "{rule:?} {s:?}");
+        assert_eq!(s, b.stats(), "{rule:?}");
+    }
 }
