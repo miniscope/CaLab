@@ -348,15 +348,16 @@ describe('parseNpz: decompressed-size cap', () => {
   });
 
   it('rejects a genuinely highly-compressible entry over a custom cap', () => {
-    // 4 Mi float64 zeros = 32 MiB inflated, ~32 KiB compressed.
-    const big = npy('<f8', '(4194304,)', new Uint8Array(32 * MiB));
+    // 1 Mi float64 zeros = 8 MiB inflated, a few KiB compressed. Kept small:
+    // compressing 32 MiB at level 9 took ~5 s under coverage and timed out.
+    const big = npy('<f8', '(1048576,)', new Uint8Array(8 * MiB));
     const zip = zipSync({ 'zeros.npy': big }, { level: 9 });
     expect(zip.length).toBeLessThan(MiB);
     expect(() => parseNpz(toArrayBuffer(zip), { maxDecompressedBytes: MiB })).toThrow(
       DecompressedSizeLimitError,
     );
-    const ok = parseNpz(toArrayBuffer(zip), { maxDecompressedBytes: 64 * MiB });
-    expect(ok.arrays['zeros'].data.length).toBe(4194304);
+    const ok = parseNpz(toArrayBuffer(zip), { maxDecompressedBytes: 16 * MiB });
+    expect(ok.arrays['zeros'].data.length).toBe(1048576);
   });
 
   it('sums sizes across entries', () => {
