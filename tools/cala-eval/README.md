@@ -38,6 +38,8 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 - `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
   (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
+- `decide_f0.py`: scores the S2.1c F0 falsifier from `--decide-shadow` runs
+  (`--sims <run>/out ... --real <run>/out ...`; see "Evidence rules (S2.1c)").
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
@@ -182,6 +184,49 @@ non-finite (or at frame `CALA_DIVERGE_AT`), a `dump_t<frame>_v<version>`
 directory with the library bytes (`Library::to_bytes`), the frame and the warm
 start, so the solve can be replayed offline.
 
+## Evidence rules (S2.1c), shadow log
+
+`crates/cala/src/discover/decide.rs` holds the pure functions of the S2.1c
+evidence rules: per-block sums (`BLOCK` = 256 frames), the cluster-robust
+ratio `θ̂ = Σx / Σw` with its standard error and `G_eff − 1` degrees of
+freedom, the Student-t tail, and the look-count margin `m(n) = z₀ + √(2 ln n)`
+with `z₀ = Φ⁻¹(1 − α₀)` (`--alpha0`, default 1e-3). No decision uses them yet.
+
+With a binary built with `--features diagnostics`, `qc_eval --decide-shadow`
+(or `CALA_DECIDE_SHADOW=<dir>`) computes the rules beside the current
+decisions and writes, without changing any of them (output byte-identical
+otherwise):
+
+- `decide_fp.tsv`: every refine and absorb the current rule tested, plus the
+  refine proposals it declined that the new trigger would have made
+  (`kind = declined`): old paired z and verdict; trigger (`D2`, `I_hat` in units
+  of the current column, `scale`, `z_pred`, `new_frames`, `triggered`); look
+  count and margin; the Δ test with the cell's held-out energy as weight
+  (`theta`, `se`, `dof`, `p`, `pass`, `publish` = triggered and passed) and its
+  frame-weighted fallback (`*_fw`); the cell's split-half footprint noise and,
+  on sims, the correlation of the current (`gt_r_cur`) and proposed
+  (`gt_r_new`) footprint with the current footprint's best GT unit. Absorbs pick
+  the alternative on even blocks and test it on odd blocks (`shadow_alt` = its
+  kind, + 10 when it differs from the current rule's choice).
+- `decide_pairs.tsv`: every merge evaluation: the three arms' accumulated
+  per-frame loss beyond a noise column on complete blocks not yet used, the
+  verdict (`merge`, `apart`, `undecided`, `held`, `skip` = no new complete
+  block), and each cell's GT unit.
+- `decide_keep.tsv`: every keep decision after new probe blocks were folded:
+  `θ` = share of the cell's claimed light that survives a free local
+  background, the verdict against ½, and a never-reset lifetime record
+  (`theta_all`).
+- `decide_silent.tsv`: the claim at each add (blocks `k`, first event `t1`,
+  rate `λ`, wait `ln((1 − α₀)/α₀)/λ`), the first time a cell without a
+  transient would be deleted (`would_delete`), and every current-rule
+  deletion (`old_<reason>`).
+
+The shadow keeps its own look counts and records per cell id in-process, so it
+is exact with `step` and `--via-jobs`, not with parallel `--visit-workers`
+(they renumber new cells). Its decisions are made where the visit runs (keep
+in `keep_tests`, not `prune`) and do not feed back: a shadow publication or
+merge does not change the footprints the next look sees.
+
 ## Validation (E1)
 
 - Reproduction of `tools/cala-diagnostics/COMPUTE_VS_PRECISION.md`: the main binary of that table
@@ -218,3 +263,4 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
 | `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |
+| `2026-11-12-s21c-f0.md`            | S2.1c F0: evidence-rule shadow on ctl; fails (energy-weighted dof ≈ 1, no power)          |
