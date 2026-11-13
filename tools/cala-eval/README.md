@@ -165,6 +165,15 @@ also gives the footprint a skirt: unfiltered light per 8 px moat block on the
 rest of the statistics disk, solved so that the column (the filter of support
 plus skirt, whose low-pass reaches the moat) matches the measured light there.
 
+## Refine gate (S2.1c)
+
+`qc_eval --refine-gate legacy|split-half` picks when the statistics path
+proposes a refinement (`SlowLoopConfig::refine_gate`, default `legacy`).
+`legacy` is the χ² disagreement test plus `refine_min_change`. `split-half`
+proposes only when `Î = ‖h/a − cur‖² − ½‖(h_A − h_B)/a‖² > 0`: the change from the
+current column exceeds the estimate's own split-half noise. The reservoir path,
+absorbs and merges are the same under both.
+
 With a binary built with `--features diagnostics`,
 `CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
 the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
@@ -218,3 +227,4 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
 | `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |
+| `2026-11-12-refine-gate.md`        | S2.1c minimal option: split-half refine gate cuts late real refines 37 % (target 40 %)    |
