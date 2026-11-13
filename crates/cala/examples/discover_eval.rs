@@ -11,12 +11,47 @@
 //!   --checkpoints K   full library snapshots matched against GT (default 10)
 //!   --fps F           recording sampling rate (default 20)
 //!   --no-pass2        skip re-extraction
+//!   --factors-out DIR compress pass 1's preprocessed frames in 600-frame
+//!                     windows and write every window's factors to
+//!                     `DIR/w<start>.fac` (`CALAFAC1`), the input of
+//!                     tools/cala-diagnostics/history_wholetest.py
+//!   --history-review N  every N compressed windows (600 frames each), review
+//!                     the history so far ([`calab_cala::compress::review`])
+//!                     and add the cells it shows to the slow loop
+//!                     (`history_review.tsv`: one row per review)
+//!   --compress-window N[,M...]   after pass 2, compress the frames in
+//!                     windows of N (crate::compress) at three points of the
+//!                     chain (raw, after the front half, the fast loop's
+//!                     input), replay pass 2 from the factors and compare the
+//!                     traces with pass 2 from the frames (`compress.tsv`)
+//!   --compress-taps LIST   any of final,front,raw (default all)
+//!   --compress-threads N   threads sharing a window's tiles (default: all
+//!                     cores; 1 for clean single-thread timings)
+//!   --bg-arms LIST    after pass 2, re-extract every frame with the final
+//!                     footprints under other background models and write
+//!                     `traces_bg_<arm>.f32`: none, ring (the slow loop's),
+//!                     learn:K (global + rank K-1 maps learned from the first
+//!                     --bg-learn frames' residual, 3 rounds, as trace_eval),
+//!                     maps:K (the first K maps of --bg-maps, a raw f32 file of
+//!                     full-frame maps, e.g. from the factors of the whole run)
+//!   --seed-file F --seed-at N   at recording frame N, seed the slow loop with
+//!                     the footprints in F (`CALASEED`, u32 n, then per cell
+//!                     u32 id, y0, x0, h, w and f32 h*w unfiltered values),
+//!                     e.g. a batch detection on the first frames
+//!   --compress-dump   also write the first window of each tap, quantized
+//!                     (`window_<tap>_<N>.i16`: `CALAWIN1`, u32 width, height,
+//!                     frames, f32 quant, then i16 frames), the input of
+//!                     examples/compress_bench.rs and
+//!                     apps/cala/scripts/compress-bench.mjs
 //!   --accept-z Z / --merge-corr R / --frames-per-tile N / --reservoir-max-mb M
 //!                     slow-loop settings
 //!   --probation N / --keep-z Z   slow loop probation and keep test
 //!   --joint           add test with the joint neighbour-trace check
 //!   --core-test off|report|trim|delete   transient-band core test (default off)
 //!   --basin-trim      trim refined footprints to their significant basin
+//!                     (needs --support-rule rings, as does --core-test)
+//!   --support-rule basin-skirt|basin|rings   footprint support rule of the
+//!                     statistics path (default basin-skirt)
 //!   --no-merge-refit  merge test against the pair's current footprints only
 //!   --no-noise-corr / --no-shift-nuisance   white-noise nulls / no gradient
 //!                     nuisance terms in the add test
@@ -57,14 +92,19 @@ use std::time::Instant;
 mod prefilter;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig};
+use calab_cala::compress::review::{review, KnownCell, ReviewConfig};
+use calab_cala::compress::{quantize, CompressConfig, WindowCompressor, WindowFactors};
+use calab_cala::discover::{CellStatus, DeletedCell, SlowLoop, SlowLoopConfig, SupportRule};
 use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, NonRigidConfig, Warper,
 };
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
-use calab_cala::trace::{Footprint, Library, LibraryBuilder, SolverConfig, TraceEngine};
+use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor, RawPixel};
+use calab_cala::trace::{
+    BackgroundLearner, BackgroundModel, Footprint, Library, LibraryBuilder, SolverConfig,
+    TraceEngine,
+};
 use std::fmt::Write as _;
 
 struct Avi {
@@ -448,11 +488,11 @@ impl Pipeline {
     }
 
     /// Returns the rigid motion shift `(dy, dx)` (zero without motion).
-    fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> (f32, f32) {
+    fn frame<T: RawPixel>(&mut self, raw: &[T], out: &mut [f32]) -> (f32, f32) {
         match &mut self.flat {
             Some((g, rf)) => {
                 for ((o, &v), &gg) in rf.iter_mut().zip(raw).zip(g.iter()) {
-                    *o = f32::from(v) / gg;
+                    *o = v.to_f32() / gg;
                 }
                 self.pre.front(rf.as_slice(), &mut self.buf).unwrap();
             }
@@ -460,6 +500,17 @@ impl Pipeline {
                 self.pre.front(raw, &mut self.buf).unwrap();
             }
         }
+        self.finish(out)
+    }
+
+    /// The chain from a front-half frame on (`--compress-window`, tap `front`).
+    fn frame_from_front(&mut self, front: &[f32], out: &mut [f32]) -> (f32, f32) {
+        self.buf.copy_from_slice(front);
+        self.finish(out)
+    }
+
+    /// Motion correction and the back half, on the front-half frame in `buf`.
+    fn finish(&mut self, out: &mut [f32]) -> (f32, f32) {
         let t = self.t;
         self.t += 1;
         if let Some(Jitter {
@@ -881,6 +932,393 @@ fn drain_edits(
     }
 }
 
+/// The final library's footprints with another background model.
+fn with_background(
+    lib: &Arc<Library>,
+    model: BackgroundModel,
+    fov: &[u8],
+    noise: Vec<f32>,
+    flat: &mut GlowFlattener,
+) -> Arc<Library> {
+    let dims = lib.dims();
+    let w = dims.width;
+    let mut b = LibraryBuilder::new(dims)
+        .fov(fov.to_vec())
+        .noise(noise)
+        .background(model)
+        .reuse(lib.clone());
+    for s in 0..lib.len() {
+        let (pix, vals) = lib.unfiltered(s);
+        let (mut y0, mut x0, mut y1, mut x1) = (usize::MAX, usize::MAX, 0, 0);
+        for &p in pix {
+            let (y, x) = (p as usize / w, p as usize % w);
+            y0 = y0.min(y);
+            x0 = x0.min(x);
+            y1 = y1.max(y);
+            x1 = x1.max(x);
+        }
+        let (h, ww) = (y1 - y0 + 1, x1 - x0 + 1);
+        let mut values = vec![0.0f32; h * ww];
+        for (&p, &v) in pix.iter().zip(vals) {
+            let (y, x) = (p as usize / w, p as usize % w);
+            values[(y - y0) * ww + (x - x0)] = v;
+        }
+        b.push(Footprint {
+            id: lib.ids()[s],
+            y0,
+            x0,
+            height: h,
+            width: ww,
+            values,
+        });
+    }
+    Arc::new(b.build(flat).unwrap())
+}
+
+/// `--bg-arms`: re-extract every frame with the final footprints under other
+/// background models; traces to `traces_bg_<arm>.f32`.
+#[allow(clippy::too_many_arguments)]
+fn background_arms(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    lib: &Arc<Library>,
+    scfg: &SlowLoopConfig,
+    fov: &[u8],
+    flat: &mut GlowFlattener,
+    frames: u32,
+    arms: &[String],
+    learn: u32,
+    maps: &[Vec<f32>],
+    out_dir: &Path,
+    flat_mean: Option<&[f32]>,
+) {
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let n = lib.len();
+    let t_len = frames as usize;
+    let noise = {
+        let mut p = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
+        let raw = rec.read(0, learn.min(frames));
+        let mut y = vec![0.0f32; n_px];
+        for f in raw.chunks_exact(n_px) {
+            p.frame(f, &mut y);
+        }
+        p.pre.noise().sigma()
+    };
+    // The first `learn` frames, preprocessed, for the learned arms.
+    let learn = learn.min(frames) as usize;
+    let mut learn_frames = vec![0.0f32; learn * n_px];
+    {
+        let mut p = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
+        let raw = rec.read(0, learn as u32);
+        for (f, o) in raw
+            .chunks_exact(n_px)
+            .zip(learn_frames.chunks_exact_mut(n_px))
+        {
+            p.frame(f, o);
+        }
+    }
+    for arm in arms {
+        let (kind, k) = arm.split_once(':').unwrap_or((arm.as_str(), "0"));
+        let k: usize = k.parse().unwrap();
+        let model = match kind {
+            "none" => BackgroundModel::None,
+            "ring" => scfg.background.clone(),
+            "maps" => BackgroundModel::Basis(maps[..k.min(maps.len())].to_vec()),
+            "learn" => {
+                let mut cur = with_background(lib, BackgroundModel::None, fov, noise.clone(), flat);
+                let mut model_buf = vec![0.0f32; n_px];
+                let mut resid = vec![0.0f32; n_px];
+                let mut fit_maps = Vec::new();
+                for _ in 0..3 {
+                    let mut eng = TraceEngine::new(cur.clone(), SolverConfig::default()).unwrap();
+                    let mut learner =
+                        BackgroundLearner::new(dims, Some(fov), 4, 8.0, learn).unwrap();
+                    for f in learn_frames.chunks_exact(n_px) {
+                        let r = eng.process(f).unwrap();
+                        let bg = match cur.background_model() {
+                            BackgroundModel::Basis(_) => Some(r.background.as_slice()),
+                            _ => None,
+                        };
+                        cur.render(&r.traces, bg, &mut model_buf).unwrap();
+                        for ((o, &y), &m) in resid.iter_mut().zip(f).zip(&model_buf) {
+                            *o = y - m;
+                        }
+                        learner.push(&resid).unwrap();
+                    }
+                    fit_maps = learner.fit(k).unwrap().maps;
+                    cur = with_background(
+                        lib,
+                        BackgroundModel::Basis(fit_maps.clone()),
+                        fov,
+                        noise.clone(),
+                        flat,
+                    );
+                }
+                BackgroundModel::Basis(fit_maps)
+            }
+            _ => panic!("unknown background arm {arm}"),
+        };
+        let l = with_background(lib, model, fov, noise.clone(), flat);
+        let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
+        let mut eng = TraceEngine::new(l.clone(), SolverConfig::default()).unwrap();
+        let mut traces = vec![0.0f32; t_len * n];
+        let mut y = vec![0.0f32; n_px];
+        let t0 = Instant::now();
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let raw = rec.read(s, cnt);
+            for (i, f) in raw.chunks_exact(n_px).enumerate() {
+                let t = s as usize + i;
+                pipe.frame(f, &mut y);
+                let r = eng.process(&y).unwrap();
+                traces[t * n..(t + 1) * n].copy_from_slice(&r.traces);
+            }
+            s += cnt;
+        }
+        println!(
+            "background arm {arm}: {} coefficients, pass 2 in {:.1} s",
+            l.background_len(),
+            t0.elapsed().as_secs_f64()
+        );
+        let mut f = std::io::BufWriter::new(
+            File::create(out_dir.join(format!("traces_bg_{}.f32", arm.replace(':', "")))).unwrap(),
+        );
+        write_f32s(&mut f, &traces);
+    }
+}
+
+/// `--compress-window`: compress the frames at three points of the chain,
+/// replay pass 2 from the factors and compare with `reference` (pass 2 from
+/// the frames, `frames x cells`).
+#[allow(clippy::too_many_arguments)]
+fn compress_report(
+    rec: &mut Recording,
+    pre0: &Preprocessor,
+    cal: &Calibration,
+    motion: bool,
+    lib: &Arc<Library>,
+    reference: &[f32],
+    frames: u32,
+    windows_list: &[usize],
+    taps: &[String],
+    threads: usize,
+    dump: bool,
+    pass2_ms: f64,
+    out_dir: &Path,
+    flat_mean: Option<&[f32]>,
+) {
+    let dims = rec.dims;
+    let n_px = dims.pixels();
+    let n = lib.len();
+    let t_len = frames as usize;
+    let mut report = String::from(
+        "tap\tcells\tframes\twindow\tmean_rank\tsvd_rank\tbuffer_mb\tkept_energy\tbytes_per_frame\tratio_vs_u8\tcompress_ms\treplay_ms\tpass2_ms\ttrace_r_median\ttrace_r_p10\trel_rmse_median\trel_rmse_p90\n",
+    );
+    let jobs: Vec<(usize, &str)> = windows_list
+        .iter()
+        .flat_map(|&w| taps.iter().map(move |t| (w, t.as_str())))
+        .collect();
+    for (window, tap) in jobs {
+        let mut src = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
+        let mut rest = Pipeline::new(rec, pre0.clone(), cal, motion, 200, flat_mean);
+        let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        let cfg = CompressConfig {
+            window,
+            threads,
+            ..CompressConfig::default()
+        };
+        let quant = cfg.quant;
+        let mut wc = WindowCompressor::new(dims, cfg);
+        let mut dump_file = dump.then(|| {
+            let path = out_dir.join(format!("window_{tap}_{window}.i16"));
+            let mut f = std::io::BufWriter::new(File::create(path).unwrap());
+            f.write_all(b"CALAWIN1").unwrap();
+            let n = window.min(t_len) as u32;
+            for v in [dims.width as u32, dims.height as u32, n] {
+                f.write_all(&v.to_le_bytes()).unwrap();
+            }
+            f.write_all(&quant.to_le_bytes()).unwrap();
+            f
+        });
+        let mut pushed = 0usize;
+        let mut got = vec![0.0f32; reference.len()];
+        let (mut y, mut hat, mut y2) = (vec![0.0f32; n_px], vec![0.0f32; n_px], vec![0.0f32; n_px]);
+        let mut rawf = vec![0.0f32; n_px];
+        let (mut bytes, mut rank_sum, mut e_all, mut e_kept) = (0usize, 0.0f64, 0.0f64, 0.0f64);
+        let (mut t_comp, mut t_replay, mut windows) = (0.0f64, 0.0f64, 0usize);
+        let (mut svd_rank, mut buffer) = (0.0f64, 0usize);
+        let mut replay = |wf: WindowFactors, rest: &mut Pipeline, eng: &mut TraceEngine| {
+            bytes += wf.bytes();
+            rank_sum += wf.mean_rank();
+            svd_rank +=
+                wf.tiles.iter().map(|t| t.svd_rank as f64).sum::<f64>() / wf.tiles.len() as f64;
+            e_all += wf.tiles.iter().map(|t| t.energy).sum::<f64>();
+            e_kept += wf.tiles.iter().map(|t| t.kept_energy).sum::<f64>();
+            t_comp += wf.compress_seconds;
+            windows += 1;
+            let t0 = Instant::now();
+            for i in 0..wf.frames {
+                wf.reconstruct(i, &mut hat);
+                let r = match tap {
+                    "final" => eng.process(&hat).unwrap(),
+                    "front" => {
+                        rest.frame_from_front(&hat, &mut y2);
+                        eng.process(&y2).unwrap()
+                    }
+                    _ => {
+                        rest.frame(&hat, &mut y2);
+                        eng.process(&y2).unwrap()
+                    }
+                };
+                let t = wf.start as usize + i;
+                got[t * n..(t + 1) * n].copy_from_slice(&r.traces);
+            }
+            t_replay += t0.elapsed().as_secs_f64();
+        };
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let raw = rec.read(s, cnt);
+            for f in raw.chunks_exact(n_px) {
+                src.frame(f, &mut y);
+                let tapped: &[f32] = match tap {
+                    "final" => &y,
+                    "front" => &src.buf,
+                    _ => {
+                        for (o, &v) in rawf.iter_mut().zip(f) {
+                            *o = f32::from(v);
+                        }
+                        &rawf
+                    }
+                };
+                if let Some(f) = dump_file.as_mut().filter(|_| pushed < window) {
+                    for &v in tapped {
+                        f.write_all(&quantize(v, quant).to_le_bytes()).unwrap();
+                    }
+                }
+                pushed += 1;
+                let wf = wc.push(tapped);
+                buffer = buffer.max(wc.buffer_bytes());
+                if let Some(wf) = wf {
+                    replay(wf, &mut rest, &mut eng);
+                }
+            }
+            s += cnt;
+        }
+        if let Some(wf) = wc.flush() {
+            replay(wf, &mut rest, &mut eng);
+        }
+        // Per cell: Pearson r with the reference trace, and the RMS
+        // difference in units of the reference trace's standard deviation.
+        let (mut rs, mut es) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let a: Vec<f32> = (0..t_len).map(|t| reference[t * n + i]).collect();
+            let b: Vec<f32> = (0..t_len).map(|t| got[t * n + i]).collect();
+            let mu = a.iter().map(|&v| f64::from(v)).sum::<f64>() / t_len as f64;
+            let var = a.iter().map(|&v| (f64::from(v) - mu).powi(2)).sum::<f64>() / t_len as f64;
+            if var <= 0.0 {
+                continue;
+            }
+            let mse = a
+                .iter()
+                .zip(&b)
+                .map(|(&x, &y)| f64::from(x - y).powi(2))
+                .sum::<f64>()
+                / t_len as f64;
+            rs.push(pearson(&a, &b));
+            es.push((mse / var).sqrt());
+        }
+        let mut f = std::io::BufWriter::new(
+            File::create(out_dir.join(format!("traces_compress_{tap}_{window}.f32"))).unwrap(),
+        );
+        write_f32s(&mut f, &got);
+        let per_frame = bytes as f64 / t_len as f64;
+        let line = format!(
+            "{tap}\t{}\t{t_len}\t{window}\t{:.1}\t{:.1}\t{:.0}\t{:.4}\t{:.0}\t{:.1}\t{:.2}\t{:.2}\t{pass2_ms:.2}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\n",
+            rs.len(),
+            rank_sum / windows.max(1) as f64,
+            svd_rank / windows.max(1) as f64,
+            buffer as f64 / 1048576.0,
+            e_kept / e_all.max(1e-300),
+            per_frame,
+            n_px as f64 / per_frame,
+            t_comp * 1e3 / t_len as f64,
+            t_replay * 1e3 / t_len as f64,
+            quantile(&rs, 0.5),
+            quantile(&rs, 0.1),
+            quantile(&es, 0.5),
+            quantile(&es, 0.9),
+        );
+        print!("compress {line}");
+        report.push_str(&line);
+    }
+    std::fs::write(out_dir.join("compress.tsv"), report).unwrap();
+}
+
+/// The compressed history of pass 1 (`--factors-out`, `--history-review`):
+/// the preprocessed frames compressed window by window. With `dir` every
+/// window's factors (`CALAFAC1`) are written to `dir/w<start frame>.fac`;
+/// with `keep` they stay in memory for the review.
+struct History {
+    dir: Option<PathBuf>,
+    keep: bool,
+    tile: usize,
+    wc: WindowCompressor,
+    windows: Vec<WindowFactors>,
+}
+
+impl History {
+    fn new(dir: Option<&Path>, keep: bool, dims: Dims, threads: usize) -> History {
+        if let Some(d) = dir {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let cfg = CompressConfig {
+            window: 600,
+            threads,
+            ..CompressConfig::default()
+        };
+        History {
+            dir: dir.map(Path::to_path_buf),
+            keep,
+            tile: cfg.tile,
+            wc: WindowCompressor::new(dims, cfg),
+            windows: Vec::new(),
+        }
+    }
+
+    fn take(&mut self, wf: WindowFactors) {
+        if let Some(d) = &self.dir {
+            let name = format!("w{:07}.fac", wf.start);
+            std::fs::write(d.join(name), wf.to_bytes(self.tile)).unwrap();
+        }
+        if self.keep {
+            self.windows.push(wf);
+        }
+    }
+
+    /// Add a frame; whether it closed a window.
+    fn push(&mut self, frame: &[f32]) -> bool {
+        match self.wc.push(frame) {
+            Some(wf) => {
+                self.take(wf);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Write the last, shorter window.
+    fn finish(&mut self) {
+        if let Some(wf) = self.wc.flush() {
+            self.take(wf);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | real").clone();
@@ -890,6 +1328,53 @@ fn main() {
     let sim = mode == "sim";
     let motion = args.iter().any(|a| a == "--motion");
     let pass2 = !args.iter().any(|a| a == "--no-pass2");
+    let compress_windows: Vec<usize> = arg_value(&args, "--compress-window")
+        .map_or(Vec::new(), |s| {
+            s.split(',').map(|v| v.parse().unwrap()).collect()
+        });
+    let compress_taps: Vec<String> = arg_value(&args, "--compress-taps")
+        .unwrap_or("final,front,raw".into())
+        .split(',')
+        .map(str::to_string)
+        .collect();
+    let compress_dump = args.iter().any(|a| a == "--compress-dump");
+    let seed_at: u32 = arg_value(&args, "--seed-at").map_or(u32::MAX, |s| s.parse().unwrap());
+    let bg_arms: Vec<String> = arg_value(&args, "--bg-arms")
+        .map_or(Vec::new(), |s| s.split(',').map(str::to_string).collect());
+    let bg_learn: u32 = arg_value(&args, "--bg-learn").map_or(200, |s| s.parse().unwrap());
+    let seed_fps: Vec<Footprint> = arg_value(&args, "--seed-file").map_or(Vec::new(), |p| {
+        let b = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert_eq!(&b[..8], b"CALASEED", "not a seed file");
+        let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let n = u(8);
+        let mut at = 12;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (id, y0, x0, h, w) = (u(at), u(at + 4), u(at + 8), u(at + 12), u(at + 16));
+            at += 20;
+            let values: Vec<f32> = b[at..at + 4 * h * w]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect();
+            at += 4 * h * w;
+            out.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: h,
+                width: w,
+                values,
+            });
+        }
+        println!("seed file: {n} footprints, applied at frame {seed_at}");
+        out
+    });
+    let compress_threads: usize = arg_value(&args, "--compress-threads").map_or(
+        std::thread::available_parallelism().map_or(1, |v| v.get()),
+        |s| s.parse().unwrap(),
+    );
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
     let start: u32 = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let n_checkpoints: u32 = arg_value(&args, "--checkpoints").map_or(10, |s| s.parse().unwrap());
@@ -926,6 +1411,19 @@ fn main() {
     if args.iter().any(|a| a == "--basin-trim") {
         scfg.basin_trim = true;
     }
+    if let Some(v) = arg_value(&args, "--support-rule") {
+        scfg.support_rule = match v.as_str() {
+            "rings" => SupportRule::Rings,
+            "basin" => SupportRule::Basin,
+            "basin-skirt" => SupportRule::BasinSkirt,
+            other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
+        };
+    }
+    assert!(
+        scfg.support_rule == SupportRule::Rings
+            || (scfg.core_test == calab_cala::discover::CoreTest::Off && !scfg.basin_trim),
+        "--core-test and --basin-trim need --support-rule rings"
+    );
     if let Some(v) = arg_value(&args, "--probation") {
         scfg.probation_frames = v.parse().unwrap();
     }
@@ -965,6 +1463,16 @@ fn main() {
     let mut rec = Recording::open(&avi_dir);
     let dims = rec.dims;
     let n_px = dims.pixels();
+    let bg_maps: Vec<Vec<f32>> = arg_value(&args, "--bg-maps").map_or(Vec::new(), |p| {
+        let b = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let v: Vec<f32> = b
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        v.chunks_exact(n_px).map(|m| m.to_vec()).collect()
+    });
     let oracle = sim.then(|| read_oracle(&input.join("oracle.bin")));
     let mut frames = arg_value(&args, "--frames")
         .map_or(rec.total, |s| s.parse().unwrap())
@@ -1046,6 +1554,25 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
     let mut flog = std::io::BufWriter::new(File::create(out_dir.join("frames1.tsv")).unwrap());
     writeln!(flog, "frame\tdy\tdx\tnr_rms\tdvar\trho_x\trho_y\trho_xy").unwrap();
     let mut yprev = vec![0.0f32; n_px];
+    // `--factors-out`: the compressed history of pass 1.
+    let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
+    // `--history-review N`: every N windows, review the history so far and
+    // add the cells it shows to the slow loop.
+    let review_every: usize =
+        arg_value(&args, "--history-review").map_or(0, |s| s.parse().unwrap());
+    let review_cfg = ReviewConfig {
+        threads: compress_threads,
+        ..ReviewConfig::default()
+    };
+    let mut review_log = String::from("frame\twindows\tcells\tcandidates\tadded\tseconds\n");
+    let mut factors = (factors_out.is_some() || review_every > 0).then(|| {
+        History::new(
+            factors_out.as_deref(),
+            review_every > 0,
+            dims,
+            compress_threads,
+        )
+    });
     let mut s = 0u32;
     let t_all = Instant::now();
     while s < frames {
@@ -1100,6 +1627,7 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
             // Spatial diagnostics are recorded separately from fast-loop time.
             let t1b = Instant::now();
+            let window_closed = factors.as_mut().is_some_and(|h| h.push(&y));
             let tr = engine.process(&y).unwrap();
             let t2 = Instant::now();
             t_pre += (t1 - t0).as_secs_f64();
@@ -1122,6 +1650,39 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             let mut profile = [0.0f64; 5];
             let mut work_delta = [0u64; 7];
             if let Some(sl) = slow.as_mut() {
+                if let Some(h) = factors.as_ref().filter(|h| {
+                    window_closed && review_every > 0 && h.windows.len() % review_every == 0
+                }) {
+                    let lib = engine.library().clone();
+                    let cells: Vec<KnownCell> = (0..lib.len())
+                        .map(|slot| {
+                            let (pix, val) = lib.unfiltered(slot);
+                            KnownCell { pix, val }
+                        })
+                        .collect();
+                    let t_review = Instant::now();
+                    let found = review(&h.windows, &cells, dims, &review_cfg);
+                    let fps: Vec<Footprint> = found.iter().map(|c| c.footprint.clone()).collect();
+                    let added = sl.add_reviewed(&fps).unwrap();
+                    let secs = t_review.elapsed().as_secs_f64();
+                    println!(
+                        "frame {}: history review of {} windows, {} candidates, {added} added, {secs:.1} s",
+                        t + 1,
+                        h.windows.len(),
+                        found.len()
+                    );
+                    review_log.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{added}\t{secs:.1}\n",
+                        t + 1,
+                        h.windows.len(),
+                        lib.len(),
+                        found.len()
+                    ));
+                }
+                if t == seed_at as usize && !seed_fps.is_empty() {
+                    let kept = sl.seed(&seed_fps).unwrap();
+                    println!("frame {t}: seeded {kept} of {} footprints", seed_fps.len());
+                }
                 let before = sl.stats();
                 if t.is_multiple_of(200) {
                     sl.set_noise(pipe.pre.noise().sigma()).unwrap();
@@ -1213,6 +1774,12 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
         }
         s += cnt;
+    }
+    if let Some(h) = factors.as_mut() {
+        h.finish();
+    }
+    if review_every > 0 {
+        std::fs::write(out_dir.join("history_review.tsv"), &review_log).unwrap();
     }
     let mut sl = slow.expect("slow loop started");
     let finalize_start = Instant::now();
@@ -1351,15 +1918,49 @@ timings.tsv: zero-based recording frame; ms for preprocessing+motion, spatial di
             }
             s += cnt;
         }
-        println!(
-            "pass 2: {t_len} frames in {:.1} s",
-            t0.elapsed().as_secs_f64()
-        );
+        let pass2_s = t0.elapsed().as_secs_f64();
+        println!("pass 2: {t_len} frames in {pass2_s:.1} s");
+        if !compress_windows.is_empty() && !lib.is_empty() {
+            compress_report(
+                &mut rec,
+                &pre0,
+                &cal,
+                motion,
+                &lib,
+                &traces,
+                frames,
+                &compress_windows,
+                &compress_taps,
+                compress_threads,
+                compress_dump,
+                pass2_s * 1e3 / t_len as f64,
+                &out_dir,
+                Some(&warm_mean),
+            );
+        }
         let mut f = std::io::BufWriter::new(File::create(out_dir.join("traces.f32")).unwrap());
         write_f32s(&mut f, &traces);
         let mi: Vec<f32> = meanimg.iter().map(|&v| (v / t_len as f64) as f32).collect();
         let mut f = File::create(out_dir.join("meanimg.f32")).unwrap();
         write_f32s(&mut f, &mi);
+        if !bg_arms.is_empty() && !lib.is_empty() {
+            background_arms(
+                &mut rec,
+                &pre0,
+                &cal,
+                motion,
+                &lib,
+                &scfg,
+                &fov,
+                &mut flat,
+                frames,
+                &bg_arms,
+                bg_learn,
+                &bg_maps,
+                &out_dir,
+                Some(&warm_mean),
+            );
+        }
     }
 
     // ---- curve of library size (also for real data)

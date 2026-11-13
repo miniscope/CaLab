@@ -160,9 +160,12 @@ capped at 40.
 
 ## Support rule (S2.1)
 
-`qc_eval --support-rule rings|basin|basin-skirt` picks how the statistics path
+`qc_eval --support-rule basin-skirt|basin|rings` picks how the statistics path
 measures a footprint's pixel support (`SlowLoopConfig::support_rule`, default
-`rings`, which is byte-identical to the rule before S2.1). `basin` keeps the
+`basin-skirt` since the S2.1 default flip; `rings` is byte-identical to the
+rule before S2.1 and stays selectable for comparisons, and is the rule
+`--core-test` and `--basin-trim` need). `discover_eval` takes the same flag.
+Runs before the flip that did not pass the flag used `rings`. `basin` keeps the
 pixels where the PSF-smoothed measured light is significant (family-wise
 `--support-alpha`, default 0.05, per footprint; standard error measured from
 the split halves) in the single-peaked basin of the cell's peak; `basin-skirt`
@@ -217,7 +220,8 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-11-e7-convergence.md`     | E7: footprint convergence metric                                                          |
 | `2026-11-11-s12-crossfit.md`       | S1.2: cross-fitted statistics give no gain; the texture is in the data                    |
 | `2026-11-11-d4-flat-field.md`      | D4: textured footprints are sensor-gain shimmer; a flat field removes them                |
-| `2026-11-12-support-rule.md`       | S2.1: measured basin support rule (rings / basin / basin-skirt); not flipped yet          |
+| `2026-11-12-support-rule.md`       | S2.1: measured basin support rule (rings / basin / basin-skirt)                           |
+| `2026-11-12-skirt-stability.md`    | S2.1b: stable skirt, PI's gate redefinitions; `basin-skirt` becomes the default           |
 | `2026-11-11-flat-field-default.md` | online flat field as the default (#330)                                                   |
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |

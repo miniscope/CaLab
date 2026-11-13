@@ -19,6 +19,7 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use super::{SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner};
+use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::Dims;
@@ -189,10 +190,27 @@ impl JsSlowLoop {
         self.inner.reservoir_plan().warning()
     }
 
+    /// Add the candidates of a history review (`HistoryReview.finish`) as
+    /// new cells on probation; one on an existing cell or a recently deleted
+    /// spot is skipped. Returns how many were added; they are published
+    /// with the next commit. Call it while no visit is out (`jobsInFlight`
+    /// 0): a visit in flight does not know the new cells.
+    #[wasm_bindgen(js_name = addReviewed)]
+    pub fn add_reviewed(&mut self, candidates: &[f32]) -> Result<u32, JsError> {
+        let fps = footprints_from_wire(candidates)
+            .ok_or_else(|| js_err("addReviewed", "malformed candidates"))?;
+        let added = self
+            .inner
+            .add_reviewed(&fps)
+            .map_err(|e| js_err("addReviewed", e))?;
+        Ok(added as u32)
+    }
+
     /// Counters: visits, proposals, adds, rejects, merges, merge tests,
     /// refines, commits, deletes, splits, absorbs, then the add
     /// classification: new adds, re-adds, churned adds, churned re-adds,
-    /// established removals (all cumulative; see `ChurnCounts`).
+    /// established removals (all cumulative; see `ChurnCounts`), then the
+    /// adds that came from the history review.
     pub fn stats(&self) -> Vec<f64> {
         let s = self.inner.stats();
         let c = self.inner.churn_counts();
@@ -213,6 +231,7 @@ impl JsSlowLoop {
             c.churned,
             c.churned_readd,
             c.established_removals,
+            s.review_adds,
         ]
         .map(|v| v as f64)
         .to_vec()

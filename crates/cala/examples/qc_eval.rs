@@ -44,9 +44,18 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
+//!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
+//!                      windows ([`calab_cala::compress`]) and write every
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      input of tools/cala-diagnostics/history_wholetest.py
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
+//!                      (needs --support-rule rings, as does --core-test)
+//!   --support-rule R   how the footprint statistics measure a support:
+//!                      basin-skirt (default) | basin | rings (the rule
+//!                      before S2.1)
+//!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --cell-diameter D  expected soma diameter, px (default 10): every scale
 //!                      that follows it (detection, seed disk, statistics
 //!                      margin, held-out placebos, and the flatten σ = 2 D
@@ -2158,6 +2167,47 @@ fn write_library(
     }
 }
 
+/// `--factors-out`: compresses the preprocessed frames window by window and
+/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+struct FactorDump {
+    dir: PathBuf,
+    tile: usize,
+    wc: calab_cala::compress::WindowCompressor,
+}
+
+impl FactorDump {
+    fn new(dir: &Path, dims: Dims) -> FactorDump {
+        std::fs::create_dir_all(dir).unwrap();
+        let cfg = calab_cala::compress::CompressConfig {
+            window: 600,
+            ..calab_cala::compress::CompressConfig::default()
+        };
+        FactorDump {
+            dir: dir.to_path_buf(),
+            tile: cfg.tile,
+            wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+        }
+    }
+
+    fn write(&self, wf: calab_cala::compress::WindowFactors) {
+        let name = format!("w{:07}.fac", wf.start);
+        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+    }
+
+    fn push(&mut self, frame: &[f32]) {
+        if let Some(wf) = self.wc.push(frame) {
+            self.write(wf);
+        }
+    }
+
+    /// Write the last, shorter window.
+    fn finish(&mut self) {
+        if let Some(wf) = self.wc.flush() {
+            self.write(wf);
+        }
+    }
+}
+
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
 /// |trace|) and, at the first frames that hit the sweep cap or go
 /// non-finite, the library bytes, the frame and the warm start.
@@ -2372,6 +2422,11 @@ fn main() {
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
     }
+    assert!(
+        scfg.support_rule == SupportRule::Rings
+            || (scfg.core_test == CoreTest::Off && !scfg.basin_trim),
+        "--core-test and --basin-trim need --support-rule rings"
+    );
     if scfg.support_rule != SupportRule::Rings {
         println!(
             "support rule: {:?}, alpha {}",
@@ -2570,6 +2625,9 @@ fn main() {
     let mut passes_out = String::from(
         "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
     );
+    // `--factors-out`: the compressed history of pass 1.
+    let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
+    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
@@ -2736,6 +2794,9 @@ fn main() {
                     if let Some(l) = tm.library(now) {
                         engine.set_library(l).unwrap();
                     }
+                }
+                if let (Some(fd), 0) = (factors.as_mut(), pass) {
+                    fd.push(&y);
                 }
                 let warm = diverge.as_ref().map(|_| engine.state());
                 let tr = engine.process(&y).unwrap();
@@ -3128,6 +3189,9 @@ fn main() {
             );
         }
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
+    }
+    if let Some(fd) = factors.as_mut() {
+        fd.finish();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();

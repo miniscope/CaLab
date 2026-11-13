@@ -41,6 +41,9 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
+  It runs with the library's `SlowLoopConfig` defaults; a footprint's support
+  is the significant single-peaked basin around its peak plus a measured skirt
+  (`SupportRule::BasinSkirt`, see `tools/cala-eval/README.md`).
 - `src/components/FovPanel.tsx`: the field of view, one image (raw,
   preprocessed, motion-corrected, background-removed or the model residual)
   with zoom, pan, a minimap and the cell overlay (contours or full-extent
@@ -251,6 +254,70 @@ a slow machine) would lose frames rather than memory. The simulator does not
 model the DAQ's own frame drops beyond `--drop`; with a real board, the
 arrival-indexed stream means a dropped frame shifts the trace timeline by one
 sample at that point (it is counted and shown, not interpolated).
+
+## Compression (experimental, `?compress`)
+
+With `?compress` in the URL the run also compresses the preprocessed,
+motion-corrected frames (the fast loop's input) into low-rank factors per
+64 px tile and 600-frame window (`crates/cala/src/compress`, ported from
+MiniMe), so past frames can be revisited without the raw video (pass 2 above
+re-reads the file; the factors are for a source that has none). When the
+recording has been read, the final library is out and every window is
+compressed, the traces of the whole recording are solved again from the
+factors with that library (back-fill): a cell found late gets its trace from
+the first frame on, and the trace viewer shows the back-filled traces.
+
+- `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
+  quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
+  Nothing is dropped, unlike the feed to the slow worker.
+- `src/workers/compress-worker.ts` + `src/lib/compress-runner.ts`: writes the
+  batches of a window to a file, compresses closed windows tile by tile from
+  that file (yielding after every tile so incoming batches are written at
+  once), and keeps the factors in `f<window>.bin`.
+- `src/lib/window-store.ts`: the files, in the origin private file system
+  (`cala-compress/<run>`, removed at the next page load); in memory for tests.
+- Back-fill (`CompressRunner.backfill`): reads each factor file back
+  (`FactorWindow`), rebuilds 16 frames at a time and solves them with a
+  `TraceEngine` on the library the fast worker forwarded; one `traces` message
+  per window goes to the main thread, where the first one replaces the live
+  trace history (`CellStore.onBackfill`).
+- `src/lib/compress-store.ts`: the status bar readout (windows, mean rank,
+  ms per frame, MB of factors, windows waiting, the back-fill) and the
+  once-per-run back-fill request.
+- `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
+  window dumped by `discover_eval --compress-dump`.
+
+### History review (`?compress&review`)
+
+With `&review` as well (`review=N`: every N windows, default 8), the run looks
+through its compressed history for cells the slow loop missed
+(`crates/cala/src/compress/review.rs`; not the History tab, which plots a
+run's metrics). It needs `?compress` and is off without it.
+
+- `src/lib/compress-runner.ts`: after compressing a window, sends its factor
+  file to the review worker and, every N windows, the newest library with the
+  request to review.
+- `src/workers/review-worker.ts` + `src/lib/review-runner.ts`: keep the factors
+  of every window in memory (`HistoryReview`) and scan them a few grid rows at
+  a time. One review at a time: one that comes due meanwhile is skipped. A
+  review takes seconds to minutes, which is why it has a worker to itself;
+  one core is left free for it when the visit workers are counted.
+- `src/lib/review-store.ts`: passes the candidates to the slow worker
+  (`SlowClient.addReviewed`) and makes the Run panel's readout (reviews,
+  candidates, cells added, seconds of the last review).
+- `src/lib/slow-runner.ts`: adds the candidates (`SlowLoop.addReviewed`, on
+  probation like any add) once no tile visit is out.
+
+Beyond 3 GB of factors the review worker drops its oldest windows.
+
+A window waits on disk (432 MB at 600 x 600) until it is compressed, so a
+replay faster than the compressor (about 8 ms per frame) queues windows there.
+A short last window keeps fewer components (the rank cut's white-noise test is
+stricter on few frames) and costs more per frame, but on the synthetic test
+session 200-frame windows gave traces as close to the truth as 600-frame
+windows. Back-filled traces match the live ones closely for
+cells that pass QC; for low-SNR cells they differ, because the factors drop
+most of the noise such a live trace consists of.
 
 ## Long-recording display limits
 
