@@ -21,6 +21,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: for recordings, "Extract after Discover" is now off by default, so a Discover, Refine, Extract flow no longer wastes an Extract run that Refine discards. After Discover the panel shows the Refine and Extract buttons with the hint "Refine to let footprints settle, then Extract final traces." Turning the option on keeps the old behaviour. Live streams are unchanged.
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
 
 ## [2.17.0] - 2026-11-13

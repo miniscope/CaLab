@@ -165,8 +165,7 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    because its traces no longer match the footprints.
 4. **Extract extracts traces.** It replays the recording with the final library, using
    the motion and flicker recorded during Discover, so a cell found late has a trace from
-   frame 0. It starts by itself when Discover ends (**Extract after Discover**; not after
-   a Refine run), or with **Extract**.
+   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover ends only if you turn on **Extract after Discover** (off by default, so a Refine does not discard an Extract; never after a Refine run).
 5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
    and a JSON block with the run's provenance and the stages that ran. **Export for CaDecon (N cells)** writes just
