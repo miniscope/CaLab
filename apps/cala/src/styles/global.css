@@ -641,3 +641,129 @@
   margin: 0.25rem 0 0;
   overflow-wrap: anywhere;
 }
+
+/* ---- Animal projects (ProjectView, start screen) ---- */
+.cala-projects-entry {
+  max-width: 46rem;
+  margin: var(--space-md, 0.75rem) auto;
+  text-align: center;
+}
+.cala-recent__title {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+}
+.cala-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+}
+.import-container.cala-project {
+  max-width: 80rem;
+}
+.cala-project .cala-project__card {
+  max-width: 76rem;
+}
+.cala-project__where code {
+  overflow-wrap: anywhere;
+}
+.cala-project__scroll {
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+.cala-project__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.cala-project__table th,
+.cala-project__table td {
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border-default);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.cala-project__table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.cala-project__table td.cala-project__session {
+  min-width: 12rem;
+  font-family: var(--font-mono, monospace);
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.cala-project__row--missing td {
+  color: var(--text-secondary);
+}
+.cala-project__row--selected td {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+}
+.cala-project__table td.cala-project__wrap {
+  white-space: normal;
+  min-width: 8rem;
+}
+.cala-project__table .cala-project__details td {
+  white-space: normal;
+  background: var(--bg-secondary, transparent);
+}
+.cala-project__results {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+.cala-project__results li {
+  margin: 0.2rem 0;
+}
+.cala-project__results code {
+  word-break: break-all;
+}
+/* Sessions sharing cell ids (one Joint run): a letter badge and a matching row edge. */
+.cala-project__ids {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+}
+.cala-project__ids--0 {
+  background: #2563eb;
+}
+.cala-project__ids--1 {
+  background: #c2410c;
+}
+.cala-project__ids--2 {
+  background: #15803d;
+}
+.cala-project__ids--3 {
+  background: #7c3aed;
+}
+.cala-project__ids--4 {
+  background: #be185d;
+}
+.cala-project__ids--5 {
+  background: #0e7490;
+}
+.cala-project__row--ids0 td:first-child {
+  box-shadow: inset 4px 0 #2563eb;
+}
+.cala-project__row--ids1 td:first-child {
+  box-shadow: inset 4px 0 #c2410c;
+}
+.cala-project__row--ids2 td:first-child {
+  box-shadow: inset 4px 0 #15803d;
+}
+.cala-project__row--ids3 td:first-child {
+  box-shadow: inset 4px 0 #7c3aed;
+}
+.cala-project__row--ids4 td:first-child {
+  box-shadow: inset 4px 0 #be185d;
+}
+.cala-project__row--ids5 td:first-child {
+  box-shadow: inset 4px 0 #0e7490;
+}
