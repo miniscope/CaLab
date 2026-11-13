@@ -109,6 +109,15 @@ Peak RSS is 1.48 GB (real) and 1.43 GB (sims).
 - Absorbs rise when refines are gated. If the gate becomes the default, absorbs may need the same `Î` treatment.
 - `refine_min_change` stays: the reservoir path still uses it.
 
+## Decision (PI, 13 Nov 2026): made the default
+
+The PI approved the split-half gate as the default (`RefineGate::SplitHalf`;
+`--refine-gate legacy` keeps the old rule). The ≥ 40 % target was restated as
+"fewer noise-sized refines", which the gate meets: late real refines fall 37 %,
+every quality gate passes, and seed-to-seed Jaccard rises from .697 to .711. The
+early `r_fp` cost at frame 3000 (−.014/−.018) recovers by the end of the run.
+Absorbs rise when refines are gated, so absorbs may later need the same `Î` test.
+
 ## Files
 
 - `reports/summ_x1.md` and `reports/summ_x4.md` (`summarize.py`)

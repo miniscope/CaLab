@@ -5,14 +5,25 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: the split-half refine gate is the default (`RefineGate::SplitHalf`). The
+  slow loop's statistics path now proposes a refinement only when the change
+  from the current footprint exceeds the estimate's own split-half noise
+  (`Î > 0`), instead of the χ² disagreement test and `refine_min_change`. Late
+  real-data refines fall 37 %, every quality gate holds and seed-to-seed
+  footprint agreement rises (Jaccard .697 → .711). The reservoir path, absorbs
+  and merges are unchanged. `qc_eval --refine-gate legacy` keeps the old rule
+  (`tools/cala-eval/results/2026-11-12-refine-gate.md`).
+
 ### Developer tooling
 
 - Cala: a split-half refine gate behind a switch (`SlowLoopConfig::refine_gate`,
-  `qc_eval --refine-gate legacy|split-half`; default `legacy`, unchanged). Under
-  `split-half` the statistics path proposes a refinement only when the change
-  exceeds the estimate's own split-half noise. It cuts late real-data refines by
-  37 % with recall and precision unchanged, short of the 40 % target, so it is
-  not the default (`tools/cala-eval/results/2026-11-12-refine-gate.md`).
+  `qc_eval --refine-gate legacy|split-half`). Under `split-half` the statistics
+  path proposes a refinement only when the change exceeds the estimate's own
+  split-half noise. It cuts late real-data refines by 37 % with recall and
+  precision unchanged (`tools/cala-eval/results/2026-11-12-refine-gate.md`);
+  it is now the default (see Changed).
 
 ## [2.16.0] - 2026-11-12
 

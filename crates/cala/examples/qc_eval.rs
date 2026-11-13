@@ -57,9 +57,10 @@
 //!                      before S2.1)
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --refine-gate G    when the statistics path proposes a refinement:
-//!                      legacy (default; χ² disagreement and
-//!                      refine_min_change) | split-half (the change exceeds
-//!                      the estimate's split-half noise, Î > 0)
+//!                      split-half (default; the change exceeds the
+//!                      estimate's split-half noise, Î > 0) | legacy (χ²
+//!                      disagreement and refine_min_change, the rule
+//!                      before S2.1c)
 //!   --cell-diameter D  expected soma diameter, px (default 10): every scale
 //!                      that follows it (detection, seed disk, statistics
 //!                      margin, held-out placebos, and the flatten σ = 2 D
@@ -2434,7 +2435,7 @@ fn main() {
             other => panic!("--refine-gate: legacy|split-half, not {other}"),
         };
     }
-    if scfg.refine_gate != RefineGate::Legacy {
+    if scfg.refine_gate != RefineGate::SplitHalf {
         println!("refine gate: {:?}", scfg.refine_gate);
     }
     assert!(
