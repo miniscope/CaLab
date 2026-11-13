@@ -427,6 +427,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             </button>
           </p>
           <Show when={(props.recent ?? []).length > 0}>
+            <p class="cala-muted cala-recent__title">Recent projects</p>
             <ul class="cala-recent" data-testid="recent-projects">
               <For each={props.recent}>
                 {(r) => (

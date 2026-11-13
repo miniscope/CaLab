@@ -648,6 +648,10 @@
   margin: var(--space-md, 0.75rem) auto;
   text-align: center;
 }
+.cala-recent__title {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+}
 .cala-recent {
   display: flex;
   flex-direction: column;
@@ -677,7 +681,7 @@
 }
 .cala-project__table th,
 .cala-project__table td {
-  padding: 0.3rem 0.5rem;
+  padding: 0.3rem 0.4rem;
   border-bottom: 1px solid var(--border-default);
   text-align: left;
   vertical-align: top;
@@ -699,7 +703,11 @@
 .cala-project__row--selected td {
   background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
 }
-.cala-project__details td {
+.cala-project__table td.cala-project__wrap {
+  white-space: normal;
+  min-width: 8rem;
+}
+.cala-project__table .cala-project__details td {
   white-space: normal;
   background: var(--bg-secondary, transparent);
 }
@@ -709,6 +717,9 @@
 }
 .cala-project__results li {
   margin: 0.2rem 0;
+}
+.cala-project__results code {
+  word-break: break-all;
 }
 /* Sessions sharing cell ids (one Joint run): a letter badge and a matching row edge. */
 .cala-project__ids {

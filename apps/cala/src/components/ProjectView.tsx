@@ -241,7 +241,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                       <td class="cala-muted" title="Saved libraries come in a later version">
                         {'—'}
                       </td>
-                      <td data-testid="cell-current">
+                      <td class="cala-project__wrap" data-testid="cell-current">
                         <Show
                           when={r.status.current}
                           fallback={<span class="cala-muted">{r.status.note ?? '—'}</span>}
