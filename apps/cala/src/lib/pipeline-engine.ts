@@ -12,7 +12,8 @@ import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } fr
 import type { Preprocessor } from './cala-wasm.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
 import { ImagingSampler, type ImagingStats } from './imaging-stats.ts';
-import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
+import { sessionBoundaries, type FramePixels, type FrameSourceInfo } from './frame-source.ts';
+import { boundariesInBatch, NO_SESSION_HOOKS, type SessionHooks } from './session-boundary.ts';
 import {
   isUnbounded,
   makePlan,
@@ -59,7 +60,10 @@ export interface LiveBatchInfo {
 
 /** What the engine needs from a `FrameSource`. */
 export interface FrameReader {
-  readonly info: Pick<FrameSourceInfo, 'width' | 'height' | 'bitDepth' | 'frameCount' | 'fps'>;
+  readonly info: Pick<
+    FrameSourceInfo,
+    'width' | 'height' | 'bitDepth' | 'frameCount' | 'fps' | 'sessions'
+  >;
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
   /**
    * Live source: resolves once frames below `end` can be read, with
@@ -201,6 +205,10 @@ const FRONT_RECORD_STRIDE = 6;
 export class PipelineEngine {
   readonly plan: PipelinePlan;
   private readonly cursor: PipelineCursor;
+  /** First frames of sessions 1.. of a multi-session recording (empty for one). */
+  private readonly boundaries: number[];
+  /** Called at each session boundary (see `session-boundary.ts`); does nothing by default. */
+  sessionHooks: SessionHooks = NO_SESSION_HOOKS;
   private readonly width: number;
   private readonly height: number;
   private readonly px: number;
@@ -243,6 +251,7 @@ export class PipelineEngine {
     const { width, height, bitDepth, frameCount, fps } = reader.info;
     this.plan = makePlan(frameCount, options);
     this.cursor = new PipelineCursor(this.plan);
+    this.boundaries = sessionBoundaries(reader.info);
     this.width = width;
     this.height = height;
     this.px = width * height;
@@ -346,6 +355,8 @@ export class PipelineEngine {
     }
 
     // process
+    for (const b of boundariesInBatch(this.boundaries, s.start, s.count))
+      this.sessionHooks.onSessionBoundary(b.index, b.frame);
     const n = s.count * this.px;
     const front = this.grow('front', n);
     const corrected = this.grow('corrected', n);

@@ -9,7 +9,10 @@ import {
   MAX_FRAMES_PER_READ,
   OPEN_CONCURRENCY,
   mapLimit,
+  sessionBoundaries,
+  sessionOfFrame,
 } from '../lib/frame-source.ts';
+import { boundariesInBatch } from '../lib/session-boundary.ts';
 import { naturalCompare } from '../lib/natural-sort.ts';
 import {
   fpsFromTimeStamps,
@@ -581,5 +584,78 @@ describe('FrameSource: file naming', () => {
     await expect(open([makeFile('clip.avi', new Uint8Array(4), 'rec')])).rejects.toThrow(
       /numbered \.avi files such as 0\.avi, 1\.avi/,
     );
+  });
+});
+
+describe('FrameSource.openSessions', () => {
+  const session = (name: string, files: File[]) => ({
+    name,
+    dir: `data/${name}`,
+    entries: entriesFromFiles(files),
+  });
+
+  it('concatenates sessions in order and records where each starts', async () => {
+    const a = recording([3, 2], {}, 'data/day1');
+    const b = recording([4], {}, 'data/day2');
+    const src = await FrameSource.openSessions([
+      session('day1', [...a.files, makeFile('timeStamps.csv', timeStamps(5, 50), 'data/day1')]),
+      session('day2', b.files),
+    ]);
+    expect(src.frameCount).toBe(9);
+    expect(src.info.sessions).toEqual([
+      { index: 0, name: 'day1', dir: 'data/day1', startFrame: 0, frameCount: 5, fps: 20, files: 2 },
+      {
+        index: 1,
+        name: 'day2',
+        dir: 'data/day2',
+        startFrame: 5,
+        frameCount: 4,
+        fps: null,
+        files: 1,
+      },
+    ]);
+    expect(sessionBoundaries(src.info)).toEqual([5]);
+    expect(sessionOfFrame(src.info, 4)).toBe(0);
+    expect(sessionOfFrame(src.info, 5)).toBe(1);
+    // Frame 5 is day2's first frame.
+    expect(Array.from(await src.readFrame(5))).toEqual(Array.from(expectedPixels(b.opts[0], 0)));
+    // A read across the boundary.
+    const two = await src.readFrames(4, 2);
+    expect(two.length).toBe(2 * 6 * 4);
+    // Warnings name their session.
+    expect(src.info.warnings.some((w) => w.startsWith('day2: No frame rate'))).toBe(true);
+    src.dispose();
+  });
+
+  it('refuses sessions whose resolution differs', async () => {
+    const a = recording([2], {}, 'data/day1');
+    const b = recording([2], { width: 8 }, 'data/day2');
+    await expect(
+      FrameSource.openSessions([session('day1', a.files), session('day2', b.files)]),
+    ).rejects.toThrow(/day2 is 8x4 8-bit but day1 is 6x4 8-bit/);
+  });
+
+  it('one session opens as a plain folder does, plus its span', async () => {
+    const a = recording([3], {}, 'data/day1');
+    const plain = await FrameSource.open(entriesFromFiles(a.files));
+    const one = await FrameSource.openSessions([session('day1', a.files)]);
+    const { sessions, ...rest } = one.info;
+    expect(rest).toEqual(plain.info);
+    expect(sessions).toHaveLength(1);
+    expect(sessionBoundaries(one.info)).toEqual([]);
+    plain.dispose();
+    one.dispose();
+  });
+});
+
+describe('boundariesInBatch', () => {
+  it('finds the boundaries inside a batch only', () => {
+    expect(boundariesInBatch([100, 250], 96, 8)).toEqual([{ index: 1, frame: 100 }]);
+    expect(boundariesInBatch([100, 250], 100, 8)).toEqual([{ index: 1, frame: 100 }]);
+    expect(boundariesInBatch([100, 250], 92, 8)).toEqual([]);
+    expect(boundariesInBatch([100, 104], 96, 16)).toEqual([
+      { index: 1, frame: 100 },
+      { index: 2, frame: 104 },
+    ]);
   });
 });

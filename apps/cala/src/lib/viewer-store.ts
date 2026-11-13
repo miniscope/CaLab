@@ -6,7 +6,7 @@
  */
 import { createSignal, onCleanup } from 'solid-js';
 import type { FrameClient } from './frame-client.ts';
-import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
 
 /** Playback rate when the recording has neither timestamps nor metadata. */
 export const FALLBACK_PLAYBACK_FPS = 20;
@@ -91,12 +91,24 @@ export function createViewerStore(client: FrameClient) {
   }
 
   async function openFiles(entries: FolderEntry[], name: string): Promise<void> {
+    return openWith(() => client.open(entries), name);
+  }
+
+  /** Several sessions as one recording (a Joint run). */
+  async function openSessions(sessions: SessionInput[], name: string): Promise<void> {
+    return openWith(() => {
+      if (!client.openSessions) throw new Error('This frame client cannot open sessions.');
+      return client.openSessions(sessions);
+    }, name);
+  }
+
+  async function openWith(open: () => Promise<FrameSourceInfo>, name: string): Promise<void> {
     pause();
     generation++;
     setError(null);
     setLoading(true);
     try {
-      const opened = await client.open(entries);
+      const opened = await open();
       setInfo(opened);
       setLabel(name);
       setFrame(null);
@@ -154,6 +166,7 @@ export function createViewerStore(client: FrameClient) {
     autoContrast,
     setAutoContrast,
     openFiles,
+    openSessions,
     openLive,
     showFrame,
     play,

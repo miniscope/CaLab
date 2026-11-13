@@ -541,3 +541,103 @@
   gap: var(--space-xs);
   font-size: 0.9rem;
 }
+
+/* ---- Multi-session run: the session list (SessionSetup) ---- */
+.cala-sessions__card {
+  max-width: 46rem;
+  margin: var(--space-lg, 1rem) auto;
+  padding: var(--space-lg, 1rem);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  text-align: left;
+}
+.cala-sessions__title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+.cala-sessions__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.cala-sessions__item {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.5rem;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+.cala-sessions__index {
+  min-width: 1.5rem;
+  font-weight: 600;
+  text-align: right;
+}
+.cala-sessions__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.cala-sessions__path,
+.cala-sessions__out {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.cala-sessions__facts {
+  font-size: 0.85rem;
+}
+.cala-sessions__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.cala-sessions__row {
+  margin: 0.5rem 0;
+}
+.cala-sessions__modes {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+.cala-sessions__mode {
+  display: block;
+  margin: 0.25rem 0;
+}
+.cala-sessions__warning {
+  margin: 0.25rem 0;
+  color: var(--warning, #b26a00);
+}
+.cala-sessions__note {
+  font-size: 0.85rem;
+}
+@media (max-width: 600px) {
+  .cala-sessions__item {
+    flex-wrap: wrap;
+  }
+}
+.cala-session-run {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.cala-session-run__list {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+.cala-session-run__current {
+  font-weight: 600;
+}
+.cala-session-run p {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}

@@ -187,6 +187,50 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
+## Several sessions of one animal
+
+To track the same cells across days, run the sessions together instead of
+renumbering files into one folder.
+
+1. **Pick the parent folder** (for a Miniscope V4 tree, the animal's folder that holds
+   `date/time/My_V4_Miniscope/`). Every recording folder in it, at any depth, becomes a
+   session; behaviour cameras are left out. If the kind of recording is unclear, the
+   app asks which one is the Miniscope. Or click **Multi-session run** on the start
+   screen and **Add session** for each folder.
+2. **Review the session list.** Each session shows its path, frames, frame rate,
+   size and recording start (from `metaData.json`). The default order is the
+   recording start, else the path. **Up**, **Down** and **Remove** change the list;
+   **Add session** appends more folders. Sessions must have the same size and bit
+   depth (an error); a different frame rate is a warning.
+3. **Choose the library mode.** **Joint**: one library. Discover runs through all
+   sessions in order, Refine replays them all, and Extract solves each session with
+   the final library, so a cell has the same id in every session. **Separate**:
+   each session is its own run, one after another. Pick how many **Refine runs**
+   come before Extract (default 1).
+4. **Results location.** By default the results go next to the data, in
+   `<picked folder>/cala-results/`; **Choose...** picks another folder. Chrome and
+   Edge ask once for permission to save there when you press **Start**. Other browsers
+   download one `cala-results.zip` with the same layout when the run ends.
+5. **Start.** The run is automatic. The panel above the cell shows the mode, the
+   session being run and each session's state. Each session's results are written
+   as soon as they are final: after its Extract (Separate), or for all sessions after
+   the Extract (Joint).
+
+The results mirror each session's path, so nothing is ever written into a data folder:
+
+```
+cala-results/
+  cala-run.json                          the run: mode, settings, sessions, boundaries
+  2026_11_10/14_02_33/My_V4_Miniscope/
+    cala-export.npz                      the usual export, for this session's frames
+    cala-session.json                    the session: index, path, stages run, cell ids
+```
+
+If `cala-results` already exists, a new `cala-results_<date>_<time>` folder is made
+instead. In a Joint run the History plots and the cell trace mark where each session
+starts. At the boundary the run goes straight on, as with concatenated files; how
+cala should handle a boundary is still being measured.
+
 ## Reading the quality-control indicators
 
 **Convergence status** (Run panel header, with the convergence plot below it). Cell discovery does not stop on long

@@ -139,6 +139,14 @@ export interface ExportInput {
   version: string;
   /** ISO timestamp. */
   createdAt?: string;
+  /**
+   * Write only frames `[start, end)` of the result (one session of a Joint
+   * run): traces, motion and flicker are sliced; frame numbers elsewhere
+   * (`first_seen_frame`, stages, history) stay on the run's axis.
+   */
+  frameRange?: { start: number; end: number };
+  /** Extra `meta_json.session` block (a multi-session run; see `session-export.ts`). */
+  session?: Record<string, unknown>;
 }
 
 /** Options of the writers. */
@@ -247,8 +255,9 @@ export async function* traceChunks(
   file: TraceFile,
   cols: readonly number[] | null,
   onBytes?: (n: number) => void,
+  range: { start: number; end: number } = { start: 0, end: file.frames },
 ): AsyncGenerator<Uint8Array> {
-  const T = file.frames;
+  const T = range.end;
   const width = cols ? cols.length : file.cells;
   const step = Math.max(1, Math.floor(CHUNK_BYTES / (4 * Math.max(file.cells, 1))));
   const read = (f: number): Promise<Float32Array> | null => {
@@ -257,8 +266,8 @@ export async function* traceChunks(
     p.catch(() => {}); // surfaced when awaited; no unhandled rejection if the consumer stops early
     return p;
   };
-  let next = read(0);
-  for (let f = 0; next; f += step) {
+  let next = read(range.start);
+  for (let f = range.start; next; f += step) {
     const block = await next;
     next = read(f + step);
     const frames = Math.min(T, f + step) - f;
@@ -323,12 +332,17 @@ export async function writeCalaExport(
   const { result, run, width, height } = input;
   const { ids, library } = result;
   const n = ids.length;
-  const T = result.frames;
-  if (run.dy.length < T) throw new RangeError('The motion record is shorter than the traces.');
+  const range = input.frameRange ?? { start: 0, end: result.frames };
+  if (range.start < 0 || range.end > result.frames || range.end <= range.start)
+    throw new RangeError(`Frames ${range.start}..${range.end} are not in the result.`);
+  const F0 = range.start;
+  const T = range.end - range.start;
+  if (run.dy.length < range.end)
+    throw new RangeError('The motion record is shorter than the traces.');
   const motion = new Float32Array(2 * T);
   for (let t = 0; t < T; t++) {
-    motion[2 * t] = run.dy[t];
-    motion[2 * t + 1] = run.dx[t];
+    motion[2 * t] = run.dy[F0 + t];
+    motion[2 * t + 1] = run.dx[F0 + t];
   }
   const seen = new Int32Array(n);
   for (let i = 0; i < n; i++) seen[i] = input.firstSeen(ids[i]) ?? -1;
@@ -365,6 +379,7 @@ export async function writeCalaExport(
         }
       : {}),
     ...(input.history ? { history: input.history.bins.meta } : {}),
+    ...(input.session ? { session: input.session } : {}),
     cell_table: cellTable(input),
   };
   const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
@@ -377,9 +392,9 @@ export async function writeCalaExport(
     'footprint_values.npy': npy(library.values, [library.values.length]),
     'fov_shape.npy': npy(Int32Array.of(height, width), [2]),
     'motion_shift_yx.npy': npy(motion, [T, 2]),
-    'motion_flags.npy': npy(run.flags.slice(0, T), [T]),
-    'flicker_offset.npy': npy(run.flickerOffset.slice(0, T), [T]),
-    'flicker_gain.npy': npy(run.flickerGain.slice(0, T), [T]),
+    'motion_flags.npy': npy(run.flags.slice(F0, F0 + T), [T]),
+    'flicker_offset.npy': npy(run.flickerOffset.slice(F0, F0 + T), [T]),
+    'flicker_gain.npy': npy(run.flickerGain.slice(F0, F0 + T), [T]),
     'first_seen_frame.npy': npy(seen, [n]),
     'qc_peak_snr.npy': npy(snr, [n]),
     'qc_pass.npy': npy(pass, [n]),
@@ -389,7 +404,7 @@ export async function writeCalaExport(
     ...historyEntries(input.history),
   };
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
-  await addTraces(zip, 'traces.npy', result.traces, null, options);
+  await addTraces(zip, 'traces.npy', result.traces, null, options, range);
   for (const [name, bytes] of Object.entries(small)) await zip.addFile(name, bytes);
   await zip.finish();
 }
@@ -401,17 +416,24 @@ async function addTraces(
   file: TraceFile,
   cols: readonly number[] | null,
   options: ExportWriteOptions,
+  range: { start: number; end: number } = { start: 0, end: file.frames },
 ): Promise<void> {
   const width = cols ? cols.length : file.cells;
-  const header = writeNpyHeader('<f4', [width, file.frames], true);
-  const total = width * file.frames * 4;
+  const frames = range.end - range.start;
+  const header = writeNpyHeader('<f4', [width, frames], true);
+  const total = width * frames * 4;
   let done = 0;
   async function* chunks(): AsyncGenerator<Uint8Array> {
     yield header;
-    for await (const c of traceChunks(file, cols, (b) => {
-      done += b;
-      options.onProgress?.(done, total);
-    }))
+    for await (const c of traceChunks(
+      file,
+      cols,
+      (b) => {
+        done += b;
+        options.onProgress?.(done, total);
+      },
+      range,
+    ))
       yield c;
   }
   await zip.addStream(name, header.length + total, chunks());

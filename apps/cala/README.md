@@ -172,6 +172,29 @@ traces = z["traces"]                      # (cells, frames)
 meta = json.loads(z["meta_json"].tobytes().decode())
 ```
 
+## Multi-session runs
+
+Several sessions of one animal in one run (design: [docs/stages.md](docs/stages.md),
+"Sessions"). Picking a parent folder finds every numbered series at any depth
+and groups them into kinds (`src/lib/sessions.ts`: prefix, or device folder
+name for V4); the Miniscope kind's series are the sessions, behaviour cameras
+are dropped, and an unclear kind asks the user. The session list
+(`components/SessionSetup.tsx`, `lib/session-list.ts`) probes each session in
+the frame worker (`probe`), orders them by `recordingStartTime` (else path) and
+validates size and bit depth (error) and frame rate (warning).
+
+- **Joint:** `FrameSource.openSessions` concatenates the sessions;
+  `info.sessions` holds each session's span. One Discover, Refine and Extract;
+  the export is cut per session (`ExportInput.frameRange`).
+- **Separate:** each session is opened alone and run in turn.
+- `lib/multi-run.ts` drives the run (`nextAutoAction` in `lib/session-run.ts`)
+  and writes the results (`lib/session-export.ts`): `cala-results/<session
+path>/cala-export.npz` and `cala-session.json`, plus `cala-results/cala-run.json`,
+  through the File System Access API (`readwrite` on the picked folder), or as
+  one zip elsewhere. An existing `cala-results` is never overwritten.
+- Boundaries: `onSessionBoundary` in `lib/session-boundary.ts` is called by both
+  engines and does nothing yet; `session` events go to the run's event log.
+
 ## Live source (experimental)
 
 Cala's target is a recording in progress: frames arriving from the
