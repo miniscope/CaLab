@@ -10,8 +10,10 @@
  * final library from frame 0. The difference is that the frames go to the
  * slow loop (`CellsSettings.refine`). The slow loop keeps the newest noise
  * map of Discover. Unlike Discover, no frame is dropped for the slow loop: the
- * next batch is asked for only once the slow loop has taken all but one of
- * the batches sent (a file can wait; a live stream could not).
+ * next batch is asked for only while the slow loop has at most
+ * `REFINE_SLOW_LEAD - 1` batches left to take (a file can wait; a live stream
+ * could not), and the fast loop's forward pool never drops (`ForwardPool`
+ * lossless).
  *
  * The engine path is the same as qc_eval's `--later-passes refine`
  * (`SlowLoop.setEditScope('refine')`, then the recording again).
@@ -28,6 +30,18 @@ export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' |
 
 /** How often to look again while waiting for the slow loop, ms. */
 const WAIT_MS = 10;
+
+/**
+ * Batches sent that the slow loop may not have taken yet: the fast pipeline's
+ * `MAX_IN_FLIGHT` plus two waiting at the slow worker (one being observed,
+ * one queued), so neither side idles while the other works. With one (the
+ * first version) the three pipeline stages ran one batch at a time: Refine
+ * ran at the sum of their costs instead of the slowest one's, about half
+ * Extract's frame rate.
+ */
+export const REFINE_SLOW_LEAD = MAX_IN_FLIGHT + 2;
+/** Forward buffers for Refine: the lead plus one for an ack the trace worker has not read yet. */
+export const REFINE_FORWARD_BUFFERS = REFINE_SLOW_LEAD + 1;
 
 export function createRefineStore(
   client: PipelineClient,
@@ -110,8 +124,8 @@ export function createRefineStore(
 
   function pump(gen: number, ctx: Ctx): void {
     while (gen === generation && status() === 'running' && !exhausted && inFlight < MAX_IN_FLIGHT) {
-      // Never more than one batch ahead of the slow loop (nothing is dropped).
-      if (ctx.done + inFlight * ctx.batch - slowTaken(ctx) > ctx.batch) {
+      // At most REFINE_SLOW_LEAD batches ahead of the slow loop (nothing is dropped).
+      if (ctx.done + (inFlight + 1) * ctx.batch - slowTaken(ctx) > REFINE_SLOW_LEAD * ctx.batch) {
         if (inFlight === 0) setTimeout(() => pump(gen, ctx), WAIT_MS);
         return;
       }
@@ -189,7 +203,14 @@ export function createRefineStore(
           motionWarmupFrames: plan1.motionWarmupFrames,
           previewMaxSide: plan1.previewMaxSide,
         },
-        { session: cells.session(), discover: true, qc: false, library: bytes, refine: true },
+        {
+          session: cells.session(),
+          discover: true,
+          qc: false,
+          library: bytes,
+          refine: true,
+          forwardBuffers: REFINE_FORWARD_BUFFERS,
+        },
         { frameCount: ctx.frames, ...rec.snapshot(), ...(flatMap ? { flatField: flatMap } : {}) },
       );
       if (gen !== generation) return;
