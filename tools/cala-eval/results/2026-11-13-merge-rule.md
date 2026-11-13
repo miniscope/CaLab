@@ -17,7 +17,7 @@ Recommendation: make it the default in a follow-up PR.
 
 ## The problem
 
-Under the current rule, 66–82 % of accepted merges in the sims join two *different* ground-truth cells. Here that is 182 of 221 labelled merges over 5 static seeds. Each such merge loses a real cell. #350 (trace-correlation veto) removed only about a sixth of them.
+Under the current rule, 66–82 % of accepted merges in the sims join two _different_ ground-truth cells. Here that is 182 of 221 labelled merges over 5 static seeds. Each such merge loses a real cell. #350 (trace-correlation veto) removed only about a sixth of them.
 
 ## Rule
 
@@ -34,6 +34,7 @@ On the union of the two supports (pixels inside both statistics disks), the cond
 This is the refine gate's `Î` (#365, #367) applied to a pair: the shapes differ by no more than two re-draws of the estimates would.
 
 Other cases:
+
 - Pairs that overlap ≥ ½ go to the held-out test alone. The bound is the existing ½ of the `one` shortcut, the equal-error point.
 - A cell without split halves (a young cell) also falls back to the held-out test.
 
@@ -42,38 +43,39 @@ No new constant is introduced, and there is no size cap.
 ## Phase 1: what separates same- from distinct-unit candidates
 
 Data: every merge test logged (`qc_eval --merge-log`, diagnostics feature) on static_s5–s9 1× with the current rule.
+
 - 1620 tests had both cells GT-matched at r ≥ .5: 73 same-unit pairs and 1547 distinct-unit pairs.
 - The current rule accepted 39 of the same-unit pairs and 182 of the distinct-unit pairs.
 
 Labels are the best spatial GT match of each cell's filtered footprint, as in the #360 shadow.
 
-| statistic (larger = more merge-like) | AUC, all tests (n same/dist) | AUC, legacy-accepted |
-|---|---|---|
-| legacy held-out z | .763 (73/1547) | .536 (39/182) |
-| footprint overlap | .935 | .906 |
-| −centre distance | .953 | .944 |
-| −Î shape (split-half, refine form) | .674 (45/1360) | .802 (21/155) |
-| −D² / split-half noise | .745 | .771 |
-| cosine of the two estimates | .840 | .844 |
-| cross-half debiased correlation | .854 | .850 |
-| −one-soma basin dip (support-rule machinery on the pair's combined light) | .651 | .561 |
-| −plan 4.2 energy-weighted θ | .855 | .404 |
-| held-out trace correlation | .537 | .476 |
+| statistic (larger = more merge-like)                                      | AUC, all tests (n same/dist) | AUC, legacy-accepted |
+| ------------------------------------------------------------------------- | ---------------------------- | -------------------- |
+| legacy held-out z                                                         | .763 (73/1547)               | .536 (39/182)        |
+| footprint overlap                                                         | .935                         | .906                 |
+| −centre distance                                                          | .953                         | .944                 |
+| −Î shape (split-half, refine form)                                        | .674 (45/1360)               | .802 (21/155)        |
+| −D² / split-half noise                                                    | .745                         | .771                 |
+| cosine of the two estimates                                               | .840                         | .844                 |
+| cross-half debiased correlation                                           | .854                         | .850                 |
+| −one-soma basin dip (support-rule machinery on the pair's combined light) | .651                         | .561                 |
+| −plan 4.2 energy-weighted θ                                               | .855                         | .404                 |
+| held-out trace correlation                                                | .537                         | .476                 |
 
 Applied to the legacy-accepted merges (offline, static estimate):
 
-| rule | same kept | distinct kept (cut) |
-|---|---|---|
-| Î ≤ 0 alone (no halves → no merge) | 8/39 (21 %) | 9/182 (−95 %) |
-| no halves → legacy, else Î ≤ 0 | 26/39 (67 %) | 36/182 (−80 %) |
-| one-soma basin | 39/39 | 169/182 (−7 %) |
-| θ < ½ (plan 4.2) | 39/39 | 181/182 (−1 %) |
-| overlap ≥ ½ or no halves | 36/39 (92 %) | 55/182 (−70 %) |
-| **chosen: overlap ≥ ½ or no halves or Î ≤ 0** | **38/39 (97 %)** | **62/182 (−66 %)** |
+| rule                                          | same kept        | distinct kept (cut) |
+| --------------------------------------------- | ---------------- | ------------------- |
+| Î ≤ 0 alone (no halves → no merge)            | 8/39 (21 %)      | 9/182 (−95 %)       |
+| no halves → legacy, else Î ≤ 0                | 26/39 (67 %)     | 36/182 (−80 %)      |
+| one-soma basin                                | 39/39            | 169/182 (−7 %)      |
+| θ < ½ (plan 4.2)                              | 39/39            | 181/182 (−1 %)      |
+| overlap ≥ ½ or no halves                      | 36/39 (92 %)     | 55/182 (−70 %)      |
+| **chosen: overlap ≥ ½ or no halves or Î ≤ 0** | **38/39 (97 %)** | **62/182 (−66 %)**  |
 
 What the logs show:
 
-1. **The simplest Î form alone fails true duplicates.** The running-statistics estimates are *conditional on the partner*: `r_A` has B's model removed. So a duplicate that the fast loop splits into two fragments gives two complementary, significant, different shapes, with cosine .2–.9. Shape equality is the right null only for pairs whose footprints do not already coincide. That is why the chosen rule exempts overlap ≥ ½, which covers 33 of the 39 accepted same-unit merges.
+1. **The simplest Î form alone fails true duplicates.** The running-statistics estimates are _conditional on the partner_: `r_A` has B's model removed. So a duplicate that the fast loop splits into two fragments gives two complementary, significant, different shapes, with cosine .2–.9. Shape equality is the right null only for pairs whose footprints do not already coincide. That is why the chosen rule exempts overlap ≥ ½, which covers 33 of the 39 accepted same-unit merges.
 2. **The distinct-unit merges are not "absence of evidence".** The weaker cell claims a median of 98 null-SDs of light on the test frames. The fresh merged column simply beats the stale pair on held-out frames (θ < 0 in 90 % of them). So the plan's energy-weighted θ cannot see them.
 3. **The pair's combined light usually has no significant dip between the two cells.** Typically a dim neighbour sits on a bright cell's flank. A morphology ("one soma") test therefore misses 93 % of these merges.
 4. Centre distance (.95) and overlap (.94) separate best. Distance would need a constant tied to cell size, so it was not used.
@@ -81,6 +83,7 @@ What the logs show:
 ## Phase 2: live A/B
 
 Settings and controls:
+
 - Same flags as the refine-gate eval (`--batch 8 --budget 30000000 --slow-seed 1 --churn-log`; real: `--motion --frames 18000 --via-jobs`, slow seeds 1 and 2).
 - Controls are the Phase 1 logged runs.
 - d = paired arm − control, mean ± 95 % t-CI over seeds.
@@ -89,38 +92,39 @@ Settings and controls:
 
 ### Static 1× (5 seeds)
 
-| metric | control | split-half | d ± CI | signs +/− |
-|---|---|---|---|---|
-| merges / run | 51.0 | 23.0 | −28.0 ± 9.0 | 0/5 |
-| distinct-unit merges / run | 36.4 | 13.0 | −23.4 ± 4.2 | 0/5 |
-| same-unit merges / run | 7.8 | 7.0 | −0.8 ± 4.5 | 3/2 |
-| P8 | .948 | .943 | −.005 ± .011 | 1/4 |
-| R8 | .790 | .800 | +.010 ± .014 | 3/1 |
-| R2 | .589 | .589 | +.001 ± .007 | |
-| r_fp | .969 | .967 | −.002 ± .003 | 2/3 |
-| fp_dup | 1.8 | 3.2 | +1.4 ± 2.9 | 4/1 |
-| fp_adjacent / fp_partial | 4.4 / 11.6 | 5.8 / 12.6 | +1.4 ± 3.4 / +1.0 ± 3.6 | |
-| cells | 512 | 521 | +9.4 ± 9.0 | 4/1 |
-| conv_big4 | .122 | .114 | −.008 ± .018 | |
-| late merges / min (last 4 min) | 6.9 | 2.75 | −4.2 ± 1.3 | 0/5 |
+| metric                         | control    | split-half | d ± CI                  | signs +/− |
+| ------------------------------ | ---------- | ---------- | ----------------------- | --------- |
+| merges / run                   | 51.0       | 23.0       | −28.0 ± 9.0             | 0/5       |
+| distinct-unit merges / run     | 36.4       | 13.0       | −23.4 ± 4.2             | 0/5       |
+| same-unit merges / run         | 7.8        | 7.0        | −0.8 ± 4.5              | 3/2       |
+| P8                             | .948       | .943       | −.005 ± .011            | 1/4       |
+| R8                             | .790       | .800       | +.010 ± .014            | 3/1       |
+| R2                             | .589       | .589       | +.001 ± .007            |           |
+| r_fp                           | .969       | .967       | −.002 ± .003            | 2/3       |
+| fp_dup                         | 1.8        | 3.2        | +1.4 ± 2.9              | 4/1       |
+| fp_adjacent / fp_partial       | 4.4 / 11.6 | 5.8 / 12.6 | +1.4 ± 3.4 / +1.0 ± 3.6 |           |
+| cells                          | 512        | 521        | +9.4 ± 9.0              | 4/1       |
+| conv_big4                      | .122       | .114       | −.008 ± .018            |           |
+| late merges / min (last 4 min) | 6.9        | 2.75       | −4.2 ± 1.3              | 0/5       |
 
 Summed over seeds: distinct-unit merges 182 → 65 (−64 %); same-unit merges 39 → 35 (90 % kept). The rule vetoed 35 merges per run: 30 distinct-unit, 1.2 same-unit and 4 low-match.
 
 ### Real (workshop recording, slow seeds 1 and 2)
 
-| | control s1 / s2 | split-half s1 / s2 |
-|---|---|---|
-| cells | 733 / 740 | 815 / 840 |
-| texture | 1 / 1 | 1 / 2 |
-| seed-to-seed Jaccard | .711 | .757 |
-| merges | 260 / 283 | 75 / 89 |
-| late merges / min | 17.8 / 22.3 | 3.0 / 4.3 |
-| Minian agreement r ≥ .5 (reference, not GT) | 521 / 522 | 585 / 599 |
-| cells with held-out z < 2 | 189 / 186 | 200 / 203 |
+|                                             | control s1 / s2 | split-half s1 / s2 |
+| ------------------------------------------- | --------------- | ------------------ |
+| cells                                       | 733 / 740       | 815 / 840          |
+| texture                                     | 1 / 1           | 1 / 2              |
+| seed-to-seed Jaccard                        | .711            | .757               |
+| merges                                      | 260 / 283       | 75 / 89            |
+| late merges / min                           | 17.8 / 22.3     | 3.0 / 4.3          |
+| Minian agreement r ≥ .5 (reference, not GT) | 521 / 522       | 585 / 599          |
+| cells with held-out z < 2                   | 189 / 186       | 200 / 203          |
 
-**PI hand labels (soft check only; older cala, many borderline).** A merge "joins two PI cells" when each cell centre lies within 5 px of a different label marked *cell*. Such merges went from 4 / 8 under the control to 3 / 5 under the split-half rule.
+**PI hand labels (soft check only; older cala, many borderline).** A merge "joins two PI cells" when each cell centre lies within 5 px of a different label marked _cell_. Such merges went from 4 / 8 under the control to 3 / 5 under the split-half rule.
 
 Two pairs are merged under both rules and are worth showing the PI:
+
 - Labels (464, 462) and (470, 463), 6 px apart. Merged in both seeds.
 - Labels (558, 339) and (568, 340). Merged in seed 2.
 
@@ -128,63 +132,65 @@ Two pairs are merged under both rules and are worth showing the PI:
 
 Reported only; the gates are declared on 1×. Same flags with `--budget 120000000`, same paired statistics, n = 3, so the CIs are wide.
 
-| metric | control | split-half | d ± CI | signs +/− |
-|---|---|---|---|---|
-| merges / run | 96.0 | 61.3 | −34.7 ± 41.9 | 0/3 |
-| distinct-unit merges / run | 56.7 | 27.3 | −29.3 ± 31.6 | 0/3 |
-| same-unit merges / run | 16.7 | 20.7 | +4.0 ± 5.0 | 3/0 |
-| P8 | .904 | .911 | +.007 ± .018 | 3/0 |
-| R8 | .822 | .838 | +.017 ± .021 | 3/0 |
-| R2 | .680 | .686 | +.006 ± .028 | 2/1 |
-| r_fp | .973 | .971 | −.002 ± .005 | 0/3 |
-| fp_dup | 5.3 | 6.7 | +1.3 ± 2.9 | 2/0 |
-| fp_adjacent / fp_partial | 7.7 / 16.0 | 11.0 / 12.0 | +3.3 ± 5.2 / −4.0 ± 8.6 | 3/0, 0/2 |
-| fp_noise | 24.7 | 20.7 | −4.0 ± 9.9 | 0/2 |
-| cells | 560 | 567 | +7.0 ± 7.5 | 3/0 |
-| conv_big4 | .146 | .131 | −.015 ± .015 | 0/3 |
-| late merges / min (last 4 min) | 12.4 | 6.4 | −6.0 ± 4.9 | 0/3 |
+| metric                         | control    | split-half  | d ± CI                  | signs +/− |
+| ------------------------------ | ---------- | ----------- | ----------------------- | --------- |
+| merges / run                   | 96.0       | 61.3        | −34.7 ± 41.9            | 0/3       |
+| distinct-unit merges / run     | 56.7       | 27.3        | −29.3 ± 31.6            | 0/3       |
+| same-unit merges / run         | 16.7       | 20.7        | +4.0 ± 5.0              | 3/0       |
+| P8                             | .904       | .911        | +.007 ± .018            | 3/0       |
+| R8                             | .822       | .838        | +.017 ± .021            | 3/0       |
+| R2                             | .680       | .686        | +.006 ± .028            | 2/1       |
+| r_fp                           | .973       | .971        | −.002 ± .005            | 0/3       |
+| fp_dup                         | 5.3        | 6.7         | +1.3 ± 2.9              | 2/0       |
+| fp_adjacent / fp_partial       | 7.7 / 16.0 | 11.0 / 12.0 | +3.3 ± 5.2 / −4.0 ± 8.6 | 3/0, 0/2  |
+| fp_noise                       | 24.7       | 20.7        | −4.0 ± 9.9              | 0/2       |
+| cells                          | 560        | 567         | +7.0 ± 7.5              | 3/0       |
+| conv_big4                      | .146       | .131        | −.015 ± .015            | 0/3       |
+| late merges / min (last 4 min) | 12.4       | 6.4         | −6.0 ± 4.9              | 0/3       |
 
 Summed over seeds: distinct-unit merges 170 → 82 (−52 %). Same-unit merges went 50 → 62, more than the control had: duplicates the vetoes keep apart early merge later, once their footprints coincide. The 1× gates also hold at 4× (P8 and R8 rise in all three seeds). fp_dup again rises slightly (+1.3, CI covers 0), and fp_adjacent rises +3.3 in 3 of 3 seeds (CI covers 0).
 
 ## Gates (pre-declared in the run log before Phase 2)
 
-| gate | result | |
-|---|---|---|
-| distinct-unit merges down ≥ 50 % (static 1×) | −64 % | pass |
-| same-unit merges kept ≥ 80 % | 90 % | pass |
-| fp_dup not up beyond CI noise | +1.4 ± 2.9 (CI covers 0; signs 4/1) | pass, watch |
-| P8 / R8 ≥ −.02 | −.005 / +.010 | pass |
-| r_fp ≥ −.010 | −.002 | pass |
-| motion 1×: distinct ≥ −50 % / same kept ≥ 80 % | −67 % / 114 % | pass |
-| motion 1×: fp_dup / P8 / R8 / r_fp | +2.4 ± 3.0 / −.007 / +.012 / −.001 | pass (fp_dup: watch) |
-| real texture ≤ control + 2 | 1 → 1, 1 → 2 | pass |
-| real Jaccard ≥ control − .01 | .711 → .757 | pass |
+| gate                                           | result                              |                      |
+| ---------------------------------------------- | ----------------------------------- | -------------------- |
+| distinct-unit merges down ≥ 50 % (static 1×)   | −64 %                               | pass                 |
+| same-unit merges kept ≥ 80 %                   | 90 %                                | pass                 |
+| fp_dup not up beyond CI noise                  | +1.4 ± 2.9 (CI covers 0; signs 4/1) | pass, watch          |
+| P8 / R8 ≥ −.02                                 | −.005 / +.010                       | pass                 |
+| r_fp ≥ −.010                                   | −.002                               | pass                 |
+| motion 1×: distinct ≥ −50 % / same kept ≥ 80 % | −67 % / 114 %                       | pass                 |
+| motion 1×: fp_dup / P8 / R8 / r_fp             | +2.4 ± 3.0 / −.007 / +.012 / −.001  | pass (fp_dup: watch) |
+| real texture ≤ control + 2                     | 1 → 1, 1 → 2                        | pass                 |
+| real Jaccard ≥ control − .01                   | .711 → .757                         | pass                 |
 
 ### Motion 1× (seeds 5–9)
 
 Settings and scoring:
+
 - Same flags as static 1×, plus `--motion`.
 - Scored against GT moved into cala's registered frame. This is the #374 fix: `motion_offset.tsv`; on motion_s5 the offset applied is (+0.11, −1.49) px.
 - The control and the arm were both run with the same diagnostics binary: this branch merged with #374, whose `crates/` are identical to this PR's head.
 
-| metric | control | split-half | d ± CI | signs +/− |
-|---|---|---|---|---|
-| merges / run | 47.0 | 23.8 | −23.2 ± 12.2 | 0/5 |
-| distinct-unit merges / run | 27.0 | 8.8 | −18.2 ± 6.4 | 0/5 |
-| same-unit merges / run | 11.2 | 12.8 | +1.6 ± 4.2 | 3/1 |
-| P8 | .934 | .927 | −.007 ± .016 | 1/4 |
-| R8 | .769 | .781 | +.012 ± .004 | 5/0 |
-| R2 | .562 | .560 | −.002 ± .005 | 1/3 |
-| r_fp | .966 | .965 | −.001 ± .003 | 3/2 |
-| fp_dup | 3.6 | 6.0 | +2.4 ± 3.0 | 4/1 |
-| fp_adjacent / fp_partial | 11.2 / 14.8 | 11.6 / 16.6 | +0.4 ± 3.6 / +1.8 ± 8.8 | |
-| cells | 527 | 539 | +11.8 ± 7.6 | 5/0 |
-| conv_big4 | .115 | .114 | −.002 ± .021 | |
-| late merges / min (last 4 min) | 7.0 | 3.2 | −3.8 ± 2.6 | 0/5 |
+| metric                         | control     | split-half  | d ± CI                  | signs +/− |
+| ------------------------------ | ----------- | ----------- | ----------------------- | --------- |
+| merges / run                   | 47.0        | 23.8        | −23.2 ± 12.2            | 0/5       |
+| distinct-unit merges / run     | 27.0        | 8.8         | −18.2 ± 6.4             | 0/5       |
+| same-unit merges / run         | 11.2        | 12.8        | +1.6 ± 4.2              | 3/1       |
+| P8                             | .934        | .927        | −.007 ± .016            | 1/4       |
+| R8                             | .769        | .781        | +.012 ± .004            | 5/0       |
+| R2                             | .562        | .560        | −.002 ± .005            | 1/3       |
+| r_fp                           | .966        | .965        | −.001 ± .003            | 3/2       |
+| fp_dup                         | 3.6         | 6.0         | +2.4 ± 3.0              | 4/1       |
+| fp_adjacent / fp_partial       | 11.2 / 14.8 | 11.6 / 16.6 | +0.4 ± 3.6 / +1.8 ± 8.8 |           |
+| cells                          | 527         | 539         | +11.8 ± 7.6             | 5/0       |
+| conv_big4                      | .115        | .114        | −.002 ± .021            |           |
+| late merges / min (last 4 min) | 7.0         | 3.2         | −3.8 ± 2.6              | 0/5       |
 
 Summed over seeds: distinct-unit merges 135 → 44 (−67 %); same-unit merges 56 → 64 (114 %). The rule vetoed 22 distinct-unit merges, 0.2 same-unit merges and 5.4 low-match merges per run. fp_dup rises again (+2.4, CI covers 0, signs 4/1); this is the largest fp_dup rise of the three sim arms.
 
 **Identity after merging main.** The identity check was repeated with the plain PR binary (default Legacy) on static_s5, after each merge of main:
+
 - after merging 1d1629a (#370) and d475447 (#371), against main 1d1629a;
 - after merging 1a21b6d (#372–#375), against main 1a21b6d.
 

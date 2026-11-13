@@ -10,7 +10,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala: a split-half merge rule, opt-in (`MergeRule::SplitHalf`,
   `qc_eval --merge-rule split-half`; the default stays `Legacy`). A pair of
   cells whose footprints overlap less than half merges only when the
-  held-out test accepts it *and* the two cells' running footprint estimates
+  held-out test accepts it _and_ the two cells' running footprint estimates
   have the same shape within their own split-half noise (the refine gate's
   `Î ≤ 0`, applied both ways on the union support). On static sims
   distinct-cell merges fall 64 % while 90 % of true-duplicate merges are
