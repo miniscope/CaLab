@@ -44,6 +44,9 @@ function library(): LibraryView {
   };
 }
 
+/** Signed traces: value = 100 * cell + frame - 1000 (negative, unlike the clipped ones). */
+const SIGNED_OFFSET = -1000;
+
 async function result(): Promise<Pass2Result> {
   // Frame-major (as the solver emits): value = 100 * cell + frame.
   const traces = new Float32Array(T * 3);
@@ -51,6 +54,11 @@ async function result(): Promise<Pass2Result> {
   return {
     ids,
     traces: await memoryTraceFile(traces, T, 3),
+    signed: await memoryTraceFile(
+      traces.map((v) => v + SIGNED_OFFSET),
+      T,
+      3,
+    ),
     frames: T,
     cells: 3,
     version: 12,
@@ -118,6 +126,13 @@ describe('export', () => {
     expect(a.traces.dtype).toBe('<f4');
     const traces = processNpyResult(a.traces);
     expect([...traces.data.slice(T, 2 * T)]).toEqual([100, 101, 102, 103, 104, 105, 106]);
+    // The signed traces: same layout, their own values.
+    expect(a.traces_signed.fortranOrder).toBe(true);
+    expect(a.traces_signed.shape).toEqual([3, T]);
+    expect(a.traces_signed.dtype).toBe('<f4');
+    expect([...processNpyResult(a.traces_signed).data.slice(T, 2 * T)]).toEqual(
+      [100, 101, 102, 103, 104, 105, 106].map((v) => v + SIGNED_OFFSET),
+    );
     expect(a.cell_ids.shape).toEqual([3]);
     expect([...a.cell_ids.data]).toEqual([4, 9, 11]);
     expect(a.centroids_yx.shape).toEqual([3, 2]);
@@ -138,6 +153,8 @@ describe('export', () => {
     expect(a.sampling_rate_hz.data[0]).toBe(20);
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
     expect(meta.format).toBe('cala-export');
+    expect(meta.format_version).toBe(4);
+    expect(meta.traces_signed).toBeTypeOf('string');
     expect(meta.cell_table).toHaveLength(3);
     expect(meta.cell_table[1]).toMatchObject({
       id: 9,
@@ -166,6 +183,10 @@ describe('export', () => {
     const traces = processNpyResult(a.traces);
     // Cell 1 (value 100 + frame) over frames 3, 4, 5.
     expect([...traces.data.slice(3, 6)]).toEqual([103, 104, 105]);
+    expect(a.traces_signed.shape).toEqual([3, 3]);
+    expect([...processNpyResult(a.traces_signed).data.slice(3, 6)]).toEqual(
+      [103, 104, 105].map((v) => v + SIGNED_OFFSET),
+    );
     expect(a.motion_shift_yx.shape).toEqual([3, 2]);
     expect(a.motion_shift_yx.data[0]).toBe(1.5);
     expect([...a.flicker_offset.data]).toEqual([3, 4, 5]);
@@ -211,7 +232,7 @@ describe('export', () => {
     const events = JSON.parse(new TextDecoder().decode(a.run_events_json.data as Uint8Array));
     expect(events[0]).toMatchObject({ kind: 'range', key: 'shift_dy' });
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
-    expect(meta.format_version).toBe(3);
+    expect(meta.format_version).toBe(4);
     expect(meta.history.series[0]).toMatchObject({ key: 'shift_dy', range_final: [-20, 20] });
   });
 
@@ -284,7 +305,31 @@ describe('export', () => {
     // A column subset streams too.
     const sub = parseNpz(await buildCaDeconExport(inp, true, { cadeconMemoryBytes: 0 })).arrays;
     expect(sub.traces.shape).toEqual([1, T]);
-    expect([...processNpyResult(sub.traces).data]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // CaDecon gets the signed traces.
+    expect([...processNpyResult(sub.traces).data]).toEqual(
+      [0, 1, 2, 3, 4, 5, 6].map((v) => v + SIGNED_OFFSET),
+    );
+  });
+
+  it('without signed traces (a live run): no traces_signed, CaDecon gets the clipped traces', async () => {
+    const inp = await input();
+    const live = { ...inp, result: { ...inp.result, signed: null } };
+    const a = parseNpz(await buildCalaExport(live)).arrays;
+    expect('traces_signed' in a).toBe(false);
+    expect(a.traces.shape).toEqual([3, T]);
+    const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
+    expect('traces_signed' in meta).toBe(false);
+    const c = parseNpz(await buildCaDeconExport(live, true)).arrays;
+    expect([...c.traces.data]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it('reports progress over both trace matrices, ending at the total', async () => {
+    const seen: [number, number][] = [];
+    await buildCalaExport(await input(), { onProgress: (d, t) => seen.push([d, t]) });
+    const total = 2 * 3 * T * 4;
+    expect(seen.every(([, t]) => t === total)).toBe(true);
+    for (let i = 1; i < seen.length; i++) expect(seen[i][0]).toBeGreaterThan(seen[i - 1][0]);
+    expect(seen[seen.length - 1][0]).toBe(total);
   });
 
   it('writes the CaDecon file with one trace matrix, QC-passing cells by default', async () => {
@@ -295,6 +340,7 @@ describe('export', () => {
     expect(z.arrays.traces.shape).toEqual([1, T]);
     // A lone cells x timepoints array: CaDecon's importer (soleTraceCandidate) takes it without asking.
     expect(traceCandidates(z)).toEqual(['traces']);
+    expect([...z.arrays.traces.data]).toEqual([0, 1, 2, 3, 4, 5, 6].map((v) => v + SIGNED_OFFSET));
     const all = parseNpz(await buildCaDeconExport(inp, false));
     expect(all.arrays.traces.shape).toEqual([3, T]);
     expect(traceCandidates(all)).toEqual(['traces']);

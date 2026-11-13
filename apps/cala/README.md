@@ -152,8 +152,9 @@ Safari build the file in OPFS and hand it to the download (disk-backed, no RAM).
 Extract's file, no transpose): `np.load` still returns the (cells, frames) array.
 `meta_json.stages` lists the stages that ran, with counts and timestamps.
 
-- `<folder>_cala.npz`, self-describing: `traces` (cells x frames, float32),
-  `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
+- `<folder>_cala.npz`, self-describing (format version 4): `traces` (cells x
+  frames, float32), `traces_signed` (the same, unclipped; absent from a live
+  run, which has no Extract), `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
   (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
   flat pixel index `row * W + column`) with `fov_shape`, per-frame
   `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
@@ -161,17 +162,31 @@ Extract's file, no transpose): `np.load` still returns the (cells, frames) array
   `qc_flags`, `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
   cell table). The full layout is the header of `src/lib/export.ts`.
 - `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
-  `cell_ids` and `sampling_rate_hz`. CaDecon's existing `.npz` import takes the
+  `cell_ids` and `sampling_rate_hz`. Its `traces` are Extract's signed traces
+  (the clipped ones for a live run). CaDecon's existing `.npz` import takes the
   one cells x timepoints array without asking; it then asks for the sampling
   rate (shown on the button's tooltip). Up to 512 MB of traces it is the classic
   C-order, non-ZIP64 file. Beyond that it is streamed like the main export, and
   CaDecon's importer (1 GiB limit, no ZIP64) cannot open it: for very long
   recordings use `np.load` on the cala `.npz`, or export fewer cells.
 
+**Signed traces.** The trace solve keeps every trace non-negative (for
+stability and against crosstalk between overlapping cells), so a quiet cell's
+`traces` row sits at exactly 0 with half-rectified noise. Deconvolution (CaDecon)
+wants a zero baseline with symmetric noise, so Extract also writes
+`traces_signed`: each trace plus the residual's projection on the cell,
+`c_i + g_i / m_i` with `g_i` the gradient of the cell's coordinate equation at
+the converged solution (background terms included) and `m_i` its curvature,
+the analogue of CNMF's `C + YrA`. Where the solve clips a cell, its negative
+noise comes back; where it does not, `traces_signed` equals `traces` to within
+the solver's tolerance. `traces` is unchanged, bit for bit
+(`TraceEngine::set_signed`, `TraceEngine.setSigned` / `lastSigned` in JS).
+
 ```python
 import json, numpy as np
 z = np.load("raw_cala.npz")
 traces = z["traces"]                      # (cells, frames)
+signed = z["traces_signed"]               # (cells, frames), unclipped: for deconvolution
 meta = json.loads(z["meta_json"].tobytes().decode())
 ```
 

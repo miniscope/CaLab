@@ -79,7 +79,20 @@
  * 4000 cells x 270k frames) get ZIP64 records, which Python's `zipfile`,
  * `np.load`, `unzip` and 7-zip read.
  *
- * CaDecon hand-off. For ordinary sizes (the selected traces up to
+ * Signed traces (format version 4; absent from live runs, which have no Extract):
+ *
+ *   traces_signed       float32 [N, T]   Extract's signed (unclipped) traces, same layout and units
+ *                                        as `traces`: each trace plus the residual's projection on
+ *                                        the cell (CNMF's C + YrA), so a quiet cell sits at 0 with
+ *                                        symmetric noise where `traces` is clipped at 0
+ *
+ * `traces` stays the solver's non-negative estimate (the solve itself clips
+ * at 0, for stability and against crosstalk); `traces_signed` is what a
+ * deconvolution wants (a zero baseline with symmetric noise).
+ *
+ * CaDecon hand-off. The CaDecon file carries the signed traces as its
+ * `traces` when the result has them (Extract), else the non-negative ones
+ * (a live run). For ordinary sizes (the selected traces up to
  * `CADECON_MEMORY_BYTES`) the file is the classic one: C-order `traces`,
  * non-ZIP64. Above that it is written streaming, Fortran-order, ZIP64 when
  * needed. CaDecon's own importer (fflate, 1 GiB decompressed cap, no ZIP64)
@@ -103,7 +116,7 @@ import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 3;
+export const EXPORT_FORMAT_VERSION = 4;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -308,7 +321,7 @@ export function calaExportBytes(input: ExportInput): number {
   const { result } = input;
   const nnz = result.library.pixels.length;
   return (
-    result.frames * result.ids.length * 4 +
+    result.frames * result.ids.length * 4 * (result.signed ? 2 : 1) +
     8 * nnz +
     17 * result.frames +
     1000 * result.ids.length +
@@ -363,6 +376,12 @@ export async function writeCalaExport(
     trace_units:
       'preprocessed grey levels (flicker removed, flattened, background floor subtracted)',
     traces_layout: 'cells x frames, float32 (stored in Fortran order)',
+    ...(result.signed
+      ? {
+          traces_signed:
+            'traces plus the residual projection on each cell (C + YrA): unclipped, zero baseline, symmetric noise',
+        }
+      : {}),
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     extract_seconds: result.seconds,
     stages: (input.stages ?? []).map(stageMeta),
@@ -404,7 +423,16 @@ export async function writeCalaExport(
     ...historyEntries(input.history),
   };
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
-  await addTraces(zip, 'traces.npy', result.traces, null, options, range);
+  const matrices: [string, TraceFile][] = [['traces.npy', result.traces]];
+  if (result.signed) matrices.push(['traces_signed.npy', result.signed]);
+  // One progress over all trace matrices.
+  const each = n * T * 4;
+  for (const [k, [name, file]] of matrices.entries()) {
+    const onProgress = options.onProgress
+      ? (done: number) => options.onProgress?.(k * each + done, matrices.length * each)
+      : undefined;
+    await addTraces(zip, name, file, null, { ...options, onProgress }, range);
+  }
   for (const [name, bytes] of Object.entries(small)) await zip.addFile(name, bytes);
   await zip.finish();
 }
@@ -460,7 +488,8 @@ export function cadeconIsClassic(
 
 /**
  * The traces in the layout CaDecon imports (`.npz`, one cells x timepoints
- * matrix named `traces`, plus the 1-D `cell_ids` and `sampling_rate_hz`).
+ * matrix named `traces`, plus the 1-D `cell_ids` and `sampling_rate_hz`):
+ * the signed traces when the result has them (Extract), else the clipped ones.
  * Classic C-order file for ordinary sizes; streamed Fortran-order (and ZIP64
  * when needed) above `CADECON_MEMORY_BYTES`, which CaDecon's importer cannot
  * open (see the file header).
@@ -473,6 +502,8 @@ export async function writeCaDeconExport(
 ): Promise<void> {
   const { result } = input;
   const T = result.frames;
+  // CaDecon wants a zero baseline with symmetric noise: the signed traces when there are any.
+  const source = result.signed ?? result.traces;
   const keep = cadeconCells(input, passOnly);
   const ids = new Uint32Array(keep.length);
   keep.forEach((c, k) => (ids[k] = result.ids[c]));
@@ -483,7 +514,7 @@ export async function writeCaDeconExport(
     const step = Math.max(1, Math.floor(CHUNK_BYTES / (4 * Math.max(result.cells, 1))));
     for (let f = 0; f < T; f += step) {
       const to = Math.min(T, f + step);
-      const block = await result.traces.readFrames(f, to);
+      const block = await source.readFrames(f, to);
       for (let k = 0; k < to - f; k++)
         for (let j = 0; j < keep.length; j++)
           traces[j * T + f + k] = block[k * result.cells + keep[j]];
@@ -491,7 +522,7 @@ export async function writeCaDeconExport(
     }
     await zip.addFile('traces.npy', npy(traces, [keep.length, T]));
   } else {
-    await addTraces(zip, 'traces.npy', result.traces, keep, options);
+    await addTraces(zip, 'traces.npy', source, keep, options);
   }
   await zip.addFile('cell_ids.npy', npy(ids, [keep.length]));
   await zip.addFile(
