@@ -66,14 +66,30 @@ export async function entriesFromDirectoryHandle(root: DirHandleLike): Promise<F
  * propagate to the caller.
  */
 export async function pickDirectory(): Promise<FolderEntry[] | null> {
+  return (await pickDirectoryWithHandle())?.entries ?? null;
+}
+
+/**
+ * `pickDirectory`, also returning the handle: a multi-session run writes its
+ * results next to the data (`session-export.ts`) and asks for `readwrite` on
+ * this handle when the run starts.
+ */
+export async function pickDirectoryWithHandle(): Promise<{
+  entries: FolderEntry[];
+  handle: DirHandleLike;
+} | null> {
+  const handle = await showPicker('read');
+  return handle ? { entries: await entriesFromDirectoryHandle(handle), handle } : null;
+}
+
+/** The directory picker in `mode`; null when the user cancels or there is no picker. */
+export async function showPicker(mode: 'read' | 'readwrite'): Promise<DirHandleLike | null> {
   const show = (window as PickerWindow).showDirectoryPicker;
   if (!show) return null;
-  let handle: DirHandleLike;
   try {
-    handle = await show.call(window, { mode: 'read' });
+    return await show.call(window, { mode });
   } catch (err) {
     if (isPickerAbort(err)) return null;
     throw err;
   }
-  return entriesFromDirectoryHandle(handle);
 }

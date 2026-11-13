@@ -196,6 +196,7 @@ function SelectedCell(props: {
   id: number;
   fps: number;
   scale: FootprintScale;
+  boundaries?: readonly number[];
 }): JSX.Element {
   const c = () => props.cells;
   const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
@@ -252,6 +253,7 @@ function SelectedCell(props: {
                 id={props.id}
                 fps={props.fps}
                 markerFrame={markerFrame()}
+                boundaries={props.boundaries}
               />
             ),
           },
@@ -272,6 +274,8 @@ function SelectedCell(props: {
 export function SelectedCellPanel(props: {
   cells: CellStore;
   fps: number;
+  /** First frames of sessions 2.. of a multi-session run (marked on the trace). */
+  boundaries?: readonly number[];
   /** Fold to its header line (while the History tab is open); unfolds when this turns false. */
   folded?: boolean;
 }): JSX.Element {
@@ -358,7 +362,15 @@ export function SelectedCellPanel(props: {
           </p>
         }
       >
-        {(id) => <SelectedCell cells={props.cells} id={id()} fps={props.fps} scale={scale()} />}
+        {(id) => (
+          <SelectedCell
+            cells={props.cells}
+            id={id()}
+            fps={props.fps}
+            scale={scale()}
+            boundaries={props.boundaries}
+          />
+        )}
       </Show>
     </SidePanel>
   );

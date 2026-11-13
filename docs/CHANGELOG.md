@@ -18,6 +18,23 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
   (`tools/cala-eval/results/2026-11-13-merge-rule.md`). Diagnostics:
   `qc_eval --merge-log` writes one JSON line per merge test.
+- Cala: multi-session runs. Pick a parent folder and every recording folder in
+  it (any depth; Miniscope V4 `date/time/My_V4_Miniscope/` and `msCam` layouts)
+  becomes a session; **Multi-session run** and **Add session** build the list by
+  hand. The list shows each session's frames, frame rate, size and recording
+  start (from `metaData.json`), is ordered by start time (else by path), and can
+  be reordered and trimmed. Sessions must share size and bit depth; a different
+  frame rate is a warning. Two library modes: **Joint** (one library through
+  all sessions, the same cell ids in each) and **Separate** (a library per
+  session). The run is automatic (Discover, the chosen Refine runs, Extract) and
+  writes each session's results when they are final to a `cala-results` tree
+  next to the data that mirrors the session paths: `cala-export.npz`,
+  `cala-session.json` and a run manifest `cala-run.json`. Chrome and Edge write
+  into the folder (a new timestamped folder if `cala-results` exists); other
+  browsers download one zip. Session boundaries are recorded in the event log
+  and marked on the History plots and the cell trace; the engines call a
+  no-op `onSessionBoundary` hook there. Boundary handling itself is unchanged.
+  A single recording folder opens as before.
 - Cala: recordings named `msCam0.avi, msCam1.avi, ...` (older Miniscope DAQ
   software), zero-padded (`msCam001.avi`) or with another prefix now open, not only
   `0.avi, 1.avi, ...`. Videos are grouped into numbered series per folder; a

@@ -153,6 +153,34 @@ describe('export', () => {
     expect([...px.slice(st[1], st[2])]).toEqual([2 * W + 3, 2 * W + 4, 3 * W + 3, 3 * W + 4]);
   });
 
+  it('writes one session of a Joint run: frames sliced, session block in meta', async () => {
+    const z = parseNpz(
+      await buildCalaExport({
+        ...(await input()),
+        frameRange: { start: 3, end: 6 },
+        session: { index: 1, start_frame: 3 },
+      }),
+    );
+    const a = z.arrays;
+    expect(a.traces.shape).toEqual([3, 3]);
+    const traces = processNpyResult(a.traces);
+    // Cell 1 (value 100 + frame) over frames 3, 4, 5.
+    expect([...traces.data.slice(3, 6)]).toEqual([103, 104, 105]);
+    expect(a.motion_shift_yx.shape).toEqual([3, 2]);
+    expect(a.motion_shift_yx.data[0]).toBe(1.5);
+    expect([...a.flicker_offset.data]).toEqual([3, 4, 5]);
+    expect([...a.cell_ids.data]).toEqual([4, 9, 11]);
+    const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
+    expect(meta.frames).toBe(3);
+    expect(meta.session).toEqual({ index: 1, start_frame: 3 });
+  });
+
+  it('refuses a frame range outside the result', async () => {
+    await expect(
+      buildCalaExport({ ...(await input()), frameRange: { start: 5, end: T + 1 } }),
+    ).rejects.toThrow(RangeError);
+  });
+
   it('writes the run history and event log when given', async () => {
     const h = new StreamHistory();
     h.define({

@@ -30,7 +30,8 @@ import {
 import type { FastLoop } from './fast-loop.ts';
 import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
 import type { FlatFieldSink } from './flat-field-runner.ts';
-import type { FramePixels } from './frame-source.ts';
+import { sessionBoundaries, type FramePixels } from './frame-source.ts';
+import { boundariesInBatch, NO_SESSION_HOOKS, type SessionHooks } from './session-boundary.ts';
 import {
   nextStep,
   type BatchPreviews,
@@ -174,6 +175,10 @@ export class FrontStage {
   /** What the fast loop in stage C is built from. */
   readonly fastSetup: FastLoopSetup;
   private readonly cursor: PipelineCursor;
+  /** First frames of sessions 1.. of a multi-session recording (empty for one). */
+  private readonly boundaries: number[];
+  /** Called at each session boundary (see `session-boundary.ts`); does nothing by default. */
+  sessionHooks: SessionHooks = NO_SESSION_HOOKS;
   private readonly width: number;
   private readonly height: number;
   private readonly px: number;
@@ -224,6 +229,7 @@ export class FrontStage {
     this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
     this.plan = makePlan(frameCount, options);
     this.cursor = new PipelineCursor(this.plan);
+    this.boundaries = sessionBoundaries(reader.info);
     this.width = width;
     this.height = height;
     this.px = width * height;
@@ -314,6 +320,8 @@ export class FrontStage {
       };
     }
 
+    for (const b of boundariesInBatch(this.boundaries, s.start, s.count))
+      this.sessionHooks.onSessionBoundary(b.index, b.frame);
     // A new flat-field map takes effect here, between batches, never mid-batch.
     const flatField = this.takeFlatField(s.start);
     const rp = this.replay;

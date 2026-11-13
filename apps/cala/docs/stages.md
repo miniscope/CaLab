@@ -113,6 +113,71 @@ fixed cut-off, such as "below 0.2× the previous run", was left out on purpose.
 Pick one from data, such as `tools/cala-eval/results/2026-11-12-skirt-stability.md`
 §5, where the typical cell is flat by pass 4.
 
+## Sessions: library-flow modes
+
+A run can hold several recording sessions of one animal (`src/lib/sessions.ts`,
+`src/lib/session-run.ts`). The **library-flow mode** says how the stages above
+compose with the sessions. It is a run setting, chosen on the session list.
+
+| Mode         | Discover                            | Refine               | Extract                          | Cell ids              |
+| ------------ | ----------------------------------- | -------------------- | -------------------------------- | --------------------- |
+| **Separate** | per session, one after another      | per session          | per session                      | per session           |
+| **Joint**    | once, through all sessions in order | replays all sessions | every session, the final library | same in every session |
+| **Apply**    | none: a fixed library               | none                 | per session                      | the library's         |
+
+- **Joint** opens the sessions as one recording (`FrameSource.openSessions`):
+  frames follow one another and `info.sessions` says where each session
+  starts. Extract runs once over all of them with the final library, and the
+  export is cut per session, so each session gets its own file with the same
+  cell ids. The engine runs straight across a boundary, as it did when sessions
+  were concatenated by hand.
+- **Separate** opens one session at a time and runs Discover, Refine and
+  Extract on it before the next.
+- **Apply** is not built. It needs a starting library from a file (the
+  `LibrarySource` `file` variant below); `LibraryMode` has the slot.
+- A multi-session run is automatic. After Discover it runs the chosen number
+  of Refine runs (default 1, 0 to 5), then Extract, then writes the results. In
+  Separate mode it then opens the next session. A failed or cancelled stage
+  stops the automatic run. A session where Discover finds no cells is skipped
+  and marked so in the manifest.
+- A single folder with one recording stays a one-session run with no automation.
+
+### Boundaries (plumbing only)
+
+The frame source knows each frame's session (`sessionOfFrame`) and the
+boundary frames (`sessionBoundaries`). Both pipeline engines call
+`sessionHooks.onSessionBoundary(index, frame)` (`src/lib/session-boundary.ts`)
+before processing a batch that holds the first frame of a session. The hook
+does nothing yet. Boundary handling (re-registration, state resets,
+per-session gain) will plug in there once it has been measured. Batches are
+not split at boundaries.
+
+The run's event log gets a `session` event at each boundary as Discover
+reaches it; the History plots and the cell trace draw a line there. The
+session metadata and the run manifest list the boundary frames.
+
+### Results
+
+Each session's results are written when they are final: after its Extract
+(Separate), or for all sessions after the final Extract (Joint). They go to a
+tree parallel to the data, never into a data folder:
+
+```
+<results location>/cala-results/              (cala-results_<date>_<time> if it exists)
+  cala-run.json                               mode, settings, sessions, boundaries
+  2026_11_10/14_02_33/My_V4_Miniscope/        the session's path below the picked folder
+    cala-export.npz                           export format 3, meta_json.session added
+    cala-session.json                         app version, mode, stages run, session index
+                                              and path, boundary frames, library version,
+                                              shared cell ids (Joint)
+```
+
+The location defaults to the picked data folder; `readwrite` is asked for
+when the run starts. Without the File System Access API the same tree
+downloads as `cala-results.zip` when the run ends (each file is built in
+memory first). A manual Extract after the run writes nothing automatically;
+use Export.
+
 ## Deferred
 
 - **Repeated Discover** ("Discover again") is not offered. It would replay the
