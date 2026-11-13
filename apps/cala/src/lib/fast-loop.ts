@@ -114,7 +114,8 @@ export interface FastLoopOptions {
    * (Discover built it). Instead of `init` it gets a `replay` message with the
    * `refine` scope, frames are forwarded from frame 0, and no noise maps are
    * sent (it keeps the newest map of the Discover run; the replay's map
-   * restarts from calibration).
+   * restarts from calibration). The forward pool never drops a batch then
+   * (`ForwardPool` lossless): the main thread paces the batches instead.
    */
   refine?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
@@ -206,7 +207,8 @@ export class FastLoop {
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
-    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px);
+    // Refine drops no frame for the slow loop (the main thread paces it).
+    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px, this.o.refine);
   }
 
   get session(): number {

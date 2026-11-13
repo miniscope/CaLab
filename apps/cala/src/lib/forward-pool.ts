@@ -10,6 +10,11 @@
  * bounded by `size` buffers on each side. Dropping is safe for discovery: the
  * slow loop keeps a reservoir of past frames per tile, and a cell that is
  * active once is active again.
+ *
+ * A **lossless** pool (Refine, which must not drop a frame) never drops: with
+ * every buffer in flight it allocates one more. Its memory is then bounded by
+ * whoever paces the batches (the Refine stage asks for the next batch only
+ * while the slow loop is at most a few batches behind).
  */
 export class ForwardPool {
   readonly size: number;
@@ -20,12 +25,18 @@ export class ForwardPool {
   forwardedFrames = 0;
   droppedFrames = 0;
 
+  /** Never drop a batch (see the class comment). */
+  readonly lossless: boolean;
+  /** Buffers a lossless pool allocated beyond `size`. */
+  extraBuffers = 0;
+
   /** `size` buffers of `length` floats each. */
-  constructor(size: number, length: number) {
+  constructor(size: number, length: number, lossless = false) {
     if (!(size >= 1) || !(length >= 1))
       throw new RangeError('ForwardPool needs size, length >= 1.');
     this.size = Math.floor(size);
     this.length = Math.floor(length);
+    this.lossless = lossless;
   }
 
   /** Buffers handed out and not yet returned. */
@@ -38,10 +49,11 @@ export class ForwardPool {
    * dropped and counted) when every buffer is in flight.
    */
   acquire(frames: number): Float32Array | null {
-    if (this.busy >= this.size) {
+    if (this.busy >= this.size && !this.lossless) {
       this.droppedFrames += frames;
       return null;
     }
+    if (this.busy >= this.size) this.extraBuffers++;
     this.busy++;
     this.forwardedFrames += frames;
     return this.free.pop() ?? new Float32Array(this.length);

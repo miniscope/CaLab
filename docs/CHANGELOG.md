@@ -73,6 +73,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: Refine replays the recording pipelined. It used to keep at most one
+  batch ahead of the slow loop, so the three pipeline workers ran one batch at
+  a time (Refine at about half Extract's frame rate). It now keeps up to four
+  batches ahead (`REFINE_SLOW_LEAD`); the forward pool of a Refine run never
+  drops a batch (lossless `ForwardPool`), so the slow loop still observes
+  every frame in order. In a Refine run with visit workers, a batch also gives
+  way between frames while a visit is out, so visit results are applied and
+  new visits handed out without waiting for the batch. Refine on the 600 x 600
+  sim (2000 frames, M-series, Metal): 139–146 fps before, 152–165 after (with
+  the idle-visit change, 177–180). Visits per frame are compute-dependent in
+  the app; with this change a Refine run makes about 20–35 % more visits per
+  frame than before (and more refines per run). Discover is unchanged.
 - Cala: the split-half merge rule is the default (`MergeRule::SplitHalf`).
   Two cells whose footprints overlap less than half now merge only when the
   held-out test accepts the merge and their measured shapes agree within

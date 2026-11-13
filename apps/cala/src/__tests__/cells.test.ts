@@ -26,7 +26,14 @@ import {
 } from '../lib/slow-runner.ts';
 import { TraceHistory } from '../lib/trace-history.ts';
 import { parseQc } from '../lib/qc.ts';
-import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
+import type {
+  FastToSlow,
+  LibraryView,
+  OwnerToVisit,
+  SlowToFast,
+  SlowToMain,
+  VisitToOwner,
+} from '../workers/slow-types.ts';
 
 beforeAll(async () => {
   await initCalaWasm(
@@ -66,6 +73,22 @@ describe('ForwardPool (the dropping policy)', () => {
     pool.release(a);
     // The returned buffer is reused, not reallocated.
     expect(pool.acquire(4)).toBe(a);
+  });
+
+  it('a lossless pool (Refine) never drops: it allocates past `size` and keeps only `size`', () => {
+    const pool = new ForwardPool(2, 10, true);
+    const bufs = [pool.acquire(4), pool.acquire(4), pool.acquire(4)];
+    expect(bufs.every((b) => b !== null)).toBe(true);
+    expect(pool.inFlight).toBe(3);
+    expect(pool.droppedFrames).toBe(0);
+    expect(pool.forwardedFrames).toBe(12);
+    expect(pool.extraBuffers).toBe(1);
+    for (const b of bufs) pool.release(b);
+    expect(pool.inFlight).toBe(0);
+    // Two kept for reuse, the extra one let go.
+    expect(pool.acquire(4)).toBe(bufs[1]);
+    expect(pool.acquire(4)).toBe(bufs[0]);
+    expect(pool.extraBuffers).toBe(1);
   });
 
   it('frees the slot for a foreign buffer without keeping it', () => {
@@ -849,6 +872,76 @@ describe('SlowRunner run stages (Discover, then Refine replays)', () => {
     // Repeatable.
     t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
     expect(t.toMain.of('status').at(-1)!.status.run).toBe(3);
+  });
+
+  it('in Refine, a batch gives way between frames while a visit is out', async () => {
+    const toFast = recorder<SlowToFast>();
+    const toMain = recorder<SlowToMain>();
+    const visit = recorder<OwnerToVisit>();
+    const events: string[] = [];
+    let jobs = 0;
+    const loop: SlowLoopLike = {
+      ...runner(new Set()).loop,
+      observe: (frame: Float32Array) => {
+        events.push(`observe ${frame[0]}`);
+        return true;
+      },
+      setEditScope: () => {},
+      takeJob: () => Uint8Array.of(++jobs),
+      applyJob: (b: Uint8Array) => {
+        events.push(`apply ${b[0]}`);
+      },
+      housekeep: () => undefined,
+    };
+    const r = new SlowRunner({
+      create: () => loop,
+      toFast,
+      toMain,
+      visits: [visit],
+      now: () => 0,
+    });
+    // 1 x 1 frames: each frame is one value.
+    const batch = (start: number): Extract<FastToSlow, { type: 'frames' }> => ({
+      ...frames(start),
+      count: 3,
+      frames: Float32Array.of(start, start + 1, start + 2),
+    });
+    const result = (job: number): VisitToOwner => ({
+      type: 'result',
+      session: 2,
+      bytes: Uint8Array.of(job),
+      ms: 1,
+    });
+    r.handle({ ...INIT, width: 1, height: 1, fov: Uint8Array.of(1), noise: Float32Array.of(1) });
+    let pauses = 0;
+    const pause = async () => {
+      pauses++;
+      // The visit's result arrives while the batch gives way.
+      if (pauses === 1) r.handleVisit(0, result(jobs));
+    };
+    // Discover: the job handed out after batch 0 is out during batch 3, but
+    // Discover keeps its timing: no pause.
+    await r.handleAsync(batch(0), pause);
+    expect(visit.of('job')).toHaveLength(1);
+    await r.handleAsync(batch(3), pause);
+    expect(pauses).toBe(0);
+    // Discover ends once the visit out is back.
+    r.handle({ type: 'end', session: 2 });
+    r.handleVisit(0, result(jobs));
+    r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    // Refine: a job goes out after the first batch; the next batch pauses
+    // after its first frame, applies the result and hands out the next job.
+    await r.handleAsync(batch(10), pause);
+    const out = visit.of('job').length;
+    events.length = 0;
+    await r.handleAsync(batch(20), pause);
+    expect(toMain.of('error')).toEqual([]);
+    expect(events).toEqual(['observe 20', `apply ${out}`, 'observe 21', 'observe 22']);
+    // The result handed out the next job, which is out for the next frame too.
+    expect(pauses).toBe(2);
+    expect(visit.of('job')).toHaveLength(out + 1);
+    // Each buffer still comes back once.
+    expect(toFast.of('ack').map((a) => a.start)).toEqual([0, 3, 10, 20]);
   });
 
   it('refuses a replay before the final library, and without a loop', () => {

@@ -168,6 +168,25 @@ export class SlowRunner {
     return this.visits.length > 0;
   }
 
+  /**
+   * `handle`, but a batch of frames gives way between frames (`pause`) while
+   * visits are out, so their results are applied and the next visits handed
+   * out without waiting for the whole batch (the slow worker's way of
+   * keeping its visit workers busy while it observes; see `frames`).
+   */
+  async handleAsync(msg: FastToSlow, pause: () => Promise<void>): Promise<void> {
+    if (msg.type !== 'frames' || msg.session !== this.session) {
+      this.handle(msg);
+      return;
+    }
+    try {
+      const steps = this.frameSteps(msg);
+      while (!steps.next().done) await pause();
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
   handle(msg: FastToSlow): void {
     if (msg.type === 'reset' || msg.type === 'init') {
       if (msg.session < this.session) return;
@@ -249,6 +268,19 @@ export class SlowRunner {
   }
 
   private frames(msg: Extract<FastToSlow, { type: 'frames' }>): void {
+    for (const _ of this.frameSteps(msg));
+  }
+
+  /**
+   * Observe a batch. With visit workers, in a Refine run, it yields after
+   * each frame while a visit is out: the caller may then let visit results
+   * in (`handleAsync`).
+   * Without that, a result waited for the whole batch, and once the frames
+   * came as fast as the slow worker could observe them (Refine, which never
+   * drops a batch) its visit workers sat idle and a Refine run made a few
+   * times fewer visits per frame.
+   */
+  private *frameSteps(msg: Extract<FastToSlow, { type: 'frames' }>): Generator<void, void> {
     const loop = this.loop;
     const init = this.init;
     let observed = 0;
@@ -275,7 +307,15 @@ export class SlowRunner {
           observed++;
           this.observed++;
           this.frame = msg.start + i + 1;
-          if (this.parallel) continue;
+          if (this.parallel) {
+            // Refine only: Discover keeps its timing (it drops batches instead).
+            if (this.scope !== 'all' && i + 1 < msg.count && this.busy.some((b) => b)) {
+              yield;
+              // A visit result failed meanwhile and dropped the loop.
+              if (this.loop !== loop) break;
+            }
+            continue;
+          }
           const s = this.now();
           const lib = loop.step(init.budget);
           maxStep = Math.max(maxStep, this.now() - s);
