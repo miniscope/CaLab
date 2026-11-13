@@ -36,6 +36,37 @@ ARMS = {
 }
 
 
+# Ground-truth scales of the sim arms (S2.4): `d` = median half-max diameter of the detectable
+# GT footprints, `edge` = median ring edge sigma (`gt_scales.py`, minisim 1.1.0 flags, seed 5
+# motion arms; v2 from S2.4 section 1). A sim's `given` scales for `qc_eval`.
+GT_SCALES = {
+    "static": {"d": 14.5, "edge": 4.0},
+    "motion": {"d": 14.4, "edge": 4.0},
+    "v3_static": {"d": 10.1, "edge": 1.6},
+    "v3_motion": {"d": 10.1, "edge": 1.6},
+    "size6_static": {"d": 6.0, "edge": 1.5},
+    "size6_motion": {"d": 6.0, "edge": 1.5},
+    "size16_static": {"d": 15.9, "edge": 1.6},
+    "size16_motion": {"d": 15.9, "edge": 1.6},
+}
+
+# S2.4 M0 one-at-a-time scale arms: `qc_eval` flags added to a run (section 6.1). The diameter
+# arms pin the flatten sigma at today's 20 px so only the detection-side scales move; `tile16`
+# also scales the slow loop's tile and margin with the diameter (6.4 d, 2.4 d).
+SCALE_ARMS = {
+    "base": "",
+    "d6": "--cell-diameter 6 --flatten-sigma 20",
+    "d14": "--cell-diameter 14 --flatten-sigma 20",
+    "d16": "--cell-diameter 16 --flatten-sigma 20",
+    "p075": "--psf-sigma 0.75",
+    "p3": "--psf-sigma 3",
+    "f10": "--flatten-sigma 10",
+    "f40": "--flatten-sigma 40",
+    "f80": "--flatten-sigma 80",
+    "tile16": "--cell-diameter 16 --flatten-sigma 20 --tile-px 102 --margin-px 38",
+}
+
+
 def spec_path(arm: str) -> Path:
     return SPEC_DIR / ARMS[arm]["spec"]
 
