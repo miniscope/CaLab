@@ -61,6 +61,14 @@
 //!                      estimate's split-half noise, Î > 0) | legacy (χ²
 //!                      disagreement and refine_min_change, the rule
 //!                      before S2.1c)
+//!   --merge-rule M     which merge tests may merge: legacy (default; the
+//!                      held-out test alone) | split-half (also one soma by
+//!                      the cells' split-half measured light)
+//!   --merge-log        DIAG (`--features diagnostics`): one JSON line per
+//!                      merge test (`merges.jsonl` in the output directory;
+//!                      `CALA_MERGE_LOG=<file>` does the same): the current
+//!                      rule's statistic and both cells' supports, footprint
+//!                      statistics and split halves, no decision changes
 //!   --cell-diameter D  expected soma diameter, px (default 10): every scale
 //!                      that follows it (detection, seed disk, statistics
 //!                      margin, held-out placebos, and the flatten σ = 2 D
@@ -200,7 +208,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
+    CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
     VisitRunner,
 };
 use calab_cala::motion::{
@@ -2290,6 +2298,15 @@ fn main() {
     let input = PathBuf::from(args.get(2).expect("input dir"));
     let out_dir = PathBuf::from(args.get(3).expect("out dir"));
     std::fs::create_dir_all(&out_dir).unwrap();
+    // DIAG: per-candidate merge log (no decision changes).
+    if args.iter().any(|a| a == "--merge-log") {
+        #[cfg(not(feature = "diagnostics"))]
+        panic!("--merge-log needs --features diagnostics");
+        #[cfg(feature = "diagnostics")]
+        if std::env::var_os("CALA_MERGE_LOG").is_none() {
+            std::env::set_var("CALA_MERGE_LOG", out_dir.join("merges.jsonl"));
+        }
+    }
     let has_gt = mode == "sim" || mode == "oracle";
     let oracle_mode = mode == "oracle";
     let motion = args.iter().any(|a| a == "--motion");
@@ -2434,6 +2451,16 @@ fn main() {
             "split-half" => RefineGate::SplitHalf,
             other => panic!("--refine-gate: legacy|split-half, not {other}"),
         };
+    }
+    if let Some(v) = arg_value(&args, "--merge-rule") {
+        scfg.merge_rule = match v.as_str() {
+            "legacy" => MergeRule::Legacy,
+            "split-half" => MergeRule::SplitHalf,
+            other => panic!("--merge-rule: legacy|split-half, not {other}"),
+        };
+    }
+    if scfg.merge_rule != MergeRule::Legacy {
+        println!("merge rule: {:?}", scfg.merge_rule);
     }
     if scfg.refine_gate != RefineGate::SplitHalf {
         println!("refine gate: {:?}", scfg.refine_gate);
@@ -2731,6 +2758,8 @@ fn main() {
                             );
                         }
                         std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
+                        #[cfg(feature = "diagnostics")]
+                        calab_cala::discover::merge_log_set_gt(g.cols.clone(), dims.width);
                         if oracle_mode {
                             let (lib, m) =
                                 oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
@@ -3226,6 +3255,8 @@ fn main() {
         println!("flat field: {} updates", o.updates());
     }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
+    #[cfg(feature = "diagnostics")]
+    calab_cala::discover::merge_log_flush();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
     if churn_log {
         std::fs::write(out_dir.join("edits.tsv"), &edit_log).unwrap();
