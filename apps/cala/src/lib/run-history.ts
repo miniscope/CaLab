@@ -473,7 +473,14 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     setAttention(new Set<string>());
     const n = o.frameCount;
     setRunEnd(n !== undefined && Number.isFinite(n) && n > 0 ? n / fps : null);
-    events.push({ frame: 0, t: 0, kind: 'pass', to: 1, detail: 'Pass 1 started', wall: wall0 });
+    events.push({
+      frame: 0,
+      t: 0,
+      kind: 'stage',
+      to: 'discover',
+      detail: 'Discover started',
+      wall: wall0,
+    });
     bump();
   }
 

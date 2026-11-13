@@ -22,6 +22,7 @@
  */
 import type {
   CellStatusView,
+  EditScopeName,
   FastToSlow,
   LibraryView,
   OwnerToVisit,
@@ -61,6 +62,8 @@ export interface SlowLoopLike {
   step(budget: number): PublishedLibrary | undefined;
   finalize(): PublishedLibrary;
   setNoise(noise: Float32Array): void;
+  /** Restrict the structural edits (absent in older fakes: a replay is refused). */
+  setEditScope?(scope: string): void;
   /** Parallel visits (needed only with visit workers). */
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
@@ -132,11 +135,15 @@ export class SlowRunner {
   private loop: SlowLoopLike | null = null;
   private init: SlowInit | null = null;
   private frame = 0;
+  private consumed = 0;
   private observed = 0;
   private skipped = 0;
   private version = 0;
   private final = false;
   private ending = false;
+  /** Runs into this loop (1 = Discover) and the current run's scope. */
+  private run = 0;
+  private scope: EditScopeName = 'all';
   private statusAt = -Infinity;
   /** Per visit worker: a visit is out. */
   private busy: boolean[];
@@ -173,6 +180,7 @@ export class SlowRunner {
         const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget } = msg;
         this.init = { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget };
         this.loop = this.deps.create(this.init);
+        this.run = 1;
         for (const v of this.visits)
           v.postMessage({ type: 'init', session: msg.session, ...this.init });
       }
@@ -182,6 +190,7 @@ export class SlowRunner {
     try {
       if (msg.type === 'frames') this.frames(msg);
       else if (msg.type === 'end') this.end();
+      else if (msg.type === 'replay') this.replay(msg.scope);
     } catch (err) {
       this.fail(err);
     }
@@ -280,6 +289,7 @@ export class SlowRunner {
         }
       }
     } finally {
+      this.consumed = Math.max(this.consumed, msg.start + msg.count);
       // The buffer always goes back, or the fast worker's pool would shrink.
       this.deps.toFast.postMessage(
         {
@@ -318,6 +328,22 @@ export class SlowRunner {
       ]);
       this.jobOwnerMs += this.now() - t0;
     }
+  }
+
+  /** Another run from frame 0 into this loop (see `FastToSlow` `replay`). */
+  private replay(scope: EditScopeName): void {
+    const loop = this.loop;
+    if (!loop) throw new Error('No slow loop to refine: run Discover first.');
+    if (!this.final) throw new Error('The slow loop has not published its final library yet.');
+    if (!loop.setEditScope) throw new Error('This build of the slow loop cannot refine.');
+    loop.setEditScope(scope);
+    this.scope = scope;
+    this.run++;
+    this.final = false;
+    this.ending = false;
+    this.frame = 0;
+    this.consumed = 0;
+    this.status(0, 0);
   }
 
   private end(): void {
@@ -375,6 +401,7 @@ export class SlowRunner {
     if (!loop) return;
     const status: SlowStatus = {
       frame: this.frame,
+      consumed: this.consumed,
       observed: this.observed,
       skipped: this.skipped,
       cells: loop.cellCount,
@@ -392,6 +419,8 @@ export class SlowRunner {
       jobOwnerMs: this.jobOwnerMs,
       work: loop.work ?? 0,
       final: this.final,
+      run: this.run,
+      editScope: this.scope,
     };
     this.visitMs = status.visitMs;
     this.visitMsSum = 0;
@@ -412,11 +441,14 @@ export class SlowRunner {
     this.loop = null;
     this.init = null;
     this.frame = 0;
+    this.consumed = 0;
     this.observed = 0;
     this.skipped = 0;
     this.version = 0;
     this.final = false;
     this.ending = false;
+    this.run = 0;
+    this.scope = 'all';
     this.statusAt = -Infinity;
     this.busy = this.visits.map(() => false);
     this.jobs = 0;

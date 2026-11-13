@@ -89,7 +89,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-describe('pass 2 store', () => {
+describe('Extract (pass 2) store', () => {
   it('replays the recorded frames with the final library and gathers the traces', async () => {
     const { store, started } = setup();
     expect(store.blockedReason()).toBeNull();
@@ -131,8 +131,8 @@ describe('pass 2 store', () => {
   });
 
   it('says why it cannot run', () => {
-    expect(setup({ status: 'running' }).store.blockedReason()).toMatch(/still running/);
-    expect(setup({ status: 'idle' }).store.blockedReason()).toMatch(/Run pass 1/);
+    expect(setup({ status: 'running' }).store.blockedReason()).toMatch(/after Discover finishes/);
+    expect(setup({ status: 'idle' }).store.blockedReason()).toMatch(/after Discover finishes/);
     expect(setup({ final: false }).store.blockedReason()).toMatch(/final library/);
     expect(setup({ frames: 2 }).store.blockedReason()).toMatch(/calibration/);
   });

@@ -15,7 +15,8 @@ bottom. Developer notes are in [README.md](README.md).
   motion and divides it out.
 - Finds cells while the recording streams by, adds and prunes them as evidence
   accumulates, and extracts a trace for each.
-- Runs a second pass that re-solves every frame with the final cell set.
+- On a recording, lets the footprints keep converging over replays of the recording
+  (**Refine**) and solves every frame with the final cell set (**Extract**).
 - Shows quality-control indicators while it runs, and exports the result as NumPy
   `.npz` files.
 
@@ -49,7 +50,7 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
 
 Needed in any browser: WebAssembly, module Web Workers, and a folder picker
 (`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
-ones. If the browser has no origin private file system (OPFS), pass 2 holds its traces
+ones. If the browser has no origin private file system (OPFS), Extract holds its traces
 in memory, up to 1.5 GB, and says so with an error when a recording does not fit.
 Use a desktop browser; a laptop with enough free RAM for the cell library and a
 few batches of frames is plenty.
@@ -84,14 +85,15 @@ portrait window, the column moves under the image and the page scrolls.
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
 **Run panel.** One status line (percent read, frame, frames per second) and the
-convergence status, with icon buttons to pause (⏸), restart (↻) and end pass 1 or
+convergence status, with icon buttons to pause (⏸), restart (↻) and end Discover or
 stop the live run (■). Below it: the time-window control (**Run** and, when the run is
 long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
 overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
 explained, residual). Collapsing the panel folds the plot away. Below the plot:
-pass 2 progress, **Discover cells**, **Pass 2 after pass 1**, **Run pass 2** and the
-**Export** menu. In a narrow window the passes show as a stepper (Calibrate, Pass 1,
-Pass 2, Export) and the metrics as small tiles on the same fixed ranges.
+**Discover cells**, **Extract after Discover**, the **Refine** button and its readout,
+Extract progress, **Extract** and the **Export** menu. In a narrow window the stages
+show as a stepper (Calibrate, Discover, Refine, Extract, Export) and the metrics as
+small tiles on the same fixed ranges. A live stream shows Discover only.
 
 **Cell panel.** The selected cell's footprint over its full extent (its own peak = 1,
 no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
@@ -145,19 +147,29 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 
 ## How a run works
 
-1. **Opening starts pass 1.** The recording is walked in batches. Preprocessing and
+A run has three named stages: **Discover**, **Refine** and **Extract** (see
+[docs/stages.md](docs/stages.md)).
+
+1. **Opening starts Discover.** The recording is walked in batches. Preprocessing and
    motion correction run in workers, so the page stays responsive. The field of view
    shows the frame being processed at the stage you pick, with the cells over it.
-2. **Pass 1 discovers cells.** A slow loop looks for new cells and prunes bad ones
+2. **Discover finds cells.** A slow loop looks for new cells and prunes bad ones
    while the fast loop extracts traces with the library as it stands. The traces
-   emitted early were solved with the cells known at that moment.
-3. **Pass 2 extracts traces.** It replays the recording with the final library, using
-   the motion and flicker recorded in pass 1, so a cell found late has a trace from
-   frame 0. It starts by itself when pass 1 ends (**Pass 2 after pass 1**), or with
-   **Run pass 2**. **End pass 1** ends discovery at the frames read so far.
-4. **Export.** Once pass 2 has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
+   emitted early were solved with the cells known at that moment. **End Discover**
+   (■) ends it at the frames read so far.
+3. **Refine (optional, repeatable).** **Refine** replays the recording from frame 0,
+   and the footprints keep converging. No cell is added, merged, split or deleted.
+   Each run reports how many footprints it refined, the median footprint change and
+   the refines per minute against the run before. "Looks settled" appears when the
+   refine rate stops falling. A Refine after an Extract discards the Extract result,
+   because its traces no longer match the footprints.
+4. **Extract extracts traces.** It replays the recording with the final library, using
+   the motion and flicker recorded during Discover, so a cell found late has a trace from
+   frame 0. It starts by itself when Discover ends (**Extract after Discover**; not after
+   a Refine run), or with **Extract**.
+5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
-   and a JSON block with the run's provenance. **Export for CaDecon (N cells)** writes just
+   and a JSON block with the run's provenance and the stages that ran. **Export for CaDecon (N cells)** writes just
    the traces of the cells that pass QC (untick **QC-passing cells only** to include
    every cell), for CaDecon. Python:
    `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds the run's history
@@ -213,7 +225,7 @@ estimates the pattern from the recording's own motion:
   when it has one. Stock Miniscope metadata has none, so the key is then the folder
   name, and a renamed folder starts from scratch. A map is never reused for a
   different frame size.
-- Pass 2 uses pass 1's newest map from frame 0.
+- Refine and Extract use Discover's newest map from frame 0.
 
 ## Testing with a simulated stream
 
@@ -246,8 +258,8 @@ never changed. See the README for the protocol and the full option list.
   pixel gain does not change between sessions; this has not been checked across days.
 - **Offline throughput.** Throughput depends on the machine and on whether WebGPU is
   available. On an Apple-silicon laptop, Chrome with WebGPU ran roughly 175 to 215
-  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Pass 2 repeats
-  the walk, so a long recording takes a while.
+  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Refine and
+  Extract repeat the walk, so a long recording takes a while.
 - **Live acquisition is experimental.** The live-source field on the start page
   streams frames from a WebSocket (see the README). Apart from
   [testing with a simulated stream](#testing-with-a-simulated-stream), it is not

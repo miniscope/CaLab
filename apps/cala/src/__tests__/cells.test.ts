@@ -547,6 +547,72 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     fl.dispose();
     expect(port.of('reset')).toEqual([{ type: 'reset', session: 5 }]);
   });
+
+  it('Refine: the replayed frames carry the background levels of their solve', () => {
+    const port = recorder<FastToSlow>();
+    const fake = fakeBackend();
+    fake.libs.set(3, [11, 12]);
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 5,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        poolSize: 2,
+        refine: true,
+        initialLibrary: Uint8Array.of(3),
+      },
+      port,
+      fake.backend,
+    );
+    fl.process(new Float32Array(12), 0, 3, calibration);
+    expect(port.of('replay')).toHaveLength(1);
+    const [batch] = port.of('frames');
+    expect(batch).toMatchObject({ start: 0, version: 3, cells: 2 });
+    expect(Array.from(batch.background!)).toEqual([0.5, 1.5, 10.5, 11.5, 20.5, 21.5]);
+    fl.dispose(true);
+  });
+
+  it('Refine: replays into the existing slow loop from frame 0, without noise maps', () => {
+    const port = recorder<FastToSlow>();
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 5,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        startFrame: 6,
+        noiseEvery: 3,
+        poolSize: 2,
+        refine: true,
+      },
+      port,
+      fakeBackend().backend,
+    );
+    fl.process(new Float32Array(12), 0, 3, calibration);
+    expect(port.of('init')).toHaveLength(0);
+    expect(port.of('replay')).toEqual([{ type: 'replay', session: 5, scope: 'refine' }]);
+    expect(port.of('frames').map((m) => m.start)).toEqual([0]);
+    fl.handleSlow({
+      type: 'ack',
+      session: 5,
+      frames: port.of('frames')[0].frames,
+      start: 0,
+      count: 3,
+      observed: 3,
+    });
+    fl.process(new Float32Array(12), 3, 3, calibration);
+    fl.process(new Float32Array(12), 6, 3, calibration);
+    expect(port.of('frames').every((m) => m.noise === undefined)).toBe(true);
+    // Stopped mid-run: the slow loop stays and publishes what it has.
+    fl.dispose(true);
+    expect(port.of('reset')).toHaveLength(0);
+    expect(port.of('end')).toEqual([{ type: 'end', session: 5 }]);
+  });
 });
 
 function fakeLib(version: number, ids: number[]): PublishedLibrary & { freed: boolean } {
@@ -740,6 +806,60 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     t.r.handle({ ...INIT, session: 1 });
     expect(t.toFast.of('library')).toHaveLength(1);
     expect(t.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SlowRunner run stages (Discover, then Refine replays)', () => {
+  function withScope() {
+    const t = runner(new Set());
+    const scopes: string[] = [];
+    t.loop.setEditScope = (s: string) => {
+      scopes.push(s);
+    };
+    return { ...t, scopes };
+  }
+  const frames = (start: number): Extract<FastToSlow, { type: 'frames' }> => ({
+    type: 'frames',
+    session: 2,
+    start,
+    count: 2,
+    version: 0,
+    cells: 0,
+    frames: new Float32Array(4),
+    traces: new Float32Array(0),
+  });
+
+  it('keeps the loop, sets the refine scope and runs again from frame 0', () => {
+    const t = withScope();
+    t.r.handle(INIT);
+    t.r.handle(frames(0));
+    t.r.handle(frames(2));
+    t.r.handle({ type: 'end', session: 2 });
+    const done = t.toMain.of('status').at(-1)!.status;
+    expect(done).toMatchObject({ final: true, run: 1, editScope: 'all', consumed: 4 });
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.scopes).toEqual(['refine']);
+    expect(t.create).toHaveBeenCalledOnce();
+    const st = t.toMain.of('status').at(-1)!.status;
+    expect(st).toMatchObject({ final: false, run: 2, editScope: 'refine', frame: 0, consumed: 0 });
+    t.r.handle(frames(0));
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ frame: 2, consumed: 2, run: 2 });
+    t.r.handle({ type: 'end', session: 2 });
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ final: true, run: 2 });
+    // Repeatable.
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.toMain.of('status').at(-1)!.status.run).toBe(3);
+  });
+
+  it('refuses a replay before the final library, and without a loop', () => {
+    const t = withScope();
+    t.r.handle(INIT);
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.toMain.of('error')[0].message).toMatch(/final library/);
+    expect(t.scopes).toEqual([]);
+    const u = withScope();
+    u.r.handle({ type: 'replay', session: -1, scope: 'refine' });
+    expect(u.toMain.of('error')[0].message).toMatch(/Discover first/);
   });
 });
 

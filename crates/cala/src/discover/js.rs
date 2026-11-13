@@ -13,12 +13,17 @@
 //! the slow loop only observes: `takeJob` hands out a tile visit as bytes,
 //! a `VisitWorker` built with the same arguments runs it, `applyJob` takes
 //! its result back, and `housekeep` publishes.
+//!
+//! Run stages (`apps/cala/docs/stages.md`): Discover is a run with the
+//! default edit scope from an empty library; a Refine run keeps this loop
+//! (all its state), sets the `refine` scope and is fed the recording again
+//! from frame 0. The same path as qc_eval's `--later-passes refine`.
 
 use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 
-use super::{SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner};
+use super::{EditScope, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner};
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
@@ -113,6 +118,27 @@ impl JsSlowLoop {
         self.inner
             .set_noise(noise.to_vec())
             .map_err(|e| js_err("setNoise", e))
+    }
+
+    /// Restrict the structural edits from now on: `all` (Discover, the
+    /// default), `refine` (the Refine stage: footprints keep converging,
+    /// the cell set is frozen), `refine-prune` or `refine-merge` (see
+    /// `EditScope`; not used by the app). For a Refine run, call it with
+    /// `refine` after Discover's `finalize`, then feed the recording again
+    /// from frame 0 (`observe` / `step` or visit jobs, as in Discover) and
+    /// `finalize` at its end. Visits handed out from now on carry the scope.
+    #[wasm_bindgen(js_name = setEditScope)]
+    pub fn set_edit_scope(&mut self, scope: &str) -> Result<(), JsError> {
+        let s = EditScope::from_name(scope)
+            .ok_or_else(|| js_err("setEditScope", format!("unknown scope {scope:?}")))?;
+        self.inner.set_edit_scope(s);
+        Ok(())
+    }
+
+    /// The current edit scope's name (`setEditScope`).
+    #[wasm_bindgen(getter, js_name = editScope)]
+    pub fn edit_scope(&self) -> String {
+        self.inner.edit_scope().name().to_string()
     }
 
     /// Whether frames solved with library `version` can still be observed.
@@ -363,19 +389,18 @@ impl JsVisitWorker {
 }
 
 impl JsSlowLoop {
-    /// A loop around `inner` that knows `lib` (tests: the JS surface driven
-    /// natively).
+    /// A loop built from parts (tests: another config, a seeded library).
     #[cfg(test)]
-    pub(super) fn from_loop(inner: SlowLoop, lib: Arc<Library>) -> JsSlowLoop {
+    pub(crate) fn from_parts(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
         JsSlowLoop {
             inner,
-            libs: vec![lib],
+            libs: vec![start],
             traces: FrameTraces::default(),
         }
     }
 
     #[cfg(test)]
-    pub(super) fn inner(&self) -> &SlowLoop {
+    pub(crate) fn inner(&self) -> &SlowLoop {
         &self.inner
     }
 

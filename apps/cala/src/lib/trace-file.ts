@@ -213,7 +213,7 @@ export class OpfsBackend implements BlockBackend {
     } catch (err) {
       if (err instanceof Error && err.name === 'QuotaExceededError') {
         throw new TraceStorageError(
-          `The browser ran out of storage for the pass-2 traces after ${gb(this.written)}. Free some disk space and run pass 2 again.`,
+          `The browser ran out of storage for the extracted traces after ${gb(this.written)}. Free some disk space and run Extract again.`,
         );
       }
       throw err;
@@ -267,7 +267,7 @@ export async function createTraceFile(
     const short = await storageShortfall(bytes);
     if (short) {
       throw new TraceStorageError(
-        `Pass 2 needs ${gb(bytes)} of browser storage (${cells} cells x ${frames.toLocaleString()} frames) but only ${gb(short.free)} is available. Free some disk space, or finish pass 1 earlier.`,
+        `Extract needs ${gb(bytes)} of browser storage (${cells} cells x ${frames.toLocaleString()} frames) but only ${gb(short.free)} is available. Free some disk space, or end Discover earlier.`,
       );
     }
     const name = `cala-pass2-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;

@@ -1,5 +1,6 @@
 import { StreamHistory } from '@calab/compute';
 import { RunEvents } from '../lib/run-events.ts';
+import type { StageRun } from '../lib/run-stages.ts';
 import { describe, expect, it } from 'vitest';
 import { parseNpz, processNpyResult, traceCandidates } from '@calab/io';
 import type { CellQcRow, QcSnapshot } from '../lib/qc.ts';
@@ -182,8 +183,57 @@ describe('export', () => {
     const events = JSON.parse(new TextDecoder().decode(a.run_events_json.data as Uint8Array));
     expect(events[0]).toMatchObject({ kind: 'range', key: 'shift_dy' });
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
-    expect(meta.format_version).toBe(2);
+    expect(meta.format_version).toBe(3);
     expect(meta.history.series[0]).toMatchObject({ key: 'shift_dy', range_final: [-20, 20] });
+  });
+
+  it('lists the stages that ran, with counts and timestamps', async () => {
+    const stages: StageRun[] = [
+      {
+        stage: 'discover',
+        index: 1,
+        startedAt: '2026-11-13T10:00:00.000Z',
+        endedAt: '2026-11-13T10:01:00.000Z',
+        outcome: 'done',
+        frames: 600,
+        cells: 12,
+        libraryVersion: 30,
+        refines: 40,
+        refinesPerMin: 80,
+        adds: 14,
+        merges: 1,
+        deletes: 1,
+        splits: 0,
+      },
+      {
+        stage: 'refine',
+        index: 1,
+        startedAt: '2026-11-13T10:01:10.000Z',
+        endedAt: '2026-11-13T10:02:00.000Z',
+        outcome: 'done',
+        frames: 600,
+        cells: 12,
+        libraryVersion: 34,
+        refines: 9,
+        refinesPerMin: 18,
+        footprintsRefined: 7,
+        medianFootprintChange: 0.04,
+      },
+    ];
+    const z = parseNpz(await buildCalaExport({ ...(await input()), stages }));
+    const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
+    expect(meta.stages.map((r: { stage: string }) => r.stage)).toEqual(['discover', 'refine']);
+    expect(meta.stages[0]).toMatchObject({
+      index: 1,
+      started_at: '2026-11-13T10:00:00.000Z',
+      outcome: 'done',
+      adds: 14,
+      refines: 40,
+    });
+    expect(meta.stages[1]).toMatchObject({ footprints_refined: 7, median_footprint_change: 0.04 });
+    expect('adds' in meta.stages[1]).toBe(false);
+    expect(meta.extract_seconds).toBeTypeOf('number');
+    expect('pass2_seconds' in meta).toBe(false);
   });
 
   it('writes the same archive with ZIP64 records forced', async () => {

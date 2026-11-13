@@ -2182,7 +2182,7 @@ fn js_observe_with_background_levels_matches_native() {
         let (s, e) = start(cfg.clone(), &seed);
         let lib = e.library().clone();
         let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), 0.0, 0).unwrap();
-        (super::js::JsSlowLoop::from_loop(s, lib), eng)
+        (super::js::JsSlowLoop::from_parts(s, lib), eng)
     };
     let (mut b, mut eb) = js(&cfg);
     let (mut c, mut ec) = js(&cfg);
@@ -2230,4 +2230,196 @@ fn js_observe_with_background_levels_matches_native() {
     assert_eq!(a.stats(), b.inner().stats());
     assert_eq!(bits(&a), bits(b.inner()));
     assert_ne!(bits(&a), bits(c.inner()), "the levels matter");
+}
+
+// ---- Run stages: the Refine replay (apps/cala/docs/stages.md) ---------------
+
+/// The structural counters a refine replay must leave alone.
+fn structural(s: &SlowStats) -> (u64, u64, u64, u64, u64, u64) {
+    (
+        s.adds,
+        s.absorbs,
+        s.merges,
+        s.splits,
+        s.deletes,
+        s.keep_tests,
+    )
+}
+
+#[test]
+fn edit_scope_names_round_trip() {
+    for s in EditScope::ALL {
+        assert_eq!(EditScope::from_name(s.name()), Some(s));
+        assert_eq!(EditScope::from_code(s.code()), Some(s));
+    }
+    assert_eq!(EditScope::from_name("refine"), Some(EditScope::Refine));
+    assert_eq!(EditScope::from_name("discover"), None);
+    assert_eq!(EditScope::from_code(4), None);
+}
+
+/// A Refine run as qc_eval's `--later-passes refine` makes it on a
+/// `SlowLoop` (the reference): Discover over the movie, the final library
+/// to the fast loop, the `refine` scope, then `refines` more passes from
+/// frame 0. Returns the bytes (past the version) of every published library
+/// of the Refine passes and of each pass's final library.
+///
+/// The traces go with the engine's ring-background levels, as the app's
+/// wire carries them (and as qc_eval passes the engine's `FrameTraces`).
+fn refine_reference(m: &[f32], t: usize, seed: &[Footprint], refines: usize) -> Vec<Vec<u8>> {
+    let n_px = N * N;
+    let (mut slow, mut eng) = start(shard_config(), seed);
+    let mut out = Vec::new();
+    let pass = |slow: &mut SlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            // The engine's ring levels go along, as the app sends them.
+            let mut tr = eng.process(f).unwrap();
+            tr.frame_index = slow.frames();
+            let lib = eng.library().clone();
+            slow.observe(f, &lib, &tr).unwrap();
+            if let Some(l) = slow.step(5_000_000).unwrap() {
+                if keep {
+                    out.push(l.to_bytes()[16..].to_vec());
+                }
+                eng.set_library(l).unwrap();
+            }
+        }
+        let lib = slow.finalize().unwrap();
+        out.push(lib.to_bytes()[16..].to_vec());
+        eng.set_library(lib).unwrap();
+    };
+    pass(&mut slow, &mut eng, &mut out, false);
+    slow.set_edit_scope(EditScope::Refine);
+    for _ in 0..refines {
+        pass(&mut slow, &mut eng, &mut out, true);
+    }
+    out
+}
+
+/// The same through the app's JS `SlowLoop` surface: `observe` by library
+/// version, `step`, `finalize`, `setEditScope("refine")`. Also returns the
+/// structural counters after Discover and after the last Refine.
+#[cfg(feature = "jsbindings")]
+#[allow(clippy::type_complexity)]
+fn refine_js(
+    m: &[f32],
+    t: usize,
+    seed: &[Footprint],
+    refines: usize,
+) -> (
+    Vec<Vec<u8>>,
+    (u64, u64, u64, u64, u64, u64),
+    (u64, u64, u64, u64, u64, u64),
+    Vec<u64>,
+    Vec<u64>,
+) {
+    use super::js::JsSlowLoop;
+    let n_px = N * N;
+    let (slow, mut eng) = start(shard_config(), seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let feed = |js: &mut JsSlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            let v = eng.library().version() as f64;
+            assert!(
+                js.observe(f, v, &tr.traces, Some(tr.background.clone()))
+                    .unwrap(),
+                "frame {k}: version {v}"
+            );
+            if let Some(l) = js.step(5_000_000.0).unwrap() {
+                if keep {
+                    out.push(l.arc().to_bytes()[16..].to_vec());
+                }
+                eng.set_library(l.arc().clone()).unwrap();
+            }
+        }
+    };
+    let mut out = Vec::new();
+    feed(&mut js, &mut eng, &mut out, false);
+    let lib = js.finalize().unwrap();
+    out.push(lib.arc().to_bytes()[16..].to_vec());
+    eng.set_library(lib.arc().clone()).unwrap();
+    let after_discover = structural(&js.inner().stats());
+    let ids_discover: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
+    js.set_edit_scope("refine").unwrap();
+    assert_eq!(js.edit_scope(), "refine");
+    for _ in 0..refines {
+        feed(&mut js, &mut eng, &mut out, true);
+        let lib = js.finalize().unwrap();
+        out.push(lib.arc().to_bytes()[16..].to_vec());
+        eng.set_library(lib.arc().clone()).unwrap();
+    }
+    let after_refine = structural(&js.inner().stats());
+    let ids_refine: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
+    (out, after_discover, after_refine, ids_discover, ids_refine)
+}
+
+/// Refine replays through the JS surface: no adds, absorbs, merges,
+/// splits, keep tests or deletions; footprints still change; the same
+/// libraries as the reference (qc_eval's later refine passes), bit for bit;
+/// and the same again on a second run (deterministic).
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_refine_replay_is_refine_only_deterministic_and_matches_qc_eval() {
+    // Long enough for a refine publish in the replays: with the ring levels
+    // taken off the statistics, 1500 frames give none.
+    let t = 2400;
+    let (m, seed) = busy_movie(t);
+    let (js, s_discover, s_refine, ids_discover, ids_refine) = refine_js(&m, t, &seed, 2);
+    assert_eq!(s_discover, s_refine, "structural edits in a Refine run");
+    assert_eq!(ids_discover, ids_refine, "the cell set changed");
+    // Discover's final library, then at least one refine publish.
+    assert!(js.len() > 3, "{} libraries", js.len());
+    assert!(
+        js[1..].iter().any(|b| *b != js[0]),
+        "Refine changed no footprint"
+    );
+    let reference = refine_reference(&m, t, &seed, 2);
+    assert_eq!(js.len(), reference.len());
+    for (k, (a, b)) in js.iter().zip(&reference).enumerate() {
+        assert!(a == b, "library {k} differs from the reference");
+    }
+    let (again, ..) = refine_js(&m, t, &seed, 2);
+    assert!(again == js, "a second run differs");
+}
+
+/// With visit workers the scope travels in the job: a refine replay whose
+/// visits run as jobs (`step_via`) matches the in-process one exactly, and
+/// makes no structural edit.
+#[test]
+fn refine_scope_travels_with_visit_jobs() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut a, &mut ea, &mut deleted);
+    drive(&m, 0..t, &mut b, &mut eb, &mut deleted);
+    let before = structural(&a.stats());
+    let ids: Vec<u64> = a.cell_infos().iter().map(|c| c.id).collect();
+    a.set_edit_scope(EditScope::Refine);
+    b.set_edit_scope(EditScope::Refine);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    assert_eq!(structural(&b.stats()), before);
+    assert_eq!(b.cell_infos().iter().map(|c| c.id).collect::<Vec<_>>(), ids);
+    assert!(b.stats().refines > 0);
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }

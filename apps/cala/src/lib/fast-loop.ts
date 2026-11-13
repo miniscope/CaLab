@@ -107,8 +107,16 @@ export interface FastLoopOptions {
   fps?: number;
   /** Stream time between QC snapshots sent to the main thread, s (paced by frames, not the wall clock). */
   qcEveryS?: number;
-  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
+  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Refine, Extract: the final library). */
   initialLibrary?: Uint8Array;
+  /**
+   * Refine run (docs/stages.md): the slow loop of `session` is already there
+   * (Discover built it). Instead of `init` it gets a `replay` message with the
+   * `refine` scope, frames are forwarded from frame 0, and no noise maps are
+   * sent (it keeps the newest map of the Discover run; the replay's map
+   * restarts from calibration).
+   */
+  refine?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
 }
@@ -124,6 +132,7 @@ export const FAST_LOOP_DEFAULTS = {
   fps: 20,
   qcEveryS: 1,
   residual: false,
+  refine: false,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -369,10 +378,16 @@ export class FastLoop {
     this.feed?.end();
   }
 
-  dispose(): void {
+  /**
+   * Free the loop. The slow loop is dropped, unless `keepSlow` (a replay stage
+   * follows, or this is a Refine run being stopped): then it is only told to
+   * publish what it has (a no-op when it already did).
+   */
+  dispose(keepSlow = false): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.port?.postMessage({ type: 'reset', session: this.o.session });
+    if (!keepSlow) this.port?.postMessage({ type: 'reset', session: this.o.session });
+    else if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
     this.feed?.reset();
     this.qc?.free();
     this.qc = null;
@@ -408,6 +423,11 @@ export class FastLoop {
     const port = this.port;
     if (!port || !this.o.discover) return;
     const session = this.o.session;
+    if (!this.initSent && this.o.refine) {
+      port.postMessage({ type: 'replay', session, scope: 'refine' });
+      this.initSent = true;
+      this.lastNoise = Infinity;
+    }
     if (!this.initSent) {
       if (start + count < this.o.startFrame) return;
       port.postMessage(
