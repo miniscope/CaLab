@@ -44,6 +44,7 @@ Scratch (plots, runs, logs; not in the repo): `/private/tmp/claude-503/-Users-da
 ## Method
 
 **Stitched sims** (`tools/cala-eval/stitch_sessions.py`).
+
 - Sources: `sims-gt110/{static,motion}_s{5,6}`. Session A is frames 0–4799, unchanged. Session B is 4800–9599: the same
   cells and GT, perturbed in the raw 8-bit frames outside cala.
 - Geometry moves the **tissue only**. The sensor-fixed vignette (`illumination × vignette`) and leakage glow from the GT
@@ -57,28 +58,30 @@ Scratch (plots, runs, logs; not in the repo): `/private/tmp/claude-503/-Users-da
   B blocks agree with the A blocks within 0.1 px.
 - Arms:
 
-  | Arm | B perturbation |
-  |---|---|
-  | `ctl` | none |
-  | `shift5` | (3.3, 3.8) px, sub-pixel |
-  | `shift15` | (9, 12) px |
-  | `shift25` | (15, 20) px |
-  | `rot1` | 1° rotation |
-  | `gain0.8`, `gain1.25` | counts × G |
-  | `off10` | +10 grey |
-  | `shift15gain1.25` | 15 px shift and ×1.25 |
-  | `realstep` | ×1.02 − 6.2, the real step |
+  | Arm                   | B perturbation             |
+  | --------------------- | -------------------------- |
+  | `ctl`                 | none                       |
+  | `shift5`              | (3.3, 3.8) px, sub-pixel   |
+  | `shift15`             | (9, 12) px                 |
+  | `shift25`             | (15, 20) px                |
+  | `rot1`                | 1° rotation                |
+  | `gain0.8`, `gain1.25` | counts × G                 |
+  | `off10`               | +10 grey                   |
+  | `shift15gain1.25`     | 15 px shift and ×1.25      |
+  | `realstep`            | ×1.02 − 6.2, the real step |
 
 - The shift sizes are **assumed**. I found no published typical between-session Miniscope displacement; CellReg aligns
   with translations and rotations but does not report magnitudes.
 
 **Runs.**
+
 - qc_eval (diagnostics build), sim mode with the app's settings: `--motion` (online flat field), `--batch 8 --slow-seed 1
-  --budget 3e7 --churn-log --boundary-log`.
+--budget 3e7 --churn-log --boundary-log`.
 - Every arm runs with `--motion`, including the static base, so arms compare like for like.
 - Seeds 5 and 6 for all arms; one seed for `shift25`, the probes and `realstep`.
 
 **Scoring** (`tools/cala-eval/boundary_analysis.py`).
+
 - Cells: final cells matched to a detectable GT unit, at least 30 px from the edge, with an online trace from frame
   ≤ 1500 to the end.
 - Per cell, fit `x = a c + b` (online trace on GT trace) twice: on A (frames 1500–4700) and on mid-B (frames 7800–9600).
@@ -91,6 +94,7 @@ Scratch (plots, runs, logs; not in the repo): `/private/tmp/claude-503/-Users-da
 - FP edge/int counts the final false positives within 25 px of the edge vs the rest.
 
 **Diagnostics** (qc_eval, built with `--features diagnostics`):
+
 - `--boundary-log` writes `boundary_pre.tsv`: per frame the input mean, glow, flicker fit, floor mean and lowered share,
   noise map every 10 frames, and the motion quality and flags.
 - It also writes `boundary_traces.bin`: every cell's online trace and ring level.
@@ -105,31 +109,31 @@ Scratch (plots, runs, logs; not in the repo): `/private/tmp/claude-503/-Users-da
 
 Trace transient (`offB`, % of the cell's peak; the control's own windows show the noise floor, about ±0.5):
 
-| base | arm | 0–10 | 10–100 | 100–1000 | peak @frame | τ (frames) | scale B/A | P8 | R8 | r_fp | FP edge/int |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| static | ctl | −0.51 | −0.31 | −0.09 | (noise) | – | 1.026 | .950 | .768 | .963 | 9.5/15.5 |
-| static | shift5 | −0.49 | −0.28 | −0.03 | (noise) | – | 1.031 | .945 | .759 | .964 | 14.0/13.5 |
-| static | shift15 | −0.28 | −0.22 | −0.06 | (noise) | – | 1.046 | .922 | .743 | .965 | 22.5/16.5 |
-| static | shift25 (s5) | −0.01 | +0.00 | −0.14 | (noise) | – | 1.052 | .937 | .760 | .964 | 18/13 |
-| static | rot1 | −0.67 | −0.45 | −0.10 | (noise) | – | 0.905 | **.803** | **.675** | **.923** | 31/72 |
-| static | gain0.8 | −0.49 | −0.98 | −0.78 | −0.79 @176 | 792 | 0.827 | .943 | .763 | .964 | 8.5/20 |
-| static | gain1.25 | −0.15 | **+3.80** | +0.79 | **+5.13 @54** | 135 | 1.291 | .945 | .761 | .963 | 14.5/13 |
-| static | off10 | −0.51 | −0.31 | −0.06 | (noise) | – | 1.024 | .953 | .760 | .962 | 11/12 |
-| static | shift15gain1.25 | +0.04 | +3.71 | +0.78 | +5.05 @58 | 135 | 1.306 | .922 | .757 | .962 | 26/13.5 |
-| static | gain1.25 + bg reset (s5) | −0.82 | +0.84 | −0.00 | +1.40 @63 | 48 | 1.278 | .947 | .768 | .959 | 10/16 |
-| static | gain0.8 + bg reset (s5) | −0.94 | −0.91 | −0.25 | −0.74 @30 | – | 0.818 | .954 | .757 | .961 | 12/10 |
-| motion | ctl | −0.48 | −0.49 | −0.03 | (noise) | – | 1.019 | .933 | .777 | .969 | 16/19 |
-| motion | shift5 | −0.30 | −0.33 | −0.02 | (noise) | – | 1.036 | .923 | .762 | .968 | 22/18 |
-| motion | shift15 | +0.08 | −0.14 | +0.08 | (noise) | – | 1.053 | .919 | .767 | .970 | 19.5/23 |
-| motion | shift25 (s5) | +0.48 | +0.10 | −0.01 | +0.56 @6 | – | 1.059 | .884 | .752 | .970 | 30/31 |
-| motion | rot1 | −0.67 | −0.42 | −0.02 | (noise) | – | 0.885 | **.785** | **.696** | **.933** | 38.5/82 |
-| motion | gain0.8 | −0.48 | −0.98 | −0.78 | −0.89 @144 | 747 | 0.820 | .930 | .773 | .967 | 14.5/22 |
-| motion | gain1.25 | −0.13 | **+3.74** | +1.01 | **+5.05 @52** | 160 | 1.280 | .929 | .773 | .967 | 15.5/22 |
-| motion | off10 | −0.57 | −0.55 | −0.05 | (noise) | – | 1.022 | .935 | .775 | .968 | 13/21 |
-| motion | shift15gain1.25 | +0.79 | +4.43 | +1.24 | +5.84 @50 | 185 | 1.313 | .918 | .766 | .969 | 22.5/20.5 |
-| motion | gain1.25 + bg reset (s5) | −1.00 | +1.00 | −0.01 | +1.38 @55 | 32 | 1.283 | .910 | .756 | .971 | 19/27 |
-| motion | gain0.8 + bg reset (s5) | −1.01 | −0.89 | −0.17 | −0.82 @34 | – | 0.818 | .922 | .773 | .968 | 16/24 |
-| motion | shift15gain1.25 + bg reset (s5) | −1.16 | +0.89 | +0.02 | +1.45 @54 | 32 | 1.307 | .925 | .739 | .953 | 25/12 |
+| base   | arm                             | 0–10  | 10–100    | 100–1000 | peak @frame   | τ (frames) | scale B/A | P8       | R8       | r_fp     | FP edge/int |
+| ------ | ------------------------------- | ----- | --------- | -------- | ------------- | ---------- | --------- | -------- | -------- | -------- | ----------- |
+| static | ctl                             | −0.51 | −0.31     | −0.09    | (noise)       | –          | 1.026     | .950     | .768     | .963     | 9.5/15.5    |
+| static | shift5                          | −0.49 | −0.28     | −0.03    | (noise)       | –          | 1.031     | .945     | .759     | .964     | 14.0/13.5   |
+| static | shift15                         | −0.28 | −0.22     | −0.06    | (noise)       | –          | 1.046     | .922     | .743     | .965     | 22.5/16.5   |
+| static | shift25 (s5)                    | −0.01 | +0.00     | −0.14    | (noise)       | –          | 1.052     | .937     | .760     | .964     | 18/13       |
+| static | rot1                            | −0.67 | −0.45     | −0.10    | (noise)       | –          | 0.905     | **.803** | **.675** | **.923** | 31/72       |
+| static | gain0.8                         | −0.49 | −0.98     | −0.78    | −0.79 @176    | 792        | 0.827     | .943     | .763     | .964     | 8.5/20      |
+| static | gain1.25                        | −0.15 | **+3.80** | +0.79    | **+5.13 @54** | 135        | 1.291     | .945     | .761     | .963     | 14.5/13     |
+| static | off10                           | −0.51 | −0.31     | −0.06    | (noise)       | –          | 1.024     | .953     | .760     | .962     | 11/12       |
+| static | shift15gain1.25                 | +0.04 | +3.71     | +0.78    | +5.05 @58     | 135        | 1.306     | .922     | .757     | .962     | 26/13.5     |
+| static | gain1.25 + bg reset (s5)        | −0.82 | +0.84     | −0.00    | +1.40 @63     | 48         | 1.278     | .947     | .768     | .959     | 10/16       |
+| static | gain0.8 + bg reset (s5)         | −0.94 | −0.91     | −0.25    | −0.74 @30     | –          | 0.818     | .954     | .757     | .961     | 12/10       |
+| motion | ctl                             | −0.48 | −0.49     | −0.03    | (noise)       | –          | 1.019     | .933     | .777     | .969     | 16/19       |
+| motion | shift5                          | −0.30 | −0.33     | −0.02    | (noise)       | –          | 1.036     | .923     | .762     | .968     | 22/18       |
+| motion | shift15                         | +0.08 | −0.14     | +0.08    | (noise)       | –          | 1.053     | .919     | .767     | .970     | 19.5/23     |
+| motion | shift25 (s5)                    | +0.48 | +0.10     | −0.01    | +0.56 @6      | –          | 1.059     | .884     | .752     | .970     | 30/31       |
+| motion | rot1                            | −0.67 | −0.42     | −0.02    | (noise)       | –          | 0.885     | **.785** | **.696** | **.933** | 38.5/82     |
+| motion | gain0.8                         | −0.48 | −0.98     | −0.78    | −0.89 @144    | 747        | 0.820     | .930     | .773     | .967     | 14.5/22     |
+| motion | gain1.25                        | −0.13 | **+3.74** | +1.01    | **+5.05 @52** | 160        | 1.280     | .929     | .773     | .967     | 15.5/22     |
+| motion | off10                           | −0.57 | −0.55     | −0.05    | (noise)       | –          | 1.022     | .935     | .775     | .968     | 13/21       |
+| motion | shift15gain1.25                 | +0.79 | +4.43     | +1.24    | +5.84 @50     | 185        | 1.313     | .918     | .766     | .969     | 22.5/20.5   |
+| motion | gain1.25 + bg reset (s5)        | −1.00 | +1.00     | −0.01    | +1.38 @55     | 32         | 1.283     | .910     | .756     | .971     | 19/27       |
+| motion | gain0.8 + bg reset (s5)         | −1.01 | −0.89     | −0.17    | −0.82 @34     | –          | 0.818     | .922     | .773     | .968     | 16/24       |
+| motion | shift15gain1.25 + bg reset (s5) | −1.16 | +0.89     | +0.02    | +1.45 @54     | 32         | 1.307     | .925     | .739     | .953     | 25/12       |
 
 State across the boundary (`report_sims.md`, second table per base):
 
@@ -155,6 +159,7 @@ State across the boundary (`report_sims.md`, second table per base):
   slow loop's half-life does not need resetting for a brightness step.
 
 Plots:
+
 - `plots/residual_static.png`, `plots/residual_motion.png`: median `offB` around the boundary.
 - `plots/state_static.png`, `plots/state_motion.png`: input mean, flicker gain, floor mean, noise, registration error.
 - `plots/ring_static.png`, `plots/ring_motion.png`: ring-level change.
@@ -167,12 +172,12 @@ Tool: `tools/cala-eval/real_boundary.py` (`brightness`, `cells`, `concat`, `trac
 
 **(a) Raw brightness, straight from the AVIs.**
 
-| window | raw frame mean (grey) |
-|---|---|
-| S1 first 30 / first 600 / 600–1200 | 60.9 / 61.3 / 60.9 |
-| S1 last 600 | 61.1 |
-| S2 first 30 / 300 / 600 | 57.7 / 57.1 / 56.7 |
-| S2 600–1200 / last 600 | 57.0 / 60.2 |
+| window                             | raw frame mean (grey) |
+| ---------------------------------- | --------------------- |
+| S1 first 30 / first 600 / 600–1200 | 60.9 / 61.3 / 60.9    |
+| S1 last 600                        | 61.1                  |
+| S2 first 30 / 300 / 600            | 57.7 / 57.1 / 56.7    |
+| S2 600–1200 / last 600             | 57.0 / 60.2           |
 
 - The difference image (S2 first 600 − S1 last 600) is a near-uniform −5 grey over the lit disk, plus cell-sized ± spots
   (activity and the ~1 px move). The dark corners are 0.
@@ -185,16 +190,16 @@ Tool: `tools/cala-eval/real_boundary.py` (`brightness`, `cells`, `concat`, `trac
 **(b) Quiet vs active cells** (PI's Joint run export, 393 cells; trace / cell p99; quiet = the third with the lowest p95
 over B−600..B and B+300..B+900, so the bump window is not used to classify):
 
-| window | active (262): mean / share > 0 | quiet (131): mean / share > 0 |
-|---|---|---|
-| boundary −600..0 | 0.167 / .70 | 0.055 / .68 |
-| boundary 0–10 | 0.191 / .68 | 0.158 / .83 |
-| boundary 10–100 | 0.196 / .69 | **0.207 / .87** |
-| boundary 100–300 | 0.177 / .70 | 0.180 / .84 |
-| boundary 300–1000 | 0.162 / .69 | 0.056 / .67 |
-| control, mid S1 (10–100) | 0.143 / .67 | 0.076 / .69 |
-| control, mid S2 (10–100) | 0.156 / .64 | 0.074 / .69 |
-| control, S1 frame 600 (10–100) | 0.151 / .65 | 0.128 / .69 |
+| window                         | active (262): mean / share > 0 | quiet (131): mean / share > 0 |
+| ------------------------------ | ------------------------------ | ----------------------------- |
+| boundary −600..0               | 0.167 / .70                    | 0.055 / .68                   |
+| boundary 0–10                  | 0.191 / .68                    | 0.158 / .83                   |
+| boundary 10–100                | 0.196 / .69                    | **0.207 / .87**               |
+| boundary 100–300               | 0.177 / .70                    | 0.180 / .84                   |
+| boundary 300–1000              | 0.162 / .69                    | 0.056 / .67                   |
+| control, mid S1 (10–100)       | 0.143 / .67                    | 0.076 / .69                   |
+| control, mid S2 (10–100)       | 0.156 / .64                    | 0.074 / .69                   |
+| control, S1 frame 600 (10–100) | 0.151 / .65                    | 0.128 / .69                   |
 
 - The quiet cells' traces are lifted off zero (share of frames above 0: .68 → .87) for ~300 frames (10 s). This is a
   baseline offset, not transients.
@@ -205,6 +210,7 @@ over B−600..B and B+300..B+900, so the bump window is not used to classify):
   window may contribute; this is unresolved.
 
 **(c) qc_eval on the real sessions.**
+
 - The concatenated recording (`real/concat`: symlinks, S1's files then S2's) runs with
   `qc_eval real --motion --fps 30 --boundary-log`.
 - **The bump is reproduced in cala's online path, without Refine or Extract.**
@@ -228,17 +234,17 @@ over B−600..B and B+300..B+900, so the bump window is not used to classify):
 
 ## Attribution
 
-| mechanism | evidence | share of the artifact |
-|---|---|---|
-| Preprocessor background floor (running min, upward τ 120 s) | Probe reset: ×1.25 peak 5.1 → 1.4 %, τ ~150 → ~40 frames; ×0.8 late dip −0.78 → −0.2 %. Ring levels follow the floor lag | **dominant** for brightness steps |
-| Flicker corrector (1 s reference) | Holds the step for ~1 s, then releases it: the ~10-frame delay and 40-frame rise of the bump; the residual +1.4 % after the probe | brief, ~1–3 s |
-| Noise map (median tracker, ~800 frames) | Follows the gain slowly. No trace effect, but QC/SNR and slow-loop thresholds see the old σ for ~1 min | indirect |
-| Motion corrector | Catches translations ≤ 25 px in 1–2 frames. Does not model rotation: 1° doubles adds and costs .15 P8 | translation: none; rotation: **largest structural** |
-| Registration coverage | The strip B no longer covers loses data: edge FPs (+10–15 at 15–25 px) | moderate (P8 −.03 to −.05) |
-| Online flat field | Sensor-fixed; no visible change at the boundary in these arms | none measured |
-| Fast-loop warm starts | The ring level is solved per frame. No transient beyond what the floor explains | none measured |
-| Slow-loop footprint statistics (half-life) | Refines, merges and deletes after the boundary equal the control for gain and translation | none measured |
-| Per-cell brightness | `scale B/A` = the applied gain (0.82, 1.28–1.31); a lasting scale change that is real in camera units | lasting, by design |
+| mechanism                                                   | evidence                                                                                                                          | share of the artifact                               |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Preprocessor background floor (running min, upward τ 120 s) | Probe reset: ×1.25 peak 5.1 → 1.4 %, τ ~150 → ~40 frames; ×0.8 late dip −0.78 → −0.2 %. Ring levels follow the floor lag          | **dominant** for brightness steps                   |
+| Flicker corrector (1 s reference)                           | Holds the step for ~1 s, then releases it: the ~10-frame delay and 40-frame rise of the bump; the residual +1.4 % after the probe | brief, ~1–3 s                                       |
+| Noise map (median tracker, ~800 frames)                     | Follows the gain slowly. No trace effect, but QC/SNR and slow-loop thresholds see the old σ for ~1 min                            | indirect                                            |
+| Motion corrector                                            | Catches translations ≤ 25 px in 1–2 frames. Does not model rotation: 1° doubles adds and costs .15 P8                             | translation: none; rotation: **largest structural** |
+| Registration coverage                                       | The strip B no longer covers loses data: edge FPs (+10–15 at 15–25 px)                                                            | moderate (P8 −.03 to −.05)                          |
+| Online flat field                                           | Sensor-fixed; no visible change at the boundary in these arms                                                                     | none measured                                       |
+| Fast-loop warm starts                                       | The ring level is solved per frame. No transient beyond what the floor explains                                                   | none measured                                       |
+| Slow-loop footprint statistics (half-life)                  | Refines, merges and deletes after the boundary equal the control for gain and translation                                         | none measured                                       |
+| Per-cell brightness                                         | `scale B/A` = the applied gain (0.82, 1.28–1.31); a lasting scale change that is real in camera units                             | lasting, by design                                  |
 
 ## Recommended fixes (`onSessionBoundary` hook), ranked by measured impact
 
