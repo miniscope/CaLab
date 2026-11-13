@@ -18,7 +18,8 @@
  * after); pass 2 applies pass 1's newest map from frame 0, so the whole
  * recording is corrected the same way. Nothing is estimated in pass 2.
  *
- * Traces go straight to a `TraceFile` (trace-file.ts): frame-major (frames x
+ * Traces go straight to a `TraceFile` (trace-file.ts), and the signed
+ * (unclipped) traces of the same solve to a second one: frame-major (frames x
  * cells) because batches arrive in frame order, in a file in the origin
  * private file system, so memory stays at a few batches whatever the
  * recording length (only disk quota limits it). The export streams from that
@@ -54,6 +55,13 @@ export interface Pass2Result {
   ids: Uint32Array;
   /** `frames x cells`, frame after frame (as the solver emits them), on disk or in memory. */
   traces: TraceFile;
+  /**
+   * The signed (unclipped) traces of the same solve, laid out as `traces`:
+   * each trace plus the residual's projection on the cell (CNMF's `C + YrA`),
+   * so a quiet cell sits at 0 with symmetric noise where `traces` is clipped
+   * at 0. What CaDecon gets. Null when the solver returned none.
+   */
+  signed: TraceFile | null;
   frames: number;
   cells: number;
   /** Library version solved with, and the library itself (footprints for the export). */
@@ -81,15 +89,17 @@ export function createPass2Store(
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
 
   let generation = 0;
-  /** The trace file of the current run or result (deleted when replaced or cleared). */
+  /** The trace files of the current run or result (deleted when replaced or cleared). */
   let file: TraceFile | null = null;
+  let signedFile: TraceFile | null = null;
 
-  /** Drop the result and delete its trace file. */
+  /** Drop the result and delete its trace files. */
   async function discard(): Promise<void> {
     setResult(null);
-    const f = file;
+    const f = [file, signedFile];
     file = null;
-    if (f) await f.dispose().catch(() => {});
+    signedFile = null;
+    for (const x of f) if (x) await x.dispose().catch(() => {});
   }
 
   let inFlight = 0;
@@ -125,6 +135,18 @@ export function createPass2Store(
         if (!c || c.ids.length !== ctx.cellCount || c.ids.some((id, i) => id !== ctx.ids[i]))
           throw new Error('Extract got no traces for the final library.');
         ctx.traces.append(step.start, c.traces);
+        if (ctx.signed) {
+          if (c.signed && c.signed.length === c.traces.length) {
+            ctx.signed.append(step.start, c.signed);
+          } else {
+            // A solver without signed traces: the export keeps the clipped ones only.
+            console.warn('Extract: the solver returned no signed traces; exporting clipped only.');
+            const s = ctx.signed;
+            ctx.signed = null;
+            signedFile = null;
+            void s.dispose().catch(() => {});
+          }
+        }
         ctx.done = step.start + step.count;
         setProcessed(ctx.done);
         setFps(ctx.meter.record(clock(), step.count));
@@ -135,6 +157,7 @@ export function createPass2Store(
         setMotionBackend(step.motionBackend ?? null);
         // Backpressure: the pump asks for the next step only after this returns.
         await ctx.traces.drained();
+        await ctx.signed?.drained();
         return;
       }
       case 'done':
@@ -143,10 +166,12 @@ export function createPass2Store(
         if (ctx.done !== ctx.frames)
           throw new Error(`Extract ended after ${ctx.done} of ${ctx.frames} frames.`);
         await ctx.traces.finish();
+        await ctx.signed?.finish();
         if (gen !== generation) return;
         setResult({
           ids: ctx.ids,
           traces: ctx.traces,
+          signed: ctx.signed,
           frames: ctx.frames,
           cells: ctx.cellCount,
           version: ctx.library.version,
@@ -163,6 +188,7 @@ export function createPass2Store(
     cellCount: number;
     ids: Uint32Array;
     traces: TraceFile;
+    signed: TraceFile | null;
     library: LibraryView;
     meter: ThroughputMeter;
     busy: number[];
@@ -228,14 +254,21 @@ export function createPass2Store(
     const flatMap = pipeline.flatFieldMap();
     const cellCount = library.ids.length;
     setTotal(frames);
-    let traces: TraceFile;
+    let traces: TraceFile | undefined;
+    let signed: TraceFile;
     try {
       // `?pass2=memory` keeps the matrix in memory (the pre-OPFS behaviour), for measurements.
       const forceMemory =
         typeof location !== 'undefined' &&
         new URLSearchParams(location.search).get('pass2') === 'memory';
-      traces = await createTraceFile(frames, cellCount, { forceMemory });
+      // Room for both matrices is checked up front (the signed one is the same size).
+      traces = await createTraceFile(frames, cellCount, {
+        forceMemory,
+        extraBytes: frames * cellCount * 4,
+      });
+      signed = await createTraceFile(frames, cellCount, { forceMemory });
     } catch (err) {
+      void traces?.dispose();
       if (gen !== generation) return;
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
@@ -243,14 +276,17 @@ export function createPass2Store(
     }
     if (gen !== generation) {
       void traces.dispose();
+      void signed.dispose();
       return;
     }
     file = traces;
+    signedFile = signed;
     const ctx: Ctx = {
       frames,
       cellCount,
       ids: library.ids.slice(),
       traces,
+      signed,
       library,
       meter: new ThroughputMeter(),
       busy: [],
@@ -266,7 +302,7 @@ export function createPass2Store(
           motionWarmupFrames: plan1.motionWarmupFrames,
           previewMaxSide: plan1.previewMaxSide,
         },
-        { session: 0, discover: false, qc: false, library: bytes },
+        { session: 0, discover: false, qc: false, library: bytes, signed: true },
         {
           frameCount: frames,
           ...rec.snapshot(),

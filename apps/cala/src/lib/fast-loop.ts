@@ -34,6 +34,10 @@ export interface TraceEngineLike {
   lastBackground?(): Float32Array;
   /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
   residualOfLast?(frame: Float32Array): Float32Array;
+  /** Also compute the signed (unclipped) traces of each batch (`lastSigned`). */
+  setSigned?(on: boolean): void;
+  /** Signed traces of the last solved batch, laid out as its traces; empty when off. */
+  lastSigned?(): Float32Array;
   free(): void;
 }
 
@@ -120,6 +124,11 @@ export interface FastLoopOptions {
   refine?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
+  /**
+   * Also return each batch's signed (unclipped) traces (`CellsBatch.signed`):
+   * Extract turns it on, the live stages do not need them.
+   */
+  signed?: boolean;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -134,6 +143,7 @@ export const FAST_LOOP_DEFAULTS = {
   qcEveryS: 1,
   residual: false,
   refine: false,
+  signed: false,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -144,6 +154,12 @@ export interface CellsBatch {
   ids: Uint32Array;
   /** `count * ids.length` traces, frame after frame. */
   traces: Float32Array;
+  /**
+   * The signed (unclipped) traces, laid out as `traces` (with `signed` on and
+   * cells in the library): each trace plus the residual's projection on the
+   * cell, so a quiet cell sits at 0 with symmetric noise instead of clipped.
+   */
+  signed?: Float32Array;
   /** Wall time of the library swap (0 without one), the solve and the forward copy, ms. */
   swapMs: number;
   solveMs: number;
@@ -267,6 +283,7 @@ export class FastLoop {
     const batch = frames.subarray(0, n);
     let traces: Float32Array = new Float32Array(0);
     let background: Float32Array | undefined;
+    let signed: Float32Array | undefined;
     let qcOn = false;
     if (this.engine && this.ids.length > 0) {
       const qc = this.qcMonitor(start, calibration);
@@ -278,6 +295,7 @@ export class FastLoop {
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
       background = this.engine.lastBackground?.();
+      if (this.o.signed) signed = this.engine.lastSigned?.();
     }
     // One frame per batch, only while the residual view is shown.
     const residual =
@@ -294,6 +312,7 @@ export class FastLoop {
       version: this.version,
       ids: this.ids.slice(),
       traces,
+      ...(signed && signed.length === traces.length ? { signed } : {}),
       swapMs: t1 - t0,
       solveMs: t2 - t1,
       forwardMs: t3 - t2,
@@ -405,7 +424,10 @@ export class FastLoop {
     const lib = this.backend.libraryFromBytes(bytes);
     try {
       if (this.engine) this.engine.setLibrary(lib);
-      else this.engine = this.backend.newEngine(lib);
+      else {
+        this.engine = this.backend.newEngine(lib);
+        if (this.o.signed) this.engine.setSigned?.(true);
+      }
       this.version = lib.version;
       this.ids = lib.ids();
     } finally {

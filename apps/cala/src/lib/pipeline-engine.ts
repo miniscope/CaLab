@@ -182,6 +182,7 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.corrected.data,
     p.output.data,
     ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
+    ...(r.cells?.signed ? [r.cells.signed] : []),
   ]
     .map((a) => a.buffer as ArrayBuffer)
     .concat(r.cells?.qc ? qcTransferables(r.cells.qc) : []);
