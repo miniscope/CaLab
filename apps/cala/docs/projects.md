@@ -246,7 +246,7 @@ folder's handle, or among the files of a folder picked through a file input).
   256 MB across all cells). A C-order `traces` (a file re-saved by NumPy) is
   read once and transposed per block.
 - **What each panel shows.**
-  - Field of view: the export's `fov_mean` and `fov_max` (format 4), each drawn
+  - Field of view: the export's `fov_mean` and `fov_max` (format 5), each drawn
     with the display range stored with it (fixed from the recording's bit
     depth, never fitted to the pixels: see `src/lib/fov-display.ts`). The lo/hi
     inputs still set a range by hand.
@@ -257,13 +257,13 @@ folder's handle, or among the files of a folder picked through a file input).
   - History and event log: `history_L{k}` and `run_events_json`, read back with
     `StreamHistory.fromExport`. A Joint run's sessions each hold the whole
     run's history, on the run's time axis.
-  - Stages: `meta_json.stages`. Flat field: `flat_field_gain` (format 4).
+  - Stages: `meta_json.stages`. Flat field: `flat_field_gain` (format 5).
   - Recording: the export's own facts (length, rate, cells, app version,
     format).
 - **Older exports open.** Each part a file lacks says "not in this export":
-  formats 1 to 3 have no FOV images or flat-field map (the cells are drawn on
+  formats 1 to 4 have no FOV images or flat-field map (the cells are drawn on
   a black field), formats 1 and 2 (before #370) no stage list, and the app
-  wrote no History into exports before format 4.
+  wrote no History into exports before format 5.
 
 ## Run plans
 

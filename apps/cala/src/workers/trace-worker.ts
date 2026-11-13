@@ -61,6 +61,7 @@ function handle(msg: StageMsg): void {
           discover: (cells?.discover ?? true) && port !== null,
           qc: cells?.qc ?? true,
           residual: cells?.residual ?? false,
+          signed: cells?.signed ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
           ...(cells?.refine ? { refine: true } : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),

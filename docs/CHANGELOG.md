@@ -7,6 +7,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
+  cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
+  bandpass and rolling baseline turn into fake humps and spurious spikes.
+  Extract now also returns each trace plus the residual's projection on the
+  cell (`c + g/m` at the converged solution, CNMF's `C + YrA`): a zero
+  baseline with symmetric noise, equal to the trace where the solve does not
+  clip. The solve and the non-negative traces are unchanged bit for bit
+  (`TraceEngine::set_signed`; JS `setSigned` / `lastSigned`). The export
+  (format version 4) adds `traces_signed` next to `traces`, also in each
+  session's file of a multi-session run, and **Export for CaDecon** writes
+  the signed traces. Live runs (no Extract) keep the clipped traces only.
+  `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
 - Cala: **View results**. Any session in a project's table with a result gets
   **View results** (on its current result, and on every result under
   **Results**): the saved export opens read-only in the normal viewer, with the
@@ -17,7 +29,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   parts an older one lacks say "not in this export". The file is read lazily
   (`ZipArchive` in `@calab/io`, ZIP64-aware), so a large export opens without
   being read whole. See `apps/cala/docs/projects.md`.
-- Cala: export format 4. `fov_mean` (mean of the registered, preprocessed
+- Cala: export format 5. `fov_mean` (mean of the registered, preprocessed
   frames before background removal) and `fov_max` (max of the frames with the
   background floor removed), float32 [H, W], kept by Extract over every frame
   of the export's span (each session of a Joint run gets its own), and

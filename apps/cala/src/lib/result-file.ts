@@ -11,8 +11,9 @@
  * is one contiguous byte range (C-order files, e.g. re-saved by NumPy, are
  * read whole once and transposed per block).
  *
- * Every format version opens: 1 to 3 lack the FOV images and the flat-field
- * map (4), 1 lacks the history and events (2) and the stage list (3). What is
+ * Every format version opens: 1 to 4 lack the FOV images and the flat-field
+ * map (5), 1 to 3 the signed traces (4), 1 the history and events (2), and 1
+ * and 2 the stage list (3). What is
  * missing is listed in `missing` so the viewer can say "not in this export".
  */
 import { parseNpy, parseNpyHeader, ZipArchive, type ZipSource } from '@calab/io';
@@ -61,6 +62,8 @@ export interface LoadedResult {
   missing: Set<ResultPart>;
   /** Frames `[from, to)` of every cell, frame after frame (`(to - from) * cells` values). */
   readFrames(from: number, to: number): Promise<Float32Array>;
+  /** The same from `traces_signed` (format 4; null when absent, e.g. a live run). */
+  readSignedFrames: ((from: number, to: number) => Promise<Float32Array>) | null;
 }
 
 const asF32 = (a: NumericTypedArray): Float32Array =>
@@ -222,14 +225,14 @@ async function traceReader(
   zip: ZipArchive,
   cells: number,
   frames: number,
+  name = 'traces.npy',
 ): Promise<LoadedResult['readFrames']> {
-  const name = 'traces.npy';
   if (!zip.has(name) || cells === 0)
     return async (from, to) => new Float32Array((to - from) * cells);
   const head = parseNpyHeader(await zip.readRange(name, 0, Math.min(zip.entry(name).size, 65536)));
-  if (head.dtype !== '<f4') throw new Error(`traces.npy is ${head.dtype}; float32 is expected.`);
+  if (head.dtype !== '<f4') throw new Error(`${name} is ${head.dtype}; float32 is expected.`);
   if (head.shape.length !== 2 || head.shape[0] !== cells || head.shape[1] !== frames)
-    throw new Error(`traces.npy has shape (${head.shape.join(', ')}), not (${cells}, ${frames}).`);
+    throw new Error(`${name} has shape (${head.shape.join(', ')}), not (${cells}, ${frames}).`);
   const check = (from: number, to: number) => {
     if (from < 0 || to > frames || to < from)
       throw new RangeError(`Frames ${from}..${to} are not in the traces.`);
@@ -316,7 +319,7 @@ export async function openResult(src: ZipSource, label = ''): Promise<LoadedResu
   const stages = stagesFromMeta(meta.stages);
   if (!Array.isArray(meta.stages)) missing.add('stages');
 
-  // FOV images (format 4): drawn with the range stored with them, else the fixed rule.
+  // FOV images (format 5): drawn with the range stored with them, else the fixed rule.
   const fov = meta.fov_images as
     { images?: { key: string; domain?: string; display_range?: unknown }[] } | undefined;
   const rule = fovDisplayRanges(num(meta.bit_depth, 8));
@@ -376,5 +379,8 @@ export async function openResult(src: ZipSource, label = ''): Promise<LoadedResu
     history,
     missing,
     readFrames: await traceReader(zip, n, frames),
+    readSignedFrames: zip.has('traces_signed.npy')
+      ? await traceReader(zip, n, frames, 'traces_signed.npy')
+      : null,
   };
 }

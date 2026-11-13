@@ -1,5 +1,5 @@
 /**
- * Fixed display ranges of the exported field-of-view images (export format 4).
+ * Fixed display ranges of the exported field-of-view images (export format 5).
  *
  * No auto-contrast: an image is drawn linearly over a range fixed by the
  * recording's bit depth, never by its pixels, so a dimmer session looks

@@ -180,10 +180,14 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover ends only if you turn on **Extract after Discover** (off by default, so a Refine does not discard an Extract; never after a Refine run).
 5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
-   and a JSON block with the run's provenance and the stages that ran. **Export for CaDecon (N cells)** writes just
-   the traces of the cells that pass QC (untick **QC-passing cells only** to include
-   every cell), for CaDecon. Python:
-   `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds a mean and a max
+   and a JSON block with the run's provenance and the stages that ran. It holds two
+   trace matrices: `traces`, which never goes below 0 (a quiet cell sits at exactly 0),
+   and `traces_signed`, the same traces without that clip, so a quiet cell's noise
+   is centred on 0 and can go negative. **Export for CaDecon (N cells)** writes just
+   the signed traces of the cells that pass QC (untick **QC-passing cells only** to include
+   every cell), for CaDecon, which needs the zero baseline. Python:
+   `np.load("<folder>_cala.npz")["traces"]` (or `["traces_signed"]`). A live run has no
+   Extract and no signed traces. The `.npz` also holds a mean and a max
    image of the field of view (`fov_mean`, `fov_max`), the flat-field gain map
    (`flat_field_gain`, when one was applied), the run's history
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
@@ -377,7 +381,7 @@ never changed. See the README for the protocol and the full option list.
 
 ## Reading the run history in Python
 
-The `.npz` export (format version 2) holds the History view's bins and the run's
+The `.npz` export (format version 2 and later) holds the History view's bins and the run's
 event log. `meta_json["history"]` describes the layout: for each level `k` its bin
 width `bin_s` and first bin time `t0_s` (stream seconds, frame / sampling rate), and
 for each series its `key`, `label`, `unit`, and initial and final display range.

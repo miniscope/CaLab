@@ -58,6 +58,19 @@ pub struct FrameTraces {
     pub background: Vec<f32>,
     /// Coordinate sweeps used (the longest any group needed).
     pub sweeps: u32,
+    /// The signed (unclipped) traces, one per cell in slot order, when the
+    /// engine computes them ([`TraceEngine::set_signed`]); empty otherwise.
+    ///
+    /// `signed_i = c_i + g_i / m_i`: the trace plus the residual's
+    /// projection on the cell (the analogue of CNMF's `C + YrA`), where
+    /// `g_i` is the gradient of the solve's coordinate equation at the
+    /// final solution (the background terms included) and `m_i` its
+    /// curvature. That is the unconstrained minimiser of the cell's
+    /// coordinate with every other trace and the background held: a cell
+    /// the solve holds at 0 gets its negative noise back (`g_i < 0`), an
+    /// active one stays at its trace to within the solver's tolerance
+    /// (`g_i ≈ 0`). The non-negative `traces` are untouched.
+    pub signed: Vec<f32>,
 }
 
 /// The warm start: each cell's last trace value by id, so it survives a
@@ -110,6 +123,8 @@ pub struct TraceEngine {
     cell_box: Vec<[u32; 4]>,
     cell_dirty: Vec<bool>,
     block_flag: Vec<bool>,
+    /// Compute [`FrameTraces::signed`] after each frame's solve.
+    signed: bool,
 }
 
 /// Pixels per partial sum of the background-map projections.
@@ -147,6 +162,7 @@ impl TraceEngine {
             cell_box: Vec::new(),
             cell_dirty: Vec::new(),
             block_flag: Vec::new(),
+            signed: false,
         };
         e.install(lib, None);
         Ok(e)
@@ -158,6 +174,20 @@ impl TraceEngine {
 
     pub fn config(&self) -> &SolverConfig {
         &self.cfg
+    }
+
+    /// Also compute the signed (unclipped) traces of every frame
+    /// ([`FrameTraces::signed`]); off by default. The solve itself, and so
+    /// [`FrameTraces::traces`], is the same either way: the signed values
+    /// are read off the converged solution in one extra pass over the cells
+    /// (about one coordinate sweep, without the steps).
+    pub fn set_signed(&mut self, on: bool) {
+        self.signed = on;
+    }
+
+    /// Whether [`Self::set_signed`] is on.
+    pub fn signed(&self) -> bool {
+        self.signed
     }
 
     /// Frames processed so far (the index the next frame gets).
@@ -576,6 +606,14 @@ impl TraceEngine {
         out.library_version = lib.version();
         out.traces.clear();
         out.traces.extend_from_slice(&self.c);
+        out.signed.clear();
+        if self.signed {
+            // Jacobi-style: every gradient at the final solution, nothing moved.
+            for i in 0..n {
+                out.signed
+                    .push(self.c[i] + self.grad(lib, i) / lib.mdiag[i]);
+            }
+        }
         out.background.clear();
         match &lib.bg {
             BgTerms::Basis { k, p, .. } => {
@@ -751,9 +789,12 @@ impl TraceEngine {
         sweeps
     }
 
-    /// Exact minimisation over `c_i` (background re-solved); returns the step.
+    /// The gradient of the coordinate equation of cell `i` at the current
+    /// solution, `b_i − Σ_j G_ij c_j` minus its background term: the
+    /// exact (projection-free) step is `grad / mdiag_i` (the curvature,
+    /// background eliminated; see [`Library`]'s `mdiag`).
     #[inline]
-    fn update(&mut self, lib: &Library, i: usize) -> f32 {
+    fn grad(&self, lib: &Library, i: usize) -> f32 {
         let (cols, vals) = lib.gram.row(i);
         let mut gc = lib.gram_diag[i] * self.c[i];
         for (&j, &g) in cols.iter().zip(vals) {
@@ -761,19 +802,10 @@ impl TraceEngine {
         }
         let mut grad = self.b[i] - gc;
         match &lib.bg {
-            BgTerms::Basis { k, x, w, .. } => {
+            BgTerms::Basis { k, w, .. } => {
                 let k = *k;
                 let s: f64 = (0..k).map(|a| f64::from(w[i * k + a]) * self.q[a]).sum();
                 grad -= s as f32;
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
-                if d != 0.0 {
-                    self.c[i] = new;
-                    for a in 0..k {
-                        self.q[a] -= f64::from(x[i * k + a]) * f64::from(d);
-                    }
-                }
-                d
             }
             BgTerms::Ring { s, q, .. } => {
                 let (qc, qv) = q.row(i);
@@ -782,17 +814,29 @@ impl TraceEngine {
                     local -= v * self.c[j as usize];
                 }
                 grad -= s[i] * local;
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
-                self.c[i] = new;
-                d
             }
-            BgTerms::None => {
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
-                self.c[i] = new;
-                d
-            }
+            BgTerms::None => {}
         }
+        grad
+    }
+
+    /// Exact minimisation over `c_i` (background re-solved); returns the step.
+    #[inline]
+    fn update(&mut self, lib: &Library, i: usize) -> f32 {
+        let grad = self.grad(lib, i);
+        let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
+        let d = new - self.c[i];
+        if let BgTerms::Basis { k, x, .. } = &lib.bg {
+            if d != 0.0 {
+                let k = *k;
+                self.c[i] = new;
+                for a in 0..k {
+                    self.q[a] -= f64::from(x[i * k + a]) * f64::from(d);
+                }
+            }
+        } else {
+            self.c[i] = new;
+        }
+        d
     }
 }

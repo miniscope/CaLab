@@ -250,6 +250,9 @@ pub struct JsTraceEngine {
     pub(crate) out: FrameTraces,
     /// Background coefficients of the last batch, frame after frame.
     pub(crate) batch_background: Vec<f32>,
+    /// Signed traces of the last batch, frame after frame (empty unless
+    /// `setSigned(true)`).
+    pub(crate) batch_signed: Vec<f32>,
 }
 
 #[wasm_bindgen(js_class = TraceEngine)]
@@ -275,6 +278,7 @@ impl JsTraceEngine {
             inner,
             out: FrameTraces::default(),
             batch_background: Vec::new(),
+            batch_signed: Vec::new(),
         })
     }
 
@@ -303,6 +307,7 @@ impl JsTraceEngine {
         }
         let mut out = Vec::with_capacity(count as usize * self.inner.library().len());
         self.batch_background.clear();
+        self.batch_signed.clear();
         for f in frames.chunks_exact(n) {
             self.inner
                 .process_into(f, &mut self.out)
@@ -310,8 +315,26 @@ impl JsTraceEngine {
             out.extend_from_slice(&self.out.traces);
             self.batch_background
                 .extend_from_slice(&self.out.background);
+            self.batch_signed.extend_from_slice(&self.out.signed);
         }
         Ok(out)
+    }
+
+    /// Also compute the signed (unclipped) traces, `lastSigned` (off by
+    /// default; the non-negative traces are the same either way).
+    #[wasm_bindgen(js_name = setSigned)]
+    pub fn set_signed(&mut self, on: bool) {
+        self.inner.set_signed(on);
+    }
+
+    /// The signed (unclipped) traces of the last `processFrames` batch (also
+    /// `QcMonitor.processFrames`), laid out as its traces (`count x cells`,
+    /// frame after frame): each cell's trace plus the residual's projection
+    /// on it (CNMF's `C + YrA`), so a quiet cell sits at 0 with symmetric
+    /// noise instead of being clipped there. Empty unless `setSigned(true)`.
+    #[wasm_bindgen(js_name = lastSigned)]
+    pub fn last_signed(&self) -> Vec<f32> {
+        self.batch_signed.clone()
     }
 
     /// The background coefficients of the last `processFrames` batch (also

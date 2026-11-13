@@ -8,7 +8,7 @@
  * project. Parts an older export lacks say "not in this export".
  */
 import { createEffect, createSignal, For, on, onCleanup, Show, type JSX } from 'solid-js';
-import { ProgressBar } from '@calab/ui';
+import { ProgressBar, SegmentedControl } from '@calab/ui';
 import { createCellStore } from '../lib/cell-store.ts';
 import { createFovLayout } from '../lib/fov-layout.ts';
 import { gainToGray8 } from '../lib/flat-field.ts';
@@ -34,7 +34,7 @@ export interface ResultOrigin {
 const LOAD_BYTES = 16 * 1048576;
 
 export const PART_LABEL: Record<ResultPart, string> = {
-  fov: 'field-of-view images (export format 4)',
+  fov: 'field-of-view images (export format 5)',
   flatfield: 'flat-field map',
   history: 'History plots and event log',
   stages: 'stage list (format 3)',
@@ -71,7 +71,7 @@ export function resultFovSource(r: LoadedResult): FovSource {
     fixedRange: (v) => r.images.find((im) => im.key === v)?.range ?? null,
     emptyText: () =>
       r.images.length === 0
-        ? `${NOT_IN_EXPORT}: the field-of-view images came with export format 4 (this file is format ${r.formatVersion}). The cells are drawn without an image.`
+        ? `${NOT_IN_EXPORT}: the field-of-view images came with export format 5 (this file is format ${r.formatVersion}). The cells are drawn without an image.`
         : null,
   };
 }
@@ -114,7 +114,7 @@ function ResultFlatField(props: { result: LoadedResult }): JSX.Element {
             {NOT_IN_EXPORT}:{' '}
             {props.result.formatVersion >= 4
               ? 'this run applied no flat field.'
-              : `the flat-field map came with export format 4${
+              : `the flat-field map came with export format 5${
                   maps().length > 0
                     ? `; this run applied ${maps().length} map${maps().length > 1 ? 's' : ''} (the metadata lists them).`
                     : '.'
@@ -222,26 +222,41 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
   });
   const source = resultFovSource(result);
 
-  // The traces, block by block into the trace viewer's store.
+  // The traces, block by block into the trace viewer's store. A format 4+
+  // export from Extract also has the signed (unclipped) traces: the panel
+  // switches between the two, reading the other matrix again.
+  type TraceMode = 'clipped' | 'signed';
+  const [mode, setMode] = createSignal<TraceMode>('clipped');
   const [loaded, setLoaded] = createSignal(0);
   const [loadError, setLoadError] = createSignal<string | null>(null);
-  let stopped = false;
-  onCleanup(() => (stopped = true));
-  void (async () => {
+  let generation = 0;
+  onCleanup(() => generation++);
+  async function loadTraces(m: TraceMode): Promise<void> {
+    const gen = ++generation;
+    const read =
+      m === 'signed' && result.readSignedFrames ? result.readSignedFrames : result.readFrames;
+    setLoaded(0);
+    setLoadError(null);
     const n = result.ids.length;
     const step = Math.max(1, Math.floor(LOAD_BYTES / (4 * Math.max(1, n))));
     try {
-      for (let f = 0; f < result.frames && !stopped; f += step) {
+      for (let f = 0; f < result.frames; f += step) {
         const to = Math.min(result.frames, f + step);
-        const block = await result.readFrames(f, to);
-        if (stopped) return;
-        cells.onBackfill(false, f, to - f, result.ids, block);
+        const block = await read(f, to);
+        if (gen !== generation) return;
+        cells.onBackfill(f === 0, f, to - f, result.ids, block);
         setLoaded(to);
       }
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      if (gen === generation) setLoadError(err instanceof Error ? err.message : String(err));
     }
-  })();
+  }
+  void loadTraces('clipped');
+  const pickMode = (m: TraceMode) => {
+    if (m === mode()) return;
+    setMode(m);
+    void loadTraces(m);
+  };
 
   let main!: HTMLDivElement;
   const layout = createFovLayout(
@@ -294,6 +309,31 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
               </p>
             )}
           </Show>
+          <Show when={result.readSignedFrames}>
+            <div class="cala-result__traces">
+              <span class="cala-muted">Traces</span>{' '}
+              <SegmentedControl
+                options={[
+                  {
+                    value: 'clipped',
+                    label: 'Non-negative',
+                    title: 'traces: the solve, clipped at 0 (a quiet cell sits at exactly 0)',
+                  },
+                  {
+                    value: 'signed',
+                    label: 'Signed',
+                    title:
+                      'traces_signed: the same without the clip, noise centred on 0 (what CaDecon gets)',
+                  },
+                ]}
+                value={mode()}
+                onChange={pickMode}
+                aria-label="Trace mode"
+                size="sm"
+                testid="trace-mode"
+              />
+            </div>
+          </Show>
           <h3 class="panel-label">Stages that ran</h3>
           <Show
             when={result.stages.length > 0}
@@ -313,7 +353,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
             when={result.history}
             fallback={
               <p class="cala-muted" data-testid="result-history-missing">
-                History: {NOT_IN_EXPORT.toLowerCase()} (the app saves it from export format 4 on).
+                History: {NOT_IN_EXPORT.toLowerCase()} (the app saves it from export format 5 on).
               </p>
             }
           >

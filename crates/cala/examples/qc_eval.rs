@@ -39,7 +39,12 @@
 //!                      loop publishes at the wrap), as the app's Refine does.
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
-//!                      the frame before and after the background floor
+//!                      the frame before and after the background floor; also
+//!                      the signed (unclipped) traces (`dump_signed.f32`) and,
+//!                      with GT, each cell's correlation with its best GT unit
+//!                      for both (`traces_signed_gt.tsv`)
+//!   --no-signed        with --dump: do not compute the signed traces (to time
+//!                      their cost; the clipped traces are the same either way)
 //!   --label-bundle C   `real` only, standalone: read candidate footprints from
 //!                      `C` (tsv: cid, cy, cx) and its sidecar `C.bin` (the
 //!                      `footprints.bin` format), run the preprocessing only and
@@ -2612,6 +2617,114 @@ impl DivergeProbe {
     }
 }
 
+/// Per cell of the pass-2 dump (frame-major `clipped` and `signed`, `t_len`
+/// frames): its best GT unit by the clipped trace's correlation, and both
+/// traces' correlation with that unit, over all frames and over the unit's
+/// active frames (GT above 5% of its range over its minimum); and on its
+/// quiet frames (GT within 1% of its range of its minimum) each trace's mean in units of the signed trace's
+/// sd there: the baseline bias clipping adds (`traces_signed_gt.tsv`,
+/// summary printed).
+fn signed_vs_gt(
+    lib: &Library,
+    clipped: &[f32],
+    signed: &[f32],
+    t_len: usize,
+    g: &Gt,
+    o: &Oracle,
+    out_dir: &Path,
+) {
+    let n = lib.len();
+    let t = t_len.min(g.t_gt);
+    let col = |m: &[f32], i: usize| -> Vec<f32> { (0..t).map(|k| m[k * n + i]).collect() };
+    let mut out = String::from(
+        "id\tgt\tr_clipped\tr_signed\tr_active_clipped\tr_active_signed\tquiet_frames\tquiet_mean_clipped_sd\tquiet_mean_signed_sd\tzero_frac\tneg_frac\n",
+    );
+    let (mut rc, mut rs) = (Vec::new(), Vec::new());
+    let (mut ac, mut as_) = (Vec::new(), Vec::new());
+    let (mut qc, mut qs) = (Vec::new(), Vec::new());
+    for (i, &id) in lib.ids().iter().enumerate() {
+        let (c, sg) = (col(clipped, i), col(signed, i));
+        let (mut bj, mut br) = (usize::MAX, f64::NEG_INFINITY);
+        for j in 0..g.kept.len() {
+            let r = pearson(&c, &g.c(o, j)[..t]);
+            if r > br {
+                (bj, br) = (j, r);
+            }
+        }
+        if bj == usize::MAX {
+            continue;
+        }
+        let gj = &g.c(o, bj)[..t];
+        let r_s = pearson(&sg, gj);
+        let zero = c.iter().filter(|&&v| v == 0.0).count() as f64 / t as f64;
+        let neg = sg.iter().filter(|&&v| v < 0.0).count() as f64 / t as f64;
+        // GT may sit on a baseline: levels are relative to its range.
+        let lo = gj.iter().fold(f32::INFINITY, |a, &v| a.min(v));
+        let peak = gj.iter().fold(f32::NEG_INFINITY, |a, &v| a.max(v)) - lo;
+        let pick = |m: &[f32], keep: &dyn Fn(f32) -> bool| -> (Vec<f32>, Vec<f32>) {
+            m.iter()
+                .zip(gj)
+                .filter(|(_, &gv)| keep(gv))
+                .map(|(&v, &gv)| (v, gv))
+                .unzip()
+        };
+        let active = |gv: f32| gv - lo > 0.05 * peak;
+        let quiet = |gv: f32| gv - lo <= 0.01 * peak;
+        let (ca, ga) = pick(&c, &active);
+        let (sa, _) = pick(&sg, &active);
+        let (r_ac, r_as) = (pearson(&ca, &ga), pearson(&sa, &ga));
+        let (cq, _) = pick(&c, &quiet);
+        let (sq, _) = pick(&sg, &quiet);
+        let nq = sq.len().max(1) as f64;
+        let ms = sq.iter().map(|&v| f64::from(v)).sum::<f64>() / nq;
+        let mc = cq.iter().map(|&v| f64::from(v)).sum::<f64>() / nq;
+        let sd = (sq.iter().map(|&v| (f64::from(v) - ms).powi(2)).sum::<f64>() / nq).sqrt();
+        let (bq_c, bq_s) = (mc / sd, ms / sd);
+        let _ = writeln!(
+            out,
+            "{id}\t{bj}\t{br:.4}\t{r_s:.4}\t{r_ac:.4}\t{r_as:.4}\t{}\t{bq_c:.3}\t{bq_s:.3}\t{zero:.3}\t{neg:.3}",
+            sq.len()
+        );
+        if br.is_finite() && r_s.is_finite() {
+            rc.push(br);
+            rs.push(r_s);
+        }
+        if r_ac.is_finite() && r_as.is_finite() && ca.len() >= 50 {
+            ac.push(r_ac);
+            as_.push(r_as);
+        }
+        if sq.len() >= 200 && bq_c.is_finite() && bq_s.is_finite() {
+            qc.push(bq_c);
+            qs.push(bq_s);
+        }
+    }
+    std::fs::write(out_dir.join("traces_signed_gt.tsv"), out).unwrap();
+    let med = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
+    };
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let better = rc.iter().zip(&rs).filter(|(a, b)| b >= a).count();
+    println!(
+        "signed vs GT: {} cells, r clipped median {:.4} mean {:.4}; r signed median {:.4} mean {:.4}; signed >= clipped for {better}",
+        rc.len(),
+        med(&rc),
+        mean(&rc),
+        med(&rs),
+        mean(&rs),
+    );
+    println!(
+        "signed vs GT, active frames: {} cells, r clipped median {:.4}, r signed median {:.4}; quiet frames: {} cells, mean / sd clipped median {:.3}, signed median {:.3}",
+        ac.len(),
+        med(&ac),
+        med(&as_),
+        qc.len(),
+        med(&qc),
+        med(&qs),
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
@@ -2631,6 +2744,7 @@ fn main() {
     let oracle_mode = mode == "oracle";
     let motion = args.iter().any(|a| a == "--motion");
     let dump = args.iter().any(|a| a == "--dump");
+    let dump_signed = !args.iter().any(|a| a == "--no-signed");
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
     let start: usize = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let every: usize = arg_value(&args, "--every").map_or(300, |s| s.parse().unwrap());
@@ -3794,6 +3908,7 @@ fn main() {
     }
     let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
     let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    eng.set_signed(dump_signed);
     let mut q2 = QcMonitor::new(
         dims,
         fov.clone(),
@@ -3805,14 +3920,19 @@ fn main() {
     let norms: Vec<f32> = (0..n)
         .map(|s| lib.filtered(s).1.iter().map(|a| a * a).sum())
         .collect();
-    let mut files: Vec<BufWriter<File>> = ["trace", "ring", "pre", "post"]
+    let mut files: Vec<BufWriter<File>> = ["trace", "ring", "pre", "post", "signed"]
         .iter()
+        .take(if dump_signed { 5 } else { 4 })
         .map(|k| BufWriter::new(File::create(out_dir.join(format!("dump_{k}.f32"))).unwrap()))
         .collect();
     let mut pre = vec![0.0f32; n_px];
     let mut tr = FrameTraces::default();
     let mut proj = vec![0.0f32; n];
     let mut hist2 = History::default();
+    // Frame-major clipped and signed traces, for the GT comparison.
+    let mut all_clipped: Vec<f32> = Vec::new();
+    let mut all_signed: Vec<f32> = Vec::new();
+    let mut solve_s = 0.0f64;
     let mut s = 0u32;
     while s < frames {
         let cnt = 64.min(frames - s);
@@ -3825,7 +3945,14 @@ fn main() {
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let t = s as usize + k;
             pipe.frame_split(f, &mut pre, &mut y);
+            let t_solve = Instant::now();
             eng.process_into(&y, &mut tr).unwrap();
+            solve_s += t_solve.elapsed().as_secs_f64();
+            if dump_signed {
+                write_f32s(&mut files[4], &tr.signed);
+                all_clipped.extend_from_slice(&tr.traces);
+                all_signed.extend_from_slice(&tr.signed);
+            }
             if t.is_multiple_of(200) {
                 q2.set_noise(pipe.pre.noise().sigma()).unwrap();
             }
@@ -3843,6 +3970,16 @@ fn main() {
             }
         }
         s += cnt;
+    }
+    drop(files);
+    println!(
+        "pass 2 solve: {:.3} s for {t_len} frames ({:.1} us/frame, signed traces {})",
+        solve_s,
+        solve_s * 1e6 / t_len.max(1) as f64,
+        if dump_signed { "on" } else { "off" }
+    );
+    if let (true, Some(g), Some(o)) = (dump_signed, &gt, &oracle) {
+        signed_vs_gt(&lib, &all_clipped, &all_signed, t_len, g, o, &out_dir);
     }
     let mut out = qc_header();
     if let (Some(g), Some(o)) = (&gt, &oracle) {

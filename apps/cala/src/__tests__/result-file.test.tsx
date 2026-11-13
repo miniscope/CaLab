@@ -114,6 +114,11 @@ async function input(range?: { start: number; end: number }): Promise<ExportInpu
     result: {
       ids,
       traces: await memoryTraceFile(traces, T, 2),
+      signed: await memoryTraceFile(
+        traces.map((v) => v - 1000),
+        T,
+        2,
+      ),
       frames: T,
       cells: 2,
       version: 7,
@@ -150,13 +155,14 @@ function sink(): ByteSink & { blob(): Blob } {
  * An older export from a v4 one: drop the entries and meta keys that came
  * later, and optionally store the traces in C order (a NumPy re-save).
  */
-async function downgrade(v4: Blob, version: 1 | 2 | 3, cOrderTraces = false): Promise<Blob> {
+async function downgrade(v4: Blob, version: 1 | 2 | 3 | 4, cOrderTraces = false): Promise<Blob> {
   const z = await ZipArchive.open(v4);
   const s = sink();
   const out = new ZipStreamWriter(s);
   for (const e of z.entries) {
     const name = e.name;
     if (['fov_mean.npy', 'fov_max.npy', 'flat_field_gain.npy'].includes(name)) continue;
+    if (version < 4 && name === 'traces_signed.npy') continue;
     if (version < 2 && (name.startsWith('history_') || name === 'run_events_json.npy')) continue;
     let bytes = await z.read(name);
     if (name === 'meta_json.npy') {
@@ -165,6 +171,7 @@ async function downgrade(v4: Blob, version: 1 | 2 | 3, cOrderTraces = false): Pr
       meta.format_version = version;
       delete meta.fov_images;
       delete meta.bit_depth;
+      if (version < 4) delete meta.traces_signed;
       if (version < 3) delete meta.stages;
       if (version < 2) delete meta.history;
       const m = new TextEncoder().encode(JSON.stringify(meta));
@@ -219,12 +226,12 @@ describe('FovProjector', () => {
   });
 });
 
-describe('export format 4 and the result reader', () => {
+describe('export format 5 and the result reader', () => {
   it('round-trips a session of a Joint run: images, flat field, traces, QC, stages, history', async () => {
     const blob = new Blob([await buildCalaExport(await input({ start: 5, end: 10 }))]);
     const r = await openResult(blob);
     expect(r.formatVersion).toBe(EXPORT_FORMAT_VERSION);
-    expect(r.formatVersion).toBe(4);
+    expect(r.formatVersion).toBe(5);
     expect([r.width, r.height, r.frames, r.fps]).toEqual([W, H, 5, 20]);
     expect(r.label).toBe('mouse1/s1');
     expect(r.missing.size).toBe(0);
@@ -242,6 +249,7 @@ describe('export format 4 and the result reader', () => {
     expect(r.flatField?.range).toEqual({ lo: 0.9, hi: 1.1 });
     // Traces: frames 5..9 of the run, frame-major.
     expect([...(await r.readFrames(1, 3))]).toEqual([6, 106, 7, 107]);
+    expect([...(await r.readSignedFrames!(1, 2))]).toEqual([6 - 1000, 106 - 1000]);
     await expect(r.readFrames(0, 6)).rejects.toThrow(RangeError);
     // Footprints, first seen, QC.
     expect([...r.library.pixels]).toEqual([0, 1, 6, 7]);
@@ -263,6 +271,14 @@ describe('export format 4 and the result reader', () => {
     expect(r.images[0].data[1]).toBeCloseTo(4.5);
   });
 
+  it('opens format 4 (signed traces, no images)', async () => {
+    const v4 = await downgrade(new Blob([await buildCalaExport(await input())]), 4);
+    const r = await openResult(v4);
+    expect(r.formatVersion).toBe(4);
+    expect([...r.missing].sort()).toEqual(['flatfield', 'fov']);
+    expect([...(await r.readSignedFrames!(0, 1))]).toEqual([-1000, 100 - 1000]);
+  });
+
   it('opens format 3 (no images, no flat-field map) and says what is missing', async () => {
     const v3 = await downgrade(new Blob([await buildCalaExport(await input())]), 3);
     const r = await openResult(v3);
@@ -271,6 +287,7 @@ describe('export format 4 and the result reader', () => {
     expect(r.flatField).toBeNull();
     expect([...r.missing].sort()).toEqual(['flatfield', 'fov']);
     expect(r.stages).toHaveLength(2);
+    expect(r.readSignedFrames).toBeNull();
     expect([...(await r.readFrames(0, 1))]).toEqual([0, 100]);
   });
 
@@ -337,13 +354,14 @@ describe('ResultView', () => {
       );
       expect(root.querySelector('.cala-fov__empty')?.textContent).toMatch(/Not in this export/);
       expect(root.querySelector('[data-testid="view-select"]')?.textContent).toMatch(/No image/);
+      expect(root.querySelector('[data-testid="trace-mode"]')).toBeNull();
     } finally {
       dispose();
       root.remove();
     }
   });
 
-  it('offers the mean and max images of a format 4 export', async () => {
+  it('offers the mean and max images of a format 5 export', async () => {
     const { ResultView } = await import('../components/ResultView.tsx');
     const r = await openResult(new Blob([await buildCalaExport(await input())]));
     const root = document.createElement('div');
@@ -354,6 +372,7 @@ describe('ResultView', () => {
       expect(views).toMatch(/Mean/);
       expect(views).toMatch(/Max/);
       expect(root.querySelector('[data-testid="result-missing"]')).toBeNull();
+      expect(root.querySelector('[data-testid="trace-mode"]')?.textContent).toMatch(/Signed/);
       // The fixed range of the image shown (max, 8-bit): no fitting.
       const hi = root.querySelector<HTMLInputElement>('[data-testid="range-hi"]');
       expect(Number(hi?.value)).toBeCloseTo(fovDisplayRanges(8).max[1], 0);
