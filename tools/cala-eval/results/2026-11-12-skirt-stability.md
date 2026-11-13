@@ -142,8 +142,65 @@ The paired per-cell analysis (`tools/paired_growth.py`) gives a different pictur
 - **Real, R7.** The median cell grows ×1.29 from pass 1 to 2 and ×1.06 from pass 2 to 3, so it decelerates. p99 is bounded
   at 0.97. But the 2→3 / 1→2 increment ratio (.56–.63) is larger than the half-life mechanism predicts (≈ .13 for
   18 000-frame passes). Another ratchet may add to it, for example the statistics disk following the support. This is
-  unverified, and the same numbers were seen before the fix (old skirt 1.63, new 1.65). A pass-4 or pass-5 real run would
-  show whether it settles.
+  unverified, and the same numbers were seen before the fix (old skirt 1.63, new 1.65). The 5-pass run in §5
+  answers this: the second ratchet is the split-half inflation φ settling, and it is decaying.
+
+## 5. Real refine-only, 5 passes (R8)
+
+Same binary (`qc_eval-fix2`) and flags as R7, with `--passes 5` (`real/r8` in the `s21c-default` scratch directory). Passes
+1–3 of seed 1 are byte-identical to R7. The Rings control is one seed. Sizes count positive pixels.
+
+| Pass | skirt s1: cells, median / p90 / p99 / max | skirt s2: cells, median / p90 / p99 / max | ctl (rings) s1: median / p99 / max |
+| ---- | ----------------------------------------- | ----------------------------------------- | ---------------------------------- |
+| 1    | 730, 234 / 460 / 820 / 1146               | 763, 225 / 496 / 900 / 1298               | 490 / 3171 / 5658                  |
+| 2    | 731, 348 / 534 / 822 / 979                | 762, 342 / 523 / 743 / 1022               | 1164 / 15 573 / 111 450            |
+| 3    | 731, 382 / 581 / 859 / 1175               | 762, 378 / 582 / 798 / 1156               | 1514 / 28 344 / 193 865            |
+| 4    | 731, 400 / 604 / 882 / 1108               | 762, 408 / 616 / 890 / 1230               | 1728 / 65 271 / 283 173            |
+| 5    | 731, 411 / 629 / 950 / 1208               | 762, 416 / 624 / 906 / 1247               | 1862 / 128 777 / 283 152           |
+
+Paired per-cell median `n_{k+1}/n_k` (cells present in all 5 passes, pass-1 size tercile), and the share of cells growing or
+shrinking by more than 5 % per step:
+
+| skirt, s1 / s2 | 2/1           | 3/2           | 4/3           | 5/4           |
+| -------------- | ------------- | ------------- | ------------- | ------------- |
+| small tercile  | 1.663 / 1.615 | 1.081 / 1.087 | 1.000 / 1.032 | 1.000 / 1.000 |
+| mid tercile    | 1.386 / 1.429 | 1.060 / 1.087 | 1.000 / 1.051 | 1.000 / 1.000 |
+| large tercile  | 1.000 / 1.000 | 1.045 / 1.034 | 1.000 / 1.028 | 1.000 / 1.000 |
+| all            | 1.291 / 1.301 | 1.058 / 1.065 | 1.000 / 1.036 | 1.000 / 1.000 |
+| grow > 5 %     | .67 / .65     | .52 / .52     | .35 / .46     | .28 / .27     |
+| shrink > 5 %   | .16 / .19     | .09 / .09     | .09 / .06     | .08 / .12     |
+| sum of Δ px    | 55k / 51k     | 31k / 32k     | 16k / 27k     | 12k / 9k      |
+
+Per pass (evalrun), skirt s1 / s2: texture 0 in every pass; S8 22–25k, flat after pass 2 (s1 22 259 → 24 714, s2 22 809 →
+24 213); Minian agreement ≥ .5 rises 531 → 577 and 535 → 591; cells 731 / 762 throughout. The Rings control runs away as in
+S2.1: p99 ×40, texture 2 → 61, S8 21.9k → 445k, 140 min wall and 2.0 GB RSS against 51 min and 1.07 GB for skirt.
+
+**Reading.** The typical cell has stopped by pass 4: the paired median ratio is 1.000 for every tercile at 5/4 in both
+seeds. The pixel increments shrink by about half per pass, and p99 stays within 1.16 of pass 1. But growth has not fully
+stopped: about 27 % of cells still grow by more than 5 % from pass 4 to 5, against 8–12 % that shrink, so the population
+median still creeps (+3 %, +2 %). A geometric tail at the observed decay would add about 20 px per cell. Growth does not
+persist per cell: P(grow at step k | grew at k − 1) equals the base rate (.27 vs .28). Only 6–7 % of cells grow more than 5 %
+at every step. Growth is also independent of peak SNR and of neighbour distance. The new pixels sit at the edge (1.1 ×
+equivalent radius) at about 0.10 of the peak, in pixels that neighbouring supports already cover.
+
+**What drives it (audit rerun of seed 1, `CALA_SUPPORT_AUDIT`, last construction per cell and pass).** The threshold
+`z_fw φ se` falls 0.311 → 0.129 → 0.107 → 0.090 → 0.085, the medians over cells per pass. Its parts move as follows:
+
+- `se` reaches its half-life equilibrium by pass 3 (0.0095 → 0.0045 → 0.0039 → 0.0038 → 0.0037). It is uncorrelated with growth
+  after pass 2 (Spearman ≈ 0). The 6000-frame forgetting is therefore not what drives the late growth.
+- **The second ratchet is the split-half inflation `φ`.** It falls 8.34 → 7.42 → 6.59 → 5.45 → 5.38, by −11 %, −15 % and
+  then −3 % per step. Growth correlates with the fall (Spearman −.27, −.33, −.19). In the 4→5 step, φ falls by 10 % in the
+  growing cells against 0.3 % in the rest. `φ` measures how much the two halves of the statistics disagree beyond white noise.
+  It falls as the model around a cell becomes stationary, because fewer edits change the residual the halves see
+  (statistics-path constructions per pass: 31.6k, 26.5k, 23.8k, 22.3k). The `φ` decline has nearly stopped (−3 %), so this
+  driver is running out.
+- **A smaller contribution comes from the statistics disk following the support.** The disk is the support radius + 0.4
+  diameters and moves when the support outgrows it. Median `N` rises 771 → 1018, and `z_fw` rises slightly with it. Growth
+  correlates with disk growth (Spearman +.45, +.32, +.27). In the 4→5 step, the disk grew in 24 % of growing cells against
+  3 % of the others. A larger disk exposes more pixels to the basin test, but so far it has not produced runaway (p99 ≤ 1.16).
+
+Not fixed here. Both drivers are decaying, and the median is flat per cell from pass 4. A longer run (8–10 passes) would show
+whether the residual creep goes to zero or settles into a slow drift through the disk-following loop.
 
 ## Gate table
 
