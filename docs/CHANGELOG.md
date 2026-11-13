@@ -5,25 +5,54 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-11-13
+
+Web apps `v2.17.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala's slow loop now publishes a footprint refinement only when the change
+exceeds the footprint estimate's own split-half noise, cutting late refines by
+about a third with no loss in final quality. Two opt-in features arrive for
+long sessions: windowed low-rank compression of the frame stream, and a
+history review that searches the compressed history for missed cells.
+
 ### Changed
 
-- Cala: the split-half refine gate is the default (`RefineGate::SplitHalf`). The
-  slow loop's statistics path now proposes a refinement only when the change
-  from the current footprint exceeds the estimate's own split-half noise
-  (`Î > 0`), instead of the χ² disagreement test and `refine_min_change`. Late
-  real-data refines fall 37 %, every quality gate holds and seed-to-seed
-  footprint agreement rises (Jaccard .697 → .711). The reservoir path, absorbs
-  and merges are unchanged. `qc_eval --refine-gate legacy` keeps the old rule
+- Cala: the split-half refine gate is the default (`RefineGate::SplitHalf`,
+  #365, #367). The slow loop's statistics path now proposes a refinement only
+  when the change from the current footprint exceeds the estimate's own
+  split-half noise (`Î > 0`), instead of the χ² disagreement test and
+  `refine_min_change`. Late real-data refines fall 37 %, every quality gate
+  holds and seed-to-seed footprint agreement rises (Jaccard .697 → .711). The
+  reservoir path, absorbs and merges are unchanged. `qc_eval --refine-gate
+legacy` keeps the old rule
   (`tools/cala-eval/results/2026-11-12-refine-gate.md`).
+
+### Added
+
+- Cala (opt-in, `?compress`): windowed low-rank compression of the frame
+  stream (#307). Each 64 px tile is compressed per 600-frame window to its mean
+  plus a low-rank factorization (randomized SVD, rank cut by lag-1
+  autocorrelation) in a worker of its own. The factors are kept in browser
+  storage (OPFS) for the session, and at the end of a run traces are
+  back-filled from them. The run panel shows the compression readout. Off by
+  default.
+- Cala (opt-in, `?compress&review`): a history review that looks through the
+  session's compressed history for cells the slow loop missed (#354). Every N
+  compressed windows (`review=N`, default 8) a worker scans the factors, and
+  candidates are added to the slow loop on probation like any add. It needs
+  `?compress` and is off without it. The slow loop's visit wire format tag is
+  now `VIS7`.
 
 ### Developer tooling
 
-- Cala: a split-half refine gate behind a switch (`SlowLoopConfig::refine_gate`,
-  `qc_eval --refine-gate legacy|split-half`). Under `split-half` the statistics
-  path proposes a refinement only when the change exceeds the estimate's own
-  split-half noise. It cuts late real-data refines by 37 % with recall and
-  precision unchanged (`tools/cala-eval/results/2026-11-12-refine-gate.md`);
-  it is now the default (see Changed).
+- cala-eval: `qc_eval` scale flags (`--cell-diameter`, `--psf-sigma`,
+  `--flatten-sigma`, `--tile-px`, `--margin-px`, `--bin`), a
+  `SlowLoopConfig::psf_sigma_px` field (default unchanged), and offline scale
+  estimators (`fp_scales.py`, `probe_scale.py`) with the S2.4 M0 results
+  (`tools/cala-eval/results/2026-11-12-scales-m0.md`, #366).
+- cala-eval: the 5-pass real refine-only check of BasinSkirt
+  (`tools/cala-eval/results/2026-11-12-skirt-stability.md` §5, #364).
+- Dependencies: pyo3 0.30 for cala's Python bindings (#275), jsdom 31 (#362),
+  lint and build toolchain patches (#361), CI action patch (#363).
 
 ## [2.16.0] - 2026-11-12
 
