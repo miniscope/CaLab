@@ -16,6 +16,8 @@ export interface CellsSettings {
   library?: Uint8Array;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
+  /** Feed the compress worker (default off; needs its port). */
+  compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
 }
@@ -51,6 +53,8 @@ export type FrameRequest =
   | { type: 'pipeline-stop'; id: number }
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
+  /** The port to the compress worker (transferred). */
+  | { type: 'connect-compress'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */
