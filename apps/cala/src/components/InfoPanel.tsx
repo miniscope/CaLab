@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from 'solid-js';
 import { DashboardPanel } from '@calab/ui';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
+import { ASSUMED_FPS } from '../lib/miniscope-meta.ts';
 
 const FPS_SOURCE_LABEL = {
   timestamps: 'timeStamps.csv (mean frame interval)',
@@ -11,7 +12,7 @@ const FPS_SOURCE_LABEL = {
 
 function fpsText(info: FrameSourceInfo): string {
   return info.fps === null
-    ? 'unknown'
+    ? `unknown (assuming ${ASSUMED_FPS} Hz)`
     : `${info.fps.toFixed(2)} Hz from ${FPS_SOURCE_LABEL[info.fpsSource]}`;
 }
 

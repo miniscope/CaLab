@@ -306,7 +306,11 @@ no new cells appear.
 **Cell QC tab.** One row per cell, failing cells first. A cell is **not measured
 yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
-0.8.
+0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
+seconds, at the recording's frame rate). After Extract it is recomputed on the
+extracted traces over the whole recording (or over each session, in that session's
+export); before, the table kept the last minute of Discover. A clean cell that happens
+to be quiet in its last minute no longer fails on a low SNR.
 
 | Verdict or flag       | Meaning                                                                                                                                          |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
