@@ -30,7 +30,7 @@ describe('RunEvents', () => {
   it('bumps version on push and clear', () => {
     const r = new RunEvents();
     const v0 = r.version();
-    r.push(ev(0, 'pass'));
+    r.push(ev(0, 'stage'));
     expect(r.version()).toBeGreaterThan(v0);
     const v1 = r.version();
     r.clear();
@@ -42,7 +42,7 @@ describe('RunEvents', () => {
     const r = new RunEvents({ maxEvents: 50, foldOlderThanS: 3600 });
     // newest event first, so the fold at the bound sees everything else as old
     r.push(ev(20000, 'setting'));
-    r.push(ev(5, 'pass', { replay: true }));
+    r.push(ev(5, 'stage', { replay: true }));
     r.push(ev(10, 'scale', { key: 'd', from: 6, to: 8, replay: true }));
     r.push(ev(20, 'flatfield', { replay: true, to: 99 }));
     r.push(ev(30, 'warning', { detail: 'w' }));
@@ -63,7 +63,7 @@ describe('RunEvents', () => {
     expect(maps.reduce((n, e) => n + (e.count ?? 1), 0)).toBe(60);
     expect(Math.max(...sums.map((e) => e.to as number))).toBeGreaterThan(2);
     // replay and non-flat-field events survive untouched
-    expect(l.filter((e) => e.replay).map((e) => e.kind)).toEqual(['pass', 'scale', 'flatfield']);
+    expect(l.filter((e) => e.replay).map((e) => e.kind)).toEqual(['stage', 'scale', 'flatfield']);
     expect(l.find((e) => e.kind === 'warning')).toBeDefined();
     expect(l.find((e) => e.t === 20000)).toBeDefined();
     for (let i = 1; i < l.length; i++) expect(l[i].t).toBeGreaterThanOrEqual(l[i - 1].t);

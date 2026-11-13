@@ -27,7 +27,8 @@ export interface PipelineClient {
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
   /** Free the worker-side pipeline. */
-  stopPipeline(): Promise<void>;
+  /** `keepSlow`: keep the slow loop (a Refine or Extract run is stopped; see `pipeline-stop`). */
+  stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
   /** Return (or stop returning) the residual preview in the running pipeline. */
@@ -247,8 +248,11 @@ export function createFrameClient(
     async stepPipeline() {
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
     },
-    async stopPipeline() {
-      expectType(await call({ type: 'pipeline-stop' }), 'pipeline-stopped');
+    async stopPipeline(opts) {
+      expectType(
+        await call({ type: 'pipeline-stop', ...(opts?.keepSlow ? { keepSlow: true } : {}) }),
+        'pipeline-stopped',
+      );
     },
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.

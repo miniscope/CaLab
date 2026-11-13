@@ -21,15 +21,22 @@
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
 //!   --seed S           oracle: perturbation seed
 //!   --slow-seed S      slow-loop seed (held-out split, random slots)
-//!   --passes N         run pass 1 N times over the same recording (S2.3,
-//!                      repeated pass 1; default 1). See "Repeated passes".
-//!   --later-passes M   edits the slow loop may make in passes >= 2 (S2.3b):
-//!                      `all` (default), `refine` (refine footprints only: no
-//!                      adds, absorbs, splits, merges, keep tests or
-//!                      deletions), `refine-prune` (also keep tests and
-//!                      deletions), `refine-merge` (also merges). Pass 1 is
-//!                      unchanged. Not with `--via-jobs`, `--visit-workers`
-//!                      or `--offered-fps`.
+//!   --passes N         run the recording N times (default 1). Pass 1 is
+//!                      the app's Discover stage; later passes replay the
+//!                      recording from frame 0 (S2.3). See "Repeated passes".
+//!   --later-passes M   edits the slow loop may make in passes >= 2 (S2.3b;
+//!                      the `EditScope` names): `all` (default: Discover
+//!                      again, which counts the same frames' evidence twice;
+//!                      not exposed in the app), `refine` (the app's Refine
+//!                      stage: refine footprints only, no adds, absorbs,
+//!                      splits, merges, keep tests or deletions),
+//!                      `refine-prune` (also keep tests and deletions),
+//!                      `refine-merge` (also merges). Pass 1 is unchanged.
+//!                      Visit jobs carry the scope, so it holds with
+//!                      `--via-jobs`, `--visit-workers` and `--offered-fps`.
+//!                      Except with `--offered-fps`, a refine replay starts
+//!                      from the previous pass's final library (the slow
+//!                      loop publishes at the wrap), as the app's Refine does.
 //!   --dump             re-extract with the final library and write per-cell
 //!                      trace, ring background and the footprint projection of
 //!                      the frame before and after the background floor
@@ -175,7 +182,8 @@
 //! The non-rigid part of the template's position (the sim's patch field
 //! averaged over the warm-up, a few tenths of a px) is not modelled.
 //!
-//! Repeated passes (`--passes N`, offline only): after the last frame the
+//! Repeated passes (`--passes N`, offline only; with `--later-passes refine`
+//! these are the app's Refine runs, see `apps/cala/docs/stages.md`): after the last frame the
 //! loop restarts at frame 0 and runs the recording again. Carried over: the
 //! fast loop's library and trace engine state (traces continue across the
 //! wrap), the whole slow loop (footprints, fpstats, ledger, probation, frame
@@ -2624,17 +2632,11 @@ fn main() {
     let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
     assert!(passes >= 1, "--passes must be at least 1");
     let later_scope = match arg_value(&args, "--later-passes").as_deref() {
-        None | Some("all") => EditScope::All,
-        Some("refine") => EditScope::Refine,
-        Some("refine-prune") => EditScope::RefinePrune,
-        Some("refine-merge") => EditScope::RefineMerge,
-        Some(m) => panic!("--later-passes: unknown mode {m}"),
+        None => EditScope::All,
+        Some(m) => {
+            EditScope::from_name(m).unwrap_or_else(|| panic!("--later-passes: unknown mode {m}"))
+        }
     };
-    // A `VisitRunner` keeps the scope it was built with.
-    assert!(
-        later_scope == EditScope::All || !via_jobs && visit_workers == 0 && offered_fps.is_none(),
-        "--later-passes needs in-process visits (no --via-jobs, --visit-workers, --offered-fps)"
-    );
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
@@ -2997,6 +2999,14 @@ fn main() {
         let off = pass * t_len;
         if pass > 0 {
             if let Some(sl) = slow.as_mut() {
+                // A refine replay is the app's Refine stage: the stage
+                // before it ends with its final library (the slow loop
+                // publishes what is pending) and the replay solves with it
+                // from frame 0. (`all`, Discover again, keeps the old
+                // behaviour: no publish at the wrap.)
+                if later_scope != EditScope::All && timed.is_none() {
+                    engine.set_library(sl.finalize().unwrap()).unwrap();
+                }
                 sl.set_edit_scope(later_scope);
             }
         }

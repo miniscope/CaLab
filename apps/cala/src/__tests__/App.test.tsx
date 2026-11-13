@@ -242,3 +242,43 @@ describe('App', () => {
     expect(root.querySelector('.drop-zone')).not.toBeNull();
   });
 });
+
+describe('App open-folder control', () => {
+  it('says files are read locally', () => {
+    const root = mount();
+    expect(root.querySelector('[data-testid="local-note"]')?.textContent).toContain(
+      'never leave your computer',
+    );
+  });
+
+  it('uses the directory picker when available, and shows nothing on cancel', async () => {
+    const show = vi.fn(async () => {
+      throw new DOMException('cancelled', 'AbortError');
+    });
+    (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = show;
+    try {
+      const root = mount();
+      root.querySelector<HTMLElement>('.drop-zone')!.click();
+      await vi.waitFor(() => expect(show).toHaveBeenCalledWith({ mode: 'read' }));
+      await Promise.resolve();
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    }
+  });
+
+  it('shows an error when the picker is refused', async () => {
+    (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = async () => {
+      throw new DOMException('Permission denied', 'NotAllowedError');
+    };
+    try {
+      const root = mount();
+      root.querySelector<HTMLElement>('.drop-zone')!.click();
+      await vi.waitFor(() =>
+        expect(root.querySelector('[role="alert"]')?.textContent).toContain('Permission denied'),
+      );
+    } finally {
+      delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    }
+  });
+});
