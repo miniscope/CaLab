@@ -21,6 +21,7 @@ import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm
 import type { DeviceIdentity } from './flat-field.ts';
 import { chooseSeries, detectSeries, dirOf, looseAvis, numberingWarnings } from './video-series.ts';
 import {
+  ASSUMED_FPS,
   fpsFromTimeStamps,
   parseDeviceIdentity,
   parseMetadata,
@@ -415,7 +416,9 @@ async function openRecording(
     );
   }
   if (fps === null) {
-    warnings.push('No frame rate found (no usable timeStamps.csv or metaData.json).');
+    warnings.push(
+      `No frame rate found (no usable timeStamps.csv or metaData.json); time-based settings (QC windows, background, flat field) assume ${ASSUMED_FPS} Hz.`,
+    );
   }
   for (const a of avis) {
     if (a.header.skippedEmptyFrames > 0) {

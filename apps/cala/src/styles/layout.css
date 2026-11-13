@@ -502,6 +502,32 @@
   margin: 0;
 }
 
+/* Refine plots (components/RefinePlots.tsx) */
+.cala-refine-plot__title,
+.cala-refine-runs figcaption {
+  font-size: 0.72rem;
+}
+
+.cala-refine-runs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+}
+
+.cala-refine-runs__plot {
+  margin: 0;
+}
+
+.cala-refine-runs__grid {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.cala-refine-runs__tick {
+  fill: var(--text-tertiary);
+  font-size: 9px;
+}
+
 .cala-run__pass2 {
   font-weight: var(--font-weight-normal);
   color: var(--text-secondary);

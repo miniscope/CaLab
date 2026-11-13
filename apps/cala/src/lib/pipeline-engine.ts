@@ -17,6 +17,7 @@ import {
 } from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
+import type { FovProjections } from './fov-projection.ts';
 import { ImagingSampler, type ImagingStats } from './imaging-stats.ts';
 import { sessionBoundaries, type FramePixels, type FrameSourceInfo } from './frame-source.ts';
 import {
@@ -180,10 +181,19 @@ export type PipelineStepResult =
       /** This batch started a session of a Joint run (session fix on): what was done. */
       session?: SessionStart;
     }
-  | { kind: 'done' };
+  | {
+      kind: 'done';
+      /** Mean and max projections of the run (Extract with `CellsSettings.projection`). */
+      projection?: FovProjections;
+    };
 
 /** Transferable buffers of a step result (for `postMessage`). */
 export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
+  if (r.kind === 'done')
+    return (r.projection?.spans ?? []).flatMap((s) => [
+      s.mean.buffer as ArrayBuffer,
+      s.max.buffer as ArrayBuffer,
+    ]);
   if (r.kind !== 'batch') return [];
   const p = r.previews;
   return [

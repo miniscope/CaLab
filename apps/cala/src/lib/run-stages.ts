@@ -15,6 +15,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { LibraryView } from '../workers/slow-types.ts';
+import { footprintChanges, quantile, type RefineSample } from './refine-metrics.ts';
 
 export type StageName = 'discover' | 'refine' | 'extract';
 
@@ -133,6 +134,11 @@ export interface StageRun {
   /** Refine: cells whose footprint changed, and their median relative change. */
   footprintsRefined?: number;
   medianFootprintChange?: number | null;
+  /** Refine: the 90th percentile of the changes the run published, and the share of cells it refined. */
+  changeP90?: number | null;
+  refinedShare?: number;
+  /** Refine: the run's series over the replay (`refine-metrics.ts`). */
+  series?: readonly RefineSample[];
 }
 
 /** Runs of the stages since the last Discover start, in order. */
@@ -199,52 +205,20 @@ export function perMinute(count: number, frames: number, fps: number): number | 
   return count / (frames / fps / 60);
 }
 
-/** One cell's footprint as pixel -> weight. */
-function footprintOf(v: LibraryView, slot: number): Map<number, number> {
-  const m = new Map<number, number>();
-  for (let k = v.starts[slot]; k < v.starts[slot + 1]; k++) m.set(v.pixels[k], v.values[k]);
-  return m;
-}
-
 /**
  * How much the footprints changed from `before` to `after`: per cell present
- * in both, the relative change `|a' - a| / |a|` (L2 over the union of their
- * pixels); `refined` counts the cells whose footprint changed at all, and
- * `median` is the median change of those refined cells (null: none). Over
- * every cell it would read 0 whenever fewer than half changed.
+ * in both, the relative change `|a' - a| / |a|` (`footprintChanges`);
+ * `refined` counts the cells whose footprint changed at all, and `median` is
+ * the median change of those refined cells (null: none). Over every cell it
+ * would read 0 whenever fewer than half changed.
  */
 export function footprintChange(
   before: LibraryView,
   after: LibraryView,
 ): { refined: number; median: number | null; cells: number } {
-  const slotOf = new Map<number, number>();
-  before.ids.forEach((id, s) => slotOf.set(id, s));
-  const changes: number[] = [];
-  let refined = 0;
-  let cells = 0;
-  after.ids.forEach((id, s) => {
-    const b = slotOf.get(id);
-    if (b === undefined) return;
-    const a0 = footprintOf(before, b);
-    const a1 = footprintOf(after, s);
-    let diff = 0;
-    let norm = 0;
-    for (const [p, v] of a0) {
-      norm += v * v;
-      const d = (a1.get(p) ?? 0) - v;
-      diff += d * d;
-    }
-    for (const [p, v] of a1) if (!a0.has(p)) diff += v * v;
-    cells++;
-    if (diff === 0) return;
-    refined++;
-    changes.push(norm > 0 ? Math.sqrt(diff / norm) : 1);
-  });
-  if (changes.length === 0) return { refined, median: null, cells };
-  changes.sort((x, y) => x - y);
-  const n = changes.length;
-  const median = n % 2 ? changes[(n - 1) / 2] : 0.5 * (changes[n / 2 - 1] + changes[n / 2]);
-  return { refined, median, cells };
+  const { changes, cells } = footprintChanges(before, after);
+  const sorted = [...changes.values()].sort((x, y) => x - y);
+  return { refined: changes.size, median: quantile(sorted, 0.5), cells };
 }
 
 /** The Refine readout against the run before it. */

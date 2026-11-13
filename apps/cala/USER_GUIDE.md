@@ -187,7 +187,9 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    the signed traces of the cells that pass QC (untick **QC-passing cells only** to include
    every cell), for CaDecon, which needs the zero baseline. Python:
    `np.load("<folder>_cala.npz")["traces"]` (or `["traces_signed"]`). A live run has no
-   Extract and no signed traces. The `.npz` also holds the run's history
+   Extract and no signed traces. The `.npz` also holds a mean and a max
+   image of the field of view (`fov_mean`, `fov_max`), the flat-field gain map
+   (`flat_field_gain`, when one was applied), the run's history
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
@@ -219,6 +221,13 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   the table.
 - **Current result.** A session's newest result is its current one. Older results are
   kept; **Set current** in its results makes an older one current again.
+- **View results.** Opens a result in the viewer as it looked right after its run:
+  the cells over the field of view (**Mean** or **Max** image), the QC table, a
+  clicked cell's footprint and trace, the History plots and event log, the stages that
+  ran and the flat field. It is read-only: to Discover or Refine again, start a new run
+  from the table. **Back to project** returns to the table. Results saved by older
+  versions open too; what they lack (the images, the History) says "not in this
+  export".
 - **Where results go.** Each run gets its own folder, `cala-results/runs/<date>_<time>/`,
   laid out like a multi-session run's results, and `cala-results/cala-project.json`
   indexes them. Raw data folders are only read. **Choose another folder...** saves the
@@ -230,8 +239,8 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   (and a permission prompt) reopens one. Other browsers pick the folder again; there each
   run downloads a zip of its run folder, to unpack into the animal folder.
 
-Saved libraries (applying one session's cells to another), matching cells across Separate
-runs, and opening a saved result in the viewer come in later versions. Details:
+Saved libraries (applying one session's cells to another) and matching cells across
+Separate runs come in later versions. Details:
 [docs/projects.md](docs/projects.md).
 
 ## Several sessions of one animal
@@ -301,7 +310,11 @@ no new cells appear.
 **Cell QC tab.** One row per cell, failing cells first. A cell is **not measured
 yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
-0.8.
+0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
+seconds, at the recording's frame rate). After Extract it is recomputed on the
+extracted traces over the whole recording (or over each session, in that session's
+export); before, the table kept the last minute of Discover. A clean cell that happens
+to be quiet in its last minute no longer fails on a low SNR.
 
 | Verdict or flag       | Meaning                                                                                                                                          |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |

@@ -220,7 +220,53 @@ and **Extract**, from the current result's run (else the latest run with that
 session, with a note when it was skipped or failed), **Cell IDs**, **Library**
 (a placeholder until saved libraries), and the **current result** (run and
 cell count). **Results** opens a row's results: each run, when it was made, its
-cell count and export path, and **Set current**.
+cell count and export path, **View results** and **Set current**. The current
+result has **View results** in its cell too.
+
+## View results
+
+**View results** opens a saved result (the session's `cala-export.npz`) in the
+normal viewer, read-only, looking as the app did right after a run on that
+session: the field of view with the footprints and contours, the QC table and
+colours, the selected cell's footprint and trace, the History plots and event
+log, the stages that ran, and the flat field. There are no Discover, Refine or
+Extract controls (a new run starts from the table); **Back to project** returns
+to it.
+
+Code: `src/lib/result-file.ts` (reading an export), `src/components/ResultView.tsx`
+(the screen), `ProjectStore.resultFile` (finding the file: through the results
+folder's handle, or among the files of a folder picked through a file input).
+
+- **The file is read lazily.** `ZipArchive` (`@calab/io`) reads only the
+  archive's directory (ZIP64-aware), then each small array as it is needed.
+  `traces.npy` is never read whole: it is stored Fortran order (frame-major),
+  so a block of frames is one byte range, read about 16 MB at a time into the
+  trace viewer's store (the same bounded `TraceHistory` the live viewer uses:
+  every cell keeps a whole-session overview, and full-resolution detail up to
+  256 MB across all cells). A C-order `traces` (a file re-saved by NumPy) is
+  read once and transposed per block.
+- **What each panel shows.**
+  - Field of view: the export's `fov_mean` and `fov_max` (format 5), each drawn
+    with the display range stored with it (fixed from the recording's bit
+    depth, never fitted to the pixels: see `src/lib/fov-display.ts`). The lo/hi
+    inputs still set a range by hand.
+  - Cells: footprints from the CSR arrays, QC from `qc_peak_snr`, `qc_pass`
+    and `qc_flags` (the export holds no other QC metric, so the rest of the QC
+    table reads n/a; there is no residual map and no demixing neighbours).
+    These are the QC recomputed after Extract on that session's own traces,
+    over the whole session (`src/lib/extract-qc.ts`), not Discover's last
+    minute.
+  - Traces: Extract's traces (the live viewer shows Discover's online traces).
+  - History and event log: `history_L{k}` and `run_events_json`, read back with
+    `StreamHistory.fromExport`. A Joint run's sessions each hold the whole
+    run's history, on the run's time axis.
+  - Stages: `meta_json.stages`. Flat field: `flat_field_gain` (format 5).
+  - Recording: the export's own facts (length, rate, cells, app version,
+    format).
+- **Older exports open.** Each part a file lacks says "not in this export":
+  formats 1 to 4 have no FOV images or flat-field map (the cells are drawn on
+  a black field), formats 1 and 2 (before #370) no stage list, and the app
+  wrote no History into exports before format 5.
 
 ## Run plans
 
@@ -265,5 +311,4 @@ need none of this.
   **Library** column, and the `library:<id>` id space are the places.
 - Cross-session matching for Separate results: `cell_matches`.
 - Pixel size and a scale bar.
-- **View results** (a saved export in the viewer): the results panel shows the
-  export path for now.
+- Opening a single `.npz` export outside a project.

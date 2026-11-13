@@ -71,9 +71,21 @@ With `--later-passes refine`, qc_eval now publishes the final library at each
 wrap and solves the next pass with it, as the app does at the end of a stage.
 
 Refine does not drop frames for the slow loop. The main thread asks for the
-next batch only once the slow loop has taken all but one of the batches sent.
-A file can wait; Discover on a live stream cannot, so Discover drops frames
+next batch only while the slow loop has fewer than `REFINE_SLOW_LEAD` (four)
+batches sent and not yet taken: two in the pipeline workers, one being
+observed, one waiting. The forward pool of a Refine run never drops a batch
+(a lossless `ForwardPool`), so the slow loop observes every frame in order. A
+file can wait; Discover on a live stream cannot, so Discover drops frames
 when the slow loop is busy.
+
+With visit workers, a Refine batch gives way to the slow worker's messages
+between frames while a visit is out (`SlowRunner.handleAsync`): visit results
+are applied, and the next visits handed out, without waiting for the rest of
+the batch. Without that, once frames came as fast as the slow worker could
+observe them, its visit workers sat idle and a run made a few times fewer
+visits per frame. How many visits a run makes per frame, and so how much refining
+a run does, depends on the machine's speed, in Refine as in Discover (PI
+decision, 13 Nov 2026).
 
 With visit workers, a Refine visit that would not refine (a tile refines on
 every other visit, and Refine has no adds, merges or keep tests) is made by
@@ -100,6 +112,34 @@ counts:
 - **Extract:** frames and cells.
 
 The export's `meta_json.stages` holds the same records (format version 3).
+
+## Refine plots
+
+Under the Refine readout the Run panel draws two plots (`components/RefinePlots.tsx`,
+with the metrics in `src/lib/refine-metrics.ts`):
+
+- **This run over the replay.** The current or last Refine run, plotted
+  against the replay's stream time with the History's `HistoryPlot`:
+  - refines per minute over the last minute of the replay (none before 10 s);
+  - at each library publish, the median and the 90th percentile of
+    `|a' - a| / |a|` over the footprints that publish changed (stems);
+  - the share of cells this run has refined at least once.
+
+  The ranges are declared like every History series: 0–50 /min and 0–0.5,
+  each stepping up a 1/2/5 ladder (never down), and 0–1 fixed for the
+  share.
+
+- **Across runs.** Refines per minute for Discover (D) and for each Refine
+  run, and the median footprint change of each Refine run. These are two
+  small plots, each with its own y axis anchored at 0. The top is the
+  series' initial range, or the 1/2/5 step that holds every run. A run
+  that was cancelled or stopped shows as a hollow dot. The settled hint
+  (below) sits under these plots.
+
+The export carries the same numbers. Each Refine run in `meta_json.stages`
+adds `change_p90` and `refined_share`, and a `series` object of columns: `t`
+(stream s), `refines`, `refines_per_min`, `changed`, `change_median`,
+`change_p90` (set at publishes, null elsewhere) and `refined_share`.
 
 ## The settled signal
 

@@ -67,6 +67,7 @@ import {
 } from './preview.ts';
 import { ImagingSampler } from './imaging-stats.ts';
 import type { RunSpan } from './run-record.ts';
+import type { FovProjector } from './fov-projection.ts';
 
 const now = (): number => performance.now();
 
@@ -184,6 +185,8 @@ export interface StageSetup {
   plan: PipelinePlan;
   /** Pass 2: motion shifts come with the jobs and are applied, not estimated. */
   replay?: boolean;
+  /** First frames of sessions 1.. of a multi-session recording (absent or empty for one). */
+  boundaries?: number[];
 }
 
 /** Stage A: read, calibrate, and run the preprocessing front half. */
@@ -282,6 +285,7 @@ export class FrontStage {
       height: this.height,
       plan: this.plan,
       ...(this.replay ? { replay: true } : {}),
+      ...(this.boundaries.length > 0 ? { boundaries: this.boundaries } : {}),
     };
   }
 
@@ -839,10 +843,14 @@ export class BackStage {
   private readonly px: number;
   private readonly factor: number;
 
-  /** `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here. */
+  /**
+   * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
+   * `projector`: mean and max projections of every frame (Extract; see `fov-projection.ts`).
+   */
   constructor(
     private readonly setup: StageSetup,
     readonly fast: FastLoop | null,
+    readonly projector: FovProjector | null = null,
   ) {
     this.px = setup.width * setup.height;
     this.factor = previewFactor(setup.width, setup.height, setup.plan.previewMaxSide);
@@ -872,9 +880,11 @@ export class BackStage {
     const n = s.count * this.px;
     const corrected = job.corrected!.subarray(0, n);
     const session = job.session ? this.beginSession(pre, job, corrected) : undefined;
+    this.projector?.addRegistered(corrected, s.start, s.count);
     // Pixels the shift moved in from outside the FOV mask are missing data:
     // they stay out of the noise map and background (see backFramesRegistered).
     pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
+    this.projector?.addOutput(corrected, s.start, s.count);
     const t1 = now();
     const cells = this.fast?.process(corrected, s.start, s.count, pre, {
       dy: job.dy!,

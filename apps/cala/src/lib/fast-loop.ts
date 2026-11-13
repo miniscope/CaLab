@@ -14,6 +14,7 @@
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
+import { ASSUMED_FPS } from './miniscope-meta.ts';
 import type { QcWire } from './qc.ts';
 
 /** What the fast loop needs of a `TraceLibrary`. */
@@ -118,7 +119,8 @@ export interface FastLoopOptions {
    * (Discover built it). Instead of `init` it gets a `replay` message with the
    * `refine` scope, frames are forwarded from frame 0, and no noise maps are
    * sent (it keeps the newest map of the Discover run; the replay's map
-   * restarts from calibration).
+   * restarts from calibration). The forward pool never drops a batch then
+   * (`ForwardPool` lossless): the main thread paces the batches instead.
    */
   refine?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
@@ -138,7 +140,7 @@ export const FAST_LOOP_DEFAULTS = {
   // One batch being observed, one queued.
   poolSize: 2,
   qc: true,
-  fps: 20,
+  fps: ASSUMED_FPS,
   qcEveryS: 1,
   residual: false,
   refine: false,
@@ -218,11 +220,18 @@ export class FastLoop {
     const { initialLibrary, ...rest } = options;
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
-    if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
+    if (!(this.o.fps > 0)) {
+      // The recording gave no rate (its warnings say so); QC durations assume this one.
+      console.warn(
+        `cala fast loop: no frame rate; QC durations assume ${FAST_LOOP_DEFAULTS.fps} Hz.`,
+      );
+      this.o.fps = FAST_LOOP_DEFAULTS.fps;
+    }
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
-    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px);
+    // Refine drops no frame for the slow loop (the main thread paces it).
+    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px, this.o.refine);
   }
 
   get session(): number {

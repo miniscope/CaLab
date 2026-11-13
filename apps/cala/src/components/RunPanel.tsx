@@ -22,6 +22,7 @@ import {
 import type { ConvergenceState } from '../lib/qc.ts';
 import { groupKeys } from '../lib/run-history.ts';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
+import { RefineRunPlot, RefineRunsChart } from './RefinePlots.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
 import {
   cadeconCells,
@@ -105,6 +106,8 @@ export interface RunPanelProps {
   height: number;
   /** Frame rate, Hz (0 when unknown). */
   fps: number;
+  /** Bits per pixel of the recording (the exported images' display ranges). */
+  bitDepth?: number;
   /** Narrow window: a stepper and metric tiles instead of the timeline. */
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
@@ -336,9 +339,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       result: r,
       run: s().record().snapshot(),
       flatField: s().record().flatFieldApplied,
+      flatFieldMap: s().flatFieldMap(),
+      ...(props.bitDepth ? { bitDepth: props.bitDepth } : {}),
       stages: props.stages.runs(),
       qc: c().qc(),
       firstSeen: c().firstSeen,
+      history: {
+        bins: props.ui.run.history().toExport(),
+        eventsJson: props.ui.run.events().toJSON(),
+      },
       version: import.meta.env.VITE_APP_VERSION || 'dev',
     };
   };
@@ -758,6 +767,16 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 : (refineText() ?? '')}
           </span>
         </div>
+        <Show when={r().series()}>
+          {(sr) => (
+            <RefineRunPlot
+              series={sr()}
+              live={refineBusy()}
+              label={`Refine ${refineRuns().length} over the replay`}
+            />
+          )}
+        </Show>
+        <RefineRunsChart runs={props.stages.runs()} />
         <Show
           when={showNextStepHint({
             live: props.live === true,
