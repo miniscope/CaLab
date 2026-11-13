@@ -32,7 +32,10 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
   Keep the metadata with your recordings.
 - Files with a prefix (`neural_metaData.json`, `neural_timestamp.csv`) are recognised.
 - Open the folder with the picker, or drop it on the page. **Choose individual files**
-  is there for odd layouts.
+  is there for odd layouts. Files are read locally and never leave your computer. In
+  Chrome and Edge the picker asks permission to "view files" in the folder (read-only).
+  Firefox and Safari show their own upload-worded confirmation, which is misleading:
+  nothing is uploaded.
 - The start page also has an optional live-source field (a WebSocket address, see the
   README). Leave it empty to work from files.
 
@@ -44,8 +47,8 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
 | Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
 | Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run panel says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                    |
 
-Needed in any browser: WebAssembly, module Web Workers, and the folder picker
-(`<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
+Needed in any browser: WebAssembly, module Web Workers, and a folder picker
+(`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
 ones. If the browser has no origin private file system (OPFS), pass 2 holds its traces
 in memory, up to 1.5 GB, and says so with an error when a recording does not fit.
 Use a desktop browser; a laptop with enough free RAM for the cell library and a
