@@ -175,6 +175,21 @@ traces = z["traces"]                      # (cells, frames)
 meta = json.loads(z["meta_json"].tobytes().decode())
 ```
 
+## Animal projects
+
+An animal folder of sessions as one project (design and index schema:
+[docs/projects.md](docs/projects.md)). **Open animal project** scans the sessions
+(`discoverSessions`), probes them, and reads `cala-results/cala-project.json`
+(`lib/project-index.ts`: validated, schema version 1) or rebuilds it from the run
+folders (every `cala-run.json` and `cala-session.json`, including #377 trees). The
+session table (`components/ProjectView.tsx`) shows each session's stage status, shared
+cell ids (`id_space`) and current result. Selected rows go into a run plan
+(`lib/run-plan.ts`) of Joint chains and Separate sets that `lib/project-store.ts` runs
+group by group through `lib/multi-run.ts`, writing each to `cala-results/runs/<id>/`
+and updating the index from `MultiRunPlan.onProgress` as sessions finish. Recent
+projects keep directory handles in IndexedDB (`lib/recent-projects.ts`). An experiment
+folder of several animals is offered as one project per animal (`suggestSplit`).
+
 ## Multi-session runs
 
 Several sessions of one animal in one run (design: [docs/stages.md](docs/stages.md),

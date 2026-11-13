@@ -58,6 +58,8 @@ export interface SessionMetaInput {
   cells: number;
   /** Joint: the library's cell ids, the same in every session. */
   sharedCellIds: readonly number[] | null;
+  /** The cell ids in this session's export (Joint: the shared ones). */
+  cellIds?: readonly number[];
   createdAt: string;
 }
 
@@ -86,6 +88,7 @@ export function sessionMetadata(i: SessionMetaInput): Record<string, unknown> {
     library_version: i.libraryVersion,
     cells: i.cells,
     shared_cell_ids: i.sharedCellIds ? [...i.sharedCellIds] : null,
+    ...(i.cellIds ? { cell_ids: [...i.cellIds] } : {}),
     export_file: SESSION_EXPORT_FILE,
   };
 }
@@ -119,6 +122,10 @@ export interface RunManifestInput {
   finished: boolean;
   /** Settings of the pipeline worth keeping (flat field on, ...). */
   pipeline?: Record<string, unknown>;
+  /** Why the run stopped (a stage failed or was cancelled). */
+  stopped?: string;
+  /** A run plan's group (project view): plan id, 1-based group, group count. */
+  plan?: { id: string; group: number; groups: number };
 }
 
 /** `cala-run.json` at the run folder's root. */
@@ -131,6 +138,8 @@ export function runManifest(i: RunManifestInput): Record<string, unknown> {
     created: i.createdAt,
     updated: i.updatedAt,
     finished: i.finished,
+    ...(i.stopped ? { stopped: i.stopped } : {}),
+    ...(i.plan ? { plan: i.plan } : {}),
     results_folder: i.root,
     mode: i.settings.mode,
     settings: { refine_runs: i.settings.refineRuns, ...(i.pipeline ?? {}) },
@@ -201,6 +210,11 @@ export async function directoryResultsSink(
   for await (const name of location.keys()) existing.add(name);
   const root = runFolderName(existing, now);
   const runDir = await location.getDirectoryHandle(root, { create: true });
+  return sinkInDirectory(runDir, root);
+}
+
+/** A sink writing below `runDir`; `root` is how the run folder is named for people. */
+export function sinkInDirectory(runDir: WritableDirLike, root: string): ResultsSink {
   const fileIn = async (path: string): Promise<WritableFileLike> => {
     const parts = segments(path);
     let dir = runDir;
@@ -236,8 +250,10 @@ export async function directoryResultsSink(
  */
 export function zipResultsSink(
   deliver: (name: string, blob: Blob) => void = downloadBlob,
+  /** Below `cala-results/` in the zip (a project run: `runs/<run id>`). */
+  prefix = '',
 ): ResultsSink {
-  const root = RESULTS_DIR;
+  const root = prefix ? `${RESULTS_DIR}/${prefix}` : RESULTS_DIR;
   const files = new Map<string, Uint8Array>();
   const writeFile = async (path: string, write: (sink: ByteSink) => Promise<void>) => {
     const sink = memorySink();
@@ -256,7 +272,10 @@ export function zipResultsSink(
       const zip = new ZipStreamWriter(out);
       for (const [path, bytes] of files) await zip.addFile(`${root}/${path}`, bytes);
       await zip.finish();
-      deliver(`${root}.zip`, new Blob([out.toArrayBuffer()], { type: 'application/zip' }));
+      deliver(
+        `${prefix ? `${RESULTS_DIR}_${prefix.replace(/\//g, '_')}` : root}.zip`,
+        new Blob([out.toArrayBuffer()], { type: 'application/zip' }),
+      );
     },
   };
 }

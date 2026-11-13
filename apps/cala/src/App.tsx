@@ -48,6 +48,13 @@ import {
   type WritableDirLike,
 } from './lib/session-export.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
+import { ProjectView } from './components/ProjectView.tsx';
+import { createProjectStore } from './lib/project-store.ts';
+import {
+  createIndexedDbRecentStore,
+  rememberProject,
+  type RecentProject,
+} from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
 import type { ExportInput } from './lib/export.ts';
 
@@ -300,7 +307,7 @@ const App: Component = () => {
 
   // ---- Multi-session runs (docs/stages.md, "Sessions") ----
   /** The start screen: open a folder, the session list, or adding to the list. */
-  const [screen, setScreen] = createSignal<'open' | 'sessions' | 'add'>('open');
+  const [screen, setScreen] = createSignal<'open' | 'sessions' | 'add' | 'project'>('open');
   const sessionList = createSessionList((s) =>
     client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
   );
@@ -354,6 +361,27 @@ const App: Component = () => {
     info: () => store.info(),
     version,
   });
+  // ---- Animal projects (docs/projects.md) ----
+  const recentStore = createIndexedDbRecentStore();
+  const [recent, setRecent] = createSignal<RecentProject[]>([]);
+  const loadRecent = () => void recentStore.list().then(setRecent);
+  loadRecent();
+  const project = createProjectStore({
+    probe: (s) =>
+      client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
+    multiRun,
+    recent: recentStore,
+    version,
+  });
+  /** From the viewer back to the open project (a running plan stops). */
+  function backToProject(): void {
+    pipeline.stop();
+    multiRun.stop();
+    store.close();
+    setScreen('project');
+    void project.refresh();
+  }
+
   /** Ask for `readwrite` on the results location; inside the Start click. */
   async function grantResults(): Promise<boolean> {
     if (!supportsDirectoryPicker()) return true;
@@ -398,7 +426,11 @@ const App: Component = () => {
     }
   });
   if (params.has('debug')) {
-    Object.assign((globalThis as { __cala?: object }).__cala ?? {}, { multiRun, sessionList });
+    Object.assign((globalThis as { __cala?: object }).__cala ?? {}, {
+      multiRun,
+      sessionList,
+      project,
+    });
   }
   const boundaries = () => {
     const i = store.info();
@@ -426,6 +458,12 @@ const App: Component = () => {
                 {multiRun.statusText()}
               </span>
             </div>
+            <Show when={project.running() && project.planState().kind === 'running'}>
+              <p class="cala-muted" data-testid="plan-progress">
+                Plan: group {(project.planState() as { group: number }).group + 1} of{' '}
+                {project.running()!.length}
+              </p>
+            </Show>
             <ol class="cala-session-run__list">
               <For each={multiRun.records()}>
                 {(r) => (
@@ -553,9 +591,21 @@ const App: Component = () => {
       when={store.info()}
       fallback={
         <Show
-          when={screen() === 'sessions'}
+          when={screen() === 'sessions' || screen() === 'project'}
           fallback={
             <OpenFolder
+              onProject={(o) => {
+                setScreen('project');
+                void project.open(o).then(loadRecent);
+              }}
+              onAnimals={(handles) =>
+                void (async () => {
+                  for (const h of handles) await rememberProject(recentStore, h, null, new Date());
+                  loadRecent();
+                })()
+              }
+              recent={supportsDirectoryPicker() ? recent() : []}
+              onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
               loading={store.loading()}
               error={store.error()}
               onOpen={(files, label) => void open(files, label)}
@@ -570,16 +620,30 @@ const App: Component = () => {
             />
           }
         >
-          <SessionSetup
-            list={sessionList}
-            onAdd={() => setScreen('add')}
-            onCancel={() => {
-              sessionList.clear();
-              setScreen('open');
-            }}
-            grant={grantResults}
-            onStart={startSessions}
-          />
+          <Show
+            when={screen() === 'project'}
+            fallback={
+              <SessionSetup
+                list={sessionList}
+                onAdd={() => setScreen('add')}
+                onCancel={() => {
+                  sessionList.clear();
+                  setScreen('open');
+                }}
+                grant={grantResults}
+                onStart={startSessions}
+              />
+            }
+          >
+            <ProjectView
+              project={project}
+              onClose={() => {
+                project.close();
+                setScreen('open');
+                loadRecent();
+              }}
+            />
+          </Show>
         </Show>
       }
     >
@@ -604,12 +668,23 @@ const App: Component = () => {
               }
               actions={
                 <>
+                  <Show when={project.opened()}>
+                    <button
+                      class="btn-secondary btn-small"
+                      data-testid="back-to-project"
+                      title="Back to the project's session table (a running plan stops)"
+                      onClick={backToProject}
+                    >
+                      Back to project
+                    </button>
+                  </Show>
                   <button
                     class="btn-secondary btn-small"
                     onClick={() => {
                       pipeline.stop();
                       multiRun.stop();
                       sessionList.clear();
+                      project.close();
                       setScreen('open');
                       store.close();
                     }}

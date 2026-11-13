@@ -15,6 +15,25 @@ import {
   type SeriesKind,
   type SessionCandidate,
 } from '../lib/sessions.ts';
+import {
+  PROJECT_INDEX_FILE,
+  projectSessionId,
+  suggestSplit,
+  type SplitGroup,
+} from '../lib/project-index.ts';
+import type { ProjectOpen } from '../lib/project-store.ts';
+import type { ReadDirLike } from '../lib/project-io.ts';
+import { ensureRead, type RecentProject } from '../lib/recent-projects.ts';
+import { entriesFromDirectoryHandle } from '../lib/directory-picker.ts';
+import { RESULTS_DIR } from '../lib/sessions.ts';
+
+/** The files of one top-level subfolder, re-rooted so that subfolder is the picked folder. */
+export function subfolderEntries(entries: FolderEntry[], root: string, sub: string): FolderEntry[] {
+  const prefix = `${root}/${sub}/`;
+  return entries
+    .filter((e) => e.relPath.startsWith(prefix))
+    .map((e) => ({ file: e.file, relPath: e.relPath.slice(root.length + 1) }));
+}
 
 interface OpenFolderProps {
   loading: boolean;
@@ -34,6 +53,13 @@ interface OpenFolderProps {
   /** Label of the add button when this screen adds sessions to a list. */
   addMode?: boolean;
   onCancel?: () => void;
+  /** Open an animal folder as a project (`docs/projects.md`). */
+  onProject?: (open: ProjectOpen) => void;
+  /** Several animals in the picked folder, opened one by one: remember the others. */
+  onAnimals?: (handles: ReadDirLike[]) => void;
+  /** Recent projects (Chrome, Edge), most recent first. */
+  recent?: RecentProject[];
+  onForget?: (r: RecentProject) => void;
 }
 
 /** Sessions found in the picked or dropped files (see `lib/sessions.ts`). */
@@ -73,6 +99,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   const [liveUrl, setLiveUrl] = createSignal(props.liveUrl ?? '');
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
+  let projectInput!: HTMLInputElement;
 
   const [pickError, setPickError] = createSignal<string | null>(null);
 
@@ -81,6 +108,15 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     entries: FolderEntry[];
     handle: DirHandleLike | null;
     candidates: SeriesKind[];
+    /** Picked with "Open animal project". */
+    project?: boolean;
+  } | null>(null);
+  // An experiment folder of several animals: which one to open.
+  const [split, setSplit] = createSignal<{
+    entries: FolderEntry[];
+    handle: DirHandleLike | null;
+    sessions: SessionCandidate[];
+    groups: SplitGroup[];
   } | null>(null);
   let chooserHeading: HTMLHeadingElement | undefined;
 
@@ -108,8 +144,17 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     queueMicrotask(() => chooserHeading?.focus());
   };
 
-  function openKind(entries: FolderEntry[], handle: DirHandleLike | null, kind: SeriesKind) {
+  function openKind(
+    entries: FolderEntry[],
+    handle: DirHandleLike | null,
+    kind: SeriesKind,
+    project = false,
+  ) {
     setPending(null);
+    if (project) {
+      openProject(entries, handle, sessionsForKind(entries, kind));
+      return;
+    }
     const sessions = sessionsForKind(entries, kind);
     if ((sessions.length > 1 || props.addMode) && props.onSessions) {
       props.onSessions(sessions, handle);
@@ -124,7 +169,142 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   const choose = (picked: SeriesKind) => {
     const p = pending();
     if (!p) return;
-    openKind(p.entries, p.handle, picked);
+    openKind(p.entries, p.handle, picked, p.project);
+  };
+
+  /** A results folder chosen earlier for the project being reopened. */
+  let reopenResults: ReadDirLike | null = null;
+
+  /** Reopen a recent project: permission again (inside the click), then as if picked. */
+  async function reopen(r: RecentProject) {
+    setPickError(null);
+    try {
+      if (!(await ensureRead(r.handle))) {
+        setPickError(
+          `The browser did not allow reading ${r.name}. Open it with "Open animal project".`,
+        );
+        return;
+      }
+      reopenResults =
+        r.resultsHandle && (await ensureRead(r.resultsHandle))
+          ? (r.resultsHandle as ReadDirLike)
+          : null;
+      const handle = r.handle as DirHandleLike;
+      submitProject(await entriesFromDirectoryHandle(handle), handle);
+    } catch (err) {
+      setPickError(
+        `Could not open ${r.name} (moved or deleted?): ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  const rootOf = (entries: FolderEntry[]) => entries[0]?.relPath.split('/')[0] ?? '';
+
+  /**
+   * "Open animal project": the picked folder is the animal. A folder that
+   * holds several animals (and no project index of its own) is offered as
+   * one project per animal first.
+   */
+  const submitProject = (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
+    setSplit(null);
+    setPending(null);
+    if (entries.length === 0) return;
+    const kinds = groupKinds(detectSeries(entries));
+    const { chosen, candidates } = chooseKind(kinds);
+    if (chosen) {
+      openKind(entries, handle, chosen, true);
+      return;
+    }
+    if (candidates.length === 0) {
+      setPickError('No Miniscope recordings were found in this folder.');
+      return;
+    }
+    setPending({ entries, handle, candidates, project: true });
+    queueMicrotask(() => chooserHeading?.focus());
+  };
+
+  function openProject(
+    entries: FolderEntry[],
+    handle: DirHandleLike | null,
+    sessions: SessionCandidate[],
+  ) {
+    const root = rootOf(entries);
+    const hasIndex = entries.some(
+      (e) => e.relPath === `${root}/${RESULTS_DIR}/${PROJECT_INDEX_FILE}`,
+    );
+    const groups = hasIndex ? null : suggestSplit(sessions.map((s) => projectSessionId(s.dir)));
+    if (groups) {
+      setSplit({ entries, handle, sessions, groups });
+      return;
+    }
+    props.onProject?.({
+      rootName: root,
+      entries,
+      handle: handle as unknown as ReadDirLike | null,
+      sessions,
+      resultsHandle: reopenResults,
+    });
+    reopenResults = null;
+  }
+
+  /** Open one animal of a split folder (and remember the others). */
+  async function openAnimal(sub: string | null) {
+    const sp = split();
+    if (!sp) return;
+    setSplit(null);
+    if (sub === null) {
+      props.onProject?.({
+        rootName: rootOf(sp.entries),
+        entries: sp.entries,
+        handle: sp.handle as unknown as ReadDirLike | null,
+        sessions: sp.sessions,
+      });
+      return;
+    }
+    const root = rootOf(sp.entries);
+    const entries = subfolderEntries(sp.entries, root, sub);
+    const parent = sp.handle as unknown as ReadDirLike | null;
+    let handle: ReadDirLike | null = null;
+    try {
+      if (parent?.getDirectoryHandle) {
+        handle = await parent.getDirectoryHandle(sub);
+        const others = await Promise.all(
+          sp.groups
+            .filter((g) => g.folder !== sub)
+            .map((g) => parent.getDirectoryHandle!(g.folder)),
+        );
+        props.onAnimals?.(others);
+      }
+    } catch (err) {
+      setPickError(`Could not open ${sub}: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+    const kinds = groupKinds(detectSeries(entries));
+    const { chosen, candidates } = chooseKind(kinds);
+    const kind = chosen ?? candidates[0];
+    props.onProject?.({
+      rootName: sub,
+      entries,
+      handle,
+      sessions: kind ? sessionsForKind(entries, kind) : [],
+    });
+  }
+
+  const openProjectFolder = () => {
+    setPickError(null);
+    reopenResults = null;
+    if (!supportsDirectoryPicker()) {
+      projectInput.click();
+      return;
+    }
+    pickDirectoryWithHandle().then(
+      (picked) => {
+        if (picked) submitProject(picked.entries, picked.handle);
+      },
+      (err: unknown) => {
+        setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
+      },
+    );
   };
 
   // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
@@ -204,6 +384,19 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           }}
         />
         <input
+          ref={projectInput}
+          type="file"
+          class="cala-hidden-input"
+          data-testid="project-input"
+          // @ts-expect-error webkitdirectory is not in lib.dom's input attributes
+          webkitdirectory=""
+          multiple
+          onChange={(e) => {
+            submitProject(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
+            e.currentTarget.value = '';
+          }}
+        />
+        <input
           ref={filesInput}
           type="file"
           class="cala-hidden-input"
@@ -216,6 +409,90 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           }}
         />
       </div>
+
+      <Show when={props.onProject && !props.addMode}>
+        <section class="cala-projects-entry" aria-labelledby="projects-entry-title">
+          <h2 id="projects-entry-title" class="cala-sessions__title">
+            Animal projects
+          </h2>
+          <p class="file-info">
+            <button
+              type="button"
+              class="btn-primary"
+              data-testid="open-project"
+              title="An animal folder of sessions: see every session's cala status, run them, and keep the results together"
+              onClick={openProjectFolder}
+            >
+              Open animal project
+            </button>
+          </p>
+          <Show when={(props.recent ?? []).length > 0}>
+            <ul class="cala-recent" data-testid="recent-projects">
+              <For each={props.recent}>
+                {(r) => (
+                  <li class="cala-recent__item" data-testid="recent-project">
+                    <button
+                      type="button"
+                      class="btn-secondary btn-small"
+                      data-testid="recent-open"
+                      onClick={() => void reopen(r)}
+                    >
+                      {r.name}
+                    </button>{' '}
+                    <span class="cala-muted">opened {new Date(r.openedAt).toLocaleString()}</span>{' '}
+                    <button
+                      type="button"
+                      class="btn-link btn-small"
+                      aria-label={`Forget ${r.name}`}
+                      onClick={() => props.onForget?.(r)}
+                    >
+                      Forget
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+        </section>
+      </Show>
+
+      <Show when={split()}>
+        {(sp) => (
+          <section class="cala-series-chooser" data-testid="split-chooser" aria-label="Animals">
+            <h2 class="cala-series-chooser__title">
+              This folder looks like {sp().groups.length} animals. Open one as a project:
+            </h2>
+            <ul class="cala-series-chooser__list">
+              <For each={sp().groups}>
+                {(g) => (
+                  <li>
+                    <button
+                      type="button"
+                      class="btn-secondary cala-series-chooser__option"
+                      data-testid="split-option"
+                      onClick={() => void openAnimal(g.folder)}
+                    >
+                      <strong>{g.folder}</strong> {'\u2014'} {g.sessions.length} sessions
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+            <p class="cala-muted">
+              Each animal becomes its own project with its own <code>cala-results</code> folder
+              {supportsDirectoryPicker() ? '; the others are added to Recent projects' : ''}.
+            </p>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="split-one"
+              onClick={() => void openAnimal(null)}
+            >
+              No, open it all as one project
+            </button>
+          </section>
+        )}
+      </Show>
 
       <p class="file-info">
         <button type="button" class="btn-secondary btn-small" onClick={() => filesInput.click()}>
