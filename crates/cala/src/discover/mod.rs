@@ -257,9 +257,8 @@ use crate::trace::{
 };
 
 /// The optics' point-spread σ, px (UCLA Miniscope at its native
-/// resolution): the scale light is smoothed at before its basins are
-/// traced, so a basin is not cut by single-pixel noise.
-const PSF_SIGMA_PX: f32 = 1.5;
+/// resolution): the default of [`SlowLoopConfig::psf_sigma_px`].
+pub const PSF_SIGMA_PX: f32 = 1.5;
 
 /// How far the transient-band core test (`fastcore.rs`) acts. Each level
 /// includes the ones before it; `Off` collects nothing.
@@ -368,6 +367,10 @@ impl CoreTest {
 pub struct SlowLoopConfig {
     /// Expected soma diameter, px (the preprocessing's `cell_diameter_px`).
     pub cell_diameter_px: f32,
+    /// The optics' point-spread σ, px: the scale light is smoothed at
+    /// before its basins are traced, so a basin is not cut by single-pixel
+    /// noise. Default [`PSF_SIGMA_PX`].
+    pub psf_sigma_px: f32,
     /// Tile side, px.
     pub tile_px: usize,
     /// Extra margin stored around each tile, px. Supports have no upper
@@ -536,6 +539,7 @@ impl Default for SlowLoopConfig {
     fn default() -> SlowLoopConfig {
         SlowLoopConfig {
             cell_diameter_px: 10.0,
+            psf_sigma_px: PSF_SIGMA_PX,
             tile_px: 64,
             margin_px: 24,
             frames_per_tile: 128,
@@ -607,6 +611,8 @@ impl SlowLoopConfig {
         self.library.validate()?;
         let ok = self.cell_diameter_px.is_finite()
             && self.cell_diameter_px >= 2.0
+            && self.psf_sigma_px.is_finite()
+            && self.psf_sigma_px >= 0.6
             && self.tile_px >= 8
             && self.frames_per_tile >= 2
             && self.random_share >= 0.0
@@ -1089,7 +1095,7 @@ impl SlowLoop {
             filter: LocalFilter::new(sigma),
             detect: LocalFilter::new((cfg.cell_diameter_px / 4.0).max(0.6)),
             smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
-            psf: LocalFilter::new(PSF_SIGMA_PX),
+            psf: LocalFilter::new(cfg.psf_sigma_px),
             basin_diag: (0, 0.0, 0),
             fast_tmp: None,
             support_tmp: None,
