@@ -12,6 +12,7 @@
  * hundreds of cells), not a rebuild.
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
+import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
 import type { QcWire } from './qc.ts';
 
@@ -143,6 +144,8 @@ export interface CellsBatch {
   qcOn: boolean;
   /** A QC snapshot, about once per `qcEveryS` of stream time. */
   qc?: QcWire;
+  /** Wall time of copying and sending the batch to the compress worker, ms (compression on). */
+  compressMs?: number;
   /**
    * Full-frame model residual of the batch's last frame (with `residual` on
    * and cells in the library). The worker turns it into a preview and drops
@@ -175,7 +178,13 @@ export class FastLoop {
   private resumed = false;
   private disposed = false;
 
-  constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
+  constructor(
+    options: FastLoopOptions,
+    port: PortLike<FastToSlow> | null,
+    backend: TraceBackend,
+    /** The feed to the compress worker (`null`: no compression). */
+    private readonly feed: CompressFeedLike | null = null,
+  ) {
     const { initialLibrary, ...rest } = options;
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
@@ -218,6 +227,9 @@ export class FastLoop {
     } else if (msg.type === 'library') {
       // Only the newest matters: an older pending version is replaced.
       if (msg.version > this.version) this.pendingLibrary = msg.bytes;
+      // The compress worker back-fills with the newest library, also the
+      // final one, which arrives after the last batch and is never applied here.
+      this.feed?.library(msg.version, msg.bytes);
     }
   }
 
@@ -257,6 +269,8 @@ export class FastLoop {
     const t2 = now();
     this.forward(batch, start, count, traces, calibration);
     const t3 = now();
+    this.feed?.push(batch, start, count);
+    const compressMs = this.feed ? now() - t3 : undefined;
     const qc = qcOn ? this.qcSnapshot() : undefined;
     return {
       version: this.version,
@@ -271,6 +285,7 @@ export class FastLoop {
       slowFrame: this.slowFrame,
       qcOn,
       ...(qc ? { qc } : {}),
+      ...(compressMs === undefined ? {} : { compressMs }),
       ...(residual && residual.length === this.px ? { residual } : {}),
     };
   }
@@ -344,12 +359,14 @@ export class FastLoop {
   /** The recording ended: let the slow loop publish what it has. */
   end(): void {
     if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
+    this.feed?.end();
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.port?.postMessage({ type: 'reset', session: this.o.session });
+    this.feed?.reset();
     this.qc?.free();
     this.qc = null;
     this.engine?.free();

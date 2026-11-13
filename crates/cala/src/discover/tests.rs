@@ -770,6 +770,23 @@ fn a_cell_on_diffuse_light_is_still_deleted() {
     assert_eq!(n, 1, "{stats:?}");
 }
 
+// ---- history review (compress/review.rs) -------------------------------------
+
+#[test]
+fn reviewed_candidates_are_added_as_new_cells_on_free_spots() {
+    let (mut slow, _eng) = start(v2_config(), &[blob(1, 30.0, 30.0)]);
+    // One candidate on empty tissue, one on the seeded cell.
+    let added = slow
+        .add_reviewed(&[blob(0, 60.0, 60.0), blob(0, 31.0, 30.0)])
+        .unwrap();
+    assert_eq!(added, 1);
+    assert_eq!(slow.stats().review_adds, 1);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 2);
+    assert!(lib.ids().contains(&1) && lib.ids().iter().all(|&id| id >= 1));
+    assert!(centres(&lib).iter().any(|&c| near(c, 60.0, 60.0)));
+}
+
 // ---- parallel visits (shard.rs) ---------------------------------------------
 
 /// A movie with something for every edit: cells to add, a duplicate pair
@@ -2106,4 +2123,38 @@ fn basin_skirt_visits_run_as_jobs_match_step_exactly() {
         "some cell carries a skirt"
     );
     assert!(lib.to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// The split-half refine gate still refines (cells move off their seed
+/// footprints) and runs identically as jobs and in `step`.
+#[test]
+fn split_half_refine_gate_refines_and_matches_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        refine_gate: RefineGate::SplitHalf,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert_eq!(s, b.stats());
 }

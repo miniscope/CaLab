@@ -7,7 +7,11 @@ import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
+import { createCompressClient } from './lib/compress-client.ts';
+import { createCompressStore } from './lib/compress-store.ts';
 import { createPass2Store } from './lib/pass2-store.ts';
+import { createReviewClient } from './lib/review-client.ts';
+import { createReviewStore, reviewEvery } from './lib/review-store.ts';
 import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
 import {
   createSlowClient,
@@ -49,15 +53,38 @@ const App: Component = () => {
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
   const visits = params.get('visits');
+  // `?review` (with `?compress`): the history review, every 8 compressed windows
+  // (`?review=N`: every N), in a worker of its own. One core is left for it.
+  const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
     undefined,
     visits !== null && visits !== ''
       ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
-      : visitWorkerCount(navigator.hardwareConcurrency),
+      : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
   );
   // `?noqc`: run without online quality control (to measure its cost).
+  // `?compress`: also compress the preprocessed frames into low-rank factors, window by
+  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
+  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  // The review worker gets the factors from the compress worker; the cells it
+  // finds go to the slow loop, which takes them on probation.
+  const review =
+    reviewWindows === null
+      ? undefined
+      : createReviewStore(reviewWindows, (session, candidates) =>
+          slow.addReviewed(session, candidates),
+        );
+  const reviewClient = review ? createReviewClient((msg) => review.onMessage(msg)) : undefined;
+  const compressClient = compress
+    ? createCompressClient(
+        client,
+        (msg) => compress.onMessage(msg),
+        undefined,
+        review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
+      )
+    : undefined;
   // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
@@ -83,6 +110,14 @@ const App: Component = () => {
       },
     },
     runHistory,
+    compress && review
+      ? {
+          reset(session) {
+            compress.reset(session);
+            review.reset(session);
+          },
+        }
+      : compress,
   );
   const pass2 = createPass2Store(client, pipeline, cells);
   // Slow-loop warnings (the reservoir filling up) go into the run's event log.
@@ -95,9 +130,26 @@ const App: Component = () => {
     ),
   );
   createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
+  // Recording read, final library out, every window compressed: solve the
+  // traces of the whole recording again from the factors, with that library.
+  createEffect(() => {
+    const slow = cells.status();
+    const done = pipeline.status() === 'done';
+    if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
+      compressClient?.backfill(cells.session(), slow?.version ?? 0);
+    }
+  });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   if (params.has('debug')) {
-    (globalThis as { __cala?: unknown }).__cala = { cells, pipeline, pass2, runHistory, historyUi };
+    (globalThis as { __cala?: unknown }).__cala = {
+      cells,
+      pipeline,
+      pass2,
+      runHistory,
+      historyUi,
+      compress,
+      review,
+    };
   }
 
   // Opening a folder starts preprocessing and motion correction right away.
@@ -173,6 +225,8 @@ const App: Component = () => {
             fps={lp.info.fps ?? 0}
             narrow={layout().narrow}
             ui={historyUi}
+            compress={compress}
+            review={review}
           />
           <SelectedCellPanel
             cells={cells}

@@ -9,7 +9,15 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   in `tools/minisim-calibration/`; an arm whose spec file is missing is skipped.
   `v3_{static,motion}`, `size6_*` and `size16_*` use the `ca1_workshop_v3*.spec.json` specs
   (cells of 10, 6 and 16 px at the real recording's edge blur; `make_v3_specs.py`).
-- `gt_scales.py`: half-max diameter and edge sigma of the ground-truth footprints in `oracle.bin`.
+- `gt_scales.py`: half-max diameter and edge sigma (gradient and ring statistics) of the ground-truth
+  footprints in `oracle.bin`. `arms.py` `GT_SCALES` holds the per-arm values and `SCALE_ARMS` the S2.4
+  M0 one-at-a-time scale flags (`qc_eval --cell-diameter`, `--psf-sigma`, `--flatten-sigma`,
+  `--tile-px`, `--margin-px`; `--bin K` bins a real recording).
+- `fp_scales.py`: the S2.4 estimators D1 (median half-max diameter, order-statistic CI) and P1
+  (radial-profile edge sigma per cell, population bound) on a run's `footprints.bin`; with
+  `--final` and `--gt`, per matched cell against its ground-truth unit. Needs numpy.
+- `probe_scale.py`: offline prototype of the S2.4 scale probe D0 (scale-normalised LoG on the
+  first 400 frames of a recording). Needs numpy, scipy, OpenCV (the minisim venv has them).
 - `recovery_vs_snr.py SIM RUN OUT.tsv`: per GT unit, minisim's matched-filter detection SNR (minisim >= 1.1) and whether a qc_eval run recovered it; the calibration data behind minisim's `DETECT_SNR_THRESHOLD` (`results/2026-11-12-matched-filter-detectable.md`).
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
@@ -165,6 +173,15 @@ also gives the footprint a skirt: unfiltered light per 8 px moat block on the
 rest of the statistics disk, solved so that the column (the filter of support
 plus skirt, whose low-pass reaches the moat) matches the measured light there.
 
+## Refine gate (S2.1c)
+
+`qc_eval --refine-gate legacy|split-half` picks when the statistics path
+proposes a refinement (`SlowLoopConfig::refine_gate`, default `legacy`).
+`legacy` is the χ² disagreement test plus `refine_min_change`. `split-half`
+proposes only when `Î = ‖h/a − cur‖² − ½‖(h_A − h_B)/a‖² > 0`: the change from the
+current column exceeds the estimate's own split-half noise. The reservoir path,
+absorbs and merges are the same under both.
+
 With a binary built with `--features diagnostics`,
 `CALA_SUPPORT_AUDIT=<file>` writes one `C` row per footprint construction on
 the statistics path (every rule: tested pixels `N`, `se`, `phi`, `z_fw`, the
@@ -218,3 +235,4 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
 | `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |
+| `2026-11-12-refine-gate.md`        | S2.1c minimal option: split-half refine gate cuts late real refines 37 % (target 40 %)    |

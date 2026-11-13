@@ -3,6 +3,8 @@ import { MetricTile, ProgressBar, SegmentedControl } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
+import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
+import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { ConvergenceState } from '../lib/qc.ts';
@@ -87,6 +89,10 @@ export interface RunPanelProps {
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
+  /** Present when the run compresses its frames (`?compress`). */
+  compress?: CompressStore;
+  /** Present when the run reviews its compressed history (`?compress&review`). */
+  review?: ReviewStore;
 }
 
 /**
@@ -562,6 +568,29 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
           {lagNow() ?? 'n/a'} frames
         </span>
+        <Show when={props.compress}>
+          {(compress) => (
+            <span class="cala-readout cala-wrap" data-testid="compress-readout">
+              {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
+            </span>
+          )}
+        </Show>
+        <Show when={props.review}>
+          {(review) => (
+            <span
+              class="cala-readout cala-wrap"
+              data-testid="review-readout"
+              title="History review: cells the slow loop missed, looked for in the compressed history."
+            >
+              {review().error() ??
+                reviewReadout(
+                  review().status(),
+                  c().status()?.counters.reviewAdds ?? 0,
+                  review().every,
+                )}
+            </span>
+          )}
+        </Show>
         <label class="cala-check" title="Run cell discovery on the frames as they are read.">
           <input
             type="checkbox"

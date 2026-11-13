@@ -257,9 +257,8 @@ use crate::trace::{
 };
 
 /// The optics' point-spread σ, px (UCLA Miniscope at its native
-/// resolution): the scale light is smoothed at before its basins are
-/// traced, so a basin is not cut by single-pixel noise.
-const PSF_SIGMA_PX: f32 = 1.5;
+/// resolution): the default of [`SlowLoopConfig::psf_sigma_px`].
+pub const PSF_SIGMA_PX: f32 = 1.5;
 
 /// How far the transient-band core test (`fastcore.rs`) acts. Each level
 /// includes the ones before it; `Off` collects nothing.
@@ -298,6 +297,23 @@ pub enum SupportRule {
     /// The default.
     #[default]
     BasinSkirt,
+}
+
+/// When the statistics path proposes a refinement (S2.1c, the minimal
+/// refine gate). Absorptions, merges and the reservoir path are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefineGate {
+    /// The estimate disagrees with the current footprint beyond its χ²
+    /// null (`n + 3 sqrt(2 n)` standard errors) and the proposal turns the
+    /// whitened column by at least `refine_min_change` (the rule before
+    /// S2.1c).
+    #[default]
+    Legacy,
+    /// The change exceeds the estimate's own split-half noise:
+    /// `Î = ‖h/a − cur‖² − ½‖(h_A − h_B)/a‖² > 0` (whitened, in units of
+    /// the current column, `a` the estimate's fit scale on it). A cell
+    /// without split halves falls back to [`RefineGate::Legacy`].
+    SplitHalf,
 }
 
 /// The split halves of a cell's running statistics on its disk pixels:
@@ -368,6 +384,10 @@ impl CoreTest {
 pub struct SlowLoopConfig {
     /// Expected soma diameter, px (the preprocessing's `cell_diameter_px`).
     pub cell_diameter_px: f32,
+    /// The optics' point-spread σ, px: the scale light is smoothed at
+    /// before its basins are traced, so a basin is not cut by single-pixel
+    /// noise. Default [`PSF_SIGMA_PX`].
+    pub psf_sigma_px: f32,
     /// Tile side, px.
     pub tile_px: usize,
     /// Extra margin stored around each tile, px. Supports have no upper
@@ -472,8 +492,11 @@ pub struct SlowLoopConfig {
     /// explains at least this share of the candidate's held-out gain.
     pub absorb_share: f32,
     /// ...and changes the whitened filtered footprint by at least this
-    /// share of its norm (smaller changes are not proposed).
+    /// share of its norm (smaller changes are not proposed; the reservoir
+    /// path, and the statistics path under [`RefineGate::Legacy`]).
     pub refine_min_change: f32,
+    /// When the statistics path proposes a refinement (see [`RefineGate`]).
+    pub refine_gate: RefineGate,
     /// Cells are refined from the reservoir (while their running statistics
     /// are not yet precise) only this many frames after their birth.
     pub reservoir_refine_frames: u64,
@@ -536,6 +559,7 @@ impl Default for SlowLoopConfig {
     fn default() -> SlowLoopConfig {
         SlowLoopConfig {
             cell_diameter_px: 10.0,
+            psf_sigma_px: PSF_SIGMA_PX,
             tile_px: 64,
             margin_px: 24,
             frames_per_tile: 128,
@@ -573,6 +597,7 @@ impl Default for SlowLoopConfig {
             absorb_z: 3.0,
             absorb_share: 0.8,
             refine_min_change: 0.03,
+            refine_gate: RefineGate::Legacy,
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_refit_pair: true,
@@ -607,6 +632,8 @@ impl SlowLoopConfig {
         self.library.validate()?;
         let ok = self.cell_diameter_px.is_finite()
             && self.cell_diameter_px >= 2.0
+            && self.psf_sigma_px.is_finite()
+            && self.psf_sigma_px >= 0.6
             && self.tile_px >= 8
             && self.frames_per_tile >= 2
             && self.random_share >= 0.0
@@ -712,6 +739,8 @@ pub struct SlowStats {
     pub pretest_rejects: u64,
     /// Merge tests that kept the two cells apart.
     pub merge_rejects: u64,
+    /// Of `adds`, cells added by the history review (`add_reviewed`).
+    pub review_adds: u64,
     /// Work spent loading frames, refining, merging and adding.
     pub work_load: u64,
     pub work_refine: u64,
@@ -1087,7 +1116,7 @@ impl SlowLoop {
             filter: LocalFilter::new(sigma),
             detect: LocalFilter::new((cfg.cell_diameter_px / 4.0).max(0.6)),
             smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
-            psf: LocalFilter::new(PSF_SIGMA_PX),
+            psf: LocalFilter::new(cfg.psf_sigma_px),
             basin_diag: (0, 0.0, 0),
             fast_tmp: None,
             support_tmp: None,
@@ -1539,6 +1568,76 @@ impl SlowLoop {
         }
         self.pending = true;
         Ok(kept)
+    }
+
+    /// Add cells found by the history review
+    /// ([`crate::compress::review`]): the session's compressed history shows
+    /// them, the add test on a tile's reservoir did not. Each gets a new id
+    /// and starts on probation like any add, so the keep tests still apply.
+    /// A candidate on an existing cell, or on a spot where a cell was
+    /// deleted and the cooldown has not run out, is skipped. Returns how
+    /// many were added; published with the next commit.
+    pub fn add_reviewed(&mut self, footprints: &[Footprint]) -> Result<usize, TraceError> {
+        let d = self.cfg.cell_diameter_px;
+        let quiet = self.cfg.reject_cooldown_frames;
+        let now = self.frames;
+        let mut added = 0;
+        for fp in footprints {
+            crate::trace::check_len("footprint values", fp.height * fp.width, fp.values.len())?;
+            if fp.y0 + fp.height > self.dims.height || fp.x0 + fp.width > self.dims.width {
+                return Err(TraceError::InvalidFootprint(
+                    "reviewed candidate outside the frame".into(),
+                ));
+            }
+            let rect = Rect {
+                y0: fp.y0,
+                x0: fp.x0,
+                h: fp.height,
+                w: fp.width,
+            };
+            let Some(mut cell) = Cell::from_canvas(
+                self.next_id,
+                rect,
+                &fp.values,
+                self.dims,
+                &self.fov,
+                &self.cfg.library,
+                Extent::Given,
+                &mut self.filter,
+                &[],
+            ) else {
+                continue;
+            };
+            let (cy, cx) = cell.center;
+            let close = |y: f32, x: f32| (y - cy).powi(2) + (x - cx).powi(2) <= (0.5 * d).powi(2);
+            let taken = self.cells.iter().any(|c| close(c.center.0, c.center.1));
+            let entombed = self.tile_of(cy, cx).is_some_and(|ti| {
+                self.tiles[ti]
+                    .tombs
+                    .iter()
+                    .any(|r| r.2 + quiet * (1u64 << (2 * r.3.min(6))) > now && close(r.0, r.1))
+            });
+            if taken || entombed {
+                continue;
+            }
+            cell.born = now;
+            self.edits.adds += 1;
+            self.stats.adds += 1;
+            self.stats.review_adds += 1;
+            let nb = self.nearest(cy, cx, cell.id);
+            self.log(EditKind::Add, cell.id, nb, cell.center, 0.0);
+            self.churn
+                .on_add(now, cell.id, cell.center, &cell.pix, &cell.filt);
+            self.next_id += 1;
+            let bbox = cell.bbox;
+            self.cells.push(cell);
+            self.touch(bbox);
+            added += 1;
+        }
+        if added > 0 {
+            self.pending = true;
+        }
+        Ok(added)
     }
 
     /// Feed one preprocessed frame and the fast loop's result for it.
@@ -4118,7 +4217,17 @@ impl SlowLoop {
     /// filtered columns).
     fn stats_proposal(&mut self, cell: &Cell, changed: bool) -> Option<Cell> {
         let (pix, h) = self.stats_estimate(cell.id)?;
-        if changed && !self.stats_disagree(cell, &pix, &h) {
+        // Under the split-half gate (with halves) `Î > 0` alone decides;
+        // otherwise the χ² disagreement and the minimum change.
+        let excess = match self.cfg.refine_gate {
+            RefineGate::SplitHalf if changed => self.split_half_excess(cell, &pix, &h),
+            _ => None,
+        };
+        let legacy = changed && excess.is_none();
+        if excess.is_some_and(|i_hat| !(i_hat > 0.0)) {
+            return None;
+        }
+        if legacy && !self.stats_disagree(cell, &pix, &h) {
             return None;
         }
         let se = self.fpstats.get(&cell.id).map(|st| st.std_err());
@@ -4164,10 +4273,47 @@ impl SlowLoop {
         self.support_tmp = None;
         let mut new = new?;
         new.born = cell.born;
-        if changed && self.change(cell, &new) < self.cfg.refine_min_change {
+        if legacy && self.change(cell, &new) < self.cfg.refine_min_change {
             return None;
         }
         Some(new)
+    }
+
+    /// How far the statistics' estimate `h` (on `pix`) is from the cell's
+    /// current filtered footprint beyond the estimate's own split-half
+    /// noise: `Î = D² − ½‖h_A − h_B‖²`, whitened, with the estimate and its
+    /// halves divided by their least-squares scale `a` on the current
+    /// column (so both terms are in the current column's units). `None`
+    /// without split halves; `+∞` when the estimate does not project
+    /// positively on the current column (any change is then real).
+    fn split_half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32]) -> Option<f64> {
+        let st = self.fpstats.get(&cell.id)?;
+        let (ha, hb, _, _) = st.halves()?;
+        let block = self.filter.moat().map_or(0, |m| m.0);
+        let w = self.dims.width;
+        let cur: Vec<f64> = pix
+            .iter()
+            .map(|&g| f64::from(cell.column_at(g, w, block)))
+            .collect();
+        let (mut hc, mut cc) = (0.0f64, 0.0f64);
+        for (k, &p) in pix.iter().enumerate() {
+            let is = f64::from(self.inv_sigma[p as usize]);
+            hc += f64::from(h[k]) * cur[k] * is * is;
+            cc += cur[k] * cur[k] * is * is;
+        }
+        if !(cc > 0.0) || !(hc > 0.0) {
+            return Some(f64::INFINITY);
+        }
+        let a = hc / cc;
+        let (mut d2, mut half) = (0.0f64, 0.0f64);
+        for (k, &p) in pix.iter().enumerate() {
+            let is = f64::from(self.inv_sigma[p as usize]);
+            let d = (f64::from(h[k]) / a - cur[k]) * is;
+            d2 += d * d;
+            let e = f64::from(ha[k] - hb[k]) / a * is;
+            half += 0.5 * e * e;
+        }
+        Some(d2 - half)
     }
 
     /// Whether the statistics' estimate `h` (on `pix`) differs from the
