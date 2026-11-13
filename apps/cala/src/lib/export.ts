@@ -67,7 +67,11 @@
  * (discover, refine, extract), `index` (1-based per stage), `started_at`,
  * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and the
  * stage's counts (Discover: refines, adds, merges, deletes, splits; Refine:
- * refines, refines_per_min, footprints_refined, median_footprint_change).
+ * refines, refines_per_min, footprints_refined, median_footprint_change,
+ * change_p90, refined_share, and `series`: the run's samples over the replay
+ * as columns `t` (stream s), `refines`, `refines_per_min`, `changed`,
+ * `change_median`, `change_p90` (at library publishes, else null) and
+ * `refined_share`; see `refine-metrics.ts`).
  * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
  * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
  *
@@ -101,6 +105,7 @@ import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
 import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
+import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
 export const EXPORT_FORMAT_VERSION = 3;
@@ -160,8 +165,8 @@ export interface ExportWriteOptions {
 }
 
 /** One stage run in `meta_json.stages` (snake_case; absent counts omitted). */
-export function stageMeta(r: StageRun): Record<string, string | number | null> {
-  const out: Record<string, string | number | null> = {
+export function stageMeta(r: StageRun): Record<string, unknown> {
+  const out: Record<string, unknown> = {
     stage: r.stage,
     index: r.index,
     started_at: r.startedAt,
@@ -180,8 +185,11 @@ export function stageMeta(r: StageRun): Record<string, string | number | null> {
     ['splits', r.splits],
     ['footprints_refined', r.footprintsRefined],
     ['median_footprint_change', r.medianFootprintChange],
+    ['change_p90', r.changeP90],
+    ['refined_share', r.refinedShare],
   ];
   for (const [k, v] of counts) if (v !== undefined) out[k] = v;
+  if (r.series) out.series = seriesMeta(r.series);
   return out;
 }
 

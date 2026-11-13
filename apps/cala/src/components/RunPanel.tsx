@@ -22,6 +22,7 @@ import {
 import type { ConvergenceState } from '../lib/qc.ts';
 import { groupKeys } from '../lib/run-history.ts';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
+import { RefineRunPlot, RefineRunsChart } from './RefinePlots.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
 import {
   cadeconCells,
@@ -758,6 +759,16 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 : (refineText() ?? '')}
           </span>
         </div>
+        <Show when={r().series()}>
+          {(sr) => (
+            <RefineRunPlot
+              series={sr()}
+              live={refineBusy()}
+              label={`Refine ${refineRuns().length} over the replay`}
+            />
+          )}
+        </Show>
+        <RefineRunsChart runs={props.stages.runs()} />
         <Show
           when={showNextStepHint({
             live: props.live === true,
