@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { initCalaWasm, QcMonitor } from '../lib/cala-wasm.ts';
-import { extractQc, spanStatsOf, statsSpan, withSpanStats } from '../lib/extract-qc.ts';
+import {
+  extractQc,
+  QC_SCOPE_DEFAULT,
+  spanStatsOf,
+  statsSpan,
+  withSpanStats,
+} from '../lib/extract-qc.ts';
 import { spanStatsWasm } from '../lib/extract-qc-wasm.ts';
 import {
   FLAG_CORRELATED_PAIR,
@@ -107,6 +113,10 @@ function snapshot(rows: CellQcRow[]): QcSnapshot {
 }
 
 describe('extract QC', () => {
+  it('the default scope is the whole session', () => {
+    expect(QC_SCOPE_DEFAULT).toBe('session');
+  });
+
   it('windows are durations at the recording rate', () => {
     expect(QcMonitor.windowFrames(20)).toBe(1200);
     expect(QcMonitor.windowFrames(30)).toBe(1800);

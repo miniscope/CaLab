@@ -12,12 +12,11 @@
  * low-SNR flag) from the extracted traces, per session span, with the
  * monitor's own function (`QcMonitor.spanStats`, Rust `QcConfig::trace_stats`)
  * at the recording's frame rate:
- *   - scope `'window'` (default): the last 60 s of the span, the monitor's
- *     definition;
- *   - scope `'session'`: the whole span, the span CaLab's shipped SNR
- *     convention reads (crates/solver/src/snr.rs). On minisim it ranks
- *     GT-matched cells and GT trace quality better (results note
- *     tools/cala-eval/results/2026-11-13-qc-snr.md).
+ *   - scope `'session'` (default, PI decision 13 Nov 2026): the whole span,
+ *     the span CaLab's shipped SNR convention reads (crates/solver/src/snr.rs).
+ *     On minisim it ranks GT-matched cells and GT trace quality better
+ *     (results note tools/cala-eval/results/2026-11-13-qc-snr.md);
+ *   - scope `'window'`: the last 60 s of the span, the monitor's definition.
  * The other metrics (demixing, neighbours, motion) stay those of Discover;
  * the duplicate flag is kept, the pass rule is recomputed from the new
  * low-SNR flag.
@@ -34,8 +33,11 @@ import {
 
 export type QcScope = 'window' | 'session';
 
-/** Scope of the after-Extract QC. `'window'` keeps the monitor's definition. */
-export const QC_SCOPE_DEFAULT: QcScope = 'window';
+/**
+ * Scope of the after-Extract QC: the whole session (PI decision 13 Nov
+ * 2026). `'window'` would keep the monitor's last-60-s definition.
+ */
+export const QC_SCOPE_DEFAULT: QcScope = 'session';
 
 /** Trace statistics of one span (`QcMonitor.spanStats`). */
 export interface SpanStats {

@@ -83,6 +83,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `SlowLoop.observe` takes an optional `background`. The measured effect of the
   mismatch is within run-to-run noise (`qc_eval --no-bg-levels`,
   `tools/cala-eval/results/2026-11-13-app-background-levels.md`).
+- Cala: QC after Extract. Refine and Extract run no QC monitor, so the app
+  showed and exported the QC of Discover's last minute: a clean cell that was
+  quiet then failed on a low peak SNR, and in a Joint run every session's
+  export carried the same QC (the end of the last session). After Extract the
+  trace statistics (peak SNR, events, the low-SNR flag) are now recomputed on
+  the extracted traces over the **whole session** (each session's own span in
+  a multi-session export), with the monitor's own function; the pass rule
+  (peak SNR ≥ 5, no likely duplicate) is unchanged. Every QC duration is now
+  seconds × the recording's frame rate (`QcConfig::for_fps`; identical at
+  20 Hz). On real data the whole-session SNR passes 70 of 71 cells that failed
+  on Discover's last minute and ranks cells against Minian far better (AUC
+  .64 → .80); see `tools/cala-eval/results/2026-11-13-qc-snr.md`.
 
 ### Changed
 

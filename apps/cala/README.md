@@ -159,8 +159,8 @@ Extract's file, no transpose): `np.load` still returns the (cells, frames) array
   flat pixel index `row * W + column`) with `fov_shape`, per-frame
   `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
   `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
-  `qc_flags` (trace statistics recomputed on the extracted traces of the file's
-  own frames, `src/lib/extract-qc.ts`), `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
+  `qc_flags` (trace statistics recomputed on the extracted traces over all of the
+  file's own frames, the whole session; `src/lib/extract-qc.ts`), `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
   cell table). The full layout is the header of `src/lib/export.ts`.
 - `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
   `cell_ids` and `sampling_rate_hz`. Its `traces` are Extract's signed traces
