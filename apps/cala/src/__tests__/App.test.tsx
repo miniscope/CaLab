@@ -415,3 +415,159 @@ describe('App: multi-session run', () => {
     await vi.waitFor(() => expect(root.querySelector('[data-testid="add-cancel"]')).not.toBeNull());
   });
 });
+
+describe('App: animal project', () => {
+  const days = ['2026_11_10', '2026_11_11', '2026_11_12'];
+  const sid = (d: string) => `${d}/09_00_00/My_V4_Miniscope`;
+  const animalFiles = () =>
+    days.flatMap((d, i) => [
+      makeFile('0.avi', new Uint8Array(4), `mouse1/${d}/09_00_00/My_V4_Miniscope`),
+      makeFile(
+        'metaData.json',
+        JSON.stringify({ recordingStartTime: { msecSinceEpoch: Date.UTC(2026, 10, 10 + i, 9) } }),
+        `mouse1/${d}/09_00_00`,
+      ),
+    ]);
+  /** Two earlier separate runs of the first session, as their folders hold them. */
+  const runFiles = () =>
+    [
+      ['r1', '2026-11-12T00:00:00.000Z'],
+      ['r2', '2026-11-13T00:00:00.000Z'],
+    ].flatMap(([run, created]) => [
+      makeFile(
+        'cala-run.json',
+        JSON.stringify({
+          format: 'cala-run',
+          created,
+          mode: 'separate',
+          sessions: [
+            { path: `mouse1/${sid(days[0])}`, results_path: sid(days[0]), status: 'written' },
+          ],
+        }),
+        `mouse1/cala-results/runs/${run}`,
+      ),
+      makeFile(
+        'cala-session.json',
+        JSON.stringify({
+          format: 'cala-session',
+          created,
+          cells: 4,
+          stages_run: [
+            { stage: 'discover', outcome: 'done' },
+            { stage: 'refine', outcome: 'done' },
+            { stage: 'extract', outcome: 'done' },
+          ],
+        }),
+        `mouse1/cala-results/runs/${run}/${sid(days[0])}`,
+      ),
+    ]);
+  const openProject = (root: HTMLElement, files: File[]) => {
+    const input = root.querySelector<HTMLInputElement>('[data-testid="project-input"]')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const rows = (root: HTMLElement) => [
+    ...root.querySelectorAll<HTMLTableRowElement>('[data-testid="project-row"]'),
+  ];
+
+  beforeEach(() => {
+    fake.probe.mockImplementation(async (sessions: unknown[]) =>
+      sessions.map(() => ({ info: { ...INFO, frameCount: 800 } })),
+    );
+  });
+
+  it('shows every session with its status, current result and shared ids', async () => {
+    const root = mount();
+    expect(root.querySelector('[data-testid="open-project"]')).not.toBeNull();
+    openProject(root, [...animalFiles(), ...runFiles()]);
+    await vi.waitFor(() => expect(rows(root)).toHaveLength(3));
+    const [first, second] = rows(root);
+    expect(first.textContent).toContain(sid(days[0]));
+    expect(first.textContent).toContain('800 frames, 0:40');
+    expect(first.querySelector('[data-testid="cell-discover"]')!.textContent).toBe('done');
+    expect(first.querySelector('[data-testid="cell-refine"]')!.textContent).toBe('1x');
+    expect(first.querySelector('[data-testid="cell-current"]')!.textContent).toContain('run r2');
+    expect(first.querySelector('[data-testid="cell-ids"]')!.textContent).toBe('own');
+    expect(second.querySelector('[data-testid="cell-current"]')!.textContent).toBe('—');
+    expect(root.querySelector('[data-testid="project-warning"]')!.textContent).toContain(
+      '2 existing run folders',
+    );
+    expect(fake.open).not.toHaveBeenCalled();
+  });
+
+  it('sets an older result current from the details', async () => {
+    const root = mount();
+    openProject(root, [...animalFiles(), ...runFiles()]);
+    await vi.waitFor(() => expect(rows(root)).toHaveLength(3));
+    rows(root)[0].querySelector<HTMLButtonElement>('[data-testid="row-details"]')!.click();
+    const items = await vi.waitFor(() => {
+      const el = root.querySelectorAll('[data-testid="result-item"]');
+      expect(el).toHaveLength(2);
+      return el;
+    });
+    expect(items[0].textContent).toContain('run r2 (current)');
+    expect(items[0].textContent).toContain('mouse1/cala-results/runs/r2/');
+    items[1].querySelector<HTMLButtonElement>('[data-testid="set-current"]')!.click();
+    await vi.waitFor(() =>
+      expect(rows(root)[0].querySelector('[data-testid="cell-current"]')!.textContent).toContain(
+        'run r1',
+      ),
+    );
+  });
+
+  it('builds a run plan from selected rows', async () => {
+    const root = mount();
+    openProject(root, animalFiles());
+    await vi.waitFor(() => expect(rows(root)).toHaveLength(3));
+    const chain = root.querySelector<HTMLButtonElement>('[data-testid="plan-chain"]')!;
+    expect(chain.disabled).toBe(true);
+    const select = (i: number) => {
+      const box = rows(root)[i].querySelector<HTMLInputElement>('[data-testid="row-select"]')!;
+      box.checked = true;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    select(0);
+    select(1);
+    await vi.waitFor(() => expect(chain.disabled).toBe(false));
+    chain.click();
+    select(2);
+    root.querySelector<HTMLButtonElement>('[data-testid="plan-separate"]')!.click();
+    const groups = await vi.waitFor(() => {
+      const el = root.querySelectorAll('[data-testid="plan-group"]');
+      expect(el).toHaveLength(2);
+      return el;
+    });
+    expect(groups[0].textContent).toContain('Joint chain of 2');
+    expect(groups[1].textContent).toContain('Separate: 1 session');
+    expect(root.querySelector<HTMLButtonElement>('[data-testid="plan-start"]')!.disabled).toBe(
+      false,
+    );
+    root.querySelectorAll<HTMLButtonElement>('[data-testid="plan-remove"]')[0].click();
+    await vi.waitFor(() =>
+      expect(root.querySelectorAll('[data-testid="plan-group"]')).toHaveLength(1),
+    );
+    root.querySelector<HTMLButtonElement>('[data-testid="project-close"]')!.click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="open-project"]')).not.toBeNull(),
+    );
+  });
+
+  it('offers one project per animal for an experiment folder', async () => {
+    const root = mount();
+    const files = ['m1', 'm2'].flatMap((m) =>
+      days
+        .slice(0, 2)
+        .map((d) => makeFile('0.avi', new Uint8Array(4), `exp/${m}/${d}/09_00_00/My_V4_Miniscope`)),
+    );
+    openProject(root, files);
+    const options = await vi.waitFor(() => {
+      const el = root.querySelectorAll<HTMLButtonElement>('[data-testid="split-option"]');
+      expect(el).toHaveLength(2);
+      return el;
+    });
+    options[1].click();
+    await vi.waitFor(() => expect(rows(root)).toHaveLength(2));
+    expect(root.querySelector('[data-testid="project-name"]')!.textContent).toBe('m2');
+    expect(rows(root)[0].textContent).toContain(sid(days[0]));
+  });
+});

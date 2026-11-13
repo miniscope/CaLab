@@ -7,6 +7,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: animal projects. **Open animal project** opens an animal's folder of
+  sessions as a project: a session table with each session's date, length,
+  Discover / Refine / Extract status, shared cell ids and current result, and
+  a run plan built from selected rows (**Chain selected**: one Joint run;
+  **Run selected separately**), run group by group. Each run is written to
+  `cala-results/runs/<run id>/` and indexed in `cala-results/cala-project.json`
+  (schema version 1: sessions, append-only runs, results with a current flag
+  and the id space their cell ids belong to), updated as each session
+  finishes. The index is validated on read and rebuilt from the run folders
+  when missing or damaged, including results trees written by multi-session
+  runs before projects; renamed session folders are matched by start time
+  and frame count. **Set current** picks an older result. Chrome and Edge
+  list recent projects for one-click reopening. A folder of several animals
+  is offered as one project per animal. See `apps/cala/docs/projects.md`.
+
 - Cala: a split-half merge rule (`MergeRule::SplitHalf`,
   `qc_eval --merge-rule legacy|split-half`). A pair of
   cells whose footprints overlap less than half merges only when the

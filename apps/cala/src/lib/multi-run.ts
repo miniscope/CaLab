@@ -49,6 +49,37 @@ export interface MultiRunPlan {
   openSink: () => Promise<ResultsSink>;
   /** For the panel: where results go. */
   locationLabel: string;
+  /** A run plan's group (project view), written into the run manifest. */
+  planInfo?: { id: string; group: number; groups: number };
+  /**
+   * Told each time results are written (after each session in Separate, after
+   * all in Joint), when the run ends and when it stops. The project view
+   * updates its index here. Failures are reported, never stop the run.
+   */
+  onProgress?: (p: RunProgress) => Promise<void>;
+}
+
+/** What `onProgress` is told. */
+export interface RunProgress {
+  settings: RunSettings;
+  /** Every session's record, as in the run manifest. */
+  records: SessionRecord[];
+  /** Record indices whose results were just written. */
+  written: number[];
+  /** The stage log now (the sessions just written, or the one that stopped). */
+  stages: readonly StageRun[];
+  /** Record indices `stages` is about. */
+  stagesFor: number[];
+  /** Cell ids of the written results, and the library version they belong to. */
+  cellIds: number[] | null;
+  libraryVersion: number | null;
+  /** The run folder's name, once it exists. */
+  root: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finished: boolean;
+  /** Why the run stopped, when it did. */
+  stopped: string | null;
 }
 
 export interface MultiRunDeps {
@@ -84,6 +115,8 @@ export function createMultiRun(deps: MultiRunDeps) {
   const [error, setError] = createSignal<string | null>(null);
   const [root, setRoot] = createSignal<string | null>(null);
   const [finished, setFinished] = createSignal(false);
+  const [stopped, setStopped] = createSignal<string | null>(null);
+  const [progressError, setProgressError] = createSignal<string | null>(null);
   let sink: ResultsSink | null = null;
   let createdAt = '';
   /** The last action started, so an effect re-run does not start it twice. */
@@ -115,6 +148,25 @@ export function createMultiRun(deps: MultiRunDeps) {
     setRecords(records().map((r) => (r.index === index ? { ...r, ...patch } : r)));
   }
 
+  async function progress(
+    p: Omit<RunProgress, 'settings' | 'records' | 'root' | 'createdAt' | 'updatedAt'>,
+  ): Promise<void> {
+    const pl = plan();
+    if (!pl?.onProgress) return;
+    try {
+      await pl.onProgress({
+        ...p,
+        settings: pl.settings,
+        records: records(),
+        root: sink?.root ?? null,
+        createdAt,
+        updatedAt: now().toISOString(),
+      });
+    } catch (err) {
+      setProgressError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function writeManifest(done: boolean): Promise<void> {
     const p = plan();
     if (!p || !sink) return;
@@ -129,6 +181,8 @@ export function createMultiRun(deps: MultiRunDeps) {
         createdAt,
         updatedAt: now().toISOString(),
         finished: done,
+        ...(stopped() ? { stopped: stopped()! } : {}),
+        ...(p.planInfo ? { plan: p.planInfo } : {}),
       }),
       null,
       2,
@@ -138,6 +192,10 @@ export function createMultiRun(deps: MultiRunDeps) {
 
   /** Write the results that are final now: one session (Separate) or all (Joint). */
   async function exportResults(): Promise<void> {
+    // The stage log ends Extract in an effect of its own on the same change
+    // that starts this export: let it run first, or `stages_run` would say
+    // Extract is still running.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const p = plan();
     const base = deps.exportInput();
     if (!p || !base) throw new Error('There is no Extract result to write.');
@@ -175,12 +233,23 @@ export function createMultiRun(deps: MultiRunDeps) {
         libraryVersion: base.result.version,
         cells: base.result.ids.length,
         sharedCellIds: joint ? Array.from(base.result.ids) : null,
+        cellIds: Array.from(base.result.ids),
         createdAt: now().toISOString(),
       });
       await sink.writeText(`${r.resultsPath}/${SESSION_META_FILE}`, JSON.stringify(meta, null, 2));
       patchRecord(r.index, { status: 'written' });
     }
     await writeManifest(false);
+    const written = which.map((r) => r.index);
+    await progress({
+      written,
+      stages: runs,
+      stagesFor: written,
+      cellIds: Array.from(base.result.ids),
+      libraryVersion: base.result.version,
+      finished: false,
+      stopped: null,
+    });
   }
 
   async function finish(skipped?: string): Promise<void> {
@@ -193,13 +262,55 @@ export function createMultiRun(deps: MultiRunDeps) {
       }
     }
     await writeManifest(true);
+    await progress({
+      written: [],
+      stages: deps.stages().runs,
+      stagesFor: skipped ? [current()] : [],
+      cellIds: null,
+      libraryVersion: null,
+      finished: true,
+      stopped: null,
+    });
     await sink?.finish();
     setFinished(true);
   }
 
+  /** A stage failed or was cancelled: the run stops; what is written stays. */
+  async function stop(reason: string): Promise<void> {
+    const p = plan();
+    if (!p) return;
+    setStopped(reason);
+    const joint = p.settings.mode === 'joint';
+    const open = records().filter(
+      (r) => r.status === 'pending' && (joint || r.index === current()),
+    );
+    for (const r of open) patchRecord(r.index, { status: 'failed', note: reason });
+    if (sink) await writeManifest(false);
+    await progress({
+      written: [],
+      stages: deps.stages().runs,
+      stagesFor: open.map((r) => r.index),
+      cellIds: null,
+      libraryVersion: null,
+      finished: false,
+      stopped: reason,
+    });
+  }
+
   async function nextSession(skipped?: string): Promise<void> {
     const p = plan()!;
-    if (skipped) patchRecord(current(), { status: 'skipped', note: skipped });
+    if (skipped) {
+      patchRecord(current(), { status: 'skipped', note: skipped });
+      await progress({
+        written: [],
+        stages: deps.stages().runs,
+        stagesFor: [current()],
+        cellIds: null,
+        libraryVersion: null,
+        finished: false,
+        stopped: null,
+      });
+    }
     const next = current() + 1;
     setCurrent(next);
     setExported(false);
@@ -222,7 +333,7 @@ export function createMultiRun(deps: MultiRunDeps) {
   // The automatic run: one step whenever a stage's state changes.
   createEffect(() => {
     const p = plan();
-    if (!p || finished() || error()) return;
+    if (!p || finished() || error() || stopped()) return;
     const st = deps.stages();
     const input = {
       settings: p.settings,
@@ -267,6 +378,9 @@ export function createMultiRun(deps: MultiRunDeps) {
         case 'finished':
           dispatch(key, () => finish(a.skipped));
           break;
+        case 'stopped':
+          dispatch(key, () => stop(a.reason));
+          break;
       }
     });
   });
@@ -287,6 +401,8 @@ export function createMultiRun(deps: MultiRunDeps) {
     createdAt = now().toISOString();
     setRoot(null);
     setError(null);
+    setStopped(null);
+    setProgressError(null);
     setFinished(false);
     setExported(false);
     setCurrent(0);
@@ -296,7 +412,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     else await deps.openOne(p.sessions[0], 0);
   }
 
-  function stop(): void {
+  function cancel(): void {
     setPlan(null);
     sink = null;
   }
@@ -311,16 +427,21 @@ export function createMultiRun(deps: MultiRunDeps) {
       const p = plan();
       if (!p) return '';
       if (error()) return `Stopped: ${error()}`;
+      if (stopped()) return `Stopped: ${stopped()}`;
       if (finished()) return 'All sessions done; results written.';
       return autoStatusText(action(), { session: current(), sessions: p.sessions.length });
     },
     error,
+    /** Why the automatic run stopped (a stage failed or was cancelled), or a write failed. */
+    stopped: () => stopped() ?? error(),
+    /** Updating the project index failed (the run went on). */
+    progressError,
     exporting,
     finished,
     /** The run folder's name once the first results are written. */
     root,
     start,
-    stop,
+    stop: cancel,
   };
 }
 

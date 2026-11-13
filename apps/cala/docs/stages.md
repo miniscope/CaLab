@@ -178,6 +178,11 @@ downloads as `cala-results.zip` when the run ends (each file is built in
 memory first). A manual Extract after the run writes nothing automatically;
 use Export.
 
+An animal project ([projects.md](projects.md)) runs the same flows from its
+session table as a run plan of Joint chains and Separate sets, writes each run
+to `cala-results/runs/<run id>/` with the same layout, and indexes them in
+`cala-results/cala-project.json`.
+
 ## Deferred
 
 - **Repeated Discover** ("Discover again") is not offered. It would replay the

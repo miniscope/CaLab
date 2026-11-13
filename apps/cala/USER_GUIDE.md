@@ -187,10 +187,54 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
+## An animal's sessions: projects
+
+Most experiments are many sessions from one animal. **Open animal project** on the
+start screen opens the animal's folder (for a Miniscope V4 tree, the folder that holds
+`date/time/My_V4_Miniscope/`) as a project: one table of all its sessions, what cala
+has done with each, and every result kept in `<animal>/cala-results/`.
+
+- **If the folder holds several animals** (an experiment folder with one subfolder per
+  animal, each with several sessions), the app offers to open one animal at a time.
+  Pick the animal, or open everything as one project.
+- **The session table** lists each session: its folder, date and time (from
+  `metaData.json`), length, then whether **Discover**, **Refine** (how many times) and
+  **Extract** ran, the **Cell IDs** column, and the **current result**. Rows marked with
+  the same letter in **Cell IDs** (and the same coloured edge) share cell ids: they come
+  from one Joint run, so cell 7 is the same neuron in each. `own` means a session's ids
+  are its own (a Separate run). **Results** on a row lists every result of that session
+  with its run, date, cell count and file path.
+- **Run plan.** Tick sessions, then **Chain selected** (one Joint run through them: one
+  library, shared cell ids) or **Run selected separately** (each its own run). Repeat to
+  build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; set
+  how many **Refine runs** come before Extract, and **Start plan**. Chrome and Edge ask
+  once for permission to save into the animal folder. The groups run one after another;
+  each session's results are written, and its current result updated, as soon as it is
+  done. If a stage fails or is cancelled the plan stops, keeps what is written, and
+  leaves the unfinished groups in the plan. **Back to project** in the header returns to
+  the table.
+- **Current result.** A session's newest result is its current one. Older results are
+  kept; **Set current** in its results makes an older one current again.
+- **Where results go.** Each run gets its own folder, `cala-results/runs/<date>_<time>/`,
+  laid out like a multi-session run's results, and `cala-results/cala-project.json`
+  indexes them. Raw data folders are only read. **Choose another folder...** saves the
+  results elsewhere. If the index is lost or damaged it is rebuilt from the run folders
+  (with a note), and results written by a multi-session run before projects existed are
+  picked up the same way. A renamed session folder is recognised by its start time and
+  frame count; a folder that is gone is marked missing.
+- **Reopening.** Chrome and Edge list **Recent projects** on the start screen: one click
+  (and a permission prompt) reopens one. Other browsers pick the folder again; there each
+  run downloads a zip of its run folder, to unpack into the animal folder.
+
+Saved libraries (applying one session's cells to another), matching cells across Separate
+runs, and opening a saved result in the viewer come in later versions. Details:
+[docs/projects.md](docs/projects.md).
+
 ## Several sessions of one animal
 
 To track the same cells across days, run the sessions together instead of
-renumbering files into one folder.
+renumbering files into one folder. An animal project (above) does the same from its
+session table and keeps the results indexed; the steps below are the one-off route.
 
 1. **Pick the parent folder** (for a Miniscope V4 tree, the animal's folder that holds
    `date/time/My_V4_Miniscope/`). Every recording folder in it, at any depth, becomes a
