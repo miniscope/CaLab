@@ -57,7 +57,9 @@ for _ in range(n):
                 gy = gx = -1e6
         nz.append(bool((v > 0).any()))
     units.append((i, det, foc, gy, gx, nz[0], cy, cx))
-rows = [l.split("\t") for l in (run / "gt.tsv").read_text().splitlines()[1:]]
+gt_lines = (run / "gt.tsv").read_text().splitlines()
+rows = [l.split("\t") for l in gt_lines[1:]]
+# gt.tsv's `unit` column (qc_eval since 13 Nov 2026) is the oracle index. Older runs:
 # gt.tsv is the subsequence of oracle units inside qc_eval's sensor mask: align by DP
 # (monotone, one unit per row, cost = centroid distance, det flags must agree).
 m = len(rows)
@@ -77,6 +79,9 @@ while i > 0:
         j -= 1
     else:
         kept[i - 1] = units[j - 1]; i -= 1; j -= 1
+if "unit" in gt_lines[0].split("\t"):
+    iu = gt_lines[0].split("\t").index("unit")
+    kept = [units[int(r[iu])] for r in rows]
 d = np.array([np.hypot(float(r[1]) - u[3], float(r[2]) - u[4]) for r, u in zip(rows, kept)])
 
 lines = (run / "cells.tsv").read_text().splitlines()
