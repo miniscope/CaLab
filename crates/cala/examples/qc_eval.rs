@@ -52,6 +52,13 @@
 //!                      basin-skirt (default) | basin | rings (the rule
 //!                      before S2.1)
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
+//!   --alpha0 A         declared error rate of the S2.1c evidence rules
+//!                      (1e-3; read only by the shadow log for now)
+//!   --decide-shadow    DIAG (`--features diagnostics`): log the S2.1c
+//!                      evidence rules beside the current decisions, no
+//!                      decision changes (`decide_{fp,pairs,keep,silent}.tsv`
+//!                      in the output directory; `CALA_DECIDE_SHADOW=<dir>`
+//!                      does the same)
 //!   --stats-half-life F  half-life (frames) of the footprint statistics
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
@@ -2203,6 +2210,15 @@ fn main() {
     let input = PathBuf::from(args.get(2).expect("input dir"));
     let out_dir = PathBuf::from(args.get(3).expect("out dir"));
     std::fs::create_dir_all(&out_dir).unwrap();
+    // DIAG: shadow log of the S2.1c evidence rules (no decision changes).
+    if args.iter().any(|a| a == "--decide-shadow") {
+        #[cfg(not(feature = "diagnostics"))]
+        panic!("--decide-shadow needs --features diagnostics");
+        #[cfg(feature = "diagnostics")]
+        if std::env::var_os("CALA_DECIDE_SHADOW").is_none() {
+            std::env::set_var("CALA_DECIDE_SHADOW", &out_dir);
+        }
+    }
     let has_gt = mode == "sim" || mode == "oracle";
     let oracle_mode = mode == "oracle";
     let motion = args.iter().any(|a| a == "--motion");
@@ -2298,6 +2314,9 @@ fn main() {
     }
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--alpha0") {
+        scfg.alpha0 = v.parse().unwrap();
     }
     assert!(
         scfg.support_rule == SupportRule::Rings
@@ -2589,6 +2608,12 @@ fn main() {
                             );
                         }
                         std::fs::write(out_dir.join("gt.tsv"), t).unwrap();
+                        #[cfg(feature = "diagnostics")]
+                        calab_cala::discover::shadow_set_gt(
+                            g.cols.clone(),
+                            g.detectable.clone(),
+                            dims.width,
+                        );
                         if oracle_mode {
                             let (lib, m) =
                                 oracle_library(o, &g, dims, &fov, &noise, &mut flat, frac, seed);
@@ -3078,6 +3103,8 @@ fn main() {
         println!("flat field: {} updates", o.updates());
     }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
+    #[cfg(feature = "diagnostics")]
+    calab_cala::discover::shadow_flush();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();
     if churn_log {
         std::fs::write(out_dir.join("edits.tsv"), &edit_log).unwrap();

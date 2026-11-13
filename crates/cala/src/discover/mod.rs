@@ -215,6 +215,7 @@
 )]
 
 mod churn;
+mod decide;
 #[cfg(feature = "diagnostics")]
 mod diagnostics;
 mod fastcore;
@@ -223,6 +224,8 @@ mod ledger;
 mod local;
 mod noisecorr;
 mod reservoir;
+#[cfg(feature = "diagnostics")]
+mod shadow;
 mod shard;
 mod wire;
 
@@ -230,6 +233,8 @@ pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, Remo
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
+#[cfg(feature = "diagnostics")]
+pub use shadow::{flush as shadow_flush, set_gt as shadow_set_gt};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
 
 #[cfg(feature = "jsbindings")]
@@ -463,6 +468,11 @@ pub struct SlowLoopConfig {
     /// light (Bonferroni over the tested pixels). Edits of the cell set
     /// keep their own rates.
     pub support_alpha: f32,
+    /// The declared error rate `α₀` of the evidence rules (S2.1c): every
+    /// refine, merge and keep decision tests at `z₀ = Φ⁻¹(1 − α₀)` plus the
+    /// look-count margin. PR 0 only logs those rules beside the current
+    /// ones (`diagnostics`, `CALA_DECIDE_SHADOW`); no decision reads it yet.
+    pub alpha0: f32,
     /// A refinement is accepted when its per-frame held-out χ² gains are
     /// positive with a paired z (mean over standard error) above this...
     pub refine_z: f32,
@@ -569,6 +579,7 @@ impl Default for SlowLoopConfig {
             support_z: 2.0,
             support_rule: SupportRule::BasinSkirt,
             support_alpha: 0.05,
+            alpha0: 1e-3,
             refine_z: 3.0,
             absorb_z: 3.0,
             absorb_share: 0.8,
@@ -629,6 +640,8 @@ impl SlowLoopConfig {
             && self.support_z.is_finite()
             && self.support_alpha > 0.0
             && self.support_alpha < 1.0
+            && self.alpha0 > 0.0
+            && self.alpha0 < 0.5
             && (self.support_rule == SupportRule::Rings
                 || (self.core_test == CoreTest::Off && !self.basin_trim))
             && self.refine_z.is_finite()
@@ -887,6 +900,9 @@ struct AddVerdict {
     alt: Option<(usize, f64, f64)>,
     /// Noise-column null of the test frames (mean, sd).
     null: (f64, f64),
+    /// DIAG: the shadow's per-frame terms (`CALA_DECIDE_SHADOW` only).
+    #[cfg(feature = "diagnostics")]
+    shadow: Option<shadow::AbsorbInput>,
 }
 
 /// A tile's model solved on its fitting frames.
@@ -1996,6 +2012,10 @@ impl SlowLoop {
                 }
             }
         }
+        #[cfg(feature = "diagnostics")]
+        if shadow::on() {
+            shadow::silent_check(self);
+        }
         for (id, reason) in doomed {
             self.delete(id, reason);
         }
@@ -2010,6 +2030,10 @@ impl SlowLoop {
         };
         #[cfg(feature = "diagnostics")]
         diagnostics::delete(self, &self.cells[i], reason.as_str());
+        #[cfg(feature = "diagnostics")]
+        if shadow::on() {
+            shadow::deleted(self, &self.cells[i], reason.as_str());
+        }
         let info = self.info(&self.cells[i]);
         let cell = self.cells.remove(i);
         self.ledger.remove(&id);
@@ -2548,8 +2572,17 @@ impl SlowLoop {
                 // (`absorb_share`) holds the add to the stricter margin.
                 let distinct = alt_gain < f64::from(self.cfg.absorb_share) * v.gain;
                 if v.ok && (margin > pen || distinct && v.gain - m > pen) {
+                    #[cfg(feature = "diagnostics")]
+                    if let Some(si) = &v.shadow {
+                        shadow::claim(self, &cell, &si.events);
+                    }
                     outcome = Outcome::Add(cell, (margin / sd) as f32);
                 } else if let Some((k, g, z)) = v.alt {
+                    #[cfg(feature = "diagnostics")]
+                    if let Some(si) = &v.shadow {
+                        let acc = g > 0.0 && z > f64::from(self.cfg.absorb_z);
+                        shadow::absorb(self, &alts, &kinds, k, z, g, acc, si);
+                    }
                     // The best of several alternatives, chosen on these
                     // frames: it needs a larger paired z than a single
                     // refinement does.
@@ -3832,6 +3865,27 @@ impl SlowLoop {
                     }
                 }
             }
+            #[cfg(feature = "diagnostics")]
+            if shadow::on() {
+                shadow::keep(
+                    self,
+                    &shadow::KeepInput {
+                        id,
+                        frames: probes
+                            .iter()
+                            .filter(|p| p.cells.contains(&id))
+                            .map(|p| p.slot.frame)
+                            .collect(),
+                        plain: plain.as_deref(),
+                        full: &full,
+                        ki,
+                        f: &f,
+                        r: &r,
+                        dof,
+                        old: (pass, fail, redundant, inconclusive),
+                    },
+                );
+            }
             self.stats.keep_tests += (pass + fail + redundant + inconclusive) as u64;
             self.stats.keep_fails += fail as u64;
             self.stats.keep_inconclusive += inconclusive as u64;
@@ -3936,6 +3990,14 @@ impl SlowLoop {
         let even = |f: &[Fit]| f.iter().step_by(2).map(|x| x.chi2).sum::<f64>();
         let odd = |f: &[Fit]| -> Vec<Fit> { f.iter().skip(1).step_by(2).cloned().collect() };
         let (b_even, b_odd) = (even(&b), odd(&b));
+        #[cfg(feature = "diagnostics")]
+        let mut shadow_in = shadow::on().then(|| shadow::AbsorbInput {
+            idx: test_fr.idx.clone(),
+            s2,
+            d: Vec::new(),
+            w: Vec::new(),
+            events: Vec::new(),
+        });
         for (i, a) in alts.iter().enumerate() {
             let mut work = 0;
             let pr = Problem::new(
@@ -3946,6 +4008,13 @@ impl SlowLoop {
             );
             self.work += work;
             let f = self.solve_with(&pr, &test_fr.y, &proj, &test_fr.miss);
+            #[cfg(feature = "diagnostics")]
+            if let Some(si) = shadow_in.as_mut() {
+                let j = base.cols.iter().position(|c| c.id == a.id);
+                let (d, w) = shadow::absorb_terms(&b, &f, &base, j, s2);
+                si.d.push(d);
+                si.w.push(w);
+            }
             let g_even = b_even - even(&f);
             if g_even > best_even {
                 best_even = g_even;
@@ -3966,6 +4035,17 @@ impl SlowLoop {
                 after.is_none_or(|a| fi > a) && f.c[k] - base_level >= self.cfg.event_z * sig
             })
             .count() as u32;
+        #[cfg(feature = "diagnostics")]
+        if let Some(si) = shadow_in.as_mut() {
+            si.events = e
+                .iter()
+                .zip(&test_fr.idx)
+                .filter(|(f, &fi)| {
+                    after.is_none_or(|a| fi > a) && f.c[k] - base_level >= self.cfg.event_z * sig
+                })
+                .map(|(_, &fi)| fi)
+                .collect();
+        }
         let mut ok = events >= self.cfg.min_events;
         // A candidate whose held-out trace follows a nearby cell's is that
         // cell's unmodelled light (scatter halo, a footprint mismatch), not
@@ -4003,6 +4083,8 @@ impl SlowLoop {
             ok,
             alt,
             null,
+            #[cfg(feature = "diagnostics")]
+            shadow: shadow_in,
         }
     }
 
@@ -4340,6 +4422,14 @@ impl SlowLoop {
             // keeping both beats it by the add margin.
             let sep = self.solve_all(&base, test_fr);
             let mut chi_sep = Self::total_chi2(&sep);
+            #[cfg(feature = "diagnostics")]
+            let shadow_on = shadow::on();
+            #[cfg(feature = "diagnostics")]
+            let per = |f: &[Fit]| -> Vec<f64> { f.iter().map(|x| x.chi2).collect() };
+            #[cfg(feature = "diagnostics")]
+            let mut shadow_pair = if shadow_on { per(&sep) } else { Vec::new() };
+            #[cfg(feature = "diagnostics")]
+            let mut shadow_arms: [Option<Vec<f64>>; 3] = [None, None, None];
             let ovl = overlap(&base.cols[i], &base.cols[j], rect.len());
             // The merged arm is a fresh fit, so the pair is refitted on the
             // same frames too (alternating rank-1 fits of each cell on the
@@ -4391,6 +4481,10 @@ impl SlowLoop {
                     let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
                     let rp = self.problem(ti, cols);
                     let rf = self.solve_all(&rp, test_fr);
+                    #[cfg(feature = "diagnostics")]
+                    if shadow_on && Self::total_chi2(&rf) < chi_sep {
+                        shadow_pair = per(&rf);
+                    }
                     chi_sep = chi_sep.min(Self::total_chi2(&rf));
                 }
             }
@@ -4399,6 +4493,10 @@ impl SlowLoop {
                 let cols = self.columns(rect, &[ids[i], ids[j]], &[&m]);
                 let mp = self.problem(ti, cols);
                 let mf = self.solve_all(&mp, test_fr);
+                #[cfg(feature = "diagnostics")]
+                if shadow_on {
+                    shadow_arms[0] = Some(per(&mf));
+                }
                 let loss = Self::total_chi2(&mf) - chi_sep;
                 let (stay, go) = if self.cells[ci].id == keep {
                     (ci, cj)
@@ -4411,6 +4509,12 @@ impl SlowLoop {
                 let cols = self.columns(rect, &[self.cells[go].id], &[]);
                 let ap = self.problem(ti, cols);
                 let af = self.solve_all(&ap, test_fr);
+                #[cfg(feature = "diagnostics")]
+                if shadow_on {
+                    // Arm 1 keeps the lower id, arm 2 the higher.
+                    let arm = if self.cells[go].id == pair.1 { 1 } else { 2 };
+                    shadow_arms[arm] = Some(per(&af));
+                }
                 let loss = Self::total_chi2(&af) - chi_sep;
                 if best_arm.as_ref().is_none_or(|b| loss < b.0) {
                     best_arm = Some((loss, None, stay, go));
@@ -4429,6 +4533,28 @@ impl SlowLoop {
                 .as_ref()
                 .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.merge_z) * s);
             #[cfg(feature = "diagnostics")]
+            if shadow_on {
+                let k = self.bgs[ti].as_ref().expect("basis").k;
+                shadow::merge(
+                    self,
+                    &shadow::MergeInput {
+                        ti,
+                        lo: pair.0,
+                        hi: pair.1,
+                        idx: &test_fr.idx,
+                        base_k: k,
+                        n_cols: base.len(),
+                        sep: per(&sep),
+                        pair: std::mem::take(&mut shadow_pair),
+                        arms: std::mem::take(&mut shadow_arms),
+                        old_accept: accept,
+                        old_z: best_arm.as_ref().map_or(f64::NAN, |b| (mu - b.0) / s),
+                        ovl,
+                        one,
+                    },
+                );
+            }
+            #[cfg(feature = "diagnostics")]
             self.log_test(
                 EditKind::Merge,
                 pair.0,
@@ -4440,6 +4566,10 @@ impl SlowLoop {
                 self.stats.merges += 1;
                 self.edits.merges += 1;
                 let (kept_id, gone) = (self.cells[stay].id, self.cells[go].id);
+                #[cfg(feature = "diagnostics")]
+                if shadow_on {
+                    shadow::merged(kept_id, gone);
+                }
                 let gone_center = self.cells[go].center;
                 let gone_young =
                     self.frames.saturating_sub(self.cells[go].born) < self.cfg.probation_frames;
@@ -4678,6 +4808,10 @@ impl SlowLoop {
             // Accepted.
             #[cfg(feature = "diagnostics")]
             self.log_test(EditKind::Split, id, new_id, true, (gain - m) / sd);
+            #[cfg(feature = "diagnostics")]
+            if shadow::on() {
+                shadow::split(id, new_id);
+            }
             self.next_id += 1;
             self.stats.splits += 1;
             self.edits.splits += 1;
@@ -4758,10 +4892,24 @@ impl SlowLoop {
                 continue;
             }
             let from_stats = self.stats_estimate(id).is_some();
+            #[cfg(feature = "diagnostics")]
+            let shadow_cx = shadow::RefineCtx {
+                i,
+                base,
+                base_test: &base_test,
+                idx: &test_fr.idx,
+                s2,
+            };
             let new = if from_stats {
                 match self.stats_proposal(&cell, true) {
                     Some(n) => n,
-                    None => continue,
+                    None => {
+                        #[cfg(feature = "diagnostics")]
+                        if shadow::on() {
+                            shadow::refine_declined(self, &cell, &shadow_cx);
+                        }
+                        continue;
+                    }
                 }
             } else if self.frames.saturating_sub(cell.born) > self.cfg.reservoir_refine_frames {
                 // Past its youth a cell is refined from its running
@@ -4818,6 +4966,12 @@ impl SlowLoop {
                 self.cfg.absorb_z
             };
             let accepted = gain > 0.0 && z > f64::from(need);
+            #[cfg(feature = "diagnostics")]
+            if shadow::on() {
+                shadow::refine_tested(
+                    self, &cell, &new, &shadow_cx, &f, from_stats, z, gain, accepted,
+                );
+            }
             #[cfg(feature = "diagnostics")]
             self.log_test(
                 EditKind::Refine,
