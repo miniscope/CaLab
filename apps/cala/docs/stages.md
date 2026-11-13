@@ -113,6 +113,34 @@ counts:
 
 The export's `meta_json.stages` holds the same records (format version 3).
 
+## Refine plots
+
+Under the Refine readout the Run panel draws two plots (`components/RefinePlots.tsx`,
+with the metrics in `src/lib/refine-metrics.ts`):
+
+- **This run over the replay.** The current or last Refine run, plotted
+  against the replay's stream time with the History's `HistoryPlot`:
+  - refines per minute over the last minute of the replay (none before 10 s);
+  - at each library publish, the median and the 90th percentile of
+    `|a' - a| / |a|` over the footprints that publish changed (stems);
+  - the share of cells this run has refined at least once.
+
+  The ranges are declared like every History series: 0–50 /min and 0–0.5,
+  each stepping up a 1/2/5 ladder (never down), and 0–1 fixed for the
+  share.
+
+- **Across runs.** Refines per minute for Discover (D) and for each Refine
+  run, and the median footprint change of each Refine run. These are two
+  small plots, each with its own y axis anchored at 0. The top is the
+  series' initial range, or the 1/2/5 step that holds every run. A run
+  that was cancelled or stopped shows as a hollow dot. The settled hint
+  (below) sits under these plots.
+
+The export carries the same numbers. Each Refine run in `meta_json.stages`
+adds `change_p90` and `refined_share`, and a `series` object of columns: `t`
+(stream s), `refines`, `refines_per_min`, `changed`, `change_median`,
+`change_p90` (set at publishes, null elsewhere) and `refined_share`.
+
 ## The settled signal
 
 Main uses the split-half refine gate (#367): a refine is published only when

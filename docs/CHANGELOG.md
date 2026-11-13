@@ -37,6 +37,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   stores each image's fixed display range (from the bit depth, never from the
   pixels; see `apps/cala/src/lib/fov-display.ts`).
 
+- Cala: Refine plots in the Run panel. The current or last Refine run is
+  plotted over its replay: refines per minute, the median and 90th
+  percentile of the footprint changes at each publish, and the share of
+  cells refined so far. A comparison across runs shows refines per minute
+  (Discover, Refine 1, 2, ...) and the median change per run, with the
+  "Looks settled" hint under it. Ranges are declared and anchored at 0, as
+  in the History plots. Each Refine run's `meta_json.stages` entry adds
+  `change_p90`, `refined_share` and the `series` columns.
 - Cala: animal projects. **Open animal project** opens an animal's folder of
   sessions as a project: a session table with each session's date, length,
   Discover / Refine / Extract status, shared cell ids and current result, and
