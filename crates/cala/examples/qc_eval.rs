@@ -126,6 +126,17 @@
 //!                      linearly over the run (pixel gain ±A, column offset
 //!                      ±B grey levels; patterns written to `drift_*.f32`)
 //!   --no-heldout       skip the ground-truth-free held-out score
+//!   --fps R            frame rate for the time-based preprocessing and
+//!                      flat-field settings (default 20; the sims' rate)
+//!   --boundary-log     diagnostics builds only (`--features diagnostics`):
+//!                      write `boundary_pre.tsv` (per frame: input mean,
+//!                      glow, flicker fit, background floor, noise map every
+//!                      10 frames, motion quality and flags) and
+//!                      `boundary_traces.bin` (every cell's online trace and
+//!                      ring level, pass 1). Read-only; see `BoundaryLog`
+//!   --probe-bg-reset F diagnostics builds only: what-if probe (not a fix)
+//!                      replacing the preprocessor's background floor with a
+//!                      fresh one before frame F (session-boundary study)
 //!   --library F        a fixed library (`footprints.bin` of an earlier run,
 //!                      `CALAFP01`) from `--start` on, no slow loop: scores
 //!                      a given cell set (held-out frames: the split the
@@ -597,6 +608,13 @@ struct Pipeline {
     /// (repeated passes replay them).
     keep_records: bool,
     records: Vec<MotionRecord>,
+    /// `--boundary-log`: the last frame's preprocessing and motion records
+    /// (read-only copies; nothing downstream uses them).
+    /// input mean, glow mean, flicker offset, flicker gain, flicker kept share
+    last_front: [f32; 5],
+    /// floor mean, share of the floor lowered
+    last_back: [f32; 2],
+    last_motion: (f32, u32),
 }
 
 impl Pipeline {
@@ -644,6 +662,9 @@ impl Pipeline {
             valid: vec![0; n_px],
             keep_records: false,
             records: Vec::new(),
+            last_front: [f32::NAN; 5],
+            last_back: [f32::NAN; 2],
+            last_motion: (f32::NAN, 0),
         }
     }
 
@@ -670,13 +691,22 @@ impl Pipeline {
 
     /// Returns the rigid shift of the frame (motion runs).
     fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> Option<(f32, f32)> {
-        self.pre.front(raw, &mut self.buf).unwrap();
+        let fr = self.pre.front(raw, &mut self.buf).unwrap();
+        self.last_front = [
+            fr.input_mean,
+            fr.lowpass_mean,
+            fr.flicker.offset,
+            fr.flicker.gain,
+            fr.flicker.kept_fraction,
+        ];
         match &mut self.mc {
             Some(mc) => {
                 let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
                 let m = self.src.as_ref().unwrap();
                 mc.validity(&rec, m, &mut self.valid).unwrap();
-                self.pre.back_masked(out, &self.valid).unwrap();
+                let b = self.pre.back_masked(out, &self.valid).unwrap();
+                self.last_back = [b.floor_mean, b.floor_lowered_fraction];
+                self.last_motion = (rec.quality, rec.flags);
                 let shift = Some((rec.dy, rec.dx));
                 if self.keep_records {
                     self.records.push(rec);
@@ -685,9 +715,95 @@ impl Pipeline {
             }
             None => {
                 out.copy_from_slice(&self.buf);
-                self.pre.back(out).unwrap();
+                let b = self.pre.back(out).unwrap();
+                self.last_back = [b.floor_mean, b.floor_lowered_fraction];
                 None
             }
+        }
+    }
+}
+
+/// `--boundary-log` (built with `--features diagnostics`): per-frame
+/// preprocessing state and every cell's online trace and ring-background
+/// level, for the session-boundary study
+/// (`tools/cala-eval/results/2026-11-13-session-boundary.md`). Read-only:
+/// it copies values the loop already computed.
+struct BoundaryLog {
+    /// `boundary_pre.tsv` rows.
+    pre: String,
+    /// id -> (first frame, traces, ring-background levels); NaN where the
+    /// id was absent.
+    cells: HashMap<u64, (usize, Vec<f32>, Vec<f32>)>,
+}
+
+impl BoundaryLog {
+    fn new() -> BoundaryLog {
+        BoundaryLog {
+            pre: String::from(
+                "frame\tinput_mean\tlowpass_mean\tflicker_offset\tflicker_gain\tflicker_kept\tfloor_mean\tfloor_lowered\tnoise_mean\tnoise_p50\tmotion_quality\tmotion_flags\n",
+            ),
+            cells: HashMap::new(),
+        }
+    }
+
+    fn frame(&mut self, t: usize, pipe: &Pipeline, ids: &[u64], tr: &FrameTraces) {
+        let f = &pipe.last_front;
+        let b = &pipe.last_back;
+        // The noise map every 10 frames (it allocates a frame).
+        let (nm, np) = if t.is_multiple_of(10) {
+            let mut s: Vec<f32> = pipe
+                .pre
+                .noise()
+                .sigma()
+                .into_iter()
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .collect();
+            let mean = s.iter().map(|&v| f64::from(v)).sum::<f64>() / s.len().max(1) as f64;
+            let mid = s.len() / 2;
+            let p50 = if s.is_empty() {
+                f32::NAN
+            } else {
+                *s.select_nth_unstable_by(mid, f32::total_cmp).1
+            };
+            (mean as f32, p50)
+        } else {
+            (f32::NAN, f32::NAN)
+        };
+        let _ = writeln!(
+            self.pre,
+            "{t}\t{:.4}\t{:.4}\t{:.4}\t{:.5}\t{:.3}\t{:.4}\t{:.5}\t{nm:.4}\t{np:.4}\t{:.4}\t{}",
+            f[0], f[1], f[2], f[3], f[4], b[0], b[1], pipe.last_motion.0, pipe.last_motion.1
+        );
+        for (k, &id) in ids.iter().enumerate() {
+            let e = self
+                .cells
+                .entry(id)
+                .or_insert_with(|| (t, Vec::new(), Vec::new()));
+            let gap = t - e.0 - e.1.len();
+            e.1.extend(std::iter::repeat_n(f32::NAN, gap));
+            e.2.extend(std::iter::repeat_n(f32::NAN, gap));
+            e.1.push(tr.traces[k]);
+            e.2.push(tr.background.get(k).copied().unwrap_or(f32::NAN));
+        }
+    }
+
+    /// `boundary_pre.tsv` and `boundary_traces.bin` (`CALABTL1`, u32 cells,
+    /// then per cell: u64 id, u32 first frame, u32 length, f32 traces,
+    /// f32 ring levels; little endian).
+    fn write(&self, dir: &Path) {
+        std::fs::write(dir.join("boundary_pre.tsv"), &self.pre).unwrap();
+        let mut f = BufWriter::new(File::create(dir.join("boundary_traces.bin")).unwrap());
+        f.write_all(b"CALABTL1").unwrap();
+        let mut ids: Vec<&u64> = self.cells.keys().collect();
+        ids.sort_unstable();
+        f.write_all(&(ids.len() as u32).to_le_bytes()).unwrap();
+        for id in ids {
+            let (t0, c, bg) = &self.cells[id];
+            f.write_all(&id.to_le_bytes()).unwrap();
+            f.write_all(&(*t0 as u32).to_le_bytes()).unwrap();
+            f.write_all(&(c.len() as u32).to_le_bytes()).unwrap();
+            write_f32s(&mut f, c);
+            write_f32s(&mut f, bg);
         }
     }
 }
@@ -2642,6 +2758,22 @@ fn main() {
         }
     };
     let churn_log = args.iter().any(|a| a == "--churn-log");
+    let boundary_flag = args.iter().any(|a| a == "--boundary-log");
+    assert!(
+        !boundary_flag || cfg!(feature = "diagnostics"),
+        "--boundary-log needs a build with --features diagnostics"
+    );
+    let mut boundary = boundary_flag.then(BoundaryLog::new);
+    // `--probe-bg-reset F` (diagnostics builds): a what-if probe for the
+    // session-boundary study, not a fix: before recording frame F of pass 1
+    // the preprocessor's background floor is replaced by a fresh one, which
+    // re-warms from frame F as at the start of a recording.
+    let probe_bg_reset: Option<usize> =
+        arg_value(&args, "--probe-bg-reset").map(|s| s.parse().unwrap());
+    assert!(
+        probe_bg_reset.is_none() || cfg!(feature = "diagnostics"),
+        "--probe-bg-reset needs a build with --features diagnostics"
+    );
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
         fixed_lib.is_none() || !oracle_mode,
@@ -2696,7 +2828,10 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
-    let mut cfg = PreprocessConfig::for_fps(20.0);
+    // `--fps R`: the recording's frame rate for the time-based preprocessing
+    // and flat-field settings (default 20, the sims'; Miniscope V4 runs at 30).
+    let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
+    let mut cfg = PreprocessConfig::for_fps(fps);
     if let Some(v) = arg_value(&args, "--cell-diameter") {
         cfg.flatten.cell_diameter_px = v.parse().unwrap();
     }
@@ -2831,8 +2966,8 @@ fn main() {
     } else if ff_mode == "online" {
         assert!(motion, "--flat-field online needs --motion");
         let secs = |k: &str, d: f32| arg_value(&args, k).map_or(d, |s| s.parse().unwrap());
-        let mut c = OnlineFlatFieldConfig::for_fps(20.0);
-        let fr = |s: f32| (s * 20.0).round();
+        let mut c = OnlineFlatFieldConfig::for_fps(fps);
+        let fr = |s: f32| (s * fps).round();
         c.estimator.half_life_frames = f64::from(fr(secs("--ff-gain-half-life", GAIN_HALF_LIFE_S)));
         c.estimator.offset_half_life_frames =
             f64::from(fr(secs("--ff-offset-half-life", OFFSET_HALF_LIFE_S)));
@@ -3030,6 +3165,13 @@ fn main() {
                 let t_rec = s as usize + k;
                 let t = off + t_rec;
                 let last = t_rec + 1 == t_len;
+                if pass == 0 && probe_bg_reset == Some(t_rec) {
+                    let cfg = *pipe.pre.background().config();
+                    *pipe.pre.background_mut() =
+                        calab_cala::preprocess::background::RunningMinBackground::new(dims, &cfg)
+                            .unwrap();
+                    println!("probe: background floor reset before frame {t_rec}");
+                }
                 let shift = if pass == 0 {
                     pipe.frame(f, &mut y)
                 } else {
@@ -3218,6 +3360,9 @@ fn main() {
                     }
                 }
                 hist.push(t, lib.ids(), &tr.traces);
+                if let (Some(b), 0) = (boundary.as_mut(), pass) {
+                    b.frame(t, &pipe, lib.ids(), &tr);
+                }
                 let a = Instant::now();
                 q.observe_shifted(&y, &lib, &tr, shift).unwrap();
                 qc_ms.push(a.elapsed().as_secs_f64() * 1e3);
@@ -3597,6 +3742,9 @@ fn main() {
         fd.finish();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
+    if let Some(b) = &boundary {
+        b.write(&out_dir);
+    }
     std::fs::write(out_dir.join("convergence.tsv"), &conv_out).unwrap();
     std::fs::write(out_dir.join("global.tsv"), &global).unwrap();
     if motion {
