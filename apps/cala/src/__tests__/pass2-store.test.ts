@@ -15,6 +15,8 @@ const PLAN: PipelinePlan = {
   calibrationFrames: 4,
   motionWarmupFrames: 4,
   previewMaxSide: 32,
+  boundaries: [],
+  sessionFix: true,
 };
 const IDS = Uint32Array.of(3, 8);
 

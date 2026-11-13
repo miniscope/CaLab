@@ -152,6 +152,19 @@
 //!   --probe-bg-reset F diagnostics builds only: what-if probe (not a fix)
 //!                      replacing the preprocessor's background floor with a
 //!                      fresh one before frame F (session-boundary study)
+//!   --sessions F1,..   first frames of sessions 2.. (a Joint run's session
+//!                      boundaries); nothing changes unless --session-fix
+//!   --session-fix L    boundary fixes (`crates/cala/src/{motion,preprocess}/session.rs`),
+//!                      comma list of reg (session re-registration:
+//!                      similarity transform to the mean of the previous
+//!                      session's last --session-ref-frames (100) registered
+//!                      frames, applied before the per-frame corrector),
+//!                      flicker (re-seat the reference), floor (rescale the
+//!                      background floor by a gain/offset fit), noise
+//!                      (rescale the noise map), or all / none (default).
+//!                      The floor and noise fits use the session's first
+//!                      --session-fit-frames (8, the app's batch) frames.
+//!                      Needs --motion; writes `session_boundaries.tsv`
 //!   --library F        a fixed library (`footprints.bin` of an earlier run,
 //!                      `CALAFP01`) from `--start` on, no slow loop: scores
 //!                      a given cell set (held-out frames: the split the
@@ -630,6 +643,65 @@ struct Pipeline {
     /// floor mean, share of the floor lowered
     last_back: [f32; 2],
     last_motion: (f32, u32),
+    /// `--sessions`: the session-level warp in force (None = identity) and
+    /// the FOV mask it moves (the corrector's validity source).
+    session_warp: Option<calab_cala::motion::SessionWarp>,
+    fov_mask: Vec<u8>,
+    /// Per-frame session warps for replays (frame where each starts).
+    session_warps: Vec<(usize, Option<calab_cala::motion::SessionWarp>)>,
+    /// Mean of the registered frames before the next boundary (the
+    /// session re-registration's reference).
+    reference: calab_cala::motion::session::ReferenceMean,
+    /// Frames already through front + motion whose back half waits (a
+    /// boundary's first frames, see `prefetch_session`):
+    /// (registered frame, validity, record, front record).
+    prepared: std::collections::VecDeque<PreparedFrame>,
+    /// Add this frame's registered image to `reference`.
+    collect_reference: bool,
+}
+
+/// A frame through front + motion whose back half waits: registered frame,
+/// validity, motion record, front record (`Pipeline::last_front`).
+type PreparedFrame = (Vec<f32>, Vec<u8>, MotionRecord, [f32; 5]);
+
+/// `--sessions` / `--session-fix`: the session-boundary fixes in force.
+#[derive(Debug, Clone, Copy, Default)]
+struct SessionFix {
+    register: bool,
+    floor: bool,
+    flicker: bool,
+    noise: bool,
+}
+
+impl SessionFix {
+    fn parse(s: &str) -> SessionFix {
+        let mut f = SessionFix::default();
+        for k in s.split(',').filter(|k| !k.is_empty()) {
+            match k {
+                "all" => {
+                    f = SessionFix {
+                        register: true,
+                        floor: true,
+                        flicker: true,
+                        noise: true,
+                    }
+                }
+                "none" => f = SessionFix::default(),
+                "reg" => f.register = true,
+                "floor" => f.floor = true,
+                "flicker" => f.flicker = true,
+                "noise" => f.noise = true,
+                _ => {
+                    panic!("--session-fix: unknown fix {k} (all, none, reg, floor, flicker, noise)")
+                }
+            }
+        }
+        f
+    }
+
+    fn any(&self) -> bool {
+        self.register || self.floor || self.flicker || self.noise
+    }
 }
 
 impl Pipeline {
@@ -680,13 +752,112 @@ impl Pipeline {
             last_front: [f32::NAN; 5],
             last_back: [f32::NAN; 2],
             last_motion: (f32::NAN, 0),
+            session_warp: None,
+            fov_mask: cal.fov().mask().to_vec(),
+            session_warps: Vec::new(),
+            reference: calab_cala::motion::session::ReferenceMean::new(),
+            prepared: std::collections::VecDeque::new(),
+            collect_reference: false,
         }
+    }
+
+    /// Install a session warp (None = identity) from frame `t` on.
+    fn set_session_warp(&mut self, t: usize, warp: Option<calab_cala::motion::SessionWarp>) {
+        let d = self.pre.dims();
+        let mask = match &warp {
+            Some(w) => w.source_mask(&self.fov_mask).unwrap(),
+            None => self.fov_mask.clone(),
+        };
+        if self.src.is_some() {
+            self.src = Some(
+                calab_cala::motion::SourceMask::new(
+                    d.height,
+                    d.width,
+                    &mask,
+                    calab_cala::motion::Interpolation::Bicubic,
+                )
+                .unwrap(),
+            );
+        }
+        self.session_warps.push((t, warp.clone()));
+        self.session_warp = warp;
+    }
+
+    /// The translation of the session warp of recording frame `t`.
+    fn session_shift_at(&self, t: usize) -> (f32, f32) {
+        self.warp_at(t).map_or((0.0, 0.0), |w| {
+            let tr = w.transform();
+            (tr.dy, tr.dx)
+        })
+    }
+
+    /// The session warp of recording frame `t` (replays).
+    fn warp_at(&self, t: usize) -> Option<&calab_cala::motion::SessionWarp> {
+        self.session_warps
+            .iter()
+            .rev()
+            .find(|(s, _)| *s <= t)
+            .and_then(|(_, w)| w.as_ref())
+    }
+
+    /// Front half, session warp and motion of `raw` into `out` (registered,
+    /// before the back half) and `self.valid`.
+    fn front_motion(&mut self, raw: &[u8], out: &mut [f32]) -> (MotionRecord, [f32; 5]) {
+        let fr = self.pre.front(raw, &mut self.buf).unwrap();
+        let front = [
+            fr.input_mean,
+            fr.lowpass_mean,
+            fr.flicker.offset,
+            fr.flicker.gain,
+            fr.flicker.kept_fraction,
+        ];
+        if let Some(w) = &self.session_warp {
+            let mut tmp = Vec::new();
+            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+        }
+        let mc = self.mc.as_mut().expect("sessions need --motion");
+        let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
+        let m = self.src.as_ref().unwrap();
+        mc.validity(&rec, m, &mut self.valid).unwrap();
+        if self.collect_reference {
+            self.reference.push(out, out.len());
+        }
+        (rec, front)
+    }
+
+    /// A session starts at the next frame: run the front half, session warp
+    /// and motion of its first frames `raws` now (as the app's stages do a
+    /// batch before the back half sees it), let the back half fit the new
+    /// session on them, and keep them for `frame`.
+    fn prefetch_session(
+        &mut self,
+        raws: &[u8],
+        cfg: &calab_cala::preprocess::session::SessionBackConfig,
+    ) -> calab_cala::preprocess::session::SessionBackFit {
+        let px = self.pre.dims().pixels();
+        let mut frames = Vec::with_capacity(raws.len());
+        let mut valid = Vec::with_capacity(raws.len());
+        for r in raws.chunks_exact(px) {
+            let mut out = vec![0.0f32; px];
+            let (rec, front) = self.front_motion(r, &mut out);
+            frames.extend_from_slice(&out);
+            valid.extend_from_slice(&self.valid);
+            self.prepared
+                .push_back((out, self.valid.clone(), rec, front));
+        }
+        self.pre
+            .begin_session_back(&frames, Some(&valid), cfg)
+            .unwrap()
     }
 
     /// Like `frame`, but a motion run warps by the stored record of frame
     /// `t` (no estimation, the corrector's state is unchanged).
     fn frame_replay(&mut self, raw: &[u8], out: &mut [f32], t: usize) -> Option<(f32, f32)> {
         self.pre.front(raw, &mut self.buf).unwrap();
+        if let Some(w) = self.warp_at(t).cloned() {
+            let mut tmp = Vec::new();
+            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+        }
         match &mut self.mc {
             Some(mc) => {
                 let rec = &self.records[t];
@@ -706,6 +877,25 @@ impl Pipeline {
 
     /// Returns the rigid shift of the frame (motion runs).
     fn frame(&mut self, raw: &[u8], out: &mut [f32]) -> Option<(f32, f32)> {
+        if self.mc.is_some() && (self.session_warp.is_some() || !self.prepared.is_empty()) {
+            let (rec, front) = match self.prepared.pop_front() {
+                Some((f, v, rec, front)) => {
+                    out.copy_from_slice(&f);
+                    self.valid.copy_from_slice(&v);
+                    (rec, front)
+                }
+                None => self.front_motion(raw, out),
+            };
+            self.last_front = front;
+            let b = self.pre.back_masked(out, &self.valid).unwrap();
+            self.last_back = [b.floor_mean, b.floor_lowered_fraction];
+            self.last_motion = (rec.quality, rec.flags);
+            let shift = Some((rec.dy, rec.dx));
+            if self.keep_records {
+                self.records.push(rec);
+            }
+            return shift;
+        }
         let fr = self.pre.front(raw, &mut self.buf).unwrap();
         self.last_front = [
             fr.input_mean,
@@ -719,6 +909,9 @@ impl Pipeline {
                 let rec = mc.process(Frame::F32(&self.buf), out).unwrap();
                 let m = self.src.as_ref().unwrap();
                 mc.validity(&rec, m, &mut self.valid).unwrap();
+                if self.collect_reference {
+                    self.reference.push(out, out.len());
+                }
                 let b = self.pre.back_masked(out, &self.valid).unwrap();
                 self.last_back = [b.floor_mean, b.floor_lowered_fraction];
                 self.last_motion = (rec.quality, rec.flags);
@@ -2907,6 +3100,29 @@ fn main() {
         probe_bg_reset.is_none() || cfg!(feature = "diagnostics"),
         "--probe-bg-reset needs a build with --features diagnostics"
     );
+    // `--sessions F1,F2,..`: first frames of sessions 2.. (a Joint run's
+    // boundaries); `--session-fix` picks the boundary fixes (default none:
+    // the boundaries change nothing).
+    let sessions: Vec<usize> = arg_value(&args, "--sessions").map_or(Vec::new(), |s| {
+        s.split(',')
+            .filter(|v| !v.is_empty())
+            .map(|v| v.parse().unwrap())
+            .collect()
+    });
+    let session_fix = SessionFix::parse(&arg_value(&args, "--session-fix").unwrap_or_default());
+    assert!(
+        !session_fix.any() || !sessions.is_empty(),
+        "--session-fix needs --sessions"
+    );
+    assert!(!session_fix.any() || motion, "--session-fix needs --motion");
+    let session_fit_frames: usize =
+        arg_value(&args, "--session-fit-frames").map_or(8, |s| s.parse().unwrap());
+    let session_ref_frames: usize =
+        arg_value(&args, "--session-ref-frames").map_or(100, |s| s.parse().unwrap());
+    assert!(session_fit_frames >= 1 && session_ref_frames >= 1);
+    let mut session_log = String::from(
+        "frame\tfit_rot_deg\tfit_dy\tfit_dx\tncc\tncc_unrotated\trot_deg\tdy\tdx\tfloor_gain\tfloor_offset\tfloor_kept\tnoise_ratio\n",
+    );
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
         fixed_lib.is_none() || !oracle_mode,
@@ -3315,17 +3531,125 @@ fn main() {
                             .unwrap();
                     println!("probe: background floor reset before frame {t_rec}");
                 }
+                if pass == 0 && session_fix.any() {
+                    pipe.collect_reference = session_fix.register
+                        && sessions
+                            .iter()
+                            .any(|&b| t_rec < b && t_rec + session_ref_frames >= b);
+                    if sessions.contains(&t_rec) {
+                        let end = sessions
+                            .iter()
+                            .copied()
+                            .filter(|&b| b > t_rec)
+                            .min()
+                            .unwrap_or(t_len)
+                            .min(t_len);
+                        let n = session_fit_frames.min(end - t_rec);
+                        let mut raws = rec.read(t_rec as u32, n as u32);
+                        if let Some(d) = &drift {
+                            for (k, fr) in raws.chunks_exact_mut(n_px).enumerate() {
+                                d.apply(fr, t_rec + k);
+                            }
+                        }
+                        let _ = write!(session_log, "{t_rec}");
+                        if session_fix.flicker {
+                            pipe.pre.begin_session_front();
+                        }
+                        if session_fix.register {
+                            let mut fronts = vec![0.0f32; raws.len()];
+                            let none = calab_cala::preprocess::flicker::FlickerRecord::default();
+                            for (r, o) in raws.chunks_exact(n_px).zip(fronts.chunks_exact_mut(n_px))
+                            {
+                                pipe.pre.front_replay(r, o, &none).unwrap();
+                            }
+                            let moving = calab_cala::motion::session::frames_mean(&fronts, n_px);
+                            let est = pipe.reference.mean().map(|r| {
+                                calab_cala::motion::session::estimate(
+                                    &r,
+                                    &moving,
+                                    dims.height,
+                                    dims.width,
+                                    &pipe.fov_mask,
+                                    &calab_cala::motion::SessionAlignConfig::default(),
+                                )
+                                .unwrap()
+                            });
+                            pipe.reference.clear();
+                            let warp = est.filter(|e| !e.transform.is_identity()).map(|e| {
+                                calab_cala::motion::SessionWarp::new(
+                                    dims.height,
+                                    dims.width,
+                                    e.transform,
+                                )
+                                .unwrap()
+                            });
+                            pipe.set_session_warp(t_rec, warp);
+                            match est {
+                                Some(e) => {
+                                    let _ = write!(
+                                        session_log,
+                                        "\t{:.4}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}",
+                                        e.fitted.rotation_deg,
+                                        e.fitted.dy,
+                                        e.fitted.dx,
+                                        e.ncc,
+                                        e.ncc_unrotated,
+                                        e.transform.rotation_deg,
+                                        e.transform.dy,
+                                        e.transform.dx
+                                    );
+                                    println!("session at frame {t_rec}: {e:?}");
+                                }
+                                None => session_log.push_str("\t\t\t\t\t\t\t\t"),
+                            }
+                        } else {
+                            session_log.push_str("\t\t\t\t\t\t\t\t");
+                        }
+                        if session_fix.floor || session_fix.noise {
+                            let cfg = calab_cala::preprocess::session::SessionBackConfig {
+                                rescale_floor: session_fix.floor,
+                                rescale_noise: session_fix.noise,
+                            };
+                            let fit = pipe.prefetch_session(&raws, &cfg);
+                            println!("session at frame {t_rec}: {fit:?}");
+                            let _ = writeln!(
+                                session_log,
+                                "\t{:.5}\t{:.4}\t{:.3}\t{:.4}",
+                                fit.floor.gain,
+                                fit.floor.offset,
+                                fit.floor.kept_fraction,
+                                fit.noise_ratio
+                            );
+                        } else {
+                            session_log.push_str("\t\t\t\t\n");
+                        }
+                    }
+                }
                 let shift = if pass == 0 {
                     pipe.frame(f, &mut y)
                 } else {
                     pipe.frame_replay(f, &mut y, t_rec)
                 };
-                if let (Some(d), 0) = (shift, pass) {
+                // A session warp's translation is part of the frame's
+                // registration (scoring, flat field); with a rotation the
+                // flat field skips the session's frames (it models shifts).
+                let shift_total = match (shift, pipe.warp_at(t_rec).is_some()) {
+                    (Some(d), true) => {
+                        let ss = pipe.session_shift_at(t_rec);
+                        Some((d.0 + ss.0, d.1 + ss.1))
+                    }
+                    (d, _) => d,
+                };
+                let ff_ok = !pipe
+                    .warp_at(t_rec)
+                    .is_some_and(|w| !w.transform().is_translation());
+                if let (Some(d), 0) = (shift_total, pass) {
                     rigid.push(d);
                 }
                 // The online flat field learns in pass 1 only; its last map
                 // stays applied.
-                if let (Some(o), Some(d), 0) = (online_ff.as_mut(), shift, pass) {
+                if let (Some(o), Some(d), 0, true) = (online_ff.as_mut(), shift_total, pass, ff_ok)
+                {
                     o.push(f, d).unwrap();
                     if o.due() {
                         let t0 = Instant::now();
@@ -3946,6 +4270,9 @@ fn main() {
             }
         }
         println!("flat field: {} updates", o.updates());
+    }
+    if session_fix.any() {
+        std::fs::write(out_dir.join("session_boundaries.tsv"), &session_log).unwrap();
     }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     #[cfg(feature = "diagnostics")]

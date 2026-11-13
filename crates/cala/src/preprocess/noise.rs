@@ -482,6 +482,18 @@ impl NoiseMap {
         }
     }
 
+    /// Scale the whole map by `ratio` (the tracked median and the running
+    /// mean behind it): a session boundary whose noise changed (see
+    /// [`super::session::noise_ratio`]). The trackers go on from there.
+    pub fn rescale(&mut self, ratio: f32) {
+        if !(ratio.is_finite() && ratio > 0.0) {
+            return;
+        }
+        for v in self.st.median.iter_mut().chain(self.st.mean_abs.iter_mut()) {
+            *v *= ratio;
+        }
+    }
+
     /// Frames fed so far.
     pub fn frames(&self) -> u64 {
         self.st.frames

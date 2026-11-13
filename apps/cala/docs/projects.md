@@ -249,13 +249,21 @@ folder (`cala-results/runs/<id>/...`) to unpack into the animal folder, and the
 next open merges it into the index. Changes to the index (Set current) are not
 saved there.
 
+## Session boundaries in Joint runs
+
+A Joint chain runs its sessions as one recording. At each boundary cala
+re-registers the new session to the previous one (rotation and a wide
+translation), re-seats the flicker reference, and carries the background floor
+and noise map into the new session's brightness. See
+[stages.md](stages.md#boundaries). Separate runs start each session fresh and
+need none of this.
+
 ## Not yet (later PRs)
 
 - Saved library files, **Apply** (a library to other sessions), extending a
   Joint run from its library: `library_in` / `library_out` on runs, the
   **Library** column, and the `library:<id>` id space are the places.
 - Cross-session matching for Separate results: `cell_matches`.
-- Session boundary handling (`onSessionBoundary`, [stages.md](stages.md)).
 - Pixel size and a scale bar.
 - **View results** (a saved export in the viewer): the results panel shows the
   export path for now.

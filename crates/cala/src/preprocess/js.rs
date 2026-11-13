@@ -469,6 +469,65 @@ impl JsPreprocessor {
         Ok(rec)
     }
 
+    /// A new session starts with the next frame of `frontFrames`: re-seat
+    /// the flicker reference (see the Rust `preprocess::session` module).
+    #[wasm_bindgen(js_name = beginSessionFront)]
+    pub fn begin_session_front(&mut self) {
+        self.inner.begin_session_front();
+    }
+
+    /// A new session starts with the next frame of `backFramesRegistered`:
+    /// `frames` are its first registered frames (whole frames, read only),
+    /// `dy`, `dx` their shifts. Rescales the background floor and / or the
+    /// noise map to the new session. Returns `[floor gain, floor offset,
+    /// floor fit kept share, noise ratio]`.
+    #[wasm_bindgen(js_name = beginSessionBack)]
+    pub fn begin_session_back(
+        &mut self,
+        frames: &[f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+        rescale_floor: bool,
+        rescale_noise: bool,
+    ) -> Result<Vec<f64>, JsError> {
+        let n = self.inner.dims().pixels();
+        let count = check_batch("beginSessionBack", frames.len(), count, n)?;
+        if dy.len() < count || dx.len() < count {
+            return Err(JsError::new("beginSessionBack: one shift per frame"));
+        }
+        let shifts: Vec<(f32, f32)> = dy
+            .iter()
+            .zip(dx)
+            .take(count)
+            .map(|(&a, &b)| (a, b))
+            .collect();
+        let cfg = super::session::SessionBackConfig {
+            rescale_floor,
+            rescale_noise,
+        };
+        let fit = self
+            .inner
+            .begin_session_back_rigid(&frames[..count * n], &shifts, &cfg)
+            .map_err(|e| js_err("beginSessionBack", e))?;
+        Ok(vec![
+            f64::from(fit.floor.gain),
+            f64::from(fit.floor.offset),
+            f64::from(fit.floor.kept_fraction),
+            f64::from(fit.noise_ratio),
+        ])
+    }
+
+    /// The validity source of `backFramesRegistered` from now on: `mask`
+    /// (the FOV mask as a session warp moved it, `SessionAligner.sourceMask`),
+    /// or the FOV mask again when empty.
+    #[wasm_bindgen(js_name = setSourceMask)]
+    pub fn set_source_mask(&mut self, mask: &[u8]) -> Result<(), JsError> {
+        self.inner
+            .set_source_mask((!mask.is_empty()).then_some(mask))
+            .map_err(|e| js_err("setSourceMask", e))
+    }
+
     /// Serialized config, calibration and running state.
     pub fn state(&self) -> Vec<u8> {
         self.inner.state().to_bytes()

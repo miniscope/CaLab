@@ -308,7 +308,7 @@ async function handle(req: FrameRequest): Promise<void> {
         down.onmessage = (e: MessageEvent<StageFree | StageShifts>) => {
           if (e.data.epoch !== epoch) return;
           if (e.data.type === 'free') frontPool?.release(e.data.buffer);
-          else front?.onShifts(e.data.start, e.data.dy, e.data.dx);
+          else front?.onShifts(e.data.start, e.data.dy, e.data.dx, e.data.session);
         };
         post({ type: 'ok', id: req.id });
         break;

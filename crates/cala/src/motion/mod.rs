@@ -65,6 +65,7 @@
 pub mod corrector;
 pub mod fft2d;
 pub mod filter;
+pub mod session;
 pub mod warp;
 pub mod xcorr;
 
@@ -79,6 +80,7 @@ pub use corrector::{
     FLAG_TEMPLATE_UPDATED,
 };
 pub use fft2d::Fft2d;
+pub use session::{SessionAlignConfig, SessionEstimate, SessionTransform, SessionWarp};
 pub use warp::{Interpolation, SourceMask, Warper};
 pub use xcorr::{Correlator, Peak};
 

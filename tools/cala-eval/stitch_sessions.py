@@ -7,6 +7,9 @@
       --gain G         multiply B's camera counts by G (default 1)
       --offset O       add O grey levels to B's camera counts (default 0)
       --seed S         dither / noise seed (default 0)
+      --aperture-dark F  render BOTH sessions through a sensor-fixed lit disk that leaves the
+                       share F of the frame dark (real Miniscope frames: ~0.28), edge
+                       `--aperture-edge` px (default 10), dark level `--dark-level` grey (default 4)
 
 Models several Miniscope sessions of one animal concatenated into one recording (the
 session-boundary study, `results/2026-11-13-session-boundary.md`). Session A (frames
@@ -34,6 +37,12 @@ to the raw 8-bit frames here, outside cala:
   under 0.05) has no data. It is filled with session A's *time-mean* tissue at the
   mirrored position plus model noise: static texture, no activity, so the fill adds
   no cells and no transients, and the GT (which does not know the fill) stays right.
+* Aperture (`--aperture-dark`). Real Miniscope frames are a lit disk on a dark frame
+  (~28 % dark); minisim's frames are lit to the edge. With this option every frame, A's
+  included, becomes `D x + (1 - D) d0 + n`: `D` a disk centred on the frame with a cosine
+  edge, `d0` the dark level, `n` Gaussian noise topping the scaled noise up to the model
+  at the new brightness. The B perturbation acts on `x`, inside the disk, before `D`: the
+  dark corners do not change, as in the real data. A is rewritten (no clone savings).
 * Intensity (`--gain`, `--offset`) acts on the de-quantized counts after the geometry,
   `G * x + O`, then `floor` and clip to 0..255 (minisim's sensor has no dark offset, so
   the camera offset is 0 and the gain scales all fluorescence including the glow;
@@ -151,6 +160,9 @@ def main() -> int:
     ap.add_argument("--gain", type=float, default=1.0)
     ap.add_argument("--offset", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--aperture-dark", type=float, default=0.0)
+    ap.add_argument("--aperture-edge", type=float, default=10.0)
+    ap.add_argument("--dark-level", type=float, default=4.0)
     a = ap.parse_args()
     dy, dx = (float(v) for v in a.shift.split(","))
     src, out = a.src.resolve(), a.out.resolve()
@@ -234,12 +246,35 @@ def main() -> int:
             noise_excess_share=float(excess.sum() / max((src_ok & lit).sum(), 1)),
             carried_over_target_median=float(np.median((carried / target)[src_ok & lit])),
         )
+    aperture = a.aperture_dark > 0.0
+    if aperture:
+        yy, xx = np.mgrid[0:h, 0:w]
+        dist = np.hypot(yy - (h - 1) / 2, xx - (w - 1) / 2).ravel()
+        radius = np.sqrt((1.0 - a.aperture_dark) * h * w / np.pi)
+        u = np.clip((radius - dist) / a.aperture_edge + 0.5, 0.0, 1.0)
+        disk = (0.5 - 0.5 * np.cos(np.pi * u)).astype(np.float32)
+        ap_mean = disk * mean_a + (1 - disk) * a.dark_level
+        ap_sd = np.sqrt(np.maximum(var_model(ap_mean) - disk**2 * var_model(mean_a), 0.0)).astype(np.float32)
+        info.update(
+            aperture_dark=a.aperture_dark,
+            aperture_radius_px=float(radius),
+            aperture_edge_px=a.aperture_edge,
+            dark_level=a.dark_level,
+            dark_share=float((disk < 0.5).mean()),
+        )
     rng = np.random.default_rng(a.seed)
     identity = not geometric and a.gain == 1.0 and a.offset == 0.0
     # (The identity arm would rewrite B unchanged: floor(R + U) = R. Skip it.)
-    for t in range(a.boundary, 0 if identity else frames_total):
+    first = 0 if aperture else a.boundary
+    for t in range(first, frames_total if (aperture or not identity) else 0):
         mm, o = frame_ref(t)
         r = mm[o : o + n].astype(np.float32) + rng.random(n, dtype=np.float32)
+        if t < a.boundary:
+            v = disk * r + (1 - disk) * a.dark_level + ap_sd * rng.standard_normal(n, dtype=np.float32)
+            mm[o : o + n] = np.clip(np.floor(v), 0, 255).astype(np.uint8)
+            if t % 500 == 0:
+                print(f"frame {t}", flush=True)
+            continue
         if geometric:
             tis = np.where(lit, (r - leak) / np.where(lit, m_field, 1), 0).astype(np.float32)
             moved = np.sum(wts * tis[idx], axis=0)
@@ -248,6 +283,8 @@ def main() -> int:
         else:
             v = r
         v = a.gain * v + a.offset
+        if aperture:
+            v = disk * v + (1 - disk) * a.dark_level + ap_sd * rng.standard_normal(n, dtype=np.float32)
         mm[o : o + n] = np.clip(np.floor(v), 0, 255).astype(np.uint8)
         if t % 500 == 0:
             print(f"frame {t}", flush=True)

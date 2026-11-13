@@ -55,6 +55,28 @@ describe('pipeline plan', () => {
     expect(cursor.next()).toBeNull();
   });
 
+  it('cuts process batches at session boundaries, so each session starts a batch', () => {
+    const plan = makePlan(
+      30,
+      { batchSize: 8, calibrationFrames: 4, motionWarmupFrames: 4 },
+      [13, 13, 0, 40, 21],
+    );
+    expect(plan.boundaries).toEqual([13, 21]);
+    const c = new PipelineCursor(plan);
+    const process: [number, number][] = [];
+    for (let s = c.next(); s; s = c.next())
+      if (s.phase === 'process') process.push([s.start, s.count]);
+    expect(process).toEqual([
+      [0, 8],
+      [8, 5],
+      [13, 8],
+      [21, 8],
+      [29, 1],
+    ]);
+    // Warm-ups are not cut.
+    expect(makePlan(30, {}, [3]).boundaries).toEqual([3]);
+  });
+
   it('processes each frame exactly once, in order, never more than a batch at a time', () => {
     const plan = makePlan(1001, { batchSize: 7 });
     const process = walk(new PipelineCursor(plan)).filter((s) => s.phase === 'process');

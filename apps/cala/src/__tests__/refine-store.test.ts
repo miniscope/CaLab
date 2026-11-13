@@ -15,6 +15,8 @@ const PLAN: PipelinePlan = {
   calibrationFrames: 4,
   motionWarmupFrames: 4,
   previewMaxSide: 32,
+  boundaries: [],
+  sessionFix: true,
 };
 
 function batch(start: number, count: number): PipelineStepResult {
