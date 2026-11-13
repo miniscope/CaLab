@@ -1,6 +1,8 @@
 /**
- * Frame source for a Miniscope recording folder: `0.avi, 1.avi, ...` plus the
- * optional `metaData.json` and `timeStamps.csv`.
+ * Frame source for a Miniscope recording folder: a numbered series of `.avi`
+ * files (`0.avi, 1.avi, ...` or `msCam0.avi, msCam1.avi, ...`, optionally
+ * zero-padded; see `video-series.ts`) plus the optional `metaData.json` and
+ * `timeStamps.csv` in the same directory.
  *
  * Nothing here reads a whole video file. Per file it reads a byte prefix (the
  * AVI header) and the `idx1` region that follows the `movi` list, then parses
@@ -17,7 +19,7 @@
  */
 import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm.ts';
 import type { DeviceIdentity } from './flat-field.ts';
-import { naturalCompare } from './natural-sort.ts';
+import { chooseSeries, detectSeries, dirOf, looseAvis, numberingWarnings } from './video-series.ts';
 import {
   fpsFromTimeStamps,
   parseDeviceIdentity,
@@ -116,11 +118,11 @@ export interface FrameSourceInfo {
   device?: DeviceIdentity;
 }
 
-/** A recording folder's files after picking the Miniscope directory. */
+/** The files of the chosen video series, plus the sidecars next to it. */
 interface Group {
   dir: string;
   avis: { file: File; index: number }[];
-  /** Gaps or duplicate numbers among the N.avi names. */
+  /** Gaps or duplicate numbers among the numbered names. */
   numberingWarnings: string[];
   /** Files that might be metaData.json / timeStamps.csv (picked after the folder is chosen). */
   sidecars: File[];
@@ -133,10 +135,13 @@ interface OpenedAvi {
   start: number; // global index of this file's first frame
 }
 
-const AVI_NAME = /^(\d+)\.avi$/i;
 // Miniscope writes metaData.json and timeStamps.csv. Exported datasets often
 // prefix them (neural_metaData.json, neural_timestamp.csv), so a prefixed name
 // is accepted too; see pickSidecar.
+/** Shown when the selection holds no numbered `.avi` series. */
+export const NO_VIDEO_MESSAGE =
+  'No Miniscope video found: expected numbered .avi files such as 0.avi, 1.avi ... or msCam0.avi, msCam1.avi ... (select the folder that contains them, or use "Choose individual files").';
+
 const METADATA_NAME = /(?:^|[_-])metadata\.json$/i;
 const TIMESTAMPS_NAME = /(?:^|[_-])time_?stamps?\.csv$/i;
 const NEURAL_PREFIX = /^(?:neural|miniscope|ms)[_-]/i;
@@ -155,76 +160,42 @@ function pickSidecar(files: File[], pattern: RegExp, exactName: RegExp): File | 
   return prefixed.length === 1 ? prefixed[0] : undefined;
 }
 
-function dirOf(relPath: string): string {
-  const slash = relPath.lastIndexOf('/');
-  return slash < 0 ? '' : relPath.slice(0, slash);
-}
-
-/** Warnings for N.avi numbering that is not 0, 1, 2, ... without repeats. */
-function numberingWarnings(avis: { file: File; index: number }[]): string[] {
-  const out: string[] = [];
-  const seen = new Map<number, string>();
-  for (const { file, index } of avis) {
-    const prior = seen.get(index);
-    if (prior !== undefined) {
-      out.push(`${prior} and ${file.name} have the same number; both are used.`);
-    }
-    seen.set(index, file.name);
-  }
-  const unique = [...seen.keys()].sort((a, b) => a - b);
-  if (unique.length > 0 && unique[0] !== 0) {
-    out.push(`The numbering starts at ${unique[0]}.avi, not 0.avi.`);
-  }
-  const missing: number[] = [];
-  for (let i = 1; i < unique.length; i++) {
-    for (let k = unique[i - 1] + 1; k < unique[i] && missing.length < 20; k++) missing.push(k);
-  }
-  if (missing.length > 0) {
-    out.push(`Missing ${missing.map((k) => `${k}.avi`).join(', ')} in the numbering.`);
-  }
-  return out;
-}
-
 function groupFiles(entries: FolderEntry[]): {
   group: Group;
   metaData?: File;
   timeStamps?: File;
   ignored: string[];
 } {
-  const byDir = new Map<string, Group>();
-  const get = (dir: string): Group => {
-    let g = byDir.get(dir);
-    if (!g) {
-      g = { dir, avis: [], numberingWarnings: [], sidecars: [] };
-      byDir.set(dir, g);
-    }
-    return g;
-  };
-  for (const { file, relPath } of entries) {
-    const dir = dirOf(relPath);
-    const m = AVI_NAME.exec(file.name);
-    if (m) get(dir).avis.push({ file, index: Number(m[1]) });
-    else if (METADATA_NAME.test(file.name) || TIMESTAMPS_NAME.test(file.name)) {
-      get(dir).sidecars.push(file);
-    }
+  // The video series: the clear choice, else the best-ranked one (the app asks
+  // the user first when it is ambiguous, see `lib/video-series.ts`). Files
+  // picked one by one that are not numbered are used in natural order.
+  const { chosen, candidates } = chooseSeries(detectSeries(entries));
+  const series = chosen ?? candidates[0];
+  let dir: string;
+  let avis: { file: File; index: number }[];
+  let warnings: string[];
+  if (series) {
+    dir = series.dir;
+    avis = series.files.map((f) => ({ file: f.entry.file, index: f.index }));
+    warnings = numberingWarnings(series);
+  } else {
+    const loose = looseAvis(entries);
+    if (loose.length === 0) throw new Error(NO_VIDEO_MESSAGE);
+    dir = '';
+    avis = loose.map((e, index) => ({ file: e.file, index }));
+    warnings = [];
   }
-  const candidates = [...byDir.values()].filter((g) => g.avis.length > 0);
-  if (candidates.length === 0) {
-    throw new Error(
-      'No Miniscope video found: expected files named 0.avi, 1.avi, ... (select the folder that contains them).',
-    );
-  }
-  // A parent folder can hold several devices (Miniscope, behaviour camera).
-  // Prefer a directory that looks like the miniscope, then the one with the most files.
-  const score = (g: Group) =>
-    (/miniscope/i.test(g.dir) ? 1_000_000 : 0) + g.avis.length - (g.dir.split('/').length - 1);
-  candidates.sort((a, b) => score(b) - score(a));
-  const group = candidates[0];
-  const metaData = pickSidecar(group.sidecars, METADATA_NAME, /^metadata\.json$/i);
-  const timeStamps = pickSidecar(group.sidecars, TIMESTAMPS_NAME, /^timestamps\.csv$/i);
-  group.avis.sort((a, b) => a.index - b.index || naturalCompare(a.file.name, b.file.name));
-  const used = new Set<File>(group.avis.map((a) => a.file));
-  group.numberingWarnings = numberingWarnings(group.avis);
+  const sidecars = entries
+    .filter(
+      (e) =>
+        dirOf(e.relPath) === dir &&
+        (METADATA_NAME.test(e.file.name) || TIMESTAMPS_NAME.test(e.file.name)),
+    )
+    .map((e) => e.file);
+  const group: Group = { dir, avis, numberingWarnings: warnings, sidecars };
+  const metaData = pickSidecar(sidecars, METADATA_NAME, /^metadata\.json$/i);
+  const timeStamps = pickSidecar(sidecars, TIMESTAMPS_NAME, /^timestamps\.csv$/i);
+  const used = new Set<File>(avis.map((a) => a.file));
   const ignored = entries
     .filter((e) => !used.has(e.file) && e.file !== metaData && e.file !== timeStamps)
     .map((e) => e.relPath);

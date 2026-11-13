@@ -253,9 +253,6 @@ describe('FrameSource', () => {
 
   it('rejects folders with no N.avi', async () => {
     await expect(open([makeFile('notes.txt', 'x')])).rejects.toThrow(/No Miniscope video/);
-    await expect(open([makeFile('clip.avi', new Uint8Array(4))])).rejects.toThrow(
-      /No Miniscope video/,
-    );
   });
 
   it('rejects compressed codecs with the file name and codec', async () => {
@@ -515,5 +512,74 @@ describe('read-ahead and throttled open', () => {
     reads.length = 0;
     await src.readFrames(1, 2);
     expect(reads).toHaveLength(1);
+  });
+});
+
+describe('FrameSource: file naming', () => {
+  /** Files `<prefix>0..n-1.avi` of 2 frames each, in `dir`. */
+  function named(prefix: string, n: number, dir = 'rec', pad = 0, from = 0) {
+    return Array.from({ length: n }, (_, i) =>
+      makeFile(
+        `${prefix}${String(from + i).padStart(pad, '0')}.avi`,
+        buildAvi({ width: 6, height: 4, frames: 2, frameOffset: i * 2 }),
+        dir,
+      ),
+    );
+  }
+
+  it('opens msCam0..N with its sidecars', async () => {
+    const src = await open([
+      ...named('msCam', 3),
+      makeFile('timeStamps.csv', timeStamps(6, 50), 'rec'),
+    ]);
+    expect(src.frameCount).toBe(6);
+    expect(src.info.files.map((f) => f.name)).toEqual(['msCam0.avi', 'msCam1.avi', 'msCam2.avi']);
+    expect(src.info.fps).toBeCloseTo(20, 5);
+  });
+
+  it('opens msCam1..N with the numbering warning', async () => {
+    const src = await open(named('msCam', 3, 'rec', 0, 1));
+    expect(src.frameCount).toBe(6);
+    expect(src.info.warnings.join(' ')).toContain('starts at msCam1.avi, not msCam0.avi');
+  });
+
+  it('opens zero-padded names in numeric order', async () => {
+    const src = await open(named('msCam', 12, 'rec', 3).reverse());
+    expect(src.info.files[0].name).toBe('msCam000.avi');
+    expect(src.info.files[11].name).toBe('msCam011.avi');
+  });
+
+  it('auto-picks msCam next to a behavCam series and reads the sidecars beside it', async () => {
+    const src = await open([
+      ...named('behavCam', 5),
+      ...named('msCam', 2),
+      makeFile('metaData.json', '{"frameRate":"20FPS"}', 'rec'),
+    ]);
+    expect(src.frameCount).toBe(4);
+    expect(src.info.fps).toBe(20);
+    expect(src.info.ignoredFiles).toContain('rec/behavCam0.avi');
+  });
+
+  it('takes sidecars from the directory of the chosen series in nested folders', async () => {
+    const src = await open([
+      ...named('msCam', 2, 'a/miniscope'),
+      makeFile('metaData.json', '{"frameRate":"30FPS"}', 'a/miniscope'),
+      ...named('behavCam', 2, 'a/behav'),
+      makeFile('metaData.json', '{"frameRate":"10FPS"}', 'a/behav'),
+    ]);
+    expect(src.info.fps).toBe(30);
+  });
+
+  it('opens individually picked files that are not numbered, in natural order', async () => {
+    const mk = (name: string, offset: number) =>
+      makeFile(name, buildAvi({ width: 6, height: 4, frames: 2, frameOffset: offset }));
+    const src = await open([mk('clip 10.avi', 4), mk('clip 2.avi', 2), mk('clip 1.avi', 0)]);
+    expect(src.info.files.map((f) => f.name)).toEqual(['clip 1.avi', 'clip 2.avi', 'clip 10.avi']);
+  });
+
+  it('still rejects a folder whose videos are not numbered', async () => {
+    await expect(open([makeFile('clip.avi', new Uint8Array(4), 'rec')])).rejects.toThrow(
+      /numbered \.avi files such as 0\.avi, 1\.avi/,
+    );
   });
 });
