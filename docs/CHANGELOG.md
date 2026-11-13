@@ -5,6 +5,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-11-12
+
+Web apps `v2.16.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala measures each footprint's extent from where its own light is significant,
+which stops footprints from growing without bound and removes textured
+artifact cells.
+
 ### Changed
 
 - Cala: a footprint's pixel support is now measured where its own light is
@@ -15,6 +22,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   footprints no longer run away (largest after 3 passes about 1.2k px instead
   of up to 320k px), and real-data texture stays at 0. `--support-rule rings`
   keeps the old rule for comparisons (`tools/cala-eval/results/2026-11-12-skirt-stability.md`).
+
+### Developer tooling
+
+- cala-eval: simulations use minisim 1.1.0, whose `detectable` flag is a
+  matched-filter SNR over the footprint and the session (threshold calibrated
+  where cala's cell size matches); sims' ground truth recomputed (#355).
 
 ## [2.15.0] - 2026-11-12
 
