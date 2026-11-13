@@ -33,6 +33,7 @@ import {
 import {
   runState,
   cellResultLookup,
+  rectifiedCells,
   currentTauRise,
   currentTauDecay,
   iterationHistory,
@@ -553,6 +554,7 @@ export function TraceInspector(): JSX.Element {
           cellIndices={cellIndices}
           selectedIndex={effectiveCellIndex}
           onSelect={setInspectedCellIndex}
+          flaggedIndices={rectifiedCells}
           highlightedIndices={() => highlightedCells() ?? selectedSubsetCells()}
         />
         <TraceLegend items={legendItems()} />
