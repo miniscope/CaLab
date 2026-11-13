@@ -263,3 +263,4 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-churn-attribution.md`  | late footprint changes are the cells' own refines, merges and absorbs                     |
 | `2026-11-12-repeated-pass.md`      | S2.3: repeating pass 1 settles footprints but false cells grow as with equal budget       |
 | `2026-11-12-refine-only-passes.md` | S2.3b: refine-only later passes let supports run away; default stays `--later-passes all` |
+| `2026-11-12-s21c-f0.md`            | S2.1c F0: evidence-rule shadow on ctl; fails (energy-weighted dof ≈ 1, no power)          |
