@@ -52,7 +52,13 @@ export interface PublishedLibrary {
 
 /** What the runner needs of the WASM `SlowLoop`. */
 export interface SlowLoopLike {
-  observe(frame: Float32Array, version: number, traces: Float32Array): boolean;
+  /** `background`: that frame's background coefficients from the same solve. */
+  observe(
+    frame: Float32Array,
+    version: number,
+    traces: Float32Array,
+    background?: Float32Array,
+  ): boolean;
   step(budget: number): PublishedLibrary | undefined;
   finalize(): PublishedLibrary;
   setNoise(noise: Float32Array): void;
@@ -256,10 +262,13 @@ export class SlowRunner {
             v.postMessage({ type: 'noise', session: this.session, noise: msg.noise });
         }
         const px = init.width * init.height;
+        const bg = msg.background;
+        const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
         for (let i = 0; i < msg.count; i++) {
           const frame = msg.frames.subarray(i * px, (i + 1) * px);
           const traces = msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells);
-          if (!loop.observe(frame, msg.version, traces)) {
+          const background = bg?.subarray(i * nb, (i + 1) * nb);
+          if (!loop.observe(frame, msg.version, traces, background)) {
             this.skipped++;
             continue;
           }

@@ -62,13 +62,10 @@ that the JS surface gives the same libraries, bit for bit.
   builds a new engine. QC is not run during Refine or Extract; the QC columns
   of the export come from Discover's last snapshot.
 
-Two differences from qc_eval are known:
-
-- qc_eval's fast loop carries its trace engine and preprocessor across the
-  wrap. The app rebuilds them.
-- qc_eval passes the slow loop the engine's ring-background levels with each
-  frame. The app's frame message carries the traces only. This is true in
-  Discover too, and it is not specific to stages.
+One difference from qc_eval is known: qc_eval's fast loop carries its trace
+engine and preprocessor across the wrap. The app rebuilds them. (The engine's
+ring-background levels go to the slow loop with each frame's traces, in
+Discover and in Refine alike, as qc_eval passes them.)
 
 With `--later-passes refine`, qc_eval now publishes the final library at each
 wrap and solves the next pass with it, as the app does at the end of a stage.

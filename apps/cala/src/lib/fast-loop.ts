@@ -27,6 +27,11 @@ export interface TraceLibraryLike {
 export interface TraceEngineLike {
   setLibrary(lib: TraceLibraryLike): void;
   processFrames(frames: Float32Array, count: number): Float32Array;
+  /**
+   * Background coefficients of the last solved batch (also through a QC monitor), frame
+   * after frame; the slow loop needs them with the traces. Absent in older fakes.
+   */
+  lastBackground?(): Float32Array;
   /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
   residualOfLast?(frame: Float32Array): Float32Array;
   free(): void;
@@ -259,6 +264,7 @@ export class FastLoop {
     const n = count * this.px;
     const batch = frames.subarray(0, n);
     let traces: Float32Array = new Float32Array(0);
+    let background: Float32Array | undefined;
     let qcOn = false;
     if (this.engine && this.ids.length > 0) {
       const qc = this.qcMonitor(start, calibration);
@@ -269,6 +275,7 @@ export class FastLoop {
           : qc.processFrames(this.engine, batch, count)
         : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
+      background = this.engine.lastBackground?.();
     }
     // One frame per batch, only while the residual view is shown.
     const residual =
@@ -276,7 +283,7 @@ export class FastLoop {
         ? this.engine.residualOfLast(batch.subarray((count - 1) * this.px, count * this.px))
         : null;
     const t2 = now();
-    this.forward(batch, start, count, traces, calibration);
+    this.forward(batch, start, count, traces, background, calibration);
     const t3 = now();
     this.feed?.push(batch, start, count);
     const compressMs = this.feed ? now() - t3 : undefined;
@@ -410,6 +417,7 @@ export class FastLoop {
     start: number,
     count: number,
     traces: Float32Array,
+    background: Float32Array | undefined,
     calibration: CalibrationSource,
   ): void {
     const port = this.port;
@@ -448,6 +456,8 @@ export class FastLoop {
     buf.set(batch);
     const tr = traces.slice();
     const transfer: Transferable[] = [buf.buffer as ArrayBuffer, tr.buffer as ArrayBuffer];
+    // A fresh copy from WASM each batch, so it can be transferred as is.
+    if (background) transfer.push(background.buffer as ArrayBuffer);
     let noise: Float32Array | undefined;
     if (start - this.lastNoise >= this.o.noiseEvery) {
       noise = calibration.noiseSigma();
@@ -464,6 +474,7 @@ export class FastLoop {
         cells: this.ids.length,
         frames: buf,
         traces: tr,
+        ...(background ? { background } : {}),
         ...(noise ? { noise } : {}),
       },
       transfer,

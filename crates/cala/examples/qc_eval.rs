@@ -39,6 +39,9 @@
 //!   --crop N           with --label-bundle: crop side in pixels (60)
 //!   --batch B          forward frames to the slow loop in batches of B (the
 //!                      app uses 8); library swaps land between batches (1)
+//!   --no-bg-levels     diagnostics: forward the traces to the slow loop
+//!                      without the fast loop's per-cell ring-background
+//!                      levels (what the app did before it sent them)
 //!   --slow-keep F      forward only a share F of the batches to the slow loop
 //!                      (it observes and steps on those only), modelling the
 //!                      app's drops when the slow worker is busy (1)
@@ -2311,6 +2314,7 @@ fn main() {
     let keep: f64 = arg_value(&args, "--slow-keep").map_or(1.0, |s| s.parse().unwrap());
     let score_mode = arg_value(&args, "--drop-mode").is_some_and(|m| m == "score");
     let drop_step = args.iter().any(|a| a == "--drop-step");
+    let no_bg_levels = args.iter().any(|a| a == "--no-bg-levels");
     let via_jobs = args.iter().any(|a| a == "--via-jobs");
     let offered_fps: Option<f64> = arg_value(&args, "--offered-fps").map(|s| s.parse().unwrap());
     let visit_workers: usize =
@@ -2859,7 +2863,11 @@ fn main() {
                     if t.is_multiple_of(200) {
                         timed_noise = Some(pipe.pre.noise().sigma());
                     }
-                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    let mut fwd_tr = tr.clone();
+                    if no_bg_levels {
+                        fwd_tr.background.clear();
+                    }
+                    pending.push((y.clone(), fwd_tr, lib.clone(), t));
                     if pending.len() >= batch_n || last {
                         n_batches += 1;
                         let now = tm.at(t + 1);
@@ -2887,7 +2895,11 @@ fn main() {
                             r.set_noise(pipe.pre.noise().sigma()).unwrap();
                         }
                     }
-                    pending.push((y.clone(), tr.clone(), lib.clone(), t));
+                    let mut fwd_tr = tr.clone();
+                    if no_bg_levels {
+                        fwd_tr.background.clear();
+                    }
+                    pending.push((y.clone(), fwd_tr, lib.clone(), t));
                     if pending.len() >= batch_n || last {
                         n_batches += 1;
                         let forward = if keep >= 1.0 {
