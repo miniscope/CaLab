@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { createEffect, createSignal, on, Show } from 'solid-js';
+import { createEffect, createSignal, For, on, Show } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
@@ -37,6 +37,19 @@ import { RunPanel } from './components/RunPanel.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
 import { createRunHistory } from './lib/run-history.ts';
 import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
+import { SessionSetup } from './components/SessionSetup.tsx';
+import { createSessionList, toSessionInput } from './lib/session-list.ts';
+import { createMultiRun } from './lib/multi-run.ts';
+import { sessionBoundaries } from './lib/frame-source.ts';
+import {
+  directoryResultsSink,
+  ensureReadwrite,
+  zipResultsSink,
+  type WritableDirLike,
+} from './lib/session-export.ts';
+import { supportsDirectoryPicker } from './lib/directory-picker.ts';
+import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
+import type { ExportInput } from './lib/export.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -284,6 +297,113 @@ const App: Component = () => {
     await store.openFiles(files, label);
     if (store.info()) void pipeline.start();
   }
+
+  // ---- Multi-session runs (docs/stages.md, "Sessions") ----
+  /** The start screen: open a folder, the session list, or adding to the list. */
+  const [screen, setScreen] = createSignal<'open' | 'sessions' | 'add'>('open');
+  const sessionList = createSessionList((s) =>
+    client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
+  );
+  const version = import.meta.env.VITE_APP_VERSION || 'dev';
+  const multiRun = createMultiRun({
+    async openJoint(sessions) {
+      pipeline.stop();
+      const n = sessions.length;
+      await store.openSessions(
+        sessions.map((s) => toSessionInput(s.candidate)),
+        `${sessions[0].candidate.name} + ${n - 1} more (${n} sessions)`,
+      );
+      if (store.info()) void pipeline.start();
+    },
+    async openOne(session, index) {
+      pipeline.stop();
+      const n = multiRun.plan()?.sessions.length ?? 1;
+      await store.openFiles(
+        session.candidate.entries,
+        `Session ${index + 1} of ${n}: ${session.candidate.name}`,
+      );
+      if (store.info()) void pipeline.start();
+    },
+    stages: () => ({
+      discover: discoverActivity(),
+      refine: stageInput().refine,
+      extract: pass2.status(),
+      availability: availability(),
+      runs: stageLog.runs(),
+    }),
+    runRefine,
+    runExtract: () => void pass2.run(),
+    exportInput: (): ExportInput | null => {
+      const r = pass2.result();
+      const i = store.info();
+      if (!r || !i) return null;
+      return {
+        label: store.label(),
+        width: i.width,
+        height: i.height,
+        fps: i.fps ?? 0,
+        result: r,
+        run: pipeline.record().snapshot(),
+        flatField: pipeline.record().flatFieldApplied,
+        stages: stageLog.runs(),
+        qc: cells.qc(),
+        firstSeen: cells.firstSeen,
+        version,
+      };
+    },
+    info: () => store.info(),
+    version,
+  });
+  /** Ask for `readwrite` on the results location; inside the Start click. */
+  async function grantResults(): Promise<boolean> {
+    if (!supportsDirectoryPicker()) return true;
+    const loc = sessionList.location();
+    return loc?.handle ? ensureReadwrite(loc.handle) : false;
+  }
+  function startSessions(settings: Parameters<typeof multiRun.start>[0]['settings']): void {
+    const loc = sessionList.location();
+    const handle = loc?.handle as unknown as WritableDirLike | null | undefined;
+    void multiRun.start({
+      sessions: sessionList.items(),
+      settings,
+      locationLabel: handle ? `${handle.name}/` : 'a zip download',
+      openSink: () => (handle ? directoryResultsSink(handle) : Promise.resolve(zipResultsSink())),
+    });
+  }
+  // Joint: each session boundary goes into the run's event log as Discover reaches it.
+  const loggedBoundaries = new Set<number>();
+  createEffect(
+    on(
+      () => pipeline.status(),
+      (st) => {
+        if (st === 'starting') loggedBoundaries.clear();
+      },
+    ),
+  );
+  createEffect(() => {
+    const info = store.info();
+    const spans = info?.sessions;
+    if (!info || !spans || spans.length < 2) return;
+    const done = pipeline.processed();
+    for (const span of spans.slice(1)) {
+      if (done < span.startFrame || loggedBoundaries.has(span.index)) continue;
+      loggedBoundaries.add(span.index);
+      runHistory.log({
+        frame: span.startFrame,
+        kind: 'session',
+        to: span.index,
+        detail: `Session ${span.index + 1}: ${span.name}`,
+        replay: false,
+      });
+    }
+  });
+  if (params.has('debug')) {
+    Object.assign((globalThis as { __cala?: object }).__cala ?? {}, { multiRun, sessionList });
+  }
+  const boundaries = () => {
+    const i = store.info();
+    return i ? sessionBoundaries(i) : [];
+  };
   // So does connecting to a live source (`?live=<url>` connects on load).
   async function openLive(url: string) {
     pipeline.stop();
@@ -291,6 +411,53 @@ const App: Component = () => {
     if (store.info()) void pipeline.start();
   }
   const liveParam = params.get('live');
+
+  /** A multi-session run's state, above the Run panel. */
+  function SessionRunStatus() {
+    return (
+      <Show when={multiRun.plan()}>
+        {(p) => (
+          <section class="cala-session-run" data-testid="session-run" aria-label="Sessions">
+            <div class="cala-session-run__head">
+              <strong>
+                {LIBRARY_MODE_LABEL[p().settings.mode]} run, {p().sessions.length} sessions
+              </strong>{' '}
+              <span class="cala-muted" data-testid="session-run-status">
+                {multiRun.statusText()}
+              </span>
+            </div>
+            <ol class="cala-session-run__list">
+              <For each={multiRun.records()}>
+                {(r) => (
+                  <li
+                    classList={{
+                      'cala-session-run__current':
+                        p().settings.mode === 'separate' && r.index === multiRun.current(),
+                    }}
+                    data-testid="session-run-item"
+                  >
+                    {r.name}{' '}
+                    <span class="cala-muted">
+                      {r.status}
+                      {r.note ? ` (${r.note})` : ''}
+                    </span>
+                  </li>
+                )}
+              </For>
+            </ol>
+            <Show when={multiRun.root()}>
+              {(root) => (
+                <p class="cala-muted" data-testid="session-run-root">
+                  Results: {p().locationLabel}
+                  {root()}/
+                </p>
+              )}
+            </Show>
+          </section>
+        )}
+      </Show>
+    );
+  }
 
   /**
    * One screen, no page scroll: the field of view, square-ish and as tall as
@@ -358,8 +525,10 @@ const App: Component = () => {
             compress={compress}
             review={review}
           />
+          <SessionRunStatus />
           <SelectedCellPanel
             cells={cells}
+            boundaries={boundaries()}
             fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
             folded={tab() === 'history'}
           />
@@ -383,13 +552,35 @@ const App: Component = () => {
     <Show
       when={store.info()}
       fallback={
-        <OpenFolder
-          loading={store.loading()}
-          error={store.error()}
-          onOpen={(files, label) => void open(files, label)}
-          onOpenLive={(url) => void openLive(url)}
-          liveUrl={liveParam ?? undefined}
-        />
+        <Show
+          when={screen() === 'sessions'}
+          fallback={
+            <OpenFolder
+              loading={store.loading()}
+              error={store.error()}
+              onOpen={(files, label) => void open(files, label)}
+              onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
+              liveUrl={liveParam ?? undefined}
+              addMode={screen() === 'add'}
+              onCancel={() => setScreen('sessions')}
+              onSessions={(found, handle) => {
+                setScreen('sessions');
+                void sessionList.add(found, handle);
+              }}
+            />
+          }
+        >
+          <SessionSetup
+            list={sessionList}
+            onAdd={() => setScreen('add')}
+            onCancel={() => {
+              sessionList.clear();
+              setScreen('open');
+            }}
+            grant={grantResults}
+            onStart={startSessions}
+          />
+        </Show>
       }
     >
       {(info) => (
@@ -417,6 +608,9 @@ const App: Component = () => {
                     class="btn-secondary btn-small"
                     onClick={() => {
                       pipeline.stop();
+                      multiRun.stop();
+                      sessionList.clear();
+                      setScreen('open');
                       store.close();
                     }}
                   >

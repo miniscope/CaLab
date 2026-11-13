@@ -21,7 +21,9 @@ export type RunEventKind =
   | 'warning'
   | 'gap'
   | 'error'
-  | 'restart';
+  | 'restart'
+  /** A new session starts here (a multi-session Joint run); `to` is its 0-based index. */
+  | 'session';
 
 export interface RunEvent {
   /** Stream frame it took effect at. */

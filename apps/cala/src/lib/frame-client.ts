@@ -3,13 +3,18 @@
  * and the pipeline calls, over the message protocol in
  * `workers/frame-types.ts`.
  */
-import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
 import type { PipelineStepResult } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
 import type { FlatFieldEvent, FlatFieldMap } from './flat-field.ts';
 import type { ReplayInput } from './pipeline-stages.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
-import type { FrameRequest, FrameRequestBody, FrameResponse } from '../workers/frame-types.ts';
+import type {
+  FrameRequest,
+  FrameRequestBody,
+  FrameResponse,
+  SessionProbeResult,
+} from '../workers/frame-types.ts';
 
 /** The preprocess + motion pipeline, as the UI drives it. */
 export interface PipelineClient {
@@ -45,6 +50,10 @@ export interface PipelineClient {
 /** What the UI needs from a frame source; the tests substitute a fake. */
 export interface FrameClient extends PipelineClient {
   open(entries: FolderEntry[]): Promise<FrameSourceInfo>;
+  /** Open sessions as one recording, in order (a Joint run). */
+  openSessions?(sessions: SessionInput[]): Promise<FrameSourceInfo>;
+  /** Each session's info (or error) for the session list; nothing stays open. */
+  probe?(sessions: SessionInput[]): Promise<SessionProbeResult[]>;
   /** Connect to a live source at a WebSocket URL (the worker owns the socket). */
   openLive?(url: string): Promise<FrameSourceInfo>;
   readFrame(index: number): Promise<FramePixels>;
@@ -208,6 +217,12 @@ export function createFrameClient(
       : {}),
     async open(entries) {
       return expectType(await call({ type: 'open', entries }), 'opened').info;
+    },
+    async openSessions(sessions) {
+      return expectType(await call({ type: 'open-sessions', sessions }), 'opened').info;
+    },
+    async probe(sessions) {
+      return expectType(await call({ type: 'probe', sessions }), 'probed').results;
     },
     async openLive(url) {
       return expectType(await call({ type: 'open-live', url }), 'opened').info;

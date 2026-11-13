@@ -43,6 +43,32 @@ function markerPlugin(time: () => number | null): uPlot.Plugin {
   };
 }
 
+/** Thin solid lines at the session boundaries (seconds) of a multi-session run. */
+function boundaryPlugin(times: () => readonly number[]): uPlot.Plugin {
+  return {
+    hooks: {
+      draw: (u) => {
+        const ts = times();
+        if (ts.length === 0) return;
+        const ctx = u.ctx;
+        ctx.save();
+        // Mid grey: visible on the light and the dark theme.
+        ctx.strokeStyle = '#8a8a8a';
+        ctx.lineWidth = devicePixelRatio;
+        ctx.beginPath();
+        for (const t of ts) {
+          const x = u.valToPos(t, 'x', true);
+          if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+          ctx.moveTo(x, u.bbox.top);
+          ctx.lineTo(x, u.bbox.top + u.bbox.height);
+        }
+        ctx.stroke();
+        ctx.restore();
+      },
+    },
+  };
+}
+
 const SERIES: uPlot.Series[] = [{}, { label: 'trace', stroke: OKABE_ITO.vermillion, width: 1.25 }];
 
 /**
@@ -57,6 +83,8 @@ export function CellTraceViewer(props: {
   fps: number;
   /** Frame of the footprint version picked on the slider (marked on the trace). */
   markerFrame?: number | null;
+  /** First frames of sessions 2.. of a multi-session run (marked on the trace). */
+  boundaries?: readonly number[];
 }): JSX.Element {
   const fs = () => props.fps;
   const [height, setHeight] = createSignal(zoomHeight());
@@ -66,8 +94,12 @@ export function CellTraceViewer(props: {
   const markerTime = () =>
     props.markerFrame === null || props.markerFrame === undefined ? null : props.markerFrame / fs();
   // Read when the chart draws (a data change redraws it, see `data`).
-  // eslint-disable-next-line solid/reactivity
-  const plugins = [markerPlugin(markerTime)];
+  /* eslint-disable solid/reactivity */
+  const plugins = [
+    markerPlugin(markerTime),
+    boundaryPlugin(() => (props.boundaries ?? []).map((f) => f / fs())),
+  ];
+  /* eslint-enable solid/reactivity */
   const frames = () => props.cells.frame();
   const duration = () => frames() / fs();
 

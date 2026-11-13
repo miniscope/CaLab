@@ -44,6 +44,7 @@ const LANE_KIND: Record<string, string | undefined> = {
   error: 'warn',
   range: 'range',
   scale: 'scale',
+  session: 'session',
 };
 
 export function createHistoryUi(run: RunHistory): HistoryUi {

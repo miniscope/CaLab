@@ -2,14 +2,19 @@ import { createSignal, For, Show, type JSX } from 'solid-js';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
+import { detectSeries, entriesForSeries, seriesLabel } from '../lib/video-series.ts';
 import {
-  chooseSeries,
-  detectSeries,
-  entriesForSeries,
-  seriesLabel,
-  type VideoSeries,
-} from '../lib/video-series.ts';
-import { pickDirectory, supportsDirectoryPicker } from '../lib/directory-picker.ts';
+  pickDirectoryWithHandle,
+  supportsDirectoryPicker,
+  type DirHandleLike,
+} from '../lib/directory-picker.ts';
+import {
+  chooseKind,
+  groupKinds,
+  sessionsForKind,
+  type SeriesKind,
+  type SessionCandidate,
+} from '../lib/sessions.ts';
 
 interface OpenFolderProps {
   loading: boolean;
@@ -20,6 +25,21 @@ interface OpenFolderProps {
   onOpenLive?: (url: string) => void;
   /** The URL offered in the live-source field. */
   liveUrl?: string;
+  /**
+   * More than one session found (a parent folder of several recordings), or
+   * the user asked for the session list: review them before a multi-session
+   * run. `handle` is the picked folder (File System Access API), if any.
+   */
+  onSessions?: (sessions: SessionCandidate[], handle: DirHandleLike | null) => void;
+  /** Label of the add button when this screen adds sessions to a list. */
+  addMode?: boolean;
+  onCancel?: () => void;
+}
+
+/** Sessions found in the picked or dropped files (see `lib/sessions.ts`). */
+export interface FoundSessions {
+  sessions: SessionCandidate[];
+  handle: DirHandleLike | null;
 }
 
 /**
@@ -59,29 +79,52 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   // Several plausible video series in the selection: ask which one to open.
   const [pending, setPending] = createSignal<{
     entries: FolderEntry[];
-    series: VideoSeries<FolderEntry>[];
-    candidates: VideoSeries<FolderEntry>[];
+    handle: DirHandleLike | null;
+    candidates: SeriesKind[];
   } | null>(null);
   let chooserHeading: HTMLHeadingElement | undefined;
 
-  const submit = (entries: FolderEntry[]) => {
+  /**
+   * Open what was picked. The video series are grouped into kinds (the
+   * Miniscope of each session, a behaviour camera, ...; `lib/sessions.ts`).
+   * One session opens as before; several go to the session list; several
+   * plausible kinds ask the user first.
+   */
+  const submit = (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
     if (entries.length === 0) return;
-    const series = detectSeries(entries);
-    const { chosen, candidates } = chooseSeries(series);
-    if (chosen || candidates.length === 0) {
-      setPending(null);
-      props.onOpen(entries, labelFor(entries));
+    const kinds = groupKinds(detectSeries(entries));
+    const { chosen, candidates } = chooseKind(kinds);
+    if (chosen) {
+      openKind(entries, handle, chosen);
       return;
     }
-    setPending({ entries, series, candidates });
+    if (candidates.length === 0) {
+      setPending(null);
+      if (props.addMode) props.onSessions?.([], handle);
+      else props.onOpen(entries, labelFor(entries));
+      return;
+    }
+    setPending({ entries, handle, candidates });
     queueMicrotask(() => chooserHeading?.focus());
   };
 
-  const choose = (picked: VideoSeries<FolderEntry>) => {
+  function openKind(entries: FolderEntry[], handle: DirHandleLike | null, kind: SeriesKind) {
+    setPending(null);
+    const sessions = sessionsForKind(entries, kind);
+    if ((sessions.length > 1 || props.addMode) && props.onSessions) {
+      props.onSessions(sessions, handle);
+      return;
+    }
+    // One session: open it as a plain folder, as before multi-session runs.
+    const all = detectSeries(entries);
+    const chosen = kind.series.length === 1 && all.length > 1 ? kind.series[0] : null;
+    props.onOpen(chosen ? entriesForSeries(entries, all, chosen) : entries, labelFor(entries));
+  }
+
+  const choose = (picked: SeriesKind) => {
     const p = pending();
     if (!p) return;
-    setPending(null);
-    props.onOpen(entriesForSeries(p.entries, p.series, picked), labelFor(p.entries));
+    openKind(p.entries, p.handle, picked);
   };
 
   // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
@@ -92,10 +135,9 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       folderInput.click();
       return;
     }
-    pickDirectory().then(
-      // eslint-disable-next-line solid/reactivity -- a one-off promise callback, not a tracked scope
-      (entries) => {
-        if (entries) submit(entries);
+    pickDirectoryWithHandle().then(
+      (picked) => {
+        if (picked) submit(picked.entries, picked.handle);
       },
       (err: unknown) => {
         setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
@@ -138,11 +180,13 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           }}
         >
           <p class="drop-zone__text">
-            <strong>Open a Miniscope folder</strong> or drop it here
+            <strong>{props.addMode ? 'Add a session folder' : 'Open a Miniscope folder'}</strong> or
+            drop it here
           </p>
           <p class="drop-zone__subtext">
             The folder with the numbered videos (0.avi, 1.avi, ... or msCam0.avi, msCam1.avi, ...)
-            and metaData.json, timeStamps.csv. Videos are read frame by frame from disk, never
+            and metaData.json, timeStamps.csv, or a parent folder of several sessions (each
+            recording folder becomes one session). Videos are read frame by frame from disk, never
             loaded whole, and never uploaded.
           </p>
         </div>
@@ -177,6 +221,29 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
         <button type="button" class="btn-secondary btn-small" onClick={() => filesInput.click()}>
           Choose individual files
         </button>
+        <Show when={props.onSessions && !props.addMode}>
+          {' '}
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            data-testid="multi-session"
+            title="Run several sessions of one animal, with one footprint library across them or one per session"
+            onClick={() => props.onSessions?.([], null)}
+          >
+            Multi-session run
+          </button>
+        </Show>
+        <Show when={props.addMode && props.onCancel}>
+          {' '}
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            data-testid="add-cancel"
+            onClick={() => props.onCancel?.()}
+          >
+            Back to the session list
+          </button>
+        </Show>
       </p>
       <p class="file-info" data-testid="local-note">
         Files are read locally and never leave your computer.
@@ -237,11 +304,24 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
                       data-testid="series-option"
                       onClick={() => choose(s)}
                     >
-                      <strong>{seriesLabel(s)}</strong> {'\u2014'} {s.files.length}{' '}
-                      {s.files.length === 1 ? 'file' : 'files'}
-                      <span class="cala-series-chooser__dir">
-                        {s.dir === '' ? '(selected files)' : s.dir}
-                      </span>
+                      <Show
+                        when={s.series.length > 1}
+                        fallback={
+                          <>
+                            <strong>{seriesLabel(s.series[0])}</strong> {'\u2014'} {s.files}{' '}
+                            {s.files === 1 ? 'file' : 'files'}
+                            <span class="cala-series-chooser__dir">
+                              {s.series[0].dir === '' ? '(selected files)' : s.series[0].dir}
+                            </span>
+                          </>
+                        }
+                      >
+                        <strong>{s.label}</strong> {'\u2014'} {s.series.length} sessions, {s.files}{' '}
+                        files
+                        <span class="cala-series-chooser__dir">
+                          {s.series.map((x) => x.dir).join(', ')}
+                        </span>
+                      </Show>
                     </button>
                   </li>
                 )}
