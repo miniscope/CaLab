@@ -1,3 +1,5 @@
+import { RECTIFIED_INPUT_FIX } from './rectified-input.ts';
+
 /**
  * Plain-language notes for the per-cell solver diagnostics (cap_limited,
  * no_size_fit, peak_outlier_ratio, dropped_spikes). Display only: these never
@@ -12,6 +14,7 @@ export interface SolveDiagnosticsInput {
   noSizeFit?: boolean;
   peakOutlierRatio?: number;
   droppedSpikes?: number;
+  rectifiedInput?: boolean;
 }
 
 export interface DiagnosticNote {
@@ -50,6 +53,12 @@ export function solveDiagnosticNotes(d: SolveDiagnosticsInput | undefined): Diag
       text: `${d.droppedSpikes} spike${d.droppedSpikes === 1 ? '' : 's'} dropped`,
       title:
         'These spikes could not be placed because every nearby frame was already at the per-frame ceiling.',
+    });
+  }
+  if (d.rectifiedInput) {
+    notes.push({
+      text: 'clipped or denoised input',
+      title: `This trace is non-negative with many exact zeros (clipped at zero, or already denoised), so the result is unreliable. ${RECTIFIED_INPUT_FIX}`,
     });
   }
   return notes;

@@ -7,6 +7,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- CaDecon: warning for rectified input. A trace that is non-negative with at
+  least a fifth of its samples exactly 0 (the baseline quantile the chain uses)
+  is clipped at zero or already denoised: cala traces from a live run (no
+  Extract), or Minian/CaImAn `C`. That is not a supported input. The solver now
+  reports `rectified_input` per cell (JS result; Python `SolveTraceResult` and
+  the `py_indeca_solve_trace` diagnostics tuple gain a fifth element, and
+  `solve_trace` raises a `UserWarning`). The CaDecon app checks the same rule
+  when the data loads (shared import store, `rectifiedInputCells`), so the
+  banner with the number of affected cells and the fix, and the marker in the
+  cell selector, appear before any run; after a run the Trace Inspector also
+  notes each affected cell. Run Extract
+  and export for CaDecon in cala (signed traces, see below), or use `C + YrA`
+  from Minian/CaImAn. Detection and warning only: the preprocessing and every
+  solver output are bit-identical to before.
+
 - Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
   cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
   bandpass and rolling baseline turn into fake humps and spurious spikes.

@@ -8,6 +8,8 @@ export interface CellSelectorProps {
   onSelect: (idx: number) => void;
   /** When set, cells outside this set are greyed out in the dropdown. */
   highlightedIndices?: () => ReadonlySet<number> | null;
+  /** Cells the solver flagged as clipped or denoised input; marked in the dropdown. */
+  flaggedIndices?: () => readonly number[];
 }
 
 export function CellSelector(props: CellSelectorProps): JSX.Element {
@@ -50,9 +52,11 @@ export function CellSelector(props: CellSelectorProps): JSX.Element {
         {props.cellIndices().map((idx) => {
           const hl = props.highlightedIndices?.();
           const dimmed = hl != null && !hl.has(idx);
+          const flagged = props.flaggedIndices?.().includes(idx) ?? false;
           return (
             <option value={String(idx)} class={dimmed ? 'cell-selector__option--dimmed' : ''}>
               Cell {idx}
+              {flagged ? ' (!) clipped or denoised input' : ''}
             </option>
           );
         })}

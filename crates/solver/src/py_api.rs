@@ -547,7 +547,7 @@ fn seed_kernel_estimate<'py>(
 ///
 /// Returns (s_counts, alpha, baseline, threshold, pve, iterations, converged,
 /// noise_var_processed, chain_noise_gain, (cap_limited, no_size_fit,
-/// peak_outlier_ratio, dropped_spikes)): `noise_var_processed` is the
+/// peak_outlier_ratio, dropped_spikes, rectified_input)): `noise_var_processed` is the
 /// per-sample noise variance of the processed (working) trace, `sigma_raw^2`
 /// through the bandpass times `chain_noise_gain`, the rolling-quantile
 /// stage's measured gain on the noise (0 and 1 when no noise floor is
@@ -557,14 +557,16 @@ fn seed_kernel_estimate<'py>(
 /// says the certificate (or, without noise, the step rule) fired.
 /// `converged = False` means the certificate could not be met in f64
 /// arithmetic: in practice the stall detector on the certificate's bound
-/// stopped the solve, since the derived cap is not reached. The last four are
+/// stopped the solve, since the derived cap is not reached. The last five are
 /// per-cell diagnostics that never change the result: `cap_limited` (the pick
 /// ended at the floor spike size, so the cap set the spike size),
 /// `no_size_fit` (no spike size passed the one-standard-error test, so the
 /// size that fits the data best was taken, usually the floor),
 /// `peak_outlier_ratio` (largest event-peak frame mass over the second
-/// largest) and `dropped_spikes` (spikes no frame of their event had room
-/// for).
+/// largest), `dropped_spikes` (spikes no frame of their event had room
+/// for) and `rectified_input` (the input trace is non-negative with at least a
+/// fifth of the samples exactly 0: clipped at zero or already denoised, not a
+/// supported input).
 #[pyfunction]
 #[pyo3(signature = (trace, tau_rise, tau_decay, fs, max_firing_rate=300.0, max_iters=500, tol=1e-4, hp_enabled=false, lp_enabled=false, warm_counts=None, lambda_=0.0))]
 #[allow(clippy::too_many_arguments)]
@@ -582,16 +584,16 @@ fn py_indeca_solve_trace<'py>(
     warm_counts: Option<PyReadonlyArray1<f64>>,
     lambda_: f64,
 ) -> PyResult<(
-    Bound<'py, PyArray1<f32>>, // s_counts
-    f64,                       // alpha
-    f64,                       // baseline
-    f64,                       // threshold
-    f64,                       // pve
-    u32,                       // iterations
-    bool,                      // converged
-    f64,                       // noise_var_processed
-    f64,                       // chain_noise_gain
-    (bool, bool, f64, u32),    // (cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes)
+    Bound<'py, PyArray1<f32>>,    // s_counts
+    f64,                          // alpha
+    f64,                          // baseline
+    f64,                          // threshold
+    f64,                          // pve
+    u32,                          // iterations
+    bool,                         // converged
+    f64,                          // noise_var_processed
+    f64,                          // chain_noise_gain
+    (bool, bool, f64, u32, bool), // (cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes, rectified_input)
 )> {
     let trace_f32 = to_f32_vec(&trace)?;
     let warm = optional_to_f32_vec(warm_counts)?;
@@ -638,6 +640,7 @@ fn py_indeca_solve_trace<'py>(
             result.no_size_fit,
             result.peak_outlier_ratio,
             result.dropped_spikes,
+            result.rectified_input,
         ),
     ))
 }

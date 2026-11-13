@@ -516,7 +516,8 @@ def test_indeca_solve_trace_degenerate_traces(trace, opts):
     assert counts.shape == trace.shape
     assert finite(counts, alpha, baseline, threshold, pve, noise_var, gain)
     assert iters >= 0 and noise_var >= 0 and gain > 0
-    cap_limited, no_size_fit, peak_ratio, dropped = diag
+    cap_limited, no_size_fit, peak_ratio, dropped, rectified = diag
+    assert isinstance(rectified, bool)
     assert isinstance(cap_limited, bool) and isinstance(no_size_fit, bool)
     assert math.isfinite(peak_ratio) and peak_ratio >= 0 and dropped >= 0
 

@@ -111,7 +111,7 @@ function isTrustworthyFit(r: { fitMode: FitMode }): boolean {
 /** Per-cell solver diagnostics carried into the stored results (display only). */
 type SolveDiagnostics = Pick<
   TraceResult,
-  'capLimited' | 'noSizeFit' | 'peakOutlierRatio' | 'droppedSpikes'
+  'capLimited' | 'noSizeFit' | 'peakOutlierRatio' | 'droppedSpikes' | 'rectifiedInput'
 >;
 
 function solveDiagnostics(r: TraceResult): SolveDiagnostics {
@@ -120,6 +120,7 @@ function solveDiagnostics(r: TraceResult): SolveDiagnostics {
     noSizeFit: r.noSizeFit,
     peakOutlierRatio: r.peakOutlierRatio,
     droppedSpikes: r.droppedSpikes,
+    rectifiedInput: r.rectifiedInput,
   };
 }
 
