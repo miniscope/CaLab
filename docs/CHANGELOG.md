@@ -13,9 +13,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   Extract), or Minian/CaImAn `C`. That is not a supported input. The solver now
   reports `rectified_input` per cell (JS result; Python `SolveTraceResult` and
   the `py_indeca_solve_trace` diagnostics tuple gain a fifth element, and
-  `solve_trace` raises a `UserWarning`), and the CaDecon app shows a banner
-  with the number of affected cells and the fix, plus a note on each affected
-  cell in the Trace Inspector and a marker in the cell selector. Run Extract
+  `solve_trace` raises a `UserWarning`). The CaDecon app checks the same rule
+  when the data loads (shared import store, `rectifiedInputCells`), so the
+  banner with the number of affected cells and the fix, and the marker in the
+  cell selector, appear before any run; after a run the Trace Inspector also
+  notes each affected cell. Run Extract
   and export for CaDecon in cala (signed traces, see below), or use `C + YrA`
   from Minian/CaImAn. Detection and warning only: the preprocessing and every
   solver output are bit-identical to before.

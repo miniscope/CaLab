@@ -29,3 +29,10 @@ export function rectifiedBannerText(n: number): string {
   const cells = n === 1 ? '1 cell looks' : `${n} cells look`;
   return `${cells} clipped at zero or already denoised (non-negative with many exact zeros). ${RECTIFIED_INPUT_FIX}`;
 }
+
+/** Sorted union of cell-index lists (load-time scan and solver flags). */
+export function mergeCellIndices(...lists: readonly number[][]): number[] {
+  const set = new Set<number>();
+  for (const list of lists) for (const c of list) set.add(c);
+  return [...set].sort((a, b) => a - b);
+}

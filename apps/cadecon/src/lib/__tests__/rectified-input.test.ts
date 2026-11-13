@@ -3,6 +3,7 @@ import {
   rectifiedBannerText,
   rectifiedCellIndices,
   RECTIFIED_INPUT_FIX,
+  mergeCellIndices,
 } from '../rectified-input.ts';
 
 describe('rectifiedCellIndices', () => {
@@ -31,5 +32,12 @@ describe('rectifiedBannerText', () => {
     expect(many).toContain(RECTIFIED_INPUT_FIX);
     expect(many).toContain('Extract');
     expect(many).toContain('C + YrA');
+  });
+});
+
+describe('mergeCellIndices', () => {
+  it('returns the sorted union of load-time and solver-flagged cells', () => {
+    expect(mergeCellIndices([4, 1], [1, 7, 2])).toEqual([1, 2, 4, 7]);
+    expect(mergeCellIndices([], [])).toEqual([]);
   });
 });

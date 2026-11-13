@@ -33,7 +33,6 @@ import {
 import {
   runState,
   cellResultLookup,
-  rectifiedCells,
   currentTauRise,
   currentTauDecay,
   iterationHistory,
@@ -51,6 +50,7 @@ import {
   getGroundTruthForCell,
   nonFiniteCounts,
 } from '../../lib/data-store.ts';
+import { rectifiedCells } from '../../lib/rectified-cells.ts';
 import {
   inspectedCellIndex,
   setInspectedCellIndex,

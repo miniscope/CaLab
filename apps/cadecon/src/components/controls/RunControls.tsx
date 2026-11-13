@@ -1,5 +1,6 @@
 import { Show, type JSX } from 'solid-js';
-import { runState, runError, failedJobs, rectifiedCells } from '../../lib/iteration-store.ts';
+import { runState, runError, failedJobs } from '../../lib/iteration-store.ts';
+import { rectifiedCells } from '../../lib/rectified-cells.ts';
 import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
 import { rectifiedBannerText } from '../../lib/rectified-input.ts';
 import { parsedData, samplingRate } from '../../lib/data-store.ts';

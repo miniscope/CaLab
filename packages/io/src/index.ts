@@ -20,6 +20,7 @@ export {
   withoutNonFinite,
   nonFiniteSkipMessage,
 } from './non-finite.ts';
+export { rectifiedCells, RECTIFIED_ZERO_FRACTION } from './rectified.ts';
 export { createImportStore } from './import-store.ts';
 export type { ImportStore, ImportStoreOptions, DemoDataOptions } from './import-store.ts';
 export { rankCellsByActivity, sampleRandomCells, pickSnrSpread } from './cell-ranking.ts';

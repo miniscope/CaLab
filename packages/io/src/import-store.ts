@@ -32,6 +32,7 @@ import { parseMat } from './mat-parser.ts';
 import { processNpyResult } from './array-utils.ts';
 import { validateTraceData } from './validation.ts';
 import { countNonFinitePerCell } from './non-finite.ts';
+import { rectifiedCells } from './rectified.ts';
 import { fetchBridgeData as defaultFetchBridgeData } from './bridge.ts';
 import { soleTraceCandidate, traceCandidates } from './trace-candidates.ts';
 
@@ -117,6 +118,17 @@ export function createImportStore(options: ImportStoreOptions) {
     const data = parsedData();
     if (!data || data.shape.length < 2) return null;
     return countNonFinitePerCell(data, swapped());
+  });
+
+  /**
+   * Cells whose trace looks rectified (non-negative, at least a fifth exact
+   * zeros: clipped at zero or already denoised), scanned once per dataset and
+   * orientation. Unsupported input; apps warn about it.
+   */
+  const rectifiedInputCells = createMemo<number[]>(() => {
+    const data = parsedData();
+    if (!data || data.shape.length < 2) return [];
+    return rectifiedCells(data, swapped());
   });
 
   const numCells = createMemo(() => effectiveShape()?.[0] ?? 0);
@@ -350,6 +362,7 @@ export function createImportStore(options: ImportStoreOptions) {
     // Derived
     effectiveShape,
     nonFiniteCounts,
+    rectifiedInputCells,
     numCells,
     numTimepoints,
     durationSeconds,
