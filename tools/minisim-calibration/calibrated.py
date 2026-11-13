@@ -67,8 +67,8 @@ FALLOFF_EXPONENT = 2.5
 FIELD_CENTER_OFFSET_UM = (21.3, 66.7)
 LEAKAGE_LEVEL = 0.08  # library default, unchanged
 # * Focal plane pinned (default "auto"). "auto" picks the plane that maximizes the
-#   detectable-cell yield, which depends on each trace's max over the whole
-#   recording: a 15 s sim resolved to ~183 um and a 2-min one to ~230 um, which
+#   detectable-cell yield, which depends on the activity over the whole recording
+#   (the trace's max under minisim 1.0.3, its transient energy under 1.1.0): a 15 s sim resolved to ~183 um and a 2-min one to ~230 um, which
 #   defocuses the cells and cuts the static content ~8x. 180 um (effective depth,
 #   field curvature included) is what the short calibration runs resolved to.
 FOCAL_DEPTH_UM = 180.0

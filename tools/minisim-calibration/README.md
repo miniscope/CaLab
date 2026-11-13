@@ -6,7 +6,8 @@ here rather than under `crates/cala/tests/fixtures/` because it is Python with i
 venv, not test data; the committed fixture (`crates/cala/tests/fixtures/motion_small`)
 only needs its output.
 
-- Pinned minisim commit: `01a9ce2` (main). The scripts need at least `c243dca` (scatter-halo PR #34: `make_trace_sim.py` uses `observed_halo_fraction`); `01a9ce2` reproduces recordings made with the earlier pin `e33edad` byte for byte.
+- Pinned minisim: **v1.1.0** (PyPI; release commit `faec512`, minisim PR #36). 1.1.0 changes only the `detectable` flag (a matched-filter SNR over the footprint and all transients, threshold 110, against the earlier single-pixel peak SNR), so it renders our fixed-focus specs byte for byte like the previous pin `01a9ce2`. `01a9ce2` reproduced recordings made with `e33edad` byte for byte. The scripts need at least `c243dca` (scatter-halo PR #34: `make_trace_sim.py` uses `observed_halo_fraction`).
+- `recompute_detectable.py SIM_DIR`: rewrites `detectable` in an existing sim's ground-truth zarr and `oracle.bin` with the installed minisim (>= 1.1), with no new video. It keeps an `oof` target-depth window. Counts and P8/R8 before and after are in `tools/cala-eval/results/2026-11-12-matched-filter-detectable.md`.
 - `ca1_workshop_calibrated.spec.json`: the calibrated 600 px spec (focal depth pinned at 180 um).
 - `ca1_workshop_v2.spec.json`: v1 plus realistic activity (event rate, burst size and long events, giving real peak SNR), cell density, bleaching and neuropil (see `CALIBRATION.md`, "v2"). Use it to validate cell discovery and QC; the motion fixtures stay on v1.
 - `ca1_workshop_v2_fpn.spec.json`: v2 plus a `sensor_defects` step (PRNU 2.4 %, column offsets 1.0 ADU, default hot pixels). It reproduces the workshop data's sensor-fixed pixel pattern: 2.4 grey levels SD, 2.7 % of brightness, which motion correction turns into a slow pixel-scale shimmer. See `tools/cala-diagnostics/PIXEL_NOISE.md`. On the GT sims tested so far the pattern does not hurt discovery. Use this spec when testing anything that is sensitive to pixel-scale texture.
@@ -39,7 +40,7 @@ All arms are 600 px, 480 s, seeds 5-9, generated with `make_trace_sim.py OUT --d
 - Density: the deep population is 12 % of the in-focus layer's density (33750/mm3). Below the pyramidal layer there are few labelled somata.
 - Haze: the deep cells add diffuse light. At 25000/mm3 the field centre is 50 % brighter than the real recording. The spec therefore lowers the static `leakage` glow from 0.08 to 0.04, so the mean grey (41 vs 42) and the centre (83 vs 83) match the real recording at the same display range.
 - RAM: `make_trace_sim.py` peaks at 2.6 GB for a halo sim and 3.6 GB for an oof sim at 600 px and 480 s, and the oof peak grows with the number of units (about 3 MB each).
-- Detectability: minisim's `detectable` is a pure SNR test, so a blurred deep cell can still pass it (27 % of the 200-280 um cells do at 25000/mm3). The oof cells are nuisance, not targets, so `--target-depth-um 0 200` clears `detectable` in `oracle.bin` for every unit deeper than 200 um. In-focus units are all shallower than 200 um, so the target set matches the other arms. `in_focus` and the rest of the oracle are unchanged.
+- Detectability: minisim's `detectable` is a pure SNR test, so a blurred deep cell can still pass it (27 % of the 200-280 um cells did at 25000/mm3 under minisim 1.0.3's peak test; the 1.1.0 matched-filter SNR passes more of them). The oof cells are nuisance, not targets, so `--target-depth-um 0 200` clears `detectable` in `oracle.bin` for every unit deeper than 200 um. In-focus units are all shallower than 200 um, so the target set matches the other arms. `in_focus` and the rest of the oracle are unchanged.
 
 **Shallow variant.** `ca1_workshop_v2_oof_shallow.spec.json` puts 8000 cells/mm3 at 185-235 um (core sigma 6-13 px), generated with `--target-depth-um 0 185`. It is brighter than the real recording (centre +6 %, mean +25 %). On seed 6 the main binary recovers 24 of its cells as cells (all matched to non-detectable units), where the 200-280 um spec gives none.
 
@@ -61,7 +62,7 @@ Display and statistics check against the real recording (`tools/cala-diagnostics
 
 ```sh
 uv venv --python 3.12
-uv pip install "minisim @ git+https://github.com/miniscope/minisim@01a9ce2"
+uv pip install "minisim==1.1.0"
 uv pip install scipy zarr  # extra deps of the scripts
 ```
 
