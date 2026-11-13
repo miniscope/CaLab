@@ -107,6 +107,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: in a Refine run with visit workers, the tile visits that would not
+  refine (every other visit of a tile: Refine makes no adds, merges or keep
+  tests) are made by the slow worker when they are due instead of being
+  shipped to a visit worker with the tile's whole reservoir. About half the
+  jobs of a Refine run, and the slow worker's time to hand them out and apply
+  them, are gone. The footprints are the same, bit for bit
+  (`refine_makes_idle_visits_at_hand_out_without_changing_footprints`).
 - Cala: the split-half merge rule is the default (`MergeRule::SplitHalf`).
   Two cells whose footprints overlap less than half now merge only when the
   held-out test accepts the merge and their measured shapes agree within
