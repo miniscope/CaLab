@@ -1,4 +1,5 @@
-export { parseNpy } from './npy-parser.ts';
+export { parseNpy, parseNpyHeader } from './npy-parser.ts';
+export type { NpyHeader } from './npy-parser.ts';
 export { writeNpy, writeNpyHeader, npyDescr } from './npy-writer.ts';
 export type { NpyWritable } from './npy-writer.ts';
 export { parseNpz } from './npz-parser.ts';
@@ -35,3 +36,5 @@ export {
   stopBridgeHeartbeat,
 } from './bridge.ts';
 export type { BridgeMetadata, BridgeConfig, BridgeProgress } from './bridge.ts';
+export { ZipArchive } from './zip-reader.ts';
+export type { ZipEntry, ZipSource } from './zip-reader.ts';

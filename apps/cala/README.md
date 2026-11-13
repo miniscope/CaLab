@@ -152,7 +152,7 @@ Safari build the file in OPFS and hand it to the download (disk-backed, no RAM).
 Extract's file, no transpose): `np.load` still returns the (cells, frames) array.
 `meta_json.stages` lists the stages that ran, with counts and timestamps.
 
-- `<folder>_cala.npz`, self-describing (format version 4): `traces` (cells x
+- `<folder>_cala.npz`, self-describing (format version 5): `traces` (cells x
   frames, float32), `traces_signed` (the same, unclipped; absent from a live
   run, which has no Extract), `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
   (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
@@ -160,8 +160,11 @@ Extract's file, no transpose): `np.load` still returns the (cells, frames) array
   `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
   `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
   `qc_flags` (trace statistics recomputed on the extracted traces over all of the
-  file's own frames, the whole session; `src/lib/extract-qc.ts`), `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
-  cell table). The full layout is the header of `src/lib/export.ts`.
+  file's own frames, the whole session; `src/lib/extract-qc.ts`),
+  `sampling_rate_hz`, `meta_json` (UTF-8 JSON: provenance and the
+  cell table), the run's History bins and event log, and (format 5) `fov_mean` /
+  `fov_max` (mean and max projections over Extract's frames, `src/lib/fov-projection.ts`)
+  and `flat_field_gain`. The full layout is the header of `src/lib/export.ts`.
 - `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
   `cell_ids` and `sampling_rate_hz`. Its `traces` are Extract's signed traces
   (the clipped ones for a live run). CaDecon's existing `.npz` import takes the
@@ -205,6 +208,9 @@ group by group through `lib/multi-run.ts`, writing each to `cala-results/runs/<i
 and updating the index from `MultiRunPlan.onProgress` as sessions finish. Recent
 projects keep directory handles in IndexedDB (`lib/recent-projects.ts`). An experiment
 folder of several animals is offered as one project per animal (`suggestSplit`).
+**View results** opens a saved export read-only (`lib/result-file.ts` reads it lazily
+through `ZipArchive` from `@calab/io`; `components/ResultView.tsx` hydrates a fresh cell
+store, run history and FOV source and reuses the viewer's panels).
 
 ## Multi-session runs
 

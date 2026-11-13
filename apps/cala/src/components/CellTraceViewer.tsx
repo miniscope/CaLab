@@ -181,7 +181,7 @@ export function CellTraceViewer(props: {
         <h3 class="panel-label">Trace</h3>
         <span class="cala-muted" data-testid="cell-trace-range">
           {frameRange()}
-          <Show when={follow()}> &middot; live</Show>
+          <Show when={follow() && !props.cells.saved()}> &middot; live</Show>
           <Show when={markerTime() !== null}>
             {' '}
             &middot; <span style={{ color: OKABE_ITO.blue }}>|</span> footprint version

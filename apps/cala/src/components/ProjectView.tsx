@@ -10,11 +10,14 @@ import { planSummary } from '../lib/run-plan.ts';
 import { DEFAULT_REFINE_RUNS, LIBRARY_MODE_LABEL, MAX_REFINE_RUNS } from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
+import type { ProjectResult } from '../lib/project-index.ts';
 
 interface ProjectViewProps {
   project: ProjectStore;
   /** Back to the start screen. */
   onClose: () => void;
+  /** Open a saved result in the read-only viewer (View results). */
+  onView?: (result: ProjectResult) => void;
 }
 
 /** A run id (`2026-11-13_14-02-33`) as `11-13 14:02`; other ids as they are. */
@@ -251,7 +254,18 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                               <span title={`run ${c().run}`}>run {fmtRun(c().run)}</span>
                               <span class="cala-muted">
                                 {c().cells !== null ? `, ${c().cells} cells` : ''}
-                              </span>
+                              </span>{' '}
+                              <Show when={props.onView}>
+                                <button
+                                  type="button"
+                                  class="btn-secondary btn-small"
+                                  data-testid="view-current"
+                                  title="Open this result in the viewer (read-only)"
+                                  onClick={() => props.onView?.(c())}
+                                >
+                                  View results
+                                </button>
+                              </Show>
                             </>
                           )}
                         </Show>
@@ -292,6 +306,17 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                                     <code class="cala-sessions__path">
                                       {p().location().label}/{res.export_path}
                                     </code>{' '}
+                                    <Show when={props.onView}>
+                                      <button
+                                        type="button"
+                                        class="btn-secondary btn-small"
+                                        data-testid="view-result"
+                                        title="Open this result in the viewer (read-only)"
+                                        onClick={() => props.onView?.(res)}
+                                      >
+                                        View results
+                                      </button>{' '}
+                                    </Show>
                                     <Show when={!res.current}>
                                       <button
                                         type="button"

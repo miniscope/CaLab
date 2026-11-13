@@ -9,7 +9,8 @@
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
-import { transferablesOf } from '../lib/pipeline-engine.ts';
+import { FovProjector } from '../lib/fov-projection.ts';
+import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
 import type { FastToCompress } from './compress-types.ts';
@@ -74,7 +75,13 @@ function handle(msg: StageMsg): void {
             )
           : null,
       );
-      stage = new BackStage(msg.setup, fast);
+      stage = new BackStage(
+        msg.setup,
+        fast,
+        cells?.projection
+          ? new FovProjector(msg.setup.width, msg.setup.height, msg.setup.boundaries ?? [])
+          : null,
+      );
       break;
     }
     case 'job': {
@@ -89,10 +96,13 @@ function handle(msg: StageMsg): void {
       }
       break;
     }
-    case 'end':
+    case 'end': {
       stage?.end();
-      workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step: { kind: 'done' } });
+      const projection = stage?.projector?.result();
+      const step: PipelineStepResult = projection ? { kind: 'done', projection } : { kind: 'done' };
+      workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step }, transferablesOf(step));
       break;
+    }
     case 'stop':
       stopStage(msg.keepSlow === true);
       break;

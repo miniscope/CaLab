@@ -64,6 +64,42 @@ export async function resultsFilesFromEntries(
   return out.sort((a, b) => (a.path < b.path ? -1 : 1));
 }
 
+/**
+ * A file under a results folder, by its path relative to it (a result's
+ * `export_path`), read through the folder's handle. Throws when it is gone.
+ */
+export async function fileAt(dir: ReadDirLike, path: string): Promise<File> {
+  const parts = path.split('/').filter((p) => p !== '' && p !== '.');
+  const name = parts.pop();
+  if (!name) throw new Error('No file was named.');
+  let d = dir;
+  for (const p of parts) {
+    let next: ReadDirLike | null = null;
+    for await (const child of d.values())
+      if (child.kind === 'directory' && child.name === p) {
+        next = child;
+        break;
+      }
+    if (!next) throw new Error(`${path} is not in the results folder (no ${p}/).`);
+    d = next;
+  }
+  for await (const child of d.values())
+    if (child.kind === 'file' && child.name === name) return child.getFile();
+  throw new Error(`${path} is not in the results folder.`);
+}
+
+/** The same from the files of a folder picked through a file input. */
+export function fileInEntries(
+  entries: readonly FolderEntry[],
+  rootName: string,
+  path: string,
+): File {
+  const want = `${rootName}/${RESULTS_DIR}/${path}`;
+  const e = entries.find((x) => x.relPath === want);
+  if (!e) throw new Error(`${path} is not among the files picked; pick the animal folder again.`);
+  return e.file;
+}
+
 /** A results folder's handle when it exists (no write needed); null when not. */
 export async function existingDir(parent: ReadDirLike, name: string): Promise<ReadDirLike | null> {
   if (!parent.getDirectoryHandle) return null;
