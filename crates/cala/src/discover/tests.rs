@@ -2162,3 +2162,72 @@ fn split_half_refine_gate_refines_and_matches_jobs() {
     assert!(s.refines > 0, "{s:?}");
     assert_eq!(s, b.stats());
 }
+
+/// The app's path (`TraceEngine.processFrames` + `lastBackground` in the
+/// fast worker, one frame's slice to `SlowLoop.observe` in the slow worker)
+/// leaves the slow loop in exactly the state the native `observe` with the
+/// engine's `FrameTraces` does; without the levels it does not.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_observe_with_background_levels_matches_native() {
+    use crate::trace::js::{JsTraceEngine, JsTraceLibrary};
+    let t = 600;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    assert!(matches!(cfg.background, BackgroundModel::Ring { .. }));
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    // The JS surface, levels passed (b) and dropped as the app used to (c).
+    let js = |cfg: &SlowLoopConfig| {
+        let (s, e) = start(cfg.clone(), &seed);
+        let lib = e.library().clone();
+        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), 0.0, 0).unwrap();
+        (super::js::JsSlowLoop::from_loop(s, lib), eng)
+    };
+    let (mut b, mut eb) = js(&cfg);
+    let (mut c, mut ec) = js(&cfg);
+    let mut published = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let ta = ea.process(f).unwrap();
+        let la = ea.library().clone();
+        assert_eq!(ta.background.len(), la.len(), "ring: one level per cell");
+        a.observe(f, &la, &ta).unwrap();
+        for (js, eng, levels) in [(&mut b, &mut eb, true), (&mut c, &mut ec, false)] {
+            let tr = eng.process_frames(f, 1).unwrap();
+            let bg = eng.last_background();
+            assert_eq!(bg.len(), eng.background_len() as usize);
+            let version = eng.inner.library().version() as f64;
+            assert!(js.observe(f, version, &tr, levels.then_some(bg)).unwrap());
+        }
+        assert_eq!(eb.out.traces, ta.traces, "frame {k}");
+        assert_eq!(eb.last_background(), ta.background, "frame {k}");
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step(5_000_000.0).unwrap();
+        let pc = c.step(5_000_000.0).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            // Past the header: versions come from a global counter.
+            assert!(
+                la.to_bytes()[16..] == lb.arc().to_bytes()[16..],
+                "frame {k}"
+            );
+            ea.set_library(la).unwrap();
+            eb.set_library(&lb).unwrap();
+            published += 1;
+        }
+        if let Some(lc) = pc {
+            ec.set_library(&lc).unwrap();
+        }
+    }
+    assert!(published > 0);
+    let bits = |s: &SlowLoop| -> Vec<(u64, u32, u32, u32)> {
+        s.debug_ledger()
+            .into_iter()
+            .map(|(id, x, y, z)| (id, x.to_bits(), y.to_bits(), z.to_bits()))
+            .collect()
+    };
+    assert_eq!(a.stats(), b.inner().stats());
+    assert_eq!(bits(&a), bits(b.inner()));
+    assert_ne!(bits(&a), bits(c.inner()), "the levels matter");
+}

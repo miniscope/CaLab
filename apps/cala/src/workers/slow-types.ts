@@ -43,6 +43,13 @@ export type FastToSlow =
       frames: Float32Array;
       /** `count * cells` traces, library slot order. */
       traces: Float32Array;
+      /**
+       * The background coefficients of the same solve (`TraceEngine.lastBackground`),
+       * frame after frame (`background.length / count` per frame: one local level
+       * per cell under the ring model). The slow loop takes them off the ledger
+       * coordinate and the footprint statistics. Transferred. Absent: no cells yet.
+       */
+      background?: Float32Array;
       /** A newer noise map, sent every few hundred frames. */
       noise?: Float32Array;
     }

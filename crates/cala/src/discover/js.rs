@@ -122,13 +122,18 @@ impl JsSlowLoop {
     }
 
     /// Feed one preprocessed frame and its traces (library slot order) from
-    /// the library with `version`. Returns `false`, observing nothing, when
-    /// that version is no longer held.
+    /// the library with `version`, with the background coefficients the same
+    /// solve gave (`TraceEngine.lastBackground`, one frame's worth: the
+    /// per-cell ring levels under the ring model). Without `background` the
+    /// ledger and footprint statistics carry the local background, so pass
+    /// it. Returns `false`, observing nothing, when that version is no
+    /// longer held.
     pub fn observe(
         &mut self,
         frame: &[f32],
         version: f64,
         traces: &[f32],
+        background: Option<Vec<f32>>,
     ) -> Result<bool, JsError> {
         let Some(lib) = self.lib(version) else {
             return Ok(false);
@@ -138,6 +143,20 @@ impl JsSlowLoop {
         self.traces.traces.clear();
         self.traces.traces.extend_from_slice(traces);
         self.traces.background.clear();
+        if let Some(bg) = background {
+            if bg.len() != lib.background_len() {
+                return Err(js_err(
+                    "observe",
+                    format!(
+                        "background has {} values, library {} expects {}",
+                        bg.len(),
+                        lib.version(),
+                        lib.background_len()
+                    ),
+                ));
+            }
+            self.traces.background = bg;
+        }
         self.inner
             .observe(frame, &lib, &self.traces)
             .map_err(|e| js_err("observe", e))?;
@@ -344,6 +363,22 @@ impl JsVisitWorker {
 }
 
 impl JsSlowLoop {
+    /// A loop around `inner` that knows `lib` (tests: the JS surface driven
+    /// natively).
+    #[cfg(test)]
+    pub(super) fn from_loop(inner: SlowLoop, lib: Arc<Library>) -> JsSlowLoop {
+        JsSlowLoop {
+            inner,
+            libs: vec![lib],
+            traces: FrameTraces::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn inner(&self) -> &SlowLoop {
+        &self.inner
+    }
+
     fn lib(&self, version: f64) -> Option<Arc<Library>> {
         self.libs
             .iter()

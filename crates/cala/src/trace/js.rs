@@ -248,6 +248,8 @@ impl JsTraceLibrary {
 pub struct JsTraceEngine {
     pub(crate) inner: TraceEngine,
     pub(crate) out: FrameTraces,
+    /// Background coefficients of the last batch, frame after frame.
+    pub(crate) batch_background: Vec<f32>,
 }
 
 #[wasm_bindgen(js_class = TraceEngine)]
@@ -272,6 +274,7 @@ impl JsTraceEngine {
         Ok(JsTraceEngine {
             inner,
             out: FrameTraces::default(),
+            batch_background: Vec::new(),
         })
     }
 
@@ -299,13 +302,33 @@ impl JsTraceEngine {
             ));
         }
         let mut out = Vec::with_capacity(count as usize * self.inner.library().len());
+        self.batch_background.clear();
         for f in frames.chunks_exact(n) {
             self.inner
                 .process_into(f, &mut self.out)
                 .map_err(|e| js_err("processFrames", e))?;
             out.extend_from_slice(&self.out.traces);
+            self.batch_background
+                .extend_from_slice(&self.out.background);
         }
         Ok(out)
+    }
+
+    /// The background coefficients of the last `processFrames` batch (also
+    /// `QcMonitor.processFrames`), frame after frame: `count x
+    /// backgroundLen` values, in the library's slot order under the ring
+    /// model (one local level per cell). The slow loop takes one frame's
+    /// worth with the traces (`SlowLoop.observe`).
+    #[wasm_bindgen(js_name = lastBackground)]
+    pub fn last_background(&self) -> Vec<f32> {
+        self.batch_background.clone()
+    }
+
+    /// Background coefficients per frame for the current library (cells,
+    /// under the ring model).
+    #[wasm_bindgen(getter, js_name = backgroundLen)]
+    pub fn background_len(&self) -> u32 {
+        self.inner.library().background_len() as u32
     }
 
     /// Residual of the last solved frame: `frame` (that frame, as passed to
