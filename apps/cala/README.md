@@ -23,7 +23,8 @@ What is here:
 - `src/workers/frame-worker.ts` + `src/lib/frame-client.ts`: the worker that
   holds the frame source and the promise-based client; frames are transferred.
 - `src/lib/viewer-store.ts`, `src/components/`: open-folder screen (directory
-  picker, drag and drop), frame canvas, scrubber, play/pause, info panel.
+  picker, drag and drop; `lib/directory-picker.ts` uses `showDirectoryPicker` in read
+  mode where it exists, else the `webkitdirectory` input), frame canvas, scrubber, play/pause, info panel.
 - `src/lib/pipeline-plan.ts`, `src/lib/pipeline-engine.ts`: the streaming
   preprocess + motion pipeline. Three walks over the recording in small
   batches: preprocessing calibration (200 raw frames), motion warm-up template
