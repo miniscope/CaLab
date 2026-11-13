@@ -904,6 +904,11 @@ pub struct SlowLoop {
     forced: Vec<(u64, u64)>,
     /// Which structural edits visits may make ([`SlowLoop::set_edit_scope`]).
     scope: EditScope,
+    /// In [`EditScope::Refine`], make the visits that would not refine at
+    /// hand-out instead of as jobs (`next_job_tile` in `shard.rs`). On by
+    /// default; tests turn it off to check that the footprints are the same
+    /// without it.
+    pub(crate) skip_unused: bool,
     // observe() buffers
     model: Vec<f32>,
     z: Vec<f32>,
@@ -1238,6 +1243,7 @@ impl SlowLoop {
             inflight: Vec::new(),
             job_seq: 0,
             noise_gen: 0,
+            skip_unused: true,
             cfg,
         };
         s.set_noise(noise)?;
@@ -2513,6 +2519,19 @@ impl SlowLoop {
             .retain(|r| r.2 > now || r.3 > 0 && r.2 + 4 * self.cfg.reject_cooldown_frames > now);
     }
 
+    /// Whether a tile's visit number `visit` (counted from 1) refines.
+    fn refines_on(&self, visit: u32) -> bool {
+        self.cfg.refine_every_visits > 0 && visit.is_multiple_of(self.cfg.refine_every_visits)
+    }
+
+    /// Whether the next visit of tile `ti` would do nothing but read the
+    /// tile's reservoir: in [`EditScope::Refine`] (no keep tests, merges or
+    /// adds), a visit that is not a refinement visit.
+    pub(crate) fn idle_visit(&self, ti: usize) -> bool {
+        let s = self.scope;
+        !s.prunes() && !s.merges() && !s.grows() && !self.refines_on(self.tile_visits[ti] + 1)
+    }
+
     /// The tests and edits of a visit (here, or in a [`VisitRunner`]).
     fn visit_body(&mut self, ti: usize) -> Result<(), TraceError> {
         if self.bgs[ti].is_none() {
@@ -2531,8 +2550,7 @@ impl SlowLoop {
         if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
             return Ok(());
         }
-        let refine = self.cfg.refine_every_visits > 0
-            && self.tile_visits[ti].is_multiple_of(self.cfg.refine_every_visits);
+        let refine = self.refines_on(self.tile_visits[ti]);
         if !refine && !scope.merges() && !scope.grows() {
             // Nothing this visit would use the tile's solve for.
             return Ok(());
