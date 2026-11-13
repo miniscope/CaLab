@@ -5,6 +5,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Developer tooling
+
+- Cala: a split-half refine gate behind a switch (`SlowLoopConfig::refine_gate`,
+  `qc_eval --refine-gate legacy|split-half`; default `legacy`, unchanged). Under
+  `split-half` the statistics path proposes a refinement only when the change
+  exceeds the estimate's own split-half noise. It cuts late real-data refines by
+  37 % with recall and precision unchanged, short of the 40 % target, so it is
+  not the default (`tools/cala-eval/results/2026-11-12-refine-gate.md`).
+
 ## [2.16.0] - 2026-11-12
 
 Web apps `v2.16.0`; the Python package `calab` is unchanged (`py/v0.5.0`).

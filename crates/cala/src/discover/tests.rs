@@ -2124,3 +2124,37 @@ fn basin_skirt_visits_run_as_jobs_match_step_exactly() {
     );
     assert!(lib.to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }
+
+/// The split-half refine gate still refines (cells move off their seed
+/// footprints) and runs identically as jobs and in `step`.
+#[test]
+fn split_half_refine_gate_refines_and_matches_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        refine_gate: RefineGate::SplitHalf,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert_eq!(s, b.stats());
+}
