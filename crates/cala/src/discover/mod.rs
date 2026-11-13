@@ -221,6 +221,8 @@ mod fastcore;
 mod fpstats;
 mod ledger;
 mod local;
+#[cfg(feature = "diagnostics")]
+mod mergelog;
 mod noisecorr;
 mod reservoir;
 mod shard;
@@ -230,6 +232,8 @@ pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, Remo
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
+#[cfg(feature = "diagnostics")]
+pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
 
 #[cfg(feature = "jsbindings")]
@@ -313,6 +317,26 @@ pub enum RefineGate {
     /// the current column, `a` the estimate's fit scale on it). A cell
     /// without split halves falls back to [`RefineGate::Legacy`].
     #[default]
+    SplitHalf,
+}
+
+/// Which merge tests may merge (S2.1c merge redesign).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MergeRule {
+    /// The default. The held-out test alone: a single column (merged
+    /// footprint, or either cell dropped) explains the tile's held-out
+    /// frames within `merge_z` of the pair, or the `one` shortcut.
+    #[default]
+    Legacy,
+    /// The held-out test, and a pair whose footprints do not largely
+    /// coincide (overlap below ½, the bound of the `one` shortcut) must
+    /// also have the same measured shape: on the union of their supports
+    /// the cells' running-statistics estimates, best scaled onto each
+    /// other, differ by no more than their own split-half noise,
+    /// `Î = ‖h_X − a h_Y‖² − ½‖h_X,A − h_X,B‖² − a² ½‖h_Y,A − h_Y,B‖² ≤ 0`
+    /// both ways (whitened; the refine gate's statistic for a pair). A
+    /// pair either cell of which has no split halves yet (a young cell)
+    /// falls back to [`MergeRule::Legacy`].
     SplitHalf,
 }
 
@@ -531,6 +555,8 @@ pub struct SlowLoopConfig {
     pub refine_min_change: f32,
     /// When the statistics path proposes a refinement (see [`RefineGate`]).
     pub refine_gate: RefineGate,
+    /// Which merge tests may merge (see [`MergeRule`]).
+    pub merge_rule: MergeRule,
     /// Cells are refined from the reservoir (while their running statistics
     /// are not yet precise) only this many frames after their birth.
     pub reservoir_refine_frames: u64,
@@ -632,6 +658,7 @@ impl Default for SlowLoopConfig {
             absorb_share: 0.8,
             refine_min_change: 0.03,
             refine_gate: RefineGate::SplitHalf,
+            merge_rule: MergeRule::Legacy,
             reservoir_refine_frames: 2400,
             split_every_visits: 4,
             merge_refit_pair: true,
@@ -4358,6 +4385,54 @@ impl SlowLoop {
         Some(d2 - half)
     }
 
+    /// The split-half merge statistic of a pair (see [`MergeRule::SplitHalf`]):
+    /// on the union of the two supports inside both statistics disks, the
+    /// larger over the two directions of `‖h_X − a h_Y‖² − ½‖h_X,A −
+    /// h_X,B‖² − a² ½‖h_Y,A − h_Y,B‖²` (whitened, `a` the least-squares
+    /// scale of `h_Y` onto `h_X`): positive when the shapes differ by more
+    /// than two re-draws of the estimates would. `None` when either cell
+    /// has no split halves; `+∞` when the disks share too few support
+    /// pixels to compare (no evidence that the shapes agree).
+    fn merge_shape_excess(&self, a: &Cell, b: &Cell) -> Option<f64> {
+        let (sa, sb) = (self.fpstats.get(&a.id)?, self.fpstats.get(&b.id)?);
+        let (ha, (ha1, ha2, _, _)) = (sa.estimate()?, sa.halves()?);
+        let (hb, (hb1, hb2, _, _)) = (sb.estimate()?, sb.halves()?);
+        let at: HashMap<u32, usize> = sa.pix.iter().enumerate().map(|(k, &p)| (p, k)).collect();
+        let on_support =
+            |p: u32| a.pix.binary_search(&p).is_ok() || b.pix.binary_search(&p).is_ok();
+        // Whitened values on the compared pixels: (x, x_A − x_B, y, y_A − y_B).
+        let v: Vec<[f64; 4]> = sb
+            .pix
+            .iter()
+            .enumerate()
+            .filter(|&(_, &p)| on_support(p))
+            .filter_map(|(kb, &p)| {
+                let ka = *at.get(&p)?;
+                let is = f64::from(self.inv_sigma[p as usize]);
+                Some([
+                    f64::from(ha[ka]) * is,
+                    f64::from(ha1[ka] - ha2[ka]) * is,
+                    f64::from(hb[kb]) * is,
+                    f64::from(hb1[kb] - hb2[kb]) * is,
+                ])
+            })
+            .collect();
+        if v.len() < 5 {
+            return Some(f64::INFINITY);
+        }
+        let excess = |x: usize, y: usize| {
+            let (xy, yy) = v
+                .iter()
+                .fold((0.0, 0.0), |(s, t), r| (s + r[x] * r[y], t + r[y] * r[y]));
+            let s = if yy > 0.0 { xy / yy } else { 0.0 };
+            v.iter().fold(0.0, |acc, r| {
+                let d = r[x] - s * r[y];
+                acc + d * d - 0.5 * r[x + 1] * r[x + 1] - 0.5 * s * s * r[y + 1] * r[y + 1]
+            })
+        };
+        Some(excess(0, 2).max(excess(2, 0)))
+    }
+
     /// Whether the statistics' estimate `h` (on `pix`) differs from the
     /// cell's current filtered footprint by more than its own noise: the
     /// whitened squared difference (current footprint scaled to fit, zero
@@ -4528,6 +4603,19 @@ impl SlowLoop {
             // keeping both beats it by the add margin.
             let sep = self.solve_all(&base, test_fr);
             let mut chi_sep = Self::total_chi2(&sep);
+            #[cfg(feature = "diagnostics")]
+            let mut frames_log = mergelog::Frames {
+                pair: sep.iter().map(|f| f.chi2).collect(),
+                pair_c: [i, j].map(|k| {
+                    (
+                        base.cols[k].id,
+                        sep.iter().map(|f| f.c[k]).collect(),
+                        1.0 / f64::from(base.coord_sigma(k)).powi(2),
+                    )
+                }),
+                rho: f64::from(self.rho),
+                ..Default::default()
+            };
             let ovl = overlap(&base.cols[i], &base.cols[j], rect.len());
             // The merged arm is a fresh fit, so the pair is refitted on the
             // same frames too (alternating rank-1 fits of each cell on the
@@ -4580,6 +4668,10 @@ impl SlowLoop {
                     let rp = self.problem(ti, cols);
                     let rf = self.solve_all(&rp, test_fr);
                     chi_sep = chi_sep.min(Self::total_chi2(&rf));
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        frames_log.refit = Some(rf.iter().map(|f| f.chi2).collect());
+                    }
                 }
             }
             let mut best_arm: Option<(f64, Option<Cell>, usize, usize)> = None;
@@ -4588,6 +4680,10 @@ impl SlowLoop {
                 let mp = self.problem(ti, cols);
                 let mf = self.solve_all(&mp, test_fr);
                 let loss = Self::total_chi2(&mf) - chi_sep;
+                #[cfg(feature = "diagnostics")]
+                {
+                    frames_log.merged = Some(mf.iter().map(|f| f.chi2).collect());
+                }
                 let (stay, go) = if self.cells[ci].id == keep {
                     (ci, cj)
                 } else {
@@ -4600,6 +4696,15 @@ impl SlowLoop {
                 let ap = self.problem(ti, cols);
                 let af = self.solve_all(&ap, test_fr);
                 let loss = Self::total_chi2(&af) - chi_sep;
+                #[cfg(feature = "diagnostics")]
+                if let Some(k) = ap.cols.iter().position(|c| c.id == self.cells[stay].id) {
+                    frames_log.solo.push((
+                        self.cells[stay].id,
+                        af.iter().map(|f| f.chi2).collect(),
+                        af.iter().map(|f| f.c[k]).collect(),
+                        1.0 / f64::from(ap.coord_sigma(k)).powi(2),
+                    ));
+                }
                 if best_arm.as_ref().is_none_or(|b| loss < b.0) {
                     best_arm = Some((loss, None, stay, go));
                 }
@@ -4613,9 +4718,32 @@ impl SlowLoop {
                 let b: Vec<f32> = sep.iter().map(|f| f.c[j]).collect();
                 corr(&a, &b) >= self.cfg.merge_corr
             };
-            let accept = best_arm
+            let mut accept = best_arm
                 .as_ref()
                 .is_some_and(|b| one || b.0 < mu + f64::from(self.cfg.merge_z) * s);
+            #[cfg(feature = "diagnostics")]
+            let legacy_accept = accept;
+            // The split-half rule: neighbours (footprints overlapping less
+            // than half) whose measured shapes differ beyond their own
+            // split-half noise stay two cells, whatever the held-out test
+            // says. Without split halves the held-out test decides alone.
+            let gated = accept && self.cfg.merge_rule == MergeRule::SplitHalf && ovl < 0.5;
+            #[cfg(feature = "diagnostics")]
+            let want_shape = gated || mergelog::on();
+            #[cfg(not(feature = "diagnostics"))]
+            let want_shape = gated;
+            let shape_excess = if want_shape {
+                self.merge_shape_excess(&self.cells[ci], &self.cells[cj])
+            } else {
+                None
+            };
+            if gated {
+                let px = self.cells[ci].pix.len() + self.cells[cj].pix.len();
+                self.work += (px * 40) as u64;
+                if shape_excess.is_some_and(|i_hat| !(i_hat <= 0.0)) {
+                    accept = false;
+                }
+            }
             #[cfg(feature = "diagnostics")]
             self.log_test(
                 EditKind::Merge,
@@ -4624,6 +4752,41 @@ impl SlowLoop {
                 accept,
                 best_arm.as_ref().map_or(f64::NAN, |b| (mu - b.0) / s),
             );
+            #[cfg(feature = "diagnostics")]
+            if mergelog::on() {
+                let arm = match &best_arm {
+                    None => -1,
+                    Some((_, Some(_), ..)) => 0,
+                    Some((_, None, _, go)) if self.cells[*go].id == pair.0 => 1,
+                    Some(_) => 2,
+                };
+                let (lo_c, hi_c) = if self.cells[ci].id == pair.0 {
+                    (ci, cj)
+                } else {
+                    (cj, ci)
+                };
+                let (ca, cb) = (self.cells[lo_c].clone(), self.cells[hi_c].clone());
+                mergelog::merge(
+                    self,
+                    &mergelog::MergeRow {
+                        lo: pair.0,
+                        hi: pair.1,
+                        accept,
+                        legacy_accept,
+                        z: best_arm.as_ref().map_or(f64::NAN, |b| (mu - b.0) / s),
+                        ovl,
+                        one,
+                        forced: was_forced,
+                        arm,
+                        n_test: test_fr.len(),
+                        shape: shape_excess,
+                        frames: frames_log,
+                        null: (mu, s),
+                    },
+                    &ca,
+                    &cb,
+                );
+            }
             if let (true, Some((loss, merged, stay, go))) = (accept, best_arm) {
                 self.stats.merges += 1;
                 self.edits.merges += 1;

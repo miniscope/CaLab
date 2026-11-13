@@ -2423,3 +2423,87 @@ fn refine_scope_travels_with_visit_jobs() {
     assert!(b.stats().refines > 0);
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }
+
+/// Under the split-half merge rule a duplicate of an established cell is
+/// still merged (its light and the cell's form one basin).
+#[test]
+fn split_half_merge_rule_still_merges_a_duplicate() {
+    let t = 1200;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
+    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
+    assert!(slow.stats().merges >= 1);
+}
+
+/// The split-half merge statistic: two independent neighbours (supports
+/// overlapping, 7 px apart) have measured shapes that differ far beyond
+/// their split-half noise (`Î > 0`, the rule keeps them apart), while a
+/// cell compared with itself is within its noise (`Î ≤ 0`).
+#[test]
+fn merge_shape_excess_tells_neighbours_from_one_cell() {
+    let t = 2000;
+    let mut rng = Lcg(71);
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 49.0, 50.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 73);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 45.0, 44.0), blob(2, 49.0, 50.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.stats().merges, 0, "stats {:?}", slow.stats());
+    let a = slow.cells.iter().find(|c| c.id == 1).unwrap().clone();
+    let b = slow.cells.iter().find(|c| c.id == 2).unwrap().clone();
+    let two = slow.merge_shape_excess(&a, &b).expect("split halves");
+    assert!(two > 0.0, "neighbours: {two}");
+    let one = slow.merge_shape_excess(&a, &a).expect("split halves");
+    assert!(one <= 0.0, "a cell against itself: {one}");
+}
+
+/// The split-half merge rule runs identically as jobs and in `step`.
+#[test]
+fn split_half_merge_rule_matches_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.merge_tests > 0, "{s:?}");
+    assert_eq!(s, b.stats());
+}

@@ -7,6 +7,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: a split-half merge rule, opt-in (`MergeRule::SplitHalf`,
+  `qc_eval --merge-rule split-half`; the default stays `Legacy`). A pair of
+  cells whose footprints overlap less than half merges only when the
+  held-out test accepts it _and_ the two cells' running footprint estimates
+  have the same shape within their own split-half noise (the refine gate's
+  `Î ≤ 0`, applied both ways on the union support). On static sims
+  distinct-cell merges fall 64 % while 90 % of true-duplicate merges are
+  kept, with P8, R8 and r_fp flat. On real data merges fall about 70 %,
+  late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`). Diagnostics:
+  `qc_eval --merge-log` writes one JSON line per merge test.
 - Cala: multi-session runs. Pick a parent folder and every recording folder in
   it (any depth; Miniscope V4 `date/time/My_V4_Miniscope/` and `msCam` layouts)
   becomes a session; **Multi-session run** and **Add session** build the list by
