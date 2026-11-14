@@ -150,6 +150,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: "frame N has non-finite pixels under cell M" no longer stops Refine or
+  Extract. The cause was the trace solver diverging, not bad pixels: under the
+  ring background, a large footprint at the FOV edge whose own moat fills its
+  clipped ring kept a small positive curvature (`ã_iᵀã_i − s_i q_ii` at 1% of
+  `ã_iᵀã_i`, with `s_i` = −116), while the same `s_i` scaled its ring couplings
+  to its neighbours to ~10. Projected SOR then grew ~11x per sweep, the traces
+  reached inf within one frame (the Discover residual read 4e30), and the next
+  frame with missing pixels was filled with NaN, which the solve rejects. The
+  rule that already took the self term out of the ring level when the
+  curvature went negative now applies below half of `ã_iᵀã_i` (the cell's level
+  comes from its ring without its own term), and a library read from bytes is
+  repaired the same way, so libraries saved before the fix also solve. Seen in
+  Joint runs on stitched sims in the browser; intermittent because the cell
+  depends on the run's library. Other cells' terms are unchanged.
+
 - Cala: sessions and projects pick only Miniscope folders, read from the
   Miniscope metadata. A behaviour camera writes the same numbered `.avi` files
   as a Miniscope, and discovery used to tell them apart by name only (a `behav*`

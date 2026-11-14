@@ -818,19 +818,34 @@ pub(crate) enum BgTerms {
     },
 }
 
+/// Smallest share of `ã_iᵀã_i` the ring self term may leave as a cell's
+/// coordinate curvature (see [`ring_self_curvature`]).
+pub(crate) const RING_SELF_MIN_CURVATURE: f32 = 0.5;
+
 /// Ring model: the local level depends on the cell's own trace through its
 /// column in the ring (its moat), which adds `−s_i q_ii` to the coordinate
 /// curvature, so `mdiag_i = ã_iᵀã_i − s_i q_ii`.
 ///
-/// When that is not positive, the cell's own column dominates its ring
-/// level (a large filtered footprint whose moat fills a ring clipped by the
-/// field-of-view edge): raising `c_i` lowers the level by more than the
-/// cell's own light, the coordinate equation has the wrong sign, and the
-/// projected SOR step runs away (halo_s5: traces of 1e37, then inf). The
-/// ring cannot separate such a cell from its local level, so its level is
+/// When the self term takes most of that curvature, the cell's own column
+/// dominates its ring level (a large filtered footprint whose moat fills a
+/// ring clipped by the field-of-view edge), and the ring cannot separate
+/// the cell from its local level:
+///
+/// * not positive: raising `c_i` lowers the level by more than the cell's
+///   own light, the coordinate equation has the wrong sign, and the
+///   projected SOR step runs away (halo_s5: traces of 1e37, then inf);
+/// * positive but small: the same `s_i` scales the cell's ring couplings
+///   `−s_i q_ij` to its neighbours, which then dwarf the curvature (a Joint
+///   run in the app: 0.012 `ã_iᵀã_i` with `s_i` = −116 and couplings of
+///   ~10). The coordinate system is far from diagonally dominant, projected
+///   SOR grows ~11x per sweep, the traces reach inf within one frame, and
+///   the next frame with missing pixels fills them with NaN.
+///
+/// Below [`RING_SELF_MIN_CURVATURE`] of `ã_iᵀã_i` the level is therefore
 /// taken from the ring without the cell's own term (`q_ii = 0`, curvature
-/// `ã_iᵀã_i`). Cells with a positive curvature are unchanged (floored at
-/// 1e-3 `ã_iᵀã_i`, which only shortens their step).
+/// `ã_iᵀã_i`). Other cells are unchanged. (On the app library above the
+/// next-smallest ratio was 0.69: the rule picks out the degenerate cell
+/// only.)
 pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdiag: &mut [f32]) {
     for i in 0..gram_diag.len() {
         let (a, b) = (q.start[i], q.start[i + 1]);
@@ -838,12 +853,41 @@ pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdi
             continue;
         };
         let m = gram_diag[i] - s[i] * q.val[a + k];
-        if m > 0.0 {
-            mdiag[i] = m.max(1e-3 * gram_diag[i]);
+        if m >= RING_SELF_MIN_CURVATURE * gram_diag[i] {
+            mdiag[i] = m;
         } else {
             q.val[a + k] = 0.0;
             mdiag[i] = gram_diag[i];
         }
+    }
+}
+
+/// [`ring_self_curvature`] on the terms of a [`Library::to_bytes`] buffer,
+/// which may predate its current threshold (a library saved before it, then
+/// Extracted): a cell it picks out loses its self term and takes the
+/// curvature `ã_iᵀã_i`, its trace noise rescaled to match (the noise is
+/// `‖·‖ / mdiag_i`). A no-op on terms built with the current rule (their
+/// picked cells already have `q_ii = 0`), so those still solve
+/// bit-identically.
+fn ring_self_curvature_on_read(
+    gram_diag: &[f32],
+    s: &[f32],
+    q: &mut Csr,
+    mdiag: &mut [f32],
+    trace_noise: &mut [f32],
+) {
+    for i in 0..gram_diag.len() {
+        let (a, b) = (q.start[i], q.start[i + 1]);
+        let Ok(k) = q.col[a..b].binary_search(&(i as u32)) else {
+            continue;
+        };
+        let qii = q.val[a + k];
+        if qii == 0.0 || gram_diag[i] - s[i] * qii >= RING_SELF_MIN_CURVATURE * gram_diag[i] {
+            continue;
+        }
+        q.val[a + k] = 0.0;
+        trace_noise[i] *= mdiag[i] / gram_diag[i];
+        mdiag[i] = gram_diag[i];
     }
 }
 
@@ -1892,7 +1936,7 @@ impl Library {
             }
             groups[g].push(i as u32);
         }
-        let bg = match t.bg {
+        let mut bg = match t.bg {
             BgRead::None => BgTerms::None,
             BgRead::Basis { k, p, x, w } => BgTerms::Basis {
                 k,
@@ -1906,14 +1950,18 @@ impl Library {
             },
             BgRead::Ring(ring) => ring,
         };
+        let (mut mdiag, mut trace_noise) = (t.mdiag, t.trace_noise);
+        if let BgTerms::Ring { s, q, .. } = &mut bg {
+            ring_self_curvature_on_read(&t.gram_diag, s, q, &mut mdiag, &mut trace_noise);
+        }
         Ok(Library {
             version,
             core: core.finish(),
             model,
             gram: t.gram,
             gram_diag: t.gram_diag,
-            mdiag: t.mdiag,
-            trace_noise: t.trace_noise,
+            mdiag,
+            trace_noise,
             groups,
             group_of: t.group_of,
             bg,
