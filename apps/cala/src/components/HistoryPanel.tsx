@@ -180,8 +180,8 @@ function ExpandButton(props: { ui: HistoryUi }): JSX.Element {
   );
 }
 
-/** Space the chips, event lane and time axis take above and below the plot, CSS px. */
-const PLOT_CHROME_PX = 64;
+/** Space the chips (up to two rows), event lane and time axis take around the plot, CSS px. */
+const PLOT_CHROME_PX = 100;
 
 /**
  * The History tab: one group at a time, with the expand button. The open

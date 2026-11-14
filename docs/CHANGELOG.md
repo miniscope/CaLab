@@ -233,6 +233,22 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: the right-hand column is one row of tabs under a run strip. The strip,
+  always in view, shows the stage running (Discover, Refine, Extract, or the
+  setup), its progress and frame rate, pause and stop or cancel, and the
+  session in a multi-session run ("Session 3/8"); idle, what ran last and the
+  cell count. Below it: **Run**, **Cell**, **QC**, **History**, **Flat field**,
+  **Timing**, **Raw file** and **Recording** (View results: **Result** in place
+  of Run, no Timing or Raw file), one panel at a time with the column's whole
+  height, so the cell viewer no longer competes with the other panels for
+  room: its trace plot fills the height the footprint and QC leave. Selecting
+  a cell opens the Cell tab; the tab is remembered per viewer (localStorage);
+  arrow keys, Home and End move between tabs (the shared `TabStrip` now has
+  one tab stop and links each tab to its panel). Hidden panels stop drawing;
+  Run, Cell and Raw file stay mounted to keep their state, and the QC table's
+  sort and filter outlive its tab. The cell's Trace / Demixing tabs became a
+  switch, so there is one tab row.
+
 - Cala: Refine replays the recording pipelined. It used to keep at most one
   batch ahead of the slow loop, so the three pipeline workers ran one batch at
   a time (Refine at about half Extract's frame rate). It now keeps up to four

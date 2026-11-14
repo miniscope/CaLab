@@ -62,7 +62,7 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                                             |
 | Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
-| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run panel says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                    |
+| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run tab says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                      |
 
 Needed in any browser: WebAssembly, module Web Workers, and a folder picker
 (`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
@@ -74,9 +74,20 @@ few batches of frames is plenty.
 ## The screen
 
 The field of view fills the left of the window, as tall as the window allows. The
-right-hand column holds three panels: **Run**, **Cell** and **Details**. Each one
-collapses with the chevron by its title. Below about 1000 px of width, or in a
-portrait window, the column moves under the image and the page scrolls.
+right-hand column has the **run strip** at the top, always in view, and below it one
+row of tabs: **Run**, **Cell**, **QC**, **History**, **Flat field**, **Timing**,
+**Raw file** and **Recording**. One tab shows at a time, with the column's whole
+height. Selecting a cell (in the field of view, the QC table or a neighbour link)
+opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
+first and last), and the app remembers the tab you were on. Below about 1000 px of
+width, or in a portrait window, the column moves under the image and the page scrolls.
+
+**Run strip.** One line: the stage running (**Discover**, **Refine 2**, **Extract**,
+or **Calibrating** and **Motion template** while a run sets up), its progress, the
+frames per second, and its controls: pause (⏸) and end Discover or stop the live run
+(■), or **Cancel** for Refine and Extract. In a multi-session run it shows which
+session is being read (**Session 3/8**). When nothing runs it says what ran last and
+how many cells there are.
 
 **Field of view.**
 
@@ -100,29 +111,32 @@ portrait window, the column moves under the image and the page scrolls.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run panel.** One status line (percent read, frame, frames per second) and the
+**Run tab.** One status line (percent read, frame, frames per second) and the
 convergence status, with icon buttons to pause (⏸), restart (↻) and end Discover or
 stop the live run (■). Below it: the time-window control (**Run** and, when the run is
 long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
 overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
-explained, residual). Collapsing the panel folds the plot away. Below the plot:
+explained, residual). Below the plot:
 **Discover cells**, **Extract after Discover**, the **Refine** button and its readout,
 Extract progress, **Extract** and the **Export** menu. In a narrow window the stages
 show as a stepper (Calibrate, Discover, Refine, Extract, Export) and the metrics as
-small tiles on the same fixed ranges. A live stream shows Discover only.
+small tiles on the same fixed ranges. A live stream shows Discover only. In a
+multi-session run the session list (with each boundary's health badge in a Joint run)
+follows.
 
-**Cell panel.** The selected cell's footprint over its full extent (its own peak = 1,
+**Cell tab.** The selected cell's footprint over its full extent (its own peak = 1,
 no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
 the stored 8-bit footprint holds). The white line is its support and the grey lines
 are its neighbours' outlines. The slider steps through the footprint's versions. Next
-to it are the QC verdict and numbers. The **Trace** tab shows the whole session as an
-overview with a live detail window; **Demixing** shows the overlapping neighbours. The
-arrows step through the cells by id.
+to it are the QC verdict and numbers. The **Trace** / **Demixing** switch picks the
+view below: **Trace** shows the whole session as an overview with a live detail
+window that takes the rest of the tab's height; **Demixing** shows the overlapping
+neighbours. The arrows step through the cells by id.
 
-**Details panel.** Tabs: **Cell QC** (the cell table: click a row to select the cell),
-**History** (see below), **Flat field**, **Timing** (per-stage times and the slow
-loop's counters), **Raw file** (scrub the recording as read from disk) and
-**Recording**.
+**The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
+and filter stay while you look at other tabs), **History** (see below), **Flat field**,
+**Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
+recording as read from disk) and **Recording**.
 
 ## The History view: how the run evolves
 
@@ -130,20 +144,19 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 5-day live stream, and drawn on one time axis (elapsed stream time: `m:ss`, then
 `h:mm`, then days `d0`…`d5`).
 
-- **Groups.** The Run panel shows **Convergence**. The **History** tab shows one group
+- **Groups.** The Run tab shows **Convergence**. The **History** tab shows one group
   at a time: **Scales** (cell diameter, PSF and flatten σ, once the scale estimator
   lands), **Imaging** (noise σ and background, both the median over the field of
   view; flicker gain and offset; flat-field updates as stems), **Motion** (dy, dx,
   share of frames flagged, registration quality) and **Throughput** (processing rate,
-  slow-loop lag, and for a live stream frames dropped per minute and live lag). The
-  Cell panel folds to one line while History is open.
+  slow-loop lag, and for a live stream frames dropped per minute and live lag).
 - **One plot per group.** Every series is drawn against its own fixed range, so they
   share one plot. The chips above it are the legend and the readout: click a chip (or
   a line, or use the arrow keys) to select a series. The selected one is drawn in
   full with its min/max envelope, and the y axis shows its units and range; the
   others are dimmed. Hover a chip for its full name, range and unit.
 - **Hover** shows every series' value at that time, with the clock time. **Click**
-  pins the time: the chips show the values then, in violet, and the Run panel shows
+  pins the time: the chips show the values then, in violet, and the Run tab shows
   a violet pill; **Esc** or the pill returns to now.
 - **Zoom.** Drag on the whole-run strip, or drag or scroll inside a plot, to choose a
   window; double-click returns to the whole run. The window and the pinned time are
@@ -155,7 +168,8 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 - **Events.** The lane above each plot marks flat-field maps, pauses, gaps and
   warnings, and range steps; the **?** button explains the icons.
 - **Expand.** The ⤢ button swaps History into the large area, with every group at once;
-  the field of view moves into the History tab and stays live. ⤡ restores it.
+  the field of view moves into the History tab and stays live (selecting a cell there
+  keeps you on the History tab). ⤡ restores it.
 - **Old periods are coarser.** The newest hour is kept at 1 s resolution, older
   periods at 4 s, 16 s, 64 s and 256 s bins; each bin keeps its minimum and maximum,
   so a spike is never lost. About 9 MB covers 5 days. The per-frame motion and
@@ -228,7 +242,8 @@ has done with each, and every result kept in `<animal>/cala-results/`.
 - **View results.** Opens a result in the viewer as it looked right after its run:
   the cells over the field of view (**Mean** or **Max** image), the QC table, a
   clicked cell's footprint and trace, the History plots and event log, the stages that
-  ran and the flat field. It is read-only: to Discover or Refine again, start a new run
+  ran and the flat field, in the same tabs (the first, **Result**, says what was
+  saved; the strip shows the traces being read). It is read-only: to Discover or Refine again, start a new run
   from the table. **Back to project** returns to the table. Results saved by older
   versions open too; what they lack (the images, the History) says "not in this
   export".
@@ -313,7 +328,7 @@ run plan that way (it never switches by itself).
 
 ## Reading the quality-control indicators
 
-**Convergence status** (Run panel header, with the convergence plot below it). Cell discovery does not stop on long
+**Convergence status** (Run tab header, with the convergence plot below it). Cell discovery does not stop on long
 recordings, so "converged" means the cells already found stopped changing, not that
 no new cells appear.
 
@@ -326,7 +341,7 @@ no new cells appear.
   library per minute, over the last two minutes. The rate of new cells is shown but
   never blocks this. It says nothing about cells Cala cannot see.
 
-**Cell QC tab.** One row per cell, failing cells first. A cell is **not measured
+**QC tab.** One row per cell, failing cells first. A cell is **not measured
 yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
 0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
@@ -391,7 +406,7 @@ never changed. See the README for the protocol and the full option list.
 
 - **Beta.** Expect rough edges, and check the results against your own data.
 - **Footprints still changing.** At the end of a 20-minute pass about 1 footprint in 10
-  may still be changing; the convergence status in the Run panel says where a run stands.
+  may still be changing; the convergence status in the Run tab says where a run stands.
 - **Somatic footprints only.** Cala looks for compact, single-peaked cell bodies, not
   dendrites or neuropil.
 - **Gain stability over days is untested.** The cached flat field assumes the sensor's

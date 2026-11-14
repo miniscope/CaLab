@@ -56,6 +56,42 @@ describe('TabStrip', () => {
     expect(onSelect).toHaveBeenCalledWith('a');
   });
 
+  /* eslint-disable solid/reactivity -- the test reads the selection untracked */
+  it('has one tab stop and moves the selection with the arrow, Home and End keys', () => {
+    const [active, setActive] = createSignal('a');
+    const host = mount(() => (
+      <TabStrip
+        tabs={[
+          { id: 'a', label: 'A' },
+          { id: 'b', label: 'B' },
+          { id: 'c', label: 'C' },
+        ]}
+        active={active()}
+        onSelect={setActive}
+        idBase="t"
+      />
+    ));
+    const [a, b, c] = tabButtons(host);
+    expect([a.tabIndex, b.tabIndex, c.tabIndex]).toEqual([0, -1, -1]);
+    expect(a.id).toBe('t-tab-a');
+    expect(a.getAttribute('aria-controls')).toBe('t-panel-a');
+    const key = (el: HTMLElement, k: string) =>
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+    key(a, 'ArrowRight');
+    expect(active()).toBe('b');
+    expect(b.tabIndex).toBe(0);
+    key(b, 'ArrowLeft');
+    key(a, 'ArrowLeft');
+    expect(active()).toBe('c');
+    key(c, 'Home');
+    expect(active()).toBe('a');
+    key(a, 'End');
+    expect(active()).toBe('c');
+    key(c, 'x');
+    expect(active()).toBe('c');
+  });
+  /* eslint-enable solid/reactivity */
+
   it('defaults to the underline variant', () => {
     const host = mount(() => <TabStrip tabs={[]} active={null} onSelect={() => {}} />);
     expect(host.querySelector('.tab-strip--underline')).not.toBeNull();
@@ -98,6 +134,27 @@ describe('Tabs', () => {
     expect(tabButtons(host)[0].getAttribute('aria-selected')).toBe('true');
     setActive('b');
     expect(tabButtons(host)[1].getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('lets a tab override keepMounted and ties panels to their tabs', () => {
+    const host = mount(() => (
+      <Tabs
+        idBase="x"
+        keepMounted={false}
+        tabs={[
+          { id: 'a', label: 'Alpha', content: <p>content a</p> },
+          { id: 'b', label: 'Beta', keepMounted: true, content: <p>content b</p> },
+          { id: 'c', label: 'Gamma', content: <p>content c</p> },
+        ]}
+      />
+    ));
+    // a shown, b kept (hidden), c not mounted.
+    expect(panels(host).map((p) => p.id)).toEqual(['x-panel-a', 'x-panel-b']);
+    expect(panels(host)[1].style.display).toBe('none');
+    tabButtons(host)[2].click();
+    expect(panels(host).map((p) => p.id)).toEqual(['x-panel-b', 'x-panel-c']);
+    expect(host.textContent).toContain('content b');
+    expect(host.textContent).not.toContain('content a');
   });
 
   it('keepMounted hides inactive panels, uses panelDisplay and labels panels', () => {

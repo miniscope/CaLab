@@ -116,8 +116,14 @@ afterEach(() => {
   dispose?.();
   dispose = undefined;
   document.body.replaceChildren();
+  localStorage.clear();
   vi.clearAllMocks();
 });
+
+/** Click a tab of the right-hand column. */
+function openTab(root: HTMLElement, id: string): void {
+  root.querySelector<HTMLButtonElement>(`[data-testid="tab-${id}"]`)!.click();
+}
 
 function mount(): HTMLElement {
   const root = document.createElement('div');
@@ -167,6 +173,7 @@ describe('App', () => {
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(0));
     expect(root.querySelector('[data-testid="frame-readout"]')?.textContent).toContain('1 / 50');
 
+    openTab(root, 'recording');
     const info = root.querySelector('[data-panel-id="info"]')!.textContent!;
     expect(info).toContain('4 x 3 px, 8-bit (GREY)');
     expect(info).toContain('20.00 Hz from timeStamps.csv');
@@ -192,15 +199,17 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
       'frame 50 / 50',
     );
-    // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
-    expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
-      'motion 0.1',
-    );
     // The Run panel's convergence plot (tiles in a narrow window, as jsdom's is) and the
     // History tab (one group shown) are up.
     expect(
       root.querySelector('[data-testid="history-convergence"], [data-testid="tile-cells"]'),
     ).not.toBeNull();
+    // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
+    openTab(root, 'timing');
+    expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
+      'motion 0.1',
+    );
+    openTab(root, 'history');
     expect(root.querySelector('[data-testid="history-tab"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
     expect(root.querySelectorAll('[data-testid="cells-view"]')).toHaveLength(1);
@@ -208,6 +217,63 @@ describe('App', () => {
     // Opening another folder stops the worker-side pipeline.
     root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
     expect(fake.stopPipeline).toHaveBeenCalled();
+  });
+
+  it('puts the run strip over one row of tabs, keyboard-operable and remembered', async () => {
+    fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const stage = () => root.querySelector('[data-testid="run-strip-stage"]')?.textContent;
+    await vi.waitFor(() => expect(stage()).toBe('Discover done'));
+    expect(root.querySelector('[data-testid="run-strip-detail"]')?.textContent).toBe('0 cells');
+    // One tab row (the cell's Trace / Demixing is a switch, not a second row).
+    const lists = root.querySelectorAll('[role="tablist"]');
+    expect(lists).toHaveLength(1);
+    const tabs = [...lists[0].querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      'Run',
+      'Cell',
+      'QC',
+      'History',
+      'Flat field',
+      'Timing',
+      'Raw file',
+      'Recording',
+    ]);
+    const selected = () => tabs.find((t) => t.getAttribute('aria-selected') === 'true');
+    expect(selected()?.textContent).toBe('Run');
+    expect(selected()?.tabIndex).toBe(0);
+    expect(tabs[1].tabIndex).toBe(-1);
+    // Each tab controls its panel; only the shown panels and the kept ones are in the DOM.
+    const panel = document.getElementById(selected()!.getAttribute('aria-controls')!)!;
+    expect(panel.getAttribute('role')).toBe('tabpanel');
+    expect(panel.querySelector('[data-testid="pipeline-status"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="qc-table"]')).toBeNull();
+    // Arrow keys move along the row and select.
+    tabs[0].focus();
+    tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(selected()?.textContent).toBe('Cell');
+    tabs[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(selected()?.textContent).toBe('QC');
+    expect(root.querySelector('[data-testid="qc-table"]')).not.toBeNull();
+    tabs[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    expect(selected()?.textContent).toBe('Recording');
+    // Run stays mounted (hidden) while another tab is shown: its state is kept.
+    expect(root.querySelector('[data-testid="pipeline-status"]')).not.toBeNull();
+    expect(localStorage.getItem('cala.sideTab.run')).toBe('recording');
+  });
+
+  it('opens on the remembered tab', async () => {
+    localStorage.setItem('cala.sideTab.run', 'qc');
+    fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    await vi.waitFor(() => expect(root.querySelector('[data-testid="qc-table"]')).not.toBeNull());
+    expect(root.querySelector('[data-testid="tab-qc"]')?.getAttribute('aria-selected')).toBe(
+      'true',
+    );
   });
 
   it('toggles play and pause', async () => {

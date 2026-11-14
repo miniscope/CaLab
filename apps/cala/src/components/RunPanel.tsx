@@ -1,5 +1,5 @@
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
-import { MetricTile, ProgressBar, SegmentedControl } from '@calab/ui';
+import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -39,6 +39,12 @@ import { SidePanel } from './SidePanel.tsx';
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
   'motion-warmup': 'Building the motion template',
+} as const;
+
+/** The setup phases in the run strip (one word). */
+const SETUP_SHORT = {
+  calibrate: 'Calibrating',
+  'motion-warmup': 'Motion template',
 } as const;
 
 /** Badge text and tooltip for where motion correction runs. */
@@ -116,6 +122,10 @@ export interface RunPanelProps {
   compress?: CompressStore;
   /** Present when the run reviews its compressed history (`?compress&review`). */
   review?: ReviewStore;
+  /** In a tab of its own: not collapsible (the convergence plot always shows). */
+  fixed?: boolean;
+  /** False while its tab is hidden: the plots stop drawing (the panel stays mounted for its state). Default true. */
+  visible?: boolean;
 }
 
 /** `0.0123` -> `1.2%`. */
@@ -469,12 +479,14 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
 
   const [metricsOpen, setMetricsOpen] = createSignal(true);
+  const shown = () => props.visible !== false;
 
   return (
     <SidePanel
       id="run"
       title="Run"
       class="cala-run"
+      fixed={props.fixed}
       open={metricsOpen()}
       onToggle={setMetricsOpen}
       toggleLabel={(open) => (open ? 'Hide the convergence plot' : 'Show the convergence plot')}
@@ -613,7 +625,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 aria-label="Extract"
               />
             </Show>
-            <Show when={metricsOpen()}>
+            <Show when={metricsOpen() && shown()}>
               <div class="cala-run__tiles">
                 <For each={tiles()}>
                   {(m) => (
@@ -645,9 +657,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               testid="time-window"
             />
           </div>
-          <RunStrip ui={props.ui} />
+          <Show when={shown()}>
+            <RunStrip ui={props.ui} />
+          </Show>
           {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
-          <Show when={metricsOpen() && !props.ui.expanded()}>
+          <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
             <GroupPlot ui={props.ui} group="convergence" height={130} compact />
           </Show>
           <Show when={!props.live && refineBusy()}>
@@ -767,7 +781,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 : (refineText() ?? '')}
           </span>
         </div>
-        <Show when={r().series()}>
+        <Show when={shown() && r().series()}>
           {(sr) => (
             <RefineRunPlot
               series={sr()}
@@ -776,7 +790,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             />
           )}
         </Show>
-        <RefineRunsChart runs={props.stages.runs()} />
+        <Show when={shown()}>
+          <RefineRunsChart runs={props.stages.runs()} />
+        </Show>
         <Show
           when={showNextStepHint({
             live: props.live === true,
@@ -957,5 +973,181 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         )}
       </Show>
     </SidePanel>
+  );
+}
+
+/** What the run strip shows: the active stage, else the newest outcome. */
+interface StripView {
+  stage: string;
+  /** Null: no bar (a live stream has no end). */
+  fraction: number | null;
+  state: ProgressState;
+  detail: string;
+  /** The stop or cancel control of the active stage. */
+  stop?: { label: string; title: string; testid: string; onClick: () => void };
+  /** Discover: pause and resume. */
+  pause?: boolean;
+}
+
+const fpsText = (fps: number) => (fps > 0 ? ` · ${fps.toFixed(1)} fps` : '');
+
+/**
+ * The run on one line, above the column's tabs and always in view: the active
+ * stage (Discover, Refine or Extract), its progress, the frame rate, its
+ * stop or cancel control and, in a multi-session run, the session. Idle, the
+ * newest outcome and the cell count. The controls are the Run tab's.
+ */
+export function RunStatusStrip(props: {
+  pipeline: PipelineStore;
+  pass2: Pass2Store;
+  refine: RefineStore;
+  stages: StageLog;
+  cells: CellStore;
+  live?: boolean;
+  /** "Session 3/8" in a multi-session run (null: none). */
+  session?: string | null;
+}): JSX.Element {
+  const s = () => props.pipeline;
+  const p = () => props.pass2;
+  const r = () => props.refine;
+  const refineRuns = () => props.stages.runs().filter((x) => x.stage === 'refine').length;
+  const cellsText = () => `${props.cells.library()?.ids.length ?? 0} cells`;
+  const view = (): StripView => {
+    const rs = r().status();
+    if (rs === 'running' || rs === 'finishing') {
+      const total = r().total();
+      return {
+        stage: `${STAGE_LABEL.refine} ${refineRuns()}`,
+        fraction: total > 0 ? r().processed() / total : 0,
+        state: 'running',
+        detail: `${rs === 'finishing' ? 'publishing' : `frame ${r().processed().toLocaleString()}`}${fpsText(r().fps())}`,
+        stop: {
+          label: 'Cancel',
+          title: 'Stop this Refine run: the footprints refined so far are kept.',
+          testid: 'strip-refine-cancel',
+          onClick: () => r().cancel(),
+        },
+      };
+    }
+    if (p().status() === 'running') {
+      const total = p().total();
+      return {
+        stage: STAGE_LABEL.extract,
+        fraction: total > 0 ? p().processed() / total : 0,
+        state: 'running',
+        detail: `frame ${p().processed().toLocaleString()}${fpsText(p().fps())}`,
+        stop: {
+          label: 'Cancel',
+          title: 'Cancel Extract.',
+          testid: 'strip-extract-cancel',
+          onClick: () => p().cancel(),
+        },
+      };
+    }
+    const st = s().status();
+    if (st === 'starting' || st === 'running' || st === 'paused') {
+      const state: ProgressState = st === 'paused' ? 'paused' : 'running';
+      const setup = s().setup();
+      const end = {
+        label: '■',
+        title: props.live
+          ? 'Stop the live run: the cells found so far become the final library.'
+          : 'End Discover here: the cells found so far become the final library.',
+        testid: 'strip-discover-end',
+        onClick: () => void s().finishEarly(),
+      };
+      if (st === 'starting')
+        return { stage: 'Starting', fraction: 0, state, detail: '', stop: end };
+      if (s().processed() === 0 && setup)
+        return {
+          stage: SETUP_SHORT[setup.phase],
+          fraction: setup.total > 0 ? setup.done / setup.total : 0,
+          state,
+          detail: `${setup.done} / ${setup.total}${st === 'paused' ? ' · paused' : ''}`,
+          stop: end,
+          pause: true,
+        };
+      const total = s().plan()?.frameCount ?? 0;
+      const bounded = Number.isFinite(total) && total > 0;
+      return {
+        stage: STAGE_LABEL.discover,
+        fraction: bounded ? s().processed() / total : null,
+        state,
+        detail: `${props.live ? 'live · ' : ''}${cellsText()}${st === 'paused' ? ' · paused' : fpsText(s().fps())}`,
+        stop: end,
+        pause: true,
+      };
+    }
+    if (st === 'error')
+      return { stage: 'Stopped', fraction: null, state: 'error', detail: 'by an error' };
+    if (st === 'idle') return { stage: 'Ready', fraction: null, state: 'idle', detail: '' };
+    const last =
+      p().status() === 'done'
+        ? STAGE_LABEL.extract
+        : refineRuns() > 0
+          ? `${STAGE_LABEL.refine} ${refineRuns()}`
+          : STAGE_LABEL.discover;
+    return { stage: `${last} done`, fraction: 1, state: 'complete', detail: cellsText() };
+  };
+  return (
+    <div
+      class="cala-strip"
+      role="status"
+      aria-label="Run"
+      data-testid="run-strip"
+      data-state={view().state}
+    >
+      <strong class="cala-strip__stage" data-testid="run-strip-stage">
+        {view().stage}
+      </strong>
+      <Show when={view().fraction !== null}>
+        <ProgressBar
+          class="cala-strip__bar"
+          fraction={view().fraction ?? 0}
+          state={view().state}
+          aria-label={view().stage}
+        />
+        <span class="cala-readout cala-strip__pct">
+          {Math.floor(100 * Math.min(1, view().fraction ?? 0))}%
+        </span>
+      </Show>
+      <span class="cala-readout cala-strip__detail" data-testid="run-strip-detail">
+        {view().detail}
+      </span>
+      <Show when={props.session}>
+        {(label) => (
+          <span class="cala-strip__session" data-testid="run-strip-session">
+            {label()}
+          </span>
+        )}
+      </Show>
+      <Show when={view().pause}>
+        <button
+          type="button"
+          class="btn-secondary btn-small cala-icon-btn"
+          aria-label={s().status() === 'paused' ? 'Resume' : 'Pause'}
+          title={s().status() === 'paused' ? 'Resume' : 'Pause'}
+          data-testid="strip-pause"
+          onClick={() => s().togglePause()}
+        >
+          {s().status() === 'paused' ? '▶' : '⏸'}
+        </button>
+      </Show>
+      <Show when={view().stop}>
+        {(stop) => (
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            classList={{ 'cala-icon-btn': stop().label.length === 1 }}
+            aria-label={stop().title}
+            title={stop().title}
+            data-testid={stop().testid}
+            onClick={() => stop().onClick()}
+          >
+            {stop().label}
+          </button>
+        )}
+      </Show>
+    </div>
   );
 }

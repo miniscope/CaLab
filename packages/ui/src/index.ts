@@ -22,7 +22,7 @@ export type { WorkerIndicatorProps } from './WorkerIndicator.tsx';
 export { TraceLegend } from './TraceLegend.tsx';
 export type { TraceLegendProps, LegendItemConfig } from './TraceLegend.tsx';
 
-export { TabStrip, Tabs } from './Tabs.tsx';
+export { TabStrip, Tabs, tabId, tabPanelId } from './Tabs.tsx';
 export type { TabStripItem, TabStripProps, TabItem, TabsProps } from './Tabs.tsx';
 export { SegmentedControl } from './SegmentedControl.tsx';
 export type { SegmentedOption, SegmentedControlProps } from './SegmentedControl.tsx';

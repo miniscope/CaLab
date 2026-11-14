@@ -73,14 +73,25 @@ function badge(r: CellQcRow): { cls: string; text: string } {
   return { cls: 'pass', text: 'pass' };
 }
 
+/** The QC table's sort and filter, kept by its owner so they outlive the table (a hidden tab). */
+export function createQcTableState() {
+  const [key, setKey] = createSignal<SortKey>('flagged');
+  const [dir, setDir] = createSignal<1 | -1>(1);
+  const [flaggedOnly, setFlaggedOnly] = createSignal(false);
+  return { key, setKey, dir, setDir, flaggedOnly, setFlaggedOnly };
+}
+
+export type QcTableState = ReturnType<typeof createQcTableState>;
+
 /**
  * Every cell with its QC metrics, sortable; flagged cells first by default.
  * Clicking a row selects the cell (as clicking its outline does).
  */
-export function QcTable(props: { cells: CellStore }): JSX.Element {
-  const [key, setKey] = createSignal<SortKey>('flagged');
-  const [dir, setDir] = createSignal<1 | -1>(1);
-  const [flaggedOnly, setFlaggedOnly] = createSignal(false);
+export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.Element {
+  // The owner's state, or a table of its own (fixed per mount).
+  const { key, setKey, dir, setDir, flaggedOnly, setFlaggedOnly } =
+    // eslint-disable-next-line solid/reactivity
+    props.state ?? createQcTableState();
   const qc = () => props.cells.qc();
   const est = () => props.cells.established();
   const fps = () => props.cells.fps();
