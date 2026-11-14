@@ -9,6 +9,7 @@
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import type { FlatFieldEvent } from '../lib/flat-field.ts';
 import { FlatFieldRunner } from '../lib/flat-field-runner.ts';
+import { freeBuffer } from '../lib/free-buffer.ts';
 import type { FlatFieldDown, FlatFieldLink, FlatFieldUp } from './flat-field-types.ts';
 
 const scope = globalThis as unknown as {
@@ -48,6 +49,8 @@ async function handle(msg: FlatFieldDown): Promise<void> {
       // and a refine can take a second while the next ones arrive.
       port?.postMessage({ type: 'ack', session: msg.session } satisfies FlatFieldUp);
       if (msg.session === session) runner.push(msg);
+      // Binned (or not wanted): release the raw frames now, not at the next GC.
+      freeBuffer(msg.raw);
       break;
     case 'stop':
       runner.stop();

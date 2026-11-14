@@ -183,6 +183,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   Joint runs on stitched sims in the browser; intermittent because the cell
   depends on the run's library. Other cells' terms are unchanged.
 
+- Cala: a multi-session run whose results go to a zip download (no folder
+  picked, or no File System Access API) no longer keeps every session's
+  export in memory after the download until the next run starts (about
+  65 MB per 10-minute session; 180 MB after a 3-session Joint run).
+
 - Cala: sessions and projects pick only Miniscope folders, read from the
   Miniscope metadata. A behaviour camera writes the same numbered `.avi` files
   as a Miniscope, and discovery used to tell them apart by name only (a `behav*`
@@ -260,6 +265,26 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   is harder to read, and the spare height stays empty. The expanded History
   caps at 340 px.
 
+- Cala: the tab uses about 0.3-0.5 GB less memory, with identical results.
+  Measured on one 600 x 600, 17,878-frame Miniscope session (Discover,
+  Refine, Extract): the tab's footprint averaged 2.14 GB and peaked at
+  2.40 GB during Discover before; 1.66 GB and 1.95 GB now. On a 3-session
+  Joint run (53,632 frames) Discover averaged 2.36 GB before and 1.88 GB
+  now, Refine 2.52 GB and 2.13 GB. Three changes:
+  the motion warm-up keeps its 200 filtered frames in one exact-size
+  allocation each instead of one doubling `Vec`, whose reallocation left the
+  motion worker's WASM heap (which never shrinks) at 370 MB instead of
+  162 MB; a visit worker drops a tile's background basis after each visit
+  (a pure function of the tile, rebuilt on the next visit) instead of
+  ending up with every tile's, about 30 MB per visit worker; and workers
+  release consumed buffers (visit jobs and results, raw batches for the
+  flat field) at once with `ArrayBuffer.prototype.transfer(0)` instead of
+  leaving them to the next garbage collection, which in workers with tiny
+  JS heaps came rarely (dead buffers averaged about 200 MB across the
+  workers). Frame rates are unchanged. Every thread that loads the WASM
+  module now answers `globalThis.__calaWasmHeapBytes()` (its WASM heap
+  size), for memory measurements over DevTools.
+
 - Cala: Refine replays the recording pipelined. It used to keep at most one
   batch ahead of the slow loop, so the three pipeline workers ran one batch at
   a time (Refine at about half Extract's frame rate). It now keeps up to four
@@ -295,6 +320,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
 
 ### Developer tooling
+
+- Cala: `apps/cala/scripts/memory-measure.mjs` runs a recording through the
+  app headless and samples the tab's memory over time per thread (JS heap,
+  ArrayBuffers and WASM heap of the main thread and every worker over CDP,
+  plus the renderer's and GPU process's footprint), then forces a GC and
+  samples again. The results zip is a download into `--out`, never written
+  into the data folder.
 
 - cala-eval: `qc_eval` scores motion runs against ground truth in cala's
   registered frame. cala registers to its warm-up template, which sits 1 to

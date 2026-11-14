@@ -131,6 +131,8 @@ describe('SlowRunner with visit workers (fakes)', () => {
     const res: VisitToOwner = { type: 'result', session: 1, bytes: Uint8Array.of(42), ms: 5 };
     t.r.handleVisit(0, res);
     expect(t.applied).toEqual([42]);
+    // Copied into the loop: the result's buffer is released at once.
+    expect(res.bytes.byteLength).toBe(0);
     expect(t.toVisit[0].at(-1)!.msg.type).toBe('job');
     // Nothing more due: the next result leaves the worker idle.
     t.r.handleVisit(1, res);

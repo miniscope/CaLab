@@ -278,6 +278,9 @@ export function zipResultsSink(
       const zip = new ZipStreamWriter(out);
       for (const [path, bytes] of files) await zip.addFile(`${root}/${path}`, bytes);
       await zip.finish();
+      // The run keeps its sink until the next run starts: do not keep every
+      // session's export alive with it (one 10-minute session is ~65 MB).
+      files.clear();
       deliver(
         `${prefix ? `${RESULTS_DIR}_${prefix.replace(/\//g, '_')}` : root}.zip`,
         new Blob([out.toArrayBuffer()], { type: 'application/zip' }),
