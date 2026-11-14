@@ -115,6 +115,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: Refine's QC. Refine runs no QC monitor, so after a Refine the Cell QC
+  table still showed Discover's last snapshot: peak SNR over each cell's last
+  60 s of Discover (the pre-#385 numbers), lower than the whole-session SNR
+  shown after Extract. Refine now keeps its replay's traces (a trace file, as
+  Extract does) and, before it reports done, recomputes the trace statistics
+  over the whole recording with the same function as after Extract
+  (`extract-qc.ts`), replacing the shown snapshot. While Refine runs the table
+  still shows the previous numbers. If there is no room for the traces, or the
+  replay solves other cells than it started with, Refine runs without the QC
+  and says so in the console.
+
 - Cala: exports now hold the run's History bins and event log
   (`history_L{k}`, `run_events_json`). The writer supported them since format
   2, but neither the Export button nor the multi-session and project runs
