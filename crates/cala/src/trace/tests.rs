@@ -610,6 +610,60 @@ fn library_install_from_terms_matches_full_rebuild_at_the_same_frame() {
     }
 }
 
+/// A rebuild with `reuse` copies the pair terms of unchanged cells from the
+/// previous library (`PairReuse`): its terms must be bit for bit those
+/// computed from scratch from the same footprint columns, with cells
+/// changed, moved, added, removed and reordered, under every background
+/// model.
+#[test]
+fn rebuild_with_reuse_has_the_terms_of_a_full_assemble() {
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let prev = Arc::new(library(&[0, 1, 2, 3, 4], model.clone(), 60));
+        let scaled = |id: u64, c: (f32, f32), k: f32| {
+            let mut fp = footprint(id, c);
+            fp.values.iter_mut().for_each(|v| *v *= k);
+            fp
+        };
+        let orders: [Vec<Footprint>; 3] = [
+            // Nothing changed.
+            (0..5).map(|i| footprint(i as u64, CENTRES[i])).collect(),
+            // 1 rescaled, 3 moved, 4 removed, 5 added.
+            vec![
+                footprint(0, CENTRES[0]),
+                scaled(1, CENTRES[1], 1.1),
+                footprint(2, CENTRES[2]),
+                footprint(3, (CENTRES[3].0 + 1.0, CENTRES[3].1)),
+                footprint(5, CENTRES[5]),
+            ],
+            // Reordered (the Gram's orientation follows the slots).
+            [4usize, 2, 0, 3, 1]
+                .iter()
+                .map(|&i| footprint(i as u64, CENTRES[i]))
+                .collect(),
+        ];
+        for (k, fps) in orders.into_iter().enumerate() {
+            let mut b = LibraryBuilder::new(dims())
+                .background(model.clone())
+                .version(61 + k as u64)
+                .reuse(prev.clone());
+            for fp in fps {
+                b.push(fp);
+            }
+            let lib = b.build(&mut flattener()).unwrap();
+            let full = Library::from_bytes(&lib.core_bytes(CORE_MAGIC)).unwrap();
+            assert_eq!(lib.to_bytes(), full.to_bytes(), "{model:?}, case {k}");
+            assert_eq!(lib.groups, full.groups);
+        }
+    }
+}
+
 #[test]
 fn library_bytes_with_damaged_terms_are_refused() {
     let lib = library(
