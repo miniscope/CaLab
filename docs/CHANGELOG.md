@@ -5,6 +5,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-11-13
+
+Web apps `v2.18.0`; the Python package `calab` is unchanged (`py/v0.5.0`; the
+rectified-input warning in its `_compute` ships with the next `py/` release).
+Cala becomes multi-session: open an animal's folder, see every session with its
+metadata and cala status, and run Joint chains (one cell library carried
+across sessions, with re-registration and brightness/noise correction at each
+boundary, and a per-boundary health flag) or Separate runs, with results
+exported per session to a parallel `cala-results/` tree and viewable read-only
+later. Refine no longer pauses or slows over long runs, the tab uses about
+0.4-0.5 GB less memory, an intermittent "non-finite pixels" crash is fixed, and
+the right-hand column is reorganised into tabs under an always-visible run
+strip.
+
 ### Added
 
 - Cala: session-boundary health flags in Joint runs. Discover judges each
