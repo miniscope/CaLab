@@ -30,7 +30,6 @@ import {
 } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
 import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
-import { freeBuffer } from './free-buffer.ts';
 import type { FlatFieldSink } from './flat-field-runner.ts';
 import { sessionBoundaries, type FramePixels } from './frame-source.ts';
 import {
@@ -379,10 +378,7 @@ export class FrontStage {
     if (this.flatSink && this.flatSink.ready()) {
       if (this.pendingRaw.size >= MAX_PENDING_RAW) {
         const oldest = this.pendingRaw.keys().next().value;
-        if (oldest !== undefined) {
-          freeBuffer(this.pendingRaw.get(oldest)?.raw);
-          this.pendingRaw.delete(oldest);
-        }
+        if (oldest !== undefined) this.pendingRaw.delete(oldest);
       }
       this.pendingRaw.set(s.start, { raw: raw.slice(0, s.count * this.px), count: s.count });
     }
@@ -424,10 +420,7 @@ export class FrontStage {
     if (!pending) return;
     this.pendingRaw.delete(start);
     const sink = this.flatSink;
-    if (!sink || !sink.ready() || (session && session[0] !== 0)) {
-      freeBuffer(pending.raw);
-      return;
-    }
+    if (!sink || !sink.ready() || (session && session[0] !== 0)) return;
     if (session) {
       dy = dy.map((v) => v + session[1]);
       dx = dx.map((v) => v + session[2]);

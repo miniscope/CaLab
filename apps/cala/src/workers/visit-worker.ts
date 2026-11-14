@@ -5,7 +5,6 @@
  * slow worker owns the cells and the reservoir (see `discover/shard.rs`).
  */
 import { initCalaWasm, VisitWorker } from '../lib/cala-wasm.ts';
-import { freeBuffer } from '../lib/free-buffer.ts';
 import type { OwnerToVisit, VisitConnect, VisitToOwner } from './slow-types.ts';
 
 const workerScope = globalThis as unknown as {
@@ -45,13 +44,7 @@ function handle(msg: OwnerToVisit): void {
     return;
   }
   const t0 = performance.now();
-  let bytes: Uint8Array;
-  try {
-    bytes = worker.run(msg.bytes);
-  } finally {
-    // Copied into WASM: release the job now, not at the next GC.
-    freeBuffer(msg.bytes);
-  }
+  const bytes = worker.run(msg.bytes);
   post({ type: 'result', session, bytes, ms: performance.now() - t0 }, [
     bytes.buffer as ArrayBuffer,
   ]);

@@ -5,6 +5,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Fixed
+
+- Cala: Refine no longer stalls with the tab's memory growing to 6-12 GB in
+  Chrome on a machine with a real GPU. v2.18.0 "freed" consumed buffers in its
+  workers with `ArrayBuffer.transfer(0)` (tile visit jobs and results, raw
+  frames for the flat-field estimator). In Chrome that keeps the memory with
+  an empty buffer that V8 counts as zero bytes, so no garbage collection is
+  triggered for it. At the ~300 tile visits a second a GPU-speed Refine makes
+  (3.35 MB each) the tab grew by about 1 GB/s. The buffers are now simply
+  dropped and collected as usual; Refine stays at Discover's level (about
+  2 GB for a 10-minute session).
+
 ## [2.18.0] - 2026-11-13
 
 Web apps `v2.18.0`; the Python package `calab` is unchanged (`py/v0.5.0`; the
