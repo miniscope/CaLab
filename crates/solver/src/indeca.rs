@@ -357,6 +357,12 @@ pub struct InDecaResult {
     /// Spikes the pick asked for that no frame of their event's span had room
     /// for (frames hold at most `cap` spikes).
     pub dropped_spikes: u32,
+    /// The input trace looks rectified at zero (non-negative with at least a
+    /// fifth of the samples exactly 0: clipped at its baseline, or already
+    /// denoised, like cala's per-frame non-negative traces or Minian/CaImAn
+    /// `C`). Not a supported input: the preprocessing is unchanged and the
+    /// result is unreliable. A warning for apps and callers only.
+    pub rectified_input: bool,
 }
 
 /// Return the interior slice of `s` excluding `pad` samples from each end.
@@ -630,6 +636,39 @@ impl Prepared {
     }
 }
 
+/// Does `trace` look rectified at zero: a baseline-removed trace clipped at 0
+/// (like cala's per-frame non-negative traces) or already denoised (Minian /
+/// CaImAn `C`)? Detection only: CaDecon does not support such input and the
+/// preprocessing is the same either way.
+///
+/// The rule: the trace minimum is exactly 0 and at least a fraction
+/// [`crate::baseline::DEFAULT_BASELINE_QUANTILE`] of the finite samples equal
+/// it. The fraction is not a free knob: the baseline stage reads the floor as
+/// the 20% quantile, so when 20% or more of the samples are the same value
+/// the floor is observed directly (the quantile *is* that value) and the
+/// baseline is exactly 0, where the bandpass and the rolling quantile can
+/// only distort it. A continuous noisy trace ties at
+/// its minimum in a handful of samples (a fraction ~ 1/n), a quantized one
+/// (integer counts) only when the quantization step is coarse against the
+/// noise and the floor sits at zero, which is itself a trace clipped at its
+/// floor. A trace whose floor is not exactly 0 (an offset added, drift left
+/// in) is not rectified: its baseline is unknown and the chain is wanted.
+/// Non-finite samples are ignored.
+pub(crate) fn is_rectified(trace: &[f32]) -> bool {
+    let (mut n, mut zeros) = (0usize, 0usize);
+    for &v in trace {
+        if !v.is_finite() {
+            continue;
+        }
+        if v < 0.0 {
+            return false;
+        }
+        n += 1;
+        zeros += (v == 0.0) as usize;
+    }
+    n > 0 && zeros as f64 >= crate::baseline::DEFAULT_BASELINE_QUANTILE * n as f64
+}
+
 pub(crate) fn prepare(
     trace: &[f32],
     tau_r: f64,
@@ -733,6 +772,7 @@ pub(crate) fn solve_trace_cfg(
     cfg: SolveConfig,
 ) -> (InDecaResult, SolveStats) {
     let mut prep = prepare(trace, tau_r, tau_d, fs, hp_enabled, lp_enabled);
+    let rectified_input = is_rectified(trace);
     let n = prep.working.len();
     let pad = prep.pad;
     // The interior the selection scores on: `[lo, hi)`.
@@ -910,6 +950,7 @@ pub(crate) fn solve_trace_cfg(
             no_size_fit: em.diag.no_size_fit,
             peak_outlier_ratio: em.diag.peak_outlier_ratio,
             dropped_spikes: em.diag.dropped_spikes,
+            rectified_input,
         },
         stats,
     )
@@ -2223,5 +2264,150 @@ mod tests {
             0.0,
         );
         assert!(zero.s_counts.iter().all(|&v| v == 0.0));
+    }
+
+    // ── Rectified input ──
+
+    /// One simulated cell's trace, drift-free (baseline 0) when `bare`.
+    fn sim_traces(
+        base: &crate::simulate::SimulationConfig,
+        snr: f64,
+        poisson: bool,
+        bare: bool,
+    ) -> (Vec<Vec<f32>>, Vec<crate::simulate::CellGroundTruth>) {
+        use crate::simulate::{
+            simulate, DriftModel, MarkovConfig, PoissonConfig, RandomWalkDrift, SpikeModel,
+        };
+        let mut cfg = base.clone();
+        cfg.noise.snr = snr;
+        cfg.num_cells = 3;
+        cfg.num_timepoints = (120.0 * cfg.fs_hz) as usize;
+        cfg.seed = 11;
+        cfg.spike_model = if poisson {
+            // Sparse cell: most frames are quiet, like the cala traces at issue.
+            SpikeModel::Poisson(PoissonConfig { rate_hz: 0.2 })
+        } else {
+            SpikeModel::Markov(MarkovConfig::default())
+        };
+        if bare {
+            cfg.drift = DriftModel::RandomWalk(RandomWalkDrift {
+                step_std_fraction: 0.0,
+                ..Default::default()
+            });
+        }
+        let sim = simulate(&cfg);
+        let nt = sim.num_timepoints;
+        let traces = (0..3)
+            .map(|c| sim.traces[c * nt..(c + 1) * nt].to_vec())
+            .collect();
+        (traces, sim.ground_truth)
+    }
+
+    #[test]
+    fn rectified_detector_fires_on_clipped_not_on_normal_traces() {
+        for (name, base) in crate::simulate::presets::all() {
+            for snr in [5.0, 30.0, 150.0] {
+                for poisson in [false, true] {
+                    // Default simulation (drift on, positive baseline) and the
+                    // drift-free one (baseline 0, noise around it).
+                    for bare in [false, true] {
+                        let (traces, _) = sim_traces(&base, snr, poisson, bare);
+                        for y in &traces {
+                            assert!(
+                                !is_rectified(y),
+                                "{name} snr {snr} poisson {poisson} bare {bare}: normal trace flagged"
+                            );
+                            // Clipping a baseline-0 trace at 0 is what cala does.
+                            if bare {
+                                let yc: Vec<f32> = y.iter().map(|&v| v.max(0.0)).collect();
+                                let zeros = yc.iter().filter(|&&v| v == 0.0).count();
+                                // Fires exactly when a fifth of the samples sit
+                                // at the floor.
+                                assert_eq!(
+                                    is_rectified(&yc),
+                                    zeros * 5 >= yc.len(),
+                                    "{name} snr {snr} poisson {poisson}: {zeros}/{} zeros",
+                                    yc.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rectified_detector_fires_on_sparse_clipped_cell() {
+        let (traces, _) = sim_traces(&crate::simulate::presets::gcamp6f(), 30.0, true, true);
+        let yc: Vec<f32> = traces[0].iter().map(|&v| v.max(0.0)).collect();
+        assert!(is_rectified(&yc));
+    }
+
+    #[test]
+    fn rectified_detector_ignores_integer_valued_raw_counts() {
+        // 16-bit camera counts: integer valued with a positive baseline, so
+        // ties at the minimum are a handful of samples, never a fifth.
+        let (traces, _) = sim_traces(&crate::simulate::presets::gcamp6f(), 30.0, false, true);
+        for y in &traces {
+            let sd = {
+                let m = y.iter().sum::<f32>() / y.len() as f32;
+                (y.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / y.len() as f32).sqrt()
+            };
+            // Coarse quantization (a step of one noise sd) and a baseline of 100.
+            let counts: Vec<f32> = y.iter().map(|&v| (100.0 + v / sd).round()).collect();
+            assert!(!is_rectified(&counts));
+        }
+        // Counts with floor 0 but fewer than a fifth at it.
+        let mut v = vec![5.0_f32; 1000];
+        for x in v.iter_mut().take(150) {
+            *x = 0.0;
+        }
+        assert!(!is_rectified(&v));
+        v[150] = 0.0;
+        v[151..200].iter_mut().for_each(|x| *x = 0.0);
+        assert!(is_rectified(&v));
+        // A positive floor is not rectification, however often it repeats.
+        assert!(!is_rectified(&vec![1.0_f32; 1000]));
+    }
+
+    #[test]
+    fn rectified_detector_edge_cases() {
+        assert!(!is_rectified(&[]));
+        assert!(!is_rectified(&[f32::NAN, f32::NAN]));
+        // Non-finite samples are ignored; a negative sample rules it out.
+        let mut v = vec![0.0_f32, 0.0, 1.0, 2.0, 3.0];
+        v.push(f32::NAN);
+        assert!(is_rectified(&v));
+        v.push(-1e-6);
+        assert!(!is_rectified(&v));
+    }
+
+    #[test]
+    fn rectified_flag_is_reported_and_preprocessing_unchanged() {
+        let (traces, gt) = sim_traces(&crate::simulate::presets::gcamp6f(), 100.0, true, true);
+        let (y, g) = (&traces[0], &gt[0]);
+        let yc: Vec<f32> = y.iter().map(|&v| v.max(0.0)).collect();
+        let solve = |t: &[f32]| {
+            solve_trace_cfg(
+                t,
+                g.tau_rise_s,
+                g.tau_decay_s,
+                30.0,
+                300.0,
+                2000,
+                1e-4,
+                true,
+                true,
+                0.0,
+                SolveConfig::default(),
+            )
+            .0
+        };
+        assert!(solve(&yc).rectified_input);
+        assert!(!solve(y).rectified_input);
+        // A flagged trace still takes the full chain: baseline window set.
+        let p = prepare(&yc, g.tau_rise_s, g.tau_decay_s, 30.0, true, true);
+        assert!(p.bl_window > 0);
     }
 }

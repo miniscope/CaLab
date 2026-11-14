@@ -82,6 +82,25 @@ class TestSolveTrace:
         assert isinstance(result.peak_outlier_ratio, float)
         assert isinstance(result.dropped_spikes, int)
         assert result.dropped_spikes >= 0
+        assert result.rectified_input is False
+
+    def test_rectified_input_warns(self):
+        # Clipped at zero: non-negative with far more than a fifth exact zeros.
+        trace = np.maximum(
+            _make_trace(0.02, 0.4, 30.0, 300, [30, 100, 200], alpha=10.0) - 0.3, 0.0
+        )
+        assert (trace == 0.0).mean() >= 0.2
+        with pytest.warns(UserWarning, match="clipped at zero or already denoised"):
+            result = solve_trace(trace, 0.02, 0.4, 30.0)
+        assert result.rectified_input is True
+
+    def test_signed_input_does_not_warn(self):
+        import warnings
+
+        trace = _make_trace(0.02, 0.4, 30.0, 300, [30, 100, 200], alpha=10.0) - 0.3
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert solve_trace(trace, 0.02, 0.4, 30.0).rectified_input is False
 
     def test_rejects_bad_max_firing_rate(self):
         trace = _make_trace(0.02, 0.4, 30.0, 100, [20, 50])
@@ -109,7 +128,7 @@ class TestSolveTrace:
         assert isinstance(alpha, float)
         assert isinstance(converged, bool)
         assert noise_var >= 0.0 and gain > 0.0
-        assert len(diag) == 4
+        assert len(diag) == 5
 
 
 # ---------------------------------------------------------------------------

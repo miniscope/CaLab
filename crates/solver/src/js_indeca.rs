@@ -53,7 +53,7 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// { s_counts, filtered_trace, alpha, baseline, threshold, pve, iterations,
 ///   converged, loop_converged, noise_var_processed, chain_noise_gain,
 ///   cap_limited, no_size_fit, peak_outlier_ratio,
-///   dropped_spikes }
+///   dropped_spikes, rectified_input }
 /// where `iterations` is the iteration count of the relaxed solve (tens of
 /// Newton steps of the exact interior-point solve at any frame rate and
 /// indicator speed; FISTA iterations only when the problem has a penalty or
@@ -79,6 +79,11 @@ pub(crate) fn to_js<T: serde::Serialize>(func: &str, value: &T) -> Result<JsValu
 /// `peak_outlier_ratio` (largest event-peak frame mass over the second
 /// largest) and `dropped_spikes` (spikes no frame of their event had room
 /// for).
+///
+/// `rectified_input` is true when the input trace looks rectified at zero
+/// (no negative sample, at least a fifth of the samples exactly 0: clipped at
+/// its baseline or already denoised). That is not a supported input; the
+/// preprocessing is unchanged and the flag is a warning for apps.
 ///
 /// Throws a JS error (rather than returning garbage) if `trace` or
 /// `warm_counts` contains a non-finite value, or if the parameters are invalid

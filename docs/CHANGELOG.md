@@ -22,6 +22,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `PipelineOptions.sessionFix` (default on) switches it off. `qc_eval`
   gains `--sessions` / `--session-fix` (and `session_boundaries.tsv`).
 
+- CaDecon: warning for rectified input. A trace that is non-negative with at
+  least a fifth of its samples exactly 0 (the baseline quantile the chain uses)
+  is clipped at zero or already denoised: cala traces from a live run (no
+  Extract), or Minian/CaImAn `C`. That is not a supported input. The solver now
+  reports `rectified_input` per cell (JS result; Python `SolveTraceResult` and
+  the `py_indeca_solve_trace` diagnostics tuple gain a fifth element, and
+  `solve_trace` raises a `UserWarning`). The CaDecon app checks the same rule
+  when the data loads (shared import store, `rectifiedInputCells`), so the
+  banner with the number of affected cells and the fix, and the marker in the
+  cell selector, appear before any run; after a run the Trace Inspector also
+  notes each affected cell. Run Extract
+  and export for CaDecon in cala (signed traces, see below), or use `C + YrA`
+  from Minian/CaImAn. Detection and warning only: the preprocessing and every
+  solver output are bit-identical to before.
+
 - Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
   cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
   bandpass and rolling baseline turn into fake humps and spurious spikes.
@@ -114,6 +129,17 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   the chosen series' folder.
 
 ### Fixed
+
+- Cala: Refine's QC. Refine runs no QC monitor, so after a Refine the Cell QC
+  table still showed Discover's last snapshot: peak SNR over each cell's last
+  60 s of Discover (the pre-#385 numbers), lower than the whole-session SNR
+  shown after Extract. Refine now keeps its replay's traces (a trace file, as
+  Extract does) and, before it reports done, recomputes the trace statistics
+  over the whole recording with the same function as after Extract
+  (`extract-qc.ts`), replacing the shown snapshot. While Refine runs the table
+  still shows the previous numbers. If there is no room for the traces, or the
+  replay solves other cells than it started with, Refine runs without the QC
+  and says so in the console.
 
 - Cala: exports now hold the run's History bins and event log
   (`history_L{k}`, `run_events_json`). The writer supported them since format

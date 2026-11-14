@@ -17,6 +17,13 @@
  *
  * The engine path is the same as qc_eval's `--later-passes refine`
  * (`SlowLoop.setEditScope('refine')`, then the recording again).
+ *
+ * QC: the replay runs no QC monitor. With `options.qc` the replay's traces
+ * (every frame, every cell; Refine keeps the ids) go to a trace file, and
+ * before the run reports `done` the QC is recomputed from them over the
+ * whole recording, as after Extract (`extract-qc.ts`), and replaces the
+ * shown snapshot. Without it the app kept showing the last minute of
+ * Discover (the monitor's window) after every Refine.
  */
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
@@ -26,6 +33,15 @@ import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-s
 import { footprintChange, perMinute, type StageLog, type StageRun } from './run-stages.ts';
 import { RefineTracker, type RefineSample } from './refine-metrics.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
+import type { QcSnapshot } from './qc.ts';
+import { createTraceFile, type TraceFile } from './trace-file.ts';
+
+/** Refine's QC: the QC of the replay's traces (`traces`: frames x cells, ids `ids`). */
+export interface RefineQcOptions {
+  qc?: (traces: TraceFile, ids: Uint32Array) => Promise<QcSnapshot | null>;
+  /** Where the replay's traces go (default `createTraceFile`: OPFS, or memory). */
+  traceFile?: (frames: number, cells: number) => Promise<TraceFile>;
+}
 
 export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' | 'cancelled';
 
@@ -52,6 +68,7 @@ export function createRefineStore(
   /** Why Refine cannot start now (the stage rules, `stageAvailability`). */
   blocked: () => string | null,
   clock: () => number = () => performance.now(),
+  options: RefineQcOptions = {},
 ) {
   const [status, setStatus] = createSignal<RefineStatus>('idle');
   const [processed, setProcessed] = createSignal(0);
@@ -78,6 +95,57 @@ export function createRefineStore(
     meter: ThroughputMeter;
     done: number;
     tracker: RefineTracker;
+    /** The replay's traces for the QC (null: no QC this run). */
+    traces: TraceFile | null;
+    ids: Uint32Array;
+  }
+
+  /** Stop collecting traces for the QC (and free them). */
+  function dropTraces(ctx: Ctx, why?: string): void {
+    if (why) console.warn(`Refine QC skipped: ${why}`);
+    const f = ctx.traces;
+    ctx.traces = null;
+    if (f) void f.dispose().catch(() => {});
+  }
+
+  /** Store one batch of the replay's traces (backpressure: waits for the disk). */
+  // The append is synchronous (batches are answered in order and the `done`
+  // step must see every batch counted); only the wait for the disk is not.
+  function collect(
+    ctx: Ctx,
+    step: { start: number; cells?: { ids: Uint32Array; traces: Float32Array } },
+  ): Promise<void> | undefined {
+    const f = ctx.traces;
+    if (!f) return undefined;
+    const c = step.cells;
+    if (!c || c.ids.length !== ctx.ids.length || c.ids.some((id, i) => id !== ctx.ids[i])) {
+      dropTraces(ctx, 'the replay solved other cells than the library it started with.');
+      return undefined;
+    }
+    const failed = (err: unknown) =>
+      dropTraces(ctx, err instanceof Error ? err.message : String(err));
+    try {
+      f.append(step.start, c.traces);
+    } catch (err) {
+      failed(err);
+      return undefined;
+    }
+    return f.drained().catch(failed);
+  }
+
+  /** The QC of the whole replay into the cell store (before the run says `done`). */
+  async function replayQc(gen: number, ctx: Ctx): Promise<void> {
+    const f = ctx.traces;
+    if (!f || !options.qc) return;
+    try {
+      await f.finish();
+      const snap = await options.qc(f, ctx.ids);
+      if (snap && gen === generation) cells.replaceQc(snap);
+    } catch (err) {
+      console.warn('Refine QC failed:', err);
+    } finally {
+      dropTraces(ctx);
+    }
   }
 
   /** Frames of this replay the slow loop has taken (0 until its status says it is on this run). */
@@ -129,7 +197,9 @@ export function createRefineStore(
     }
     if (st && st.run === ctx.run && st.final) {
       record(ctx, 'done');
-      setStatus('done');
+      void replayQc(gen, ctx).then(() => {
+        if (gen === generation) setStatus('done');
+      });
       return;
     }
     setTimeout(() => awaitFinal(gen, ctx), WAIT_MS);
@@ -140,7 +210,10 @@ export function createRefineStore(
     generation++;
     setError(message);
     setStatus('error');
-    if (ctx) record(ctx, 'error');
+    if (ctx) {
+      record(ctx, 'error');
+      dropTraces(ctx);
+    }
     void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
@@ -154,13 +227,16 @@ export function createRefineStore(
       inFlight++;
       client
         .stepPipeline()
-        .then((step) => {
+        .then(async (step) => {
           if (gen !== generation) return;
           if (step.kind === 'batch') {
+            const stored = collect(ctx, step);
             ctx.done = step.start + step.count;
             sample(ctx);
             setProcessed(ctx.done);
             setFps(ctx.meter.record(clock(), step.count));
+            // Backpressure: the next batch is asked for once the disk has caught up.
+            await stored;
           } else if (step.kind === 'done' && !exhausted) {
             exhausted = true;
             if (ctx.done !== ctx.frames)
@@ -215,11 +291,25 @@ export function createRefineStore(
       meter: new ThroughputMeter(),
       done: 0,
       tracker: new RefineTracker(before, cells.fps()),
+      traces: null,
+      ids: before.ids.slice(),
     };
     current = ctx;
     setTotal(ctx.frames);
     setSeries({ samples: [], end: ctx.tracker.time(ctx.frames) });
     log.begin('refine');
+    // Room for the replay's traces (the QC); without it Refine runs, without a QC.
+    if (options.qc) {
+      try {
+        ctx.traces = await (options.traceFile ?? createTraceFile)(ctx.frames, ctx.ids.length);
+      } catch (err) {
+        console.warn('Refine QC skipped:', err instanceof Error ? err.message : String(err));
+      }
+      if (gen !== generation) {
+        dropTraces(ctx);
+        return;
+      }
+    }
     try {
       await client.startPipeline(
         {
@@ -252,13 +342,17 @@ export function createRefineStore(
     generation++;
     inFlight = 0;
     setStatus('cancelled');
-    if (current) record(current, 'cancelled');
+    if (current) {
+      record(current, 'cancelled');
+      dropTraces(current);
+    }
     void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
   /** Forget the state (a new Discover run, another recording). */
   function clear(): void {
     if (status() === 'running' || status() === 'finishing') generation++;
+    if (current) dropTraces(current);
     current = null;
     setStatus('idle');
     setError(null);

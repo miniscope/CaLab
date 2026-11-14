@@ -28,6 +28,9 @@ export interface TraceResult {
   peakOutlierRatio?: number;
   /** Spikes that could not be placed (no frame with room) and were dropped. */
   droppedSpikes?: number;
+  /** The input trace looks rectified at zero (non-negative, many exact zeros:
+   *  clipped or already denoised). Unsupported input; a warning only. */
+  rectifiedInput?: boolean;
 }
 
 /** Results from peak-seeded spike detection on a single trace. */

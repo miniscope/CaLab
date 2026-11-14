@@ -49,3 +49,13 @@ describe('max firing rate', () => {
     expect(spikesPerFrameCap(300, 0)).toBe(1);
   });
 });
+
+describe('rectified input note', () => {
+  it('adds a note with the fix when flagged', () => {
+    const notes = solveDiagnosticNotes({ rectifiedInput: true });
+    expect(notes).toHaveLength(1);
+    expect(notes[0].text).toBe('clipped or denoised input');
+    expect(notes[0].title).toContain('C + YrA');
+    expect(solveDiagnosticNotes({ rectifiedInput: false })).toEqual([]);
+  });
+});
