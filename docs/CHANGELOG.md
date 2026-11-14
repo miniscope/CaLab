@@ -183,6 +183,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   Joint runs on stitched sims in the browser; intermittent because the cell
   depends on the run's library. Other cells' terms are unchanged.
 
+- Cala: a multi-session run whose results go to a zip download (no folder
+  picked, or no File System Access API) no longer keeps every session's
+  export in memory after the download until the next run starts (about
+  65 MB per 10-minute session; 180 MB after a 3-session Joint run).
+
 - Cala: sessions and projects pick only Miniscope folders, read from the
   Miniscope metadata. A behaviour camera writes the same numbered `.avi` files
   as a Miniscope, and discovery used to tell them apart by name only (a `behav*`
@@ -236,7 +241,9 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala: the tab uses about 0.3-0.5 GB less memory, with identical results.
   Measured on one 600 x 600, 17,878-frame Miniscope session (Discover,
   Refine, Extract): the tab's footprint averaged 2.14 GB and peaked at
-  2.40 GB during Discover before; 1.66 GB and 1.95 GB now. Three changes:
+  2.40 GB during Discover before; 1.66 GB and 1.95 GB now. On a 3-session
+  Joint run (53,632 frames) Discover averaged 2.36 GB before and 1.88 GB
+  now, Refine 2.52 GB and 2.13 GB. Three changes:
   the motion warm-up keeps its 200 filtered frames in one exact-size
   allocation each instead of one doubling `Vec`, whose reallocation left the
   motion worker's WASM heap (which never shrinks) at 370 MB instead of
