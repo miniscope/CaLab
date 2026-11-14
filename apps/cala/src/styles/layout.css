@@ -484,9 +484,12 @@
   animation: none;
 }
 
+/* The first tab's label starts on the panel content's left edge (16px):
+   7px of bar padding + the tab's 9px. The rule matches the panel border. */
 .cala-side-tabs__bar.tab-strip {
   flex: none;
-  padding: 0 var(--space-xs);
+  padding: 0 7px;
+  border-bottom-color: var(--border-subtle);
   scrollbar-width: thin;
 }
 
@@ -566,6 +569,20 @@
   overflow: hidden;
 }
 
+/* The overview is the whole session: a faint track shows its full extent even
+   when the cell only exists in its last part. */
+.cala-trace-viewer .trace-overview {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Cell header: the step and Clear buttons share the segmented control's height. */
+.cala-cell-panel .cala-side-panel__actions .btn-small {
+  padding: 1px 10px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
 .cala-main--narrow .cala-main__side {
   overflow: visible;
 }
@@ -638,6 +655,12 @@
 .cala-run__footer .cala-readout,
 .cala-run__line {
   font-size: 0.78rem;
+}
+
+/* Checkboxes beside small readouts sit near the readouts' size, not the body's. */
+.cala-run__footer .cala-check,
+.cala-qc-table .cala-trace-head > * {
+  font-size: 0.8125rem;
 }
 
 .cala-run__line {
@@ -923,7 +946,7 @@
 /* ---- Selected cell ---- */
 .cala-selected__body {
   display: flex;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   align-items: flex-start;
 }
 
@@ -936,8 +959,17 @@
 }
 
 .cala-selected__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 0.75rem;
-  line-height: 1.3;
+  line-height: 1.4;
+}
+
+/* Captions keep a readable measure on a wide column. */
+.cala-selected__facts,
+.cala-selected__side .cala-cellqc__note {
+  max-width: 80ch;
 }
 
 .cala-footprint-zoom {

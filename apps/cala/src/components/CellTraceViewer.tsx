@@ -258,7 +258,7 @@ export function CellTraceViewer(props: {
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
         />
-        <p class="cala-muted" data-testid="cell-trace-history-note">
+        <p class="cala-muted cala-hint" data-testid="cell-trace-history-note">
           Whole-session overview: min/max envelope.{' '}
           <Show when={span()} fallback="Full-resolution samples are unavailable for this cell.">
             {(s) => (

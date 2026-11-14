@@ -247,7 +247,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   one tab stop and links each tab to its panel). Hidden panels stop drawing;
   Run, Cell and Raw file stay mounted to keep their state, and the QC table's
   sort and filter outlive its tab. The cell's Trace / Demixing tabs became a
-  switch, so there is one tab row.
+  switch, so there is one tab row. A visual polish pass on the column: the
+  tab labels share the panel's left edge, the trace overview draws a faint
+  track for the whole session, the captions around the trace lose the margins
+  that opened a band above the plot (it gains about 30 px), the cell's metrics
+  stay beside their labels on a wide column, its captions keep a readable
+  measure, and the cell header buttons and Run/QC checkboxes match the small
+  controls and readouts around them.
 
 - Cala: Refine replays the recording pipelined. It used to keep at most one
   batch ahead of the slow loop, so the three pipeline workers ran one batch at
