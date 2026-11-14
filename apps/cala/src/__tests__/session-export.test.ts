@@ -344,6 +344,16 @@ describe('zipResultsSink', () => {
     expect(new TextDecoder().decode(entries.get('cala-results/s1/cala-session.json')!)).toBe('{}');
   });
 
+  it('lets go of the files once the zip is delivered', async () => {
+    const blobs: Blob[] = [];
+    const sink = zipResultsSink((_, blob) => blobs.push(blob));
+    await sink.writeFile('s1/cala-export.npz', (s) => s.write(new Uint8Array(1000)));
+    await sink.finish();
+    await sink.finish();
+    expect(readZip(await blobs[0].arrayBuffer()).size).toBe(1);
+    expect(readZip(await blobs[1].arrayBuffer()).size).toBe(0);
+  });
+
   it('rejects bad paths', async () => {
     const sink = zipResultsSink(() => {});
     await expect(sink.writeText('../x', 'y')).rejects.toThrow(/Not a results path/);
