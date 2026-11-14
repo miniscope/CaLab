@@ -20,7 +20,6 @@
  * delay this worker; the fast worker drops batches for it instead of waiting
  * (see `ForwardPool`).
  */
-import { freeBuffer } from './free-buffer.ts';
 import type {
   CellStatusView,
   EditScopeName,
@@ -242,12 +241,7 @@ export class SlowRunner {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
       const t0 = this.now();
-      try {
-        this.loop.applyJob!(msg.bytes);
-      } finally {
-        // Copied into WASM: release the result now, not at the next GC.
-        freeBuffer(msg.bytes);
-      }
+      this.loop.applyJob!(msg.bytes);
       this.jobOwnerMs += this.now() - t0;
       this.jobs++;
       this.visitMsSum += msg.ms;
