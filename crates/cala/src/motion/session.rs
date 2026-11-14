@@ -162,6 +162,14 @@ pub struct SessionEstimate {
     /// Correlation of the best fit, and of the best unrotated shift.
     pub ncc: f32,
     pub ncc_unrotated: f32,
+    /// Best correlation of the moving image mirrored (rows, columns, both)
+    /// over the same translation search: the chance level (NaN without a
+    /// correlation square).
+    pub chance_ncc: f32,
+    /// The best rotation is at the edge of the grid, or the best shift
+    /// within a pixel of the translation limit.
+    pub pinned_rotation: bool,
+    pub pinned_shift: bool,
 }
 
 /// Resampling of whole frames by one [`SessionTransform`] (bicubic,
@@ -372,10 +380,105 @@ impl BandCrop {
     }
 }
 
+/// The band-passed reference square and its spectrum, and the scratch to
+/// score moving images against it (rotation 0, ±`max_shift`).
+struct Matcher {
+    band: BandCrop,
+    corr: Correlator,
+    crop: Vec<f32>,
+    ref_spec: Vec<realfft::num_complex::Complex32>,
+    e_ref: f64,
+    mov_spec: Vec<realfft::num_complex::Complex32>,
+    max_shift: f32,
+}
+
+impl Matcher {
+    /// `None` when the FOV holds no correlation square.
+    fn new(
+        reference: &[f32],
+        h: usize,
+        w: usize,
+        fov: &[u8],
+        cfg: &SessionAlignConfig,
+    ) -> Result<Option<Matcher>, MotionError> {
+        let Some(sq) = fov_square(fov, h, w, cfg.roi_max_side) else {
+            return Ok(None);
+        };
+        let side = sq.2;
+        let mut corr = Correlator::new(side, side, 0.3)?;
+        let mut band = BandCrop {
+            h,
+            w,
+            sq,
+            s1: cfg.dog_sigma_small,
+            s2: cfg.dog_sigma_large,
+            full: Vec::new(),
+            scratch: DogScratch::default(),
+        };
+        let mut crop = vec![0.0f32; side * side];
+        band.run(reference, &mut crop);
+        let mut ref_spec = corr.make_spectrum();
+        let e_ref = corr.spectrum(&crop, &mut ref_spec)?;
+        let mov_spec = corr.make_spectrum();
+        Ok(Some(Matcher {
+            band,
+            corr,
+            crop,
+            ref_spec,
+            e_ref,
+            mov_spec,
+            max_shift: cfg.max_shift.min(side as f32 / 4.0),
+        }))
+    }
+
+    /// `(ncc, dy, dx)` of the best shift of `img` (`h x w`) onto the reference.
+    fn score(&mut self, img: &[f32]) -> Result<(f32, f32, f32), MotionError> {
+        self.band.run(img, &mut self.crop);
+        let e = self.corr.spectrum(&self.crop, &mut self.mov_spec)?;
+        let p = self.corr.register(
+            &self.ref_spec,
+            self.e_ref,
+            &self.mov_spec,
+            e,
+            self.max_shift,
+            10,
+        )?;
+        Ok((p.ncc, p.dy, p.dx))
+    }
+}
+
+/// Non-finite values as 0.
+fn clean(v: &[f32]) -> Vec<f32> {
+    v.iter()
+        .map(|&x| if x.is_finite() { x } else { 0.0 })
+        .collect()
+}
+
+/// `img` (`h x w`) mirrored: rows (`flip_y`) and/or columns (`flip_x`).
+fn flipped(img: &[f32], h: usize, w: usize, flip_y: bool, flip_x: bool) -> Vec<f32> {
+    let mut out = vec![0.0f32; h * w];
+    for y in 0..h {
+        let sy = if flip_y { h - 1 - y } else { y };
+        for x in 0..w {
+            let sx = if flip_x { w - 1 - x } else { x };
+            out[y * w + x] = img[sy * w + sx];
+        }
+    }
+    out
+}
+
 /// Register `moving` (the mean of the new session's first frames, front
 /// half output, sensor coordinates) onto `reference` (the mean of the
 /// previous session's last registered frames). Both are `h x w`; `fov` is
 /// the sensor FOV mask. See the module docs.
+///
+/// Besides the transform, the estimate reports what a reader needs to judge
+/// it (`apps/cala/src/lib/boundary-flags.ts`); none of it changes the
+/// transform: `chance_ncc`, the best correlation of the moving image
+/// mirrored (rows, columns, both) over the same translation search (the
+/// same texture, but unrelated content: what the search finds by chance),
+/// and whether the best fit lies at the edge of the rotation grid or the
+/// translation search (`pinned_rotation`, `pinned_shift`).
 pub fn estimate(
     reference: &[f32],
     moving: &[f32],
@@ -395,62 +498,38 @@ pub fn estimate(
             "session alignment ranges".into(),
         ));
     }
-    let clean = |v: &[f32]| -> Vec<f32> {
-        v.iter()
-            .map(|&x| if x.is_finite() { x } else { 0.0 })
-            .collect()
-    };
     let (reference, moving) = (clean(reference), clean(moving));
     let identity = SessionEstimate {
         transform: SessionTransform::IDENTITY,
         fitted: SessionTransform::IDENTITY,
         ncc: 0.0,
         ncc_unrotated: 0.0,
+        chance_ncc: f32::NAN,
+        pinned_rotation: false,
+        pinned_shift: false,
     };
-    let Some(sq) = fov_square(fov, h, w, cfg.roi_max_side) else {
+    let Some(mut m) = Matcher::new(&reference, h, w, fov, cfg)? else {
         return Ok(identity);
     };
-    let side = sq.2;
-    let mut corr = Correlator::new(side, side, 0.3)?;
-    let mut band = BandCrop {
-        h,
-        w,
-        sq,
-        s1: cfg.dog_sigma_small,
-        s2: cfg.dog_sigma_large,
-        full: Vec::new(),
-        scratch: DogScratch::default(),
-    };
-    let mut crop = vec![0.0f32; side * side];
-    band.run(&reference, &mut crop);
-    let mut ref_spec = corr.make_spectrum();
-    let e_ref = corr.spectrum(&crop, &mut ref_spec)?;
-    let mut mov_spec = corr.make_spectrum();
     let mut rotated = vec![0.0f32; px];
-    let max_shift = cfg.max_shift.min(side as f32 / 4.0);
     // (ncc, dy, dx) at rotation `deg`.
-    let mut score = |deg: f32| -> Result<(f32, f32, f32), MotionError> {
-        let src = if deg == 0.0 {
-            &moving
-        } else {
-            let t = SessionTransform {
-                rotation_deg: deg,
-                dy: 0.0,
-                dx: 0.0,
-            };
-            SessionWarp::new(h, w, t)?.apply(&moving, &mut rotated)?;
-            &rotated
+    let mut score = |m: &mut Matcher, deg: f32| -> Result<(f32, f32, f32), MotionError> {
+        if deg == 0.0 {
+            return m.score(&moving);
+        }
+        let t = SessionTransform {
+            rotation_deg: deg,
+            dy: 0.0,
+            dx: 0.0,
         };
-        band.run(src, &mut crop);
-        let e = corr.spectrum(&crop, &mut mov_spec)?;
-        let p = corr.register(&ref_spec, e_ref, &mov_spec, e, max_shift, 10)?;
-        Ok((p.ncc, p.dy, p.dx))
+        SessionWarp::new(h, w, t)?.apply(&moving, &mut rotated)?;
+        m.score(&rotated)
     };
     let n = (cfg.max_rotation_deg / cfg.rotation_step_deg).floor() as i32;
     let mut grid: Vec<(f32, (f32, f32, f32))> = Vec::new();
     for k in -n..=n {
         let deg = k as f32 * cfg.rotation_step_deg;
-        grid.push((deg, score(deg)?));
+        grid.push((deg, score(&mut m, deg)?));
     }
     let unrot = grid[n as usize].1;
     let (bi, &(bdeg, bres)) = grid
@@ -467,7 +546,7 @@ pub fn estimate(
             let off = (0.5 * (l - r) / den).clamp(-0.5, 0.5);
             let d2 = bdeg + off * cfg.rotation_step_deg;
             if off != 0.0 {
-                let r2 = score(d2)?;
+                let r2 = score(&mut m, d2)?;
                 if r2.0 >= bres.0 {
                     deg = d2;
                     res = r2;
@@ -492,12 +571,47 @@ pub fn estimate(
     } else {
         SessionTransform::IDENTITY
     };
+    // Chance level: the moving image mirrored (unrelated content, the same
+    // texture spectrum), over the same translation search.
+    let mut chance = f32::NEG_INFINITY;
+    for (fy, fx) in [(true, false), (false, true), (true, true)] {
+        chance = chance.max(m.score(&flipped(&moving, h, w, fy, fx))?.0);
+    }
+    // The search's edges (the sub-pixel peak lies within a pixel of the limit).
+    let pinned_rotation = n > 0 && (bi == 0 || bi + 1 == grid.len());
+    let pinned_shift = res.1.abs().max(res.2.abs()) >= m.max_shift - 1.0;
     Ok(SessionEstimate {
         transform,
         fitted,
         ncc: res.0,
         ncc_unrotated: unrot.0,
+        chance_ncc: chance,
+        pinned_rotation,
+        pinned_shift,
     })
+}
+
+/// The correlation of `moving` with `reference` at the best shift (rotation
+/// 0, the [`estimate`] search and band), or `None` when the FOV holds no
+/// correlation square. Within a session this is the boundary correlation's
+/// null: the same statistic between blocks of frames that need no
+/// re-registration (`apps/cala/src/lib/boundary-flags.ts`).
+pub fn block_ncc(
+    reference: &[f32],
+    moving: &[f32],
+    h: usize,
+    w: usize,
+    fov: &[u8],
+    cfg: &SessionAlignConfig,
+) -> Result<Option<f32>, MotionError> {
+    let px = h * w;
+    if reference.len() != px || moving.len() != px || fov.len() != px {
+        return Err(MotionError::SizeMismatch("block ncc image size".into()));
+    }
+    let Some(mut m) = Matcher::new(&clean(reference), h, w, fov, cfg)? else {
+        return Ok(None);
+    };
+    Ok(Some(m.score(&clean(moving))?.0))
 }
 
 /// Running sum of registered frames: the reference for [`estimate`].
@@ -689,6 +803,65 @@ mod tests {
         assert_eq!(m[2 * w + 10], 0);
         assert_eq!(m[10 * w + w - 3], 1);
         assert_eq!(m[10 * w + w - 2], 0);
+    }
+
+    #[test]
+    fn chance_level_pinned_edges_and_block_null() {
+        let (h, w) = (192, 192);
+        let reference = texture(h, w, 11);
+        let fov = vec![1u8; h * w];
+        let cfg = SessionAlignConfig {
+            roi_max_side: 128,
+            ..SessionAlignConfig::default()
+        };
+        // The same tissue, moved 6 px: a strong match well above chance,
+        // inside the search.
+        let mut moving = vec![0.0; h * w];
+        let t = SessionTransform {
+            rotation_deg: 0.0,
+            dy: -6.0,
+            dx: 0.0,
+        };
+        SessionWarp::new(h, w, t)
+            .unwrap()
+            .apply(&reference, &mut moving)
+            .unwrap();
+        let est = estimate(&reference, &moving, h, w, &fov, &cfg).unwrap();
+        assert!(est.ncc > 0.9, "{est:?}");
+        assert!(est.chance_ncc < 0.5, "{est:?}");
+        assert!(!est.pinned_rotation && !est.pinned_shift, "{est:?}");
+        let b = block_ncc(&reference, &moving, h, w, &fov, &cfg)
+            .unwrap()
+            .unwrap();
+        assert!((b - est.ncc_unrotated).abs() < 1e-6, "{b} vs {est:?}");
+        // Unrelated tissue: the match is at chance level.
+        let other = texture(h, w, 12);
+        let est = estimate(&reference, &other, h, w, &fov, &cfg).unwrap();
+        assert!(est.ncc < 0.5 && est.chance_ncc < 0.5, "{est:?}");
+        // A move beyond the search (128 px square: ±32 px): pinned.
+        let t = SessionTransform {
+            rotation_deg: 0.0,
+            dy: -45.0,
+            dx: 0.0,
+        };
+        SessionWarp::new(h, w, t)
+            .unwrap()
+            .apply(&reference, &mut moving)
+            .unwrap();
+        let est = estimate(&reference, &moving, h, w, &fov, &cfg).unwrap();
+        assert!(est.pinned_shift || est.ncc < 0.5, "{est:?}");
+        // A rotation beyond the grid: the best rotation sits at its edge.
+        let t = SessionTransform {
+            rotation_deg: 8.0,
+            dy: 0.0,
+            dx: 0.0,
+        };
+        SessionWarp::new(h, w, t)
+            .unwrap()
+            .apply(&reference, &mut moving)
+            .unwrap();
+        let est = estimate(&reference, &moving, h, w, &fov, &cfg).unwrap();
+        assert!(est.pinned_rotation || est.ncc < 0.5, "{est:?}");
     }
 
     #[test]

@@ -222,6 +222,8 @@ describe('pipeline stages', () => {
           }
           expect(s.previews, `previews of batch ${i}`).toEqual(o.previews);
           expect(s.session, `session of batch ${i}`).toEqual(o.session);
+          // The boundary flags' null samples (none here: the sessions are under 100 frames).
+          expect(s.boundaryNull).toBe(o.boundaryNull);
           expect(s.cells?.traces).toEqual(o.cells?.traces);
           expect(s.cells?.ids).toEqual(o.cells?.ids);
           expect(s.cells?.version).toBe(o.cells?.version);

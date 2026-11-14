@@ -16,6 +16,7 @@
  * and 2 the stage list (3). What is
  * missing is listed in `missing` so the viewer can say "not in this export".
  */
+import { parseBoundaryFlag, type BoundaryFlag } from './boundary-flags.ts';
 import { parseNpy, parseNpyHeader, ZipArchive, type ZipSource } from '@calab/io';
 import type { HistoryExport } from '@calab/compute';
 import type { NumericTypedArray } from '@calab/core';
@@ -64,6 +65,8 @@ export interface LoadedResult {
   readFrames(from: number, to: number): Promise<Float32Array>;
   /** The same from `traces_signed` (format 4; null when absent, e.g. a live run). */
   readSignedFrames: ((from: number, to: number) => Promise<Float32Array>) | null;
+  /** Joint, sessions 2..: the health flag of the boundary the session starts with (format 6). */
+  boundary: BoundaryFlag | null;
 }
 
 const asF32 = (a: NumericTypedArray): Float32Array =>
@@ -382,5 +385,6 @@ export async function openResult(src: ZipSource, label = ''): Promise<LoadedResu
     readSignedFrames: zip.has('traces_signed.npy')
       ? await traceReader(zip, n, frames, 'traces_signed.npy')
       : null,
+    boundary: parseBoundaryFlag((meta.session as Record<string, unknown> | undefined)?.boundary),
   };
 }

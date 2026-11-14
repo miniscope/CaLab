@@ -35,6 +35,7 @@ import type {
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 import { RunRecord } from './run-record.ts';
+import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 
@@ -253,6 +254,43 @@ export function createPipelineStore(
     if (applied.first) patchFlat({ firstFrame: applied.frame });
   }
 
+  /** Discover of a Joint run: the session-boundary health flags (`boundary-flags.ts`). */
+  let boundaryMonitor: BoundaryMonitor | null = null;
+  const [boundaryFlags, setBoundaryFlags] = createSignal<BoundaryFlag[]>([]);
+  /** What History was last told about each boundary (severity, pending), by session index. */
+  let boundaryLogged = new Map<number, string>();
+  cells?.onStatus((st) => {
+    if (!boundaryMonitor) return;
+    boundaryMonitor.onAdds(st.frame, st.counters.adds);
+    refreshBoundaryFlags();
+  });
+
+  /**
+   * Re-judge the boundaries when something they wait for arrived (a session
+   * start, a window that finished playing, the end of Discover), publish the
+   * flags and log each change of verdict in History.
+   */
+  function refreshBoundaryFlags(force = false): void {
+    const m = boundaryMonitor;
+    if (!m || (!force && !m.changed())) return;
+    const flags = m.flags();
+    setBoundaryFlags(flags);
+    for (const f of flags) {
+      const key = `${f.severity}/${f.pending}`;
+      if (boundaryLogged.get(f.index) === key) continue;
+      boundaryLogged.set(f.index, key);
+      runHistory?.log({
+        frame: f.frame,
+        kind: f.severity === 'ok' ? 'setting' : 'warning',
+        key: 'boundary check',
+        to: f.severity,
+        detail: `Session ${f.index + 1} boundary: ${severityLabel(f.severity, f.pending).replace(/^Boundary /, '')}. ${f.reason}${f.suggestion ? ` ${f.suggestion}` : ''}`,
+        replay: false,
+        data: { session: f.index, severity: f.severity, pending: f.pending },
+      });
+    }
+  }
+
   /** A session of a Joint run started: record its re-registration (Refine and Extract replay it) and log it. */
   function noteSessionStart(st: SessionStart): void {
     record.noteSession(st.index, st.transform);
@@ -287,6 +325,15 @@ export function createPipelineStore(
       case 'batch': {
         if (step.flatField) noteFlatFieldApplied(step.flatField);
         if (step.session) noteSessionStart(step.session);
+        if (boundaryMonitor) {
+          const m = boundaryMonitor;
+          if (step.session) m.onSessionStart(step.session);
+          if (step.boundaryNull !== undefined) m.onNull(step.start + step.count, step.boundaryNull);
+          if (step.imaging)
+            m.onImaging(step.imaging.frame, step.imaging.noiseSigma, step.imaging.background);
+          if (step.cells) m.onTraces(step.start, step.count, step.cells.ids, step.cells.traces);
+          refreshBoundaryFlags();
+        }
         const wasComplete = record.complete;
         record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
         if (wasComplete && !record.complete)
@@ -349,6 +396,8 @@ export function createPipelineStore(
       case 'done':
         if (!exhausted) {
           exhausted = true;
+          boundaryMonitor?.end();
+          refreshBoundaryFlags(true);
           flushFlatField();
           setStatus('done');
         }
@@ -413,6 +462,9 @@ export function createPipelineStore(
     setError(null);
     livePoints = [];
     setLive(null);
+    boundaryMonitor = null;
+    boundaryLogged = new Map();
+    setBoundaryFlags([]);
     cells?.reset(-1);
   }
 
@@ -463,6 +515,13 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
+      // Joint run with the session fix: judge each boundary (observers only).
+      if (p.sessionFix && p.boundaries.length > 0)
+        boundaryMonitor = new BoundaryMonitor({
+          boundaries: p.boundaries,
+          frames: p.frameCount,
+          fps: cells?.fps() ?? 0,
+        });
       runHistory?.reset({
         fps: cells?.fps() ?? 0,
         live: flat.identity?.()?.live === true,
@@ -579,6 +638,8 @@ export function createPipelineStore(
     flushFlatField,
     /** What pass 1 recorded per frame (motion shifts and flicker) so far. */
     record: () => record,
+    /** Joint: Discover's session-boundary health flags, one per boundary reached (`boundary-flags.ts`). */
+    boundaryFlags,
     finishEarly,
     /** Steps currently requested from the worker (for tests). */
     inFlight: () => inFlight,

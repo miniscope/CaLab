@@ -11,6 +11,7 @@ import { DEFAULT_REFINE_RUNS, LIBRARY_MODE_LABEL, MAX_REFINE_RUNS } from '../lib
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
+import { BoundaryBadge } from './BoundaryBadge.tsx';
 
 interface ProjectViewProps {
   project: ProjectStore;
@@ -207,6 +208,19 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                         </Show>
                         <Show when={r.row?.planned.error}>
                           {(e) => <span class="cala-sessions__warning"> {e()}</span>}
+                        </Show>
+                        <Show when={r.status.boundary}>
+                          {(f) => (
+                            <>
+                              {' '}
+                              <BoundaryBadge
+                                flag={f()}
+                                {...(r.status.runMode === 'joint'
+                                  ? { onSeparate: () => p().replanSeparate(r.status.runSessions) }
+                                  : {})}
+                              />
+                            </>
+                          )}
                         </Show>
                       </td>
                       <td>{fmtDate(r.session.start, true)}</td>

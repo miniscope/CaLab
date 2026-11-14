@@ -40,6 +40,15 @@ export interface SessionStart {
   fitted?: SessionTransform;
   ncc?: number;
   nccUnrotated?: number;
+  /**
+   * The chance level of `ncc` (the moving image mirrored, the same search)
+   * and whether the fit sits at the edge of the rotation grid or the
+   * translation search (absent in a replay). For the boundary flags
+   * (`boundary-flags.ts`); they change nothing.
+   */
+  chanceNcc?: number;
+  pinnedRotation?: boolean;
+  pinnedShift?: boolean;
   /** Background floor map (gain, offset, share kept by the fit) and noise-map factor. */
   floorGain: number;
   floorOffset: number;
@@ -63,7 +72,14 @@ export function sessionStart(
     frame: job.session!.frame,
     transform,
     ...(al
-      ? { fitted: [al[3], al[4], al[5]] as SessionTransform, ncc: al[6], nccUnrotated: al[7] }
+      ? {
+          fitted: [al[3], al[4], al[5]] as SessionTransform,
+          ncc: al[6],
+          nccUnrotated: al[7],
+          ...(al.length >= 11
+            ? { chanceNcc: al[8], pinnedRotation: al[9] === 1, pinnedShift: al[10] === 1 }
+            : {}),
+        }
       : {}),
     floorGain: fit[0],
     floorOffset: fit[1],

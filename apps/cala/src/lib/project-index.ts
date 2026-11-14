@@ -11,6 +11,7 @@
  * Pure functions on plain data; nothing here reads or writes a file
  * (`project-io.ts` does).
  */
+import { parseBoundaryFlag, type BoundaryFlag } from './boundary-flags.ts';
 import type { LibraryMode } from './session-run.ts';
 
 export const PROJECT_INDEX_FILE = 'cala-project.json';
@@ -55,6 +56,11 @@ export interface ProjectRunSession {
   note?: string;
   /** The stages run for this session (Joint: the same for all). */
   stages: StageRecord[];
+  /**
+   * Joint, sessions 2..: the health flag of the boundary the session starts
+   * with, in the export's JSON form (`boundaryFlagJson`).
+   */
+  boundary?: Record<string, unknown>;
 }
 
 export interface ProjectRun {
@@ -567,11 +573,13 @@ export function runFromFolder(
     const stages = Array.isArray(meta?.stages_run)
       ? (meta.stages_run.filter((x) => isObj(x) && isStr(x.stage)) as StageRecord[])
       : [];
+    const boundary = isObj(meta?.boundary) ? meta.boundary : isObj(s.boundary) ? s.boundary : null;
     runSessions.push({
       id: sid,
       status: meta ? 'written' : status,
       ...(typeof s.note === 'string' ? { note: s.note } : {}),
       stages,
+      ...(boundary ? { boundary } : {}),
     });
     if (meta) {
       const ids = Array.isArray(meta.cell_ids)
@@ -680,6 +688,11 @@ export interface SessionStatus {
   results: ProjectResult[];
   /** The latest run's word on it when it produced no result: skipped, failed. */
   note: string | null;
+  /** That run's health flag of the boundary the session starts with (Joint, sessions 2..). */
+  boundary: BoundaryFlag | null;
+  /** That run's mode and its sessions (for "re-plan as Separate"). */
+  runMode: LibraryMode | null;
+  runSessions: string[];
 }
 
 function lastOf(stages: StageRecord[], name: string): StageState {
@@ -722,6 +735,9 @@ export function sessionStatus(index: ProjectIndex, sessionId: string): SessionSt
     current,
     results,
     note,
+    boundary: entry?.boundary ? parseBoundaryFlag(entry.boundary) : null,
+    runMode: from?.mode ?? null,
+    runSessions: from?.sessions.map((x) => x.id) ?? [],
   };
 }
 
