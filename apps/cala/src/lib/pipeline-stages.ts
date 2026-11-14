@@ -823,7 +823,8 @@ export class MotionStage {
       plan.sessionFix && plan.boundaries.length > 0
         ? new SessionAligner(this.setup.width, this.setup.height)
         : null;
-    this.fovMask = fovMask;
+    // A copy: the job's `calib.fovMask` is transferred on to stage C with the job.
+    this.fovMask = fovMask.slice();
     this.gpuReady = false;
     if (this.gpuMotion && !this.gpu) {
       this.gpu = await GpuMotion.create(

@@ -166,6 +166,12 @@ describe('pipeline stages', () => {
           break;
         }
         const done = await b.handle(job);
+        // As the motion worker's postMessage does: the calibration's FOV mask
+        // moves on to C, detached in B (B must keep its own copy).
+        if (done.calib) {
+          const m = done.calib.fovMask;
+          done.calib = { ...done.calib, fovMask: structuredClone(m, { transfer: [m.buffer] }) };
+        }
         if (done.front) frontPool.release(done.front);
         staged.push(c.handle(done));
         if (done.corrected) outPool.release(done.corrected);
