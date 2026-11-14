@@ -8,7 +8,10 @@ import {
   createRefineStore,
   REFINE_FORWARD_BUFFERS,
   REFINE_SLOW_LEAD,
+  type RefineQcOptions,
 } from '../lib/refine-store.ts';
+import type { QcSnapshot } from '../lib/qc.ts';
+import { createTraceFile, type TraceFile } from '../lib/trace-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import { createStageLog } from '../lib/run-stages.ts';
 import type { LibraryView, SlowStatus } from '../workers/slow-types.ts';
@@ -21,9 +24,22 @@ const PLAN: PipelinePlan = {
   previewMaxSide: 32,
 };
 
-function batch(start: number, count: number): PipelineStepResult {
+/** A replay batch; `ids` the cells the fast loop solved (trace of cell i at frame t: 10 t + i). */
+function batch(start: number, count: number, ids?: number[]): PipelineStepResult {
   const z = new Float32Array(count);
+  const cells = ids
+    ? {
+        cells: {
+          ids: Uint32Array.from(ids),
+          traces: Float32Array.from({ length: count * ids.length }, (_, k) => {
+            const t = start + Math.floor(k / ids.length);
+            return 10 * t + (k % ids.length);
+          }),
+        } as never,
+      }
+    : {};
   return {
+    ...cells,
     kind: 'batch',
     start,
     count,
@@ -59,7 +75,15 @@ function lib(version: number, values: number[]): LibraryView {
  * slow loop: it takes the forwarded batches when `consume` says so (at once
  * by default), and publishes `after` with 6 more refines at the end.
  */
-function setup(opts: { lagging?: boolean; batches?: number } = {}) {
+function setup(
+  opts: {
+    lagging?: boolean;
+    batches?: number;
+    /** Cells of each replay batch (omit: batches without traces). */
+    cellIds?: (i: number) => number[];
+    refineQc?: RefineQcOptions;
+  } = {},
+) {
   const frames = 4 * (opts.batches ?? 3);
   const rec = new RunRecord();
   for (let t = 0; t < frames; t++) rec.push(t, [0], [0], [0], [0], [0]);
@@ -76,7 +100,7 @@ function setup(opts: { lagging?: boolean; batches?: number } = {}) {
   let forwarded = 0;
   const ahead: number[] = [];
   const steps: PipelineStepResult[] = [
-    ...Array.from({ length: frames / 4 }, (_, i) => batch(4 * i, 4)),
+    ...Array.from({ length: frames / 4 }, (_, i) => batch(4 * i, 4, opts.cellIds?.(i))),
     { kind: 'done' },
   ];
   const started: { cells: unknown; replay: unknown }[] = [];
@@ -122,13 +146,24 @@ function setup(opts: { lagging?: boolean; batches?: number } = {}) {
     session: () => 7,
     fps: () => 2,
     error: () => null,
+    qc: () => null,
+    replaceQc: vi.fn(),
   } as unknown as CellStore;
   const log = createStageLog();
   log.begin('discover');
   log.end('discover', 'done', { frames: 12, refines: 10, refinesPerMin: 100 });
-  const store = createRefineStore(client, pipeline, cells, log, () => null);
+  const store = createRefineStore(
+    client,
+    pipeline,
+    cells,
+    log,
+    () => null,
+    undefined,
+    opts.refineQc,
+  );
   return {
     store,
+    cells,
     log,
     started,
     stops,
@@ -213,6 +248,61 @@ describe('Refine store', () => {
     expect(t.store.status()).toBe('cancelled');
     expect(t.stops).toEqual([{ keepSlow: true }]);
     expect(t.log.last('refine')!.outcome).toBe('cancelled');
+  });
+
+  it('replaces the QC with the QC of the whole replay before it is done', async () => {
+    const snap = { frame: 0 } as unknown as QcSnapshot;
+    let seen: { frames: number; cells: number; ids: number[]; data: number[] } | null = null;
+    const qc = vi.fn(async (traces: TraceFile, ids: Uint32Array) => {
+      seen = {
+        frames: traces.frames,
+        cells: traces.cells,
+        ids: [...ids],
+        data: [...(await traces.readFrames(0, traces.frames))],
+      };
+      return snap;
+    });
+    const t = setup({
+      cellIds: () => [1, 2, 3, 4],
+      refineQc: { qc, traceFile: (f, c) => createTraceFile(f, c, { forceMemory: true }) },
+    });
+    let doneBeforeQc = false;
+    (t.cells.replaceQc as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      doneBeforeQc = t.store.status() === 'done';
+    });
+    await t.store.run();
+    await until(() => t.store.status() === 'done');
+    expect(qc).toHaveBeenCalledTimes(1);
+    expect(t.cells.replaceQc).toHaveBeenCalledWith(snap);
+    expect(doneBeforeQc).toBe(false);
+    // Every frame of the recording, every cell, frame after frame.
+    expect(seen).toMatchObject({ frames: 12, cells: 4, ids: [1, 2, 3, 4] });
+    const want = Array.from({ length: 48 }, (_, k) => 10 * Math.floor(k / 4) + (k % 4));
+    expect(seen!.data).toEqual(want);
+  });
+
+  it('skips the QC when the replay solves other cells than the library it started with', async () => {
+    const qc = vi.fn(async () => ({}) as QcSnapshot);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const t = setup({
+      cellIds: (i) => (i === 1 ? [1, 2, 3] : [1, 2, 3, 4]),
+      refineQc: { qc, traceFile: (f, c) => createTraceFile(f, c, { forceMemory: true }) },
+    });
+    await t.store.run();
+    await until(() => t.store.status() === 'done');
+    expect(qc).not.toHaveBeenCalled();
+    expect(t.cells.replaceQc).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keeps no traces without a QC function', async () => {
+    const traceFile = vi.fn();
+    const t = setup({ cellIds: () => [1, 2, 3, 4], refineQc: { traceFile } });
+    await t.store.run();
+    await until(() => t.store.status() === 'done');
+    expect(traceFile).not.toHaveBeenCalled();
+    expect(t.cells.replaceQc).not.toHaveBeenCalled();
   });
 
   it('does not start when the stage rules say no', async () => {

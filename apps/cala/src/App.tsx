@@ -175,7 +175,25 @@ const App: Component = () => {
   const pass2 = createPass2Store(client, pipeline, cells, undefined, () =>
     refine.status() === 'running' || refine.status() === 'finishing' ? 'Refine is running.' : null,
   );
-  const refine = createRefineStore(client, pipeline, cells, stageLog, () => availability().refine);
+  // Refine's QC: the trace statistics of the replay's traces over the whole
+  // recording, as after Extract (the replay runs no QC monitor).
+  const refine = createRefineStore(
+    client,
+    pipeline,
+    cells,
+    stageLog,
+    () => availability().refine,
+    undefined,
+    {
+      qc: async (traces, ids) => {
+        const backend = await loadSpanStats();
+        const fps = store.info()?.fps ?? 0;
+        const rate = fps > 0 ? fps : ASSUMED_FPS;
+        const range = { start: 0, end: traces.frames };
+        return extractQc(traces, ids, range, rate, QC_SCOPE_DEFAULT, cells.qc(), backend);
+      },
+    },
+  );
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
