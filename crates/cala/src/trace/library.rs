@@ -655,7 +655,8 @@ impl LibraryBuilder {
         let version = self
             .version
             .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
-        Library::assemble(core.finish(), self.background, version)
+        let prev = self.reuse.as_deref();
+        Library::assemble(core.finish(), self.background, version, prev)
     }
 }
 
@@ -891,6 +892,93 @@ fn ring_self_curvature_on_read(
     }
 }
 
+/// Bitwise equality of two `f32` slices (`==` would take `-0.0` for `0.0`).
+fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// The pair terms [`Library::assemble`] may copy from the library it
+/// rebuilds (`prev`): those of two cells that are both unchanged, under the
+/// same frame, FOV, moat grid and background model. A cell is unchanged
+/// when its support, column values (`vc`), moat blocks and values, support
+/// centre and radius are bit for bit those of its slot in `prev`.
+///
+/// Why a copy is exact: an off-diagonal Gram term is computed from its two
+/// columns only (and the FOV block counts), with the lower slot's column as
+/// the image (`pair`), so it is copied only when the two cells keep their
+/// order; a ring coupling `q[i][j]` from column `j` and the ring of cell
+/// `i` (its centre and radius). An entry `prev` lacks is a term that was
+/// exactly 0: `prev`'s neighbour search reached every pair whose columns
+/// (or ring) can meet. The per-cell terms (diagonal, noise, ring self term,
+/// which `ring_self_curvature` may have zeroed in `prev`) are always
+/// computed.
+struct PairReuse<'a> {
+    prev: &'a Library,
+    /// `prev` slot of each cell, `None` for a new or changed one.
+    slot: Vec<Option<usize>>,
+}
+
+impl<'a> PairReuse<'a> {
+    fn new(prev: &'a Library, core: &Core, model: &BackgroundModel) -> Option<PairReuse<'a>> {
+        let pc = &prev.core;
+        if pc.dims != core.dims
+            || pc.block != core.block
+            || pc.fov != core.fov
+            || prev.model != *model
+        {
+            return None;
+        }
+        let slot: Vec<Option<usize>> = (0..core.ids.len())
+            .map(|i| {
+                let s = *pc.index_of.get(&core.ids[i])?;
+                let (pa, va) = core.core_col(i);
+                let (pb, vb) = pc.core_col(s);
+                let (la, wa) = core.low(i);
+                let (lb, wb) = pc.low(s);
+                let (ca, cb) = (core.centers[i], pc.centers[s]);
+                let same = pa == pb
+                    && same_bits(va, vb)
+                    && la == lb
+                    && same_bits(wa, wb)
+                    && same_bits(&[ca.0, ca.1, core.radii[i]], &[cb.0, cb.1, pc.radii[s]]);
+                same.then_some(s)
+            })
+            .collect();
+        slot.iter()
+            .any(Option::is_some)
+            .then_some(PairReuse { prev, slot })
+    }
+
+    /// `prev`'s slots of cells `i` and `j` when both are unchanged.
+    fn slots(&self, i: usize, j: usize) -> Option<(usize, usize)> {
+        Some((self.slot[i]?, self.slot[j]?))
+    }
+
+    /// The Gram term of cells `i < j`: `Some(term)` copied (`Some(None)`:
+    /// it is 0), `None` to compute it.
+    fn gram(&self, i: usize, j: usize) -> Option<Option<f32>> {
+        let (a, b) = self.slots(i, j)?;
+        if (a < b) != (i < j) {
+            return None;
+        }
+        let (cols, vals) = self.prev.gram.row(a);
+        Some(cols.binary_search(&(b as u32)).ok().map(|k| vals[k]))
+    }
+
+    /// The ring coupling `q[i][j]` (`i != j`), as [`PairReuse::gram`].
+    fn ring(&self, i: usize, j: usize) -> Option<Option<f32>> {
+        if i == j {
+            return None;
+        }
+        let (a, b) = self.slots(i, j)?;
+        let BgTerms::Ring { q, .. } = &self.prev.bg else {
+            return None;
+        };
+        let (cols, vals) = q.row(a);
+        Some(cols.binary_search(&(b as u32)).ok().map(|k| vals[k]))
+    }
+}
+
 /// An immutable, versioned footprint library with the solver's precomputed
 /// terms. Share it as `Arc<Library>`; build a new one to change it.
 #[derive(Debug, Clone)]
@@ -913,7 +1001,17 @@ pub struct Library {
 }
 
 impl Library {
-    fn assemble(core: Core, model: BackgroundModel, version: u64) -> Result<Library, TraceError> {
+    /// The solver's terms of `core`. With `prev` (the library this one
+    /// rebuilds), the pair terms of unchanged cells are copied from it
+    /// instead of computed again ([`PairReuse`]): the same values, bit for
+    /// bit, at a fraction of the cost when a few cells changed (a slow-loop
+    /// publish refines a handful of footprints out of hundreds).
+    fn assemble(
+        core: Core,
+        model: BackgroundModel,
+        version: u64,
+        prev: Option<&Library>,
+    ) -> Result<Library, TraceError> {
         let n = core.ids.len();
         let dims = core.dims;
         let n_px = dims.pixels();
@@ -974,6 +1072,7 @@ impl Library {
             out
         };
 
+        let reuse = prev.and_then(|p| PairReuse::new(p, &core, &model));
         // Gram of the columns `vc_i 1_S − P low_i`:
         // `Σ_S∩S vc vc − Σ_S_j vc_j low_i(B) − Σ_B low_j ccore_i + Σ_B low_i low_j n_B`.
         let gl = core.grid_len();
@@ -1033,11 +1132,19 @@ impl Library {
                 if j <= i {
                     continue;
                 }
-                let g = pair(j, &img, &lim, &ccore);
-                if g != 0.0 {
-                    rows[i].push((j as u32, g as f32));
-                    rows[j].push((i as u32, g as f32));
-                }
+                let g = match reuse.as_ref().and_then(|r| r.gram(i, j)) {
+                    Some(Some(g)) => g,
+                    Some(None) => continue,
+                    None => {
+                        let g = pair(j, &img, &lim, &ccore);
+                        if g == 0.0 {
+                            continue;
+                        }
+                        g as f32
+                    }
+                };
+                rows[i].push((j as u32, g));
+                rows[j].push((i as u32, g));
             }
             for &q in p {
                 img[q as usize] = 0.0;
@@ -1213,6 +1320,12 @@ impl Library {
                     // Ring mean of every column that reaches the ring, the
                     // cell's own moat included.
                     for j in near(i, outer + rmax + 1.0) {
+                        if let Some(copied) = reuse.as_ref().and_then(|r| r.ring(i, j)) {
+                            if let Some(g) = copied {
+                                qrows[i].push((j as u32, g));
+                            }
+                            continue;
+                        }
                         let (pj, vj) = core.core_col(j);
                         let mut g = 0.0f32;
                         for (&q, &a) in pj.iter().zip(vj) {
@@ -1290,6 +1403,7 @@ impl Library {
             self.core.clone(),
             model,
             NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
+            None,
         )
     }
 
@@ -1922,7 +2036,7 @@ impl Library {
             blk_noise2: Vec::new(),
         };
         let Some(t) = terms else {
-            return Library::assemble(core.finish(), model, version);
+            return Library::assemble(core.finish(), model, version, None);
         };
         // The overlap groups, numbered in order of their first cell, as
         // `assemble` numbers them.

@@ -150,6 +150,24 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: Refine no longer pauses at every library publish, and no longer slows
+  as the run goes on. Each publish (every 100 frames) rebuilt the library's
+  solve terms (the Gram and ring couplings of every cell pair) from scratch,
+  although a Refine publish changes 2 to 5 footprints out of hundreds. On a
+  4-session Samara Joint run (411 cells) that took about 200 ms of slow-worker
+  time per publish, growing with the footprints, and Refine, which never drops
+  a frame, waited for it: 704 pauses over 150 ms (161 s of a 479 s Refine). A
+  rebuild now copies the pair terms of unchanged cells from the previous
+  library and computes only those of changed cells, and the glow flattener's
+  vertical pass skips all-zero columns (most of a canvas when the build
+  filters a few footprints). Both are exact: library bytes, footprints and
+  traces are bit-identical (new tests; `qc_eval` with a Refine pass writes
+  byte-identical outputs). Same run: publish 197 ms to 36 ms
+  mean, pauses 704 to 2, Refine 149 to 161 frames/s, flat over the run. The
+  Refine plots now get the run's series at most 4 times a second (the tracker
+  still takes every batch and the logged series is unchanged), so the main
+  thread's cost per batch no longer grows with the replay.
+
 - Cala: "frame N has non-finite pixels under cell M" no longer stops Refine or
   Extract. The cause was the trace solver diverging, not bad pixels: under the
   ring background, a large footprint at the FOV edge whose own moat fills its

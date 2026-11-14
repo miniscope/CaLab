@@ -47,6 +47,13 @@ export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' |
 
 /** How often to look again while waiting for the slow loop, ms. */
 const WAIT_MS = 10;
+/**
+ * Least wall time between updates of the run's series for the plots, ms.
+ * The tracker takes every batch; only handing the plot a copy of the
+ * growing series (which rebuilds its history) waits, so the main thread's
+ * cost per batch does not grow with the replay.
+ */
+export const SERIES_EVERY_MS = 250;
 
 /**
  * Batches sent that the slow loop may not have taken yet: the fast pipeline's
@@ -95,6 +102,8 @@ export function createRefineStore(
     meter: ThroughputMeter;
     done: number;
     tracker: RefineTracker;
+    /** Clock time of the last series update (`SERIES_EVERY_MS`). */
+    seriesAt: number;
     /** The replay's traces for the QC (null: no QC this run). */
     traces: TraceFile | null;
     ids: Uint32Array;
@@ -154,20 +163,26 @@ export function createRefineStore(
     return st && st.run === ctx.run ? (st.consumed ?? st.frame) : 0;
   }
 
-  /** Feed the run's series from the slow loop's newest status and library. */
-  function sample(ctx: Ctx): void {
+  /**
+   * Feed the run's series from the slow loop's newest status and library;
+   * the plots get it at most every `SERIES_EVERY_MS` (always with `flush`).
+   */
+  function sample(ctx: Ctx, flush = false): void {
     const st = cells.status();
     if (!st || st.run !== ctx.run) return;
     const frame = st.frame;
     const lib = cells.library();
     if (lib) ctx.tracker.library(lib, frame);
     ctx.tracker.status(frame, Math.max(0, st.counters.refines - ctx.refines0));
+    const now = clock();
+    if (!flush && now - ctx.seriesAt < SERIES_EVERY_MS) return;
+    ctx.seriesAt = now;
     setSeries({ samples: ctx.tracker.samples().slice(), end: ctx.tracker.time(ctx.frames) });
   }
 
   /** Close the run in the log with what the slow loop published. */
   function record(ctx: Ctx, outcome: 'done' | 'cancelled' | 'error'): void {
-    sample(ctx);
+    sample(ctx, true);
     const after = cells.library();
     const st = cells.status();
     const refines = Math.max(0, (st?.counters.refines ?? ctx.refines0) - ctx.refines0);
@@ -291,6 +306,7 @@ export function createRefineStore(
       meter: new ThroughputMeter(),
       done: 0,
       tracker: new RefineTracker(before, cells.fps()),
+      seriesAt: -Infinity,
       traces: null,
       ids: before.ids.slice(),
     };

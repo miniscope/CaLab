@@ -8,6 +8,7 @@ import {
   createRefineStore,
   REFINE_FORWARD_BUFFERS,
   REFINE_SLOW_LEAD,
+  SERIES_EVERY_MS,
   type RefineQcOptions,
 } from '../lib/refine-store.ts';
 import type { QcSnapshot } from '../lib/qc.ts';
@@ -84,6 +85,7 @@ function setup(
     /** Cells of each replay batch (omit: batches without traces). */
     cellIds?: (i: number) => number[];
     refineQc?: RefineQcOptions;
+    clock?: () => number;
   } = {},
 ) {
   const frames = 4 * (opts.batches ?? 3);
@@ -160,7 +162,7 @@ function setup(
     cells,
     log,
     () => null,
-    undefined,
+    opts.clock,
     opts.refineQc,
   );
   return {
@@ -214,6 +216,24 @@ describe('Refine store', () => {
     });
     // 6 refines over 12 frames at 2 fps = 0.1 min.
     expect(r.refinesPerMin).toBeCloseTo(60);
+  });
+
+  it('hands the plots its series at most every SERIES_EVERY_MS, and all of it at the end', async () => {
+    let now = 0;
+    const t = setup({ batches: 8, clock: () => now });
+    await t.store.run();
+    await until(() => t.store.processed() >= 8);
+    // The first batch updates the series; with the clock standing still the rest wait.
+    const early = t.store.series()!.samples.length;
+    expect(early).toBe(1);
+    await until(() => t.store.status() === 'finishing');
+    expect(t.store.series()!.samples.length).toBe(early);
+    now = SERIES_EVERY_MS;
+    await until(() => t.store.status() === 'done');
+    // Closing the run flushes the whole series (as logged).
+    const logged = t.log.last('refine')!.series!;
+    expect(logged.length).toBeGreaterThan(8);
+    expect(t.store.series()!.samples).toEqual(logged);
   });
 
   it('waits for the final library of its own run before it is done', async () => {
