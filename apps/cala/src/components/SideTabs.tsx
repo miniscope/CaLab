@@ -11,9 +11,6 @@ import { HistoryTab, type HistoryUi } from './HistoryPanel.tsx';
 import { InfoPanel } from './InfoPanel.tsx';
 import { QcTable, type QcTableState } from './QcTable.tsx';
 
-/** Smallest height of the History tab's plot, CSS px (it grows to the panel's height). */
-const HISTORY_PLOT_MIN_PX = 140;
-
 /**
  * The right-hand column: the run strip, always in view, over one row of tabs
  * (Run, Cell, QC, History and the pipeline details), one panel at a time with
@@ -100,7 +97,7 @@ export function detailTabs(props: {
           when={!props.ui.expanded()}
           fallback={<div class="cala-details__fov">{props.fov()}</div>}
         >
-          <HistoryTab ui={props.ui} minHeight={HISTORY_PLOT_MIN_PX} />
+          <HistoryTab ui={props.ui} />
         </Show>
       ),
     },

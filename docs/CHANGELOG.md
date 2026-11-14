@@ -241,7 +241,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   **Timing**, **Raw file** and **Recording** (View results: **Result** in place
   of Run, no Timing or Raw file), one panel at a time with the column's whole
   height, so the cell viewer no longer competes with the other panels for
-  room: its trace plot fills the height the footprint and QC leave. Selecting
+  room. Selecting
   a cell opens the Cell tab; the tab is remembered per viewer (localStorage);
   arrow keys, Home and End move between tabs (the shared `TabStrip` now has
   one tab stop and links each tab to its panel). Hidden panels stop drawing;
@@ -254,6 +254,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   stay beside their labels on a wide column, its captions keep a readable
   measure, and the cell header buttons and Run/QC checkboxes match the small
   controls and readouts around them.
+  Line plots in the column (the cell's trace and Demixing, History, the Run
+  tab's convergence and Refine plots) are sized by their width, 3.5:1 within
+  140-260 px (`plotHeight`), instead of stretched to the panel: a tall axis
+  is harder to read, and the spare height stays empty. The expanded History
+  caps at 340 px.
 
 - Cala: Refine replays the recording pipelined. It used to keep at most one
   batch ahead of the slow loop, so the three pipeline workers ran one batch at

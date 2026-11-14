@@ -21,6 +21,7 @@ import {
 } from '../lib/run-stages.ts';
 import type { ConvergenceState } from '../lib/qc.ts';
 import { groupKeys } from '../lib/run-history.ts';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
 import { RefineRunPlot, RefineRunsChart } from './RefinePlots.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
@@ -662,7 +663,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </Show>
           {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
           <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
-            <GroupPlot ui={props.ui} group="convergence" height={130} compact />
+            <AspectPlot>
+              {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
+            </AspectPlot>
           </Show>
           <Show when={!props.live && refineBusy()}>
             <ProgressBar

@@ -20,6 +20,7 @@ import { detailTabs, SideColumn } from './SideTabs.tsx';
 import { createQcTableState } from './QcTable.tsx';
 import { createSideTab, showPickedCell } from '../lib/side-tab.ts';
 import { FovPanel, type FovSource } from './FovPanel.tsx';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import { createHistoryUi, GroupPlot, HistoryExpanded, RunStrip } from './HistoryPanel.tsx';
 import { SelectedCellPanel } from './CellsPanel.tsx';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
@@ -365,7 +366,9 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
         <div class="cala-run__timeline">
           <RunStrip ui={ui} />
           <Show when={!ui.expanded()}>
-            <GroupPlot ui={ui} group="convergence" height={130} compact />
+            <AspectPlot>
+              {(h) => <GroupPlot ui={ui} group="convergence" height={h()} compact />}
+            </AspectPlot>
           </Show>
         </div>
       </Show>

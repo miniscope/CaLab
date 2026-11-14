@@ -1,4 +1,5 @@
 import { createEffect, createMemo, For, Show, type JSX } from 'solid-js';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import { OKABE_ITO, TracePanel } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -236,14 +237,18 @@ export function DemixView(props: { cells: CellStore; id: number }): JSX.Element 
         fallback={<p class="cala-muted">No overlapping neighbours: nothing to demix.</p>}
       >
         <Show when={nbKey()} keyed>
-          <TracePanel
-            data={data}
-            series={series()}
-            height={130}
-            syncKey="cala-demix"
-            xLabel="Time (s), each trace scaled to its own range"
-            hideYValues
-          />
+          <AspectPlot>
+            {(h) => (
+              <TracePanel
+                data={data}
+                series={series()}
+                height={h()}
+                syncKey="cala-demix"
+                xLabel="Time (s), each trace scaled to its own range"
+                hideYValues
+              />
+            )}
+          </AspectPlot>
         </Show>
       </Show>
     </div>
