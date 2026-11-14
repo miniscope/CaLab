@@ -832,6 +832,93 @@ fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
     }
 }
 
+#[test]
+fn ring_self_term_that_nearly_cancels_the_curvature_does_not_diverge() {
+    // A Joint run in the app (two stitched sessions of a minisim motion
+    // recording): a 26 px footprint at the FOV edge had `ã_iᵀã_i − s_i q_ii`
+    // = 0.012 `ã_iᵀã_i` (positive, so the m <= 0 rule above left it alone)
+    // with `s_i` = −116. Its row of the coordinate system was then the
+    // small curvature against ring couplings `−s_i q_ij` of ~10 to its
+    // neighbours: projected SOR grew by ~11x per sweep, the traces ran to
+    // inf within one frame's 200 sweeps, and the next frame with missing
+    // pixels filled them with NaN ("frame N has non-finite pixels under
+    // cell M", which stopped Refine or Extract). Reproduce the terms: the
+    // ring probe plus a neighbour in its ring, `s_0` scaled to that ratio.
+    let d = Dims::new(64, 64).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 6.0,
+        ..FlattenConfig::default()
+    };
+    let mut flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    let mut b = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    let probe = ring_probe_footprint();
+    let mut nb = ring_probe_footprint();
+    nb.id = 1;
+    nb.x0 += 14;
+    b.push(probe.clone());
+    b.push(nb.clone());
+    let mut lib = b.build(&mut flat).unwrap();
+    let gd = lib.gram_diag[0];
+    {
+        let BgTerms::Ring { s, q, .. } = &mut lib.bg else {
+            panic!("ring model expected");
+        };
+        let (cols, vals) = q.row(0);
+        let k00 = cols.binary_search(&0).expect("self term in the ring");
+        let q01 = vals[cols
+            .binary_search(&1)
+            .expect("the neighbour is in the ring")];
+        assert!(q01 != 0.0 && s[0] != 0.0);
+        // `ã_0ᵀã_0 − s_0 q_00 = 0.012 ã_0ᵀã_0`, as in the app (its own moat
+        // filling a clipped ring: set `q_00`, the couplings stay as built).
+        q.val[q.start[0] + k00] = (1.0 - 0.012) * gd / s[0];
+    }
+    // As the old rule left it (that curvature kept): a library saved then
+    // must be repaired when it is read back.
+    let mut saved = lib.clone();
+    saved.trace_noise[0] *= lib.mdiag[0] / (0.012 * gd);
+    saved.mdiag[0] = 0.012 * gd;
+    let mut mdiag = lib.gram_diag.clone();
+    if let BgTerms::Ring { s, q, .. } = &mut lib.bg {
+        library::ring_self_curvature(&lib.gram_diag, s, q, &mut mdiag);
+    }
+    lib.mdiag = mdiag;
+    let read = Library::from_bytes(&saved.to_bytes()).unwrap();
+    assert_eq!(read.mdiag, lib.mdiag);
+    // The noise follows the curvature (`‖·‖ / mdiag`).
+    let want = saved.trace_noise[0] * 0.012;
+    assert!(
+        (read.trace_noise[0] - want).abs() <= 1e-6 * want,
+        "{read:?}"
+    );
+    assert_eq!(read.trace_noise[1], saved.trace_noise[1]);
+
+    let mut fp = vec![0.0f32; 64 * 64];
+    for (p, c) in [(&probe, 3.0f32), (&nb, 2.0)] {
+        for y in 0..p.height {
+            for x in 0..p.width {
+                fp[(p.y0 + y) * 64 + p.x0 + x] += c * p.values[y * p.width + x];
+            }
+        }
+    }
+    flat.apply(&mut fp).unwrap();
+    fp.iter_mut().for_each(|v| *v += 5.0);
+    let cfg = SolverConfig::default();
+    for lib in [lib, read] {
+        let mut e = TraceEngine::new(Arc::new(lib), cfg).unwrap();
+        for _ in 0..4 {
+            let r = e.process(&fp).unwrap();
+            assert!(r.traces.iter().all(|v| v.is_finite() && *v < 1e3), "{r:?}");
+            assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+        }
+    }
+}
+
 fn lib_noise(e: &TraceEngine) -> f32 {
     e.library().trace_noise()[0]
 }
