@@ -130,6 +130,18 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: sessions and projects pick only Miniscope folders, read from the
+  Miniscope metadata. A behaviour camera writes the same numbered `.avi` files
+  as a Miniscope, and discovery used to tell them apart by name only (a `behav*`
+  folder or prefix): a camera folder named otherwise made the app ask which
+  series to use, and a dual-Miniscope rig or a Miniscope folder renamed between
+  days made the user pick one Miniscope kind and lost the others. Discovery now
+  reads the experiment `metaData.json` (`"miniscopes"` / `"cameras"`), else the
+  device's own `metaData.json` (`deviceType`, or an `ewl` field), and keeps only
+  Miniscope folders; each Miniscope of a session is its own row. Without
+  metadata it works by name as before, and the series chooser marks a folder
+  it takes for a behaviour camera.
+
 - Cala: Refine's QC. Refine runs no QC monitor, so after a Refine the Cell QC
   table still showed Discover's last snapshot: peak SNR over each cell's last
   60 s of Discover (the pre-#385 numbers), lower than the whole-session SNR

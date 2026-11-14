@@ -12,22 +12,19 @@
  * same kind of recording" across days (the same prefix, or the same device
  * folder name) form a kind; the Miniscope kind is chosen the way
  * `chooseSeries` chooses a series, and the user is asked only when it is
- * ambiguous. Pure functions on names and strings; nothing reads a file.
+ * ambiguous. A kind's role (Miniscope or behaviour camera) comes from the
+ * Miniscope metaData.json files when they say (`device-roles.ts`, read by
+ * `discoverKinds`), else from the names. Apart from `discoverKinds`, pure
+ * functions on names and strings; nothing reads a file.
  */
 import type { FolderEntry } from './frame-source.ts';
+import { readDeviceRoles, roleFromName, type RoleInfo, type RoleSource } from './device-roles.ts';
 import { naturalCompare } from './natural-sort.ts';
-import {
-  detectSeries,
-  dirOf,
-  isBehaviourPrefix,
-  seriesLabel,
-  type VideoSeries,
-} from './video-series.ts';
+import { detectSeries, dirOf, seriesLabel, type VideoSeries } from './video-series.ts';
 
 /** Same patterns as the sidecar lookup in `frame-source.ts`. */
 const METADATA_NAME = /(?:^|[_-])metadata\.json$/i;
 const TIMESTAMPS_NAME = /(?:^|[_-])time_?stamps?\.csv$/i;
-const BEHAVIOUR_DIR = /^behav/i;
 const MINISCOPE_DIR = /miniscope/i;
 
 function basename(dir: string): string {
@@ -44,7 +41,29 @@ export interface SeriesKind {
   series: VideoSeries<FolderEntry>[];
   /** Total video files. */
   files: number;
+  /**
+   * Miniscope or behaviour camera, when its series agree (from metadata, else
+   * names); null when unknown or mixed.
+   */
+  role: RoleInfo | null;
 }
+
+const SOURCE_RANK: Record<RoleSource, number> = { experiment: 0, device: 1, name: 2 };
+
+/** One role for a kind: its series' roles when they do not conflict, the strongest source. */
+function kindRole(roles: (RoleInfo | null)[]): RoleInfo | null {
+  const known = roles.filter((r): r is RoleInfo => r !== null);
+  if (known.length === 0) return null;
+  if (known.some((r) => r.role !== known[0].role)) return null;
+  const source = known.reduce(
+    (best, r) => (SOURCE_RANK[r.source] < SOURCE_RANK[best] ? r.source : best),
+    known[0].source,
+  );
+  return { role: known[0].role, source };
+}
+
+/** True when a role came from metaData.json rather than a name. */
+const fromMetadata = (r: RoleInfo | null): r is RoleInfo => r !== null && r.source !== 'name';
 
 /** Kind key: the prefix when there is one, else the device folder name; plus the extension. */
 export function seriesKindKey(s: VideoSeries): string {
@@ -54,7 +73,14 @@ export function seriesKindKey(s: VideoSeries): string {
     : `d:${basename(s.dir).toLowerCase()}:${ext}`;
 }
 
-export function groupKinds(series: VideoSeries<FolderEntry>[]): SeriesKind[] {
+/**
+ * Group series into kinds. `roles` (by `series.key`, from `readDeviceRoles`)
+ * says what the metadata found; series without one fall back to their names.
+ */
+export function groupKinds(
+  series: VideoSeries<FolderEntry>[],
+  roles: ReadonlyMap<string, RoleInfo> = new Map(),
+): SeriesKind[] {
   const byKey = new Map<string, SeriesKind>();
   for (const s of series) {
     const key = seriesKindKey(s);
@@ -64,24 +90,54 @@ export function groupKinds(series: VideoSeries<FolderEntry>[]): SeriesKind[] {
         s.prefix !== '' || basename(s.dir) === ''
           ? seriesLabel(s)
           : `${basename(s.dir)}/${seriesLabel(s)}`;
-      k = { key, label, series: [], files: 0 };
+      k = { key, label, series: [], files: 0, role: null };
       byKey.set(key, k);
     }
     k.series.push(s);
     k.files += s.files.length;
   }
   const out = [...byKey.values()];
-  for (const k of out) k.series.sort((a, b) => naturalCompare(a.dir, b.dir));
+  for (const k of out) {
+    k.series.sort((a, b) => naturalCompare(a.dir, b.dir));
+    k.role = kindRole(
+      k.series.map((s) => {
+        const r = roles.get(s.key);
+        if (r) return r;
+        const named = roleFromName(s);
+        return named ? { role: named, source: 'name' as const } : null;
+      }),
+    );
+  }
   return out;
+}
+
+/**
+ * Several Miniscope kinds as one: a dual-scope rig (two Miniscope folders per
+ * session) or a device folder renamed between days. Each series stays its own
+ * session, so every Miniscope is listed rather than one picked.
+ */
+export function mergeKinds(kinds: SeriesKind[]): SeriesKind {
+  const series = kinds
+    .flatMap((k) => k.series)
+    .sort((a, b) => naturalCompare(a.dir, b.dir) || naturalCompare(a.key, b.key));
+  return {
+    key: kinds.map((k) => k.key).join('+'),
+    label: kinds.map((k) => k.label).join(' + '),
+    series,
+    files: kinds.reduce((n, k) => n + k.files, 0),
+    role: kindRole(kinds.map((k) => k.role)),
+  };
 }
 
 /**
  * Same narrowing idea as `chooseSeries`, at kind level:
  *  1. One kind: chosen.
- *  2. Drop behaviour kinds (a behaviour prefix, or no prefix and a device folder
- *     named behav...) unless nothing else is left.
- *  3. Prefer the Miniscope prefixes (none, `msCam`).
- *  4. Prefer a kind with a directory whose path mentions "miniscope".
+ *  2. Kinds that metaData.json says are Miniscopes: chosen, all of them (merged
+ *     by `mergeKinds` when there are several); every other kind is left out.
+ *  3. Drop camera kinds (metadata, a behaviour prefix, or a device folder named
+ *     behav...) unless nothing else is left.
+ *  4. Prefer the Miniscope prefixes (none, `msCam`).
+ *  5. Prefer a kind with a directory whose path mentions "miniscope".
  * Candidates are sorted by file count (most first), then key; chosen is the
  * single one left, else null.
  */
@@ -96,10 +152,17 @@ export function chooseKind(kinds: SeriesKind[]): {
     if (kept.length > 0) cands = kept;
   };
   const prefixOf = (k: SeriesKind) => k.series[0].prefix;
-  const isBehaviour = (k: SeriesKind) =>
-    isBehaviourPrefix(prefixOf(k)) ||
-    (prefixOf(k) === '' && BEHAVIOUR_DIR.test(basename(k.series[0].dir)));
-  if (cands.length > 1) narrow((k) => !isBehaviour(k));
+  if (cands.length > 1) {
+    const scopes = cands.filter((k) => fromMetadata(k.role) && k.role.role === 'miniscope');
+    if (scopes.length > 0) {
+      const chosen = scopes.length === 1 ? scopes[0] : mergeKinds(scopes);
+      return { chosen, candidates: [chosen] };
+    }
+  }
+  const isCamera = (k: SeriesKind) =>
+    k.role?.role === 'camera' ||
+    (k.role === null && k.series.some((s) => roleFromName(s) === 'camera'));
+  if (cands.length > 1) narrow((k) => !isCamera(k));
   if (cands.length > 1) {
     narrow((k) => ['', 'mscam'].includes(prefixOf(k).toLowerCase()));
   }
@@ -163,13 +226,25 @@ export function sessionsForKind(entries: FolderEntry[], kind: SeriesKind): Sessi
   });
 }
 
-/** All of it: detect, group, choose. `sessions` is null when ambiguous (the UI shows the kinds). */
-export function discoverSessions(entries: FolderEntry[]): {
+/** Detect the series, read their metadata roles, and group them into kinds. */
+export async function discoverKinds(entries: FolderEntry[]): Promise<SeriesKind[]> {
+  const series = detectSeries(entries);
+  return groupKinds(series, await readDeviceRoles(entries, series));
+}
+
+/**
+ * All of it: detect, group, choose. `sessions` is null when ambiguous (the UI
+ * shows the kinds). Pass `roles` (from `readDeviceRoles`) to use the metadata.
+ */
+export function discoverSessions(
+  entries: FolderEntry[],
+  roles?: ReadonlyMap<string, RoleInfo>,
+): {
   sessions: SessionCandidate[] | null;
   kinds: SeriesKind[];
   candidates: SeriesKind[];
 } {
-  const kinds = groupKinds(detectSeries(entries));
+  const kinds = groupKinds(detectSeries(entries), roles);
   const { chosen, candidates } = chooseKind(kinds);
   return { sessions: chosen ? sessionsForKind(entries, chosen) : null, kinds, candidates };
 }

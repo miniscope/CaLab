@@ -30,10 +30,14 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
   (letters, `_`, `-` or spaces). Zero-padded numbers (`msCam001.avi`) work, and files
   are sorted by number, not alphabetically. Gaps, repeated numbers and a series that
   does not start at 0 give a warning and still open.
-- If the folder (or its subfolders) holds several series, such as `msCam*.avi` next to
-  a `behavCam*.avi` behaviour camera, Cala picks the Miniscope one: it skips `behav*`
-  prefixes and prefers `msCam` and unprefixed names. When it still cannot tell, it lists
-  the series (name, file count, folder) and you pick one.
+- If the folder (or its subfolders) holds several series, such as the Miniscope's
+  `img/` next to a behaviour camera's `behav/`, Cala picks the Miniscope from the
+  metadata the Miniscope software writes: the recording's `metaData.json` lists
+  `"miniscopes"` and `"cameras"`, and each device's own `metaData.json` gives its
+  `deviceType`. Without metadata it goes by name: it skips `behav*` folders and
+  prefixes and prefers `msCam` and unprefixed names. When it still cannot tell, it
+  lists the series (name, file count, folder, and "behaviour camera" where it
+  thinks so) and you pick one.
 - `metaData.json` and `timeStamps.csv` are read from the folder of the chosen series.
 
 - The frame rate comes from `timeStamps.csv`, else from `metaData.json`. The frame
@@ -251,8 +255,9 @@ session table and keeps the results indexed; the steps below are the one-off rou
 
 1. **Pick the parent folder** (for a Miniscope V4 tree, the animal's folder that holds
    `date/time/My_V4_Miniscope/`). Every recording folder in it, at any depth, becomes a
-   session; behaviour cameras are left out. If the kind of recording is unclear, the
-   app asks which one is the Miniscope. Or click **Multi-session run** on the start
+   session; behaviour cameras are left out (see above). A rig with two Miniscopes
+   gives one session per Miniscope; run those as **Separate**. If the kind of
+   recording is unclear, the app asks which one is the Miniscope. Or click **Multi-session run** on the start
    screen and **Add session** for each folder.
 2. **Review the session list.** Each session shows its path, frames, frame rate,
    size and recording start (from `metaData.json`). The default order is the
