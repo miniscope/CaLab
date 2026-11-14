@@ -20,6 +20,7 @@ import { DetailsTabs } from './DetailsTabs.tsx';
 import { FovPanel, type FovSource } from './FovPanel.tsx';
 import { createHistoryUi, GroupPlot, HistoryExpanded, RunStrip } from './HistoryPanel.tsx';
 import { SelectedCellPanel } from './CellsPanel.tsx';
+import { BoundaryBadge } from './BoundaryBadge.tsx';
 import { SidePanel } from './SidePanel.tsx';
 
 /** Where the result came from (the project index), for the readout. */
@@ -189,6 +190,16 @@ function ResultFacts(props: { result: LoadedResult; origin: ResultOrigin }): JSX
       <dd>{String(m().app_version ?? '')}</dd>
       <dt>Export format</dt>
       <dd>{r().formatVersion}</dd>
+      <Show when={r().boundary}>
+        {(f) => (
+          <>
+            <dt>Session boundary</dt>
+            <dd>
+              <BoundaryBadge flag={f()} />
+            </dd>
+          </>
+        )}
+      </Show>
       <Show when={props.origin.path}>
         <dt>File</dt>
         <dd>
@@ -294,6 +305,14 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
             Read-only: this is the result as it was saved. Start a new run from the project to
             Discover, Refine or Extract again.
           </p>
+          <Show when={result.boundary}>
+            {(f) => (
+              <p class="cala-result__boundary" data-testid="result-boundary">
+                <BoundaryBadge flag={f()} /> <span class="cala-muted">{f().reason}</span>
+                <Show when={f().suggestion}>{(t) => <span class="cala-muted"> {t()}</span>}</Show>
+              </p>
+            )}
+          </Show>
           <Show when={loaded() < result.frames && !loadError()}>
             <ProgressBar
               fraction={result.frames > 0 ? loaded() / result.frames : 1}

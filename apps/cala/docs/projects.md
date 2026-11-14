@@ -105,8 +105,10 @@ videos say; there are no hand-typed columns.
 **Run:** `id` (its folder name, a local timestamp; `legacy-...` for a run found
 at the results root), `folder` (relative to the results folder; `""` for a #377
 tree at its root), `mode` (`joint` | `separate`), `sessions[]` (`id`, `status`
-`pending | written | skipped | failed`, `note`, and `stages`: the stage runs as
-the export's `stages_run` records them, with times and outcomes), `settings`
+`pending | written | skipped | failed`, `note`, `stages`: the stage runs as
+the export's `stages_run` records them, with times and outcomes, and for the
+later sessions of a Joint run `boundary`: the health flag of the boundary the
+session starts with), `settings`
 (`refine_runs`), `app_version`, `created`, `updated`, `finished`, `stopped` (why
 it stopped), `plan` (`{id, group, groups}` for a run plan's group), and
 `library_in` / `library_out` (`null`; saved libraries come in PR 2).
@@ -330,6 +332,16 @@ translation), re-seats the flicker reference, and carries the background floor
 and noise map into the new session's brightness. See
 [stages.md](stages.md#boundaries). Separate runs start each session fresh and
 need none of this.
+
+Each boundary also gets a health flag (ok, warning or failed, with the reason;
+[stages.md](stages.md#boundary-flags)). It is stored with the session's run
+entry in the index (`runs[].sessions[].boundary`, the export's JSON form; read
+back from `cala-session.json` or `cala-run.json` when the index is rebuilt),
+and the session table shows it as a badge on the row of the session that
+starts at that boundary, with the reason as its tooltip. A failed boundary's
+badge offers **Re-plan as Separate**: the chain's sessions go into the run plan
+as Separate runs (only the plan changes; nothing starts). View results shows
+the flag of the result's session.
 
 ## Not yet (later PRs)
 

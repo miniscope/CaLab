@@ -297,6 +297,20 @@ remounted scope does not show up as a baseline bump in the traces. The run's His
 lists what was done at each boundary ("session boundary"). The cells' brightness is
 not equalised between sessions: if the light changed, traces stay in camera units.
 
+cala also checks each boundary and flags it **ok**, **warning** or **failed**, with the
+reason (hover the badge). It looks at three things, each against what the same
+recording does within a session: whether the new session lines up with the previous
+one (a failed alignment usually means the sessions do not show the same field of
+view, or moved further than cala searches); whether the brightness and noise
+corrections held over the next 30 s; and whether the cell library carried over (a
+burst of new cells, or many cells going silent at once, after the boundary). The
+outcome checks need 30 s after the boundary, so the flag says "ok so far" until then.
+The flag shows on the session's row in the project table, in the run's session list,
+in History ("boundary check"), on the cell trace's boundary line (orange: warning,
+red with "!": failed) and in the saved results. For a failed boundary, run those
+sessions **Separate** instead: **Re-plan as Separate** on the badge puts them into the
+run plan that way (it never switches by itself).
+
 ## Reading the quality-control indicators
 
 **Convergence status** (Run panel header, with the convergence plot below it). Cell discovery does not stop on long

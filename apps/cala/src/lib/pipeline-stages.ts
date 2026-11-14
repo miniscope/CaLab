@@ -36,6 +36,7 @@ import {
   boundariesInBatch,
   NO_SESSION_HOOKS,
   referenceSpan,
+  SESSION_REFERENCE_FRAMES,
   sessionStart,
   type SessionHooks,
   type SessionStart,
@@ -120,6 +121,8 @@ export interface StageJob {
   sessionTransform?: SessionTransform;
   /** B's estimate on the session's first batch: `SessionAligner.beginSession`'s values. */
   sessionAlign?: number[];
+  /** B: a within-session sample of the boundary correlation's null (`boundary-flags.ts`). */
+  boundaryNull?: number;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -627,10 +630,18 @@ export class MotionStage {
       else if (this.setup.replay) a.setTransform(0, 0, 0);
       else job.sessionAlign = Array.from(a.beginSession(front, this.fovMask!));
     }
-    if (a.isIdentity) return;
-    a.warpF32(front);
-    const t = a.transform();
-    job.sessionTransform = [t[0], t[1], t[2]];
+    if (!a.isIdentity) {
+      a.warpF32(front);
+      const t = a.transform();
+      job.sessionTransform = [t[0], t[1], t[2]];
+    }
+    // The boundary flags' null (an observer): this batch against the
+    // session's last block of registered frames, as `beginSession` scores a
+    // session's first batch.
+    if (!this.setup.replay && !job.session && a.nullFrames >= SESSION_REFERENCE_FRAMES) {
+      const v = a.nullSample(front.subarray(0, job.step.count * this.px), this.fovMask!);
+      if (Number.isFinite(v)) job.boundaryNull = v;
+    }
   }
 
   /**
@@ -786,6 +797,7 @@ export class MotionStage {
         ? referenceSpan(this.setup.plan.boundaries, s.start, s.count)
         : null;
     if (ref) this.aligner!.pushReference(out.subarray(ref.from * this.px, ref.to * this.px));
+    if (this.aligner && !this.setup.replay) this.aligner.pushNull(out);
     const t2 = now();
     job.corrected = corrected;
     job.dy = dy;
@@ -933,6 +945,7 @@ export class BackStage {
       ...(job.flatField ? { flatField: job.flatField } : {}),
       ...(imaging ? { imaging } : {}),
       ...(session ? { session } : {}),
+      ...(job.boundaryNull !== undefined ? { boundaryNull: job.boundaryNull } : {}),
     };
   }
 

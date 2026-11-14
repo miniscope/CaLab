@@ -24,6 +24,7 @@ import {
   boundariesInBatch,
   NO_SESSION_HOOKS,
   referenceSpan,
+  SESSION_REFERENCE_FRAMES,
   sessionStart,
   type SessionHooks,
   type SessionStart,
@@ -180,6 +181,11 @@ export type PipelineStepResult =
       imaging?: ImagingStats;
       /** This batch started a session of a Joint run (session fix on): what was done. */
       session?: SessionStart;
+      /**
+       * Discover of a Joint run: a within-session sample of the boundary
+       * correlation's null, completed with this batch (`boundary-flags.ts`).
+       */
+      boundaryNull?: number;
     }
   | {
       kind: 'done';
@@ -403,6 +409,7 @@ export class PipelineEngine {
     let sessionAlign: number[] | undefined;
     let sessionTransform: SessionTransform | undefined;
     const aligner = this.aligner;
+    let boundaryNull: number | undefined;
     if (aligner) {
       if (session) sessionAlign = Array.from(aligner.beginSession(front, this.fovMask!));
       if (!aligner.isIdentity) {
@@ -410,10 +417,16 @@ export class PipelineEngine {
         const t = aligner.transform();
         sessionTransform = [t[0], t[1], t[2]];
       }
+      // The boundary flags' null (an observer; see `FrontStage`'s session warp).
+      if (!session && aligner.nullFrames >= SESSION_REFERENCE_FRAMES) {
+        const v = aligner.nullSample(front.subarray(0, n), this.fovMask!);
+        if (Number.isFinite(v)) boundaryNull = v;
+      }
     }
     motion.processF32(front, corrected, records);
     const ref = aligner ? referenceSpan(this.plan.boundaries, s.start, s.count) : null;
     if (ref) aligner!.pushReference(corrected.subarray(ref.from * this.px, ref.to * this.px));
+    aligner?.pushNull(corrected.subarray(0, n));
     const t3 = now();
     const last = s.count - 1;
     const before = downsampleFrame(corrected, last, this.width, this.height, this.factor);
@@ -480,6 +493,7 @@ export class PipelineEngine {
       ...(live ? { live } : {}),
       ...(imaging ? { imaging } : {}),
       ...(sessionStarted ? { session: sessionStarted } : {}),
+      ...(boundaryNull !== undefined ? { boundaryNull } : {}),
     };
   }
 

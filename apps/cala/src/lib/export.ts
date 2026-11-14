@@ -110,6 +110,16 @@
  *                                        the cell (CNMF's C + YrA), so a quiet cell sits at 0 with
  *                                        symmetric noise where `traces` is clipped at 0
  *
+ * Session-boundary flags (format version 6; Joint runs, sessions 2..):
+ * `meta_json.session.boundary` is the health flag of the boundary the session
+ * starts with (`boundary-flags.ts`, docs/stages.md "Boundary flags"):
+ * `session_index`, `frame` (on the run's axis), `severity` (ok, warning,
+ * failed), `pending` (the run ended before a check's window played),
+ * `reason` (plain language), `suggestion` (failed: run Separate), and
+ * `checks`: per check its `key`, `group` (alignment, change, outcome),
+ * `severity`, `judged`, `value`, `null_centre`, `null_spread`, `z` and
+ * `reason`. Observers only: nothing else in the export depends on them.
+ *
  * `traces` stays the solver's non-negative estimate (the solve itself clips
  * at 0, for stability and against crosstalk); `traces_signed` is what a
  * deconvolution wants (a zero baseline with symmetric noise).
@@ -147,7 +157,7 @@ import type { StageRun } from './run-stages.ts';
 import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 5;
+export const EXPORT_FORMAT_VERSION = 6;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;

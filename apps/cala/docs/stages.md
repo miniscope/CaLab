@@ -238,6 +238,70 @@ The run's event log gets a `session` event at each boundary as Discover
 reaches it; the History plots and the cell trace draw a line there. The
 session metadata and the run manifest list the boundary frames.
 
+### Boundary flags
+
+Discover of a Joint run judges each boundary: **ok**, **warning** or
+**failed**, with a plain-language reason (`src/lib/boundary-flags.ts`,
+`BoundaryMonitor`, fed by the pipeline store). The flags are observers: they
+never change processing, and a one-session run computes none. Each threshold
+compares a statistic of the boundary with a null built from the same
+recording; the few fixed choices are in `BOUNDARY_FLAG_RULES` (one place).
+
+| group                       | check          | what it reads                                                                                                                                                                                                                                                 | warning                                                                    | failed                                                                        |
+| --------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| alignment (at the boundary) | `match`        | the re-registration's `ncc` against the same correlation within the sessions before: a block of 100 registered frames and the next batch, without rotation (`SessionAligner.nullSample`, one sample per ~108 frames), on the log decorrelation `−ln(1 − ncc)` | outside the null                                                           | nearer the chance level than a within-session match (keeps < ½ of its margin) |
+|                             | `search_edge`  | the best rotation at the edge of the ±3° grid, or the best shift within 1 px of the ±40 px search                                                                                                                                                             | pinned, match ok                                                           | pinned, match not ok                                                          |
+| change (after the window)   | `floor_fit`    | `floorKept`: the share of pixels the floor's gain/offset fit follows                                                                                                                                                                                          |                                                                            | under ½ (the fit describes a minority: a change it cannot model)              |
+|                             | `noise_drift`  | ln(noise σ at the window's end / at its start) after the rescale, against the same over windows within the sessions before                                                                                                                                    | outside the null, and larger than the rescale's own step (ln `noiseRatio`) |                                                                               |
+|                             | `floor_drift`  | the floor's move over the window in noise σ, against the same                                                                                                                                                                                                 | outside the null, and larger than the floor's step at the boundary         |                                                                               |
+| outcome (after the window)  | `new_cells`    | slow-loop adds in the window, against the adds per window within the sessions before                                                                                                                                                                          | outside the null                                                           | and the excess is more than ½ the library at the boundary                     |
+|                             | `silent_cells` | cells active in the window before the boundary (peak SNR ≥ 5, QC's pass rule, noise from the trace's first differences) that are silent or gone in the window after, against the same share between consecutive windows within the sessions before            | outside the null                                                           | and the excess is more than ½ of the active cells                             |
+
+- **Chance level.** `SessionAligner.beginSession` also scores the moving image
+  mirrored (rows, columns, both) over the same translation search: unrelated
+  content with the same texture. Its best correlation is what the search finds
+  by chance (`chanceNcc`). Within a session the match sits near 1; a field of
+  view that is not the previous one sits near chance.
+- **Outside the null** means 3.5 robust standard deviations (median and MAD),
+  the Iglewicz & Hoaglin (1993) outlier cut for the modified z score. Counts
+  use the same cut on the Anscombe scale (2√(x + 3/8)), divided by the null's
+  overdispersion (variance over mean, at least 1); the silent share uses a
+  quasi-binomial z with the null's dispersion.
+- **Drift after a rescale.** The trackers settle a little after any boundary
+  (the floor relaxes upward with τ = 120 s), while within a session they sit
+  still, so the within-session null alone flags normal boundaries. A drift
+  warns only when it is also larger than the step the rescale applied: the
+  correction captured under half of the change (the majority rule).
+- **Failed** is the majority rule: under half of a match's margin over
+  chance, a fit that follows under half the pixels (the breakdown point of
+  its median-based trimming), an excess of more than half the library or of
+  the active cells.
+- **The window** is `BOUNDARY_FLAG_RULES.windowS` = 30 s of stream after the
+  boundary, in frames at the recording's fps (Miniscope recordings run
+  10–60 fps). The within-session windows are the same length, aligned to each
+  session's start; the first two of every session are left out (a run's
+  discovery warm-up, and the window after a boundary). The null comes only
+  from the sessions before the boundary. With fewer than 3 null samples a
+  check says it is not judged.
+- **When.** Alignment is judged at the boundary; change and outcome once the
+  window has played in the fast and the slow loop (until then the flag is
+  "ok so far", `pending`). A run that ends first leaves them not judged.
+- **Where it shows.** A History event ("boundary check": a `warning` for a
+  warning or failed boundary, a `setting` for ok) each time a verdict changes;
+  the boundary line on the cell trace (orange for a warning, vermillion with a
+  "!" for failed); a badge in the multi-session run's list; the export
+  (`meta_json.session.boundary`, export format 6), `cala-session.json`, the run
+  manifest and the project index (`runs[].sessions[].boundary`), so the
+  session table and View results show it.
+- **What to do.** A failed boundary suggests running those sessions Separate.
+  The session table's **Re-plan as Separate** puts the chain's sessions into
+  the run plan as Separate runs; nothing switches by itself.
+- Calibration (stitched sims and Samara's real Joint data):
+  `tools/cala-eval/results/2026-11-13-boundary-flags.md`;
+  `tools/cala-eval/boundary_flags_eval.ts` runs the same monitor on a
+  `qc_eval --sessions … --session-fix all --boundary-log --churn-log` run
+  (which writes the null samples to `boundary_null.tsv`).
+
 ### Results
 
 Each session's results are written when they are final: after its Extract

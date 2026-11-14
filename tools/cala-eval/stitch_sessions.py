@@ -7,6 +7,10 @@
       --gain G         multiply B's camera counts by G (default 1)
       --offset O       add O grey levels to B's camera counts (default 0)
       --seed S         dither / noise seed (default 0)
+      --b-source SIM   session B's frames come from another sim of the same size (a
+                       different field of view: the failed-boundary case of the
+                       boundary-flag calibration). The GT stays the source's, so it is
+                       wrong after the boundary: score only session A
       --aperture-dark F  render BOTH sessions through a sensor-fixed lit disk that leaves the
                        share F of the frame dark (real Miniscope frames: ~0.28), edge
                        `--aperture-edge` px (default 10), dark level `--dark-level` grey (default 4)
@@ -163,6 +167,7 @@ def main() -> int:
     ap.add_argument("--aperture-dark", type=float, default=0.0)
     ap.add_argument("--aperture-edge", type=float, default=10.0)
     ap.add_argument("--dark-level", type=float, default=4.0)
+    ap.add_argument("--b-source", type=Path, default=None)
     a = ap.parse_args()
     dy, dx = (float(v) for v in a.shift.split(","))
     src, out = a.src.resolve(), a.out.resolve()
@@ -223,7 +228,17 @@ def main() -> int:
         "seed": a.seed,
         "scale_adu_per_unit": s,
         "frames": frames_total,
+        "b_source": str(a.b_source.resolve()) if a.b_source else None,
     }
+    b_files = []
+    if a.b_source:
+        for p in sorted((a.b_source / "daq" / "Miniscope").glob("*.avi"), key=lambda p: int(p.stem)):
+            b_files.append(avi_frames(p, n, "r"))
+
+    def b_frame(t):
+        mm, offs = b_files[t // FRAMES_PER_FILE]
+        o = offs[t % FRAMES_PER_FILE]
+        return mm[o : o + n]
     if geometric:
         idx, wts, outside, (sy, sx) = sampler(h, w, dy, dx, a.rotate)
         # A tap without data: outside the frame, or the source pixel is unlit.
@@ -263,12 +278,13 @@ def main() -> int:
             dark_share=float((disk < 0.5).mean()),
         )
     rng = np.random.default_rng(a.seed)
-    identity = not geometric and a.gain == 1.0 and a.offset == 0.0
+    identity = not geometric and a.gain == 1.0 and a.offset == 0.0 and not a.b_source
     # (The identity arm would rewrite B unchanged: floor(R + U) = R. Skip it.)
     first = 0 if aperture else a.boundary
     for t in range(first, frames_total if (aperture or not identity) else 0):
         mm, o = frame_ref(t)
-        r = mm[o : o + n].astype(np.float32) + rng.random(n, dtype=np.float32)
+        src_frame = b_frame(t) if (a.b_source and t >= a.boundary) else mm[o : o + n]
+        r = src_frame.astype(np.float32) + rng.random(n, dtype=np.float32)
         if t < a.boundary:
             v = disk * r + (1 - disk) * a.dark_level + ap_sd * rng.standard_normal(n, dtype=np.float32)
             mm[o : o + n] = np.clip(np.floor(v), 0, 255).astype(np.uint8)

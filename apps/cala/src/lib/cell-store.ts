@@ -190,6 +190,8 @@ export function createCellStore(
   const [saved, setSaved] = createSignal(false);
 
   let session = -1;
+  /** Told every slow-loop status of the current session (`onStatus`). */
+  const statusListeners: ((st: SlowStatus) => void)[] = [];
   /** Newest published library as `TraceLibrary.toBytes()` (pass 2 solves with it). */
   let latestBytes: Uint8Array | null = null;
   let convHistory = new ConvergenceHistory();
@@ -283,6 +285,7 @@ export function createCellStore(
         setEstablished(m);
       }
       setStatus(st);
+      for (const fn of statusListeners) fn(st);
     } else setError(msg.message);
   }
 
@@ -426,6 +429,8 @@ export function createCellStore(
     libraryBytes: () => latestBytes,
     geometry,
     status,
+    /** Be told every slow-loop status of the current session (the boundary flags count its adds). */
+    onStatus: (fn: (st: SlowStatus) => void) => statusListeners.push(fn),
     error,
     /** Fast-loop frames read, and the library version being solved. */
     frame,

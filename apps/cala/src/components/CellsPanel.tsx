@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
+import type { BoundarySeverity } from '../lib/boundary-flags.ts';
 import { SegmentedControl, Tabs } from '@calab/ui';
 import { viridisRGB } from '@calab/ui/chart';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
@@ -197,6 +198,7 @@ function SelectedCell(props: {
   fps: number;
   scale: FootprintScale;
   boundaries?: readonly number[];
+  boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
 }): JSX.Element {
   const c = () => props.cells;
   const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
@@ -254,6 +256,7 @@ function SelectedCell(props: {
                 fps={props.fps}
                 markerFrame={markerFrame()}
                 boundaries={props.boundaries}
+                boundaryFlags={props.boundaryFlags}
               />
             ),
           },
@@ -276,6 +279,8 @@ export function SelectedCellPanel(props: {
   fps: number;
   /** First frames of sessions 2.. of a multi-session run (marked on the trace). */
   boundaries?: readonly number[];
+  /** Their health flags (Joint runs; `boundary-flags.ts`). */
+  boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
   /** Fold to its header line (while the History tab is open); unfolds when this turns false. */
   folded?: boolean;
 }): JSX.Element {
@@ -369,6 +374,7 @@ export function SelectedCellPanel(props: {
             fps={props.fps}
             scale={scale()}
             boundaries={props.boundaries}
+            boundaryFlags={props.boundaryFlags}
           />
         )}
       </Show>

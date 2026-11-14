@@ -165,6 +165,9 @@
 //!                      The floor and noise fits use the session's first
 //!                      --session-fit-frames (8, the app's batch) frames.
 //!                      Needs --motion; writes `session_boundaries.tsv`
+//!                      (with re-registration also `boundary_null.tsv`: the
+//!                      boundary correlation's within-session null samples,
+//!                      as the app's boundary flags use them)
 //!   --library F        a fixed library (`footprints.bin` of an earlier run,
 //!                      `CALAFP01`) from `--start` on, no slow loop: scores
 //!                      a given cell set (held-out frames: the split the
@@ -658,6 +661,17 @@ struct Pipeline {
     prepared: std::collections::VecDeque<PreparedFrame>,
     /// Add this frame's registered image to `reference`.
     collect_reference: bool,
+    /// `--sessions` with re-registration: the boundary correlation's
+    /// within-session null (as the app's `SessionAligner.nullSample`): a
+    /// block of `null_ref` registered frames, then the mean of the next
+    /// `null_fit` front frames (after the session warp) scored against it.
+    null_on: bool,
+    null_ref: usize,
+    null_fit: usize,
+    null_block: calab_cala::motion::session::ReferenceMean,
+    null_moving: calab_cala::motion::session::ReferenceMean,
+    /// The sample the last frame completed (taken by the caller).
+    null_last: Option<f32>,
 }
 
 /// A frame through front + motion whose back half waits: registered frame,
@@ -758,6 +772,12 @@ impl Pipeline {
             reference: calab_cala::motion::session::ReferenceMean::new(),
             prepared: std::collections::VecDeque::new(),
             collect_reference: false,
+            null_on: false,
+            null_ref: 100,
+            null_fit: 8,
+            null_block: calab_cala::motion::session::ReferenceMean::new(),
+            null_moving: calab_cala::motion::session::ReferenceMean::new(),
+            null_last: None,
         }
     }
 
@@ -800,6 +820,38 @@ impl Pipeline {
             .and_then(|(_, w)| w.as_ref())
     }
 
+    /// The within-session null after a frame: `registered` is its
+    /// registered image, `self.buf` its front (after the session warp).
+    fn observe_null(&mut self, registered: &[f32]) {
+        if !self.null_on {
+            return;
+        }
+        let px = registered.len();
+        if (self.null_block.frames() as usize) < self.null_ref {
+            self.null_block.push(registered, px);
+            return;
+        }
+        self.null_moving.push(&self.buf, px);
+        if (self.null_moving.frames() as usize) < self.null_fit {
+            return;
+        }
+        let (Some(r), Some(m)) = (self.null_block.mean(), self.null_moving.mean()) else {
+            return;
+        };
+        let d = self.pre.dims();
+        self.null_last = calab_cala::motion::session::block_ncc(
+            &r,
+            &m,
+            d.height,
+            d.width,
+            &self.fov_mask,
+            &calab_cala::motion::SessionAlignConfig::default(),
+        )
+        .unwrap();
+        self.null_block.clear();
+        self.null_moving.clear();
+    }
+
     /// Front half, session warp and motion of `raw` into `out` (registered,
     /// before the back half) and `self.valid`.
     fn front_motion(&mut self, raw: &[u8], out: &mut [f32]) -> (MotionRecord, [f32; 5]) {
@@ -822,6 +874,7 @@ impl Pipeline {
         if self.collect_reference {
             self.reference.push(out, out.len());
         }
+        self.observe_null(out);
         (rec, front)
     }
 
@@ -912,6 +965,7 @@ impl Pipeline {
                 if self.collect_reference {
                     self.reference.push(out, out.len());
                 }
+                self.observe_null(out);
                 let b = self.pre.back_masked(out, &self.valid).unwrap();
                 self.last_back = [b.floor_mean, b.floor_lowered_fraction];
                 self.last_motion = (rec.quality, rec.flags);
@@ -3121,8 +3175,10 @@ fn main() {
         arg_value(&args, "--session-ref-frames").map_or(100, |s| s.parse().unwrap());
     assert!(session_fit_frames >= 1 && session_ref_frames >= 1);
     let mut session_log = String::from(
-        "frame\tfit_rot_deg\tfit_dy\tfit_dx\tncc\tncc_unrotated\trot_deg\tdy\tdx\tfloor_gain\tfloor_offset\tfloor_kept\tnoise_ratio\n",
+        "frame\tfit_rot_deg\tfit_dy\tfit_dx\tncc\tncc_unrotated\trot_deg\tdy\tdx\tchance_ncc\tpinned_rot\tpinned_shift\tfloor_gain\tfloor_offset\tfloor_kept\tnoise_ratio\n",
     );
+    // The boundary correlation's within-session null (`Pipeline::observe_null`).
+    let mut null_log = String::from("frame\tncc\n");
     let fixed_lib: Option<PathBuf> = arg_value(&args, "--library").map(PathBuf::from);
     assert!(
         fixed_lib.is_none() || !oracle_mode,
@@ -3435,6 +3491,9 @@ fn main() {
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
     pipe.keep_records = passes > 1;
+    pipe.null_on = session_fix.register && !sessions.is_empty();
+    pipe.null_ref = session_ref_frames;
+    pipe.null_fit = session_fit_frames;
     // Pass 1's rigid shift of every frame (motion runs).
     let mut rigid: Vec<(f32, f32)> = Vec::new();
     let empty = LibraryBuilder::new(dims)
@@ -3552,6 +3611,9 @@ fn main() {
                             }
                         }
                         let _ = write!(session_log, "{t_rec}");
+                        // A null block never spans a boundary.
+                        pipe.null_block.clear();
+                        pipe.null_moving.clear();
                         if session_fix.flicker {
                             pipe.pre.begin_session_front();
                         }
@@ -3588,7 +3650,7 @@ fn main() {
                                 Some(e) => {
                                     let _ = write!(
                                         session_log,
-                                        "\t{:.4}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}",
+                                        "\t{:.4}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}\t{:.4}\t{}\t{}",
                                         e.fitted.rotation_deg,
                                         e.fitted.dy,
                                         e.fitted.dx,
@@ -3596,14 +3658,17 @@ fn main() {
                                         e.ncc_unrotated,
                                         e.transform.rotation_deg,
                                         e.transform.dy,
-                                        e.transform.dx
+                                        e.transform.dx,
+                                        e.chance_ncc,
+                                        u8::from(e.pinned_rotation),
+                                        u8::from(e.pinned_shift)
                                     );
                                     println!("session at frame {t_rec}: {e:?}");
                                 }
-                                None => session_log.push_str("\t\t\t\t\t\t\t\t"),
+                                None => session_log.push_str("\t\t\t\t\t\t\t\t\t\t\t"),
                             }
                         } else {
-                            session_log.push_str("\t\t\t\t\t\t\t\t");
+                            session_log.push_str("\t\t\t\t\t\t\t\t\t\t\t");
                         }
                         if session_fix.floor || session_fix.noise {
                             let cfg = calab_cala::preprocess::session::SessionBackConfig {
@@ -3630,6 +3695,9 @@ fn main() {
                 } else {
                     pipe.frame_replay(f, &mut y, t_rec)
                 };
+                if let Some(v) = pipe.null_last.take() {
+                    let _ = writeln!(null_log, "{t_rec}\t{v:.5}");
+                }
                 // A session warp's translation is part of the frame's
                 // registration (scoring, flat field); with a rotation the
                 // flat field skips the session's frames (it models shifts).
@@ -4273,6 +4341,7 @@ fn main() {
     }
     if session_fix.any() {
         std::fs::write(out_dir.join("session_boundaries.tsv"), &session_log).unwrap();
+        std::fs::write(out_dir.join("boundary_null.tsv"), &null_log).unwrap();
     }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
     #[cfg(feature = "diagnostics")]

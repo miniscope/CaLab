@@ -377,6 +377,9 @@ pub struct JsSessionAligner {
     h: usize,
     w: usize,
     reference: super::session::ReferenceMean,
+    /// Within-session blocks of registered frames for the boundary
+    /// correlation's null (`nullSample`); an observer only.
+    null_block: super::session::ReferenceMean,
     warp: Option<super::SessionWarp>,
     scratch: Vec<f32>,
 }
@@ -392,6 +395,7 @@ impl JsSessionAligner {
             h: height as usize,
             w: width as usize,
             reference: super::session::ReferenceMean::new(),
+            null_block: super::session::ReferenceMean::new(),
             warp: None,
             scratch: Vec::new(),
         })
@@ -410,11 +414,54 @@ impl JsSessionAligner {
         self.reference.frames()
     }
 
+    /// Add registered frames to the current within-session null block
+    /// (observer: nothing the pipeline does depends on it).
+    #[wasm_bindgen(js_name = pushNull)]
+    pub fn push_null(&mut self, frames: &[f32]) {
+        self.null_block.push(frames, self.h * self.w);
+    }
+
+    /// Frames in the current null block.
+    #[wasm_bindgen(getter, js_name = nullFrames)]
+    pub fn null_frames(&self) -> u32 {
+        self.null_block.frames()
+    }
+
+    /// One sample of the boundary correlation's within-session null: the
+    /// mean of `frames` (front half output, after the session warp) against
+    /// the null block's mean, as `beginSession` scores a session's first
+    /// batch without rotation (`session::block_ncc`). Clears the block.
+    /// NaN without a block or a correlation square.
+    #[wasm_bindgen(js_name = nullSample)]
+    pub fn null_sample(&mut self, frames: &[f32], fov: &[u8]) -> Result<f32, JsError> {
+        let px = self.h * self.w;
+        if frames.is_empty() || !frames.len().is_multiple_of(px) || fov.len() != px {
+            return Err(JsError::new("SessionAligner.nullSample: frame sizes"));
+        }
+        let Some(r) = self.null_block.mean() else {
+            return Ok(f32::NAN);
+        };
+        self.null_block.clear();
+        let moving = super::session::frames_mean(frames, px);
+        let v = super::session::block_ncc(
+            &r,
+            &moving,
+            self.h,
+            self.w,
+            fov,
+            &super::SessionAlignConfig::default(),
+        )
+        .map_err(|e| js_err("SessionAligner.nullSample", e))?;
+        Ok(v.unwrap_or(f32::NAN))
+    }
+
     /// A session starts: register the mean of its first frames `frames`
     /// (front half output, whole frames) onto the reference, install the
-    /// transform and clear the reference. Without a reference the transform
-    /// is the identity. Returns `[applied rotation°, dy, dx, fitted
-    /// rotation°, dy, dx, ncc, ncc unrotated]`.
+    /// transform and clear the reference (and the null block: a null block
+    /// never spans a boundary). Without a reference the transform is the
+    /// identity. Returns `[applied rotation°, dy, dx, fitted rotation°, dy,
+    /// dx, ncc, ncc unrotated, chance ncc, pinned rotation (0/1), pinned
+    /// shift (0/1)]` (see `session::SessionEstimate`).
     #[wasm_bindgen(js_name = beginSession)]
     pub fn begin_session(&mut self, frames: &[f32], fov: &[u8]) -> Result<Vec<f32>, JsError> {
         let px = self.h * self.w;
@@ -437,10 +484,16 @@ impl JsSessionAligner {
             None => None,
         };
         self.reference.clear();
+        self.null_block.clear();
         let t = est.map_or(super::SessionTransform::IDENTITY, |e| e.transform);
         self.set(t)?;
         let f = est.map_or(super::SessionTransform::IDENTITY, |e| e.fitted);
         let (ncc, ncc0) = est.map_or((0.0, 0.0), |e| (e.ncc, e.ncc_unrotated));
+        let chance = est.map_or(f32::NAN, |e| e.chance_ncc);
+        let flag = |b: bool| if b { 1.0 } else { 0.0 };
+        let (pin_r, pin_s) = est.map_or((0.0, 0.0), |e| {
+            (flag(e.pinned_rotation), flag(e.pinned_shift))
+        });
         Ok(vec![
             t.rotation_deg,
             t.dy,
@@ -450,6 +503,9 @@ impl JsSessionAligner {
             f.dx,
             ncc,
             ncc0,
+            chance,
+            pin_r,
+            pin_s,
         ])
     }
 

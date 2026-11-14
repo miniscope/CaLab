@@ -16,6 +16,7 @@
  * (`directoryResultsSink`, `readwrite` asked for when the run starts).
  * Elsewhere the same tree downloads as one zip (`zipResultsSink`).
  */
+import { boundaryFlagJson, type BoundaryFlag } from './boundary-flags.ts';
 import { ZipStreamWriter, type ByteSink } from '@calab/io';
 import { downloadBlob, memorySink, stageMeta } from './export.ts';
 import type { StageRun } from './run-stages.ts';
@@ -44,6 +45,8 @@ export interface SessionRecord {
   status: 'pending' | 'written' | 'skipped' | 'failed';
   /** Why it was skipped or failed. */
   note?: string;
+  /** Joint: the health flag of the boundary this session starts with (sessions 2..; `boundary-flags.ts`). */
+  boundary?: BoundaryFlag;
 }
 
 export interface SessionMetaInput {
@@ -89,6 +92,7 @@ export function sessionMetadata(i: SessionMetaInput): Record<string, unknown> {
     cells: i.cells,
     shared_cell_ids: i.sharedCellIds ? [...i.sharedCellIds] : null,
     ...(i.cellIds ? { cell_ids: [...i.cellIds] } : {}),
+    ...(s.boundary ? { boundary: boundaryFlagJson(s.boundary) } : {}),
     export_file: SESSION_EXPORT_FILE,
   };
 }
@@ -107,6 +111,7 @@ export function exportSessionBlock(
     path: s.dir,
     start_frame: s.startFrame,
     frames: s.frames,
+    ...(s.boundary ? { boundary: boundaryFlagJson(s.boundary) } : {}),
   };
 }
 
@@ -156,6 +161,7 @@ export function runManifest(i: RunManifestInput): Record<string, unknown> {
         s.recordingStartMs === null ? null : new Date(s.recordingStartMs).toISOString(),
       status: s.status,
       ...(s.note ? { note: s.note } : {}),
+      ...(s.boundary ? { boundary: boundaryFlagJson(s.boundary) } : {}),
     })),
   };
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { boundaryFlagJson, summarize } from '../lib/boundary-flags.ts';
 import { render } from 'solid-js/web';
 import { StreamHistory } from '@calab/compute';
 import { parseNpy, writeNpy, ZipArchive, ZipStreamWriter, type ByteSink } from '@calab/io';
@@ -231,7 +232,7 @@ describe('export format 5 and the result reader', () => {
     const blob = new Blob([await buildCalaExport(await input({ start: 5, end: 10 }))]);
     const r = await openResult(blob);
     expect(r.formatVersion).toBe(EXPORT_FORMAT_VERSION);
-    expect(r.formatVersion).toBe(5);
+    expect(r.formatVersion).toBe(6);
     expect([r.width, r.height, r.frames, r.fps]).toEqual([W, H, 5, 20]);
     expect(r.label).toBe('mouse1/s1');
     expect(r.missing.size).toBe(0);
@@ -261,6 +262,44 @@ describe('export format 5 and the result reader', () => {
     expect(r.stages[0].adds).toBe(3);
     expect(r.history?.bins.levels[0].n).toBeGreaterThan(0);
     expect(r.history?.events[0]).toMatchObject({ kind: 'stage', to: 'discover' });
+  });
+
+  it('reads the session-boundary flag (format 6) and shows it', async () => {
+    const flag = summarize(1, 5, [
+      {
+        key: 'match',
+        group: 'alignment',
+        severity: 'failed',
+        judged: true,
+        value: 0.3,
+        nullCentre: 0.95,
+        nullSpread: 0.01,
+        z: 40,
+        reason: 'Alignment failed: test.',
+      },
+    ]);
+    const base = await input({ start: 5, end: 10 });
+    const blob = new Blob([
+      await buildCalaExport({
+        ...base,
+        session: { mode: 'joint', index: 1, boundary: boundaryFlagJson(flag) },
+      }),
+    ]);
+    const r = await openResult(blob);
+    expect(r.boundary?.severity).toBe('failed');
+    expect(r.boundary?.reason).toBe('Alignment failed: test.');
+    const { ResultView } = await import('../components/ResultView.tsx');
+    const root = document.createElement('div');
+    document.body.append(root);
+    const dispose = render(() => <ResultView result={r} origin={{ session: 's2' }} />, root);
+    const badge = root.querySelector('[data-testid=result-boundary] [data-testid=boundary-badge]');
+    expect(badge?.getAttribute('data-severity')).toBe('failed');
+    expect(badge?.getAttribute('title')).toMatch(/Separate/);
+    dispose();
+    root.remove();
+    // Older exports have none.
+    const old = await openResult(new Blob([await buildCalaExport(await input())]));
+    expect(old.boundary).toBeNull();
   });
 
   it('opens a ZIP64 export', async () => {
