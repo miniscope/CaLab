@@ -347,7 +347,9 @@ describe('zipResultsSink', () => {
   it('lets go of the files once the zip is delivered', async () => {
     const blobs: Blob[] = [];
     const sink = zipResultsSink((_, blob) => blobs.push(blob));
-    await sink.writeFile('s1/cala-export.npz', (s) => s.write(new Uint8Array(1000)));
+    await sink.writeFile('s1/cala-export.npz', async (s) => {
+      await s.write(new Uint8Array(1000));
+    });
     await sink.finish();
     await sink.finish();
     expect(readZip(await blobs[0].arrayBuffer()).size).toBe(1);
