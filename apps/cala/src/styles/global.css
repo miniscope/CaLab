@@ -494,6 +494,17 @@
   overflow-wrap: anywhere;
 }
 
+.cala-series-chooser__role {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.cala-series-chooser__role--camera {
+  font-weight: 600;
+  color: var(--warning, #b26a00);
+}
+
 /* Sensor flat field panel */
 
 .cala-flat {

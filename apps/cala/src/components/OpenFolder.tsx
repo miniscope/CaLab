@@ -8,9 +8,10 @@ import {
   supportsDirectoryPicker,
   type DirHandleLike,
 } from '../lib/directory-picker.ts';
+import { roleLabel } from '../lib/device-roles.ts';
 import {
   chooseKind,
-  groupKinds,
+  discoverKinds,
   sessionsForKind,
   type SeriesKind,
   type SessionCandidate,
@@ -122,14 +123,14 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
 
   /**
    * Open what was picked. The video series are grouped into kinds (the
-   * Miniscope of each session, a behaviour camera, ...; `lib/sessions.ts`).
-   * One session opens as before; several go to the session list; several
-   * plausible kinds ask the user first.
+   * Miniscope of each session, a behaviour camera, ...; `lib/sessions.ts`),
+   * with each device's role read from its metaData.json. One session opens as
+   * before; several go to the session list; several plausible kinds ask the
+   * user first.
    */
-  const submit = (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
+  const submit = async (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
     if (entries.length === 0) return;
-    const kinds = groupKinds(detectSeries(entries));
-    const { chosen, candidates } = chooseKind(kinds);
+    const { chosen, candidates } = chooseKind(await discoverKinds(entries));
     if (chosen) {
       openKind(entries, handle, chosen);
       return;
@@ -190,7 +191,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           ? (r.resultsHandle as ReadDirLike)
           : null;
       const handle = r.handle as DirHandleLike;
-      submitProject(await entriesFromDirectoryHandle(handle), handle);
+      await submitProject(await entriesFromDirectoryHandle(handle), handle);
     } catch (err) {
       setPickError(
         `Could not open ${r.name} (moved or deleted?): ${err instanceof Error ? err.message : err}`,
@@ -205,12 +206,11 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
    * holds several animals (and no project index of its own) is offered as
    * one project per animal first.
    */
-  const submitProject = (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
+  const submitProject = async (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
     setSplit(null);
     setPending(null);
     if (entries.length === 0) return;
-    const kinds = groupKinds(detectSeries(entries));
-    const { chosen, candidates } = chooseKind(kinds);
+    const { chosen, candidates } = chooseKind(await discoverKinds(entries));
     if (chosen) {
       openKind(entries, handle, chosen, true);
       return;
@@ -279,8 +279,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       setPickError(`Could not open ${sub}: ${err instanceof Error ? err.message : err}`);
       return;
     }
-    const kinds = groupKinds(detectSeries(entries));
-    const { chosen, candidates } = chooseKind(kinds);
+    const { chosen, candidates } = chooseKind(await discoverKinds(entries));
     const kind = chosen ?? candidates[0];
     props.onProject?.({
       rootName: sub,
@@ -297,14 +296,11 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       projectInput.click();
       return;
     }
-    pickDirectoryWithHandle().then(
-      (picked) => {
-        if (picked) submitProject(picked.entries, picked.handle);
-      },
-      (err: unknown) => {
+    pickDirectoryWithHandle()
+      .then((picked) => (picked ? submitProject(picked.entries, picked.handle) : undefined))
+      .catch((err: unknown) => {
         setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
-      },
-    );
+      });
   };
 
   // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
@@ -315,14 +311,11 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       folderInput.click();
       return;
     }
-    pickDirectoryWithHandle().then(
-      (picked) => {
-        if (picked) submit(picked.entries, picked.handle);
-      },
-      (err: unknown) => {
+    pickDirectoryWithHandle()
+      .then((picked) => (picked ? submit(picked.entries, picked.handle) : undefined))
+      .catch((err: unknown) => {
         setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
-      },
-    );
+      });
   };
 
   return (
@@ -356,7 +349,15 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            if (e.dataTransfer) void filesFromDrop(e.dataTransfer).then(submit);
+            if (e.dataTransfer) {
+              void filesFromDrop(e.dataTransfer)
+                .then((files) => submit(files))
+                .catch((err: unknown) => {
+                  setPickError(
+                    `Could not open the files: ${err instanceof Error ? err.message : err}`,
+                  );
+                });
+            }
           }}
         >
           <p class="drop-zone__text">
@@ -379,7 +380,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           webkitdirectory=""
           multiple
           onChange={(e) => {
-            submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
+            void submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />
@@ -392,7 +393,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           webkitdirectory=""
           multiple
           onChange={(e) => {
-            submitProject(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
+            void submitProject(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />
@@ -404,7 +405,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           multiple
           accept=".avi,.json,.csv"
           onChange={(e) => {
-            submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
+            void submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />
@@ -599,6 +600,19 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
                         <span class="cala-series-chooser__dir">
                           {s.series.map((x) => x.dir).join(', ')}
                         </span>
+                      </Show>
+                      <Show when={roleLabel(s.role)}>
+                        {(tag) => (
+                          <span
+                            class="cala-series-chooser__role"
+                            classList={{
+                              'cala-series-chooser__role--camera': s.role?.role === 'camera',
+                            }}
+                            data-testid="series-role"
+                          >
+                            {tag()}
+                          </span>
+                        )}
                       </Show>
                     </button>
                   </li>
