@@ -72,7 +72,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
-  await page.getByRole('tab', { name: 'Cell QC' }).click();
+  await page.getByRole('tab', { name: 'QC', exact: true }).click();
   await expect(page.getByTestId('qc-counts')).toContainText('QC starts once');
   await page.getByTestId('color-mode').selectOption('peakSnr');
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
