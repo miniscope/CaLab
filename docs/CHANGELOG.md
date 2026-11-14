@@ -7,6 +7,26 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: session-boundary health flags in Joint runs. Discover judges each
+  boundary ok, warning or failed, with a plain-language reason: the
+  re-registration's match against the same correlation within the sessions
+  before (and against a chance level, the moving image mirrored) and a fit
+  pinned at the edge of its search; whether the floor and noise corrections
+  held over the next 30 s; and whether the library carried over (new cells,
+  cells going silent at once), each against its own within-recording null
+  (`src/lib/boundary-flags.ts`, `BOUNDARY_FLAG_RULES`). Shown as a badge on
+  the session's row in the project table (with **Re-plan as Separate** for a
+  failed one), in the run's session list, in History ("boundary check"), on
+  the cell trace's boundary line and in View results; stored in the export
+  (`meta_json.session.boundary`, export format 6), `cala-session.json`, the
+  run manifest and the project index. Observers only: processing is
+  unchanged. `qc_eval` writes the null samples to `boundary_null.tsv` and the
+  chance level and pinned edges to `session_boundaries.tsv`;
+  `tools/cala-eval/boundary_flags_eval.ts` runs the app's monitor on a
+  qc_eval run; `stitch_sessions.py --b-source` stitches two different fields
+  of view. Calibration:
+  `tools/cala-eval/results/2026-11-13-boundary-flags.md`.
+
 - Cala: session boundaries in Joint runs. Where a new session starts, cala
   re-registers it to the previous session (a similarity transform: ±3°
   rotation and a ±40 px translation search against the mean of the previous

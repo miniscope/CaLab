@@ -35,6 +35,7 @@ import {
 } from './lib/slow-client.ts';
 import { FovPanel, pipelineFovSource } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
+import { BoundaryBadge } from './components/BoundaryBadge.tsx';
 import { DetailsTabs } from './components/DetailsTabs.tsx';
 import { OpenFolder } from './components/OpenFolder.tsx';
 import { RunPanel } from './components/RunPanel.tsx';
@@ -387,6 +388,7 @@ const App: Component = () => {
     runRefine,
     runExtract: () => void pass2.run(),
     sessionQc: (range, fps) => extractQcFor(range, fps),
+    boundaryFlags: () => pipeline.boundaryFlags(),
     exportInput: (): ExportInput | null => {
       const r = pass2.result();
       const i = store.info();
@@ -564,6 +566,19 @@ const App: Component = () => {
                       {r.status}
                       {r.note ? ` (${r.note})` : ''}
                     </span>
+                    <Show
+                      when={
+                        p().settings.mode === 'joint' &&
+                        pipeline.boundaryFlags().find((f) => f.index === r.index)
+                      }
+                    >
+                      {(f) => (
+                        <>
+                          {' '}
+                          <BoundaryBadge flag={f()} />
+                        </>
+                      )}
+                    </Show>
                   </li>
                 )}
               </For>
@@ -653,6 +668,7 @@ const App: Component = () => {
           <SelectedCellPanel
             cells={cells}
             boundaries={boundaries()}
+            boundaryFlags={pipeline.boundaryFlags()}
             fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
             folded={tab() === 'history'}
           />

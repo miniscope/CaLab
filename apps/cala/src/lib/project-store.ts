@@ -5,6 +5,7 @@
  * this store builds each group's plan and keeps the index up to date as
  * results are written.
  */
+import { boundaryFlagJson } from './boundary-flags.ts';
 import { createEffect, createSignal, on, untrack } from 'solid-js';
 import type { FolderEntry, SessionInput } from './frame-source.ts';
 import type { SessionProbeResult } from '../workers/frame-types.ts';
@@ -402,6 +403,16 @@ export function createProjectStore(deps: ProjectDeps) {
     setSelected(new Set<string>());
   }
 
+  /**
+   * A Joint chain's boundary failed: put its sessions (those still in the
+   * table) into the plan as Separate runs. Only edits the plan; nothing runs.
+   */
+  function replanSeparate(ids: readonly string[]): void {
+    const keep = ids.filter((id) => tableRows().some((r) => r.session.id === id && r.row));
+    if (keep.length === 0) return;
+    setPlan(addGroup(plan(), 'separate', keep, order()));
+  }
+
   /** Problems that keep the plan from starting, per group. */
   function planErrors(): string[] {
     const out: string[] = [];
@@ -454,6 +465,7 @@ export function createProjectStore(deps: ProjectDeps) {
           status: r.status,
           ...(r.note ? { note: r.note } : {}),
           stages: stagesBySession.get(r.index) ?? [],
+          ...(r.boundary ? { boundary: boundaryFlagJson(r.boundary) } : {}),
         }));
         const run: ProjectRun = {
           id: runId,
@@ -568,6 +580,7 @@ export function createProjectStore(deps: ProjectDeps) {
     selectAll,
     plan,
     addToPlan,
+    replanSeparate,
     removeGroup: (i: number) => setPlan(removeGroup(plan(), i)),
     moveGroup: (from: number, to: number) => setPlan(moveGroup(plan(), from, to)),
     clearPlan: () => setPlan([]),

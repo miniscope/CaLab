@@ -6,6 +6,7 @@
  * The stores that run the stages stay as they are; this store only watches
  * them and calls their actions, through the narrow `MultiRunDeps`.
  */
+import type { BoundaryFlag } from './boundary-flags.ts';
 import { createEffect, createSignal, on, untrack } from 'solid-js';
 import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
@@ -107,6 +108,8 @@ export interface MultiRunDeps {
   sessionQc?(range: { start: number; end: number }, fps: number): Promise<QcSnapshot | null>;
   /** The open recording. */
   info(): FrameSourceInfo | null;
+  /** Joint: Discover's session-boundary flags (`boundary-flags.ts`), written with each session's results. */
+  boundaryFlags?(): readonly BoundaryFlag[];
   version: string;
   now?: () => Date;
 }
@@ -217,6 +220,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     if (joint && info?.sessions)
       for (const span of info.sessions)
         patchRecord(span.index, { startFrame: span.startFrame, frames: span.frameCount });
+    if (joint) for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
     const which = joint ? records() : records().filter((r) => r.index === current());
     const runs = deps.stages().runs;
     for (const r of which) {

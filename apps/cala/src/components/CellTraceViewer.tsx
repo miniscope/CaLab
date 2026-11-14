@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, Show, type JSX } from 'solid-js';
 import { OKABE_ITO, TraceOverview, ZoomWindow } from '@calab/ui/chart';
+import type { BoundarySeverity } from '../lib/boundary-flags.ts';
 import { downsampleMinMax } from '@calab/compute';
 import type uPlot from 'uplot';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -43,26 +44,49 @@ function markerPlugin(time: () => number | null): uPlot.Plugin {
   };
 }
 
-/** Thin solid lines at the session boundaries (seconds) of a multi-session run. */
-function boundaryPlugin(times: () => readonly number[]): uPlot.Plugin {
+/** A session boundary on the trace (seconds) and its health flag's severity (`boundary-flags.ts`). */
+export interface BoundaryMark {
+  t: number;
+  severity?: BoundarySeverity;
+}
+
+/** Colour of a boundary line: mid grey (light and dark theme), or the flag's warning/failed colour. */
+function boundaryColour(s: BoundarySeverity | undefined): string {
+  if (s === 'failed') return OKABE_ITO.vermillion;
+  if (s === 'warning') return OKABE_ITO.orange;
+  return '#8a8a8a';
+}
+
+/**
+ * Thin solid lines at the session boundaries of a multi-session run; a
+ * boundary flagged warning or failed is drawn thicker in its colour with a
+ * "!" at the top.
+ */
+function boundaryPlugin(marks: () => readonly BoundaryMark[]): uPlot.Plugin {
   return {
     hooks: {
       draw: (u) => {
-        const ts = times();
-        if (ts.length === 0) return;
+        const ms = marks();
+        if (ms.length === 0) return;
         const ctx = u.ctx;
         ctx.save();
-        // Mid grey: visible on the light and the dark theme.
-        ctx.strokeStyle = '#8a8a8a';
-        ctx.lineWidth = devicePixelRatio;
-        ctx.beginPath();
-        for (const t of ts) {
-          const x = u.valToPos(t, 'x', true);
+        for (const m of ms) {
+          const x = u.valToPos(m.t, 'x', true);
           if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+          const flagged = m.severity === 'warning' || m.severity === 'failed';
+          ctx.strokeStyle = boundaryColour(m.severity);
+          ctx.lineWidth = (flagged ? 2 : 1) * devicePixelRatio;
+          ctx.beginPath();
           ctx.moveTo(x, u.bbox.top);
           ctx.lineTo(x, u.bbox.top + u.bbox.height);
+          ctx.stroke();
+          if (flagged) {
+            ctx.fillStyle = boundaryColour(m.severity);
+            ctx.font = `bold ${11 * devicePixelRatio}px sans-serif`;
+            ctx.textBaseline = 'top';
+            ctx.fillText('!', x + 3 * devicePixelRatio, u.bbox.top + 2 * devicePixelRatio);
+          }
         }
-        ctx.stroke();
         ctx.restore();
       },
     },
@@ -85,6 +109,8 @@ export function CellTraceViewer(props: {
   markerFrame?: number | null;
   /** First frames of sessions 2.. of a multi-session run (marked on the trace). */
   boundaries?: readonly number[];
+  /** Their health flags (Joint runs): a warning or failed boundary is marked in its colour. */
+  boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
 }): JSX.Element {
   const fs = () => props.fps;
   const [height, setHeight] = createSignal(zoomHeight());
@@ -97,7 +123,12 @@ export function CellTraceViewer(props: {
   /* eslint-disable solid/reactivity */
   const plugins = [
     markerPlugin(markerTime),
-    boundaryPlugin(() => (props.boundaries ?? []).map((f) => f / fs())),
+    boundaryPlugin(() =>
+      (props.boundaries ?? []).map((f) => ({
+        t: f / fs(),
+        severity: props.boundaryFlags?.find((b) => b.frame === f)?.severity,
+      })),
+    ),
   ];
   /* eslint-enable solid/reactivity */
   const frames = () => props.cells.frame();
