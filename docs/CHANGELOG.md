@@ -5,6 +5,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.18.1] - 2026-11-14
+
+Web apps `v2.18.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Fixes a v2.18.0 regression: in Chrome at GPU speed, Refine's tab memory grew by
+gigabytes within seconds until Refine stalled.
+
 ### Fixed
 
 - Cala: Refine no longer stalls with the tab's memory growing to 6-12 GB in
