@@ -73,6 +73,10 @@ export function initCalaWasm(wasmBytes?: BufferSource): Promise<void> {
     ready = init(wasmBytes ? { module_or_path: wasmBytes } : undefined)
       .then((wasm) => {
         memory = wasm.memory;
+        // For memory measurements over DevTools/CDP: every thread that loads
+        // the module (main or worker) reports its own linear memory size.
+        (globalThis as { __calaWasmHeapBytes?: () => number }).__calaWasmHeapBytes =
+          calaWasmHeapBytes;
       })
       .catch((err) => {
         // Let a later call retry instead of staying stuck on a rejection.

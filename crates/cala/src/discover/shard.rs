@@ -863,6 +863,12 @@ impl VisitRunner {
         self.inner.set_noise(noise)
     }
 
+    /// Tile background bases held between jobs (none: see [`VisitRunner::run`]).
+    #[cfg(test)]
+    pub(crate) fn cached_bases(&self) -> usize {
+        self.inner.bgs.iter().flatten().count()
+    }
+
     /// Run one visit; the result goes back to the loop that made the job.
     pub fn run(&mut self, job: VisitJob) -> Result<VisitResult, TraceError> {
         let s = &mut self.inner;
@@ -925,6 +931,11 @@ impl VisitRunner {
             .filter(|&w| s.tiles[ti].slot(w).proj.is_none())
             .collect();
         let out = s.visit_body(ti);
+        // The tile's background basis is a pure function of its rectangle
+        // (rebuilt by the next visit that needs it). Kept, every runner would
+        // end up holding the bases of all tiles (about 40 MB at 600 x 600)
+        // on top of the owning loop's copy.
+        s.bgs[ti] = None;
         let ops = s.journal.take().unwrap_or_default();
         out?;
         let tile = std::mem::replace(&mut s.tiles[ti], Tile::new(core, rect));
