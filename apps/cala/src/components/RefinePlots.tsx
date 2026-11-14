@@ -20,6 +20,7 @@ import {
   type RefineSample,
   type RunPoint,
 } from '../lib/refine-metrics.ts';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import type { StageRun } from '../lib/run-stages.ts';
 
 export function RefineRunPlot(props: {
@@ -35,18 +36,22 @@ export function RefineRunPlot(props: {
   return (
     <div class="cala-refine-plot" data-testid="refine-run-plot">
       <span class="cala-muted cala-refine-plot__title">{props.label}</span>
-      <HistoryPlot
-        history={history}
-        keys={REFINE_SERIES_KEYS}
-        window={() => ({ t0: 0, t1: Math.max(props.series.end, 1) })}
-        now={now}
-        runEnd={() => Math.max(props.series.end, 1)}
-        tick={() => props.series.samples.length}
-        height={props.height ?? 90}
-        compact
-        label={props.label}
-        testid="refine-history"
-      />
+      <AspectPlot>
+        {(h) => (
+          <HistoryPlot
+            history={history}
+            keys={REFINE_SERIES_KEYS}
+            window={() => ({ t0: 0, t1: Math.max(props.series.end, 1) })}
+            now={now}
+            runEnd={() => Math.max(props.series.end, 1)}
+            tick={() => props.series.samples.length}
+            height={props.height ?? h()}
+            compact
+            label={props.label}
+            testid="refine-history"
+          />
+        )}
+      </AspectPlot>
     </div>
   );
 }

@@ -16,8 +16,11 @@ import { grayToImageData } from '../lib/frame-display.ts';
 import type { LoadedResult, ResultPart } from '../lib/result-file.ts';
 import { createRunHistory } from '../lib/run-history.ts';
 import { STAGE_LABEL, type StageRun } from '../lib/run-stages.ts';
-import { DetailsTabs } from './DetailsTabs.tsx';
+import { detailTabs, SideColumn } from './SideTabs.tsx';
+import { createQcTableState } from './QcTable.tsx';
+import { createSideTab, showPickedCell } from '../lib/side-tab.ts';
 import { FovPanel, type FovSource } from './FovPanel.tsx';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import { createHistoryUi, GroupPlot, HistoryExpanded, RunStrip } from './HistoryPanel.tsx';
 import { SelectedCellPanel } from './CellsPanel.tsx';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
@@ -274,17 +277,162 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
     () => main,
     () => ({ width: result.width, height: result.height }),
   );
-  const [tab, setTab] = createSignal('qc');
   const expanded = () => ui.expanded() && !layout().narrow;
-  createEffect(
-    on(ui.expanded, (x) => {
-      if (x) setTab('history');
-    }),
-  );
+  const qcState = createQcTableState();
   const fov = () => (
     <FovPanel source={source} cells={cells} width={result.width} height={result.height} fps={fps} />
   );
   const missing = () => [...result.missing].map((p) => PART_LABEL[p]);
+  const loading = () => loaded() < result.frames && !loadError();
+
+  /** The Result tab: what was saved, the stages that ran and the convergence plot. */
+  const resultPanel = () => (
+    <SidePanel id="run" title="Saved result" class="cala-run" fixed>
+      <p class="cala-muted" data-testid="result-readonly">
+        Read-only: this is the result as it was saved. Start a new run from the project to Discover,
+        Refine or Extract again.
+      </p>
+      <Show when={result.boundary}>
+        {(f) => (
+          <p class="cala-result__boundary" data-testid="result-boundary">
+            <BoundaryBadge flag={f()} /> <span class="cala-muted">{f().reason}</span>
+            <Show when={f().suggestion}>{(t) => <span class="cala-muted"> {t()}</span>}</Show>
+          </p>
+        )}
+      </Show>
+      <Show when={loading()}>
+        <ProgressBar
+          fraction={result.frames > 0 ? loaded() / result.frames : 1}
+          state="running"
+          label="Reading traces"
+          aria-label="Reading traces"
+        />
+      </Show>
+      <Show when={loadError()}>
+        {(e) => (
+          <p class="cala-warning" role="alert">
+            The traces could not be read: {e()}
+          </p>
+        )}
+      </Show>
+      <Show when={result.readSignedFrames}>
+        <div class="cala-result__traces">
+          <span class="cala-muted">Traces</span>{' '}
+          <SegmentedControl
+            options={[
+              {
+                value: 'clipped',
+                label: 'Non-negative',
+                title: 'traces: the solve, clipped at 0 (a quiet cell sits at exactly 0)',
+              },
+              {
+                value: 'signed',
+                label: 'Signed',
+                title:
+                  'traces_signed: the same without the clip, noise centred on 0 (what CaDecon gets)',
+              },
+            ]}
+            value={mode()}
+            onChange={pickMode}
+            aria-label="Trace mode"
+            size="sm"
+            testid="trace-mode"
+          />
+        </div>
+      </Show>
+      <h3 class="panel-label">Stages that ran</h3>
+      <Show
+        when={result.stages.length > 0}
+        fallback={
+          <p class="cala-muted" data-testid="result-stages">
+            {result.missing.has('stages')
+              ? `${NOT_IN_EXPORT} (the stage list came with export format 3).`
+              : 'None recorded.'}
+          </p>
+        }
+      >
+        <ol class="cala-result__stages" data-testid="result-stages">
+          <For each={result.stages}>{(s) => <li>{stageLine(s)}</li>}</For>
+        </ol>
+      </Show>
+      <Show
+        when={result.history}
+        fallback={
+          <p class="cala-muted" data-testid="result-history-missing">
+            History: {NOT_IN_EXPORT.toLowerCase()} (the app saves it from export format 5 on).
+          </p>
+        }
+      >
+        <div class="cala-run__timeline">
+          <RunStrip ui={ui} />
+          <Show when={!ui.expanded()}>
+            <AspectPlot>
+              {(h) => <GroupPlot ui={ui} group="convergence" height={h()} compact />}
+            </AspectPlot>
+          </Show>
+        </div>
+      </Show>
+      <Show when={missing().length > 0}>
+        <p class="cala-muted" data-testid="result-missing">
+          {NOT_IN_EXPORT}: {missing().join('; ')}.
+        </p>
+      </Show>
+    </SidePanel>
+  );
+  const tabs = [
+    { id: 'result', label: 'Result', testid: 'tab-result', content: resultPanel },
+    {
+      id: 'cell',
+      label: 'Cell',
+      testid: 'tab-cell',
+      keepMounted: true,
+      content: () => <SelectedCellPanel cells={cells} fps={fps} />,
+    },
+    ...detailTabs({
+      cells,
+      qc: qcState,
+      ui,
+      fov: () => (expanded() ? fov() : null),
+      flatField: () => <ResultFlatField result={result} />,
+      recording: () => <ResultFacts result={result} origin={props.origin} />,
+    }),
+  ];
+  const ids = tabs.map((t) => t.id);
+  const tab = createSideTab('result', 'result', () => ids);
+  createEffect(
+    on(ui.expanded, (x) => {
+      if (x) tab.set('history');
+    }),
+  );
+  showPickedCell(tab, cells.selected, () => expanded() && tab.active() === 'history');
+  /** The strip: a saved result, reading its traces until they are in. */
+  const strip = (
+    <div class="cala-strip" role="status" aria-label="Result" data-testid="run-strip">
+      <strong class="cala-strip__stage" data-testid="run-strip-stage">
+        Saved result
+      </strong>
+      <Show
+        when={loading()}
+        fallback={
+          <span class="cala-readout cala-strip__detail" data-testid="run-strip-detail">
+            read-only · {result.ids.length} cells
+            <Show when={loadError()}> · traces not read</Show>
+          </span>
+        }
+      >
+        <ProgressBar
+          class="cala-strip__bar"
+          fraction={result.frames > 0 ? loaded() / result.frames : 1}
+          state="running"
+          aria-label="Reading traces"
+        />
+        <span class="cala-readout cala-strip__detail" data-testid="run-strip-detail">
+          reading traces {Math.floor((100 * loaded()) / Math.max(1, result.frames))}%
+        </span>
+      </Show>
+      <Show when={result.boundary}>{(f) => <BoundaryBadge flag={f()} />}</Show>
+    </div>
+  );
 
   return (
     <div
@@ -300,105 +448,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
         </Show>
       </div>
       <div class="cala-main__side">
-        <SidePanel id="run" title="Saved result" class="cala-run">
-          <p class="cala-muted" data-testid="result-readonly">
-            Read-only: this is the result as it was saved. Start a new run from the project to
-            Discover, Refine or Extract again.
-          </p>
-          <Show when={result.boundary}>
-            {(f) => (
-              <p class="cala-result__boundary" data-testid="result-boundary">
-                <BoundaryBadge flag={f()} /> <span class="cala-muted">{f().reason}</span>
-                <Show when={f().suggestion}>{(t) => <span class="cala-muted"> {t()}</span>}</Show>
-              </p>
-            )}
-          </Show>
-          <Show when={loaded() < result.frames && !loadError()}>
-            <ProgressBar
-              fraction={result.frames > 0 ? loaded() / result.frames : 1}
-              state="running"
-              label="Reading traces"
-              aria-label="Reading traces"
-            />
-          </Show>
-          <Show when={loadError()}>
-            {(e) => (
-              <p class="cala-warning" role="alert">
-                The traces could not be read: {e()}
-              </p>
-            )}
-          </Show>
-          <Show when={result.readSignedFrames}>
-            <div class="cala-result__traces">
-              <span class="cala-muted">Traces</span>{' '}
-              <SegmentedControl
-                options={[
-                  {
-                    value: 'clipped',
-                    label: 'Non-negative',
-                    title: 'traces: the solve, clipped at 0 (a quiet cell sits at exactly 0)',
-                  },
-                  {
-                    value: 'signed',
-                    label: 'Signed',
-                    title:
-                      'traces_signed: the same without the clip, noise centred on 0 (what CaDecon gets)',
-                  },
-                ]}
-                value={mode()}
-                onChange={pickMode}
-                aria-label="Trace mode"
-                size="sm"
-                testid="trace-mode"
-              />
-            </div>
-          </Show>
-          <h3 class="panel-label">Stages that ran</h3>
-          <Show
-            when={result.stages.length > 0}
-            fallback={
-              <p class="cala-muted" data-testid="result-stages">
-                {result.missing.has('stages')
-                  ? `${NOT_IN_EXPORT} (the stage list came with export format 3).`
-                  : 'None recorded.'}
-              </p>
-            }
-          >
-            <ol class="cala-result__stages" data-testid="result-stages">
-              <For each={result.stages}>{(s) => <li>{stageLine(s)}</li>}</For>
-            </ol>
-          </Show>
-          <Show
-            when={result.history}
-            fallback={
-              <p class="cala-muted" data-testid="result-history-missing">
-                History: {NOT_IN_EXPORT.toLowerCase()} (the app saves it from export format 5 on).
-              </p>
-            }
-          >
-            <div class="cala-run__timeline">
-              <RunStrip ui={ui} />
-              <Show when={!ui.expanded()}>
-                <GroupPlot ui={ui} group="convergence" height={130} compact />
-              </Show>
-            </div>
-          </Show>
-          <Show when={missing().length > 0}>
-            <p class="cala-muted" data-testid="result-missing">
-              {NOT_IN_EXPORT}: {missing().join('; ')}.
-            </p>
-          </Show>
-        </SidePanel>
-        <SelectedCellPanel cells={cells} fps={fps} folded={tab() === 'history'} />
-        <DetailsTabs
-          cells={cells}
-          ui={ui}
-          active={tab()}
-          onActive={setTab}
-          fov={() => (expanded() ? fov() : null)}
-          flatField={() => <ResultFlatField result={result} />}
-          recording={() => <ResultFacts result={result} origin={props.origin} />}
-        />
+        <SideColumn strip={strip} tabs={tabs} active={tab.active()} onActive={tab.set} />
       </div>
     </div>
   );

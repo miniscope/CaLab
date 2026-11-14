@@ -238,6 +238,33 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Cala: the right-hand column is one row of tabs under a run strip. The strip,
+  always in view, shows the stage running (Discover, Refine, Extract, or the
+  setup), its progress and frame rate, pause and stop or cancel, and the
+  session in a multi-session run ("Session 3/8"); idle, what ran last and the
+  cell count. Below it: **Run**, **Cell**, **QC**, **History**, **Flat field**,
+  **Timing**, **Raw file** and **Recording** (View results: **Result** in place
+  of Run, no Timing or Raw file), one panel at a time with the column's whole
+  height, so the cell viewer no longer competes with the other panels for
+  room. Selecting
+  a cell opens the Cell tab; the tab is remembered per viewer (localStorage);
+  arrow keys, Home and End move between tabs (the shared `TabStrip` now has
+  one tab stop and links each tab to its panel). Hidden panels stop drawing;
+  Run, Cell and Raw file stay mounted to keep their state, and the QC table's
+  sort and filter outlive its tab. The cell's Trace / Demixing tabs became a
+  switch, so there is one tab row. A visual polish pass on the column: the
+  tab labels share the panel's left edge, the trace overview draws a faint
+  track for the whole session, the captions around the trace lose the margins
+  that opened a band above the plot (it gains about 30 px), the cell's metrics
+  stay beside their labels on a wide column, its captions keep a readable
+  measure, and the cell header buttons and Run/QC checkboxes match the small
+  controls and readouts around them.
+  Line plots in the column (the cell's trace and Demixing, History, the Run
+  tab's convergence and Refine plots) are sized by their width, 3.5:1 within
+  140-260 px (`plotHeight`), instead of stretched to the panel: a tall axis
+  is harder to read, and the spare height stays empty. The expanded History
+  caps at 340 px.
+
 - Cala: the tab uses about 0.3-0.5 GB less memory, with identical results.
   Measured on one 600 x 600, 17,878-frame Miniscope session (Discover,
   Refine, Extract): the tab's footprint averaged 2.14 GB and peaked at

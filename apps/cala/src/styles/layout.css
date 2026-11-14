@@ -1,7 +1,8 @@
 /* ========================
-   Layout C: the field of view sized by the window height on the left; Run,
-   Cell and the details tabs in one column on the right. One screen, no page
-   scroll; narrow or portrait windows stack and scroll.
+   Layout C: the field of view sized by the window height on the left; on the
+   right the run strip over one row of tabs (Run, Cell, QC, History, details),
+   one panel at a time with the column's height. One screen, no page scroll;
+   narrow or portrait windows stack and scroll.
    ======================== */
 .cala-main {
   position: relative;
@@ -40,8 +41,8 @@
 .cala-main__side {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  overflow-y: auto;
+  gap: var(--space-xs);
+  overflow: hidden;
 }
 
 .cala-main--narrow {
@@ -405,48 +406,199 @@
   display: none;
 }
 
-/* The cell viewer takes what Run and the details leave; the details get a share. */
-.cala-cell-panel:not(.cala-side-panel--closed) {
+/* ---- Run strip: the run on one line, always in view ---- */
+.cala-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 34px;
+  padding: 4px var(--space-md);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: var(--panel-bg-data);
+  font-size: 0.8rem;
+}
+
+.cala-strip__stage {
+  flex: none;
+  white-space: nowrap;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.cala-strip[data-state='error'] .cala-strip__stage {
+  color: var(--error);
+}
+
+.cala-strip__bar.progress-bar {
+  flex: 1 1 4rem;
+  min-width: 3rem;
+  margin: 0;
+}
+
+.cala-strip__pct {
+  flex: none;
+  min-width: 2.6em;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.cala-strip__detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+/* Idle (no bar): the detail takes the room. */
+.cala-strip__stage + .cala-strip__detail {
+  flex: 1 1 auto;
+}
+
+.cala-strip__session {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.cala-strip .btn-small {
+  flex: none;
+  padding-block: 1px;
+}
+
+/* ---- The column's tabs: one row, one panel with the remaining height ---- */
+.cala-main .cala-side-tabs {
   flex: 1 1 0;
-  min-height: 200px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  animation: none;
 }
 
-.cala-cell-panel > .cala-side-panel__body {
-  overflow-y: auto;
+/* The first tab's label starts on the panel content's left edge (16px):
+   7px of bar padding + the tab's 9px. The rule matches the panel border. */
+.cala-side-tabs__bar.tab-strip {
+  flex: none;
+  padding: 0 7px;
+  border-bottom-color: var(--border-subtle);
+  scrollbar-width: thin;
 }
 
-.cala-details:not(.cala-side-panel--closed) {
-  flex: 0 1 240px;
-  min-height: 130px;
+.cala-side-tabs__bar .tab-strip__tab {
+  padding: 6px 9px 5px;
+  font-size: 0.8rem;
 }
 
-.cala-details--grow:not(.cala-side-panel--closed) {
-  flex: 1 1 240px;
+.cala-side-tabs__bar .tab-strip__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
-.cala-details > .cala-side-panel__body {
-  flex: 1;
-  margin-top: 0;
-}
-
-.cala-details__panel {
-  flex: 1;
+.cala-side-tabs__panel {
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--space-sm);
   min-height: 0;
   overflow-y: auto;
-  padding-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md) var(--space-md);
 }
 
-.cala-details__panel .panel-label,
+/* A panel with a tab of its own sits flat in the tab's panel (no card in a card). */
+.cala-main .cala-side-tabs__panel > .dashboard-panel {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  animation: none;
+}
+
+.cala-side-tabs__panel .panel-label,
 .cala-selected .panel-label {
   margin: 0;
 }
 
-.cala-main--narrow .cala-details:not(.cala-side-panel--closed) {
-  flex-basis: auto;
+/* QC, History (and the FOV it holds while expanded) fill the tab's height. */
+.cala-side-tabs__panel > .cala-qc-table,
+.cala-side-tabs__panel > .cala-history,
+.cala-side-tabs__panel > .cala-details__fov {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
 }
 
-.cala-main--narrow .cala-details__panel {
-  max-height: 360px;
+/* The Cell tab: the trace takes whatever height the footprint and QC leave. */
+.cala-side-tabs__panel > .cala-cell-panel {
+  flex: 1 0 auto;
+}
+
+.cala-cell-panel > .cala-side-panel__body {
+  flex: 1 0 auto;
+}
+
+.cala-cell-panel .cala-selected {
+  flex: 1 0 auto;
+}
+
+.cala-selected__views {
+  align-self: flex-start;
+}
+
+.cala-selected__view {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cala-trace-viewer--fill {
+  flex: 1 0 auto;
+}
+
+.cala-trace-zoom {
+  overflow: hidden;
+}
+
+/* The overview is the whole session: a faint track shows its full extent even
+   when the cell only exists in its last part. */
+.cala-trace-viewer .trace-overview {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Cell header: the step and Clear buttons share the segmented control's height. */
+.cala-cell-panel .cala-side-panel__actions .btn-small {
+  padding: 1px 10px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.cala-main--narrow .cala-main__side {
+  overflow: visible;
+}
+
+.cala-main--narrow .cala-side-tabs__panel {
+  overflow: visible;
+}
+
+/* Stacked, the tab has no height of its own to fill. */
+.cala-main--narrow .cala-side-tabs__panel > .cala-qc-table,
+.cala-main--narrow .cala-side-tabs__panel > .cala-history,
+.cala-main--narrow .cala-side-tabs__panel > .cala-details__fov {
+  flex: none;
+  height: 360px;
+}
+
+.cala-main--narrow .cala-side-tabs {
+  flex: none;
 }
 
 .cala-tab-note {
@@ -496,6 +648,12 @@
 .cala-run__footer .cala-readout,
 .cala-run__line {
   font-size: 0.78rem;
+}
+
+/* Checkboxes beside small readouts sit near the readouts' size, not the body's. */
+.cala-run__footer .cala-check,
+.cala-qc-table .cala-trace-head > * {
+  font-size: 0.8125rem;
 }
 
 .cala-run__line {
@@ -597,8 +755,7 @@
 }
 
 .cala-history__plot {
-  flex: 1;
-  min-height: 0;
+  flex: none;
   overflow: hidden;
 }
 
@@ -781,7 +938,7 @@
 /* ---- Selected cell ---- */
 .cala-selected__body {
   display: flex;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   align-items: flex-start;
 }
 
@@ -794,8 +951,17 @@
 }
 
 .cala-selected__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 0.75rem;
-  line-height: 1.3;
+  line-height: 1.4;
+}
+
+/* Captions keep a readable measure on a wide column. */
+.cala-selected__facts,
+.cala-selected__side .cala-cellqc__note {
+  max-width: 80ch;
 }
 
 .cala-footprint-zoom {

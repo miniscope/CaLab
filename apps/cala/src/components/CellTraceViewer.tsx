@@ -1,3 +1,4 @@
+import { plotHeight } from '../lib/plot-size.tsx';
 import { createEffect, createMemo, createSignal, on, onCleanup, Show, type JSX } from 'solid-js';
 import { OKABE_ITO, TraceOverview, ZoomWindow } from '@calab/ui/chart';
 import type { BoundarySeverity } from '../lib/boundary-flags.ts';
@@ -14,7 +15,6 @@ const ZOOM_MIN = 160;
 const ZOOM_MAX = 420;
 /** Height of everything else on the screen (header, strips, footprint, QC), px. */
 const ZOOM_RESERVED = 700;
-
 function zoomHeight(): number {
   const h = typeof window === 'undefined' ? 900 : window.innerHeight;
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, h - ZOOM_RESERVED));
@@ -111,12 +111,31 @@ export function CellTraceViewer(props: {
   boundaries?: readonly number[];
   /** Their health flags (Joint runs): a warning or failed boundary is marked in its colour. */
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /**
+   * The zoom plot is sized by its width (the shared aspect rule) instead of a
+   * share of the window's height.
+   */
+  fill?: boolean;
 }): JSX.Element {
   const fs = () => props.fps;
   const [height, setHeight] = createSignal(zoomHeight());
-  const onResize = () => setHeight(zoomHeight());
-  window.addEventListener('resize', onResize);
-  onCleanup(() => window.removeEventListener('resize', onResize));
+  /** `fill`: the zoom plot's height follows the box's width by the shared aspect rule. */
+  const fillBox = (box: HTMLDivElement) => {
+    if (typeof ResizeObserver === 'undefined') return;
+    setHeight(plotHeight(box.clientWidth));
+    const ro = new ResizeObserver(() => {
+      // Hidden (a tab not shown): keep the last height.
+      if (box.clientWidth > 0) setHeight(plotHeight(box.clientWidth));
+    });
+    ro.observe(box);
+    onCleanup(() => ro.disconnect());
+  };
+  // eslint-disable-next-line solid/reactivity -- the mode is fixed per mount
+  if (!props.fill) {
+    const onResize = () => setHeight(zoomHeight());
+    window.addEventListener('resize', onResize);
+    onCleanup(() => window.removeEventListener('resize', onResize));
+  }
   const markerTime = () =>
     props.markerFrame === null || props.markerFrame === undefined ? null : props.markerFrame / fs();
   // Read when the chart draws (a data change redraws it, see `data`).
@@ -207,7 +226,11 @@ export function CellTraceViewer(props: {
   };
 
   return (
-    <div class="cala-trace-viewer" data-testid="cell-trace">
+    <div
+      class="cala-trace-viewer"
+      classList={{ 'cala-trace-viewer--fill': props.fill }}
+      data-testid="cell-trace"
+    >
       <div class="cala-trace-head">
         <h3 class="panel-label">Trace</h3>
         <span class="cala-muted" data-testid="cell-trace-range">
@@ -230,7 +253,7 @@ export function CellTraceViewer(props: {
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
         />
-        <p class="cala-muted" data-testid="cell-trace-history-note">
+        <p class="cala-muted cala-hint" data-testid="cell-trace-history-note">
           Whole-session overview: min/max envelope.{' '}
           <Show when={span()} fallback="Full-resolution samples are unavailable for this cell.">
             {(s) => (
@@ -241,7 +264,11 @@ export function CellTraceViewer(props: {
             )}
           </Show>
         </p>
-        <div class="cala-trace-zoom" style={{ height: `${height()}px` }}>
+        <div
+          ref={(el) => props.fill && fillBox(el)}
+          class="cala-trace-zoom"
+          style={{ height: `${height()}px` }}
+        >
           <Show when={height()} keyed>
             {(h) => (
               <ZoomWindow

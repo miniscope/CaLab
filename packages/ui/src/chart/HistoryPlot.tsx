@@ -904,8 +904,10 @@ export function HistoryPlot(props: HistoryPlotProps) {
     resize();
     let ro: ResizeObserver | undefined;
     if (typeof ResizeObserver !== 'undefined') {
+      // A new width, or a new height (the wrap follows `height`): redraw at that size.
       ro = new ResizeObserver(() => {
-        if (Math.floor(wrapEl.clientWidth) !== cssW) resize();
+        if (Math.floor(wrapEl.clientWidth) !== cssW || canvasEl.style.height !== `${totalH()}px`)
+          resize();
       });
       ro.observe(wrapEl);
     }

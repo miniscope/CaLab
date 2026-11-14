@@ -36,16 +36,18 @@ import {
 import { FovPanel, pipelineFovSource } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { BoundaryBadge } from './components/BoundaryBadge.tsx';
-import { DetailsTabs } from './components/DetailsTabs.tsx';
+import { detailTabs, SideColumn } from './components/SideTabs.tsx';
+import { createQcTableState } from './components/QcTable.tsx';
+import { createSideTab, showPickedCell } from './lib/side-tab.ts';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { RunPanel } from './components/RunPanel.tsx';
+import { RunPanel, RunStatusStrip } from './components/RunPanel.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
 import { createRunHistory } from './lib/run-history.ts';
 import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
 import { SessionSetup } from './components/SessionSetup.tsx';
 import { createSessionList, toSessionInput } from './lib/session-list.ts';
 import { createMultiRun } from './lib/multi-run.ts';
-import { sessionBoundaries } from './lib/frame-source.ts';
+import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
 import {
   directoryResultsSink,
   ensureReadwrite,
@@ -531,7 +533,17 @@ const App: Component = () => {
   }
   const liveParam = params.get('live');
 
-  /** A multi-session run's state, above the Run panel. */
+  /** "Session 3/8" in a multi-session run: the session being read (Joint: the one the frame is in). */
+  const sessionLabel = (): string | null => {
+    const p = multiRun.plan();
+    if (!p) return null;
+    const n = p.sessions.length;
+    if (p.settings.mode !== 'joint') return `Session ${multiRun.current() + 1}/${n}`;
+    const info = store.info();
+    return `Session ${(info ? sessionOfFrame(info, pipeline.processed()) : 0) + 1}/${n}`;
+  };
+
+  /** A multi-session run's state, in the Run tab under the Run panel. */
   function SessionRunStatus() {
     return (
       <Show when={multiRun.plan()}>
@@ -599,8 +611,9 @@ const App: Component = () => {
 
   /**
    * One screen, no page scroll: the field of view, square-ish and as tall as
-   * the window, on the left; Run, Cell and the details tabs in one column on
-   * the right. Narrow windows stack the column under the image and scroll.
+   * the window, on the left; on the right the run strip over one row of tabs
+   * (Run, Cell, QC, History, details), one panel with the column's height.
+   * Narrow windows stack the column under the image and scroll.
    */
   function Layout(lp: { info: NonNullable<ReturnType<typeof store.info>> }) {
     let main!: HTMLDivElement;
@@ -608,14 +621,8 @@ const App: Component = () => {
       () => main,
       () => ({ width: lp.info.width, height: lp.info.height }),
     );
-    const [tab, setTab] = createSignal('qc');
     const expanded = () => historyUi.expanded() && !layout().narrow;
-    // Expanding swaps History into the large area and shows the FOV in the History tab.
-    createEffect(
-      on(historyUi.expanded, (x) => {
-        if (x) setTab('history');
-      }),
-    );
+    const qcState = createQcTableState();
     const fov = () => (
       <FovPanel
         source={pipelineFovSource(pipeline)}
@@ -625,6 +632,75 @@ const App: Component = () => {
         fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
       />
     );
+    /* eslint-disable solid/reactivity -- built once per opened recording */
+    const tabs = [
+      {
+        id: 'run',
+        label: 'Run',
+        testid: 'tab-run',
+        keepMounted: true,
+        content: () => (
+          <>
+            <RunPanel
+              pipeline={pipeline}
+              pass2={pass2}
+              refine={refine}
+              stages={stageLog}
+              availability={availability()}
+              onRefine={runRefine}
+              cells={cells}
+              live={lp.info.live !== undefined}
+              label={store.label()}
+              width={lp.info.width}
+              height={lp.info.height}
+              fps={lp.info.fps ?? 0}
+              bitDepth={lp.info.bitDepth}
+              narrow={layout().narrow}
+              ui={historyUi}
+              compress={compress}
+              review={review}
+              fixed
+              visible={tab.active() === 'run'}
+            />
+            <SessionRunStatus />
+          </>
+        ),
+      },
+      {
+        id: 'cell',
+        label: 'Cell',
+        testid: 'tab-cell',
+        keepMounted: true,
+        content: () => (
+          <SelectedCellPanel
+            cells={cells}
+            boundaries={boundaries()}
+            boundaryFlags={pipeline.boundaryFlags()}
+            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+          />
+        ),
+      },
+      ...detailTabs({
+        store: pipeline,
+        cells,
+        qc: qcState,
+        viewer: store,
+        info: lp.info,
+        ui: historyUi,
+        fov: () => (expanded() ? fov() : null),
+      }),
+    ];
+    /* eslint-enable solid/reactivity */
+    const ids = tabs.map((t) => t.id);
+    const tab = createSideTab('run', 'run', () => ids);
+    // Expanding swaps History into the large area and shows the FOV in the History tab.
+    createEffect(
+      on(historyUi.expanded, (x) => {
+        if (x) tab.set('history');
+      }),
+    );
+    // Picking a cell shows it in the Cell tab (not from the FOV held in the History tab).
+    showPickedCell(tab, cells.selected, () => expanded() && tab.active() === 'history');
     return (
       <div
         ref={main}
@@ -645,42 +721,21 @@ const App: Component = () => {
           </Show>
         </div>
         <div class="cala-main__side">
-          <RunPanel
-            pipeline={pipeline}
-            pass2={pass2}
-            refine={refine}
-            stages={stageLog}
-            availability={availability()}
-            onRefine={runRefine}
-            cells={cells}
-            live={lp.info.live !== undefined}
-            label={store.label()}
-            width={lp.info.width}
-            height={lp.info.height}
-            fps={lp.info.fps ?? 0}
-            bitDepth={lp.info.bitDepth}
-            narrow={layout().narrow}
-            ui={historyUi}
-            compress={compress}
-            review={review}
-          />
-          <SessionRunStatus />
-          <SelectedCellPanel
-            cells={cells}
-            boundaries={boundaries()}
-            boundaryFlags={pipeline.boundaryFlags()}
-            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
-            folded={tab() === 'history'}
-          />
-          <DetailsTabs
-            store={pipeline}
-            cells={cells}
-            viewer={store}
-            info={lp.info}
-            ui={historyUi}
-            active={tab()}
-            onActive={setTab}
-            fov={() => (expanded() ? fov() : null)}
+          <SideColumn
+            strip={
+              <RunStatusStrip
+                pipeline={pipeline}
+                pass2={pass2}
+                refine={refine}
+                stages={stageLog}
+                cells={cells}
+                live={lp.info.live !== undefined}
+                session={sessionLabel()}
+              />
+            }
+            tabs={tabs}
+            active={tab.active()}
+            onActive={tab.set}
           />
         </div>
       </div>

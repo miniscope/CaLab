@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
+import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import { SegmentedControl } from '@calab/ui';
 import {
   createTimeWindow,
@@ -14,6 +14,7 @@ import {
   type HistoryGroup,
   type RunHistory,
 } from '../lib/run-history.ts';
+import { AspectPlot } from '../lib/plot-size.tsx';
 
 /** Shared state of the History views: the run, the time window, the open group, expanded or not. */
 export interface HistoryUi {
@@ -180,23 +181,11 @@ function ExpandButton(props: { ui: HistoryUi }): JSX.Element {
   );
 }
 
-/** Space the chips, event lane and time axis take above and below the plot, CSS px. */
-const PLOT_CHROME_PX = 64;
-
 /**
  * The History tab: one group at a time, with the expand button. The open
- * group's plot takes the tab's whole height (`minHeight` at least).
+ * group's plot is sized by the shared aspect rule; the rest of the tab stays empty.
  */
-export function HistoryTab(props: { ui: HistoryUi; minHeight: number }): JSX.Element {
-  let box!: HTMLDivElement;
-  const [avail, setAvail] = createSignal(0);
-  onMount(() => {
-    if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => setAvail(box.clientHeight));
-    ro.observe(box);
-    onCleanup(() => ro.disconnect());
-  });
-  const height = () => Math.max(props.minHeight, Math.floor(avail() - PLOT_CHROME_PX));
+export function HistoryTab(props: { ui: HistoryUi }): JSX.Element {
   return (
     <div class="cala-history" data-testid="history-tab">
       <div class="cala-history__bar">
@@ -220,18 +209,23 @@ export function HistoryTab(props: { ui: HistoryUi; minHeight: number }): JSX.Ele
         />
         <ExpandButton ui={props.ui} />
       </div>
-      <div class="cala-history__plot" ref={box}>
-        <For each={TAB_GROUPS}>
-          {(g) => (
-            <Show when={props.ui.group() === g.id}>
-              <GroupPlot ui={props.ui} group={g.id} height={height()} />
-            </Show>
-          )}
-        </For>
-      </div>
+      <AspectPlot class="cala-history__plot">
+        {(height) => (
+          <For each={TAB_GROUPS}>
+            {(g) => (
+              <Show when={props.ui.group() === g.id}>
+                <GroupPlot ui={props.ui} group={g.id} height={height()} />
+              </Show>
+            )}
+          </For>
+        )}
+      </AspectPlot>
     </div>
   );
 }
+
+/** The expanded History's plots may be taller than the column's, still by aspect, px. */
+const EXPANDED_MAX_PX = 340;
 
 /** History in the large left area: the whole-run strip and every group, two columns. */
 export function HistoryExpanded(props: { ui: HistoryUi }): JSX.Element {
@@ -240,13 +234,15 @@ export function HistoryExpanded(props: { ui: HistoryUi }): JSX.Element {
     const span = s.t1 - s.t0;
     return `${formatElapsed(s.t0, span)} – ${formatElapsed(s.t1, span)}`;
   };
-  const col = (ids: HistoryGroup[], heights: number[]) => (
+  const col = (ids: HistoryGroup[]) => (
     <div class="cala-history-x__col">
       <For each={ids}>
-        {(id, i) => (
+        {(id) => (
           <section class="cala-history-x__group">
             <h3 class="panel-label">{HISTORY_GROUPS.find((g) => g.id === id)?.label}</h3>
-            <GroupPlot ui={props.ui} group={id} height={heights[i()]} />
+            <AspectPlot max={EXPANDED_MAX_PX}>
+              {(height) => <GroupPlot ui={props.ui} group={id} height={height()} />}
+            </AspectPlot>
           </section>
         )}
       </For>
@@ -261,8 +257,8 @@ export function HistoryExpanded(props: { ui: HistoryUi }): JSX.Element {
       </div>
       <RunStrip ui={props.ui} />
       <div class="cala-history-x__cols">
-        {col(['convergence', 'scales'], [250, 220])}
-        {col(['imaging', 'motion', 'throughput'], [150, 150, 150])}
+        {col(['convergence', 'scales'])}
+        {col(['imaging', 'motion', 'throughput'])}
       </div>
     </div>
   );

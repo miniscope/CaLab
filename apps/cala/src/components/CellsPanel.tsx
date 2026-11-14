@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
 import type { BoundarySeverity } from '../lib/boundary-flags.ts';
-import { SegmentedControl, Tabs } from '@calab/ui';
+import { SegmentedControl } from '@calab/ui';
 import { viridisRGB } from '@calab/ui/chart';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
@@ -202,6 +202,7 @@ function SelectedCell(props: {
 }): JSX.Element {
   const c = () => props.cells;
   const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
+  const [view, setView] = createSignal<'trace' | 'demix'>('trace');
   const inLibrary = () => c().library()?.ids.includes(props.id) ?? false;
   const info = () => {
     const view = c().library();
@@ -242,38 +243,42 @@ function SelectedCell(props: {
           </div>
         </div>
       </div>
-      <Tabs
-        class="cala-selected__tabs"
-        aria-label="Cell views"
-        tabs={[
-          {
-            id: 'trace',
-            label: 'Trace',
-            content: (
-              <CellTraceViewer
-                cells={c()}
-                id={props.id}
-                fps={props.fps}
-                markerFrame={markerFrame()}
-                boundaries={props.boundaries}
-                boundaryFlags={props.boundaryFlags}
-              />
-            ),
-          },
-          {
-            id: 'demix',
-            label: 'Demixing',
-            testid: 'demix-tab',
-            content: () => <DemixView cells={c()} id={props.id} />,
-          },
+      {/* One view at a time, switched in place (the column's tabs are the only tab row). */}
+      <SegmentedControl
+        class="cala-selected__views"
+        options={[
+          { value: 'trace', label: 'Trace', testid: 'trace-tab' },
+          { value: 'demix', label: 'Demixing', testid: 'demix-tab' },
         ]}
-        keepMounted={false}
+        value={view()}
+        onChange={setView}
+        aria-label="Cell view"
+        size="sm"
+        testid="cell-view"
       />
+      <div class="cala-selected__view">
+        <Show
+          when={view() === 'demix'}
+          fallback={
+            <CellTraceViewer
+              cells={c()}
+              id={props.id}
+              fps={props.fps}
+              markerFrame={markerFrame()}
+              boundaries={props.boundaries}
+              boundaryFlags={props.boundaryFlags}
+              fill
+            />
+          }
+        >
+          <DemixView cells={c()} id={props.id} />
+        </Show>
+      </div>
     </div>
   );
 }
 
-/** The clicked cell: footprint, facts, QC and trace (right-hand column). */
+/** The clicked cell: footprint, facts, QC and trace (the right-hand column's Cell tab). */
 export function SelectedCellPanel(props: {
   cells: CellStore;
   fps: number;
@@ -281,17 +286,8 @@ export function SelectedCellPanel(props: {
   boundaries?: readonly number[];
   /** Their health flags (Joint runs; `boundary-flags.ts`). */
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
-  /** Fold to its header line (while the History tab is open); unfolds when this turns false. */
-  folded?: boolean;
 }): JSX.Element {
   const [scale, setScale] = createSignal<FootprintScale>('linear');
-  const [open, setOpen] = createSignal(true);
-  createEffect(
-    on(
-      () => props.folded === true,
-      (f) => setOpen(!f),
-    ),
-  );
   /** The cell before or after the selected one, by id. */
   const step = (dir: 1 | -1) => {
     const ids = Array.from(props.cells.library()?.ids ?? []).sort((a, b) => a - b);
@@ -307,8 +303,7 @@ export function SelectedCellPanel(props: {
   return (
     <SidePanel
       id="cell"
-      open={open()}
-      onToggle={setOpen}
+      fixed
       class="cala-cell-panel"
       title={
         <Show when={props.cells.selected()} fallback="Cell">
