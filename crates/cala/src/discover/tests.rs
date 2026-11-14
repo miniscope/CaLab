@@ -907,6 +907,8 @@ fn visits_run_as_jobs_match_step_exactly() {
     assert_eq!(a.work(), b.work());
     assert_eq!(a.cell_infos(), b.cell_infos());
     assert_eq!(a.churn_counts(), b.churn_counts());
+    // The runner rebuilds each tile's background basis per visit, so it holds none between jobs.
+    assert_eq!(runner.cached_bases(), 0);
     // (NaN fields: compare as text.)
     assert_eq!(
         format!("{:?}", a.take_add_log()),
