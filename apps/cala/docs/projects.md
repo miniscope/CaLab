@@ -14,10 +14,37 @@ project and its run plan), `src/lib/run-plan.ts`, `src/lib/recent-projects.ts`,
 ## The project root is the animal folder
 
 **Open animal project** on the start screen picks the animal's folder. The
-sessions are found as for a multi-session run (`discoverSessions`: every
-numbered video series at any depth, the Miniscope kind chosen, behaviour
-cameras left out). A session's id is its folder relative to the animal folder,
-e.g. `2026_11_10/14_02_33/My_V4_Miniscope`.
+sessions are found as for a multi-session run (`discoverKinds` and
+`chooseKind`: every numbered video series at any depth, the Miniscope kind
+chosen, behaviour cameras left out). A session's id is its folder relative to
+the animal folder, e.g. `2026_11_10/14_02_33/My_V4_Miniscope`.
+
+### Miniscope or behaviour camera
+
+A behaviour camera writes the same numbered `.avi` files as a Miniscope, so
+each device folder's role is read from the metadata the Miniscope DAQ software
+writes (`src/lib/device-roles.ts`), strongest first:
+
+1. The recording's `metaData.json` (one folder up) lists its devices,
+   `"miniscopes": ["img"]` and `"cameras": ["behav"]`; a device folder is named
+   after the device (spaces as `_`).
+2. Else the device folder's own `metaData.json`: a `deviceType` naming a
+   Miniscope (`Miniscope_V4_BNO`, `Miniscope_V3`) or a camera (`Minicam-Mono-XGA`,
+   `WebCam-640x480`), else an `ewl` field (Miniscope only). `gain` and `led0` do
+   not tell them apart: a Minicam writes both.
+3. Else the names: a `behav*` folder or prefix is a camera, a folder mentioning
+   `miniscope` is a Miniscope.
+
+When the metadata says which folders are Miniscopes, only those are sessions;
+every other series is left out. A session with two Miniscopes (a dual-scope
+rig) gives one row per Miniscope (`14_30_33/scopeL`, `14_30_33/scopeR`), and a
+Miniscope folder renamed between days still gives every day. Joint mode
+treats every row as the same field of view, so run the scopes of a dual rig as
+Separate (or select one scope's rows). Without metadata, camera-named series are
+dropped as before and anything still unclear is asked in the series chooser,
+which marks the series it takes for a behaviour camera. Where older DAQ
+software wrote `msCam*.avi` and `behavCam*.avi` into one folder, that folder's
+metadata describes both, so only the names count there.
 
 If the picked folder holds several animals (an experiment folder), the app
 offers one project per animal first (`suggestSplit`): at least two top-level
