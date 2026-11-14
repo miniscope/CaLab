@@ -44,6 +44,8 @@ export interface StageShifts {
   start: number;
   dy: Float32Array;
   dx: Float32Array;
+  /** The session warp applied before these shifts (absent: identity). */
+  session?: [number, number, number];
 }
 
 /** Main thread -> motion / trace worker: their ports. */

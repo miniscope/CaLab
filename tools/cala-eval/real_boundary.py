@@ -220,6 +220,7 @@ def traces(run: Path, out: Path, start: int, label: str, boundary: int | None) -
     b = boundary if boundary is not None else start
     rel = b - start
     sig = np.array([noise_sigma(x) for x in X])
+    sig[~(sig > 0)] = np.nan  # an all-zero (never active) trace has no noise scale
     ref = slice(max(rel - WIN, 0), rel) if rel > 0 else slice(1500, 2100)
     base = np.nanpercentile(X[:, ref], 20, axis=1)
     z = (X - base[:, None]) / sig[:, None]

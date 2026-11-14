@@ -78,6 +78,7 @@ async function handle(msg: StageMsg): Promise<void> {
                 start: done.step.start,
                 dy: done.dy.slice(),
                 dx: done.dx.slice(),
+                ...(done.sessionTransform ? { session: done.sessionTransform } : {}),
               };
               up?.postMessage(shifts, [
                 shifts.dy.buffer as ArrayBuffer,

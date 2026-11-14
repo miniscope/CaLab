@@ -22,6 +22,8 @@ const PLAN: PipelinePlan = {
   calibrationFrames: 4,
   motionWarmupFrames: 4,
   previewMaxSide: 32,
+  boundaries: [],
+  sessionFix: true,
 };
 
 /** A replay batch; `ids` the cells the fast loop solved (trace of cell i at frame t: 10 t + i). */

@@ -65,6 +65,8 @@ const PLAN: PipelinePlan = {
   calibrationFrames: 50,
   motionWarmupFrames: 50,
   previewMaxSide: 320,
+  boundaries: [],
+  sessionFix: true,
 };
 
 const image = () => ({ width: 4, height: 3, data: new Float32Array(12) });

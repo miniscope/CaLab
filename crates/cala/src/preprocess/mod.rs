@@ -57,6 +57,7 @@ pub mod hot_pixels;
 pub mod lines;
 pub mod noise;
 mod pipeline;
+pub mod session;
 mod stats;
 pub mod warmup;
 

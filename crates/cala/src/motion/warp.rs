@@ -111,7 +111,7 @@ fn second_derivatives(t: &[f64], y: &[f64]) -> Vec<f64> {
 
 /// Catmull-Rom weights for taps at offsets -1, 0, 1, 2 and fraction `t`.
 #[inline]
-fn cubic_weights(t: f32) -> [f32; 4] {
+pub(crate) fn cubic_weights(t: f32) -> [f32; 4] {
     let t2 = t * t;
     let t3 = t2 * t;
     [

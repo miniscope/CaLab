@@ -35,6 +35,7 @@ import type {
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 import { RunRecord } from './run-record.ts';
+import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
@@ -252,6 +253,32 @@ export function createPipelineStore(
     if (applied.first) patchFlat({ firstFrame: applied.frame });
   }
 
+  /** A session of a Joint run started: record its re-registration (Refine and Extract replay it) and log it. */
+  function noteSessionStart(st: SessionStart): void {
+    record.noteSession(st.index, st.transform);
+    const [rot, dy, dx] = st.transform;
+    const moved =
+      rot === 0 && dy === 0 && dx === 0
+        ? 'no re-registration'
+        : `re-registered ${rot.toFixed(2)}°, (${dy.toFixed(1)}, ${dx.toFixed(1)}) px`;
+    // App.tsx logs the boundary itself (a 'session' event); this is what the stages did there.
+    runHistory?.log({
+      frame: st.frame,
+      kind: 'setting',
+      key: 'session boundary',
+      to: st.index,
+      detail: `Session ${st.index + 1} start: ${moved}; background floor ×${st.floorGain.toFixed(3)}, noise ×${st.noiseRatio.toFixed(3)}`,
+      data: {
+        rotation: rot,
+        dy,
+        dx,
+        floorGain: st.floorGain,
+        floorOffset: st.floorOffset,
+        noiseRatio: st.noiseRatio,
+      },
+    });
+  }
+
   function handle(step: PipelineStepResult): void {
     switch (step.kind) {
       case 'setup':
@@ -259,6 +286,7 @@ export function createPipelineStore(
         return;
       case 'batch': {
         if (step.flatField) noteFlatFieldApplied(step.flatField);
+        if (step.session) noteSessionStart(step.session);
         const wasComplete = record.complete;
         record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
         if (wasComplete && !record.complete)

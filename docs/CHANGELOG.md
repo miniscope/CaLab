@@ -7,6 +7,21 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: session boundaries in Joint runs. Where a new session starts, cala
+  re-registers it to the previous session (a similarity transform: ±3°
+  rotation and a ±40 px translation search against the mean of the previous
+  session's last 100 registered frames, applied to the whole session before
+  the per-frame corrector), re-seats the flicker reference, maps the
+  background floor into the new session's brightness (a gain and offset
+  fitted on the session's first batch) and rescales the noise map. On
+  stitched two-session sims this removes most of the baseline bump after a
+  brightness step and recovers the cells of a rotated session (results in
+  `tools/cala-eval/results/2026-11-13-session-boundary-fix.md`). Batches are
+  cut at session boundaries; within a session nothing changes and one-session
+  runs are byte-identical. Refine and Extract replay the recorded transform.
+  `PipelineOptions.sessionFix` (default on) switches it off. `qc_eval`
+  gains `--sessions` / `--session-fix` (and `session_boundaries.tsv`).
+
 - CaDecon: warning for rectified input. A trace that is non-negative with at
   least a fifth of its samples exactly 0 (the baseline quantile the chain uses)
   is clipped at zero or already denoised: cala traces from a live run (no

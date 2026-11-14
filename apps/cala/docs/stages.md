@@ -188,15 +188,51 @@ compose with the sessions. It is a run setting, chosen on the session list.
   and marked so in the manifest.
 - A single folder with one recording stays a one-session run with no automation.
 
-### Boundaries (plumbing only)
+### Boundaries
 
 The frame source knows each frame's session (`sessionOfFrame`) and the
-boundary frames (`sessionBoundaries`). Both pipeline engines call
+boundary frames (`sessionBoundaries`). The pipeline plan cuts the batch before
+a boundary short, so every session starts a batch. Both pipeline engines call
 `sessionHooks.onSessionBoundary(index, frame)` (`src/lib/session-boundary.ts`)
-before processing a batch that holds the first frame of a session. The hook
-does nothing yet. Boundary handling (re-registration, state resets,
-per-session gain) will plug in there once it has been measured. Batches are
-not split at boundaries.
+before that batch.
+
+With `PipelineOptions.sessionFix` on (the default), the stages carry the run
+into the new session (measured in
+`tools/cala-eval/results/2026-11-13-session-boundary-fix.md`). Within a session
+nothing changes, and a one-session run is byte-identical to before.
+
+- **Re-registration (stage B).** The mean of the new session's first batch is
+  registered onto the mean of the previous session's last 100 registered frames:
+  a translation search of ±40 px and rotations of ±3° (a similarity transform,
+  `SessionAligner`). The transform is applied to every frame of the session
+  before the per-frame corrector, which then works as within a session.
+  - A rotation is applied when it is at least 0.1° and removes at least 10 % of
+    the unrotated fit's decorrelation.
+  - Without one, a translation beyond 10 px is applied as a whole-pixel shift;
+    a smaller one is left to the corrector (its ±15 px search catches it).
+  - The reference is the previous session's registered frames, not the
+    corrector's template, because the template covers only the registration
+    region (at most 384 px), too small for a ±40 px search.
+  - Pixels the warp brings in from outside the FOV are missing data, as for
+    the per-frame shifts. The flat-field estimator gets the session's
+    translation added to each shift, and no frames of a rotated session.
+- **Flicker (stage A).** The flicker reference is re-seated on the new session,
+  as at the start of a recording, so a brightness step is not read as flicker
+  and released over a second.
+- **Background floor and noise map (stage C).** A gain and offset fitted
+  between the first batch and the floor's boxcar of the previous session's
+  last frames (trimmed least squares, corrected for the boxcar's noise) map
+  the floor into the new session's brightness. The noise map is scaled by the
+  new session's noise (the median of its frame differences in units of the old
+  map). Fast-loop warm starts and slow-loop statistics are not reset: the
+  measurement showed no benefit.
+- **Refine and Extract** replay it: A and C redo their steps on the replayed
+  frames (the flicker comes from the record), and B applies the transform
+  recorded in the run record (`RunRecord.noteSession`). A run recorded before
+  this has no transforms and replays without re-registration.
+- The batch's step result carries what was done (`session`), and the run's
+  event log gets a `setting` event ("session boundary") with the transform,
+  floor gain and noise factor.
 
 The run's event log gets a `session` event at each boundary as Discover
 reaches it; the History plots and the cell trace draw a line there. The

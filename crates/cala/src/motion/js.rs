@@ -367,3 +367,151 @@ impl JsMotionCorrector {
         self.inner.template().map_or_else(Vec::new, |t| t.to_vec())
     }
 }
+
+/// Session-level re-registration (see the Rust `motion::session` module):
+/// collects the reference (the previous session's last registered frames),
+/// estimates the new session's similarity transform from its first frames,
+/// and warps that session's frames before the per-frame corrector.
+#[wasm_bindgen(js_name = SessionAligner)]
+pub struct JsSessionAligner {
+    h: usize,
+    w: usize,
+    reference: super::session::ReferenceMean,
+    warp: Option<super::SessionWarp>,
+    scratch: Vec<f32>,
+}
+
+#[wasm_bindgen(js_class = SessionAligner)]
+impl JsSessionAligner {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> Result<JsSessionAligner, JsError> {
+        if width == 0 || height == 0 {
+            return Err(JsError::new("SessionAligner: empty frame"));
+        }
+        Ok(JsSessionAligner {
+            h: height as usize,
+            w: width as usize,
+            reference: super::session::ReferenceMean::new(),
+            warp: None,
+            scratch: Vec::new(),
+        })
+    }
+
+    /// Add registered frames (whole frames, before the background stage) to
+    /// the reference.
+    #[wasm_bindgen(js_name = pushReference)]
+    pub fn push_reference(&mut self, frames: &[f32]) {
+        self.reference.push(frames, self.h * self.w);
+    }
+
+    /// Frames in the reference so far.
+    #[wasm_bindgen(getter, js_name = referenceFrames)]
+    pub fn reference_frames(&self) -> u32 {
+        self.reference.frames()
+    }
+
+    /// A session starts: register the mean of its first frames `frames`
+    /// (front half output, whole frames) onto the reference, install the
+    /// transform and clear the reference. Without a reference the transform
+    /// is the identity. Returns `[applied rotation°, dy, dx, fitted
+    /// rotation°, dy, dx, ncc, ncc unrotated]`.
+    #[wasm_bindgen(js_name = beginSession)]
+    pub fn begin_session(&mut self, frames: &[f32], fov: &[u8]) -> Result<Vec<f32>, JsError> {
+        let px = self.h * self.w;
+        if frames.is_empty() || !frames.len().is_multiple_of(px) || fov.len() != px {
+            return Err(JsError::new("SessionAligner.beginSession: frame sizes"));
+        }
+        let moving = super::session::frames_mean(frames, px);
+        let est = match self.reference.mean() {
+            Some(r) => Some(
+                super::session::estimate(
+                    &r,
+                    &moving,
+                    self.h,
+                    self.w,
+                    fov,
+                    &super::SessionAlignConfig::default(),
+                )
+                .map_err(|e| js_err("SessionAligner.beginSession", e))?,
+            ),
+            None => None,
+        };
+        self.reference.clear();
+        let t = est.map_or(super::SessionTransform::IDENTITY, |e| e.transform);
+        self.set(t)?;
+        let f = est.map_or(super::SessionTransform::IDENTITY, |e| e.fitted);
+        let (ncc, ncc0) = est.map_or((0.0, 0.0), |e| (e.ncc, e.ncc_unrotated));
+        Ok(vec![
+            t.rotation_deg,
+            t.dy,
+            t.dx,
+            f.rotation_deg,
+            f.dy,
+            f.dx,
+            ncc,
+            ncc0,
+        ])
+    }
+
+    /// Install a recorded transform (a replay), `[rotation°, dy, dx]`.
+    #[wasm_bindgen(js_name = setTransform)]
+    pub fn set_transform(&mut self, rotation_deg: f32, dy: f32, dx: f32) -> Result<(), JsError> {
+        let t = super::SessionTransform::from_array([rotation_deg, dy, dx])
+            .map_err(|e| js_err("SessionAligner.setTransform", e))?;
+        self.set(t)
+    }
+
+    fn set(&mut self, t: super::SessionTransform) -> Result<(), JsError> {
+        self.warp = if t.is_identity() {
+            None
+        } else {
+            Some(
+                super::SessionWarp::new(self.h, self.w, t)
+                    .map_err(|e| js_err("SessionAligner", e))?,
+            )
+        };
+        Ok(())
+    }
+
+    /// The transform in force, `[rotation°, dy, dx]`.
+    pub fn transform(&self) -> Vec<f32> {
+        self.warp
+            .as_ref()
+            .map_or(super::SessionTransform::IDENTITY, |w| w.transform())
+            .to_array()
+            .to_vec()
+    }
+
+    /// The transform in force is the identity.
+    #[wasm_bindgen(getter, js_name = isIdentity)]
+    pub fn is_identity(&self) -> bool {
+        self.warp.is_none()
+    }
+
+    /// Warp whole frames in place by the transform in force (nothing for
+    /// the identity).
+    #[wasm_bindgen(js_name = warpF32)]
+    pub fn warp_f32(&mut self, frames: &mut [f32]) -> Result<(), JsError> {
+        let Some(w) = &self.warp else {
+            return Ok(());
+        };
+        w.apply_in_place(frames, &mut self.scratch)
+            .map_err(|e| js_err("SessionAligner.warpF32", e))
+    }
+
+    /// The sensor FOV mask `fov` as the transform in force moves it: the
+    /// validity source of the session's registered frames
+    /// (`Preprocessor.setSourceMask`).
+    #[wasm_bindgen(js_name = sourceMask)]
+    pub fn source_mask(&self, fov: &[u8]) -> Result<Vec<u8>, JsError> {
+        if fov.len() != self.h * self.w {
+            return Err(JsError::new("SessionAligner.sourceMask: mask size"));
+        }
+        match &self.warp {
+            None => Ok(fov.to_vec()),
+            Some(w) => w
+                .source_mask(fov)
+                .map_err(|e| js_err("SessionAligner.sourceMask", e)),
+        }
+    }
+}

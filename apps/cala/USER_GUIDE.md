@@ -290,8 +290,12 @@ cala-results/
 
 If `cala-results` already exists, a new `cala-results_<date>_<time>` folder is made
 instead. In a Joint run the History plots and the cell trace mark where each session
-starts. At the boundary the run goes straight on, as with concatenated files; how
-cala should handle a boundary is still being measured.
+starts. At each boundary cala lines the new session up with the previous one (it
+finds a rotation of up to 3° and a shift of up to 40 px), and adjusts its background
+and noise estimates to the new session's brightness, so a change of LED level or a
+remounted scope does not show up as a baseline bump in the traces. The run's History
+lists what was done at each boundary ("session boundary"). The cells' brightness is
+not equalised between sessions: if the light changed, traces stay in camera units.
 
 ## Reading the quality-control indicators
 
