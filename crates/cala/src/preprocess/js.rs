@@ -492,6 +492,7 @@ impl JsPreprocessor {
     /// periodically refreshed monitor receives the post-back noise map,
     /// matching the separate back and solve calls.
     #[wasm_bindgen(js_name = backTraceQcFramesRegistered)]
+    #[allow(clippy::too_many_arguments)] // Flat batch ABI: objects, pixels, shifts, refresh policy.
     pub fn back_trace_qc_frames_registered(
         &mut self,
         engine: &mut JsTraceEngine,
