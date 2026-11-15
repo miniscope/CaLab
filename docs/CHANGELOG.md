@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: sensor flat-field shift bins store only field-of-view pixels, retaining float64 accumulation. Refinement computes its fixed weight maps once per solve instead of every iteration.
+
 ## [2.18.1] - 2026-11-14
 
 Web apps `v2.18.1`; the Python package `calab` is unchanged (`py/v0.5.0`).

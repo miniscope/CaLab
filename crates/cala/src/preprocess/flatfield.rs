@@ -197,6 +197,8 @@ impl FlatField {
 pub struct DitherFlatField {
     dims: Dims,
     mask: Vec<u8>,
+    /// Sensor indices stored in each compact shift-bin accumulator.
+    fov_px: Vec<usize>,
     /// Pixels whose mean is the dark level.
     dark_px: Vec<u32>,
     cfg: FlatFieldConfig,
@@ -283,6 +285,7 @@ impl DitherFlatField {
             dims,
             dark_px,
             mask: fov_mask.to_vec(),
+            fov_px: (0..dims.pixels()).filter(|&p| fov_mask[p] != 0).collect(),
             cfg,
             sums: vec![None; nb * nb],
             counts: vec![0.0; nb * nb],
@@ -356,14 +359,15 @@ impl DitherFlatField {
 
     /// The forgetting-weighted mean of the binned frames (offset-free with
     /// the offset model, flicker-scaled): the brightness the gain multiplies.
+    /// Pixels outside the FOV are zero (they do not enter gain estimation).
     pub fn mean_image(&self) -> Vec<f32> {
         let n = self.dims.pixels();
         let mut acc = vec![0.0f64; n];
         let mut c = 0.0;
         for (s, &k) in self.sums.iter().zip(&self.counts) {
             if let Some(s) = s {
-                for (a, &v) in acc.iter_mut().zip(s) {
-                    *a += v;
+                for (&p, &v) in self.fov_px.iter().zip(s) {
+                    acc[p] += v;
                 }
                 c += k;
             }
@@ -479,10 +483,9 @@ impl DitherFlatField {
         let scale = wt * reference / mean;
         let nb = (2 * r + 1) as usize;
         let b = (iy + r) as usize * nb + (ix + r) as usize;
-        let n = self.dims.pixels();
-        let acc = self.sums[b].get_or_insert_with(|| vec![0.0; n]);
-        for (p, (a, &v)) in acc.iter_mut().zip(raw).enumerate() {
-            let v = f64::from(v.to_f32() - off(p));
+        let acc = self.sums[b].get_or_insert_with(|| vec![0.0; self.fov_px.len()]);
+        for (&p, a) in self.fov_px.iter().zip(acc) {
+            let v = f64::from(raw[p].to_f32() - off(p));
             if v.is_finite() {
                 *a += v * scale;
             }
@@ -530,17 +533,10 @@ impl DitherFlatField {
             if c / self.wscale < self.cfg.min_bin_frames as f64 {
                 continue;
             }
-            let mut l: Vec<f32> = s
-                .iter()
-                .zip(&self.mask)
-                .map(|(&v, &m)| {
-                    if m != 0 {
-                        ((v / c - dark).max(1.0)).ln() as f32
-                    } else {
-                        0.0
-                    }
-                })
-                .collect();
+            let mut l = vec![0.0f32; n];
+            for (&p, &v) in self.fov_px.iter().zip(s) {
+                l[p] = ((v / c - dark).max(1.0)).ln() as f32;
+            }
             hp.apply(&mut l)?;
             let shift = ((b / nb) as i32 - r, (b % nb) as i32 - r);
             used.push((shift, c / self.wscale, l));
@@ -566,10 +562,38 @@ impl DitherFlatField {
         let mut t = vec![0.0f32; n];
         let mut tw = vec![0.0f64; n];
         let mut acc = vec![0.0f64; n];
+        // Geometry and bin weights are constant during this solve. Preserve
+        // the original accumulation order, but compute denominators only once.
+        let mut gw = vec![0.0f64; n];
+        for &((sy, sx), wgt, _) in &used {
+            for y in 0..h {
+                for x in 0..w {
+                    if let Some(p) = inside(y as isize - sy as isize, x as isize - sx as isize) {
+                        if self.mask[p] != 0 {
+                            tw[y * w + x] += wgt;
+                        }
+                    }
+                }
+            }
+        }
+        for &((sy, sx), wgt, _) in &used {
+            for y in 0..h {
+                for x in 0..w {
+                    let p = y * w + x;
+                    if self.mask[p] == 0 {
+                        continue;
+                    }
+                    if let Some(u) = inside(y as isize + sy as isize, x as isize + sx as isize) {
+                        if tw[u] > 0.0 {
+                            gw[p] += wgt;
+                        }
+                    }
+                }
+            }
+        }
         for _ in 0..iterations.max(1) {
             // t(u) = mean over bins of (L_s - g)(u - s), sensor pixel u - s in the FOV.
             acc.fill(0.0);
-            tw.fill(0.0);
             for &((sy, sx), wgt, ref l) in &used {
                 for y in 0..h {
                     for x in 0..w {
@@ -582,7 +606,6 @@ impl DitherFlatField {
                         }
                         let u = y * w + x;
                         acc[u] += wgt * f64::from(l[p] - g[p]);
-                        tw[u] += wgt;
                     }
                 }
             }
@@ -595,7 +618,6 @@ impl DitherFlatField {
             }
             // g(x) = mean over bins of L_s(x) - t(x + s), tissue x + s seen.
             acc.fill(0.0);
-            let mut gw = vec![0.0f64; n];
             for &((sy, sx), wgt, ref l) in &used {
                 for y in 0..h {
                     for x in 0..w {
@@ -611,7 +633,6 @@ impl DitherFlatField {
                             continue;
                         }
                         acc[p] += wgt * f64::from(l[p] - t[u]);
-                        gw[p] += wgt;
                     }
                 }
             }
@@ -1393,5 +1414,70 @@ mod tests {
         assert!(matches!(on.refine(), RefineOutcome::Updated(_)));
         let lg: Vec<f32> = g.iter().map(|v| v.ln()).collect();
         assert!(sc.corr(&on.current().unwrap().log_gain, &lg) > 0.9);
+    }
+}
+
+#[cfg(test)]
+mod compact_storage_tests {
+    use super::*;
+
+    #[test]
+    fn accumulators_only_hold_fov_pixels_and_preserve_weighted_means() {
+        let dims = Dims::new(64, 48).unwrap();
+        let mask: Vec<u8> = (0..dims.pixels())
+            .map(|p| {
+                u8::from(p % 64 >= 16 && p % 64 < 48 && p / 64 >= 12 && p / 64 < 36 && p % 7 != 0)
+            })
+            .collect();
+        let mut ff = DitherFlatField::new(
+            dims,
+            &mask,
+            FlatFieldConfig {
+                min_bin_frames: 1,
+                ..FlatFieldConfig::default()
+            },
+        )
+        .unwrap();
+        let mut expected = vec![0.0f64; dims.pixels()];
+        let mut reference = None;
+        for i in 0..12 {
+            let raw: Vec<u8> = (0..dims.pixels())
+                .map(|p| (50 + (p * 3 + i * 11) % 100) as u8)
+                .collect();
+            let mean = raw
+                .iter()
+                .zip(&mask)
+                .filter(|(_, m)| **m != 0)
+                .map(|(&v, _)| f64::from(v))
+                .sum::<f64>()
+                / ff.fov_px.len() as f64;
+            let scale = *reference.get_or_insert(mean) / mean;
+            for &p in &ff.fov_px {
+                expected[p] += f64::from(raw[p]) * scale;
+            }
+            ff.push(&raw, ((i % 3) as f32 - 1.0, 0.0)).unwrap();
+        }
+        for s in ff.sums.iter().flatten() {
+            assert_eq!(s.len(), ff.fov_px.len());
+        }
+        assert!(ff.fov_px.len() < dims.pixels() / 2);
+        let mean = ff.mean_image();
+        for p in 0..dims.pixels() {
+            if mask[p] != 0 {
+                assert!((mean[p] - (expected[p] / 12.0) as f32).abs() < 1e-5);
+            } else {
+                assert_eq!(mean[p], 0.0);
+            }
+        }
+        let cold = ff.solve().unwrap();
+        let warm = ff.solve_from(Some(&cold.log_gain), 10).unwrap();
+        assert_eq!(cold.bins_used, 3);
+        for p in 0..dims.pixels() {
+            assert!(cold.gain[p].is_finite() && warm.gain[p].is_finite());
+            if mask[p] == 0 {
+                assert_eq!(cold.gain[p], 1.0);
+                assert_eq!(warm.gain[p], 1.0);
+            }
+        }
     }
 }
