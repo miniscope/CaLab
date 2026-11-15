@@ -29,6 +29,8 @@ interface Buffer {
   values: Float32Array[];
   /** Flattened start index of each block, for logarithmic indexed access. */
   starts: number[];
+  /** Cache the block used by sequential reads/writes. */
+  cursor: number;
   size: number;
   /** Stream frame of the first sample ever stored (index origin). */
   origin: number;
@@ -111,6 +113,9 @@ export class TraceHistory {
   }
 
   private blockIndex(b: Buffer, index: number): number {
+    const cached = b.cursor;
+    if (index >= b.starts[cached] && index < b.starts[cached] + b.values[cached].length)
+      return cached;
     let low = 0;
     let high = b.starts.length - 1;
     while (low < high) {
@@ -118,6 +123,7 @@ export class TraceHistory {
       if (b.starts[mid] <= index) low = mid;
       else high = mid - 1;
     }
+    b.cursor = low;
     return low;
   }
 
@@ -169,6 +175,7 @@ export class TraceHistory {
     next.push(...this.allocate(size - keep));
     this.held -= (old - size) * 4;
     b.values = this.coalesce(next);
+    b.cursor = 0;
     b.starts = [];
     let offset = 0;
     for (const chunk of b.values) {
@@ -192,6 +199,7 @@ export class TraceHistory {
     if (!this.reserve(next - size)) return;
     b.values.push(...this.allocate(next - size));
     b.values = this.coalesce(b.values);
+    b.cursor = 0;
     b.starts = [];
     let offset = 0;
     for (const chunk of b.values) {
@@ -244,7 +252,7 @@ export class TraceHistory {
           starts.push(offset);
           offset += chunk.length;
         }
-        b = { values, starts, size, origin: start, len: 0, end: start, overview };
+        b = { values, starts, cursor: 0, size, origin: start, len: 0, end: start, overview };
         this.bufs.set(id, b);
       }
       // Frames this cell missed are kept as NaN, so frames stay aligned.
