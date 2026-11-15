@@ -110,12 +110,12 @@ export async function nextStep(
 /** Wall time per stage for one step, ms. */
 export interface StageTimings {
   readMs: number;
-  /** Preprocessing: front half (hot pixels, flicker, flattening, lines) plus back half (background, noise). */
+  /** Preprocessing: both halves in the single-worker path; front half only when Stage C fuses back processing with the trace solve. */
   preprocessMs: number;
   motionMs: number;
   /** Preview downsampling and bookkeeping. */
   otherMs: number;
-  /** Fast loop: library swap, trace solve and the forward copy to the slow loop. */
+  /** Fast loop; in the pipelined path this also includes fused back preprocessing. */
   traceMs: number;
 }
 

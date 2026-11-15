@@ -80,12 +80,32 @@ export interface TraceBackend {
   newQc?(setup: QcSetup): QcMonitorLike;
   /** `QcMonitor.cellFields()` / `globalFields()`, comma-separated. */
   qcFields?(): { cell: string; global: string };
+  /** Back-process and solve using one full-batch copy into WASM. */
+  backAndTrace?(
+    pre: RegisteredPreprocessor,
+    engine: TraceEngineLike,
+    qc: QcMonitorLike | null,
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+    refreshQcNoise: boolean,
+  ): Float32Array;
 }
 
 /** What the fast loop reads from the preprocessor when the slow loop starts. */
 export interface CalibrationSource {
   fovMask(): Uint8Array;
   noiseSigma(): Float32Array;
+}
+
+export interface RegisteredPreprocessor extends CalibrationSource {
+  backFramesRegistered(
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+  ): Float64Array;
 }
 
 export interface FastLoopOptions {
@@ -202,6 +222,7 @@ export class FastLoop {
   private qcNoise = 0;
   private qcLastFrame = -Infinity;
   private qcFrame = 0;
+  private qcRefreshDeferred = false;
   private pendingLibrary: Uint8Array | null = null;
   private initSent = false;
   private lastNoise = 0;
@@ -282,24 +303,45 @@ export class FastLoop {
     count: number,
     calibration: CalibrationSource,
     shifts?: { dy: Float32Array; dx: Float32Array },
+    registered?: RegisteredPreprocessor,
   ): CellsBatch {
     const t0 = now();
     this.applyPendingLibrary();
     const t1 = now();
     const n = count * this.px;
     const batch = frames.subarray(0, n);
+    const fused = !!(
+      registered &&
+      shifts &&
+      this.engine &&
+      this.ids.length &&
+      this.backend.backAndTrace
+    );
+    if (registered && shifts && !fused)
+      registered.backFramesRegistered(batch, count, shifts.dy, shifts.dx);
     let traces: Float32Array = new Float32Array(0);
     let background: Float32Array | undefined;
     let signed: Float32Array | undefined;
     let qcOn = false;
     if (this.engine && this.ids.length > 0) {
-      const qc = this.qcMonitor(start, calibration);
+      const qc = this.qcMonitor(start, calibration, fused);
       qcOn = qc !== null;
-      traces = qc
-        ? shifts && qc.processFramesShifted
-          ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
-          : qc.processFrames(this.engine, batch, count)
-        : this.engine.processFrames(batch, count);
+      traces = fused
+        ? this.backend.backAndTrace!(
+            registered!,
+            this.engine,
+            qc,
+            batch,
+            count,
+            shifts!.dy,
+            shifts!.dx,
+            this.qcRefreshDeferred,
+          )
+        : qc
+          ? shifts && qc.processFramesShifted
+            ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
+            : qc.processFrames(this.engine, batch, count)
+          : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
       background = this.engine.lastBackground?.();
       if (this.o.signed) signed = this.engine.lastSigned?.();
@@ -335,7 +377,12 @@ export class FastLoop {
   }
 
   /** The QC monitor, created on first use; refreshes its noise map now and then. */
-  private qcMonitor(start: number, calibration: CalibrationSource): QcMonitorLike | null {
+  private qcMonitor(
+    start: number,
+    calibration: CalibrationSource,
+    deferNoise = false,
+  ): QcMonitorLike | null {
+    this.qcRefreshDeferred = false;
     const b = this.backend;
     if (!this.o.qc || !b.newQc || !b.qcFields) return null;
     if (!this.qc) {
@@ -349,8 +396,10 @@ export class FastLoop {
         fps: this.o.fps,
       });
       this.qcNoise = start;
+      this.qcRefreshDeferred = deferNoise;
     } else if (start - this.qcNoise >= this.o.noiseEvery) {
-      this.qc.setNoise(calibration.noiseSigma());
+      if (deferNoise) this.qcRefreshDeferred = true;
+      else this.qc.setNoise(calibration.noiseSigma());
       this.qcNoise = start;
     }
     return this.qc;
