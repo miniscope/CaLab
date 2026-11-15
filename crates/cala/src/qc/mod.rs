@@ -77,7 +77,7 @@ pub mod heldout;
 pub mod stats;
 
 #[cfg(feature = "jsbindings")]
-mod js;
+pub(crate) mod js;
 
 use std::collections::{HashMap, VecDeque};
 

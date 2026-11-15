@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: the pipelined back-half preprocessing and trace/QC solve share one WASM batch, removing a redundant full-frame copy without retaining JavaScript views into WASM memory. Timing labels distinguish the combined back+trace stage.
+
 ### Fixed
 
 - Cala: adding newly found cells no longer copies every existing trace buffer

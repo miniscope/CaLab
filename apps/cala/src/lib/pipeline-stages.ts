@@ -893,17 +893,22 @@ export class BackStage {
     const corrected = job.corrected!.subarray(0, n);
     const session = job.session ? this.beginSession(pre, job, corrected) : undefined;
     this.projector?.addRegistered(corrected, s.start, s.count);
-    // Pixels the shift moved in from outside the FOV mask are missing data:
-    // they stay out of the noise map and background (see backFramesRegistered).
-    pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
+    // With a library, the fast loop can back-process and solve in one WASM
+    // call. Without one, it still runs the back half exactly once.
+    let cells;
+    if (this.fast)
+      cells = this.fast.process(
+        corrected,
+        s.start,
+        s.count,
+        pre,
+        { dy: job.dy!, dx: job.dx! },
+        pre,
+      );
+    else pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
     this.projector?.addOutput(corrected, s.start, s.count);
     const t1 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre, {
-      dy: job.dy!,
-      dx: job.dx!,
-    });
     const imaging = this.imaging.sample(pre, s.start, s.count);
-    const t2 = now();
     const output = downsampleFrame(
       corrected,
       s.count - 1,
@@ -912,9 +917,10 @@ export class BackStage {
       this.factor,
     );
     const t3 = now();
-    t.preprocessMs += t1 - t0;
-    t.traceMs = t2 - t1;
-    t.otherMs += t3 - t2;
+    // The fused WASM call spans both operations, so attribute it to Stage C
+    // as a whole rather than presenting an artificial split.
+    t.traceMs = t1 - t0;
+    t.otherMs += t3 - t1;
     job.busyMs[2] = t3 - t0;
     const previews: BatchPreviews = {
       frame: s.start + s.count - 1,

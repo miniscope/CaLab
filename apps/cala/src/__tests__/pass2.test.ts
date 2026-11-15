@@ -97,6 +97,8 @@ async function run(
     replay?: ReplayInput;
     /** Also return the signed traces (as Extract does). */
     signed?: boolean;
+    fused?: boolean;
+    qc?: boolean;
   },
   onBatch?: (b: Batch) => void,
 ): Promise<Batch[]> {
@@ -116,12 +118,14 @@ async function run(
       ...a.fastSetup,
       session: 1,
       discover: false,
-      qc: false,
+      qc: options.qc ?? false,
+      noiseEvery: 16,
+      qcEveryS: 0.4,
       initialLibrary: options.library,
       signed: options.signed ?? false,
     },
     null,
-    traceBackend,
+    options.fused === false ? { ...traceBackend, backAndTrace: undefined } : traceBackend,
   );
   const c = new BackStage(a.setup, fast);
   const batches: Batch[] = [];
@@ -170,6 +174,25 @@ describe('pass 2', () => {
       [24, 40],
       [34, 30],
     ]);
+  });
+
+  it.each([false, true])('fused Stage C matches separate calls (QC=%s)', async (qc) => {
+    const separate = await run({ library: libA.bytes, signed: true, qc, fused: false });
+    const fused = await run({ library: libA.bytes, signed: true, qc });
+    expect(fused.length).toBe(separate.length);
+    for (let i = 0; i < fused.length; i++) {
+      expect(fused[i].previews).toEqual(separate[i].previews);
+      expect(fused[i].cells?.traces).toEqual(separate[i].cells?.traces);
+      expect(fused[i].cells?.signed).toEqual(separate[i].cells?.signed);
+      const a = fused[i].cells?.qc;
+      const b = separate[i].cells?.qc;
+      expect(!!a).toBe(!!b);
+      if (a && b) {
+        const { buildMs: _a, ...qa } = a;
+        const { buildMs: _b, ...qb } = b;
+        expect(qa).toEqual(qb);
+      }
+    }
   });
 
   it('reproduces pass 1 bit for bit with the same library', async () => {
