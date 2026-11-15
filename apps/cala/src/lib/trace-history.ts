@@ -24,10 +24,15 @@ import { OVERVIEW_BUCKETS, TraceOverviewHistory, type TraceEnvelope } from './tr
 
 interface Buffer {
   overview: TraceOverviewHistory;
-  values: Float32Array;
+  /** Fixed-size blocks let a budget resize release old blocks without copying
+   * the entire trace. Only the two blocks crossing a new boundary are copied. */
+  values: Float32Array[];
+  /** Flattened start index of each block, for logarithmic indexed access. */
+  starts: number[];
+  size: number;
   /** Stream frame of the first sample ever stored (index origin). */
   origin: number;
-  /** Samples held (up to values.length) and the stream frame after the newest. */
+  /** Samples held (up to size) and the stream frame after the newest. */
   len: number;
   end: number;
 }
@@ -39,6 +44,7 @@ export interface CellTrace {
 }
 
 const INITIAL_FRAMES = 1024;
+const BLOCK_FRAMES = 1024;
 /** Smallest ring a cell is cut back to (beyond the budget only past ~65k cells at 256 MB). */
 const MIN_RING = 256;
 /** Buffer growth factor: at most a third of a buffer is unused headroom. */
@@ -85,6 +91,53 @@ export class TraceHistory {
     return true;
   }
 
+  private allocate(size: number): Float32Array[] {
+    const chunks: Float32Array[] = [];
+    for (let left = size; left > 0; left -= BLOCK_FRAMES) {
+      chunks.push(new Float32Array(Math.min(BLOCK_FRAMES, left)));
+    }
+    return chunks;
+  }
+
+  /** Read/write a flattened index in the block list. */
+  private at(b: Buffer, index: number): number {
+    const i = this.blockIndex(b, index);
+    return b.values[i]?.[index - b.starts[i]] ?? NaN;
+  }
+
+  private put(b: Buffer, index: number, value: number): void {
+    const i = this.blockIndex(b, index);
+    b.values[i][index - b.starts[i]] = value;
+  }
+
+  private blockIndex(b: Buffer, index: number): number {
+    let low = 0;
+    let high = b.starts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >>> 1;
+      if (b.starts[mid] <= index) low = mid;
+      else high = mid - 1;
+    }
+    return low;
+  }
+
+  /** Keep edge fragments from repeated resizes from accumulating forever. */
+  private coalesce(values: Float32Array[]): Float32Array[] {
+    const out: Float32Array[] = [];
+    for (const chunk of values) {
+      const last = out.at(-1);
+      if (last && last.length + chunk.length <= BLOCK_FRAMES) {
+        const joined = new Float32Array(last.length + chunk.length);
+        joined.set(last);
+        joined.set(chunk, last.length);
+        out[out.length - 1] = joined;
+      } else {
+        out.push(chunk);
+      }
+    }
+    return out;
+  }
+
   /** The ring size each of `cells` tracked cells gets (equal share of the budget). */
   ringFor(cells: number): number {
     const share = Math.floor(this.maxBytes / 4 / Math.max(1, cells));
@@ -93,20 +146,43 @@ export class TraceHistory {
 
   /** Cut `b` back to its newest `size` frames, linearised (so it may grow again later). */
   private shrink(b: Buffer, size: number): void {
-    const old = b.values.length;
+    const old = b.size;
     const keep = Math.min(b.len, size);
     const first = b.end - keep;
-    const next = new Float32Array(size);
-    for (let k = 0; k < keep; k++) next[k] = b.values[(first + k - b.origin) % old];
+    const next: Float32Array[] = [];
+    // Keep whole blocks by reference. Only partial edge blocks need copying,
+    // so adding a cell does work proportional to the block size, not history.
+    let physical = (first - b.origin) % old;
+    if (physical < 0) physical += old;
+    let left = keep;
+    while (left > 0) {
+      const ci = this.blockIndex(b, physical);
+      const base = b.starts[ci];
+      const chunk = b.values[ci];
+      const within = physical - base;
+      const take = Math.min(left, chunk.length - within, old - physical);
+      if (within === 0 && take === chunk.length) next.push(chunk);
+      else next.push(chunk.slice(within, within + take));
+      left -= take;
+      physical = (physical + take) % old;
+    }
+    next.push(...this.allocate(size - keep));
     this.held -= (old - size) * 4;
-    b.values = next;
+    b.values = this.coalesce(next);
+    b.starts = [];
+    let offset = 0;
+    for (const chunk of b.values) {
+      b.starts.push(offset);
+      offset += chunk.length;
+    }
+    b.size = size;
     b.origin = first;
     b.len = keep;
   }
 
   /** Make room for `frames` more samples in `b` while it is still linear. */
   private grow(b: Buffer, frames: number): void {
-    const size = b.values.length;
+    const size = b.size;
     const cap = this.cap;
     // Once wrapped (len < frames since origin) a buffer never grows again.
     if (b.len !== b.end - b.origin || b.len + frames <= size || size >= cap) return;
@@ -114,14 +190,22 @@ export class TraceHistory {
     while (next < b.len + frames && next < cap) next = Math.ceil(next * GROWTH);
     next = Math.min(next, cap);
     if (!this.reserve(next - size)) return;
-    const bigger = new Float32Array(next);
-    bigger.set(b.values.subarray(0, b.len));
-    b.values = bigger;
+    b.values.push(...this.allocate(next - size));
+    b.values = this.coalesce(b.values);
+    b.starts = [];
+    let offset = 0;
+    for (const chunk of b.values) {
+      b.starts.push(offset);
+      offset += chunk.length;
+    }
+    b.size = next;
   }
 
   private write(b: Buffer, frame: number, v: number): void {
-    const size = b.values.length;
-    b.values[(frame - b.origin) % size] = v;
+    const size = b.size;
+    let index = (frame - b.origin) % size;
+    if (index < 0) index += size;
+    this.put(b, index, v);
   }
 
   /**
@@ -137,7 +221,7 @@ export class TraceHistory {
     // The share this batch works with: the cells tracked once the new ones are in.
     this.cap = this.ringFor(Math.min(this.maxCells, this.bufs.size + fresh));
     if (fresh > 0) {
-      for (const b of this.bufs.values()) if (b.values.length > this.cap) this.shrink(b, this.cap);
+      for (const b of this.bufs.values()) if (b.size > this.cap) this.shrink(b, this.cap);
     }
     for (let j = 0; j < n; j++) {
       const id = ids[j];
@@ -153,7 +237,14 @@ export class TraceHistory {
         if (this.bufs.size >= this.maxCells) continue;
         const size = Math.min(this.cap, Math.max(INITIAL_FRAMES, count));
         if (!this.reserve(size)) continue;
-        b = { values: new Float32Array(size), origin: start, len: 0, end: start, overview };
+        const values = this.allocate(size);
+        const starts: number[] = [];
+        let offset = 0;
+        for (const chunk of values) {
+          starts.push(offset);
+          offset += chunk.length;
+        }
+        b = { values, starts, size, origin: start, len: 0, end: start, overview };
         this.bufs.set(id, b);
       }
       // Frames this cell missed are kept as NaN, so frames stay aligned.
@@ -166,14 +257,14 @@ export class TraceHistory {
         b.overview.push(start + i, value);
       }
       b.end = start + count;
-      b.len = Math.min(b.values.length, b.len + gap + count);
+      b.len = Math.min(b.size, b.len + gap + count);
     }
   }
 
   private drop(id: number): void {
     const b = this.bufs.get(id);
     if (!b) return;
-    this.held -= b.values.length * 4;
+    this.held -= b.size * 4;
     this.bufs.delete(id);
   }
 
@@ -209,10 +300,14 @@ export class TraceHistory {
     const out = new Float64Array(end - first).fill(NaN);
     const b = this.bufs.get(id);
     if (!b) return out;
-    const size = b.values.length;
+    const size = b.size;
     const from = Math.max(first, b.end - b.len);
     const to = Math.min(end, b.end);
-    for (let f = from; f < to; f++) out[f - first] = b.values[(f - b.origin) % size];
+    for (let f = from; f < to; f++) {
+      let index = (f - b.origin) % size;
+      if (index < 0) index += size;
+      out[f - first] = this.at(b, index);
+    }
     return out;
   }
 
@@ -220,13 +315,15 @@ export class TraceHistory {
   get(id: number): CellTrace {
     const b = this.bufs.get(id);
     if (!b) return { frames: [], values: [] };
-    const size = b.values.length;
+    const size = b.size;
     const frames = new Array<number>(b.len);
     const values = new Array<number>(b.len);
     const first = b.end - b.len;
     for (let k = 0; k < b.len; k++) {
       frames[k] = first + k;
-      values[k] = b.values[(first + k - b.origin) % size];
+      let index = (first + k - b.origin) % size;
+      if (index < 0) index += size;
+      values[k] = this.at(b, index);
     }
     return { frames, values };
   }
