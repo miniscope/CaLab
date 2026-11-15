@@ -12,6 +12,9 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::qc::js::JsQcMonitor;
+use crate::trace::js::JsTraceEngine;
+
 use super::flatfield::{
     FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome,
 };
@@ -467,6 +470,44 @@ impl JsPreprocessor {
             ]);
         }
         Ok(rec)
+    }
+
+    /// Back-process and solve one registered batch while its pixels are in
+    /// WASM memory. `frames` is copied back to JS once, after both operations;
+    /// the separate calls copy the whole batch into WASM twice.
+    #[wasm_bindgen(js_name = backTraceFramesRegistered)]
+    pub fn back_trace_frames_registered(
+        &mut self,
+        engine: &mut JsTraceEngine,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<Vec<f32>, JsError> {
+        self.back_frames_registered(frames, count, dy, dx)?;
+        engine.process_frames(frames, count)
+    }
+
+    /// As `backTraceFramesRegistered`, with online QC. A newly made or
+    /// periodically refreshed monitor receives the post-back noise map,
+    /// matching the separate back and solve calls.
+    #[wasm_bindgen(js_name = backTraceQcFramesRegistered)]
+    #[allow(clippy::too_many_arguments)] // Flat batch ABI: objects, pixels, shifts, refresh policy.
+    pub fn back_trace_qc_frames_registered(
+        &mut self,
+        engine: &mut JsTraceEngine,
+        qc: &mut JsQcMonitor,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+        refresh_qc_noise: bool,
+    ) -> Result<Vec<f32>, JsError> {
+        self.back_frames_registered(frames, count, dy, dx)?;
+        if refresh_qc_noise {
+            qc.set_noise(&self.inner.noise().sigma())?;
+        }
+        qc.process_frames_shifted(engine, frames, count, dy, dx)
     }
 
     /// A new session starts with the next frame of `frontFrames`: re-seat
