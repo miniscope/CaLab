@@ -9,6 +9,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 - Cala: the pipelined back-half preprocessing and trace/QC solve share one WASM batch, removing a redundant full-frame copy without retaining JavaScript views into WASM memory. Timing labels distinguish the combined back+trace stage.
 
+### Fixed
+
+- Cala: adding newly found cells no longer copies every existing trace buffer
+  just to reduce the per-cell history share. Trace histories use 1024-frame
+  blocks; a resize releases whole old blocks and copies only partial boundary
+  blocks, while keeping the same frame alignment, retention window and byte
+  budget.
+
 ## [2.18.1] - 2026-11-14
 
 Web apps `v2.18.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
