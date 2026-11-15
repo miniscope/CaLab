@@ -1462,8 +1462,8 @@ mod compact_storage_tests {
         }
         assert!(ff.fov_px.len() < dims.pixels() / 2);
         let mean = ff.mean_image();
-        for p in 0..dims.pixels() {
-            if mask[p] != 0 {
+        for (p, &mask_value) in mask.iter().enumerate() {
+            if mask_value != 0 {
                 assert!((mean[p] - (expected[p] / 12.0) as f32).abs() < 1e-5);
             } else {
                 assert_eq!(mean[p], 0.0);
@@ -1472,9 +1472,9 @@ mod compact_storage_tests {
         let cold = ff.solve().unwrap();
         let warm = ff.solve_from(Some(&cold.log_gain), 10).unwrap();
         assert_eq!(cold.bins_used, 3);
-        for p in 0..dims.pixels() {
+        for (p, &mask_value) in mask.iter().enumerate() {
             assert!(cold.gain[p].is_finite() && warm.gain[p].is_finite());
-            if mask[p] == 0 {
+            if mask_value == 0 {
                 assert_eq!(cold.gain[p], 1.0);
                 assert_eq!(warm.gain[p], 1.0);
             }
