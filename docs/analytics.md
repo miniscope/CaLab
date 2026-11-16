@@ -84,9 +84,8 @@ The 4096-byte `event_data` limit (008) fits every payload above and is unchanged
 ## Admin app
 
 `apps/admin` (hidden from the app list, admin role only: RLS limits `analytics_*` reads to
-`app_metadata.role = 'admin'`). All reads are paged 1000 rows at a time, newest first, with a
-cap of 200k sessions (400k events); a banner appears when a table hit it. No database migration
-is needed: aggregation is client-side. Filters live in the URL hash
+`app_metadata.role = 'admin'`). Reads use keyset pagination (1000 rows per page, newest first, 30 s timeout and one retry per page). Sessions and submissions load first and events stream in afterwards (current period only), so views render immediately and show an "events still loading" note. Row caps: 100k sessions, 150k events; a banner appears when a table hits one. Sessions and events are read with `select('*')`: columns the database lacks (for example `is_anonymous`, migration 008) are listed in a banner and the related metric shows n/a. No database migration
+is required: aggregation is client-side (the optional `018_analytics_admin_read_performance.sql` adds indexes for the keyset reads and a cheaper admin RLS expression). Filters live in the URL hash
 (`#/cala?app=cala&range=90d&ver=2.18.1&dev=1`).
 
 ### Definitions
