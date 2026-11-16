@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Fixed
+
+- Analytics: events fired while the session is still being created (cala's `webgpu_info` at startup) were silently dropped. They are now queued (at most 25) and sent once the session exists.
+
 ### Added
 
 - Cala: usage analytics events (`run_started`, `run_finished`, `run_failed`, `boundary_summary`, `results_exported`, `webgpu_info`, `file_imported`) with aggregate numbers and categories only; failures report only a category and error class, never message text. See `docs/analytics.md`.
