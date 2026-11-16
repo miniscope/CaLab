@@ -8,6 +8,10 @@ import {
   errorType,
   setupAnalyticsEffects,
   webgpuPayload,
+  devicePayload,
+  osFamily,
+  browserMajor,
+  sanitizeLabel,
   type AnalyticsDeps,
 } from '../lib/analytics-integration.ts';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
@@ -41,6 +45,7 @@ type Call = [string, Record<string, unknown>];
 
 function harness(over: Partial<AnalyticsDeps> = {}) {
   const calls: Call[] = [];
+  const deviceCalls: Call[] = [];
   const [runs, setRuns] = createSignal<StageRun[]>([]);
   const [info, setInfo] = createSignal<FrameSourceInfo | null>(null);
   const [plan, setPlan] = createSignal<ReturnType<AnalyticsDeps['plan']>>(null);
@@ -48,7 +53,17 @@ function harness(over: Partial<AnalyticsDeps> = {}) {
   const [fps, setFps] = createSignal(0);
   const dispose = createRoot((d) => {
     setupAnalyticsEffects({
-      track: (n, d2) => void calls.push([n, d2 as Record<string, unknown>]),
+      track: (n, d2) =>
+        void (n === 'device_info' ? deviceCalls : calls).push([n, d2 as Record<string, unknown>]),
+      deviceEnv: () => ({
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/142.0.7444.60 Safari/537.36',
+        platform: 'MacIntel',
+        uaPlatform: 'macOS',
+        cores: 10,
+        deviceMemory: 8,
+        dpr: 2,
+      }),
       stageRuns: runs,
       info,
       plan,
@@ -70,7 +85,7 @@ function harness(over: Partial<AnalyticsDeps> = {}) {
     });
     return d;
   });
-  return { calls, setRuns, setInfo, setPlan, setEnded, setFps, dispose };
+  return { calls, deviceCalls, setRuns, setInfo, setPlan, setEnded, setFps, dispose };
 }
 
 const names = (c: Call[]) => c.map((x) => x[0]);
@@ -83,6 +98,9 @@ describe('event sequence', () => {
     const h = harness();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.calls).toEqual([['webgpu_info', { adapter: 'hardware', vendor: 'nvidia' }]]);
+    expect(h.deviceCalls).toEqual([
+      ['device_info', { os: 'macos', cores: 10, memory_gb: 8, browser_major: 142, dpr: 2 }],
+    ]);
 
     h.setInfo(INFO);
     await vi.advanceTimersByTimeAsync(0);
@@ -179,6 +197,14 @@ describe('event sequence', () => {
     h.dispose();
   });
 
+  it('device_info is still sent when the adapter request fails', async () => {
+    const h = harness({ getAdapter: () => Promise.reject(new Error('no gpu')) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls[0]).toEqual(['webgpu_info', { adapter: 'none' }]);
+    expect(h.deviceCalls).toHaveLength(1);
+    h.dispose();
+  });
+
   it('webgpu_info reports none without an adapter', async () => {
     const h = harness({ getAdapter: async () => null });
     await vi.advanceTimersByTimeAsync(0);
@@ -203,7 +229,8 @@ describe('payload allowlist', () => {
     h.setEnded(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.calls.length).toBeGreaterThan(5);
-    for (const [name, data] of h.calls) {
+    expect(h.deviceCalls).toHaveLength(1);
+    for (const [name, data] of [...h.calls, ...h.deviceCalls]) {
       const allowed = (ALLOWED_FIELDS as Record<string, readonly string[]>)[name];
       expect(allowed, `unknown event ${name}`).toBeDefined();
       for (const k of Object.keys(data)) expect(allowed).toContain(k);
@@ -213,11 +240,117 @@ describe('payload allowlist', () => {
     h.dispose();
   });
 
+  it('a failed run reports the peaks reached before it failed', async () => {
+    const h = harness({ heapBytes: () => 300 * 1048576 });
+    h.setRuns([run({})]);
+    await vi.advanceTimersByTimeAsync(2000);
+    h.setRuns([run({ outcome: 'error', endedAt: '2026-01-01T00:00:10.000Z' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.find((c) => c[0] === 'run_failed')![1]).toMatchObject({
+      peak_wasm_mb: 300,
+    });
+    h.dispose();
+  });
+
+  it('peaks are running maxima: a later lower sample does not lower them', async () => {
+    let wasm = 100 * 1048576;
+    const h = harness({ heapBytes: () => wasm });
+    h.setRuns([run({})]);
+    await vi.advanceTimersByTimeAsync(1000);
+    wasm = 700 * 1048576;
+    await vi.advanceTimersByTimeAsync(1000);
+    wasm = 200 * 1048576;
+    await vi.advanceTimersByTimeAsync(2000);
+    h.setRuns([run({ outcome: 'done', endedAt: '2026-01-01T00:00:10.000Z' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.find((c) => c[0] === 'run_finished')![1]).toMatchObject({
+      peak_wasm_mb: 700,
+    });
+    h.dispose();
+  });
+
+  it('omits the peaks when no memory figure is available', async () => {
+    const h = harness({ heapBytes: () => 0 });
+    h.setRuns([run({})]);
+    h.setRuns([run({ outcome: 'error', endedAt: '2026-01-01T00:00:10.000Z' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    const f = h.calls.find((c) => c[0] === 'run_failed')![1];
+    expect(f).not.toHaveProperty('peak_wasm_mb');
+    h.dispose();
+  });
+
   it('drops unlisted fields even if a payload carried them', async () => {
     const h = harness({ getAdapter: async () => ({ info: { vendor: 'amd' } }) });
     await vi.advanceTimersByTimeAsync(0);
     expect(Object.keys(h.calls[0][1]).sort()).toEqual(['adapter', 'vendor']);
     h.dispose();
+  });
+
+  it('device_info carries no UA string, version or fingerprint', async () => {
+    const h = harness({
+      deviceEnv: () => ({
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+        platform: 'Win32',
+        cores: 16,
+        dpr: 1.3,
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.deviceCalls).toEqual([
+      ['device_info', { os: 'windows', cores: 16, browser_major: 130, dpr: 1.25 }],
+    ]);
+    expect(JSON.stringify(h.deviceCalls)).not.toMatch(/Mozilla|NT 10|Gecko/);
+    h.dispose();
+  });
+
+  it('webgpu_info sanitises adapter strings and reports limits in MB', () => {
+    const p = webgpuPayload({
+      isFallbackAdapter: false,
+      info: {
+        vendor: 'Apple!',
+        architecture: 'Metal-3 <script>',
+        device: '',
+        description: 'Apple M2 Pro (Mac14,9) ' + 'x'.repeat(100),
+      },
+      limits: { maxBufferSize: 4294967296, maxStorageBufferBindingSize: 134217728 },
+    });
+    expect(p).toMatchObject({
+      adapter: 'hardware',
+      vendor: 'apple',
+      architecture: 'metal-3 script',
+      max_buffer_mb: 4096,
+      max_storage_mb: 128,
+    });
+    expect(p).not.toHaveProperty('device');
+    expect((p.description as string).length).toBeLessThanOrEqual(48);
+    expect(p.description).toMatch(/^[a-z0-9 ._-]+$/);
+  });
+});
+
+describe('device helpers', () => {
+  it('osFamily is a family only', () => {
+    expect(osFamily('macOS', 'MacIntel')).toBe('macos');
+    expect(osFamily('Windows', 'Win32')).toBe('windows');
+    expect(osFamily(undefined, 'Linux x86_64')).toBe('linux');
+    expect(osFamily(undefined, 'Linux armv81', 'Mozilla/5.0 (Linux; Android 14)')).toBe('android');
+    expect(osFamily(undefined, 'iPhone')).toBe('ios');
+    expect(osFamily('Chrome OS', '')).toBe('chromeos');
+    expect(osFamily(undefined, 'Plan9')).toBe('other');
+  });
+  it('browserMajor reads Chrome, Edge, Firefox and Safari', () => {
+    expect(browserMajor('X Chrome/142.0.0.0 Safari/537.36')).toBe(142);
+    expect(browserMajor('X Chrome/142.0.0.0 Safari/537.36 Edg/141.0.1')).toBe(141);
+    expect(browserMajor('X Gecko/20100101 Firefox/131.0')).toBe(131);
+    expect(browserMajor('X Version/17.4 Safari/605.1.15')).toBe(17);
+    expect(browserMajor('curl/8')).toBeUndefined();
+  });
+  it('devicePayload rounds dpr to 0.25 and omits absent fields', () => {
+    expect(devicePayload({ platform: 'MacIntel', dpr: 2.6 })).toMatchObject({
+      os: 'macos',
+      dpr: 2.5,
+    });
+    expect(sanitizeLabel('  Ünï$x 1_2.3-4  ', 48)).toBe('nx 1_2.3-4');
   });
 });
 

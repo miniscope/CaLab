@@ -476,7 +476,7 @@ ${released.map(renderCard).join('\n')}
   </main>
   <footer>
     <div class="page">
-      <p>CaLab collects anonymous usage statistics (which features are used, run size and speed, errors) with a random identifier stored in your browser; recordings, file names and personal data never leave it, only country and region are kept, and no IP address is stored. Cala also has an optional, off-by-default name tag for beta testers. <button type="button" id="analytics-toggle" class="analytics-toggle"></button> (Do Not Track also turns it off.)</p>
+      <p>CaLab collects anonymous usage statistics (which features are used, run size and speed, errors) and a coarse hardware snapshot (operating system family, CPU core count, memory class, GPU type and limits, browser version, display scale) with a random identifier stored in your browser; recordings, file names and personal data never leave it, only country and region are kept, and no IP address is stored. Cala also has an optional, off-by-default name tag for beta testers. <button type="button" id="analytics-toggle" class="analytics-toggle"></button> (Do Not Track also turns it off.)</p>
       <ul>
         ${versionLink ? `<li>${versionLink}</li>` : ''}
         <li><a href="${CHANGELOG_URL}">Changelog</a></li>

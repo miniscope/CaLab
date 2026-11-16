@@ -18,6 +18,7 @@ import type { BoundaryFlag } from './boundary-flags.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
 import type { StageName, StageRun } from './run-stages.ts';
 import { EXPORT_FORMAT_VERSION } from './export.ts';
+import { startMemoryCollector, totalWasmHeapBytes } from './memory-telemetry.ts';
 
 export type RunMode = 'joint' | 'separate' | 'apply' | 'single';
 export type ErrorCategory = 'out_of_memory' | 'webgpu' | 'decode' | 'worker' | 'unknown';
@@ -39,10 +40,19 @@ export const ALLOWED_FIELDS = {
     'cells',
     'peak_wasm_mb',
   ],
-  run_failed: ['stage', 'error_category', 'error_type'],
+  run_failed: ['stage', 'error_category', 'error_type', 'peak_wasm_mb'],
   boundary_summary: ['boundaries', 'ok', 'warning', 'failed'],
   results_exported: ['sessions', 'format_version'],
-  webgpu_info: ['adapter', 'vendor'],
+  webgpu_info: [
+    'adapter',
+    'vendor',
+    'architecture',
+    'device',
+    'description',
+    'max_buffer_mb',
+    'max_storage_mb',
+  ],
+  device_info: ['os', 'cores', 'memory_gb', 'browser_major', 'dpr'],
 } as const satisfies Partial<Record<AnalyticsEventName, readonly string[]>>;
 
 export type CalaEventName = keyof typeof ALLOWED_FIELDS;
@@ -106,20 +116,110 @@ export function fileExtension(name: string | undefined): string {
 
 export interface AdapterLike {
   isFallbackAdapter?: boolean;
-  info?: { vendor?: string };
+  info?: { vendor?: string; architecture?: string; device?: string; description?: string };
+  limits?: { maxBufferSize?: number; maxStorageBufferBindingSize?: number };
 }
 
-/** The webgpu_info payload (adapter class and a short lowercase vendor). */
+/** Lowercase, `[a-z0-9 ._-]` only, trimmed, at most `max` characters ('' when nothing is left). */
+export function sanitizeLabel(raw: unknown, max: number): string {
+  return String(raw ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ._-]/g, '')
+    .trim()
+    .slice(0, max);
+}
+
+const toMb = (bytes: unknown): number | undefined =>
+  typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0
+    ? Math.round(bytes / 1048576)
+    : undefined;
+
+/**
+ * The webgpu_info payload: adapter class, short lowercase GPU labels (Chrome
+ * often leaves device/description empty: omitted then) and two buffer limits.
+ */
 export function webgpuPayload(adapter: AdapterLike | null): Record<string, unknown> {
   if (!adapter) return { adapter: 'none' };
-  const vendor = (adapter.info?.vendor ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9 -]/g, '')
-    .trim()
-    .slice(0, 24);
+  const vendor = sanitizeLabel(adapter.info?.vendor, 24);
+  const architecture = sanitizeLabel(adapter.info?.architecture, 48);
+  const device = sanitizeLabel(adapter.info?.device, 48);
+  const description = sanitizeLabel(adapter.info?.description, 48);
   return {
     adapter: adapter.isFallbackAdapter ? 'fallback' : 'hardware',
     ...(vendor ? { vendor } : {}),
+    ...(architecture ? { architecture } : {}),
+    ...(device ? { device } : {}),
+    ...(description ? { description } : {}),
+    max_buffer_mb: toMb(adapter.limits?.maxBufferSize),
+    max_storage_mb: toMb(adapter.limits?.maxStorageBufferBindingSize),
+  };
+}
+
+export type OsFamily = 'macos' | 'windows' | 'linux' | 'chromeos' | 'android' | 'ios' | 'other';
+
+export interface DeviceEnv {
+  userAgent?: string;
+  platform?: string;
+  uaPlatform?: string;
+  cores?: number;
+  deviceMemory?: number;
+  dpr?: number;
+}
+
+/** Operating system family only (never a version). */
+export function osFamily(
+  uaPlatform: string | undefined,
+  platform: string | undefined,
+  ua = '',
+): OsFamily {
+  const p = `${uaPlatform || ''} ${platform || ''}`.toLowerCase();
+  if (/android/.test(p) || /android/i.test(ua)) return 'android';
+  if (/iphone|ipad|ipod|ios/.test(p) || /iphone|ipad|ipod/i.test(ua)) return 'ios';
+  if (/chrome os|chromeos|cros/.test(p) || /\bcros\b/i.test(ua)) return 'chromeos';
+  if (/mac/.test(p)) return 'macos';
+  if (/win/.test(p)) return 'windows';
+  if (/linux|x11/.test(p)) return 'linux';
+  return 'other';
+}
+
+/** Major browser version from the user agent (Edge, Chrome, Firefox, Safari), or undefined. */
+export function browserMajor(ua: string | undefined): number | undefined {
+  const s = ua ?? '';
+  const m =
+    /\b(?:Edg|Edge|OPR)\/(\d+)/.exec(s) ??
+    /\bFirefox\/(\d+)/.exec(s) ??
+    /\bChrome\/(\d+)/.exec(s) ??
+    /\bVersion\/(\d+)[\d.]*.*Safari\//.exec(s);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Coarse hardware snapshot: family, core count, memory class, browser major, display scale. */
+export function devicePayload(env: DeviceEnv): Record<string, unknown> {
+  const dpr = typeof env.dpr === 'number' && env.dpr > 0 ? Math.round(env.dpr * 4) / 4 : undefined;
+  return {
+    os: osFamily(env.uaPlatform, env.platform, env.userAgent),
+    cores:
+      typeof env.cores === 'number' && env.cores > 0
+        ? Math.min(Math.round(env.cores), 256)
+        : undefined,
+    memory_gb:
+      typeof env.deviceMemory === 'number' && env.deviceMemory > 0 ? env.deviceMemory : undefined,
+    browser_major: browserMajor(env.userAgent),
+    dpr,
+  };
+}
+
+function defaultDeviceEnv(): DeviceEnv {
+  const nav = globalThis.navigator as
+    (Navigator & { userAgentData?: { platform?: string }; deviceMemory?: number }) | undefined;
+  return {
+    userAgent: nav?.userAgent,
+    platform: nav?.platform,
+    uaPlatform: nav?.userAgentData?.platform,
+    cores: nav?.hardwareConcurrency,
+    deviceMemory: nav?.deviceMemory,
+    dpr: globalThis.devicePixelRatio,
   };
 }
 
@@ -137,8 +237,10 @@ export interface AnalyticsDeps {
   throughput(stage: StageName): number;
   /** Why a stage stopped (raw; only its category and error class are ever sent). */
   stageError(stage: StageName): string | null;
-  /** Bytes of the WASM heap, 0 when not reachable from this thread. */
+  /** Bytes of WASM heap summed over all threads (main thread and workers); 0 when unknown. */
   heapBytes?(): number;
+  /** The coarse hardware snapshot inputs (defaults to the browser's). */
+  deviceEnv?(): DeviceEnv;
   boundaryFlags(): readonly BoundaryFlag[];
   /** Multi-session run end: finished or stopped, and the sessions written. */
   runEnded(): boolean;
@@ -174,14 +276,30 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
     }
   };
 
-  const heap =
-    deps.heapBytes ??
-    (() => (globalThis as { __calaWasmHeapBytes?: () => number }).__calaWasmHeapBytes?.() ?? 0);
+  // Workers report their WASM heap to the main thread (lib/memory-telemetry.ts).
+  if (!deps.heapBytes) {
+    const stop = startMemoryCollector(
+      () => (globalThis as { __calaWasmHeapBytes?: () => number }).__calaWasmHeapBytes?.() ?? 0,
+    );
+    onCleanup(stop);
+  }
+  const heap = deps.heapBytes ?? (() => totalWasmHeapBytes());
 
-  // ---- webgpu_info: once per session ----
+  // ---- webgpu_info and device_info: once per session ----
+  // Both go out once the adapter request settles, not synchronously at setup:
+  // the app renders before `initSession` starts, and events sent that early
+  // are dropped (see the queue in packages/community analytics.ts).
+  const sendDevice = () => {
+    try {
+      send('device_info', devicePayload((deps.deviceEnv ?? defaultDeviceEnv)()));
+    } catch {
+      // Analytics never throws.
+    }
+  };
   void (deps.getAdapter ?? defaultAdapter)()
     .then((a) => send('webgpu_info', webgpuPayload(a)))
-    .catch(() => send('webgpu_info', { adapter: 'none' }));
+    .catch(() => send('webgpu_info', { adapter: 'none' }))
+    .finally(sendDevice);
 
   // ---- file_imported ----
   let lastInfo: FrameSourceInfo | null = null;
@@ -220,6 +338,11 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
       ...(info?.fps ? { fps: round(info.fps) } : {}),
       ...(info ? { width: info.width, height: info.height } : {}),
     };
+  }
+
+  /** Peak WASM heap summed over all threads, only when known (0: omitted). */
+  function peakFields(l: Live | undefined): Record<string, number> {
+    return l && l.peak > 0 ? { peak_wasm_mb: Math.round(l.peak / 1048576) } : {};
   }
 
   function sample(stage: StageName, l: Live): void {
@@ -265,8 +388,7 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
             ...(Number.isFinite(dur) ? { duration_s: round(dur) } : {}),
             ...(med !== null ? { median_fps: round(med) } : {}),
             cells: r.cells,
-            // Only when this thread's WASM heap is reachable (0: omitted).
-            ...(l && l.peak > 0 ? { peak_wasm_mb: Math.round(l.peak / 1048576) } : {}),
+            ...peakFields(l),
           });
         } else if (r.outcome === 'error') {
           const raw = deps.stageError(r.stage) ?? '';
@@ -275,6 +397,7 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
             stage: r.stage,
             error_category: errorCategory(raw),
             ...(type ? { error_type: type } : {}),
+            ...peakFields(l),
           });
         }
         // 'cancelled': the user's choice, not reported.

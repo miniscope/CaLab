@@ -8,6 +8,7 @@
  * `@calab/core` must stay wasm-free (its barrel is imported by apps that never
  * load a WASM module).
  */
+import { startMemoryReporter } from './memory-telemetry.ts';
 import init, {
   AviHeader,
   aviIdx1PayloadLen,
@@ -77,6 +78,9 @@ export function initCalaWasm(wasmBytes?: BufferSource): Promise<void> {
         // the module (main or worker) reports its own linear memory size.
         (globalThis as { __calaWasmHeapBytes?: () => number }).__calaWasmHeapBytes =
           calaWasmHeapBytes;
+        // Workers report their heap to the main thread's run telemetry
+        // (lib/memory-telemetry.ts); the main thread counts its own directly.
+        if (typeof window === 'undefined') startMemoryReporter(calaWasmHeapBytes);
       })
       .catch((err) => {
         // Let a later call retry instead of staying stuck on a rejection.

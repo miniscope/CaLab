@@ -5,7 +5,9 @@
  *
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
- *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335]
+ *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
+ *   `--single`: one recording folder (Discover, then one Refine, no export).
+ *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
  * folder input with `?debug`, keeps the sessions whose names contain one of
@@ -52,7 +54,8 @@ const L = (s) => {
 };
 
 const ctx = await chromium.launchPersistentContext(udd, {
-  headless: true,
+  headless: !args.includes('--headed'),
+  ...(args.includes('--headed') ? { channel: 'chrome' } : {}),
   args: [
     '--enable-precise-memory-info',
     '--enable-unsafe-webgpu',
@@ -256,40 +259,49 @@ const fmt = (r) => {
 let t0 = Date.now();
 await page.goto(`${url}?debug`);
 await attachPage();
+const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
-await page.waitForSelector('[data-testid=session-item]', { timeout: 120000 });
-await page.waitForTimeout(3000);
-if (keep.length) {
-  for (;;) {
-    const names = await page.$$eval('[data-testid=session-item]', (e) =>
-      e.map((x) => x.textContent),
-    );
-    const drop = names.findIndex((n) => !keep.some((k) => n.includes(k)));
-    if (drop < 0) break;
-    await page.locator('[data-testid=session-remove]').nth(drop).click();
-    await page.waitForTimeout(300);
+if (single) {
+  // One recording folder: Discover starts by itself; then press Refine once.
+  await page.waitForFunction(() => window.__cala?.pipeline.status() === 'running', null, {
+    timeout: 120000,
+  });
+} else {
+  await page.waitForSelector('[data-testid=session-item]', { timeout: 120000 });
+  await page.waitForTimeout(3000);
+  if (keep.length) {
+    for (;;) {
+      const names = await page.$$eval('[data-testid=session-item]', (e) =>
+        e.map((x) => x.textContent),
+      );
+      const drop = names.findIndex((n) => !keep.some((k) => n.includes(k)));
+      if (drop < 0) break;
+      await page.locator('[data-testid=session-remove]').nth(drop).click();
+      await page.waitForTimeout(300);
+    }
   }
-}
-L(
-  'sessions: ' +
-    JSON.stringify(
-      await page.$$eval('[data-testid=session-item]', (e) =>
-        e.map((x) => x.textContent.slice(0, 80)),
+  L(
+    'sessions: ' +
+      JSON.stringify(
+        await page.$$eval('[data-testid=session-item]', (e) =>
+          e.map((x) => x.textContent.slice(0, 80)),
+        ),
       ),
-    ),
-);
-if (await page.locator(`[data-testid=mode-${mode}]`).count())
-  await page.check(`[data-testid=mode-${mode}]`);
-if (await page.locator('[data-testid=refine-runs]').count())
-  await page.selectOption('[data-testid=refine-runs]', refineRuns);
-await page.waitForFunction(
-  () => !document.querySelector('[data-testid=sessions-start]').disabled,
-  null,
-  { timeout: 120000 },
-);
-L('pre-start ' + fmt(await sample(true)));
-await page.click('[data-testid=sessions-start]');
-t0 = Date.now();
+  );
+  if (await page.locator(`[data-testid=mode-${mode}]`).count())
+    await page.check(`[data-testid=mode-${mode}]`);
+  if (await page.locator('[data-testid=refine-runs]').count())
+    await page.selectOption('[data-testid=refine-runs]', refineRuns);
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid=sessions-start]').disabled,
+    null,
+    { timeout: 120000 },
+  );
+  L('pre-start ' + fmt(await sample(true)));
+  await page.click('[data-testid=sessions-start]');
+  t0 = Date.now();
+}
+let refineClicked = false;
 const samples = [];
 let stop = null;
 let lastKey = '';
@@ -302,8 +314,16 @@ while (!stop) {
   const key = `${r.st?.pst}|${r.st?.refine}|${r.st?.extract}`;
   if (key !== lastKey) lastKey = key;
   const run = r.st?.run ?? '';
-  if (downloads > 0 && /done|finished|complete|saved/i.test(run)) stop = 'done';
-  if (/error|failed/i.test(run)) stop = 'error: ' + run;
+  if (single) {
+    if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
+      refineClicked = true;
+      await page.click('[data-testid=refine-run]');
+    }
+    if (refineClicked && r.st?.refine === 'done') stop = 'done';
+    if (r.st?.pst === 'error' || r.st?.refine === 'error') stop = 'error';
+  }
+  if (!single && downloads > 0 && /done|finished|complete|saved/i.test(run)) stop = 'done';
+  if (!single && /error|failed/i.test(run)) stop = 'error: ' + run;
   if (r.t > maxMin * 60) stop = 'time';
 }
 L('STOP ' + stop);

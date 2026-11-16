@@ -11,6 +11,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Cala: run telemetry now reports `peak_wasm_mb` summed over the main thread and all workers (it was almost always absent: the solver WASM lives in workers) on `run_finished` and `run_failed`. Workers report their heap over a low-rate `BroadcastChannel`.
+- Cala: a once-per-session coarse hardware snapshot: new `device_info` event (OS family, CPU cores, memory class, browser major version, display scale) and GPU architecture/device/description and buffer limits on `webgpu_info`. The privacy notice says so; the existing opt-out covers it.
 - Cala: usage analytics events (`run_started`, `run_finished`, `run_failed`, `boundary_summary`, `results_exported`, `webgpu_info`, `file_imported`) with aggregate numbers and categories only; failures report only a category and error class, never message text. See `docs/analytics.md`.
 - Usage statistics opt-out (Cala start screen, landing page footer; Do Not Track is honoured) and an optional, off-by-default beta tester tag (32 characters, `[A-Za-z0-9 ._@-]`). The landing page notice now says what is collected.
 - Migration `017_analytics_event_name_shape.sql` validates `analytics_events.event_name` by shape instead of a fixed list; it must be run on the Supabase project (the client works in either order).
