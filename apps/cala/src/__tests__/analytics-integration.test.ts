@@ -5,7 +5,7 @@ import {
   errorCategory,
   fileExtension,
   median,
-  scrubMessage,
+  errorType,
   setupAnalyticsEffects,
   webgpuPayload,
   type AnalyticsDeps,
@@ -125,7 +125,7 @@ describe('event sequence', () => {
     h.dispose();
   });
 
-  it('reports a failed run with a category and a scrubbed message, never twice', async () => {
+  it('reports a failed run with a category and error class but never the message text, never twice', async () => {
     const h = harness();
     h.setRuns([run({ stage: 'refine', index: 2 })]);
     h.setRuns([
@@ -137,7 +137,6 @@ describe('event sequence', () => {
     expect(failed[0][1]).toEqual({
       stage: 'refine',
       error_category: 'out_of_memory',
-      message: 'Cell discovery stopped: out of memory in <path>',
     });
     expect(JSON.stringify(h.calls)).not.toContain('ana');
     h.dispose();
@@ -222,24 +221,15 @@ describe('payload allowlist', () => {
   });
 });
 
-describe('scrubMessage', () => {
+describe('errorType', () => {
   it.each([
-    ['failed to open /Users/ana/data/M7/0.avi', 'failed to open <path>'],
-    ['C:\\Users\\Bob\\Desktop\\mouse\\0.avi missing', '<path> missing'],
-    ['GET https://example.org/x?token=abc failed', 'GET <url> failed'],
-    ['contact ana@lab.edu now', 'contact <email> now'],
-    ['cannot read msCam12.avi', 'cannot read <file>'],
-    ["no folder 'Mouse 7 day 3'", 'no folder <str>'],
-    ['sent by @ana_k', 'sent by <user>'],
-    ['frame 1.5 of 3', 'frame 1.5 of 3'],
+    ['RangeError: Invalid array length', 'RangeError'],
+    ['TypeError: cannot read /Users/ana/x', 'TypeError'],
+    ['MouseM7Error: bad', null],
+    ['no colon here', null],
+    ['  Error: oops', 'Error'],
   ])('%s', (input, expected) => {
-    expect(scrubMessage(input)).toBe(expected);
-  });
-
-  it('caps length at 200 and collapses whitespace', () => {
-    const out = scrubMessage('x  \n y ' + 'z'.repeat(500));
-    expect(out.length).toBeLessThanOrEqual(200);
-    expect(out.startsWith('x y ')).toBe(true);
+    expect(errorType(input)).toBe(expected);
   });
 });
 

@@ -6,7 +6,7 @@
 // ALLOWED_FIELDS) and by tests:
 //   - numbers and small fixed categories only; never file, folder, animal or
 //     session names, paths, traces, footprints, stacks or recording times;
-//   - error messages pass through `scrubMessage` and are capped at 200 chars;
+//   - error message text is never sent (category and a closed-list error class only);
 //   - low volume: one event per stage run, per export, per session; nothing
 //     per batch or frame (the database caps events per session, migration 013).
 // The one user-typed field is the opt-in `tester_tag` (packages/community
@@ -39,7 +39,7 @@ export const ALLOWED_FIELDS = {
     'cells',
     'peak_wasm_mb',
   ],
-  run_failed: ['stage', 'error_category', 'message'],
+  run_failed: ['stage', 'error_category', 'error_type'],
   boundary_summary: ['boundaries', 'ok', 'warning', 'failed'],
   results_exported: ['sessions', 'format_version'],
   webgpu_info: ['adapter', 'vendor'],
@@ -47,29 +47,29 @@ export const ALLOWED_FIELDS = {
 
 export type CalaEventName = keyof typeof ALLOWED_FIELDS;
 
-export const MESSAGE_MAX = 200;
-
-const FILE_EXT =
-  'avi|mp4|mkv|mov|csv|json|npz|npy|zip|tif|tiff|h5|hdf5|txt|wasm|js|mjs|ts|tsx|png|jpg|jpeg|bin|mat|nwb|log';
-
 /**
- * Remove what could identify a person, a lab or a recording from an error
- * message: URLs, e-mails, Windows and Unix paths, file names, quoted strings
- * (folder and animal names tend to be quoted) and @handles. Collapses
- * whitespace and caps the length at 200 characters.
+ * Error classes that may be reported by name. A closed list: the message text
+ * itself is never sent (a regex cannot reliably strip paths, folder or animal
+ * names from free text), only which kind of error it was.
  */
-export function scrubMessage(raw: string): string {
-  let s = String(raw ?? '');
-  s = s.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'")]+/gi, '<url>');
-  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '<email>');
-  s = s.replace(/\b[A-Za-z]:[\\/][^\s'",;)]*/g, '<path>');
-  s = s.replace(/\\\\[^\s'",;)]+/g, '<path>');
-  s = s.replace(/(?:~|\.{1,2})?(?:\/[^\s/'",;:)]+){1,}\/?/g, '<path>');
-  s = s.replace(new RegExp(`[\\w()-]+(?:\\.[\\w()-]+)*\\.(?:${FILE_EXT})\\b`, 'gi'), '<file>');
-  s = s.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, '<str>');
-  s = s.replace(/(^|\s)@[\w.-]+/g, '$1<user>');
-  s = s.replace(/\s+/g, ' ').trim();
-  return s.length > MESSAGE_MAX ? s.slice(0, MESSAGE_MAX - 3) + '...' : s;
+export const ERROR_TYPES = [
+  'Error',
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'DOMException',
+  'OperationError',
+  'AbortError',
+  'NotAllowedError',
+  'QuotaExceededError',
+  'RuntimeError',
+] as const;
+
+/** The error class named at the start of a message, when it is in the closed list. */
+export function errorType(raw: string): (typeof ERROR_TYPES)[number] | null {
+  const m = /^\s*([A-Za-z]+):/.exec(String(raw ?? ''));
+  return ERROR_TYPES.find((t) => t === m?.[1]) ?? null;
 }
 
 /** A small fixed set of failure kinds, from the raw message. */
@@ -135,7 +135,7 @@ export interface AnalyticsDeps {
   } | null;
   /** Current throughput of a stage, frames per second (0: idle). */
   throughput(stage: StageName): number;
-  /** Why a stage stopped (raw; scrubbed here). */
+  /** Why a stage stopped (raw; only its category and error class are ever sent). */
   stageError(stage: StageName): string | null;
   /** Bytes of the WASM heap, 0 when not reachable from this thread. */
   heapBytes?(): number;
@@ -269,11 +269,12 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
             ...(l && l.peak > 0 ? { peak_wasm_mb: Math.round(l.peak / 1048576) } : {}),
           });
         } else if (r.outcome === 'error') {
-          const message = scrubMessage(deps.stageError(r.stage) ?? '');
+          const raw = deps.stageError(r.stage) ?? '';
+          const type = errorType(raw);
           send('run_failed', {
             stage: r.stage,
-            error_category: errorCategory(deps.stageError(r.stage) ?? ''),
-            ...(message ? { message } : {}),
+            error_category: errorCategory(raw),
+            ...(type ? { error_type: type } : {}),
           });
         }
         // 'cancelled': the user's choice, not reported.

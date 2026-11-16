@@ -26,16 +26,16 @@ Every payload is filtered through an allowlist (`ALLOWED_FIELDS` in Cala's integ
 covered by a test. Volume is one event per stage run, export or session; the database caps a
 session at 500 events (migration 013).
 
-| Event              | Fields                                                                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                       |
-| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions`, `frames`, `fps`, `width`, `height` |
-| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                      |
-| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `message` (scrubbed, at most 200 characters)    |
-| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                        |
-| `results_exported` | `sessions`, `format_version`                                                                                            |
-| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor` (lowercase, at most 24 characters)                                         |
-| `tester_tag`       | `tag` (opt-in, see below)                                                                                               |
+| Event              | Fields                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                                          |
+| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions`, `frames`, `fps`, `width`, `height`                    |
+| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                                         |
+| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `error_type` (a closed list of error class names, e.g. RangeError) |
+| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                                           |
+| `results_exported` | `sessions`, `format_version`                                                                                                               |
+| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor` (lowercase, at most 24 characters)                                                            |
+| `tester_tag`       | `tag` (opt-in, see below)                                                                                                                  |
 
 `peak_wasm_mb` is the largest WASM heap sampled (every 2 s) on the main thread during the
 run. The solver threads are workers with heaps of their own, so it is omitted when the main
@@ -56,9 +56,8 @@ account; the Admin app joins it to runs by `session_id`. Clearing the box stops 
 ## Never collected
 
 File or folder names, paths, animal or session names, trace or footprint data, error stacks,
-recording timestamps, anything else the user typed (except the optional tag). Error messages
-pass through `scrubMessage`, which replaces URLs, e-mails, Windows and Unix paths, known file
-names, quoted strings and `@handles`.
+recording timestamps, anything else the user typed (except the optional tag). Error message
+text is never sent, only a category and, when it matches a closed list, the error class name.
 
 ## Database migration
 
