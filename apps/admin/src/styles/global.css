@@ -1132,3 +1132,21 @@ main {
   font-size: 0.75rem;
   min-height: 0;
 }
+
+.loadline {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.loadline__btns {
+  display: flex;
+  gap: 8px;
+}

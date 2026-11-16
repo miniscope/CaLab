@@ -11,6 +11,7 @@ import {
   cur,
   prev,
   prevSubs,
+  schema,
   setActiveView,
   setFilters,
   win,
@@ -26,8 +27,8 @@ import { delta, fmtDuration, fmtNum, fmtPct, type Bucket } from '../lib/stats.ts
 
 export function OverviewView(): JSX.Element {
   const [bucket, setBucket] = createSignal<Bucket>('day');
-  const o = createMemo(() => computeOverview(cur()));
-  const p = createMemo(() => (prev() ? computeOverview(prev()!) : null));
+  const o = createMemo(() => computeOverview(cur(), schema().anonKnown));
+  const p = createMemo(() => (prev() ? computeOverview(prev()!, schema().anonKnown) : null));
   const d = createMemo(() => overviewDeltas(o(), p()));
   const subs = () => catuneSubs().length + cadeconSubs().length;
   const subsDelta = () => delta(subs(), prevSubs());
@@ -61,10 +62,10 @@ export function OverviewView(): JSX.Element {
         />
         <MetricCard
           label="Signed-in accounts"
-          value={fmtNum(o().signedIn)}
-          delta={d().signedIn}
+          value={o().signedIn === null ? 'n/a' : fmtNum(o().signedIn)}
+          delta={o().signedIn === null ? null : d().signedIn}
           good="up"
-          hint="Distinct non-anonymous user_id."
+          hint="Distinct non-anonymous user_id. n/a when the database has no is_anonymous column (migration 008)."
         />
         <MetricCard
           label="Median session"
