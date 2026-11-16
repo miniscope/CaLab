@@ -5,6 +5,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.19.1] - 2026-11-16
+
+Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Admin hotfix (the dashboard stuck on "Loading analytics..."), Cala visitor
+geography, and shorter usage-statistics notices. After deploying, paste
+`supabase/functions/geo-session/index.ts` into the `geo-session` function in the
+Supabase dashboard so the geography lookup takes effect.
+
 ### Fixed
 
 - Admin: the dashboard stayed on "Loading analytics..." on the live site. Sessions were read by naming columns, and production lacks `analytics_sessions.is_anonymous` (migration 008), so the read failed; the error then escaped the loading state without a banner. Sessions and events are read with `select('*')` again, missing columns are reported in a banner and degrade (signed-in accounts shows n/a), and an `ErrorBoundary` with Retry guards the dashboard. Reads now use keyset pagination (offset paging was O(n) per page on `analytics_events`), load sessions and submissions first and events in the background with per-table progress, Stop and "Load 7 days instead" controls, a 30 s timeout with one retry per page, and per-table timing in the console. Optional migration `018_analytics_admin_read_performance.sql` adds matching indexes and a cheaper admin RLS expression.
