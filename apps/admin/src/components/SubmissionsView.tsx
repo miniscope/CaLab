@@ -1,224 +1,158 @@
-import { type JSX, createResource, createSignal, createMemo, Show, Switch, Match } from 'solid-js';
-import { DataTable } from './DataTable.tsx';
-import {
-  fetchSubmissions,
-  deleteSubmission,
-  computeOutliers,
-  fetchCadeconSubmissions,
-  deleteCadeconSubmission,
-  computeCadeconOutliers,
-} from '../lib/analytics-queries.ts';
-import { dateRange } from '../lib/admin-store.ts';
+import { type JSX, createMemo, createSignal, Show } from 'solid-js';
+import { DataTable, type Column, type Row } from './DataTable.tsx';
+import { deleteCadeconSubmission, deleteSubmission } from '../lib/analytics-queries.ts';
+import { computeCadeconOutliers, computeOutliers } from '../lib/outliers.ts';
+import { cadeconSubs, catuneSubs, refresh } from '../lib/admin-store.ts';
 
 type SubmissionApp = 'catune' | 'cadecon';
 
+const COMMON: Column[] = [
+  {
+    key: 'created_at',
+    label: 'Date',
+    format: (r) => String(r.created_at).slice(0, 16).replace('T', ' '),
+  },
+  { key: 'indicator', label: 'Indicator' },
+  { key: 'species', label: 'Species' },
+  { key: 'brain_region', label: 'Brain region' },
+  { key: 'data_source', label: 'Source' },
+  { key: 'tau_rise', label: 'Tau rise', align: 'right' },
+  { key: 'tau_decay', label: 'Tau decay', align: 'right' },
+];
+const CATUNE_COLS: Column[] = [
+  ...COMMON,
+  { key: 'lambda', label: 'Lambda', align: 'right' },
+  { key: 'sampling_rate', label: 'Rate', align: 'right' },
+  { key: 'app_version', label: 'Version' },
+];
+const CADECON_COLS: Column[] = [
+  ...COMMON,
+  { key: 'sampling_rate', label: 'Rate', align: 'right' },
+  { key: 'median_alpha', label: 'Med. alpha', align: 'right' },
+  { key: 'median_pve', label: 'Med. PVE', align: 'right' },
+  { key: 'converged', label: 'Converged' },
+  { key: 'app_version', label: 'Version' },
+];
+
 export function SubmissionsView(): JSX.Element {
-  const [activeApp, setActiveApp] = createSignal<SubmissionApp>('catune');
+  const [app, setApp] = createSignal<SubmissionApp>('catune');
+  const [source, setSource] = createSignal('');
+  const [outliersOnly, setOutliersOnly] = createSignal(false);
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  const [error, setError] = createSignal<string | null>(null);
 
-  // CaTune resources
-  const [catuneSubmissions, { refetch: refetchCatune }] = createResource(
-    dateRange,
-    fetchSubmissions,
-  );
-  // CaDecon resources
-  const [cadeconSubmissions, { refetch: refetchCadecon }] = createResource(
-    dateRange,
-    fetchCadeconSubmissions,
-  );
-
-  // Shared filter state
-  const [filterIndicator, setFilterIndicator] = createSignal('');
-  const [filterSpecies, setFilterSpecies] = createSignal('');
-  const [filterRegion, setFilterRegion] = createSignal('');
-  const [filterSource, setFilterSource] = createSignal('');
-  const [showOutliersOnly, setShowOutliersOnly] = createSignal(false);
-  const [selectedIds, setSelectedIds] = createSignal<Set<string>>(new Set());
-
-  // Reset selection when switching apps
-  const switchApp = (app: SubmissionApp) => {
-    setSelectedIds(new Set<string>());
-    setActiveApp(app);
+  const switchApp = (a: SubmissionApp) => {
+    setSelected(new Set<string>());
+    setApp(a);
   };
 
-  // CaTune filtering
-  const catuneOutlierIds = createMemo(() => computeOutliers(catuneSubmissions() ?? []));
-  const filteredCatune = createMemo(() => {
-    let rows = catuneSubmissions() ?? [];
-    const ind = filterIndicator().toLowerCase();
-    const sp = filterSpecies().toLowerCase();
-    const reg = filterRegion().toLowerCase();
-    const src = filterSource();
-    if (ind) rows = rows.filter((r) => r.indicator.toLowerCase().includes(ind));
-    if (sp) rows = rows.filter((r) => r.species.toLowerCase().includes(sp));
-    if (reg) rows = rows.filter((r) => r.brain_region.toLowerCase().includes(reg));
-    if (src) rows = rows.filter((r) => r.data_source === src);
-    if (showOutliersOnly()) rows = rows.filter((r) => catuneOutlierIds().has(r.id));
-    return rows;
+  const catuneOutliers = createMemo(() => computeOutliers(catuneSubs()));
+  const cadeconOutliers = createMemo(() => computeCadeconOutliers(cadeconSubs()));
+  const outliers = () => (app() === 'catune' ? catuneOutliers() : cadeconOutliers());
+  const rows = createMemo((): Row[] => {
+    let r: Row[] = app() === 'catune' ? catuneSubs() : cadeconSubs();
+    if (source()) r = r.filter((x) => x.data_source === source());
+    if (outliersOnly()) r = r.filter((x) => outliers().has(x.id as string));
+    return r;
   });
 
-  // CaDecon filtering
-  const cadeconOutlierIds = createMemo(() => computeCadeconOutliers(cadeconSubmissions() ?? []));
-  const filteredCadecon = createMemo(() => {
-    let rows = cadeconSubmissions() ?? [];
-    const ind = filterIndicator().toLowerCase();
-    const sp = filterSpecies().toLowerCase();
-    const reg = filterRegion().toLowerCase();
-    const src = filterSource();
-    if (ind) rows = rows.filter((r) => r.indicator.toLowerCase().includes(ind));
-    if (sp) rows = rows.filter((r) => r.species.toLowerCase().includes(sp));
-    if (reg) rows = rows.filter((r) => r.brain_region.toLowerCase().includes(reg));
-    if (src) rows = rows.filter((r) => r.data_source === src);
-    if (showOutliersOnly()) rows = rows.filter((r) => cadeconOutlierIds().has(r.id));
-    return rows;
-  });
-
-  // Row type unifies catune/cadecon submissions for the admin table; shape differs by app.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleDelete = async (row: Record<string, any>) => {
-    if (!confirm(`Delete submission ${String(row.id).slice(0, 8)}...?`)) return;
-    if (activeApp() === 'catune') {
-      await deleteSubmission(row.id as string);
-      refetchCatune();
-    } else {
-      await deleteCadeconSubmission(row.id as string);
-      refetchCadecon();
-    }
-  };
-
-  const handleBulkDelete = async () => {
-    const ids = Array.from(selectedIds());
-    if (ids.length === 0) return;
-    if (!confirm(`Delete ${ids.length} selected submission(s)?`)) return;
-    const deleteFn = activeApp() === 'catune' ? deleteSubmission : deleteCadeconSubmission;
+  const remove = async (ids: string[]) => {
+    setError(null);
+    const del = app() === 'catune' ? deleteSubmission : deleteCadeconSubmission;
+    const failed: string[] = [];
     for (const id of ids) {
-      await deleteFn(id);
+      try {
+        await del(id);
+      } catch (e) {
+        failed.push(`${id.slice(0, 8)}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
-    setSelectedIds(new Set<string>());
-    if (activeApp() === 'catune') refetchCatune();
-    else refetchCadecon();
+    setSelected(new Set<string>());
+    if (failed.length > 0) setError(`Could not delete ${failed.length}: ${failed.join('; ')}`);
+    refresh();
   };
 
-  const rowClass = (row: Record<string, unknown>) => {
-    const ids = activeApp() === 'catune' ? catuneOutlierIds() : cadeconOutlierIds();
-    return ids.has(row.id as string) ? 'outlier-row' : undefined;
-  };
+  const rowClass = (row: Row) => (outliers().has(row.id as string) ? 'outlier-row' : undefined);
 
   return (
     <div class="view">
-      <h2 class="view__title">Community Submissions</h2>
-
-      <div class="app-toggle">
+      <p class="note">
+        Submissions follow the date range only (not the app, version or dev filters). Outliers are
+        flagged by the 1.5 x IQR rule on tau and sampling rate.
+      </p>
+      <div class="app-toggle" role="group" aria-label="Submission app">
         <button
-          class={`app-toggle__btn${activeApp() === 'catune' ? ' app-toggle__btn--active' : ''}`}
+          class={`app-toggle__btn${app() === 'catune' ? ' app-toggle__btn--active' : ''}`}
+          aria-pressed={app() === 'catune'}
           onClick={() => switchApp('catune')}
         >
-          CaTune ({(catuneSubmissions() ?? []).length})
+          CaTune ({catuneSubs().length})
         </button>
         <button
-          class={`app-toggle__btn${activeApp() === 'cadecon' ? ' app-toggle__btn--active' : ''}`}
+          class={`app-toggle__btn${app() === 'cadecon' ? ' app-toggle__btn--active' : ''}`}
+          aria-pressed={app() === 'cadecon'}
           onClick={() => switchApp('cadecon')}
         >
-          CaDecon ({(cadeconSubmissions() ?? []).length})
+          CaDecon ({cadeconSubs().length})
         </button>
       </div>
-
       <div class="filter-bar">
-        <input
-          type="text"
-          placeholder="Filter indicator..."
-          value={filterIndicator()}
-          onInput={(e) => setFilterIndicator(e.currentTarget.value)}
-        />
-        <input
-          type="text"
-          placeholder="Filter species..."
-          value={filterSpecies()}
-          onInput={(e) => setFilterSpecies(e.currentTarget.value)}
-        />
-        <input
-          type="text"
-          placeholder="Filter region..."
-          value={filterRegion()}
-          onInput={(e) => setFilterRegion(e.currentTarget.value)}
-        />
-        <select
-          class="filter-bar__select"
-          value={filterSource()}
-          onChange={(e) => setFilterSource(e.currentTarget.value)}
-        >
-          <option value="">All sources</option>
-          <option value="user">user</option>
-          <option value="demo">demo</option>
-          <option value="training">training</option>
-          <option value="bridge">bridge</option>
-        </select>
-        <label class="filter-bar__toggle">
+        <label class="filters__field">
+          <span>Source</span>
+          <select value={source()} onChange={(e) => setSource(e.currentTarget.value)}>
+            <option value="">All sources</option>
+            <option value="user">user</option>
+            <option value="demo">demo</option>
+            <option value="training">training</option>
+            <option value="bridge">bridge</option>
+          </select>
+        </label>
+        <label class="filters__check">
           <input
             type="checkbox"
-            checked={showOutliersOnly()}
-            onChange={(e) => setShowOutliersOnly(e.currentTarget.checked)}
+            checked={outliersOnly()}
+            onChange={(e) => setOutliersOnly(e.currentTarget.checked)}
           />
-          Show outliers only
+          Outliers only ({outliers().size})
         </label>
       </div>
-
-      <Show when={selectedIds().size > 0}>
+      <Show when={error()}>
+        <div class="banner banner--error" role="alert">
+          {error()}
+        </div>
+      </Show>
+      <Show when={selected().size > 0}>
         <div class="bulk-toolbar">
-          <span class="bulk-toolbar__count">{selectedIds().size} selected</span>
-          <button class="bulk-toolbar__delete" onClick={handleBulkDelete}>
-            Delete Selected
+          <span>{selected().size} selected</span>
+          <button
+            class="bulk-toolbar__delete"
+            onClick={() => {
+              if (confirm(`Delete ${selected().size} selected submission(s)?`)) {
+                void remove(Array.from(selected()));
+              }
+            }}
+          >
+            Delete selected
           </button>
         </div>
       </Show>
-
-      <Switch>
-        <Match when={activeApp() === 'catune'}>
-          <DataTable
-            columns={[
-              { key: 'created_at', label: 'Date' },
-              { key: 'indicator', label: 'Indicator' },
-              { key: 'species', label: 'Species' },
-              { key: 'brain_region', label: 'Brain Region' },
-              { key: 'data_source', label: 'Source' },
-              { key: 'tau_rise', label: 'Tau Rise' },
-              { key: 'tau_decay', label: 'Tau Decay' },
-              { key: 'lambda', label: 'Lambda' },
-              { key: 'sampling_rate', label: 'Samp. Rate' },
-              { key: 'app_version', label: 'Version' },
-            ]}
-            rows={filteredCatune()}
-            onDeleteRow={handleDelete}
-            selectable
-            selectedIds={selectedIds}
-            onSelectionChange={setSelectedIds}
-            rowClass={rowClass}
-          />
-        </Match>
-        <Match when={activeApp() === 'cadecon'}>
-          <DataTable
-            columns={[
-              { key: 'created_at', label: 'Date' },
-              { key: 'indicator', label: 'Indicator' },
-              { key: 'species', label: 'Species' },
-              { key: 'brain_region', label: 'Brain Region' },
-              { key: 'data_source', label: 'Source' },
-              { key: 'tau_rise', label: 'Tau Rise' },
-              { key: 'tau_decay', label: 'Tau Decay' },
-              { key: 'sampling_rate', label: 'Samp. Rate' },
-              { key: 'median_alpha', label: 'Med. Alpha' },
-              { key: 'median_pve', label: 'Med. PVE' },
-              { key: 'converged', label: 'Converged' },
-              { key: 'app_version', label: 'Version' },
-            ]}
-            rows={filteredCadecon()}
-            onDeleteRow={handleDelete}
-            selectable
-            selectedIds={selectedIds}
-            onSelectionChange={setSelectedIds}
-            rowClass={rowClass}
-          />
-        </Match>
-      </Switch>
+      <DataTable
+        caption={`${app() === 'catune' ? 'CaTune' : 'CaDecon'} community submissions`}
+        columns={app() === 'catune' ? CATUNE_COLS : CADECON_COLS}
+        rows={rows()}
+        pageSize={25}
+        searchable
+        defaultSort={{ key: 'created_at', asc: false }}
+        onDeleteRow={(row) => {
+          if (confirm(`Delete submission ${String(row.id).slice(0, 8)}...?`))
+            void remove([row.id as string]);
+        }}
+        selectable
+        selectedIds={selected}
+        onSelectionChange={setSelected}
+        rowClass={rowClass}
+        emptyText="No submissions in this range."
+      />
     </div>
   );
 }

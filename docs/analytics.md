@@ -65,3 +65,62 @@ text is never sent, only a category and, when it matches a closed list, the erro
 (003) by the shape rule `^[a-z][a-z0-9_]{1,47}$`. **The project owner must run it.** Until it
 runs, the new events are rejected silently by the old list; the client works in either order.
 The 4096-byte `event_data` limit (008) fits every payload above and is unchanged.
+
+## Admin app
+
+`apps/admin` (hidden from the app list, admin role only: RLS limits `analytics_*` reads to
+`app_metadata.role = 'admin'`). All reads are paged 1000 rows at a time, newest first, with a
+cap of 200k sessions (400k events); a banner appears when a table hit it. No database migration
+is needed: aggregation is client-side. Filters live in the URL hash
+(`#/cala?app=cala&range=90d&ver=2.18.1&dev=1`).
+
+### Definitions
+
+- **Browser**: a distinct `user_id`. Supabase anonymous auth persists per browser profile
+  (localStorage), so this is per browser, not per person, and resets when site data is cleared.
+  `anonymous_id` is per tab and is not used for counting. Sessions without `user_id` (pre-008)
+  are counted as sessions only.
+- **Signed-in account**: distinct non-anonymous `user_id`. No account identity is shown; users
+  appear only as six-character hashes.
+- **Returning**: a browser with sessions on more than one UTC day in the range. New vs returning
+  and cohorts use "first seen in the loaded data", so with a short range early visits are
+  invisible; choose All for true first-seen.
+- **Median session**: `ended_at - created_at` (heartbeat), else `duration_seconds`; over 4 h is
+  dropped (a tab left open).
+- **Dates** are UTC throughout; weeks start Monday. The previous period is the equal-length
+  period before the range (none for All).
+- **Dev noise**: version `dev` and localhost-like referrers are hidden unless "Include dev builds".
+- Events are attributed to an app through their session; events whose session started before
+  the loaded range are not attributed (a note shows how many).
+
+### Reading the Cala tab
+
+- **Funnel**: sessions with at least one of each event, each step capped by the previous.
+- **Failure rate**: `run_failed / (run_finished + run_failed)`.
+- **Unfinished runs**: `run_started` with no later `run_finished` or `run_failed` of the same
+  stage in the same session (a finish closes the most recent open start of its stage). It is the
+  only trace of a tab killed by an out-of-memory condition, but it is also a closed or reloaded
+  tab or a run the user stopped (cancelled runs emit nothing), so read it as a rate and look for
+  version-to-version jumps. "Survived" is the session's last heartbeat minus the run start
+  (accurate to about a minute).
+- **Median fps**: median of per-run `median_fps`; the headline uses hardware adapters only so
+  software rendering does not hide a regression, and "fps by adapter class" shows it separately.
+- **Version comparison** ignores the version filter and flags a version whose GPU median fps
+  fell more than 20%, or whose failure or unfinished rate rose more than 10 or 15 points, against
+  the previous version with at least 5 attempts.
+- **Hardware** (needs `device_info` and the extended `webgpu_info`; older versions are
+  "Unknown"): mixes of OS, cores, memory class, GPU vendor and architecture, browser and major
+  version, and fps and failure rates grouped by GPU class, cores, memory, max buffer size and OS.
+  Groups with fewer than 3 run starts are hidden unless "Show small groups" is on.
+  `peak_wasm_mb` is a main-thread figure in older versions and a sum over threads in newer ones.
+- **Testers**: tags are free text typed by users and are rendered as plain text; a session's
+  last `tester_tag` is joined to its runs by `session_id`.
+
+### Fixture mode
+
+`npm run dev -w apps/admin`, then open `http://localhost:<port>/?fixture=1`. It bypasses both
+Supabase and the admin gate and shows seeded synthetic data (all apps, several Cala versions
+with a simulated 2.18.0 regression and a high unfinished rate, hardware events from 2.19.0,
+testers, returning browsers). The flag requires `import.meta.env.DEV`, which is the literal
+`false` in a build, so the generator is not in the production bundle; a test builds the app and
+checks this.

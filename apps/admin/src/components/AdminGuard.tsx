@@ -1,6 +1,7 @@
 import { Switch, Match, Show, type JSX, createSignal } from 'solid-js';
 import { signInWithEmail, supabaseEnabled } from '@calab/community';
 import { user, authLoading, isAdmin } from '../lib/admin-store.ts';
+import { FIXTURE_MODE } from '../lib/fixture/flag.ts';
 
 interface AdminGuardProps {
   children: JSX.Element;
@@ -65,6 +66,9 @@ function SignInForm(): JSX.Element {
 }
 
 export function AdminGuard(props: AdminGuardProps): JSX.Element {
+  // Dev-only synthetic data (`npm run dev` + ?fixture=1); constant false in builds.
+  // eslint-disable-next-line solid/components-return-once
+  if (FIXTURE_MODE) return <>{props.children}</>;
   return (
     <Switch>
       <Match when={authLoading()}>
