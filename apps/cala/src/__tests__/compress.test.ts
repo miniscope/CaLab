@@ -1,10 +1,7 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   FactorWindow,
-  initCalaWasm,
   quantizeTiles,
   TileCompressor,
   TraceEngine,
@@ -17,12 +14,9 @@ import { CompressRunner, factorName, tileGrid } from '../lib/compress-runner.ts'
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 const W = 40;
 const H = 24;

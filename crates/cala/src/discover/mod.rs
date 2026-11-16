@@ -3253,7 +3253,6 @@ impl SlowLoop {
                 canvas,
                 h,
                 mask,
-                a: &a,
                 low: &low,
                 col: &col,
                 se,
@@ -5249,19 +5248,6 @@ fn column_on(lib: &Library, slot: usize, pix: &[u32]) -> Vec<f32> {
             Err(_) => 0.0,
         })
         .collect()
-}
-
-/// Set `out[i]` for every `pix[i]` in `sub` (both sorted).
-fn mark(pix: &[u32], sub: &[u32], out: &mut [bool]) {
-    let mut j = 0;
-    for (i, &p) in pix.iter().enumerate() {
-        while j < sub.len() && sub[j] < p {
-            j += 1;
-        }
-        if j < sub.len() && sub[j] == p {
-            out[i] = true;
-        }
-    }
 }
 
 /// The single-peaked basin of the light `q` from `seed` (S1.6): a pixel

@@ -1,15 +1,6 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  initCalaWasm,
-  QcMonitor,
-  SlowLoop,
-  TraceEngine,
-  TraceLibrary,
-  VisitWorker,
-} from '../lib/cala-wasm.ts';
+import { QcMonitor, SlowLoop, TraceEngine, TraceLibrary, VisitWorker } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell } from '../lib/cell-overlay.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { RESERVED_THREADS, visitWorkerCount } from '../lib/slow-client.ts';
@@ -21,12 +12,9 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 describe('visitWorkerCount', () => {
   it('leaves the reserved threads free and caps the count', () => {

@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm, QcMonitor } from '../lib/cala-wasm.ts';
+import { QcMonitor } from '../lib/cala-wasm.ts';
 import {
   extractQc,
   QC_SCOPE_DEFAULT,
@@ -18,12 +16,9 @@ import {
   type QcSnapshot,
 } from '../lib/qc.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 /** Deterministic noise in [-0.5, 0.5). */
 function lcg(seed: number): () => number {

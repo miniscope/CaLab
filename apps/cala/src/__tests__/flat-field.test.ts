@@ -1,8 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm } from '../lib/cala-wasm.ts';
 import {
   flatFieldChangeLine,
   flatFieldKey,
@@ -37,12 +34,9 @@ import {
 } from '../lib/pipeline-stages.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import { StagePool } from '../lib/stage-pool.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 const W = 64;
 const H = 48;

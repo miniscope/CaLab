@@ -1,16 +1,10 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { entriesFromFiles, FrameSource, type FolderEntry } from '../lib/frame-source.ts';
 import { buildAvi, makeFile } from './synth-avi.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 /**
  * Posting to the frame worker structured-clones the entries. A path stored as
