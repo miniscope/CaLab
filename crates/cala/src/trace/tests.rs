@@ -374,6 +374,71 @@ fn ring_model_and_no_background_run() {
 }
 
 #[test]
+fn consolidated_ring_gradient_matches_two_walk_solver() {
+    let model = BackgroundModel::Ring {
+        inner_px: 7.0,
+        outer_px: 12.0,
+    };
+    let mut lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model.clone(), 1));
+    let mut fast = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut old = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    fast.set_consolidated_ring_gradient(true);
+    fast.set_signed(true);
+    old.set_signed(true);
+    let frames = filtered_frames(&traces(6, 14, 42), 0.2, 43);
+    let close = |a: f32, b: f32, what: &str| {
+        assert!(
+            (a - b).abs() <= 0.002 + 0.0002 * a.abs().max(b.abs()),
+            "{what}: {a} vs {b}"
+        );
+    };
+    for (t, frame) in frames.iter().enumerate() {
+        if t == 6 {
+            let state = fast.state();
+            fast.restore(&state).unwrap();
+            old.restore(&state).unwrap();
+        }
+        if t == 9 {
+            lib = Arc::new(library(&[0, 1, 2, 3, 5], model.clone(), 2));
+            fast.set_library(lib.clone()).unwrap();
+            old.set_library(lib.clone()).unwrap();
+        }
+        let mut frame = frame.clone();
+        if t == 3 || t == 10 {
+            for y in 8..25 {
+                frame[y * W + 13] = f32::NAN;
+            }
+        }
+        let a = fast.process(&frame).unwrap();
+        let b = old.process(&frame).unwrap();
+        for (name, va, vb) in [
+            ("trace", &a.traces, &b.traces),
+            ("signed", &a.signed, &b.signed),
+            ("background", &a.background, &b.background),
+        ] {
+            for (&x, &y) in va.iter().zip(vb) {
+                close(x, y, name);
+            }
+        }
+        for i in 0..lib.len() {
+            let (x, y) = fast.ring_gradient_pair(i);
+            close(x, y, "gradient");
+        }
+        if t == 5 || t == 11 {
+            let slot = a.traces.iter().position(|&c| c > 0.0).unwrap();
+            let (mut fa, mut fb) = (Vec::new(), Vec::new());
+            fast.drop_one(slot, &mut fa).unwrap();
+            old.drop_one(slot, &mut fb).unwrap();
+            assert_eq!(fa.len(), fb.len());
+            for ((ia, xa), (ib, xb)) in fa.iter().zip(&fb) {
+                assert_eq!(ia, ib);
+                close(*xa, *xb, "drop one");
+            }
+        }
+    }
+}
+
+#[test]
 fn invalid_input_is_an_error_not_a_panic() {
     let mut fl = IdentityFilter(dims());
     let dup = LibraryBuilder::new(dims())
@@ -870,19 +935,22 @@ fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
     flat.apply(&mut fp).unwrap();
     fp.iter_mut().for_each(|v| *v += 5.0);
     let cfg = SolverConfig::default();
-    let mut e = TraceEngine::new(lib, cfg).unwrap();
-    let first = e.process(&fp).unwrap();
-    assert!(first.traces[0].is_finite(), "{first:?}");
-    assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
-    // The same frame again from the warm start: the same fixed point.
-    for _ in 0..3 {
-        let r = e.process(&fp).unwrap();
-        assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
-        let tol = cfg.tol * lib_noise(&e) * 2.0;
-        assert!(
-            (r.traces[0] - first.traces[0]).abs() <= tol,
-            "{r:?} vs {first:?}"
-        );
+    for consolidated in [false, true] {
+        let mut e = TraceEngine::new(lib.clone(), cfg).unwrap();
+        e.set_consolidated_ring_gradient(consolidated);
+        let first = e.process(&fp).unwrap();
+        assert!(first.traces[0].is_finite(), "{first:?}");
+        assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
+        // The same frame again from the warm start: the same fixed point.
+        for _ in 0..3 {
+            let r = e.process(&fp).unwrap();
+            assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+            let tol = cfg.tol * lib_noise(&e) * 2.0;
+            assert!(
+                (r.traces[0] - first.traces[0]).abs() <= tol,
+                "{r:?} vs {first:?}"
+            );
+        }
     }
 }
 
@@ -963,12 +1031,15 @@ fn ring_self_term_that_nearly_cancels_the_curvature_does_not_diverge() {
     flat.apply(&mut fp).unwrap();
     fp.iter_mut().for_each(|v| *v += 5.0);
     let cfg = SolverConfig::default();
-    for lib in [lib, read] {
-        let mut e = TraceEngine::new(Arc::new(lib), cfg).unwrap();
-        for _ in 0..4 {
-            let r = e.process(&fp).unwrap();
-            assert!(r.traces.iter().all(|v| v.is_finite() && *v < 1e3), "{r:?}");
-            assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+    for consolidated in [false, true] {
+        for lib in [&lib, &read] {
+            let mut e = TraceEngine::new(Arc::new(lib.clone()), cfg).unwrap();
+            e.set_consolidated_ring_gradient(consolidated);
+            for _ in 0..4 {
+                let r = e.process(&fp).unwrap();
+                assert!(r.traces.iter().all(|v| v.is_finite() && *v < 1e3), "{r:?}");
+                assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+            }
         }
     }
 }

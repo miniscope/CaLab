@@ -528,6 +528,40 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     expect(fl.process(frames, 9, 3, calibration).version).toBe(6);
   });
 
+  it('enables consolidated gradients only for a frozen-library replay', () => {
+    for (const mode of ['discover', 'refine', 'extract'] as const) {
+      const fake = fakeBackend();
+      fake.libs.set(3, [11]);
+      const enabled: boolean[] = [];
+      const newEngine = fake.backend.newEngine;
+      fake.backend.newEngine = (lib) => ({
+        ...newEngine(lib),
+        setConsolidatedRingGradient: (on) => enabled.push(on),
+      });
+      const fl = new FastLoop(
+        {
+          width: 2,
+          height: 2,
+          batchSize: 3,
+          cellDiameterPx: 1,
+          flattenSigmaPx: 1,
+          fps: 20,
+          session: 5,
+          qc: false,
+          ...(mode !== 'discover' ? { initialLibrary: Uint8Array.of(3) } : {}),
+          refine: mode === 'refine',
+        },
+        recorder<FastToSlow>(),
+        fake.backend,
+      );
+      if (mode === 'discover')
+        fl.handleSlow({ type: 'library', session: 5, version: 3, bytes: Uint8Array.of(3) });
+      fl.process(new Float32Array(12), 0, 3, calibration);
+      expect(enabled, mode).toEqual(mode === 'extract' ? [true] : []);
+      fl.dispose();
+    }
+  });
+
   it('returns the residual of the last frame only while asked, and only with cells', () => {
     const port = recorder<FastToSlow>();
     const fake = fakeBackend();
