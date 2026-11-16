@@ -11,6 +11,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
+- Admin: analytics dashboard overhaul. Global filters (app, UTC date range with previous-period comparison, version, dev builds hidden by default, kept in the URL hash); Overview with unique browsers, returning rate, signed-in accounts and median session; new Cala tab (funnel, runs, failures, unfinished-run rate, WebGPU and hardware mix, fps and failure rate by hardware, version-over-version comparison with regression flags, boundaries); new Users tab (new vs returning, retention cohorts, most active browsers with a per-browser drawer, testers); Geography, Usage (funnels, first-touch referrers), Submissions (search, sort, pagination) and Export (CSV and JSON of the filtered data with column docs) rebuilt. A dev-only synthetic fixture mode (`?fixture=1`) is excluded from production builds. See "Admin app" in `docs/analytics.md`.
 - Cala: run telemetry now reports `peak_wasm_mb` summed over the main thread and all workers (it was almost always absent: the solver WASM lives in workers) on `run_finished` and `run_failed`. Workers report their heap over a low-rate `BroadcastChannel`.
 - Cala: a once-per-session coarse hardware snapshot: new `device_info` event (OS family, CPU cores, memory class, browser major version, display scale) and GPU architecture/device/description and buffer limits on `webgpu_info`. The privacy notice says so; the existing opt-out covers it.
 - Cala: usage analytics events (`run_started`, `run_finished`, `run_failed`, `boundary_summary`, `results_exported`, `webgpu_info`, `file_imported`) with aggregate numbers and categories only; failures report only a category and error class, never message text. See `docs/analytics.md`.
@@ -25,6 +26,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Admin: every analytics read is paged (it stopped silently at Supabase's 1000-row default), the last second of an end date is no longer dropped, weekly buckets use UTC weeks (they shifted by a day in non-UTC time zones), session duration is a median with a 4 h cap instead of a mean skewed by tabs left open, "Unique Users" counted only signed-in accounts, and a failed delete is reported instead of ignored.
 - Cala: adding newly found cells no longer copies every existing trace buffer
   just to reduce the per-cell history share. Trace histories use 1024-frame
   blocks; a resize releases whole old blocks and copies only partial boundary
