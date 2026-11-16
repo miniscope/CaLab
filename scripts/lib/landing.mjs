@@ -373,6 +373,8 @@ ${designTokens()}
     footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); }
     footer a { color: var(--text-secondary); }
     footer a:hover { color: var(--accent); }
+    .analytics-toggle { background: none; border: 0; padding: 0; font: inherit; color: var(--text-secondary); text-decoration: underline; cursor: pointer; }
+    .analytics-toggle:hover { color: var(--accent); }
     .version { font-family: var(--font-mono); }
 
     @media (max-width: 820px) {
@@ -474,7 +476,7 @@ ${released.map(renderCard).join('\n')}
   </main>
   <footer>
     <div class="page">
-      <p>CaLab collects anonymous usage statistics to support grant reporting. No personal data or IP addresses are stored.</p>
+      <p>CaLab collects anonymous usage statistics (which features are used, run size and speed, errors) with a random identifier stored in your browser; recordings, file names and personal data never leave it, only country and region are kept, and no IP address is stored. Cala also has an optional, off-by-default name tag for beta testers. <button type="button" id="analytics-toggle" class="analytics-toggle"></button> (Do Not Track also turns it off.)</p>
       <ul>
         ${versionLink ? `<li>${versionLink}</li>` : ''}
         <li><a href="${CHANGELOG_URL}">Changelog</a></li>
@@ -485,6 +487,27 @@ ${released.map(renderCard).join('\n')}
     </div>
   </footer>
   <script>
+    // Usage statistics switch; the key is shared with every app (same origin).
+    (() => {
+      const btn = document.getElementById('analytics-toggle');
+      if (!btn) return;
+      const KEY = 'calab_analytics_off';
+      const read = () => {
+        try { return localStorage.getItem(KEY); } catch { return null; }
+      };
+      const enabled = () => {
+        const v = read();
+        if (v === '1') return false;
+        if (v === '0') return true;
+        return navigator.doNotTrack !== '1';
+      };
+      const paint = () => { btn.textContent = enabled() ? 'Turn off usage statistics' : 'Turn on usage statistics'; };
+      btn.addEventListener('click', () => {
+        try { localStorage.setItem(KEY, enabled() ? '1' : '0'); } catch {}
+        paint();
+      });
+      paint();
+    })();
     // Card "Details" disclosures: shown only when this script runs.
     for (const btn of document.querySelectorAll('.card__toggle')) {
       const panel = document.getElementById(btn.getAttribute('aria-controls'));

@@ -47,6 +47,7 @@ import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx'
 import { SessionSetup } from './components/SessionSetup.tsx';
 import { createSessionList, toSessionInput } from './lib/session-list.ts';
 import { createMultiRun } from './lib/multi-run.ts';
+import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
 import {
   directoryResultsSink,
@@ -417,6 +418,19 @@ const App: Component = () => {
     },
     info: () => store.info(),
     version,
+  });
+  // Anonymous usage analytics (docs/analytics.md): aggregate events only.
+  setupAnalyticsEffects({
+    stageRuns: () => stageLog.runs(),
+    info: () => store.info(),
+    plan: () => multiRun.plan(),
+    throughput: (stage) =>
+      stage === 'discover' ? pipeline.fps() : stage === 'refine' ? refine.fps() : pass2.fps(),
+    stageError: (stage) =>
+      stage === 'discover' ? pipeline.error() : stage === 'refine' ? refine.error() : pass2.error(),
+    boundaryFlags: () => pipeline.boundaryFlags(),
+    runEnded: () => multiRun.finished() || multiRun.stopped() !== null,
+    sessionsWritten: () => multiRun.records().filter((r) => r.status === 'written').length,
   });
   // ---- Animal projects (docs/projects.md) ----
   const recentStore = createIndexedDbRecentStore();

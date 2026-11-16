@@ -13,8 +13,9 @@ export type { SubmissionService } from './submission-service.ts';
 export { INDICATOR_OPTIONS } from './field-options.ts';
 
 // Analytics
-export { initSession, trackEvent } from './analytics.ts';
+export { initSession, trackEvent, updateTesterTag } from './analytics.ts';
 export type { AnalyticsEventName } from './analytics.ts';
+export { analyticsEnabled, setAnalyticsEnabled, ANALYTICS_OFF_KEY } from './analytics-consent.ts';
 
 // Utilities
 export { computeDatasetHash } from './dataset-hash.ts';
@@ -50,3 +51,11 @@ export type {
   FieldOption,
   FieldOptions,
 } from './types.ts';
+
+export {
+  getTesterTag,
+  setTesterTag,
+  sanitizeTesterTag,
+  TESTER_TAG_KEY,
+  TESTER_TAG_MAX,
+} from './tester-tag.ts';
