@@ -2,7 +2,7 @@
 // dynamic import guarded by FIXTURE_MODE, so it is not in production bundles.
 // SYNTHETIC_FIXTURE_SENTINEL lets a test prove that.
 
-import type { Dataset } from '../analytics-queries.ts';
+import type { Dataset, PageSource, TableName } from '../analytics-queries.ts';
 import type { CadeconSubmissionRow, EventRow, SessionRow, SubmissionRow } from '../types.ts';
 
 export const SYNTHETIC_FIXTURE_SENTINEL = 'calab-admin-synthetic-fixture-v1';
@@ -382,5 +382,60 @@ function generate(nowMs: number, seed: number): Dataset {
     truncated: [],
     orphanEvents: 0,
     fetchedAt: nowMs,
+  };
+}
+
+export interface FixtureOptions {
+  slow: boolean;
+  noanon: boolean;
+  error: boolean;
+}
+
+const cmp = (a: string | number, b: string | number) =>
+  typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b));
+
+/** Fixture rows served through the same keyset PageSource interface as Supabase. */
+export function fixtureSource(
+  nowMs: number,
+  opts: FixtureOptions = { slow: false, noanon: false, error: false },
+): PageSource {
+  const d = makeFixture(nowMs);
+  const tables: Record<TableName, { id: string | number; created_at: string }[]> = {
+    sessions: opts.noanon
+      ? d.sessions.map((s) => {
+          const { is_anonymous: _drop, ...rest } = s;
+          void _drop;
+          return rest as SessionRow;
+        })
+      : d.sessions,
+    events: d.events,
+    catune: d.catune,
+    cadecon: d.cadecon,
+  };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  return {
+    pageFn(name, range) {
+      const rows = tables[name]
+        .filter((r) => {
+          const t = Date.parse(r.created_at);
+          return t >= range.from && t < range.to;
+        })
+        .sort((a, b) => b.created_at.localeCompare(a.created_at) || cmp(b.id, a.id));
+      return async (cursor, signal) => {
+        if (opts.error && name === 'sessions') {
+          throw new Error('column analytics_sessions.is_anonymous does not exist');
+        }
+        if (opts.slow && name === 'events') await sleep(1500);
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+        const after = cursor
+          ? rows.filter(
+              (r) =>
+                r.created_at < cursor.created_at ||
+                (r.created_at === cursor.created_at && cmp(r.id, cursor.id) < 0),
+            )
+          : rows;
+        return after.slice(0, 1000) as never[];
+      };
+    },
   };
 }

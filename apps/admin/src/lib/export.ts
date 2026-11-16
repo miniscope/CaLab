@@ -81,7 +81,7 @@ export function sessionTable(sessions: SessionRow[]): ExportTable {
       s.id,
       s.created_at,
       s.user_id ? shortHash(s.user_id) : '',
-      s.is_anonymous === false,
+      s.is_anonymous == null ? '' : s.is_anonymous === false,
       s.app_name,
       s.app_version ?? '',
       s.country_code ?? '',

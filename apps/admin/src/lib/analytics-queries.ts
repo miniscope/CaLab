@@ -1,11 +1,12 @@
 // Supabase reads for the admin dashboard. RLS restricts every table here to
-// the admin role. Every read is paged (see paging.ts): an unpaged select is
-// silently cut at the project's max-rows (1000 by default).
+// the admin role. Reads are keyset-paged (see paging.ts) by loader.ts.
 
 import { getSupabase } from '@calab/community';
 import type { CadeconSubmissionRow, EventRow, SessionRow, SubmissionRow } from './types.ts';
-import type { TimeWindow } from './filters.ts';
-import { fetchAllPages, type PagedResult } from './paging.ts';
+import type { Cursor } from './paging.ts';
+import { PAGE_SIZE } from './paging.ts';
+
+type SupabaseLike = Pick<NonNullable<Awaited<ReturnType<typeof getSupabase>>>, 'from'>;
 
 export interface Dataset {
   sessions: SessionRow[];
@@ -19,66 +20,82 @@ export interface Dataset {
   fetchedAt: number;
 }
 
-const SESSION_COLS =
-  'id, created_at, anonymous_id, user_id, is_anonymous, app_name, app_version, country_code, region, screen_width, screen_height, user_agent_family, referrer_domain, ended_at, duration_seconds';
-const EVENT_COLS = 'id, created_at, session_id, event_name, event_data';
-const CATUNE_COLS =
-  'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, lambda, sampling_rate';
-const CADECON_COLS =
-  'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, sampling_rate, median_alpha, median_pve, mean_event_rate, num_iterations, converged';
+export type TableName = 'sessions' | 'events' | 'catune' | 'cadecon';
 
-async function pagedByTime<T extends { id: string | number }>(
-  table: string,
-  columns: string,
-  w: Pick<TimeWindow, 'fetchStart' | 'fetchEnd'>,
-  maxRows?: number,
-): Promise<PagedResult<T>> {
-  const supabase = await getSupabase();
-  if (!supabase) return { rows: [], truncated: false, pages: 0 };
-  const from = new Date(w.fetchStart).toISOString();
-  const to = new Date(w.fetchEnd).toISOString();
-  return fetchAllPages<T>(
-    async (a, b) => {
-      const { data, error } = await supabase
-        .from(table)
-        .select(columns)
-        .gte('created_at', from)
-        .lt('created_at', to)
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: false })
-        .range(a, b);
-      if (error) throw new Error(error.message);
-      return (data ?? []) as unknown as T[];
-    },
-    { key: (r) => String(r.id), maxRows },
-  );
+export const TABLES: Record<TableName, { table: string; columns: string; label: string }> = {
+  sessions: {
+    table: 'analytics_sessions',
+    label: 'Sessions',
+    columns:
+      // select('*'): never name a column the deployed schema may lack (008's
+      // is_anonymous was missing in production). lib/schema.ts reports what is absent.
+      '*',
+  },
+  events: {
+    table: 'analytics_events',
+    label: 'Events',
+    columns: '*',
+  },
+  catune: {
+    table: 'catune_submissions',
+    label: 'CaTune submissions',
+    columns:
+      'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, lambda, sampling_rate',
+  },
+  cadecon: {
+    table: 'cadecon_submissions',
+    label: 'CaDecon submissions',
+    columns:
+      'id, created_at, user_id, indicator, species, brain_region, data_source, app_version, tau_rise, tau_decay, sampling_rate, median_alpha, median_pve, mean_event_rate, num_iterations, converged',
+  },
+};
+
+export interface TimeRange {
+  from: number;
+  to: number;
 }
 
-export async function fetchDataset(
-  w: Pick<TimeWindow, 'fetchStart' | 'fetchEnd'>,
-): Promise<Dataset> {
-  const [sessions, events, catune, cadecon] = await Promise.all([
-    pagedByTime<SessionRow>('analytics_sessions', SESSION_COLS, w),
-    pagedByTime<EventRow>('analytics_events', EVENT_COLS, w, 400_000),
-    pagedByTime<SubmissionRow>('catune_submissions', CATUNE_COLS, w),
-    pagedByTime<CadeconSubmissionRow>('cadecon_submissions', CADECON_COLS, w),
-  ]);
-  const truncated = [
-    sessions.truncated && 'sessions',
-    events.truncated && 'events',
-    catune.truncated && 'CaTune submissions',
-    cadecon.truncated && 'CaDecon submissions',
-  ].filter((x): x is string => !!x);
-  const ids = new Set(sessions.rows.map((s) => s.id));
+export type PageFn = (cursor: Cursor | null, signal: AbortSignal) => Promise<never[]>;
+
+/** Where pages come from: Supabase in production, an in-memory table in fixture mode. */
+export interface PageSource {
+  pageFn(table: TableName, range: TimeRange): PageFn;
+}
+
+/**
+ * Keyset page query: created_at in [from, to), strictly after the cursor in
+ * (created_at desc, id desc). Ties on created_at are resolved by id, so
+ * identical timestamps are neither skipped nor repeated.
+ */
+export function supabaseSource(supabase: SupabaseLike | null, pageSize = PAGE_SIZE): PageSource {
   return {
-    sessions: sessions.rows,
-    events: events.rows,
-    catune: catune.rows,
-    cadecon: cadecon.rows,
-    truncated,
-    orphanEvents: events.rows.filter((e) => !ids.has(e.session_id)).length,
-    fetchedAt: Date.now(),
+    pageFn(name, range) {
+      const { table, columns } = TABLES[name];
+      return async (cursor, signal) => {
+        if (!supabase) return [];
+        let q = supabase
+          .from(table)
+          .select(columns)
+          .gte('created_at', new Date(range.from).toISOString())
+          .lt('created_at', new Date(range.to).toISOString());
+        if (cursor) {
+          const c = cursor.created_at;
+          q = q.or(`created_at.lt.${c},and(created_at.eq.${c},id.lt.${cursor.id})`);
+        }
+        const { data, error } = await q
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .limit(pageSize)
+          .abortSignal(signal);
+        if (error) throw new Error(error.message);
+        return (data ?? []) as unknown as never[];
+      };
+    },
   };
+}
+
+export async function liveSource(): Promise<PageSource> {
+  return supabaseSource(await getSupabase());
 }
 
 export async function deleteSubmission(id: string): Promise<void> {
