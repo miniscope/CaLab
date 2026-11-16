@@ -5,6 +5,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Fixed
+
+- Admin: the dashboard stayed on "Loading analytics..." on the live site. Sessions were read by naming columns, and production lacks `analytics_sessions.is_anonymous` (migration 008), so the read failed; the error then escaped the loading state without a banner. Sessions and events are read with `select('*')` again, missing columns are reported in a banner and degrade (signed-in accounts shows n/a), and an `ErrorBoundary` with Retry guards the dashboard. Reads now use keyset pagination (offset paging was O(n) per page on `analytics_events`), load sessions and submissions first and events in the background with per-table progress, Stop and "Load 7 days instead" controls, a 30 s timeout with one retry per page, and per-table timing in the console. Optional migration `018_analytics_admin_read_performance.sql` adds matching indexes and a cheaper admin RLS expression.
+- Analytics: sessions recorded no country or region since the `geo-session` function started reading `cf-ipcountry`, which Supabase's gateway does not forward. The function now looks the visitor's IP up once over HTTPS (ipwho.is, geojs.io as a backup, 1.5 s timeout each, no geography on failure) and never stores or logs the IP. The privacy notices (landing page and Cala) now say so.
+
 ## [2.19.0] - 2026-11-15
 
 Web apps `v2.19.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
@@ -30,7 +35,6 @@ Supabase project to store the new Cala events (the apps work without it).
 
 ### Fixed
 
-- Admin: the dashboard stayed on "Loading analytics..." on the live site. Sessions were read by naming columns, and production lacks `analytics_sessions.is_anonymous` (migration 008), so the read failed; the error then escaped the loading state without a banner. Sessions and events are read with `select('*')` again, missing columns are reported in a banner and degrade (signed-in accounts shows n/a), and an `ErrorBoundary` with Retry guards the dashboard. Reads now use keyset pagination (offset paging was O(n) per page on `analytics_events`), load sessions and submissions first and events in the background with per-table progress, Stop and "Load 7 days instead" controls, a 30 s timeout with one retry per page, and per-table timing in the console. Optional migration `018_analytics_admin_read_performance.sql` adds matching indexes and a cheaper admin RLS expression.
 - Analytics: events fired while the session is still being created (cala's `webgpu_info` at startup) were silently dropped. They are now queued (at most 25) and sent once the session exists.
 - Admin: every analytics read is paged (it stopped silently at Supabase's 1000-row default), the last second of an end date is no longer dropped, weekly buckets use UTC weeks (they shifted by a day in non-UTC time zones), session duration is a median with a 4 h cap instead of a mean skewed by tabs left open, "Unique Users" counted only signed-in accounts, and a failed delete is reported instead of ignored.
 - Cala: adding newly found cells no longer copies every existing trace buffer

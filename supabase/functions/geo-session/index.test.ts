@@ -13,8 +13,10 @@ import { assertEquals, assertStringIncludes } from 'https://deno.land/std@0.224.
 import {
   APP_NAME_PATTERN,
   allowedOrigins,
+  clientIp,
   corsHeaders,
   handleRequest,
+  lookupGeo,
   resolveGeo,
 } from './index.ts';
 
@@ -122,6 +124,123 @@ Deno.test('resolveGeo returns null country/region when CF headers are missing', 
 });
 
 // ── handleRequest: error paths ─────────────────────────────────────────────
+
+// ── IP geolocation (the platform strips cf-ipcountry) ──────────────────────
+
+type FakeReply = { status?: number; body?: unknown; throws?: boolean };
+
+function fakeFetch(replies: Record<string, FakeReply>, calls: string[] = []): typeof fetch {
+  return ((input: string | URL | Request) => {
+    const url = String(input);
+    calls.push(url);
+    const key = Object.keys(replies).find((k) => url.startsWith(k));
+    const r = key ? replies[key] : { throws: true };
+    if (r.throws) return Promise.reject(new Error('network'));
+    return Promise.resolve(new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 }));
+  }) as typeof fetch;
+}
+
+const IPWHO = 'https://ipwho.is/';
+const GEOJS = 'https://get.geojs.io/';
+
+Deno.test('clientIp prefers cf-connecting-ip, then the first x-forwarded-for entry', () => {
+  assertEquals(
+    clientIp(
+      makeRequest('POST', {
+        headers: { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-for': '198.51.100.2' },
+      }),
+    ),
+    '203.0.113.7',
+  );
+  assertEquals(
+    clientIp(makeRequest('POST', { headers: { 'x-forwarded-for': ' 198.51.100.2 , 10.0.0.1' } })),
+    '198.51.100.2',
+  );
+  assertEquals(
+    clientIp(makeRequest('POST', { headers: { 'cf-connecting-ip': '2001:db8::1' } })),
+    '2001:db8::1',
+  );
+});
+
+Deno.test('clientIp rejects missing or malformed values', () => {
+  assertEquals(clientIp(makeRequest('POST')), null);
+  assertEquals(
+    clientIp(makeRequest('POST', { headers: { 'x-forwarded-for': 'not-an-ip, 1.2.3.4' } })),
+    null,
+  );
+  assertEquals(
+    clientIp(makeRequest('POST', { headers: { 'cf-connecting-ip': '1.2.3.4/../admin' } })),
+    null,
+  );
+});
+
+Deno.test('lookupGeo reads country and region from ipwho.is', async () => {
+  const calls: string[] = [];
+  const f = fakeFetch(
+    { [IPWHO]: { body: { success: true, country_code: 'US', region: 'California' } } },
+    calls,
+  );
+  assertEquals(await lookupGeo('203.0.113.7', f), { countryCode: 'US', regionName: 'California' });
+  assertEquals(calls.length, 1);
+});
+
+Deno.test('lookupGeo falls back to geojs.io when ipwho.is fails or answers badly', async () => {
+  for (const first of [
+    { throws: true },
+    { status: 429, body: {} },
+    { body: { success: false, message: 'rate limited' } },
+    { body: { success: true, country_code: 'usa' } },
+  ] as FakeReply[]) {
+    const f = fakeFetch({
+      [IPWHO]: first,
+      [GEOJS]: { body: { country_code: 'DE', region: 'Berlin' } },
+    });
+    assertEquals(await lookupGeo('203.0.113.7', f), { countryCode: 'DE', regionName: 'Berlin' });
+  }
+});
+
+Deno.test('lookupGeo accepts a country without a region from the backup', async () => {
+  const f = fakeFetch({ [GEOJS]: { body: { country_code: 'JP' } } });
+  assertEquals(await lookupGeo('203.0.113.7', f), { countryCode: 'JP', regionName: null });
+});
+
+Deno.test('lookupGeo returns no geography when both services fail, and never throws', async () => {
+  assertEquals(await lookupGeo('203.0.113.7', fakeFetch({})), {
+    countryCode: null,
+    regionName: null,
+  });
+  assertEquals(
+    await lookupGeo('203.0.113.7', fakeFetch({ [IPWHO]: { body: 'x' }, [GEOJS]: { status: 500 } })),
+    { countryCode: null, regionName: null },
+  );
+});
+
+Deno.test('lookupGeo ignores oversized or non-string regions', async () => {
+  const f = fakeFetch({
+    [IPWHO]: { body: { success: true, country_code: 'US', region: 'x'.repeat(200) } },
+  });
+  assertEquals(await lookupGeo('203.0.113.7', f), { countryCode: 'US', regionName: null });
+});
+
+Deno.test(
+  'lookupGeo does not call out for an invalid IP, and sends nothing but the IP',
+  async () => {
+    const calls: string[] = [];
+    const f = fakeFetch({ [IPWHO]: { body: { success: true, country_code: 'US' } } }, calls);
+    assertEquals(await lookupGeo('1.2.3.4/../x', f), { countryCode: null, regionName: null });
+    assertEquals(calls.length, 0);
+    await lookupGeo('203.0.113.7', f);
+    assertEquals(calls, ['https://ipwho.is/203.0.113.7?fields=success,country_code,region']);
+  },
+);
+
+Deno.test('lookupGeo gives up after the timeout', async () => {
+  const slow = ((_: string | URL | Request, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as typeof fetch;
+  assertEquals(await lookupGeo('203.0.113.7', slow, 20), { countryCode: null, regionName: null });
+});
 
 Deno.test('OPTIONS preflight returns 200 with CORS headers', async () => {
   const res = await handleRequest(makeRequest('OPTIONS', { origin: ALLOWED_ORIGIN }));

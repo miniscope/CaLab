@@ -109,6 +109,6 @@ Community features gracefully degrade when credentials are not configured — th
 
 ## Privacy
 
-Analytics collects: anonymous session ID (per-tab), country/region (resolved server-side from IP, IP is never stored), browser family, screen dimensions, referrer domain, app name/version, and allow-listed event names.
+Analytics collects: anonymous session ID (per-tab), country/region (resolved server-side: the `geo-session` function sends the IP once over HTTPS to a geolocation service, ipwho.is with geojs.io as a backup, and never stores or logs it; Supabase's gateway does not forward a country header), browser family, screen dimensions, referrer domain, app name/version, and event names (lowercase slugs, validated by shape since migration 017).
 
 **Not stored:** IP addresses, full user agent strings, full referrer URLs, file contents or names, persistent cross-session identifiers.

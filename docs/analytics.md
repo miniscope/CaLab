@@ -10,7 +10,9 @@ throws; a rejected insert is silent.
 
 Random identifier (per browser tab, `sessionStorage`), app name and version, browser family,
 screen size, referrer domain, country and region (resolved server-side by the `geo-session`
-edge function; no IP address is stored). Start and end time.
+edge function, which sends the visitor's IP once, over HTTPS, to a geolocation service,
+ipwho.is with geojs.io as a backup, and keeps only the country and region; CaLab never stores
+or logs the IP address). Start and end time.
 
 ## Opting out
 
@@ -54,7 +56,7 @@ session at 500 events (migration 013).
 
 `device_info` and the extra `webgpu_info` fields are a coarse hardware snapshot, sent once per
 session: no user agent string, OS version, canvas/WebGL/audio fingerprint, fonts, languages,
-timezone, battery or IP address.
+timezone or battery, and no IP address is kept.
 
 Shared events used by other apps: `demo_loaded`, `auth_signed_in/out`, `tutorial_*`,
 `community_browser_opened` and so on (`AnalyticsEventName`).
