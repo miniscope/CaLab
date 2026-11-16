@@ -322,6 +322,13 @@ impl JsTraceEngine {
 
     /// Also compute the signed (unclipped) traces, `lastSigned` (off by
     /// default; the non-negative traces are the same either way).
+    /// Use consolidated ring gradients for a replay with frozen footprints.
+    /// Off by default; discovery/refinement retain their original arithmetic.
+    #[wasm_bindgen(js_name = setConsolidatedRingGradient)]
+    pub fn set_consolidated_ring_gradient(&mut self, on: bool) {
+        self.inner.set_consolidated_ring_gradient(on);
+    }
+
     #[wasm_bindgen(js_name = setSigned)]
     pub fn set_signed(&mut self, on: bool) {
         self.inner.set_signed(on);

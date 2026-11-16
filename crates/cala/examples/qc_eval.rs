@@ -4453,6 +4453,7 @@ fn main() {
     let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
     let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
     eng.set_signed(dump_signed);
+    eng.set_consolidated_ring_gradient(true);
     let mut q2 = QcMonitor::new(
         dims,
         fov.clone(),

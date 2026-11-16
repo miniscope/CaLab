@@ -37,6 +37,8 @@ export interface TraceEngineLike {
   residualOfLast?(frame: Float32Array): Float32Array;
   /** Also compute the signed (unclipped) traces of each batch (`lastSigned`). */
   setSigned?(on: boolean): void;
+  /** Reassociated ring gradients, only for a replay with frozen footprints. */
+  setConsolidatedRingGradient?(on: boolean): void;
   /** Signed traces of the last solved batch, laid out as its traces; empty when off. */
   lastSigned?(): Float32Array;
   free(): void;
@@ -210,6 +212,7 @@ const now = (): number => performance.now();
 
 export class FastLoop {
   private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary'>>;
+  private readonly frozenReplay: boolean;
   private readonly px: number;
   private readonly port: PortLike<FastToSlow> | null;
   private readonly backend: TraceBackend;
@@ -241,6 +244,7 @@ export class FastLoop {
     const { initialLibrary, ...rest } = options;
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
+    this.frozenReplay = initialLibrary !== undefined && !this.o.refine;
     if (!(this.o.fps > 0)) {
       // The recording gave no rate (its warnings say so); QC durations assume this one.
       console.warn(
@@ -482,6 +486,7 @@ export class FastLoop {
       if (this.engine) this.engine.setLibrary(lib);
       else {
         this.engine = this.backend.newEngine(lib);
+        if (this.frozenReplay) this.engine.setConsolidatedRingGradient?.(true);
         if (this.o.signed) this.engine.setSigned?.(true);
       }
       this.version = lib.version;
