@@ -36,6 +36,7 @@ import {
   type ExportInput,
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
+import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
@@ -246,6 +247,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           setExporting(`Exporting ${name}: ${all > 0 ? Math.floor((100 * done) / all) : 0}%`),
         ),
       );
+      reportResultsExported(1);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {

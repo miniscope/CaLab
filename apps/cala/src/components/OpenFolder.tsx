@@ -1,5 +1,6 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
 import { ImportFeedbackLinks } from '@calab/community-ui';
+import { AnalyticsNotice } from './AnalyticsNotice.tsx';
 import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
 import { detectSeries, entriesForSeries, seriesLabel } from '../lib/video-series.ts';
@@ -644,6 +645,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
         )}
       </Show>
 
+      <AnalyticsNotice />
       <ImportFeedbackLinks appId={__APP_ID__} />
     </div>
   );
