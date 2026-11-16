@@ -26,20 +26,35 @@ Every payload is filtered through an allowlist (`ALLOWED_FIELDS` in Cala's integ
 covered by a test. Volume is one event per stage run, export or session; the database caps a
 session at 500 events (migration 013).
 
-| Event              | Fields                                                                                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                                          |
-| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions`, `frames`, `fps`, `width`, `height`                    |
-| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                                         |
-| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `error_type` (a closed list of error class names, e.g. RangeError) |
-| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                                           |
-| `results_exported` | `sessions`, `format_version`                                                                                                               |
-| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor` (lowercase, at most 24 characters)                                                            |
-| `tester_tag`       | `tag` (opt-in, see below)                                                                                                                  |
+| Event              | Fields                                                                                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                                                                                                                                    |
+| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions`, `frames`, `fps`, `width`, `height`                                                                                                              |
+| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                                                                                                                                   |
+| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `error_type` (a closed list of error class names, e.g. RangeError), `peak_wasm_mb` (when known)                                                              |
+| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                                                                                                                                     |
+| `results_exported` | `sessions`, `format_version`                                                                                                                                                                                                         |
+| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor`, `architecture`, `device`, `description` (each lowercase `[a-z0-9 ._-]`, at most 24/48/48/48 characters, omitted when empty), `max_buffer_mb`, `max_storage_mb` (WebGPU adapter limits) |
+| `device_info`      | `os` (macos/windows/linux/chromeos/android/ios/other, family only), `cores`, `memory_gb` (`navigator.deviceMemory`, coarse, Chrome only), `browser_major`, `dpr` (rounded to 0.25); once per session                                 |
+| `tester_tag`       | `tag` (opt-in, see below)                                                                                                                                                                                                            |
 
-`peak_wasm_mb` is the largest WASM heap sampled (every 2 s) on the main thread during the
-run. The solver threads are workers with heaps of their own, so it is omitted when the main
-thread has none; it is not a whole-tab figure.
+### Memory fields
+
+- `peak_wasm_mb`: the largest sampled (every 2 s) sum of WASM linear memory over the main
+  thread and every worker (solver, visit, flat-field, trace, compress, review). Each worker
+  reports its heap size over a same-origin `BroadcastChannel` every 2 s
+  (`apps/cala/src/lib/memory-telemetry.ts`); a worker silent for 30 s is dropped. Peak of the
+  sum at sample times, so short spikes between samples are missed. All browsers.
+- Not reported: a JS-heap figure. `performance.memory.usedJSHeapSize` (Chrome and Edge only)
+  sees the main thread alone (about 200 MB of a 2.4 GB tab in a real run) and workers have
+  none, so it would look reassuring while the memory is elsewhere. Worker JS heaps and
+  ArrayBuffers (where the v2.18.0 regression lived) and GPU memory are invisible to a page
+  without cross-origin isolation, so `peak_wasm_mb` is not the tab's total footprint.
+- `peak_wasm_mb` is also sent on `run_failed` when known.
+
+`device_info` and the extra `webgpu_info` fields are a coarse hardware snapshot, sent once per
+session: no user agent string, OS version, canvas/WebGL/audio fingerprint, fonts, languages,
+timezone, battery or IP address.
 
 Shared events used by other apps: `demo_loaded`, `auth_signed_in/out`, `tutorial_*`,
 `community_browser_opened` and so on (`AnalyticsEventName`).

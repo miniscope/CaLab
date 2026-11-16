@@ -14,9 +14,11 @@ export function AnalyticsNotice(): JSX.Element {
   return (
     <section class="cala-analytics" data-testid="analytics-notice" aria-label="Usage statistics">
       <p class="cala-analytics__text">
-        Cala sends anonymous usage statistics (which features are used, run size and speed, errors)
-        with a random identifier stored in this browser. Recordings, file names and personal data
-        never leave your browser; only country and region are kept, and no IP address is stored.
+        Cala sends anonymous usage statistics (which features are used, run size, speed, memory and
+        errors) and a coarse hardware snapshot (operating system family, CPU core count, memory
+        class, GPU type and limits, browser version, display scale) with a random identifier stored
+        in this browser. Recordings, file names and personal data never leave your browser; only
+        country and region are kept, and no IP address is stored.
       </p>
       <label class="cala-check">
         <input

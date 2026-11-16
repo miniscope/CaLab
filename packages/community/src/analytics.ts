@@ -36,6 +36,7 @@ export type AnalyticsEventName =
   | 'boundary_summary'
   | 'results_exported'
   | 'webgpu_info'
+  | 'device_info'
   // Opt-in beta tester tag (the only user-typed field; see tester-tag.ts).
   | 'tester_tag';
 

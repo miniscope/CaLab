@@ -77,6 +77,23 @@ describe('events fired before the session exists', () => {
     expect(inserted.map((r) => r.event_name)).toEqual(['webgpu_info', 'file_imported']);
   });
 
+  it('send nothing (device_info, run memory fields included) when analytics are off', async () => {
+    const m = await load();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => (k === 'calab_analytics_off' ? '1' : null),
+      setItem: () => {},
+      removeItem: () => {},
+    });
+    const init = m.initSession('cala', 't');
+    await flush();
+    void m.trackEvent('device_info', { os: 'macos', cores: 8 });
+    void m.trackEvent('run_finished', { peak_wasm_mb: 1 });
+    release?.();
+    await init;
+    await flush();
+    expect(inserted).toHaveLength(0);
+  });
+
   it('are dropped when the session cannot be created', async () => {
     failInit = true;
     const m = await load();
