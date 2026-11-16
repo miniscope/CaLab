@@ -47,7 +47,8 @@ export function ExportPanel(): JSX.Element {
       <p class="view__desc">
         Exports use the filters above (app, UTC range, version, dev builds). Browser ids are
         six-character hashes; no user_id, IP address or account identity is exported. Cells that
-        start with = + or @ are prefixed with a quote so spreadsheets do not run them.
+        start with = + - @ (or a tab or line break) are prefixed with a quote so spreadsheets do not
+        run them.
       </p>
       <div class="export-list">
         <For each={tables()}>

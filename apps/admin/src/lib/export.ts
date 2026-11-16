@@ -11,11 +11,27 @@ function escapeCSV(value: unknown): string {
   return str;
 }
 
-/** RFC 4180 CSV. Cells starting with = + - @ are prefixed so spreadsheets do not run them. */
+const FORMULA_TRIGGERS = new Set(['=', '+', '-', '@', '\uFF1D', '\uFF0B', '\uFF0D', '\uFF20']);
+
+/**
+ * Neutralise spreadsheet formula injection (OWASP CSV injection). Only strings
+ * are touched: a string whose first character is a tab, CR or LF, or whose first
+ * non-space character is = + - @ (or a fullwidth variant), gets a leading single
+ * quote. Real numbers stay numbers, so -5 is exported as -5.
+ */
+export function neutralizeCell(v: unknown): unknown {
+  if (typeof v !== 'string' || v.length === 0) return v;
+  const first = v[0];
+  if (first === '\t' || first === '\r' || first === '\n') return `'${v}`;
+  const trimmed = v.replace(/^[ \u00A0]+/, '');
+  return trimmed.length > 0 && FORMULA_TRIGGERS.has(trimmed[0]) ? `'${v}` : v;
+}
+
+/** RFC 4180 CSV with formula neutralisation applied to every string cell. */
 export function toCSV(headers: string[], rows: unknown[][]): string {
-  const safe = (v: unknown) => (typeof v === 'string' && /^[=+@]/.test(v) ? `'${v}` : v);
-  const headerLine = headers.map(escapeCSV).join(',');
-  const dataLines = rows.map((row) => row.map((c) => escapeCSV(safe(c))).join(','));
+  const cell = (v: unknown) => escapeCSV(neutralizeCell(v));
+  const headerLine = headers.map(cell).join(',');
+  const dataLines = rows.map((row) => row.map(cell).join(','));
   return [headerLine, ...dataLines].join('\n');
 }
 
