@@ -78,7 +78,8 @@ export function eventsOf(sessions: SessionRow[], events: EventRow[]): EventRow[]
 export interface Overview {
   sessions: number;
   browsers: number;
-  signedIn: number;
+  /** null when the database cannot tell signed-in from anonymous (no is_anonymous column). */
+  signedIn: number | null;
   returning: number;
   /** returning / browsers; null when there are no browsers. */
   returningRate: number | null;
@@ -87,7 +88,7 @@ export interface Overview {
   noUserId: number;
 }
 
-export function computeOverview(sessions: SessionRow[]): Overview {
+export function computeOverview(sessions: SessionRow[], anonKnown = true): Overview {
   const days = new Map<string, Set<string>>();
   const signed = new Set<string>();
   let noUserId = 0;
@@ -107,7 +108,7 @@ export function computeOverview(sessions: SessionRow[]): Overview {
   return {
     sessions: sessions.length,
     browsers: days.size,
-    signedIn: signed.size,
+    signedIn: anonKnown ? signed.size : null,
     returning,
     returningRate: days.size > 0 ? returning / days.size : null,
     medianDuration: median(sessions.map(sessionDuration)),

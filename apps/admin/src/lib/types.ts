@@ -3,7 +3,8 @@ export interface SessionRow {
   created_at: string;
   anonymous_id: string;
   user_id: string | null;
-  is_anonymous: boolean;
+  /** Absent (undefined) when the database lacks migration 008's column; never assume a value. */
+  is_anonymous?: boolean | null;
   app_name: string;
   app_version: string | null;
   country_code: string | null;
