@@ -95,5 +95,3 @@ export type MainToCompress =
    * (or a newer one), once that library has arrived and no window is waiting.
    */
   | { type: 'backfill'; session: number; version: number };
-
-export type CompressConnect = Extract<MainToCompress, { type: 'connect' }>;
