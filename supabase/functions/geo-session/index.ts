@@ -1,9 +1,11 @@
 // Supabase Edge Function: geo-session
-// Receives session start data from client, resolves client country/region
-// from the Cloudflare edge headers (no outbound IP lookup, IP never stored),
+// Receives session start data from client, resolves the client's country and
+// region (from a platform country header when one exists, otherwise by a
+// one-off HTTPS lookup of the client IP; the IP is never stored or logged),
 // inserts session, returns session_id.
 
 import { createClient } from 'npm:@supabase/supabase-js@2.103.3';
+import { isIP } from 'node:net';
 
 /**
  * Origins allowed to call this function. Additional origins (e.g. preview
@@ -67,22 +69,99 @@ interface SessionPayload {
   referrer_domain?: string;
 }
 
+type Geo = { countryCode: string | null; regionName: string | null };
+const NO_GEO: Geo = { countryCode: null, regionName: null };
+
 /**
- * Read the client's country/region from Cloudflare edge headers. Supabase's
- * function gateway sits behind CF, so cf-ipcountry is always populated for
- * real requests. Falls back to empty if the header is missing (local dev,
- * non-CF deployment).
- *
- * Previously this made an outbound `http://ip-api.com/json/...` call over
- * plaintext HTTP — an unnecessary dependency and a MITM-poisonable channel.
+ * Read the client's country/region from Cloudflare edge headers when the
+ * platform provides them. Supabase's gateway currently strips `cf-ipcountry`
+ * (checked from the function logs, Nov 2026), so this usually yields nothing
+ * and `lookupGeo` below does the work; it stays as the cheap first choice for
+ * platforms or deployments that do forward the header.
  */
-function resolveGeo(req: Request): { countryCode: string | null; regionName: string | null } {
+function resolveGeo(req: Request): Geo {
   const country = req.headers.get('cf-ipcountry');
   const region = req.headers.get('cf-region');
   return {
     countryCode: country && country !== 'XX' && country !== 'T1' ? country : null,
     regionName: region ?? null,
   };
+}
+
+/**
+ * The client's IP as the platform reports it. Used ONLY for the transient
+ * geolocation lookup below: it is never stored, logged or returned.
+ */
+function clientIp(req: Request): string | null {
+  const candidates = [
+    req.headers.get('cf-connecting-ip'),
+    req.headers.get('x-forwarded-for')?.split(',')[0],
+  ];
+  for (const c of candidates) {
+    const ip = c?.trim();
+    if (ip && isIP(ip) !== 0) return ip;
+  }
+  return null;
+}
+
+const GEO_TIMEOUT_MS = 1500;
+const COUNTRY_CODE = /^[A-Z]{2}$/;
+
+async function getJson(url: string, fetchFn: typeof fetch, timeoutMs: number): Promise<unknown> {
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`geo lookup status ${res.status}`);
+  return await res.json();
+}
+
+function cleanRegion(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 && v.length <= 64 ? v : null;
+}
+
+/**
+ * Country and region for an IP, by HTTPS lookup: ipwho.is first (country and
+ * region), geojs.io as a backup (country, region when it has one). Anything
+ * wrong (bad IP, timeout, non-JSON, unexpected shape, both services down)
+ * yields no geography: analytics never fail a session over it. Only the IP is
+ * sent; nothing else about the visitor leaves the function.
+ */
+async function lookupGeo(
+  ip: string,
+  fetchFn: typeof fetch = fetch,
+  timeoutMs: number = GEO_TIMEOUT_MS,
+): Promise<Geo> {
+  if (isIP(ip) === 0) return NO_GEO;
+  const enc = encodeURIComponent(ip);
+  try {
+    const j = (await getJson(
+      `https://ipwho.is/${enc}?fields=success,country_code,region`,
+      fetchFn,
+      timeoutMs,
+    )) as { success?: unknown; country_code?: unknown; region?: unknown };
+    if (
+      j.success === true &&
+      typeof j.country_code === 'string' &&
+      COUNTRY_CODE.test(j.country_code)
+    ) {
+      return { countryCode: j.country_code, regionName: cleanRegion(j.region) };
+    }
+  } catch {
+    // fall through to the backup service
+  }
+  try {
+    const j = (await getJson(`https://get.geojs.io/v1/ip/geo/${enc}.json`, fetchFn, timeoutMs)) as {
+      country_code?: unknown;
+      region?: unknown;
+    };
+    if (typeof j.country_code === 'string' && COUNTRY_CODE.test(j.country_code)) {
+      return { countryCode: j.country_code, regionName: cleanRegion(j.region) };
+    }
+  } catch {
+    // no geography for this session
+  }
+  return NO_GEO;
 }
 
 interface ResolvedUser {
@@ -151,7 +230,11 @@ export async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse({ error: 'app_name must be a lowercase app slug' }, 400, origin);
     }
 
-    const geo = resolveGeo(req);
+    let geo = resolveGeo(req);
+    if (!geo.countryCode) {
+      const ip = clientIp(req);
+      if (ip) geo = await lookupGeo(ip);
+    }
     const user = await resolveUser(req.headers.get('authorization'));
 
     // Require a verified user (anonymous or real). Without one, RLS on
@@ -200,7 +283,7 @@ export async function handleRequest(req: Request): Promise<Response> {
 }
 
 // Exposed for tests; not exported by the edge runtime import.
-export { APP_NAME_PATTERN, allowedOrigins, corsHeaders, resolveGeo };
+export { APP_NAME_PATTERN, allowedOrigins, clientIp, corsHeaders, lookupGeo, resolveGeo };
 
 // Only attach to Deno.serve when the edge runtime loads this module.
 // Tests import handleRequest directly and never touch the server.

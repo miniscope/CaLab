@@ -17,8 +17,9 @@ export function AnalyticsNotice(): JSX.Element {
         Cala sends anonymous usage statistics (which features are used, run size, speed, memory and
         errors) and a coarse hardware snapshot (operating system family, CPU core count, memory
         class, GPU type and limits, browser version, display scale) with a random identifier stored
-        in this browser. Recordings, file names and personal data never leave your browser; only
-        country and region are kept, and no IP address is stored.
+        in this browser. Recordings, file names and personal data never leave your browser. Your IP
+        address is sent once to a geolocation service to find your country and region; only the
+        country and region are kept, and CaLab does not store the IP address.
       </p>
       <label class="cala-check">
         <input
