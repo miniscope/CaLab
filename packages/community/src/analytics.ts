@@ -40,6 +40,12 @@ export type AnalyticsEventName =
   | 'tester_tag';
 
 let sessionId: string | null = null;
+// Events fired while the session is still being created (the app renders and
+// reports before the auth + geo-session round trips finish) wait here and are
+// sent once it exists; they are dropped if it never does. Bounded.
+let initInFlight = false;
+const pending: Array<{ name: AnalyticsEventName; data?: Record<string, unknown> }> = [];
+const PENDING_MAX = 25;
 let sessionEndRegistered = false;
 // Cached access token for the raw-fetch heartbeat / pagehide paths. Kept
 // in module state so the pagehide handler (which can't await) has a
@@ -116,6 +122,7 @@ async function ensureAuth(): Promise<string | null> {
 export async function initSession(appName: string, appVersion?: string): Promise<void> {
   // Opted out (or Do Not Track): no network call, no anonymous sign-in.
   if (!supabaseEnabled || !analyticsEnabled()) return;
+  initInFlight = true;
 
   try {
     const token = await ensureAuth();
@@ -144,20 +151,31 @@ export async function initSession(appName: string, appVersion?: string): Promise
     startHeartbeat();
     const tag = getTesterTag();
     if (tag) void trackEvent('tester_tag', { tag });
+    initInFlight = false;
+    for (const e of pending.splice(0)) void trackEvent(e.name, e.data);
   } catch {
     // Analytics init failed — silently continue
+  } finally {
+    initInFlight = false;
+    pending.length = 0;
   }
 }
 
 /**
- * Track a high-level event within the current session.
- * No-ops if session was not initialized.
+ * Track a high-level event within the current session. Events fired while the
+ * session is still being created are queued and sent when it is ready.
+ * No-ops if analytics are off or the session could not be created.
  */
 export async function trackEvent(
   eventName: AnalyticsEventName,
   eventData?: Record<string, unknown>,
 ): Promise<void> {
-  if (!supabaseEnabled || !sessionId || !analyticsEnabled()) return;
+  if (!supabaseEnabled || !analyticsEnabled()) return;
+  if (!sessionId) {
+    if (initInFlight && pending.length < PENDING_MAX)
+      pending.push({ name: eventName, data: eventData });
+    return;
+  }
 
   try {
     const supabase = await getSupabase();
