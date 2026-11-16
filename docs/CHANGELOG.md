@@ -5,9 +5,13 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
-### Fixed
+## [2.19.0] - 2026-11-15
 
-- Analytics: events fired while the session is still being created (cala's `webgpu_info` at startup) were silently dropped. They are now queued (at most 25) and sent once the session exists.
+Web apps `v2.19.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala gets usage analytics (with a privacy notice, an opt-out and an optional
+beta-tester tag), four speed and memory improvements, and the Admin dashboard
+is rebuilt. Run `supabase/migrations/017_analytics_event_name_shape.sql` on the
+Supabase project to store the new Cala events (the apps work without it).
 
 ### Added
 
@@ -26,6 +30,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Analytics: events fired while the session is still being created (cala's `webgpu_info` at startup) were silently dropped. They are now queued (at most 25) and sent once the session exists.
 - Admin: every analytics read is paged (it stopped silently at Supabase's 1000-row default), the last second of an end date is no longer dropped, weekly buckets use UTC weeks (they shifted by a day in non-UTC time zones), session duration is a median with a 4 h cap instead of a mean skewed by tabs left open, "Unique Users" counted only signed-in accounts, and a failed delete is reported instead of ignored.
 - Cala: adding newly found cells no longer copies every existing trace buffer
   just to reduce the per-cell history share. Trace histories use 1024-frame
