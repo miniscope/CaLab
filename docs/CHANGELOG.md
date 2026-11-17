@@ -7,7 +7,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
-- Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to >3 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, all pairs within 3 D plus up to 10,000 farther ones, off-scale points counted). Computed once on demand in a worker from all pairs within 3 D plus up to 20,000 sampled farther pairs (about 350 ms for 650 cells x 18,000 frames).
+- Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to 3-6 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, off-scale points counted). Computed once on demand in a worker from all pairs within 6 D (thinned uniformly only above 400,000), 0.2-1 s for 650 cells x 18,000 frames.
 
 ### Changed
 

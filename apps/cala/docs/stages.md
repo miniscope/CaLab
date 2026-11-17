@@ -119,16 +119,7 @@ The Correlation tab (`components/CorrDistancePanel.tsx`, math in
 `lib/corr-distance.ts`) plots the median Pearson r of cell-trace pairs against their
 centre distance, a ground-truth-free check for incomplete demixing. Traces are
 high-passed with a 15 s centred moving average; D is the median equivalent diameter at
-half maximum of the footprints; bins are <0.5, 0.5-0.75, 0.75-1, 1-1.25, 1.25-1.5, 1.5-2,
-2-3 and >3 D, each shown as median and IQR, and the dotted line is the median over the
-1.5-3 D pairs. Bins are drawn at their median pair distance over a canvas scatter of
-the individual pairs (continuous x, 0-6 D; all near pairs, at most 10,000 far ones,
-points outside the fixed y range or beyond 6 D counted, not drawn; the worker returns
-the per-pair distance and r as typed arrays). Cost control: all pairs within 3 D plus a seeded random sample of at most
-20,000 farther pairs, on demand in a worker (`workers/corr-distance-worker.ts`), once; the
-per-frame loop never sees it. Measured on 650 cells x 18,000 frames (random layout):
-about 350 ms in Node, one 47 MB f32 copy of the traces in the worker plus the same on the
-main thread while it is gathered. Real recordings may also share signal between
+half maximum of the footprints; bins are <0.5, 0.5-0.75, 0.75-1, 1-1.25, 1.25-1.5, 1.5-2, 2-3 and 3-6 D, each shown as median and IQR at its median pair distance, and the dotted line is the median over the 1.5-3 D pairs. Beside them is a canvas scatter of the individual pairs (continuous x, 0-6 D; points outside the fixed y range are counted, not drawn). Pairs: every pair within 6 D, the plotted range, for the stats and the scatter alike; only above 400,000 pairs is each kept with the same probability at every distance, so the density stays continuous (the note under the plot says so). Pairs beyond 6 D are not used. It runs on demand in a worker (`workers/corr-distance-worker.ts`), once, and returns the per-pair distance and r as typed arrays; the per-frame loop never sees it. Measured on 650 cells x 18,000 frames (random layout, uniform noise): 0.2 s with about 11,600 pairs within 6 D (D = 14 px), 1 s with about 73,000 (D = 40 px), in Node; one 47 MB f32 copy of the traces in the worker plus the same on the main thread while it is gathered. Real recordings may also share signal between
 neighbours (neuropil, motion), so read the excess against a population null or a
 before/after contrast, not as absolute leak. The plot data is not in the export.
 

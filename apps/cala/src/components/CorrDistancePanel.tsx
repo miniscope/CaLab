@@ -9,12 +9,7 @@
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import { corrRequest, runCorrDistance } from '../lib/corr-distance-client.ts';
-import {
-  NEAR_D,
-  SCATTER_X_MAX,
-  selectScatter,
-  type CorrDistanceResult,
-} from '../lib/corr-distance.ts';
+import { SCATTER_X_MAX, selectScatter, type CorrDistanceResult } from '../lib/corr-distance.ts';
 
 const W = 360;
 const H = 210;
@@ -39,7 +34,7 @@ export function corrYRange(res: Pick<CorrDistanceResult, 'bins' | 'farMedian'>):
 export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Element {
   const range = () => corrYRange(props.result);
   // Continuous x in soma diameters (px when the footprint size is unknown).
-  const xMax = () => (props.result.diameterPx > 0 ? SCATTER_X_MAX : 2 * NEAR_D);
+  const xMax = () => SCATTER_X_MAX;
   const xv = (d: number) => PAD_L + ((W - PAD_L - PAD_R) * Math.min(d, xMax())) / xMax();
   const x = (i: number) => xv(props.result.bins[i].medianDist ?? 0);
   const xTicks = () => Array.from({ length: xMax() + 1 }, (_, i) => i);
@@ -193,9 +188,12 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
         </text>
       </svg>
       <figcaption class="cala-muted" data-testid="corr-scatter-note">
-        {sel().near.toLocaleString()} near and {sel().far.toLocaleString()} far pairs drawn
+        {sel().idx.length.toLocaleString()} of {props.result.pairsKept.toLocaleString()} pairs drawn
+        {props.result.pairsKept < props.result.pairsTotal
+          ? `, thinned uniformly at random from ${props.result.pairsTotal.toLocaleString()} (same keep-probability at every distance)`
+          : ''}
         {sel().offX + sel().offY > 0
-          ? `; ${(sel().offX + sel().offY).toLocaleString()} off-scale (${sel().offY.toLocaleString()} outside the r range, ${sel().offX.toLocaleString()} beyond ${xMax()} ${props.result.diameterPx > 0 ? 'D' : 'px'})`
+          ? `; ${(sel().offX + sel().offY).toLocaleString()} off-scale (${sel().offY.toLocaleString()} outside the r range)`
           : ''}
         .
       </figcaption>
@@ -260,15 +258,16 @@ export function CorrDistancePanel(props: { cells: CellStore }): JSX.Element {
             <CorrDistancePlot result={r()} />
             <p class="cala-muted" data-testid="corr-caption">
               Grey points: individual pairs. Blue dots: median r per distance bin, at the bin's
-              median distance, bars: interquartile range (a bin centred beyond 6 D is left out).
-              Dotted line: median r of far pairs (1.5-3 soma diameters apart), the level expected
-              with no leak between cells.
+              median distance, bars: interquartile range. Dotted line: median r of far pairs (1.5-3
+              soma diameters apart), the level expected with no leak between cells.
             </p>
             <p class="cala-muted" data-testid="corr-readout">
               {r().cells} cells, {r().frames.toLocaleString()} frames; D ={' '}
               {r().diameterPx > 0 ? `${r().diameterPx.toFixed(1)} px` : 'unknown'}; pairs: all{' '}
-              {r().pairsNear.toLocaleString()} within 3 D plus {r().pairsFar.toLocaleString()} of{' '}
-              {r().pairsFarTotal.toLocaleString()} farther (at most 10,000 of them drawn)
+              {r().pairsKept.toLocaleString()} within 6 D
+              {r().pairsKept < r().pairsTotal
+                ? ` (a uniform random ${r().pairsKept.toLocaleString()} of ${r().pairsTotal.toLocaleString()})`
+                : ' (all of them)'}
               {r().skipped > 0 ? `; ${r().skipped} cells skipped (too short or flat)` : ''}
               {r().ms !== undefined ? `; ${Math.round(r().ms!)} ms` : ''}.
             </p>

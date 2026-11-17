@@ -11,11 +11,11 @@
  * - r is the Pearson correlation of two high-passed traces over all frames;
  * - the distance is centre to centre in soma diameters D, where D is the
  *   median equivalent diameter at half maximum of the cells' footprints;
- * - pairs fall into the bins `CORR_BINS`; each bin reports median and IQR; the
- *   far-pair level is the median over the pairs at 1.5-3 D.
+ * - pairs fall into the bins `CORR_EDGES` (the last is 3-6 D); each bin reports
+ *   median and IQR; the far-pair level is the median over the pairs at 1.5-3 D.
  *
- * Cost control: all pairs within `NEAR_D` (3 D) are used, plus a seeded random
- * sample of at most `maxFar` farther pairs. It runs once, on demand, in a
+ * Cost control: all pairs within 6 D (the plotted range) are used, thinned
+ * uniformly only above `DEFAULT_MAX_PAIRS`. It runs once, on demand, in a
  * worker; never in the per-frame loop. Pure, unit-tested.
  */
 import type { LibraryView } from '../workers/slow-types.ts';
@@ -30,17 +30,17 @@ export const CORR_BIN_LABELS = [
   '1.25-1.5',
   '1.5-2',
   '2-3',
-  '>3',
+  '3-6',
 ] as const;
 /** The far-pair reference range, in D: bins 1.5-2 and 2-3. */
 export const FAR_LO = 1.5;
 export const FAR_HI = 3;
-/** All pairs closer than this are used; the rest are sampled. */
-export const NEAR_D = 3;
+/** All pairs closer than this (the plotted range, D) are used; farther ones are not. */
+export const PAIR_D_MAX = 6;
 /** High-pass window, seconds. */
 export const HP_SECONDS = 15;
-/** Far (> 3 D) pairs sampled by default. */
-export const DEFAULT_MAX_FAR = 20000;
+/** Pairs kept at most; beyond it the pairs within range are thinned uniformly. */
+export const DEFAULT_MAX_PAIRS = 400000;
 /** A cell needs this many finite frames beyond the high-pass window to count. */
 const MIN_FRAMES_FACTOR = 2;
 
@@ -67,14 +67,10 @@ export interface CorrDistanceResult {
   /** Cells left out (too short or flat trace). */
   skipped: number;
   frames: number;
-  pairsNear: number;
-  pairsFar: number;
-  /** Far pairs available before sampling. */
-  pairsFarTotal: number;
-  /**
-   * Every correlated pair, for the scatter: centre distance (D) and r. The
-   * `pairsNear` near pairs come first, then the sampled far pairs in random order.
-   */
+  /** Pairs within 6 D, and those kept (equal unless thinned). */
+  pairsTotal: number;
+  pairsKept: number;
+  /** Every correlated pair, for the scatter: centre distance (D) and r. */
   pairDist: Float32Array;
   pairR: Float32Array;
   /** Wall time of the computation and the bytes it held, set by the caller. */
@@ -151,76 +147,58 @@ function rng(seed: number): () => number {
 }
 
 export interface PairSet {
-  /** Cell indices (rows of the matrix) of each pair, and its distance in D. */
+  /** Cell indices (rows of the matrix) of each kept pair, and its distance in D. */
   a: Uint32Array;
   b: Uint32Array;
   dist: Float32Array;
-  near: number;
-  far: number;
-  farTotal: number;
+  /** Pairs within `PAIR_D_MAX`, before thinning. */
+  total: number;
+  /** Pairs kept (all of them unless thinned). */
+  kept: number;
 }
 
 /**
- * The pairs to correlate: every pair closer than `NEAR_D` plus at most `maxFar`
- * pairs from the rest, drawn uniformly without replacement (seeded).
- * `centers` is `(y, x)` per cell in px; `diameter` the soma diameter in px.
+ * The pairs to correlate: every pair closer than `PAIR_D_MAX` (the plotted
+ * range, so the stats and the scatter see the same pairs). Only if there are
+ * more than `maxPairs` of them is each kept with the same probability
+ * `maxPairs / total` (seeded), so the density stays continuous over the whole
+ * range. `centers` is `(y, x)` per cell in px; `diameter` the soma diameter in px.
  */
 export function selectPairs(
   centers: ArrayLike<number>,
   count: number,
   diameter: number,
-  maxFar = DEFAULT_MAX_FAR,
+  maxPairs = DEFAULT_MAX_PAIRS,
   seed = 1,
 ): PairSet {
   const D = diameter > 0 ? diameter : 1;
-  const nearA: number[] = [];
-  const nearB: number[] = [];
-  const nearD: number[] = [];
   const dist = (i: number, j: number) =>
     Math.hypot(centers[2 * i] - centers[2 * j], centers[2 * i + 1] - centers[2 * j + 1]) / D;
-  // Reservoir sample of the far pairs, in one pass over all pairs.
+  let total = 0;
+  for (let i = 0; i < count; i++)
+    for (let j = i + 1; j < count; j++) if (dist(i, j) < PAIR_D_MAX) total++;
+  const cap = Math.max(0, Math.floor(maxPairs));
+  const keep = total <= cap ? 1 : cap / total;
   const rand = rng(seed);
-  const cap = Math.max(0, Math.floor(maxFar));
-  const farA = new Uint32Array(cap);
-  const farB = new Uint32Array(cap);
-  const farD = new Float32Array(cap);
-  let seen = 0;
+  const a: number[] = [];
+  const b: number[] = [];
+  const d: number[] = [];
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
-      const d = dist(i, j);
-      if (d < NEAR_D) {
-        nearA.push(i);
-        nearB.push(j);
-        nearD.push(d);
-      } else if (cap > 0) {
-        if (seen < cap) {
-          farA[seen] = i;
-          farB[seen] = j;
-          farD[seen] = d;
-        } else {
-          const r = Math.floor(rand() * (seen + 1));
-          if (r < cap) {
-            farA[r] = i;
-            farB[r] = j;
-            farD[r] = d;
-          }
-        }
-        seen++;
-      } else seen++;
+      const x = dist(i, j);
+      if (x >= PAIR_D_MAX || (keep < 1 && rand() >= keep)) continue;
+      a.push(i);
+      b.push(j);
+      d.push(x);
     }
   }
-  const nFar = Math.min(seen, cap);
-  const total = nearA.length + nFar;
-  const a = new Uint32Array(total);
-  const b = new Uint32Array(total);
-  const dd = new Float32Array(total);
-  a.set(nearA);
-  b.set(nearB);
-  dd.set(nearD);
-  a.set(farA.subarray(0, nFar), nearA.length);
-  b.set(farB.subarray(0, nFar), nearA.length);
-  dd.set(farD.subarray(0, nFar), nearA.length);
-  return { a, b, dist: dd, near: nearA.length, far: nFar, farTotal: seen };
+  return {
+    a: Uint32Array.from(a),
+    b: Uint32Array.from(b),
+    dist: Float32Array.from(d),
+    total,
+    kept: a.length,
+  };
 }
 
 /** Median and quartiles per bin, and the 1.5-3 D far-pair median, from pair distances and r. */
@@ -264,7 +242,7 @@ export interface CorrInput {
   /** `(y, x)` px per cell, interleaved. */
   centers: ArrayLike<number>;
   diameter: number;
-  maxFar?: number;
+  maxPairs?: number;
   seed?: number;
 }
 
@@ -316,7 +294,7 @@ export function computeCorrDistance(input: CorrInput): CorrDistanceResult {
     centers[2 * k] = input.centers[2 * c];
     centers[2 * k + 1] = input.centers[2 * c + 1];
   });
-  const pairs = selectPairs(centers, rows.length, input.diameter, input.maxFar, input.seed);
+  const pairs = selectPairs(centers, rows.length, input.diameter, input.maxPairs, input.seed);
   const r = new Float64Array(pairs.a.length);
   for (let p = 0; p < r.length; p++) {
     const ia = rows[pairs.a[p]] * frames;
@@ -333,62 +311,41 @@ export function computeCorrDistance(input: CorrInput): CorrDistanceResult {
     cells: rows.length,
     skipped: cells - rows.length,
     frames,
-    pairsNear: pairs.near,
-    pairsFar: pairs.far,
-    pairsFarTotal: pairs.farTotal,
+    pairsTotal: pairs.total,
+    pairsKept: pairs.kept,
     pairDist: pairs.dist,
     pairR: Float32Array.from(r),
   };
 }
 
-/** Far points drawn in the scatter, at most. */
-export const MAX_FAR_DRAWN = 10000;
-/** Scatter x extent, soma diameters. */
-export const SCATTER_X_MAX = 6;
+/** Scatter x extent, soma diameters (the pairs' range). */
+export const SCATTER_X_MAX = PAIR_D_MAX;
 
 export interface ScatterSelection {
-  /** Indices into `pairDist`/`pairR` of the points that fall inside the plot area. */
+  /** Indices into `pairDist`/`pairR` of the points inside the plot area. */
   idx: Uint32Array;
-  /** Drawn near and far points. */
-  near: number;
-  far: number;
-  /** Candidate points beyond the x extent or the y range (not drawn). */
+  /** Points beyond the x extent or outside the y range (not drawn). */
   offX: number;
   offY: number;
 }
 
-/**
- * Points to draw: all near pairs and the first `maxFar` far pairs that fall
- * inside the plot (the far sample is already random, so this is a uniform
- * subsample), kept only inside `[0, xMax] x yRange`; the rest seen are counted
- * as off-scale.
- */
+/** Points to draw: every pair inside `[0, xMax] x yRange`; the others are counted. */
 export function selectScatter(
-  res: Pick<CorrDistanceResult, 'pairDist' | 'pairR' | 'pairsNear'>,
+  res: Pick<CorrDistanceResult, 'pairDist' | 'pairR'>,
   xMax: number,
   yRange: readonly [number, number],
-  maxFar = MAX_FAR_DRAWN,
 ): ScatterSelection {
   const n = res.pairDist.length;
   const idx = new Uint32Array(n);
   let m = 0;
-  let near = 0;
-  let far = 0;
   let offX = 0;
   let offY = 0;
-  const cap = Math.max(0, Math.floor(maxFar));
   for (let k = 0; k < n; k++) {
-    if (k >= res.pairsNear && far >= cap) break;
-    const d = res.pairDist[k];
     const v = res.pairR[k];
     if (!Number.isFinite(v)) continue;
-    if (d > xMax) offX++;
+    if (res.pairDist[k] > xMax) offX++;
     else if (v < yRange[0] || v > yRange[1]) offY++;
-    else {
-      idx[m++] = k;
-      if (k < res.pairsNear) near++;
-      else far++;
-    }
+    else idx[m++] = k;
   }
-  return { idx: idx.subarray(0, m), near, far, offX, offY };
+  return { idx: idx.subarray(0, m), offX, offY };
 }

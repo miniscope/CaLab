@@ -56,15 +56,20 @@ describe('selectPairs', () => {
   // 20 cells on a line, 1 D apart (D = 10 px).
   const centers = new Float32Array(40);
   for (let i = 0; i < 20; i++) centers[2 * i + 1] = i * 10;
-  it('keeps every pair within 3 D and samples the rest', () => {
-    const p = selectPairs(centers, 20, 10, 5, 7);
-    let near = 0;
-    for (let i = 0; i < 20; i++) for (let j = i + 1; j < 20; j++) if ((j - i) * 1 < 3) near++;
-    expect(p.near).toBe(near);
-    expect(p.far).toBe(5);
-    expect(p.farTotal).toBe(190 - near);
-    for (let k = 0; k < p.near; k++) expect(p.dist[k]).toBeLessThan(3);
-    for (let k = p.near; k < p.near + p.far; k++) expect(p.dist[k]).toBeGreaterThanOrEqual(3);
+  it('keeps every pair within 6 D and nothing farther', () => {
+    const p = selectPairs(centers, 20, 10);
+    let within = 0;
+    for (let i = 0; i < 20; i++) for (let j = i + 1; j < 20; j++) if (j - i < 6) within++;
+    expect(p.total).toBe(within);
+    expect(p.kept).toBe(within);
+    expect(p.dist.length).toBe(within);
+    for (let k = 0; k < p.kept; k++) expect(p.dist[k]).toBeLessThan(6);
+  });
+  it('thins uniformly across the whole range when over the cap', () => {
+    const p = selectPairs(centers, 20, 10, 40, 7);
+    expect(p.kept).toBeGreaterThan(15);
+    expect(p.kept).toBeLessThan(70);
+    expect(p.total).toBeGreaterThan(p.kept);
   });
   it('is reproducible and has no duplicate pairs', () => {
     const a = selectPairs(centers, 20, 10, 50, 3);
@@ -75,7 +80,7 @@ describe('selectPairs', () => {
   });
   it('takes all pairs when under the cap', () => {
     const p = selectPairs(centers, 20, 10, 1000);
-    expect(p.near + p.far).toBe(190);
+    expect(p.kept).toBe(p.total);
   });
 });
 
@@ -110,15 +115,16 @@ describe('computeCorrDistance', () => {
           noise() + (c < 2 ? shared[t] : 0) + 5 * Math.sin((2 * Math.PI * t) / 2900);
     const centers = new Float32Array(2 * cells);
     // cells 0,1 at 0.4 D; the others are far apart
-    const xs = [0, 4, 100, 200, 300, 400];
+    const xs = [0, 4, 40, 80, 120, 160];
     xs.forEach((v, i) => (centers[2 * i + 1] = v));
     const res = computeCorrDistance({ traces, cells, frames, fps, centers, diameter: 10 });
     expect(res.cells).toBe(6);
     expect(res.bins[0].n).toBe(1);
+    expect(res.bins[7].n).toBe(5);
     expect(res.bins[0].median!).toBeGreaterThan(0.4);
-    // the shared slow drift is removed by the high-pass: far pairs sit near 0
+    // the shared slow drift is removed by the high-pass: the 3-6 D pairs sit near 0
     expect(Math.abs(res.bins[7].median!)).toBeLessThan(0.1);
-    expect(res.pairsNear + res.pairsFar).toBe(15);
+    expect(res.pairsKept).toBe(6);
   });
   it('skips short and flat cells and treats NaN frames as missing', () => {
     const frames = 1500;
@@ -156,7 +162,7 @@ describe('corrYRange', () => {
 });
 
 describe('scatter', () => {
-  it('returns per-pair typed arrays, near pairs first, and bin positions', () => {
+  it('returns per-pair typed arrays and bin positions', () => {
     const res = computeCorrDistance({
       traces: new Float32Array(3 * 600).map((_, i) => Math.sin(i * 0.3) + ((i * 7919) % 13)),
       cells: 3,
@@ -164,29 +170,20 @@ describe('scatter', () => {
       fps: 1,
       centers: [0, 0, 0, 1, 0, 50],
       diameter: 1,
-      maxFar: 5,
     });
     expect(res.pairDist).toBeInstanceOf(Float32Array);
     expect(res.pairR).toBeInstanceOf(Float32Array);
-    expect(res.pairDist.length).toBe(res.pairsNear + res.pairsFar);
-    expect(res.pairDist[0]).toBeLessThan(3);
+    expect(res.pairDist.length).toBe(res.pairsKept);
+    expect(res.pairsKept).toBe(1);
+    expect(res.bins[3].medianDist!).toBeCloseTo(1);
     expect(res.bins[1].medianDist).toBeNull();
-    expect(res.bins[7].medianDist!).toBeGreaterThan(3);
   });
-  it('keeps points in range, caps far points and counts the rest', () => {
+  it('keeps points in range and counts the rest', () => {
     const dist = Float32Array.from([0.2, 1, 2.9, 3.5, 4, 5, 7, 8]);
     const r = Float32Array.from([0.1, 0.9, 0.2, 0.3, -0.5, 0.1, 0.1, 0.1]);
-    const all = selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5]);
+    const all = selectScatter({ pairDist: dist, pairR: r }, 6, [-0.1, 0.5]);
     expect(Array.from(all.idx)).toEqual([0, 2, 3, 5]);
-    expect(all.near).toBe(2);
-    expect(all.far).toBe(2);
     expect(all.offY).toBe(2);
     expect(all.offX).toBe(2);
-    const capped = selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5], 1);
-    expect(capped.far).toBe(1);
-    expect(capped.idx.length).toBe(3);
-    expect(selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5], 1)).toEqual(
-      capped,
-    );
   });
 });

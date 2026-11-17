@@ -145,9 +145,9 @@ repeats it): for every pair of cells it takes the Pearson correlation of their t
 (each minus a 15 s moving average) and plots the median per bin of centre distance,
 in soma diameters D (the median equivalent diameter of the footprints at half
 maximum), with the interquartile range as bars, over a faint scatter of the individual
-pairs (r against the exact distance, 0 to 6 D). The scatter draws every pair within
-3 D and up to 10,000 farther ones; points above or below the plot, or beyond 6 D, are
-not drawn and are counted under the plot. Cells that share no signal sit near 0;
+pairs (r against the exact distance, 0 to 6 D). Every pair within 6 D is used and drawn
+(thinned uniformly at random only on very large fields, and the note says so); points
+above or below the plot are not drawn and are counted under it. Cells that share no signal sit near 0;
 excess correlation at close range means light is shared between neighbours' traces.
 The dotted line is the median r of far pairs (1.5-3 D apart), the level expected with
 no leak. The y axis is fixed at -0.1 to 0.5 and widens (in 0.1 steps) only when a bar
