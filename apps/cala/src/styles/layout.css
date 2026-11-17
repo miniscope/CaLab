@@ -999,13 +999,29 @@
 }
 
 .cala-corr__plot {
+  position: relative;
   margin: 0;
   max-width: 560px;
 }
 
 .cala-corr__plot svg {
+  position: relative;
   width: 100%;
   height: auto;
+}
+
+.cala-corr__scatter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  aspect-ratio: 360 / 210;
+  pointer-events: none;
+}
+
+.cala-corr__plot figcaption {
+  margin-top: 2px;
+  font-size: 11px;
 }
 
 .cala-corr__grid {

@@ -50,6 +50,8 @@ export interface CorrBin {
   /** Infinity for the last bin. */
   hi: number;
   n: number;
+  /** Median centre distance of the bin's pairs, D (null: empty); where the bin is drawn. */
+  medianDist: number | null;
   median: number | null;
   q25: number | null;
   q75: number | null;
@@ -69,6 +71,12 @@ export interface CorrDistanceResult {
   pairsFar: number;
   /** Far pairs available before sampling. */
   pairsFarTotal: number;
+  /**
+   * Every correlated pair, for the scatter: centre distance (D) and r. The
+   * `pairsNear` near pairs come first, then the sampled far pairs in random order.
+   */
+  pairDist: Float32Array;
+  pairR: Float32Array;
   /** Wall time of the computation and the bytes it held, set by the caller. */
   ms?: number;
   bytes?: number;
@@ -221,15 +229,19 @@ export function binStats(
   r: ArrayLike<number>,
 ): { bins: CorrBin[]; farMedian: number | null } {
   const groups: number[][] = CORR_EDGES.map(() => []);
+  const dgroups: number[][] = CORR_EDGES.map(() => []);
   const far: number[] = [];
   for (let k = 0; k < dist.length; k++) {
     if (!Number.isFinite(r[k])) continue;
     groups[binOf(dist[k])].push(r[k]);
+    dgroups[binOf(dist[k])].push(dist[k]);
     if (dist[k] >= FAR_LO && dist[k] < FAR_HI) far.push(r[k]);
   }
   const bins = groups.map((g, b): CorrBin => {
     g.sort((x, y) => x - y);
+    const dg = dgroups[b].sort((x, y) => x - y);
     return {
+      medianDist: quantile(dg, 0.5),
       label: CORR_BIN_LABELS[b],
       lo: CORR_EDGES[b],
       hi: b + 1 < CORR_EDGES.length ? CORR_EDGES[b + 1] : Infinity,
@@ -324,5 +336,59 @@ export function computeCorrDistance(input: CorrInput): CorrDistanceResult {
     pairsNear: pairs.near,
     pairsFar: pairs.far,
     pairsFarTotal: pairs.farTotal,
+    pairDist: pairs.dist,
+    pairR: Float32Array.from(r),
   };
+}
+
+/** Far points drawn in the scatter, at most. */
+export const MAX_FAR_DRAWN = 10000;
+/** Scatter x extent, soma diameters. */
+export const SCATTER_X_MAX = 6;
+
+export interface ScatterSelection {
+  /** Indices into `pairDist`/`pairR` of the points that fall inside the plot area. */
+  idx: Uint32Array;
+  /** Drawn near and far points. */
+  near: number;
+  far: number;
+  /** Candidate points beyond the x extent or the y range (not drawn). */
+  offX: number;
+  offY: number;
+}
+
+/**
+ * Points to draw: all near pairs and the first `maxFar` far pairs that fall
+ * inside the plot (the far sample is already random, so this is a uniform
+ * subsample), kept only inside `[0, xMax] x yRange`; the rest seen are counted
+ * as off-scale.
+ */
+export function selectScatter(
+  res: Pick<CorrDistanceResult, 'pairDist' | 'pairR' | 'pairsNear'>,
+  xMax: number,
+  yRange: readonly [number, number],
+  maxFar = MAX_FAR_DRAWN,
+): ScatterSelection {
+  const n = res.pairDist.length;
+  const idx = new Uint32Array(n);
+  let m = 0;
+  let near = 0;
+  let far = 0;
+  let offX = 0;
+  let offY = 0;
+  const cap = Math.max(0, Math.floor(maxFar));
+  for (let k = 0; k < n; k++) {
+    if (k >= res.pairsNear && far >= cap) break;
+    const d = res.pairDist[k];
+    const v = res.pairR[k];
+    if (!Number.isFinite(v)) continue;
+    if (d > xMax) offX++;
+    else if (v < yRange[0] || v > yRange[1]) offY++;
+    else {
+      idx[m++] = k;
+      if (k < res.pairsNear) near++;
+      else far++;
+    }
+  }
+  return { idx: idx.subarray(0, m), near, far, offX, offY };
 }

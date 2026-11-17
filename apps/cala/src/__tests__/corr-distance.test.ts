@@ -6,6 +6,7 @@ import {
   highPass,
   quantile,
   selectPairs,
+  selectScatter,
   somaDiameter,
 } from '../lib/corr-distance.ts';
 import { corrYRange } from '../components/CorrDistancePanel.tsx';
@@ -144,12 +145,48 @@ describe('computeCorrDistance', () => {
 describe('corrYRange', () => {
   const mk = (q25: number, q75: number) => ({
     farMedian: 0,
-    bins: [{ label: 'a', lo: 0, hi: 1, n: 3, median: 0, q25, q75 }],
+    bins: [{ label: 'a', lo: 0, hi: 1, n: 3, medianDist: 0.5, median: 0, q25, q75 }],
   });
   it('is fixed at -0.1..0.5 for ordinary data', () => {
     expect(corrYRange(mk(-0.05, 0.4))).toEqual([-0.1, 0.5]);
   });
   it('grows in steps of 0.1 only when the data needs it', () => {
     expect(corrYRange(mk(-0.23, 0.62))).toEqual([-0.3, 0.7]);
+  });
+});
+
+describe('scatter', () => {
+  it('returns per-pair typed arrays, near pairs first, and bin positions', () => {
+    const res = computeCorrDistance({
+      traces: new Float32Array(3 * 600).map((_, i) => Math.sin(i * 0.3) + ((i * 7919) % 13)),
+      cells: 3,
+      frames: 600,
+      fps: 1,
+      centers: [0, 0, 0, 1, 0, 50],
+      diameter: 1,
+      maxFar: 5,
+    });
+    expect(res.pairDist).toBeInstanceOf(Float32Array);
+    expect(res.pairR).toBeInstanceOf(Float32Array);
+    expect(res.pairDist.length).toBe(res.pairsNear + res.pairsFar);
+    expect(res.pairDist[0]).toBeLessThan(3);
+    expect(res.bins[1].medianDist).toBeNull();
+    expect(res.bins[7].medianDist!).toBeGreaterThan(3);
+  });
+  it('keeps points in range, caps far points and counts the rest', () => {
+    const dist = Float32Array.from([0.2, 1, 2.9, 3.5, 4, 5, 7, 8]);
+    const r = Float32Array.from([0.1, 0.9, 0.2, 0.3, -0.5, 0.1, 0.1, 0.1]);
+    const all = selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5]);
+    expect(Array.from(all.idx)).toEqual([0, 2, 3, 5]);
+    expect(all.near).toBe(2);
+    expect(all.far).toBe(2);
+    expect(all.offY).toBe(2);
+    expect(all.offX).toBe(2);
+    const capped = selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5], 1);
+    expect(capped.far).toBe(1);
+    expect(capped.idx.length).toBe(3);
+    expect(selectScatter({ pairDist: dist, pairR: r, pairsNear: 3 }, 6, [-0.1, 0.5], 1)).toEqual(
+      capped,
+    );
   });
 });

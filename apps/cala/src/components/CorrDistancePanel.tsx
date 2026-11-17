@@ -6,10 +6,15 @@
  * the pipeline. The y axis is fixed at -0.1 to 0.5 and only grows, in steps of
  * 0.1, when a bin's quartile falls outside it.
  */
-import { createSignal, For, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import { corrRequest, runCorrDistance } from '../lib/corr-distance-client.ts';
-import type { CorrDistanceResult } from '../lib/corr-distance.ts';
+import {
+  NEAR_D,
+  SCATTER_X_MAX,
+  selectScatter,
+  type CorrDistanceResult,
+} from '../lib/corr-distance.ts';
 
 const W = 360;
 const H = 210;
@@ -18,6 +23,7 @@ const PAD_R = 8;
 const PAD_T = 10;
 const PAD_B = 34;
 const COLOR = '#0072b2';
+const DOT = '#7f8c9a';
 
 /** The y range: -0.1 to 0.5, widened to the next 0.1 only when the data needs it. */
 export function corrYRange(res: Pick<CorrDistanceResult, 'bins' | 'farMedian'>): [number, number] {
@@ -32,7 +38,38 @@ export function corrYRange(res: Pick<CorrDistanceResult, 'bins' | 'farMedian'>):
 
 export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Element {
   const range = () => corrYRange(props.result);
-  const x = (i: number) => PAD_L + ((W - PAD_L - PAD_R) * (i + 0.5)) / props.result.bins.length;
+  // Continuous x in soma diameters (px when the footprint size is unknown).
+  const xMax = () => (props.result.diameterPx > 0 ? SCATTER_X_MAX : 2 * NEAR_D);
+  const xv = (d: number) => PAD_L + ((W - PAD_L - PAD_R) * Math.min(d, xMax())) / xMax();
+  const x = (i: number) => xv(props.result.bins[i].medianDist ?? 0);
+  const xTicks = () => Array.from({ length: xMax() + 1 }, (_, i) => i);
+  const sel = createMemo(() => selectScatter(props.result, xMax(), range()));
+  let canvas: HTMLCanvasElement | undefined;
+  createEffect(() => {
+    const s = sel();
+    const res = props.result;
+    const [lo, hi] = range();
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const scale = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+    canvas.width = W * scale;
+    canvas.height = H * scale;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = DOT;
+    ctx.globalAlpha = 0.22;
+    const px = (W - PAD_L - PAD_R) / xMax();
+    const py = (H - PAD_T - PAD_B) / (hi - lo);
+    for (let i = 0; i < s.idx.length; i++) {
+      const k = s.idx[i];
+      ctx.fillRect(
+        PAD_L + res.pairDist[k] * px - 0.9,
+        PAD_T + (hi - res.pairR[k]) * py - 0.9,
+        1.8,
+        1.8,
+      );
+    }
+  });
   const y = (v: number) => {
     const [lo, hi] = range();
     return PAD_T + (H - PAD_T - PAD_B) * (1 - (v - lo) / (hi - lo));
@@ -43,24 +80,51 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
     for (let v = lo; v <= hi + 1e-9; v += 0.1) out.push(Math.round(v * 10) / 10);
     return out;
   };
+  // A bin whose median distance lies beyond the x extent is not drawn (the far line covers it).
+  const shown = (i: number) =>
+    props.result.bins[i].median !== null && (props.result.bins[i].medianDist ?? 0) <= xMax();
   const path = () => {
     let d = '';
     props.result.bins.forEach((b, i) => {
-      if (b.median === null) return;
-      d += `${d ? 'L' : 'M'}${x(i).toFixed(1)},${y(b.median).toFixed(1)}`;
+      if (!shown(i)) return;
+      d += `${d ? 'L' : 'M'}${x(i).toFixed(1)},${y(b.median!).toFixed(1)}`;
     });
     return d;
   };
   const unit = () => (props.result.diameterPx > 0 ? 'soma diameters' : 'px (no footprint size)');
   return (
     <figure class="cala-corr__plot" data-testid="corr-plot">
+      <canvas
+        ref={canvas}
+        class="cala-corr__scatter"
+        data-testid="corr-scatter"
+        data-points={sel().idx.length}
+        aria-hidden="true"
+      />
       <svg
+        class="cala-corr__svg"
         viewBox={`0 0 ${W} ${H}`}
         role="img"
         aria-label={`Pairwise trace correlation against centre distance: ${props.result.bins
           .map((b) => `${b.label} ${b.median === null ? 'none' : b.median.toFixed(2)}`)
           .join(', ')}`}
       >
+        <For each={xTicks()}>
+          {(v) => (
+            <>
+              <line class="cala-corr__grid" x1={xv(v)} x2={xv(v)} y1={PAD_T} y2={H - PAD_B} />
+              <text
+                class="cala-corr__tick"
+                x={xv(v)}
+                y={H - PAD_B + 12}
+                text-anchor="middle"
+                data-testid="corr-x-tick"
+              >
+                {v === xMax() ? `${v}+` : v}
+              </text>
+            </>
+          )}
+        </For>
         <For each={ticks()}>
           {(v) => (
             <>
@@ -91,7 +155,7 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
         <For each={props.result.bins}>
           {(b, i) => (
             <>
-              <Show when={b.median !== null}>
+              <Show when={shown(i())}>
                 <line
                   x1={x(i())}
                   x2={x(i())}
@@ -100,21 +164,20 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
                   stroke={COLOR}
                   stroke-width="1.5"
                 />
-                <circle cx={x(i())} cy={y(b.median!)} r={3.5} fill={COLOR}>
+                <circle
+                  cx={x(i())}
+                  cy={y(b.median!)}
+                  r={3.5}
+                  fill={COLOR}
+                  stroke="#fff"
+                  stroke-width="1"
+                  data-testid="corr-bin-dot"
+                >
                   <title>
                     {`${b.label} D: median ${b.median!.toFixed(3)}, IQR ${b.q25!.toFixed(3)} to ${b.q75!.toFixed(3)}, ${b.n.toLocaleString()} pairs`}
                   </title>
                 </circle>
               </Show>
-              <text
-                class="cala-corr__tick"
-                x={x(i())}
-                y={H - PAD_B + 12}
-                text-anchor="middle"
-                data-testid="corr-bin-label"
-              >
-                {b.label}
-              </text>
             </>
           )}
         </For>
@@ -129,6 +192,13 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
           pairwise r (high-passed)
         </text>
       </svg>
+      <figcaption class="cala-muted" data-testid="corr-scatter-note">
+        {sel().near.toLocaleString()} near and {sel().far.toLocaleString()} far pairs drawn
+        {sel().offX + sel().offY > 0
+          ? `; ${(sel().offX + sel().offY).toLocaleString()} off-scale (${sel().offY.toLocaleString()} outside the r range, ${sel().offX.toLocaleString()} beyond ${xMax()} ${props.result.diameterPx > 0 ? 'D' : 'px'})`
+          : ''}
+        .
+      </figcaption>
     </figure>
   );
 }
@@ -189,14 +259,16 @@ export function CorrDistancePanel(props: { cells: CellStore }): JSX.Element {
           <>
             <CorrDistancePlot result={r()} />
             <p class="cala-muted" data-testid="corr-caption">
-              Dots: median r per distance bin, bars: interquartile range. Dotted line: median r of
-              far pairs (1.5-3 soma diameters apart), the level expected with no leak between cells.
+              Grey points: individual pairs. Blue dots: median r per distance bin, at the bin's
+              median distance, bars: interquartile range (a bin centred beyond 6 D is left out).
+              Dotted line: median r of far pairs (1.5-3 soma diameters apart), the level expected
+              with no leak between cells.
             </p>
             <p class="cala-muted" data-testid="corr-readout">
               {r().cells} cells, {r().frames.toLocaleString()} frames; D ={' '}
               {r().diameterPx > 0 ? `${r().diameterPx.toFixed(1)} px` : 'unknown'}; pairs: all{' '}
               {r().pairsNear.toLocaleString()} within 3 D plus {r().pairsFar.toLocaleString()} of{' '}
-              {r().pairsFarTotal.toLocaleString()} farther
+              {r().pairsFarTotal.toLocaleString()} farther (at most 10,000 of them drawn)
               {r().skipped > 0 ? `; ${r().skipped} cells skipped (too short or flat)` : ''}
               {r().ms !== undefined ? `; ${Math.round(r().ms!)} ms` : ''}.
             </p>
