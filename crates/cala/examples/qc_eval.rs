@@ -85,6 +85,9 @@
 //!                      estimate's split-half noise, Î > 0) | legacy (χ²
 //!                      disagreement and refine_min_change, the rule
 //!                      before S2.1c)
+//!   --refine-z Z       held-out paired z a statistics-path refinement must
+//!                      exceed (default 0: any held-out gain; 3 = the gate
+//!                      before the refine-gate fix)
 //!   --merge-rule M     which merge tests may merge: split-half (default;
 //!                      a pair overlapping less than ½ must also be one
 //!                      soma by the cells' split-half measured light) |
@@ -3310,6 +3313,10 @@ fn main() {
             "split-half" => RefineGate::SplitHalf,
             other => panic!("--refine-gate: legacy|split-half, not {other}"),
         };
+    }
+    if let Some(v) = arg_value(&args, "--refine-z") {
+        scfg.refine_z = v.parse().unwrap();
+        println!("refine z: {}", scfg.refine_z);
     }
     if let Some(v) = arg_value(&args, "--merge-rule") {
         scfg.merge_rule = match v.as_str() {

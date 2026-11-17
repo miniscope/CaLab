@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: neighbouring footprints are no longer left "bitten". A cell found after its neighbour was born without the light under that neighbour's centre and kept the hole, which leaked its events into the neighbour's trace. The refine gate now accepts a refinement from the running statistics when it lowers the held-out error at all (`SlowLoopConfig::refine_z` 3 → 0; the split-half test still applies, reservoir refinements keep `absorb_z`). On the dense static sims the footprint value at a neighbour 0.75-1 soma diameter away goes from 0.00 to 0.51 of truth (pairs sims: 0.11 → 0.61), trace leak there falls by a fifth to two fifths and close-pair trace correlation excess by about a fifth, with matched cells 991 → 1016 and no more false cells; Refine passes accept about 5× more (small) refinements. Discover is affected as well as Refine. `qc_eval --refine-z` sets it for comparison. See `tools/cala-eval/results/2026-11-17-refine-gate-refill.md`.
+
 ## [2.19.1] - 2026-11-16
 
 Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
