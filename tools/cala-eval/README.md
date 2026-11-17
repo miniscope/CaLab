@@ -182,6 +182,19 @@ also gives the footprint a skirt: unfiltered light per 8 px moat block on the
 rest of the statistics disk, solved so that the column (the filter of support
 plus skirt, whose low-pass reaches the moat) matches the measured light there.
 
+## Shadow fill
+
+`qc_eval --shadow-fill off|min|median` (`SlowLoopConfig::shadow_fill`, default
+`off`, needs a basin support rule) raises a statistics-path footprint inside
+the half-max core of an already-modelled neighbour to a floor taken from the
+footprint itself: the minimum (`min`) or median (`median`, benchmark arm) of
+its values on the same 1 px ring around its peak on the side facing away from
+that neighbour, made non-increasing outward. It runs in `finish_basin`, after
+the inversion and before the skirt, so Discover, Refine, the absorb
+alternative and the split competitor all see it. Pixels are only ever raised;
+isolated cells and undetected neighbours are untouched. `qc_eval` prints the
+filled constructions, pixels and mean mass added when it is on.
+
 ## Refine gate (S2.1c)
 
 `qc_eval --refine-gate legacy|split-half` picks when the statistics path

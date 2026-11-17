@@ -2588,3 +2588,350 @@ fn merge_rules_match_jobs() {
         assert_eq!(s, b.stats(), "{rule:?}");
     }
 }
+
+// ---- Neighbour-shadow ring floor (`ShadowFill`) ----
+
+const SH_SIDE: usize = 96;
+/// Peak position of the cell under test and the soma sigma (D ~ 7 px).
+const SH_CY: f32 = 48.0;
+const SH_CX: f32 = 44.0;
+const SH_S: f32 = 3.0;
+/// Neighbour offset along x: 0.85 soma diameters (D = 2.355 sigma).
+const SH_D: f32 = 6.0;
+
+/// A library cell of a Gaussian (peak 1) on the full frame.
+fn lib_cell(slow: &mut SlowLoop, id: u64, cy: f32, cx: f32, s: f32) -> Cell {
+    let a = gauss(SH_SIDE, cy, cx, s, 1.0, 1.0);
+    Cell::from_canvas(
+        id,
+        full(SH_SIDE),
+        &a,
+        slow.dims,
+        &slow.fov,
+        &slow.cfg.library,
+        Extent::Seed,
+        &mut slow.filter,
+        &[],
+    )
+    .unwrap()
+}
+
+/// One statistics-path construction of the cell at (`SH_CY`, `SH_CX`) from
+/// the unfiltered `truth` footprint, with the neighbours (`cy`, `cx`, `s`)
+/// already in the library. Returns the cell and the loop.
+fn shadow_build(
+    fill: ShadowFill,
+    truth: &[f32],
+    neighbours: &[(f32, f32, f32)],
+    prep: impl FnOnce(&mut SlowLoop),
+) -> (Cell, SlowLoop) {
+    let mut slow = basin_loop(SH_SIDE, SupportRule::BasinSkirt);
+    slow.cfg.shadow_fill = fill;
+    prep(&mut slow);
+    for (k, &(cy, cx, s)) in neighbours.iter().enumerate() {
+        let c = lib_cell(&mut slow, 100 + k as u64, cy, cx, s);
+        slow.cells.push(c);
+    }
+    let h_true = filtered(SH_SIDE, truth);
+    let mut rng = Lcg(3);
+    let (h, halves) = measure(&h_true, 0.5, &mut rng);
+    let (pix, _) = disk_mask(SH_SIDE, SH_CY, SH_CX, 22.0);
+    let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+    let mut start = skirt_cell(&[]);
+    start.pix = vec![(SH_CY as usize * SH_SIDE + SH_CX as usize) as u32];
+    start.raw = vec![1.0];
+    slow.support_tmp = Some((
+        pix.clone(),
+        pick(&halves.0),
+        pick(&halves.1),
+        halves.2,
+        halves.3,
+    ));
+    let cell = slow
+        .make_cell_global(1, &pix, &pick(&h), Some(&start), Some(0.5))
+        .unwrap();
+    (cell, slow)
+}
+
+fn raw_at(c: &Cell, y: usize, x: usize) -> f32 {
+    let g = (y * SH_SIDE + x) as u32;
+    c.pix.binary_search(&g).map_or(0.0, |k| c.raw[k])
+}
+
+/// The cell's own footprint `A` (amp 20) and a neighbour footprint `B` at
+/// `SH_D` to the right.
+fn shadow_pair(wb: f32) -> (Vec<f32>, Vec<f32>) {
+    (
+        gauss(SH_SIDE, SH_CY, SH_CX, SH_S, 1.0, 20.0),
+        gauss(SH_SIDE, SH_CY, SH_CX + SH_D, SH_S, 1.0, wb),
+    )
+}
+
+fn minus(a: &[f32], b: &[f32], k: f32) -> Vec<f32> {
+    a.iter().zip(b).map(|(x, y)| x - k * y).collect()
+}
+
+/// Test 1: with the fill off, a neighbour in the library changes nothing,
+/// and the default is off.
+#[test]
+fn shadow_off_is_identical_and_default() {
+    assert_eq!(SlowLoopConfig::default().shadow_fill, ShadowFill::Off);
+    let (a, b) = shadow_pair(20.0);
+    let truth = minus(&a, &b, 0.15);
+    let (with, slow) = shadow_build(
+        ShadowFill::Off,
+        &truth,
+        &[(SH_CY, SH_CX + SH_D, SH_S)],
+        |_| {},
+    );
+    let (without, _) = shadow_build(ShadowFill::Off, &truth, &[], |_| {});
+    assert_eq!(with.pix, without.pix);
+    assert_eq!(with.raw, without.raw);
+    assert_eq!(slow.shadow_diag, (0, 0, 0.0));
+}
+
+/// Test 2: an isolated cell is bit-identical with the fill on.
+#[test]
+fn shadow_isolated_cell_is_bit_identical() {
+    let (a, b) = shadow_pair(20.0);
+    let truth = minus(&a, &b, 0.15);
+    for fill in [ShadowFill::Min, ShadowFill::Median] {
+        let (on, slow) = shadow_build(fill, &truth, &[], |_| {});
+        let (off, _) = shadow_build(ShadowFill::Off, &truth, &[], |_| {});
+        assert_eq!(on.pix, off.pix);
+        assert_eq!(on.raw, off.raw);
+        assert_eq!(on.filt, off.filt);
+        assert_eq!(slow.shadow_diag, (0, 0, 0.0));
+        // A neighbour far away (core off the disk) is the same as none.
+        let (far, slow) = shadow_build(fill, &truth, &[(10.0, 10.0, SH_S)], |_| {});
+        assert_eq!(far.raw, off.raw);
+        assert_eq!(slow.shadow_diag, (0, 0, 0.0));
+    }
+}
+
+/// Test 3: a bite at a library neighbour is filled, from below, and no pixel
+/// is ever reduced.
+#[test]
+fn shadow_deficit_bite_is_filled() {
+    let (a, b) = shadow_pair(20.0);
+    let truth = minus(&a, &b, 0.15);
+    let nb = [(SH_CY, SH_CX + SH_D, SH_S)];
+    let (off, _) = shadow_build(ShadowFill::Off, &truth, &nb, |_| {});
+    let (on, slow) = shadow_build(ShadowFill::Min, &truth, &nb, |_| {});
+    let (y, x) = (SH_CY as usize, (SH_CX + SH_D) as usize);
+    let mirror = raw_at(&off, y, (SH_CX - SH_D) as usize);
+    assert!(mirror > 0.0);
+    let before = raw_at(&off, y, x);
+    let after = raw_at(&on, y, x);
+    assert!(before < 0.5 * mirror, "bite {before} vs mirror {mirror}");
+    assert!(
+        after >= 0.5 * mirror && after <= 1.0 * mirror,
+        "filled {after} vs mirror {mirror}"
+    );
+    assert!(slow.shadow_diag.0 >= 1 && slow.shadow_diag.1 > 0);
+    // Never lowers a pixel.
+    for (&g, &v) in off.pix.iter().zip(&off.raw) {
+        let k = on.pix.binary_search(&g).expect("support only grows");
+        assert!(on.raw[k] >= v - 1e-6, "pixel {g}: {v} -> {}", on.raw[k]);
+    }
+}
+
+/// Test 4: an excess (the neighbour's light added to the cell) is not made
+/// larger, and the second peak is still counted.
+#[test]
+fn shadow_excess_is_not_absorbed() {
+    let (a, b) = shadow_pair(20.0);
+    let truth: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x + 0.3 * y).collect();
+    let nb = [(SH_CY, SH_CX + SH_D, SH_S)];
+    let (off, so) = shadow_build(ShadowFill::Off, &truth, &nb, |_| {});
+    let (on, sn) = shadow_build(ShadowFill::Min, &truth, &nb, |_| {});
+    let (y, x) = (SH_CY as usize, (SH_CX + SH_D) as usize);
+    let mirror = raw_at(&on, y, (SH_CX - SH_D) as usize);
+    assert!(raw_at(&on, y, x) >= raw_at(&off, y, x) - 1e-6);
+    assert!(
+        raw_at(&on, y, x) <= raw_at(&off, y, x).max(mirror) + 1e-6,
+        "the floor adds at most the mirror value"
+    );
+    // The fill never touches the second-peak bookkeeping.
+    assert_eq!(so.basin_diag.2, sn.basin_diag.2);
+}
+
+/// Test 4b: a notch wider than the neighbour's core (1.25x its radius) is
+/// filled over the core.
+#[test]
+fn shadow_bite_wider_than_the_core_is_filled() {
+    let (a, b) = shadow_pair(20.0);
+    let mut truth = minus(&a, &b, 0.15);
+    // Zero the light on a patch 1.25 times the core radius (core r ~ 1.18
+    // sigma; a bigger notch swallows this cell's own peak, 6 px away, and the ring floor
+    // is a noisy minimum at these amplitudes).
+    let r = 1.25 * 1.18 * SH_S;
+    for (i, v) in truth.iter_mut().enumerate() {
+        let (dy, dx) = (
+            (i / SH_SIDE) as f32 - SH_CY,
+            (i % SH_SIDE) as f32 - (SH_CX + SH_D),
+        );
+        if dy * dy + dx * dx <= r * r {
+            *v = 0.0;
+        }
+    }
+    let nb = [(SH_CY, SH_CX + SH_D, SH_S)];
+    let (off, _) = shadow_build(ShadowFill::Off, &truth, &nb, |_| {});
+    let (on, _) = shadow_build(ShadowFill::Min, &truth, &nb, |_| {});
+    let (y, x) = (SH_CY as usize, (SH_CX + SH_D) as usize);
+    let mirror = raw_at(&off, y, (SH_CX - SH_D) as usize);
+    assert!(raw_at(&off, y, x) < 0.5 * mirror);
+    assert!(
+        raw_at(&on, y, x) > 0.5 * mirror,
+        "{} vs mirror {mirror}",
+        raw_at(&on, y, x)
+    );
+}
+
+/// Test 5: light of an undetected neighbour (not in the library) is neither
+/// support nor skirt, with the fill on.
+#[test]
+fn shadow_undetected_neighbour_keeps_the_existing_path() {
+    let a: Vec<f32> = gauss(SH_SIDE, 48.0, 44.0, 2.5, 1.0, 20.0)
+        .iter()
+        .zip(gauss(SH_SIDE, 48.0, 58.0, 2.5, 1.0, 20.0))
+        .map(|(&v, w)| v + w)
+        .collect();
+    // The only library cell is far from both.
+    let (on, slow) = shadow_build(ShadowFill::Min, &a, &[(20.0, 20.0, 2.5)], |_| {});
+    let (off, _) = shadow_build(ShadowFill::Off, &a, &[], |_| {});
+    assert_eq!(on.raw, off.raw);
+    assert_eq!(on.pix, off.pix);
+    assert!(slow.basin_diag.2 >= 1, "second peak counted");
+    assert_eq!(slow.shadow_diag, (0, 0, 0.0));
+    let g2 = (48 * SH_SIDE + 58) as u32;
+    assert!(on.pix.binary_search(&g2).map_or(true, |k| on.raw[k] == 0.0));
+}
+
+/// Test 6: a 2:1 cell with the neighbour across its long axis is not
+/// filled beyond its own profile.
+#[test]
+fn shadow_elongated_cell_is_not_overfilled() {
+    // Long axis along x (sigma 2 s), the neighbour above, across the axis.
+    let a = gauss(SH_SIDE, SH_CY, SH_CX, SH_S, 2.0, 20.0);
+    let b = gauss(SH_SIDE, SH_CY - SH_D, SH_CX, SH_S, 1.0, 20.0);
+    let truth = minus(&a, &b, 0.15);
+    let nb = [(SH_CY - SH_D, SH_CX, SH_S)];
+    let (on, _) = shadow_build(ShadowFill::Min, &truth, &nb, |_| {});
+    let (y, x) = ((SH_CY - SH_D) as usize, SH_CX as usize);
+    let true_here = a[y * SH_SIDE + x] / 20.0;
+    assert!(
+        raw_at(&on, y, x) <= true_here + 0.1,
+        "{} vs truth {true_here}",
+        raw_at(&on, y, x)
+    );
+}
+
+/// Test 7: off-FOV pixels are unmeasured, not dark: part of the ring off the
+/// FOV does not zero the floor.
+#[test]
+fn shadow_lens_edge_does_not_zero_the_floor() {
+    let (a, b) = shadow_pair(20.0);
+    let truth = minus(&a, &b, 0.15);
+    let nb = [(SH_CY, SH_CX + SH_D, SH_S)];
+    let cut = |slow: &mut SlowLoop| {
+        for y in 0..SH_SIDE {
+            for x in 0..40 {
+                slow.fov[y * SH_SIDE + x] = 0;
+            }
+        }
+    };
+    let (on, slow) = shadow_build(ShadowFill::Min, &truth, &nb, cut);
+    let (off, _) = shadow_build(ShadowFill::Off, &truth, &nb, cut);
+    let (y, x) = (SH_CY as usize, (SH_CX + SH_D) as usize);
+    assert!(slow.shadow_diag.1 > 0, "something was filled");
+    assert!(raw_at(&on, y, x) > raw_at(&off, y, x) + 0.05);
+}
+
+/// Test 8: visits run as jobs match `step` with the fill on and an
+/// overlapping pair in the scene (`busy_movie` has one).
+#[test]
+fn shadow_fill_visits_run_as_jobs_match_step_exactly() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        shadow_fill: ShadowFill::Min,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    assert_eq!(a.stats(), b.stats());
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// Test 9: the existing support tests hold with the fill on.
+#[test]
+fn shadow_fill_two_real_adjacent_cells_are_not_merged() {
+    let t = 2000;
+    let mut rng = Lcg(71);
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 49.0, 50.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 73);
+    let cfg = SlowLoopConfig {
+        shadow_fill: ShadowFill::Min,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 45.0, 44.0), blob(2, 49.0, 50.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 2, "stats {:?}", slow.stats());
+    assert_eq!(slow.stats().merges, 0, "stats {:?}", slow.stats());
+}
+
+#[test]
+fn shadow_fill_keeps_supports_bounded_and_shrinking() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        shadow_fill: ShadowFill::Min,
+        ..shard_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &seed);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let pass1 = largest_support(&slow);
+    slow.set_edit_scope(EditScope::Refine);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert!(slow.stats().refines > 0, "{:?}", slow.stats());
+    assert!(largest_support(&slow) <= pass1);
+
+    let t = 3000;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 48.0, 48.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let wide = blob_w(1, 48.0, 48.0, 6.0);
+    let cfg = SlowLoopConfig {
+        shadow_fill: ShadowFill::Min,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, std::slice::from_ref(&wide));
+    let before = largest_support(&slow);
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert!((largest_support(&slow) as f64) < 0.6 * before as f64);
+}

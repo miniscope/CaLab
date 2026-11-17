@@ -303,6 +303,27 @@ pub enum SupportRule {
     BasinSkirt,
 }
 
+/// Neighbour-shadow ring floor on a statistics-path footprint. Inside the
+/// half-max core of a library neighbour the cell's light is not separately
+/// measurable (the neighbour's trace absorbs it and the pixel reads low or
+/// not significant), so the footprint is raised there to a lower bound taken
+/// from itself: what it does at the same distance from its peak on the side
+/// facing away from that neighbour. It only ever raises a pixel, adds no size
+/// cap and leaves isolated cells and undetected neighbours exactly as they
+/// were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShadowFill {
+    /// No fill (the default).
+    #[default]
+    Off,
+    /// The floor is the minimum over the reference pixels of each 1 px ring
+    /// (a lower bound; the intended rule).
+    Min,
+    /// The floor is the median over the reference pixels of each ring
+    /// (benchmark arm only: it over-fills elongated cells).
+    Median,
+}
+
 /// When the statistics path proposes a refinement (S2.1c, the minimal
 /// refine gate). Absorptions, merges and the reservoir path are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -537,6 +558,9 @@ pub struct SlowLoopConfig {
     /// `BasinSkirt` is the default, `Rings` the rule above. The basin rules
     /// need `core_test` off and no `basin_trim`.
     pub support_rule: SupportRule,
+    /// Neighbour-shadow ring floor ([`ShadowFill`]); `Off` is the default.
+    /// Needs a basin support rule.
+    pub shadow_fill: ShadowFill,
     /// Family-wise error rate of one support construction under the basin
     /// rules: the probability that it admits at least one pixel without
     /// light (Bonferroni over the tested pixels). Edits of the cell set
@@ -653,6 +677,7 @@ impl Default for SlowLoopConfig {
             stats_min_snr: 4.0,
             support_z: 2.0,
             support_rule: SupportRule::BasinSkirt,
+            shadow_fill: ShadowFill::Off,
             support_alpha: 0.05,
             refine_z: 3.0,
             absorb_z: 3.0,
@@ -720,6 +745,7 @@ impl SlowLoopConfig {
             && self.support_alpha < 1.0
             && (self.support_rule == SupportRule::Rings
                 || (self.core_test == CoreTest::Off && !self.basin_trim))
+            && (self.shadow_fill == ShadowFill::Off || self.support_rule != SupportRule::Rings)
             && self.refine_z.is_finite()
             && self.absorb_z.is_finite()
             && self.absorb_share.is_finite()
@@ -842,6 +868,9 @@ pub struct SlowLoop {
     psf: LocalFilter,
     /// DIAG counters of the basin rule: calls, light removed (sum of fractions), second significant peaks.
     pub basin_diag: (u64, f64, u64),
+    /// DIAG counters of the shadow fill: constructions that filled at least
+    /// one pixel, filled pixels, and the summed share of footprint mass added.
+    pub shadow_diag: (u64, u64, f64),
     /// Transient-band estimate (on the statistics disk), its
     /// measured standard error and the held-out core (if one passed) for
     /// the next `finish_cell`.
@@ -1185,6 +1214,7 @@ impl SlowLoop {
             smooth: LocalFilter::new((cfg.cell_diameter_px / 10.0).max(0.6)),
             psf: LocalFilter::new(cfg.psf_sigma_px),
             basin_diag: (0, 0.0, 0),
+            shadow_diag: (0, 0, 0.0),
             fast_tmp: None,
             support_tmp: None,
             fast_checked: HashMap::new(),
@@ -3414,6 +3444,9 @@ impl SlowLoop {
         self.filter
             .invert(canvas.h, canvas.w, &ms.s0, target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
+        if self.cfg.shadow_fill != ShadowFill::Off {
+            self.shadow_fill(id, canvas, mask, &ms, &mut a);
+        }
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) {
             return None;
@@ -3442,6 +3475,152 @@ impl SlowLoop {
             }
         }
         cell
+    }
+
+    /// The neighbour-shadow ring floor ([`ShadowFill`]) on the unfiltered
+    /// footprint `a` (after the inversion, before the skirt). For every other
+    /// library cell `j` whose half-max core meets the statistics disk and does
+    /// not contain the peak `p0`: the reference is the statistics-disk pixels
+    /// in the half-plane facing away from `j`, outside every neighbour core and
+    /// outside the undetected light `x`, on the FOV (off-disk and off-FOV
+    /// pixels are unmeasured, not dark; pixels outside the basin count as 0).
+    /// The floor `m_j(ρ)` is the minimum (or median) of `a` over the reference
+    /// pixels of the 1 px ring `ρ` around `p0`, made non-increasing outward
+    /// (0 where a ring has no reference pixel). Each pixel of `core_j` on the
+    /// statistics disk, 4-connected to `p0` through `{a > 0}` and the other
+    /// candidates, is raised to `max(a, m_j(ρ))`. Pixels are only ever raised.
+    /// Returns the number of filled pixels and the share of mass added.
+    fn shadow_fill(
+        &mut self,
+        id: u64,
+        canvas: Rect,
+        mask: &[bool],
+        ms: &MeasuredSupport,
+        a: &mut [f32],
+    ) -> (usize, f64) {
+        let (ch, cw, n) = (canvas.h, canvas.w, canvas.len());
+        let w = self.dims.width;
+        // Neighbour cores on the canvas (half of the neighbour's peak).
+        let mut cores: Vec<(Vec<bool>, (f32, f32))> = Vec::new();
+        for c in self.cells.iter().filter(|c| c.id != id) {
+            let top = c.raw.iter().copied().fold(0.0f32, f32::max);
+            if !(top > 0.0) {
+                continue;
+            }
+            let mut core = vec![false; n];
+            let mut any = false;
+            for (&g, &v) in c.pix.iter().zip(&c.raw) {
+                if v >= 0.5 * top {
+                    if let Some(l) = canvas.local(g as usize / w, g as usize % w) {
+                        if mask[l] {
+                            core[l] = true;
+                            any = true;
+                        }
+                    }
+                }
+            }
+            if any {
+                cores.push((core, c.center));
+            }
+        }
+        if cores.is_empty() {
+            return (0, 0.0);
+        }
+        // The peak of the footprint.
+        let Some(p0) = (0..n)
+            .filter(|&p| a[p] > 0.0)
+            .max_by(|&i, &j| a[i].total_cmp(&a[j]))
+        else {
+            return (0, 0.0);
+        };
+        let (py, px) = ((p0 / cw) as f32, (p0 % cw) as f32);
+        let in_any_core: Vec<bool> = (0..n).map(|p| cores.iter().any(|(c, _)| c[p])).collect();
+        let valid: Vec<bool> = (0..n)
+            .map(|p| mask[p] && self.fov[(canvas.y0 + p / cw) * w + canvas.x0 + p % cw] != 0)
+            .collect();
+        let rho: Vec<usize> = (0..n)
+            .map(|p| {
+                let (dy, dx) = ((p / cw) as f32 - py, (p % cw) as f32 - px);
+                dy.hypot(dx).round() as usize
+            })
+            .collect();
+        let nr = rho.iter().copied().max().unwrap_or(0) + 1;
+        let before: f64 = a.iter().map(|&v| f64::from(v.max(0.0))).sum();
+        let base: Vec<f32> = a.to_vec();
+        let median = self.cfg.shadow_fill == ShadowFill::Median;
+        let mut filled = vec![false; n];
+        for (core, (cy, cx)) in &cores {
+            if core[p0] {
+                continue; // the peak lies inside the neighbour's core
+            }
+            let (vy, vx) = (*cy - canvas.y0 as f32 - py, *cx - canvas.x0 as f32 - px);
+            // Reference pixels per ring, away from the neighbour.
+            let mut rings: Vec<Vec<f32>> = vec![Vec::new(); nr];
+            for p in 0..n {
+                if !valid[p] || in_any_core[p] || ms.x[p] {
+                    continue;
+                }
+                let (dy, dx) = ((p / cw) as f32 - py, (p % cw) as f32 - px);
+                if dy * vy + dx * vx <= 0.0 {
+                    rings[rho[p]].push(if ms.s0[p] { base[p].max(0.0) } else { 0.0 });
+                }
+            }
+            let mut m = vec![0.0f32; nr];
+            let mut last = f32::INFINITY;
+            for (k, r) in rings.iter_mut().enumerate() {
+                if r.is_empty() {
+                    m[k] = 0.0;
+                    continue;
+                }
+                let v = if median {
+                    r.sort_by(f32::total_cmp);
+                    r[r.len() / 2]
+                } else {
+                    r.iter().copied().fold(f32::INFINITY, f32::min)
+                };
+                last = last.min(v);
+                m[k] = last;
+            }
+            // Flood from the peak through {a > 0} and the candidates.
+            let cand = |p: usize| core[p] && valid[p] && m[rho[p]] > 0.0;
+            let mut seen = vec![false; n];
+            let mut stack = vec![p0];
+            seen[p0] = true;
+            while let Some(p) = stack.pop() {
+                if cand(p) && m[rho[p]] > a[p] {
+                    a[p] = m[rho[p]];
+                    filled[p] = true;
+                }
+                let (y, x) = (p / cw, p % cw);
+                let mut push = |q: usize| {
+                    if !seen[q] && (base[q] > 0.0 || a[q] > 0.0 || cand(q)) {
+                        seen[q] = true;
+                        stack.push(q);
+                    }
+                };
+                if y > 0 {
+                    push(p - cw);
+                }
+                if y + 1 < ch {
+                    push(p + cw);
+                }
+                if x > 0 {
+                    push(p - 1);
+                }
+                if x + 1 < cw {
+                    push(p + 1);
+                }
+            }
+        }
+        let count = filled.iter().filter(|&&f| f).count();
+        let added: f64 = a.iter().map(|&v| f64::from(v.max(0.0))).sum::<f64>() - before;
+        let share = if before > 0.0 { added / before } else { 0.0 };
+        if count > 0 {
+            self.shadow_diag.0 += 1;
+            self.shadow_diag.1 += count as u64;
+            self.shadow_diag.2 += share;
+        }
+        (count, share)
     }
 
     /// The skirt (S2.1 section 4.2): per moat-grid block, the unfiltered

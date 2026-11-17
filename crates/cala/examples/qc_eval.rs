@@ -79,6 +79,10 @@
 //!   --support-rule R   how the footprint statistics measure a support:
 //!                      basin-skirt (default) | basin | rings (the rule
 //!                      before S2.1)
+//!   --shadow-fill M    neighbour-shadow ring floor: off (default) | min |
+//!                      median (benchmark arm); raises a footprint inside the
+//!                      half-max core of a library neighbour to its own floor
+//!                      on the side facing away (needs a basin support rule)
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --refine-gate G    when the statistics path proposes a refinement:
 //!                      split-half (default; the change exceeds the
@@ -280,8 +284,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
-    VisitRunner,
+    CoreTest, EditScope, MergeRule, RefineGate, ShadowFill, SlowLoop, SlowLoopConfig, SupportRule,
+    VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3301,6 +3305,14 @@ fn main() {
             other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
         };
     }
+    if let Some(v) = arg_value(&args, "--shadow-fill") {
+        scfg.shadow_fill = match v.as_str() {
+            "off" => ShadowFill::Off,
+            "min" => ShadowFill::Min,
+            "median" => ShadowFill::Median,
+            other => panic!("--shadow-fill: off|min|median, not {other}"),
+        };
+    }
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
     }
@@ -4363,6 +4375,14 @@ fn main() {
             println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
             std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
             std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
+        }
+        if sl.config().shadow_fill != ShadowFill::Off {
+            let (c, px, share) = sl.shadow_diag;
+            println!(
+                "shadow fill {:?}: {c} constructions filled, {px} pixels, mean mass added {:.3}",
+                sl.config().shadow_fill,
+                if c > 0 { share / c as f64 } else { 0.0 }
+            );
         }
         if sl.config().basin_trim || sl.config().support_rule != SupportRule::Rings {
             let (c, f, s2) = sl.basin_diag;

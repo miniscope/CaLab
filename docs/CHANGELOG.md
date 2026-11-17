@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala (`crates/cala`): an optional neighbour-shadow ring floor on footprints estimated from the statistics (`SlowLoopConfig::shadow_fill`, `ShadowFill::Off` (default) | `Min` | `Median`; `qc_eval --shadow-fill off|min|median`). Inside the half-max core of a library neighbour the cell's own light is not separately measurable (the neighbour's trace absorbs it, so the footprint is bitten there); the footprint is raised to what it does at the same distance from its peak on the side facing away from that neighbour (minimum over each 1 px ring; `Median` is a benchmark arm). It only ever raises a pixel, adds no size cap or penalty, and leaves isolated cells and not-yet-detected neighbours exactly as before. The default is `Off`, so the product is unchanged; measurements in `tools/cala-eval/results/2026-11-16-shadow-fill.md`.
+
 ## [2.19.1] - 2026-11-16
 
 Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
