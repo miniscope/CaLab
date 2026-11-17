@@ -75,8 +75,8 @@ few batches of frames is plenty.
 
 The field of view fills the left of the window, as tall as the window allows. The
 right-hand column has the **run strip** at the top, always in view, and below it one
-row of tabs: **Run**, **Cell**, **QC**, **History**, **Flat field**, **Timing**,
-**Raw file** and **Recording**. One tab shows at a time, with the column's whole
+row of tabs: **Run**, **Cell**, **QC**, **History**, **Correlation**, **Flat field**,
+**Timing**, **Raw file** and **Recording**. One tab shows at a time, with the column's whole
 height. Selecting a cell (in the field of view, the QC table or a neighbour link)
 opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
 first and last), and the app remembers the tab you were on. Below about 1000 px of
@@ -134,9 +134,22 @@ window that takes the rest of the tab's height; **Demixing** shows the overlappi
 neighbours. The arrows step through the cells by id.
 
 **The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
-and filter stay while you look at other tabs), **History** (see below), **Flat field**,
+and filter stay while you look at other tabs), **History** (see below), **Correlation** (the
+pairwise trace correlation against distance plot; see below), **Flat field**,
 **Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
 recording as read from disk) and **Recording**.
+
+**Correlation tab.** A check for incomplete demixing of neighbouring cells. Press
+**Compute** (once, on demand; it never runs with the pipeline, and **Recompute**
+repeats it): for every pair of cells it takes the Pearson correlation of their traces
+(each minus a 15 s moving average) and plots the median per bin of centre distance,
+in soma diameters D (the median equivalent diameter of the footprints at half
+maximum), with the interquartile range as bars. Cells that share no signal sit near 0;
+excess correlation at close range means light is shared between neighbours' traces.
+The dotted line is the median r of far pairs (1.5-3 D apart), the level expected with
+no leak. The y axis is fixed at -0.1 to 0.5 and widens (in 0.1 steps) only when a bar
+falls outside it. After Extract the traces cover the whole recording; before that they
+cover the frames each cell has been tracked.
 
 ## The History view: how the run evolves
 

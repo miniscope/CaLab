@@ -113,6 +113,22 @@ counts:
 
 The export's `meta_json.stages` holds the same records (format version 3).
 
+## Correlation vs distance
+
+The Correlation tab (`components/CorrDistancePanel.tsx`, math in
+`lib/corr-distance.ts`) plots the median Pearson r of cell-trace pairs against their
+centre distance, a ground-truth-free check for incomplete demixing. Traces are
+high-passed with a 15 s centred moving average; D is the median equivalent diameter at
+half maximum of the footprints; bins are <0.5, 0.5-0.75, 0.75-1, 1-1.25, 1.25-1.5, 1.5-2,
+2-3 and >3 D, each shown as median and IQR, and the dotted line is the median over the
+1.5-3 D pairs. Cost control: all pairs within 3 D plus a seeded random sample of at most
+20,000 farther pairs, on demand in a worker (`workers/corr-distance-worker.ts`), once; the
+per-frame loop never sees it. Measured on 650 cells x 18,000 frames (random layout):
+about 350 ms in Node, one 47 MB f32 copy of the traces in the worker plus the same on the
+main thread while it is gathered. Real recordings may also share signal between
+neighbours (neuropil, motion), so read the excess against a population null or a
+before/after contrast, not as absolute leak. The plot data is not in the export.
+
 ## Refine plots
 
 Under the Refine readout the Run panel draws two plots (`components/RefinePlots.tsx`,
