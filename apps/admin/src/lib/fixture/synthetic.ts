@@ -225,7 +225,9 @@ function generate(nowMs: number, seed: number): Dataset {
                 const base = {
                   stage,
                   mode,
-                  sessions: nSes,
+                  // Sessions this run processed (Joint: all; Separate and single: one).
+                  sessions: mode === 'separate' || mode === 'single' ? 1 : nSes,
+                  ...(nSes > 1 ? { plan_sessions: nSes, refine_runs: 1 } : {}),
                   frames,
                   fps: 30,
                   width: 608,
