@@ -216,6 +216,7 @@
 )]
 
 mod churn;
+mod cluster;
 #[cfg(feature = "diagnostics")]
 mod diagnostics;
 mod fastcore;
@@ -244,6 +245,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use churn::Churn;
+use cluster::ClusterStore;
 use fpstats::{parity_block, FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
@@ -322,6 +324,52 @@ pub enum RefineGate {
 }
 
 /// Which merge tests may merge (S2.1c merge redesign).
+/// Where footprints of overlapping cells are updated jointly from a
+/// replay of their stored history (`cluster.rs`, the Stage 1 design in
+/// `demix-bench/design_joint_update.md`): a cluster of cells whose
+/// normalised whitened overlap is at least `cluster_rho_min` keeps, per
+/// fitting frame, the K numbers of its residual in a K-dim basis; a refine
+/// visit re-solves the stored frames' traces with the current footprints
+/// and refits the footprints jointly, and the cluster's members are
+/// proposed and gated together. Cells outside clusters keep the per-cell
+/// running statistics. Off by default (experimental).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointUpdate {
+    /// Per-cell statistics only.
+    #[default]
+    Off,
+    /// Joint replay in [`EditScope::Refine`] visits (the app's Refine
+    /// stage); the store accumulates only there.
+    Refine,
+    /// Joint replay in every visit (Discover too): the clusters follow the
+    /// library's cell set, and a store restarts when its members change.
+    All,
+}
+
+/// Sign rule of the joint replay's footprint step (filtered space, where a
+/// true footprint is slightly negative in its high-pass moat). The
+/// rotation between a bitten newcomer and its over-filled neighbour is a
+/// free direction of a linear footprint fit (`A R`, `R⁻¹ C`); what pins it
+/// is the newcomer's light clipped at zero on the older cell's far side.
+/// On the quick demixing tier (17 Nov 2026) `All` lowered the 0.75-1 D bite
+/// share 0.50 -> 0.36 and the < 1 D trace correlation excess +0.14 ->
+/// +0.10; `Off` gave 0.50 -> 0.42 and no correlation gain; `Own` was no
+/// different from `Off` (`tools/cala-eval/results/2026-11-17-cluster-replay.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointSign {
+    /// A plain per-pixel joint least-squares fit; the sign rule enters only
+    /// through the finish path's inversion (`a ≥ 0`).
+    Off,
+    /// Each member's coefficient ≥ 0 where its current filtered column is
+    /// positive (the moat stays free).
+    Own,
+    /// Each member's coefficient ≥ 0 on its whole disk (the design toys'
+    /// non-negative footprint step; the moat is clipped there and comes
+    /// back through the finish path's inversion).
+    #[default]
+    All,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
     /// The held-out test alone: a single column (merged footprint, or
@@ -636,6 +684,22 @@ pub struct SlowLoopConfig {
     /// basin of its light (`basin_trim_from`, seeded at the footprint's
     /// peak). Off by default.
     pub basin_trim: bool,
+    /// Joint footprint update of overlapping cells (see [`JointUpdate`]).
+    pub joint_update: JointUpdate,
+    /// Cells join a cluster along overlaps `G_ij / sqrt(G_ii G_jj)` (the
+    /// whitened filtered columns' Gram) of at least this, strongest first.
+    pub cluster_rho_min: f32,
+    /// At most this many cells per cluster (2..=8); a union that would
+    /// exceed it is refused and that overlap is left to the per-cell
+    /// statistics' coupling.
+    pub cluster_max: usize,
+    /// Experimental: the sign rule of the replay's footprint step (see
+    /// [`JointSign`]).
+    pub joint_sign_rule: JointSign,
+    /// Experimental: alternations per replay inside the store (the design:
+    /// 1; more converge the stored window's factorisation further, but the
+    /// published footprints then move by more than the gate tests well).
+    pub joint_iters: usize,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -702,6 +766,11 @@ impl Default for SlowLoopConfig {
             bite_reset: 0.05,
             core_test: CoreTest::Off,
             basin_trim: false,
+            joint_update: JointUpdate::Off,
+            cluster_rho_min: 0.05,
+            cluster_max: 6,
+            joint_sign_rule: JointSign::All,
+            joint_iters: 1,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -757,6 +826,10 @@ impl SlowLoopConfig {
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
             && self.merge_z.is_finite()
+            && self.cluster_rho_min > 0.0
+            && self.cluster_rho_min < 1.0
+            && (2..=8).contains(&self.cluster_max)
+            && self.joint_iters >= 1
             && self.churn.is_valid();
         if ok {
             Ok(())
@@ -863,6 +936,39 @@ pub struct SlowStats {
     pub bite_refills: u64,
 }
 
+/// Counters of the joint update ([`JointUpdate`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplayStats {
+    /// Cluster sets built (the library's cell set changed), clusters built
+    /// in them, and their members.
+    pub builds: u64,
+    pub clusters: u64,
+    pub members: u64,
+    /// Stores started over because a member's statistics disk left the
+    /// cluster's pixels.
+    pub restarts: u64,
+    /// Frames a cluster skipped (a missing pixel).
+    pub skipped_frames: u64,
+    /// Replays run, replays without a result (too few frames, singular),
+    /// replays where no member's estimate was significant, replays whose
+    /// estimate did not differ from the current footprints beyond its
+    /// split-half noise.
+    pub replays: u64,
+    pub replay_none: u64,
+    pub low_snr: u64,
+    pub converged: u64,
+    /// Cluster proposals gated, accepted, and members replaced.
+    pub proposals: u64,
+    pub accepted: u64,
+    pub members_replaced: u64,
+    /// Peak bytes held by the stores.
+    pub peak_bytes: u64,
+    /// DIAG (`diagnostics` builds only): wall time of the running
+    /// footprint statistics, per-cell part and cluster part, ns.
+    pub per_cell_ns: u64,
+    pub cluster_ns: u64,
+}
+
 /// The slow loop. See the module docs.
 pub struct SlowLoop {
     dims: Dims,
@@ -930,6 +1036,17 @@ pub struct SlowLoop {
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
     fpstats: HashMap<u64, FpStats>,
+    /// Joint update (`cluster.rs`): the cluster stores, each member's
+    /// cluster, the library cell set they were built for, whether each
+    /// cluster's last replay was usable (its members then skip the per-cell
+    /// refinement), and a residual buffer.
+    clusters: Vec<ClusterStore>,
+    cluster_of: HashMap<u64, usize>,
+    cluster_ids: Vec<u64>,
+    cluster_ok: Vec<bool>,
+    cbuf: Vec<f32>,
+    /// Counters of the joint update.
+    pub replay_stats: ReplayStats,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
@@ -1257,6 +1374,12 @@ impl SlowLoop {
             #[cfg(feature = "diagnostics")]
             test_log: Vec::new(),
             fpstats: HashMap::new(),
+            clusters: Vec::new(),
+            cluster_of: HashMap::new(),
+            cluster_ids: Vec::new(),
+            cluster_ok: Vec::new(),
+            cbuf: Vec::new(),
+            replay_stats: ReplayStats::default(),
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
@@ -1294,6 +1417,9 @@ impl SlowLoop {
     /// [`EditScope::Refine`] and feeds the recording again from frame 0.
     pub fn set_edit_scope(&mut self, scope: EditScope) {
         self.scope = scope;
+        if !self.joint_active() {
+            self.clear_clusters();
+        }
     }
 
     /// The structural edits allowed now ([`SlowLoop::set_edit_scope`]).
@@ -1948,6 +2074,8 @@ impl SlowLoop {
         if !fitting {
             return;
         }
+        #[cfg(feature = "diagnostics")]
+        let t0 = std::time::Instant::now();
         if self.fpstats.len() > lib.len() {
             let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
             self.fpstats.retain(|id, _| ids.contains(id));
@@ -1958,6 +2086,7 @@ impl SlowLoop {
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
+            self.clusters.iter_mut().for_each(|c| c.scale(f64::from(f)));
             self.stats_w = 1.0;
         }
         let w = self.stats_w;
@@ -2020,6 +2149,14 @@ impl SlowLoop {
             }
             st.push(&self.rbuf, [c, c], c, w);
             work += st.pix.len() as u64 * 3;
+        }
+        #[cfg(feature = "diagnostics")]
+        let t1 = std::time::Instant::now();
+        work += self.update_clusters(frame, lib, traces, w, ring);
+        #[cfg(feature = "diagnostics")]
+        {
+            self.replay_stats.per_cell_ns += (t1 - t0).as_nanos() as u64;
+            self.replay_stats.cluster_ns += t1.elapsed().as_nanos() as u64;
         }
         self.work += work;
         self.stats.work_stats += work;
@@ -4412,6 +4549,12 @@ impl SlowLoop {
     fn split_half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32]) -> Option<f64> {
         let st = self.fpstats.get(&cell.id)?;
         let (ha, hb, _, _) = st.halves()?;
+        Some(self.half_excess(cell, pix, h, &ha, &hb))
+    }
+
+    /// [`Self::split_half_excess`] of an estimate `h` with split halves
+    /// `ha`, `hb` (all on `pix`).
+    fn half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32], ha: &[f32], hb: &[f32]) -> f64 {
         let block = self.filter.moat().map_or(0, |m| m.0);
         let w = self.dims.width;
         let cur: Vec<f64> = pix
@@ -4425,7 +4568,7 @@ impl SlowLoop {
             cc += cur[k] * cur[k] * is * is;
         }
         if !(cc > 0.0) || !(hc > 0.0) {
-            return Some(f64::INFINITY);
+            return f64::INFINITY;
         }
         let a = hc / cc;
         let (mut d2, mut half) = (0.0f64, 0.0f64);
@@ -4436,7 +4579,7 @@ impl SlowLoop {
             let e = f64::from(ha[k] - hb[k]) / a * is;
             half += 0.5 * e * e;
         }
-        Some(d2 - half)
+        d2 - half
     }
 
     /// The split-half merge statistic of a pair (see [`MergeRule::SplitHalf`]):
@@ -5158,8 +5301,12 @@ impl SlowLoop {
         let mut updates = Vec::new();
         // Cells whose running statistics restart after a kept bite refill.
         let mut resets: Vec<u64> = Vec::new();
+        let joint = self.refine_clusters(ti, base, test_fr, &base_test, chi_base, s2, &mut updates);
         for i in 0..base.len() {
             let id = base.cols[i].id;
+            if joint.contains(&id) {
+                continue;
+            }
             let Some(ci) = self.cells.iter().position(|c| c.id == id) else {
                 continue;
             };

@@ -103,7 +103,7 @@ secondary row. Run it with the minisim venv python (numpy, scipy):
 
 ```
 source ~/Projects/cala-data/sims.env     # CALA_SIMS, CALA_PAIRS, MINISIM_PY, QC_EVAL_BIN
-# one binary, two flag sets (here the refine gate z 3 vs 0): quick tier, ~35-40 min
+# one binary, two flag sets (here the refine gate z 3 vs 0): quick tier, 10 runs, ~20 min at 6-wide cold
 $MINISIM_PY tools/cala-eval/demix_suite.py --tier quick --bin $QC_EVAL_BIN \
     --base-label z3 --new-label z0 --base-flags "--refine-z 3" --new-flags "--refine-z 0" \
     --md tools/cala-eval/results/<date>-<task>.md
@@ -112,18 +112,40 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
     --base-label main --new-label branch --md ...
 ```
 
-- Tiers (`demix_suite.TIERS`): `quick` = static s5-s7 + pairs s5-s6 (5 sims); `full` = static s5-s9, motion
+- Tiers (`demix_suite.TIERS`): `smoke` = static s5 + pairs s5 (2 sims): a crash/sanity check that the pipeline
+  runs and the metrics look sane, **not a significance test**; `quick` = static s5-s7 + pairs s5-s6 (5 sims); `full` = static s5-s9, motion
   s5-s9, pairs s5-s8 (14 sims). `--only static_s5,pairs_s6` runs a subset (smoke test). Static and motion
   sims come from `$CALA_SIMS` (`sims-gt110`), the designed isolated-pairs sims (54 pairs at 4-24 px, soma
   diameter 14.5 px; `make_pair_spec.py`) from `$CALA_PAIRS` (`demix-bench/measure/pairsim_v2191`).
 - Each run is `qc_eval sim SIM RUN --passes 2 --later-passes refine --batch 8 --budget 30000000
---slow-seed 1 --dump` (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
+--slow-seed 1 --dump --no-heldout --no-signed` (the last two skip the held-out score and signed traces the
+  metrics never read; footprints.bin, footprints_pass1.bin and dump_trace.f32 were byte-identical with and without them on
+  static_s5 and pairs_s5 with a build of main a26f48d, and on static_s5 with `qc_eval-st2-c --joint-update refine
+--joint-sign all`; final.tsv differs only in its `ho_*` columns, which become nan/0 without the held-out score and
+  which `demix_metrics.py` does not read. Do NOT use `--no-heldout` for runs that need the held-out score) (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
   app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
   (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
 - Output goes to `$CALA_DATA/demix-suite/<name>/<arm>/<sim>/` (`--name` to resume: finished runs and
   metrics are skipped; a rebuilt binary needs a new name), with `report.md` beside them.
-  `--report-only` re-renders an existing tree. At most 2 `qc_eval sim` runs at once (machine-wide count,
-  cap 2, about 1 GB each); the metrics step peaks near 2.5 GB.
+  `--report-only` re-renders an existing tree. `--parallel` (default and cap 6 = `run_arms.MAX_LIGHT`, the
+  PI's machine-wide limit on light runs, raised from 4 on 18 Nov 2026; change that one constant if the PI moves it) counts only this
+  suite's `qc_eval sim` runs, and the machine-wide count of light runs still never exceeds the cap, so a suite
+  next to another agent's runs waits for a slot (no run starts below 5 GB free). Jobs are queued
+  longest-first (motion, static, pairs). Each run is 0.7-1.8 GB; the metrics step peaks near 2.5 GB.
+  Scaling (static sims, 6 runs, 18 Nov 2026): per-run wall about 255 s at 4 concurrent, about 315 s at 6
+  concurrent (+24 %), so 6-wide still gives about 20 % more runs per hour.
+- **Run cache** (`suite_cache.py`): `qc_eval` is deterministic (byte-identical across reruns), so each finished
+  run is stored under `$CALA_DATA/suite-cache/v1/<key>/` (override `--cache-dir` / `$CALA_SUITE_CACHE`),
+  copy-on-write on APFS. Key = sha256 of the binary + the full ordered `qc_eval` argument list (passes,
+  later-passes, batch, budget, slow-seed, every flag) + the sim (`oracle.bin`, `spec.json`, `gen.json`, `daq/`
+  names and sizes) + a cache-format version, so any change to any of them is a miss. The `demix_*` metric
+  files are cached per run under a hash of `demix_metrics.py` + `demix_clusters.py`, so editing the metric
+  code recomputes only the metrics. The baseline arm of a comparison therefore costs nothing the second time.
+  `--no-cache` neither reads nor writes it; `--force` skips reads. A rebuilt binary is a new hash, so cached
+  runs of the old build are simply not hit. Cached run dirs are complete copies (all dumps included).
+- **How many sims?** The quick tier (5 sims) only detects large effects: about 97 % power for an effect the
+  size of Stage 1's headline (-0.047), but only about 37 % with 3 sims. A "within noise" verdict on a
+  small expected effect is not evidence of no effect; use the full tier, or more seeds, for that.
 - `demix_metrics.py SIM RUN` (per run, also usable alone): Hungarian match on footprint correlation
   (r >= 0.7); the motion-frame offset is estimated from matched centroids and the GT moved into cala's
   frame (motion sims; the same offset `qc_eval` reports in `motion_offset.tsv`); bite ratio at each GT

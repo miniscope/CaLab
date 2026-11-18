@@ -305,8 +305,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
-    VisitRunner,
+    CoreTest, EditScope, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
+    SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3278,6 +3278,48 @@ fn main() {
         scfg.refine_z = v.parse().unwrap();
         println!("refine z: {}", scfg.refine_z);
     }
+    if let Some(v) = arg_value(&args, "--joint-update") {
+        scfg.joint_update = match v.as_str() {
+            "off" => JointUpdate::Off,
+            "refine" => JointUpdate::Refine,
+            "all" => JointUpdate::All,
+            other => panic!("--joint-update: off|refine|all, not {other}"),
+        };
+    }
+    if let Some(v) = arg_value(&args, "--cluster-rho-min") {
+        scfg.cluster_rho_min = v.parse().unwrap();
+    }
+    if let Some(v) = arg_value(&args, "--cluster-max") {
+        scfg.cluster_max = v.parse().unwrap();
+    }
+    if scfg.joint_update != JointUpdate::Off {
+        println!(
+            "joint update: {:?}, cluster rho >= {}, at most {} cells",
+            scfg.joint_update, scfg.cluster_rho_min, scfg.cluster_max
+        );
+    }
+    if let Some(v) = arg_value(&args, "--joint-sign") {
+        scfg.joint_sign_rule = match v.as_str() {
+            "off" => JointSign::Off,
+            "own" => JointSign::Own,
+            "all" => JointSign::All,
+            other => panic!("--joint-sign: off|own|all, not {other}"),
+        };
+        println!("joint update: sign rule {:?}", scfg.joint_sign_rule);
+    }
+    if let Some(v) = arg_value(&args, "--bg") {
+        scfg.background = match v.as_str() {
+            "none" => calab_cala::trace::BackgroundModel::None,
+            "ring" => scfg.background.clone(),
+            other => panic!("--bg: none|ring, not {other}"),
+        };
+        println!("slow-loop background model: {:?}", scfg.background);
+    }
+    if let Some(v) = arg_value(&args, "--joint-iters") {
+        scfg.joint_iters = v.parse().unwrap();
+        println!("joint update: {} alternations per replay", scfg.joint_iters);
+    }
+    let cluster_census = args.iter().any(|a| a == "--cluster-census");
     if let Some(v) = arg_value(&args, "--merge-rule") {
         scfg.merge_rule = match v.as_str() {
             "legacy" => MergeRule::Legacy,
@@ -3506,6 +3548,9 @@ fn main() {
         f
     });
     let mut qc_ms: Vec<f64> = Vec::with_capacity(t_len);
+    // Wall time of the slow loop's `observe` (the per-frame part of the
+    // slow worker), per pass.
+    let mut slow_obs_s = 0.0f64;
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
@@ -3980,7 +4025,9 @@ fn main() {
                         }
                         for (yy, tt, ll, tf) in pending.drain(..) {
                             if forward {
+                                let a = Instant::now();
                                 sl.observe(&yy, &ll, &tt).unwrap();
+                                slow_obs_s += a.elapsed().as_secs_f64();
                                 slow_rec.push(tf as u32);
                                 fwd_frames += 1;
                             } else if !drop_step {
@@ -4164,6 +4211,27 @@ fn main() {
                 (sl.stats(), sl.frames(), sl.len())
             });
             let wall = t_pass.elapsed().as_secs_f64();
+            if let Some(sl) = slow.as_mut() {
+                let rs = sl.replay_stats;
+                sl.replay_stats.per_cell_ns = 0;
+                sl.replay_stats.cluster_ns = 0;
+                println!(
+                    "pass {}: slow observe {:.3} ms/frame (fitting-frame statistics: per-cell {:.3}, clusters {:.3} ms/frame, diagnostics builds only); joint update {:?}",
+                    pass + 1,
+                    slow_obs_s * 1e3 / t_len as f64,
+                    rs.per_cell_ns as f64 * 1e-6 / t_len as f64,
+                    rs.cluster_ns as f64 * 1e-6 / t_len as f64,
+                    rs
+                );
+                slow_obs_s = 0.0;
+                if cluster_census {
+                    print!(
+                        "pass {}: {}",
+                        pass + 1,
+                        sl.cluster_census(&lib, &[0.03, 0.05, 0.1], 6)
+                    );
+                }
+            }
             let _ = writeln!(
                 passes_out,
                 "{}\t{}\t{}\t{sn}\t{}\t{}\t{}\t{}\t{sf}\t{wall:.1}",

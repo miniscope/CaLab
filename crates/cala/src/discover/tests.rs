@@ -2623,6 +2623,14 @@ fn fp_at(lib: &Library, id: u64, y: usize, x: usize) -> f32 {
 /// cell's footprint value there (truth exp(-3.5²/(2·2.5²)) ≈ 0.38) after
 /// 4000 frames with refine gate `z`, and the number of refinements.
 fn bitten_refill(z: f32) -> (f32, u64) {
+    let (v, refines, _) = bitten_refill_with(z, JointUpdate::Off);
+    (v, refines)
+}
+
+/// [`bitten_refill`] with the joint update `joint`, in the Refine scope
+/// (the cell set frozen, as the app's Refine stage), also returning the
+/// joint update's counters.
+fn bitten_refill_with(z: f32, joint: JointUpdate) -> (f32, u64, ReplayStats) {
     let t = 4000;
     let mut rng = Lcg(411);
     let (a, b) = ((46.0, 44.0), (46.0, 47.5));
@@ -2642,9 +2650,13 @@ fn bitten_refill(z: f32) -> (f32, u64) {
     }
     let cfg = SlowLoopConfig {
         refine_z: z,
+        joint_update: joint,
         ..v2_config()
     };
     let (mut slow, mut eng) = start(cfg, &[blob_w(1, a.0, a.1, 2.5), bitten]);
+    if joint != JointUpdate::Off {
+        slow.set_edit_scope(EditScope::Refine);
+    }
     let mut deleted = Vec::new();
     drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
     let lib = slow.finalize().unwrap();
@@ -2652,7 +2664,21 @@ fn bitten_refill(z: f32) -> (f32, u64) {
     (
         fp_at(&lib, 2, a.0 as usize, a.1 as usize),
         slow.stats().refines,
+        slow.replay_stats,
     )
+}
+
+/// The cluster history replay ([`JointUpdate::Refine`]) refills the
+/// bitten footprint too, from the two cells' joint proposals.
+#[test]
+fn a_bitten_footprint_is_refilled_by_the_cluster_replay() {
+    let (v, refines, rs) = bitten_refill_with(0.0, JointUpdate::Refine);
+    assert!(rs.clusters >= 1 && rs.replays > 0, "{rs:?}");
+    assert!(rs.accepted > 0, "{rs:?}");
+    assert!(
+        v > 0.1,
+        "value at the neighbour centre {v} (truth 0.38), {refines} refines, {rs:?}"
+    );
 }
 
 /// The refine gate accepts a statistics-path refill with a positive
