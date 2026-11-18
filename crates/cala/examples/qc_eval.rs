@@ -103,7 +103,8 @@
 //!                      f32 LE) and `extract_ids.tsv`. Not with `--sessions`
 //!   Every run writes `stage_times.tsv`: seconds per pass (and for the
 //!   Extract pass) spent reading, preprocessing, compressing, solving traces
-//!   and in the slow loop.
+//!   and in the slow loop. The columns do not add up to `wall_s`: the QC
+//!   monitor, the held-out score and the checkpoint output are in no column.
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -3166,6 +3167,13 @@ fn main() {
         Tiling::parse(&s)
             .unwrap_or_else(|| panic!("--tiling: plain, overlap:N or offset, not {s:?}"))
     });
+    if let Tiling::Overlap(o) = tiling {
+        let limit = CompressConfig::default().tile / 2;
+        assert!(
+            o <= limit,
+            "--tiling overlap:{o}: N must be at most half the tile size ({limit} px)"
+        );
+    }
     let replay_factors = match arg_value(&args, "--replay-source").as_deref() {
         None | Some("raw") => false,
         Some("factors") => true,
@@ -3243,6 +3251,10 @@ fn main() {
         "--session-fix needs --sessions"
     );
     assert!(!session_fix.any() || motion, "--session-fix needs --motion");
+    assert!(
+        !extract_pass || sessions.is_empty(),
+        "--extract-pass does not support --sessions"
+    );
     let session_fit_frames: usize =
         arg_value(&args, "--session-fit-frames").map_or(8, |s| s.parse().unwrap());
     let session_ref_frames: usize =
@@ -4582,10 +4594,6 @@ fn main() {
     // `--extract-pass`: the app's Extract stage. One more replay from frame
     // 0 with the final library and no slow loop.
     if extract_pass {
-        assert!(
-            sessions.is_empty(),
-            "--extract-pass does not support --sessions"
-        );
         let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
         eng.set_consolidated_ring_gradient(true);
         let mut out = BufWriter::new(File::create(out_dir.join("extract_trace.f32")).unwrap());

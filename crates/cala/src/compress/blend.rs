@@ -19,7 +19,10 @@ pub enum Tiling {
     /// the weight ramps over the shared band (raised cosine).
     Overlap(usize),
     /// The plain grid plus a second one shifted by half a tile in x and y;
-    /// a tile's weight falls linearly towards its inner edges.
+    /// a tile's weight falls linearly towards its inner edges. The weights
+    /// sum to 1, but where a line of one grid crosses a line of the other, a
+    /// tile keeps a normalised weight of up to about 0.5 on its own edge
+    /// (overlap tilings: at most about 0.004).
     Offset,
 }
 
