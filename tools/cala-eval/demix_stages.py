@@ -37,7 +37,7 @@ another arm's stage with `--ref LABEL:K`, e.g. today's Discover + 1 Refine). A s
 Lower is better for both, so a stage better than R is good. The time to good footprints of an arm is the cumulative
 wall time of its first good stage, or "not reached"; the report also gives it as a ratio of R's own cumulative wall
 time (design_discover_lookback.md section 6 asks for <= 0.7 against Discover + 1 Refine). Only the stage
-granularity is available (a look-back arm run with --passes 1 has one stage: its Discover).
+granularity is available.
 
 Cluster churn: from the libraries written at 12.5 % steps of pass 1 (cheap, footprints only; no traces needed) the
 share of surviving cells whose overlap cluster (demix_clusters.py) changed between consecutive checkpoints, and why.
