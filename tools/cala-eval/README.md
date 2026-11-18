@@ -191,6 +191,12 @@ since 13 Nov 2026). `legacy` is the χ² disagreement test plus
 current column exceeds the estimate's own split-half noise. The reservoir path,
 absorbs and merges are the same under both.
 
+`qc_eval --refine-z Z` sets the paired held-out z a statistics-path
+refinement must exceed (`SlowLoopConfig::refine_z`, default 0 since 17 Nov
+2026: any held-out gain; 3 before). Reservoir-path refinements keep
+`absorb_z`. The 3σ veto on a tile's few held-out frames kept later-born
+neighbours bitten (`results/2026-11-17-refine-gate-refill.md`).
+
 ## Merge rule (S2.1c)
 
 `qc_eval --merge-rule legacy|split-half` picks which merge tests may merge
@@ -260,3 +266,4 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-refine-gate.md`           | S2.1c minimal option: split-half refine gate cuts late real refines 37 %; the default                    |
 | `2026-11-13-merge-rule.md`            | S2.1c merge redesign: split-half merge rule cuts distinct-cell merges 52–67 %; the default               |
 | `2026-11-13-app-background-levels.md` | the app's slow loop without the ring-background levels: within noise; fixed so the app matches `qc_eval` |
+| `2026-11-17-refine-gate-refill.md`    | refine gate z 3 → 0: bitten neighbours refilled, leak and close-pair corr down, detection unchanged      |
