@@ -249,25 +249,27 @@ export function CalaView(): JSX.Element {
           </ChartCard>
           <ChartCard
             title="Runs by stage and mode"
-            subtitle="Finished runs"
+            subtitle="Finished runs and sessions processed; a Joint run is one run over all its sessions"
             table={{
-              columns: ['Stage', 'Mode', 'Runs', 'Median fps', 'Median s'],
+              columns: ['Stage', 'Mode', 'Runs', 'Sessions', 'Median fps', 'Median s'],
               rows: stageRows().map((r) => [
                 r.stage,
                 r.mode,
                 r.runs,
+                r.sessions,
                 fps(r.medianFps),
                 fmtNum(r.medianDuration),
               ]),
             }}
           >
             <DataTable
-              caption="Finished Cala runs by stage and mode"
+              caption="Finished Cala runs and the sessions they processed, by stage and mode"
               defaultSort={{ key: 'runs', asc: false }}
               columns={[
                 { key: 'stage', label: 'Stage' },
                 { key: 'mode', label: 'Mode' },
                 { key: 'runs', label: 'Runs', bar: true },
+                { key: 'sessions', label: 'Sessions', align: 'right' },
                 {
                   key: 'medianFps',
                   label: 'Median fps',

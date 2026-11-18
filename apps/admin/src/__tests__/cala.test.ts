@@ -9,6 +9,7 @@ import {
   flagRegressions,
   pairRuns,
   sizeDistributions,
+  stageModeTable,
   testerTable,
   unfinishedTable,
   versionComparison,
@@ -331,5 +332,44 @@ describe('testers', () => {
   it('buildCala ignores non-Cala sessions', () => {
     const t = session({ app_name: 'catune' });
     expect(buildCala([t], [event(t.id, 'run_finished', { stage: 'discover' })]).runs).toEqual([]);
+  });
+});
+
+describe('sessions processed per run', () => {
+  const run = (sid: string, s: number, stage: string, extra = {}) => finished(sid, s, stage, extra);
+
+  it('counts a Joint run once over all its sessions, a Separate plan once per session, old events too', () => {
+    const s = session();
+    const evs = [
+      // New events: sessions = this run's, plan_sessions = the plan's.
+      run(s.id, 1, 'discover', { mode: 'joint', sessions: 4, plan_sessions: 4, refine_runs: 1 }),
+      run(s.id, 2, 'discover', { mode: 'separate', sessions: 1, plan_sessions: 4, refine_runs: 0 }),
+      run(s.id, 3, 'discover', { mode: 'separate', sessions: 1, plan_sessions: 4, refine_runs: 0 }),
+      // Old events: sessions was the plan's size in every mode.
+      run(s.id, 4, 'extract', { mode: 'separate', sessions: 4 }),
+      run(s.id, 5, 'extract', { mode: 'separate', sessions: 4 }),
+      run(s.id, 6, 'extract', { mode: 'joint', sessions: 16 }),
+      run(s.id, 7, 'extract', { mode: 'single', sessions: 1 }),
+    ];
+    const runs = extractRuns([s], indexEvents([s], evs));
+    expect(runs.map((r) => r.sessions)).toEqual([4, 1, 1, 1, 1, 16, 1]);
+    expect(runs[0]).toMatchObject({ planSessions: 4, refineRuns: 1 });
+    expect(runs[3]).toMatchObject({ planSessions: null, refineRuns: null });
+    const rows = stageModeTable(runs);
+    const row = (stage: string, mode: string) =>
+      rows.find((r) => r.stage === stage && r.mode === mode)!;
+    expect(row('discover', 'joint')).toMatchObject({ runs: 1, sessions: 4 });
+    expect(row('discover', 'separate')).toMatchObject({ runs: 2, sessions: 2 });
+    expect(row('extract', 'separate')).toMatchObject({ runs: 2, sessions: 2 });
+    expect(row('extract', 'joint')).toMatchObject({ runs: 1, sessions: 16 });
+    expect(row('extract', 'single')).toMatchObject({ runs: 1, sessions: 1 });
+    // Order: stage, then Joint, Separate, single.
+    expect(rows.map((r) => `${r.stage}/${r.mode}`)).toEqual([
+      'discover/joint',
+      'discover/separate',
+      'extract/joint',
+      'extract/separate',
+      'extract/single',
+    ]);
   });
 });

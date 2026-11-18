@@ -7,7 +7,12 @@ import {
   type StageState,
 } from '../lib/project-index.ts';
 import { planSummary } from '../lib/run-plan.ts';
-import { DEFAULT_REFINE_RUNS, LIBRARY_MODE_LABEL, MAX_REFINE_RUNS } from '../lib/session-run.ts';
+import {
+  DEFAULT_REFINE_RUNS,
+  LIBRARY_MODE_LABEL,
+  MAX_REFINE_RUNS,
+  refinePlanText,
+} from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
@@ -460,6 +465,12 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             </For>
           </select>
         </label>
+        <p
+          class={refineRuns() === 0 ? 'cala-sessions__warning' : 'cala-muted cala-sessions__note'}
+          data-testid="plan-refine-note"
+        >
+          {refinePlanText(refineRuns())}
+        </p>
         <p class="cala-muted cala-sessions__note">
           Each group is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code> as
           each session finishes; that session's newest result becomes its current one. Data folders

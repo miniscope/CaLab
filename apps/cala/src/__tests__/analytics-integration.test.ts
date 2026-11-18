@@ -171,7 +171,7 @@ describe('event sequence', () => {
 
   it('multi-session joint run: one import, boundary summary and export at the end', async () => {
     const h = harness();
-    const plan = { settings: { mode: 'joint' as const }, sessions: [1, 2, 3] };
+    const plan = { settings: { mode: 'joint' as const, refineRuns: 2 }, sessions: [1, 2, 3] };
     h.setPlan(plan);
     h.setInfo(INFO);
     h.setInfo({ ...INFO });
@@ -181,6 +181,8 @@ describe('event sequence', () => {
     expect(h.calls.find((c) => c[0] === 'run_started')![1]).toMatchObject({
       mode: 'joint',
       sessions: 3,
+      plan_sessions: 3,
+      refine_runs: 2,
     });
     h.setEnded(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -194,6 +196,33 @@ describe('event sequence', () => {
       sessions: 3,
       format_version: expect.any(Number),
     });
+    h.dispose();
+  });
+
+  it('a Separate plan reports one session per run, with the plan size and Refine setting apart', async () => {
+    const h = harness();
+    h.setPlan({ settings: { mode: 'separate' as const, refineRuns: 0 }, sessions: [1, 2, 3, 4] });
+    h.setInfo(INFO);
+    h.setRuns([run({})]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.find((c) => c[0] === 'run_started')![1]).toMatchObject({
+      mode: 'separate',
+      sessions: 1,
+      plan_sessions: 4,
+      refine_runs: 0,
+    });
+    h.dispose();
+  });
+
+  it('a single folder carries no plan fields', async () => {
+    const h = harness();
+    h.setInfo(INFO);
+    h.setRuns([run({})]);
+    await vi.advanceTimersByTimeAsync(0);
+    const data = h.calls.find((c) => c[0] === 'run_started')![1];
+    expect(data).toMatchObject({ mode: 'single', sessions: 1 });
+    expect(data).not.toHaveProperty('plan_sessions');
+    expect(data).not.toHaveProperty('refine_runs');
     h.dispose();
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { StageActivity, StageName } from '../lib/run-stages.ts';
 import {
   autoStatusText,
+  refinePlanText,
   nextAutoAction,
   type AutoInput,
   type LibraryMode,
@@ -177,5 +178,14 @@ describe('autoStatusText', () => {
     expect(autoStatusText({ kind: 'stopped', reason: 'Extract was cancelled.' }, pos)).toBe(
       'Stopped: Extract was cancelled.',
     );
+  });
+});
+
+describe('refinePlanText', () => {
+  it('says what the plan does about Refine, including that it is off', () => {
+    expect(refinePlanText(1)).toBe('Refine runs: 1 before Extract');
+    expect(refinePlanText(3)).toBe('Refine runs: 3 before Extract');
+    expect(refinePlanText(0)).toContain('Refine runs: 0');
+    expect(refinePlanText(0)).toContain('not refined');
   });
 });
