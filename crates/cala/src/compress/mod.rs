@@ -68,7 +68,8 @@ pub struct CompressConfig {
     pub seed: u64,
     /// Buffered values are `round(value * quant)` in `i16`: a resolution of
     /// `1 / quant` and a range of `± 32767 / quant` (64: 1/64 grey level,
-    /// ± 512 grey levels, for 8-bit recordings).
+    /// ± 512 grey levels, for 8-bit recordings). `-32768` is reserved for a
+    /// missing sample ([`MISSING`]).
     pub quant: f32,
     /// Threads that share a window's tiles (native builds; wasm uses one).
     pub threads: usize,
@@ -105,6 +106,12 @@ pub struct TileFactors {
     pub temporal: Vec<f32>,
     /// Per-pixel mean over the window.
     pub mean: Vec<f32>,
+    /// Per pixel: the variance over the window that the rank cut removed,
+    /// `max(0, Σ (y − mean)² − ‖W(p, :)‖²) / T`. All 0 when read from a v1 file.
+    pub discarded: Vec<f32>,
+    /// Per pixel: the share of the window's frames in which the pixel was not
+    /// missing. All 1 when read from a v1 file.
+    pub valid: Vec<f32>,
     /// `Σ (y − mean)²` over the tile and the window, and the part kept.
     pub energy: f64,
     pub kept_energy: f64,
@@ -118,16 +125,20 @@ impl TileFactors {
     }
 
     pub fn bytes(&self) -> usize {
-        4 * (self.spatial.len() + self.temporal.len() + self.mean.len())
+        4 * (self.spatial.len()
+            + self.temporal.len()
+            + self.mean.len()
+            + self.discarded.len()
+            + self.valid.len())
     }
 
-    /// Little-endian encoding: `CTF1`, u32 x0, y0, w, h, rank, frames,
-    /// svd_rank, f64 energy, kept_energy, then f32 mean (`P`), spatial
-    /// (`P x rank`) and temporal (`frames x rank`).
+    /// Little-endian encoding: `CTF2`, u32 x0, y0, w, h, rank, frames,
+    /// svd_rank, f64 energy, kept_energy, then f32 mean (`P`), discarded
+    /// (`P`), valid (`P`), spatial (`P x rank`) and temporal (`frames x rank`).
     pub fn to_bytes(&self) -> Vec<u8> {
         let frames = self.temporal.len().checked_div(self.rank).unwrap_or(0);
         let mut b = Vec::with_capacity(48 + self.bytes());
-        b.extend_from_slice(b"CTF1");
+        b.extend_from_slice(b"CTF2");
         for v in [
             self.x0,
             self.y0,
@@ -141,7 +152,13 @@ impl TileFactors {
         }
         b.extend_from_slice(&self.energy.to_le_bytes());
         b.extend_from_slice(&self.kept_energy.to_le_bytes());
-        for a in [&self.mean, &self.spatial, &self.temporal] {
+        for a in [
+            &self.mean,
+            &self.discarded,
+            &self.valid,
+            &self.spatial,
+            &self.temporal,
+        ] {
             for v in a.iter() {
                 b.extend_from_slice(&v.to_le_bytes());
             }
@@ -152,9 +169,11 @@ impl TileFactors {
     /// Inverse of [`TileFactors::to_bytes`]; `None` for truncated or
     /// inconsistent input.
     pub fn from_bytes(b: &[u8]) -> Option<TileFactors> {
-        if b.get(..4)? != b"CTF1" {
-            return None;
-        }
+        let v2 = match b.get(..4)? {
+            b"CTF1" => false,
+            b"CTF2" => true,
+            _ => return None,
+        };
         let u = |i: usize| -> Option<usize> {
             let o = 4 + 4 * i;
             Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
@@ -167,7 +186,9 @@ impl TileFactors {
         let (energy, kept_energy) = (f(32)?, f(40)?);
         let p = w.checked_mul(h)?;
         let (ns, nt) = (p.checked_mul(rank)?, frames.checked_mul(rank)?);
-        let total = p.checked_add(ns)?.checked_add(nt)?;
+        // Per-pixel arrays before the factors: mean, and in v2 discarded and valid.
+        let head = if v2 { p.checked_mul(3)? } else { p };
+        let total = head.checked_add(ns)?.checked_add(nt)?;
         let body = b.get(48..)?;
         if body.len() != total.checked_mul(4)? {
             return None;
@@ -178,15 +199,22 @@ impl TileFactors {
             .iter()
             .map(|c| f32::from_le_bytes(*c))
             .collect();
+        let (discarded, valid) = if v2 {
+            (vals[p..2 * p].to_vec(), vals[2 * p..3 * p].to_vec())
+        } else {
+            (vec![0.0; p], vec![1.0; p])
+        };
         Some(TileFactors {
             x0,
             y0,
             w,
             h,
             rank,
-            spatial: vals[p..p + ns].to_vec(),
-            temporal: vals[p + ns..].to_vec(),
+            spatial: vals[head..head + ns].to_vec(),
+            temporal: vals[head + ns..].to_vec(),
             mean: vals[..p].to_vec(),
+            discarded,
+            valid,
             energy,
             kept_energy,
             svd_rank,
@@ -740,6 +768,15 @@ pub fn compress_tile(
             temporal[i * rank + c] = svd.v[i * svd.k + j];
         }
     }
+    let discarded = (0..p)
+        .map(|i| {
+            let kept: f64 = spatial[i * rank..(i + 1) * rank]
+                .iter()
+                .map(|&w| f64::from(w) * f64::from(w))
+                .sum();
+            ((y.ss[i] - kept).max(0.0) / t as f64) as f32
+        })
+        .collect();
     TileFactors {
         x0: 0,
         y0: 0,
@@ -749,6 +786,8 @@ pub fn compress_tile(
         spatial,
         temporal,
         mean: y.mean,
+        discarded,
+        valid: y.valid,
         energy: y.energy,
         kept_energy,
         svd_rank: svd.k,
@@ -952,6 +991,11 @@ mod tests {
             }
             y[i * p + 4] = f32::NAN;
         }
+        let q = quantized(&y);
+        let m = TileMatrix::new(&q, t, p, QUANT);
+        assert_eq!(m.valid[4], 0.0);
+        assert_eq!(m.ss[4], 0.0);
+        assert_eq!(m.mean[4], 0.0);
         let tf = compress_tile(&quantized(&y), t, p, &CompressConfig::default(), 3);
         assert_eq!(tf.mean[4], 0.0);
         // The randomized SVD's basis leaves rounding residue (about 1e-22) on a row of zeros.
@@ -1058,6 +1102,82 @@ mod tests {
         }
         assert!(err_rec < 0.1 * err_noisy, "{err_rec} vs {err_noisy}");
         assert!(wf.bytes() * 10 < t * side * side * 4);
+    }
+
+    /// A tile record in the v1 layout (`CTF1`), as files written before format v2.
+    fn v1_record(tf: &TileFactors) -> Vec<u8> {
+        let frames = tf.temporal.len().checked_div(tf.rank).unwrap_or(0);
+        let mut b = b"CTF1".to_vec();
+        for v in [tf.x0, tf.y0, tf.w, tf.h, tf.rank, frames, tf.svd_rank] {
+            b.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        b.extend_from_slice(&tf.energy.to_le_bytes());
+        b.extend_from_slice(&tf.kept_energy.to_le_bytes());
+        for a in [&tf.mean, &tf.spatial, &tf.temporal] {
+            for v in a.iter() {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn the_discarded_variance_closes_the_energy() {
+        let (t, side) = (300, 24);
+        let (noisy, _) = synth(t, side, 4, 1.0);
+        let mut tf = compress_tile(
+            &quantized(&noisy),
+            t,
+            side * side,
+            &CompressConfig::default(),
+            1,
+        );
+        (tf.w, tf.h) = (side, side);
+        assert_eq!(tf.discarded.len(), side * side);
+        assert!(tf.discarded.iter().all(|&d| d >= 0.0 && d.is_finite()));
+        assert!(tf.valid.iter().all(|&v| v == 1.0));
+        let d: f64 = tf.discarded.iter().map(|&v| f64::from(v)).sum::<f64>() * t as f64;
+        let rel = (d - (tf.energy - tf.kept_energy)).abs() / tf.energy;
+        assert!(
+            rel < 0.02,
+            "discarded {d}, energy {} kept {}",
+            tf.energy,
+            tf.kept_energy
+        );
+    }
+
+    #[test]
+    fn a_tile_record_round_trips_as_v2_and_still_reads_v1() {
+        let (t, side) = (120, 10);
+        let (noisy, _) = synth(t, side, 2, 0.5);
+        let mut tf = compress_tile(
+            &quantized(&noisy),
+            t,
+            side * side,
+            &CompressConfig::default(),
+            5,
+        );
+        (tf.x0, tf.y0, tf.w, tf.h) = (3, 7, side, side);
+        let bytes = tf.to_bytes();
+        assert_eq!(&bytes[..4], b"CTF2");
+        let back = TileFactors::from_bytes(&bytes).expect("v2 record");
+        assert_eq!(
+            (back.x0, back.y0, back.w, back.h, back.rank),
+            (3, 7, side, side, tf.rank)
+        );
+        assert_eq!(back.discarded, tf.discarded);
+        assert_eq!(back.valid, tf.valid);
+        assert_eq!(back.spatial, tf.spatial);
+        assert_eq!(back.temporal, tf.temporal);
+        let old = TileFactors::from_bytes(&v1_record(&tf)).expect("v1 record");
+        assert_eq!(old.spatial, tf.spatial);
+        assert_eq!(old.mean, tf.mean);
+        assert!(old.discarded.iter().all(|&d| d == 0.0) && old.discarded.len() == side * side);
+        assert!(old.valid.iter().all(|&v| v == 1.0) && old.valid.len() == side * side);
+        assert!(TileFactors::from_bytes(&bytes[..bytes.len() - 1]).is_none());
+        let mut bad = bytes.clone();
+        bad[3] = b'9';
+        assert!(TileFactors::from_bytes(&bad).is_none());
     }
 
     #[test]
