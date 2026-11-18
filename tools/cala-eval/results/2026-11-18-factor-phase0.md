@@ -41,31 +41,10 @@ G0 per recording (verdict of the QC-pass cells against the null):
 | motion    | `plain`       | outside       | outside   |
 | motion    | `plain_recal` | outside       | within    |
 
-The file-recording rule per recording and measure:
-
-| recording | measure        | plain   | plain_recal | recal within where plain outside |
-| --------- | -------------- | ------- | ----------- | -------------------------------- |
-| wl200     | trace r, lag 1 | outside | outside     | no                               |
-| wl200     | footprint cos  | outside | outside     | no                               |
-| wl24_01   | trace r, lag 1 | outside | outside     | no                               |
-| wl24_01   | footprint cos  | outside | outside     | no                               |
-| wl24_04   | trace r, lag 1 | outside | outside     | no                               |
-| wl24_04   | footprint cos  | outside | outside     | no                               |
-| plain     | trace r, lag 1 | outside | outside     | no                               |
-| plain     | footprint cos  | outside | within      | yes                              |
-| v4        | trace r, lag 1 | outside | outside     | no                               |
-| v4        | footprint cos  | outside | within      | yes                              |
-| motion    | trace r, lag 1 | outside | outside     | no                               |
-| motion    | footprint cos  | outside | within      | yes                              |
-
-The tiling rule, verdicts of "QC pass, under 8 px from a tile line" (trace / footprint):
-
-| arm         | wl200             | wl24_01           | wl24_04           | plain             | v4                | motion            |
-| ----------- | ----------------- | ----------------- | ----------------- | ----------------- | ----------------- | ----------------- |
-| `plain`     | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside |
-| `overlap8`  | outside / outside | outside / outside | outside / outside | not run           | not run           | not run           |
-| `overlap16` | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside |
-| `offset`    | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside | outside / outside |
+The file-recording rule compares the same cells of this table: `plain_recal` is `within` where `plain` is `outside` in
+exactly the three footprint cells that read `within`. For the tiling rule, the QC-pass cells under 8 px from a tile line
+are `outside` on both the trace and the footprint loss for all 21 runs of a tiling arm (every tiling on every recording
+where it was run; the values are in "Tile lines").
 
 ### What the specified gate cannot tell
 
@@ -82,11 +61,12 @@ null loss of the QC-pass cells per recording.
 | v4        | 0.00043     | 0.00549   | 0.00050     |
 | motion    | 0.00095     | 0.00632   | 0.00126     |
 
-The truth comparison on the three synthetic recordings says something the gate does not. The paired difference of the
-truth correlation (factor arm minus raw, same cells) has a median of 0.0016 on `wl200` (25 cells), 0.0036 on `plain`
-(180 cells) and 0.0962 on `motion` (145 cells) for the `plain` arm. Its 5th percentile is -0.0876, -0.0267 and -0.1159.
-So the median cell is as close to the truth with factors as without, while one cell in twenty loses about 0.03 to 0.12
-of truth correlation or more. The full table is in "Truth".
+The truth comparison says something the gate does not. For the `plain` arm, the paired difference of the truth
+correlation (factor arm minus raw, same cells) has a median of 0.0016 on `wl200` (25 cells) and 0.0036 on `plain`
+(180 cells). Its 5th percentile is -0.0876 and -0.0267. So on these two recordings the median cell is as close to the
+truth with factors as without, while one cell in twenty loses about 0.03 to 0.09 of truth correlation or more. The
+truth match of `motion` is unreliable (estimated frame offset 15.5 px, only 145 of 262 cells matched), so it is left
+out here. The full table is in "Truth".
 
 The footprint jump at tile lines (median jump of footprint values across a tile line over the same elsewhere) rises with
 `plain` tiling on five of six recordings, most on `wl200` (0.979 for raw, 1.818 for `plain`) and `plain` (0.933,
@@ -187,7 +167,8 @@ that do not pass QC. "Under 16 px from the border" is the motion band; it is rep
 | tile line over 16 px        | 0.8354 / 0.9932 (27) | 0.8014 / 0.9412 (22)  | 0.7444 / 0.9419 (18) | 0.9953 / 0.9997 (39)  | 0.9904 / 0.9894 (44)  | 0.9672 / 0.9818 (68)  |
 | under 16 px from the border | 0.8286 / 0.9936 (6)  | 0.7411 / 0.8891 (27)  | 0.6918 / 0.8316 (12) | n/a / n/a (0)         | n/a / n/a (0)         | 0.9059 / 0.9895 (4)   |
 
-Cells that do not pass QC (the low-SNR class, SNR meaning signal-to-noise ratio) have a lower trace r1 than QC-pass
+QC pass against not QC pass stands in here for the spec's SNR class (SNR meaning signal-to-noise ratio); no split by
+SNR itself was made. Cells that do not pass QC have a lower trace r1 than QC-pass
 cells on every recording; their footprint cos is lower on five recordings and higher on `wl200`. On `wl24_01` and
 `wl24_04` the cells under 4 px from a tile line and the cells in the border band have the lowest trace r1 (0.69 to
 0.74), and on `wl24_01` also the cells 4 to 8 px away. On `wl200` and `motion` the cells under 4 px from a tile line
@@ -286,10 +267,12 @@ On `wl200` they change little. On `v4` the recalibrated factors also have a much
 
 `x_<tiling>` against `x_raw`: Discover once, then Extract on the raw frames and on frames rebuilt from the factors, with
 the same library. The footprints are identical by construction (footprint cos 1.0000 everywhere confirms it). "Cells"
-is the SNR class: QC pass, or not QC pass (low SNR). These arms have no null, so they carry no verdict. On `wl24_01`
-and `wl24_04` the Extract-alone trace r1 of QC-pass cells is much higher than in the full `plain` arm (0.9169 against
-0.7999, 0.9140 against 0.7688), so most of the loss there comes from the refine replays on factors. On `wl200` the two
-are about equal (0.8272 against 0.8338), so the loss there is already in Extract.
+is QC pass or not QC pass, used as a stand-in for the SNR class; no split by SNR itself was made. These arms have no
+null, so they carry no verdict. On `wl24_01` and `wl24_04` the Extract-alone trace r1 of QC-pass cells is much higher
+than in the full `plain` arm (0.9169 against 0.7999, 0.9140 against 0.7688). This suggests, but does not show, that
+most of the loss there comes from the refine replays on factors. On `wl200` the two are about equal (0.8272 against
+0.8338), which suggests that the loss there is already in Extract. Both are inferences: the two comparisons have
+different references (`x_raw` and `raw`) and different QC-pass cells (52 against 58, 36 against 40, 62 against 63).
 
 ## Truth (synthetic sets)
 
@@ -319,9 +302,10 @@ are about equal (0.8272 against 0.8338), so the loss there is already in Extract
 
 Median trace correlation with the truth, for the reference run and the factor arm, over the cells with a truth unit
 within 6 px after the offset. The paired difference is factor arm minus reference over the same cells. On `wl200` and
-`plain` the medians of the factor arms are at most 0.034 below the reference, and mostly above it. On `motion` the arms
-with pass-1 factors are above raw by 0.08 to 0.10 in the paired median, while `plain_recal` is close to raw; see "Notes
-on the data".
+`plain` the medians of the factor arms are at most 0.033 below the reference, and mostly above it. The `motion` rows
+should be read with care: the truth match there is unreliable (estimated frame offset 15.5 px, only 145 of 262 cells
+matched). On `motion` the arms with pass-1 factors are above raw by 0.08 to 0.10 in the paired median, while
+`plain_recal` is close to raw; see "Notes on the data".
 
 ## Cost of the tilings
 
@@ -365,8 +349,162 @@ the same mean rank and size.
 
 ### Native
 
-Seconds per stage of the `raw` arm, from `qc_eval`'s own clock (`stage_times.tsv`). `pass1` is Discover, the later
-passes are the refine replays, `extract` is the Extract pass.
+Seconds per stage of the `raw` arm, from `qc_eval`'s own clock (`stage_times.tsv`). `pass1` is Discover, `pass2` is
+the first refine replay, `extract` is the Extract pass. The table with every refine replay is in the appendix.
+
+| recording | stage   | read | preprocess | solve | slow loop | wall   |
+| --------- | ------- | ---- | ---------- | ----- | --------- | ------ |
+| wl200     | pass1   | 0.28 | 32.73      | 1.56  | 25.04     | 64.21  |
+| wl200     | pass2   | 0.07 | 13.85      | 1.95  | 22.25     | 42.91  |
+| wl200     | extract | 0.07 | 13.36      | 1.83  | 0.00      | 15.27  |
+| wl24_01   | pass1   | 0.19 | 30.73      | 3.09  | 26.88     | 68.18  |
+| wl24_01   | pass2   | 0.07 | 13.55      | 4.56  | 25.78     | 54.09  |
+| wl24_01   | extract | 0.07 | 13.58      | 5.17  | 0.00      | 18.85  |
+| wl24_04   | pass1   | 0.07 | 32.42      | 2.53  | 25.05     | 66.02  |
+| wl24_04   | pass2   | 0.07 | 13.73      | 3.45  | 24.30     | 47.93  |
+| wl24_04   | extract | 0.07 | 13.57      | 4.01  | 0.00      | 17.68  |
+| plain     | pass1   | 2.06 | 103.32     | 2.56  | 18.54     | 137.70 |
+| plain     | pass2   | 0.36 | 55.39      | 3.35  | 22.92     | 91.37  |
+| plain     | extract | 0.37 | 55.39      | 3.31  | 0.00      | 59.10  |
+| v4        | pass1   | 2.05 | 103.49     | 3.85  | 19.19     | 144.38 |
+| v4        | pass2   | 0.39 | 55.04      | 5.63  | 23.40     | 98.73  |
+| v4        | extract | 0.39 | 55.65      | 5.70  | 0.00      | 61.78  |
+| motion    | pass1   | 1.94 | 106.27     | 2.72  | 19.75     | 142.56 |
+| motion    | pass2   | 0.38 | 55.10      | 4.41  | 24.40     | 97.20  |
+| motion    | extract | 0.39 | 55.33      | 4.45  | 0.00      | 60.21  |
+
+The `plain` arm against `raw`, wall seconds per stage. "Of which compress" is the compression time inside Discover.
+The factor arms rebuild full frames from the factors and run the existing engine, so they measure the loss, not the
+speed-up. Arm C (the factor engine) does not exist yet.
+
+| recording | Discover raw | Discover plain | of which compress | refine mean raw | refine mean plain | Extract raw | Extract plain |
+| --------- | ------------ | -------------- | ----------------- | --------------- | ----------------- | ----------- | ------------- |
+| wl200     | 64.21        | 72.30          | 9.10              | 42.6            | 44.1              | 15.27       | 16.94         |
+| wl24_01   | 68.18        | 75.39          | 7.93              | 58.5            | 60.7              | 18.85       | 21.09         |
+| wl24_04   | 66.02        | 73.79          | 7.79              | 49.8            | 52.7              | 17.68       | 19.91         |
+| plain     | 137.70       | 176.94         | 33.83             | 97.4            | 115.6             | 59.10       | 65.64         |
+| v4        | 144.38       | 178.27         | 33.84             | 99.8            | 110.5             | 61.78       | 71.78         |
+| motion    | 142.56       | 172.99         | 34.37             | 98.2            | 105.5             | 60.21       | 67.59         |
+
+The factor arms are slower than raw at every stage. The table gives the extra time of `plain` over `raw` in percent,
+per stage (for the refine replays, the range over the replays). On the 600 px recordings Discover takes 21 to 28
+percent longer (including about 34 s of compression), the refine replays 7 to 27 percent and Extract 11 to 16 percent.
+On the 200 px recordings the figures are 11 to 13, 1 to 8 and 11 to 13 percent. The runs shared the machine, so these
+are rough.
+
+| recording | Discover | refine passes | Extract |
+| --------- | -------- | ------------- | ------- |
+| wl200     | 13       | 2 to 6        | 11      |
+| wl24_01   | 11       | 1 to 7        | 12      |
+| wl24_04   | 12       | 4 to 8        | 13      |
+| plain     | 28       | 11 to 27      | 11      |
+| v4        | 23       | 10 to 12      | 16      |
+| motion    | 21       | 7 to 8        | 12      |
+
+Wall seconds and peak memory (MB) per arm. The wall times are from runs that shared the machine (2 or 3 at once), so
+they are rough.
+
+**Peak memory overstates the factor arms.** A probe (200 px, 1800 frames) showed the factor dump at 806 MB against
+214 MB with the macOS allocator's large-block cache switched off (`MallocLargeCache=0`), with byte-identical factors;
+raw was 238 MB. The extra is freed chunk buffers that the allocator keeps. Reusing one buffer is phase 1 work.
+
+| arm           | wl200      | wl24_01    | wl24_04    | plain      | v4         | motion     |
+| ------------- | ---------- | ---------- | ---------- | ---------- | ---------- | ---------- |
+| `raw`         | 294 / 263  | 380 / 259  | 333 / 246  | 395 / 1227 | 409 / 1153 | 403 / 1195 |
+| `null_lo`     | 257 / 245  | 326 / 269  | 283 / 242  | 383 / 1221 | 396 / 1152 | 391 / 1196 |
+| `null_hi`     | 371 / 258  | 479 / 267  | 417 / 240  | not run    | not run    | not run    |
+| `plain`       | 310 / 809  | 400 / 795  | 358 / 794  | 477 / 2085 | 474 / 1965 | 455 / 2035 |
+| `overlap8`    | 314 / 1067 | 414 / 1054 | 369 / 1050 | not run    | not run    | not run    |
+| `overlap16`   | 319 / 1344 | 422 / 1348 | 373 / 1330 | 536 / 2786 | 560 / 2826 | 522 / 2726 |
+| `offset`      | 317 / 854  | 417 / 858  | 360 / 855  | 483 / 2517 | 550 / 2402 | 504 / 2449 |
+| `plain_recal` | 299 / 808  | 388 / 765  | 335 / 795  | 430 / 1782 | 472 / 1703 | 446 / 1644 |
+| `x_raw`       | 79 / 246   | 85 / 231   | 83 / 246   | 199 / 1159 | 208 / 1056 | 198 / 1113 |
+| `x_plain`     | 91 / 801   | 96 / 796   | 94 / 793   | 239 / 2080 | 251 / 1968 | 239 / 2012 |
+| `x_overlap8`  | 95 / 1051  | 102 / 1049 | 99 / 1068  | not run    | not run    | not run    |
+| `x_overlap16` | 98 / 1340  | 108 / 1330 | 103 / 1326 | 280 / 2838 | 313 / 2811 | 282 / 3017 |
+| `x_offset`    | 97 / 860   | 107 / 871  | 101 / 861  | not run    | not run    | not run    |
+
+### Browser
+
+Whole recordings in Chrome, one refine run each, one run at a time, after the native arms had ended. `?compress` adds
+window compression in a worker of its own. It also starts a back-fill once the recording is read, the final library is
+out and every window is compressed: the compress worker rebuilds the windows from the factors and solves the traces of
+the whole recording again with that library. This runs on its own worker and can overlap Refine. Refine and Extract
+themselves read the raw frames in both runs. Seconds are from the app's own stage records in each export; fps in the
+table means frames per second.
+
+| recording | stage    | outcome     | frames | seconds, default | seconds, ?compress | ratio | cells, default | cells, ?compress | fps default | fps ?compress |
+| --------- | -------- | ----------- | ------ | ---------------- | ------------------ | ----- | -------------- | ---------------- | ----------- | ------------- |
+| wl24_01   | discover | done / done | 40234  | 33.0             | 34.3               | 1.04  | 84             | 90               | 1219        | 1173          |
+| wl24_01   | refine   | done / done | 40234  | 30.4             | 29.1               | 0.96  | 84             | 90               | 1323        | 1385          |
+| wl24_01   | extract  | done / done | 40234  | 29.9             | 29.6               | 0.99  | 84             | 90               | 1348        | 1357          |
+| v4        | discover | done / done | 23711  | 155.4            | 195.7              | 1.26  | 825            | 839              | 153         | 121           |
+| v4        | refine   | done / done | 23711  | 220.2            | 225.9              | 1.03  | 825            | 839              | 108         | 105           |
+| v4        | extract  | done / done | 23711  | 205.5            | 210.0              | 1.02  | 825            | 839              | 115         | 113           |
+
+Two unrelated single-thread jobs started on the machine at about 12:07. The last third of Refine and all of Extract of
+`v4` with `?compress` (12:01 to 12:13) shared the machine with them; the other three runs did not. The cell counts
+differ between default and `?compress` (84 against 90, 825 against 839), so the frames per second are not a
+like-for-like comparison. With that caveat, compression added about 4 percent to Discover on `wl24_01` and about 26
+percent on `v4`.
+
+## Before v2.20.0
+
+The first full set of runs used the version before v2.20.0, whose refine gate needed a held-out gain with z above 3
+(`refine_z` 3). v2.20.0 accepts any held-out gain (`refine_z` 0). Same scale and budget. `plain` against `raw`, QC-pass
+cells:
+
+| recording | trace loss, old gate | trace loss, new gate | footprint loss, old gate | footprint loss, new gate | jump raw / plain, old gate | jump raw / plain, new gate | QC-pass n old | QC-pass n new |
+| --------- | -------------------- | -------------------- | ------------------------ | ------------------------ | -------------------------- | -------------------------- | ------------- | ------------- |
+| wl200     | 0.17912              | 0.16617              | 0.01164                  | 0.01033                  | 1.250 / 1.648              | 0.979 / 1.818              | 63            | 63            |
+| wl24_01   | 0.16581              | 0.20011              | 0.05340                  | 0.04539                  | 1.099 / 1.162              | 1.150 / 1.095              | 63            | 58            |
+| wl24_04   | 0.17782              | 0.23123              | 0.04412                  | 0.04051                  | 1.128 / 1.358              | 1.071 / 1.379              | 44            | 40            |
+| plain     | 0.00531              | 0.00515              | 0.00000                  | 0.00085                  | 1.003 / 1.146              | 0.933 / 1.326              | 137           | 142           |
+| v4        | 0.01170              | 0.00944              | 0.00961                  | 0.00806                  | 0.822 / 0.908              | 0.895 / 0.957              | 216           | 202           |
+| motion    | 0.04719              | 0.03055              | 0.02437                  | 0.02274                  | 0.859 / 0.992              | 0.929 / 1.020              | 167           | 178           |
+
+The jump columns give raw's own jump beside the jump of `plain`, because raw's value changed between the versions too
+(on `wl200` from 1.250 to 0.979). The new gate lowers the trace loss on `wl200`, `v4` and `motion`, leaves it about the
+same on `plain` and raises it on `wl24_01` and `wl24_04`. The verdicts do not change: `outside` on both measures, except the footprint loss on `plain`, which was `within` (loss 0.00000) at
+the old gate and is `outside` now. One default-budget comparison exists, on the old gate only (`wl200`, `plain` against
+`raw`, 12000 frames, 5 replays): trace loss 0.18230 and footprint loss 0.01089 against a null of 0.00000, truth
+correlation median 0.7608 for raw and 0.8486 for `plain` over 28 cells (paired difference median -0.0012, 5th percentile
+-0.1006), footprint jump 0.930 for raw and 1.886 for `plain`.
+
+## Notes on the data
+
+- `motion`: the truth offset is large, (dy, dx) = (+15.5, +0.7) px, and only 145 of 262 cells match a truth unit. The
+  raw truth correlation median is low (0.4602). The arms with pass-1 factors reach about 0.60, `plain_recal` 0.4473.
+  This was not investigated; the truth numbers on `motion` should be read with care.
+- Browser: the driver's own status file gives other stage times than the app's stage records (for example Discover of
+  `wl24_01` default 15.0 s against 33.0 s). The driver polls in steps of about 15 s, so its times are coarse. The table
+  uses the app's records.
+- `tools/cala-eval/stage_times.py` stops with an error on the CaDecon export (it has no `meta_json`) instead of
+  printing "no stage records". The browser table was made from the cala exports only.
+- QC pass is read from the reference run of each comparison, so `x_raw` and `raw` count slightly different QC-pass cells
+  (for example 62 against 63 on `wl200`).
+
+## What was not measured
+
+- Arm C (the factor engine) does not exist yet. The speed-up of Refine and Extract on factors is not measured; the factor
+  arms only measure the loss.
+- The motion band is only reported, not gated. `plain` and `v4` have no cell in it, `motion` has 4.
+- `lowsnr` and `dense` were not run. The 600 px recordings have no `null_hi`, `overlap8`, `x_overlap8` or `x_offset`,
+  and their null is a single run.
+- Only the first 12000 (200 px) or 6000 (600 px) frames were used, with 5 or 2 refine replays. Effects that need long
+  recordings (late rank growth, slow drift) are not covered.
+- The slow-loop budget was a tenth of the default. Nothing was measured at the default budget on v2.20.0.
+- Refine "until settled" with its iteration count was not measured; the replays ran a fixed number of times.
+- Recall and precision against the truth were not computed, only the trace correlation of matched cells.
+- Peak memory was measured per run, not per stage. Frames of history per gigabyte were not computed.
+- The `x_` arms have no null run, so their loss has no verdict.
+- Each browser configuration ran once; there is no spread for the browser times.
+- The spec's remedies for dim cells (lower `rho_min`, higher starting rank) were not tried.
+
+## Appendix: native stage times of the `raw` arm
+
+Seconds per stage for every pass, from `qc_eval`'s own clock (`stage_times.tsv`). `pass1` is Discover, `pass2` and later
+are the refine replays, `extract` is the Extract pass.
 
 | recording | stage   | read | preprocess | solve | slow loop | wall   |
 | --------- | ------- | ---- | ---------- | ----- | --------- | ------ |
@@ -403,114 +541,3 @@ passes are the refine replays, `extract` is the Extract pass.
 | motion    | pass2   | 0.38 | 55.10      | 4.41  | 24.40     | 97.20  |
 | motion    | pass3   | 0.38 | 55.37      | 4.61  | 25.19     | 99.28  |
 | motion    | extract | 0.39 | 55.33      | 4.45  | 0.00      | 60.21  |
-
-The `plain` arm against `raw`, wall seconds per stage. "Of which compress" is the compression time inside Discover.
-The factor arms rebuild full frames from the factors and run the existing engine, so they measure the loss, not the
-speed-up. They are expected to be slightly slower than raw, and they are. Arm C (the factor engine) does not exist
-yet.
-
-| recording | Discover raw | Discover plain | of which compress | refine mean raw | refine mean plain | Extract raw | Extract plain |
-| --------- | ------------ | -------------- | ----------------- | --------------- | ----------------- | ----------- | ------------- |
-| wl200     | 64.21        | 72.30          | 9.10              | 42.6            | 44.1              | 15.27       | 16.94         |
-| wl24_01   | 68.18        | 75.39          | 7.93              | 58.5            | 60.7              | 18.85       | 21.09         |
-| wl24_04   | 66.02        | 73.79          | 7.79              | 49.8            | 52.7              | 17.68       | 19.91         |
-| plain     | 137.70       | 176.94         | 33.83             | 97.4            | 115.6             | 59.10       | 65.64         |
-| v4        | 144.38       | 178.27         | 33.84             | 99.8            | 110.5             | 61.78       | 71.78         |
-| motion    | 142.56       | 172.99         | 34.37             | 98.2            | 105.5             | 60.21       | 67.59         |
-
-Wall seconds and peak memory (MB) per arm. The wall times are from runs that shared the machine (2 or 3 at once), so
-they are rough.
-
-**Peak memory overstates the factor arms.** A probe (200 px, 1800 frames) showed the factor dump at 806 MB against
-214 MB with the macOS allocator's large-block cache switched off (`MallocLargeCache=0`), with byte-identical factors;
-raw was 238 MB. The extra is freed chunk buffers that the allocator keeps. Reusing one buffer is phase 1 work.
-
-| arm           | wl200      | wl24_01    | wl24_04    | plain      | v4         | motion     |
-| ------------- | ---------- | ---------- | ---------- | ---------- | ---------- | ---------- |
-| `raw`         | 294 / 263  | 380 / 259  | 333 / 246  | 395 / 1227 | 409 / 1153 | 403 / 1195 |
-| `null_lo`     | 257 / 245  | 326 / 269  | 283 / 242  | 383 / 1221 | 396 / 1152 | 391 / 1196 |
-| `null_hi`     | 371 / 258  | 479 / 267  | 417 / 240  | not run    | not run    | not run    |
-| `plain`       | 310 / 809  | 400 / 795  | 358 / 794  | 477 / 2085 | 474 / 1965 | 455 / 2035 |
-| `overlap8`    | 314 / 1067 | 414 / 1054 | 369 / 1050 | not run    | not run    | not run    |
-| `overlap16`   | 319 / 1344 | 422 / 1348 | 373 / 1330 | 536 / 2786 | 560 / 2826 | 522 / 2726 |
-| `offset`      | 317 / 854  | 417 / 858  | 360 / 855  | 483 / 2517 | 550 / 2402 | 504 / 2449 |
-| `plain_recal` | 299 / 808  | 388 / 765  | 335 / 795  | 430 / 1782 | 472 / 1703 | 446 / 1644 |
-| `x_raw`       | 79 / 246   | 85 / 231   | 83 / 246   | 199 / 1159 | 208 / 1056 | 198 / 1113 |
-| `x_plain`     | 91 / 801   | 96 / 796   | 94 / 793   | 239 / 2080 | 251 / 1968 | 239 / 2012 |
-| `x_overlap8`  | 95 / 1051  | 102 / 1049 | 99 / 1068  | not run    | not run    | not run    |
-| `x_overlap16` | 98 / 1340  | 108 / 1330 | 103 / 1326 | 280 / 2838 | 313 / 2811 | 282 / 3017 |
-| `x_offset`    | 97 / 860   | 107 / 871  | 101 / 861  | not run    | not run    | not run    |
-
-### Browser
-
-Whole recordings in Chrome, one refine run each, one run at a time, after the native arms had ended. `?compress` adds
-window compression in a worker of its own; Refine and Extract on factors do not exist yet, so they read the raw frames
-in both runs. Seconds are from the app's own stage records in each export.
-
-| recording | stage    | outcome     | frames | seconds, default | seconds, ?compress | ratio | cells, default | cells, ?compress | fps default | fps ?compress |
-| --------- | -------- | ----------- | ------ | ---------------- | ------------------ | ----- | -------------- | ---------------- | ----------- | ------------- |
-| wl24_01   | discover | done / done | 40234  | 33.0             | 34.3               | 1.04  | 84             | 90               | 1219        | 1173          |
-| wl24_01   | refine   | done / done | 40234  | 30.4             | 29.1               | 0.96  | 84             | 90               | 1323        | 1385          |
-| wl24_01   | extract  | done / done | 40234  | 29.9             | 29.6               | 0.99  | 84             | 90               | 1348        | 1357          |
-| v4        | discover | done / done | 23711  | 155.4            | 195.7              | 1.26  | 825            | 839              | 153         | 121           |
-| v4        | refine   | done / done | 23711  | 220.2            | 225.9              | 1.03  | 825            | 839              | 108         | 105           |
-| v4        | extract  | done / done | 23711  | 205.5            | 210.0              | 1.02  | 825            | 839              | 115         | 113           |
-
-Two unrelated single-thread jobs started on the machine at about 12:07. The last third of Refine and all of Extract of
-`v4` with `?compress` (12:01 to 12:13) shared the machine with them; the other three runs did not. The cell counts
-differ between default and `?compress` (84 against 90, 825 against 839), so the frames per second are not a
-like-for-like comparison. With that caveat, compression added about 4 percent to Discover on `wl24_01` and about 26
-percent on `v4`.
-
-## Before v2.20.0
-
-The first full set of runs used the version before v2.20.0, whose refine gate needed a held-out gain with z above 3
-(`refine_z` 3). v2.20.0 accepts any held-out gain (`refine_z` 0). Same scale and budget. `plain` against `raw`, QC-pass
-cells:
-
-| recording | trace loss, old gate | trace loss, new gate | footprint loss, old gate | footprint loss, new gate | jump, old gate | jump, new gate | QC-pass n old | QC-pass n new |
-| --------- | -------------------- | -------------------- | ------------------------ | ------------------------ | -------------- | -------------- | ------------- | ------------- |
-| wl200     | 0.17912              | 0.16617              | 0.01164                  | 0.01033                  | 1.648          | 1.818          | 63            | 63            |
-| wl24_01   | 0.16581              | 0.20011              | 0.05340                  | 0.04539                  | 1.162          | 1.095          | 63            | 58            |
-| wl24_04   | 0.17782              | 0.23123              | 0.04412                  | 0.04051                  | 1.358          | 1.379          | 44            | 40            |
-| plain     | 0.00531              | 0.00515              | 0.00000                  | 0.00085                  | 1.146          | 1.326          | 137           | 142           |
-| v4        | 0.01170              | 0.00944              | 0.00961                  | 0.00806                  | 0.908          | 0.957          | 216           | 202           |
-| motion    | 0.04719              | 0.03055              | 0.02437                  | 0.02274                  | 0.992          | 1.020          | 167           | 178           |
-
-The new gate lowers the trace loss on `wl200`, `v4` and `motion`, leaves it about the same on `plain` and raises it on
-`wl24_01` and `wl24_04`. The verdicts
-do not change: `outside` on both measures, except the footprint loss on `plain`, which was `within` (loss 0.00000) at
-the old gate and is `outside` now. One default-budget comparison exists, on the old gate only (`wl200`, `plain` against
-`raw`, 12000 frames, 5 replays): trace loss 0.18230 and footprint loss 0.01089 against a null of 0.00000, truth
-correlation median 0.7608 for raw and 0.8486 for `plain` over 28 cells (paired difference median -0.0012, 5th percentile
--0.1006), footprint jump 0.930 for raw and 1.886 for `plain`.
-
-## Notes on the data
-
-- `motion`: the truth offset is large, (dy, dx) = (+15.5, +0.7) px, and only 145 of 262 cells match a truth unit. The
-  raw truth correlation median is low (0.4602). The arms with pass-1 factors reach about 0.60, `plain_recal` 0.4473.
-  This was not investigated; the truth numbers on `motion` should be read with care.
-- Browser: the driver's own status file gives other stage times than the app's stage records (for example Discover of
-  `wl24_01` default 15.0 s against 33.0 s). The driver polls in steps of about 15 s, so its times are coarse. The table
-  uses the app's records.
-- `tools/cala-eval/stage_times.py` stops with an error on the CaDecon export (it has no `meta_json`) instead of
-  printing "no stage records". The browser table was made from the cala exports only.
-- QC pass is read from the reference run of each comparison, so `x_raw` and `raw` count slightly different QC-pass cells
-  (for example 62 against 63 on `wl200`).
-
-## What was not measured
-
-- Arm C (the factor engine) does not exist yet. The speed-up of Refine and Extract on factors is not measured; the factor
-  arms only measure the loss.
-- The motion band is only reported, not gated. `plain` and `v4` have no cell in it, `motion` has 4.
-- `lowsnr` and `dense` were not run. The 600 px recordings have no `null_hi`, `overlap8`, `x_overlap8` or `x_offset`,
-  and their null is a single run.
-- Only the first 12000 (200 px) or 6000 (600 px) frames were used, with 5 or 2 refine replays. Effects that need long
-  recordings (late rank growth, slow drift) are not covered.
-- The slow-loop budget was a tenth of the default. Nothing was measured at the default budget on v2.20.0.
-- Refine "until settled" with its iteration count was not measured; the replays ran a fixed number of times.
-- Recall and precision against the truth were not computed, only the trace correlation of matched cells.
-- Peak memory was measured per run, not per stage. Frames of history per gigabyte were not computed.
-- The `x_` arms have no null run, so their loss has no verdict.
-- Each browser configuration ran once; there is no spread for the browser times.
-- The spec's remedies for dim cells (lower `rho_min`, higher starting rank) were not tried.
