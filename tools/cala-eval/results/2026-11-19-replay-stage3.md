@@ -9,20 +9,20 @@ component) and §3.2 (no restart on births); `design_joint_update.md` ("Stage 3 
 `full-signall/off` (main) and `full-stage2/stage2`, pairs < 1 D with a matched GT neighbour j (the row behind
 the 0.059 → 0.075 figure), est/true of i's footprint at j's centre (both peak-normalised):
 
-| split | main | Stage 2 |
-| ----- | ---- | ------- |
-| over-fill share (ratio > 1.3), all | 0.050 | 0.075 |
-| ... and absolute excess est − true > 0.05 of peak | 0.044 | 0.049 |
-| ... and absolute excess > 0.10 of peak | 0.028 | 0.027 |
-| ... with true at c_j < 0.10 of peak (tail pixels) | 0.011 | 0.033 |
-| static + pairs, 0.75-1 D, j in i's final cluster | 0.058 (n 1120) | 0.113 (n 1152) |
-| static + pairs, 0.75-1 D, j outside i's cluster | 0.000 (n 152) | 0.066 (n 122) |
+| split                                                                                 | main                 | Stage 2              |
+| ------------------------------------------------------------------------------------- | -------------------- | -------------------- |
+| over-fill share (ratio > 1.3), all                                                    | 0.050                | 0.075                |
+| ... and absolute excess est − true > 0.05 of peak                                     | 0.044                | 0.049                |
+| ... and absolute excess > 0.10 of peak                                                | 0.028                | 0.027                |
+| ... with true at c_j < 0.10 of peak (tail pixels)                                     | 0.011                | 0.033                |
+| static + pairs, 0.75-1 D, j in i's final cluster                                      | 0.058 (n 1120)       | 0.113 (n 1152)       |
+| static + pairs, 0.75-1 D, j outside i's cluster                                       | 0.000 (n 152)        | 0.066 (n 122)        |
 | over-filled pairs 0.75-1 D: j's footprint r / reverse bite share / median true at c_j | 0.982 / 0.78 / 0.130 | 0.993 / 0.26 / 0.086 |
 
-Reading: Stage 2's extra over-fill is toward *detected* neighbours in the same cluster, at pixels where the true
+Reading: Stage 2's extra over-fill is toward _detected_ neighbours in the same cluster, at pixels where the true
 footprint is under 10 % of its peak, and the neighbour's own footprint is good. It is mostly a small absolute
 overshoot of a healed tail (median excess 0.07 of peak), not an absorbed cell; the absolute-excess rows are flat.
-The leftover-light guard targets absorption of light *no member explains* (undetected or not-yet-born neighbours,
+The leftover-light guard targets absorption of light _no member explains_ (undetected or not-yet-born neighbours,
 and out-of-cluster light), so it is not expected to move the ratio row much in Refine. Both rows are reported.
 
 ## Go / no-go, written down before any Stage 3 result
@@ -34,25 +34,25 @@ Arms. main (flag off); Stage 2 = `--joint-update refine --joint-sign all` (`full
 
 Refine (full tier, 14 sims, `--passes 2 --later-passes refine`):
 
-| # | metric | target |
-| - | ------ | ------ |
-| 1 | Over-fill share est/true > 1.3, pairs < 1 D (detected neighbour) | ≤ 5 % (Stage 2 0.075, main 0.050); reported also with absolute excess > 0.05 of peak |
-| 2 | Over-fill next to undetected GT units, < 1 D | ≤ main (0.090) |
-| 3 | Footprint r all / close pairs | within CI of Stage 2 (0.9920 / 0.9917) or better |
-| 4 | Trace corr excess < 1 D | within CI of Stage 2 (+0.084) or better |
-| 5 | Bite share 0.5-0.75 / 0.75-1 D | within CI of Stage 2 (0.123 / 0.201) or better; split by birth order (earlier / later-born) |
-| 6 | Isolated cells: footprint r, trace r | no regression vs main (paired change ≥ −0.005, CI upper end ≥ 0) |
-| 7 | Matched / false / merges | within noise of Stage 2 and main |
-| 8 | Cells matching 2+ GT units | reported, split into absorption (est/true > 1.3 at one of its GT units) and light regained (≤ 1.3) |
+| #   | metric                                                           | target                                                                                             |
+| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 1   | Over-fill share est/true > 1.3, pairs < 1 D (detected neighbour) | ≤ 5 % (Stage 2 0.075, main 0.050); reported also with absolute excess > 0.05 of peak               |
+| 2   | Over-fill next to undetected GT units, < 1 D                     | ≤ main (0.090)                                                                                     |
+| 3   | Footprint r all / close pairs                                    | within CI of Stage 2 (0.9920 / 0.9917) or better                                                   |
+| 4   | Trace corr excess < 1 D                                          | within CI of Stage 2 (+0.084) or better                                                            |
+| 5   | Bite share 0.5-0.75 / 0.75-1 D                                   | within CI of Stage 2 (0.123 / 0.201) or better; split by birth order (earlier / later-born)        |
+| 6   | Isolated cells: footprint r, trace r                             | no regression vs main (paired change ≥ −0.005, CI upper end ≥ 0)                                   |
+| 7   | Matched / false / merges                                         | within noise of Stage 2 and main                                                                   |
+| 8   | Cells matching 2+ GT units                                       | reported, split into absorption (est/true > 1.3 at one of its GT units) and light regained (≤ 1.3) |
 
 Discover only (`--passes 1 --joint-update all --joint-sign all`; quick tier to iterate, then full tier):
 
-| # | metric | target |
-| - | ------ | ------ |
-| 9 | Matched cells per sim | ≥ main − 1 % (Stage 2: −9.0 / sim, quick tier) |
-| 10 | False cells per sim | within noise of main |
-| 11 | Accuracy rows (footprint r all/close, corr excess, bite share) | at least Stage 2's Discover-only readout |
-| 12 | Store history | report: builds, fresh stores, rebases (history kept / dropped), restarts, replays |
+| #   | metric                                                         | target                                                                            |
+| --- | -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 9   | Matched cells per sim                                          | ≥ main − 1 % (Stage 2: −9.0 / sim, quick tier)                                    |
+| 10  | False cells per sim                                            | within noise of main                                                              |
+| 11  | Accuracy rows (footprint r all/close, corr excess, bite share) | at least Stage 2's Discover-only readout                                          |
+| 12  | Store history                                                  | report: builds, fresh stores, rebases (history kept / dropped), restarts, replays |
 
 Reported, not gated: share of main's Discover → +1 Refine gain reached (`demix_stages.py`, static s5 + pairs s5);
 slow-loop cost from solo runs (observe + step ms/frame, static s5 and motion s5): no more than +5 % over Stage 2.
@@ -110,20 +110,21 @@ Direction: the provisional component costs some of Stage 2's healing in Refine. 
 `demix-suite/st3-quick-discover` (arms `st3prov` = leftover 1 + rebase + provisional, `st3store` = same with
 `--joint-no-provisional`), each against `quick-pass1-discover/main-pass1`:
 
-| metric | main | Stage 2 | Stage 3 (provisional) | Stage 3 (stored only) |
-| ------ | ---- | ------- | --------------------- | --------------------- |
-| Footprint r all / close | 0.9813 / 0.9761 | 0.9864 / 0.9853 | 0.9862 / 0.9851 | **0.9870 / 0.9864** |
-| Corr excess < 1 D | +0.147 | +0.104 | +0.109 | **+0.095** |
-| Bite share 0.5-0.75 / 0.75-1 D | 0.479 / 0.669 | 0.297 / 0.437 | 0.311 / 0.466 | **0.256 / 0.432** |
-| Over-fill, matched neighbour < 1 D | 0.059 | 0.049 | **0.027** (vs main −0.032 [−0.048, −0.016], 5/5) | 0.035 (5/5) |
-| Over-fill, undetected neighbour < 1 D | 0.056 | 0.080 | 0.079 | 0.089 |
-| Matched / false per sim | 346.8 / 15.0 | 337.8 / 14.6 | 339.2 / 16.8 (−7.6 [−15.2, 0.0]) | 336.0 / 17.6 (−10.8 [−22.0, +0.4]) |
+| metric                                | main            | Stage 2         | Stage 3 (provisional)                            | Stage 3 (stored only)              |
+| ------------------------------------- | --------------- | --------------- | ------------------------------------------------ | ---------------------------------- |
+| Footprint r all / close               | 0.9813 / 0.9761 | 0.9864 / 0.9853 | 0.9862 / 0.9851                                  | **0.9870 / 0.9864**                |
+| Corr excess < 1 D                     | +0.147          | +0.104          | +0.109                                           | **+0.095**                         |
+| Bite share 0.5-0.75 / 0.75-1 D        | 0.479 / 0.669   | 0.297 / 0.437   | 0.311 / 0.466                                    | **0.256 / 0.432**                  |
+| Over-fill, matched neighbour < 1 D    | 0.059           | 0.049           | **0.027** (vs main −0.032 [−0.048, −0.016], 5/5) | 0.035 (5/5)                        |
+| Over-fill, undetected neighbour < 1 D | 0.056           | 0.080           | 0.079                                            | 0.089                              |
+| Matched / false per sim               | 346.8 / 15.0    | 337.8 / 14.6    | 339.2 / 16.8 (−7.6 [−15.2, 0.0])                 | 336.0 / 17.6 (−10.8 [−22.0, +0.4]) |
 
 Store history on static s5 (Discover): 85 builds; 140 fresh stores (groups made only of previously lone cells),
 103 rebased (only 6 with a newborn member), 35 dropped (a newborn's light outside the stored span), 20 unions,
 0 restarts of a moving store; 710 replays (Stage 2: 730).
 
 Reading:
+
 - Rebase works mechanically but rarely meets a birth: most Discover births join a **lone** cell, which has no
   store, so the new cluster starts fresh. Re-expression does not lengthen the replayed history much, and the
   replay count is unchanged.

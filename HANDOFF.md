@@ -7,6 +7,7 @@ Binaries: `$CALA_DATA/bin/qc_eval-st3-b` (all flags). Runs: `demix-suite/st3-smo
 `st3-quick-discover`.
 
 Not done:
+
 1. Full-tier Refine run (14 sims) of `--joint-update refine --joint-sign all --joint-leftover 1 --joint-rebase`
    (± `--joint-no-provisional`), compared with `demix_report.py --base full-stage2/stage2` and `full-signall/off`.
    Recompute metrics on CoW copies of those trees (`cp -c -R`) to get the new 2+ GT split rows.
