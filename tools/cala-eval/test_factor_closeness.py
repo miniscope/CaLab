@@ -105,6 +105,9 @@ class Closeness(unittest.TestCase):
         self.assertTrue(math.isnan(rows[11]["trace_r"]))
         self.assertTrue(math.isnan(rows[7]["trace_r"]))
         self.assertAlmostEqual(F.loss(list(rows.values()), "trace_r"), 0.0, places=6)
+        self.assertEqual(F.dropped(list(rows.values()), "trace_r"), 2)
+        self.assertEqual(F.dropped(list(rows.values()), "fp_cos"), 1)
+        self.assertEqual(F.verdict(0.0, [0.01], 2, [0]), "dropped cells")
         text = F.report(self.root / "a", self.root / "b", [])
         self.assertIn("1 of 3 cells are missing", text)
 
@@ -128,6 +131,9 @@ class Closeness(unittest.TestCase):
         self.assertEqual(F.verdict(0.03, [0.02, 0.005]), "outside")
         self.assertEqual(F.verdict(0.03, []), "not judged")
         self.assertEqual(F.verdict(float("nan"), [0.02]), "not judged")
+        self.assertEqual(F.verdict(0.01, [0.02], 1, [1]), "within")
+        self.assertEqual(F.verdict(0.01, [0.02], 2, [1]), "dropped cells")
+        self.assertEqual(F.verdict(0.03, [0.02], 5, [0]), "outside")
 
     def test_a_run_without_cells_reports_and_does_not_crash(self) -> None:
         write_run(self.root / "a", {}, {})
@@ -156,6 +162,41 @@ class Closeness(unittest.TestCase):
         }
         self.assertAlmostEqual(rows[7]["truth_r_ref"], 1.0, places=6)
         self.assertTrue(math.isnan(rows[11]["truth_r_ref"]))  # no unit within 6 px
+
+    def test_cells_only_in_the_test_run_are_reported(self) -> None:
+        write_run(
+            self.root / "a", {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]}
+        )
+        write_run(self.root / "b", CELLS, TRACES)
+        text = F.report(self.root / "a", self.root / "b", [])
+        self.assertIn("1 cells of the test run are not in the reference run.", text)
+
+    def test_a_cell_without_a_centroid_is_counted(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        final = self.root / "a" / "final.tsv"
+        kept = [
+            ln for ln in final.read_text().splitlines() if ln.split("\t")[1] != "11"
+        ]
+        final.write_text("\n".join(kept) + "\n")
+        rows = {r["id"]: r for r in F.compare(self.root / "a", self.root / "b")}
+        self.assertTrue(math.isnan(rows[11]["edge_px"]))
+        text = F.report(self.root / "a", self.root / "b", [])
+        self.assertIn("1 cells have no centroid in final.tsv", text)
+
+    def test_report_judges_against_a_null_run(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        noise = 0.05 * np.cos(np.arange(200) * 1.7)
+        noisy = {c: list(np.asarray(TRACES[c]) + noise) for c in TRACES}
+        write_run(self.root / "n", CELLS, noisy)
+        text = F.report(self.root / "a", self.root / "b", [self.root / "n"])
+        self.assertIn("| within |", text)
+        write_run(
+            self.root / "c", {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]}
+        )
+        text = F.report(self.root / "a", self.root / "c", [self.root / "n"])
+        self.assertIn("| dropped cells |", text)
 
 
 if __name__ == "__main__":

@@ -221,11 +221,25 @@ def loss(rows: list[Row], key: str) -> float:
     return float(np.median(1.0 - v)) if len(v) else NAN
 
 
-def verdict(test_loss: float, null_losses: list[float]) -> str:
+def dropped(rows: list[Row], key: str) -> int:
+    """Number of QC-pass rows whose `key` is NaN (no value to compare)."""
+    return sum(1 for r in rows if r["qc_pass"] and math.isnan(r[key]))
+
+
+def verdict(
+    test_loss: float,
+    null_losses: list[float],
+    test_dropped: int = 0,
+    null_dropped: list[int] | None = None,
+) -> str:
     nulls = [x for x in null_losses if not math.isnan(x)]
     if not nulls or math.isnan(test_loss):
         return "not judged"
-    return "within" if test_loss <= max(nulls) else "outside"
+    if test_loss > max(nulls):
+        return "outside"
+    if test_dropped > max(null_dropped or [], default=0):
+        return "dropped cells"
+    return "within"
 
 
 def groups(rows: list[Row], band: float) -> list[tuple[str, list[Row]]]:
@@ -261,6 +275,7 @@ def subsets(rows: list[Row]) -> list[tuple[str, list[Row]]]:
             f"QC pass, {NEAR_PX:g} px or more from a tile line",
             [r for r in rows if r["edge_px"] >= NEAR_PX],
         ),
+        ("QC pass, no centroid", [r for r in rows if math.isnan(r["edge_px"])]),
     ]
 
 
@@ -279,33 +294,44 @@ def report(
     """The Markdown comparison of `test` with `ref`, judged against the `nulls`."""
     rows = compare(ref, test, tile, truth_path)
     null_rows = [compare(ref, n, tile, None) for n in nulls]
+    dims, fa = read_footprints(ref / "footprints.bin")
+    _, fb = read_footprints(test / "footprints.bin")
     missing = sum(1 for r in rows if not r["in_test"])
+    extra = len(set(fb) - set(fa))
+    no_centroid = sum(1 for r in rows if math.isnan(r["edge_px"]))
     out = [f"### `{test.name}` against `{ref.name}`", ""]
     out.append(
         f"{len(rows)} cells in the reference run; {missing} of {len(rows)} cells are missing in the test run."
     )
+    out.append(f"{extra} cells of the test run are not in the reference run.")
+    out.append(
+        f"{no_centroid} cells have no centroid in final.tsv and are in no tile-line group."
+    )
     out += [
         "",
-        "| cells | n | trace r median | trace r 5th pct | footprint cos median | footprint cos 5th pct |",
+        "| cells | n | n with trace r | n with footprint cos | trace r median | trace r 5th pct | footprint cos median | footprint cos 5th pct |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    out.append("| --- | --- | --- | --- | --- | --- |")
     for name, g in groups(rows, band):
         tr, fc = finite(g, "trace_r"), finite(g, "fp_cos")
         out.append(
-            f"| {name} | {len(g)} | {q(tr, 50)} | {q(tr, 5)} | {q(fc, 50)} | {q(fc, 5)} |"
+            f"| {name} | {len(g)} | {len(tr)} | {len(fc)} | {q(tr, 50)} | {q(tr, 5)} | {q(fc, 50)} | {q(fc, 5)} |"
         )
     out += [
         "",
-        "| cells | measure | loss | largest null loss | against the null |",
-        "| --- | --- | --- | --- | --- |",
+        "| cells | measure | QC-pass cells | without a value | most without a value in a null | loss | largest null loss | against the null |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for k, (name, g) in enumerate(subsets(rows)):
+        n_qc = sum(1 for r in g if r["qc_pass"])
         for key, label in (("trace_r", "trace r"), ("fp_cos", "footprint cos")):
             mine = loss(g, key)
             theirs = [loss(subsets(n)[k][1], key) for n in null_rows]
+            null_drop = [dropped(subsets(n)[k][1], key) for n in null_rows]
             top = max([x for x in theirs if not math.isnan(x)], default=NAN)
             out.append(
-                f"| {name} | {label} | {mine:.5f} | {top:.5f} | {verdict(mine, theirs)} |"
+                f"| {name} | {label} | {n_qc} | {dropped(g, key)} | {max(null_drop, default=0)} "
+                f"| {mine:.5f} | {top:.5f} | {verdict(mine, theirs, dropped(g, key), null_drop)} |"
             )
     if truth_path:
         a, b = finite(rows, "truth_r_ref"), finite(rows, "truth_r_test")
@@ -313,8 +339,6 @@ def report(
             "",
             f"Trace correlation with the truth, median: reference {q(a, 50)}, test {q(b, 50)}.",
         ]
-    dims, fa = read_footprints(ref / "footprints.bin")
-    _, fb = read_footprints(test / "footprints.bin")
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
     out += [
         "",
