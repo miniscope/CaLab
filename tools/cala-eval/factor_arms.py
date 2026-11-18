@@ -1,14 +1,15 @@
 """Run the phase-0 arms of the factor pipeline on one recording and write the report.
 
     python factor_arms.py --rec AVI_DIR --out DIR [--frames N] [--no-motion]
-        [--refine 5] [--jobs 3] [--arms raw,plain,...] [--truth truth.npz]
+        [--refine 5] [--budget U] [--jobs 3] [--arms raw,plain,...] [--truth truth.npz]
         [--qc-eval PATH] [--dry-run]
 
 Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 
 - `raw`: Discover, `--refine` refine replays and the Extract pass on the raw replay.
 - `null_lo`, `null_hi`: `raw` with half and twice the slow-loop budget in the
-  replays. Their distance to `raw` is the null spread.
+  replays (`--budget`, default `DEFAULT_BUDGET`). Their distance to `raw` is the null spread.
+  A finished arm is skipped only when its stored command equals the current one.
 - `plain`, `overlap8`, `overlap16`, `offset`: the replays and the Extract pass
   solve frames rebuilt from the factors of pass 1, under that tiling.
 - `plain_recal`: as `plain`, but the factors are those of the first replay
@@ -43,16 +44,18 @@ TILINGS: dict[str, str] = {
 DEFAULT_QC_EVAL = (
     Path(__file__).resolve().parents[2] / "crates/cala/target/release/examples/qc_eval"
 )
+# qc_eval's default `--budget` (slow-loop work units per frame)
+DEFAULT_BUDGET = 30_000_000
 
 
-def arms(refine: int) -> dict[str, list[str]]:
+def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
     """Arm name to its `qc_eval` flags (without recording, output and factor folder)."""
     full = ["--passes", str(refine + 1), "--later-passes", "refine", "--extract-pass"]
     extract = ["--passes", "1", "--extract-pass"]
     out = {
         "raw": full,
-        "null_lo": full + ["--later-budget", "15000000"],
-        "null_hi": full + ["--later-budget", "60000000"],
+        "null_lo": full + ["--later-budget", str(budget // 2)],
+        "null_hi": full + ["--later-budget", str(budget * 2)],
         "x_raw": extract,
     }
     for name, tiling in TILINGS.items():
@@ -70,6 +73,7 @@ def command(
     flags: list[str],
     motion: bool,
     frames: int | None,
+    budget: int | None = None,
 ) -> list[str]:
     cmd = [str(qc_eval), "real", str(rec), str(run), *flags]
     if "--replay-source" in flags:
@@ -78,12 +82,23 @@ def command(
         cmd.append("--motion")
     if frames is not None:
         cmd += ["--frames", str(frames)]
+    if budget is not None:
+        cmd += ["--budget", str(budget)]
     return cmd
 
 
-def done(run: Path) -> bool:
+def done(run: Path, cmd: list[str] | None = None) -> bool:
+    """True when the arm's `run.json` has return code 0 (and, given `cmd`, the same command)."""
     path = run / "run.json"
-    return path.exists() and json.loads(path.read_text()).get("returncode") == 0
+    if not path.exists():
+        return False
+    try:
+        record = json.loads(path.read_text())
+    except ValueError:
+        return False
+    if record.get("returncode") != 0:
+        return False
+    return cmd is None or record.get("cmd") == cmd
 
 
 def max_rss_mb(log: str) -> float | None:
@@ -154,12 +169,27 @@ def stage_table(run: Path) -> list[str]:
     return out + [""]
 
 
-def report(out_dir: Path, names: list[str], truth: Path | None) -> str:
+def stored_budget(cmd: list[str]) -> int:
+    """The slow-loop budget of a stored command: the value after `--budget`, else the default."""
+    return int(cmd[cmd.index("--budget") + 1]) if "--budget" in cmd else DEFAULT_BUDGET
+
+
+def report(
+    out_dir: Path,
+    names: list[str],
+    truth: Path | None,
+    cmds: dict[str, list[str]] | None = None,
+) -> str:
     """The recording's Markdown report from the finished arms."""
-    have = [n for n in names if done(out_dir / n)]
-    text = [
-        f"## {out_dir.name}",
-        "",
+    have = [n for n in names if done(out_dir / n, cmds[n] if cmds else None)]
+    text = [f"## {out_dir.name}", ""]
+    if have:
+        first = json.loads((out_dir / have[0] / "run.json").read_text())
+        text += [
+            f"Slow-loop budget: {stored_budget(first['cmd'])} work units per frame.",
+            "",
+        ]
+    text += [
         "| arm | wall s | peak memory MB |",
         "| --- | --- | --- |",
     ]
@@ -213,6 +243,12 @@ def main() -> None:
     ap.add_argument(
         "--jobs", type=int, default=3, help="runs at once (at most 4 machine-wide)"
     )
+    ap.add_argument(
+        "--budget",
+        type=int,
+        default=DEFAULT_BUDGET,
+        help="slow-loop work units per frame (qc_eval --budget); the null arms use half and twice it",
+    )
     ap.add_argument("--arms", help="comma-separated subset")
     ap.add_argument("--truth", type=Path)
     ap.add_argument("--qc-eval", type=Path, default=DEFAULT_QC_EVAL)
@@ -220,12 +256,17 @@ def main() -> None:
     a = ap.parse_args()
     assert 1 <= a.jobs <= 4, "--jobs must be 1 to 4"
     assert a.refine >= 2, "--refine must be at least 2 (plain_recal compresses pass 2)"
-    table = arms(a.refine)
+    if a.budget < 2:
+        ap.error("--budget must be at least 2 (the null arms use half of it)")
+    table = arms(a.refine, a.budget)
     names = a.arms.split(",") if a.arms else list(table)
     unknown = [n for n in names if n not in table]
     assert not unknown, f"unknown arms: {unknown}"
+    budget = None if a.budget == DEFAULT_BUDGET else a.budget
     cmds = {
-        n: command(a.qc_eval, a.rec, a.out / n, table[n], not a.no_motion, a.frames)
+        n: command(
+            a.qc_eval, a.rec, a.out / n, table[n], not a.no_motion, a.frames, budget
+        )
         for n in names
     }
     if a.dry_run:
@@ -235,10 +276,10 @@ def main() -> None:
     assert a.qc_eval.exists(), (
         f"{a.qc_eval}: build it with `cargo build --release --example qc_eval`"
     )
-    todo = [n for n in names if not done(a.out / n)]
+    todo = [n for n in names if not done(a.out / n, cmds[n])]
     with ThreadPoolExecutor(max_workers=a.jobs) as pool:
         codes = list(pool.map(lambda n: run_arm(n, cmds[n], a.out / n), todo))
-    (a.out / "report.md").write_text(report(a.out, names, a.truth))
+    (a.out / "report.md").write_text(report(a.out, names, a.truth, cmds))
     print(f"report: {a.out / 'report.md'}")
     if any(codes):
         sys.exit(1)

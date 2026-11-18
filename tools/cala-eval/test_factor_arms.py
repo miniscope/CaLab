@@ -103,6 +103,51 @@ class Arms(unittest.TestCase):
         self.assertAlmostEqual(A.max_rss_mb(log), 1234.56789)
         self.assertIsNone(A.max_rss_mb("no time output"))
 
+    def test_budget_sets_the_null_arms_and_the_command(self) -> None:
+        a = A.arms(5, 3_000_000)
+        self.assertEqual(a["null_lo"], a["raw"] + ["--later-budget", "1500000"])
+        self.assertEqual(a["null_hi"], a["raw"] + ["--later-budget", "6000000"])
+        self.assertEqual(a["raw"], A.arms(5)["raw"])
+        cmd = A.command(
+            Path("qc"),
+            Path("rec"),
+            Path("out/raw"),
+            a["raw"],
+            motion=True,
+            frames=100,
+            budget=3_000_000,
+        )
+        self.assertEqual(cmd[-2:], ["--budget", "3000000"])
+        self.assertNotIn(
+            "--budget",
+            A.command(
+                Path("qc"),
+                Path("rec"),
+                Path("out/raw"),
+                a["raw"],
+                motion=True,
+                frames=100,
+            ),
+        )
+
+    def test_an_arm_finished_with_another_command_is_not_done(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "raw"
+            run.mkdir()
+            self.assertFalse(A.done(run))
+            (run / "run.json").write_text(
+                '{"arm": "raw", "cmd": ["qc", "a"], "returncode": 0, "wall_s": 1.0}'
+            )
+            self.assertTrue(A.done(run))
+            self.assertTrue(A.done(run, ["qc", "a"]))
+            self.assertFalse(A.done(run, ["qc", "a", "--budget", "3000000"]))
+            (run / "run.json").write_text(
+                '{"arm": "raw", "cmd": ["qc", "a"], "returncode": 1, "wall_s": 1.0}'
+            )
+            self.assertFalse(A.done(run, ["qc", "a"]))
+            (run / "run.json").write_text('{"arm": "raw", "cm')
+            self.assertFalse(A.done(run))
+
 
 if __name__ == "__main__":
     unittest.main()
