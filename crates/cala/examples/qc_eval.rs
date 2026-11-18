@@ -332,7 +332,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::blend::Tiling;
 use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
     CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
@@ -2869,7 +2869,6 @@ fn factor_config(args: &[String]) -> CompressConfig {
 /// `<dir>/factors.tsv` (a row per window).
 struct FactorDump {
     dir: PathBuf,
-    tile: usize,
     wc: WindowCompressor,
     /// Seconds spent buffering and compressing.
     seconds: f64,
@@ -2879,11 +2878,10 @@ struct FactorDump {
 impl FactorDump {
     fn new(dir: &Path, dims: Dims, tiling: Tiling, cfg: CompressConfig) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
-        let layout = BlendLayout::new(dims, cfg.tile, tiling);
+        let cfg = CompressConfig { tiling, ..cfg };
         FactorDump {
             dir: dir.to_path_buf(),
-            tile: cfg.tile,
-            wc: WindowCompressor::with_grid(dims, cfg, layout.grid().to_vec()),
+            wc: WindowCompressor::new(dims, cfg),
             seconds: 0.0,
             log: String::from("start\tframes\ttiles\tmean_rank\tkept\tbytes\tcompress_s\n"),
         }
@@ -2902,7 +2900,7 @@ impl FactorDump {
             wf.compress_seconds
         );
         let name = format!("w{:07}.fac", wf.start);
-        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+        std::fs::write(self.dir.join(name), wf.to_bytes()).unwrap();
     }
 
     fn push(&mut self, frame: &[f32]) {
@@ -2927,19 +2925,17 @@ impl FactorDump {
 }
 
 /// `--replay-source factors`: frames rebuilt from the factor files a
-/// [`FactorDump`] wrote with the same tiling.
+/// [`FactorDump`] wrote (the tiling is in the files).
 struct FactorReplay {
     dir: PathBuf,
-    layout: BlendLayout,
     cur: Option<WindowFactors>,
     buf: Vec<f32>,
 }
 
 impl FactorReplay {
-    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorReplay {
+    fn new(dir: &Path, dims: Dims) -> FactorReplay {
         FactorReplay {
             dir: dir.to_path_buf(),
-            layout: BlendLayout::new(dims, CompressConfig::default().tile, tiling),
             cur: None,
             buf: vec![0.0; dims.pixels()],
         }
@@ -2963,7 +2959,7 @@ impl FactorReplay {
             "frame {t} is beyond the factors in {:?}",
             self.dir
         );
-        self.layout.reconstruct(wf, t - start, &mut self.buf);
+        wf.reconstruct(t - start, &mut self.buf);
         for (o, &r) in y.iter_mut().zip(&self.buf) {
             if !o.is_nan() {
                 *o = r;
@@ -3678,7 +3674,7 @@ fn main() {
         .as_deref()
         .map(|d| FactorDump::new(d, dims, tiling, factor_config(&args)));
     let mut replay =
-        replay_factors.then(|| FactorReplay::new(factors_out.as_deref().unwrap(), dims, tiling));
+        replay_factors.then(|| FactorReplay::new(factors_out.as_deref().unwrap(), dims));
     let mut stage_times =
         String::from("stage\tread_s\tpre_s\tcompress_s\tsolve_s\tslow_s\twall_s\n");
     for pass in 0..passes {
@@ -4871,7 +4867,7 @@ mod tests {
             fd.finish();
             let log = std::fs::read_to_string(dir.join("factors.tsv")).unwrap();
             assert_eq!(log.lines().count(), 3, "header and two windows: {log}");
-            let mut fr = FactorReplay::new(&dir, dims, tiling);
+            let mut fr = FactorReplay::new(&dir, dims);
             for t in [0, FACTOR_WINDOW - 1, FACTOR_WINDOW, FACTOR_WINDOW + 49] {
                 let mut y = vec![0.0f32; dims.pixels()];
                 y[5] = f32::NAN;

@@ -13,7 +13,9 @@ use wasm_bindgen::prelude::*;
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
+use super::{
+    compress_tile, quantize, quantize_tiles, tile_grid, CompressConfig, TileFactors, WindowFactors,
+};
 use crate::preprocess::Dims;
 use crate::trace::Library;
 
@@ -70,7 +72,14 @@ pub fn quantize_tiles_js(
     if tile == 0 || !(quant.is_finite() && quant > 0.0) {
         return Err(js_err("quantizeTiles", "tile and quant must be positive"));
     }
-    quantize_tiles(frames, count as usize, dims, tile as usize, quant, out);
+    quantize_tiles(
+        frames,
+        count as usize,
+        dims,
+        &tile_grid(dims, tile as usize),
+        quant,
+        out,
+    );
     Ok(())
 }
 
