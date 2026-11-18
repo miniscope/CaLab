@@ -14,7 +14,7 @@ all runs, and a refine replay keeps the cell set):
 - `trace_r`: Pearson correlation of the Extract traces (`extract_trace.f32`);
 - `trace_r1`: the same from lag-1 cross-covariances, which noise that is white in time
   does not enter; the trace gate uses it, because the factors remove noise that a raw
-  trace keeps;
+  trace keeps; undefined (and counted as without a value) for a trace that is noise only;
 - `fp_cos`: cosine of the unfiltered footprints (`footprints.bin`);
 - `edge_px`: distance of the centroid to the nearest tile line;
 - `border_px`: distance of the centroid to the frame border;
@@ -52,6 +52,7 @@ EDGE_BINS: tuple[tuple[float, float], ...] = (
 NEAR_PX = 8.0
 TRUTH_PX = 6.0
 NAN = float("nan")
+WHITE_Z = 4.0
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +135,9 @@ def lag1_r(a: np.ndarray, b: np.ndarray) -> float:
     Built from lag-1 cross-covariances, `C(p, q) = mean of (p[t] q[t+1] + p[t+1] q[t]) / 2`,
     as `C(a, b) / sqrt(C(a, a) C(b, b))`. Noise that is white in time adds nothing to them in
     expectation, so a trace and its denoised version score near 1, where the plain correlation
-    drops by the share of noise. NaN when either trace has no positive lag-1 autocovariance
-    (a constant trace, or noise only) or fewer than 3 samples.
+    drops by the share of noise. NaN when either trace's lag-1 autocorrelation is not above
+    `WHITE_Z / sqrt(n)` (a constant trace, or noise only) or there are fewer than 3 samples;
+    the result is clipped to [-1, 1].
     """
     n = min(len(a), len(b))
     if n < 3:
@@ -147,9 +149,13 @@ def lag1_r(a: np.ndarray, b: np.ndarray) -> float:
         return float(0.5 * ((p[:-1] * q[1:]).sum() + (p[1:] * q[:-1]).sum()))
 
     cxx, cyy = c(x, x), c(y, y)
-    if cxx <= 0 or cyy <= 0:
+    # A trace has a slow part to compare only when its lag-1 autocorrelation is clearly positive:
+    # white noise of n samples gives one of about 0 +- 1 / sqrt(n) (the compressor's own rule).
+    floor = WHITE_Z / float(np.sqrt(n))
+    sxx, syy = float((x * x).sum()), float((y * y).sum())
+    if sxx <= 0 or syy <= 0 or cxx / sxx <= floor or cyy / syy <= floor:
         return NAN
-    return c(x, y) / float(np.sqrt(cxx * cyy))
+    return float(np.clip(c(x, y) / np.sqrt(cxx * cyy), -1.0, 1.0))
 
 
 def fp_cosine(a: Cell, b: Cell) -> float:

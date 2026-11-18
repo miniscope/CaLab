@@ -149,6 +149,24 @@ class Closeness(unittest.TestCase):
         alternating = np.asarray([1.0, -1.0] * 50)
         self.assertTrue(math.isnan(F.lag1_r(alternating, np.sin(np.arange(100) * 0.1))))
 
+    def test_lag1_correlation_of_noise_is_undefined_and_never_out_of_range(
+        self,
+    ) -> None:
+        sine = np.sin(np.arange(300) * 0.1)
+        values = []
+        for seed in range(200):
+            noise = np.random.default_rng(seed).normal(0.0, 1.0, 300)
+            values.append(F.lag1_r(noise, sine))
+        defined = [v for v in values if not math.isnan(v)]
+        self.assertLess(len(defined), 5)
+        self.assertTrue(all(-1.0 <= v <= 1.0 for v in defined))
+
+    def test_lag1_correlation_is_clipped(self) -> None:
+        t = np.arange(500)
+        a = np.sin(t * 0.05)
+        self.assertLessEqual(F.lag1_r(a, a * 3.0 + 1e-9 * np.cos(t)), 1.0)
+        self.assertAlmostEqual(F.lag1_r(a, -a), -1.0, places=9)
+
     def test_verdict(self) -> None:
         self.assertEqual(F.verdict(0.01, [0.02, 0.005]), "within")
         self.assertEqual(F.verdict(0.03, [0.02, 0.005]), "outside")
