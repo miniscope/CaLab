@@ -1,6 +1,7 @@
 import { type JSX, createMemo, createSignal, For, Show } from 'solid-js';
 import { SegmentedControl } from '@calab/ui';
 import { MetricCard } from './MetricCard.tsx';
+import { LocalBuildNote } from './LocalBuildNote.tsx';
 import { ChartCard, Empty } from './charts/ChartCard.tsx';
 import { StackedColumns } from './charts/StackedColumns.tsx';
 import { HBars } from './charts/HBars.tsx';
@@ -192,6 +193,7 @@ export function CalaView(): JSX.Element {
         <Empty text="No Cala sessions for this filter (the app filter may exclude Cala)." />
       </Show>
       <Show when={cala().sessions.length > 0}>
+        <LocalBuildNote />
         <div class="metric-grid">
           <MetricCard label="Cala sessions" value={fmtNum(cala().sessions.length)} />
           <MetricCard label="Runs finished" value={fmtNum(runs().length)} />

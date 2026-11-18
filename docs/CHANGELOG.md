@@ -5,6 +5,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+
+### Changed
+
+- Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+
 ## [2.20.0] - 2026-11-17
 
 Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
