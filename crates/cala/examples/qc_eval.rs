@@ -299,8 +299,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner,
+    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop,
+    SlowLoopConfig, SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3296,6 +3296,18 @@ fn main() {
             other => panic!("--bg: none|ring, not {other}"),
         };
         println!("slow-loop background model: {:?}", scfg.background);
+    }
+    if let Some(v) = arg_value(&args, "--joint-admit") {
+        scfg.joint_admit = match v.as_str() {
+            "cluster" => JointAdmit::Cluster,
+            "member" => JointAdmit::Member,
+            other => panic!("--joint-admit: cluster|member, not {other}"),
+        };
+        println!("joint update: admission {:?}", scfg.joint_admit);
+    }
+    if args.iter().any(|a| a == "--joint-carry") {
+        scfg.joint_carry = true;
+        println!("joint update: the store carries its own estimate across replays");
     }
     if let Some(v) = arg_value(&args, "--joint-iters") {
         scfg.joint_iters = v.parse().unwrap();
