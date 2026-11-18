@@ -153,3 +153,28 @@ Isolated cells: 0.9931-0.9933 at every Refine stage in every arm (no change).
 - **One Stage 2 Refine pass beats three main Refine passes** on footprint r (all 0.9926 vs 0.9912, close 0.9927 vs
   0.9895), trace r (0.9767 vs 0.9744) and corr excess (+0.113 vs +0.154). Time to good footprints (the report's
   rule, each arm against its own +3): main and Stage 1 at +2 Refine (wall ratio 0.76), Stage 2 at +1 (0.51).
+
+## Slow-loop cost (solo runs, nothing else on the machine; Refine pass, `slow_cost.tsv`)
+
+`~/Projects/cala-data/runs/replay2/solo/summary.txt`. Wall ms per frame; work = the loop's deterministic units.
+
+| sim | arm | observe | step | observe + step | vs main | statistics work / frame | store peak MB |
+| --- | --- | ------- | ---- | -------------- | ------- | ----------------------- | ------------- |
+| static s5 | main | 2.49 | 9.73 | 12.22 | — | 1.22 M | — |
+| static s5 | Stage 1 | 3.45 | 10.43 | 13.88 | +13.6 % | 3.76 M | 38.0 |
+| static s5 | Stage 2 | 3.16 | 10.15 | 13.31 | **+9.0 %** | 3.19 M | 32.7 |
+| motion s5 | main | 2.56 | 9.89 | 12.46 | — | 1.29 M | — |
+| motion s5 | Stage 1 | 3.64 | 10.63 | 14.27 | +14.5 % | 4.17 M | 43.0 |
+| motion s5 | Stage 2 | 3.58 | 10.57 | 14.15 | **+13.6 %** | 3.59 M | 37.2 |
+
+Gate #8 (≤ +10 % vs main): met on static s5, **not met on motion s5** (+13.6 %). Observe alone is still +27 % / +40 %
+over main: the cluster push (3 multiply-adds per pixel per member, plus the projection) dominates; the next levers are
+activity-selected history (push only active or sampled quiet frames) and f32 / f16 coordinates.
+
+## Verdict against the go/no-go
+
+Met: #1, #2 (0.75-1 D bite share 0.201 ≤ 0.25, Stage 1 0.338), #3, #6, #7, #11, #12, flag-off identity; #4 corr
+excess 0.5-1 D +0.062 (pooled). Not met: #5 over-fill 0.075 (Stage 1 0.067, main 0.059); #8 cost on motion s5
+(+13.6 %). Reported: #9 store 26.6 MB mean, #10 2+ GT matches +9.4 over Stage 1 (support area +40 px), #13, #14
+(one Stage 2 Refine pass beats three main Refine passes). Stage 2 clearly beats Stage 1 on every accuracy row with no
+regression on isolated cells; over-fill and motion cost are the open items.
