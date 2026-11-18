@@ -12,7 +12,7 @@ a flag already present, replaces) arguments for one binary only. `--motion` is
 added for the motion arms. Output: `<runs>/<label>/<arm>_s<seed>/` holding the
 `qc_eval` outputs plus `run.json` (rc, wall s, max RSS) and `time.txt`.
 
-Limits: at most `--parallel` (cap 4) light `sim` runs at once *machine-wide*
+Limits: at most `--parallel` (cap 6) light `sim` runs at once *machine-wide*
 (other `qc_eval sim` processes count), no new run while free memory is below
 5 GB (the `vm_stat` rule), and a run whose max RSS exceeds 6 GB is reported.
 Heavy jobs (`qc_eval real`, sim generation) are not started here; they are
@@ -37,7 +37,8 @@ import arms as A  # noqa: E402
 
 MIN_FREE_GB = 5.0
 RSS_LIMIT_GB = 6.0
-MAX_LIGHT = 4
+# Machine-wide cap on light `qc_eval sim` runs (PI-approved 18 Nov 2026, raised from 4); raise only with the PI's approval.
+MAX_LIGHT = 6
 
 
 def free_gb() -> float:
@@ -60,6 +61,15 @@ def light_running() -> int:
         if len(words) > 2 and words[1] == "sim" and ("qc_eval" in words[0] or "/cala-eval/bin/" in words[0]):
             n += 1
     return n
+
+
+def slot_free(state: dict) -> bool:
+    """May this queue start another run? Default (`run_arms.py`): `parallel` counts every `qc_eval sim` on the
+    machine. With `state["own_only"]` (the suite): only this queue's runs count against `parallel`, and the
+    machine-wide total must still stay below MAX_LIGHT."""
+    if state.get("own_only"):
+        return state.get("own", 0) < state["parallel"] and light_running() < MAX_LIGHT
+    return light_running() < state["parallel"]
 
 
 def merge_args(base: list[str], extra: list[str]) -> list[str]:
@@ -104,7 +114,9 @@ def run_one(job: dict, state: dict) -> dict:
     # check-then-start so two threads do not both take the last slot.
     while True:
         with state["lock"]:
-            if light_running() < state["parallel"] and free_gb() >= MIN_FREE_GB:
+            if slot_free(state) and free_gb() >= MIN_FREE_GB:
+                if state.get("own_only"):
+                    state["own"] = state.get("own", 0) + 1
                 out.mkdir(parents=True, exist_ok=True)
                 t0 = time.time()
                 proc = subprocess.Popen(
@@ -116,6 +128,9 @@ def run_one(job: dict, state: dict) -> dict:
                 break
         time.sleep(15)
     rc = proc.wait()
+    if state.get("own_only"):
+        with state["lock"]:
+            state["own"] -= 1
     wall = time.time() - t0
     txt = (out / "time.txt").read_text()
     m = re.search(r"(\d+)\s+maximum resident set size", txt)
