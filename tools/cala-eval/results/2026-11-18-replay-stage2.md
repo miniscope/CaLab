@@ -133,3 +133,23 @@ Stage 2 vs main in Discover: better on every accuracy row (5/5 seeds) except iso
 **−9.0 matched cells per sim [−18.4, +0.4], 4/5 seeds** (Stage 1's Discover arm had the same, −8.4). In Discover
 the stores still restart on every library change (90 builds, 6519 store instances, only 730 replays on static s5),
 so the replay runs on short histories; membership re-expression needs leftover-light directions (next step).
+
+## Refine recovery (`demix_stages.py`, static s5 + pairs s5, Discover + 3 Refines)
+
+`~/Projects/cala-data/demix-suite/stages-replay2/report.md`; per-cell accuracy from each stage's `demix_cells.tsv`
+(median over matched cells pooled over the two sims; Discover is the same library in all arms).
+
+| arm | stage | footprint r all / isolated / close | trace r all / close | corr excess < 1 D | bite 0.75-1 D |
+| --- | ----- | ---------------------------------- | ------------------- | ----------------- | ------------- |
+| all | Discover | 0.9817 / 0.9896 / 0.9779 | 0.9715 / 0.9669 | +0.180 | 0.713 |
+| main | +1 / +2 / +3 Refine | 0.9896 / 0.9908 / 0.9912 (close 0.9865 / 0.9888 / 0.9895) | 0.9740 / 0.9741 / 0.9744 | +0.160 / +0.154 / +0.154 | 0.525 / 0.418 / 0.364 |
+| Stage 1 | +1 / +2 / +3 | 0.9911 / 0.9923 / 0.9925 (close 0.9901 / 0.9920 / 0.9922) | 0.9756 / 0.9765 / 0.9765 | +0.142 / +0.123 / +0.125 | see report |
+| Stage 2 | +1 / +2 / +3 | **0.9926** / 0.9933 / 0.9934 (close **0.9927** / 0.9934 / 0.9935) | 0.9767 / 0.9774 / 0.9773 | +0.113 / +0.108 / +0.113 | see report |
+
+Isolated cells: 0.9931-0.9933 at every Refine stage in every arm (no change).
+
+- Share of main's Discover → +1 Refine footprint-r gain reached by one Refine pass: Stage 1 119 % (close pairs 142 %),
+  **Stage 2 138 % (close 172 %)**.
+- **One Stage 2 Refine pass beats three main Refine passes** on footprint r (all 0.9926 vs 0.9912, close 0.9927 vs
+  0.9895), trace r (0.9767 vs 0.9744) and corr excess (+0.113 vs +0.154). Time to good footprints (the report's
+  rule, each arm against its own +3): main and Stage 1 at +2 Refine (wall ratio 0.76), Stage 2 at +1 (0.51).
