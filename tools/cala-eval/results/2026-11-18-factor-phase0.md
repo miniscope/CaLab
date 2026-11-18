@@ -73,10 +73,17 @@ The footprint jump at tile lines (median jump of footprint values across a tile 
 1.326). The overlapping and offset tilings bring it to or below the raw value on `wl200`, `wl24_01` and `v4`, to within
 0.04 above it on `plain` and `motion`, and to 0.07 to 0.09 above it on `wl24_04`. The full table is in "Tile lines".
 
-**Decision: open, for the user.** The choice is one of three: accept the measured loss on the evidence of the truth
-comparison and pick a tiling, change the gate (for example a fixed tolerance or a truth-based criterion instead of the
-near-zero null), or first try the spec's remedies (lower `rho_min`, higher starting rank, a compression replay with the
-final calibration) and measure again.
+The spec's remedies were then tried on the three 200 px recordings ("Remedies: the rank cut"): the trace loss there
+comes from the rank cut (0.002 to 0.003 with no cut). At under a quarter of the size of the frames no setting removes
+more than about two fifths of it, the loss falls steadily with the rank and has no knee, and a second power iteration of the SVD removes
+26 to 30 percent of it for about 10 percent more bytes.
+
+**Decision (the user, 18 Nov 2026): the gate is replaced.** The spec's Amendment 1 sets fixed limits instead of the
+near-zero null (truth correlation, footprint loss, trace loss where there is no truth, footprint jump at tile lines),
+two power iterations of the SVD, the two offset grids as the tiling, and a compression replay with the final
+calibration for file recordings. Under those limits, recalibrated factors with two SVD iterations pass where they were
+run. The chosen combination (offset grids, recalibrated, two iterations) has not been run together; that check is the
+gate of phase 1.
 
 ## How it was measured
 
@@ -224,7 +231,10 @@ overlap tilings at most about 0.004), so the two grids do not hide every tile li
 | motion    | 0.03055           | 0.00165                 | 0.02274               | 0.00121                     | 5.6              | 5.5                    |
 
 `plain` uses the factors of pass 1, which hold Discover's preprocessing as it was at each frame. `plain_recal` uses the
-factors of the first replay, with the final flat field from frame 0. The recalibrated factors cut the trace loss by a
+factors of the first replay, with the final flat field from frame 0 and with the running background floor and noise
+map continued from the end of pass 1. On the three real recordings the first flat field map arrived at frame 2999 of
+pass 1; the three synthetic sets got no map at all (0 updates in the run logs), so on them the difference between the
+two arms is the settled running state alone. How much each part contributes on the real recordings was not measured. The recalibrated factors cut the trace loss by a
 factor of 3 to 19 on `wl24_01`, `wl24_04`, `v4` and `motion`. They cut the footprint loss by a factor of 3 to 19 on
 `wl24_01`, `wl24_04` and `motion`, and to 0.00000 on `v4`. On `plain` both losses fall too, from an already small value.
 On `wl200` they change little. On `v4` the recalibrated factors also have a much lower mean rank (7.1 against 12.3).
@@ -454,6 +464,93 @@ Two unrelated single-thread jobs started on the machine at about 12:07. The last
 differ between default and `?compress` (84 against 90, 825 against 839), so the frames per second are not a
 like-for-like comparison. With that caveat, compression added about 4 percent to Discover on `wl24_01` and about 26
 percent on `v4`.
+
+## Remedies: the rank cut (200 px recordings)
+
+Run after the tables above, to find where the trace loss of the 200 px recordings comes from. Each arm is
+`plain_recal` (plain tiling, factors of the first replay) with another setting of the compressor, set by the `qc_eval`
+flags `--factors-rho-min`, `--factors-z`, `--factors-k0`, `--factors-max-rank` and `--factors-n-iter`, which were added
+for this. The compressor keeps a component when the lag-1 autocorrelation of its time course exceeds the cut; the
+default cut is 0.2, the default starting rank is 40 and the randomized SVD runs one power iteration. The `recal_r`
+arms keep a fixed number of components per tile, the largest by variance, with no cut. `recal_full` has no cut and
+keeps every component up to the largest rank of 300. Same scale and budget as above; the reference is the same `raw`
+run.
+
+| recording | arm           | cut                     | mean rank | MB per 1000 frames | compression ms per frame | trace loss (lag 1) | footprint loss | footprint jump |
+| --------- | ------------- | ----------------------- | --------- | ------------------ | ------------------------ | ------------------ | -------------- | -------------- |
+| wl200     | `plain_recal` | 0.2 (default)           | 5.4       | 1.9                | 0.72                     | 0.1657             | 0.0088         | 1.850          |
+| wl200     | `recal_iter2` | 0.2, two SVD iterations | 5.8       | 2.1                | 1.00                     | 0.1165             | 0.0063         | 1.738          |
+| wl200     | `recal_rho0`  | 0.16                    | 6.8       | 2.1                | 0.83                     | 0.1615             | 0.0099         | 1.822          |
+| wl200     | `recal_k80`   | 0.2, starting rank 80   | 6.0       | 2.1                | 1.57                     | 0.1240             | 0.0074         | 1.815          |
+| wl200     | `recal_z2`    | 0.08                    | 16.0      | 4.1                | 1.77                     | 0.1334             | 0.0071         | 1.730          |
+| wl200     | `recal_r10`   | none, rank 10           | 10.0      | 3.6                | 0.27                     | 0.2260             | 0.0126         | 1.757          |
+| wl200     | `recal_r20`   | none, rank 20           | 20.0      | 6.9                | 0.38                     | 0.1543             | 0.0095         | 1.825          |
+| wl200     | `recal_r40`   | none, rank 40           | 40.0      | 13.5               | 0.65                     | 0.1021             | 0.0063         | 1.706          |
+| wl200     | `recal_r80`   | none, rank 80           | 78.9      | 26.6               | 1.42                     | 0.0497             | 0.0044         | 1.513          |
+| wl200     | `recal_full`  | none, rank up to 300    | 285.2     | 98.4               | 26.11                    | 0.0028             | 0.0010         | 1.140          |
+| wl24_01   | `plain_recal` | 0.2 (default)           | 10.2      | 3.9                | 0.64                     | 0.0622             | 0.0145         | 1.323          |
+| wl24_01   | `recal_iter2` | 0.2, two SVD iterations | 11.4      | 4.3                | 0.94                     | 0.0444             | 0.0097         | 1.325          |
+| wl24_01   | `recal_rho0`  | 0.16                    | 12.3      | 4.5                | 0.70                     | 0.0561             | 0.0126         | 1.248          |
+| wl24_01   | `recal_k80`   | 0.2, starting rank 80   | 11.2      | 4.2                | 1.49                     | 0.0493             | 0.0117         | 1.281          |
+| wl24_01   | `recal_z2`    | 0.08                    | 26.4      | 8.7                | 3.66                     | 0.0368             | 0.0080         | 1.214          |
+| wl24_01   | `recal_r10`   | none, rank 10           | 10.0      | 3.6                | 0.26                     | 0.0977             | 0.0150         | 1.225          |
+| wl24_01   | `recal_r20`   | none, rank 20           | 20.0      | 6.9                | 0.36                     | 0.0597             | 0.0117         | 1.177          |
+| wl24_01   | `recal_r40`   | none, rank 40           | 40.0      | 13.5               | 0.64                     | 0.0363             | 0.0074         | 1.175          |
+| wl24_01   | `recal_r80`   | none, rank 80           | 78.9      | 26.6               | 1.43                     | 0.0189             | 0.0047         | 1.240          |
+| wl24_01   | `recal_full`  | none, rank up to 300    | 285.2     | 98.4               | 28.83                    | 0.0025             | 0.0016         | 1.176          |
+| wl24_04   | `plain_recal` | 0.2 (default)           | 8.5       | 3.2                | 0.61                     | 0.0754             | 0.0106         | 1.468          |
+| wl24_04   | `recal_iter2` | 0.2, two SVD iterations | 9.3       | 3.5                | 0.90                     | 0.0556             | 0.0084         | 1.507          |
+| wl24_04   | `recal_rho0`  | 0.16                    | 10.3      | 3.7                | 0.71                     | 0.0701             | 0.0096         | 1.423          |
+| wl24_04   | `recal_k80`   | 0.2, starting rank 80   | 9.5       | 3.6                | 1.54                     | 0.0603             | 0.0104         | 1.478          |
+| wl24_04   | `recal_z2`    | 0.08                    | 22.7      | 7.4                | 3.89                     | 0.0456             | 0.0072         | 1.308          |
+| wl24_04   | `recal_r10`   | none, rank 10           | 10.0      | 3.6                | 0.29                     | 0.1156             | 0.0171         | 1.477          |
+| wl24_04   | `recal_r20`   | none, rank 20           | 20.0      | 6.9                | 0.40                     | 0.0752             | 0.0106         | 1.399          |
+| wl24_04   | `recal_r40`   | none, rank 40           | 40.0      | 13.5               | 0.70                     | 0.0478             | 0.0082         | 1.375          |
+| wl24_04   | `recal_r80`   | none, rank 80           | 78.9      | 26.6               | 1.43                     | 0.0255             | 0.0051         | 1.311          |
+| wl24_04   | `recal_full`  | none, rank up to 300    | 285.2     | 98.4               | 28.99                    | 0.0022             | 0.0021         | 1.171          |
+
+The table gives the cost and the loss of the QC-pass cells per arm. The footprint jump of `raw` is 0.979 on `wl200`,
+1.150 on `wl24_01` and 1.071 on `wl24_04`. All 27 runs ended with return code 0. The first four remedy arms ran four
+at once, the others three at once beside an unrelated job, so the compression times are not comparable to the last
+digit. For scale, the 8-bit frames of these recordings are 40 MB per 1000 frames; the factors are stored as 32-bit
+floats.
+
+- The rank cut is where the loss arises. Without a cut the trace loss is 0.002 to 0.003 on all three recordings.
+  `recal_full` is a ceiling, not an option: at 98 MB per 1000 frames it is larger than the frames.
+- The loss has no knee. With a fixed rank it falls steadily: each doubling of the rank from 10 to 80 removes a third to
+  a half of the trace loss, and rank 80, at two thirds of the size of the frames, still loses 0.02 to 0.05.
+- The autocorrelation cut picks components better than their variance does. The default cut comes within 0.012 of the
+  trace loss of a fixed rank of 20 at 28 to 57 percent of its size. On the wireless recordings the cut at 0.08 reaches that of a
+  fixed rank of 40 at 55 to 64 percent of its size.
+- A looser cut closes little. The cut at 0.08 keeps about 2.5 to 3 times the components and twice the bytes, and
+  removes a fifth of the trace loss on `wl200` and about two fifths on the wireless recordings.
+- A second power iteration of the SVD is the cheapest gain measured. It removes 26 to 30 percent of the trace loss
+  for about 10 percent more bytes and 40 to 50 percent more compression time. A starting rank of 80 removes 20 to 25
+  percent and more than doubles the compression time. Both point to the accuracy of the randomized SVD as a limit of
+  the default setting; the SVD's accuracy was not measured directly.
+
+Truth on `wl200`, same cells (the truth correlation of `raw` has a median of 0.8433):
+
+| arm (wl200)   | matched cells | truth correlation, arm minus raw, median | 5th percentile |
+| ------------- | ------------- | ---------------------------------------- | -------------- |
+| `plain_recal` | 25            | -0.0032                                  | -0.0932        |
+| `recal_iter2` | 25            | 0.0079                                   | -0.0421        |
+| `recal_rho0`  | 25            | -0.0032                                  | -0.0886        |
+| `recal_k80`   | 25            | 0.0014                                   | -0.0545        |
+| `recal_z2`    | 25            | -0.0030                                  | -0.0737        |
+| `recal_r10`   | 25            | -0.0167                                  | -0.1702        |
+| `recal_r20`   | 25            | -0.0105                                  | -0.1225        |
+| `recal_r40`   | 25            | -0.0048                                  | -0.0698        |
+| `recal_r80`   | 25            | 0.0012                                   | -0.0393        |
+| `recal_full`  | 25            | 0.0040                                   | -0.0076        |
+
+With the autocorrelation cut the median cell is as close to the truth as with raw frames, in every arm. The fixed
+ranks of 10 and 20 are worse in the median too. What a higher rank or a more accurate SVD improves is the worst
+cells. With 25 matched cells the 5th percentile rests on one or two cells. The wireless recordings have no truth, so
+whether their trace loss of 0.04 to 0.08 is lost signal or removed noise is not known.
+
+Not measured: combinations (two power iterations with a looser cut), three or more power iterations, the 600 px
+recordings, and any tiling other than plain.
 
 ## Before v2.20.0
 
