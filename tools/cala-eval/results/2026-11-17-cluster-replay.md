@@ -167,7 +167,7 @@ s5 `footprints.bin` and `final.tsv` are identical to main's (`z0` arm of the sui
   The alternative of clipping in unfiltered space (invert, clip, re-filter) was not tested.
 - The reading of the "2+ GT units" rise (footprints that took back light under a neighbour, not merges) agrees with the
   close-pair table but was not checked footprint by footprint.
-- The demixing suite (`tools/cala-eval/demix_suite.py`) is in the unmerged PR #420.
+- The demixing suite is `tools/cala-eval/demix_suite.py` (#420).
 
 ## Not done (later stages)
 
