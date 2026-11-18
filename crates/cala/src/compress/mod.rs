@@ -373,8 +373,9 @@ impl WindowCompressor {
         self.buf.iter().map(|b| b.len() * 2).sum()
     }
 
-    /// Add a frame (non-finite pixels count as 0); returns the window's
-    /// factors when it is full.
+    /// Add a frame (a non-finite pixel is a missing sample and counts as the
+    /// pixel's mean over the window); returns the window's factors when it
+    /// is full.
     pub fn push(&mut self, frame: &[f32]) -> Option<WindowFactors> {
         let width = self.dims.width;
         let q = self.cfg.quant;
@@ -502,21 +503,31 @@ pub fn quantize_tiles(
     }
 }
 
-/// `round(v * quant)` in `i16`; non-finite values count as 0.
+/// The quantized value of a missing sample (a non-finite pixel). `quantize`
+/// clamps to `±32767`, so no finite value maps to it.
+pub const MISSING: i16 = i16::MIN;
+
+/// `round(v * quant)` in `i16`; a non-finite value gives [`MISSING`].
 ///
 /// Rounds half away from zero like `f32::round`, written out with `trunc`:
 /// on wasm `round` is a libm call per pixel, `trunc` an instruction the
-/// loop over a frame vectorizes with.
+/// loop over a frame vectorizes with. The missing case is a select, not a
+/// branch, for the same reason.
 #[inline]
 pub fn quantize(v: f32, quant: f32) -> i16 {
-    let s = if v.is_finite() { v * quant } else { 0.0 };
+    let s = v * quant;
     let t = s.trunc();
     let r = if (s - t).abs() >= 0.5 {
         t + 1.0f32.copysign(s)
     } else {
         t
     };
-    r.clamp(-32767.0, 32767.0) as i32 as i16
+    let q = r.clamp(-32767.0, 32767.0) as i32 as i16;
+    if v.is_finite() {
+        q
+    } else {
+        MISSING
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +545,10 @@ struct TileMatrix<'a> {
     mean: Vec<f32>,
     /// `Σ (y − mean)²` over the tile.
     energy: f64,
+    /// Per pixel: `Σ (y − mean)²` over its valid samples.
+    ss: Vec<f64>,
+    /// Per pixel: the share of the window's frames in which it was not missing.
+    valid: Vec<f32>,
 }
 
 impl<'a> TileMatrix<'a> {
@@ -542,21 +557,50 @@ impl<'a> TileMatrix<'a> {
         // Integer column sums are exact (|v| < 2^15, v² < 2^30).
         let mut acc = vec![0i64; p];
         let mut sq = vec![0i64; p];
+        let mut cnt = vec![0u32; p];
         for row in raw.chunks_exact(p) {
-            for ((a, s), &v) in acc.iter_mut().zip(sq.iter_mut()).zip(row) {
-                let v = i64::from(v);
-                *a += v;
-                *s += v * v;
+            for (((a, s), c), &v) in acc
+                .iter_mut()
+                .zip(sq.iter_mut())
+                .zip(cnt.iter_mut())
+                .zip(row)
+            {
+                if v != MISSING {
+                    let v = i64::from(v);
+                    *a += v;
+                    *s += v * v;
+                    *c += 1;
+                }
             }
         }
-        let (tf, q) = (t as f64, f64::from(quant));
-        let mean = acc.iter().map(|&a| (a as f64 / tf / q) as f32).collect();
-        let energy = acc
+        let q = f64::from(quant);
+        // A missing sample counts as the mean of the pixel's valid samples,
+        // which is 0 after centring; a pixel with no valid sample is all 0.
+        let mean = acc
+            .iter()
+            .zip(&cnt)
+            .map(|(&a, &c)| {
+                if c > 0 {
+                    (a as f64 / f64::from(c) / q) as f32
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let ss: Vec<f64> = acc
             .iter()
             .zip(&sq)
-            .map(|(&a, &s)| (s as f64 - (a as f64) * (a as f64) / tf).max(0.0))
-            .sum::<f64>()
-            / (q * q);
+            .zip(&cnt)
+            .map(|((&a, &s), &c)| {
+                if c > 0 {
+                    (s as f64 - (a as f64) * (a as f64) / f64::from(c)).max(0.0) / (q * q)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let energy = ss.iter().sum();
+        let valid = cnt.iter().map(|&c| c as f32 / t as f32).collect();
         TileMatrix {
             raw,
             t,
@@ -564,6 +608,8 @@ impl<'a> TileMatrix<'a> {
             inv_quant: 1.0 / quant,
             mean,
             energy,
+            ss,
+            valid,
         }
     }
 
@@ -572,11 +618,13 @@ impl<'a> TileMatrix<'a> {
         buf.clear();
         let s = self.inv_quant;
         for row in self.raw[c0 * self.p..(c0 + n) * self.p].chunks_exact(self.p) {
-            buf.extend(
-                row.iter()
-                    .zip(&self.mean)
-                    .map(|(&v, &m)| f32::from(v) * s - m),
-            );
+            buf.extend(row.iter().zip(&self.mean).map(|(&v, &m)| {
+                if v == MISSING {
+                    0.0
+                } else {
+                    f32::from(v) * s - m
+                }
+            }));
         }
     }
 
@@ -850,12 +898,76 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_sample_is_marked_and_counts_as_the_pixels_mean() {
+        assert_eq!(quantize(f32::NAN, QUANT), MISSING);
+        assert_eq!(quantize(f32::INFINITY, QUANT), MISSING);
+        assert_eq!(
+            quantize(-1.0e9, QUANT),
+            -32767,
+            "the clamp never gives MISSING"
+        );
+        // 2 pixels, 6 frames; pixel 1 is missing in frames 1 and 4.
+        let y = [
+            1.0f32,
+            5.0,
+            2.0,
+            f32::NAN,
+            3.0,
+            7.0,
+            4.0,
+            9.0,
+            5.0,
+            f32::NAN,
+            6.0,
+            11.0,
+        ];
+        let raw = quantized(&y);
+        let m = TileMatrix::new(&raw, 6, 2, QUANT);
+        assert!((m.mean[0] - 3.5).abs() < 1e-6);
+        assert!(
+            (m.mean[1] - 8.0).abs() < 1e-6,
+            "mean over the 4 valid samples"
+        );
+        assert_eq!(m.valid, vec![1.0, 4.0 / 6.0]);
+        // Pixel 0: sum (y - 3.5)^2 = 17.5; pixel 1: 9 + 1 + 1 + 9 = 20.
+        assert!((m.ss[0] - 17.5).abs() < 1e-9 && (m.ss[1] - 20.0).abs() < 1e-9);
+        assert!((m.energy - 37.5).abs() < 1e-9);
+        let mut b = Vec::new();
+        m.block(0, 6, &mut b);
+        assert_eq!(
+            (b[3], b[9]),
+            (0.0, 0.0),
+            "a missing sample is 0 after centring"
+        );
+        assert!((b[1] + 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_pixel_missing_in_every_frame_gives_zeros() {
+        let (t, p) = (40, 9);
+        let mut y = vec![0.0f32; t * p];
+        for i in 0..t {
+            for j in 0..p {
+                y[i * p + j] = 10.0 + (i as f32 / 5.0).sin() * (1.0 + j as f32);
+            }
+            y[i * p + 4] = f32::NAN;
+        }
+        let tf = compress_tile(&quantized(&y), t, p, &CompressConfig::default(), 3);
+        assert_eq!(tf.mean[4], 0.0);
+        // The randomized SVD's basis leaves rounding residue (about 1e-22) on a row of zeros.
+        assert!(tf.spatial[4 * tf.rank..5 * tf.rank]
+            .iter()
+            .all(|&v| v.abs() < 1e-6));
+        assert!(tf.spatial.iter().chain(&tf.temporal).all(|v| v.is_finite()));
+    }
+
+    #[test]
     fn quantize_rounds_like_f32_round() {
         let reference = |v: f32, q: f32| -> i16 {
             if v.is_finite() {
                 (v * q).round().clamp(-32767.0, 32767.0) as i16
             } else {
-                0
+                MISSING
             }
         };
         let mut values = vec![
