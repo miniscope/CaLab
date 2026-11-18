@@ -121,7 +121,7 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
 --slow-seed 1 --dump --no-heldout --no-signed` (the last two skip the held-out score and signed traces the
   metrics never read; footprints.bin, footprints_pass1.bin and dump_trace.f32 were byte-identical with and without them on
   static_s5 and pairs_s5 with a build of main a26f48d, and on static_s5 with `qc_eval-st2-c --joint-update refine
-  --joint-sign all`; final.tsv differs only in its `ho_*` columns, which become nan/0 without the held-out score and
+--joint-sign all`; final.tsv differs only in its `ho_*` columns, which become nan/0 without the held-out score and
   which `demix_metrics.py` does not read. Do NOT use `--no-heldout` for runs that need the held-out score) (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
   app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
   (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
