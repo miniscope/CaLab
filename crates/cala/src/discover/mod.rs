@@ -730,6 +730,10 @@ pub struct SlowLoopConfig {
     /// published, never seen by the fast loop) that hold light no member
     /// may claim. 0: Stage 2 (no leftover directions).
     pub joint_leftover: usize,
+    /// Fit the leftover directions as provisional components in the
+    /// replay (`design_discover_lookback.md` §3.1b). Off: the leftover
+    /// directions are stored history only (§3.1a).
+    pub joint_provisional: bool,
     /// On a change of a cluster's member set (birth, death, a cell joining
     /// or leaving), re-express the store with the most members in common
     /// in the new member set instead of starting over
@@ -808,6 +812,7 @@ impl Default for SlowLoopConfig {
             joint_admit: JointAdmit::Cluster,
             joint_carry: false,
             joint_leftover: 0,
+            joint_provisional: true,
             joint_rebase: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),

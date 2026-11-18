@@ -1016,6 +1016,18 @@ impl ClusterStore {
         iters: usize,
         carry: bool,
     ) -> Option<Replay> {
+        self.replay_with(gamma, sign_rule, iters, carry, true)
+    }
+
+    /// [`ClusterStore::replay`], with the provisional components on or off.
+    pub fn replay_with(
+        &mut self,
+        gamma: f64,
+        sign_rule: JointSign,
+        iters: usize,
+        carry: bool,
+        provisional: bool,
+    ) -> Option<Replay> {
         let (n, kk) = (self.pix.len(), self.ids.len());
         if self.hist.stored() < 4 * (kk + 1) || self.sw <= 0.0 {
             return None;
@@ -1044,7 +1056,7 @@ impl ClusterStore {
         // seeded from the leftover directions (rectified, the sign with
         // more positive light), then carried from replay to replay like a
         // member's footprint; seeded again after a member-set change.
-        let ml = r - self.ru;
+        let ml = if provisional { r - self.ru } else { 0 };
         if self.prov.as_ref().is_none_or(|p| p.1 != ml) {
             self.prov = (ml > 0).then(|| {
                 let mut p = vec![0.0f64; n * ml];
@@ -1144,14 +1156,14 @@ impl ClusterStore {
                 }
                 let idx: Vec<usize> = (0..kt).filter(|&k| mask & (1 << k) != 0).collect();
                 let ns = idx.len();
-                if !inv_by_mask.contains_key(&mask) {
+                if let std::collections::hash_map::Entry::Vacant(e) = inv_by_mask.entry(mask) {
                     let mut sub = vec![0.0f64; ns * ns];
                     for (a_, &p) in idx.iter().enumerate() {
                         for (b_, &q_) in idx.iter().enumerate() {
                             sub[a_ * ns + b_] = mr[p * kt + q_];
                         }
                     }
-                    inv_by_mask.insert(mask, inverse(&sub, ns)?);
+                    e.insert(inverse(&sub, ns)?);
                 }
                 let inv = &inv_by_mask[&mask];
                 let ur = &self.u[i * r..(i + 1) * r];
@@ -1625,11 +1637,12 @@ impl SlowLoop {
             let n = st.pix.len();
             let kk = ids.len();
             self.work += (st.stored() * kk * (kk + 8) + n * kk * kk * 4) as u64;
-            let rep = st.replay(
+            let rep = st.replay_with(
                 gamma,
                 self.cfg.joint_sign_rule,
                 self.cfg.joint_iters,
                 self.cfg.joint_carry,
+                self.cfg.joint_provisional,
             );
             #[cfg(feature = "diagnostics")]
             let mut sd = StageDiag::new(kk);

@@ -3316,6 +3316,10 @@ fn main() {
             scfg.joint_leftover
         );
     }
+    if args.iter().any(|a| a == "--joint-no-provisional") {
+        scfg.joint_provisional = false;
+        println!("joint update: leftover directions stored only (no provisional components)");
+    }
     if args.iter().any(|a| a == "--joint-rebase") {
         scfg.joint_rebase = true;
         println!("joint update: stores re-expressed on member-set changes");
