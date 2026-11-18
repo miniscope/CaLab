@@ -117,14 +117,19 @@ The blending window is separable in x and y and derived from the geometry, so
 it is not stored. Blended factors `diag(b_k) W_k` and `b_k ⊙ μ_k` are formed
 when a window is loaded.
 
-Rule for the choice: the cheapest arm in which cells within 8 px of a tile line
-are as close to the raw result as cells further away, within the null spread
-(see Closeness).
+Chosen after phase 0: the two offset grids (Amendment 1, A3). The rule first
+written here, "the cheapest arm within the null spread", could not be met by
+any arm.
 
 ### 3. Factor store
 
 - Compression is on for every run, without `?compress`. `?compress=off` turns
   it off, and Refine and Extract then replay the raw file as today.
+- The randomized SVD runs two power iterations (`n_iter` 2; Amendment 1, A2).
+- For a file, the factors that Refine and Extract use are made in one
+  compression replay after Discover, with the final calibration. A live stream
+  has no replay and uses the factors of Discover, with a flat field seed of the
+  same sensor where one exists (Amendment 1, A4).
 - Factor files stay in the origin private file system for the run. When the
   run has a results folder with write access, they are also written to
   `<run>/factors/f<window>.bin`, so a live session keeps its factors.
@@ -233,16 +238,21 @@ Recordings: simulations with ground truth, one 600 × 600 real recording at
 
 **Closeness** (A against C, and both against ground truth on simulations):
 
-- per cell: Pearson correlation of the traces, cosine of the footprints;
+- per cell: lag-1 correlation of the traces (plain Pearson correlation is
+  reported but not judged: the factors remove white noise that the raw trace
+  keeps), cosine of the footprints;
 - reported by SNR class (QC pass, low SNR), by distance of the centroid to the
   nearest tile line (under 4, 4 to 8, 8 to 16, over 16 px) and for the motion
   band at the edge;
 - relative jump of footprint values across tile lines against other columns;
 - on simulations: recall, precision and trace correlation to the truth.
 
-The pass threshold is not a fixed number. Phase 0 measures the **null spread**:
-the same metrics between two raw runs that differ only in visit timing. The
-factor result passes when it is within that spread for QC-pass cells.
+The pass rule is A1 of Amendment 1: limits on the change of the truth
+correlation, on the footprint loss, on the trace loss where there is no truth,
+and on the footprint jump at tile lines. Phase 0 measured the **null spread**
+(the same metrics between raw runs that differ only in the slow-loop budget).
+It is 0.00001 to 0.006, which nothing smaller than the frames can meet, so it
+is reported but is not the threshold.
 
 **Speed**: wall time and frames per second per stage, native (`qc_eval`) and in
 the browser (headless Chrome), at both frame sizes:
@@ -265,14 +275,15 @@ frames) against 8.2 kB as `i16`; phase 0 measures the real mean rank.
 Each phase gets its own implementation plan. A phase starts only when the gate
 before it has passed.
 
-| Phase | Work                                                                                              | Gate at the end                                                             |
-| ----- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| 0     | Harness (flags on `examples/qc_eval.rs`), arms A and B, null spread, tiling arms, baseline timing | Loss of A against B within the null spread for QC-pass cells; tiling chosen |
-| 1     | Format v2: overlap and blending, discarded variance, valid share                                  | v1 and v2 files read; compression time within the live frame budget         |
-| 2     | Extract on factors (Rust, WASM binding, compress worker); replaces the back-fill                  | B against C to float32 rounding; A against C within the null spread         |
-| 3     | Refine on factors with the settle stop                                                            | Same checks on footprints, against a settled raw Refine                     |
-| 4     | App: stages, Run panel, compression on by default, factors kept for live runs                     | e2e run of Discover, Refine, Extract on a file and on a simulated stream    |
-| 5     | Browser benchmark report in `tools/cala-eval/results/`; decide the default                        | Decision recorded                                                           |
+| Phase | Work                                                                                                                    | Gate at the end                                                                                                                                                                    |
+| ----- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Harness (flags on `examples/qc_eval.rs`), arms A and B, null spread, tiling arms, baseline timing                       | Done. Failed as first written (null spread); A against B meets A1 for recalibrated factors with two SVD iterations where run; offset grids chosen                                  |
+| 1     | Format v2: offset grids and blending, discarded variance, valid share; two SVD iterations; compression replay for files | v1 and v2 files read; A against B meets A1 on all six recordings for offset grids, recalibrated, two iterations; compression time of that combination within the live frame budget |
+| 2     | Extract on factors (Rust, WASM binding, compress worker); replaces the back-fill                                        | B against C to float32 rounding; A against C meets A1                                                                                                                              |
+| 4a    | Before phase 4: the factors of Discover with a flat field seed, on a simulated stream                                   | Measured against A1; decides what a live run may claim                                                                                                                             |
+| 3     | Refine on factors with the settle stop                                                                                  | Same checks on footprints, against a settled raw Refine                                                                                                                            |
+| 4     | App: stages, Run panel, compression on by default, factors kept for live runs                                           | e2e run of Discover, Refine, Extract on a file and on a simulated stream                                                                                                           |
+| 5     | Browser benchmark report in `tools/cala-eval/results/`; decide the default                                              | Decision recorded                                                                                                                                                                  |
 
 Raw replay stays available behind `?compress=off` at least until phase 5.
 
@@ -292,15 +303,192 @@ Raw replay stays available behind `?compress=off` at least until phase 5.
 
 ## Risks
 
-- **Discover-time preprocessing in the factors.** If arm B is too far from arm
-  A early in a recording, a file gets one compression replay with the final
-  calibration before Refine. A live stream cannot; the report then states the
-  difference for live runs.
-- **Dim cells.** The rank cut drops most of the noise and can drop a dim cell's
-  signal. Reported per SNR class; the remedy is a lower `rho_min` or a higher
-  starting rank, at the cost of size.
+- **Discover-time preprocessing in the factors.** Measured in phase 0: the
+  factors of Discover fail the gate on four of six recordings, recalibrated
+  factors pass. A file gets one compression replay with the final calibration
+  before Refine. A live stream cannot; whether a flat field seed brings its
+  factors within the gate is open and is measured before phase 4.
+- **Dim cells and low SNR.** The rank cut drops most of the noise and part of
+  the signal. Measured in phase 0: at 200 px the trace loss is 0.04 to 0.12
+  with two SVD iterations, a looser cut or a higher starting rank close little
+  of it, and it has no knee against the size. On real 200 px recordings there
+  is no truth to say whether the loss is signal.
 - **Missing pixels per window, not per frame.** Affects cells in the motion
   band only; measured separately.
 - **Live latency.** A window closes after 600 frames (30 s at 20 fps), so the
   newest frames are not yet in the factors while the stream runs. Refine and
   Extract start after the stream ends and the last window is flushed.
+
+## Amendment 1, after phase 0 (18 Nov 2026)
+
+**Status: approved by the user on 18 Nov 2026.** The text above has been
+edited to match; this section holds the reasons and the evidence.
+Evidence: `tools/cala-eval/results/2026-11-18-factor-phase0.md` (v2.20.0;
+bounded runs: 12000 frames at 200 px, 6000 at 600 px, slow-loop budget
+3,000,000). "Loss" is 1 minus the median over QC-pass cells, of the lag-1
+trace correlation or the footprint cosine, against the run on raw frames.
+
+### A1. The gate
+
+Replaces "within the null spread" in Benchmarks, in the tiling rule of §2 and
+in the gates of phases 0, 2 and 3.
+
+Why: the null spread is 0.00001 to 0.006. Factors with no rank cut at all
+(rank up to 300, larger than the frames) still lose 0.002 to 0.003 on the
+trace. No setting smaller than the frames can pass, so the rule decides nothing.
+
+The rule, on QC-pass cells:
+
+1. **Truth.** On a synthetic set whose truth match is usable (the raw run's
+   median truth correlation is at least 0.8 and at least 20 cells match a
+   truth unit), the paired change of the truth correlation, factor run minus
+   raw run, has a median of at least −0.01 and a 5th percentile of at least
+   −0.05.
+2. **Footprints.** Footprint loss at most 0.02, on every recording.
+3. **Traces without truth.** On a recording without usable truth, trace loss
+   at most 0.08.
+4. **Tile lines.** The footprint jump at tile lines is at most 0.10 above the
+   raw run's.
+
+The limits are the user's, approved as proposed. The truth limits say "the
+typical cell is not worse and the worst cells lose little". The limits 0.02
+and 0.08 have no derivation: they lie between what recalibrated factors
+measured and what the factors of Discover measured. The null spread stays in
+the reports.
+
+Measured against rules 1 to 3 (plain tiling; truth as median, 5th percentile;
+otherwise trace loss, footprint loss):
+
+| recording | judged by  | factors of Discover  | recalibrated         | recalibrated, 2 SVD iterations |
+| --------- | ---------- | -------------------- | -------------------- | ------------------------------ |
+| wl200     | truth      | +0.002, −0.088: fail | −0.003, −0.093: fail | +0.008, −0.042: pass           |
+| plain     | truth      | +0.004, −0.027: pass | +0.001, −0.031: pass | not run                        |
+| motion    | trace, cos | 0.031, 0.023: fail   | 0.002, 0.001: pass   | not run                        |
+| wl24_01   | trace, cos | 0.200, 0.045: fail   | 0.062, 0.014: pass   | 0.044, 0.010: pass             |
+| wl24_04   | trace, cos | 0.231, 0.041: fail   | 0.075, 0.011: pass   | 0.056, 0.008: pass             |
+| v4        | trace, cos | 0.009, 0.008: pass   | 0.002, 0.000: pass   | not run                        |
+
+`motion` has truth, but the match is not usable (raw median 0.46). The truth
+result on `wl200` rests on 25 matched cells, so its 5th percentile is one or
+two cells. Plain tiling fails rule 4 on `wl200` (jump 1.82 against 0.98 for
+raw); see A3.
+
+### A2. Compressor settings
+
+- **Two power iterations** of the randomized SVD (`n_iter` 2, today 1).
+  Measured on the 200 px recordings: 26 to 30 % less trace loss for about 10 %
+  more bytes and 40 to 50 % more compression time. Three or more iterations
+  were not measured, and neither were two at 600 px.
+- **The cut rule stays** (lag-1 autocorrelation above 0.2). It comes within
+  0.012 of the trace loss of a fixed rank of 20 at 28 to 57 % of the size, and
+  a looser cut (0.08) doubles the bytes to remove a fifth to two fifths of the
+  loss. The loss has no knee: a fixed rank of 80, at two thirds of the size of
+  the frames, still loses 0.02 to 0.05.
+- This replaces the remedy named under Risks ("a lower `rho_min` or a higher
+  starting rank"): both were measured and close little.
+
+### A3. Tiling
+
+Chosen: **two offset grids**. Replaces the rule "the cheapest arm within the
+null spread" of §2.
+
+- All three tilings remove most of the footprint jump that plain tiling adds:
+  with the offset grids the jump is below the raw run's on three recordings
+  and at most 0.07 above it on the others.
+- The offset grids have the lowest trace loss of the tilings, plain included,
+  on four recordings and are within 0.02 of the lowest on the other two
+  (`wl24_01`, `motion`). Overlap 16 raised the trace loss against plain on
+  every recording, most on `wl200` (0.23 against 0.17).
+- Cost, measured: 1.8 to 2.0 times the bytes and 1.8 to 2.2 times the
+  compression time of plain tiling. Overlap 8 costs 1.4 to 1.6 times the bytes
+  and was not run at 600 px.
+- A property of the layout: where a line of one grid crosses a line of the
+  other, a tile keeps a weight of about 0.5 on its own edge.
+
+Not measured: any tiling together with recalibrated factors or two SVD
+iterations (the tiling arms used the factors of Discover).
+
+### A4. Calibration of the factors
+
+What the factors of Discover lack, as read in the code:
+
+- The flat field divides the raw frame in sensor coordinates, before
+  registration. Discover has no map for the first 150 s unless a stored map of
+  the same sensor (a seed) is given; later passes apply the last map from
+  frame 0. In the registered frame the map's effect moves with each frame's
+  shift, so it cannot be applied to stored spatial factors afterwards as one
+  factor per pixel.
+- The running background floor and noise map start unsettled in Discover and
+  continue, settled, in later passes.
+
+On the three real recordings the first map arrived at frame 2999. The three
+synthetic sets got no map at all, and recalibration still cut the loss on
+`motion` (trace 0.031 to 0.002), so the settled running state matters beside
+the flat field. How much each contributes was not measured.
+
+Decided:
+
+- **File recordings**: the factors used by Refine and Extract are made in one
+  compression replay after Discover, with the final calibration. This is one
+  more pass over the file. The factors made during Discover serve the history
+  review as today.
+- **Live streams**: there is no replay. The factors of Discover are used, with
+  a flat field seed from an earlier session of the same sensor where one
+  exists. Rules 1 to 4 are checked for this case on a simulated stream before
+  phase 4; until then a live run's factors are not claimed to meet them.
+
+Not measured: the factors of Discover with a seed; how their loss falls with
+the length of the recording (the part without a map is a fixed 150 s, a
+quarter of the frames in the wireless runs); whether the app stores and loads a
+seed.
+
+### A5. What the trade is, by recording type
+
+| recording type | 8-bit frames, MB per 1000 frames | recalibrated factors, plain tiling | trace loss                      |
+| -------------- | -------------------------------- | ---------------------------------- | ------------------------------- |
+| 200 px         | 40                               | 2.1 to 4.3 (2 SVD iterations)      | 0.04 to 0.12 (2 SVD iterations) |
+| 600 px         | 360                              | 14.5 to 22.6 (1 iteration)         | 0.002 to 0.003 (1 iteration)    |
+
+The offset grids about double the factor sizes. At 200 px the loss is 15 to
+60 times that at 600 px, and on the wireless recordings
+there is no truth to say whether it is lost signal or removed noise.
+
+### A6. Phases
+
+- **Phase 0**: the gate as first written failed on all six recordings. Under
+  A1, recalibrated factors with two SVD iterations pass rules 1 to 3 where
+  they were run; the gaps are in the table of A1 and in A3.
+- **Phase 1** adds `n_iter` 2, the offset grids and the compression replay
+  for files. Its gate adds: rules 1 to 4 on all six recordings for the chosen
+  combination (offset grids, recalibrated, two iterations), and the
+  compression time of that combination within the live frame budget.
+- **Phases 2 and 3**: "A against C within the null spread" becomes "A against
+  C meets A1". "B against C to float32 rounding" is unchanged.
+
+### A7. Found while planning phases 1 and 2
+
+**Status: approved by the user on 18 Nov 2026**, together with the plans of
+phases 1 and 2. Facts read in the code on 18 Nov 2026 and what the plans do
+about them.
+
+- **The history review reads side-by-side tiles.** It stacks the components of
+  every tile that covers a pixel, without blending weights. So the live
+  factors of Discover stay on plain tiles through phases 1 to 3, and only the
+  factors made for Refine and Extract use the offset grids. Making the review
+  read the offset grids moves to phase 4, where a live stream's factors are
+  also the ones Refine and Extract use.
+- **No extra pass in phases 1 and 2.** Extract's replay already has the final
+  calibration, so in phase 1 it also feeds the compressor and leaves the
+  recalibrated factors. The separate compression replay of A4 arrives with
+  phase 3, which needs the factors before Refine starts.
+- **Flat field seed.** The app already stores a flat field map per device and
+  seeds a file run with it. A live stream skips that store today. The seed of
+  A4 for live streams therefore needs that changed, in step 4a.
+- **Missing samples.** A non-finite pixel is stored as a marker value in the
+  quantized buffer (`i16::MIN`), counted per pixel, and enters the SVD as the
+  pixel's mean over its valid samples. This is §1's valid share made concrete.
+- **Gate A1 in the tools.** The truth rule is evaluated on QC-pass cells
+  (the phase 0 numbers in A1's table are over all matched cells), and the tile
+  lines of the offset grids are every 32 px in the tile-line measures (phase 0
+  measured the offset arm on the 64 px lines only). The phase 1 gate run gives
+  the numbers under these definitions.
