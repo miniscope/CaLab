@@ -24,9 +24,20 @@ main).
 | 9 | Cluster stores, peak MB | reported (design 10-12 MB) | 38-43 MB |
 | 10 | Final cells matching 2+ GT units | reported; split by est/true at c_j ≤ 1.3 (light regained) vs > 1.3 (absorption) | +17.9 |
 
+| 11 | Footprint r with GT, median, isolated matched cells (no GT unit within 1.5 D) | **no regression**: paired change ≥ −0.005 with the CI's upper end ≥ 0 (and seeds not agreeing on a loss) | (new metric) |
+| 12 | Trace r with GT, median, isolated matched cells | **no regression**, same rule as #11 | (new metric) |
+| 13 | Footprint r / trace r / share footprint r < 0.9, for all / isolated / close-pair (< 1 D) matched cells | reported; close-pair footprint r expected to rise | (new metric) |
+| 14 | Refine recovery: `demix_stages.py` Discover vs + 1 / 2 / 3 Refine passes, main vs Stage 1 vs Stage 2, quick tier | reported: share of main's Refine gain (Discover → +1 Refine) on footprint r (all / isolated / close) that each arm keeps, and the bite share / corr excess per stage | — |
+
+Added before any Stage 2 run, after the probe (PI, 18 Nov): Refine's purpose is overall footprint accuracy from
+more frames, not bites only; #11-#12 gate, #13-#14 are reported. The end goal is multi-pass-Refine quality at lower
+cost, including during streaming Discover, so the Discover-only readout below is part of the report.
+
 Flag off: `footprints.bin`, `footprints_pass1.bin` and `final.tsv` byte-identical to main.
 
-Secondary readout (not gated here): pass 1 only (`--passes 1`), main vs `--joint-update all`, quick tier.
+Secondary readout (not gated here): pass 1 only (`--passes 1`), main vs `--joint-update all`, quick tier
+(Discover-only: same rows as above, and the share of main's Discover → +1 Refine gain that a Discover-only run
+with the replay reaches).
 
 The slow-loop cost metric is new: qc_eval writes `slow_cost.tsv` per pass (wall ms/frame of `SlowLoop::observe` and
 of `step`, and the loop's own deterministic work units per frame); `demix_metrics.py` copies the last pass into
