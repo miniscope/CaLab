@@ -98,13 +98,21 @@ QC cost per frame is unchanged (0.314 → 0.318 ms); wall time +2-3 %, within th
 - **Mirror through the peak pixel** instead of the half-max centre: mixed, no clear gain.
 - **Refill without the statistics reset**: bitten 6 but leak > 0.2 still 5; pair 22/170 stayed bitten (wide tail 0 at
   170's centre).
+- **Light transfer** (refill plus `κ (new − old)` taken out of the neighbour, `κ` the slope of the cell's trace on the
+  neighbour's): leak > 0.2 3, 170 ← 22 0.34; no gain over the refill.
+- **Unmix** (the cell plus `λ̂` times the neighbour's footprint, `λ̂ = cov(c_nb, c) / var(c)`, the algebraic inverse
+  of the fixed point): leak > 0.2 3, 170 ← 22 0.42, dense F1 0.664; no gain.
 
 ## Open
 
 - Not run on the demixing suite (`demix_suite.py`); the minisim sims are not on this machine.
 - One or two seeds per setting: read differences of one or two cells as noise. The drop from 8 to 2-4 cells > 0.2 holds
   in both seeds.
-- 170 ← 22 (9 px, both wide) still leaks 0.31-0.36.
+- 170 ← 22 (9 px, both wide) still leaks 0.31-0.36. The bite has moved both centres: 22's half-max centre sits about
+  1 px away from 170 (so its mirror reads 0.22 where the truth is 0.38) and 170 has spread toward 22 (0.35 over 22's
+  centre, truth 0.24). The refill of 22 is tested 72 times in a run and kept once (held-out gain about −800, z −3),
+  because 170 already explains that light. A refill from a fitted shape model instead of the cell's own mirror is the
+  next thing to try.
 - The refill assumes a roughly mirror-symmetric cell. The held-out test guards it, but real asymmetric cells were not
   checked.
 - Fewer merges with the fix (16 → 8, 14 → 11), not looked into.
