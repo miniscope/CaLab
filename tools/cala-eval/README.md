@@ -118,7 +118,9 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
   sims come from `$CALA_SIMS` (`sims-gt110`), the designed isolated-pairs sims (54 pairs at 4-24 px, soma
   diameter 14.5 px; `make_pair_spec.py`) from `$CALA_PAIRS` (`demix-bench/measure/pairsim_v2191`).
 - Each run is `qc_eval sim SIM RUN --passes 2 --later-passes refine --batch 8 --budget 30000000
---slow-seed 1 --dump` (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
+--slow-seed 1 --dump --no-heldout --no-signed` (the last two skip the held-out score and signed traces the
+  metrics never read; footprints.bin, dump_trace.f32 and final.tsv were byte-identical with and without them on
+  static_s5 and pairs_s5) (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
   app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
   (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
 - Output goes to `$CALA_DATA/demix-suite/<name>/<arm>/<sim>/` (`--name` to resume: finished runs and
