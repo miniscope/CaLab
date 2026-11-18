@@ -19,7 +19,9 @@ all runs, and a refine replay keeps the cell set):
 - `edge_px`: distance of the centroid to the nearest tile line;
 - `border_px`: distance of the centroid to the frame border;
 - `truth_r_*` (with `--truth`): the best correlation with a ground-truth unit
-  whose centroid is within 6 px.
+  whose centroid is within 6 px. One frame offset between the run and the truth is
+  estimated first, from the units that best follow each cell's trace, and applied
+  before the 6 px radius.
 
 A loss is the median of `1 - value` over the QC-pass cells. The judged measures
 are `trace_r1` and `fp_cos`; the plain `trace_r` is printed but not gated. The test
@@ -51,6 +53,8 @@ EDGE_BINS: tuple[tuple[float, float], ...] = (
 )
 NEAR_PX = 8.0
 TRUTH_PX = 6.0
+TRUTH_MIN_R = 0.5
+TRUTH_MIN_CELLS = 3
 NAN = float("nan")
 WHITE_Z = 4.0
 
@@ -171,9 +175,56 @@ def line_distance(c: float, n: int, tile: int) -> float:
     return float(np.abs(lines - c).min()) if len(lines) else float("inf")
 
 
-def truth_r(trace: np.ndarray, c: tuple[float, float], truth: Truth) -> float:
+def truth_offset(
+    traces: dict[int, np.ndarray],
+    centroids: dict[int, tuple[float, float]],
+    truth: Truth,
+) -> tuple[float, float, int]:
+    """Median (dy, dx) from each cell to the truth unit that best follows its trace, and the
+    number of cells used (those whose best correlation is above `TRUTH_MIN_R`).
+
+    The run is registered to its own template, so its frame is shifted against the truth by
+    one global offset. Returns (0.0, 0.0, n) when fewer than `TRUTH_MIN_CELLS` cells are used.
+    """
     cen, tr = truth
-    near = np.flatnonzero(np.hypot(cen[:, 0] - c[0], cen[:, 1] - c[1]) <= TRUTH_PX)
+    dys: list[float] = []
+    dxs: list[float] = []
+    ok = np.isfinite(cen).all(axis=1)
+    if ok.any():
+        units = np.flatnonzero(ok)
+        for cid, trace in traces.items():
+            c = centroids.get(cid)
+            if c is None or not (math.isfinite(c[0]) and math.isfinite(c[1])):
+                continue
+            n = min(len(trace), tr.shape[1])
+            x = trace[:n].astype(np.float64)
+            x = x - x.mean()
+            u = tr[units, :n].astype(np.float64)
+            u = u - u.mean(axis=1, keepdims=True)
+            d = np.sqrt((x * x).sum() * (u * u).sum(axis=1))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                r = np.where(d > 0, (u @ x) / d, np.nan)
+            if not np.isfinite(r).any():
+                continue
+            k = int(np.nanargmax(r))
+            if r[k] > TRUTH_MIN_R:
+                dys.append(float(cen[units[k], 0] - c[0]))
+                dxs.append(float(cen[units[k], 1] - c[1]))
+    if len(dys) < TRUTH_MIN_CELLS:
+        return 0.0, 0.0, len(dys)
+    return float(np.median(dys)), float(np.median(dxs)), len(dys)
+
+
+def truth_r(
+    trace: np.ndarray,
+    c: tuple[float, float],
+    truth: Truth,
+    offset: tuple[float, float] = (0.0, 0.0),
+) -> float:
+    """Best correlation with a truth unit within `TRUTH_PX` of `c` shifted by `offset`."""
+    cen, tr = truth
+    y, x = c[0] + offset[0], c[1] + offset[1]
+    near = np.flatnonzero(np.hypot(cen[:, 0] - y, cen[:, 1] - x) <= TRUTH_PX)
     rs = [r for r in (pearson(trace, tr[k]) for k in near) if not math.isnan(r)]
     return max(rs) if rs else NAN
 
@@ -182,11 +233,19 @@ def compare(
     ref: Path, test: Path, tile: int = 64, truth_path: Path | None = None
 ) -> list[Row]:
     """One row per cell of `ref`, compared with the cell of the same id in `test`."""
+    return _compare(ref, test, tile, truth_path)[0]
+
+
+def _compare(
+    ref: Path, test: Path, tile: int, truth_path: Path | None
+) -> tuple[list[Row], tuple[float, float, int]]:
+    """The rows of `compare` and the truth offset `(dy, dx, n cells)` used for them."""
     (h, w), fa = read_footprints(ref / "footprints.bin")
     _, fb = read_footprints(test / "footprints.bin")
     ta, tb = read_traces(ref), read_traces(test)
     cen, qc = read_centroids(ref), read_qc(ref)
     truth = read_truth(truth_path, (h, w)) if truth_path else None
+    dy, dx, n_off = truth_offset(ta, cen, truth) if truth else (0.0, 0.0, 0)
     rows: list[Row] = []
     for cid in sorted(fa):
         cy, cx = cen.get(cid, (NAN, NAN))
@@ -203,15 +262,15 @@ def compare(
                 "fp_cos": fp_cosine(fa[cid], fb[cid]) if cid in fb else NAN,
                 "trace_r": pearson(ta[cid], tb[cid]) if both else NAN,
                 "trace_r1": lag1_r(ta[cid], tb[cid]) if both else NAN,
-                "truth_r_ref": truth_r(ta[cid], (cy, cx), truth)
+                "truth_r_ref": truth_r(ta[cid], (cy, cx), truth, (dy, dx))
                 if truth and cid in ta
                 else NAN,
-                "truth_r_test": truth_r(tb[cid], (cy, cx), truth)
+                "truth_r_test": truth_r(tb[cid], (cy, cx), truth, (dy, dx))
                 if truth and cid in tb
                 else NAN,
             }
         )
-    return rows
+    return rows, (dy, dx, n_off)
 
 
 def line_jump(cells: dict[int, Cell], dims: tuple[int, int], tile: int) -> float:
@@ -327,7 +386,7 @@ def report(
     truth_path: Path | None = None,
 ) -> str:
     """The Markdown comparison of `test` with `ref`, judged against the `nulls`."""
-    rows = compare(ref, test, tile, truth_path)
+    rows, (dy, dx, n_off) = _compare(ref, test, tile, truth_path)
     null_rows = [compare(ref, n, tile, None) for n in nulls]
     dims, fa = read_footprints(ref / "footprints.bin")
     _, fb = read_footprints(test / "footprints.bin")
@@ -380,8 +439,13 @@ def report(
             )
     if truth_path:
         a, b = finite(rows, "truth_r_ref"), finite(rows, "truth_r_test")
+        k = len(a)
         out += [
             "",
+            (
+                f"Truth frame offset (dy, dx) = ({dy:+.1f}, {dx:+.1f}) px from {n_off} cells; "
+                f"{k} of {len(rows)} cells have a truth unit within {TRUTH_PX:g} px after it."
+            ),
             f"Trace correlation with the truth, median: reference {q(a, 50)}, test {q(b, 50)}.",
         ]
         both = [

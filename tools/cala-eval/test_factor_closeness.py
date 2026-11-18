@@ -64,6 +64,8 @@ T = np.sin(np.arange(200) * 0.3)
 CELLS = {7: blob(20, 20), 9: blob(63, 90), 11: blob(100, 40)}
 TRACES = {7: list(T), 9: list(np.roll(T, 5)), 11: list(np.roll(T, 11))}
 
+CELLS_XY = {7: (20, 20), 9: (63, 90), 11: (100, 40)}
+
 
 class Closeness(unittest.TestCase):
     def setUp(self) -> None:
@@ -203,6 +205,60 @@ class Closeness(unittest.TestCase):
         }
         self.assertAlmostEqual(rows[7]["truth_r_ref"], 1.0, places=6)
         self.assertTrue(math.isnan(rows[11]["truth_r_ref"]))  # no unit within 6 px
+
+    def _write_truth(
+        self, units: list[tuple[tuple[list[int], list[float]], int]]
+    ) -> Path:
+        h, w = DIMS
+        pix = [p for (b, _) in units for p in b[0]]
+        val = [v for (b, _) in units for v in b[1]]
+        ptr = [0]
+        for b, _ in units:
+            ptr.append(ptr[-1] + len(b[0]))
+        path = self.root / "truth.npz"
+        np.savez(
+            path,
+            A_data=np.asarray(val, "f4"),
+            A_indices=np.asarray(pix, "i4"),
+            A_indptr=np.asarray(ptr, "i4"),
+            A_shape=np.asarray([len(units), h * w]),
+            traces=np.asarray([TRACES[i] for (_, i) in units], "f4"),
+        )
+        return path
+
+    def test_truth_offset_is_estimated_and_applied(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES)
+        write_run(b, CELLS, TRACES)
+        truth = self._write_truth(
+            [(blob(cy - 3, cx + 7), i) for i, (cy, cx) in CELLS_XY.items()]
+        )
+        dy, dx, n = F.truth_offset(
+            F.read_traces(a), F.read_centroids(a), F.read_truth(truth, DIMS)
+        )
+        self.assertAlmostEqual(dy, -3.0, places=6)
+        self.assertAlmostEqual(dx, 7.0, places=6)
+        self.assertEqual(n, 3)
+        rows = F.compare(a, b, truth_path=truth)
+        self.assertEqual(len(rows), 3)
+        for r in rows:
+            self.assertAlmostEqual(r["truth_r_ref"], 1.0, places=6)
+        text = F.report(a, b, [], truth_path=truth)
+        self.assertIn(
+            "Truth frame offset (dy, dx) = (-3.0, +7.0) px from 3 cells; 3 of 3 cells",
+            text,
+        )
+
+    def test_truth_offset_needs_three_cells(self) -> None:
+        a = self.root / "a"
+        write_run(a, CELLS, TRACES)
+        truth = self._write_truth([(blob(21, 20), 7)])
+        self.assertEqual(
+            F.truth_offset(
+                F.read_traces(a), F.read_centroids(a), F.read_truth(truth, DIMS)
+            ),
+            (0.0, 0.0, 1),
+        )
 
     def test_cells_only_in_the_test_run_are_reported(self) -> None:
         write_run(
