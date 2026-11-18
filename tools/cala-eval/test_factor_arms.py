@@ -148,6 +148,19 @@ class Arms(unittest.TestCase):
             (run / "run.json").write_text('{"arm": "raw", "cm')
             self.assertFalse(A.done(run))
 
+    def test_a_rerun_drops_the_old_run_record_before_it_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "raw"
+            run.mkdir()
+            old = run / "run.json"
+            old.write_text('{"arm": "raw", "cmd": ["qc", "a"], "returncode": 0}')
+            # The command fails while the old record is still there.
+            check = (
+                "import pathlib, sys; sys.exit(int(pathlib.Path(sys.argv[1]).exists()))"
+            )
+            rc = A.run_arm("raw", [sys.executable, "-c", check, str(old)], run)
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

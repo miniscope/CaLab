@@ -110,6 +110,8 @@ def max_rss_mb(log: str) -> float | None:
 def run_arm(name: str, cmd: list[str], run: Path) -> int:
     """Run one arm; its output goes to `<run>/run.log`, the result to `<run>/run.json`."""
     run.mkdir(parents=True, exist_ok=True)
+    # An interrupted rerun must not leave the old record to be taken as finished.
+    (run / "run.json").unlink(missing_ok=True)
     timed = ["/usr/bin/time", "-l", *cmd] if sys.platform == "darwin" else cmd
     t0 = time.time()
     with open(run / "run.log", "w") as log:

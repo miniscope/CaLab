@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,18 @@ class StageTimes(unittest.TestCase):
             np.savez(p, meta_json=np.frombuffer(b"{}", np.uint8))
             self.assertEqual(S.stages(p), [])
             self.assertIn("no stage records", S.table(p))
+
+    def test_an_export_without_meta_json_gives_an_empty_table(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x_cala_cadecon.npz"
+            np.savez(p, traces=np.zeros((2, 3), np.float32), cell_ids=np.arange(2))
+            self.assertEqual(S.stages(p), [])
+            self.assertIn("no stage records", S.table(p))
+
+    def test_a_trailing_z_is_read_as_utc(self) -> None:
+        stamp = S.parse("2026-11-17T10:00:00.500Z")
+        self.assertEqual(stamp.utcoffset(), timedelta(0))
+        self.assertEqual(stamp.microsecond, 500000)
 
 
 if __name__ == "__main__":

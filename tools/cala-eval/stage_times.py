@@ -20,12 +20,19 @@ Row = dict[str, float | str]
 
 
 def parse(stamp: str) -> datetime:
-    return datetime.fromisoformat(stamp)  # Python 3.11+ reads the trailing "Z"
+    # Python before 3.11 does not read a trailing "Z", so the replace stays.
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))  # noqa: FURB162
 
 
 def stages(npz: Path) -> list[Row]:
-    """One row per stage run: stage, index, outcome, seconds, frames, cells, fps."""
-    meta = json.loads(np.load(npz)["meta_json"].tobytes().decode())
+    """One row per stage run: stage, index, outcome, seconds, frames, cells, fps.
+
+    An export without `meta_json` (a CaDecon export) has no stage records.
+    """
+    with np.load(npz) as z:
+        if "meta_json" not in z.files:
+            return []
+        meta = json.loads(z["meta_json"].tobytes().decode())
     rows: list[Row] = []
     for s in meta.get("stages", []):
         ended = s.get("ended_at")
