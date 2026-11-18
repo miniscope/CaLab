@@ -2669,3 +2669,55 @@ fn a_bitten_footprint_is_refilled_from_its_statistics() {
     );
     assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
 }
+
+/// A wide cell (σ 3.5 px) and a small one (σ 1.8 px) 5 px apart, independent
+/// activity. The wide cell is seeded with the leak fixed point: its true
+/// footprint minus 0.45 of the small one's (about 0 at the small cell's
+/// centre, truth exp(-5²/(2·3.5²)) ≈ 0.36). Returns the wide cell's value
+/// there after 4000 frames, with or without the bite refill.
+fn wide_over_small(bite_refill: bool) -> f32 {
+    let t = 4000;
+    let mut rng = Lcg(97);
+    let (w, s) = ((46.0, 44.0), (46.0, 49.0));
+    let small = blob_w(2, s.0, s.1, 1.8);
+    let cells = vec![
+        (blob_w(1, w.0, w.1, 3.5), trace(&mut rng, t, 0.03, 6.0)),
+        (small.clone(), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 501);
+    let mut bitten = blob_w(1, w.0, w.1, 3.5);
+    for y in 0..bitten.height {
+        for x in 0..bitten.width {
+            let (gy, gx) = (bitten.y0 + y, bitten.x0 + x);
+            let (dy, dx) = (gy as f32 - s.0, gx as f32 - s.1);
+            let a_s = (-(dy * dy + dx * dx) / (2.0 * 1.8 * 1.8)).exp();
+            let v = &mut bitten.values[y * bitten.width + x];
+            *v = (*v - 0.45 * a_s).max(0.0);
+        }
+    }
+    let cfg = SlowLoopConfig {
+        bite_refill,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[bitten, small]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1, 2], "stats {:?}", slow.stats());
+    if bite_refill {
+        assert!(slow.stats().bite_refills > 0, "stats {:?}", slow.stats());
+    }
+    fp_at(&lib, 1, s.0 as usize, s.1 as usize)
+}
+
+/// The bite refill takes a wide cell out of the leak fixed point that its
+/// running statistics keep it in.
+#[test]
+fn bite_refill_restores_a_wide_cells_tail() {
+    let off = wide_over_small(false);
+    let on = wide_over_small(true);
+    assert!(
+        on > off + 0.1 && on > 0.2,
+        "with refill {on}, without {off} (truth 0.36)"
+    );
+}

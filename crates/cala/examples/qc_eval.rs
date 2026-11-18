@@ -98,6 +98,12 @@
 //!   --refine-z Z       held-out paired z a statistics-path refinement must
 //!                      exceed (default 0: any held-out gain; 3 = the gate
 //!                      before the refine-gate fix)
+//!   --bite-refill      refill a footprint bitten by a close neighbour
+//!                      (`SlowLoopConfig::bite_refill`, off by default)
+//!   --bite-ratio R     with --bite-refill: bitten below R times the mirror
+//!                      value (0.8)
+//!   --bite-reset F     with --bite-refill: running-statistics scale after a
+//!                      kept refill (0.05)
 //!   --merge-rule M     which merge tests may merge: split-half (default;
 //!                      a pair overlapping less than ½ must also be one
 //!                      soma by the cells' split-half measured light) |
@@ -3256,6 +3262,18 @@ fn main() {
             other => panic!("--refine-gate: legacy|split-half, not {other}"),
         };
     }
+    if args.iter().any(|a| a == "--bite-refill") {
+        scfg.bite_refill = true;
+        println!("bite refill: on");
+    }
+    if let Some(v) = arg_value(&args, "--bite-ratio") {
+        scfg.bite_ratio = v.parse().unwrap();
+        println!("bite ratio: {}", scfg.bite_ratio);
+    }
+    if let Some(v) = arg_value(&args, "--bite-reset") {
+        scfg.bite_reset = v.parse().unwrap();
+        println!("bite reset: {}", scfg.bite_reset);
+    }
     if let Some(v) = arg_value(&args, "--refine-z") {
         scfg.refine_z = v.parse().unwrap();
         println!("refine z: {}", scfg.refine_z);
@@ -4166,6 +4184,12 @@ fn main() {
             st.deletes,
             st.splits
         );
+            if st.bite_tests > 0 {
+                println!(
+                    "bite refills: {} tested, {} kept (cumulative)",
+                    st.bite_tests, st.bite_refills
+                );
+            }
             if passes > 1 {
                 write_library(
                     &out_dir,

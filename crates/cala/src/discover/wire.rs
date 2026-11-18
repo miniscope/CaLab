@@ -584,4 +584,6 @@ stats_list!(
     work_stats,
     review_adds,
     support_no_se,
+    bite_tests,
+    bite_refills,
 );

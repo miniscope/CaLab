@@ -608,6 +608,26 @@ pub struct SlowLoopConfig {
     /// neighbouring cells co-fire in population events
     /// (tools/cala-diagnostics/LEFTOVER_LIGHT.md).
     pub joint_neighbours: bool,
+    /// Bite refill (off by default). A wide cell next to a smaller one can
+    /// lose its light under the neighbour's centre for good: once the
+    /// neighbour's trace carries part of this cell's events, the running
+    /// statistics estimate this cell there as the true light minus that
+    /// leak (about 0), and traces solved with the bitten footprint keep the
+    /// leak, so the bite is a fixed point the statistics never leave. With
+    /// this on, a refine visit tests each cell whose footprint at a close
+    /// neighbour's centre (inside the cell's support) is below
+    /// `bite_ratio` of its value at the mirror point (reflected through the
+    /// cell's centre): the footprint with the neighbour's side refilled from
+    /// the mirror side, alone and with the biting neighbours trimmed toward
+    /// the cell to their own mirror image. The better one is kept on the
+    /// statistics path's held-out test (`refine_z`); then the running
+    /// statistics of the cell and of its biting neighbours are scaled by
+    /// `bite_reset`, so they re-learn from traces solved with the new
+    /// footprints instead of pulling the bite back
+    /// (`tools/cala-eval/results/2026-11-18-bite-refill.md`).
+    pub bite_refill: bool,
+    pub bite_ratio: f32,
+    pub bite_reset: f32,
     /// Transient-band core test (see [`CoreTest`]). Off by default: bright
     /// compact cells can still fail its noise half (their own light
     /// dominates every contrast window of a small statistics disk).
@@ -677,6 +697,9 @@ impl Default for SlowLoopConfig {
             noise_corr: true,
             shift_nuisance: true,
             joint_neighbours: false,
+            bite_refill: false,
+            bite_ratio: 0.8,
+            bite_reset: 0.05,
             core_test: CoreTest::Off,
             basin_trim: false,
             churn: ChurnConfig::default(),
@@ -834,6 +857,10 @@ pub struct SlowStats {
     /// Statistics proposals not made under a basin support rule because
     /// the split halves gave no measured standard error.
     pub support_no_se: u64,
+    /// Bite-refill proposals tested and kept (see
+    /// [`SlowLoopConfig::bite_refill`]).
+    pub bite_tests: u64,
+    pub bite_refills: u64,
 }
 
 /// The slow loop. See the module docs.
@@ -5129,6 +5156,8 @@ impl SlowLoop {
             .max(1.0);
         let s2 = (chi_base / dof).max(1.0);
         let mut updates = Vec::new();
+        // Cells whose running statistics restart after a kept bite refill.
+        let mut resets: Vec<u64> = Vec::new();
         for i in 0..base.len() {
             let id = base.cols[i].id;
             let Some(ci) = self.cells.iter().position(|c| c.id == id) else {
@@ -5140,6 +5169,59 @@ impl SlowLoop {
                 .is_none()
             {
                 continue;
+            }
+            if self.cfg.bite_refill {
+                if let Some(new) = self.bite_refill(&cell) {
+                    self.stats.bite_tests += 1;
+                    let need = f64::from(self.cfg.refine_z);
+                    let cols = self.columns(rect, &[id], &[&new]);
+                    let pr = self.problem(ti, cols);
+                    let f = self.solve_all(&pr, test_fr);
+                    let gain = (chi_base - Self::total_chi2(&f)) / s2;
+                    let z = paired_z(&base_test, &f);
+                    let biters: Vec<u64> = self.bites(&cell).into_iter().map(|b| b.2).collect();
+                    // The refill with the biting neighbours trimmed toward it.
+                    let mut trims = Vec::new();
+                    for &nid in &biters {
+                        if let Some(nb) = self.cells.iter().find(|c| c.id == nid).cloned() {
+                            if let Some(t) = self.bite_trim(&nb, new.center) {
+                                trims.push(t);
+                            }
+                        }
+                    }
+                    let mut pair = None;
+                    if !trims.is_empty() {
+                        let mut skip = vec![id];
+                        skip.extend(trims.iter().map(|t| t.id));
+                        let mut extra: Vec<&Cell> = vec![&new];
+                        extra.extend(trims.iter());
+                        let cols = self.columns(rect, &skip, &extra);
+                        let pr = self.problem(ti, cols);
+                        let f2 = self.solve_all(&pr, test_fr);
+                        let g2 = (chi_base - Self::total_chi2(&f2)) / s2;
+                        let z2 = paired_z(&base_test, &f2);
+                        if g2 > 0.0 && z2 > need && g2 > gain {
+                            pair = Some(z2);
+                        }
+                    }
+                    if let Some(z2) = pair {
+                        self.stats.bite_refills += 1;
+                        resets.push(id);
+                        resets.extend(&biters);
+                        updates.push((id, new, z2 as f32, 3));
+                        for t in trims {
+                            updates.push((t.id, t, z2 as f32, 3));
+                        }
+                        continue;
+                    }
+                    if gain > 0.0 && z > need {
+                        self.stats.bite_refills += 1;
+                        resets.push(id);
+                        resets.extend(&biters);
+                        updates.push((id, new, z as f32, 3));
+                        continue;
+                    }
+                }
             }
             let from_stats = self.stats_estimate(id).is_some();
             let new = if from_stats {
@@ -5228,7 +5310,126 @@ impl SlowLoop {
                 self.touch(bbox);
             }
         }
+        resets.sort_unstable();
+        resets.dedup();
+        for id in resets {
+            if let Some(st) = self.fpstats.get_mut(&id) {
+                st.scale(self.cfg.bite_reset);
+            }
+        }
         self.tiles[ti].fresh = 0;
+    }
+
+    /// Footprint value of `cell` at the pixel nearest to `(y, x)` (0 off its
+    /// support).
+    fn raw_at(&self, cell: &Cell, y: f32, x: f32) -> f32 {
+        let w = self.dims.width;
+        let (yi, xi) = (y.round(), x.round());
+        if yi < 0.0 || xi < 0.0 || xi as usize >= w || yi as usize >= self.dims.height {
+            return 0.0;
+        }
+        let p = (yi as usize * w + xi as usize) as u32;
+        // `pix` is sorted (global row-major).
+        cell.pix.binary_search(&p).map_or(0.0, |k| cell.raw[k])
+    }
+
+    /// The neighbours that bite `cell` (see [`SlowLoopConfig::bite_refill`]):
+    /// unit direction from the cell's centre and id.
+    fn bites(&self, cell: &Cell) -> Vec<(f32, f32, u64)> {
+        let (cy, cx) = cell.center;
+        let mut out = Vec::new();
+        for nb in &self.cells {
+            if nb.id == cell.id {
+                continue;
+            }
+            let (dy, dx) = (nb.center.0 - cy, nb.center.1 - cx);
+            let d = (dy * dy + dx * dx).sqrt();
+            if !(d >= 1.0 && d < cell.radius) {
+                continue;
+            }
+            let a_n = self.raw_at(cell, nb.center.0, nb.center.1);
+            let a_m = self.raw_at(cell, cy - dy, cx - dx);
+            if a_m > 0.0 && a_n < self.cfg.bite_ratio * a_m {
+                out.push((dy / d, dx / d, nb.id));
+            }
+        }
+        out
+    }
+
+    /// `cell` with its support pixels on the side `(uy, ux)` (a unit
+    /// direction from its centre) set to `pick(value, value of the pixel's
+    /// reflection across the line through the centre perpendicular to it)`.
+    /// `None` when nothing changes.
+    fn mirrored(
+        &mut self,
+        cell: &Cell,
+        dirs: &[(f32, f32)],
+        pick: fn(f32, f32) -> f32,
+    ) -> Option<Cell> {
+        let w = self.dims.width;
+        let (cy, cx) = cell.center;
+        let mut new = cell.raw.clone();
+        let mut changed = false;
+        for &(uy, ux) in dirs {
+            for (k, &p) in cell.pix.iter().enumerate() {
+                let (py, px) = ((p as usize / w) as f32, (p as usize % w) as f32);
+                let s = (py - cy) * uy + (px - cx) * ux;
+                if s <= 0.0 {
+                    continue;
+                }
+                let m = self.raw_at(cell, py - 2.0 * s * uy, px - 2.0 * s * ux);
+                let v = pick(new[k], m);
+                if v != new[k] {
+                    new[k] = v;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return None;
+        }
+        let bbox = cell.bbox;
+        let mut canvas = vec![0.0f32; bbox.len()];
+        for (&p, &v) in cell.pix.iter().zip(&new) {
+            if let Some(l) = bbox.local(p as usize / w, p as usize % w) {
+                canvas[l] = v.max(0.0);
+            }
+        }
+        let mut out = Cell::from_canvas(
+            cell.id,
+            bbox,
+            &canvas,
+            self.dims,
+            &self.fov,
+            &self.cfg.library,
+            Extent::Radius(cell.radius),
+            &mut self.filter,
+            &[],
+        )?;
+        out.born = cell.born;
+        Some(out)
+    }
+
+    /// The refill proposal of a bitten `cell`: on each biting neighbour's
+    /// side, every support pixel takes at least the value of its mirror
+    /// pixel. `None` when no neighbour bites.
+    fn bite_refill(&mut self, cell: &Cell) -> Option<Cell> {
+        let dirs: Vec<(f32, f32)> = self.bites(cell).into_iter().map(|b| (b.0, b.1)).collect();
+        if dirs.is_empty() {
+            return None;
+        }
+        self.mirrored(cell, &dirs, f32::max)
+    }
+
+    /// Neighbour `nb` trimmed on the side facing `toward`: every support
+    /// pixel there at most the value of its mirror pixel.
+    fn bite_trim(&mut self, nb: &Cell, toward: (f32, f32)) -> Option<Cell> {
+        let (dy, dx) = (toward.0 - nb.center.0, toward.1 - nb.center.1);
+        let d = (dy * dy + dx * dx).sqrt();
+        if !(d >= 1.0) {
+            return None;
+        }
+        self.mirrored(nb, &[(dy / d, dx / d)], f32::min)
     }
 }
 
