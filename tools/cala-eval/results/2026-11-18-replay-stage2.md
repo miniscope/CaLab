@@ -11,18 +11,18 @@ Full tier (14 sims: static s5-s9, motion s5-s9, pairs s5-s8), `--passes 2 --late
 the Stage 1 suite run `demix-suite/full-signall` (`off`, `signall`; the binaries' flag-off output is identical to
 main).
 
-| # | metric | target | Stage 1 |
-| - | ------ | ------ | ------- |
-| 1 | Bite share (ratio < 0.5), 0.5-0.75 D | ≤ 0.25 | 0.203 |
-| 2 | Bite share, 0.75-1 D | **≤ 0.25** | 0.338 |
-| 3 | Trace corr excess < 1 D (headline) | ≤ Stage 1 (+0.106), seeds agree | +0.106 |
-| 4 | Corr excess 0.5-0.75 / 0.75-1 D | ≤ +0.10 / ≤ +0.05 (design) | static +0.102 / +0.060 |
-| 5 | Over-fill (est/true at c_j > 1.3, pairs < 1 D) | **≤ 5 %**, and next to undetected GT units no worse than main | 6.7 % (main 5.9 %) |
-| 6 | Matched / false cells | within noise of main (CI covers 0 or better; at most -1 % matched, +1 false per sim) | +1.1 / -1.1 |
-| 7 | Merges, splits | unchanged (Refine makes none) | unchanged |
-| 8 | Slow-loop cost, Refine pass (observe + step, wall ms/frame, solo runs static s5 and motion s5) | **≤ +10 % vs main** | observe +30 % |
-| 9 | Cluster stores, peak MB | reported (design 10-12 MB) | 38-43 MB |
-| 10 | Final cells matching 2+ GT units | reported; split by est/true at c_j ≤ 1.3 (light regained) vs > 1.3 (absorption) | +17.9 |
+| #   | metric                                                                                         | target                                                                               | Stage 1                |
+| --- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------- |
+| 1   | Bite share (ratio < 0.5), 0.5-0.75 D                                                           | ≤ 0.25                                                                               | 0.203                  |
+| 2   | Bite share, 0.75-1 D                                                                           | **≤ 0.25**                                                                           | 0.338                  |
+| 3   | Trace corr excess < 1 D (headline)                                                             | ≤ Stage 1 (+0.106), seeds agree                                                      | +0.106                 |
+| 4   | Corr excess 0.5-0.75 / 0.75-1 D                                                                | ≤ +0.10 / ≤ +0.05 (design)                                                           | static +0.102 / +0.060 |
+| 5   | Over-fill (est/true at c_j > 1.3, pairs < 1 D)                                                 | **≤ 5 %**, and next to undetected GT units no worse than main                        | 6.7 % (main 5.9 %)     |
+| 6   | Matched / false cells                                                                          | within noise of main (CI covers 0 or better; at most -1 % matched, +1 false per sim) | +1.1 / -1.1            |
+| 7   | Merges, splits                                                                                 | unchanged (Refine makes none)                                                        | unchanged              |
+| 8   | Slow-loop cost, Refine pass (observe + step, wall ms/frame, solo runs static s5 and motion s5) | **≤ +10 % vs main**                                                                  | observe +30 %          |
+| 9   | Cluster stores, peak MB                                                                        | reported (design 10-12 MB)                                                           | 38-43 MB               |
+| 10  | Final cells matching 2+ GT units                                                               | reported; split by est/true at c_j ≤ 1.3 (light regained) vs > 1.3 (absorption)      | +17.9                  |
 
 | 11 | Footprint r with GT, median, isolated matched cells (no GT unit within 1.5 D) | **no regression**: paired change ≥ −0.005 with the CI's upper end ≥ 0 (and seeds not agreeing on a loss) | (new metric) |
 | 12 | Trace r with GT, median, isolated matched cells | **no regression**, same rule as #11 | (new metric) |
@@ -93,26 +93,26 @@ pairs at 0.5-1 D in main).
 Reports: `~/Projects/cala-data/demix-suite/full-stage2/report-vs-{main,stage1}.md`. Pooled, bootstrap 95 % CI,
 "seeds" = sims agreeing in sign.
 
-| # | metric | main | Stage 1 | Stage 2 | Stage 2 − Stage 1 [CI], seeds | target |
-| - | ------ | ---- | ------- | ------- | --------------- | ------ |
-| 1 | Bite share 0.5-0.75 D | 0.353 | 0.203 | **0.123** | −0.080 [−0.105, −0.056], 13/14 | ≤ 0.25 met |
-| 2 | Bite share 0.75-1 D | 0.486 | 0.338 | **0.201** | −0.137 [−0.167, −0.107], 12/14 | ≤ 0.25 **met** |
-| | Bite share 0-0.5 D | 0.382 | 0.193 | 0.120 | −0.074 [−0.109, −0.039], 12/14 | |
-| | Bite share later-born, 0.75-1 D | — | 0.461 | 0.241 | −0.220, 10/11 | |
-| 3 | Trace corr excess < 1 D | +0.150 | +0.106 | **+0.084** | −0.022 [−0.034, −0.013], 14/14 | ≤ Stage 1 met |
-| 4 | Corr excess 0.5-1 D | +0.127 | +0.088 | +0.062 | −0.026, 14/14 | |
-| 5 | Over-fill est/true > 1.3, pairs < 1 D | 0.059 | 0.067 | **0.075** (0.75-1 D 0.109) | +0.008 | ≤ 5 % **not met** |
-| 5b | Over-fill next to undetected GT units, < 1 D | 0.090 | 0.086 | 0.098 | +0.012 [−0.012, +0.035], 8/10 | no worse than main: +0.008 [−0.016, +0.030] vs main, within noise |
-| 6 | Matched / false cells per sim | 400.1 / 21.9 | 401.3 / 20.7 | 401.1 / 20.9 | −0.1 / +0.1 | met (vs main +1.0 / −1.0) |
-| 7 | Merges / splits | 404 / 6.6 | 404 / 6.6 | 404 / 6.6 | 0 | met |
-| 9 | Cluster stores, peak MB | — | 38-43 (s5) | 26.6 mean | | reported |
-| 10 | Final cells matching 2+ GT units | 148.6 | 166.5 | 175.9 | +9.4 [5.6, 13.2], 13/14 | reported (support area 603 / 630 / 670 px) |
-| 11 | Footprint r, isolated | 0.9922 | 0.9922 | 0.9922 | −0.0000 [−0.0010, +0.0011], 7/14 | no regression met |
-| 12 | Trace r, isolated | 0.9818 | 0.9810 | 0.9811 | +0.0001 [−0.0039, +0.0036]; vs main −0.0007 [−0.0043, +0.0031] | no regression met |
-| 13 | Footprint r, all | 0.9879 | 0.9899 | **0.9920** | +0.0021 [0.0017, 0.0026], 14/14 | |
-| 13 | Footprint r, close pairs (< 1 D) | 0.9843 | 0.9879 | **0.9917** | +0.0038 [0.0030, 0.0045], 14/14 | |
-| 13 | Footprint r < 0.9 share, all / close | 0.056 / 0.071 | 0.049 / 0.060 | 0.043 / 0.050 | −0.007 / −0.011 | |
-| 13 | Trace r, all / close | 0.9676 / 0.9602 | 0.9704 / 0.9651 | 0.9717 / 0.9677 | +0.0013 / +0.0025 (14/14) | |
+| #   | metric                                       | main            | Stage 1         | Stage 2                    | Stage 2 − Stage 1 [CI], seeds                                  | target                                                            |
+| --- | -------------------------------------------- | --------------- | --------------- | -------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | Bite share 0.5-0.75 D                        | 0.353           | 0.203           | **0.123**                  | −0.080 [−0.105, −0.056], 13/14                                 | ≤ 0.25 met                                                        |
+| 2   | Bite share 0.75-1 D                          | 0.486           | 0.338           | **0.201**                  | −0.137 [−0.167, −0.107], 12/14                                 | ≤ 0.25 **met**                                                    |
+|     | Bite share 0-0.5 D                           | 0.382           | 0.193           | 0.120                      | −0.074 [−0.109, −0.039], 12/14                                 |                                                                   |
+|     | Bite share later-born, 0.75-1 D              | —               | 0.461           | 0.241                      | −0.220, 10/11                                                  |                                                                   |
+| 3   | Trace corr excess < 1 D                      | +0.150          | +0.106          | **+0.084**                 | −0.022 [−0.034, −0.013], 14/14                                 | ≤ Stage 1 met                                                     |
+| 4   | Corr excess 0.5-1 D                          | +0.127          | +0.088          | +0.062                     | −0.026, 14/14                                                  |                                                                   |
+| 5   | Over-fill est/true > 1.3, pairs < 1 D        | 0.059           | 0.067           | **0.075** (0.75-1 D 0.109) | +0.008                                                         | ≤ 5 % **not met**                                                 |
+| 5b  | Over-fill next to undetected GT units, < 1 D | 0.090           | 0.086           | 0.098                      | +0.012 [−0.012, +0.035], 8/10                                  | no worse than main: +0.008 [−0.016, +0.030] vs main, within noise |
+| 6   | Matched / false cells per sim                | 400.1 / 21.9    | 401.3 / 20.7    | 401.1 / 20.9               | −0.1 / +0.1                                                    | met (vs main +1.0 / −1.0)                                         |
+| 7   | Merges / splits                              | 404 / 6.6       | 404 / 6.6       | 404 / 6.6                  | 0                                                              | met                                                               |
+| 9   | Cluster stores, peak MB                      | —               | 38-43 (s5)      | 26.6 mean                  |                                                                | reported                                                          |
+| 10  | Final cells matching 2+ GT units             | 148.6           | 166.5           | 175.9                      | +9.4 [5.6, 13.2], 13/14                                        | reported (support area 603 / 630 / 670 px)                        |
+| 11  | Footprint r, isolated                        | 0.9922          | 0.9922          | 0.9922                     | −0.0000 [−0.0010, +0.0011], 7/14                               | no regression met                                                 |
+| 12  | Trace r, isolated                            | 0.9818          | 0.9810          | 0.9811                     | +0.0001 [−0.0039, +0.0036]; vs main −0.0007 [−0.0043, +0.0031] | no regression met                                                 |
+| 13  | Footprint r, all                             | 0.9879          | 0.9899          | **0.9920**                 | +0.0021 [0.0017, 0.0026], 14/14                                |                                                                   |
+| 13  | Footprint r, close pairs (< 1 D)             | 0.9843          | 0.9879          | **0.9917**                 | +0.0038 [0.0030, 0.0045], 14/14                                |                                                                   |
+| 13  | Footprint r < 0.9 share, all / close         | 0.056 / 0.071   | 0.049 / 0.060   | 0.043 / 0.050              | −0.007 / −0.011                                                |                                                                   |
+| 13  | Trace r, all / close                         | 0.9676 / 0.9602 | 0.9704 / 0.9651 | 0.9717 / 0.9677            | +0.0013 / +0.0025 (14/14)                                      |                                                                   |
 
 Flag off: `footprints.bin`, `footprints_pass1.bin` and `final.tsv` byte-identical to main on static s5 and motion s5.
 
@@ -120,14 +120,14 @@ Flag off: `footprints.bin`, `footprints_pass1.bin` and `final.tsv` byte-identica
 
 `~/Projects/cala-data/demix-suite/quick-pass1-discover/report-stage2-vs-main.md`.
 
-| metric | main Discover | Stage 1 Discover | Stage 2 Discover |
-| ------ | ------------- | ---------------- | ---------------- |
+| metric                              | main Discover            | Stage 1 Discover         | Stage 2 Discover         |
+| ----------------------------------- | ------------------------ | ------------------------ | ------------------------ |
 | Footprint r, all / isolated / close | 0.9813 / 0.9881 / 0.9761 | 0.9854 / 0.9883 / 0.9836 | 0.9864 / 0.9881 / 0.9853 |
-| Trace r, all / close | 0.9696 / 0.9617 | 0.9732 / 0.9674 | 0.9731 / 0.9670 |
-| Corr excess < 1 D | +0.147 | +0.112 | +0.104 |
-| Bite share 0.5-0.75 / 0.75-1 D | 0.479 / 0.669 | 0.314 / 0.507 | 0.297 / 0.437 |
-| Over-fill next to undetected, < 1 D | 0.056 | 0.058 | 0.080 |
-| Matched / false per sim | 346.8 / 15.0 | 338.4 / 15.2 | 337.8 / 14.6 |
+| Trace r, all / close                | 0.9696 / 0.9617          | 0.9732 / 0.9674          | 0.9731 / 0.9670          |
+| Corr excess < 1 D                   | +0.147                   | +0.112                   | +0.104                   |
+| Bite share 0.5-0.75 / 0.75-1 D      | 0.479 / 0.669            | 0.314 / 0.507            | 0.297 / 0.437            |
+| Over-fill next to undetected, < 1 D | 0.056                    | 0.058                    | 0.080                    |
+| Matched / false per sim             | 346.8 / 15.0             | 338.4 / 15.2             | 337.8 / 14.6             |
 
 Stage 2 vs main in Discover: better on every accuracy row (5/5 seeds) except isolated cells (unchanged), but
 **−9.0 matched cells per sim [−18.4, +0.4], 4/5 seeds** (Stage 1's Discover arm had the same, −8.4). In Discover
@@ -139,12 +139,12 @@ so the replay runs on short histories; membership re-expression needs leftover-l
 `~/Projects/cala-data/demix-suite/stages-replay2/report.md`; per-cell accuracy from each stage's `demix_cells.tsv`
 (median over matched cells pooled over the two sims; Discover is the same library in all arms).
 
-| arm | stage | footprint r all / isolated / close | trace r all / close | corr excess < 1 D | bite 0.75-1 D |
-| --- | ----- | ---------------------------------- | ------------------- | ----------------- | ------------- |
-| all | Discover | 0.9817 / 0.9896 / 0.9779 | 0.9715 / 0.9669 | +0.180 | 0.713 |
-| main | +1 / +2 / +3 Refine | 0.9896 / 0.9908 / 0.9912 (close 0.9865 / 0.9888 / 0.9895) | 0.9740 / 0.9741 / 0.9744 | +0.160 / +0.154 / +0.154 | 0.525 / 0.418 / 0.364 |
-| Stage 1 | +1 / +2 / +3 | 0.9911 / 0.9923 / 0.9925 (close 0.9901 / 0.9920 / 0.9922) | 0.9756 / 0.9765 / 0.9765 | +0.142 / +0.123 / +0.125 | see report |
-| Stage 2 | +1 / +2 / +3 | **0.9926** / 0.9933 / 0.9934 (close **0.9927** / 0.9934 / 0.9935) | 0.9767 / 0.9774 / 0.9773 | +0.113 / +0.108 / +0.113 | see report |
+| arm     | stage               | footprint r all / isolated / close                                | trace r all / close      | corr excess < 1 D        | bite 0.75-1 D         |
+| ------- | ------------------- | ----------------------------------------------------------------- | ------------------------ | ------------------------ | --------------------- |
+| all     | Discover            | 0.9817 / 0.9896 / 0.9779                                          | 0.9715 / 0.9669          | +0.180                   | 0.713                 |
+| main    | +1 / +2 / +3 Refine | 0.9896 / 0.9908 / 0.9912 (close 0.9865 / 0.9888 / 0.9895)         | 0.9740 / 0.9741 / 0.9744 | +0.160 / +0.154 / +0.154 | 0.525 / 0.418 / 0.364 |
+| Stage 1 | +1 / +2 / +3        | 0.9911 / 0.9923 / 0.9925 (close 0.9901 / 0.9920 / 0.9922)         | 0.9756 / 0.9765 / 0.9765 | +0.142 / +0.123 / +0.125 | see report            |
+| Stage 2 | +1 / +2 / +3        | **0.9926** / 0.9933 / 0.9934 (close **0.9927** / 0.9934 / 0.9935) | 0.9767 / 0.9774 / 0.9773 | +0.113 / +0.108 / +0.113 | see report            |
 
 Isolated cells: 0.9931-0.9933 at every Refine stage in every arm (no change).
 
@@ -158,14 +158,14 @@ Isolated cells: 0.9931-0.9933 at every Refine stage in every arm (no change).
 
 `~/Projects/cala-data/runs/replay2/solo/summary.txt`. Wall ms per frame; work = the loop's deterministic units.
 
-| sim | arm | observe | step | observe + step | vs main | statistics work / frame | store peak MB |
-| --- | --- | ------- | ---- | -------------- | ------- | ----------------------- | ------------- |
-| static s5 | main | 2.49 | 9.73 | 12.22 | — | 1.22 M | — |
-| static s5 | Stage 1 | 3.45 | 10.43 | 13.88 | +13.6 % | 3.76 M | 38.0 |
-| static s5 | Stage 2 | 3.16 | 10.15 | 13.31 | **+9.0 %** | 3.19 M | 32.7 |
-| motion s5 | main | 2.56 | 9.89 | 12.46 | — | 1.29 M | — |
-| motion s5 | Stage 1 | 3.64 | 10.63 | 14.27 | +14.5 % | 4.17 M | 43.0 |
-| motion s5 | Stage 2 | 3.58 | 10.57 | 14.15 | **+13.6 %** | 3.59 M | 37.2 |
+| sim       | arm     | observe | step  | observe + step | vs main     | statistics work / frame | store peak MB |
+| --------- | ------- | ------- | ----- | -------------- | ----------- | ----------------------- | ------------- |
+| static s5 | main    | 2.49    | 9.73  | 12.22          | —           | 1.22 M                  | —             |
+| static s5 | Stage 1 | 3.45    | 10.43 | 13.88          | +13.6 %     | 3.76 M                  | 38.0          |
+| static s5 | Stage 2 | 3.16    | 10.15 | 13.31          | **+9.0 %**  | 3.19 M                  | 32.7          |
+| motion s5 | main    | 2.56    | 9.89  | 12.46          | —           | 1.29 M                  | —             |
+| motion s5 | Stage 1 | 3.64    | 10.63 | 14.27          | +14.5 %     | 4.17 M                  | 43.0          |
+| motion s5 | Stage 2 | 3.58    | 10.57 | 14.15          | **+13.6 %** | 3.59 M                  | 37.2          |
 
 Gate #8 (≤ +10 % vs main): met on static s5, **not met on motion s5** (+13.6 %). Observe alone is still +27 % / +40 %
 over main: the cluster push (3 multiply-adds per pixel per member, plus the projection) dominates; the next levers are
