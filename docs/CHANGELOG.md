@@ -8,6 +8,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Added
 
 - Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+- cala evaluation: `qc_eval` can run the refine replays and an Extract pass on frames rebuilt from
+  the compressed factors (`--replay-source factors`, `--tiling`, `--factors-pass`, `--extract-pass`),
+  with overlapping and offset tilings in `compress::blend`; `tools/cala-eval/factor_arms.py` and
+  `factor_closeness.py` compare them with the raw replay. No change to the app.
 
 ### Changed
 
