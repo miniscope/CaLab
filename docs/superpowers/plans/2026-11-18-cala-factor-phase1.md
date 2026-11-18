@@ -109,7 +109,10 @@ Add to the `tests` module of `crates/cala/src/compress/mod.rs`:
         }
         let tf = compress_tile(&quantized(&y), t, p, &CompressConfig::default(), 3);
         assert_eq!(tf.mean[4], 0.0);
-        assert!(tf.spatial[4 * tf.rank..5 * tf.rank].iter().all(|&v| v == 0.0));
+        // The randomized SVD's basis leaves rounding residue (about 1e-22) on a row of zeros.
+        assert!(tf.spatial[4 * tf.rank..5 * tf.rank]
+            .iter()
+            .all(|&v| v.abs() < 1e-6));
         assert!(tf.spatial.iter().chain(&tf.temporal).all(|v| v.is_finite()));
     }
 ```
