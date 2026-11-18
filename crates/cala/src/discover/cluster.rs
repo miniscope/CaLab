@@ -26,7 +26,8 @@ use std::collections::HashMap;
 use super::fpstats::disk_pixels;
 use super::local::{Cell, Fit, Problem};
 use super::{
-    column_on, paired_z, solve_dense, EditScope, Frames, JointSign, JointUpdate, SlowLoop,
+    column_on, paired_z, solve_dense, EditScope, Frames, JointAdmit, JointSign, JointUpdate,
+    SlowLoop,
 };
 use crate::trace::{FrameTraces, Library};
 
@@ -236,8 +237,8 @@ pub(crate) struct ClusterStore {
     /// `pix` (member-major, unwhitened, moat included).
     pub version: u64,
     pub cols: Vec<f32>,
-    /// Forgetting sums of the whitened residual: `Σ w r̃ ĉ_k` (pixel-major),
-    /// `Σ w r̃`, `Σ w ĉ`, `Σ w ĉ_k²`, `Σ w`.
+    /// Forgetting sums of the whitened residual: `Σ w r̃ ĉ_k` (member-major),
+    /// `Σ w r̃`, `Σ w ĉ`, `Σ w ĉ ĉᵀ` (`K x K`), `Σ w`.
     cy: Vec<f32>,
     sr: Vec<f32>,
     sc: Vec<f64>,
@@ -253,6 +254,41 @@ pub(crate) struct ClusterStore {
     hist: RingHistory,
     /// Frames pushed.
     pub k: u64,
+    /// The store's own last joint estimate, whitened (pixel-major `n x K`),
+    /// carried to the next replay's trace step (`joint_carry`).
+    est: Option<Vec<f64>>,
+}
+
+/// Per pixel of `pix`: the member whose ring level is subtracted there (the
+/// largest positive column; else the nearest disk centre) and the bit mask
+/// of the members whose disk covers it.
+fn owner_cover(
+    pix: &[u32],
+    disks: &[((f32, f32), f32)],
+    cols: &[f32],
+    width: usize,
+) -> (Vec<u8>, Vec<u8>) {
+    let n = pix.len();
+    let mut owner = vec![0u8; n];
+    let mut cover = vec![0u8; n];
+    for (i, &p) in pix.iter().enumerate() {
+        let (y, x) = ((p as usize / width) as f32, (p as usize % width) as f32);
+        let mut best = (f32::NEG_INFINITY, f32::INFINITY, 0usize);
+        for (k, &((cy, cx), r)) in disks.iter().enumerate() {
+            let d2 = (y - cy).powi(2) + (x - cx).powi(2);
+            if d2 <= r * r {
+                cover[i] |= 1 << k;
+            }
+            let c = cols[k * n + i];
+            // Largest positive column; else nearest centre.
+            let key = (c.max(0.0), d2);
+            if key.0 > best.0 || (key.0 == best.0 && key.1 < best.1) {
+                best = (key.0, key.1, k);
+            }
+        }
+        owner[i] = best.2 as u8;
+    }
+    (owner, cover)
 }
 
 /// What a replay gives each member, on the cluster's pixels: the estimate
@@ -288,25 +324,7 @@ impl ClusterStore {
     ) -> ClusterStore {
         let kk = ids.len();
         let n = pix.len();
-        let mut owner = vec![0u8; n];
-        let mut cover = vec![0u8; n];
-        for (i, &p) in pix.iter().enumerate() {
-            let (y, x) = ((p as usize / width) as f32, (p as usize % width) as f32);
-            let mut best = (f32::NEG_INFINITY, f32::INFINITY, 0usize);
-            for (k, &((cy, cx), r)) in disks.iter().enumerate() {
-                let d2 = (y - cy).powi(2) + (x - cx).powi(2);
-                if d2 <= r * r {
-                    cover[i] |= 1 << k;
-                }
-                let c = cols[k * n + i];
-                // Largest positive column; else nearest centre.
-                let key = (c.max(0.0), d2);
-                if key.0 > best.0 || (key.0 == best.0 && key.1 < best.1) {
-                    best = (key.0, key.1, k);
-                }
-            }
-            owner[i] = best.2 as u8;
-        }
+        let (owner, cover) = owner_cover(&pix, &disks, &cols, width);
         let mut s = ClusterStore {
             ids,
             disks,
@@ -320,12 +338,13 @@ impl ClusterStore {
             sr: vec![0.0; n],
             ut: Vec::new(),
             sc: vec![0.0; kk],
-            scc: vec![0.0; kk],
+            scc: vec![0.0; kk * kk],
             sw: 0.0,
             u: Vec::new(),
             rank: 0,
             hist: RingHistory::new(cap, kk),
             k: 0,
+            est: None,
         };
         // The first basis is the members' current whitened columns (the
         // statistics have not accumulated yet).
@@ -402,7 +421,9 @@ impl ClusterStore {
         for k in 0..kk {
             let ck = f64::from(c[k]);
             self.sc[k] += w * ck;
-            self.scc[k] += w * ck * ck;
+            for l in 0..kk {
+                self.scc[k * kk + l] += w * ck * f64::from(c[l]);
+            }
         }
         // Member-major axpy / dot loops (vectorise).
         let wf = w as f32;
@@ -435,25 +456,8 @@ impl ClusterStore {
     /// variance yet keeps its current column) and re-express the stored
     /// frames in it, `V ← U'ᵀ U V`.
     fn refresh_basis(&mut self) {
-        let (n, kk) = (self.pix.len(), self.ids.len());
-        let a = self.white_cols();
-        let mut b = vec![0.0f64; n * kk];
-        for k in 0..kk {
-            let var = if self.sw > 0.0 {
-                self.scc[k] - self.sc[k] * self.sc[k] / self.sw
-            } else {
-                0.0
-            };
-            let use_cy = var > 0.0;
-            for i in 0..n {
-                b[i * kk + k] = if use_cy {
-                    f64::from(self.cy[k * n + i]) - f64::from(self.sr[i]) * self.sc[k] / self.sw
-                } else {
-                    a[i * kk + k]
-                };
-            }
-        }
-        let (u2, r2) = orth(&b, n, kk);
+        let (u2, r2) = self.cy_basis();
+        let n = self.pix.len();
         // R = U'ᵀ U (r2 x rank).
         let mut rm = vec![0.0f64; r2 * self.rank];
         for i in 0..n {
@@ -468,6 +472,151 @@ impl ClusterStore {
         self.set_basis(u2, r2);
     }
 
+    /// `orth` of the centred `CY` (a member whose trace has no variance yet
+    /// keeps its current column).
+    fn cy_basis(&self) -> (Vec<f64>, usize) {
+        let (n, kk) = (self.pix.len(), self.ids.len());
+        let a = self.white_cols();
+        let mut b = vec![0.0f64; n * kk];
+        for k in 0..kk {
+            let var = if self.sw > 0.0 {
+                self.scc[k * kk + k] - self.sc[k] * self.sc[k] / self.sw
+            } else {
+                0.0
+            };
+            let use_cy = var > 0.0;
+            for i in 0..n {
+                b[i * kk + k] = if use_cy {
+                    f64::from(self.cy[k * n + i]) - f64::from(self.sr[i]) * self.sc[k] / self.sw
+                } else {
+                    a[i * kk + k]
+                };
+            }
+        }
+        orth(&b, n, kk)
+    }
+
+    /// Move the store to new pixels `pix` (sorted; whitening `is`, member
+    /// disks `disks`, the members' current filtered columns `cols` there,
+    /// member-major), keeping its history: pixels in both sets keep their
+    /// sums and stored light; a pixel new to the store starts at the current
+    /// model (its sums and every stored frame's light there are what the
+    /// members' current columns predict from the frame's least-squares
+    /// traces), the store's analogue of `FpStats::seed_new` (no evidence
+    /// yet, rather than zero light). Linear in the stored coordinates, so it
+    /// is one [`ClusterHistory::reexpress`]. `false` (store unchanged) when
+    /// the current columns are degenerate in the basis.
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_to(
+        &mut self,
+        disks: Vec<((f32, f32), f32)>,
+        pix: Vec<u32>,
+        is: Vec<f32>,
+        width: usize,
+        version: u64,
+        cols: Vec<f32>,
+    ) -> bool {
+        let (n0, kk, r0) = (self.pix.len(), self.ids.len(), self.rank);
+        let n1 = pix.len();
+        if n1 == 0 || r0 == 0 {
+            return false;
+        }
+        // Least-squares traces of a stored frame: c = P v, P = (BᵀB)⁻¹ Bᵀ,
+        // B = Uᵀ A (A the current whitened columns).
+        let a0 = self.white_cols();
+        let mut b = vec![0.0f64; r0 * kk];
+        for i in 0..n0 {
+            for j in 0..r0 {
+                let uij = self.u[i * r0 + j];
+                for k in 0..kk {
+                    b[j * kk + k] += uij * a0[i * kk + k];
+                }
+            }
+        }
+        let mut g = vec![0.0f64; kk * kk];
+        for p in 0..kk {
+            for q in 0..kk {
+                g[p * kk + q] = (0..r0).map(|j| b[j * kk + p] * b[j * kk + q]).sum();
+            }
+        }
+        let Some(gi) = inverse(&g, kk) else {
+            return false;
+        };
+        let mut pm = vec![0.0f64; kk * r0];
+        for k in 0..kk {
+            for j in 0..r0 {
+                pm[k * r0 + j] = (0..kk).map(|q| gi[k * kk + q] * b[j * kk + q]).sum();
+            }
+        }
+        // The new pixels' whitened columns, sums and frame map (n1 x r0).
+        let mut a1 = vec![0.0f64; n1 * kk];
+        for k in 0..kk {
+            for i in 0..n1 {
+                a1[i * kk + k] = f64::from(cols[k * n1 + i]) * f64::from(is[i]);
+            }
+        }
+        let mut cy = vec![0.0f32; n1 * kk];
+        let mut sr = vec![0.0f32; n1];
+        let mut rc = vec![0.0f64; n1 * r0];
+        for i in 0..n1 {
+            match self.pix.binary_search(&pix[i]) {
+                Ok(i0) => {
+                    sr[i] = self.sr[i0];
+                    for k in 0..kk {
+                        cy[k * n1 + i] = self.cy[k * n0 + i0];
+                    }
+                    rc[i * r0..(i + 1) * r0].copy_from_slice(&self.u[i0 * r0..(i0 + 1) * r0]);
+                }
+                Err(_) => {
+                    let ai = &a1[i * kk..(i + 1) * kk];
+                    sr[i] = (0..kk).map(|l| ai[l] * self.sc[l]).sum::<f64>() as f32;
+                    for k in 0..kk {
+                        cy[k * n1 + i] =
+                            (0..kk).map(|l| ai[l] * self.scc[l * kk + k]).sum::<f64>() as f32;
+                    }
+                    for j in 0..r0 {
+                        rc[i * r0 + j] = (0..kk).map(|l| ai[l] * pm[l * r0 + j]).sum();
+                    }
+                }
+            }
+        }
+        let est = self.est.take().map(|e| {
+            let mut out = a1.clone();
+            for i in 0..n1 {
+                if let Ok(i0) = self.pix.binary_search(&pix[i]) {
+                    out[i * kk..(i + 1) * kk].copy_from_slice(&e[i0 * kk..(i0 + 1) * kk]);
+                }
+            }
+            out
+        });
+        let (owner, cover) = owner_cover(&pix, &disks, &cols, width);
+        self.disks = disks;
+        self.pix = pix;
+        self.is = is;
+        self.owner = owner;
+        self.cover = cover;
+        self.version = version;
+        self.cols = cols;
+        self.cy = cy;
+        self.sr = sr;
+        self.est = est;
+        // The basis on the new pixels, and every stored frame in it:
+        // v' = U'ᵀ Rc v.
+        let (u1, r1) = self.cy_basis();
+        let mut rm = vec![0.0f64; r1 * r0];
+        for i in 0..n1 {
+            for a_ in 0..r1 {
+                let x = u1[i * r1 + a_];
+                for b_ in 0..r0 {
+                    rm[a_ * r0 + b_] += x * rc[i * r0 + b_];
+                }
+            }
+        }
+        self.hist.reexpress(&rm, r1, r0);
+        self.set_basis(u1, r1);
+        true
+    }
+
     /// One alternation on the stored window (see the module docs): refresh
     /// the basis, re-solve every stored frame's traces with the current
     /// columns (non-negative), refit the footprints jointly per pixel
@@ -478,7 +627,16 @@ impl ClusterStore {
     /// where its current filtered column is positive (its own light; the
     /// high-pass moat, negative in filtered space, stays free).
     /// `iters` alternations are run on the store (the design: 1).
-    pub fn replay(&mut self, gamma: f64, sign_rule: JointSign, iters: usize) -> Option<Replay> {
+    /// With `carry`, the traces are re-solved with the store's own last
+    /// estimate (when it has one) instead of the published columns, and
+    /// this replay's estimate is kept for the next one.
+    pub fn replay(
+        &mut self,
+        gamma: f64,
+        sign_rule: JointSign,
+        iters: usize,
+        carry: bool,
+    ) -> Option<Replay> {
         let (n, kk) = (self.pix.len(), self.ids.len());
         if self.hist.stored() < 4 * (kk + 1) || self.sw <= 0.0 {
             return None;
@@ -504,7 +662,11 @@ impl ClusterStore {
             s += 1;
         });
         // Trace step on every stored frame, with the current columns.
-        let mut cs = solve_traces(&self.white_cols(), &self.u, n, kk, r, &vv)?;
+        let start = match (&self.est, carry) {
+            (Some(e), true) => e.clone(),
+            _ => self.white_cols(),
+        };
+        let mut cs = solve_traces(&start, &self.u, n, kk, r, &vv)?;
         // Footprint step per subset of frames: all, half A, half B.
         let fit = |cs: &[f64], sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
             let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kk], vec![0.0f64; r]);
@@ -623,6 +785,15 @@ impl ClusterStore {
         let (h, se) = fit(&cs, &|_| true)?;
         let (ha, sa) = fit(&cs, &|s| hs[s])?;
         let (hb, sb) = fit(&cs, &|s| !hs[s])?;
+        if carry {
+            let mut e = vec![0.0f64; n * kk];
+            for k in 0..kk {
+                for i in 0..n {
+                    e[i * kk + k] = f64::from(h[k][i]) * f64::from(self.is[i]);
+                }
+            }
+            self.est = Some(e);
+        }
         Some(Replay {
             h,
             ha,
@@ -655,13 +826,36 @@ impl SlowLoop {
     /// A fresh store for the members `ids` (published in `lib`), on the
     /// union of their statistics disks widened by the statistics margin.
     fn new_store(&self, lib: &Library, ids: Vec<u64>) -> Option<ClusterStore> {
-        let margin = self.cfg.stats_margin_cells * self.cfg.cell_diameter_px;
+        let (disks, pix, is, cols) = self.store_geometry(lib, &ids)?;
+        let cap = self.cfg.stats_half_life_frames.ceil().max(1.0) as usize;
+        Some(ClusterStore::new(
+            ids,
+            disks,
+            pix,
+            is,
+            self.dims.width,
+            lib.version(),
+            cols,
+            cap,
+        ))
+    }
+
+    /// The pixels of a store for members `ids`: the union of their
+    /// statistics disks (which already carry the statistics margin around
+    /// each support), with the whitening and the members' current filtered
+    /// columns there (member-major).
+    #[allow(clippy::type_complexity)]
+    fn store_geometry(
+        &self,
+        lib: &Library,
+        ids: &[u64],
+    ) -> Option<(Vec<((f32, f32), f32)>, Vec<u32>, Vec<f32>, Vec<f32>)> {
         let (width, height) = (self.dims.width, self.dims.height);
         let mut disks = Vec::with_capacity(ids.len());
         let mut pix: Vec<u32> = Vec::new();
-        for id in &ids {
+        for id in ids {
             let st = self.fpstats.get(id)?;
-            let disk = (st.center, st.radius + margin);
+            let disk = (st.center, st.radius);
             pix.extend(disk_pixels(disk.0, disk.1, width, height, &self.fov));
             disks.push(disk);
         }
@@ -673,20 +867,10 @@ impl SlowLoop {
         }
         let is: Vec<f32> = pix.iter().map(|&p| self.inv_sigma[p as usize]).collect();
         let mut cols = Vec::with_capacity(ids.len() * pix.len());
-        for id in &ids {
+        for id in ids {
             cols.extend(column_on(lib, lib.slot(*id)?, &pix));
         }
-        let cap = self.cfg.stats_half_life_frames.ceil().max(1.0) as usize;
-        Some(ClusterStore::new(
-            ids,
-            disks,
-            pix,
-            is,
-            width,
-            lib.version(),
-            cols,
-            cap,
-        ))
+        Some((disks, pix, is, cols))
     }
 
     /// Clusters of the library's cells (greedy, `cluster_rho_min`,
@@ -770,10 +954,18 @@ impl SlowLoop {
                     .is_some_and(|st| self.clusters[ci].covers(k, st.center, st.radius))
             });
             if !covered {
-                if let Some(s) = self.new_store(lib, self.clusters[ci].ids.clone()) {
-                    self.clusters[ci] = s;
-                    self.cluster_ok[ci] = false;
-                    self.replay_stats.restarts += 1;
+                // Move the store to the members' current disks, keeping
+                // its history; start over only when that is degenerate.
+                let ids = self.clusters[ci].ids.clone();
+                if let Some((disks, pix, is, cols)) = self.store_geometry(lib, &ids) {
+                    let w = self.dims.width;
+                    if self.clusters[ci].move_to(disks, pix, is, w, version, cols) {
+                        self.replay_stats.moves += 1;
+                    } else if let Some(s) = self.new_store(lib, ids) {
+                        self.clusters[ci] = s;
+                        self.cluster_ok[ci] = false;
+                        self.replay_stats.restarts += 1;
+                    }
                 }
             }
             let st = &mut self.clusters[ci];
@@ -884,80 +1076,167 @@ impl SlowLoop {
             let n = st.pix.len();
             let kk = ids.len();
             self.work += (st.stored() * kk * (kk + 8) + n * kk * kk * 4) as u64;
-            let Some(rep) = st.replay(gamma, self.cfg.joint_sign_rule, self.cfg.joint_iters) else {
-                self.replay_stats.replay_none += 1;
-                self.cluster_ok[ci] = false;
-                continue;
-            };
-            let cpix = self.clusters[ci].pix.clone();
-            // Each member's estimate on its own statistics disk.
-            let mut props: Vec<(usize, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
-            for (k, id) in ids.iter().enumerate() {
-                let Some(st) = self.fpstats.get(id) else {
-                    continue;
+            let rep = st.replay(
+                gamma,
+                self.cfg.joint_sign_rule,
+                self.cfg.joint_iters,
+                self.cfg.joint_carry,
+            );
+            #[cfg(feature = "diagnostics")]
+            let mut sd = StageDiag::new(kk);
+            'cluster: {
+                let Some(rep) = rep.as_ref() else {
+                    self.replay_stats.replay_none += 1;
+                    self.cluster_ok[ci] = false;
+                    #[cfg(feature = "diagnostics")]
+                    sd.all("none");
+                    break 'cluster;
                 };
-                let pick = |v: &[f32]| -> Vec<f32> {
-                    st.pix
+                let cpix = self.clusters[ci].pix.clone();
+                // Each member's estimate on its own statistics disk.
+                let mut props: Vec<(usize, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
+                for (k, id) in ids.iter().enumerate() {
+                    let Some(st) = self.fpstats.get(id) else {
+                        continue;
+                    };
+                    let pick = |v: &[f32]| -> Vec<f32> {
+                        st.pix
+                            .iter()
+                            .map(|p| cpix.binary_search(p).map_or(0.0, |i| v[i]))
+                            .collect()
+                    };
+                    let h = pick(&rep.h[k]);
+                    let peak = h
                         .iter()
-                        .map(|p| cpix.binary_search(p).map_or(0.0, |i| v[i]))
-                        .collect()
-                };
-                let h = pick(&rep.h[k]);
-                let peak = h
-                    .iter()
-                    .zip(&st.pix)
-                    .map(|(&v, &p)| v * self.inv_sigma[p as usize])
-                    .fold(0.0f32, f32::max);
-                if f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * rep.se[k] {
-                    props.push((k, st.pix.clone(), h, pick(&rep.ha[k]), pick(&rep.hb[k])));
+                        .zip(&st.pix)
+                        .map(|(&v, &p)| v * self.inv_sigma[p as usize])
+                        .fold(0.0f32, f32::max);
+                    if f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * rep.se[k] {
+                        props.push((k, st.pix.clone(), h, pick(&rep.ha[k]), pick(&rep.hb[k])));
+                    }
                 }
-            }
-            if props.is_empty() {
-                self.replay_stats.low_snr += 1;
-                self.cluster_ok[ci] = false;
-                continue;
-            }
-            self.cluster_ok[ci] = true;
-            let excess: f64 = props
-                .iter()
-                .map(|(k, pix, h, ha, hb)| self.half_excess(&cells[*k], pix, h, ha, hb))
-                .sum();
-            if !(excess > 0.0) {
-                self.replay_stats.converged += 1;
-                continue;
-            }
-            let mut news: Vec<Cell> = Vec::new();
-            for (k, pix, h, ha, hb) in props {
-                self.fast_tmp = None;
-                self.support_tmp = Some((pix.clone(), ha, hb, rep.sa[k], rep.sb[k]));
-                let new = self.make_cell_global(ids[k], &pix, &h, Some(&cells[k]), Some(rep.se[k]));
-                self.support_tmp = None;
-                if let Some(mut new) = new {
-                    new.born = cells[k].born;
-                    news.push(new);
+                #[cfg(feature = "diagnostics")]
+                {
+                    sd.all("lowsnr");
+                    for p in &props {
+                        sd.exit[p.0] = "conv";
+                    }
+                }
+                if props.is_empty() {
+                    self.replay_stats.low_snr += 1;
+                    self.cluster_ok[ci] = false;
+                    break 'cluster;
+                }
+                self.cluster_ok[ci] = true;
+                match self.cfg.joint_admit {
+                    JointAdmit::Cluster => {
+                        let excess: f64 = props
+                            .iter()
+                            .map(|(k, pix, h, ha, hb)| self.half_excess(&cells[*k], pix, h, ha, hb))
+                            .sum();
+                        if !(excess > 0.0) {
+                            props.clear();
+                        }
+                    }
+                    JointAdmit::Member => props.retain(|(k, pix, h, _, _)| {
+                        let v = rep.sa[*k] * rep.sa[*k] + rep.sb[*k] * rep.sb[*k];
+                        self.noise_excess(&cells[*k], pix, h, v) > 0.0
+                    }),
+                }
+                if props.is_empty() {
+                    self.replay_stats.converged += 1;
+                    break 'cluster;
+                }
+                let mut news: Vec<Cell> = Vec::new();
+                for (k, pix, h, ha, hb) in props {
+                    self.fast_tmp = None;
+                    self.support_tmp = Some((pix.clone(), ha, hb, rep.sa[k], rep.sb[k]));
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        sd.exit[k] = "fnone";
+                        if stage_dump_on() {
+                            let wd = self.dims.width;
+                            let at = |c: (f32, f32)| {
+                                (c.0.round() as usize * wd + c.1.round() as usize) as u32
+                            };
+                            self.probe =
+                                Some((cells.iter().map(|c| at(c.center)).collect(), Vec::new()));
+                        }
+                    }
+                    let new =
+                        self.make_cell_global(ids[k], &pix, &h, Some(&cells[k]), Some(rep.se[k]));
+                    self.support_tmp = None;
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        sd.probe[k] = self.probe.take().map(|p| p.1);
+                    }
+                    if let Some(mut new) = new {
+                        new.born = cells[k].born;
+                        #[cfg(feature = "diagnostics")]
+                        {
+                            sd.exit[k] = "rej";
+                            sd.news[k] = Some(new.clone());
+                        }
+                        news.push(new);
+                    }
+                }
+                #[cfg(feature = "diagnostics")]
+                dump_replay(self, &cells, &cpix, rep);
+                if news.is_empty() {
+                    break 'cluster;
+                }
+                self.replay_stats.proposals += 1;
+                let skip: Vec<u64> = news.iter().map(|c| c.id).collect();
+                let refs: Vec<&Cell> = news.iter().collect();
+                let cols = self.columns(rect, &skip, &refs);
+                let pr = self.problem(ti, cols);
+                let f = self.solve_all(&pr, test_fr);
+                let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
+                let z = paired_z(base_test, &f);
+                let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
+                #[cfg(feature = "diagnostics")]
+                {
+                    sd.gain = gain;
+                    sd.z = z;
+                    sd.frames = rep.frames;
+                    if stage_dump_on() {
+                        // Counterfactual: each member's new column alone
+                        // (its work is not charged to the budget).
+                        let w0 = self.work;
+                        for nc in &news {
+                            let Some(k) = ids.iter().position(|&x| x == nc.id) else {
+                                continue;
+                            };
+                            let cols = self.columns(rect, &[nc.id], &[nc]);
+                            let pr = self.problem(ti, cols);
+                            let f = self.solve_all(&pr, test_fr);
+                            sd.solo[k] = (chi_base - SlowLoop::total_chi2(&f)) / s2;
+                        }
+                        self.work = w0;
+                    }
+                }
+                if accepted {
+                    self.replay_stats.accepted += 1;
+                    self.replay_stats.members_replaced += news.len() as u64;
+                    #[cfg(feature = "diagnostics")]
+                    for e in sd.exit.iter_mut() {
+                        if *e == "rej" {
+                            *e = "acc";
+                        }
+                    }
+                    for new in news {
+                        updates.push((new.id, new, z as f32, 3));
+                    }
                 }
             }
             #[cfg(feature = "diagnostics")]
-            dump_replay(self, &cells, &cpix, &rep);
-            if news.is_empty() {
-                continue;
-            }
-            self.replay_stats.proposals += 1;
-            let skip: Vec<u64> = news.iter().map(|c| c.id).collect();
-            let refs: Vec<&Cell> = news.iter().collect();
-            let cols = self.columns(rect, &skip, &refs);
-            let pr = self.problem(ti, cols);
-            let f = self.solve_all(&pr, test_fr);
-            let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
-            let z = paired_z(base_test, &f);
-            let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
-            if accepted {
-                self.replay_stats.accepted += 1;
-                self.replay_stats.members_replaced += news.len() as u64;
-                for new in news {
-                    updates.push((new.id, new, z as f32, 3));
-                }
-            }
+            dump_stages(
+                self,
+                &cells,
+                rep.as_ref(),
+                &self.clusters[ci].pix.clone(),
+                &sd,
+            );
         }
         let _ = w;
         tile_ids
@@ -1074,6 +1353,142 @@ impl SlowLoop {
             );
         }
         out
+    }
+}
+
+/// DIAG (`CALA_REPLAY_STAGES=path`): where a replay's estimate goes in
+/// the finish path, per member: its exit (`none` no replay, `lowsnr` under
+/// the minimum SNR, `conv` the cluster's split-half excess ≤ 0, `fnone` the
+/// finish path gave no footprint, `rej` / `acc` gated), the samples of
+/// `finish_basin` at the members' centres, and the new cell.
+#[cfg(feature = "diagnostics")]
+pub(super) struct StageDiag {
+    pub exit: Vec<&'static str>,
+    pub probe: Vec<Option<Vec<[f32; 8]>>>,
+    pub news: Vec<Option<Cell>>,
+    pub gain: f64,
+    pub z: f64,
+    pub frames: usize,
+    pub solo: Vec<f64>,
+}
+
+#[cfg(feature = "diagnostics")]
+impl StageDiag {
+    pub fn new(kk: usize) -> StageDiag {
+        StageDiag {
+            exit: vec!["none"; kk],
+            probe: vec![None; kk],
+            news: vec![None; kk],
+            gain: f64::NAN,
+            z: f64::NAN,
+            frames: 0,
+            solo: vec![f64::NAN; kk],
+        }
+    }
+
+    pub fn all(&mut self, e: &'static str) {
+        self.exit.iter_mut().for_each(|x| *x = e);
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+pub(super) fn stage_dump_on() -> bool {
+    std::env::var_os("CALA_REPLAY_STAGES").is_some()
+}
+
+/// One row per ordered member pair (i, j): frame, ids, K, distance, i's
+/// exit, gate gain and z, the raw replay estimate of i at c_j over c_i
+/// (cluster pixels, filtered), `finish_basin`'s samples of i at c_i and at
+/// c_j (h, smoothed target, q, tol, S0, X, inverted light, mask), and the
+/// new and the current footprint of i at c_j over c_i (unfiltered raw,
+/// filtered column).
+#[cfg(feature = "diagnostics")]
+fn dump_stages(
+    slow: &SlowLoop,
+    cells: &[Cell],
+    rep: Option<&Replay>,
+    cpix: &[u32],
+    sd: &StageDiag,
+) {
+    use std::io::Write;
+    let Ok(path) = std::env::var("CALA_REPLAY_STAGES") else {
+        return;
+    };
+    let w = slow.dims.width;
+    let at = |c: (f32, f32)| (c.0.round() as usize * w + c.1.round() as usize) as u32;
+    let block = slow.filter.moat().map_or(0, |m| m.0);
+    let raw_at = |c: &Cell, p: u32| c.pix.iter().position(|&q| q == p).map_or(0.0, |k| c.raw[k]);
+    let ratio = |a: f32, b: f32| if a > 0.0 { b / a } else { f32::NAN };
+    let mut s = String::new();
+    for (i, ci) in cells.iter().enumerate() {
+        let pi = at(ci.center);
+        let in_disk = |p: u32| {
+            slow.fpstats
+                .get(&ci.id)
+                .is_some_and(|st| st.pix.binary_search(&p).is_ok())
+        };
+        for (j, cj) in cells.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let pj = at(cj.center);
+            let r_rep = rep.map_or(f32::NAN, |r| {
+                let get = |p: u32| cpix.binary_search(&p).map_or(f32::NAN, |x| r.h[i][x]);
+                ratio(get(pi), get(pj))
+            });
+            let pr = |k: usize| -> String {
+                sd.probe[i].as_ref().and_then(|v| v.get(k)).map_or_else(
+                    || "nan\tnan\tnan\tnan\tnan\tnan\tnan\tnan".to_string(),
+                    |v| {
+                        v.iter()
+                            .map(|x| format!("{x:.5}"))
+                            .collect::<Vec<_>>()
+                            .join("\t")
+                    },
+                )
+            };
+            let (nr, nc) = sd.news[i].as_ref().map_or((f32::NAN, f32::NAN), |c| {
+                (
+                    ratio(raw_at(c, pi), raw_at(c, pj)),
+                    ratio(c.column_at(pi, w, block), c.column_at(pj, w, block)),
+                )
+            });
+            let (or, oc) = (
+                ratio(raw_at(ci, pi), raw_at(ci, pj)),
+                ratio(ci.column_at(pi, w, block), ci.column_at(pj, w, block)),
+            );
+            let d =
+                ((ci.center.0 - cj.center.0).powi(2) + (ci.center.1 - cj.center.1).powi(2)).sqrt();
+            s.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{:.2}\t{}\t{:.3}\t{:.3}\t{}\t{:.4}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.3}\t{:.3}\n",
+                slow.frames,
+                ci.id,
+                cj.id,
+                cells.len(),
+                d,
+                sd.exit[i],
+                sd.gain,
+                sd.z,
+                u8::from(in_disk(pj)),
+                r_rep,
+                pr(i),
+                pr(j),
+                nr,
+                nc,
+                or,
+                oc,
+                sd.frames,
+                sd.solo[i],
+                sd.solo[j]
+            ));
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(s.as_bytes());
     }
 }
 
@@ -1295,6 +1710,7 @@ pub(crate) fn nnls(g: &[f64], b: &[f64], k: usize, x: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::split_excess;
 
     #[test]
     fn greedy_clusters_respect_the_cap_and_strength_order() {
@@ -1403,7 +1819,7 @@ mod tests {
             wgt /= gamma;
             st.push(&y, &[x[0] as f32, x[1] as f32], wgt);
             if t % 200 == 199 && t > 512 {
-                let rep = st.replay(gamma, JointSign::Off, 1).expect("replay");
+                let rep = st.replay(gamma, JointSign::Off, 1, false).expect("replay");
                 let norm = |h: &[f32]| {
                     let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
                     h.iter().map(|v| v.max(0.0) / m).collect::<Vec<f32>>()
@@ -1419,5 +1835,194 @@ mod tests {
         let over = cur_j[12 * w + ci.1.round() as usize]
             / (aj[12 * w + ci.1.round() as usize] / aj.iter().cloned().fold(0.0, f32::max));
         assert!(over < 1.3, "j over-fill at i's centre = {over}");
+    }
+
+    /// Two Gaussian cells 0.75 diameters apart on a 24 x 40 canvas
+    /// (footprints j, i and the width).
+    fn truth() -> (Vec<f32>, Vec<f32>, usize) {
+        let (h, w) = (24usize, 40usize);
+        let d = 14.0f32;
+        let sig = d / 2.3548;
+        let cj = (12.0f32, 20.0 - 0.375 * d);
+        let ci = (12.0f32, 20.0 + 0.375 * d);
+        let gauss = |c: (f32, f32)| -> Vec<f32> {
+            (0..h * w)
+                .map(|p| {
+                    let (y, x) = ((p / w) as f32, (p % w) as f32);
+                    (-((y - c.0).powi(2) + (x - c.1).powi(2)) / (2.0 * sig * sig)).exp()
+                })
+                .collect()
+        };
+        (gauss(cj), gauss(ci), w)
+    }
+
+    /// A store on `pix` (members j, i; columns `cols`, member-major on `pix`)
+    /// fed `frames` noisy frames of the true cells, its fast traces solved
+    /// with the store's columns. Returns the store and the true footprints.
+    fn fed_store(
+        pix: Vec<u32>,
+        cols: Vec<f32>,
+        frames: usize,
+        seed: u64,
+    ) -> (ClusterStore, Vec<f32>, Vec<f32>, usize) {
+        let (aj, ai, w) = truth();
+        let d = 14.0f32;
+        let cj = (12.0f32, 20.0 - 0.375 * d);
+        let ci = (12.0f32, 20.0 + 0.375 * d);
+        let n = pix.len();
+        let mut st = ClusterStore::new(
+            vec![1, 2],
+            vec![(cj, 30.0), (ci, 30.0)],
+            pix,
+            vec![1.0; n],
+            w,
+            0,
+            cols,
+            3000,
+        );
+        let mut rng = seed;
+        let mut unif = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (mut c1, mut c2) = (0.0f64, 0.0f64);
+        let mut x = [0.0f64; 2];
+        for _ in 0..frames {
+            for c in [&mut c1, &mut c2] {
+                *c *= 0.95;
+                if unif() < 0.01 {
+                    *c += -unif().max(1e-12).ln();
+                }
+            }
+            let y: Vec<f32> = st
+                .pix
+                .iter()
+                .map(|&p| {
+                    let p = p as usize;
+                    let z = (-2.0 * unif().max(1e-12).ln()).sqrt()
+                        * (2.0 * std::f64::consts::PI * unif()).cos();
+                    (f64::from(aj[p]) * c1 + f64::from(ai[p]) * c2 + 0.5 * z) as f32
+                })
+                .collect();
+            let a = st.white_cols();
+            let (mut g, mut b) = ([0.0f64; 4], [0.0f64; 2]);
+            for p in 0..n {
+                for k in 0..2 {
+                    b[k] += a[p * 2 + k] * f64::from(y[p]);
+                    for l in 0..2 {
+                        g[k * 2 + l] += a[p * 2 + k] * a[p * 2 + l];
+                    }
+                }
+            }
+            nnls(&g, &b, 2, &mut x);
+            st.push(&y, &[x[0] as f32, x[1] as f32], 1.0);
+        }
+        (st, aj, ai, w)
+    }
+
+    fn on(a: &[f32], pix: &[u32]) -> Vec<f32> {
+        pix.iter().map(|&p| a[p as usize]).collect()
+    }
+
+    /// Started at the truth, the per-member rule (split-half noise from the
+    /// joint fit's standard errors) proposes neither member; the replay's
+    /// own halves, which share one basis, understate the noise.
+    #[test]
+    fn a_member_at_the_truth_is_not_proposed() {
+        let (n, mut members_rule, mut cluster_rule) = (24 * 40, 0, 0);
+        for seed in [11u64, 12, 13, 14, 15] {
+            let pix: Vec<u32> = (0..n as u32).collect();
+            let (aj, ai, _) = truth();
+            let cols = [on(&aj, &pix), on(&ai, &pix)].concat();
+            let (mut st, aj, ai, _) = fed_store(pix.clone(), cols, 3000, seed);
+            let gamma = 1.0;
+            let rep = st.replay(gamma, JointSign::All, 1, false).expect("replay");
+            let is = vec![1.0f64; n];
+            for (k, a) in [(0usize, &aj), (1, &ai)] {
+                let cur: Vec<f64> = a.iter().map(|&v| f64::from(v)).collect();
+                let v = rep.sa[k] * rep.sa[k] + rep.sb[k] * rep.sb[k];
+                if split_excess(&rep.h[k], &cur, &is, None, v) > 0.0 {
+                    members_rule += 1;
+                }
+                if split_excess(&rep.h[k], &cur, &is, Some((&rep.ha[k], &rep.hb[k])), 0.0) > 0.0 {
+                    cluster_rule += 1;
+                }
+            }
+        }
+        assert_eq!(
+            members_rule, 0,
+            "per-member rule proposed a member at the truth"
+        );
+        assert!(
+            cluster_rule >= 5,
+            "replay halves proposed only {cluster_rule} of 10"
+        );
+    }
+
+    /// Moving a store to a larger, shifted pixel set keeps its stored frames
+    /// and its estimate on the shared pixels; the new pixels start at the
+    /// current model (the estimate there follows the current columns).
+    #[test]
+    fn a_moved_store_keeps_its_history_and_starts_new_pixels_at_the_model() {
+        let (h, w) = (24usize, 40usize);
+        let full: Vec<u32> = (0..(h * w) as u32).collect();
+        let (aj, ai, _) = truth();
+        // The old pixels: the left 30 columns.
+        let old: Vec<u32> = full
+            .iter()
+            .copied()
+            .filter(|&p| (p as usize % w) < 30)
+            .collect();
+        let cols = [on(&aj, &old), on(&ai, &old)].concat();
+        let (mut st, aj, ai, _) = fed_store(old.clone(), cols, 2500, 7);
+        let before = st.replay(1.0, JointSign::Off, 1, false).expect("replay");
+        let stored = st.stored();
+        // The new pixels: the right 34 columns (drops 6, adds 10).
+        let new: Vec<u32> = full
+            .iter()
+            .copied()
+            .filter(|&p| (p as usize % w) >= 6)
+            .collect();
+        let cols = [on(&aj, &new), on(&ai, &new)].concat();
+        let disks = st.disks.clone();
+        assert!(st.move_to(disks, new.clone(), vec![1.0; new.len()], w, 0, cols));
+        assert_eq!(st.stored(), stored);
+        let after = st.replay(1.0, JointSign::Off, 1, false).expect("replay");
+        for k in 0..2 {
+            // Shared pixels: the estimate is unchanged.
+            let (mut num, mut den) = (0.0f64, 0.0f64);
+            for (i1, p) in new.iter().enumerate() {
+                if let Ok(i0) = old.binary_search(p) {
+                    let d = f64::from(after.h[k][i1] - before.h[k][i0]);
+                    num += d * d;
+                    den += f64::from(before.h[k][i0]).powi(2);
+                }
+            }
+            assert!(
+                num / den < 0.01,
+                "member {k}: shared-pixel change {}",
+                num / den
+            );
+            // New pixels: proportional to the current (true) column.
+            let truth = if k == 0 { &aj } else { &ai };
+            let peak = new
+                .iter()
+                .enumerate()
+                .max_by(|a, b| truth[*a.1 as usize].total_cmp(&truth[*b.1 as usize]))
+                .map(|(i, _)| i)
+                .expect("pixels");
+            let scale = after.h[k][peak] / truth[new[peak] as usize];
+            for (i1, &p) in new.iter().enumerate() {
+                if (p as usize % w) >= 30 && truth[p as usize] > 0.2 {
+                    let e = after.h[k][i1] / scale - truth[p as usize];
+                    assert!(
+                        e.abs() < 0.1,
+                        "member {k}: new pixel {p} off the model by {e}"
+                    );
+                }
+            }
+        }
     }
 }
