@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
+import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
@@ -86,11 +87,13 @@ function setup(
     cellIds?: (i: number) => number[];
     refineQc?: RefineQcOptions;
     clock?: () => number;
+    flatMap?: FlatFieldMap;
   } = {},
 ) {
   const frames = 4 * (opts.batches ?? 3);
   const rec = new RunRecord();
-  for (let t = 0; t < frames; t++) rec.push(t, [0], [0], [0], [0], [0]);
+  for (let t = 0; t < frames; t++) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
+  rec.noteSession(1, [0.25, 2, -3]);
   let slow = {
     run: 1,
     final: true,
@@ -107,14 +110,14 @@ function setup(
     ...Array.from({ length: frames / 4 }, (_, i) => batch(4 * i, 4, opts.cellIds?.(i))),
     { kind: 'done' },
   ];
-  const started: { cells: unknown; replay: unknown }[] = [];
+  const started: { options: unknown; cells: unknown; replay: unknown }[] = [];
   const stops: unknown[] = [];
   const consume = (to: number) => {
     slow = { ...slow, frame: to, consumed: to };
   };
   const client: PipelineClient = {
-    async startPipeline(_o, cells, replay) {
-      started.push({ cells, replay });
+    async startPipeline(options, cells, replay) {
+      started.push({ options, cells, replay });
       // The slow worker takes the `replay` message with the first batch.
       slow = { ...slow, run: 2, final: false, frame: 0, consumed: 0, editScope: 'refine' };
       return PLAN;
@@ -141,7 +144,7 @@ function setup(
   const pipeline = {
     plan: () => ({ ...PLAN, frameCount: frames }),
     record: () => rec,
-    flatFieldMap: () => null,
+    flatFieldMap: () => opts.flatMap ?? null,
   } as unknown as PipelineStore;
   const cells = {
     library: () => current,
@@ -189,18 +192,50 @@ async function until(cond: () => boolean, ms = 1000): Promise<void> {
 }
 
 describe('Refine store', () => {
+  it('replays with the newest Discover flat field from frame 0', async () => {
+    const flatMap: FlatFieldMap = {
+      gain: new Float32Array(16).fill(1.02),
+      offset: new Float32Array(0),
+      dark: 1,
+      binsUsed: 3,
+      framesUsed: 500,
+      gainSd: 0.04,
+    };
+    const t = setup({ flatMap });
+    await t.store.run();
+    expect((t.started[0].replay as { flatField: FlatFieldMap }).flatField).toBe(flatMap);
+    await until(() => t.store.status() === 'done');
+  });
+
   it('replays the recording into the Discover slow loop and logs the run with its readout', async () => {
     const t = setup();
     await t.store.run();
     expect(t.started).toHaveLength(1);
-    expect(t.started[0].cells).toMatchObject({
+    expect(t.started[0].cells).toEqual({
       session: 7,
       discover: true,
       refine: true,
       qc: false,
       library: Uint8Array.of(5),
+      forwardBuffers: REFINE_FORWARD_BUFFERS,
     });
-    expect((t.started[0].replay as { frameCount: number }).frameCount).toBe(12);
+    expect(t.started[0].options).toEqual({
+      batchSize: 4,
+      calibrationFrames: 4,
+      motionWarmupFrames: 4,
+      previewMaxSide: PLAN.previewMaxSide,
+    });
+    const replay = t.started[0].replay as ReturnType<RunRecord['snapshot']> & {
+      frameCount: number;
+    };
+    expect(replay.frameCount).toBe(12);
+    expect(replay.dy[3]).toBe(3);
+    expect(replay.dx[3]).toBe(-3);
+    expect(replay.flags).toEqual(new Uint8Array(12));
+    expect(replay.flickerOffset).toEqual(new Float32Array(12).fill(0.5));
+    expect(replay.flickerGain).toEqual(new Float32Array(12).fill(0.01));
+    expect(replay.sessionTransforms?.[1]).toEqual([0.25, 2, -3]);
+    expect('flatField' in replay).toBe(false);
     await until(() => t.store.status() === 'done');
     expect(t.store.processed()).toBe(12);
     const r = t.log.last('refine')!;

@@ -69,6 +69,7 @@ function setup(
   const rec = new RunRecord();
   const frames = opts.frames ?? 8;
   for (let t = 0; t < frames; t++) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
+  rec.noteSession(1, [0.25, 2, -3]);
   const started: { options: unknown; cells: unknown; replay: unknown }[] = [];
   const steps: PipelineStepResult[] = [
     batch(0, 4, IDS, !opts.noSigned),
@@ -112,11 +113,30 @@ describe('Extract (pass 2) store', () => {
     await settle();
     expect(store.status()).toBe('done');
     expect(started).toHaveLength(1);
-    expect(started[0].cells).toMatchObject({ discover: false, qc: false, signed: true });
-    expect(started[0].options).toMatchObject({ batchSize: 4, calibrationFrames: 4 });
-    const replay = started[0].replay as { frameCount: number; dx: Float32Array };
+    expect(started[0].cells).toEqual({
+      session: 0,
+      discover: false,
+      qc: false,
+      signed: true,
+      projection: true,
+      library: Uint8Array.of(1, 2, 3),
+    });
+    expect(started[0].options).toEqual({
+      batchSize: 4,
+      calibrationFrames: 4,
+      motionWarmupFrames: 4,
+      previewMaxSide: 32,
+    });
+    const replay = started[0].replay as ReturnType<RunRecord['snapshot']> & {
+      frameCount: number;
+    };
     expect(replay.frameCount).toBe(8);
+    expect(replay.dy[3]).toBe(3);
     expect(replay.dx[3]).toBe(-3);
+    expect(replay.flags).toEqual(new Uint8Array(8));
+    expect(replay.flickerOffset).toEqual(new Float32Array(8).fill(0.5));
+    expect(replay.flickerGain).toEqual(new Float32Array(8).fill(0.01));
+    expect(replay.sessionTransforms?.[1]).toEqual([0.25, 2, -3]);
     const r = store.result()!;
     expect(r.frames).toBe(8);
     expect(r.cells).toBe(2);

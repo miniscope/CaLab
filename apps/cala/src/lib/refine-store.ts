@@ -35,6 +35,7 @@ import { RefineTracker, type RefineSample } from './refine-metrics.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 import type { QcSnapshot } from './qc.ts';
 import { createTraceFile, type TraceFile } from './trace-file.ts';
+import { startReplayPipeline } from './replay-pipeline.ts';
 
 /** Refine's QC: the QC of the replay's traces (`traces`: frames x cells, ids `ids`). */
 export interface RefineQcOptions {
@@ -327,22 +328,17 @@ export function createRefineStore(
       }
     }
     try {
-      await client.startPipeline(
-        {
-          batchSize: plan1.batchSize,
-          calibrationFrames: plan1.calibrationFrames,
-          motionWarmupFrames: plan1.motionWarmupFrames,
-          previewMaxSide: plan1.previewMaxSide,
-        },
+      await startReplayPipeline(
+        client,
+        plan1,
         {
           session: cells.session(),
           discover: true,
-          qc: false,
           library: bytes,
           refine: true,
           forwardBuffers: REFINE_FORWARD_BUFFERS,
         },
-        { frameCount: ctx.frames, ...rec.snapshot(), ...(flatMap ? { flatField: flatMap } : {}) },
+        { frames: ctx.frames, record: rec, flatField: flatMap },
       );
       if (gen !== generation) return;
       pump(gen, ctx);

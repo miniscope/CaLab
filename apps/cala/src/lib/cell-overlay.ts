@@ -128,8 +128,6 @@ export type Rgb = [number, number, number];
  */
 export type OverlayMode = 'off' | 'contours' | 'footprints' | 'both';
 
-export const OVERLAY_MODES: readonly OverlayMode[] = ['off', 'contours', 'footprints', 'both'];
-
 export interface OverlayStyle {
   /** Outline colour of a cell. */
   color(id: number): Rgb;
