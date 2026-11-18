@@ -27,6 +27,7 @@
 //! from the buffer chunk by chunk; the Householder QR, the small SVD (from
 //! the eigenvectors of `B Bᵀ`) and the autocorrelations run in float64.
 
+pub mod blend;
 mod linalg;
 pub mod review;
 
@@ -337,6 +338,16 @@ pub struct WindowCompressor {
 impl WindowCompressor {
     pub fn new(dims: Dims, cfg: CompressConfig) -> WindowCompressor {
         let grid = tile_grid(dims, cfg.tile);
+        WindowCompressor::with_grid(dims, cfg, grid)
+    }
+
+    /// As [`WindowCompressor::new`] with the tiles given as `(x0, y0, w, h)`;
+    /// they may overlap (see [`blend::BlendLayout`]).
+    pub fn with_grid(
+        dims: Dims,
+        cfg: CompressConfig,
+        grid: Vec<(usize, usize, usize, usize)>,
+    ) -> WindowCompressor {
         let buf = grid
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
